@@ -44,6 +44,7 @@ const allowedEnvironment = new Set([
   "PGSSLMODE",
   "PGCONNECT_TIMEOUT",
   "PGHOSTADDR",
+  "REVIEW_ROUTER_DATABASE_URL_FILE",
 ]);
 const secretPattern =
   /postgres(?:ql)?:\/\/|BEGIN [A-Z ]*PRIVATE KEY|(?:password|token|private[_-]?key)=/iu;
@@ -56,6 +57,7 @@ const environmentValuePatterns: Readonly<Record<string, RegExp>> = {
   PGSSLMODE: /^(?:disable|allow|prefer|require|verify-ca|verify-full)$/u,
   PGCONNECT_TIMEOUT: /^(?:[1-9]|[1-9][0-9]|1[0-1][0-9]|120)$/u,
   PGHOSTADDR: /^(?:[0-9.]{7,15}|[A-Fa-f0-9:]{2,45})$/u,
+  REVIEW_ROUTER_DATABASE_URL_FILE: /^\/[A-Za-z0-9._+\-/]{1,1023}$/u,
 };
 
 function boundedTimeout(value: number | undefined): number {

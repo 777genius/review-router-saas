@@ -1,6 +1,9 @@
 import {
   assertRunnerIdentity,
+  beginReleaseMigrationAttempt,
+  recoverCompletedReleaseMigration,
   RolloutStep,
+  sha256Canonical,
   transitionFailure,
   transitionFromObservation,
   type ReleaseRollout,
@@ -133,6 +136,8 @@ export class ReleaseRolloutUseCases {
       runAttempt: r.execution.runAttempt,
       sourceSystemIdentifier: r.source.systemIdentifier,
       targetSystemIdentifier: r.target.systemIdentifier,
+      targetRecoveryWitnessSha256: r.target.recoveryWitnessSha256,
+      migrationTransition: r.migrationTransition,
     });
     if (claimed !== "claimed") throw new Error("rollout_id_already_claimed");
     return await this.accept(
@@ -218,11 +223,73 @@ export class ReleaseRolloutUseCases {
     );
   }
   async runReleaseMigration(r: ReleaseRollout) {
-    return await this.accept(
-      r,
-      await this.ports.database.runReleaseMigration(r.target),
-      RolloutStep.RunReleaseMigration,
-    );
+    const beginReleaseMigration = this.ports.ledger.beginReleaseMigration;
+    const completeReleaseMigration = this.ports.ledger.completeReleaseMigration;
+    const failReleaseMigration = this.ports.ledger.failReleaseMigration;
+    const loadReleaseMigrationCheckpoint =
+      this.ports.ledger.loadReleaseMigrationCheckpoint;
+    if (
+      !beginReleaseMigration ||
+      !completeReleaseMigration ||
+      !failReleaseMigration ||
+      !loadReleaseMigrationCheckpoint
+    )
+      throw new Error("release_migration_phase_protocol_unavailable");
+    const checkpoint = await loadReleaseMigrationCheckpoint({
+      rolloutId: r.rolloutId,
+      targetSystemIdentifier: r.target.systemIdentifier,
+    });
+    if (checkpoint.targetManifestPhase === "quarantined")
+      throw new Error("release_migration_quarantined");
+    if (checkpoint.targetManifestPhase === "post_migration") {
+      if (!checkpoint.permit || !checkpoint.receipt)
+        throw new Error("release_migration_checkpoint_invalid");
+      return recoverCompletedReleaseMigration(
+        r,
+        checkpoint.permit,
+        checkpoint.receipt,
+      );
+    }
+    const previousReceiptSha256 =
+      r.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`;
+    const permit = await beginReleaseMigration({
+      rolloutId: r.rolloutId,
+      expectedCommitSha: r.expectedCommitSha,
+      runId: r.execution.runId,
+      runAttempt: r.execution.runAttempt,
+      sourceSystemIdentifier: r.source.systemIdentifier,
+      targetSystemIdentifier: r.target.systemIdentifier,
+      targetRecoveryWitnessSha256: r.target.recoveryWitnessSha256,
+      transitionSha256: r.migrationTransition.transitionSha256,
+      expectedPreviousReceiptSha256: previousReceiptSha256,
+    });
+    const migrating = beginReleaseMigrationAttempt(r, permit);
+    let completed: ReleaseRollout;
+    let receipt: ReleaseMigrationReceipt;
+    try {
+      const observation = await this.ports.database.runReleaseMigration(
+        r.target,
+        r.migrationTransition,
+        permit,
+      );
+      if (observation.step !== RolloutStep.RunReleaseMigration)
+        throw new Error("adapter_observation_step_mismatch");
+      completed = transitionFromObservation(migrating, observation);
+      receipt = completed.receipts.at(-1) as ReleaseMigrationReceipt;
+    } catch (error) {
+      const reasonSha256 = `sha256:${sha256Canonical({
+        code: error instanceof Error ? error.message : "unknown",
+      })}`;
+      await failReleaseMigration({ permit, reasonSha256 });
+      throw error;
+    }
+    const canonical = await completeReleaseMigration({
+      permit,
+      receipt,
+    });
+    if (canonical.receiptSha256 !== receipt.receiptSha256)
+      throw new Error("release_migration_receipt_recovery_conflict");
+    return completed;
   }
   async stageTargetServices(r: ReleaseRollout) {
     const previousReceiptSha256 = r.receipts.at(-1)!.receiptSha256;
@@ -281,6 +348,8 @@ export class ReleaseRolloutUseCases {
         targetDeployIds,
         postgresMajor: 17,
         migrationChecksum,
+        transitionSha256: r.migrationTransition.transitionSha256,
+        postManifestIdentity: r.migrationTransition.postManifestIdentity,
       });
       this.assertActivationAuthorization(r, authorization, {
         jobId,
@@ -289,7 +358,15 @@ export class ReleaseRolloutUseCases {
         migrationChecksum,
       });
       authorized = true;
-      const observation = await this.ports.database.activate(r.rolloutId);
+      const rawObservation = await this.ports.database.activate(r.rolloutId);
+      const observation = {
+        ...rawObservation,
+        facts: {
+          ...(rawObservation.facts as Record<string, unknown>),
+          transitionSha256: authorization.transitionSha256,
+          postManifestIdentity: authorization.postManifestIdentity,
+        },
+      };
       if (observation.step !== RolloutStep.ActivateTargetGeneration)
         throw new Error("activation_receipt_step_mismatch");
       const next = transitionFromObservation(r, observation);
@@ -347,6 +424,10 @@ export class ReleaseRolloutUseCases {
       authorization.expectedCommitSha !== r.expectedCommitSha ||
       authorization.postgresMajor !== 17 ||
       authorization.migrationChecksum !== expected.migrationChecksum ||
+      authorization.transitionSha256 !==
+        r.migrationTransition.transitionSha256 ||
+      authorization.postManifestIdentity !==
+        r.migrationTransition.postManifestIdentity ||
       authorization.sourceSystemIdentifier !== r.source.systemIdentifier ||
       authorization.targetSystemIdentifier !== r.target.systemIdentifier ||
       authorization.previousReceiptSha256 !== expected.previousReceiptSha256 ||
@@ -371,6 +452,8 @@ export class ReleaseRolloutUseCases {
       authorization.expectedCommitSha !== r.expectedCommitSha ||
       receipt.postgresMajor !== authorization.postgresMajor ||
       receipt.migrationChecksum !== authorization.migrationChecksum ||
+      receipt.transitionSha256 !== authorization.transitionSha256 ||
+      receipt.postManifestIdentity !== authorization.postManifestIdentity ||
       receipt.sourceSystemIdentifier !== authorization.sourceSystemIdentifier ||
       receipt.targetSystemIdentifier !== authorization.targetSystemIdentifier ||
       receipt.previousReceiptSha256 !== authorization.previousReceiptSha256 ||

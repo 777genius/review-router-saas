@@ -119,6 +119,62 @@ const expectJsonbBinding = (query: Prisma.Sql, expected: unknown): void => {
 };
 
 describe("release authority postgres JSONB bindings", () => {
+  it("preserves the canonical null provider in migration completion transport", async () => {
+    const receipt = {
+      step: "run_release_migration" as const,
+      receiptId: "rollout:migration:1",
+      observedAt,
+      rolloutId: "rollout",
+      expectedCommitSha: "a".repeat(40),
+      runId: "1",
+      runAttempt: 1 as const,
+      sourceSystemIdentifier: "100",
+      targetSystemIdentifier: "200",
+      provider: undefined,
+      observationSha256: `sha256:${"1".repeat(64)}`,
+      previousReceiptSha256: zeroReceipt,
+      receiptSha256: `sha256:${"2".repeat(64)}`,
+      migrationChecksum: `sha256:${"3".repeat(64)}`,
+      transitionSha256: `sha256:${"4".repeat(64)}`,
+      migrationArtifactDigest: `sha256:${"5".repeat(64)}`,
+      migrationBundleSha256: `sha256:${"6".repeat(64)}`,
+      preManifestIdentity: `sha256:${"7".repeat(64)}`,
+      postManifestIdentity: `sha256:${"3".repeat(64)}`,
+      postCatalogDigest: `sha256:${"8".repeat(64)}`,
+      permitEpoch: 1,
+      permitNonce: "a".repeat(32),
+    };
+    const permit = {
+      schemaVersion: 1 as const,
+      rolloutId: receipt.rolloutId,
+      runId: receipt.runId,
+      runAttempt: 1 as const,
+      targetSystemIdentifier: receipt.targetSystemIdentifier,
+      targetRecoveryWitnessSha256: "b".repeat(64),
+      transitionSha256: receipt.transitionSha256,
+      expectedPreviousReceiptSha256: zeroReceipt,
+      epoch: 1,
+      nonce: receipt.permitNonce,
+    };
+    let query: Prisma.Sql | undefined;
+    const prisma = {
+      $queryRaw: async (input: Prisma.Sql) => {
+        query = input;
+        return [{ value: { ...receipt, provider: null } }];
+      },
+    } as unknown as PrismaClient;
+
+    await new RoutineReleaseControlLedgerAdapter(
+      prisma,
+    ).completeReleaseMigration({ permit, receipt });
+
+    expect(query).toBeDefined();
+    expectJsonbBinding(query!, {
+      permit,
+      receipt: { ...receipt, provider: null },
+    });
+  });
+
   it("keeps late identity persistence and terminalization on the production routines", async () => {
     const recorder = new QueryRecorder();
     const adapter = new RoutineReleaseControlLedgerAdapter(
@@ -328,6 +384,8 @@ describe("release authority postgres JSONB bindings", () => {
         targetDeployIds: ["dep-a"],
         postgresMajor: 17,
         migrationChecksum: `sha256:${"7".repeat(64)}`,
+        transitionSha256: `sha256:${"8".repeat(64)}`,
+        postManifestIdentity: `sha256:${"7".repeat(64)}`,
       }),
     ).rejects.toMatchObject({
       message: "release_authority_conflict",
@@ -343,7 +401,7 @@ describe("release authority postgres JSONB bindings", () => {
         runAttempt: 1,
         sourceSystemIdentifier: "100",
         targetSystemIdentifier: "200",
-      }),
+      } as never),
     ).rejects.toBeInstanceOf(ReleaseAuthorityAdapterUnexpectedError);
   });
 
@@ -491,6 +549,8 @@ describe("release authority postgres JSONB bindings", () => {
       targetDeployIds: [dangerous],
       postgresMajor: 17,
       migrationChecksum: `sha256:${"7".repeat(64)}`,
+      transitionSha256: `sha256:${"8".repeat(64)}`,
+      postManifestIdentity: `sha256:${"7".repeat(64)}`,
       authorizedAt: observedAt,
     };
     const activationReceipt = {
@@ -518,6 +578,8 @@ describe("release authority postgres JSONB bindings", () => {
       targetDeployIds: [dangerous],
       postgresMajor: 17,
       migrationChecksum: `sha256:${"7".repeat(64)}`,
+      transitionSha256: `sha256:${"8".repeat(64)}`,
+      postManifestIdentity: `sha256:${"7".repeat(64)}`,
     });
     expectJsonbBinding(recorder.queries.at(-1)!, [dangerous]);
 

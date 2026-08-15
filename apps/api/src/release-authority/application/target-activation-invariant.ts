@@ -88,6 +88,9 @@ export function targetActivationIdentityMatches(
     proposedReceipt.firstWriteBoundary === target.firstWriteBoundary &&
     proposedReceipt.postgresMajor === target.postgresMajor &&
     proposedReceipt.migrationChecksum === target.migrationChecksum &&
+    proposedReceipt.transitionSha256 === authorization.transitionSha256 &&
+    proposedReceipt.postManifestIdentity ===
+      authorization.postManifestIdentity &&
     proposedReceipt.permitEpoch === target.permitEpoch &&
     proposedReceipt.permitNonce === target.permitNonce &&
     sameOrderedValues(

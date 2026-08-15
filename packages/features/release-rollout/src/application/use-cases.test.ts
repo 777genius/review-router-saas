@@ -8,6 +8,7 @@ import {
 } from "../domain/release-rollout";
 import { ReleaseRolloutUseCases } from "./use-cases";
 import { ProviderAuthorityOperation } from "./ports";
+import { createReleaseMigrationTransition } from "../domain/release-migration-transition";
 
 const resumedPostcondition = {
   serviceId: "srv-target",
@@ -35,6 +36,10 @@ const resumedPostcondition = {
 const rollout = createReleaseRollout({
   rolloutId: "rollout-app-test",
   expectedCommitSha: "d".repeat(40),
+  migrationTransition: createReleaseMigrationTransition({
+    commitSha: "d".repeat(40),
+    releaseImageDigest: `sha256:${"e".repeat(64)}`,
+  }),
   execution: {
     organization: "rr-control",
     controlRepository: "rr-control/releases",
@@ -153,6 +158,27 @@ const basePorts = () => ({
   evidence: {} as never,
   ledger: {
     claim: vi.fn().mockResolvedValue("claimed"),
+    beginReleaseMigration: vi.fn().mockImplementation(async (input) => ({
+      schemaVersion: 1,
+      rolloutId: input.rolloutId,
+      runId: input.runId,
+      runAttempt: input.runAttempt,
+      targetSystemIdentifier: input.targetSystemIdentifier,
+      targetRecoveryWitnessSha256: input.targetRecoveryWitnessSha256,
+      transitionSha256: input.transitionSha256,
+      expectedPreviousReceiptSha256: input.expectedPreviousReceiptSha256,
+      epoch: 1,
+      nonce: "f".repeat(32),
+    })),
+    completeReleaseMigration: vi
+      .fn()
+      .mockImplementation(async (input) => input.receipt),
+    failReleaseMigration: vi.fn().mockResolvedValue(undefined),
+    loadReleaseMigrationCheckpoint: vi.fn().mockResolvedValue({
+      targetManifestPhase: "pre_migration",
+      permit: null,
+      receipt: null,
+    }),
     compareAndSet: vi.fn().mockResolvedValue(true),
     markActivationUncertain: vi.fn().mockResolvedValue(undefined),
     fenceTargetSwitch: vi.fn().mockImplementation(async (input) => ({
@@ -167,6 +193,8 @@ const basePorts = () => ({
       expectedCommitSha: rollout.expectedCommitSha,
       postgresMajor: 17,
       migrationChecksum: "sha256:" + "7".repeat(64),
+      transitionSha256: rollout.migrationTransition.transitionSha256,
+      postManifestIdentity: rollout.migrationTransition.postManifestIdentity,
       epoch: 1,
       nonce: "a".repeat(32),
       sourceSystemIdentifier: rollout.source.systemIdentifier,
@@ -179,6 +207,28 @@ const basePorts = () => ({
     observeActivationState: vi.fn().mockResolvedValue("before"),
     verifyFinalAuthority: vi.fn().mockResolvedValue(true),
   },
+});
+
+const rolloutBeforeMigration = (): ReleaseRollout => ({
+  ...rollout,
+  phase: RolloutPhase.CutoverRunnerProvisioned,
+  receipts: [
+    {
+      step: RolloutStep.ProvisionCutoverRunner,
+      receiptId: `${rollout.rolloutId}:provision_cutover_runner:1`,
+      observedAt: "2026-08-12T00:00:00.000Z",
+      rolloutId: rollout.rolloutId,
+      expectedCommitSha: rollout.expectedCommitSha,
+      runId: rollout.execution.runId,
+      runAttempt: 1,
+      sourceSystemIdentifier: rollout.source.systemIdentifier,
+      targetSystemIdentifier: rollout.target.systemIdentifier,
+      provider: undefined,
+      observationSha256: `sha256:${"2".repeat(64)}`,
+      previousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      receiptSha256: `sha256:${"1".repeat(64)}`,
+    },
+  ],
 });
 
 describe("release rollout application boundary", () => {
@@ -258,6 +308,99 @@ describe("release rollout application boundary", () => {
     await expect(useCases.claimRollout(rollout)).rejects.toThrow(
       "rollout_id_already_claimed",
     );
+  });
+
+  it("uses durable begin/effect/complete and records only the trusted post manifest", async () => {
+    const ports = basePorts();
+    const beforeMigration = rolloutBeforeMigration();
+    const runReleaseMigration = vi.fn(async (_target, transition, permit) => ({
+      step: RolloutStep.RunReleaseMigration,
+      observedAt: "2026-08-12T00:00:01.000Z",
+      facts: {
+        version: 3,
+        status: "succeeded",
+        migrationStatus: "succeeded",
+        preflightStatus: "passed",
+        aclGateState: "closed",
+        commit: rollout.expectedCommitSha,
+        imageDigest: transition.releaseImageDigest,
+        roles: ["a", "b", "c", "d"],
+        transitionSha256: transition.transitionSha256,
+        migrationArtifactDigest: transition.migrationArtifactDigest,
+        migrationBundleSha256: transition.migrationBundleSha256,
+        preManifestIdentity: transition.preManifestIdentity,
+        postManifestIdentity: transition.postManifestIdentity,
+        postCatalogDigest: transition.postCatalogDigest,
+        permitEpoch: permit.epoch,
+        permitNonce: permit.nonce,
+        targetSystemIdentifier: permit.targetSystemIdentifier,
+        targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
+      },
+    }));
+    ports.database = { runReleaseMigration } as never;
+    const useCases = new ReleaseRolloutUseCases(ports);
+    const completed = await useCases.runReleaseMigration(beforeMigration);
+    expect(completed.targetManifestPhase).toBe("post_migration");
+    expect(ports.ledger.beginReleaseMigration).toHaveBeenCalledOnce();
+    expect(ports.ledger.completeReleaseMigration).toHaveBeenCalledOnce();
+    expect(ports.ledger.compareAndSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ step: RolloutStep.RunReleaseMigration }),
+    );
+    expect(completed.receipts.at(-1)).toMatchObject({
+      migrationChecksum: rollout.migrationTransition.postManifestIdentity,
+      transitionSha256: rollout.migrationTransition.transitionSha256,
+      postManifestIdentity: rollout.migrationTransition.postManifestIdentity,
+    });
+    ports.ledger.loadReleaseMigrationCheckpoint.mockResolvedValue({
+      targetManifestPhase: "post_migration",
+      permit: completed.migrationPermit!,
+      receipt: completed.receipts.at(-1),
+    });
+    runReleaseMigration.mockClear();
+    const recovered = await useCases.runReleaseMigration(beforeMigration);
+    expect(recovered.receipts.at(-1)?.receiptSha256).toBe(
+      completed.receipts.at(-1)?.receiptSha256,
+    );
+    expect(runReleaseMigration).not.toHaveBeenCalled();
+  });
+
+  it("quarantines an effect failure and never attempts completion", async () => {
+    const ports = basePorts();
+    ports.database = {
+      runReleaseMigration: vi.fn().mockRejectedValue(new Error("sql_failed")),
+    } as never;
+    await expect(
+      new ReleaseRolloutUseCases(ports).runReleaseMigration(
+        rolloutBeforeMigration(),
+      ),
+    ).rejects.toThrow("sql_failed");
+    expect(ports.ledger.failReleaseMigration).toHaveBeenCalledWith({
+      permit: expect.objectContaining({
+        transitionSha256: rollout.migrationTransition.transitionSha256,
+      }),
+      reasonSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+    });
+    expect(ports.ledger.completeReleaseMigration).not.toHaveBeenCalled();
+  });
+
+  it("quarantines a stale worker observation instead of accepting its digest", async () => {
+    const ports = basePorts();
+    ports.database = {
+      runReleaseMigration: vi.fn().mockResolvedValue({
+        ...observed(RolloutStep.RunReleaseMigration),
+        facts: {
+          migrationStatus: "succeeded",
+          migrationChecksum: `sha256:${"f".repeat(64)}`,
+        },
+      }),
+    } as never;
+    await expect(
+      new ReleaseRolloutUseCases(ports).runReleaseMigration(
+        rolloutBeforeMigration(),
+      ),
+    ).rejects.toThrow("migration_observation_invalid");
+    expect(ports.ledger.failReleaseMigration).toHaveBeenCalledOnce();
+    expect(ports.ledger.completeReleaseMigration).not.toHaveBeenCalled();
   });
 
   it("does not transition when exact runner workflow job identity is wrong", async () => {

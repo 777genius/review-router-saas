@@ -161,7 +161,7 @@ describe("release authority ACL readiness observation", () => {
           },
         },
       ],
-      [{ schemaVersion: 12, migrationManifest: [] }],
+      [{ schemaVersion: 13, migrationManifest: [] }],
       [{ migrationManifest: manifest }],
     ]);
     const harness = transactionHarness(queryRaw);
@@ -192,6 +192,7 @@ describe("release authority ACL readiness observation", () => {
       [
         {
           applicationMigrationManifestIdentity: `sha256:${"b".repeat(64)}`,
+          applicationPostCatalogDigest: `sha256:${"c".repeat(64)}`,
         },
       ],
     ]);
@@ -208,10 +209,12 @@ describe("release authority ACL readiness observation", () => {
       installerRoutine: true,
       readerRoutine: false,
       applicationMigrationManifestIdentity: `sha256:${"b".repeat(64)}`,
+      applicationPostCatalogDigest: `sha256:${"c".repeat(64)}`,
     });
     expect(sqlText(queryRaw)).toContain(
       "read_activation_migration_manifest_identity()",
     );
+    expect(sqlText(queryRaw)).toContain("'legacyAuthoritySchemaPresent'");
     expect(sqlText(queryRaw)).toContain("reviewrouter_activation");
     expect(sqlText(queryRaw)).not.toContain("WITH facts AS");
   });

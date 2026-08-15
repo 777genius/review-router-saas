@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,6 +17,7 @@ import {
 } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
 import { normalizeSecretSafePostgresArguments } from "./lib/secret-safe-command-boundary.mjs";
 import { effectivePrincipalInventorySql } from "../packages/features/release-rollout/src/adapters/effective-principal-postgres.mjs";
+import { liveV70V72CatalogDigestSha256 as fencedLiveV70V72CatalogDigestSha256 } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 
 const runtimeRoles = [
   ["api", "reviewrouter_api", "REVIEW_ROUTER_API_DATABASE_URL"],
@@ -22,6 +29,92 @@ const runtimeRoles = [
     "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
   ],
 ];
+
+const atomicReleaseMigrationEntries = Object.freeze([
+  [
+    "000060_codex_oauth_setup_serialization",
+    "f24ab69f681349332e47e121adc72bd3edb14e24bcbffcd26fce4f03ba0d7395",
+  ],
+  [
+    "000061_codex_oauth_provider_mutation_fence",
+    "bba689c8b80580ec649cc3262fb2ee9c97be758f3c4ab7094c48c84d002aeb30",
+  ],
+  [
+    "000062_codex_oauth_remote_outcome_unknown",
+    "0e8bb62933a270d745530f2c4984520e1753f42d8531c24ffdfa4acfe46a73f4",
+  ],
+  [
+    "000063_codex_oauth_setup_payload_claim",
+    "33100d6f5f3f59cd9a4c22f041d19caba6a0e0be88de4a0ee4d543af50619481",
+  ],
+  [
+    "000064_codex_oauth_versioned_secret_namespaces",
+    "4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666",
+  ],
+  [
+    "000065_codex_oauth_authority_acl_hardening",
+    "ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c",
+  ],
+  [
+    "000066_codex_oauth_rotating_cascade_authority",
+    "3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8",
+  ],
+  [
+    "000069_release_rollout_ledger",
+    "82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05",
+  ],
+  [
+    "000070_runtime_generation_witness_proof",
+    "cb9c42171f9bd924d21093852a1053cb947100acef1321ec8cf62e8fd5928c6f",
+  ],
+  [
+    "000071_transactional_service_transition",
+    "36ecd5c6b880bd9cd4ad76a20fdd9e4ceafcc3e524e924eb3c7b0c78116da093",
+  ],
+  [
+    "000072_runtime_canary_challenge",
+    "48ac05b9da6031456de6b7bab2bc9ee46dc3b7bc5cb7ef45c7a5db1ee3956b68",
+  ],
+]);
+
+export function atomicReleaseMigrationBundleSql() {
+  return atomicReleaseMigrationEntries
+    .map(([migrationName, checksum], index) => {
+      const path = new URL(
+        `../packages/platform/db/prisma/migrations/${migrationName}/migration.sql`,
+        import.meta.url,
+      );
+      const source = readFileSync(path, "utf8");
+      const actual = createHash("sha256").update(source).digest("hex");
+      if (actual !== checksum)
+        throw new Error(
+          `release_migration_bundle_source_mismatch:${migrationName}`,
+        );
+      const body = source
+        .replace(/^BEGIN;\s*/u, "")
+        .replace(/\s*COMMIT;\s*$/u, "\n");
+      const variable = `apply_release_migration_${index}`;
+      return `SELECT NOT EXISTS (
+  SELECT 1 FROM public._prisma_migrations
+  WHERE migration_name='${migrationName}' AND checksum='${checksum}'
+    AND finished_at IS NOT NULL AND rolled_back_at IS NULL
+) AS ${variable} \\gset
+\\if :${variable}
+INSERT INTO public._prisma_migrations(
+  id,checksum,finished_at,migration_name,logs,rolled_back_at,started_at,applied_steps_count
+) VALUES (
+  pg_catalog.gen_random_uuid()::text,'${checksum}',NULL,'${migrationName}',NULL,NULL,
+  clock_timestamp(),0
+);
+${body}
+UPDATE public._prisma_migrations
+SET finished_at=clock_timestamp(),applied_steps_count=1
+WHERE migration_name='${migrationName}' AND checksum='${checksum}'
+  AND finished_at IS NULL AND rolled_back_at IS NULL;
+\\endif`;
+    })
+    .join("\n");
+}
 
 export const rotatingEvidenceTables = Object.freeze([
   "CodexOAuthChildIdentityQuarantine",
@@ -560,11 +653,11 @@ BEGIN
      OR requested_activated_catalog_policy->>'version' IS DISTINCT FROM '1'
      OR requested_preactivation_catalog_policy->>'phase' IS DISTINCT FROM 'preactivation'
      OR requested_activated_catalog_policy->>'phase' IS DISTINCT FROM 'activated'
-     OR (SELECT count(*) FROM jsonb_object_keys(requested_preactivation_catalog_policy)) <> 10
-     OR (SELECT count(*) FROM jsonb_object_keys(requested_activated_catalog_policy)) <> 10
-     OR NOT requested_preactivation_catalog_policy ?& ARRAY['kind','version','phase','database','roles','memberships','roleReachability','rowSecurity','grants','effectivePermissions']
-     OR NOT requested_activated_catalog_policy ?& ARRAY['kind','version','phase','database','roles','memberships','roleReachability','rowSecurity','grants','effectivePermissions']
-     OR EXISTS (SELECT 1 FROM unnest(ARRAY['roles','memberships','roleReachability','rowSecurity','grants','effectivePermissions']) field
+     OR (SELECT count(*) FROM jsonb_object_keys(requested_preactivation_catalog_policy)) <> 11
+     OR (SELECT count(*) FROM jsonb_object_keys(requested_activated_catalog_policy)) <> 11
+     OR NOT requested_preactivation_catalog_policy ?& ARRAY['kind','version','phase','database','roles','memberships','roleReachability','rowSecurity','extensions','grants','effectivePermissions']
+     OR NOT requested_activated_catalog_policy ?& ARRAY['kind','version','phase','database','roles','memberships','roleReachability','rowSecurity','extensions','grants','effectivePermissions']
+     OR EXISTS (SELECT 1 FROM unnest(ARRAY['roles','memberships','roleReachability','rowSecurity','extensions','grants','effectivePermissions']) field
        WHERE jsonb_typeof(requested_preactivation_catalog_policy->field) IS DISTINCT FROM 'array'
           OR jsonb_typeof(requested_activated_catalog_policy->field) IS DISTINCT FROM 'array')
      OR requested_preactivation_catalog_policy_sha256 <> 'sha256:' || encode(sha256(convert_to(
@@ -633,7 +726,7 @@ RETURNS text LANGUAGE sql IMMUTABLE SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp AS $canonical_json$
 SELECT CASE jsonb_typeof(value)
   WHEN 'object' THEN '{' || coalesce((SELECT string_agg(to_json(key)::text || ':' ||
-    reviewrouter_activation.canonical_json(item), ',' ORDER BY key)
+    reviewrouter_activation.canonical_json(item), ',' ORDER BY key COLLATE "C")
     FROM jsonb_each(value) entry(key,item)), '') || '}'
   WHEN 'array' THEN '[' || coalesce((SELECT string_agg(
     reviewrouter_activation.canonical_json(item), ',' ORDER BY ordinal)
@@ -660,7 +753,7 @@ BEGIN
   SELECT inventory::jsonb INTO STRICT projected_inventory FROM (
 ${effectivePrincipalInventorySql}
   ) canonical_projection(inventory);
-  SELECT jsonb_agg(name ORDER BY name) INTO STRICT allowed_principal_contract FROM (
+  SELECT jsonb_agg(name ORDER BY name COLLATE "C") INTO STRICT allowed_principal_contract FROM (
     SELECT DISTINCT unnest(ARRAY[
       'reviewrouter_api','reviewrouter_web','reviewrouter_worker',
       'reviewrouter_codex_effect_authority','reviewrouter_release_migration',
@@ -778,6 +871,16 @@ ${effectivePrincipalInventorySql}
     WHERE grant_record->>'principal'='PUBLIC'
       AND grant_record->>'capability' NOT IN ('schema:usage','type:usage')
     UNION ALL
+    -- This gate intentionally precedes relevance normalization. The inventory
+    -- grant union contains direct/default ACLs plus ownership and role
+    -- attributes, so no noncanonical grantee can disappear from catalogPolicy.
+    SELECT 'unexpected_grant_principal', grant_record->>'principal',
+      grant_record->>'capability', grant_record->>'resource'
+    FROM jsonb_array_elements(projected_inventory->'grants') grant_record
+    WHERE grant_record->>'principal' IS DISTINCT FROM 'PUBLIC'
+      AND NOT EXISTS (SELECT 1 FROM allowed_principals
+        WHERE name=grant_record->>'principal')
+    UNION ALL
     SELECT 'unexpected_ownership', grant_record->>'principal',
       grant_record->>'capability', grant_record->>'resource'
     FROM jsonb_array_elements(projected_inventory->'grants') grant_record
@@ -791,6 +894,34 @@ ${effectivePrincipalInventorySql}
     WHERE grant_record->>'capability' LIKE 'admin:%'
       AND grant_record->>'principal' <> '${canonicalBootstrapRoleName}'
     UNION ALL
+    SELECT 'unexpected_external_grantor', grant_record->>'grantor',
+      grant_record->>'capability', grant_record->>'resource'
+    FROM jsonb_array_elements(projected_inventory->'grants') grant_record
+    WHERE grant_record->>'grantor' IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM allowed_principals
+        WHERE name=grant_record->>'grantor')
+      AND NOT (
+        grant_record->>'principal'='${canonicalBootstrapRoleName}'
+        AND grant_record->>'capability'='admin:role-membership'
+        AND grant_record->>'source'='attribute'
+        AND (grant_record->>'grantable')::boolean
+        AND substring(grant_record->>'resource' FROM 6)
+          = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+        AND EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(projected_inventory->'memberships') edge
+          WHERE edge->>'member'=grant_record->>'principal'
+            AND edge->>'role'=substring(grant_record->>'resource' FROM 6)
+            AND edge->>'grantor'=grant_record->>'grantor'
+            AND (edge->>'adminOption')::boolean
+            AND NOT (edge->>'inheritOption')::boolean
+            AND NOT (edge->>'setOption')::boolean)
+        AND (SELECT count(DISTINCT edge->>'grantor')
+          FROM jsonb_array_elements(projected_inventory->'memberships') edge
+          WHERE edge->>'member'='${canonicalBootstrapRoleName}'
+            AND edge->>'role' = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}]))=1
+      )
+    UNION ALL
     SELECT 'unexpected_row_security_principal', policy_role,
       NULL::text, relation_record->>'relation'
     FROM jsonb_array_elements(projected_inventory->'rowSecurity') relation_record
@@ -798,10 +929,93 @@ ${effectivePrincipalInventorySql}
     CROSS JOIN LATERAL jsonb_array_elements_text(policy_record->'roles') policy_role
     WHERE policy_role <> 'PUBLIC'
       AND NOT EXISTS (SELECT 1 FROM allowed_principals WHERE name=policy_role)
+    UNION ALL
+    SELECT 'unsupported_catalog_authority', 'catalog', NULL::text, family
+    FROM jsonb_array_elements_text(
+      projected_inventory->'unsupportedAuthorityFamilies') family
+    UNION ALL
+    SELECT 'unsupported_acl_privilege', grant_record->>'principal',
+      grant_record->>'capability', grant_record->>'resource'
+    FROM jsonb_array_elements(projected_inventory->'grants') grant_record
+    WHERE grant_record->>'capability' LIKE 'unsupported:%'
+    UNION ALL
+    SELECT 'unexpected_extension_owner', extension_record->>'owner',
+      'owner:extension', 'extension:'||(extension_record->>'name')
+    FROM jsonb_array_elements(projected_inventory->'extensions') extension_record
+    WHERE NOT EXISTS (SELECT 1 FROM allowed_principals
+      WHERE name=extension_record->>'owner')
+      AND extension_record->>'owner' IS DISTINCT FROM (
+        SELECT min(edge->>'grantor' COLLATE "C")
+        FROM jsonb_array_elements(projected_inventory->'memberships') edge
+        WHERE edge->>'member'='${canonicalBootstrapRoleName}'
+          AND edge->>'role' = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+        HAVING count(DISTINCT edge->>'grantor')=1)
+    UNION ALL
+    SELECT 'bootstrap_membership_topology_mismatch',
+      '${canonicalBootstrapRoleName}', 'admin:role-membership', 'role:'||expected.role_name
+    FROM unnest(ARRAY[${canonicalRoleNames.map(quoted).join(",")}]) expected(role_name)
+    WHERE (SELECT count(*)
+      FROM jsonb_array_elements(projected_inventory->'memberships') edge
+      WHERE edge->>'member'='${canonicalBootstrapRoleName}'
+        AND edge->>'role'=expected.role_name
+        AND (edge->>'adminOption')::boolean
+        AND NOT (edge->>'inheritOption')::boolean
+        AND NOT (edge->>'setOption')::boolean) <> 1
+    UNION ALL
+    SELECT 'unexpected_relevant_membership', edge->>'member',
+      'admin:role-membership', 'role:'||(edge->>'role')
+    FROM jsonb_array_elements(projected_inventory->'memberships') edge
+    WHERE (edge->>'member' = ANY (ARRAY[${activationPrincipalRoleNames.map(quoted).join(",")}])
+        OR edge->>'role' = ANY (ARRAY[${activationPrincipalRoleNames.map(quoted).join(",")}]))
+      AND NOT (
+        edge->>'member'='${canonicalBootstrapRoleName}'
+        AND edge->>'role' = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+        AND (edge->>'adminOption')::boolean
+        AND NOT (edge->>'inheritOption')::boolean
+        AND NOT (edge->>'setOption')::boolean)
+    UNION ALL
+    SELECT 'bootstrap_membership_grantor_mismatch',
+      '${canonicalBootstrapRoleName}', 'admin:role-membership', 'external-bootstrap-authority'
+    WHERE (SELECT count(DISTINCT edge->>'grantor')
+      FROM jsonb_array_elements(projected_inventory->'memberships') edge
+      WHERE edge->>'member'='${canonicalBootstrapRoleName}'
+        AND edge->>'role' = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])) <> 1
+       OR EXISTS (
+         SELECT 1 FROM jsonb_array_elements(projected_inventory->'memberships') edge
+         WHERE edge->>'member'='${canonicalBootstrapRoleName}'
+           AND edge->>'role' = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+           AND edge->>'grantor' = ANY (ARRAY[${activationPrincipalRoleNames.map(quoted).join(",")}]))
+    UNION ALL
+    SELECT 'bootstrap_membership_grantor_not_inert', grantor_name,
+      'admin:role-membership', 'external-bootstrap-authority'
+    FROM (SELECT min(edge->>'grantor' COLLATE "C") AS grantor_name
+      FROM jsonb_array_elements(projected_inventory->'memberships') edge
+      WHERE edge->>'member'='${canonicalBootstrapRoleName}'
+        AND edge->>'role' = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])) external_grantor
+    WHERE grantor_name IS NOT NULL AND (
+      EXISTS (SELECT 1 FROM jsonb_array_elements(projected_inventory->'roles') role
+        WHERE role->>'name'=grantor_name AND (
+          (role->>'canLogin')::boolean OR (role->>'superuser')::boolean
+          OR (role->>'bypassRls')::boolean OR (role->>'replication')::boolean
+          OR (role->>'createDatabase')::boolean OR (role->>'createRole')::boolean))
+      OR EXISTS (SELECT 1 FROM jsonb_array_elements(projected_inventory->'memberships') edge
+        WHERE edge->>'member'=grantor_name OR edge->>'role'=grantor_name)
+      OR EXISTS (SELECT 1 FROM jsonb_array_elements(projected_inventory->'grants') grant_record
+        WHERE grant_record->>'principal'=grantor_name
+          OR (grant_record->>'grantor'=grantor_name AND NOT (
+            grant_record->>'principal'='${canonicalBootstrapRoleName}'
+            AND grant_record->>'capability'='admin:role-membership'
+            AND substring(grant_record->>'resource' FROM 6) = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}]))))
+      OR EXISTS (SELECT 1 FROM jsonb_array_elements(projected_inventory->'rowSecurity') relation_record
+        WHERE relation_record->>'owner'=grantor_name OR EXISTS (
+          SELECT 1 FROM jsonb_array_elements(relation_record->'policies') policy_record,
+            LATERAL jsonb_array_elements_text(policy_record->'roles') policy_role
+          WHERE policy_role=grantor_name)))
   )
   SELECT coalesce(jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
     'kind',code,'principal',principal,'capability',capability,'resource',resource
-  )) ORDER BY code,principal,capability,resource),'[]'::jsonb)
+  )) ORDER BY code COLLATE "C",principal COLLATE "C",
+    capability COLLATE "C",resource COLLATE "C"),'[]'::jsonb)
   INTO policy_violations FROM (SELECT DISTINCT * FROM violations) unique_violations;
   SELECT jsonb_build_object(
     'kind','reviewrouter-effective-principal-policy',
@@ -813,9 +1027,118 @@ ${effectivePrincipalInventorySql}
     'rowSecurity',projected_inventory->'rowSecurity',
     'violations',policy_violations
   ) INTO projected_policy;
-  WITH role_names AS (
-    SELECT role->>'name' AS principal
+  IF jsonb_array_length(policy_violations) <> 0 THEN
+    RETURN jsonb_build_object(
+      'kind','reviewrouter-effective-principal-projection',
+      'version',2,
+      'inventory',projected_inventory,
+      'policy',projected_policy,
+      'catalogPolicy',NULL
+    );
+  END IF;
+  WITH RECURSIVE canonical_principals(name) AS (
+    SELECT unnest(ARRAY[${activationPrincipalRoleNames.map(quoted).join(",")}])
+  ), role_facts AS (
+    SELECT role, role->>'name' AS name
     FROM jsonb_array_elements(projected_inventory->'roles') role
+  ), membership_facts AS (
+    SELECT edge, edge->>'member' AS member, edge->>'role' AS role,
+      edge->>'grantor' AS grantor
+    FROM jsonb_array_elements(projected_inventory->'memberships') edge
+  ), grant_facts AS (
+    SELECT grant_record, grant_record->>'principal' AS principal,
+      grant_record->>'grantor' AS grantor
+    FROM jsonb_array_elements(projected_inventory->'grants') grant_record
+  ), bootstrap_authority(name) AS (
+    SELECT min(grantor COLLATE "C")
+    FROM membership_facts
+    WHERE member='${canonicalBootstrapRoleName}'
+      AND role = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+  ), relevance_seed(name) AS (
+    SELECT name FROM canonical_principals
+    UNION
+    SELECT name FROM role_facts WHERE (role->>'canLogin')::boolean
+      OR (role->>'superuser')::boolean OR (role->>'bypassRls')::boolean
+      OR (role->>'replication')::boolean OR (role->>'createDatabase')::boolean
+      OR (role->>'createRole')::boolean
+    UNION
+    SELECT relation_record->>'owner'
+    FROM jsonb_array_elements(projected_inventory->'rowSecurity') relation_record
+    UNION
+    SELECT policy_role
+    FROM jsonb_array_elements(projected_inventory->'rowSecurity') relation_record,
+      LATERAL jsonb_array_elements(relation_record->'policies') policy_record,
+      LATERAL jsonb_array_elements_text(policy_record->'roles') policy_role
+    WHERE policy_role <> 'PUBLIC'
+    UNION
+    SELECT extension_record->>'owner'
+    FROM jsonb_array_elements(projected_inventory->'extensions') extension_record
+    WHERE extension_record->>'owner' IS DISTINCT FROM
+      (SELECT name FROM bootstrap_authority)
+  ), relevant(name) AS (
+    SELECT name FROM relevance_seed WHERE name IS NOT NULL
+    UNION
+    SELECT CASE WHEN membership.member=relevant.name
+      THEN membership.role ELSE membership.member END
+    FROM relevant JOIN membership_facts membership
+      ON membership.member=relevant.name OR membership.role=relevant.name
+  ), normalized_roles AS (
+    SELECT role FROM role_facts WHERE name IN (SELECT name FROM relevant)
+  ), normalized_memberships AS (
+    SELECT jsonb_build_object(
+      'member',member,'role',role,
+      'setOption',(edge->>'setOption')::boolean,
+      'inheritOption',(edge->>'inheritOption')::boolean,
+      'adminOption',(edge->>'adminOption')::boolean,
+      'grantor',CASE WHEN member='${canonicalBootstrapRoleName}'
+          AND role = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+          AND (edge->>'adminOption')::boolean
+          AND NOT (edge->>'inheritOption')::boolean
+          AND NOT (edge->>'setOption')::boolean
+        THEN jsonb_build_object('kind','external-bootstrap-authority')
+        ELSE jsonb_build_object('kind','principal','name',grantor) END) AS edge
+    FROM membership_facts
+    WHERE member IN (SELECT name FROM relevant)
+       OR role IN (SELECT name FROM relevant)
+  ), normalized_grants AS (
+    -- Memberships are the authoritative exact edge inventory. The matching
+    -- admin-capability row is a derived duplicate. Other admin facts remain.
+    SELECT CASE
+      WHEN grantor=(SELECT name FROM bootstrap_authority)
+        THEN jsonb_set(
+          grant_record,'{grantor}',to_jsonb('external-bootstrap-authority'::text)
+        )
+      ELSE grant_record END AS grant_record
+    FROM grant_facts
+    WHERE NOT (principal='${canonicalBootstrapRoleName}'
+        AND grant_record->>'capability'='admin:role-membership'
+        AND EXISTS (
+          SELECT 1 FROM membership_facts membership
+          WHERE membership.member=principal
+            AND membership.role=substring(grant_record->>'resource' FROM 6)
+            AND membership.grantor=grantor
+            AND (membership.edge->>'adminOption')::boolean
+            AND NOT (membership.edge->>'inheritOption')::boolean
+            AND NOT (membership.edge->>'setOption')::boolean
+        )
+        AND substring(grant_record->>'resource' FROM 6) = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}]))
+      AND (principal='PUBLIC' OR principal IN (SELECT name FROM relevant))
+  ), normalized_reachability AS (
+    SELECT reachability
+    FROM jsonb_array_elements(projected_inventory->'roleReachability') reachability
+    WHERE reachability->>'principal' IN (SELECT name FROM relevant)
+      AND reachability->>'role' IN (SELECT name FROM relevant)
+  ), normalized_extensions AS (
+    SELECT jsonb_build_object(
+      'name',extension_record->>'name',
+      'owner',CASE WHEN extension_record->>'owner'=(SELECT name FROM bootstrap_authority)
+        THEN jsonb_build_object('kind','external-provider-authority')
+        ELSE jsonb_build_object('kind','principal','name',extension_record->>'owner') END
+    ) AS extension_record
+    FROM jsonb_array_elements(projected_inventory->'extensions') extension_record
+  ), role_names AS (
+    SELECT name AS principal FROM relevant
+    WHERE name IN (SELECT name FROM role_facts)
   ), effective AS (
     SELECT role_names.principal, grant_record->>'capability' AS capability,
       grant_record->>'resource' AS resource
@@ -828,25 +1151,42 @@ ${effectivePrincipalInventorySql}
            AND reachability->>'role'=grant_record->>'principal'
            AND ((reachability->>'usage')::boolean OR (reachability->>'set')::boolean)
        )
+  ), effective_unique AS (
+    SELECT DISTINCT principal,capability,resource FROM effective
   ), effective_contract AS (
-    SELECT role_names.principal, coalesce(jsonb_agg(DISTINCT jsonb_build_object(
-      'capability',effective.capability,'resource',effective.resource)
-      ORDER BY jsonb_build_object('capability',effective.capability,'resource',effective.resource))
-      FILTER (WHERE effective.capability IS NOT NULL),
+    SELECT role_names.principal, coalesce(jsonb_agg(jsonb_build_object(
+      'capability',effective_unique.capability,'resource',effective_unique.resource)
+      ORDER BY effective_unique.capability COLLATE "C",effective_unique.resource COLLATE "C")
+      FILTER (WHERE effective_unique.capability IS NOT NULL),
       '[]'::jsonb) AS permissions
-    FROM role_names LEFT JOIN effective USING (principal)
+    FROM role_names LEFT JOIN effective_unique USING (principal)
     GROUP BY role_names.principal
   )
   SELECT jsonb_build_object(
     'kind','reviewrouter-activation-catalog-policy','version',1,
     'phase',requested_phase,'database',projected_inventory->'database',
-    'roles',projected_inventory->'roles',
-    'memberships',projected_inventory->'memberships',
-    'roleReachability',projected_inventory->'roleReachability',
+    'roles',(SELECT coalesce(jsonb_agg(role ORDER BY role->>'name' COLLATE "C"),'[]'::jsonb)
+      FROM normalized_roles),
+    'memberships',(SELECT coalesce(jsonb_agg(edge ORDER BY edge->>'member' COLLATE "C",
+      edge->>'role' COLLATE "C",(edge->>'setOption')::boolean,
+      (edge->>'inheritOption')::boolean,(edge->>'adminOption')::boolean,
+      reviewrouter_activation.canonical_json(edge->'grantor') COLLATE "C"),
+      '[]'::jsonb) FROM normalized_memberships),
+    'roleReachability',(SELECT coalesce(jsonb_agg(reachability
+      ORDER BY reachability->>'principal' COLLATE "C",reachability->>'role' COLLATE "C"),
+      '[]'::jsonb) FROM normalized_reachability),
     'rowSecurity',projected_inventory->'rowSecurity',
-    'grants',projected_inventory->'grants',
+    'extensions',(SELECT coalesce(jsonb_agg(extension_record ORDER BY
+      extension_record->>'name' COLLATE "C",
+      reviewrouter_activation.canonical_json(extension_record->'owner') COLLATE "C"),
+      '[]'::jsonb) FROM normalized_extensions),
+    'grants',(SELECT coalesce(jsonb_agg(grant_record ORDER BY
+      grant_record->>'principal' COLLATE "C",grant_record->>'capability' COLLATE "C",
+      grant_record->>'resource' COLLATE "C",grant_record->>'source' COLLATE "C",
+      (grant_record->>'grantable')::boolean,grant_record->>'grantor' COLLATE "C"),
+      '[]'::jsonb) FROM normalized_grants),
     'effectivePermissions',(SELECT jsonb_agg(jsonb_build_object(
-      'principal',principal,'permissions',permissions) ORDER BY principal)
+      'principal',principal,'permissions',permissions) ORDER BY principal COLLATE "C")
       FROM effective_contract)
   ) INTO projected_catalog_policy;
   RETURN jsonb_build_object(
@@ -861,6 +1201,62 @@ $project_effective_principal_authority$;
 ALTER FUNCTION reviewrouter_activation.project_effective_principal_authority(text) OWNER TO ${activationReceiptGuardRoleName};
 REVOKE ALL ON FUNCTION reviewrouter_activation.project_effective_principal_authority(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION reviewrouter_activation.project_effective_principal_authority(text) FROM ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName}, ${canonicalBootstrapRoleName}, reviewrouter_release_migration;
+CREATE OR REPLACE FUNCTION reviewrouter_activation.capture_catalog_policy_candidate(
+  requested_phase text
+) RETURNS jsonb LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp AS $capture_catalog_policy_candidate$
+DECLARE projection jsonb;
+DECLARE database_binding jsonb;
+BEGIN
+  IF session_user <> 'reviewrouter_release_migration' THEN
+    RAISE EXCEPTION 'activation catalog policy candidate caller invalid';
+  END IF;
+  SELECT pg_catalog.shobj_description(database.oid,'pg_database')::jsonb
+  INTO database_binding
+  FROM pg_catalog.pg_database database WHERE database.datname=current_database();
+  IF current_setting('reviewrouter.activation_catalog_candidate_capture',true)
+       IS DISTINCT FROM 'disposable-only'
+     OR current_setting('reviewrouter.activation_catalog_disposable_database_identity',true)
+       !~ '^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$'
+     OR jsonb_typeof(database_binding) IS DISTINCT FROM 'object'
+     OR database_binding->>'systemIdentifier' IS DISTINCT FROM
+          (SELECT system_identifier::text FROM pg_catalog.pg_control_system())
+     OR database_binding->>'recoveryWitnessSha256' !~ '^[a-f0-9]{64}$'
+     OR database_binding->'disposableCaptureAttestation'->>'kind'
+          IS DISTINCT FROM 'reviewrouter-disposable-database-attestation-v1'
+     OR database_binding->'disposableCaptureAttestation'->>'identity'
+          IS DISTINCT FROM current_setting(
+            'reviewrouter.activation_catalog_disposable_database_identity',true)
+     OR database_binding->'disposableCaptureAttestation'->>'systemIdentifier'
+          IS DISTINCT FROM database_binding->>'systemIdentifier'
+     OR database_binding->'disposableCaptureAttestation'->>'databaseOid'
+          IS DISTINCT FROM (SELECT oid::text FROM pg_catalog.pg_database
+            WHERE datname=current_database())
+     OR database_binding->'disposableCaptureAttestation'->>'recoveryWitnessSha256'
+          IS DISTINCT FROM database_binding->>'recoveryWitnessSha256'
+     OR database_binding->'disposableCaptureAttestation'->>'nonce'
+          !~ '^[a-f0-9]{64}$' THEN
+    RAISE EXCEPTION 'activation catalog policy candidate disposable marker invalid';
+  END IF;
+  IF current_setting('server_version_num')::integer / 10000 <> 17
+     OR current_database() <> 'review_router' THEN
+    RAISE EXCEPTION 'activation catalog policy candidate target invalid';
+  END IF;
+  projection := reviewrouter_activation.project_effective_principal_authority(requested_phase);
+  IF projection->'catalogPolicy' IS NULL
+     OR projection->'policy'->'violations' <> '[]'::jsonb THEN
+    RAISE EXCEPTION 'activation catalog policy candidate safety rejected'
+      USING DETAIL = reviewrouter_activation.canonical_json(
+        projection->'policy'->'violations'
+      );
+  END IF;
+  RETURN projection->'catalogPolicy';
+END
+$capture_catalog_policy_candidate$;
+ALTER FUNCTION reviewrouter_activation.capture_catalog_policy_candidate(text) OWNER TO ${activationReceiptGuardRoleName};
+REVOKE ALL ON FUNCTION reviewrouter_activation.capture_catalog_policy_candidate(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION reviewrouter_activation.capture_catalog_policy_candidate(text) FROM ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName}, ${canonicalBootstrapRoleName};
+GRANT EXECUTE ON FUNCTION reviewrouter_activation.capture_catalog_policy_candidate(text) TO reviewrouter_release_migration;
 CREATE OR REPLACE FUNCTION reviewrouter_activation.validate_principal_evidence(
   requested_rollout_id text, expected_transaction_id bigint
 ) RETURNS reviewrouter_activation.activation_principal_evidence
@@ -890,11 +1286,15 @@ BEGIN
      OR jsonb_typeof(evidence.before_inventory->'memberships') IS DISTINCT FROM 'array'
      OR jsonb_typeof(evidence.before_inventory->'roleReachability') IS DISTINCT FROM 'array'
      OR jsonb_typeof(evidence.before_inventory->'rowSecurity') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(evidence.before_inventory->'extensions') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(evidence.before_inventory->'unsupportedAuthorityFamilies') IS DISTINCT FROM 'array'
      OR jsonb_typeof(evidence.before_inventory->'grants') IS DISTINCT FROM 'array'
      OR jsonb_typeof(evidence.activated_inventory->'roles') IS DISTINCT FROM 'array'
      OR jsonb_typeof(evidence.activated_inventory->'memberships') IS DISTINCT FROM 'array'
      OR jsonb_typeof(evidence.activated_inventory->'roleReachability') IS DISTINCT FROM 'array'
      OR jsonb_typeof(evidence.activated_inventory->'rowSecurity') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(evidence.activated_inventory->'extensions') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(evidence.activated_inventory->'unsupportedAuthorityFamilies') IS DISTINCT FROM 'array'
      OR jsonb_typeof(evidence.activated_inventory->'grants') IS DISTINCT FROM 'array'
      OR EXISTS (SELECT 1 FROM jsonb_array_elements(evidence.before_inventory->'grants') grant_record
        WHERE jsonb_typeof(grant_record->'grantable') IS DISTINCT FROM 'boolean'
@@ -984,6 +1384,10 @@ BEGIN
   SELECT * INTO permit FROM reviewrouter_activation.activation_permit
   WHERE rollout_id=requested_rollout_id FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'activation permit absent'; END IF;
+  IF EXISTS (SELECT 1 FROM reviewrouter_activation.activation_permit newer
+    WHERE newer.permit_epoch > permit.permit_epoch) THEN
+    RAISE EXCEPTION 'activation permit superseded';
+  END IF;
   IF EXISTS (SELECT 1 FROM reviewrouter_activation.activation_receipt
     WHERE rollout_id=requested_rollout_id) THEN RETURN false; END IF;
   SELECT system_identifier::text INTO live_system_identifier FROM pg_catalog.pg_control_system();
@@ -1010,6 +1414,8 @@ BEGIN
      OR jsonb_typeof(inventory->'memberships') IS DISTINCT FROM 'array'
      OR jsonb_typeof(inventory->'roleReachability') IS DISTINCT FROM 'array'
      OR jsonb_typeof(inventory->'rowSecurity') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(inventory->'extensions') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(inventory->'unsupportedAuthorityFamilies') IS DISTINCT FROM 'array'
      OR jsonb_typeof(inventory->'grants') IS DISTINCT FROM 'array'
      OR policy->>'kind' IS DISTINCT FROM 'reviewrouter-effective-principal-policy'
      OR policy->>'version' IS DISTINCT FROM '2'
@@ -1186,6 +1592,8 @@ BEGIN
        OR jsonb_typeof(live_activated_inventory->'memberships') IS DISTINCT FROM 'array'
        OR jsonb_typeof(live_activated_inventory->'roleReachability') IS DISTINCT FROM 'array'
        OR jsonb_typeof(live_activated_inventory->'rowSecurity') IS DISTINCT FROM 'array'
+       OR jsonb_typeof(live_activated_inventory->'extensions') IS DISTINCT FROM 'array'
+       OR jsonb_typeof(live_activated_inventory->'unsupportedAuthorityFamilies') IS DISTINCT FROM 'array'
        OR jsonb_typeof(live_activated_inventory->'grants') IS DISTINCT FROM 'array'
        OR live_activated_policy->>'kind' IS DISTINCT FROM 'reviewrouter-effective-principal-policy'
        OR live_activated_policy->>'version' IS DISTINCT FROM '2'
@@ -1626,6 +2034,12 @@ BEGIN
     '${activationReceiptReaderRoleName}'
   ) THEN
     RAISE EXCEPTION 'activation migration manifest read request invalid';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM public._prisma_migrations
+    WHERE finished_at IS NULL AND rolled_back_at IS NULL
+  ) THEN
+    RAISE EXCEPTION 'activation migration manifest unresolved';
   END IF;
   RETURN (
     SELECT 'sha256:' || encode(sha256(convert_to(
@@ -2780,20 +3194,134 @@ COMMIT;
 `;
 }
 
+/** Canonical projection of the live V70-V72 security catalog. */
+export const liveV70V72CatalogDigestSha256 =
+  "sha256:05820ed393b7364c468b62cb19e5cd4c8aaa729021155a18162f1a4b2012a44d";
+export const liveV70V72CatalogDigestSql = `
+WITH selected_relations AS (
+  SELECT c.oid, n.nspname, c.relname, c.relkind, c.relowner, c.relacl
+  FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+  WHERE n.nspname='public' AND c.relname IN
+    ('RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+), facts AS (
+  SELECT jsonb_build_object(
+    'columns',coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'relation',r.relname,'position',a.attnum,'name',a.attname,
+      'type',pg_catalog.format_type(a.atttypid,a.atttypmod),
+      'nullable',NOT a.attnotnull,
+      'default',pg_catalog.pg_get_expr(d.adbin,d.adrelid))
+      ORDER BY r.relname COLLATE "C",a.attnum)
+      FROM selected_relations r JOIN pg_catalog.pg_attribute a ON a.attrelid=r.oid
+      LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=r.oid AND d.adnum=a.attnum
+      WHERE a.attnum>0 AND NOT a.attisdropped),'[]'::jsonb),
+    'constraints',coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'relation',r.relname,'name',c.conname,'type',c.contype,
+      'definition',pg_catalog.pg_get_constraintdef(c.oid,true))
+      ORDER BY r.relname COLLATE "C",c.conname COLLATE "C")
+      FROM selected_relations r JOIN pg_catalog.pg_constraint c ON c.conrelid=r.oid),'[]'::jsonb),
+    'indexes',coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'relation',r.relname,'name',i.relname,'valid',x.indisvalid,
+      'unique',x.indisunique,'primary',x.indisprimary,
+      'definition',pg_catalog.pg_get_indexdef(i.oid))
+      ORDER BY r.relname COLLATE "C",i.relname COLLATE "C")
+      FROM selected_relations r JOIN pg_catalog.pg_index x ON x.indrelid=r.oid
+      JOIN pg_catalog.pg_class i ON i.oid=x.indexrelid),'[]'::jsonb),
+    'relations',coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'name',relname,'kind',relkind,'owner',pg_catalog.pg_get_userbyid(relowner),
+      'acl',coalesce((SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
+        FROM unnest(relacl) v),'[]'::jsonb)) ORDER BY relname COLLATE "C")
+      FROM selected_relations),'[]'::jsonb),
+    'functions',coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'identity',p.oid::regprocedure::text,'owner',pg_catalog.pg_get_userbyid(p.proowner),
+      'securityDefiner',p.prosecdef,'searchPath',coalesce(to_jsonb(p.proconfig),'null'::jsonb),
+      'definition',pg_catalog.pg_get_functiondef(p.oid),
+      'acl',coalesce((SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
+        FROM unnest(p.proacl) v),'[]'::jsonb)) ORDER BY p.oid::regprocedure::text COLLATE "C")
+      FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='public' AND p.proname IN (
+        'reviewrouter_record_runtime_generation_witness_proof',
+        'reviewrouter_read_runtime_generation_witness_proofs',
+        'reviewrouter_runtime_generation_write_read_canary',
+        'reviewrouter_request_runtime_canary_challenge',
+        'reviewrouter_answer_runtime_canary_challenge',
+        'reviewrouter_read_runtime_canary_challenge_proofs')),'[]'::jsonb),
+    'defaultAcl',coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'owner',pg_catalog.pg_get_userbyid(d.defaclrole),'namespace',n.nspname,
+      'kind',d.defaclobjtype,'acl',(SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
+        FROM unnest(d.defaclacl) v)) ORDER BY pg_catalog.pg_get_userbyid(d.defaclrole) COLLATE "C",d.defaclobjtype)
+      FROM pg_catalog.pg_default_acl d LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace
+      WHERE n.nspname='public'),'[]'::jsonb),
+    'history',coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'name',migration_name,'checksum',checksum,'finished',finished_at IS NOT NULL,
+      'rolledBack',rolled_back_at IS NOT NULL) ORDER BY migration_name COLLATE "C")
+      FROM public._prisma_migrations WHERE migration_name IN
+      ('000070_runtime_generation_witness_proof','000071_transactional_service_transition',
+       '000072_runtime_canary_challenge')),'[]'::jsonb),
+    'unresolvedHistory',EXISTS(SELECT 1 FROM public._prisma_migrations
+      WHERE finished_at IS NULL AND rolled_back_at IS NULL),
+    'legacyAuthoritySchemaPresent',to_regnamespace('release_authority') IS NOT NULL
+  ) AS value
+)
+SELECT 'sha256:'||encode(pg_catalog.sha256(convert_to(value::text,'UTF8')),'hex')
+FROM facts`;
+
+if (liveV70V72CatalogDigestSha256 !== fencedLiveV70V72CatalogDigestSha256)
+  throw new Error("release_migration_fenced_catalog_projection_drift");
+
 export function atomicMigrationAndGrantSql(
   configuration,
-  { gateClosed = false } = {},
+  {
+    gateClosed = false,
+    migrationBundleSql = atomicReleaseMigrationBundleSql(),
+  } = {},
 ) {
   return `\\set ON_ERROR_STOP on
-SET lock_timeout = '5000ms';
-SET statement_timeout = '120000ms';
-SELECT pg_advisory_lock(1381126735, 1129271120);
-\\! pnpm --filter @reviewrouter/platform-db db:migrate:deploy
-\\if :SHELL_ERROR
-  \\quit :SHELL_EXIT_CODE
-\\endif
-${runtimeGrantSql(configuration, { gateClosed })}
-SELECT pg_advisory_unlock(1381126735, 1129271120);
+BEGIN;
+SET LOCAL lock_timeout = '5000ms';
+SET LOCAL statement_timeout = '120000ms';
+-- Migration takes the target lock exclusively before touching catalog state.
+-- Authority begin/complete use target-shared then control-authority order and
+-- never upgrade a shared lock, preventing cross-worker upgrade deadlocks.
+${activationMigrationExclusionSql}
+${migrationBundleSql}
+${runtimeGrantStatements(configuration)}
+${gateClosed ? runtimeAclGateStatements(configuration) : ""}
+DO $phase_aware_manifest_postcondition$
+DECLARE manifest_identity text;
+DECLARE catalog_digest text;
+BEGIN
+  SELECT 'sha256:' || encode(pg_catalog.sha256(convert_to(
+    coalesce(string_agg(migration_name || ':' || checksum, ',' ORDER BY migration_name), ''),
+    'UTF8')), 'hex')
+  INTO manifest_identity
+  FROM public._prisma_migrations
+  WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL;
+  IF manifest_identity <> 'sha256:553576dcf644278cdc464d3465e34e0814862cd44c76784d89bb61c65f04b303'
+    THEN RAISE EXCEPTION 'release migration post manifest mismatch'; END IF;
+  IF EXISTS (SELECT 1 FROM public._prisma_migrations
+    WHERE finished_at IS NULL AND rolled_back_at IS NULL)
+    THEN RAISE EXCEPTION 'release migration unresolved history'; END IF;
+  IF to_regclass('public."RuntimeCanaryChallenge"') IS NULL
+    OR to_regclass('public."RuntimeCanaryChallengeProof"') IS NULL
+    OR to_regprocedure('public.reviewrouter_request_runtime_canary_challenge(text,text,timestamp with time zone,text,text,text,jsonb)') IS NULL
+    OR to_regprocedure('public.reviewrouter_read_runtime_canary_challenge_proofs(text)') IS NULL
+    OR to_regprocedure('public.reviewrouter_answer_runtime_canary_challenge(text,text,text,text,text,text)') IS NULL
+    THEN RAISE EXCEPTION 'release migration V72 catalog postcondition missing'; END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_catalog.pg_proc
+    WHERE oid IN (
+      'public.reviewrouter_request_runtime_canary_challenge(text,text,timestamp with time zone,text,text,text,jsonb)'::regprocedure,
+      'public.reviewrouter_read_runtime_canary_challenge_proofs(text)'::regprocedure,
+      'public.reviewrouter_answer_runtime_canary_challenge(text,text,text,text,text,text)'::regprocedure
+    ) AND NOT prosecdef
+  ) THEN RAISE EXCEPTION 'release migration V72 routine security invalid'; END IF;
+  SELECT digest INTO STRICT catalog_digest FROM (${liveV70V72CatalogDigestSql}) live(digest);
+  IF catalog_digest IS DISTINCT FROM '${liveV70V72CatalogDigestSha256}'
+    THEN RAISE EXCEPTION 'release migration V70-V72 live catalog digest mismatch'; END IF;
+END
+$phase_aware_manifest_postcondition$;
+COMMIT;
 `;
 }
 
@@ -2812,6 +3340,40 @@ BEGIN;
 ${activationMigrationExclusionSql}
 ${runtimeGrantStatements(configuration)}
 ${principalInventorySql};
+ROLLBACK;
+`;
+}
+
+/**
+ * Read-only operational capture. The activated candidate is observed by
+ * applying the exact production grants inside the same rollback-only
+ * transaction; this path has no permit or activation authority.
+ */
+export function canonicalActivationCatalogPolicyCandidateSql(
+  configuration,
+  disposableDatabaseIdentity,
+) {
+  if (
+    !/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(
+      disposableDatabaseIdentity ?? "",
+    )
+  )
+    throw new Error(
+      "activation_catalog_policy_candidate_disposable_identity_required",
+    );
+  const disposableIdentityLiteral = quoted(disposableDatabaseIdentity);
+  return `\\set ON_ERROR_STOP on
+BEGIN;
+SET LOCAL reviewrouter.activation_catalog_candidate_capture = 'disposable-only';
+SET LOCAL reviewrouter.activation_catalog_disposable_database_identity = ${disposableIdentityLiteral};
+${activationMigrationExclusionSql}
+SELECT jsonb_build_object(
+  'preactivation',reviewrouter_activation.capture_catalog_policy_candidate('preactivation')
+);
+${runtimeGrantStatements(configuration)}
+SELECT jsonb_build_object(
+  'activated',reviewrouter_activation.capture_catalog_policy_candidate('activated')
+);
 ROLLBACK;
 `;
 }
@@ -2961,7 +3523,30 @@ export function runReleaseMigrationSubprocess(
       maxBuffer: 16 * 1024 * 1024,
       timeout: 600_000,
     });
-    if (result.status !== 0 || result.error)
+    if (result.status !== 0 || result.error) {
+      const safeStep = /^[a-z][a-z0-9_]{2,63}$/u.test(step) ? step : "unknown";
+      process.stderr.write(`release_migration_substep_failed:${safeStep}\n`);
+      const diagnostic = (() => {
+        const prismaCode = result.stderr?.match(/\b(P[0-9]{4})\b/u)?.[1];
+        const migration = result.stderr?.match(
+          /Migration name:\s*([0-9]{6}_[a-z0-9_]+)/u,
+        )?.[1];
+        if (prismaCode)
+          return migration
+            ? `prisma ${prismaCode} migration ${migration}`
+            : `prisma ${prismaCode}`;
+        if (/ERROR:\s*permission denied/iu.test(result.stderr ?? ""))
+          return "permission denied";
+        if (/ERROR:\s*release migration/iu.test(result.stderr ?? ""))
+          return "release migration invariant rejected";
+        return /ERROR:/u.test(result.stderr ?? "")
+          ? "postgres error"
+          : undefined;
+      })();
+      if (diagnostic)
+        process.stderr.write(
+          `release_migration_postgres_error:${safeStep}:${diagnostic}\n`,
+        );
       throw sanitizedDiagnosticError({
         code: "release_migration_step_failed",
         phase: "release_migration",
@@ -2969,6 +3554,7 @@ export function runReleaseMigrationSubprocess(
         signal: result.signal,
         timedOut: result.error?.code === "ETIMEDOUT",
       });
+    }
     return result.stdout;
   } finally {
     rmSync(directory, { recursive: true, force: true });

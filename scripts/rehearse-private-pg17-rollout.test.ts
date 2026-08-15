@@ -1,8 +1,18 @@
-import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { describe, expect, it, vi } from "vitest";
+import { readdirSync, readFileSync } from "node:fs";
 import {
+  assertDisposableCaptureTarget,
   createRehearsalRunnerJobBinding,
+  cleanupCaptureOnlyRehearsalFixtures,
+  cleanupDisposableRehearsalResources,
+  captureOnlyRehearsalFixtureCleanupSql,
+  disposableTargetPublicTableAclCanonicalizationSql,
   normalizeRehearsalDockerInvocation,
+  resolveRehearsalCaptureOnlyConfiguration,
+  resolvePreReleaseMigrationExclusions,
+  rehearsalActivationCatalogPolicyAuthorization,
+  routeRehearsalAfterReleaseMigration,
+  runRehearsalReleaseMigration,
   validateRehearsalConfiguration,
   waitForFinalPostgresServer,
 } from "./rehearse-private-pg17-rollout.mjs";
@@ -32,6 +42,325 @@ describe("disposable dual-version rehearsal", () => {
     expect(() => validateRehearsalConfiguration({})).toThrow(
       "private_pg17_rehearsal_explicit_opt_in_required",
     );
+  });
+  it("uses the exact reviewed compact digest authorization in normal rehearsal", () => {
+    expect(rehearsalActivationCatalogPolicyAuthorization).toEqual({
+      preactivationCatalogPolicySha256:
+        "sha256:6e500c32e51fcf9421dc94c3f41a536c1cfaec9af3ce912c6a65b99460c8d5e2",
+      activatedCatalogPolicySha256:
+        "sha256:e88f3556a869977de67c02487663d7524dd19c5a3c11bb5541ada5cdc98f9b93",
+    });
+  });
+  it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
+    const identity = "rr-disposable-production-shaped-capture";
+    expect(
+      resolveRehearsalCaptureOnlyConfiguration({
+        REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1",
+        REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY: identity,
+      }),
+    ).toEqual({ disposableDatabaseIdentity: identity });
+    for (const value of [undefined, "0", "true", "01"])
+      expect(
+        resolveRehearsalCaptureOnlyConfiguration({
+          REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:
+            value,
+          REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+            identity,
+        }),
+      ).toBeUndefined();
+    expect(() =>
+      resolveRehearsalCaptureOnlyConfiguration({
+        REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1",
+        REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+          "production",
+      }),
+    ).toThrow(
+      "activation_catalog_policy_candidate_disposable_identity_required",
+    );
+  });
+  it("rejects capture against a durable or source database target", () => {
+    expect(() =>
+      assertDisposableCaptureTarget({
+        createdContainers: ["rr-source", "rr-authority"],
+        sourceContainer: "rr-source",
+        targetContainer: "durable-configured-database",
+      }),
+    ).toThrow(
+      "activation_catalog_policy_candidate_disposable_attestation_required",
+    );
+    expect(() =>
+      assertDisposableCaptureTarget({
+        createdContainers: ["rr-source"],
+        sourceContainer: "rr-source",
+        targetContainer: "rr-source",
+      }),
+    ).toThrow(
+      "activation_catalog_policy_candidate_disposable_attestation_required",
+    );
+    expect(
+      assertDisposableCaptureTarget({
+        createdContainers: ["rr-source", "rr-target"],
+        sourceContainer: "rr-source",
+        targetContainer: "rr-target",
+      }),
+    ).toBeUndefined();
+  });
+  it("stops the capture-only branch before target staging", async () => {
+    const candidate = Object.freeze({ kind: "candidate", version: 1 });
+    const captureCandidate = vi.fn(async () => candidate);
+    const stageTargetServices = vi.fn();
+
+    await expect(
+      routeRehearsalAfterReleaseMigration({
+        captureOnly: { disposableDatabaseIdentity: "rr-disposable-test" },
+        captureCandidate,
+        stageTargetServices,
+      }),
+    ).resolves.toEqual({ mode: "capture-only", candidate });
+    expect(captureCandidate).toHaveBeenCalledOnce();
+    expect(stageTargetServices).not.toHaveBeenCalled();
+  });
+  it("uses a narrow transactional and asserted capture-only fixture cleanup", () => {
+    const sql = captureOnlyRehearsalFixtureCleanupSql();
+    const objectCleanup = sql.indexOf(
+      "DROP TABLE IF EXISTS public.rehearsal_items CASCADE",
+    );
+    const postCleanupAssertions = sql.indexOf("DO $capture_fixture_cleanup$");
+    expect(sql.startsWith("\\set ON_ERROR_STOP on\n")).toBe(true);
+    expect(sql).toContain("BEGIN;");
+    expect(sql).toContain(
+      "DROP TABLE IF EXISTS public.rehearsal_items CASCADE",
+    );
+    expect(sql).toContain("DROP SCHEMA IF EXISTS app_private CASCADE");
+    expect(sql).toContain("to_regclass('public.rehearsal_items')");
+    expect(sql).toContain("relation.relkind='S'");
+    expect(sql).toContain("relation.relkind='i'");
+    expect(sql).toContain("object_type.typname LIKE 'rehearsal_items%'");
+    expect(sql).toContain("to_regnamespace('app_private')");
+    expect(sql).toContain("to_regrole('rehearsal_writer')");
+    expect(sql).toContain("capture-only rehearsal role unexpectedly present");
+    expect(sql).toContain("capture-only rehearsal fixture cleanup incomplete");
+    expect(sql).toContain("COMMIT;");
+    expect(
+      sql.indexOf("capture-only rehearsal role unexpectedly present"),
+    ).toBeLessThan(objectCleanup);
+    for (const assertion of [
+      "to_regclass('public.rehearsal_items')",
+      "relation.relkind='S'",
+      "relation.relkind='i'",
+      "object_type.typname LIKE 'rehearsal_items%'",
+      "to_regnamespace('app_private')",
+      "to_regrole('rehearsal_writer')",
+    ])
+      expect(sql.indexOf(assertion, postCleanupAssertions)).toBeGreaterThan(-1);
+    expect(sql).not.toMatch(
+      /(?:REVOKE[^;]*FROM|DROP ROLE)[^;]*rehearsal_writer/u,
+    );
+    expect(sql).not.toMatch(/DROP SCHEMA (?:public|reviewrouter_)/u);
+  });
+  it("cleans capture-only fixtures with release-migration authority and fails closed", () => {
+    const releaseMigrationDatabaseUrl =
+      "postgresql://reviewrouter_release_migration:secret@target/review_router";
+    const canonicalRun = vi.fn(() => ({ stdout: "" }));
+
+    expect(
+      cleanupCaptureOnlyRehearsalFixtures({
+        canonicalRun,
+        releaseMigrationDatabaseUrl,
+      }),
+    ).toEqual({ stdout: "" });
+    expect(canonicalRun).toHaveBeenCalledWith(
+      "cleanup_capture_only_rehearsal_fixtures",
+      "psql",
+      [releaseMigrationDatabaseUrl, "--no-psqlrc", "--quiet"],
+      {
+        env: { DATABASE_URL: releaseMigrationDatabaseUrl },
+        input: captureOnlyRehearsalFixtureCleanupSql(),
+      },
+    );
+
+    const failure = new Error("must be owner of table rehearsal_items");
+    expect(() =>
+      cleanupCaptureOnlyRehearsalFixtures({
+        canonicalRun: vi.fn(() => {
+          throw failure;
+        }),
+        releaseMigrationDatabaseUrl,
+      }),
+    ).toThrow(failure);
+  });
+  it("runs the migration port directly for capture-only without rollout CAS or staging", async () => {
+    const calls: string[] = [];
+    const candidate = Object.freeze({ kind: "candidate", version: 1 });
+    const migrationPort = vi.fn(async () => calls.push("migration-port"));
+    const runReleaseMigration = vi.fn(async () => {
+      calls.push("rollout-use-case-cas");
+      return { phase: "migrated" };
+    });
+    const captureCandidate = vi.fn(async () => {
+      calls.push("capture-candidate");
+      return candidate;
+    });
+    const stageTargetServices = vi.fn(async () => {
+      calls.push("stage-target-services");
+      return { phase: "staged" };
+    });
+    const runStage = vi.fn(async (name, operation) => {
+      calls.push(`stage:${name}`);
+      return operation();
+    });
+
+    await expect(
+      runRehearsalReleaseMigration({
+        captureOnly: { disposableDatabaseIdentity: "rr-disposable-test" },
+        rollout: { phase: "pre-migration" },
+        runStage,
+        migrationPort,
+        runReleaseMigration,
+        captureCandidate,
+        stageTargetServices,
+      }),
+    ).resolves.toEqual({ mode: "capture-only", candidate });
+    expect(calls).toEqual([
+      "stage:run_release_migration",
+      "migration-port",
+      "capture-candidate",
+    ]);
+    expect(runReleaseMigration).not.toHaveBeenCalled();
+    expect(stageTargetServices).not.toHaveBeenCalled();
+  });
+  it("keeps normal migration in the rollout use case and stages its result", async () => {
+    const preMigrationRollout = Object.freeze({ phase: "pre-migration" });
+    const transition = Object.freeze({
+      transitionSha256: `sha256:${"1".repeat(64)}`,
+      migrationArtifactDigest: `sha256:${"2".repeat(64)}`,
+      postManifestIdentity: `sha256:${"3".repeat(64)}`,
+      postCatalogDigest: `sha256:${"4".repeat(64)}`,
+    });
+    const migratedRollout = Object.freeze({
+      phase: "migrated",
+      targetManifestPhase: "post_migration",
+      migrationTransition: transition,
+      receipts: [
+        {
+          step: "run_release_migration",
+          ...transition,
+          migrationChecksum: transition.postManifestIdentity,
+        },
+      ],
+    });
+    const stagedRollout = Object.freeze({ phase: "staged" });
+    const migrationPort = vi.fn();
+    const runReleaseMigration = vi.fn(async () => migratedRollout);
+    const captureCandidate = vi.fn();
+    const stageTargetServices = vi.fn(async () => stagedRollout);
+    const runStage = vi.fn(async (_name, operation) => operation());
+
+    await expect(
+      runRehearsalReleaseMigration({
+        captureOnly: undefined,
+        rollout: preMigrationRollout,
+        runStage,
+        migrationPort,
+        runReleaseMigration,
+        captureCandidate,
+        stageTargetServices,
+      }),
+    ).resolves.toEqual({ mode: "rollout", rollout: stagedRollout });
+    expect(runStage).toHaveBeenCalledWith(
+      "run_release_migration",
+      runReleaseMigration,
+    );
+    expect(runReleaseMigration).toHaveBeenCalledOnce();
+    expect(migrationPort).not.toHaveBeenCalled();
+    expect(captureCandidate).not.toHaveBeenCalled();
+    expect(stageTargetServices).toHaveBeenCalledWith(migratedRollout);
+  });
+  it("attempts every cleanup even when an earlier cleanup fails", async () => {
+    const calls: string[] = [];
+    const close = vi.fn(async () => {
+      calls.push("control");
+      throw new Error("close_failed");
+    });
+    const disconnect = vi.fn(async () => calls.push("database"));
+    const docker = vi.fn((...args: string[]) => {
+      calls.push(args.join(":"));
+      if (args[0] === "rm") throw new Error("container_failed");
+    });
+    const removeDirectory = vi.fn(() => calls.push("directory"));
+
+    await expect(
+      cleanupDisposableRehearsalResources({
+        releaseControl: { close },
+        prismaClients: [{ $disconnect: disconnect }],
+        createdContainers: ["source", "target"],
+        networkCreated: true,
+        network: "network",
+        directory: "/tmp/disposable-rehearsal-test",
+        docker,
+        removeDirectory,
+      }),
+    ).rejects.toThrow("close_failed");
+    expect(calls).toEqual([
+      "control",
+      "database",
+      "rm:--force:target",
+      "rm:--force:source",
+      "network:rm:network",
+      "directory",
+    ]);
+  });
+  it("keeps an explicit fail-closed PG16 pre-release migration boundary", () => {
+    const migrationNames = readdirSync(
+      "packages/platform/db/prisma/migrations",
+      { withFileTypes: true },
+    )
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+
+    const exclusions = resolvePreReleaseMigrationExclusions(migrationNames);
+
+    expect(exclusions).toEqual([
+      "000060_codex_oauth_setup_serialization",
+      "000061_codex_oauth_provider_mutation_fence",
+      "000062_codex_oauth_remote_outcome_unknown",
+      "000063_codex_oauth_setup_payload_claim",
+      "000064_codex_oauth_versioned_secret_namespaces",
+      "000065_codex_oauth_authority_acl_hardening",
+      "000066_codex_oauth_rotating_cascade_authority",
+      "000069_release_rollout_ledger",
+      "000070_runtime_generation_witness_proof",
+      "000071_transactional_service_transition",
+      "000072_runtime_canary_challenge",
+    ]);
+    expect(exclusions).not.toContain("000067_review_live_progress");
+    expect(exclusions).not.toContain(
+      "000068_validate_review_assignment_manifest",
+    );
+    expect(() =>
+      resolvePreReleaseMigrationExclusions([
+        ...migrationNames,
+        "000073_future_release_migration",
+      ]),
+    ).toThrow("private_pg17_rehearsal_migration_boundary_unclassified");
+    expect(() =>
+      resolvePreReleaseMigrationExclusions([
+        ...migrationNames,
+        "000073_future_review_migration",
+      ]),
+    ).toThrow("private_pg17_rehearsal_migration_boundary_unclassified");
+  });
+  it("canonicalizes only the disposable PUBLIC table-read drift", () => {
+    const sql = disposableTargetPublicTableAclCanonicalizationSql();
+
+    expect(sql).toContain(
+      "ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_role_bootstrap IN SCHEMA public",
+    );
+    expect(sql).toContain("REVOKE SELECT ON TABLES FROM PUBLIC");
+    expect(sql).toContain(
+      "REVOKE SELECT ON ALL TABLES IN SCHEMA public FROM PUBLIC",
+    );
+    expect(sql).not.toContain("REVOKE ALL");
   });
   it("adds Docker exec interactive mode when psql reads SQL from stdin", () => {
     expect(
@@ -118,7 +447,7 @@ describe("disposable dual-version rehearsal", () => {
           "--username",
           "postgres",
           "--dbname",
-          "reviewrouter",
+          "review_router",
           "--no-psqlrc",
           "--tuples-only",
           "--no-align",
@@ -127,6 +456,20 @@ describe("disposable dual-version rehearsal", () => {
         options: { input: "SELECT 1;\n", timeout: 2_000 },
       },
     ]);
+  });
+  it("supports a provider-named PostgreSQL bootstrap administrator", () => {
+    const calls: string[][] = [];
+    waitForFinalPostgresServer(
+      (args) => {
+        calls.push(args);
+        return "1\n";
+      },
+      "rr-pg17-disposable",
+      { username: "reviewrouter_role_bootstrap" },
+    );
+
+    expect(calls[0]).toContain("reviewrouter_role_bootstrap");
+    expect(calls[0]).not.toContain("postgres");
   });
   it("retries final-server readiness only up to the configured bound", () => {
     let probes = 0;
@@ -247,7 +590,12 @@ describe("disposable dual-version rehearsal", () => {
       "beginCompensation",
       "assertPromotionAllowed",
       "REVIEW_ROUTER_DATABASE_URL_FILE",
+      "createDatabaseCredentialBoundary",
       '"000069_release_rollout_ledger"',
+      '"000070_runtime_generation_witness_proof"',
+      '"000071_transactional_service_transition"',
+      '"000072_runtime_canary_challenge"',
+      "private_pg17_rehearsal_migration_boundary_unclassified",
       "private_pg17_rehearsal_command_failed",
       "sanitizedDiagnosticError",
       "redactedErrorChain",
@@ -368,7 +716,142 @@ describe("disposable dual-version rehearsal", () => {
     expect(source).toContain(
       "private_pg17_rehearsal_target_principal_inventory_failed",
     );
+    expect(source).toContain(
+      "private_pg17_rehearsal_public_acl_drift_unproven",
+    );
+    expect(source).toContain(
+      "private_pg17_rehearsal_public_acl_cleanup_failed",
+    );
+    expect(source).toContain(
+      "deploymentRevision: canonicalEnv.REVIEW_ROUTER_RELEASE_COMMIT_SHA",
+    );
+    expect(source).toContain(
+      "artifactDigest: canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST",
+    );
+    expect(source).not.toContain("closeBootstrapGuardRead");
+    expect(source).toContain(
+      "GRANT USAGE ON SCHEMA reviewrouter_activation TO reviewrouter_role_bootstrap",
+    );
+    expect(source).toContain("REVIEW_ROUTER_RUNTIME_SERVICE_ID: serviceId");
+    expect(source).toContain(
+      "REVIEW_ROUTER_RUNTIME_DEPLOYMENT_PROVENANCE: digest.slice(-64)",
+    );
+    expect(source).toContain("servicePostcondition: current.postcondition");
+    expect(source).toContain("normalizedServicePostconditionSha256(");
+    expect(source).toContain('const nonce = "a".repeat(48)');
+    expect(source).toContain("expectedGeneration");
+    expect(source).toContain("serviceFacts");
+    expect(source).toContain("proowner=to_regrole('postgres')");
+    expect(source).not.toContain("proowner='postgres'::regrole");
+    expect(source).toContain(
+      "POSTGRES_USER=reviewrouter_provider_administrator",
+    );
+    expect(source).not.toContain("POSTGRES_USER=reviewrouter_role_bootstrap");
+    expect(source).toContain(
+      "CREATE ROLE reviewrouter_role_bootstrap LOGIN PASSWORD 'disposable-bootstrap' SUPERUSER CREATEROLE",
+    );
+    expect(source).not.toContain(
+      "GRANT CREATE ON DATABASE review_router TO reviewrouter_role_bootstrap",
+    );
+    expect(source).toContain("$remove_pg17_provider_memberships$");
+    expect(source).toContain("'REVOKE %I FROM %I GRANTED BY CURRENT_ROLE'");
+    expect(source).toContain("membership.member=provider_role.oid");
+    expect(source).toContain("UPDATE pg_catalog.pg_authid");
+    expect(
+      source.indexOf("CREATE EXTENSION IF NOT EXISTS pgcrypto"),
+    ).toBeLessThan(source.indexOf("UPDATE pg_catalog.pg_authid"));
+    expect(source).toContain("$provider_extension_owners$");
+    expect(source.indexOf("$provider_extension_owners$")).toBeLessThan(
+      source.indexOf("UPDATE pg_catalog.pg_authid"),
+    );
+    expect(source).toContain("'providerAdministratorInert'");
+    expect(source).toContain(
+      "disposableProviderRoles.bootstrapSuperuser !== true",
+    );
+    expect(source).toContain(
+      "ALTER ROLE reviewrouter_role_bootstrap NOSUPERUSER",
+    );
+    expect(source).toContain(
+      "private_pg17_rehearsal_bootstrap_demotion_failed",
+    );
+    expect(source).toContain("rehearsal_canonical_step_failed:${step}");
+    expect(source).toContain("safePostgresErrorClassification(result.stderr)");
+    expect(source).toContain("rehearsal_canonical_postgres_error:${step}");
+    expect(source).toContain(
+      "rehearsal_stage_failed:${safeName}:${redactedErrorChain(error)}",
+    );
+    expect(source).toContain(
+      "rehearsal_migration_substep_started:canonical_migration",
+    );
+    expect(source).toContain(
+      "rehearsal_migration_substep_completed:verify_migration_evidence",
+    );
+    expect(source).toContain(
+      "targetRecoveryWitnessSha256: rollout.target.recoveryWitnessSha256",
+    );
+    expect(source).toContain(
+      "migrationTransition: rollout.migrationTransition",
+    );
+    expect(source).toContain('"observe_migration_checksum"');
+    expect(source).toContain(
+      "private_pg17_rehearsal_provider_administrator_convergence_failed",
+    );
+    expect(
+      source.indexOf("disposableTargetPublicTableAclCanonicalizationSql()"),
+    ).toBeLessThan(source.indexOf("activationAuthorityProvisioningSql()"));
     expect(source).toContain("if (!targetPrincipalDecision.accepted)");
     expect(source).not.toContain("targetPrincipalDecision.allowed");
+    expect(source).not.toContain("draftPolicyForDisposableRehearsal");
+    expect(source).toContain(
+      "authorizeCanonicalActivationCatalogPolicies(\n          rehearsalActivationCatalogPolicyAuthorization",
+    );
+    expect(source).not.toContain(
+      "trustedActivationCatalogPolicies: canonicalActivationCatalogPolicies",
+    );
+    expect(source).toContain(
+      "private_pg17_rehearsal_activation_catalog_policy_trust_root_blocked",
+    );
+    const releaseMigration = source.indexOf('runStage("run_release_migration"');
+    const capture = source.indexOf(
+      '"capture_activation_catalog_policy_candidate"',
+    );
+    const marker = source.indexOf(
+      '"mark_disposable_activation_catalog_database"',
+    );
+    const fixtureCleanup = source.indexOf(
+      "cleanupCaptureOnlyRehearsalFixtures({",
+      releaseMigration,
+    );
+    const stageTarget = source.indexOf(
+      "useCases.stageTargetServices(migratedRollout)",
+    );
+    const activate = source.indexOf('runStage("activate_target_generation"');
+    expect(releaseMigration).toBeGreaterThan(-1);
+    expect(releaseMigration).toBeLessThan(marker);
+    expect(releaseMigration).toBeLessThan(fixtureCleanup);
+    expect(fixtureCleanup).toBeLessThan(marker);
+    expect(marker).toBeLessThan(capture);
+    expect(capture).toBeLessThan(stageTarget);
+    expect(stageTarget).toBeLessThan(activate);
+    const fixtureCleanupBranch = source.slice(fixtureCleanup, marker);
+    expect(fixtureCleanupBranch).toContain(
+      "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL",
+    );
+    expect(fixtureCleanupBranch).not.toContain(
+      "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL",
+    );
+    const captureBranch = source.slice(marker, stageTarget);
+    expect(captureBranch).toContain(
+      "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL",
+    );
+    expect(captureBranch).toContain(
+      "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL",
+    );
+    expect(captureBranch).toContain(
+      "canonicalActivationCatalogPolicyCandidateSql",
+    );
+    expect(captureBranch).not.toContain("install_activation_permit");
+    expect(captureBranch).not.toContain("executePrivateGenerationActivation");
+    expect(source).not.toContain("rehearsal_capture_debug_");
   });
 });

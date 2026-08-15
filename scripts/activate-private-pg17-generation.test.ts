@@ -16,34 +16,6 @@ const env = {
   REVIEW_ROUTER_RELEASE_COMMIT_SHA: "a".repeat(40),
   REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
   REVIEW_ROUTER_ROLLOUT_ID: "rollout-activation-1",
-  REVIEW_ROUTER_TARGET_PREACTIVATION_PRINCIPAL_POLICY_JSON: JSON.stringify({
-    version: 1,
-    publicPermissions: [],
-    principals: [
-      {
-        principal: "reviewrouter_release_migration",
-        mayLogin: true,
-        inherit: true,
-        connectionLimit: -1,
-        validUntil: null,
-        permissions: [],
-      },
-    ],
-  }),
-  REVIEW_ROUTER_TARGET_PRINCIPAL_POLICY_JSON: JSON.stringify({
-    version: 1,
-    publicPermissions: [],
-    principals: [
-      {
-        principal: "reviewrouter_release_migration",
-        mayLogin: true,
-        inherit: true,
-        connectionLimit: -1,
-        validUntil: null,
-        permissions: [],
-      },
-    ],
-  }),
 };
 const receipt = {
   rolloutId: "rollout-activation-1",

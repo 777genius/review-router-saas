@@ -1,5 +1,11 @@
 import { canonicalJson, sha256Canonical } from "./release-rollout";
-import type { ActivationCatalogPolicy } from "./effective-principal-inventory";
+import generatedActivationCatalogPolicyArtifact from "./activation-catalog-policy-artifact.generated.js";
+import {
+  PrincipalCapability,
+  canonicalActivationPrincipalNames,
+  canonicalBootstrapMembershipRoleNames,
+  type ActivationCatalogPolicy,
+} from "./effective-principal-inventory";
 
 export type ActivationCatalogPolicyPhase = "preactivation" | "activated";
 
@@ -13,40 +19,92 @@ export type ActivationCatalogPolicyDigests = Readonly<{
   activatedCatalogPolicySha256: string;
 }>;
 
-/**
- * Release-owned activation policy trust root. Updating this artifact is a
- * versioned release change; deployment configuration is only checked input.
- */
-export const canonicalActivationCatalogPolicyArtifact = Object.freeze({
-  kind: "reviewrouter-activation-catalog-policy-artifact" as const,
-  version: 1 as const,
-  policies: Object.freeze({
-    preactivation: Object.freeze({
-      kind: "reviewrouter-activation-catalog-policy" as const,
-      version: 1 as const,
-      phase: "preactivation" as const,
-      database: "review_router",
-      roles: Object.freeze([]),
-      memberships: Object.freeze([]),
-      roleReachability: Object.freeze([]),
-      rowSecurity: Object.freeze([]),
-      grants: Object.freeze([]),
-      effectivePermissions: Object.freeze([]),
-    }),
-    activated: Object.freeze({
-      kind: "reviewrouter-activation-catalog-policy" as const,
-      version: 1 as const,
-      phase: "activated" as const,
-      database: "review_router",
-      roles: Object.freeze([]),
-      memberships: Object.freeze([]),
-      roleReachability: Object.freeze([]),
-      rowSecurity: Object.freeze([]),
-      grants: Object.freeze([]),
-      effectivePermissions: Object.freeze([]),
-    }),
-  }),
+const policyFields = [
+  "kind",
+  "version",
+  "phase",
+  "database",
+  "roles",
+  "memberships",
+  "roleReachability",
+  "rowSecurity",
+  "extensions",
+  "grants",
+  "effectivePermissions",
+] as const;
+const canonicalPrincipals = new Set<string>(canonicalActivationPrincipalNames);
+const canonicalCapabilities = new Set<string>(
+  Object.values(PrincipalCapability),
+);
+const grantSources = new Set(["attribute", "ownership", "privilege", "public"]);
+const rehearsalIdentifier =
+  /(?:rehearsal(?:_|items)|app_private|rr_(?:direct|parent|inherited|set_|owner|super|bypass|column|sequence|routine))/u;
+
+export const canonicalActivationCatalogPolicyTrustRootReadiness: Readonly<{
+  status: "blocked" | "ready";
+  reason: string;
+}> = Object.freeze({
+  status: "ready",
+  reason:
+    "independently-reviewed-v19-production-shaped-pg17-candidate-promoted-with-pinned-phase-digests",
 });
+
+export function assertCanonicalActivationCatalogPolicyTrustRootReady(): void {
+  if (canonicalActivationCatalogPolicyTrustRootReadiness.status !== "ready")
+    throw new Error(
+      `activation_catalog_policy_trust_root_blocked:${canonicalActivationCatalogPolicyTrustRootReadiness.reason}`,
+    );
+}
+
+type ActivationCatalogPolicyArtifact = Readonly<{
+  kind: "reviewrouter-activation-catalog-policy-artifact";
+  version: 1;
+  policies: Readonly<{
+    preactivation: ActivationCatalogPolicy;
+    activated: ActivationCatalogPolicy;
+  }>;
+}>;
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const nested of Object.values(value)) deepFreeze(nested);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function cloneGeneratedArtifact(value: unknown): unknown {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function assertActivationCatalogPolicyArtifact(
+  value: unknown,
+): asserts value is ActivationCatalogPolicyArtifact {
+  if (!isExactRecord(value, ["kind", "version", "policies"]))
+    throw new Error("activation_catalog_policy_artifact_invalid");
+  if (
+    value.kind !== "reviewrouter-activation-catalog-policy-artifact" ||
+    value.version !== 1 ||
+    !isExactRecord(value.policies, ["preactivation", "activated"])
+  )
+    throw new Error("activation_catalog_policy_artifact_invalid");
+  assertActivationCatalogPolicyNormalization(
+    value.policies.preactivation,
+    "preactivation",
+  );
+  assertActivationCatalogPolicyNormalization(
+    value.policies.activated,
+    "activated",
+  );
+}
+
+const loadedActivationCatalogPolicyArtifact = cloneGeneratedArtifact(
+  generatedActivationCatalogPolicyArtifact,
+);
+assertActivationCatalogPolicyArtifact(loadedActivationCatalogPolicyArtifact);
+export const canonicalActivationCatalogPolicyArtifact = deepFreeze(
+  loadedActivationCatalogPolicyArtifact,
+);
 
 const pin = (policy: ActivationCatalogPolicy): PinnedActivationCatalogPolicy =>
   Object.freeze({
@@ -68,58 +126,280 @@ export const canonicalActivationCatalogPolicyDigests = Object.freeze({
     canonicalActivationCatalogPolicies.activated.sha256,
 });
 
-const expectedFields = new Set([
-  "kind",
-  "version",
-  "phase",
-  "database",
-  "roles",
-  "memberships",
-  "roleReachability",
-  "rowSecurity",
-  "grants",
-  "effectivePermissions",
-]);
+export const reviewedActivationCatalogPolicyDigests = Object.freeze({
+  preactivationCatalogPolicySha256:
+    "sha256:6e500c32e51fcf9421dc94c3f41a536c1cfaec9af3ce912c6a65b99460c8d5e2",
+  activatedCatalogPolicySha256:
+    "sha256:e88f3556a869977de67c02487663d7524dd19c5a3c11bb5541ada5cdc98f9b93",
+});
 
-export function assertCanonicalActivationCatalogPolicyInput(
-  serialized: string,
-  phase: ActivationCatalogPolicyPhase,
-): PinnedActivationCatalogPolicy {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(serialized);
-  } catch {
-    throw new Error(`activation_catalog_policy_json_invalid:${phase}`);
-  }
-  if (
-    parsed === null ||
-    typeof parsed !== "object" ||
-    Array.isArray(parsed) ||
-    Object.keys(parsed).length !== expectedFields.size ||
-    !Object.keys(parsed).every((field) => expectedFields.has(field)) ||
-    (parsed as Record<string, unknown>).kind !==
-      "reviewrouter-activation-catalog-policy" ||
-    (parsed as Record<string, unknown>).version !== 1 ||
-    (parsed as Record<string, unknown>).phase !== phase ||
-    typeof (parsed as Record<string, unknown>).database !== "string" ||
-    ![
-      "roles",
-      "memberships",
-      "roleReachability",
-      "rowSecurity",
-      "grants",
-      "effectivePermissions",
-    ].every((field) =>
-      Array.isArray((parsed as Record<string, unknown>)[field]),
-    )
+if (
+  !activationCatalogPolicyDigestsEqual(
+    canonicalActivationCatalogPolicyDigests,
+    reviewedActivationCatalogPolicyDigests,
   )
-    throw new Error(`activation_catalog_policy_contract_invalid:${phase}`);
-  const expected = canonicalActivationCatalogPolicies[phase];
-  if (canonicalJson(parsed) !== canonicalJson(expected.policy))
-    throw new Error(
-      `activation_catalog_policy_deployment_input_mismatch:${phase}`,
-    );
-  return expected;
+)
+  throw new Error("activation_catalog_policy_reviewed_digest_drift");
+
+const policyDigestPattern = /^sha256:[a-f0-9]{64}$/u;
+
+/**
+ * Authorizes the checked-in artifact with independently supplied compact
+ * deployment configuration. There is intentionally no default argument: the
+ * release artifact cannot authorize itself.
+ */
+export function authorizeCanonicalActivationCatalogPolicies(
+  configured: ActivationCatalogPolicyDigests,
+): typeof canonicalActivationCatalogPolicies {
+  assertActivationCatalogPolicyNormalization(
+    canonicalActivationCatalogPolicies.preactivation.policy,
+    "preactivation",
+  );
+  assertActivationCatalogPolicyNormalization(
+    canonicalActivationCatalogPolicies.activated.policy,
+    "activated",
+  );
+  if (
+    !policyDigestPattern.test(configured.preactivationCatalogPolicySha256) ||
+    !policyDigestPattern.test(configured.activatedCatalogPolicySha256)
+  )
+    throw new Error("activation_catalog_policy_digest_invalid");
+  if (!activationCatalogPolicyDigestsEqual(configured))
+    throw new Error("activation_catalog_policy_digest_mismatch");
+  assertCanonicalActivationCatalogPolicyTrustRootReady();
+  return canonicalActivationCatalogPolicies;
+}
+
+export function assertActivationCatalogPolicyNormalization(
+  value: unknown,
+  phase: ActivationCatalogPolicyPhase,
+): asserts value is ActivationCatalogPolicy {
+  try {
+    assertNormalizedPolicy(value, phase);
+  } catch {
+    throw new Error(`activation_catalog_policy_normalization_invalid:${phase}`);
+  }
+}
+
+function isExactRecord(
+  value: unknown,
+  fields: readonly string[],
+): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === fields.length &&
+    fields.every((field) => Object.hasOwn(value, field))
+  );
+}
+
+function isSafeText(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && !value.includes("\0");
+}
+
+function assertUnique(values: readonly unknown[]): void {
+  const keys = values.map((item) => canonicalJson(item));
+  if (new Set(keys).size !== keys.length) throw new Error("duplicate");
+}
+
+function assertNormalizedPolicy(
+  value: unknown,
+  phase: ActivationCatalogPolicyPhase,
+): asserts value is ActivationCatalogPolicy {
+  if (
+    !isExactRecord(value, policyFields) ||
+    value.kind !== "reviewrouter-activation-catalog-policy" ||
+    value.version !== 1 ||
+    value.phase !== phase ||
+    value.database !== "review_router"
+  )
+    throw new Error("policy");
+  const arrayFields = policyFields.slice(4);
+  if (!arrayFields.every((field) => Array.isArray(value[field])))
+    throw new Error("arrays");
+
+  const roles = value.roles as unknown[];
+  if (roles.length !== canonicalActivationPrincipalNames.length)
+    throw new Error("roles");
+  roles.forEach((role, index) => {
+    if (
+      !isExactRecord(role, [
+        "name",
+        "canLogin",
+        "inherit",
+        "superuser",
+        "bypassRls",
+        "replication",
+        "createDatabase",
+        "createRole",
+        "connectionLimit",
+        "validUntil",
+      ]) ||
+      role.name !== canonicalActivationPrincipalNames[index] ||
+      role.canLogin !==
+        (role.name !== "reviewrouter_activation_receipt_guard") ||
+      role.inherit !== true ||
+      role.superuser !== false ||
+      role.bypassRls !== false ||
+      role.replication !== false ||
+      role.createDatabase !== false ||
+      role.createRole !== (role.name === "reviewrouter_role_bootstrap") ||
+      role.connectionLimit !== -1 ||
+      role.validUntil !== null
+    )
+      throw new Error("role");
+  });
+
+  const memberships = value.memberships as unknown[];
+  if (memberships.length !== canonicalBootstrapMembershipRoleNames.length)
+    throw new Error("memberships");
+  memberships.forEach((membership, index) => {
+    if (
+      !isExactRecord(membership, [
+        "member",
+        "role",
+        "setOption",
+        "inheritOption",
+        "adminOption",
+        "grantor",
+      ]) ||
+      membership.member !== "reviewrouter_role_bootstrap" ||
+      membership.role !== canonicalBootstrapMembershipRoleNames[index] ||
+      membership.setOption !== false ||
+      membership.inheritOption !== false ||
+      membership.adminOption !== true ||
+      !isExactRecord(membership.grantor, ["kind"]) ||
+      membership.grantor.kind !== "external-bootstrap-authority"
+    )
+      throw new Error("membership");
+  });
+
+  const reachability = value.roleReachability as unknown[];
+  reachability.forEach((edge) => {
+    if (
+      !isExactRecord(edge, ["principal", "role", "usage", "set"]) ||
+      !canonicalPrincipals.has(String(edge.principal)) ||
+      !canonicalPrincipals.has(String(edge.role)) ||
+      typeof edge.usage !== "boolean" ||
+      typeof edge.set !== "boolean"
+    )
+      throw new Error("reachability");
+  });
+  assertUnique(reachability);
+
+  const rowSecurity = value.rowSecurity as unknown[];
+  rowSecurity.forEach((relation) => {
+    if (
+      !isExactRecord(relation, [
+        "relation",
+        "owner",
+        "enabled",
+        "forced",
+        "policies",
+      ]) ||
+      !isSafeText(relation.relation) ||
+      !canonicalPrincipals.has(String(relation.owner)) ||
+      typeof relation.enabled !== "boolean" ||
+      typeof relation.forced !== "boolean" ||
+      !Array.isArray(relation.policies)
+    )
+      throw new Error("row-security");
+    relation.policies.forEach((policy) => {
+      if (
+        !isExactRecord(policy, [
+          "name",
+          "command",
+          "permissive",
+          "using",
+          "withCheck",
+          "roles",
+        ]) ||
+        !isSafeText(policy.name) ||
+        !isSafeText(policy.command) ||
+        typeof policy.permissive !== "boolean" ||
+        !(policy.using === null || typeof policy.using === "string") ||
+        !(policy.withCheck === null || typeof policy.withCheck === "string") ||
+        !Array.isArray(policy.roles) ||
+        !policy.roles.every(
+          (role) => role === "PUBLIC" || canonicalPrincipals.has(String(role)),
+        )
+      )
+        throw new Error("row-security-policy");
+    });
+    assertUnique(relation.policies);
+  });
+  assertUnique(rowSecurity);
+
+  const extensions = value.extensions as unknown[];
+  extensions.forEach((extension) => {
+    if (
+      !isExactRecord(extension, ["name", "owner"]) ||
+      !isSafeText(extension.name) ||
+      !isExactRecord(
+        extension.owner,
+        (extension.owner as Record<string, unknown>)?.kind === "principal"
+          ? ["kind", "name"]
+          : ["kind"],
+      ) ||
+      !(
+        extension.owner.kind === "external-provider-authority" ||
+        (extension.owner.kind === "principal" &&
+          canonicalPrincipals.has(String(extension.owner.name)))
+      )
+    )
+      throw new Error("extension");
+  });
+  assertUnique(extensions);
+
+  const grants = value.grants as unknown[];
+  grants.forEach((grant) => {
+    if (
+      !isExactRecord(grant, [
+        "principal",
+        "capability",
+        "resource",
+        "source",
+        "grantable",
+        "grantor",
+      ]) ||
+      !(
+        grant.principal === "PUBLIC" ||
+        canonicalPrincipals.has(String(grant.principal))
+      ) ||
+      !canonicalCapabilities.has(String(grant.capability)) ||
+      !isSafeText(grant.resource) ||
+      !grantSources.has(String(grant.source)) ||
+      typeof grant.grantable !== "boolean" ||
+      !canonicalPrincipals.has(String(grant.grantor))
+    )
+      throw new Error("grant");
+  });
+  assertUnique(grants);
+
+  const effectivePermissions = value.effectivePermissions as unknown[];
+  if (effectivePermissions.length !== canonicalActivationPrincipalNames.length)
+    throw new Error("effective-permissions");
+  effectivePermissions.forEach((entry, index) => {
+    if (
+      !isExactRecord(entry, ["principal", "permissions"]) ||
+      entry.principal !== canonicalActivationPrincipalNames[index] ||
+      !Array.isArray(entry.permissions)
+    )
+      throw new Error("effective-permissions");
+    entry.permissions.forEach((permission) => {
+      if (
+        !isExactRecord(permission, ["capability", "resource"]) ||
+        !canonicalCapabilities.has(String(permission.capability)) ||
+        !isSafeText(permission.resource)
+      )
+        throw new Error("permission");
+    });
+    assertUnique(entry.permissions);
+  });
+
+  if (rehearsalIdentifier.test(canonicalJson(value)))
+    throw new Error("rehearsal-resource");
 }
 
 export function activationCatalogPolicyDigestsEqual(

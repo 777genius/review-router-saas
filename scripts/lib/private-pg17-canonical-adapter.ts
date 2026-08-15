@@ -3,6 +3,10 @@ import {
   RedactedProcessCommandAdapter,
   decomposePostgresConnection,
   type StepObservation,
+  assertReleaseMigrationTransition,
+  createReleaseMigrationTransition,
+  type ReleaseMigrationPermit,
+  type ReleaseMigrationTransitionV1,
 } from "../../packages/features/release-rollout/src/index";
 import { executePrivateGenerationActivation } from "../activate-private-pg17-generation.mjs";
 import {
@@ -23,7 +27,48 @@ export class PrivatePg17CanonicalAdapter {
     };
   }
 
-  runReleaseMigration(env: NodeJS.ProcessEnv): StepObservation {
+  runReleaseMigration(
+    env: NodeJS.ProcessEnv,
+    transition: ReleaseMigrationTransitionV1,
+    permit: ReleaseMigrationPermit,
+  ): StepObservation {
+    assertReleaseMigrationTransition(
+      transition,
+      createReleaseMigrationTransition({
+        commitSha: String(env.REVIEW_ROUTER_RELEASE_COMMIT_SHA),
+        releaseImageDigest: String(env.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST),
+      }),
+    );
+    const observeManifestIdentity = () => {
+      const connection = decomposePostgresConnection(
+        String(env.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL),
+      );
+      try {
+        return new RedactedProcessCommandAdapter()
+          .execute(
+            "psql",
+            [
+              ...connection.args,
+              "--no-psqlrc",
+              "--tuples-only",
+              "--no-align",
+              "--command",
+              "SELECT 'sha256:' || encode(pg_catalog.sha256(convert_to(coalesce(string_agg(migration_name || ':' || checksum, ',' ORDER BY migration_name), ''), 'UTF8')), 'hex') FROM public._prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL",
+            ],
+            { env: connection.env },
+          )
+          .stdout.trim();
+      } finally {
+        connection.cleanup();
+      }
+    };
+    const resumeManifestIdentity = observeManifestIdentity();
+    if (
+      !transition.allowedResumeManifestIdentities.includes(
+        resumeManifestIdentity,
+      )
+    )
+      throw new Error("private_pg17_rollout_resume_manifest_untrusted");
     const facts = executeCanonicalReleaseMigration(
       { ...env, REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed" },
       secureCanonicalRun,
@@ -40,30 +85,11 @@ export class PrivatePg17CanonicalAdapter {
       },
       secureCanonicalRun,
     );
-    const connection = decomposePostgresConnection(
-      String(env.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL),
-    );
-    let migrationChecksum: string;
-    try {
-      migrationChecksum = new RedactedProcessCommandAdapter()
-        .execute(
-          "psql",
-          [
-            ...connection.args,
-            "--no-psqlrc",
-            "--tuples-only",
-            "--no-align",
-            "--command",
-            "SELECT 'sha256:' || encode(pg_catalog.sha256(convert_to(coalesce(string_agg(migration_name || ':' || checksum, ',' ORDER BY migration_name), ''), 'UTF8')), 'hex') FROM public._prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL",
-          ],
-          { env: connection.env },
-        )
-        .stdout.trim();
-    } finally {
-      connection.cleanup();
-    }
+    const migrationChecksum = observeManifestIdentity();
     if (!/^sha256:[a-f0-9]{64}$/u.test(migrationChecksum))
       throw new Error("private_pg17_rollout_migration_checksum_unproven");
+    if (migrationChecksum !== transition.postManifestIdentity)
+      throw new Error("private_pg17_rollout_post_manifest_mismatch");
     return {
       step: RolloutStep.RunReleaseMigration,
       observedAt: new Date().toISOString(),
@@ -71,6 +97,16 @@ export class PrivatePg17CanonicalAdapter {
         ...(facts as Record<string, unknown>),
         legacyReconciliation,
         migrationChecksum,
+        transitionSha256: transition.transitionSha256,
+        migrationArtifactDigest: transition.migrationArtifactDigest,
+        migrationBundleSha256: transition.migrationBundleSha256,
+        preManifestIdentity: transition.preManifestIdentity,
+        postManifestIdentity: transition.postManifestIdentity,
+        postCatalogDigest: transition.postCatalogDigest,
+        permitEpoch: permit.epoch,
+        permitNonce: permit.nonce,
+        targetSystemIdentifier: permit.targetSystemIdentifier,
+        targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
       },
     };
   }

@@ -9,6 +9,7 @@ import {
   releaseAuthorityDefaultAclExactExpression,
   releaseAuthorityFinalAclExactExpression,
 } from "./acl-policy-postgres.mjs";
+import { fencedLiveV70V72CatalogDigestSql } from "@reviewrouter/features-release-rollout/adapters/live-v70-v72-catalog-digest";
 
 export type ReleaseAuthorityReadinessConnection = Pick<
   Prisma.TransactionClient,
@@ -19,6 +20,7 @@ type DatabaseIdentityProbe = Readonly<{
   roleName: string;
   authorityOwnerRoleName: string;
   systemIdentifier: string;
+  recoveryWitnessSha256: string;
   databaseIdentity: RuntimeDatabaseIdentity;
   postgresMajor: number;
   authorityPresent: boolean;
@@ -27,6 +29,7 @@ type DatabaseIdentityProbe = Readonly<{
   installerRoutineBodySha256: string;
   readerRoutineBodySha256: string;
   applicationMigrationManifestIdentity: string;
+  applicationPostCatalogDigest: string;
   activationNamespaceFingerprint: string;
   authorityRoleTopologyExact: boolean;
   activationGuardExact: boolean;
@@ -72,6 +75,10 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
   const probeRows = await prisma.$queryRaw<DatabaseIdentityProbe[]>(Prisma.sql`
     SELECT current_user AS "roleName",
       (SELECT system_identifier::text FROM pg_control_system()) AS "systemIdentifier",
+      coalesce(pg_catalog.shobj_description(
+        (SELECT oid FROM pg_database WHERE datname=current_database()),
+        'pg_database'
+      )::jsonb->>'recoveryWitnessSha256','') AS "recoveryWitnessSha256",
       jsonb_build_object(
         'serverIdentity', (SELECT system_identifier::text FROM pg_control_system()),
         'databaseIdentity', (SELECT oid::text FROM pg_database
@@ -100,6 +107,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
         ) bodies(ordinal,body_sha256)),'')
         AS "readerRoutineBodySha256",
       '' AS "applicationMigrationManifestIdentity",
+      '' AS "applicationPostCatalogDigest",
       CASE WHEN to_regnamespace('reviewrouter_activation') IS NULL THEN ''
         ELSE 'sha256:' || ${Prisma.raw(activationCatalogDigest)} END
         AS "activationNamespaceFingerprint",
@@ -407,10 +415,15 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
     if (!probeRows[0].installerRoutine && !probeRows[0].readerRoutine)
       return readiness;
     const migrationRows = await prisma.$queryRaw<
-      { applicationMigrationManifestIdentity: string }[]
+      {
+        applicationMigrationManifestIdentity: string;
+        applicationPostCatalogDigest: string;
+      }[]
     >(Prisma.sql`
       SELECT reviewrouter_activation.read_activation_migration_manifest_identity()
-        AS "applicationMigrationManifestIdentity"
+        AS "applicationMigrationManifestIdentity",
+        (${Prisma.raw(fencedLiveV70V72CatalogDigestSql)})
+        AS "applicationPostCatalogDigest"
     `);
     signal?.throwIfAborted();
     if (migrationRows.length !== 1 || !migrationRows[0])
@@ -502,7 +515,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
         ) AS "databaseIdentity",
         current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
         CASE WHEN catalog_exact AND default_acl_exact AND final_acl_exact
-          AND owner_membership_exact AND role_topology_exact THEN 12 ELSE 0 END
+          AND owner_membership_exact AND role_topology_exact
+          THEN ${releaseAuthoritySchemaVersion} ELSE 0 END
           AS "schemaVersion",
         '[]'::jsonb AS "migrationManifest",
         'sha256:' || catalog_digest AS "catalogFingerprint",
@@ -521,6 +535,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
         '' AS "installerRoutineBodySha256",
         '' AS "readerRoutineBodySha256",
         '' AS "applicationMigrationManifestIdentity",
+        '' AS "applicationPostCatalogDigest",
         '' AS "activationNamespaceFingerprint",
         role_topology_exact AS "authorityRoleTopologyExact",
         false AS "activationGuardExact",

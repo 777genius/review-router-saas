@@ -43,6 +43,48 @@ roles AS (
   WHERE namespace.nspname NOT IN ('pg_catalog','information_schema')
     AND namespace.nspname !~ '^pg_toast'
     AND namespace.nspname !~ '^pg_temp_'
+), extensions AS (
+  SELECT extension.extname AS name, pg_get_userbyid(extension.extowner) AS owner
+  FROM pg_catalog.pg_extension extension
+), unsupported_authority_families AS (
+  SELECT family FROM (VALUES
+    ('large-object', EXISTS (SELECT 1 FROM pg_catalog.pg_largeobject_metadata)),
+    ('large-object-default-acl', EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl WHERE defaclobjtype='L')),
+    ('foreign-data-wrapper', EXISTS (SELECT 1 FROM pg_catalog.pg_foreign_data_wrapper)),
+    ('foreign-server', EXISTS (SELECT 1 FROM pg_catalog.pg_foreign_server)),
+    ('publication', EXISTS (SELECT 1 FROM pg_catalog.pg_publication)),
+    ('subscription', EXISTS (SELECT 1 FROM pg_catalog.pg_subscription)),
+    ('event-trigger', EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger)),
+    ('parameter-acl', EXISTS (SELECT 1 FROM pg_catalog.pg_parameter_acl)),
+    ('custom-language', EXISTS (SELECT 1 FROM pg_catalog.pg_language
+      WHERE lanname NOT IN ('c','internal','plpgsql','sql') OR lanacl IS NOT NULL)),
+    ('tablespace', EXISTS (SELECT 1 FROM pg_catalog.pg_tablespace
+      WHERE spcname NOT IN ('pg_default','pg_global') OR spcacl IS NOT NULL)),
+    ('collation', EXISTS (SELECT 1 FROM pg_catalog.pg_collation item
+      JOIN pg_catalog.pg_namespace namespace ON namespace.oid=item.collnamespace
+      WHERE namespace.nspname <> 'pg_catalog')),
+    ('conversion', EXISTS (SELECT 1 FROM pg_catalog.pg_conversion item
+      JOIN pg_catalog.pg_namespace namespace ON namespace.oid=item.connamespace
+      WHERE namespace.nspname <> 'pg_catalog')),
+    ('operator', EXISTS (SELECT 1 FROM pg_catalog.pg_operator item
+      JOIN pg_catalog.pg_namespace namespace ON namespace.oid=item.oprnamespace
+      WHERE namespace.nspname <> 'pg_catalog')),
+    ('operator-class', EXISTS (SELECT 1 FROM pg_catalog.pg_opclass item
+      JOIN pg_catalog.pg_namespace namespace ON namespace.oid=item.opcnamespace
+      WHERE namespace.nspname <> 'pg_catalog')),
+    ('operator-family', EXISTS (SELECT 1 FROM pg_catalog.pg_opfamily item
+      JOIN pg_catalog.pg_namespace namespace ON namespace.oid=item.opfnamespace
+      WHERE namespace.nspname <> 'pg_catalog')),
+    ('extended-statistics', EXISTS (SELECT 1 FROM pg_catalog.pg_statistic_ext)),
+    ('text-search', EXISTS (
+      SELECT 1 FROM pg_catalog.pg_ts_config item JOIN pg_catalog.pg_namespace namespace ON namespace.oid=item.cfgnamespace WHERE namespace.nspname <> 'pg_catalog'
+      UNION ALL
+      SELECT 1 FROM pg_catalog.pg_ts_dict item JOIN pg_catalog.pg_namespace namespace ON namespace.oid=item.dictnamespace WHERE namespace.nspname <> 'pg_catalog'
+      UNION ALL
+      SELECT 1 FROM pg_catalog.pg_ts_parser item JOIN pg_catalog.pg_namespace namespace ON namespace.oid=item.prsnamespace WHERE namespace.nspname <> 'pg_catalog'
+      UNION ALL
+      SELECT 1 FROM pg_catalog.pg_ts_template item JOIN pg_catalog.pg_namespace namespace ON namespace.oid=item.tmplnamespace WHERE namespace.nspname <> 'pg_catalog'))
+  ) unsupported(family,present) WHERE present
 ), grants(principal, capability, resource, source, grantable, grantor) AS (
   SELECT role.name, capability, resource, 'attribute', true, role.name
   FROM roles role CROSS JOIN LATERAL (VALUES
@@ -85,14 +127,10 @@ roles AS (
     AND namespace.nspname !~ '^pg_temp_'
     AND type.typtype IN ('d','e','m','r','c')
   UNION ALL
-  SELECT pg_get_userbyid(metadata.lomowner), 'owner:object',
-    'large-object:'||metadata.oid::text, 'ownership', true,
-    pg_get_userbyid(metadata.lomowner)
-  FROM pg_catalog.pg_largeobject_metadata metadata
-  UNION ALL
   SELECT coalesce(grantee.rolname,'PUBLIC'),
     CASE acl.privilege_type WHEN 'CONNECT' THEN 'database:connect'
-      WHEN 'CREATE' THEN 'database:create' WHEN 'TEMPORARY' THEN 'database:temporary' END,
+      WHEN 'CREATE' THEN 'database:create' WHEN 'TEMPORARY' THEN 'database:temporary'
+      ELSE 'unsupported:database-acl:'||acl.privilege_type END,
     'database:'||database.datname, CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END,
     acl.is_grantable, pg_get_userbyid(acl.grantor)
   FROM pg_catalog.pg_database database
@@ -101,7 +139,9 @@ roles AS (
   WHERE database.datname=current_database()
   UNION ALL
   SELECT coalesce(grantee.rolname,'PUBLIC'),
-    CASE acl.privilege_type WHEN 'CREATE' THEN 'schema:create' ELSE 'schema:usage' END,
+    CASE acl.privilege_type WHEN 'CREATE' THEN 'schema:create'
+      WHEN 'USAGE' THEN 'schema:usage'
+      ELSE 'unsupported:schema-acl:'||acl.privilege_type END,
     'schema:'||namespace.nspname, CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END,
     acl.is_grantable, pg_get_userbyid(acl.grantor)
   FROM pg_catalog.pg_namespace namespace
@@ -115,14 +155,21 @@ roles AS (
       WHEN 'r' THEN CASE acl.privilege_type WHEN 'INSERT' THEN 'table:insert'
         WHEN 'UPDATE' THEN 'table:update' WHEN 'DELETE' THEN 'table:delete'
         WHEN 'TRUNCATE' THEN 'table:truncate' WHEN 'TRIGGER' THEN 'table:trigger'
-        WHEN 'REFERENCES' THEN 'table:references' ELSE 'table:read' END
+        WHEN 'REFERENCES' THEN 'table:references' WHEN 'SELECT' THEN 'table:read'
+        WHEN 'MAINTAIN' THEN 'table:maintain'
+        ELSE 'unsupported:table-default-acl:'||acl.privilege_type END
       WHEN 'S' THEN CASE acl.privilege_type WHEN 'USAGE' THEN 'sequence:usage'
-        WHEN 'UPDATE' THEN 'sequence:update' ELSE 'sequence:read' END
-      WHEN 'f' THEN 'routine:execute'
-      WHEN 'n' THEN CASE acl.privilege_type WHEN 'CREATE' THEN 'schema:create' ELSE 'schema:usage' END
-      WHEN 'T' THEN 'type:usage'
-      WHEN 'L' THEN CASE acl.privilege_type WHEN 'UPDATE' THEN 'large-object:write'
-        ELSE 'large-object:read' END
+        WHEN 'UPDATE' THEN 'sequence:update' WHEN 'SELECT' THEN 'sequence:read'
+        ELSE 'unsupported:sequence-default-acl:'||acl.privilege_type END
+      WHEN 'f' THEN CASE acl.privilege_type WHEN 'EXECUTE' THEN 'routine:execute'
+        ELSE 'unsupported:routine-default-acl:'||acl.privilege_type END
+      WHEN 'n' THEN CASE acl.privilege_type WHEN 'CREATE' THEN 'schema:create'
+        WHEN 'USAGE' THEN 'schema:usage'
+        ELSE 'unsupported:schema-default-acl:'||acl.privilege_type END
+      WHEN 'T' THEN CASE acl.privilege_type WHEN 'USAGE' THEN 'type:usage'
+        ELSE 'unsupported:type-default-acl:'||acl.privilege_type END
+      WHEN 'L' THEN 'unsupported:large-object-default-acl'
+      ELSE 'unsupported:default-acl-family:'||defaults.defaclobjtype::text
     END,
     'default:'||pg_get_userbyid(defaults.defaclrole)||':'||
       defaults.defaclobjtype::text||':'||coalesce(namespace.nspname,'*'),
@@ -133,7 +180,9 @@ roles AS (
   LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee
   LEFT JOIN pg_catalog.pg_namespace namespace ON namespace.oid=defaults.defaclnamespace
   UNION ALL
-  SELECT coalesce(grantee.rolname,'PUBLIC'), 'type:usage',
+  SELECT coalesce(grantee.rolname,'PUBLIC'),
+    CASE acl.privilege_type WHEN 'USAGE' THEN 'type:usage'
+      ELSE 'unsupported:type-acl:'||acl.privilege_type END,
     'type:'||quote_ident(namespace.nspname)||'.'||quote_ident(type.typname),
     CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END,
     acl.is_grantable, pg_get_userbyid(acl.grantor)
@@ -145,21 +194,11 @@ roles AS (
     AND type.typtype IN ('d','e','m','r','c')
   UNION ALL
   SELECT coalesce(grantee.rolname,'PUBLIC'),
-    CASE acl.privilege_type WHEN 'UPDATE' THEN 'large-object:write'
-      ELSE 'large-object:read' END,
-    'large-object:'||metadata.oid::text,
-    CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END,
-    acl.is_grantable, pg_get_userbyid(acl.grantor)
-  FROM pg_catalog.pg_largeobject_metadata metadata
-  CROSS JOIN LATERAL aclexplode(coalesce(
-    metadata.lomacl,acldefault('L',metadata.lomowner))) acl
-  LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee
-  UNION ALL
-  SELECT coalesce(grantee.rolname,'PUBLIC'),
     CASE acl.privilege_type WHEN 'INSERT' THEN 'table:insert' WHEN 'UPDATE' THEN 'table:update'
       WHEN 'DELETE' THEN 'table:delete' WHEN 'TRUNCATE' THEN 'table:truncate'
       WHEN 'TRIGGER' THEN 'table:trigger' WHEN 'REFERENCES' THEN 'table:references'
-      ELSE 'table:read' END,
+      WHEN 'SELECT' THEN 'table:read' WHEN 'MAINTAIN' THEN 'table:maintain'
+      ELSE 'unsupported:table-acl:'||acl.privilege_type END,
     'relation:'||quote_ident(object.schema_name)||'.'||quote_ident(object.object_name),
     CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END,
     acl.is_grantable, pg_get_userbyid(acl.grantor)
@@ -170,7 +209,8 @@ roles AS (
   UNION ALL
   SELECT coalesce(grantee.rolname,'PUBLIC'),
     CASE acl.privilege_type WHEN 'INSERT' THEN 'column:insert' WHEN 'UPDATE' THEN 'column:update'
-      WHEN 'REFERENCES' THEN 'column:references' ELSE 'column:read' END,
+      WHEN 'REFERENCES' THEN 'column:references' WHEN 'SELECT' THEN 'column:read'
+      ELSE 'unsupported:column-acl:'||acl.privilege_type END,
     'column:'||quote_ident(namespace.nspname)||'.'||quote_ident(relation.relname)||'.'||quote_ident(attribute.attname),
     CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END,
     acl.is_grantable, pg_get_userbyid(acl.grantor)
@@ -184,7 +224,9 @@ roles AS (
     AND namespace.nspname !~ '^pg_temp_'
   UNION ALL
   SELECT coalesce(grantee.rolname,'PUBLIC'),
-    CASE acl.privilege_type WHEN 'USAGE' THEN 'sequence:usage' WHEN 'UPDATE' THEN 'sequence:update' ELSE 'sequence:read' END,
+    CASE acl.privilege_type WHEN 'USAGE' THEN 'sequence:usage'
+      WHEN 'UPDATE' THEN 'sequence:update' WHEN 'SELECT' THEN 'sequence:read'
+      ELSE 'unsupported:sequence-acl:'||acl.privilege_type END,
     'sequence:'||quote_ident(object.schema_name)||'.'||quote_ident(object.object_name),
     CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END,
     acl.is_grantable, pg_get_userbyid(acl.grantor)
@@ -192,7 +234,9 @@ roles AS (
   CROSS JOIN LATERAL aclexplode(coalesce(sequence.relacl,acldefault('S',sequence.relowner))) acl
   LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee WHERE object.relkind='S'
   UNION ALL
-  SELECT coalesce(grantee.rolname,'PUBLIC'), 'routine:execute', routine.resource,
+  SELECT coalesce(grantee.rolname,'PUBLIC'),
+    CASE acl.privilege_type WHEN 'EXECUTE' THEN 'routine:execute'
+      ELSE 'unsupported:routine-acl:'||acl.privilege_type END, routine.resource,
     CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END,
     acl.is_grantable, pg_get_userbyid(acl.grantor)
   FROM routines routine
@@ -201,13 +245,15 @@ roles AS (
 )
 SELECT json_build_object('version',1,'database',current_database(),
   'sessionPrincipal',session_user,
-  'roles',(SELECT coalesce(json_agg(to_jsonb(roles)-'oid' ORDER BY name),'[]'::json) FROM roles),
-  'memberships',(SELECT coalesce(json_agg(memberships ORDER BY member,role),'[]'::json) FROM memberships),
+  'roles',(SELECT coalesce(json_agg(to_jsonb(roles)-'oid' ORDER BY name COLLATE "C"),'[]'::json) FROM roles),
+  'memberships',(SELECT coalesce(json_agg(memberships ORDER BY member COLLATE "C",role COLLATE "C",grantor COLLATE "C"),'[]'::json) FROM memberships),
+  'extensions',(SELECT coalesce(json_agg(extensions ORDER BY name COLLATE "C",owner COLLATE "C"),'[]'::json) FROM extensions),
+  'unsupportedAuthorityFamilies',(SELECT coalesce(json_agg(family ORDER BY family COLLATE "C"),'[]'::json) FROM unsupported_authority_families),
   'roleReachability',(SELECT coalesce(json_agg(json_build_object(
     'principal',principal.name,'role',effective.name,
     'usage',principal.oid=effective.oid OR pg_has_role(principal.oid,effective.oid,'USAGE'),
     'set',principal.oid=effective.oid OR pg_has_role(principal.oid,effective.oid,'SET'))
-    ORDER BY principal.name,effective.name),'[]'::json)
+    ORDER BY principal.name COLLATE "C",effective.name COLLATE "C"),'[]'::json)
     FROM roles principal CROSS JOIN roles effective
     WHERE principal."canLogin" AND (principal.oid=effective.oid
       OR pg_has_role(principal.oid,effective.oid,'USAGE')
@@ -222,10 +268,10 @@ SELECT json_build_object('version',1,'database',current_database(),
         'withCheck',pg_get_expr(policy.polwithcheck,policy.polrelid),
         'roles',(SELECT coalesce(json_agg(
           CASE WHEN policy_role=0 THEN 'PUBLIC' ELSE pg_get_userbyid(policy_role) END
-          ORDER BY CASE WHEN policy_role=0 THEN 'PUBLIC' ELSE pg_get_userbyid(policy_role) END),
+          ORDER BY (CASE WHEN policy_role=0 THEN 'PUBLIC' ELSE pg_get_userbyid(policy_role) END) COLLATE "C"),
           '[]'::json) FROM unnest(policy.polroles) policy_role))
-      ORDER BY policy.polname),'[]'::json) FROM pg_policy policy
-      WHERE policy.polrelid=relation.oid)) ORDER BY namespace.nspname,relation.relname),
+      ORDER BY policy.polname COLLATE "C"),'[]'::json) FROM pg_policy policy
+      WHERE policy.polrelid=relation.oid)) ORDER BY namespace.nspname COLLATE "C",relation.relname COLLATE "C"),
       '[]'::json) FROM pg_class relation JOIN pg_namespace namespace
       ON namespace.oid=relation.relnamespace WHERE relation.relkind IN ('r','p')
         AND namespace.nspname NOT IN ('pg_catalog','information_schema')
@@ -233,5 +279,5 @@ SELECT json_build_object('version',1,'database',current_database(),
         AND namespace.nspname !~ '^pg_temp_'),
   'grants',(SELECT coalesce(json_agg(json_build_object('principal',principal,'capability',capability,
     'resource',resource,'source',source,'grantable',grantable,'grantor',grantor)
-    ORDER BY principal,capability,resource,source,grantable,grantor),'[]'::json)
-    FROM grants WHERE capability IS NOT NULL))`;
+    ORDER BY principal COLLATE "C",capability COLLATE "C",resource COLLATE "C",source COLLATE "C",grantable,grantor COLLATE "C"),'[]'::json)
+    FROM grants))`;

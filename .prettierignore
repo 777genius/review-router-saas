@@ -7,4 +7,5 @@ action-dist
 build
 coverage
 pnpm-lock.yaml
+packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js
 .local-secrets

@@ -49,15 +49,15 @@ release service values by the workflows.
 
 Repository variables:
 
-| Group             | Variables                                                                                                                                                                             |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workflow identity | `REVIEW_ROUTER_RELEASE_CONTROL_ORG`, `REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY`, release-witness signing key ID and public key                                                        |
-| Service origins   | `REVIEW_ROUTER_RELEASE_CONTROL_URL`, `REVIEW_ROUTER_RELEASE_WITNESS_URL`                                                                                                              |
-| Runners           | `REVIEW_ROUTER_RUNNER_GROUP_ID`, `REVIEW_ROUTER_RUNNER_GROUP_NAME`, `REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID`                                                                            |
-| Provider          | `REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS`, `RENDER_OWNER_ID`                                                                                                                          |
-| Generations       | source/target `RENDER_DATABASE_ID`, `INTERNAL_HOSTNAME`, `DATABASE_NAME`, `DATABASE_SYSTEM_IDENTIFIER`, `RECOVERY_WITNESS_SHA256`                                                     |
-| Release           | `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, `REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON`, source/source-fenced/target-equivalence/target-preactivation/target principal policy JSON |
-| Canary            | `REVIEW_ROUTER_LIVE_CANARY_URL`                                                                                                                                                       |
+| Group             | Variables                                                                                                                                                                                                        |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workflow identity | `REVIEW_ROUTER_RELEASE_CONTROL_ORG`, `REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY`, release-witness signing key ID and public key                                                                                   |
+| Service origins   | `REVIEW_ROUTER_RELEASE_CONTROL_URL`, `REVIEW_ROUTER_RELEASE_WITNESS_URL`                                                                                                                                         |
+| Runners           | `REVIEW_ROUTER_RUNNER_GROUP_ID`, `REVIEW_ROUTER_RUNNER_GROUP_NAME`, `REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID`                                                                                                       |
+| Provider          | `REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS`, `RENDER_OWNER_ID`                                                                                                                                                     |
+| Generations       | source/target `RENDER_DATABASE_ID`, `INTERNAL_HOSTNAME`, `DATABASE_NAME`, `DATABASE_SYSTEM_IDENTIFIER`, `RECOVERY_WITNESS_SHA256`                                                                                |
+| Release           | `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, `REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON`, source/source-fenced/target-equivalence principal policy JSON, and the two compact activation catalog policy digests |
+| Canary            | `REVIEW_ROUTER_LIVE_CANARY_URL`                                                                                                                                                                                  |
 
 `REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS` has one canonical encoding in every
 phase: a compact JSON array of unique Render service IDs, for example
@@ -78,14 +78,111 @@ Quoted PostgreSQL names are represented literally in JSON. Generate and review
 them from a disposable, production-shaped catalog; never copy live discovery
 output into the allowlist without review.
 
+Capture candidates only through the rehearsal's capture-only mode. The former
+standalone database-URL capture command was removed because a caller-provided
+label cannot prove that a configured database is disposable. The rehearsal performs the
+same pinned PG16-to-PG17 copy, role bootstrap, canonical release migration,
+legacy reconciliation, and preactivation preparation as the rollout rehearsal:
+
+```bash
+export REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL=1
+export REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY=1
+export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY=rr-disposable-<unique-id>
+export REVIEW_ROUTER_REHEARSAL_PG16_IMAGE='postgres:16.13-bookworm@sha256:<approved-64-hex-digest>'
+export REVIEW_ROUTER_REHEARSAL_PG17_IMAGE='postgres:17.<minor>-bookworm@sha256:<approved-64-hex-digest>'
+pnpm release-rollout:rehearsal > /tmp/reviewrouter-activation-catalog-policy-candidate.json
+```
+
+Only the exact capture-only value `1` selects this branch. Immediately after
+`run_release_migration`, it proves that the target is a container created by
+this rehearsal, that it is distinct from the source, and that its observed
+system identifier and recovery witness match the fenced target state. It then
+writes a structured disposable attestation through the role-bootstrap
+connection. The attestation binds the capture identity, live system identifier,
+database OID, recovery-witness digest, and a nonce derived from the observed
+target state. The canonical candidate query re-observes and verifies every
+binding through the release-migration connection. The runtime grants exist only
+inside that query's rollback transaction. The branch then exits: it cannot stage or resume target
+services, install an activation permit, activate a generation, run the canary,
+or produce rollout proof. Its stdout is the typed candidate JSON; diagnostics
+remain on stderr. All three disposable containers, their network, and temporary
+credential files are cleaned up on success or failure.
+
+Without that exact capture-only opt-in, this is the normal rehearsal and it
+remains fail-closed on
+`canonicalActivationCatalogPolicyTrustRootReadiness`; the readiness assertion
+runs before any Docker operation.
+
+The rehearsal creates the database attestation; an operator-supplied database
+comment or disposable-looking label is not accepted as lifecycle proof. The
+capture login is `reviewrouter_release_migration`. Both the explicit capture-only
+opt-in and the exact structured server-side attestation are mandatory before any
+catalog projection. The guard first performs the full raw safety evaluation, then
+returns the provider-neutral relevance closure. Every raw direct/default ACL,
+ownership, and role-attribute grant principal must be `PUBLIC` or an exact
+canonical activation principal; this check occurs before normalization, so a
+disconnected role with application authority rejects capture instead of being
+omitted. A factually disconnected inert provider role with no application
+authority is omitted without consulting its name. The one external inert
+grantor of the exact five bootstrap membership edges is represented as
+`{"kind":"external-bootstrap-authority"}`; its catalog name is never pinned.
+Any second grantor, different edge/options, or other authority rejects capture.
+Extension entries pin the provider-neutral extension name and normalized owner.
+An application principal is represented by name; an otherwise-inert provider
+owner is represented as `external-provider-authority`, never by its provider
+role name. Versions are intentionally excluded because provider patch cadence
+changes them without changing ALTER/UPDATE/DROP authority. Large objects,
+foreign data wrappers/servers, publications, subscriptions, event triggers,
+parameter ACLs, custom languages/tablespaces, user collations/conversions,
+operators, extended statistics, text-search objects, and other unmodeled ACL
+kinds make projection fail closed. The built-in languages and tablespaces are
+accepted only in their immutable default shape. No catalog-local OID is admitted
+to the artifact.
+
+The promoted trust root is generated from the independently reviewed v19
+candidate. Immutable capture, image, phase-digest, and final-review evidence is
+recorded in the adjacent `activation-catalog-policy-provenance.json`. It is the
+machine-readable source for the precise ready state; stale capture blockers are
+not retained after promotion.
+
+The command has no permit-installation or activation capability. It reads the
+preactivation candidate only after a capture-only transaction drops the exact
+`public.rehearsal_items`, `app_private`, and `rehearsal_writer` fixtures and
+asserts their absence. Normal rollout retains those fixtures and canary checks.
+Candidate parsing independently rejects rehearsal-shaped identities/resources
+and duplicate normalized grant identities. It then reads the
+preactivation candidate, applies the exact production runtime grants, reads the
+activated candidate, and ends with `ROLLBACK`; it never substitutes one phase
+for the other. Review the complete diff, verify that no provider identity is
+present, then promote only the reviewed bytes with the exact operator opt-in:
+
+```bash
+REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v19 \
+  pnpm release-rollout:promote-activation-catalog-policy \
+  --candidate /tmp/rr-activation-catalog-candidate-v19.json --write
+```
+
+Omit `--write` to verify that the checked-in generated module is byte-exact.
+The command accepts no runtime policy path, verifies the reviewed whole-file
+size and SHA-256 before parsing, validates normalization, checks both reviewed
+phase digests and the canonical artifact digest, and writes only the fixed
+source-owned artifact path. Update both compact deployment digest
+authorizations as part of the same release change. Never run candidate capture
+on a live database and never add capture, promotion, or drafting to the
+activation path.
+
 Activation principal evidence uses a single-session staged transaction. The
 versioned `canonicalActivationCatalogPolicyArtifact` in the release-rollout
 domain is the sole trust root for both reviewed target contracts and their
-deterministic hashes. The two Render JSON values remain required deployment
-inputs, but release-control requires canonical-equivalent content before
-it becomes ready; changing Render configuration cannot change the pinned
-policy. Release-control installs only the artifact policies and hashes through
-its dedicated permit-installer connection. The cutover runner does not send
+deterministic hashes. Release-control and release-witness require independently
+configured `REVIEW_ROUTER_TARGET_{PREACTIVATION,ACTIVATED}_CATALOG_POLICY_SHA256`
+values and verify both against the checked-in artifact; missing, malformed, or
+mismatched values fail startup. No runtime path or full-policy environment value
+can replace the checked-in artifact. The generated module is cloned, strictly
+validated, and deeply frozen by the domain contract before use; module loading
+also recomputes both phase digests and refuses any provenance drift.
+Release-control installs only the artifact policies and hashes through its
+dedicated permit-installer connection. The cutover runner does not send
 policy JSON. In the committing transaction, the target guard
 locks that one-shot permit, independently projects the live PG17 catalogs, and
 requires byte-exact normalized equality with the permit-bound preactivation
@@ -106,7 +203,7 @@ The release-control readiness attestation and release-witness schema 3 bind
 both artifact policy hashes. Final trusted-rollout evidence schema 8 requires
 the permit receipt and signed witness to equal those pinned values. A policy
 artifact update therefore requires one coherent control/witness/finalizer
-release and matching Render JSON inputs; mixed versions fail closed.
+release and matching Render digest inputs; mixed versions fail closed.
 
 Protected environment secrets:
 
@@ -200,7 +297,7 @@ verifier or upgraded without rerunning the current rollout and witness observati
    Configure release-control with independently captured authority and target
    database identities: each tuple contains `system_identifier`, the database
    OID, and `current_database()`. Also configure the exact authority owner role,
-   activation migration-manifest digest, activation namespace fingerprint, and
+   exact pre-migration application-manifest digest, activation namespace fingerprint, and
    activation routine body hashes from the immutable release. These values are
    catalog evidence, not credentials or connection strings. Obtain the two
    routine hashes from the checked-out release without querying the target:
@@ -529,6 +626,28 @@ REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY="$REPOSITORY" \
   pnpm release-rollout:evidence:verify \
   "trusted-private-pg17-${ROLLOUT_ID}-RUN_ID-1/trusted-rollout-evidence.json"
 ```
+
+### Phase-aware application manifest fence
+
+The release artifact fixes one `ReleaseMigrationTransitionV1` to the exact
+release commit, immutable image digest, ordered migration SQL checksums,
+migration bundle digest, exact pre-manifest, every exact crash-resume root,
+the exact 73-migration post-manifest, and the V72 catalog postcondition. The
+control plane derives this transition from its trusted release identity; a
+runner cannot submit or override an expected manifest.
+
+Normal migration uses three durable operations: `begin` claims the target
+generation and returns one idempotent permit while the target is exactly at the
+pre-manifest. After a crash, `begin` reads the durable `migrating` phase without
+requiring the target to still be pre-migration, and the migration adapter
+verifies the permit, bundle, exact transition-owned resume root,
+post-manifest, and V72 objects while holding the migration lock; `complete`
+freshly attests the exact post-manifest and atomically stores the canonical
+`run_release_migration` receipt. A retry returns the same permit or canonical
+receipt. A SQL failure quarantines the target forward-only. Never edit the
+phase, reuse a quarantined generation, substitute a worker digest, or configure
+the control plane to accept either manifest. Capture-only rehearsal remains a
+non-authoritative direct-port evidence path and does not call release authority.
 
 ## Compensation, rollback, and outcome unknown
 

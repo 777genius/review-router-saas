@@ -466,6 +466,18 @@ describe("release authority database installation", () => {
       recover.indexOf("FROM release_authority.provider_resource_lease"),
     ).toBeLessThan(recover.indexOf("FROM release_authority.provider_mutation"));
   });
+  it("appends the immutable phase-aware application manifest protocol", () => {
+    const migration = readFileSync(
+      "packages/platform/release-authority-db/migrations/000013_phase_aware_application_manifest/migration.sql",
+      "utf8",
+    );
+    expect(migration).toContain("release_rollout_claim_transition");
+    expect(migration).toContain("release_migration_begin");
+    expect(migration).toContain("release_migration_complete");
+    expect(migration).toContain("release_migration_fail");
+    expect(migration).toContain("target_generation_claim");
+    expect(migration).toContain("postCatalogDigest");
+  });
   it("removes implicit PUBLIC usage from the declared authority type", () => {
     const migration = readFileSync(
       "packages/platform/release-authority-db/migrations/000011_default_and_final_acl_exactness/migration.sql",
@@ -490,6 +502,7 @@ describe("release authority database installation", () => {
       "packages/platform/release-authority-db/migrations/000010_recovery_effect_permits/migration.sql",
       "packages/platform/release-authority-db/migrations/000011_default_and_final_acl_exactness/migration.sql",
       "packages/platform/release-authority-db/migrations/000012_provider_mutation_resource_fence/migration.sql",
+      "packages/platform/release-authority-db/migrations/000013_phase_aware_application_manifest/migration.sql",
     ]);
     expect(
       releaseAuthorityMigrationPaths.map((path) =>
@@ -509,6 +522,7 @@ describe("release authority database installation", () => {
       "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
       "727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
       "45eb81a2715cf8c254cdacc2ca4ce8c80fc6c6527c009fe9dce63c3f80a510b1",
+      "c2c721cef391504da5b2053da017e83b4dd80811f410368071138f0f28352853",
     ]);
     const bundle = releaseAuthorityMigrationBundle("fresh-install");
     const first = bundle.indexOf("CREATE SCHEMA release_authority");

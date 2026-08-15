@@ -449,6 +449,9 @@ export function assertTrustedRolloutEvidence(
     )
       throw new Error("trusted_rollout_evidence_receipt_chain_invalid");
   }
+  const migrationReceipt = value.receipts.find(
+    (receipt) => receipt.step === RolloutStep.RunReleaseMigration,
+  );
   if (
     value.receipts.find(
       (receipt) => receipt.step === RolloutStep.VerifyProtectedEnvironment,
@@ -463,6 +466,12 @@ export function assertTrustedRolloutEvidence(
     !value.receipts.some(
       (receipt) => canonicalJson(receipt) === canonicalJson(value.activation),
     ) ||
+    migrationReceipt?.step !== RolloutStep.RunReleaseMigration ||
+    !("postManifestIdentity" in migrationReceipt) ||
+    migrationReceipt.postManifestIdentity !==
+      value.activation.postManifestIdentity ||
+    migrationReceipt.postManifestIdentity !==
+      value.activation.migrationChecksum ||
     value.activation.firstWriteBoundary !== true ||
     value.activation.sourceSystemIdentifier !== value.source.systemIdentifier ||
     value.activation.targetSystemIdentifier !== value.target.systemIdentifier ||
@@ -665,6 +674,8 @@ export function assertTrustedRolloutEvidence(
     !digest.test(witness.releaseAuthority.catalogFingerprint) ||
     !witness.releaseAuthority.catalogVerifier ||
     !digest.test(witness.activation.migrationManifestIdentity) ||
+    witness.activation.migrationManifestIdentity !==
+      value.activation.postManifestIdentity ||
     !digest.test(witness.activation.namespaceFingerprint) ||
     !/^[a-f0-9]{64}$/u.test(witness.activation.installerRoutineBodySha256) ||
     !/^[a-f0-9]{64}$/u.test(witness.activation.readerRoutineBodySha256) ||

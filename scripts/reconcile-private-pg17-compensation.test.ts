@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createReleaseRollout } from "../packages/features/release-rollout/src/index";
+import {
+  createReleaseMigrationTransition,
+  createReleaseRollout,
+} from "../packages/features/release-rollout/src/index";
 import { parseInitialRolloutArtifact } from "./reconcile-private-pg17-compensation";
 
 const rolloutId = "pg17-release-1";
@@ -15,6 +18,10 @@ const rollout = () =>
   createReleaseRollout({
     rolloutId,
     expectedCommitSha: "b".repeat(40),
+    migrationTransition: createReleaseMigrationTransition({
+      commitSha: "b".repeat(40),
+      releaseImageDigest: `sha256:${"e".repeat(64)}`,
+    }),
     execution: {
       organization: "777genius",
       controlRepository: "777genius/review-router-saas",

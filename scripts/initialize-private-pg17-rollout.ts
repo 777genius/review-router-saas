@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import {
   AuthenticatedRunnerLedgerAdapter,
   createReleaseRollout,
+  createReleaseMigrationTransition,
   assertVerifiedReleaseImageProvenance,
   ReleaseRolloutUseCases,
   RolloutStep,
@@ -73,6 +74,10 @@ let rollout = createReleaseRollout({
   },
   source: generation("SOURCE"),
   target: generation("TARGET"),
+  migrationTransition: createReleaseMigrationTransition({
+    commitSha: required("REVIEW_ROUTER_EXPECTED_SHA"),
+    releaseImageDigest: releaseImageProvenance.identity.imageDigest,
+  }),
 });
 const unavailable = async (): Promise<never> => {
   throw new Error("private_pg17_port_not_available_in_initialize_phase");

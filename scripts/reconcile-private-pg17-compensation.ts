@@ -39,7 +39,7 @@ export function parseInitialRolloutArtifact(
   const candidate = object(artifact?.rollout);
   if (!artifact || !candidate || Object.keys(artifact).length !== 1)
     throw new Error("private_pg17_reconcile_artifact_invalid");
-  if (candidate.schemaVersion !== 2)
+  if (candidate.schemaVersion !== 3)
     throw new Error("private_pg17_reconcile_schema_version_unsupported");
   if (candidate.rolloutId !== expectedRolloutId)
     throw new Error("private_pg17_reconcile_rollout_mismatch");

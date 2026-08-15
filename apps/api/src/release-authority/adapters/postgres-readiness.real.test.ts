@@ -145,7 +145,7 @@ realDescribe("release authority exact catalog readiness", () => {
     const observed = await readiness();
     expect(observed).toMatchObject({
       postgresMajor: 17,
-      schemaVersion: 12,
+      schemaVersion: 13,
       catalogVerifier: "complete_catalog_v3_acl_exact",
       defaultAclExact: true,
       finalAclExact: true,

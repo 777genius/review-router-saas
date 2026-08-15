@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import type { ReleaseAuthorityDatabaseReadiness } from "./release-authority/application/readiness";
+import { releaseControlDatabaseSetIsReady } from "./release-authority/application/readiness";
 import {
   composeReleaseControlDependencies,
   createReleaseControlApp as createReleaseControlAppBase,
@@ -11,6 +12,7 @@ import { createReleaseWitnessApp as createReleaseWitnessAppBase } from "./releas
 import {
   canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
+  createReleaseMigrationTransition,
 } from "@reviewrouter/features-release-rollout";
 
 const digest = (value: string) =>
@@ -35,10 +37,15 @@ const trustedDatabaseIdentity = {
   activationGuardRoleName: "reviewrouter_activation_receipt_guard",
   installerRoutineBodySha256: "a".repeat(64),
   readerRoutineBodySha256: "b".repeat(64),
-  targetMigrationManifestIdentity: `sha256:${"c".repeat(64)}`,
+  targetMigrationManifestIdentity:
+    "sha256:dac2d257a6b60be214b96b0a809df0ee18cc7615ffae21520802fe568debf554",
   activationNamespaceFingerprint: `sha256:${"d".repeat(64)}`,
 } as const;
 const trustedActivationCatalogPolicies = canonicalActivationCatalogPolicies;
+const trustedMigrationTransition = createReleaseMigrationTransition({
+  commitSha: "0".repeat(40),
+  releaseImageDigest: `sha256:${"0".repeat(64)}`,
+});
 
 const testReadinessObserver = async (
   prisma: PrismaClient,
@@ -129,14 +136,15 @@ const authorityReadiness = (
     | "reviewrouter_release_control"
     | "reviewrouter_provider_authority"
     | "reviewrouter_release_witness",
-) => [
+): ReleaseAuthorityDatabaseReadiness[] => [
   {
     roleName,
     authorityOwnerRoleName: trustedDatabaseIdentity.authorityOwnerRoleName,
     systemIdentifier: "1",
+    recoveryWitnessSha256: "",
     databaseIdentity: trustedDatabaseIdentity.authorityDatabaseIdentity,
     postgresMajor: 17,
-    schemaVersion: 12,
+    schemaVersion: 13,
     catalogFingerprint: "sha256:canonical-catalog",
     expectedCatalogFingerprint: "sha256:canonical-catalog",
     catalogVerifier: "complete_catalog_v3_acl_exact",
@@ -196,11 +204,15 @@ const authorityReadiness = (
         "000012_provider_mutation_resource_fence",
         "45eb81a2715cf8c254cdacc2ca4ce8c80fc6c6527c009fe9dce63c3f80a510b1",
       ],
+      [
+        "000013_phase_aware_application_manifest",
+        "c2c721cef391504da5b2053da017e83b4dd80811f410368071138f0f28352853",
+      ],
     ].map(([migrationName, checksum], index) => ({
       position: index + 1,
-      migrationName,
+      migrationName: migrationName!,
       checksumSha256: `sha256:${checksum}`,
-      byteVariant: "canonical",
+      byteVariant: "canonical" as const,
     })),
     controlRoutine: true,
     providerRoutine: true,
@@ -209,6 +221,7 @@ const authorityReadiness = (
     installerRoutineBodySha256: "",
     readerRoutineBodySha256: "",
     applicationMigrationManifestIdentity: "",
+    applicationPostCatalogDigest: "",
     activationNamespaceFingerprint: "",
     authorityRoleTopologyExact: true,
     activationGuardExact: false,
@@ -233,6 +246,7 @@ const installerReadiness = [
     roleName: "reviewrouter_activation_permit_installer",
     authorityOwnerRoleName: "",
     systemIdentifier: "2",
+    recoveryWitnessSha256: "f".repeat(64),
     databaseIdentity: trustedDatabaseIdentity.targetDatabaseIdentity,
     postgresMajor: 17,
     schemaVersion: 0,
@@ -251,6 +265,7 @@ const installerReadiness = [
     readerRoutineBodySha256: "b".repeat(64),
     applicationMigrationManifestIdentity:
       trustedDatabaseIdentity.targetMigrationManifestIdentity,
+    applicationPostCatalogDigest: "",
     activationNamespaceFingerprint:
       trustedDatabaseIdentity.activationNamespaceFingerprint,
     authorityRoleTopologyExact: false,
@@ -276,6 +291,7 @@ const readerReadiness = [
     roleName: "reviewrouter_activation_receipt_reader",
     authorityOwnerRoleName: "",
     systemIdentifier: "2",
+    recoveryWitnessSha256: "f".repeat(64),
     databaseIdentity: trustedDatabaseIdentity.targetDatabaseIdentity,
     postgresMajor: 17,
     schemaVersion: 0,
@@ -294,6 +310,7 @@ const readerReadiness = [
     readerRoutineBodySha256: "b".repeat(64),
     applicationMigrationManifestIdentity:
       trustedDatabaseIdentity.targetMigrationManifestIdentity,
+    applicationPostCatalogDigest: "",
     activationNamespaceFingerprint:
       trustedDatabaseIdentity.activationNamespaceFingerprint,
     authorityRoleTopologyExact: false,
@@ -314,6 +331,15 @@ const readerReadiness = [
     authorityTablesRevoked: false,
   },
 ];
+const postMigrationReadiness = <T extends readonly Record<string, unknown>[]>(
+  rows: T,
+) =>
+  rows.map((row) => ({
+    ...row,
+    applicationMigrationManifestIdentity:
+      trustedMigrationTransition.postManifestIdentity,
+    applicationPostCatalogDigest: trustedMigrationTransition.postCatalogDigest,
+  }));
 const witnessReadiness = authorityReadiness("reviewrouter_release_witness");
 type QueryOperation = (query: { text?: string }) => unknown;
 const readinessQuery = (
@@ -446,17 +472,17 @@ describe("release authority process composition", () => {
     expect(
       (await app.inject({ method: "GET", url: "/health" })).statusCode,
     ).toBe(503);
-    expect(observer).toHaveBeenCalledTimes(4);
+    expect(observer).toHaveBeenCalledTimes(2);
     expect(
       (await app.inject({ method: "GET", url: "/health" })).statusCode,
     ).toBe(503);
-    expect(observer).toHaveBeenCalledTimes(4);
+    expect(observer).toHaveBeenCalledTimes(2);
     releaseInitial();
     for (let index = 0; index < 10; index += 1) await Promise.resolve();
     expect(
       (await app.inject({ method: "GET", url: "/health" })).statusCode,
     ).toBe(200);
-    expect(observer).toHaveBeenCalledTimes(4);
+    expect(observer).toHaveBeenCalledTimes(2);
     await app.close();
   });
 
@@ -509,6 +535,20 @@ describe("release authority process composition", () => {
         maxWaitMilliseconds: 123,
         transactionTimeoutMilliseconds: 456,
       },
+      {
+        execute: async (sequence) =>
+          sequence(async (target, mutation) =>
+            mutation({
+              systemIdentifier: target === "installer" ? "2" : "1",
+              recoveryWitnessSha256:
+                target === "installer" ? "f".repeat(64) : "",
+            }),
+          ),
+      },
+      createReleaseMigrationTransition({
+        commitSha: "a".repeat(40),
+        releaseImageDigest: `sha256:${"e".repeat(64)}`,
+      }),
     );
     await expect(
       dependencies.authority.claim({
@@ -518,6 +558,11 @@ describe("release authority process composition", () => {
         runAttempt: 1,
         sourceSystemIdentifier: "1",
         targetSystemIdentifier: "2",
+        targetRecoveryWitnessSha256: "f".repeat(64),
+        migrationTransition: createReleaseMigrationTransition({
+          commitSha: "a".repeat(40),
+          releaseImageDigest: `sha256:${"e".repeat(64)}`,
+        }),
       }),
     ).resolves.toBe("claimed");
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
@@ -553,6 +598,8 @@ describe("release authority process composition", () => {
       expectedCommitSha: "c".repeat(40),
       postgresMajor: 17 as const,
       migrationChecksum: `sha256:${"7".repeat(64)}`,
+      transitionSha256: `sha256:${"8".repeat(64)}`,
+      postManifestIdentity: `sha256:${"7".repeat(64)}`,
       epoch: 2,
       nonce: "a".repeat(32),
       sourceSystemIdentifier: "100",
@@ -591,6 +638,8 @@ describe("release authority process composition", () => {
         targetDeployIds: ["deploy-1"],
         postgresMajor: 17,
         migrationChecksum: authorization.migrationChecksum,
+        transitionSha256: authorization.transitionSha256,
+        postManifestIdentity: authorization.postManifestIdentity,
       }),
     ).resolves.toEqual(authorization);
     expect(authorityQuery).toHaveBeenCalledOnce();
@@ -692,7 +741,7 @@ describe("release authority process composition", () => {
     );
     const installerOperation = vi.fn();
     const installerQuery = readinessQuery(
-      installerReadiness,
+      postMigrationReadiness(installerReadiness),
       installerOperation,
     );
     const readerOperation = vi.fn().mockResolvedValue([
@@ -700,7 +749,10 @@ describe("release authority process composition", () => {
         value: targetReceipt,
       },
     ]);
-    const readerQuery = readinessQuery(readerReadiness, readerOperation);
+    const readerQuery = readinessQuery(
+      postMigrationReadiness(readerReadiness),
+      readerOperation,
+    );
     const app = await createReleaseControlApp({
       controlPrisma: { $queryRaw: authorityQuery } as never,
       providerAuthorityPrisma: {
@@ -755,7 +807,9 @@ describe("release authority process composition", () => {
       rolloutId: "rollout-retry",
       expectedCommitSha: "c".repeat(40),
       postgresMajor: 17 as const,
-      migrationChecksum: `sha256:${"7".repeat(64)}`,
+      migrationChecksum: trustedMigrationTransition.postManifestIdentity,
+      transitionSha256: trustedMigrationTransition.transitionSha256,
+      postManifestIdentity: trustedMigrationTransition.postManifestIdentity,
       epoch: 4,
       nonce: "d".repeat(32),
       sourceSystemIdentifier: "100",
@@ -776,7 +830,7 @@ describe("release authority process composition", () => {
       authorityOperation,
     );
     const installerQuery = readinessQuery(
-      installerReadiness,
+      postMigrationReadiness(installerReadiness),
       installerOperation,
     );
     const app = await createReleaseControlApp({
@@ -788,7 +842,7 @@ describe("release authority process composition", () => {
       } as never,
       permitInstallerPrisma: { $queryRaw: installerQuery } as never,
       targetReceiptReaderPrisma: {
-        $queryRaw: readinessQuery(readerReadiness),
+        $queryRaw: readinessQuery(postMigrationReadiness(readerReadiness)),
       } as never,
       credentials: {
         controlTokenSha256: digest("control"),
@@ -807,6 +861,8 @@ describe("release authority process composition", () => {
       targetDeployIds: authorization.targetDeployIds,
       postgresMajor: authorization.postgresMajor,
       migrationChecksum: authorization.migrationChecksum,
+      transitionSha256: authorization.transitionSha256,
+      postManifestIdentity: authorization.postManifestIdentity,
     };
     const authorize = () =>
       app.inject({
@@ -941,10 +997,10 @@ describe("release authority process composition", () => {
       controlPrisma: { $queryRaw: controlQuery } as never,
       providerAuthorityPrisma: { $queryRaw: providerQuery } as never,
       permitInstallerPrisma: {
-        $queryRaw: readinessQuery(installerReadiness),
+        $queryRaw: readinessQuery(postMigrationReadiness(installerReadiness)),
       } as never,
       targetReceiptReaderPrisma: {
-        $queryRaw: readinessQuery(readerReadiness),
+        $queryRaw: readinessQuery(postMigrationReadiness(readerReadiness)),
       } as never,
       credentials: {
         controlTokenSha256: digest("control"),
@@ -1014,10 +1070,10 @@ describe("release authority process composition", () => {
         ),
       } as never,
       permitInstallerPrisma: {
-        $queryRaw: readinessQuery(installerReadiness),
+        $queryRaw: readinessQuery(postMigrationReadiness(installerReadiness)),
       } as never,
       targetReceiptReaderPrisma: {
-        $queryRaw: readinessQuery(readerReadiness),
+        $queryRaw: readinessQuery(postMigrationReadiness(readerReadiness)),
       } as never,
       credentials: {
         controlTokenSha256: digest("control"),
@@ -1074,19 +1130,39 @@ describe("release authority process composition", () => {
         },
       ]),
     );
-    const control = { $queryRaw: controlOperation } as never;
-    const provider = { $queryRaw: vi.fn() } as never;
-    const installer = { $queryRaw: vi.fn() } as never;
-    const reader = { $queryRaw: vi.fn() } as never;
+    const atomicQuery = <T extends ReturnType<typeof vi.fn>>(query: T): T =>
+      Object.assign(query, { atomicTest: true });
+    const control = {
+      $queryRaw: atomicQuery(controlOperation),
+    } as unknown as PrismaClient;
+    const provider = {
+      $queryRaw: atomicQuery(vi.fn()),
+    } as unknown as PrismaClient;
+    const installer = {
+      $queryRaw: atomicQuery(vi.fn()),
+    } as unknown as PrismaClient;
+    const reader = {
+      $queryRaw: atomicQuery(vi.fn()),
+    } as unknown as PrismaClient;
+    const observedConnections: string[] = [];
     const observer = vi.fn(async (prisma: PrismaClient) => {
-      if (prisma === control)
+      const query = prisma.$queryRaw;
+      if (prisma === control || query === control.$queryRaw) {
+        observedConnections.push("control");
         return {
           ...authorityReadiness("reviewrouter_release_control")[0]!,
           catalogExact: !catalogDrifted,
         };
-      if (prisma === provider)
+      }
+      if (prisma === provider || query === provider.$queryRaw) {
+        observedConnections.push("provider");
         return authorityReadiness("reviewrouter_provider_authority")[0]!;
-      if (prisma === installer) return installerReadiness[0]!;
+      }
+      if (prisma === installer || query === installer.$queryRaw) {
+        observedConnections.push("installer");
+        return installerReadiness[0]!;
+      }
+      observedConnections.push("reader");
       return readerReadiness[0]!;
     });
     const app = await createReleaseControlApp({
@@ -1099,7 +1175,19 @@ describe("release authority process composition", () => {
         providerAuthorityTokenSha256: digest("provider"),
       },
       readinessObserver: observer as never,
+      atomicReadinessObserver: observer as never,
     });
+    expect(
+      releaseControlDatabaseSetIsReady(
+        {
+          control: authorityReadiness("reviewrouter_release_control")[0]!,
+          provider: authorityReadiness("reviewrouter_provider_authority")[0]!,
+          installer: installerReadiness[0]!,
+          reader: readerReadiness[0]!,
+        },
+        trustedDatabaseIdentity,
+      ),
+    ).toBe(true);
     const claim = () =>
       app.inject({
         method: "POST",
@@ -1107,19 +1195,25 @@ describe("release authority process composition", () => {
         headers: { authorization: "Bearer control" },
         payload: {
           rolloutId: "rollout-fresh-gate",
-          expectedCommitSha: "a".repeat(40),
+          expectedCommitSha: "0".repeat(40),
           runId: "1",
           runAttempt: 1,
           sourceSystemIdentifier: "100",
-          targetSystemIdentifier: "200",
+          targetSystemIdentifier: "2",
+          targetRecoveryWitnessSha256: "f".repeat(64),
+          migrationTransition: trustedMigrationTransition,
         },
       });
-    expect((await claim()).statusCode).toBe(200);
-    expect(observer).toHaveBeenCalledTimes(4);
+    const firstClaim = await claim();
+    expect(
+      firstClaim.statusCode,
+      `${firstClaim.body}:${observedConnections.join(",")}`,
+    ).toBe(200);
+    expect(observer).toHaveBeenCalledTimes(12);
     catalogDrifted = true;
 
-    expect((await claim()).statusCode).toBe(200);
-    expect(observer).toHaveBeenCalledTimes(4);
+    expect((await claim()).statusCode).toBe(503);
+    expect(observer).toHaveBeenCalledTimes(14);
     const protectedMutation = await app.inject({
       method: "POST",
       url: "/v1/provider-mutations/issue",
@@ -1134,8 +1228,8 @@ describe("release authority process composition", () => {
       },
     });
     expect(protectedMutation.statusCode).toBe(503);
-    expect(observer).toHaveBeenCalledTimes(8);
-    expect(controlOperation).toHaveBeenCalledTimes(2);
+    expect(observer).toHaveBeenCalledTimes(16);
+    expect(controlOperation).toHaveBeenCalledTimes(3);
     await app.close();
   });
 
@@ -1159,10 +1253,10 @@ describe("release authority process composition", () => {
       } as never,
       providerAuthorityPrisma: { $queryRaw: providerQuery } as never,
       permitInstallerPrisma: {
-        $queryRaw: readinessQuery(installerReadiness),
+        $queryRaw: readinessQuery(postMigrationReadiness(installerReadiness)),
       } as never,
       targetReceiptReaderPrisma: {
-        $queryRaw: readinessQuery(readerReadiness),
+        $queryRaw: readinessQuery(postMigrationReadiness(readerReadiness)),
       } as never,
       credentials: {
         controlTokenSha256: digest("control"),
@@ -1359,7 +1453,12 @@ describe("release authority process composition", () => {
         runId: "1",
         runAttempt: 1,
         sourceSystemIdentifier: "100",
-        targetSystemIdentifier: "200",
+        targetSystemIdentifier: "2",
+        targetRecoveryWitnessSha256: "f".repeat(64),
+        migrationTransition: createReleaseMigrationTransition({
+          commitSha: "a".repeat(40),
+          releaseImageDigest: `sha256:${"0".repeat(64)}`,
+        }),
       },
     });
     expect(response.statusCode).toBe(503);
@@ -1403,7 +1502,12 @@ describe("release authority process composition", () => {
         runId: "1",
         runAttempt: 1,
         sourceSystemIdentifier: "100",
-        targetSystemIdentifier: "200",
+        targetSystemIdentifier: "2",
+        targetRecoveryWitnessSha256: "f".repeat(64),
+        migrationTransition: createReleaseMigrationTransition({
+          commitSha: "a".repeat(40),
+          releaseImageDigest: `sha256:${"0".repeat(64)}`,
+        }),
       },
     });
     expect(response.statusCode).toBe(503);

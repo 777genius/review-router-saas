@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertPromotionAllowed,
+  beginReleaseMigrationAttempt,
   beginCompensation,
   completeCompensation,
   createReleaseRollout,
@@ -9,8 +10,13 @@ import {
   transitionFailure,
   transitionFromObservation,
 } from "./release-rollout";
+import { createReleaseMigrationTransition } from "./release-migration-transition";
 
 const digest = `sha256:${"a".repeat(64)}`;
+const migrationTransitionFixture = createReleaseMigrationTransition({
+  commitSha: "d".repeat(40),
+  releaseImageDigest: `sha256:${"e".repeat(64)}`,
+});
 const servicePostcondition = (suspended: boolean) => ({
   serviceId: "srv-target",
   ownerId: "tea-owner",
@@ -37,6 +43,7 @@ const create = () =>
   createReleaseRollout({
     rolloutId: "rollout-2026-08-12",
     expectedCommitSha: "d".repeat(40),
+    migrationTransition: migrationTransitionFixture,
     execution: {
       organization: "reviewrouter-control",
       controlRepository: "reviewrouter-control/releases",
@@ -288,8 +295,8 @@ const observe = (step: (typeof steps)[number], index: number) => {
           version: 2,
           status: "succeeded",
           commit: "d".repeat(40),
-          imageDigest: digest,
-          migrationChecksum: digest,
+          imageDigest: `sha256:${"e".repeat(64)}`,
+          migrationChecksum: migrationTransitionFixture.postManifestIdentity,
           roles: [1, 2, 3, 4],
         },
       };
@@ -323,8 +330,20 @@ const observe = (step: (typeof steps)[number], index: number) => {
           preflightStatus: "passed",
           aclGateState: "closed",
           commit: "d".repeat(40),
-          imageDigest: digest,
-          migrationChecksum: digest,
+          imageDigest: `sha256:${"e".repeat(64)}`,
+          migrationChecksum: migrationTransitionFixture.postManifestIdentity,
+          transitionSha256: migrationTransitionFixture.transitionSha256,
+          migrationArtifactDigest:
+            migrationTransitionFixture.migrationArtifactDigest,
+          migrationBundleSha256:
+            migrationTransitionFixture.migrationBundleSha256,
+          preManifestIdentity: migrationTransitionFixture.preManifestIdentity,
+          postManifestIdentity: migrationTransitionFixture.postManifestIdentity,
+          postCatalogDigest: migrationTransitionFixture.postCatalogDigest,
+          permitEpoch: 1,
+          permitNonce: "a".repeat(32),
+          targetSystemIdentifier: "200",
+          targetRecoveryWitnessSha256: "c".repeat(64),
           roles: [1, 2, 3, 4],
         },
       };
@@ -369,7 +388,9 @@ const observe = (step: (typeof steps)[number], index: number) => {
           observationSha256: digest,
           transactionId: "42",
           postgresMajor: 17,
-          migrationChecksum: digest,
+          migrationChecksum: migrationTransitionFixture.postManifestIdentity,
+          transitionSha256: migrationTransitionFixture.transitionSha256,
+          postManifestIdentity: migrationTransitionFixture.postManifestIdentity,
           permitEpoch: 1,
           permitNonce: "a".repeat(32),
           targetDeployIds: ["dep-target"],
@@ -444,6 +465,21 @@ describe("release rollout domain policy", () => {
   it("hash-chains observation-derived receipts through activation, resume, cleanup, and verification", () => {
     let rollout = create();
     steps.forEach((step, index) => {
+      if (step === RolloutStep.RunReleaseMigration)
+        rollout = beginReleaseMigrationAttempt(rollout, {
+          schemaVersion: 1,
+          rolloutId: rollout.rolloutId,
+          runId: rollout.execution.runId,
+          runAttempt: 1,
+          targetSystemIdentifier: rollout.target.systemIdentifier,
+          targetRecoveryWitnessSha256: rollout.target.recoveryWitnessSha256,
+          transitionSha256: rollout.migrationTransition.transitionSha256,
+          expectedPreviousReceiptSha256:
+            rollout.receipts.at(-1)?.receiptSha256 ??
+            `sha256:${"0".repeat(64)}`,
+          epoch: 1,
+          nonce: "a".repeat(32),
+        });
       rollout = transitionFromObservation(rollout, observe(step, index));
     });
     expect(rollout.phase).toBe(RolloutPhase.RolloutVerified);

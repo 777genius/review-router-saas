@@ -15,6 +15,7 @@ const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
   roleName: "reviewrouter_release_control",
   authorityOwnerRoleName: "reviewrouter_release_authority_owner",
   systemIdentifier: "1",
+  recoveryWitnessSha256: "",
   databaseIdentity: {
     serverIdentity: "1",
     databaseIdentity: "16384",
@@ -47,6 +48,7 @@ const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
   installerRoutineBodySha256: "",
   readerRoutineBodySha256: "",
   applicationMigrationManifestIdentity: "",
+  applicationPostCatalogDigest: "",
   activationNamespaceFingerprint: "",
   authorityRoleTopologyExact: true,
   activationGuardExact: false,
@@ -155,6 +157,54 @@ describe("release authority exact readiness contract", () => {
         trusted,
       ),
     ).toBe(true);
+    const postMigrationActivation = {
+      ...activation,
+      applicationMigrationManifestIdentity: `sha256:${"e".repeat(64)}`,
+    };
+    expect(
+      releaseControlMutationDatabaseIsReady(postMigrationActivation, trusted),
+    ).toBe(false);
+    expect(
+      releaseControlMutationDatabaseIsReady(postMigrationActivation, {
+        ...trusted,
+        allowedTargetMigrationManifestIdentities: [
+          trusted.targetMigrationManifestIdentity,
+          postMigrationActivation.applicationMigrationManifestIdentity,
+        ],
+      }),
+    ).toBe(true);
+    const exactPostCatalog = `sha256:${"f".repeat(64)}`;
+    expect(
+      releaseControlMutationDatabaseIsReady(
+        {
+          ...postMigrationActivation,
+          applicationPostCatalogDigest: exactPostCatalog,
+        },
+        {
+          ...trusted,
+          allowedTargetMigrationManifestIdentities: [
+            trusted.targetMigrationManifestIdentity,
+            postMigrationActivation.applicationMigrationManifestIdentity,
+          ],
+          targetPostCatalogDigest: exactPostCatalog,
+        },
+      ),
+    ).toBe(true);
+    expect(
+      releaseControlMutationDatabaseIsReady(
+        {
+          ...postMigrationActivation,
+          applicationPostCatalogDigest: `sha256:${"0".repeat(64)}`,
+        },
+        {
+          ...trusted,
+          allowedTargetMigrationManifestIdentities: [
+            postMigrationActivation.applicationMigrationManifestIdentity,
+          ],
+          targetPostCatalogDigest: exactPostCatalog,
+        },
+      ),
+    ).toBe(false);
     expect(
       releaseControlDatabaseSetIsReady(
         {

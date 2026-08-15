@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
 import { isNormalizedServicePostcondition } from "./service-transition";
+import {
+  assertReleaseMigrationTransitionIntegrity,
+  TargetManifestPhase,
+  type ReleaseMigrationPermit,
+  type ReleaseMigrationTransitionV1,
+} from "./release-migration-transition";
 
 /** Authority-owned evidence captured before dispatching provider creation. */
 export type ProviderCreationBoundary = Readonly<{
@@ -286,6 +292,8 @@ export interface ActivationReceipt extends StepReceipt {
   readonly firstWriteBoundary: true;
   readonly postgresMajor: 17;
   readonly migrationChecksum: string;
+  readonly transitionSha256: string;
+  readonly postManifestIdentity: string;
   readonly permitEpoch: number;
   readonly permitNonce: string;
   readonly targetDeployIds: readonly string[];
@@ -298,6 +306,14 @@ export interface ActivationReceipt extends StepReceipt {
 export interface ReleaseMigrationReceipt extends StepReceipt {
   readonly step: typeof RolloutStep.RunReleaseMigration;
   readonly migrationChecksum: string;
+  readonly transitionSha256: string;
+  readonly migrationArtifactDigest: string;
+  readonly migrationBundleSha256: string;
+  readonly preManifestIdentity: string;
+  readonly postManifestIdentity: string;
+  readonly postCatalogDigest: string;
+  readonly permitEpoch: number;
+  readonly permitNonce: string;
 }
 
 export interface ActivationAuthorization {
@@ -305,6 +321,8 @@ export interface ActivationAuthorization {
   readonly expectedCommitSha: string;
   readonly postgresMajor: 17;
   readonly migrationChecksum: string;
+  readonly transitionSha256: string;
+  readonly postManifestIdentity: string;
   readonly epoch: number;
   readonly nonce: string;
   readonly sourceSystemIdentifier: string;
@@ -329,13 +347,16 @@ export interface TargetSwitchFence {
 }
 
 export interface ReleaseRollout {
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 3;
   readonly rolloutId: string;
   readonly expectedCommitSha: string;
   readonly execution: ReleaseExecutionIdentity;
   readonly phase: RolloutPhase;
   readonly source: DatabaseGenerationIdentity;
   readonly target: DatabaseGenerationIdentity;
+  readonly migrationTransition: ReleaseMigrationTransitionV1;
+  readonly targetManifestPhase: TargetManifestPhase;
+  readonly migrationPermit?: ReleaseMigrationPermit;
   readonly receipts: readonly StepReceipt[];
   readonly activated: boolean;
   readonly activationUncertain: boolean;
@@ -429,6 +450,8 @@ export function createReleaseRollout(
     | "activated"
     | "activationUncertain"
     | "sourcePermanentlyIneligible"
+    | "targetManifestPhase"
+    | "migrationPermit"
   >,
 ): ReleaseRollout {
   assertIdentifier(input.rolloutId, "rollout_id");
@@ -440,14 +463,18 @@ export function createReleaseRollout(
     input.source.systemIdentifier === input.target.systemIdentifier
   )
     throw new Error("database_generations_not_distinct");
+  assertReleaseMigrationTransitionIntegrity(input.migrationTransition);
+  if (input.migrationTransition.commitSha !== input.expectedCommitSha)
+    throw new Error("release_migration_transition_commit_mismatch");
   return Object.freeze({
     ...input,
-    schemaVersion: 2,
+    schemaVersion: 3,
     phase: RolloutPhase.Planned,
     receipts: Object.freeze([]),
     activated: false,
     activationUncertain: false,
     sourcePermanentlyIneligible: false,
+    targetManifestPhase: TargetManifestPhase.PreMigration,
   });
 }
 
@@ -729,6 +756,7 @@ function assertStepFacts(
         facts.version !== 2 ||
         facts.status !== "succeeded" ||
         facts.commit !== rollout.expectedCommitSha ||
+        facts.imageDigest !== rollout.migrationTransition.releaseImageDigest ||
         !Array.isArray(facts.roles) ||
         facts.roles.length < 4
       )
@@ -762,13 +790,31 @@ function assertStepFacts(
     }
     case RolloutStep.RunReleaseMigration:
       if (
+        rollout.targetManifestPhase !== TargetManifestPhase.Migrating ||
+        !rollout.migrationPermit ||
         facts.version !== 3 ||
         facts.status !== "succeeded" ||
         facts.migrationStatus !== "succeeded" ||
         facts.preflightStatus !== "passed" ||
         facts.aclGateState !== "closed" ||
         facts.commit !== rollout.expectedCommitSha ||
-        !digestPattern.test(String(facts.migrationChecksum)) ||
+        facts.transitionSha256 !==
+          rollout.migrationTransition.transitionSha256 ||
+        facts.migrationArtifactDigest !==
+          rollout.migrationTransition.migrationArtifactDigest ||
+        facts.migrationBundleSha256 !==
+          rollout.migrationTransition.migrationBundleSha256 ||
+        facts.preManifestIdentity !==
+          rollout.migrationTransition.preManifestIdentity ||
+        facts.postManifestIdentity !==
+          rollout.migrationTransition.postManifestIdentity ||
+        facts.postCatalogDigest !==
+          rollout.migrationTransition.postCatalogDigest ||
+        facts.permitEpoch !== rollout.migrationPermit.epoch ||
+        facts.permitNonce !== rollout.migrationPermit.nonce ||
+        facts.targetSystemIdentifier !== rollout.target.systemIdentifier ||
+        facts.targetRecoveryWitnessSha256 !==
+          rollout.target.recoveryWitnessSha256 ||
         !Array.isArray(facts.roles) ||
         facts.roles.length < 4
       )
@@ -1049,12 +1095,19 @@ export function transitionFromObservation(
   };
   let receipt: StepReceipt;
   if (observation.step === RolloutStep.RunReleaseMigration) {
+    const facts = observation.facts as Record<string, unknown>;
     const migrationBase = {
       ...base,
       step: RolloutStep.RunReleaseMigration,
-      migrationChecksum: String(
-        (observation.facts as Record<string, unknown>).migrationChecksum,
-      ),
+      migrationChecksum: rollout.migrationTransition.postManifestIdentity,
+      transitionSha256: String(facts.transitionSha256),
+      migrationArtifactDigest: String(facts.migrationArtifactDigest),
+      migrationBundleSha256: String(facts.migrationBundleSha256),
+      preManifestIdentity: String(facts.preManifestIdentity),
+      postManifestIdentity: String(facts.postManifestIdentity),
+      postCatalogDigest: String(facts.postCatalogDigest),
+      permitEpoch: Number(facts.permitEpoch),
+      permitNonce: String(facts.permitNonce),
     };
     receipt = {
       ...migrationBase,
@@ -1072,6 +1125,8 @@ export function transitionFromObservation(
       !/^[0-9]+$/u.test(String(facts.transactionId)) ||
       facts.postgresMajor !== 17 ||
       !digestPattern.test(String(facts.migrationChecksum)) ||
+      !digestPattern.test(String(facts.transitionSha256)) ||
+      !digestPattern.test(String(facts.postManifestIdentity)) ||
       !Number.isSafeInteger(facts.permitEpoch) ||
       Number(facts.permitEpoch) < 1 ||
       !/^[a-f0-9]{32}$/u.test(String(facts.permitNonce)) ||
@@ -1093,6 +1148,8 @@ export function transitionFromObservation(
       firstWriteBoundary: true as const,
       postgresMajor: 17 as const,
       migrationChecksum: String(facts.migrationChecksum),
+      transitionSha256: String(facts.transitionSha256),
+      postManifestIdentity: String(facts.postManifestIdentity),
       permitEpoch: Number(facts.permitEpoch),
       permitNonce: String(facts.permitNonce),
       targetDeployIds: Object.freeze(
@@ -1122,7 +1179,91 @@ export function transitionFromObservation(
     activated: rollout.activated || activation,
     sourcePermanentlyIneligible:
       rollout.sourcePermanentlyIneligible || activation,
+    targetManifestPhase:
+      observation.step === RolloutStep.RunReleaseMigration
+        ? TargetManifestPhase.PostMigration
+        : rollout.targetManifestPhase,
     ...(activation ? { activationReceipt: receipt as ActivationReceipt } : {}),
+  });
+}
+
+export function beginReleaseMigrationAttempt(
+  rollout: ReleaseRollout,
+  permit: ReleaseMigrationPermit,
+): ReleaseRollout {
+  const previousReceiptSha256 =
+    rollout.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`;
+  if (
+    rollout.phase !== RolloutPhase.CutoverRunnerProvisioned ||
+    (rollout.targetManifestPhase !== TargetManifestPhase.PreMigration &&
+      rollout.targetManifestPhase !== TargetManifestPhase.Migrating) ||
+    permit.schemaVersion !== 1 ||
+    permit.rolloutId !== rollout.rolloutId ||
+    permit.runId !== rollout.execution.runId ||
+    permit.runAttempt !== rollout.execution.runAttempt ||
+    permit.targetSystemIdentifier !== rollout.target.systemIdentifier ||
+    permit.targetRecoveryWitnessSha256 !==
+      rollout.target.recoveryWitnessSha256 ||
+    permit.transitionSha256 !== rollout.migrationTransition.transitionSha256 ||
+    permit.expectedPreviousReceiptSha256 !== previousReceiptSha256 ||
+    !Number.isSafeInteger(permit.epoch) ||
+    permit.epoch < 1 ||
+    !/^[a-f0-9]{32}$/u.test(permit.nonce)
+  )
+    throw new Error("release_migration_permit_invalid");
+  if (
+    rollout.migrationPermit &&
+    canonicalJson(rollout.migrationPermit) !== canonicalJson(permit)
+  )
+    throw new Error("release_migration_permit_replay_conflict");
+  return Object.freeze({
+    ...rollout,
+    targetManifestPhase: TargetManifestPhase.Migrating,
+    migrationPermit: Object.freeze({ ...permit }),
+  });
+}
+
+export function recoverCompletedReleaseMigration(
+  rollout: ReleaseRollout,
+  permit: ReleaseMigrationPermit,
+  receipt: ReleaseMigrationReceipt,
+): ReleaseRollout {
+  const migrating = beginReleaseMigrationAttempt(rollout, permit);
+  const previousReceiptSha256 =
+    rollout.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`;
+  const { receiptSha256, ...unsigned } = receipt;
+  if (
+    receipt.step !== RolloutStep.RunReleaseMigration ||
+    receipt.rolloutId !== rollout.rolloutId ||
+    receipt.expectedCommitSha !== rollout.expectedCommitSha ||
+    receipt.runId !== rollout.execution.runId ||
+    receipt.runAttempt !== rollout.execution.runAttempt ||
+    receipt.sourceSystemIdentifier !== rollout.source.systemIdentifier ||
+    receipt.targetSystemIdentifier !== rollout.target.systemIdentifier ||
+    receipt.previousReceiptSha256 !== previousReceiptSha256 ||
+    receipt.transitionSha256 !== rollout.migrationTransition.transitionSha256 ||
+    receipt.migrationChecksum !==
+      rollout.migrationTransition.postManifestIdentity ||
+    receipt.migrationArtifactDigest !==
+      rollout.migrationTransition.migrationArtifactDigest ||
+    receipt.migrationBundleSha256 !==
+      rollout.migrationTransition.migrationBundleSha256 ||
+    receipt.preManifestIdentity !==
+      rollout.migrationTransition.preManifestIdentity ||
+    receipt.postManifestIdentity !==
+      rollout.migrationTransition.postManifestIdentity ||
+    receipt.postCatalogDigest !==
+      rollout.migrationTransition.postCatalogDigest ||
+    receipt.permitEpoch !== permit.epoch ||
+    receipt.permitNonce !== permit.nonce ||
+    receiptSha256 !== `sha256:${sha256Canonical(unsigned)}`
+  )
+    throw new Error("release_migration_receipt_recovery_invalid");
+  return Object.freeze({
+    ...migrating,
+    phase: RolloutPhase.MigrationApplied,
+    targetManifestPhase: TargetManifestPhase.PostMigration,
+    receipts: Object.freeze([...rollout.receipts, Object.freeze(receipt)]),
   });
 }
 
@@ -1137,7 +1278,14 @@ export function transitionFailure(
       activationUncertain: true,
       sourcePermanentlyIneligible: true,
     });
-  return Object.freeze({ ...rollout, phase: RolloutPhase.PreActivationFailed });
+  return Object.freeze({
+    ...rollout,
+    phase: RolloutPhase.PreActivationFailed,
+    targetManifestPhase:
+      rollout.targetManifestPhase === TargetManifestPhase.Migrating
+        ? TargetManifestPhase.Quarantined
+        : rollout.targetManifestPhase,
+  });
 }
 
 export function beginCompensation(rollout: ReleaseRollout): ReleaseRollout {
@@ -1241,7 +1389,36 @@ export interface AuthoritativeGenerationLedger {
     runAttempt: number;
     sourceSystemIdentifier: string;
     targetSystemIdentifier: string;
+    targetRecoveryWitnessSha256: string;
+    migrationTransition: ReleaseMigrationTransitionV1;
   }): Promise<"claimed" | "duplicate">;
+  beginReleaseMigration?(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    targetRecoveryWitnessSha256: string;
+    transitionSha256: string;
+    expectedPreviousReceiptSha256: string;
+  }): Promise<ReleaseMigrationPermit>;
+  completeReleaseMigration?(input: {
+    permit: ReleaseMigrationPermit;
+    receipt: ReleaseMigrationReceipt;
+  }): Promise<ReleaseMigrationReceipt>;
+  failReleaseMigration?(input: {
+    permit: ReleaseMigrationPermit;
+    reasonSha256: string;
+  }): Promise<void>;
+  loadReleaseMigrationCheckpoint?(input: {
+    rolloutId: string;
+    targetSystemIdentifier: string;
+  }): Promise<{
+    targetManifestPhase: TargetManifestPhase;
+    permit: ReleaseMigrationPermit | null;
+    receipt: ReleaseMigrationReceipt | null;
+  }>;
   compareAndSet(input: {
     rolloutId: string;
     expectedCommitSha: string;
@@ -1286,6 +1463,8 @@ export interface AuthoritativeGenerationLedger {
     targetDeployIds: readonly string[];
     postgresMajor: 17;
     migrationChecksum: string;
+    transitionSha256: string;
+    postManifestIdentity: string;
   }): Promise<ActivationAuthorization>;
   finalizeActivation(input: {
     authorization: ActivationAuthorization;

@@ -8,6 +8,7 @@ import {
 } from "../application/readiness.js";
 import type { RuntimeDatabaseIdentity } from "../domain/database-identity.js";
 import type { ReleaseAuthorityMutationTarget } from "../application/services.js";
+import type { ReleaseAuthorityFencedAttestation } from "../application/services.js";
 import { observeReleaseAuthorityDatabaseReadinessOnConnection } from "./postgres-readiness.js";
 
 export type SameConnectionIdentityExpectation = Readonly<{
@@ -159,7 +160,7 @@ export async function executeAtomicReleaseControlMutation<T>(
   clients: AtomicReleaseControlConnections,
   target: ReleaseAuthorityMutationTarget,
   trusted: TrustedReleaseControlDatabaseIdentity,
-  mutation: () => Promise<T> | T,
+  mutation: (attestation: ReleaseAuthorityFencedAttestation) => Promise<T> | T,
   timing: AtomicMutationTiming,
   unavailableError: () => Error,
   observe: (
@@ -213,7 +214,11 @@ export async function executeAtomicReleaseControlMutation<T>(
           new Map([
             [selected.prisma, { connection, expected: selected.expected }],
           ]),
-          mutation,
+          () =>
+            mutation({
+              systemIdentifier: readiness.systemIdentifier,
+              recoveryWitnessSha256: readiness.recoveryWitnessSha256,
+            }),
         );
       },
       {

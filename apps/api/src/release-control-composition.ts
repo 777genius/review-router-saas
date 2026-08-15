@@ -31,6 +31,7 @@ import {
 } from "./release-authority/application/attestation-lease.js";
 import {
   releaseControlDatabaseSetIsReady,
+  releaseControlMutationDatabaseIsReady,
   type TrustedReleaseControlDatabaseIdentity,
 } from "./release-authority/application/readiness.js";
 import {
@@ -46,17 +47,19 @@ import {
   executeSameConnectionFenced,
   type SameConnectionTransactionTiming,
 } from "./release-authority/adapters/same-connection-fence.js";
-import type { TrustedActivationCatalogPolicy } from "./release-authority/domain/activation-catalog-policy.js";
 import {
   activationCatalogPolicyDigestsEqual,
   canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
   canonicalJson,
+  createReleaseMigrationTransition,
+  type ReleaseMigrationTransitionV1,
+  type PinnedActivationCatalogPolicy,
 } from "@reviewrouter/features-release-rollout";
 
 export type TrustedActivationCatalogPolicies = Readonly<{
-  preactivation: TrustedActivationCatalogPolicy;
-  activated: TrustedActivationCatalogPolicy;
+  preactivation: PinnedActivationCatalogPolicy;
+  activated: PinnedActivationCatalogPolicy;
 }>;
 
 export type ReleaseControlCredentials = Readonly<{
@@ -75,6 +78,7 @@ export function composeReleaseControlDependencies(
   targetReceiptReaderPrisma?: PrismaClient,
   sameConnectionTiming?: SameConnectionTransactionTiming,
   highRiskMutationGate?: ReleaseAuthorityHighRiskMutationGate,
+  trustedMigrationTransition?: ReleaseMigrationTransitionV1,
 ): ReleaseControlRouteDependencies {
   if (
     !credentialSha256.test(credentials.controlTokenSha256) ||
@@ -185,6 +189,7 @@ export function composeReleaseControlDependencies(
       permitInstaller,
       targetReceiptReader,
       highRiskMutationGate,
+      trustedMigrationTransition,
     ),
     providerAuthority: new ProviderAuthorityDecisionService(
       providerAuthorityAdapter,
@@ -268,7 +273,10 @@ export async function createReleaseControlApp(input: {
   };
   const readinessObserver =
     input.readinessObserver ?? observeReleaseAuthorityDatabaseReadiness;
-  const observeMutationAuthority = async (signal: AbortSignal) => {
+  const observeMutationAuthority = async (
+    attestationSubject: import("./release-authority/domain/attestation-subject.js").ReleaseAuthorityAttestationSubject,
+    signal: AbortSignal,
+  ) => {
     const observationOptions = {
       signal,
       poolWaitMilliseconds: readinessPolicyOptions.poolWaitMilliseconds,
@@ -278,6 +286,25 @@ export async function createReleaseControlApp(input: {
       transactionTimeoutMilliseconds:
         readinessPolicyOptions.transactionTimeoutMilliseconds,
     };
+    if (attestationSubject.targetManifestIdentity === undefined) {
+      const [control, provider] = await Promise.all([
+        readinessObserver(input.controlPrisma, observationOptions),
+        readinessObserver(input.providerAuthorityPrisma, observationOptions),
+      ]);
+      if (
+        !input.trustedDatabaseIdentity ||
+        !releaseControlMutationDatabaseIsReady(
+          control,
+          input.trustedDatabaseIdentity,
+        ) ||
+        !releaseControlMutationDatabaseIsReady(
+          provider,
+          input.trustedDatabaseIdentity,
+        )
+      )
+        throw new DefinitiveAttestationMismatchError();
+      return;
+    }
     const [control, provider, installer, reader] = await Promise.all([
       readinessObserver(input.controlPrisma, observationOptions),
       readinessObserver(input.providerAuthorityPrisma, observationOptions),
@@ -293,13 +320,27 @@ export async function createReleaseControlApp(input: {
           installer,
           reader,
         },
-        input.trustedDatabaseIdentity,
+        {
+          ...input.trustedDatabaseIdentity,
+          targetMigrationManifestIdentity:
+            attestationSubject.targetManifestIdentity ??
+            input.trustedDatabaseIdentity.targetMigrationManifestIdentity,
+        },
       )
     )
       throw new DefinitiveAttestationMismatchError();
   };
   const deploymentRevision = input.deploymentRevision ?? "";
   const artifactDigest = input.artifactDigest ?? "";
+  const trustedMigrationTransition = createReleaseMigrationTransition({
+    commitSha: deploymentRevision,
+    releaseImageDigest: artifactDigest,
+  });
+  if (
+    input.trustedDatabaseIdentity.targetMigrationManifestIdentity !==
+    trustedMigrationTransition.preManifestIdentity
+  )
+    throw new Error("release_migration_pre_manifest_identity_mismatch");
   const manifestIdentity = `sha256:${createHash("sha256")
     .update(
       JSON.stringify([
@@ -349,12 +390,15 @@ export async function createReleaseControlApp(input: {
       readerSha256: `sha256:${input.trustedDatabaseIdentity.readerRoutineBodySha256}`,
     },
     migrationManifestIdentity: manifestIdentity,
+    targetManifestPhase: "control_only",
+    migrationTransitionSha256: trustedMigrationTransition.transitionSha256,
     activationFingerprint:
       input.trustedDatabaseIdentity.activationNamespaceFingerprint,
     activationCatalogPolicies: canonicalActivationCatalogPolicyDigests,
   });
   const readiness = new ReleaseAuthorityAttestationCoordinator(
-    (_subject, signal) => observeMutationAuthority(signal),
+    (attestationSubject, signal) =>
+      observeMutationAuthority(attestationSubject, signal),
     () =>
       Object.assign(new Error("release_control_readiness_unavailable"), {
         statusCode: 503,
@@ -365,60 +409,109 @@ export async function createReleaseControlApp(input: {
   const highRiskMutationGate: ReleaseAuthorityHighRiskMutationGate = {
     execute: (sequence) =>
       readiness.executeHighRiskMutationSequence(subject, (executeFresh) =>
-        sequence((target, mutation) =>
-          executeFresh(() =>
-            executeAtomicReleaseControlMutation(
-              {
-                control: {
-                  prisma: input.controlPrisma,
-                  expected: {
-                    roleName: "reviewrouter_release_control",
-                    databaseIdentity:
-                      input.trustedDatabaseIdentity!.authorityDatabaseIdentity,
-                    postgresMajor: 17,
+        sequence((target, mutation, targetManifestPhase) => {
+          const targetManifestIdentity =
+            targetManifestPhase === "control_only"
+              ? undefined
+              : targetManifestPhase === "post_migration"
+                ? trustedMigrationTransition.postManifestIdentity
+                : trustedMigrationTransition.preManifestIdentity;
+          const {
+            targetManifestIdentity: _baseTargetManifestIdentity,
+            ...phaseSubjectBase
+          } = subject;
+          const phaseSubject = createReleaseAuthorityAttestationSubject({
+            ...phaseSubjectBase,
+            ...(targetManifestIdentity === undefined
+              ? {}
+              : { targetManifestIdentity }),
+            targetManifestPhase: targetManifestPhase ?? "pre_migration",
+            migrationTransitionSha256:
+              trustedMigrationTransition.transitionSha256,
+          });
+          const {
+            allowedTargetMigrationManifestIdentities:
+              _configuredManifestAlternatives,
+            targetPostCatalogDigest: _configuredPostCatalogDigest,
+            ...trustedIdentityBase
+          } = input.trustedDatabaseIdentity!;
+          const phaseTrustedIdentity = {
+            ...trustedIdentityBase,
+            targetMigrationManifestIdentity:
+              targetManifestIdentity ??
+              trustedMigrationTransition.preManifestIdentity,
+            ...(targetManifestIdentity === undefined
+              ? {
+                  allowedTargetMigrationManifestIdentities: [
+                    trustedMigrationTransition.preManifestIdentity,
+                    trustedMigrationTransition.postManifestIdentity,
+                  ],
+                }
+              : {}),
+            ...(targetManifestPhase === "post_migration"
+              ? {
+                  targetPostCatalogDigest:
+                    trustedMigrationTransition.postCatalogDigest,
+                }
+              : {}),
+          };
+          return executeFresh(
+            () =>
+              executeAtomicReleaseControlMutation(
+                {
+                  control: {
+                    prisma: input.controlPrisma,
+                    expected: {
+                      roleName: "reviewrouter_release_control",
+                      databaseIdentity:
+                        input.trustedDatabaseIdentity!
+                          .authorityDatabaseIdentity,
+                      postgresMajor: 17,
+                    },
+                  },
+                  provider: {
+                    prisma: input.providerAuthorityPrisma,
+                    expected: {
+                      roleName: "reviewrouter_provider_authority",
+                      databaseIdentity:
+                        input.trustedDatabaseIdentity!
+                          .authorityDatabaseIdentity,
+                      postgresMajor: 17,
+                    },
+                  },
+                  installer: {
+                    prisma: input.permitInstallerPrisma,
+                    expected: {
+                      roleName: "reviewrouter_activation_permit_installer",
+                      databaseIdentity:
+                        input.trustedDatabaseIdentity!.targetDatabaseIdentity,
+                      postgresMajor: 17,
+                    },
+                  },
+                  reader: {
+                    prisma: input.targetReceiptReaderPrisma,
+                    expected: {
+                      roleName: "reviewrouter_activation_receipt_reader",
+                      databaseIdentity:
+                        input.trustedDatabaseIdentity!.targetDatabaseIdentity,
+                      postgresMajor: 17,
+                    },
                   },
                 },
-                provider: {
-                  prisma: input.providerAuthorityPrisma,
-                  expected: {
-                    roleName: "reviewrouter_provider_authority",
-                    databaseIdentity:
-                      input.trustedDatabaseIdentity!.authorityDatabaseIdentity,
-                    postgresMajor: 17,
-                  },
-                },
-                installer: {
-                  prisma: input.permitInstallerPrisma,
-                  expected: {
-                    roleName: "reviewrouter_activation_permit_installer",
-                    databaseIdentity:
-                      input.trustedDatabaseIdentity!.targetDatabaseIdentity,
-                    postgresMajor: 17,
-                  },
-                },
-                reader: {
-                  prisma: input.targetReceiptReaderPrisma,
-                  expected: {
-                    roleName: "reviewrouter_activation_receipt_reader",
-                    databaseIdentity:
-                      input.trustedDatabaseIdentity!.targetDatabaseIdentity,
-                    postgresMajor: 17,
-                  },
-                },
-              },
-              target,
-              input.trustedDatabaseIdentity!,
-              mutation,
-              atomicMutationTiming,
-              () =>
-                Object.assign(
-                  new Error("release_control_readiness_unavailable"),
-                  { statusCode: 503 },
-                ),
-              input.atomicReadinessObserver,
-            ),
-          ),
-        ),
+                target,
+                phaseTrustedIdentity,
+                mutation,
+                atomicMutationTiming,
+                () =>
+                  Object.assign(
+                    new Error("release_control_readiness_unavailable"),
+                    { statusCode: 503 },
+                  ),
+                input.atomicReadinessObserver,
+              ),
+            phaseSubject,
+          );
+        }),
       ),
   };
   const dependencies = composeReleaseControlDependencies(
@@ -430,6 +523,7 @@ export async function createReleaseControlApp(input: {
     input.targetReceiptReaderPrisma,
     sameConnectionTiming,
     highRiskMutationGate,
+    trustedMigrationTransition,
   );
   const assertMutationAuthorityReady = () => readiness.assertOrdinary(subject);
   const ordinary =
@@ -440,10 +534,30 @@ export async function createReleaseControlApp(input: {
       await assertMutationAuthorityReady();
       return await operation(...args);
     };
+  const phaseGated =
+    <Arguments extends readonly unknown[], Result>(
+      operation: (...args: Arguments) => Result,
+      targetManifestPhase: "pre_migration" | "post_migration" | "control_only",
+    ) =>
+    async (...args: Arguments): Promise<Awaited<Result>> =>
+      await highRiskMutationGate.execute((executeFresh) =>
+        executeFresh("control", () => operation(...args), targetManifestPhase),
+      );
+  const controlOnly = <Arguments extends readonly unknown[], Result>(
+    operation: (...args: Arguments) => Result,
+  ) => phaseGated(operation, "control_only");
+  const postMigration = <Arguments extends readonly unknown[], Result>(
+    operation: (...args: Arguments) => Result,
+  ) => phaseGated(operation, "post_migration");
   const gatedDependencies: ReleaseControlRouteDependencies = {
     ...dependencies,
     authority: {
       claim: ordinary(dependencies.authority.claim),
+      beginReleaseMigration: dependencies.authority.beginReleaseMigration,
+      completeReleaseMigration: dependencies.authority.completeReleaseMigration,
+      failReleaseMigration: dependencies.authority.failReleaseMigration,
+      loadReleaseMigrationCheckpoint:
+        dependencies.authority.loadReleaseMigrationCheckpoint,
       completeSourceFreeze: ordinary(
         dependencies.authority.completeSourceFreeze,
       ),
@@ -459,12 +573,12 @@ export async function createReleaseControlApp(input: {
       authorizeActivation: dependencies.authority.authorizeActivation,
       authorizeAndInstall: dependencies.authority.authorizeAndInstall,
       finalize: dependencies.authority.finalize,
-      state: ordinary(dependencies.authority.state),
-      authorityState: ordinary(dependencies.authority.authorityState),
-      compensationCheckpoint: ordinary(
+      state: controlOnly(dependencies.authority.state),
+      authorityState: controlOnly(dependencies.authority.authorityState),
+      compensationCheckpoint: controlOnly(
         dependencies.authority.compensationCheckpoint,
       ),
-      verifyFinalAuthority: ordinary(
+      verifyFinalAuthority: postMigration(
         dependencies.authority.verifyFinalAuthority,
       ),
     },
@@ -476,32 +590,34 @@ export async function createReleaseControlApp(input: {
         }
       : {}),
     runnerOperations: {
-      persistProvisioningIntent: ordinary(
+      persistProvisioningIntent: controlOnly(
         dependencies.runnerOperations.persistProvisioningIntent,
       ),
-      listIntents: ordinary(dependencies.runnerOperations.listIntents),
-      acquireProviderDispatchPermit: ordinary(
+      listIntents: controlOnly(dependencies.runnerOperations.listIntents),
+      acquireProviderDispatchPermit: controlOnly(
         dependencies.runnerOperations.acquireProviderDispatchPermit,
       ),
-      abandonPreparedEffect: ordinary(
+      abandonPreparedEffect: controlOnly(
         dependencies.runnerOperations.abandonPreparedEffect,
       ),
-      reconcileProvisioningEffect: ordinary(
+      reconcileProvisioningEffect: controlOnly(
         dependencies.runnerOperations.reconcileProvisioningEffect,
       ),
-      persistJob: ordinary(dependencies.runnerOperations.persistJob),
-      listOpenJobs: ordinary(dependencies.runnerOperations.listOpenJobs),
-      persistIdentity: ordinary(dependencies.runnerOperations.persistIdentity),
-      currentRunner: ordinary(dependencies.runnerOperations.currentRunner),
-      markTerminal: ordinary(dependencies.runnerOperations.markTerminal),
-      cleanupObservation: ordinary(
+      persistJob: controlOnly(dependencies.runnerOperations.persistJob),
+      listOpenJobs: controlOnly(dependencies.runnerOperations.listOpenJobs),
+      persistIdentity: controlOnly(
+        dependencies.runnerOperations.persistIdentity,
+      ),
+      currentRunner: controlOnly(dependencies.runnerOperations.currentRunner),
+      markTerminal: controlOnly(dependencies.runnerOperations.markTerminal),
+      cleanupObservation: controlOnly(
         dependencies.runnerOperations.cleanupObservation,
       ),
-      cleanupWitness: ordinary(dependencies.runnerOperations.cleanupWitness),
-      terminalCleanupFact: ordinary(
+      cleanupWitness: controlOnly(dependencies.runnerOperations.cleanupWitness),
+      terminalCleanupFact: controlOnly(
         dependencies.runnerOperations.terminalCleanupFact,
       ),
-      persistRegistration: ordinary(
+      persistRegistration: controlOnly(
         dependencies.runnerOperations.persistRegistration,
       ),
     },
@@ -511,27 +627,29 @@ export async function createReleaseControlApp(input: {
     ...(dependencies.serviceTransition
       ? {
           serviceTransition: {
-            begin: ordinary(dependencies.serviceTransition.begin),
-            append: ordinary(dependencies.serviceTransition.append),
-            read: ordinary(dependencies.serviceTransition.read),
-            readContract: ordinary(dependencies.serviceTransition.readContract),
-            complete: ordinary(dependencies.serviceTransition.complete),
-            intendRecoveryEffect: ordinary(
+            begin: controlOnly(dependencies.serviceTransition.begin),
+            append: controlOnly(dependencies.serviceTransition.append),
+            read: controlOnly(dependencies.serviceTransition.read),
+            readContract: controlOnly(
+              dependencies.serviceTransition.readContract,
+            ),
+            complete: controlOnly(dependencies.serviceTransition.complete),
+            intendRecoveryEffect: controlOnly(
               dependencies.serviceTransition.intendRecoveryEffect,
             ),
-            claimRecoveryEffect: ordinary(
+            claimRecoveryEffect: controlOnly(
               dependencies.serviceTransition.claimRecoveryEffect,
             ),
-            consumeRecoveryEffectPermit: ordinary(
+            consumeRecoveryEffectPermit: controlOnly(
               dependencies.serviceTransition.consumeRecoveryEffectPermit,
             ),
-            validateRecoveryEffectExecution: ordinary(
+            validateRecoveryEffectExecution: controlOnly(
               dependencies.serviceTransition.validateRecoveryEffectExecution,
             ),
-            completeRecoveryEffect: ordinary(
+            completeRecoveryEffect: controlOnly(
               dependencies.serviceTransition.completeRecoveryEffect,
             ),
-            reconcileRecoveryEffect: ordinary(
+            reconcileRecoveryEffect: controlOnly(
               dependencies.serviceTransition.reconcileRecoveryEffect,
             ),
           },

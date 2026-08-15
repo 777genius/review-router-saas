@@ -15,11 +15,16 @@ import {
 } from "./trusted-rollout-evidence";
 import { releaseAuthoritySchemaVersion } from "./release-authority-contract";
 import { canonicalActivationCatalogPolicyDigests } from "./activation-catalog-policy-contract";
+import { createReleaseMigrationTransition } from "./release-migration-transition";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const base = createReleaseRollout({
   rolloutId: "rollout-evidence",
   expectedCommitSha: "d".repeat(40),
+  migrationTransition: createReleaseMigrationTransition({
+    commitSha: "d".repeat(40),
+    releaseImageDigest: `sha256:${"e".repeat(64)}`,
+  }),
   execution: {
     organization: "rr-control",
     controlRepository: "rr-control/releases",
@@ -137,22 +142,44 @@ const receipts = steps.map((step, index) => {
     previousReceiptSha256,
   };
   const unsigned =
-    step === RolloutStep.ActivateTargetGeneration
+    step === RolloutStep.RunReleaseMigration
       ? {
           ...common,
-          step: RolloutStep.ActivateTargetGeneration,
-          canonicalPrivilegesSha256: digest,
-          beforePrincipalInventorySha256: digest,
-          beforePrincipalPolicySha256: digest,
-          activatedPrincipalInventorySha256: digest,
-          activatedPrincipalPolicySha256: digest,
-          catalogFactsSha256: digest,
-          ...canonicalActivationCatalogPolicyDigests,
-          transactionId: "42",
-          firstWriteReceiptSha256: digest,
-          firstWriteBoundary: true as const,
+          step: RolloutStep.RunReleaseMigration,
+          migrationChecksum: base.migrationTransition.postManifestIdentity,
+          transitionSha256: base.migrationTransition.transitionSha256,
+          migrationArtifactDigest:
+            base.migrationTransition.migrationArtifactDigest,
+          migrationBundleSha256: base.migrationTransition.migrationBundleSha256,
+          preManifestIdentity: base.migrationTransition.preManifestIdentity,
+          postManifestIdentity: base.migrationTransition.postManifestIdentity,
+          postCatalogDigest: base.migrationTransition.postCatalogDigest,
+          permitEpoch: 1,
+          permitNonce: "migration-permit",
         }
-      : common;
+      : step === RolloutStep.ActivateTargetGeneration
+        ? {
+            ...common,
+            step: RolloutStep.ActivateTargetGeneration,
+            canonicalPrivilegesSha256: digest,
+            beforePrincipalInventorySha256: digest,
+            beforePrincipalPolicySha256: digest,
+            activatedPrincipalInventorySha256: digest,
+            activatedPrincipalPolicySha256: digest,
+            catalogFactsSha256: digest,
+            ...canonicalActivationCatalogPolicyDigests,
+            transactionId: "42",
+            firstWriteReceiptSha256: digest,
+            firstWriteBoundary: true as const,
+            postgresMajor: 17 as const,
+            migrationChecksum: base.migrationTransition.postManifestIdentity,
+            transitionSha256: base.migrationTransition.transitionSha256,
+            postManifestIdentity: base.migrationTransition.postManifestIdentity,
+            permitEpoch: 1,
+            permitNonce: "activation-permit",
+            targetDeployIds: ["dep-release"],
+          }
+        : common;
   const receipt = {
     ...unsigned,
     receiptSha256: `sha256:${sha256Canonical(unsigned)}`,
@@ -224,7 +251,7 @@ const releaseWitness = (
       catalogVerifier: "release-authority-catalog-v1",
     },
     activation: {
-      migrationManifestIdentity: digest,
+      migrationManifestIdentity: base.migrationTransition.postManifestIdentity,
       namespaceFingerprint: digest,
       installerRoutineBodySha256: "a".repeat(64),
       readerRoutineBodySha256: "b".repeat(64),
@@ -449,7 +476,7 @@ const create = () =>
   );
 
 describe("trusted post-cleanup evidence", () => {
-  it("assembles and verifies full schema-12 evidence", () => {
+  it("assembles and verifies full schema-13 evidence", () => {
     expect(create().releaseWitness.releaseAuthority.schemaVersion).toBe(
       releaseAuthoritySchemaVersion,
     );

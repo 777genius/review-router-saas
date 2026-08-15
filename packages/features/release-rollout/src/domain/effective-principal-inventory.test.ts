@@ -96,6 +96,42 @@ describe("effective principal policy", () => {
     ).toBe(false);
   });
 
+  it("keeps PostgreSQL 17 SELECT and MAINTAIN distinct and rejects duplicate grant identities", () => {
+    const inventory: EffectivePrincipalInventory = {
+      ...baseInventory(),
+      grants: [
+        {
+          principal: "runtime",
+          capability: PrincipalCapability.TableRead,
+          resource: "relation:public.items",
+          source: "privilege",
+          grantable: false,
+          grantor: "owner",
+        },
+        {
+          principal: "runtime",
+          capability: PrincipalCapability.TableMaintain,
+          resource: "relation:public.items",
+          source: "privilege",
+          grantable: false,
+          grantor: "owner",
+        },
+      ],
+    };
+    const permissions =
+      draftEffectivePrincipalPolicy(inventory).principals[0]!.permissions;
+    expect(permissions).toEqual([
+      permission(PrincipalCapability.TableMaintain, "relation:public.items"),
+      permission(PrincipalCapability.TableRead, "relation:public.items"),
+    ]);
+    expect(
+      evaluateEffectivePrincipalInventory(
+        { ...inventory, grants: [...inventory.grants, inventory.grants[0]!] },
+        draftEffectivePrincipalPolicy(inventory),
+      ).violations,
+    ).toContain("grant_inventory_duplicate_identity");
+  });
+
   it("rejects a required principal whose complete permission set disappeared", () => {
     const decision = evaluateEffectivePrincipalInventory(
       { ...baseInventory(), grants: [] },

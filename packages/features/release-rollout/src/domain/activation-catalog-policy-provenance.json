@@ -1,0 +1,50 @@
+{
+  "kind": "reviewrouter-activation-catalog-policy-promotion-provenance",
+  "version": 1,
+  "status": "ready",
+  "readinessReason": "independently-reviewed-v19-production-shaped-pg17-candidate-promoted-with-pinned-phase-digests",
+  "promotedAt": "2026-08-14",
+  "candidate": {
+    "reviewedPathLabel": "/tmp/rr-activation-catalog-candidate-v19.json",
+    "bytes": 2044112,
+    "sha256": "e1e75fe2ec744c6b12fc762ef64a090ea3e66fb778edc4ef1f119614875ba0f0",
+    "byteIdenticalCaptureLabels": [
+      "rr-activation-catalog-candidate-v15",
+      "rr-activation-catalog-candidate-v17",
+      "rr-activation-catalog-candidate-v19"
+    ],
+    "captureSha256": {
+      "v15": "e1e75fe2ec744c6b12fc762ef64a090ea3e66fb778edc4ef1f119614875ba0f0",
+      "v17": "e1e75fe2ec744c6b12fc762ef64a090ea3e66fb778edc4ef1f119614875ba0f0",
+      "v19": "e1e75fe2ec744c6b12fc762ef64a090ea3e66fb778edc4ef1f119614875ba0f0"
+    }
+  },
+  "postgresImages": {
+    "sourcePg16": "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+    "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
+  },
+  "canonicalDigests": {
+    "preactivation": "sha256:6e500c32e51fcf9421dc94c3f41a536c1cfaec9af3ce912c6a65b99460c8d5e2",
+    "activated": "sha256:e88f3556a869977de67c02487663d7524dd19c5a3c11bb5541ada5cdc98f9b93",
+    "artifact": "sha256:d5f654f1dc66936a8f9c8ded9d2245f6f444d1352ef87256de495812a2510796"
+  },
+  "independentReview": {
+    "result": "GO",
+    "resultLabel": "rr-activation-final-rereview-v20",
+    "resultRecordedAt": "2026-08-14T20:22:52.051Z",
+    "resultSha256": "946fe15fce283409d6fe0999321b4053f1edce64122e774db786e19eb5470eb0",
+    "baseCommit": "415f62270aed5f730b504ea96af52952e977139b"
+  },
+  "evidenceLabels": [
+    "production-shaped-disposable-pg16-to-pg17-rehearsal",
+    "byte-identical-v15-v17-v19-captures",
+    "raw-unexpected-grant-principal-pre-normalization-gate",
+    "external-bootstrap-grantor-exact-five-edge-topology-gate",
+    "effective-permissions-recomputed-for-all-18-phase-principal-records",
+    "final-independent-go-rr-activation-final-rereview-v20"
+  ],
+  "commands": {
+    "promote": "REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v19 pnpm release-rollout:promote-activation-catalog-policy --candidate /tmp/rr-activation-catalog-candidate-v19.json --write",
+    "verify": "REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v19 pnpm release-rollout:promote-activation-catalog-policy --candidate /tmp/rr-activation-catalog-candidate-v19.json"
+  }
+}

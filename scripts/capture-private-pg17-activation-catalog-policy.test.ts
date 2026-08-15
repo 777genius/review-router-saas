@@ -1,0 +1,135 @@
+import { describe, expect, it } from "vitest";
+import { parsePrivatePg17ActivationCatalogPolicyCandidate } from "./capture-private-pg17-activation-catalog-policy.mjs";
+import { canonicalActivationPrincipalNames } from "../packages/features/release-rollout/src/index.ts";
+
+const policy = (phase: "preactivation" | "activated") => ({
+  kind: "reviewrouter-activation-catalog-policy",
+  version: 1,
+  phase,
+  database: "review_router",
+  roles: canonicalActivationPrincipalNames.map((name) => ({ name })),
+  memberships: [],
+  roleReachability: [],
+  rowSecurity: [],
+  extensions: [],
+  grants: [],
+  effectivePermissions: [],
+});
+
+describe("activation catalog policy candidate capture", () => {
+  it("rejects phase substitution", () => {
+    expect(() =>
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        `${JSON.stringify({ preactivation: policy("activated") })}\n${JSON.stringify({ activated: policy("preactivation") })}\n`,
+      ),
+    ).toThrow("activation_catalog_policy_candidate_invalid:preactivation");
+  });
+
+  it("exports the same pure, secret-safe parser used by the CLI adapter", () => {
+    const stdout = `${JSON.stringify({ preactivation: policy("preactivation") })}\n${JSON.stringify({ activated: policy("activated") })}\n`;
+
+    expect(parsePrivatePg17ActivationCatalogPolicyCandidate(stdout)).toEqual({
+      kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+      version: 1,
+      policies: {
+        preactivation: policy("preactivation"),
+        activated: policy("activated"),
+      },
+    });
+    expect(() =>
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        '{"password":"secret-canary"',
+      ),
+    ).toThrow("activation_catalog_policy_candidate_output_invalid");
+    try {
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        '{"password":"secret-canary"',
+      );
+    } catch (error) {
+      expect(String(error)).not.toContain("secret-canary");
+    }
+  });
+
+  it("rejects rehearsal resources and duplicate normalized grant identities", () => {
+    const rehearsal = {
+      ...policy("preactivation"),
+      rowSecurity: [
+        {
+          relation: "public.rehearsal_items",
+          owner: "reviewrouter_role_bootstrap",
+          policies: [],
+        },
+      ],
+    };
+    expect(() =>
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        `${JSON.stringify({ preactivation: rehearsal })}\n${JSON.stringify({ activated: policy("activated") })}\n`,
+      ),
+    ).toThrow(
+      "activation_catalog_policy_candidate_rehearsal_resource_forbidden:preactivation",
+    );
+
+    const grant = {
+      principal: "reviewrouter_api",
+      capability: "table:read",
+      resource: "relation:public.items",
+      source: "privilege",
+      grantable: false,
+      grantor: "reviewrouter_release_migration",
+    };
+    const duplicate = {
+      ...policy("activated"),
+      grants: [grant, { ...grant }],
+    };
+    expect(() =>
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        `${JSON.stringify({ preactivation: policy("preactivation") })}\n${JSON.stringify({ activated: duplicate })}\n`,
+      ),
+    ).toThrow("activation_catalog_policy_candidate_duplicate_grant:activated");
+  });
+
+  it("accepts only provider-neutral, uniquely named extension authority", () => {
+    const extension = {
+      ...policy("preactivation"),
+      extensions: [
+        {
+          name: "plpgsql",
+          owner: { kind: "external-provider-authority" },
+        },
+        {
+          name: "pgcrypto",
+          owner: { kind: "principal", name: "reviewrouter_role_bootstrap" },
+        },
+      ],
+    };
+    expect(
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        `${JSON.stringify({ preactivation: extension })}\n${JSON.stringify({ activated: policy("activated") })}\n`,
+      ).policies.preactivation.extensions,
+    ).toHaveLength(2);
+    expect(() =>
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        `${JSON.stringify({ preactivation: { ...extension, extensions: [{ name: "pgcrypto", owner: "provider-role" }] } })}\n${JSON.stringify({ activated: policy("activated") })}\n`,
+      ),
+    ).toThrow(
+      "activation_catalog_policy_candidate_extension_authority_invalid:preactivation",
+    );
+  });
+
+  it("rejects a provider-local role even when it is otherwise harmless", () => {
+    const providerNamed = {
+      ...policy("preactivation"),
+      roles: [
+        ...policy("preactivation").roles,
+        { name: "managed_provider_administrator" },
+      ],
+    };
+    expect(() =>
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        `${JSON.stringify({ preactivation: providerNamed })}\n${JSON.stringify({ activated: policy("activated") })}\n`,
+      ),
+    ).toThrow(
+      "activation_catalog_policy_candidate_provider_identity_forbidden:preactivation",
+    );
+  });
+});

@@ -27,7 +27,19 @@ export function createSecureCanonicalRun(
             arg.startsWith("postgres://") || arg.startsWith("postgresql://"),
         );
         if (urlIndex < 0) throw new Error("private_pg17_psql_url_missing");
-        const connection = decomposePostgresConnection(args[urlIndex]!);
+        const databaseUrl = new URL(args[urlIndex]!);
+        const resolvedHostAddress = hostAddress(databaseUrl.hostname);
+        const nestedDatabaseUrl = new URL(databaseUrl);
+        if (resolvedHostAddress)
+          nestedDatabaseUrl.hostname = resolvedHostAddress;
+        const connection = decomposePostgresConnection(databaseUrl.toString());
+        const directory = mkdtempSync(join(tmpdir(), "rr-db-credential-"));
+        chmodSync(directory, 0o700);
+        const credentialPath = join(directory, "database-url");
+        writeFileSync(credentialPath, nestedDatabaseUrl.toString(), {
+          mode: 0o600,
+          flag: "wx",
+        });
         const normalized = normalizeSecretSafePostgresArguments(
           args.filter((_, index) => index !== urlIndex),
           options.input,
@@ -39,19 +51,17 @@ export function createSecureCanonicalRun(
             {
               env: {
                 ...connection.env,
-                ...(hostAddress(new URL(args[urlIndex]!).hostname)
-                  ? {
-                      PGHOSTADDR: hostAddress(
-                        new URL(args[urlIndex]!).hostname,
-                      ),
-                    }
+                ...(resolvedHostAddress
+                  ? { PGHOSTADDR: resolvedHostAddress }
                   : {}),
+                REVIEW_ROUTER_DATABASE_URL_FILE: credentialPath,
               },
               input: normalized.input,
             },
           ).stdout;
         } finally {
           connection.cleanup();
+          rmSync(directory, { recursive: true, force: true });
         }
       }
       if (command !== "node" && command !== "pnpm")

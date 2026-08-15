@@ -10,10 +10,15 @@ import {
   reconcileCompensationSafety,
 } from "./reconcile-compensation";
 import type { CompensationCheckpoint } from "./ports";
+import { createReleaseMigrationTransition } from "../domain/release-migration-transition";
 
 const rollout = createReleaseRollout({
   rolloutId: "rollout-reconcile-test",
   expectedCommitSha: "d".repeat(40),
+  migrationTransition: createReleaseMigrationTransition({
+    commitSha: "d".repeat(40),
+    releaseImageDigest: `sha256:${"e".repeat(64)}`,
+  }),
   execution: {
     organization: "rr-control",
     controlRepository: "rr-control/releases",

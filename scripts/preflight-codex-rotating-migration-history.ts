@@ -1,23 +1,17 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createPrismaClient } from "../packages/platform/db/src/index";
+import type { CodexRotatingMigrationHistoryRow } from "./codex-rotating-migration-history-policy";
 import {
-  assertCodexRotatingMigrationHistoryIsPristine,
-  checkedInCodexRotatingMigrationChecksums,
-  type CodexRotatingMigrationHistoryRow,
-} from "./codex-rotating-migration-history-policy";
+  canonicalReleaseMigrationEntries,
+  canonicalReleaseMigrationResumeManifestIdentities,
+} from "../packages/features/release-rollout/src/domain/release-migration-transition";
 
-const migrationNames = [
-  "000060_codex_oauth_setup_serialization",
-  "000061_codex_oauth_provider_mutation_fence",
-  "000062_codex_oauth_remote_outcome_unknown",
-  "000063_codex_oauth_setup_payload_claim",
-  "000064_codex_oauth_versioned_secret_namespaces",
-  "000065_codex_oauth_authority_acl_hardening",
-  "000066_codex_oauth_rotating_cascade_authority",
-  "000069_release_rollout_ledger",
-] as const;
+const migrationNames = canonicalReleaseMigrationEntries.map(
+  ({ migrationName }) => migrationName,
+);
 
 const sourceDigests = Object.fromEntries(
   await Promise.all(
@@ -37,9 +31,10 @@ const sourceDigests = Object.fromEntries(
     ]),
   ),
 );
-for (const [migrationName, immutableChecksum] of Object.entries(
-  checkedInCodexRotatingMigrationChecksums,
-)) {
+for (const {
+  migrationName,
+  migrationSqlSha256: immutableChecksum,
+} of canonicalReleaseMigrationEntries) {
   if (sourceDigests[migrationName] !== immutableChecksum) {
     throw new Error(
       `codex_rotating_immutable_migration_source_mismatch:${migrationName}`,
@@ -66,20 +61,69 @@ try {
           SELECT "migration_name", "checksum", "finished_at", "rolled_back_at",
                  "applied_steps_count"
           FROM "_prisma_migrations"
-          WHERE "migration_name" IN (
-            '000060_codex_oauth_setup_serialization',
-            '000061_codex_oauth_provider_mutation_fence',
-            '000062_codex_oauth_remote_outcome_unknown',
-            '000063_codex_oauth_setup_payload_claim',
-            '000064_codex_oauth_versioned_secret_namespaces',
-            '000065_codex_oauth_authority_acl_hardening',
-            '000066_codex_oauth_rotating_cascade_authority',
-            '000067_release_rollout_ledger',
-            '000069_release_rollout_ledger'
-          )
+          ORDER BY "migration_name", "started_at"
         `
       : [];
-  assertCodexRotatingMigrationHistoryIsPristine(rows);
+  const checkedInNames = (
+    await readdir(resolve("packages/platform/db/prisma/migrations"))
+  ).filter((name) => /^\d{6}_[a-z0-9_]+$/u.test(name));
+  const checkedIn = new Map(
+    await Promise.all(
+      checkedInNames.map(
+        async (name) =>
+          [
+            name,
+            createHash("sha256")
+              .update(
+                await readFile(
+                  resolve(
+                    "packages/platform/db/prisma/migrations",
+                    name,
+                    "migration.sql",
+                  ),
+                ),
+              )
+              .digest("hex"),
+          ] as const,
+      ),
+    ),
+  );
+  for (const row of rows) {
+    if (
+      !checkedIn.has(row.migration_name) ||
+      checkedIn.get(row.migration_name) !== row.checksum
+    )
+      throw new Error(
+        `release_migration_history_unknown_or_changed:${row.migration_name}`,
+      );
+    if (row.finished_at === null && row.rolled_back_at === null)
+      throw new Error(
+        `release_migration_history_unresolved:${row.migration_name}`,
+      );
+  }
+  for (const name of checkedInNames) {
+    if (
+      rows.filter(
+        (row) =>
+          row.migration_name === name &&
+          row.finished_at !== null &&
+          row.rolled_back_at === null,
+      ).length > 1
+    )
+      throw new Error(`release_migration_history_duplicate_success:${name}`);
+  }
+  const successful = rows
+    .filter((row) => row.finished_at !== null && row.rolled_back_at === null)
+    .map((row) => `${row.migration_name}:${row.checksum}`)
+    .sort()
+    .join(",");
+  const manifestIdentity = `sha256:${createHash("sha256").update(successful).digest("hex")}`;
+  if (
+    !canonicalReleaseMigrationResumeManifestIdentities.includes(
+      manifestIdentity,
+    )
+  )
+    throw new Error("release_migration_history_resume_root_untrusted");
   process.stdout.write(
     `${JSON.stringify({
       status: "passed",

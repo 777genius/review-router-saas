@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import {
+  createReleaseMigrationTransition,
+  sha256Canonical,
+} from "@reviewrouter/features-release-rollout";
+import {
   RoutineReleaseControlLedgerAdapter,
   RoutineRunnerCleanupWitnessAdapter,
   RoutineProviderMutationAuthorityAdapter,
@@ -12,6 +16,30 @@ const witnessUrl = process.env.REVIEW_ROUTER_RELEASE_AUTHORITY_WITNESS_TEST_URL;
 const adminUrl = process.env.REVIEW_ROUTER_RELEASE_AUTHORITY_ADMIN_TEST_URL;
 const realDescribe =
   controlUrl && witnessUrl && adminUrl ? describe : describe.skip;
+
+const claimBinding = (input: {
+  rolloutId: string;
+  expectedCommitSha: string;
+  runId: string;
+  sourceSystemIdentifier: string;
+  targetSystemIdentifier: string;
+}) => ({
+  ...input,
+  runAttempt: 1 as const,
+  targetRecoveryWitnessSha256: "f".repeat(64),
+  migrationTransition: createReleaseMigrationTransition({
+    commitSha: input.expectedCommitSha,
+    releaseImageDigest: `sha256:${"e".repeat(64)}`,
+  }),
+});
+
+const numericSystemIdentifiers = (unique: string) => {
+  const base = BigInt(`0x${unique.slice(0, 15)}`) * 10n;
+  return {
+    sourceSystemIdentifier: (base + 1n).toString(),
+    targetSystemIdentifier: (base + 2n).toString(),
+  };
+};
 
 realDescribe("release authority API/Postgres runtime contract", () => {
   const control = controlUrl
@@ -46,12 +74,11 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       rolloutId,
       expectedCommitSha: "d".repeat(40),
       runId: "901",
-      runAttempt: 1,
-      sourceSystemIdentifier: "191",
-      targetSystemIdentifier: "291",
-    } as const;
+      runAttempt: 1 as const,
+      ...numericSystemIdentifiers(unique),
+    };
 
-    await expect(ledger.claim(binding)).resolves.toBe("claimed");
+    await expect(ledger.claim(claimBinding(binding))).resolves.toBe("claimed");
     await ledger.persistProvisioningIntent({
       id: intentId,
       rolloutId,
@@ -200,22 +227,23 @@ realDescribe("release authority API/Postgres runtime contract", () => {
     const unique = randomUUID().replaceAll("-", "");
     const rolloutId = `r-provider-mutation-${unique.slice(0, 16)}`;
     const secondRolloutId = `r-provider-second-${unique.slice(0, 16)}`;
-    await ledger.claim({
-      rolloutId,
-      expectedCommitSha: "a".repeat(40),
-      runId: "902",
-      runAttempt: 1,
-      sourceSystemIdentifier: "192",
-      targetSystemIdentifier: "292",
-    });
-    await ledger.claim({
-      rolloutId: secondRolloutId,
-      expectedCommitSha: "c".repeat(40),
-      runId: "903",
-      runAttempt: 1,
-      sourceSystemIdentifier: "193",
-      targetSystemIdentifier: "293",
-    });
+    await ledger.claim(
+      claimBinding({
+        rolloutId,
+        expectedCommitSha: "a".repeat(40),
+        runId: "902",
+        ...numericSystemIdentifiers(unique),
+      }),
+    );
+    const secondIdentifiers = numericSystemIdentifiers(`${unique.slice(1)}0`);
+    await ledger.claim(
+      claimBinding({
+        rolloutId: secondRolloutId,
+        expectedCommitSha: "c".repeat(40),
+        runId: "903",
+        ...secondIdentifiers,
+      }),
+    );
     const base = {
       rolloutId,
       operation: `freeze:srv-${unique.slice(0, 12)}`,
@@ -470,6 +498,122 @@ realDescribe("release authority API/Postgres runtime contract", () => {
     ).resolves.toMatchObject({ epoch: 1 });
   });
 
+  it("returns the stored canonical migration receipt on stable retries and quarantines conflicts", async () => {
+    if (!control) throw new Error("real_postgres_test_unconfigured");
+    const ledger = new RoutineReleaseControlLedgerAdapter(control);
+    const unique = randomUUID().replaceAll("-", "");
+    const rolloutId = `r-migration-retry-${unique.slice(0, 16)}`;
+    const binding = claimBinding({
+      rolloutId,
+      expectedCommitSha: "6".repeat(40),
+      runId: "905",
+      ...numericSystemIdentifiers(unique),
+    });
+    await ledger.claim(binding);
+    const permit = await ledger.beginReleaseMigration({
+      rolloutId,
+      expectedCommitSha: binding.expectedCommitSha,
+      runId: binding.runId,
+      runAttempt: 1,
+      sourceSystemIdentifier: binding.sourceSystemIdentifier,
+      targetSystemIdentifier: binding.targetSystemIdentifier,
+      targetRecoveryWitnessSha256: binding.targetRecoveryWitnessSha256,
+      transitionSha256: binding.migrationTransition.transitionSha256,
+      expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+    });
+    const migrationReceipt = (observedAt: string, receiptId: string) => {
+      const unsigned = {
+        step: "run_release_migration" as const,
+        receiptId,
+        observedAt,
+        rolloutId,
+        expectedCommitSha: binding.expectedCommitSha,
+        runId: binding.runId,
+        runAttempt: 1 as const,
+        sourceSystemIdentifier: binding.sourceSystemIdentifier,
+        targetSystemIdentifier: binding.targetSystemIdentifier,
+        provider: undefined,
+        observationSha256: `sha256:${"1".repeat(64)}`,
+        previousReceiptSha256: permit.expectedPreviousReceiptSha256,
+        migrationChecksum: binding.migrationTransition.postManifestIdentity,
+        transitionSha256: binding.migrationTransition.transitionSha256,
+        migrationArtifactDigest:
+          binding.migrationTransition.migrationArtifactDigest,
+        migrationBundleSha256:
+          binding.migrationTransition.migrationBundleSha256,
+        preManifestIdentity: binding.migrationTransition.preManifestIdentity,
+        postManifestIdentity: binding.migrationTransition.postManifestIdentity,
+        postCatalogDigest: binding.migrationTransition.postCatalogDigest,
+        permitEpoch: permit.epoch,
+        permitNonce: permit.nonce,
+      };
+      return {
+        ...unsigned,
+        receiptSha256: `sha256:${sha256Canonical(unsigned)}`,
+      };
+    };
+    const first = migrationReceipt(
+      "2026-08-14T01:02:03.004Z",
+      `${rolloutId}:migration:first`,
+    );
+    await expect(
+      ledger.completeReleaseMigration({ permit, receipt: first }),
+    ).resolves.toEqual(first);
+    const retry = migrationReceipt(
+      "2026-08-14T01:02:04.005Z",
+      `${rolloutId}:migration:retry`,
+    );
+    await expect(
+      ledger.completeReleaseMigration({ permit, receipt: retry }),
+    ).resolves.toEqual(first);
+    const {
+      receiptSha256: _retryReceiptSha256,
+      ...conflictingUnsignedReceipt
+    } = {
+      ...retry,
+      observationSha256: `sha256:${"2".repeat(64)}`,
+    };
+    await expect(
+      ledger.completeReleaseMigration({
+        permit,
+        receipt: {
+          ...conflictingUnsignedReceipt,
+          receiptSha256: `sha256:${sha256Canonical(conflictingUnsignedReceipt)}`,
+        },
+      }),
+    ).rejects.toThrow();
+
+    const quarantineUnique = randomUUID().replaceAll("-", "");
+    const quarantined = claimBinding({
+      rolloutId: `r-migration-quarantine-${quarantineUnique.slice(0, 12)}`,
+      expectedCommitSha: "7".repeat(40),
+      runId: "906",
+      ...numericSystemIdentifiers(quarantineUnique),
+    });
+    await ledger.claim(quarantined);
+    const quarantinePermit = await ledger.beginReleaseMigration({
+      rolloutId: quarantined.rolloutId,
+      expectedCommitSha: quarantined.expectedCommitSha,
+      runId: quarantined.runId,
+      runAttempt: 1,
+      sourceSystemIdentifier: quarantined.sourceSystemIdentifier,
+      targetSystemIdentifier: quarantined.targetSystemIdentifier,
+      targetRecoveryWitnessSha256: quarantined.targetRecoveryWitnessSha256,
+      transitionSha256: quarantined.migrationTransition.transitionSha256,
+      expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+    });
+    await ledger.failReleaseMigration({
+      permit: quarantinePermit,
+      reasonSha256: `sha256:${"3".repeat(64)}`,
+    });
+    await expect(
+      ledger.loadReleaseMigrationCheckpoint({
+        rolloutId: quarantined.rolloutId,
+        targetSystemIdentifier: quarantined.targetSystemIdentifier,
+      }),
+    ).resolves.toMatchObject({ targetManifestPhase: "quarantined" });
+  });
+
   it("uses resource-first locks during concurrent recovery", async () => {
     if (!control || !admin) throw new Error("real_postgres_test_unconfigured");
     const ledger = new RoutineReleaseControlLedgerAdapter(control);
@@ -487,14 +631,14 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       expected: { fingerprint: `sha256:${"9".repeat(64)}`, version: null },
       leaseSeconds: 60,
     } as const;
-    await ledger.claim({
-      rolloutId: request.rolloutId,
-      expectedCommitSha: "8".repeat(40),
-      runId: "904",
-      runAttempt: 1,
-      sourceSystemIdentifier: "194",
-      targetSystemIdentifier: "294",
-    });
+    await ledger.claim(
+      claimBinding({
+        rolloutId: request.rolloutId,
+        expectedCommitSha: "8".repeat(40),
+        runId: "904",
+        ...numericSystemIdentifiers(unique),
+      }),
+    );
     await authority.issue(request);
 
     // This transaction deliberately holds resource before requesting mutation.

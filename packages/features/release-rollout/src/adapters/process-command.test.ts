@@ -62,6 +62,22 @@ describe("redacted process command diagnostics", () => {
     }
   });
 
+  it("allows only a path to the nested migration credential file", () => {
+    expect(() =>
+      assertSafeProcessBoundary("psql", [], {
+        PATH: "/usr/local/bin:/usr/bin:/bin",
+        REVIEW_ROUTER_DATABASE_URL_FILE:
+          "/tmp/rr-db-credential-safe/database-url",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertSafeProcessBoundary("psql", [], {
+        REVIEW_ROUTER_DATABASE_URL_FILE:
+          "postgresql://owner:secret@db.internal/review_router",
+      }),
+    ).toThrow("release_rollout_process_boundary_rejected");
+  });
+
   it("bounds timeout diagnostics without exposing aborted process data", () => {
     let caught: unknown;
     try {

@@ -11,15 +11,24 @@ import type {
 } from "@reviewrouter/features-release-rollout";
 import {
   assertOneShotMutationPermit,
+  createReleaseMigrationTransition,
+  sha256Canonical,
   ProviderIdentifier,
   ProviderResourceKind,
 } from "@reviewrouter/features-release-rollout";
-import { registerReleaseRolloutLedgerRoutes } from "./release-authority/adapters/http";
+import {
+  migrationBeginRequest,
+  migrationCompleteRequest,
+  migrationFailRequest,
+  registerReleaseRolloutLedgerRoutes,
+  rolloutClaimRequest,
+} from "./release-authority/adapters/http";
 import {
   ReleaseAuthorityService,
   ReleaseRolloutReconciliationService,
   RunnerOperationsService,
   ProviderMutationAuthorityService,
+  type ReleaseAuthorityHighRiskMutationGate,
 } from "./release-authority/application/services";
 import type {
   ReleaseAuthorityLedgerPort,
@@ -27,6 +36,10 @@ import type {
   RunnerOperationsLedgerPort,
 } from "./release-authority/domain/model";
 
+const migrationTransition = createReleaseMigrationTransition({
+  commitSha: "a".repeat(40),
+  releaseImageDigest: `sha256:${"b".repeat(64)}`,
+});
 const binding = {
   rolloutId: "rollout-ledger-test",
   expectedCommitSha: "a".repeat(40),
@@ -35,12 +48,29 @@ const binding = {
   sourceSystemIdentifier: "100",
   targetSystemIdentifier: "200",
 };
+const claimBinding = {
+  ...binding,
+  targetRecoveryWitnessSha256: "c".repeat(64),
+  migrationTransition,
+};
 
 type CombinedLedgerPort = ReleaseAuthorityLedgerPort &
   RunnerOperationsLedgerPort &
   ReleaseRolloutReconciliationPort;
 
 class ConcurrentRepository implements CombinedLedgerPort {
+  async beginReleaseMigration(): Promise<never> {
+    throw new Error("not_implemented_in_legacy_concurrency_fixture");
+  }
+  async completeReleaseMigration(): Promise<never> {
+    throw new Error("not_implemented_in_legacy_concurrency_fixture");
+  }
+  async failReleaseMigration(): Promise<void> {
+    throw new Error("not_implemented_in_legacy_concurrency_fixture");
+  }
+  async loadReleaseMigrationCheckpoint(): Promise<never> {
+    throw new Error("not_implemented_in_legacy_concurrency_fixture");
+  }
   async completeSourceFreeze() {
     return "recorded" as const;
   }
@@ -126,6 +156,8 @@ class ConcurrentRepository implements CombinedLedgerPort {
       expectedCommitSha: input.expectedCommitSha,
       postgresMajor: input.postgresMajor,
       migrationChecksum: input.migrationChecksum,
+      transitionSha256: input.transitionSha256,
+      postManifestIdentity: input.postManifestIdentity,
       epoch: 1,
       nonce: "c".repeat(32),
       sourceSystemIdentifier: input.sourceSystemIdentifier,
@@ -303,14 +335,129 @@ class ConcurrentRepository implements CombinedLedgerPort {
 
 const token = "ledger-control-secret";
 const tokenSha256 = createHash("sha256").update(token).digest("hex");
+const highRiskGate: ReleaseAuthorityHighRiskMutationGate = {
+  execute: async (sequence) =>
+    sequence(async (target, mutation) =>
+      mutation({
+        systemIdentifier:
+          target === "installer" || target === "reader" ? "200" : "100",
+        recoveryWitnessSha256:
+          target === "installer" || target === "reader" ? "c".repeat(64) : "",
+      }),
+    ),
+};
 const services = (repository: CombinedLedgerPort) => ({
-  authority: new ReleaseAuthorityService(repository),
+  authority: new ReleaseAuthorityService(
+    repository,
+    undefined,
+    undefined,
+    highRiskGate,
+    migrationTransition,
+  ),
   runnerOperations: new RunnerOperationsService(repository),
   reconciliation: new ReleaseRolloutReconciliationService(repository),
   controlTokenSha256: tokenSha256,
 });
 
 describe("release rollout ledger internal API", () => {
+  it("parses migration DTOs exactly and rejects malformed or cross-route identities", () => {
+    const digestValue = `sha256:${"d".repeat(64)}`;
+    const begin = {
+      ...binding,
+      targetRecoveryWitnessSha256: "c".repeat(64),
+      transitionSha256: migrationTransition.transitionSha256,
+      expectedPreviousReceiptSha256: digestValue,
+    };
+    const permit = {
+      schemaVersion: 1 as const,
+      rolloutId: binding.rolloutId,
+      runId: binding.runId,
+      runAttempt: 1,
+      targetSystemIdentifier: binding.targetSystemIdentifier,
+      targetRecoveryWitnessSha256: "c".repeat(64),
+      transitionSha256: migrationTransition.transitionSha256,
+      expectedPreviousReceiptSha256: digestValue,
+      epoch: 1,
+      nonce: "e".repeat(32),
+    };
+    const unsignedReceipt = {
+      step: "run_release_migration" as const,
+      receiptId: `${binding.rolloutId}:run_release_migration:12`,
+      observedAt: "2026-08-14T00:00:00.000Z",
+      ...binding,
+      observationSha256: digestValue,
+      previousReceiptSha256: digestValue,
+      migrationChecksum: migrationTransition.postManifestIdentity,
+      transitionSha256: migrationTransition.transitionSha256,
+      migrationArtifactDigest: migrationTransition.migrationArtifactDigest,
+      migrationBundleSha256: migrationTransition.migrationBundleSha256,
+      preManifestIdentity: migrationTransition.preManifestIdentity,
+      postManifestIdentity: migrationTransition.postManifestIdentity,
+      postCatalogDigest: migrationTransition.postCatalogDigest,
+      permitEpoch: 1,
+      permitNonce: permit.nonce,
+    };
+    const receipt = {
+      ...unsignedReceipt,
+      receiptSha256: `sha256:${sha256Canonical(unsignedReceipt)}`,
+    };
+    expect(rolloutClaimRequest(claimBinding)).toEqual(claimBinding);
+    expect(migrationBeginRequest(begin, binding.rolloutId)).toEqual(begin);
+    expect(
+      migrationCompleteRequest({ permit, receipt }, binding.rolloutId),
+    ).toEqual({ permit, receipt: { ...receipt, provider: undefined } });
+    expect(
+      migrationFailRequest(
+        { permit, reasonSha256: digestValue },
+        binding.rolloutId,
+      ),
+    ).toEqual({ permit, reasonSha256: digestValue });
+    const malformed = [
+      () => rolloutClaimRequest({ ...claimBinding, unknown: true }),
+      () => rolloutClaimRequest({ ...claimBinding, runId: 123 }),
+      () => rolloutClaimRequest({ ...claimBinding, expectedCommitSha: "bad" }),
+      () =>
+        migrationBeginRequest(
+          { ...begin, rolloutId: "other" },
+          binding.rolloutId,
+        ),
+      () =>
+        migrationBeginRequest(
+          { ...begin, transitionSha256: null },
+          binding.rolloutId,
+        ),
+      () =>
+        migrationCompleteRequest(
+          { permit, receipt, extra: true },
+          binding.rolloutId,
+        ),
+      () =>
+        migrationCompleteRequest(
+          { permit: { ...permit, epoch: "1" }, receipt },
+          binding.rolloutId,
+        ),
+      () =>
+        migrationCompleteRequest(
+          { permit, receipt: { ...receipt, observedAt: "yesterday" } },
+          binding.rolloutId,
+        ),
+      () =>
+        migrationFailRequest(
+          { permit, reasonSha256: "bad" },
+          binding.rolloutId,
+        ),
+      () =>
+        migrationFailRequest(
+          {
+            permit: { ...permit, rolloutId: "other" },
+            reasonSha256: digestValue,
+          },
+          binding.rolloutId,
+        ),
+    ];
+    for (const parse of malformed)
+      expect(parse).toThrow("release_migration_request_invalid");
+  });
   it("exposes the authenticated one-shot provider mutation authority protocol", async () => {
     let state: "fresh" | "consumed" | "executing" | "completed" = "fresh";
     const expected = { fingerprint: `sha256:${"b".repeat(64)}`, version: null };
@@ -853,7 +1000,7 @@ describe("release rollout ledger internal API", () => {
         await app.inject({
           method: "POST",
           url: "/v1/rollouts/claim",
-          payload: binding,
+          payload: claimBinding,
         })
       ).statusCode,
     ).toBe(401);
@@ -861,13 +1008,13 @@ describe("release rollout ledger internal API", () => {
       method: "POST",
       url: "/v1/rollouts/claim",
       headers: { authorization: `Bearer ${token}` },
-      payload: binding,
+      payload: claimBinding,
     });
     const duplicate = await app.inject({
       method: "POST",
       url: "/v1/rollouts/claim",
       headers: { authorization: `Bearer ${token}` },
-      payload: binding,
+      payload: claimBinding,
     });
     expect(first.json()).toEqual({ result: "claimed" });
     expect(duplicate.json()).toEqual({ result: "duplicate" });
@@ -939,8 +1086,14 @@ describe("release rollout ledger internal API", () => {
   });
 
   it("replays one exact activation permit and denies conflicting concurrency", async () => {
-    const service = new ReleaseAuthorityService(new ConcurrentRepository());
-    await service.claim(binding);
+    const service = new ReleaseAuthorityService(
+      new ConcurrentRepository(),
+      undefined,
+      undefined,
+      highRiskGate,
+      migrationTransition,
+    );
+    await service.claim(claimBinding);
     const results = await Promise.allSettled(
       Array.from({ length: 64 }, (_, index) =>
         service.authorizeActivation({
@@ -949,7 +1102,9 @@ describe("release rollout ledger internal API", () => {
           previousReceiptSha256: `sha256:${"0".repeat(64)}`,
           targetDeployIds: ["dep-target"],
           postgresMajor: 17,
-          migrationChecksum: `sha256:${"7".repeat(64)}`,
+          migrationChecksum: migrationTransition.postManifestIdentity,
+          transitionSha256: migrationTransition.transitionSha256,
+          postManifestIdentity: migrationTransition.postManifestIdentity,
         }),
       ),
     );
@@ -965,7 +1120,9 @@ describe("release rollout ledger internal API", () => {
       previousReceiptSha256: `sha256:${"0".repeat(64)}`,
       targetDeployIds: ["dep-target"],
       postgresMajor: 17,
-      migrationChecksum: `sha256:${"7".repeat(64)}`,
+      migrationChecksum: migrationTransition.postManifestIdentity,
+      transitionSha256: migrationTransition.transitionSha256,
+      postManifestIdentity: migrationTransition.postManifestIdentity,
     });
     expect(exactReplay.epoch).toBe(1);
     expect(await service.state(binding)).toBe("uncertain");

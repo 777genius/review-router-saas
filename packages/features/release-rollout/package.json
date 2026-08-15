@@ -8,6 +8,10 @@
       "types": "./src/index.ts",
       "production": "./dist/index.js",
       "default": "./src/index.ts"
+    },
+    "./adapters/live-v70-v72-catalog-digest": {
+      "types": "./src/adapters/live-v70-v72-catalog-digest.d.mts",
+      "default": "./src/adapters/live-v70-v72-catalog-digest.mjs"
     }
   },
   "dependencies": {

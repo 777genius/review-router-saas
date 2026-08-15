@@ -13,6 +13,7 @@ export const PrincipalCapability = Object.freeze({
   TableTruncate: "table:truncate",
   TableTrigger: "table:trigger",
   TableReferences: "table:references",
+  TableMaintain: "table:maintain",
   ColumnRead: "column:read",
   ColumnInsert: "column:insert",
   ColumnUpdate: "column:update",
@@ -91,6 +92,30 @@ export interface EffectivePrincipalRowSecurity {
     roles: readonly string[];
   }>[];
 }
+/**
+ * Provider-neutral extension authority. Extension versions are deliberately
+ * excluded: installed versions vary by provider patch cadence and do not
+ * change who can ALTER, UPDATE, or DROP the extension.
+ */
+export interface EffectivePrincipalExtensionAuthority {
+  readonly name: string;
+  readonly owner: string;
+}
+
+export type ActivationCatalogAuthorityIdentity =
+  | Readonly<{
+      kind: "principal";
+      name: string;
+    }>
+  | Readonly<{
+      /** Provider-owned built-in extension authority, proven otherwise inert. */
+      kind: "external-provider-authority";
+    }>;
+
+export interface ActivationCatalogExtensionAuthority {
+  readonly name: string;
+  readonly owner: ActivationCatalogAuthorityIdentity;
+}
 export interface EffectivePrincipalInventory {
   readonly version: 1;
   readonly database: string;
@@ -101,6 +126,10 @@ export interface EffectivePrincipalInventory {
   readonly roleReachability?: readonly EffectivePrincipalRoleReachability[];
   /** Present in the server-derived activation projection contract. */
   readonly rowSecurity?: readonly EffectivePrincipalRowSecurity[];
+  /** Present in the server-derived activation projection contract. */
+  readonly extensions?: readonly EffectivePrincipalExtensionAuthority[];
+  /** Stable family names whose authority is intentionally not projected. */
+  readonly unsupportedAuthorityFamilies?: readonly string[];
   readonly grants: readonly EffectivePrincipalGrant[];
 }
 export interface EffectivePrincipalPermission {
@@ -120,6 +149,49 @@ export interface EffectivePrincipalPolicy {
   readonly publicPermissions: readonly EffectivePrincipalPermission[];
   readonly principals: readonly EffectivePrincipalRule[];
 }
+
+/**
+ * Stable identity used only for the provider-issued bootstrap memberships.
+ * The raw inventory always retains the actual PostgreSQL grantor name.
+ */
+export const ActivationCatalogMembershipGrantorKind = Object.freeze({
+  ExternalBootstrapAuthority: "external-bootstrap-authority",
+} as const);
+
+export type ActivationCatalogMembershipGrantor =
+  | Readonly<{
+      kind: typeof ActivationCatalogMembershipGrantorKind.ExternalBootstrapAuthority;
+    }>
+  | Readonly<{ kind: "principal"; name: string }>;
+
+export interface ActivationCatalogMembership extends Omit<
+  EffectivePrincipalMembership,
+  "grantor"
+> {
+  readonly grantor: ActivationCatalogMembershipGrantor;
+}
+
+/** Domain-owned principal boundary shared by policy validation and adapters. */
+export const canonicalActivationPrincipalNames = Object.freeze([
+  "reviewrouter_activation_permit_installer",
+  "reviewrouter_activation_receipt_guard",
+  "reviewrouter_activation_receipt_reader",
+  "reviewrouter_api",
+  "reviewrouter_codex_effect_authority",
+  "reviewrouter_release_migration",
+  "reviewrouter_role_bootstrap",
+  "reviewrouter_web",
+  "reviewrouter_worker",
+] as const);
+
+/** Exact provider-issued topology; only its single inert grantor is normalized. */
+export const canonicalBootstrapMembershipRoleNames = Object.freeze([
+  "reviewrouter_api",
+  "reviewrouter_codex_effect_authority",
+  "reviewrouter_release_migration",
+  "reviewrouter_web",
+  "reviewrouter_worker",
+] as const);
 /**
  * Reviewed, phase-specific exact catalog contract consumed by target-local
  * activation. Array ordering is canonical and is part of the digest.
@@ -130,9 +202,10 @@ export interface ActivationCatalogPolicy {
   readonly phase: "preactivation" | "activated";
   readonly database: string;
   readonly roles: readonly EffectivePrincipalRole[];
-  readonly memberships: readonly EffectivePrincipalMembership[];
+  readonly memberships: readonly ActivationCatalogMembership[];
   readonly roleReachability: readonly EffectivePrincipalRoleReachability[];
   readonly rowSecurity: readonly EffectivePrincipalRowSecurity[];
+  readonly extensions: readonly ActivationCatalogExtensionAuthority[];
   readonly grants: readonly EffectivePrincipalGrant[];
   readonly effectivePermissions: readonly Readonly<{
     principal: string;
@@ -197,9 +270,20 @@ const safeText = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && !value.includes("\0");
 const permissionKey = (value: EffectivePrincipalPermission): string =>
   `${value.capability}\0${value.resource}`;
+const grantIdentityKey = (value: EffectivePrincipalGrant): string =>
+  canonicalJson([
+    value.principal,
+    value.capability,
+    value.resource,
+    value.source,
+    value.grantable,
+    value.grantor,
+  ]);
+const compareCanonicalText = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0;
 const sortedUnique = <T>(items: readonly T[], key: (value: T) => string): T[] =>
   [...new Map(items.map((item) => [key(item), item])).values()].sort((a, b) =>
-    key(a).localeCompare(key(b)),
+    compareCanonicalText(key(a), key(b)),
   );
 
 export function canonicalEffectivePrincipalPolicy(
@@ -220,7 +304,9 @@ export function canonicalEffectivePrincipalPolicy(
             ),
           }),
         )
-        .sort((left, right) => left.principal.localeCompare(right.principal)),
+        .sort((left, right) =>
+          compareCanonicalText(left.principal, right.principal),
+        ),
     ),
   });
 }
@@ -314,6 +400,16 @@ export function evaluateEffectivePrincipalInventory(
       !["attribute", "ownership", "privilege", "public"].includes(grant.source)
     )
       violations.push("grant_inventory_invalid");
+  if (
+    new Set(inventory.grants.map(grantIdentityKey)).size !==
+    inventory.grants.length
+  )
+    violations.push("grant_inventory_duplicate_identity");
+  if (inventory.unsupportedAuthorityFamilies?.length)
+    violations.push("unsupported_catalog_authority");
+  for (const extension of inventory.extensions ?? [])
+    if (!safeText(extension.name) || !safeText(extension.owner))
+      violations.push("extension_authority_invalid");
   for (const edge of inventory.memberships)
     if (
       !safeText(edge.member) ||

@@ -6,6 +6,11 @@ import type {
   StepObservation,
   TargetSwitchFence,
 } from "../domain/release-rollout";
+import type {
+  ReleaseMigrationObservation,
+  ReleaseMigrationPermit,
+  ReleaseMigrationTransitionV1,
+} from "../domain/release-migration-transition";
 
 export interface ProviderControlPort {
   freezeAndObserve(): Promise<StepObservation>;
@@ -101,7 +106,11 @@ export interface DatabaseRolloutPort {
   ): Promise<StepObservation>;
   runReleaseMigration(
     target: DatabaseGenerationIdentity,
-  ): Promise<StepObservation>;
+    transition: ReleaseMigrationTransitionV1,
+    permit: ReleaseMigrationPermit,
+  ): Promise<
+    StepObservation<ReleaseMigrationObservation & Record<string, unknown>>
+  >;
   activate(rolloutId: string): Promise<StepObservation>;
 }
 

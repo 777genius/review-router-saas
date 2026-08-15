@@ -125,6 +125,7 @@ export type AttestationFreshnessBoundary = Readonly<{
 
 export type ExecuteFreshAttestedMutation = <Result>(
   mutation: () => Promise<Result> | Result,
+  subjectOverride?: ReleaseAuthorityAttestationSubject,
 ) => Promise<Result>;
 
 export class ReleaseAuthorityAttestationCoordinator {
@@ -255,9 +256,9 @@ export class ReleaseAuthorityAttestationCoordinator {
     ) => Promise<Result> | Result,
   ): Promise<Result> {
     const result = this.highRiskMutationTail.then(() =>
-      sequence(async (mutation) => {
+      sequence(async (mutation, subjectOverride) => {
         const boundary = this.captureFreshnessBoundary();
-        await this.forceNew(subject, boundary);
+        await this.forceNew(subjectOverride ?? subject, boundary);
         return await mutation();
       }),
     );

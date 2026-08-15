@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   activationAuthorityProvisioningSql,
   activationRoutineBodyTrustRoots,
+  canonicalActivationCatalogPolicyCandidateSql,
   canonicalActivationSql,
   effectivePrincipalInventorySqlSha256,
   roleProvisioningSql,
@@ -143,9 +145,53 @@ describe("target-local PG17 activation permit", () => {
   it("compares independently projected exact catalog and effective facts", () => {
     const sql = activationAuthorityProvisioningSql();
     expect(sql).toContain("'catalogPolicy',projected_catalog_policy");
-    expect(sql).toContain("'memberships',projected_inventory->'memberships'");
-    expect(sql).toContain("'grants',projected_inventory->'grants'");
+    expect(sql).toContain("WITH RECURSIVE canonical_principals");
+    expect(sql).toContain("relevance_seed(name)");
+    expect(sql).toContain("normalized_memberships");
+    expect(sql).toContain("'kind','external-bootstrap-authority'");
+    expect(sql).toContain("bootstrap_membership_grantor_not_inert");
+    expect(sql).toContain("bootstrap_membership_grantor_mismatch");
+    expect(sql).toContain("unexpected_relevant_membership");
+    expect(sql).toContain(
+      "ON membership.member=relevant.name OR membership.role=relevant.name",
+    );
+    expect(sql).toContain(
+      "member IN (SELECT name FROM relevant)\n       OR role IN (SELECT name FROM relevant)",
+    );
+    expect(sql).toContain(
+      "Memberships are the authoritative exact edge inventory",
+    );
+    expect(sql).toContain("(edge->>'setOption')::boolean");
+    expect(sql).toContain("(edge->>'inheritOption')::boolean");
+    expect(sql).toContain("(edge->>'adminOption')::boolean");
+    expect(sql).toContain(
+      `reviewrouter_activation.canonical_json(edge->'grantor') COLLATE "C"`,
+    );
+    expect(sql).toContain("to_jsonb('external-bootstrap-authority'::text)");
+    expect(sql).toContain("IF jsonb_array_length(policy_violations) <> 0");
+    expect(sql).toContain("'catalogPolicy',NULL");
     expect(sql).toContain("'rowSecurity',projected_inventory->'rowSecurity'");
+    expect(sql).toContain("normalized_extensions");
+    expect(sql).toContain("'external-provider-authority'");
+    expect(sql).toContain("'extensions'");
+    expect(sql).toContain("unsupported_catalog_authority");
+    expect(sql).toContain("unsupported_acl_privilege");
+    expect(sql).toContain("unexpected_grant_principal");
+    expect(sql).toContain(
+      "grant_record->>'principal' IS DISTINCT FROM 'PUBLIC'\n      AND NOT EXISTS (SELECT 1 FROM allowed_principals",
+    );
+    expect(sql).toContain(
+      "The inventory\n    -- grant union contains direct/default ACLs plus ownership and role\n    -- attributes",
+    );
+    expect(sql).toContain("unexpected_extension_owner");
+    expect(sql).toContain("unexpected_external_grantor");
+    expect(sql).toContain(
+      "grant_record->>'source'='attribute'\n        AND (grant_record->>'grantable')::boolean",
+    );
+    expect(sql).toContain("edge->>'grantor'=grant_record->>'grantor'");
+    expect(sql).not.toContain(
+      "SELECT principal FROM grant_facts WHERE principal <> 'PUBLIC'",
+    );
     expect(sql).toContain("'effectivePermissions'");
     expect(
       sql.match(/reachable\.login_name <> 'reviewrouter_role_bootstrap'/gu),
@@ -159,6 +205,128 @@ describe("target-local PG17 activation permit", () => {
     expect(sql).toContain(
       "RAISE EXCEPTION 'activation catalog policy mismatch'",
     );
+  });
+
+  it("captures candidates without permit or activation authority", () => {
+    const sql = canonicalActivationCatalogPolicyCandidateSql(
+      configuration,
+      "rr-disposable-activation-policy-test",
+    );
+    expect(sql).toContain("BEGIN;");
+    expect(sql).toContain("capture_catalog_policy_candidate('preactivation')");
+    expect(sql).toContain("capture_catalog_policy_candidate('activated')");
+    expect(activationAuthorityProvisioningSql()).toContain(
+      "activation catalog policy candidate target invalid",
+    );
+    expect(activationAuthorityProvisioningSql()).toContain(
+      "activation catalog policy candidate disposable marker invalid",
+    );
+    for (const attestationFact of [
+      "disposableCaptureAttestation",
+      "reviewrouter-disposable-database-attestation-v1",
+      "systemIdentifier",
+      "databaseOid",
+      "recoveryWitnessSha256",
+      "nonce",
+    ])
+      expect(activationAuthorityProvisioningSql()).toContain(attestationFact);
+    expect(activationAuthorityProvisioningSql()).toContain(
+      "session_user <> 'reviewrouter_release_migration'",
+    );
+    expect(activationAuthorityProvisioningSql()).toContain(
+      "USING DETAIL = reviewrouter_activation.canonical_json(\n        projection->'policy'->'violations'",
+    );
+    expect(sql).toContain(
+      "reviewrouter.activation_catalog_candidate_capture = 'disposable-only'",
+    );
+    expect(sql).toContain("GRANT CONNECT");
+    expect(sql).toContain("ROLLBACK;");
+    expect(sql).not.toContain("install_activation_permit");
+    expect(sql).not.toContain("stage_principal_evidence");
+    expect(sql).not.toContain("activate_generation");
+    expect(
+      sql.indexOf("capture_catalog_policy_candidate('preactivation')"),
+    ).toBeLessThan(sql.indexOf("GRANT CONNECT"));
+    expect(sql.indexOf("GRANT CONNECT")).toBeLessThan(
+      sql.indexOf("capture_catalog_policy_candidate('activated')"),
+    );
+  });
+
+  it("keeps the PG17 fixture production-shaped and permit proof pinned", () => {
+    const source = readFileSync(
+      new URL("./private-pg17-activation-adversarial.test.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("POSTGRES_USER=${providerAdminUsername}");
+    expect(source).not.toContain("POSTGRES_USER=${adminUsername}");
+    expect(source).toContain("disposablePg17TargetRoleFoundationSql({");
+    expect(source).toContain(
+      'providerAdminUsername = "disposable_provider_admin"',
+    );
+    expect(source).toContain(
+      "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
+    expect(source).toContain("disposablePg17CanonicalRoleBootstrapSetupSql()");
+    expect(source).toContain("roleProvisioningSql(configuration)");
+    expect(
+      source.indexOf(
+        "canonicalRoleBootstrapSetup.publicTableAclCanonicalization",
+      ),
+    ).toBeLessThan(
+      source.indexOf(
+        "canonicalRoleBootstrapSetup.activationAuthorityProvisioning",
+      ),
+    );
+    expect(
+      source.indexOf(
+        "canonicalRoleBootstrapSetup.activationAuthorityProvisioning",
+      ),
+    ).toBeLessThan(
+      source.indexOf("canonicalRoleBootstrapSetup.bootstrapDemotion"),
+    );
+    expect(
+      source.indexOf("canonicalRoleBootstrapSetup.bootstrapDemotion"),
+    ).toBeLessThan(source.indexOf("roleProvisioningSql(configuration)"));
+    expect(source.indexOf("roleProvisioningSql(configuration)")).toBeLessThan(
+      source.indexOf("runtimeGrantSql(configuration, { gateClosed: true })"),
+    );
+    expect(source).toContain('"@reviewrouter/platform-db"');
+    expect(source).toContain('"db:migrate:deploy"');
+    expect(source).toContain("clone immutable production-shaped seed");
+    expect(source).toContain("arrange?.(context);");
+    expect(source.indexOf("arrange?.(context);")).toBeLessThan(
+      source.indexOf("lockDownProvider(context);"),
+    );
+    expect(source).toContain(
+      "canonicalActivationCatalogPolicies.preactivation.policy",
+    );
+    expect(source).toContain(
+      "canonicalActivationCatalogPolicies.activated.sha256",
+    );
+    expect(source).not.toContain(
+      "project_effective_principal_authority('preactivation')->'catalogPolicy' AS before_policy",
+    );
+    expect(source).toContain("const psqlAs = (");
+    expect(source).toContain("session_user || '|' || current_user");
+    expect(source).not.toContain("SET SESSION AUTHORIZATION");
+    expect(source).not.toContain("activation_attack_target");
+    const preReadinessAclProof = source.slice(
+      source.indexOf(
+        '"rejects a disconnected NOLOGIN role with a direct application ACL before trust-root readiness"',
+      ),
+      source.indexOf(
+        '"rejects a second bootstrap grantor and an extra relevant edge"',
+      ),
+    );
+    expect(preReadinessAclProof).toContain("CREATE ROLE rr_inert_acl NOLOGIN");
+    expect(preReadinessAclProof).toContain(
+      "GRANT SELECT ON ${applicationRelation} TO rr_inert_acl",
+    );
+    expect(preReadinessAclProof).toContain("captureCandidateSql(identity)");
+    expect(source).toContain(
+      '"omits a disconnected role only while it has no application authority"',
+    );
+    expect(source).toContain("another_disconnected_provider_role");
   });
 
   it("gives the guard read-only migration history and no other public table access", () => {
@@ -261,6 +429,8 @@ describe("target-local PG17 activation permit", () => {
       sql.indexOf("WITH runtime_roles(role_name, role_kind)"),
     ).toBeLessThan(sql.lastIndexOf("IF receipt.rollout_id IS NOT NULL THEN"));
     expect(sql).toContain("consumed activation permit has no receipt");
+    expect(sql).toContain("activation permit superseded");
+    expect(sql).toContain("newer.permit_epoch > permit.permit_epoch");
     expect(sql).toContain("activation permit consumption raced");
   });
 

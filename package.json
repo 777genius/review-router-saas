@@ -68,6 +68,7 @@
     "codex-rotating:loopback-proof": "REVIEW_ROUTER_CODEX_ROTATING_WIRE_PROOF=1 vitest run apps/web/src/server/codex-rotating-one-shot-curl.real.test.ts apps/api/src/github/one-shot-github-secret-put.protocol.test.ts apps/api/src/github/one-shot-github-secret-put.real.test.ts apps/api/src/github/codex-rotating-integrated-fault.real.test.ts",
     "codex-rotating:rollout-proof": "vitest run scripts/verify-codex-rotating-rollout.test.ts",
     "release-rollout:rehearsal": "node --import tsx scripts/rehearse-private-pg17-rollout.mjs",
+    "release-rollout:promote-activation-catalog-policy": "node --import tsx scripts/promote-private-pg17-activation-catalog-policy.mjs",
     "release-authority:fresh-install": "node scripts/install-release-authority-db.mjs --fresh-install",
     "release-authority:upgrade": "node scripts/install-release-authority-db.mjs --incremental-upgrade",
     "release-rollout:evidence:assemble": "node --import tsx scripts/assemble-private-pg17-trusted-evidence.ts",

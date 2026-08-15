@@ -18,8 +18,14 @@ import type {
   CreateProvisioningIntent,
   PersistRunnerRegistrationInput,
   RolloutBinding,
+  RolloutClaimBinding,
   PersistedJob,
 } from "../domain/model.js";
+import type {
+  ReleaseMigrationPermit,
+  ReleaseMigrationReceipt,
+  ReleaseMigrationTransitionV1,
+} from "@reviewrouter/features-release-rollout";
 import type {
   ProviderAuthorityDecisionService,
   ReleaseAuthorityService,
@@ -246,6 +252,423 @@ const exactKeys = (
 };
 const nonemptyString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= 256;
+const rolloutIdentifier = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{2,255}$/u;
+const commitSha = /^[a-f0-9]{40}$/u;
+const sha256Digest = /^sha256:[a-f0-9]{64}$/u;
+const rawSha256 = /^[a-f0-9]{64}$/u;
+const postgresSystemIdentifier = /^[1-9][0-9]{0,19}$/u;
+const positiveRunId = /^[1-9][0-9]{0,39}$/u;
+const migrationName = /^\d{6}_[a-z0-9_]+$/u;
+const imageDigest = /^sha256:[a-f0-9]{64}$/u;
+const permitNonce = /^[a-f0-9]{32}$/u;
+
+const invalidMigrationRequest = (): never => {
+  throw Object.assign(new Error("release_migration_request_invalid"), {
+    statusCode: 400,
+  });
+};
+
+const stringMatching = (value: unknown, pattern: RegExp): value is string =>
+  typeof value === "string" && pattern.test(value);
+const requiredPattern = (value: unknown, pattern: RegExp): string => {
+  if (typeof value === "string" && pattern.test(value)) return value;
+  return invalidMigrationRequest();
+};
+const requiredArray = (value: unknown): unknown[] => {
+  if (Array.isArray(value)) return value;
+  return invalidMigrationRequest();
+};
+
+const exactTimestamp = (value: unknown): value is string =>
+  typeof value === "string" &&
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) &&
+  Number.isFinite(Date.parse(value)) &&
+  new Date(value).toISOString() === value;
+
+const migrationTransitionRequest = (
+  value: unknown,
+): ReleaseMigrationTransitionV1 => {
+  const body = record(value);
+  if (
+    !exactKeys(body, [
+      "schemaVersion",
+      "commitSha",
+      "releaseImageDigest",
+      "migrationArtifactDigest",
+      "orderedMigrationEntries",
+      "preManifestIdentity",
+      "orderedPendingEntriesSha256",
+      "migrationBundleSha256",
+      "allowedResumeManifestIdentities",
+      "postManifestIdentity",
+      "postCatalogDigest",
+      "transitionSha256",
+    ]) ||
+    body.schemaVersion !== 1 ||
+    !stringMatching(body.commitSha, commitSha) ||
+    !stringMatching(body.releaseImageDigest, imageDigest) ||
+    !stringMatching(body.migrationArtifactDigest, sha256Digest) ||
+    !stringMatching(body.preManifestIdentity, sha256Digest) ||
+    !stringMatching(body.orderedPendingEntriesSha256, sha256Digest) ||
+    !stringMatching(body.migrationBundleSha256, sha256Digest) ||
+    !stringMatching(body.postManifestIdentity, sha256Digest) ||
+    !stringMatching(body.postCatalogDigest, sha256Digest) ||
+    !stringMatching(body.transitionSha256, sha256Digest) ||
+    !Array.isArray(body.orderedMigrationEntries) ||
+    body.orderedMigrationEntries.length < 1 ||
+    !Array.isArray(body.allowedResumeManifestIdentities) ||
+    body.allowedResumeManifestIdentities.length < 2
+  )
+    invalidMigrationRequest();
+  const orderedMigrationEntriesValue = requiredArray(
+    body.orderedMigrationEntries,
+  );
+  const allowedResumeManifestIdentitiesValue = requiredArray(
+    body.allowedResumeManifestIdentities,
+  );
+  const orderedMigrationEntries = orderedMigrationEntriesValue.map((entry) => {
+    const item = record(entry);
+    if (
+      !exactKeys(item, ["migrationName", "migrationSqlSha256"]) ||
+      !stringMatching(item.migrationName, migrationName) ||
+      !stringMatching(item.migrationSqlSha256, rawSha256)
+    )
+      invalidMigrationRequest();
+    return {
+      migrationName: requiredPattern(item.migrationName, migrationName),
+      migrationSqlSha256: requiredPattern(item.migrationSqlSha256, rawSha256),
+    };
+  });
+  const allowedResumeManifestIdentities =
+    allowedResumeManifestIdentitiesValue.map((entry) => {
+      if (!stringMatching(entry, sha256Digest)) invalidMigrationRequest();
+      return requiredPattern(entry, sha256Digest);
+    });
+  return {
+    schemaVersion: 1,
+    commitSha: requiredPattern(body.commitSha, commitSha),
+    releaseImageDigest: requiredPattern(body.releaseImageDigest, imageDigest),
+    migrationArtifactDigest: requiredPattern(
+      body.migrationArtifactDigest,
+      sha256Digest,
+    ),
+    orderedMigrationEntries,
+    preManifestIdentity: requiredPattern(
+      body.preManifestIdentity,
+      sha256Digest,
+    ),
+    orderedPendingEntriesSha256: requiredPattern(
+      body.orderedPendingEntriesSha256,
+      sha256Digest,
+    ),
+    migrationBundleSha256: requiredPattern(
+      body.migrationBundleSha256,
+      sha256Digest,
+    ),
+    allowedResumeManifestIdentities,
+    postManifestIdentity: requiredPattern(
+      body.postManifestIdentity,
+      sha256Digest,
+    ),
+    postCatalogDigest: requiredPattern(body.postCatalogDigest, sha256Digest),
+    transitionSha256: requiredPattern(body.transitionSha256, sha256Digest),
+  };
+};
+
+export const rolloutClaimRequest = (value: unknown): RolloutClaimBinding => {
+  const body = record(value);
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "expectedCommitSha",
+      "runId",
+      "runAttempt",
+      "sourceSystemIdentifier",
+      "targetSystemIdentifier",
+      "targetRecoveryWitnessSha256",
+      "migrationTransition",
+    ]) ||
+    !stringMatching(body.rolloutId, rolloutIdentifier) ||
+    !stringMatching(body.expectedCommitSha, commitSha) ||
+    !stringMatching(body.runId, positiveRunId) ||
+    body.runAttempt !== 1 ||
+    !stringMatching(body.sourceSystemIdentifier, postgresSystemIdentifier) ||
+    !stringMatching(body.targetSystemIdentifier, postgresSystemIdentifier) ||
+    body.sourceSystemIdentifier === body.targetSystemIdentifier ||
+    !stringMatching(body.targetRecoveryWitnessSha256, rawSha256)
+  )
+    invalidMigrationRequest();
+  return {
+    rolloutId: requiredPattern(body.rolloutId, rolloutIdentifier),
+    expectedCommitSha: requiredPattern(body.expectedCommitSha, commitSha),
+    runId: requiredPattern(body.runId, positiveRunId),
+    runAttempt: 1,
+    sourceSystemIdentifier: requiredPattern(
+      body.sourceSystemIdentifier,
+      postgresSystemIdentifier,
+    ),
+    targetSystemIdentifier: requiredPattern(
+      body.targetSystemIdentifier,
+      postgresSystemIdentifier,
+    ),
+    targetRecoveryWitnessSha256: requiredPattern(
+      body.targetRecoveryWitnessSha256,
+      rawSha256,
+    ),
+    migrationTransition: migrationTransitionRequest(body.migrationTransition),
+  };
+};
+
+export const migrationPermitRequest = (
+  value: unknown,
+): ReleaseMigrationPermit => {
+  const body = record(value);
+  if (
+    !exactKeys(body, [
+      "schemaVersion",
+      "rolloutId",
+      "runId",
+      "runAttempt",
+      "targetSystemIdentifier",
+      "targetRecoveryWitnessSha256",
+      "transitionSha256",
+      "expectedPreviousReceiptSha256",
+      "epoch",
+      "nonce",
+    ]) ||
+    body.schemaVersion !== 1 ||
+    !stringMatching(body.rolloutId, rolloutIdentifier) ||
+    !stringMatching(body.runId, positiveRunId) ||
+    body.runAttempt !== 1 ||
+    !stringMatching(body.targetSystemIdentifier, postgresSystemIdentifier) ||
+    !stringMatching(body.targetRecoveryWitnessSha256, rawSha256) ||
+    !stringMatching(body.transitionSha256, sha256Digest) ||
+    !stringMatching(body.expectedPreviousReceiptSha256, sha256Digest) ||
+    !Number.isSafeInteger(body.epoch) ||
+    Number(body.epoch) < 1 ||
+    !stringMatching(body.nonce, permitNonce)
+  )
+    invalidMigrationRequest();
+  return {
+    schemaVersion: 1,
+    rolloutId: requiredPattern(body.rolloutId, rolloutIdentifier),
+    runId: requiredPattern(body.runId, positiveRunId),
+    runAttempt: 1,
+    targetSystemIdentifier: requiredPattern(
+      body.targetSystemIdentifier,
+      postgresSystemIdentifier,
+    ),
+    targetRecoveryWitnessSha256: requiredPattern(
+      body.targetRecoveryWitnessSha256,
+      rawSha256,
+    ),
+    transitionSha256: requiredPattern(body.transitionSha256, sha256Digest),
+    expectedPreviousReceiptSha256: requiredPattern(
+      body.expectedPreviousReceiptSha256,
+      sha256Digest,
+    ),
+    epoch: Number(body.epoch),
+    nonce: requiredPattern(body.nonce, permitNonce),
+  };
+};
+
+export const migrationReceiptRequest = (
+  value: unknown,
+): ReleaseMigrationReceipt => {
+  const body = record(value);
+  const requiredKeys = [
+    "step",
+    "receiptId",
+    "observedAt",
+    "rolloutId",
+    "expectedCommitSha",
+    "runId",
+    "runAttempt",
+    "sourceSystemIdentifier",
+    "targetSystemIdentifier",
+    "observationSha256",
+    "previousReceiptSha256",
+    "receiptSha256",
+    "migrationChecksum",
+    "transitionSha256",
+    "migrationArtifactDigest",
+    "migrationBundleSha256",
+    "preManifestIdentity",
+    "postManifestIdentity",
+    "postCatalogDigest",
+    "permitEpoch",
+    "permitNonce",
+  ];
+  const actualKeys = Object.keys(body);
+  if (
+    (!exactKeys(body, requiredKeys) &&
+      !exactKeys(body, [...requiredKeys, "provider"])) ||
+    body.step !== "run_release_migration" ||
+    !stringMatching(body.receiptId, rolloutIdentifier) ||
+    !exactTimestamp(body.observedAt) ||
+    !stringMatching(body.rolloutId, rolloutIdentifier) ||
+    !stringMatching(body.expectedCommitSha, commitSha) ||
+    !stringMatching(body.runId, positiveRunId) ||
+    body.runAttempt !== 1 ||
+    !stringMatching(body.sourceSystemIdentifier, postgresSystemIdentifier) ||
+    !stringMatching(body.targetSystemIdentifier, postgresSystemIdentifier) ||
+    body.sourceSystemIdentifier === body.targetSystemIdentifier ||
+    !stringMatching(body.observationSha256, sha256Digest) ||
+    !stringMatching(body.previousReceiptSha256, sha256Digest) ||
+    !stringMatching(body.receiptSha256, sha256Digest) ||
+    !stringMatching(body.migrationChecksum, sha256Digest) ||
+    !stringMatching(body.transitionSha256, sha256Digest) ||
+    !stringMatching(body.migrationArtifactDigest, sha256Digest) ||
+    !stringMatching(body.migrationBundleSha256, sha256Digest) ||
+    !stringMatching(body.preManifestIdentity, sha256Digest) ||
+    !stringMatching(body.postManifestIdentity, sha256Digest) ||
+    !stringMatching(body.postCatalogDigest, sha256Digest) ||
+    !Number.isSafeInteger(body.permitEpoch) ||
+    Number(body.permitEpoch) < 1 ||
+    !stringMatching(body.permitNonce, permitNonce) ||
+    (actualKeys.includes("provider") && body.provider !== null)
+  )
+    invalidMigrationRequest();
+  return {
+    step: "run_release_migration",
+    receiptId: requiredPattern(body.receiptId, rolloutIdentifier),
+    observedAt: exactTimestamp(body.observedAt)
+      ? body.observedAt
+      : invalidMigrationRequest(),
+    rolloutId: requiredPattern(body.rolloutId, rolloutIdentifier),
+    expectedCommitSha: requiredPattern(body.expectedCommitSha, commitSha),
+    runId: requiredPattern(body.runId, positiveRunId),
+    runAttempt: 1,
+    sourceSystemIdentifier: requiredPattern(
+      body.sourceSystemIdentifier,
+      postgresSystemIdentifier,
+    ),
+    targetSystemIdentifier: requiredPattern(
+      body.targetSystemIdentifier,
+      postgresSystemIdentifier,
+    ),
+    provider: undefined,
+    observationSha256: requiredPattern(body.observationSha256, sha256Digest),
+    previousReceiptSha256: requiredPattern(
+      body.previousReceiptSha256,
+      sha256Digest,
+    ),
+    receiptSha256: requiredPattern(body.receiptSha256, sha256Digest),
+    migrationChecksum: requiredPattern(body.migrationChecksum, sha256Digest),
+    transitionSha256: requiredPattern(body.transitionSha256, sha256Digest),
+    migrationArtifactDigest: requiredPattern(
+      body.migrationArtifactDigest,
+      sha256Digest,
+    ),
+    migrationBundleSha256: requiredPattern(
+      body.migrationBundleSha256,
+      sha256Digest,
+    ),
+    preManifestIdentity: requiredPattern(
+      body.preManifestIdentity,
+      sha256Digest,
+    ),
+    postManifestIdentity: requiredPattern(
+      body.postManifestIdentity,
+      sha256Digest,
+    ),
+    postCatalogDigest: requiredPattern(body.postCatalogDigest, sha256Digest),
+    permitEpoch: Number(body.permitEpoch),
+    permitNonce: requiredPattern(body.permitNonce, permitNonce),
+  };
+};
+
+export const migrationBeginRequest = (
+  value: unknown,
+  routeRolloutId: string,
+) => {
+  const body = record(value);
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "expectedCommitSha",
+      "runId",
+      "runAttempt",
+      "sourceSystemIdentifier",
+      "targetSystemIdentifier",
+      "targetRecoveryWitnessSha256",
+      "transitionSha256",
+      "expectedPreviousReceiptSha256",
+    ]) ||
+    body.rolloutId !== routeRolloutId
+  )
+    invalidMigrationRequest();
+  if (
+    !stringMatching(body.rolloutId, rolloutIdentifier) ||
+    !stringMatching(body.expectedCommitSha, commitSha) ||
+    !stringMatching(body.runId, positiveRunId) ||
+    body.runAttempt !== 1 ||
+    !stringMatching(body.sourceSystemIdentifier, postgresSystemIdentifier) ||
+    !stringMatching(body.targetSystemIdentifier, postgresSystemIdentifier) ||
+    body.sourceSystemIdentifier === body.targetSystemIdentifier ||
+    !stringMatching(body.targetRecoveryWitnessSha256, rawSha256) ||
+    !stringMatching(body.transitionSha256, sha256Digest) ||
+    !stringMatching(body.expectedPreviousReceiptSha256, sha256Digest)
+  )
+    invalidMigrationRequest();
+  return {
+    rolloutId: requiredPattern(body.rolloutId, rolloutIdentifier),
+    expectedCommitSha: requiredPattern(body.expectedCommitSha, commitSha),
+    runId: requiredPattern(body.runId, positiveRunId),
+    runAttempt: 1,
+    sourceSystemIdentifier: requiredPattern(
+      body.sourceSystemIdentifier,
+      postgresSystemIdentifier,
+    ),
+    targetSystemIdentifier: requiredPattern(
+      body.targetSystemIdentifier,
+      postgresSystemIdentifier,
+    ),
+    targetRecoveryWitnessSha256: requiredPattern(
+      body.targetRecoveryWitnessSha256,
+      rawSha256,
+    ),
+    transitionSha256: requiredPattern(body.transitionSha256, sha256Digest),
+    expectedPreviousReceiptSha256: requiredPattern(
+      body.expectedPreviousReceiptSha256,
+      sha256Digest,
+    ),
+  };
+};
+
+export const migrationCompleteRequest = (
+  value: unknown,
+  routeRolloutId: string,
+) => {
+  const body = record(value);
+  if (!exactKeys(body, ["permit", "receipt"])) invalidMigrationRequest();
+  const permit = migrationPermitRequest(body.permit);
+  const receipt = migrationReceiptRequest(body.receipt);
+  if (
+    permit.rolloutId !== routeRolloutId ||
+    receipt.rolloutId !== routeRolloutId
+  )
+    invalidMigrationRequest();
+  return { permit, receipt };
+};
+
+export const migrationFailRequest = (
+  value: unknown,
+  routeRolloutId: string,
+) => {
+  const body = record(value);
+  if (!exactKeys(body, ["permit", "reasonSha256"])) invalidMigrationRequest();
+  const permit = migrationPermitRequest(body.permit);
+  if (
+    permit.rolloutId !== routeRolloutId ||
+    !stringMatching(body.reasonSha256, sha256Digest)
+  )
+    invalidMigrationRequest();
+  return {
+    permit,
+    reasonSha256: requiredPattern(body.reasonSha256, sha256Digest),
+  };
+};
 const invalidEffectRequest = (): never => {
   throw Object.assign(new Error("release_runner_effect_request_invalid"), {
     statusCode: 400,
@@ -899,7 +1322,7 @@ export async function registerReleaseRolloutLedgerRoutes(
   );
   app.post("/v1/rollouts/claim", { preHandler: control }, async (request) => ({
     result: await dependencies.authority.claim(
-      record(request.body) as RolloutBinding,
+      rolloutClaimRequest(request.body),
     ),
   }));
   app.post<{ Params: { rolloutId: string } }>(
@@ -944,6 +1367,46 @@ export async function registerReleaseRolloutLedgerRoutes(
         rolloutId: request.params.rolloutId,
       } as never),
     }),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/rollouts/:rolloutId/release-migration/begin",
+    { preHandler: control },
+    async (request) => ({
+      permit: await dependencies.authority.beginReleaseMigration({
+        ...migrationBeginRequest(request.body, request.params.rolloutId),
+      }),
+    }),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/rollouts/:rolloutId/release-migration/complete",
+    { preHandler: control },
+    async (request) => ({
+      receipt: await dependencies.authority.completeReleaseMigration(
+        migrationCompleteRequest(request.body, request.params.rolloutId),
+      ),
+    }),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/rollouts/:rolloutId/release-migration/fail",
+    { preHandler: control },
+    async (request) => {
+      await dependencies.authority.failReleaseMigration(
+        migrationFailRequest(request.body, request.params.rolloutId),
+      );
+      return { failed: true };
+    },
+  );
+  app.get<{
+    Params: { rolloutId: string };
+    Querystring: { target_system_identifier: string };
+  }>(
+    "/v1/rollouts/:rolloutId/release-migration/checkpoint",
+    { preHandler: control },
+    async (request) =>
+      await dependencies.authority.loadReleaseMigrationCheckpoint({
+        rolloutId: request.params.rolloutId,
+        targetSystemIdentifier: request.query.target_system_identifier,
+      }),
   );
   app.put<{ Params: { rolloutId: string } }>(
     "/v1/rollouts/:rolloutId/activation-uncertain",

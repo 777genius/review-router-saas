@@ -13,6 +13,7 @@ export type ReleaseAuthorityDatabaseReadiness = Readonly<{
   roleName: string;
   authorityOwnerRoleName: string;
   systemIdentifier: string;
+  recoveryWitnessSha256: string;
   databaseIdentity: RuntimeDatabaseIdentity;
   postgresMajor: number;
   schemaVersion: number;
@@ -35,6 +36,7 @@ export type ReleaseAuthorityDatabaseReadiness = Readonly<{
   installerRoutineBodySha256: string;
   readerRoutineBodySha256: string;
   applicationMigrationManifestIdentity: string;
+  applicationPostCatalogDigest: string;
   activationNamespaceFingerprint: string;
   authorityRoleTopologyExact: boolean;
   activationGuardExact: boolean;
@@ -69,8 +71,26 @@ export type TrustedReleaseControlDatabaseIdentity = Readonly<{
   installerRoutineBodySha256: string;
   readerRoutineBodySha256: string;
   targetMigrationManifestIdentity: string;
+  /** Exact transition endpoints accepted only by phase-uncertain quarantine. */
+  allowedTargetMigrationManifestIdentities?: readonly string[];
+  /** Required only while completing a post-migration target operation. */
+  targetPostCatalogDigest?: string;
   activationNamespaceFingerprint: string;
 }>;
+
+const targetManifestIdentityIsTrusted = (
+  actual: string,
+  trusted: TrustedReleaseControlDatabaseIdentity,
+): boolean =>
+  actual === trusted.targetMigrationManifestIdentity ||
+  trusted.allowedTargetMigrationManifestIdentities?.includes(actual) === true;
+
+const targetPostCatalogDigestIsTrusted = (
+  actual: string,
+  trusted: TrustedReleaseControlDatabaseIdentity,
+): boolean =>
+  trusted.targetPostCatalogDigest === undefined ||
+  actual === trusted.targetPostCatalogDigest;
 
 export const releaseAuthoritySchemaIsReady = (
   readiness: ReleaseAuthorityDatabaseReadiness,
@@ -218,8 +238,14 @@ export function releaseControlMutationDatabaseIsReady(
         readiness.installerRoutine &&
         readiness.installerRoutineBodySha256 ===
           trusted.installerRoutineBodySha256 &&
-        readiness.applicationMigrationManifestIdentity ===
-          trusted.targetMigrationManifestIdentity &&
+        targetManifestIdentityIsTrusted(
+          readiness.applicationMigrationManifestIdentity,
+          trusted,
+        ) &&
+        targetPostCatalogDigestIsTrusted(
+          readiness.applicationPostCatalogDigest,
+          trusted,
+        ) &&
         readiness.activationNamespaceFingerprint ===
           trusted.activationNamespaceFingerprint &&
         readiness.activationGuardExact &&
@@ -233,8 +259,14 @@ export function releaseControlMutationDatabaseIsReady(
         ) &&
         readiness.readerRoutine &&
         readiness.readerRoutineBodySha256 === trusted.readerRoutineBodySha256 &&
-        readiness.applicationMigrationManifestIdentity ===
-          trusted.targetMigrationManifestIdentity &&
+        targetManifestIdentityIsTrusted(
+          readiness.applicationMigrationManifestIdentity,
+          trusted,
+        ) &&
+        targetPostCatalogDigestIsTrusted(
+          readiness.applicationPostCatalogDigest,
+          trusted,
+        ) &&
         readiness.activationNamespaceFingerprint ===
           trusted.activationNamespaceFingerprint &&
         readiness.activationGuardExact &&

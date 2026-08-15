@@ -316,9 +316,11 @@ const useCases = new ReleaseRolloutUseCases({
     copy: unavailable,
     verifyEquivalence: unavailable,
     bootstrapTargetRoles: unavailable,
-    runReleaseMigration: async () => {
+    runReleaseMigration: async (_target, transition, permit) => {
       const observation = canonical.runReleaseMigration(
         canonicalReleaseEnvironment,
+        transition,
+        permit,
       );
       migration = observation.facts;
       return observation;

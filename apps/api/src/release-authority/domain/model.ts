@@ -10,6 +10,10 @@ import type {
   RunnerIdentity,
   StepObservation,
   TargetSwitchFence,
+  ReleaseMigrationPermit,
+  ReleaseMigrationReceipt,
+  ReleaseMigrationTransitionV1,
+  TargetManifestPhase,
   ProviderMutationAuthorityPort,
 } from "@reviewrouter/features-release-rollout";
 import type {
@@ -37,6 +41,10 @@ export type RolloutBinding = {
   runAttempt: number;
   sourceSystemIdentifier: string;
   targetSystemIdentifier: string;
+};
+export type RolloutClaimBinding = RolloutBinding & {
+  targetRecoveryWitnessSha256: string;
+  migrationTransition: ReleaseMigrationTransitionV1;
 };
 export type ProvisioningIntent = RunnerProvisioningIntentRecord;
 export type CreateProvisioningIntent = Omit<
@@ -136,7 +144,30 @@ export interface ReleaseAuthorityLedgerPort {
   recordSourceFreezeMutation(
     input: RecordSourceFreezeMutation,
   ): Promise<"recorded" | "existing">;
-  claim(input: RolloutBinding): Promise<"claimed" | "duplicate">;
+  claim(input: RolloutClaimBinding): Promise<"claimed" | "duplicate">;
+  beginReleaseMigration(
+    input: RolloutBinding & {
+      targetRecoveryWitnessSha256: string;
+      transitionSha256: string;
+      expectedPreviousReceiptSha256: string;
+    },
+  ): Promise<ReleaseMigrationPermit>;
+  completeReleaseMigration(input: {
+    permit: ReleaseMigrationPermit;
+    receipt: ReleaseMigrationReceipt;
+  }): Promise<ReleaseMigrationReceipt>;
+  failReleaseMigration(input: {
+    permit: ReleaseMigrationPermit;
+    reasonSha256: string;
+  }): Promise<void>;
+  loadReleaseMigrationCheckpoint(input: {
+    rolloutId: string;
+    targetSystemIdentifier: string;
+  }): Promise<{
+    targetManifestPhase: TargetManifestPhase;
+    permit: ReleaseMigrationPermit | null;
+    receipt: ReleaseMigrationReceipt | null;
+  }>;
   compareAndSet(
     input: RolloutBinding & {
       step: string;
@@ -161,6 +192,8 @@ export interface ReleaseAuthorityLedgerPort {
       targetDeployIds: readonly string[];
       postgresMajor: 17;
       migrationChecksum: string;
+      transitionSha256: string;
+      postManifestIdentity: string;
     },
   ): Promise<ActivationAuthorization>;
   finalizeActivation(input: {

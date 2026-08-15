@@ -1,14 +1,21 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  liveV70V72CatalogDigestSha256 as fencedLiveV70V72CatalogDigestSha256,
+  fencedLiveV70V72CatalogDigestSql,
+} from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
+import {
   activationAuthorityProvisioningSql,
   atomicMigrationAndGrantSql,
   activationPrincipalRoleCapabilityMatrix,
   assertCanonicalRoleTopology,
+  canonicalActivationCatalogPolicyCandidateSql,
   canonicalRoleTopologyObservationSql,
   canonicalDatabaseGenerationObservationSql,
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
+  liveV70V72CatalogDigestSha256,
+  liveV70V72CatalogDigestSql,
   isActivationPrincipalRoleCapabilityPermitted,
   resolveReleaseMigrationConfiguration,
   resolveRoleBootstrapConfiguration,
@@ -52,6 +59,28 @@ describe("application database release-authority isolation", () => {
       /\b(?:CREATE|ALTER|DROP|GRANT|REVOKE)\s+(?:ROLE|TABLE|FUNCTION|PROCEDURE)\b/iu,
     );
     expect(migration).not.toContain("release_rollout_ledger");
+  });
+  it("binds capture to a structured live disposable-database attestation", () => {
+    const sql = canonicalActivationCatalogPolicyCandidateSql(
+      resolveReleaseMigrationConfiguration(environment()),
+      "rr-disposable-activation-policy-test",
+    );
+
+    expect(sql).toContain("ROLLBACK;");
+    expect(sql).toContain(
+      "reviewrouter.activation_catalog_candidate_capture = 'disposable-only'",
+    );
+    const authoritySql = activationAuthorityProvisioningSql();
+    expect(authoritySql).toContain("disposableCaptureAttestation");
+    expect(authoritySql).toContain(
+      "reviewrouter-disposable-database-attestation-v1",
+    );
+    expect(authoritySql).toContain("systemIdentifier");
+    expect(authoritySql).toContain("databaseOid");
+    expect(authoritySql).toContain("recoveryWitnessSha256");
+    expect(authoritySql).toContain("nonce");
+    expect(sql).not.toContain("install_activation_permit");
+    expect(sql).not.toContain("activate_generation");
   });
 
   it("provisions only target-local activation capability", () => {
@@ -298,21 +327,47 @@ describe("canonical exclusive release migration caller", () => {
       expect(migrationSql).toContain("SET LOCAL lock_timeout = '5000ms'");
     }
     expect(atomicMigration).toContain(
-      "SELECT pg_advisory_lock(1381126735, 1129271120)",
+      "SELECT pg_advisory_xact_lock(1381126735, 1129271120)",
     );
+    expect(atomicMigration).not.toContain("pg_advisory_xact_lock_shared");
+    expect(atomicMigration).not.toContain("\\! pnpm");
+    expect(atomicMigration).not.toContain("pg_advisory_unlock");
+    expect(atomicMigration.indexOf("BEGIN;")).toBeLessThan(
+      atomicMigration.indexOf("pg_advisory_xact_lock(1381126735"),
+    );
+    expect(
+      atomicMigration.indexOf("pg_advisory_xact_lock(1381126735"),
+    ).toBeLessThan(
+      atomicMigration.indexOf("000060_codex_oauth_setup_serialization"),
+    );
+    expect(atomicMigration.trim().endsWith("COMMIT;")).toBe(true);
+    expect(atomicMigration).toContain(liveV70V72CatalogDigestSql);
+    expect(liveV70V72CatalogDigestSha256).toBe(
+      fencedLiveV70V72CatalogDigestSha256,
+    );
+    expect(fencedLiveV70V72CatalogDigestSql).toContain(
+      "read_activation_migration_manifest_identity()",
+    );
+    expect(fencedLiveV70V72CatalogDigestSql).not.toContain(
+      "FROM public._prisma_migrations",
+    );
+    for (const catalogFact of [
+      "'columns'",
+      "'constraints'",
+      "'indexes'",
+      "'relations'",
+      "'functions'",
+      "'defaultAcl'",
+      "'history'",
+      "'unresolvedHistory'",
+      "'legacyAuthoritySchemaPresent'",
+      "pg_get_functiondef",
+      "securityDefiner",
+      "searchPath",
+    ])
+      expect(liveV70V72CatalogDigestSql).toContain(catalogFact);
     expect(atomicMigration).toContain(
-      "\\! pnpm --filter @reviewrouter/platform-db db:migrate:deploy",
-    );
-    expect(atomicMigration).toContain("\\if :SHELL_ERROR");
-    expect(atomicMigration).toContain("\\quit :SHELL_EXIT_CODE");
-    expect(atomicMigration.indexOf("pg_advisory_lock")).toBeLessThan(
-      atomicMigration.indexOf("db:migrate:deploy"),
-    );
-    expect(atomicMigration.indexOf("db:migrate:deploy")).toBeLessThan(
-      atomicMigration.indexOf("BEGIN;"),
-    );
-    expect(atomicMigration.indexOf("COMMIT;")).toBeLessThan(
-      atomicMigration.indexOf("pg_advisory_unlock"),
+      "release migration V70-V72 live catalog digest mismatch",
     );
     const observationSql = canonicalRoleTopologyObservationSql();
     const createdRoleIdentities = [

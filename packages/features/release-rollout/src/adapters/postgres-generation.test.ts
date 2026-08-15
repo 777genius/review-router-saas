@@ -101,6 +101,18 @@ describe("PostgreSQL effective-principal catalog adapter", () => {
     );
   });
 
+  it("separates type ownership from the database ACL projection", () => {
+    expect(effectivePrincipalInventorySql).toMatch(
+      /AND type\.typtype IN \('d','e','m','r','c'\)\n  UNION ALL\n  SELECT coalesce\(grantee\.rolname,'PUBLIC'\),\n    CASE acl\.privilege_type WHEN 'CONNECT' THEN 'database:connect'/u,
+    );
+  });
+
+  it("separates type ACLs from the table ACL projection", () => {
+    expect(effectivePrincipalInventorySql).toMatch(
+      /AND type\.typtype IN \('d','e','m','r','c'\)\n  UNION ALL\n  SELECT coalesce\(grantee\.rolname,'PUBLIC'\),\n    CASE acl\.privilege_type WHEN 'INSERT' THEN 'table:insert'/u,
+    );
+  });
+
   it("enumerates login attributes, membership options, ownership, and every write surface", () => {
     for (const token of [
       "rolcanlogin",
@@ -124,6 +136,51 @@ describe("PostgreSQL effective-principal catalog adapter", () => {
       "PUBLIC",
     ])
       expect(effectivePrincipalInventorySql).toContain(token);
+  });
+
+  it("maps PG17 table ACLs completely and fails closed on unknown privileges", () => {
+    expect(
+      effectivePrincipalInventorySql.match(/WHEN 'SELECT' THEN 'table:read'/gu),
+    ).toHaveLength(2);
+    expect(
+      effectivePrincipalInventorySql.match(
+        /WHEN 'MAINTAIN' THEN 'table:maintain'/gu,
+      ),
+    ).toHaveLength(2);
+    expect(effectivePrincipalInventorySql).not.toContain(
+      "WHEN 'REFERENCES' THEN 'table:references' ELSE 'table:read'",
+    );
+    expect(effectivePrincipalInventorySql).toContain(
+      "ELSE 'unsupported:table-acl:'||acl.privilege_type",
+    );
+    expect(effectivePrincipalInventorySql).toContain(
+      "ELSE 'unsupported:table-default-acl:'||acl.privilege_type",
+    );
+  });
+
+  it("projects extension authority and gates unsupported families without local OIDs", () => {
+    expect(effectivePrincipalInventorySql).toContain("pg_catalog.pg_extension");
+    expect(effectivePrincipalInventorySql).toContain("'extensions'");
+    expect(effectivePrincipalInventorySql).toContain(
+      "'unsupportedAuthorityFamilies'",
+    );
+    expect(effectivePrincipalInventorySql).not.toContain(
+      "'large-object:'||metadata.oid::text",
+    );
+    for (const catalog of [
+      "pg_largeobject_metadata",
+      "pg_foreign_data_wrapper",
+      "pg_foreign_server",
+      "pg_publication",
+      "pg_subscription",
+      "pg_event_trigger",
+      "pg_parameter_acl",
+      "pg_language",
+      "pg_tablespace",
+      "pg_statistic_ext",
+      "pg_ts_config",
+    ])
+      expect(effectivePrincipalInventorySql).toContain(catalog);
   });
 });
 

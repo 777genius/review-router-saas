@@ -61,6 +61,10 @@ export const releaseAuthorityMigrationContract = Object.freeze([
     "000012_provider_mutation_resource_fence",
     "sha256:45eb81a2715cf8c254cdacc2ca4ce8c80fc6c6527c009fe9dce63c3f80a510b1",
   ],
+  [
+    "000013_phase_aware_application_manifest",
+    "sha256:c2c721cef391504da5b2053da017e83b4dd80811f410368071138f0f28352853",
+  ],
 ]);
 
 export const releaseAuthorityMigrationPaths = Object.freeze(

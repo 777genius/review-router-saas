@@ -25,6 +25,9 @@ export type ReleaseAuthorityAttestationSubject = Readonly<{
     readerSha256: string;
   }>;
   migrationManifestIdentity: string;
+  targetManifestIdentity?: string;
+  targetManifestPhase?: "pre_migration" | "post_migration" | "control_only";
+  migrationTransitionSha256?: string;
   activationFingerprint: string;
   activationCatalogPolicies: Readonly<{
     preactivationCatalogPolicySha256: string;
@@ -52,6 +55,14 @@ export function createReleaseAuthorityAttestationSubject(
     !sha256.test(input.routineBodyRoots.installerSha256) ||
     !sha256.test(input.routineBodyRoots.readerSha256) ||
     !sha256.test(input.migrationManifestIdentity) ||
+    (input.targetManifestIdentity !== undefined &&
+      !sha256.test(input.targetManifestIdentity)) ||
+    (input.targetManifestPhase !== undefined &&
+      !["pre_migration", "post_migration", "control_only"].includes(
+        input.targetManifestPhase,
+      )) ||
+    (input.migrationTransitionSha256 !== undefined &&
+      !sha256.test(input.migrationTransitionSha256)) ||
     !sha256.test(input.activationFingerprint) ||
     !sha256.test(
       input.activationCatalogPolicies.preactivationCatalogPolicySha256,
