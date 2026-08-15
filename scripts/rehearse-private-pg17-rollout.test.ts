@@ -51,6 +51,13 @@ describe("disposable dual-version rehearsal", () => {
     ).toBe("release migration v70-v72 live catalog digest mismatch");
     expect(
       safePostgresErrorClassification(
+        "psql: ERROR:  P0001: release migration target live completion mismatch:catalog_digest_observed\nDETAIL: token=secret",
+      ),
+    ).toBe(
+      "release migration target live completion mismatch:catalog_digest_observed",
+    );
+    expect(
+      safePostgresErrorClassification(
         "psql: ERROR:  P0001: codex_oauth_provider_identity_mismatch\nDETAIL: token=secret",
       ),
     ).toBe("codex_oauth_provider_identity_mismatch");
