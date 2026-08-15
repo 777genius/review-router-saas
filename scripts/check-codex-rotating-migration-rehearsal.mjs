@@ -2145,7 +2145,7 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     transferredLegacyOwners === "2:2",
     "role bootstrap did not transfer pre-existing public objects to the schema owner",
   );
-  psql(release, [
+  psql(url, [
     "-c",
     `DROP FUNCTION public.rr_legacy_bootstrap_owned_fn();
      DROP TABLE public.rr_legacy_bootstrap_owned;`,

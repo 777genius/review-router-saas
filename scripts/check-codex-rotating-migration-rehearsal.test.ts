@@ -232,6 +232,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(provisioning).toContain(
       "role bootstrap did not transfer pre-existing public objects to the schema owner",
     );
+    expect(provisioning).toMatch(
+      /psql\(url, \[\s+"-c",\s+`DROP FUNCTION public\.rr_legacy_bootstrap_owned_fn\(\);/u,
+    );
     expect(source).toContain("membership_grantor_count <> 1");
     expect(source).toContain(
       "granted.rolname <> 'reviewrouter_activation_receipt_guard'",
