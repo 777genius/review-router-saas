@@ -1,13 +1,16 @@
 import type { RepositoryWorkflowProbePort } from "@reviewrouter/features-repo-health";
 import type { ProviderKind } from "@reviewrouter/features-review-providers";
 import {
+  assertSameVersionedProviderSecretNamespace,
   type CodexRotatingReviewActionV2Mode,
-  type CodexRotatingT0WorkflowSchemaVersion,
+  CodexRotatingT0WorkflowSchemaVersion,
   type VersionedProviderSecretNamespace,
   defaultCodexRotatingWorkflowPath,
   defaultWorkflowPath,
   getCodexRotatingWorkflowSetupContentMarkerGroups,
   getWorkflowSetupContentMarkerGroups,
+  readCanonicalCodexRotatingT0WorkflowSourceMetadata,
+  scanCodexRotatingAdvisoryWorkflow,
   type ReviewRouterDiscussionMode,
 } from "@reviewrouter/features-workflow-provisioning";
 
@@ -68,6 +71,21 @@ export async function isWorkflowSetupAlreadyCurrent(
                   }
                 : {}),
             }),
+          ...(input.codexRotatingWorkflowSchemaVersion ===
+            CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 &&
+          input.codexRotatingWorkflowSecretNamespace
+            ? {
+                expectedContentValidator: (workflow: string) =>
+                  isCanonicalVersionedCodexWorkflowReady({
+                    workflow,
+                    expectedActionRef: input.actionRef,
+                    expectedProviderInstanceId:
+                      input.codexRotatingProviderInstanceId!,
+                    expectedSecretNamespace:
+                      input.codexRotatingWorkflowSecretNamespace!,
+                  }),
+              }
+            : {}),
         }
       : input.providerKind || input.conflictReviewFallbackEnabled === true
         ? {
@@ -85,4 +103,36 @@ export async function isWorkflowSetupAlreadyCurrent(
     workflowCheck.expectedActionRefFound &&
     (workflowCheck.expectedContentMarkersFound ?? true)
   );
+}
+
+function isCanonicalVersionedCodexWorkflowReady(input: {
+  readonly workflow: string;
+  readonly expectedActionRef: string;
+  readonly expectedProviderInstanceId: string;
+  readonly expectedSecretNamespace: VersionedProviderSecretNamespace;
+}): boolean {
+  try {
+    if (!scanCodexRotatingAdvisoryWorkflow(input.workflow).valid) {
+      return false;
+    }
+    const metadata = readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+      input.workflow,
+    );
+    if (
+      metadata.actionRef !== input.expectedActionRef ||
+      metadata.providerInstanceId !== input.expectedProviderInstanceId ||
+      metadata.workflowSchemaVersion !==
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+      !metadata.secretNamespace
+    ) {
+      return false;
+    }
+    assertSameVersionedProviderSecretNamespace({
+      expected: input.expectedSecretNamespace,
+      actual: metadata.secretNamespace,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
