@@ -2128,7 +2128,7 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
   ]);
   const transferredLegacyOwners = psql(release, [
     "-Atc",
-    `SELECT count(*) || ':' || count(*) FILTER (WHERE owner_name = 'reviewrouter_release_migration')
+    `SELECT count(*) || ':' || count(*) FILTER (WHERE owner_name = 'reviewrouter_release_schema_owner')
      FROM (
        SELECT owner.rolname AS owner_name
        FROM pg_class relation
@@ -2143,7 +2143,7 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
   ]).stdout.trim();
   assert(
     transferredLegacyOwners === "2:2",
-    "role bootstrap did not transfer pre-existing public objects to the release role",
+    "role bootstrap did not transfer pre-existing public objects to the schema owner",
   );
   psql(release, [
     "-c",

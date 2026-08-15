@@ -226,6 +226,12 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "REVOKE ${foreignGrantedRole} FROM reviewrouter_role_bootstrap GRANTED BY ${foreignGrantor}",
     );
     expect(provisioning).toContain("DROP ROLE ${foreignGrantedRole}");
+    expect(provisioning).toContain(
+      "owner_name = 'reviewrouter_release_schema_owner'",
+    );
+    expect(provisioning).toContain(
+      "role bootstrap did not transfer pre-existing public objects to the schema owner",
+    );
     expect(source).toContain("membership_grantor_count <> 1");
     expect(source).toContain(
       "granted.rolname <> 'reviewrouter_activation_receipt_guard'",
