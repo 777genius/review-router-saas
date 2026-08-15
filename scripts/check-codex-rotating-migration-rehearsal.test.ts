@@ -420,7 +420,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).toContain("runRehearsalReleaseSubprocess");
     expect(provisioning).toContain(
-      "markCanonicalRehearsalRoles(bootstrap.toString())",
+      "markCanonicalRehearsalRoles(url.toString())",
     );
     expect(source).toContain(
       'searchParams.set("application_name", applicationName)',

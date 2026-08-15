@@ -2150,7 +2150,7 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     `DROP FUNCTION public.rr_legacy_bootstrap_owned_fn();
      DROP TABLE public.rr_legacy_bootstrap_owned;`,
   ]);
-  markCanonicalRehearsalRoles(bootstrap.toString());
+  markCanonicalRehearsalRoles(url.toString());
   return {
     clients,
     environment,
