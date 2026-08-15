@@ -27,6 +27,9 @@ type JsonRpcRequest = Readonly<{
 
 const briefMarker = "REVIEWROUTER_INVESTIGATION_TURN_BRIEF_V1_BASE64URL:";
 const scenarioMarker = "REVIEWROUTER_PAIRED_E2E_SCENARIO:";
+const codexVersion = requireCodexVersion(
+  process.env.REVIEW_ROUTER_PAIRED_CODEX_APP_SERVER_VERSION,
+);
 const threadId = "reviewrouter-paired-e2e-thread";
 const turnId = "reviewrouter-paired-e2e-turn";
 let protocolCwd = process.cwd();
@@ -38,7 +41,7 @@ void main();
 
 async function main(): Promise<void> {
   if (process.argv.includes("--version")) {
-    process.stdout.write("codex-cli 0.145.0\n");
+    process.stdout.write(`codex-cli ${codexVersion}\n`);
     return;
   }
   if (!process.argv.includes("app-server")) {
@@ -57,7 +60,7 @@ async function handleRequest(message: JsonRpcRequest): Promise<void> {
   switch (message.method) {
     case "initialize":
       await respond(message, {
-        userAgent: "Codex Desktop/0.145.0 reviewrouter-paired-e2e",
+        userAgent: `Codex Desktop/${codexVersion} reviewrouter-paired-e2e`,
         codexHome: process.cwd(),
         platformFamily: "unix",
         platformOs: process.platform,
@@ -471,7 +474,7 @@ function threadRecord() {
     modelProvider: "openai",
     path: null,
     cwd: protocolCwd,
-    cliVersion: "0.145.0",
+    cliVersion: codexVersion,
     turns: [],
   };
 }
@@ -542,6 +545,13 @@ function stringEnvironment(
       (entry): entry is [string, string] => entry[1] !== undefined,
     ),
   );
+}
+
+function requireCodexVersion(value: string | undefined): string {
+  if (!value || !/^[0-9]+\.[0-9]+\.[0-9]+$/u.test(value)) {
+    throw new Error("paired_fake_codex_version_invalid");
+  }
+  return value;
 }
 
 function stringField(value: Record<string, unknown>, field: string): string {

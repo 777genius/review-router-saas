@@ -93,9 +93,11 @@ async function main(): Promise<void> {
     artifactsRoot = await mkdtemp(
       path.join(tmpdir(), "reviewrouter-paired-codex-"),
     );
+    const codexVersion = await readPinnedCodexVersion(config.actionSourceDir);
     const fakeCodexPath = await buildFakeCodex(
       artifactsRoot,
       config.actionSourceDir,
+      codexVersion,
     );
     const result = await executeScenario(config, modules, fakeCodexPath);
     emitResult(result);
@@ -749,6 +751,7 @@ async function assertExactActionReleaseArtifacts(
 async function buildFakeCodex(
   artifactsRoot: string,
   actionSourceDir: string,
+  codexVersion: string,
 ): Promise<string> {
   const output = path.join(artifactsRoot, "paired-fake-codex.cjs");
   await build({
@@ -765,9 +768,41 @@ async function buildFakeCodex(
     logLevel: "silent",
     banner: { js: "#!/usr/bin/env node" },
     nodePaths: [path.join(actionSourceDir, "node_modules")],
+    define: {
+      "process.env.REVIEW_ROUTER_PAIRED_CODEX_APP_SERVER_VERSION":
+        JSON.stringify(codexVersion),
+    },
   });
   await chmod(output, 0o700);
   return output;
+}
+
+async function readPinnedCodexVersion(
+  actionSourceDir: string,
+): Promise<string> {
+  const [protocolSource, oauthSource] = await Promise.all([
+    readFile(
+      path.join(
+        actionSourceDir,
+        "src/review-investigation/infrastructure/codex-app-server-protocol.ts",
+      ),
+      "utf8",
+    ),
+    readFile(
+      path.join(actionSourceDir, "src/codex-oauth/codex-cli.ts"),
+      "utf8",
+    ),
+  ]);
+  const protocolVersion = protocolSource.match(
+    /CODEX_APP_SERVER_VERSION\s*=\s*["']([0-9]+\.[0-9]+\.[0-9]+)["']/u,
+  )?.[1];
+  const oauthVersion = oauthSource.match(
+    /CODEX_OAUTH_PINNED_CODEX_PACKAGE\s*=\s*["']@openai\/codex@([0-9]+\.[0-9]+\.[0-9]+)["']/u,
+  )?.[1];
+  if (!protocolVersion || protocolVersion !== oauthVersion) {
+    throw new Error("paired_action_codex_version_contract_invalid");
+  }
+  return protocolVersion;
 }
 
 async function readConfig(value: string | undefined): Promise<RunnerConfig> {
