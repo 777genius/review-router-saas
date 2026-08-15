@@ -41,6 +41,11 @@ describe("disposable dual-version rehearsal", () => {
     ).toBe("public ownership convergence failed");
     expect(
       safePostgresErrorClassification(
+        "psql: ERROR:  P0001: release migration executor runtime CONNECT gate mismatch\nDETAIL: token=secret",
+      ),
+    ).toBe("release migration executor runtime connect gate mismatch");
+    expect(
+      safePostgresErrorClassification(
         "psql: ERROR:  P0001: codex_oauth_provider_identity_mismatch\nDETAIL: token=secret",
       ),
     ).toBe("codex_oauth_provider_identity_mismatch");

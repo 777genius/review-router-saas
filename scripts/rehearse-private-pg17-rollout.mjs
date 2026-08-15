@@ -404,8 +404,6 @@ export function safePostgresErrorClassification(stderr) {
     return `permission denied for ${deniedObject[1]?.toLowerCase()} ${deniedObject[2]}`;
   if (/ERROR:\s*permission denied/iu.test(normalizedStderr ?? ""))
     return "permission denied";
-  if (/ERROR:\s*release migration/iu.test(normalizedStderr ?? ""))
-    return "release migration invariant rejected";
   const namedInvariant = normalizedStderr?.match(
     /ERROR:\s*((?:codex_oauth|reviewrouter|runtime|release)_[a-z0-9_]{2,160})(?:\n|$)/iu,
   )?.[1];
@@ -418,6 +416,8 @@ export function safePostgresErrorClassification(stderr) {
     /ERROR:\s*([a-z][a-z ]{2,100})(?:\n|$)/iu,
   )?.[1];
   if (staticInvariant) return staticInvariant.toLowerCase();
+  if (/ERROR:\s*release migration/iu.test(normalizedStderr ?? ""))
+    return "release migration invariant rejected";
   if (sqlState) return `postgres sqlstate ${sqlState}`;
   if (/ERROR:/u.test(normalizedStderr ?? "")) return "postgres error";
   return undefined;
