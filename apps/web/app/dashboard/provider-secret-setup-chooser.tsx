@@ -911,6 +911,8 @@ function providerSetupSubmitErrorText(error: string): string {
       return "Rotating Codex OAuth is not enabled for this ReviewRouter deployment.";
     case "codex_rotating_setup_not_ready":
       return "ReviewRouter could not prove an active server-authorized versioned setup. Finish the versioned write and merge its exact workflow before retrying.";
+    case "codex_rotating_workflow_namespace_not_ready":
+      return "ReviewRouter has an unfinished versioned setup. Run the fresh setup command above, merge its exact workflow, then verify again.";
     default:
       return "The dashboard could not save provider setup. Retry once, then check server logs if it repeats.";
   }
