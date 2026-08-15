@@ -325,6 +325,12 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       source.indexOf("function proveLateMigrationRollbackAndReplayMatrix"),
     );
     const prepareIndex = orchestration.indexOf("prepareCanonicalReleaseRoles(");
+    const fixtureSeedIndex = orchestration.indexOf(
+      "seedDirtyFixtures(rehearsalUrl)",
+    );
+    const releaseLoginIndex = orchestration.indexOf(
+      "rehearsalUrl = rehearsalRoleClients.release",
+    );
     const helperIndex = orchestration.indexOf(
       "executeCanonicalReleaseMigration(",
     );
@@ -332,6 +338,8 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "discardRehearsalOnlyRolledBackMigrationHistory(rehearsalUrl)",
     );
     expect(prepareIndex).toBeGreaterThan(-1);
+    expect(fixtureSeedIndex).toBeGreaterThan(prepareIndex);
+    expect(fixtureSeedIndex).toBeLessThan(releaseLoginIndex);
     expect(prepareIndex).toBeLessThan(helperIndex);
     expect(rehearsalHistoryResetIndex).toBeGreaterThan(prepareIndex);
     expect(rehearsalHistoryResetIndex).toBeLessThan(helperIndex);

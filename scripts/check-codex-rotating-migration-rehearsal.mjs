@@ -95,8 +95,8 @@ try {
     applyBaselineThrough59,
   );
   rehearsalRoleClients = rehearsalRelease.clients;
-  rehearsalUrl = rehearsalRoleClients.release;
   seedDirtyFixtures(rehearsalUrl);
+  rehearsalUrl = rehearsalRoleClients.release;
   await proveMigration60LockTimeout(rehearsalUrl);
   migrateResolve(rehearsalUrl, "--rolled-back", migration60Name);
   await proveCombinedLockTimeout(rehearsalUrl);
