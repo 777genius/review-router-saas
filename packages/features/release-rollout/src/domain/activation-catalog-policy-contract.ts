@@ -1,11 +1,14 @@
-import { canonicalJson, sha256Canonical } from "./release-rollout";
+import { sha256Canonical } from "./release-rollout";
 import generatedActivationCatalogPolicyArtifact from "./activation-catalog-policy-artifact.generated.js";
 import {
-  PrincipalCapability,
   canonicalActivationPrincipalNames,
   canonicalBootstrapMembershipRoleNames,
   type ActivationCatalogPolicy,
 } from "./effective-principal-inventory";
+import {
+  assertActivationCatalogPolicyNormalizationForProfile,
+  type ActivationCatalogPolicyNormalizationProfile,
+} from "./activation-catalog-policy-normalization";
 
 export type ActivationCatalogPolicyPhase = "preactivation" | "activated";
 
@@ -19,19 +22,6 @@ export type ActivationCatalogPolicyDigests = Readonly<{
   activatedCatalogPolicySha256: string;
 }>;
 
-const policyFields = [
-  "kind",
-  "version",
-  "phase",
-  "database",
-  "roles",
-  "memberships",
-  "roleReachability",
-  "rowSecurity",
-  "extensions",
-  "grants",
-  "effectivePermissions",
-] as const;
 // The checked-in v20 artifact remains independently pinned until the rollout
 // orchestrator captures and promotes the schema-owner topology. Live capture
 // uses canonicalActivationPrincipalNames; this validator deliberately proves
@@ -39,17 +29,15 @@ const policyFields = [
 const promotedArtifactPrincipalNames = canonicalActivationPrincipalNames.filter(
   (name) => name !== "reviewrouter_release_schema_owner",
 );
-const promotedArtifactBootstrapMembershipRoleNames =
-  canonicalBootstrapMembershipRoleNames.filter(
-    (name) => name !== "reviewrouter_release_schema_owner",
-  );
-const canonicalPrincipals = new Set<string>(promotedArtifactPrincipalNames);
-const canonicalCapabilities = new Set<string>(
-  Object.values(PrincipalCapability),
-);
-const grantSources = new Set(["attribute", "ownership", "privilege", "public"]);
-const rehearsalIdentifier =
-  /(?:rehearsal(?:_|items)|app_private|rr_(?:direct|parent|inherited|set_|owner|super|bypass|column|sequence|routine))/u;
+const promotedArtifactNormalizationProfile: ActivationCatalogPolicyNormalizationProfile =
+  Object.freeze({
+    principalNames: promotedArtifactPrincipalNames,
+    bootstrapMembershipRoleNames: canonicalBootstrapMembershipRoleNames,
+    noLoginPrincipalNames: Object.freeze([
+      "reviewrouter_activation_receipt_guard",
+    ]),
+    createRolePrincipalNames: Object.freeze(["reviewrouter_role_bootstrap"]),
+  });
 
 export const canonicalActivationCatalogPolicyTrustRootReadiness: Readonly<{
   status: "blocked" | "ready";
@@ -186,7 +174,11 @@ export function assertActivationCatalogPolicyNormalization(
   phase: ActivationCatalogPolicyPhase,
 ): asserts value is ActivationCatalogPolicy {
   try {
-    assertNormalizedPolicy(value, phase);
+    assertActivationCatalogPolicyNormalizationForProfile(
+      value,
+      phase,
+      promotedArtifactNormalizationProfile,
+    );
   } catch {
     throw new Error(`activation_catalog_policy_normalization_invalid:${phase}`);
   }
@@ -203,216 +195,6 @@ function isExactRecord(
     Object.keys(value).length === fields.length &&
     fields.every((field) => Object.hasOwn(value, field))
   );
-}
-
-function isSafeText(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && !value.includes("\0");
-}
-
-function assertUnique(values: readonly unknown[]): void {
-  const keys = values.map((item) => canonicalJson(item));
-  if (new Set(keys).size !== keys.length) throw new Error("duplicate");
-}
-
-function assertNormalizedPolicy(
-  value: unknown,
-  phase: ActivationCatalogPolicyPhase,
-): asserts value is ActivationCatalogPolicy {
-  if (
-    !isExactRecord(value, policyFields) ||
-    value.kind !== "reviewrouter-activation-catalog-policy" ||
-    value.version !== 1 ||
-    value.phase !== phase ||
-    value.database !== "review_router"
-  )
-    throw new Error("policy");
-  const arrayFields = policyFields.slice(4);
-  if (!arrayFields.every((field) => Array.isArray(value[field])))
-    throw new Error("arrays");
-
-  const roles = value.roles as unknown[];
-  if (roles.length !== promotedArtifactPrincipalNames.length)
-    throw new Error("roles");
-  roles.forEach((role, index) => {
-    if (
-      !isExactRecord(role, [
-        "name",
-        "canLogin",
-        "inherit",
-        "superuser",
-        "bypassRls",
-        "replication",
-        "createDatabase",
-        "createRole",
-        "connectionLimit",
-        "validUntil",
-      ]) ||
-      role.name !== promotedArtifactPrincipalNames[index] ||
-      role.canLogin !==
-        (role.name !== "reviewrouter_activation_receipt_guard") ||
-      role.inherit !== true ||
-      role.superuser !== false ||
-      role.bypassRls !== false ||
-      role.replication !== false ||
-      role.createDatabase !== false ||
-      role.createRole !== (role.name === "reviewrouter_role_bootstrap") ||
-      role.connectionLimit !== -1 ||
-      role.validUntil !== null
-    )
-      throw new Error("role");
-  });
-
-  const memberships = value.memberships as unknown[];
-  if (
-    memberships.length !== promotedArtifactBootstrapMembershipRoleNames.length
-  )
-    throw new Error("memberships");
-  memberships.forEach((membership, index) => {
-    if (
-      !isExactRecord(membership, [
-        "member",
-        "role",
-        "setOption",
-        "inheritOption",
-        "adminOption",
-        "grantor",
-      ]) ||
-      membership.member !== "reviewrouter_role_bootstrap" ||
-      membership.role !== promotedArtifactBootstrapMembershipRoleNames[index] ||
-      membership.setOption !== false ||
-      membership.inheritOption !== false ||
-      membership.adminOption !== true ||
-      !isExactRecord(membership.grantor, ["kind"]) ||
-      membership.grantor.kind !== "external-bootstrap-authority"
-    )
-      throw new Error("membership");
-  });
-
-  const reachability = value.roleReachability as unknown[];
-  reachability.forEach((edge) => {
-    if (
-      !isExactRecord(edge, ["principal", "role", "usage", "set"]) ||
-      !canonicalPrincipals.has(String(edge.principal)) ||
-      !canonicalPrincipals.has(String(edge.role)) ||
-      typeof edge.usage !== "boolean" ||
-      typeof edge.set !== "boolean"
-    )
-      throw new Error("reachability");
-  });
-  assertUnique(reachability);
-
-  const rowSecurity = value.rowSecurity as unknown[];
-  rowSecurity.forEach((relation) => {
-    if (
-      !isExactRecord(relation, [
-        "relation",
-        "owner",
-        "enabled",
-        "forced",
-        "policies",
-      ]) ||
-      !isSafeText(relation.relation) ||
-      !canonicalPrincipals.has(String(relation.owner)) ||
-      typeof relation.enabled !== "boolean" ||
-      typeof relation.forced !== "boolean" ||
-      !Array.isArray(relation.policies)
-    )
-      throw new Error("row-security");
-    relation.policies.forEach((policy) => {
-      if (
-        !isExactRecord(policy, [
-          "name",
-          "command",
-          "permissive",
-          "using",
-          "withCheck",
-          "roles",
-        ]) ||
-        !isSafeText(policy.name) ||
-        !isSafeText(policy.command) ||
-        typeof policy.permissive !== "boolean" ||
-        !(policy.using === null || typeof policy.using === "string") ||
-        !(policy.withCheck === null || typeof policy.withCheck === "string") ||
-        !Array.isArray(policy.roles) ||
-        !policy.roles.every(
-          (role) => role === "PUBLIC" || canonicalPrincipals.has(String(role)),
-        )
-      )
-        throw new Error("row-security-policy");
-    });
-    assertUnique(relation.policies);
-  });
-  assertUnique(rowSecurity);
-
-  const extensions = value.extensions as unknown[];
-  extensions.forEach((extension) => {
-    if (
-      !isExactRecord(extension, ["name", "owner"]) ||
-      !isSafeText(extension.name) ||
-      !isExactRecord(
-        extension.owner,
-        (extension.owner as Record<string, unknown>)?.kind === "principal"
-          ? ["kind", "name"]
-          : ["kind"],
-      ) ||
-      !(
-        extension.owner.kind === "external-provider-authority" ||
-        (extension.owner.kind === "principal" &&
-          canonicalPrincipals.has(String(extension.owner.name)))
-      )
-    )
-      throw new Error("extension");
-  });
-  assertUnique(extensions);
-
-  const grants = value.grants as unknown[];
-  grants.forEach((grant) => {
-    if (
-      !isExactRecord(grant, [
-        "principal",
-        "capability",
-        "resource",
-        "source",
-        "grantable",
-        "grantor",
-      ]) ||
-      !(
-        grant.principal === "PUBLIC" ||
-        canonicalPrincipals.has(String(grant.principal))
-      ) ||
-      !canonicalCapabilities.has(String(grant.capability)) ||
-      !isSafeText(grant.resource) ||
-      !grantSources.has(String(grant.source)) ||
-      typeof grant.grantable !== "boolean" ||
-      !canonicalPrincipals.has(String(grant.grantor))
-    )
-      throw new Error("grant");
-  });
-  assertUnique(grants);
-
-  const effectivePermissions = value.effectivePermissions as unknown[];
-  if (effectivePermissions.length !== promotedArtifactPrincipalNames.length)
-    throw new Error("effective-permissions");
-  effectivePermissions.forEach((entry, index) => {
-    if (
-      !isExactRecord(entry, ["principal", "permissions"]) ||
-      entry.principal !== promotedArtifactPrincipalNames[index] ||
-      !Array.isArray(entry.permissions)
-    )
-      throw new Error("effective-permissions");
-    entry.permissions.forEach((permission) => {
-      if (
-        !isExactRecord(permission, ["capability", "resource"]) ||
-        !canonicalCapabilities.has(String(permission.capability)) ||
-        !isSafeText(permission.resource)
-      )
-        throw new Error("permission");
-    });
-    assertUnique(entry.permissions);
-  });
-
-  if (rehearsalIdentifier.test(canonicalJson(value)))
-    throw new Error("rehearsal-resource");
 }
 
 export function activationCatalogPolicyDigestsEqual(

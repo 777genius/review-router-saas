@@ -8,6 +8,8 @@ import {
 const expected: ActivationCatalogPolicyPromotionExpectation = {
   readinessReason: "reviewed-v21",
   captureBaseCommit: "a".repeat(40),
+  auditedHead: "2".repeat(40),
+  reviewArtifactSha256: "3".repeat(64),
   candidateBytes: 42,
   candidateSha256: "b".repeat(64),
   sourcePg16Image: `postgres:16.13-bookworm@sha256:${"c".repeat(64)}`,
@@ -19,7 +21,7 @@ const expected: ActivationCatalogPolicyPromotionExpectation = {
 
 const ready = () => ({
   kind: "reviewrouter-activation-catalog-policy-promotion-provenance",
-  version: 2,
+  version: 3,
   status: "ready",
   readinessReason: expected.readinessReason,
   promotedAt: "2026-08-15T10:31:00.000Z",
@@ -46,6 +48,8 @@ const ready = () => ({
     reviewerRunId: "rr-policy-review-v21",
     reviewedAt: "2026-08-15T10:30:00.000Z",
     baseCommit: expected.captureBaseCommit,
+    auditedHead: expected.auditedHead,
+    reviewArtifactSha256: expected.reviewArtifactSha256,
     candidateBytes: expected.candidateBytes,
     candidateSha256: expected.candidateSha256,
     postgresImages: {
@@ -74,6 +78,18 @@ describe("activation catalog policy promotion provenance", () => {
   });
 
   it.each([
+    [
+      "audited head drift",
+      (value: ReturnType<typeof ready>) => {
+        value.independentReview.auditedHead = "0".repeat(40);
+      },
+    ],
+    [
+      "review artifact digest drift",
+      (value: ReturnType<typeof ready>) => {
+        value.independentReview.reviewArtifactSha256 = "0".repeat(64);
+      },
+    ],
     [
       "NO-GO review",
       (value: ReturnType<typeof ready>) => {

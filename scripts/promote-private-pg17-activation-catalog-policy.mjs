@@ -7,9 +7,9 @@ import {
   sha256Canonical,
 } from "../packages/features/release-rollout/src/domain/release-rollout.ts";
 import {
-  canonicalActivationPrincipalNames,
-  canonicalBootstrapMembershipRoleNames,
-} from "../packages/features/release-rollout/src/domain/effective-principal-inventory.ts";
+  assertActivationCatalogPolicyNormalizationForProfile,
+  productionActivationCatalogPolicyNormalizationProfile,
+} from "../packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts";
 import { assertActivationCatalogPolicyPromotionProvenance } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
 
 export const activationCatalogPromotionOptIn =
@@ -39,6 +39,9 @@ export const reviewedActivationCatalogPromotionExpectation = Object.freeze({
   readinessReason:
     "reviewed-v21-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
   captureBaseCommit: "03329fc89abe441e094fc9cc15ca6e056bb38452",
+  auditedHead: "0000000000000000000000000000000000000000",
+  reviewArtifactSha256:
+    "0000000000000000000000000000000000000000000000000000000000000000",
   candidateBytes: reviewedActivationCatalogCandidate.bytes,
   candidateSha256: reviewedActivationCatalogCandidate.sha256,
   sourcePg16Image:
@@ -125,57 +128,17 @@ function assertArtifactCandidate(value) {
 }
 
 function assertNormalizedCandidatePolicy(value, phase) {
-  const fields = [
-    "database",
-    "effectivePermissions",
-    "extensions",
-    "grants",
-    "kind",
-    "memberships",
-    "phase",
-    "roleReachability",
-    "roles",
-    "rowSecurity",
-    "version",
-  ];
-  const validRecord =
-    value !== null && typeof value === "object" && !Array.isArray(value);
-  if (
-    !validRecord ||
-    Object.keys(value).sort().join(",") !== fields.join(",") ||
-    value.kind !== "reviewrouter-activation-catalog-policy" ||
-    value.version !== 1 ||
-    value.phase !== phase ||
-    value.database !== "review_router" ||
-    !fields
-      .filter(
-        (field) => !["database", "kind", "phase", "version"].includes(field),
-      )
-      .every((field) => Array.isArray(value[field])) ||
-    value.roles.map((role) => role?.name).join("\0") !==
-      canonicalActivationPrincipalNames.join("\0") ||
-    value.memberships.map((edge) => edge?.role).join("\0") !==
-      canonicalBootstrapMembershipRoleNames.join("\0") ||
-    value.memberships.some(
-      (edge) =>
-        edge?.member !== "reviewrouter_role_bootstrap" ||
-        edge?.setOption !== false ||
-        edge?.inheritOption !== false ||
-        edge?.adminOption !== true ||
-        Object.keys(edge?.grantor ?? {}).join(",") !== "kind" ||
-        edge.grantor.kind !== "external-bootstrap-authority",
-    ) ||
-    value.effectivePermissions.map((entry) => entry?.principal).join("\0") !==
-      canonicalActivationPrincipalNames.join("\0") ||
-    new Set(value.grants.map((grant) => canonicalJson(grant))).size !==
-      value.grants.length ||
-    /(?:rehearsal(?:_|items)|app_private|rr_(?:direct|parent|inherited|set_|owner|super|bypass|column|sequence|routine))/u.test(
-      canonicalJson(value),
-    )
-  )
+  try {
+    assertActivationCatalogPolicyNormalizationForProfile(
+      value,
+      phase,
+      productionActivationCatalogPolicyNormalizationProfile,
+    );
+  } catch {
     throw new Error(
       `activation_catalog_policy_promotion_normalization_invalid:${phase}`,
     );
+  }
 }
 
 export function canonicalActivationCatalogArtifactSource(candidateBytes) {

@@ -185,12 +185,11 @@ export const canonicalActivationPrincipalNames = Object.freeze([
   "reviewrouter_worker",
 ] as const);
 
-/** Exact provider-issued topology; only its single inert grantor is normalized. */
+/** Exact final provider-issued topology after the schema-owner handoff is revoked. */
 export const canonicalBootstrapMembershipRoleNames = Object.freeze([
   "reviewrouter_api",
   "reviewrouter_codex_effect_authority",
   "reviewrouter_release_migration",
-  "reviewrouter_release_schema_owner",
   "reviewrouter_web",
   "reviewrouter_worker",
 ] as const);

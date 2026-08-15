@@ -1,19 +1,59 @@
 import { describe, expect, it } from "vitest";
 import { parsePrivatePg17ActivationCatalogPolicyCandidate } from "./capture-private-pg17-activation-catalog-policy.mjs";
-import { canonicalActivationPrincipalNames } from "../packages/features/release-rollout/src/index.ts";
+import {
+  canonicalActivationPrincipalNames,
+  canonicalBootstrapMembershipRoleNames,
+} from "../packages/features/release-rollout/src/index.ts";
 
 const policy = (phase: "preactivation" | "activated") => ({
   kind: "reviewrouter-activation-catalog-policy",
   version: 1,
   phase,
   database: "review_router",
-  roles: canonicalActivationPrincipalNames.map((name) => ({ name })),
-  memberships: [],
-  roleReachability: [],
-  rowSecurity: [],
+  roles: canonicalActivationPrincipalNames.map((name) => ({
+    name,
+    canLogin: ![
+      "reviewrouter_activation_receipt_guard",
+      "reviewrouter_release_schema_owner",
+    ].includes(name),
+    inherit: true,
+    superuser: false,
+    bypassRls: false,
+    replication: false,
+    createDatabase: false,
+    createRole: false,
+    connectionLimit: -1,
+    validUntil: null,
+  })),
+  memberships: canonicalBootstrapMembershipRoleNames.map((role) => ({
+    member: "reviewrouter_role_bootstrap",
+    role,
+    setOption: false,
+    inheritOption: false,
+    adminOption: true,
+    grantor: { kind: "external-bootstrap-authority" },
+  })),
+  roleReachability: canonicalActivationPrincipalNames
+    .filter(
+      (name) =>
+        ![
+          "reviewrouter_activation_receipt_guard",
+          "reviewrouter_release_schema_owner",
+        ].includes(name),
+    )
+    .map((principal) => ({
+      principal,
+      role: principal,
+      usage: true,
+      set: true,
+    })),
+  rowSecurity: [] as Array<Record<string, unknown>>,
   extensions: [],
   grants: [],
-  effectivePermissions: [],
+  effectivePermissions: canonicalActivationPrincipalNames.map((principal) => ({
+    principal,
+    permissions: [] as Array<Record<string, unknown>>,
+  })),
 });
 
 const envelope = (preactivation: unknown, activated: unknown) =>
@@ -89,9 +129,7 @@ describe("activation catalog policy candidate capture", () => {
       parsePrivatePg17ActivationCatalogPolicyCandidate(
         envelope(rehearsal, policy("activated")),
       ),
-    ).toThrow(
-      "activation_catalog_policy_candidate_rehearsal_resource_forbidden:preactivation",
-    );
+    ).toThrow("activation_catalog_policy_candidate_invalid:preactivation");
 
     const grant = {
       principal: "reviewrouter_api",
@@ -109,7 +147,7 @@ describe("activation catalog policy candidate capture", () => {
       parsePrivatePg17ActivationCatalogPolicyCandidate(
         envelope(policy("preactivation"), duplicate),
       ),
-    ).toThrow("activation_catalog_policy_candidate_duplicate_grant:activated");
+    ).toThrow("activation_catalog_policy_candidate_invalid:activated");
   });
 
   it("accepts only provider-neutral, uniquely named extension authority", () => {
@@ -117,12 +155,12 @@ describe("activation catalog policy candidate capture", () => {
       ...policy("preactivation"),
       extensions: [
         {
-          name: "plpgsql",
-          owner: { kind: "external-provider-authority" },
-        },
-        {
           name: "pgcrypto",
           owner: { kind: "principal", name: "reviewrouter_role_bootstrap" },
+        },
+        {
+          name: "plpgsql",
+          owner: { kind: "external-provider-authority" },
         },
       ],
     };
@@ -141,9 +179,7 @@ describe("activation catalog policy candidate capture", () => {
           policy("activated"),
         ),
       ),
-    ).toThrow(
-      "activation_catalog_policy_candidate_extension_authority_invalid:preactivation",
-    );
+    ).toThrow("activation_catalog_policy_candidate_invalid:preactivation");
   });
 
   it("rejects a provider-local role even when it is otherwise harmless", () => {
@@ -158,8 +194,60 @@ describe("activation catalog policy candidate capture", () => {
       parsePrivatePg17ActivationCatalogPolicyCandidate(
         envelope(providerNamed, policy("activated")),
       ),
-    ).toThrow(
-      "activation_catalog_policy_candidate_provider_identity_forbidden:preactivation",
-    );
+    ).toThrow("activation_catalog_policy_candidate_invalid:preactivation");
+  });
+
+  it.each([
+    [
+      "role flags",
+      (value: ReturnType<typeof policy>) => {
+        value.roles[0]!.superuser = true;
+      },
+    ],
+    [
+      "schema-owner final membership",
+      (value: ReturnType<typeof policy>) => {
+        (value.memberships as Array<Record<string, unknown>>).splice(3, 0, {
+          ...value.memberships[0]!,
+          role: "reviewrouter_release_schema_owner",
+        });
+      },
+    ],
+    [
+      "non-self reachability",
+      (value: ReturnType<typeof policy>) => {
+        value.roleReachability[0]!.role = "reviewrouter_api";
+      },
+    ],
+    [
+      "nested row-security shape",
+      (value: ReturnType<typeof policy>) => {
+        value.rowSecurity.push({
+          relation: "public.items",
+          owner: "reviewrouter_release_schema_owner",
+          enabled: false,
+          forced: false,
+          policies: [{ name: "read", command: "r", permissive: true }],
+        });
+      },
+    ],
+    [
+      "nested permission shape",
+      (value: ReturnType<typeof policy>) => {
+        value.effectivePermissions[0]!.permissions.push({
+          capability: "database:connect",
+          resource: "database:review_router",
+          unexpected: true,
+        });
+      },
+    ],
+  ])("rejects malformed %s", (_name, mutate) => {
+    const malformed = policy("preactivation");
+    mutate(malformed);
+    expect(() =>
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        envelope(malformed, policy("activated")),
+      ),
+    ).toThrow("activation_catalog_policy_candidate_invalid:preactivation");
   });
 });

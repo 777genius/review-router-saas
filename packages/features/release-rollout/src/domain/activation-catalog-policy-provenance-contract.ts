@@ -1,6 +1,8 @@
 export type ActivationCatalogPolicyPromotionExpectation = Readonly<{
   readinessReason: string;
   captureBaseCommit: string;
+  auditedHead: string;
+  reviewArtifactSha256: string;
   candidateBytes: number;
   candidateSha256: string;
   sourcePg16Image: string;
@@ -56,7 +58,7 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
       ]) ||
       value.kind !==
         "reviewrouter-activation-catalog-policy-promotion-provenance" ||
-      value.version !== 2 ||
+      value.version !== 3 ||
       value.status !== "ready" ||
       value.readinessReason !== expected.readinessReason ||
       typeof value.promotedAt !== "string" ||
@@ -115,6 +117,8 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
         "reviewerRunId",
         "reviewedAt",
         "baseCommit",
+        "auditedHead",
+        "reviewArtifactSha256",
         "candidateBytes",
         "candidateSha256",
         "postgresImages",
@@ -126,6 +130,12 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
       typeof review.reviewedAt !== "string" ||
       !timestamp.test(review.reviewedAt) ||
       review.baseCommit !== value.captureBaseCommit ||
+      review.auditedHead !== expected.auditedHead ||
+      typeof review.auditedHead !== "string" ||
+      !commitSha.test(review.auditedHead) ||
+      review.reviewArtifactSha256 !== expected.reviewArtifactSha256 ||
+      typeof review.reviewArtifactSha256 !== "string" ||
+      !sha256.test(review.reviewArtifactSha256) ||
       review.candidateBytes !== candidate.bytes ||
       review.candidateSha256 !== candidate.sha256 ||
       !exactRecord(review.postgresImages, ["sourcePg16", "targetPg17"]) ||
