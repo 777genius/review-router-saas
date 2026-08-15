@@ -116,6 +116,10 @@ export const canonicalReleaseMigrationEntries = Object.freeze([
     "36ecd5c6b880bd9cd4ad76a20fdd9e4ceafcc3e524e924eb3c7b0c78116da093",
   ],
   [
+    "000072_retire_superseded_codex_setup_claims",
+    "a0105a5498bacf23ec59687f6b43c70cecc075665231c37d970edcf8c0855fb3",
+  ],
+  [
     "000072_runtime_canary_challenge",
     "48ac05b9da6031456de6b7bab2bc9ee46dc3b7bc5cb7ef45c7a5db1ee3956b68",
   ],
@@ -125,15 +129,15 @@ export const canonicalReleaseMigrationEntries = Object.freeze([
 
 export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
-    "sha256:7f14f768f030bc5d08f6f1452a8f5e60ab75b82e443a908e9b0889d630486c87",
+    "sha256:2a6d797c58dcbc09263859c079717ce833a7ee3dd7791582057147395749be3b",
   preManifestIdentity:
     "sha256:dac2d257a6b60be214b96b0a809df0ee18cc7615ffae21520802fe568debf554",
   orderedPendingEntriesSha256:
-    "sha256:b8bf82755df9f75fbb2d5cf4c310b84284b5df23ad7fc24cb2136554dd1f0ee9",
+    "sha256:665edd3be5a7add17d5fc8d8e35d4bab7a32d133cb89385bb10d3030899e2420",
   migrationBundleSha256:
-    "sha256:1633e85d2e13fe4e0758189d82c2f723c0ea6f67cb669971009f679015a8039a",
+    "sha256:729858362159799dcf1967d5bae71f6ffa1e176762337ff22f4c1d77c8f75018",
   postManifestIdentity:
-    "sha256:553576dcf644278cdc464d3465e34e0814862cd44c76784d89bb61c65f04b303",
+    "sha256:81dd8e6f9e3a799e462c26d1aa2684309df915416369b54f8499a8d793d5e623",
   // Captured digest of the canonical live V70-V72 catalog projection.
   postCatalogDigest:
     "sha256:eeead1a6e8ec36f32e550e275ee961ac4620f9c6ee35646d007abb1de54b6945",
@@ -151,6 +155,7 @@ export const canonicalReleaseMigrationResumeManifestIdentities = Object.freeze([
   "sha256:4b09dd9c7edc993c299054c6b63e02facbcea61c581f9e4a26a2a400725c266f",
   "sha256:741f4dffd0a5e66c3507d524fe00586fd070543e19c4b547db17eb3902e16c66",
   "sha256:122b0c7d62cdef78750d8e4cbeeed0e86e06af5b4558965257cefb711b051440",
+  "sha256:319bc469387a0853d9fb4731b455906426ca5c99cea02f6c9f33b224a54d9722",
   canonicalReleaseMigrationArtifact.postManifestIdentity,
 ]);
 
