@@ -8,6 +8,7 @@ import {
   canonicalActivationSql,
   effectivePrincipalInventorySqlSha256,
   roleProvisioningSql,
+  runtimeGrantStatements,
 } from "./run-codex-rotating-release-migration.mjs";
 import { effectivePrincipalInventorySql } from "../packages/features/release-rollout/src/index.ts";
 import { fencedLiveV70V72CatalogDigestSql } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
@@ -223,8 +224,7 @@ describe("target-local PG17 activation permit", () => {
       "rr-disposable-activation-policy-test",
     );
     expect(sql).toContain("BEGIN;");
-    expect(sql).toContain("capture_catalog_policy_candidate('preactivation')");
-    expect(sql).toContain("capture_catalog_policy_candidate('activated')");
+    expect(sql).toContain("capture_catalog_policy_candidate_pair()");
     expect(activationAuthorityProvisioningSql()).toContain(
       "activation catalog policy candidate target invalid",
     );
@@ -249,17 +249,14 @@ describe("target-local PG17 activation permit", () => {
     expect(sql).toContain(
       "reviewrouter.activation_catalog_candidate_capture = 'disposable-only'",
     );
-    expect(sql).toContain("GRANT CONNECT");
+    expect(sql).not.toContain("GRANT CONNECT");
     expect(sql).toContain("ROLLBACK;");
     expect(sql).not.toContain("install_activation_permit");
     expect(sql).not.toContain("stage_principal_evidence");
     expect(sql).not.toContain("activate_generation");
     expect(
-      sql.indexOf("capture_catalog_policy_candidate('preactivation')"),
-    ).toBeLessThan(sql.indexOf("GRANT CONNECT"));
-    expect(sql.indexOf("GRANT CONNECT")).toBeLessThan(
-      sql.indexOf("capture_catalog_policy_candidate('activated')"),
-    );
+      sql.match(/capture_catalog_policy_candidate_pair\(\)/gu),
+    ).toHaveLength(1);
   });
 
   it("keeps the PG17 fixture production-shaped and permit proof pinned", () => {
@@ -472,16 +469,25 @@ describe("target-local PG17 activation permit", () => {
       authority.indexOf("SET consumed_at = transaction_timestamp()"),
     );
     expect(activation.sql).toContain("BEGIN;");
-    expect(activation.sql).toContain("GRANT CONNECT");
+    expect(activation.sql).not.toContain("GRANT CONNECT");
     expect(activation.sql).toContain(
       "reviewrouter_activation.activate_generation(",
     );
     expect(activation.sql.trim().endsWith("COMMIT;")).toBe(true);
     expect(activation.sql.indexOf("stage_principal_evidence")).toBeLessThan(
-      activation.sql.indexOf("GRANT CONNECT"),
-    );
-    expect(activation.sql.indexOf("GRANT CONNECT")).toBeLessThan(
       activation.sql.indexOf("activate_generation"),
+    );
+    expect(
+      authority.indexOf(
+        "principal evidence is not transaction-bound to activation",
+      ),
+    ).toBeLessThan(
+      authority.indexOf("PERFORM reviewrouter_activation.apply_runtime_acl()"),
+    );
+    expect(
+      authority.indexOf("PERFORM reviewrouter_activation.apply_runtime_acl()"),
+    ).toBeLessThan(
+      authority.indexOf("project_effective_principal_authority('activated')"),
     );
     expect(activation.sql).not.toContain("forgedClean");
   });
@@ -535,6 +541,8 @@ describe("target-local PG17 activation permit", () => {
     expect(sql).toContain("principalInventorySqlSha256");
     expect(sql).toContain("principalProjectorBodySha256");
     expect(sql).toContain("principalEvidenceValidatorBodySha256");
+    expect(sql).toContain("runtimeAclBodySha256");
+    expect(sql).toContain("runtimeAclPolicyPairBodySha256");
     expect(sql).toContain("activateGenerationBodySha256");
     expect(sql).toContain("readActivationReceiptBodySha256");
     expect(sql).toContain("validate_principal_evidence(");
@@ -648,6 +656,56 @@ describe("target-local PG17 activation permit", () => {
     );
     expect(provisioning).toContain(
       "ALTER ROLE reviewrouter_role_bootstrap NOSUPERUSER NOCREATEROLE;\nCOMMIT;",
+    );
+  });
+
+  it("installs owner-only runtime ACL routines behind the no-login guard", () => {
+    const provisioning = roleProvisioningSql(configuration);
+    expect(provisioning).toContain(
+      "CREATE OR REPLACE FUNCTION reviewrouter_activation.apply_runtime_acl()",
+    );
+    expect(provisioning).toContain(
+      "CREATE OR REPLACE FUNCTION reviewrouter_activation.capture_runtime_acl_policy_pair()",
+    );
+    expect(provisioning).toContain("SECURITY DEFINER");
+    expect(provisioning).toContain("SET search_path = pg_catalog, pg_temp");
+    expect(provisioning).toContain(
+      "OWNER TO reviewrouter_release_schema_owner",
+    );
+    expect(provisioning).toContain("TO reviewrouter_activation_receipt_guard");
+    expect(provisioning).toContain(
+      runtimeGrantStatements(configuration).replaceAll(
+        ':"DBNAME"',
+        '"review_router"',
+      ),
+    );
+    expect(provisioning).toContain("USING ERRCODE = 'RRACL'");
+    expect(provisioning).toContain("EXCEPTION WHEN SQLSTATE 'RRACL' THEN");
+    expect(provisioning).toContain("IF activated_policy IS NULL THEN");
+    expect(provisioning).toContain(
+      "runtime ACL routine integrity binding invalid",
+    );
+    expect(provisioning).toContain("runtime ACL routine execute ACL invalid");
+    expect(provisioning).toContain(
+      "REVOKE CREATE ON SCHEMA reviewrouter_activation",
+    );
+    const pairStart = provisioning.indexOf(
+      "AS $capture_runtime_acl_policy_pair$",
+    );
+    const pairEnd = provisioning.indexOf(
+      "$capture_runtime_acl_policy_pair$;",
+      pairStart + 1,
+    );
+    const pair = provisioning.slice(pairStart, pairEnd);
+    expect(
+      pair.indexOf("capture_catalog_policy_candidate('preactivation')"),
+    ).toBeLessThan(
+      pair.indexOf("PERFORM reviewrouter_activation.apply_runtime_acl()"),
+    );
+    expect(
+      pair.indexOf("PERFORM reviewrouter_activation.apply_runtime_acl()"),
+    ).toBeLessThan(
+      pair.indexOf("capture_catalog_policy_candidate('activated')"),
     );
   });
 

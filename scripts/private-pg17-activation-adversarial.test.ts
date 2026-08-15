@@ -708,7 +708,36 @@ SELECT set_config(
     ->'disposableCaptureAttestation'->>'identity',
   false
 ) FROM pg_database WHERE datname=current_database();
-SELECT reviewrouter_activation.capture_catalog_policy_candidate('preactivation');`;
+SELECT reviewrouter_activation.capture_catalog_policy_candidate_pair();`;
+
+const runtimeAclAuthoritySnapshotSql = `SELECT jsonb_build_object(
+  'databaseAcl',(SELECT datacl::text FROM pg_database WHERE datname=current_database()),
+  'schemas',(SELECT jsonb_agg(jsonb_build_array(namespace.nspname,
+    pg_get_userbyid(namespace.nspowner),namespace.nspacl::text)
+    ORDER BY namespace.nspname COLLATE "C") FROM pg_namespace namespace
+    WHERE namespace.nspname IN ('public','reviewrouter_activation')),
+  'objects',(SELECT jsonb_agg(object_fact ORDER BY object_fact COLLATE "C") FROM (
+    SELECT 'relation:'||relation.oid::text||':'||pg_get_userbyid(relation.relowner)||':'||
+      coalesce(relation.relacl::text,'') AS object_fact
+    FROM pg_class relation JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+    WHERE namespace.nspname IN ('public','reviewrouter_activation')
+    UNION ALL
+    SELECT 'routine:'||routine.oid::text||':'||pg_get_userbyid(routine.proowner)||':'||
+      coalesce(routine.proacl::text,'')
+    FROM pg_proc routine JOIN pg_namespace namespace ON namespace.oid=routine.pronamespace
+    WHERE namespace.nspname IN ('public','reviewrouter_activation')
+  ) facts),
+  'defaultAcls',(SELECT coalesce(jsonb_agg(jsonb_build_array(
+    defaults.defaclrole::regrole::text,defaults.defaclnamespace::regnamespace::text,
+    defaults.defaclobjtype,defaults.defaclacl::text) ORDER BY defaults.oid),'[]'::jsonb)
+    FROM pg_default_acl defaults),
+  'memberships',(SELECT coalesce(jsonb_agg(jsonb_build_array(
+    membership.roleid::regrole::text,membership.member::regrole::text,
+    membership.grantor::regrole::text,membership.admin_option,
+    membership.inherit_option,membership.set_option)
+    ORDER BY membership.roleid,membership.member,membership.grantor),'[]'::jsonb)
+    FROM pg_auth_members membership)
+)::text;`;
 
 const attestDisposableCaptureSql = () => `
 DO $attest_disposable_capture$
@@ -802,6 +831,109 @@ describePg17(
         );
         expect(observed.readerExecuteCount).toBe(0);
         expect(observed.publicExecuteCount).toBe(0);
+      }),
+      120_000,
+    );
+
+    it(
+      "captures both policies without leaking owner ACL changes or pgcrypto EXECUTE",
+      isolatedCase("runtime-acl-pair", (context) => {
+        context.psqlAs(adminUsername, attestDisposableCaptureSql());
+        const before = context.psqlAs(
+          adversarialAdminUsername,
+          runtimeAclAuthoritySnapshotSql,
+        );
+        const captureOutput = context.psqlAs(
+          releaseUsername,
+          `BEGIN; ${captureCandidateSql()} COMMIT;`,
+        );
+        const captured = JSON.parse(
+          captureOutput.split("\n").find((line) => line.startsWith("{")) ??
+            "null",
+        ) as {
+          preactivation: { phase: string };
+          activated: { phase: string };
+        };
+        expect(captured.preactivation.phase).toBe("preactivation");
+        expect(captured.activated.phase).toBe("activated");
+        expect(
+          context.psqlAs(
+            adversarialAdminUsername,
+            `SELECT bool_and(NOT has_function_privilege(principal,
+              'public.pgp_sym_decrypt(bytea,text)'::regprocedure,'EXECUTE'))
+             FROM unnest(ARRAY['public','${releaseUsername}',
+               'reviewrouter_activation_receipt_guard']) principal;`,
+          ),
+        ).toBe("t");
+        const decrypt = context.psqlResultAs(
+          releaseUsername,
+          "SELECT public.pgp_sym_decrypt('\\x00'::bytea,'denied');",
+        );
+        expect(decrypt.status).not.toBe(0);
+        expect(decrypt.stderr).toContain(
+          "permission denied for function pgp_sym_decrypt",
+        );
+        expect(
+          context.psqlAs(
+            adversarialAdminUsername,
+            `SELECT bool_and(NOT has_function_privilege(principal,routine,'EXECUTE'))
+             FROM unnest(ARRAY['${releaseUsername}','reviewrouter_api',
+               'reviewrouter_web','reviewrouter_worker',
+               'reviewrouter_codex_effect_authority']) principal
+             CROSS JOIN unnest(ARRAY[
+               'reviewrouter_activation.apply_runtime_acl()'::regprocedure,
+               'reviewrouter_activation.capture_runtime_acl_policy_pair()'::regprocedure
+             ]) routine;`,
+          ),
+        ).toBe("t");
+        for (const invocation of [
+          "SELECT reviewrouter_activation.apply_runtime_acl();",
+          "SELECT reviewrouter_activation.capture_runtime_acl_policy_pair();",
+        ]) {
+          expect(
+            context.psqlResultAs(releaseUsername, invocation).status,
+          ).not.toBe(0);
+        }
+        expect(
+          context.psqlAs(
+            adversarialAdminUsername,
+            runtimeAclAuthoritySnapshotSql,
+          ),
+        ).toBe(before);
+
+        context.psqlAs(
+          adversarialAdminUsername,
+          `ALTER FUNCTION public."codex_oauth_database_authority_challenge"(text,text,integer)
+             RENAME TO rr_injected_missing_authority_challenge;`,
+        );
+        const beforeUnexpectedError = context.psqlAs(
+          adversarialAdminUsername,
+          runtimeAclAuthoritySnapshotSql,
+        );
+        context.psqlAs(
+          releaseUsername,
+          `BEGIN;
+           DO $catch_unexpected$
+           BEGIN
+             PERFORM reviewrouter_activation.capture_catalog_policy_candidate_pair();
+             RAISE EXCEPTION 'expected runtime ACL pair failure';
+           EXCEPTION WHEN undefined_function THEN
+             NULL;
+           END
+           $catch_unexpected$;
+           COMMIT;`,
+        );
+        expect(
+          context.psqlAs(
+            adversarialAdminUsername,
+            runtimeAclAuthoritySnapshotSql,
+          ),
+        ).toBe(beforeUnexpectedError);
+        context.psqlAs(
+          adversarialAdminUsername,
+          `ALTER FUNCTION public.rr_injected_missing_authority_challenge(text,text,integer)
+             RENAME TO "codex_oauth_database_authority_challenge";`,
+        );
       }),
       120_000,
     );
@@ -1561,6 +1693,54 @@ printf 'hostile_mutator_excluded\n'`,
           runAs(
             readerUsername,
             "SELECT reviewrouter_activation.read_activation_receipt('exact-clean-stage') IS NULL;",
+          ),
+        ).toBe("t");
+      }),
+      120_000,
+    );
+
+    it(
+      "applies runtime grants only inside a permit-guarded activation call",
+      isolatedCase("permit-guarded-runtime-acl", (context) => {
+        const before = context.psqlAs(
+          adversarialAdminUsername,
+          runtimeAclAuthoritySnapshotSql,
+        );
+        const unpermitted = context.psqlResultAs(
+          releaseUsername,
+          canonicalActivationSql(configuration, {
+            rolloutId: "runtime-acl-without-permit",
+          }).sql,
+        );
+        expect(unpermitted.status).not.toBe(0);
+        expect(unpermitted.stderr).toContain("activation permit absent");
+        expect(
+          context.psqlAs(
+            adversarialAdminUsername,
+            runtimeAclAuthoritySnapshotSql,
+          ),
+        ).toBe(before);
+
+        context.installPermit("permit-guarded-runtime-acl");
+        const activationOutput = context.psqlAs(
+          releaseUsername,
+          canonicalActivationSql(configuration, {
+            rolloutId: "permit-guarded-runtime-acl",
+          }).sql,
+        );
+        const receipt = JSON.parse(
+          activationOutput
+            .split("\n")
+            .findLast((line) => line.startsWith("{")) ?? "null",
+        ) as { firstWriteBoundary: boolean; rolloutId: string };
+        expect(receipt.rolloutId).toBe("permit-guarded-runtime-acl");
+        expect(receipt.firstWriteBoundary).toBe(true);
+        expect(
+          context.psqlAs(
+            adversarialAdminUsername,
+            `SELECT bool_and(has_database_privilege(role_name,current_database(),'CONNECT'))
+             FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
+               'reviewrouter_worker','reviewrouter_codex_effect_authority']) role_name;`,
           ),
         ).toBe("t");
       }),

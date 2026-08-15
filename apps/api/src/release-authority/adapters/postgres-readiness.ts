@@ -147,14 +147,16 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           (1,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)')),'')),
           (2,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.canonical_json(jsonb)')),'')),
           (3,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)')),'')),
-          (4,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)')),'')),
-          (5,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)')),'')),
-          (6,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.activate_generation(text)')),'')),
-          (7,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)')),'')),
-          (8,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)')),'')),
-          (9,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)')),'')),
-          (10,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)')),'')),
-          (11,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)')),''))
+          (4,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate(text)')),'')),
+          (5,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()')),'')),
+          (6,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)')),'')),
+          (7,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)')),'')),
+          (8,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.activate_generation(text)')),'')),
+          (9,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)')),'')),
+          (10,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)')),'')),
+          (11,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)')),'')),
+          (12,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)')),'')),
+          (13,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)')),''))
         ) bodies(ordinal,body_sha256)),'')
         AS "installerRoutineBodySha256",
       coalesce((SELECT encode(sha256(convert_to(string_agg(body_sha256, ':' ORDER BY ordinal),'UTF8')),'hex')
@@ -310,7 +312,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           FROM pg_namespace n CROSS JOIN pg_roles guard
           WHERE n.nspname='reviewrouter_activation'
             AND guard.rolname='reviewrouter_activation_receipt_guard'),false)
-        AND coalesce((SELECT count(*)=6 AND bool_and(p.prosecdef
+        AND coalesce((SELECT count(*)=8 AND bool_and(p.prosecdef
             AND p.prokind='f' AND p.proowner=guard.oid
             AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']
             AND l.lanname=CASE WHEN p.oid=to_regprocedure(
@@ -337,7 +339,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
             AND has_function_privilege('reviewrouter_release_migration',p.oid,'EXECUTE')
               IS NOT DISTINCT FROM (p.oid IN (
                 to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
-                to_regprocedure('reviewrouter_activation.activate_generation(text)')))
+                to_regprocedure('reviewrouter_activation.activate_generation(text)'),
+                to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()')))
             AND (p.oid=to_regprocedure(
                   'reviewrouter_activation.assert_no_activation_receipt()')
                 AND EXISTS (SELECT 1
@@ -348,17 +351,28 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                     AND grantee.rolname='reviewrouter_role_bootstrap')
               OR p.oid IN (
                   to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
-                  to_regprocedure('reviewrouter_activation.activate_generation(text)'))
+                  to_regprocedure('reviewrouter_activation.activate_generation(text)'),
+                  to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()'))
                 AND EXISTS (SELECT 1
                   FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
                   JOIN pg_roles grantee ON grantee.oid=acl.grantee
                   WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
                     AND NOT acl.is_grantable
                     AND grantee.rolname='reviewrouter_release_migration')
+              OR p.oid=to_regprocedure(
+                  'reviewrouter_activation.capture_catalog_policy_candidate(text)')
+                AND EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+                  JOIN pg_roles grantee ON grantee.oid=acl.grantee
+                  WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+                    AND NOT acl.is_grantable
+                    AND grantee.rolname='reviewrouter_release_schema_owner')
               OR p.oid NOT IN (
                   to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
                   to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
-                  to_regprocedure('reviewrouter_activation.activate_generation(text)'))
+                  to_regprocedure('reviewrouter_activation.activate_generation(text)'),
+                  to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate(text)'),
+                  to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()'))
                 AND NOT EXISTS (SELECT 1
                   FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
                   WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner))
@@ -372,8 +386,12 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                       THEN 'reviewrouter_role_bootstrap'
                     WHEN p.oid IN (
                       to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
-                      to_regprocedure('reviewrouter_activation.activate_generation(text)'))
+                      to_regprocedure('reviewrouter_activation.activate_generation(text)'),
+                      to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()'))
                       THEN 'reviewrouter_release_migration'
+                    WHEN p.oid=to_regprocedure(
+                      'reviewrouter_activation.capture_catalog_policy_candidate(text)')
+                      THEN 'reviewrouter_release_schema_owner'
                     ELSE NULL END)))
           FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
           JOIN pg_language l ON l.oid=p.prolang
@@ -382,6 +400,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
             AND p.oid IN (to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
               to_regprocedure('reviewrouter_activation.canonical_json(jsonb)'),
               to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)'),
+              to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate(text)'),
+              to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()'),
               to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)'),
               to_regprocedure('reviewrouter_activation.activate_generation(text)'),
               to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'))),false)
@@ -474,7 +494,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'),
               to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)'))),false)
         AS "activationMigrationBoundaryExact",
-      coalesce((SELECT count(*)=6 AND bool_and(
+      coalesce((SELECT count(*)=8 AND bool_and(
           has_function_privilege('reviewrouter_role_bootstrap',p.oid,'EXECUTE')
             IS NOT DISTINCT FROM (p.oid=to_regprocedure(
               'reviewrouter_activation.assert_no_activation_receipt()')))
@@ -483,6 +503,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
           to_regprocedure('reviewrouter_activation.canonical_json(jsonb)'),
           to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)'),
+          to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate(text)'),
+          to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()'),
           to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)'),
           to_regprocedure('reviewrouter_activation.activate_generation(text)'),
           to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'))),false)
@@ -638,6 +660,24 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)'),
               to_regprocedure(
                 'public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text)')))
+          AND (SELECT count(*)=2 AND bool_and(routine.prosecdef
+                AND routine.prokind='f' AND routine.proowner=owner.oid
+                AND routine.proconfig=ARRAY['search_path=pg_catalog, pg_temp']
+                AND NOT has_function_privilege('public',routine.oid,'EXECUTE')
+                AND has_function_privilege(
+                  'reviewrouter_activation_receipt_guard',routine.oid,'EXECUTE')
+                AND NOT EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(routine.proacl,
+                    acldefault('f',routine.proowner))) acl
+                  WHERE acl.privilege_type='EXECUTE'
+                    AND acl.grantee<>routine.proowner
+                    AND (acl.is_grantable OR acl.grantee<>
+                      (SELECT oid FROM pg_roles WHERE rolname=
+                        'reviewrouter_activation_receipt_guard'))))
+            FROM pg_proc routine WHERE routine.oid IN (
+              to_regprocedure('reviewrouter_activation.apply_runtime_acl()'),
+              to_regprocedure(
+                'reviewrouter_activation.capture_runtime_acl_policy_pair()')))
           FROM pg_roles owner CROSS JOIN pg_roles migration
           CROSS JOIN pg_roles bootstrap
           CROSS JOIN pg_namespace public_namespace
