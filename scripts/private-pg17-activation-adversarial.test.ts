@@ -723,9 +723,17 @@ const runtimeAclAuthoritySnapshotSql = `SELECT jsonb_build_object(
     WHERE namespace.nspname IN ('public','reviewrouter_activation')
     UNION ALL
     SELECT 'routine:'||routine.oid::text||':'||pg_get_userbyid(routine.proowner)||':'||
-      coalesce(routine.proacl::text,'')
+      coalesce(routine.proacl::text,'')||':'||coalesce(routine.proconfig::text,'')
     FROM pg_proc routine JOIN pg_namespace namespace ON namespace.oid=routine.pronamespace
     WHERE namespace.nspname IN ('public','reviewrouter_activation')
+    UNION ALL
+    SELECT 'column:'||attribute.attrelid::text||':'||attribute.attname||':'||
+      coalesce(attribute.attacl::text,'')
+    FROM pg_attribute attribute
+    JOIN pg_class relation ON relation.oid=attribute.attrelid
+    JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+    WHERE namespace.nspname IN ('public','reviewrouter_activation')
+      AND attribute.attnum>0 AND NOT attribute.attisdropped
   ) facts),
   'defaultAcls',(SELECT coalesce(jsonb_agg(jsonb_build_array(
     defaults.defaclrole::regrole::text,defaults.defaclnamespace::regnamespace::text,
@@ -934,6 +942,44 @@ describePg17(
           `ALTER FUNCTION public.rr_injected_missing_authority_challenge(text,text,integer)
              RENAME TO "codex_oauth_database_authority_challenge";`,
         );
+      }),
+      120_000,
+    );
+
+    it(
+      "rejects an early rollback SQLSTATE collision without leaking ACL changes",
+      isolatedCase("runtime-acl-sqlstate-collision", (context) => {
+        context.psqlAs(adminUsername, attestDisposableCaptureSql());
+        context.psqlAs(
+          adversarialAdminUsername,
+          `CREATE OR REPLACE FUNCTION reviewrouter_activation.apply_runtime_acl()
+           RETURNS void LANGUAGE plpgsql SECURITY DEFINER
+           SET search_path = pg_catalog, pg_temp
+           AS $injected_rracl$
+           BEGIN
+             RAISE EXCEPTION 'injected early runtime ACL collision'
+               USING ERRCODE = 'RRACL';
+           END
+           $injected_rracl$;`,
+        );
+        const before = context.psqlAs(
+          adversarialAdminUsername,
+          runtimeAclAuthoritySnapshotSql,
+        );
+        const capture = context.psqlResultAs(
+          releaseUsername,
+          `BEGIN; ${captureCandidateSql()} COMMIT;`,
+        );
+        expect(capture.status).not.toBe(0);
+        expect(capture.stderr).toContain(
+          "injected early runtime ACL collision",
+        );
+        expect(
+          context.psqlAs(
+            adversarialAdminUsername,
+            runtimeAclAuthoritySnapshotSql,
+          ),
+        ).toBe(before);
       }),
       120_000,
     );

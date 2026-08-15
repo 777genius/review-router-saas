@@ -188,10 +188,17 @@ export function parsePrivatePg17ActivationCatalogPolicyCandidate(stdout) {
   } catch {
     throw new Error("activation_catalog_policy_candidate_output_invalid");
   }
-  const preactivation = observations.find(
-    (item) => item.preactivation,
-  )?.preactivation;
-  const activated = observations.find((item) => item.activated)?.activated;
+  if (
+    observations.length !== 1 ||
+    observations[0] === null ||
+    typeof observations[0] !== "object" ||
+    Array.isArray(observations[0]) ||
+    Object.keys(observations[0]).length !== 2 ||
+    !Object.hasOwn(observations[0], "preactivation") ||
+    !Object.hasOwn(observations[0], "activated")
+  )
+    throw new Error("activation_catalog_policy_candidate_envelope_invalid");
+  const { preactivation, activated } = observations[0];
   return Object.freeze({
     kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
     version: 1,

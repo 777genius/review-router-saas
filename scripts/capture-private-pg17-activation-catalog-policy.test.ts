@@ -16,17 +16,20 @@ const policy = (phase: "preactivation" | "activated") => ({
   effectivePermissions: [],
 });
 
+const envelope = (preactivation: unknown, activated: unknown) =>
+  `${JSON.stringify({ preactivation, activated })}\n`;
+
 describe("activation catalog policy candidate capture", () => {
   it("rejects phase substitution", () => {
     expect(() =>
       parsePrivatePg17ActivationCatalogPolicyCandidate(
-        `${JSON.stringify({ preactivation: policy("activated") })}\n${JSON.stringify({ activated: policy("preactivation") })}\n`,
+        envelope(policy("activated"), policy("preactivation")),
       ),
     ).toThrow("activation_catalog_policy_candidate_invalid:preactivation");
   });
 
   it("exports the same pure, secret-safe parser used by the CLI adapter", () => {
-    const stdout = `${JSON.stringify({ preactivation: policy("preactivation") })}\n${JSON.stringify({ activated: policy("activated") })}\n`;
+    const stdout = envelope(policy("preactivation"), policy("activated"));
 
     expect(parsePrivatePg17ActivationCatalogPolicyCandidate(stdout)).toEqual({
       kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
@@ -50,6 +53,27 @@ describe("activation catalog policy candidate capture", () => {
     }
   });
 
+  it("requires one exact atomic pair envelope", () => {
+    const split = `${JSON.stringify({ preactivation: policy("preactivation") })}\n${JSON.stringify({ activated: policy("activated") })}\n`;
+    expect(() =>
+      parsePrivatePg17ActivationCatalogPolicyCandidate(split),
+    ).toThrow("activation_catalog_policy_candidate_envelope_invalid");
+    expect(() =>
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        `${envelope(policy("preactivation"), policy("activated"))}${JSON.stringify({ extra: true })}\n`,
+      ),
+    ).toThrow("activation_catalog_policy_candidate_envelope_invalid");
+    expect(() =>
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        `${JSON.stringify({
+          preactivation: policy("preactivation"),
+          activated: policy("activated"),
+          duplicate: policy("activated"),
+        })}\n`,
+      ),
+    ).toThrow("activation_catalog_policy_candidate_envelope_invalid");
+  });
+
   it("rejects rehearsal resources and duplicate normalized grant identities", () => {
     const rehearsal = {
       ...policy("preactivation"),
@@ -63,7 +87,7 @@ describe("activation catalog policy candidate capture", () => {
     };
     expect(() =>
       parsePrivatePg17ActivationCatalogPolicyCandidate(
-        `${JSON.stringify({ preactivation: rehearsal })}\n${JSON.stringify({ activated: policy("activated") })}\n`,
+        envelope(rehearsal, policy("activated")),
       ),
     ).toThrow(
       "activation_catalog_policy_candidate_rehearsal_resource_forbidden:preactivation",
@@ -83,7 +107,7 @@ describe("activation catalog policy candidate capture", () => {
     };
     expect(() =>
       parsePrivatePg17ActivationCatalogPolicyCandidate(
-        `${JSON.stringify({ preactivation: policy("preactivation") })}\n${JSON.stringify({ activated: duplicate })}\n`,
+        envelope(policy("preactivation"), duplicate),
       ),
     ).toThrow("activation_catalog_policy_candidate_duplicate_grant:activated");
   });
@@ -104,12 +128,18 @@ describe("activation catalog policy candidate capture", () => {
     };
     expect(
       parsePrivatePg17ActivationCatalogPolicyCandidate(
-        `${JSON.stringify({ preactivation: extension })}\n${JSON.stringify({ activated: policy("activated") })}\n`,
+        envelope(extension, policy("activated")),
       ).policies.preactivation.extensions,
     ).toHaveLength(2);
     expect(() =>
       parsePrivatePg17ActivationCatalogPolicyCandidate(
-        `${JSON.stringify({ preactivation: { ...extension, extensions: [{ name: "pgcrypto", owner: "provider-role" }] } })}\n${JSON.stringify({ activated: policy("activated") })}\n`,
+        envelope(
+          {
+            ...extension,
+            extensions: [{ name: "pgcrypto", owner: "provider-role" }],
+          },
+          policy("activated"),
+        ),
       ),
     ).toThrow(
       "activation_catalog_policy_candidate_extension_authority_invalid:preactivation",
@@ -126,7 +156,7 @@ describe("activation catalog policy candidate capture", () => {
     };
     expect(() =>
       parsePrivatePg17ActivationCatalogPolicyCandidate(
-        `${JSON.stringify({ preactivation: providerNamed })}\n${JSON.stringify({ activated: policy("activated") })}\n`,
+        envelope(providerNamed, policy("activated")),
       ),
     ).toThrow(
       "activation_catalog_policy_candidate_provider_identity_forbidden:preactivation",
