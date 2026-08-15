@@ -180,7 +180,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(privilegeProof).not.toContain("sequence.oid");
   });
 
-  it("rehearses fail-closed grantor topology and an idempotent second bootstrap", () => {
+  it("rehearses fail-closed grantor topology and rejects bootstrap replay", () => {
     const provisioning =
       /function prepareCanonicalReleaseRoles\(url, installHistoricalSchema\) \{([\s\S]+?)\n\}/u.exec(
         source,
@@ -195,9 +195,17 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(provisioning).not.toContain("String(error)");
     expect(provisioning).not.toContain(".stderr");
     expect(source).toContain("refusing non-canonical role membership topology");
-    expect(source).toContain("idempotent_second_role_provisioning");
     expect(source).toContain(
-      "second role bootstrap changed the canonical membership topology",
+      "demoted role bootstrap unexpectedly retained provisioning authority",
+    );
+    expect(source).toContain(
+      "rejected role bootstrap replay changed the canonical membership topology",
+    );
+    expect(provisioning.indexOf("const foreignGrantor")).toBeLessThan(
+      provisioning.indexOf('"initial_role_provisioning"'),
+    );
+    expect(provisioning).toContain(
+      'expectFailureContaining: "trusted role bootstrap authority is not exact"',
     );
     expect(source).toContain(
       "adversarial grantor retained role membership revoke authority",

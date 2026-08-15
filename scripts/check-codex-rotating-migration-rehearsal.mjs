@@ -1979,15 +1979,6 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
       },
     ],
   });
-  runRehearsalReleaseSubprocess(
-    "initial_role_provisioning",
-    "psql",
-    [bootstrap.toString(), "--no-psqlrc", "--quiet"],
-    {
-      env: { ...environment, DATABASE_URL: bootstrap.toString() },
-      input: canonicalProvisioningSql,
-    },
-  );
   for (const role of allRoles) {
     psql(url, [
       "-c",
@@ -2014,7 +2005,6 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
          OR granted.rolname = 'reviewrouter_role_bootstrap'
          OR member.rolname = 'reviewrouter_role_bootstrap'`,
     ]).stdout.trim();
-  const firstBootstrapTopology = observeMembershipTopology();
   const foreignGrantor = "reviewrouter_rehearsal_foreign_grantor";
   psql(url, [
     "-c",
@@ -2050,7 +2040,7 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     "role bootstrap did not reject an adversarial foreign membership grantor",
   );
   runRehearsalReleaseSubprocess(
-    "idempotent_second_role_provisioning",
+    "initial_role_provisioning",
     "psql",
     [bootstrap.toString(), "--no-psqlrc", "--quiet"],
     {
@@ -2058,9 +2048,22 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
       input: canonicalProvisioningSql,
     },
   );
+  const firstBootstrapTopology = observeMembershipTopology();
+  const demotedReplay = runSecretSafePostgresCommand({
+    databaseUrl: bootstrap,
+    binary: psqlBinary,
+    args: ["-X", "-v", "ON_ERROR_STOP=1", "--no-psqlrc", "--quiet"],
+    input: canonicalProvisioningSql,
+    kind: "rehearsal",
+    expectFailureContaining: "trusted role bootstrap authority is not exact",
+  });
+  assert(
+    demotedReplay.expectedFailure === true,
+    "demoted role bootstrap unexpectedly retained provisioning authority",
+  );
   assert(
     observeMembershipTopology() === firstBootstrapTopology,
-    "second role bootstrap changed the canonical membership topology",
+    "rejected role bootstrap replay changed the canonical membership topology",
   );
   assert(
     psql(url, [
