@@ -8,6 +8,7 @@ import {
   assertTrustedCanonicalVersionedWorkflow,
   createVersionedSecretWorkflowSourceAttestation,
   defaultCodexRotatingWorkflowPath,
+  preferredSetupBaseBranches,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
   workflowDocumentSemanticSha256,
   WorkflowSourceTrust,
@@ -87,16 +88,18 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
   if (observedRepository.defaultBranch !== input.defaultBranch) {
     throw new Error("codex_rotating_workflow_default_branch_mismatch");
   }
+  const workflowSource = await resolveWorkflowSourceBranch({
+    octokit: input.octokit,
+    owner: input.owner,
+    name: input.name,
+    defaultBranch: input.defaultBranch,
+  });
   const refParameters = {
     owner: input.owner,
     repo: input.name,
-    ref: `heads/${input.defaultBranch}`,
+    ref: `heads/${workflowSource.branch}`,
   };
-  const refResponse = await input.octokit.request(
-    "GET /repos/{owner}/{repo}/git/ref/{ref}",
-    refParameters,
-  );
-  const workflowSourceCommitSha = readGitHubCommitSha(refResponse.data);
+  const workflowSourceCommitSha = workflowSource.commitSha;
   const workflowPath = defaultCodexRotatingWorkflowPath;
   const contentResponse = await input.octokit.request(
     "GET /repos/{owner}/{repo}/contents/{path}",
@@ -163,6 +166,43 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     namespaceEpoch: namespace.epoch.toString(),
     workflowSourceCommitSha,
   };
+}
+
+async function resolveWorkflowSourceBranch(input: {
+  readonly octokit: GitHubRequester;
+  readonly owner: string;
+  readonly name: string;
+  readonly defaultBranch: string;
+}): Promise<{ readonly branch: string; readonly commitSha: string }> {
+  for (const branch of preferredSetupBaseBranches(input.defaultBranch)) {
+    try {
+      const response = await input.octokit.request(
+        "GET /repos/{owner}/{repo}/git/ref/{ref}",
+        {
+          owner: input.owner,
+          repo: input.name,
+          ref: `heads/${branch}`,
+        },
+      );
+      return { branch, commitSha: readGitHubCommitSha(response.data) };
+    } catch (error) {
+      if (githubErrorStatus(error) === 404) continue;
+      throw error;
+    }
+  }
+  throw new Error("codex_rotating_workflow_branch_not_found");
+}
+
+function githubErrorStatus(error: unknown): number | null {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof error.status === "number"
+  ) {
+    return error.status;
+  }
+  return null;
 }
 
 function readGitHubRepositoryIdentity(data: unknown): {

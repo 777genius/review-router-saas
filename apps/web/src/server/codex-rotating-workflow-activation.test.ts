@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   assertTrusted: vi.fn(),
   createAttestation: vi.fn(),
   inspectNamespace: vi.fn(),
+  preferredSetupBaseBranches: vi.fn(),
   readMetadata: vi.fn(),
   semanticSha: vi.fn(),
 }));
@@ -20,6 +21,7 @@ vi.mock("@reviewrouter/features-workflow-provisioning", () => ({
   assertTrustedCanonicalVersionedWorkflow: mocks.assertTrusted,
   createVersionedSecretWorkflowSourceAttestation: mocks.createAttestation,
   defaultCodexRotatingWorkflowPath: ".github/workflows/reviewrouter-codex.yml",
+  preferredSetupBaseBranches: mocks.preferredSetupBaseBranches,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata: mocks.readMetadata,
   workflowDocumentSemanticSha256: mocks.semanticSha,
   WorkflowSourceTrust: {
@@ -58,6 +60,9 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
         name: "REVIEWROUTER_CODEX_AUTH_JSON_TEST_E2",
       },
     });
+    mocks.preferredSetupBaseBranches.mockImplementation(
+      (defaultBranch: string) => [defaultBranch],
+    );
     mocks.readMetadata.mockReturnValue({ actionRef: "action-sha" });
     mocks.semanticSha.mockReturnValue("b".repeat(64));
     mocks.createAttestation.mockReturnValue({
@@ -104,6 +109,29 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
         namespaceEpoch: "2",
         workflowSourceCommitSha: firstHead,
       }),
+    );
+  });
+
+  it("attests the preferred integration branch when it differs from the GitHub default", async () => {
+    mocks.preferredSetupBaseBranches.mockReturnValueOnce(["dev", "main"]);
+    const { input, request } = fixture();
+
+    await expect(
+      activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
+    ).resolves.toEqual({
+      status: "activated",
+      namespaceEpoch: "2",
+      workflowSourceCommitSha: firstHead,
+    });
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      "GET /repos/{owner}/{repo}/git/ref/{ref}",
+      expect.objectContaining({ ref: "heads/dev" }),
+    );
+    expect(request).toHaveBeenNthCalledWith(
+      4,
+      "GET /repos/{owner}/{repo}/git/ref/{ref}",
+      expect.objectContaining({ ref: "heads/dev" }),
     );
   });
 
