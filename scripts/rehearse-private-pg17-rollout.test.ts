@@ -16,6 +16,7 @@ import {
   routeRehearsalAfterReleaseMigration,
   runRehearsalReleaseMigration,
   validateRehearsalConfiguration,
+  waitForRehearsalControlReady,
   waitForFinalPostgresServer,
 } from "./rehearse-private-pg17-rollout.mjs";
 
@@ -45,6 +46,29 @@ describe("disposable dual-version rehearsal", () => {
       "private_pg17_rehearsal_explicit_opt_in_required",
     );
   });
+  it("waits for the asynchronous control-plane attestation before mutation", async () => {
+    const statuses = [503, 503, 200];
+    const sleep = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      waitForRehearsalControlReady(async () => statuses.shift() ?? 503, {
+        maxAttempts: 3,
+        intervalMilliseconds: 1,
+        sleep,
+      }),
+    ).resolves.toBeUndefined();
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds a control-plane attestation that never becomes ready", async () => {
+    await expect(
+      waitForRehearsalControlReady(async () => 503, {
+        maxAttempts: 2,
+        intervalMilliseconds: 1,
+        sleep: vi.fn().mockResolvedValue(undefined),
+      }),
+    ).rejects.toThrow("private_pg17_rehearsal_control_readiness_timeout");
+  });
   it("uses the exact reviewed compact digest authorization in normal rehearsal", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual({
       preactivationCatalogPolicySha256:
@@ -60,8 +84,8 @@ describe("disposable dual-version rehearsal", () => {
       statementTimeoutMilliseconds: 45_000,
       transactionTimeoutMilliseconds: 50_000,
       observationDeadlineMilliseconds: 60_000,
-      leaseMilliseconds: 120_000,
-      refreshAfterMilliseconds: 90_000,
+      leaseMilliseconds: 900_000,
+      refreshAfterMilliseconds: 600_000,
     });
   });
   it("leaves bootstrap demotion exclusively to canonical role provisioning", () => {

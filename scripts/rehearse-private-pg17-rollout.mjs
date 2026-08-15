@@ -77,8 +77,8 @@ export const rehearsalReadinessPolicy = Object.freeze({
   statementTimeoutMilliseconds: 45_000,
   transactionTimeoutMilliseconds: 50_000,
   observationDeadlineMilliseconds: 60_000,
-  leaseMilliseconds: 120_000,
-  refreshAfterMilliseconds: 90_000,
+  leaseMilliseconds: 900_000,
+  refreshAfterMilliseconds: 600_000,
 });
 import { releaseAuthorityMigrationBundle } from "./install-release-authority-db.mjs";
 import { executePrivateGenerationActivation } from "./activate-private-pg17-generation.mjs";
@@ -576,6 +576,35 @@ export function waitForFinalPostgresServer(
     }
   }
   throw new Error("private_pg17_rehearsal_database_timeout");
+}
+
+export async function waitForRehearsalControlReady(
+  probe,
+  {
+    maxAttempts = 900,
+    intervalMilliseconds = 100,
+    sleep = (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  } = {},
+) {
+  if (
+    typeof probe !== "function" ||
+    typeof sleep !== "function" ||
+    !Number.isSafeInteger(maxAttempts) ||
+    maxAttempts < 1 ||
+    !Number.isSafeInteger(intervalMilliseconds) ||
+    intervalMilliseconds < 1
+  )
+    throw new Error("private_pg17_rehearsal_control_readiness_invalid");
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      if ((await probe()) === 200) return;
+    } catch {
+      // The initial attestation is deliberately asynchronous and fail-closed.
+    }
+    if (attempt + 1 < maxAttempts) await sleep(intervalMilliseconds);
+  }
+  throw new Error("private_pg17_rehearsal_control_readiness_timeout");
 }
 
 export async function executeDisposableRehearsal(
@@ -1335,6 +1364,15 @@ ROLLBACK;`,
       );
     });
     await releaseControl.ready();
+    await waitForRehearsalControlReady(
+      async () =>
+        (
+          await releaseControl.inject({
+            method: "GET",
+            url: "/health",
+          })
+        ).statusCode,
+    );
     const controlFetch = async (input, init) => {
       const requestUrl = new URL(String(input));
       const response = await releaseControl.inject({
@@ -2768,6 +2806,14 @@ COMMIT;
       clearTimeout(timeout);
     }
   };
+  await waitForRehearsalControlReady(
+    async () =>
+      (
+        await facts.controlFetch(`${facts.authorityOrigin}/health`, {
+          method: "GET",
+        })
+      ).status,
+  );
   rollout = await runStage("claim_rollout", () =>
     useCases.claimRollout(rollout),
   );
