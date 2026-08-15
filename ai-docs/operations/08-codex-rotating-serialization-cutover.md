@@ -1,4 +1,4 @@
-# Fenced rotating OAuth cutover (000060 through 000069)
+# Fenced rotating OAuth cutover (000060 through 000073)
 
 > `REVIEWROUTER_CODEX_AUTH_JSON` is an unsafe, deprecated stable namespace.
 > Its legacy confirmation endpoint is permanently removed and has no runtime
@@ -76,6 +76,7 @@ is checked against both that policy and the files on every test run.
 | `000064_codex_oauth_versioned_secret_namespaces` | `4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666` |
 | `000065_codex_oauth_authority_acl_hardening`     | `ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c` |
 | `000066_codex_oauth_rotating_cascade_authority`  | `3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8` |
+| `000073_codex_oauth_active_namespace_refresh`    | `3e5b6606f22c8bec6f75f52f48b693806d597fa283155f6e033844c4f6be4de6` |
 | `000069_release_rollout_ledger`                  | `82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05` |
 
 ## 000069 no-op marker policy

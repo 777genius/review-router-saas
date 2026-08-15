@@ -359,20 +359,30 @@ export class OctokitCodexRotatingGitHubSecretGateway
       throw new Error("codex_rotating_workflow_publish_render_invalid");
     }
 
-    const writeResponse = (await githubRequest(
-      "PUT /repos/{owner}/{repo}/contents/{path}",
-      {
-        owner: input.repository.owner,
-        repo,
-        path: managedCodexWorkflowPath,
-        branch: defaultBranch,
-        sha: currentBlobSha,
-        message: "chore: rotate ReviewRouter Codex auth namespace",
-        content: Buffer.from(nextSource, "utf8").toString("base64"),
-        headers,
-      },
-    )) as ContentsWriteResponse;
-    const commitSha = decodeContentsWriteCommitSha(writeResponse.data);
+    const commitSha = areWorkflowDocumentsSemanticallyEqual(
+      currentSource,
+      nextSource,
+    )
+      ? await this.readBranchHead({
+          token: token.token,
+          owner: input.repository.owner,
+          repo,
+          branch: defaultBranch,
+        })
+      : decodeContentsWriteCommitSha(
+          (
+            (await githubRequest("PUT /repos/{owner}/{repo}/contents/{path}", {
+              owner: input.repository.owner,
+              repo,
+              path: managedCodexWorkflowPath,
+              branch: defaultBranch,
+              sha: currentBlobSha,
+              message: "chore: rotate ReviewRouter Codex auth namespace",
+              content: Buffer.from(nextSource, "utf8").toString("base64"),
+              headers,
+            })) as ContentsWriteResponse
+          ).data,
+        );
     const verified = await this.verifyWorkflowSource({
       repository: input.repository,
       workflowSha: commitSha,

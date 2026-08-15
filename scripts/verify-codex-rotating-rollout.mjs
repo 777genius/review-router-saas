@@ -83,6 +83,13 @@ const migrations = [
     expectedSha256:
       "3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8",
   },
+  {
+    id: "000073_codex_oauth_active_namespace_refresh",
+    sourceFile:
+      "packages/platform/db/prisma/migrations/000073_codex_oauth_active_namespace_refresh/migration.sql",
+    expectedSha256:
+      "3e5b6606f22c8bec6f75f52f48b693806d597fa283155f6e033844c4f6be4de6",
+  },
 ];
 const checkedInRotatingMigrations = readdirSync(
   resolve(checkoutRoot, "packages/platform/db/prisma/migrations"),
@@ -1733,7 +1740,7 @@ function exactIndexDefinition(entry) {
       "activeSecretNamespaceId",
     ],
     CodexOAuthWritebackIntent_dispatchAttemptId_key: ["dispatchAttemptId"],
-    CodexOAuthWritebackIntent_secretNamespaceId_key: ["secretNamespaceId"],
+    CodexOAuthWritebackIntent_secretNamespaceId_idx: ["secretNamespaceId"],
     CodexOAuthWritebackIntent_versioned_lease_key: ["leaseId"],
   }[entry?.name];
   const predicateTokens = {
@@ -1813,7 +1820,6 @@ function exactIndexDefinition(entry) {
         "CodexOAuthSetupDispatchAttempt_claim_ordinal_key",
         "CodexOAuthProviderInstance_activeSecretNamespaceId_key",
         "CodexOAuthWritebackIntent_dispatchAttemptId_key",
-        "CodexOAuthWritebackIntent_secretNamespaceId_key",
         "CodexOAuthWritebackIntent_versioned_lease_key",
         "CodexOAuthLease_leaseKey_key",
         "CodexOAuthProviderInstance_providerInstanceId_key",

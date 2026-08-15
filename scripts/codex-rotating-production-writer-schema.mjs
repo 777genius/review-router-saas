@@ -864,9 +864,9 @@ export const codexRotatingIndexDefinitions = Object.freeze([
       "362e24efcec988141dd90f185f8a3844aaf4e38687d9a1de1077be05f470f741",
   }),
   Object.freeze({
-    name: "CodexOAuthWritebackIntent_secretNamespaceId_key",
+    name: "CodexOAuthWritebackIntent_secretNamespaceId_idx",
     definitionSha256:
-      "ad2bdbc8b95be2d211cebf815fc203124c2f5417c6d621d046ffe63a3b2f8c60",
+      "468ffb9de5522600e2fe3fe1eff742fa9b688731768ef30e927cd0cab81cf29d",
   }),
   Object.freeze({
     name: "CodexOAuthWritebackIntent_versioned_lease_key",
@@ -943,7 +943,7 @@ export const codexRotatingCatalogIndexNames = Object.freeze([
   "CodexOAuthWritebackIntent_provider_epoch_idx",
   "CodexOAuthWritebackIntent_providerInstanceId_idempotencyKey_key",
   "CodexOAuthWritebackIntent_providerInstanceId_status_idx",
-  "CodexOAuthWritebackIntent_secretNamespaceId_key",
+  "CodexOAuthWritebackIntent_secretNamespaceId_idx",
   "CodexOAuthWritebackIntent_versioned_lease_key",
 ]);
 

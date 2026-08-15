@@ -521,14 +521,21 @@ export class InMemoryCodexRotatingOAuthRepository
             retryAfter: existing.executorLeaseExpiresAt,
           };
         }
-        this.permanentlyRetiredNamespaceIds.add(existing.namespace.namespaceId);
+        const provider = this.providers.get(input.request.providerInstanceId);
+        if (
+          provider?.activeNamespace.namespaceId !==
+          existing.namespace.namespaceId
+        ) {
+          this.permanentlyRetiredNamespaceIds.add(
+            existing.namespace.namespaceId,
+          );
+        }
         this.writebacks.set(key, {
           ...existing,
           status: "remote_outcome_unknown",
           safeErrorCode:
             RuntimeVersionedDurableMarker.InterruptedAttemptRecoveredV1,
         });
-        const provider = this.providers.get(input.request.providerInstanceId);
         if (
           provider?.mutationOwner === "runtime" &&
           provider.mutationOwnerId === existing.request.leaseId
@@ -604,12 +611,9 @@ export class InMemoryCodexRotatingOAuthRepository
         generation: input.request.generation,
       };
     }
-    const namespace = allocateVersionedProviderSecretNamespace({
-      scope: provider.activeNamespace.scope,
-      epoch: provider.activeNamespace.epoch + 1n,
-    });
+    const namespace = provider.activeNamespace;
     const intentId = `intent:${key}`;
-    const attemptId = `attempt:${namespace.namespaceId}`;
+    const attemptId = `attempt:${namespace.namespaceId}:${input.request.leaseId}`;
     const executorOwner = `executor:${attemptId}`;
     const executorLeaseExpiresAt =
       reserveRuntimeVersionedEffectConfirmationWindow({
@@ -751,8 +755,7 @@ export class InMemoryCodexRotatingOAuthRepository
     }
     if (
       record.namespace &&
-      (this.permanentlyRetiredNamespaceIds.has(record.namespace.namespaceId) ||
-        provider.activeNamespace.namespaceId === record.namespace.namespaceId)
+      this.permanentlyRetiredNamespaceIds.has(record.namespace.namespaceId)
     ) {
       throw new Error("codex_rotating_versioned_retirement_namespace_conflict");
     }
@@ -761,7 +764,10 @@ export class InMemoryCodexRotatingOAuthRepository
       status: "remote_outcome_unknown",
       safeErrorCode: input.safeErrorCode,
     });
-    if (record.namespace) {
+    if (
+      record.namespace &&
+      provider.activeNamespace.namespaceId !== record.namespace.namespaceId
+    ) {
       this.permanentlyRetiredNamespaceIds.add(record.namespace.namespaceId);
     }
     this.providers.set(record.request.providerInstanceId, {
@@ -805,7 +811,10 @@ export class InMemoryCodexRotatingOAuthRepository
     ) {
       throw new Error("codex_rotating_versioned_retirement_fence_conflict");
     }
-    if (record.namespace) {
+    if (
+      record.namespace &&
+      provider.activeNamespace.namespaceId !== record.namespace.namespaceId
+    ) {
       this.permanentlyRetiredNamespaceIds.add(record.namespace.namespaceId);
     }
     this.writebacks.set(key, {

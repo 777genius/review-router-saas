@@ -279,7 +279,7 @@ function requireRuntimeWritebackAudit(checkoutRoot, failures) {
     );
   }
   for (const token of [
-    "allocateVersionedProviderSecretNamespace",
+    "mapActiveVersionedProviderSecretNamespace",
     "readDatabaseIncarnation",
     "assertDatabaseIncarnation",
     'status: "dispatch_authorized"',
@@ -291,6 +291,11 @@ function requireRuntimeWritebackAudit(checkoutRoot, failures) {
     if (!ledger.includes(token)) {
       failures.push(`${runtimeLedger}: missing audited invariant ${token}`);
     }
+  }
+  if (ledger.includes("allocateVersionedProviderSecretNamespace")) {
+    failures.push(
+      `${runtimeLedger}: runtime refresh must not allocate a workflow-bound namespace`,
+    );
   }
   if (
     !/new CodexRotatingVersionedWritebackDispatcher\(\s*codexRotatingOAuth,\s*codexRotatingGitHubSecretGateway,\s*codexRotatingGitHubSecretGateway,/su.test(

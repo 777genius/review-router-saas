@@ -1387,7 +1387,7 @@ describe("Codex rotating OAuth action control plane", () => {
     });
   });
 
-  it("atomically rebinds completed memory leases to the activated versioned namespace and rejects stale prior bindings", async () => {
+  it("reuses the active namespace across refreshes and preserves completed lease posting windows", async () => {
     const dependencies = buildRotatingDependencies();
     const ledger =
       dependencies.codexRotatingOAuth as InMemoryCodexRotatingOAuthRepository;
@@ -1401,7 +1401,7 @@ describe("Codex rotating OAuth action control plane", () => {
     if (firstTarget.status !== "ready")
       throw new Error("expected_first_target");
     expect(firstTarget.writeTarget.secretName).toMatch(
-      /^REVIEWROUTER_CODEX_AUTH_JSON_R123456_P[0-9a-f]{16}_E2_[0-9a-f]{32}$/,
+      /^REVIEWROUTER_CODEX_AUTH_JSON_R123456_P[0-9a-f]{16}_E1_[0-9a-f]{32}$/,
     );
 
     const second = await completeRotatingWriteback(dependencies, {
@@ -1417,7 +1417,7 @@ describe("Codex rotating OAuth action control plane", () => {
     expect(secondTarget).toMatchObject({ status: "ready" });
     if (secondTarget.status !== "ready")
       throw new Error("expected_second_target");
-    expect(secondTarget.writeTarget.secretName).not.toBe(
+    expect(secondTarget.writeTarget.secretName).toBe(
       firstTarget.writeTarget.secretName,
     );
 
@@ -1427,7 +1427,12 @@ describe("Codex rotating OAuth action control plane", () => {
         providerInstanceId: "codex-rotating:123456",
         now,
       }),
-    ).resolves.toEqual({ status: "lease_not_active" });
+    ).resolves.toMatchObject({
+      status: "ready",
+      writeTarget: {
+        secretName: firstTarget.writeTarget.secretName,
+      },
+    });
     await expect(
       ledger.authorizeReviewSnapshotAccess({
         leaseId: second.prelease.leaseId,
