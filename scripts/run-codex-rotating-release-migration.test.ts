@@ -554,7 +554,7 @@ describe("canonical exclusive release migration caller", () => {
     const finalManifestIdentityGrant = activationAuthority.slice(
       activationAuthority.lastIndexOf(manifestIdentityGrant),
       activationAuthority.indexOf(
-        "COMMIT;",
+        "-- Install the schema-owner ACL projectors",
         activationAuthority.lastIndexOf(manifestIdentityGrant),
       ),
     );

@@ -660,7 +660,8 @@ describe("target-local PG17 activation permit", () => {
   });
 
   it("installs owner-only runtime ACL routines behind the no-login guard", () => {
-    const provisioning = roleProvisioningSql(configuration);
+    const provisioning = activationAuthorityProvisioningSql();
+    const roleBootstrap = roleProvisioningSql(configuration);
     expect(provisioning).toContain(
       "CREATE OR REPLACE FUNCTION reviewrouter_activation.apply_runtime_acl()",
     );
@@ -674,10 +675,9 @@ describe("target-local PG17 activation permit", () => {
     );
     expect(provisioning).toContain("TO reviewrouter_activation_receipt_guard");
     expect(provisioning).toContain(
-      runtimeGrantStatements(configuration).replaceAll(
-        ':"DBNAME"',
-        '"review_router"',
-      ),
+      runtimeGrantStatements(configuration, undefined, {
+        dynamicDatabaseTarget: true,
+      }),
     );
     expect(provisioning).toContain("USING ERRCODE = 'RRACL'");
     expect(provisioning).toContain("EXCEPTION WHEN SQLSTATE 'RRACL' THEN");
@@ -689,6 +689,9 @@ describe("target-local PG17 activation permit", () => {
     expect(provisioning).toContain("runtime ACL routine execute ACL invalid");
     expect(provisioning).toContain(
       "REVOKE CREATE ON SCHEMA reviewrouter_activation",
+    );
+    expect(roleBootstrap).not.toContain(
+      "CREATE OR REPLACE FUNCTION reviewrouter_activation.apply_runtime_acl()",
     );
     const pairStart = provisioning.indexOf(
       "AS $capture_runtime_acl_policy_pair$",

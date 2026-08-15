@@ -230,14 +230,13 @@ END IF;`;
 
 const quoteIdentifier = (value) => `"${String(value).replaceAll('"', '""')}"`;
 
-function guardOwnedRuntimeGrantSql(configuration) {
-  const databaseName = decodeURIComponent(
-    new URL(configuration.releaseUrl).pathname.slice(1),
-  );
-  return runtimeGrantStatements(configuration).replaceAll(
-    ':"DBNAME"',
-    quoteIdentifier(databaseName),
-  );
+function guardOwnedRuntimeGrantSql() {
+  const configuration = {
+    roles: runtimeRoles.map(([role, username]) => ({ role, username })),
+  };
+  return runtimeGrantStatements(configuration, undefined, {
+    dynamicDatabaseTarget: true,
+  });
 }
 
 function guardOwnedRuntimeAclGateSql(configuration) {
@@ -247,8 +246,8 @@ function guardOwnedRuntimeAclGateSql(configuration) {
   return runtimeAclGateStatements(configuration, quoteIdentifier(databaseName));
 }
 
-function schemaOwnerRuntimeAclRoutinesSql(configuration) {
-  const runtimeGrants = guardOwnedRuntimeGrantSql(configuration);
+function schemaOwnerRuntimeAclRoutinesSql() {
+  const runtimeGrants = guardOwnedRuntimeGrantSql();
   const applyBody = `
 BEGIN
 ${runtimeGrants}
@@ -287,11 +286,6 @@ $apply_runtime_acl$;
 ALTER FUNCTION reviewrouter_activation.apply_runtime_acl()
   OWNER TO ${releaseSchemaOwnerRoleName};
 REVOKE ALL ON FUNCTION reviewrouter_activation.apply_runtime_acl() FROM PUBLIC;
-REVOKE ALL ON FUNCTION reviewrouter_activation.apply_runtime_acl() FROM
-  ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName},
-  ${canonicalBootstrapRoleName}, reviewrouter_release_migration,
-  reviewrouter_api, reviewrouter_web, reviewrouter_worker,
-  reviewrouter_codex_effect_authority;
 GRANT EXECUTE ON FUNCTION reviewrouter_activation.apply_runtime_acl()
   TO ${activationReceiptGuardRoleName};
 CREATE OR REPLACE FUNCTION reviewrouter_activation.capture_runtime_acl_policy_pair()
@@ -303,11 +297,6 @@ ALTER FUNCTION reviewrouter_activation.capture_runtime_acl_policy_pair()
   OWNER TO ${releaseSchemaOwnerRoleName};
 REVOKE ALL ON FUNCTION reviewrouter_activation.capture_runtime_acl_policy_pair()
   FROM PUBLIC;
-REVOKE ALL ON FUNCTION reviewrouter_activation.capture_runtime_acl_policy_pair()
-  FROM ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName},
-  ${canonicalBootstrapRoleName}, reviewrouter_release_migration,
-  reviewrouter_api, reviewrouter_web, reviewrouter_worker,
-  reviewrouter_codex_effect_authority;
 GRANT EXECUTE ON FUNCTION reviewrouter_activation.capture_runtime_acl_policy_pair()
   TO ${activationReceiptGuardRoleName};
 DO $runtime_acl_routine_boundary$
@@ -2828,6 +2817,14 @@ REVOKE ALL ON FUNCTION reviewrouter_activation.read_activation_migration_manifes
 GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()
   TO ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName},
      reviewrouter_release_migration;
+-- Install the schema-owner ACL projectors before the activation namespace is
+-- fingerprinted. Role bootstrap may validate them, but must not mutate this
+-- trusted namespace after release-control readiness has been attested.
+GRANT CREATE ON SCHEMA reviewrouter_activation
+  TO ${releaseSchemaOwnerRoleName};
+${schemaOwnerRuntimeAclRoutinesSql()}
+REVOKE CREATE ON SCHEMA reviewrouter_activation
+  FROM ${releaseSchemaOwnerRoleName};
 COMMIT;
 `;
 }
@@ -3241,8 +3238,6 @@ export function roleProvisioningSql(
     );
   const guardedGrants = guardOwnedRuntimeGrantSql(configuration);
   const guardedAclGate = guardOwnedRuntimeAclGateSql(configuration);
-  const schemaOwnerRuntimeAclRoutines =
-    schemaOwnerRuntimeAclRoutinesSql(configuration);
   const runtimeRoleLiterals = configuration.roles
     .map(({ username }) => quoted(username))
     .join(",");
@@ -3727,7 +3722,6 @@ WHERE (SELECT owner.rolname FROM pg_namespace namespace JOIN pg_roles owner ON o
 GRANT CREATE ON SCHEMA reviewrouter_activation
   TO ${releaseSchemaOwnerRoleName};
 SET LOCAL ROLE ${releaseSchemaOwnerRoleName};
-${schemaOwnerRuntimeAclRoutines}
 ${guardedLegacyReconciliation}
 DROP PROCEDURE IF EXISTS public.reviewrouter_execute_release_migration(
   text,text,text,text,text,bigint,text,jsonb);
@@ -4386,7 +4380,14 @@ function assertConnectionRole(
 export function runtimeGrantStatements(
   configuration,
   databaseTarget = ':"DBNAME"',
+  { dynamicDatabaseTarget = false } = {},
 ) {
+  const databaseAclStatement = (statement) => {
+    if (!dynamicDatabaseTarget)
+      return statement.replaceAll("__DATABASE_TARGET__", databaseTarget);
+    const template = statement.replaceAll("__DATABASE_TARGET__", "%I");
+    return `EXECUTE pg_catalog.format(${quoted(template)}, pg_catalog.current_database());`;
+  };
   const rotatingEvidenceLiterals = rotatingEvidenceTables
     .map((table) => `'${table}'`)
     .join(",");
@@ -4404,8 +4405,8 @@ export function runtimeGrantStatements(
     .map((column) => `"${column}"`)
     .join(", ");
   return `
-REVOKE CREATE ON DATABASE ${databaseTarget} FROM PUBLIC;
-REVOKE CONNECT ON DATABASE ${databaseTarget} FROM PUBLIC;
+${databaseAclStatement("REVOKE CREATE ON DATABASE __DATABASE_TARGET__ FROM PUBLIC;")}
+${databaseAclStatement("REVOKE CONNECT ON DATABASE __DATABASE_TARGET__ FROM PUBLIC;")}
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 ${configuration.roles
   .filter(({ role }) => role !== "effect-authority")
@@ -4413,7 +4414,7 @@ ${configuration.roles
     ({
       role,
       username,
-    }) => `GRANT CONNECT ON DATABASE ${databaseTarget} TO ${username};
+    }) => `${databaseAclStatement(`GRANT CONNECT ON DATABASE __DATABASE_TARGET__ TO ${username};`)}
 GRANT USAGE ON SCHEMA public TO ${username};
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM ${username};
 GRANT EXECUTE ON FUNCTION public."codex_oauth_database_authority_challenge"(text, text, integer) TO ${username};
@@ -4495,7 +4496,7 @@ ALTER FUNCTION public.reviewrouter_runtime_generation_write_read_canary(TEXT, TE
 GRANT EXECUTE ON FUNCTION public.reviewrouter_request_runtime_canary_challenge(TEXT, TEXT, TIMESTAMPTZ, TEXT, TEXT, TEXT, JSONB) TO reviewrouter_api;
 GRANT EXECUTE ON FUNCTION public.reviewrouter_read_runtime_canary_challenge_proofs(TEXT) TO reviewrouter_api;
 GRANT EXECUTE ON FUNCTION public.reviewrouter_answer_runtime_canary_challenge(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT) TO reviewrouter_web, reviewrouter_api, reviewrouter_worker;
-GRANT CONNECT ON DATABASE ${databaseTarget} TO reviewrouter_codex_effect_authority;
+${databaseAclStatement("GRANT CONNECT ON DATABASE __DATABASE_TARGET__ TO reviewrouter_codex_effect_authority;")}
 GRANT USAGE ON SCHEMA public TO reviewrouter_codex_effect_authority;
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM reviewrouter_codex_effect_authority;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM reviewrouter_codex_effect_authority;
