@@ -90,10 +90,12 @@ try {
       .startsWith("17"),
     "the rehearsal database server must be PostgreSQL 17",
   );
-  const rehearsalRelease = prepareCanonicalReleaseRoles(rehearsalUrl);
+  const rehearsalRelease = prepareCanonicalReleaseRoles(
+    rehearsalUrl,
+    applyBaselineThrough59,
+  );
   rehearsalRoleClients = rehearsalRelease.clients;
   rehearsalUrl = rehearsalRoleClients.release;
-  applyBaselineThrough59(rehearsalUrl);
   seedDirtyFixtures(rehearsalUrl);
   await proveMigration60LockTimeout(rehearsalUrl);
   migrateResolve(rehearsalUrl, "--rolled-back", migration60Name);
@@ -1764,7 +1766,9 @@ function proveDatabasePrivileges(url) {
   ]);
 }
 
-function prepareCanonicalReleaseRoles(url) {
+function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
+  if (typeof installHistoricalSchema !== "function")
+    throw new Error("historical_schema_installer_required");
   const loginRoles = [
     ["reviewrouter_api", "rr-rehearsal-api"],
     ["reviewrouter_web", "rr-rehearsal-web"],
@@ -1858,7 +1862,7 @@ function prepareCanonicalReleaseRoles(url) {
   psql(bootstrap, [
     "-c",
     String.raw`
-      CREATE TABLE public."_prisma_migrations" (
+      CREATE TABLE IF NOT EXISTS public."_prisma_migrations" (
         "id" VARCHAR(36) PRIMARY KEY NOT NULL,
         "checksum" VARCHAR(64) NOT NULL,
         "finished_at" TIMESTAMPTZ,
@@ -1869,6 +1873,10 @@ function prepareCanonicalReleaseRoles(url) {
         "applied_steps_count" INTEGER NOT NULL DEFAULT 0
       )`,
   ]);
+  // The hardened authority is installed over an existing historical schema,
+  // matching a real upgrade. Bootstrap owns these objects temporarily so the
+  // following canonical role transaction can transfer them atomically.
+  installHistoricalSchema(bootstrap);
   runRehearsalReleaseSubprocess(
     "external_activation_authority_provisioning",
     "psql",

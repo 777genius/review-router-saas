@@ -182,7 +182,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
 
   it("rehearses fail-closed grantor topology and an idempotent second bootstrap", () => {
     const provisioning =
-      /function prepareCanonicalReleaseRoles\(url\) \{([\s\S]+?)\n\}/u.exec(
+      /function prepareCanonicalReleaseRoles\(url, installHistoricalSchema\) \{([\s\S]+?)\n\}/u.exec(
         source,
       )?.[1];
     expect(provisioning).toBeDefined();
@@ -291,9 +291,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       source.indexOf("try {"),
       source.indexOf("function proveLateMigrationRollbackAndReplayMatrix"),
     );
-    const prepareIndex = orchestration.indexOf(
-      "prepareCanonicalReleaseRoles(rehearsalUrl)",
-    );
+    const prepareIndex = orchestration.indexOf("prepareCanonicalReleaseRoles(");
     const helperIndex = orchestration.indexOf(
       "executeCanonicalReleaseMigration(",
     );
@@ -307,7 +305,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).not.toContain("psqlInput");
 
     const provisioning =
-      /function prepareCanonicalReleaseRoles\(url\) \{([\s\S]+?)\n\}/u.exec(
+      /function prepareCanonicalReleaseRoles\(url, installHistoricalSchema\) \{([\s\S]+?)\n\}/u.exec(
         source,
       )?.[1];
     expect(provisioning).toBeDefined();
@@ -332,7 +330,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(provisioning).toContain(
       "CREATE ROLE reviewrouter_activation_receipt_reader LOGIN",
     );
-    expect(provisioning).toContain('CREATE TABLE public."_prisma_migrations"');
+    expect(provisioning).toContain(
+      'CREATE TABLE IF NOT EXISTS public."_prisma_migrations"',
+    );
+    expect(provisioning).toContain("installHistoricalSchema(bootstrap)");
+    expect(
+      provisioning.indexOf("installHistoricalSchema(bootstrap)"),
+    ).toBeLessThan(
+      provisioning.indexOf('"external_activation_authority_provisioning"'),
+    );
     expect(provisioning).toContain(
       '"external_activation_authority_provisioning"',
     );
