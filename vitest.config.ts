@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
@@ -9,6 +9,10 @@ export default defineConfig({
       "packages/**/*.test.tsx",
       "scripts/**/*.test.ts",
       "spikes/**/*.test.ts",
+    ],
+    exclude: [
+      ...configDefaults.exclude,
+      "scripts/hosted-pool-e2e/hosted-pool-postgres.e2e.test.ts",
     ],
     environment: "node",
     globals: false,

@@ -24,6 +24,7 @@
     "test": "vitest run",
     "lint": "eslint .",
     "format:check": "prettier --check .",
+    "postinstall": "pnpm db:generate",
     "local:bootstrap": "bash scripts/bootstrap-local.sh",
     "local:check": "bash scripts/check-local-readiness.sh",
     "hosted:check": "node scripts/check-hosted-readiness.mjs",

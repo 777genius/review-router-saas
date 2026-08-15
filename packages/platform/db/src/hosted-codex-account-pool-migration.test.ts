@@ -125,10 +125,12 @@ describe("000073 hosted Codex account pool", () => {
     );
     expect(sql).toContain('"attestedBindingRevision" = "revision"');
     expect(sql).toContain(
-      '"workflowSourceTrust" = \'trusted_default_branch_revision\'',
+      "\"workflowSourceTrust\" = 'trusted_default_branch_revision'",
     );
     expect(sql).toContain("hosted_codex_binding_activation_revision_changed");
-    expect(sql).toContain("hosted_codex_binding_repository_attestation_mismatch");
+    expect(sql).toContain(
+      "hosted_codex_binding_repository_attestation_mismatch",
+    );
     expect(sql).toContain("hosted_codex_binding_state_cas_required");
     expect(sql).toContain(
       'FOREIGN KEY ("repositoryBindingId", "workspaceId", "poolId", "repositoryConnectionId", "bindingRevision")',
@@ -162,15 +164,13 @@ describe("000073 hosted Codex account pool", () => {
     expect(sql).not.toContain(
       'FOREIGN KEY ("reviewRequestId") REFERENCES "ReviewInvocationLeaseV2"',
     );
-    expect(sql).toContain(
-      'ON "HostedCodexInvocationGrant"("reviewRequestId")',
-    );
+    expect(sql).toContain('ON "HostedCodexInvocationGrant"("reviewRequestId")');
   });
 
   it("separates replay idempotency from body identity and fences on response start", () => {
     expect(sql).toContain('"idempotencyKeyHash" TEXT NOT NULL');
     expect(sql).toContain('"requestHash" TEXT,');
-    expect(sql).toContain('"status" = \'processing\'');
+    expect(sql).toContain("\"status\" = 'processing'");
     expect(sql).toMatch(
       /"status" = 'received'[\s\S]*?"requestHash" IS NULL[\s\S]*?"status" = 'processing'/u,
     );
@@ -182,9 +182,7 @@ describe("000073 hosted Codex account pool", () => {
     );
     expect(sql).toContain("hosted_codex_relay_request_hash_immutable");
     expect(sql).toContain("hosted_codex_relay_admission_guard");
-    expect(sql).toContain(
-      '"requestCount" = target_grant."requestCount" + 1',
-    );
+    expect(sql).toContain('"requestCount" = target_grant."requestCount" + 1');
     expect(sql).toContain('"inFlight" = target_grant."inFlight" + 1');
     expect(sql).toContain("hosted_codex_relay_completion_accounting");
     expect(sql).toContain(
@@ -198,15 +196,11 @@ describe("000073 hosted Codex account pool", () => {
     );
     expect(sql).toContain('"successfulResponseStartedAt" TIMESTAMP(3)');
     expect(sql).toContain("hosted_codex_relay_success_fence");
-    expect(sql).toContain(
-      'SET "firstSuccessfulResponseAt" = success_at',
-    );
+    expect(sql).toContain('SET "firstSuccessfulResponseAt" = success_at');
   });
 
   it("persists and atomically consumes a distinct hash-only comment refresh capability", () => {
-    expect(sql).toContain(
-      'CREATE TABLE "HostedCodexCommentRefreshCapability"',
-    );
+    expect(sql).toContain('CREATE TABLE "HostedCodexCommentRefreshCapability"');
     expect(sql).toContain('"capabilityTokenHash" TEXT NOT NULL');
     expect(sql).toContain(
       'CREATE UNIQUE INDEX "HostedCodexCommentRefreshCapability_capabilityTokenHash_key"',

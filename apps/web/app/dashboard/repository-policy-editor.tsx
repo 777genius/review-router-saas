@@ -278,7 +278,8 @@ function ProviderSecretNotice({
   );
   const [refreshVersion, setRefreshVersion] = useState(0);
   const authMetadata = getProviderAuthModeMetadata(authMode);
-  const metadata = rotatingCodex || hostedCodex ? null : getSecretMetadata(authMode);
+  const metadata =
+    rotatingCodex || hostedCodex ? null : getSecretMetadata(authMode);
   const command = metadata
     ? repositoryFullName
       ? `gh secret set ${metadata.secretName} --repo ${repositoryFullName}${metadata.commandSuffix ? ` ${metadata.commandSuffix}` : ""}`

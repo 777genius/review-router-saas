@@ -172,7 +172,11 @@ export async function importHostedPoolAccountClientAction(
     );
     revalidatePath("/dashboard");
     return {
-      params: { notice: "hosted_pool_account_added", workspace: workspaceId, section: "setup" },
+      params: {
+        notice: "hosted_pool_account_added",
+        workspace: workspaceId,
+        section: "setup",
+      },
     };
   } catch (error) {
     return {
@@ -206,11 +210,19 @@ export async function setHostedPoolAccountStateClientAction(
     );
     revalidatePath("/dashboard");
     return {
-      params: { notice: "hosted_pool_account_updated", workspace: workspaceId, section: "setup" },
+      params: {
+        notice: "hosted_pool_account_updated",
+        workspace: workspaceId,
+        section: "setup",
+      },
     };
   } catch (error) {
     return {
-      params: { error: safeDashboardErrorCode(error), workspace: workspaceId, section: "setup" },
+      params: {
+        error: safeDashboardErrorCode(error),
+        workspace: workspaceId,
+        section: "setup",
+      },
     };
   }
 }
@@ -336,7 +348,9 @@ async function provisionPendingHostedPoolWorkflow(input: {
     ...(actor.accessSource?.source === "repo_manager"
       ? {
           fallback: async () =>
-            new OctokitWorkflowSetupGateway(await createGitHubUserOctokit(actor)),
+            new OctokitWorkflowSetupGateway(
+              await createGitHubUserOctokit(actor),
+            ),
         }
       : {}),
   });
@@ -471,7 +485,10 @@ async function provisionPendingRepositoryOwnedWorkflow(input: {
   const octokit = await createGitHubAppInstallationOctokit(
     repository.installation.githubInstallationId.toString(),
   );
-  await assertRepositoryVisibleToGitHubApp({ octokit, repository: githubRepository });
+  await assertRepositoryVisibleToGitHubApp({
+    octokit,
+    repository: githubRepository,
+  });
   const actionRef = await resolveCodexRotatingProvisioningActionRef({
     prisma,
     inspection: namespaceInspection,
@@ -488,7 +505,9 @@ async function provisionPendingRepositoryOwnedWorkflow(input: {
     ...(actor.accessSource?.source === "repo_manager"
       ? {
           fallback: async () =>
-            new OctokitWorkflowSetupGateway(await createGitHubUserOctokit(actor)),
+            new OctokitWorkflowSetupGateway(
+              await createGitHubUserOctokit(actor),
+            ),
         }
       : {}),
   });
@@ -543,7 +562,12 @@ function createHostedPoolDashboardMutationDependencies(): HostedPoolDashboardMut
     getRepository: async (repositoryId) =>
       prisma.repositoryConnection.findUnique({
         where: { id: repositoryId },
-        select: { id: true, workspaceId: true, fullName: true, visibility: true },
+        select: {
+          id: true,
+          workspaceId: true,
+          fullName: true,
+          visibility: true,
+        },
       }),
     mutations: createPrismaHostedPoolDashboardMutationPort({
       prisma,
@@ -555,10 +579,10 @@ function createHostedPoolDashboardMutationDependencies(): HostedPoolDashboardMut
 
 function readNonNegativeInteger(formData: FormData, name: string): number {
   const value = Number(readFormString(formData, name));
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name}_invalid`);
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new Error(`${name}_invalid`);
   return value;
 }
-
 
 export async function requestInstallationSyncClientAction(
   formData: FormData,
@@ -1423,16 +1447,15 @@ async function confirmSetupPullRequestMergedMutation(
       throw new Error("setup_pr_not_merged");
     }
 
-    const hostedBinding =
-      await prisma.hostedCodexRepositoryBinding.findFirst({
-        where: {
-          repositoryConnectionId: repositoryId,
-          workspaceId,
-          status: { in: ["pending_activation", "active"] },
-          tombstonedAt: null,
-        },
-        select: { id: true, status: true, revision: true },
-      });
+    const hostedBinding = await prisma.hostedCodexRepositoryBinding.findFirst({
+      where: {
+        repositoryConnectionId: repositoryId,
+        workspaceId,
+        status: { in: ["pending_activation", "active"] },
+        tombstonedAt: null,
+      },
+      select: { id: true, status: true, revision: true },
+    });
     if (hostedBinding?.status === "pending_activation") {
       await activateConfirmedHostedPoolBindingAfterWorkflowMerge({
         prisma,
