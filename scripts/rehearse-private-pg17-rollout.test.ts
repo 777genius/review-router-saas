@@ -968,6 +968,12 @@ describe("disposable dual-version rehearsal", () => {
       releaseMigration,
     );
     expect(source).toContain("facts.sql(facts.targetContainer, statement)");
+    expect(source).toContain(
+      'if (facts.captureOnly) {\n      sql(source, "DROP TABLE public.rehearsal_items CASCADE")',
+    );
+    expect(source).toContain(
+      'sql(target, "DROP TABLE public.rehearsal_items CASCADE")',
+    );
     const stageTarget = source.indexOf(
       "useCases.stageTargetServices(migratedRollout)",
     );

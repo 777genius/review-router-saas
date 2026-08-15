@@ -1079,14 +1079,22 @@ ROLLBACK;`,
       throw new Error("private_pg17_rehearsal_equivalence_failed");
     sql(source, "DROP SCHEMA app_private CASCADE");
     sql(target, "DROP SCHEMA app_private CASCADE");
+    if (facts.captureOnly) {
+      sql(source, "DROP TABLE public.rehearsal_items CASCADE");
+      sql(target, "DROP TABLE public.rehearsal_items CASCADE");
+    }
     const configuration = disposableSqlConfiguration();
     const canonicalRoleBootstrapSetup =
       disposablePg17CanonicalRoleBootstrapSetupSql();
     sql(
       target,
       `ALTER DATABASE review_router OWNER TO reviewrouter_role_bootstrap;
-       ALTER TABLE rehearsal_items OWNER TO reviewrouter_role_bootstrap;
-       ALTER SEQUENCE rehearsal_items_id_seq OWNER TO reviewrouter_role_bootstrap;
+       ${
+         facts.captureOnly
+           ? ""
+           : `ALTER TABLE rehearsal_items OWNER TO reviewrouter_role_bootstrap;
+       ALTER SEQUENCE rehearsal_items_id_seq OWNER TO reviewrouter_role_bootstrap;`
+       }
        DO $transfer$ DECLARE item record; BEGIN
          FOR item IN SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proowner=to_regrole('postgres') LOOP
            EXECUTE format('ALTER ROUTINE %s OWNER TO reviewrouter_role_bootstrap', item.oid::regprocedure);
