@@ -414,6 +414,36 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
             AND has_function_privilege('reviewrouter_activation_receipt_reader',p.oid,'EXECUTE')
               IS NOT DISTINCT FROM (p.oid=to_regprocedure(
                 'reviewrouter_activation.read_migration_receipt(text,bigint,text)'))
+            AND (EXISTS (SELECT 1
+              FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+              JOIN pg_roles grantee ON grantee.oid=acl.grantee
+              WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+                AND grantee.rolname='reviewrouter_activation_permit_installer'))
+              IS NOT DISTINCT FROM (p.oid IN (
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)')))
+            AND (EXISTS (SELECT 1
+              FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+              JOIN pg_roles grantee ON grantee.oid=acl.grantee
+              WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+                AND grantee.rolname='reviewrouter_release_migration'))
+              IS NOT DISTINCT FROM (p.oid=to_regprocedure(
+                'reviewrouter_activation.read_migration_receipt(text,bigint,text)'))
+            AND (EXISTS (SELECT 1
+              FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+              JOIN pg_roles grantee ON grantee.oid=acl.grantee
+              WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+                AND grantee.rolname='reviewrouter_release_schema_owner'))
+              IS NOT DISTINCT FROM (p.oid IN (
+                to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)')))
+            AND (EXISTS (SELECT 1
+              FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+              JOIN pg_roles grantee ON grantee.oid=acl.grantee
+              WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+                AND grantee.rolname='reviewrouter_activation_receipt_reader'))
+              IS NOT DISTINCT FROM (p.oid=to_regprocedure(
+                'reviewrouter_activation.read_migration_receipt(text,bigint,text)'))
             AND NOT EXISTS (SELECT 1
               FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
               LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee
@@ -578,7 +608,24 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 AND has_function_privilege(migration.oid,routine.oid,'EXECUTE')
                   IS NOT DISTINCT FROM
                     (routine.oid=to_regprocedure(
-                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)')))
+                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)'))
+                AND (EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(routine.proacl,
+                    acldefault('f',routine.proowner))) acl
+                  WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+                    AND acl.grantee=migration.oid)) IS NOT DISTINCT FROM
+                    (routine.oid=to_regprocedure(
+                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)'))
+                AND NOT EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(routine.proacl,
+                    acldefault('f',routine.proowner))) acl
+                  LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee
+                  WHERE acl.privilege_type='EXECUTE'
+                    AND acl.grantee<>routine.proowner
+                    AND (acl.is_grantable OR grantee.oid IS DISTINCT FROM CASE
+                      WHEN routine.oid=to_regprocedure(
+                        'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)')
+                        THEN migration.oid ELSE NULL END))))
             FROM pg_proc routine WHERE routine.oid IN (
               to_regprocedure(
                 'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)'),
@@ -677,6 +724,10 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           AND pg_get_userbyid(p.proowner)='reviewrouter_activation_receipt_guard'
           AND has_function_privilege('reviewrouter_activation_permit_installer',p.oid,'EXECUTE')
           AND NOT has_function_privilege('public',p.oid,'EXECUTE')
+          AND EXISTS (SELECT 1 FROM aclexplode(
+              coalesce(p.proacl,acldefault('f',p.proowner))) acl
+            WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+              AND acl.grantee='reviewrouter_activation_permit_installer'::regrole)
           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
             WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
               AND (acl.is_grantable OR NOT EXISTS (SELECT 1 FROM pg_roles grantee
@@ -691,6 +742,14 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           AND pg_get_userbyid(p.proowner)='reviewrouter_activation_receipt_guard'
           AND has_function_privilege('reviewrouter_activation_receipt_reader',p.oid,'EXECUTE')
           AND NOT has_function_privilege('public',p.oid,'EXECUTE')
+          AND EXISTS (SELECT 1 FROM aclexplode(
+              coalesce(p.proacl,acldefault('f',p.proowner))) acl
+            WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+              AND acl.grantee='reviewrouter_activation_receipt_reader'::regrole)
+          AND EXISTS (SELECT 1 FROM aclexplode(
+              coalesce(p.proacl,acldefault('f',p.proowner))) acl
+            WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+              AND acl.grantee='reviewrouter_release_migration'::regrole)
           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
             WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
               AND (acl.is_grantable OR NOT EXISTS (SELECT 1 FROM pg_roles grantee

@@ -921,6 +921,11 @@ activationDescribe("activation target semantic readiness", () => {
         "REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION reviewrouter_activation.assert_no_activation_receipt() FROM reviewrouter_role_bootstrap",
         "activationGuardExact",
       ],
+      [
+        "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean) TO reviewrouter_release_migration WITH GRANT OPTION",
+        "REVOKE GRANT OPTION FOR EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean) FROM reviewrouter_release_migration",
+        "activationGuardExact",
+      ],
     ] as const;
     for (const [mutate, restore, field] of cases) {
       await admin.$executeRawUnsafe(mutate);
