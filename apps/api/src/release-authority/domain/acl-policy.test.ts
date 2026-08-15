@@ -48,8 +48,8 @@ describe("release authority ACL policy", () => {
     expect(releaseAuthorityFinalAclPolicy.publicPrivileges).toEqual([]);
     expect(releaseAuthorityFinalAclPolicy.grantOptions).toEqual([]);
     expect(releaseAuthorityFinalAclPolicy.roleMemberships).toEqual([]);
-    expect(new Set(releaseAuthorityFinalAclPolicy.relations).size).toBe(14);
-    expect(new Set(releaseAuthorityFinalAclPolicy.routines).size).toBe(80);
+    expect(new Set(releaseAuthorityFinalAclPolicy.relations).size).toBe(15);
+    expect(new Set(releaseAuthorityFinalAclPolicy.routines).size).toBe(84);
     expect(
       new Set(
         releaseAuthorityFinalAclPolicy.routineExecuteRoles

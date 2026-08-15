@@ -115,8 +115,8 @@ describe("Codex rotating immutable migration history policy", () => {
     );
     expect(preflightSource).toContain('FROM "_prisma_migrations"');
     expect(preflightSource).not.toContain('WHERE "migration_name" IN');
-    expect(preflightSource).toContain(
-      "canonicalReleaseMigrationResumeManifestIdentities.includes(",
+    expect(preflightSource).toMatch(
+      /canonicalReleaseMigrationResumeManifestIdentities[\s\S]{0,120}\.includes\(manifestIdentity\)/u,
     );
   });
 

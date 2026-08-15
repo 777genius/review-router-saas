@@ -366,11 +366,34 @@ const services = (repository: CombinedLedgerPort) => ({
 describe("release rollout ledger internal API", () => {
   it("parses migration DTOs exactly and rejects malformed or cross-route identities", () => {
     const digestValue = `sha256:${"d".repeat(64)}`;
+    const inventorySha256 = `sha256:${createHash("sha256")
+      .update(
+        JSON.stringify({
+          activeLeaseIds: [],
+          fetchedSetupIds: [],
+          pendingIntentIds: [],
+          intentStatuses: [],
+        }),
+      )
+      .digest("hex")}`;
+    const sourceLegacyAmbiguity = {
+      inventorySha256,
+      activeLeaseIds: [],
+      fetchedSetupIds: [],
+      pendingIntentIds: [],
+      intentStatuses: [],
+      observations: [
+        { observedAt: "2026-08-13T23:59:58.000Z", inventorySha256 },
+        { observedAt: "2026-08-13T23:59:59.000Z", inventorySha256 },
+      ],
+      stable: true as const,
+    };
     const begin = {
       ...binding,
       targetRecoveryWitnessSha256: "c".repeat(64),
       transitionSha256: migrationTransition.transitionSha256,
       expectedPreviousReceiptSha256: digestValue,
+      sourceLegacyAmbiguity,
     };
     const permit = {
       schemaVersion: 1 as const,
@@ -381,6 +404,8 @@ describe("release rollout ledger internal API", () => {
       targetRecoveryWitnessSha256: "c".repeat(64),
       transitionSha256: migrationTransition.transitionSha256,
       expectedPreviousReceiptSha256: digestValue,
+      sourceLegacyAmbiguity,
+      eligibilityCutoff: "2026-08-13T23:59:59.000Z",
       epoch: 1,
       nonce: "e".repeat(32),
     };
