@@ -871,8 +871,8 @@ function proveVersionedNamespaceLedger(url) {
               AND attempt."idempotencyKey" = 'dispatch:runtime-proof-recovery'
           ) exact_active_recovery_setup_namespace
         ),
-        'definiteRuntimeTombstone', (
-          SELECT row_to_json(exact_definite_runtime_tombstone) FROM (
+        'definiteIntentOnRetiredInitialNamespace', (
+          SELECT row_to_json(exact_definite_intent_on_retired_initial_namespace) FROM (
             SELECT intent."id" AS "intentId", namespace."id" AS "namespaceId",
               namespace."namespaceEpoch"::text AS "namespaceEpoch",
               namespace."status" AS "namespaceStatus", namespace."permanentlyRetired",
@@ -881,10 +881,10 @@ function proveVersionedNamespaceLedger(url) {
             JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = intent."secretNamespaceId"
             WHERE intent."providerInstanceRowId" = 'p-clean'
               AND intent."idempotencyKey" = 'proof:definite'
-          ) exact_definite_runtime_tombstone
+          ) exact_definite_intent_on_retired_initial_namespace
         ),
-        'ambiguousRuntimeTombstone', (
-          SELECT row_to_json(exact_ambiguous_runtime_tombstone) FROM (
+        'recoveredAmbiguousIntentOnRetiredInitialNamespace', (
+          SELECT row_to_json(exact_recovered_ambiguous_intent_on_retired_initial_namespace) FROM (
             SELECT intent."id" AS "intentId", namespace."id" AS "namespaceId",
               namespace."namespaceEpoch"::text AS "namespaceEpoch",
               namespace."status" AS "namespaceStatus", namespace."permanentlyRetired",
@@ -893,10 +893,10 @@ function proveVersionedNamespaceLedger(url) {
             JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = intent."secretNamespaceId"
             WHERE intent."providerInstanceRowId" = 'p-clean'
               AND intent."idempotencyKey" = 'proof:ambiguous'
-          ) exact_ambiguous_runtime_tombstone
+          ) exact_recovered_ambiguous_intent_on_retired_initial_namespace
         ),
-        'activeRuntimeNamespace', (
-          SELECT row_to_json(exact_active_runtime_namespace) FROM (
+        'completedIntentOnActiveRecoveryNamespace', (
+          SELECT row_to_json(exact_completed_intent_on_active_recovery_namespace) FROM (
             SELECT intent."id" AS "intentId", namespace."id" AS "namespaceId",
               namespace."secretName", namespace."namespaceEpoch"::text AS "namespaceEpoch",
               intent."accountIdentityHash", intent."latestGenerationHash",
@@ -906,10 +906,10 @@ function proveVersionedNamespaceLedger(url) {
             JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = intent."secretNamespaceId"
             WHERE intent."providerInstanceRowId" = 'p-clean'
               AND intent."idempotencyKey" = 'proof:rollback'
-          ) exact_active_runtime_namespace
+          ) exact_completed_intent_on_active_recovery_namespace
         ),
-        'confirmedRestartRuntimeTombstone', (
-          SELECT row_to_json(exact_confirmed_restart_runtime_tombstone) FROM (
+        'confirmedRestartUnknownIntentOnActiveRecoveryNamespace', (
+          SELECT row_to_json(exact_confirmed_restart_unknown_intent_on_active_recovery_namespace) FROM (
             SELECT intent."id" AS "intentId", namespace."id" AS "namespaceId",
               namespace."namespaceEpoch"::text AS "namespaceEpoch",
               namespace."status" AS "namespaceStatus", namespace."permanentlyRetired",
@@ -918,7 +918,7 @@ function proveVersionedNamespaceLedger(url) {
             JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = intent."secretNamespaceId"
             WHERE intent."providerInstanceRowId" = 'p-clean'
               AND intent."idempotencyKey" = 'proof:confirmed-restart'
-          ) exact_confirmed_restart_runtime_tombstone
+          ) exact_confirmed_restart_unknown_intent_on_active_recovery_namespace
         ),
         'provider', (
           SELECT row_to_json(exact_provider) FROM (
@@ -949,67 +949,94 @@ function proveVersionedNamespaceLedger(url) {
       evidence.activeRecoverySetupNamespace.namespaceStatus === "active" &&
       evidence.activeRecoverySetupNamespace.permanentlyRetired === false &&
       evidence.activeRecoverySetupNamespace.namespaceId ===
-        evidence.activeRuntimeNamespace?.namespaceId,
+        evidence.completedIntentOnActiveRecoveryNamespace?.namespaceId &&
+      evidence.activeRecoverySetupNamespace.namespaceId ===
+        evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace
+          ?.namespaceId,
     "runtime production path did not retain the active recovery setup namespace",
   );
   assert(
-    evidence.definiteRuntimeTombstone?.intentStatus === "completed" &&
-      evidence.definiteRuntimeTombstone.namespaceStatus ===
+    evidence.definiteIntentOnRetiredInitialNamespace?.intentStatus ===
+      "completed" &&
+      evidence.definiteIntentOnRetiredInitialNamespace.namespaceStatus ===
         "retired_superseded" &&
-      evidence.definiteRuntimeTombstone.permanentlyRetired === true,
+      evidence.definiteIntentOnRetiredInitialNamespace.permanentlyRetired ===
+        true &&
+      evidence.definiteIntentOnRetiredInitialNamespace.namespaceId ===
+        evidence.initialSetupTombstone.namespaceId,
     "runtime production path did not retain the exact definite namespace tombstone",
   );
   assert(
-    evidence.activeRuntimeNamespace?.intentStatus === "completed" &&
-      evidence.activeRuntimeNamespace.namespaceStatus === "active" &&
-      evidence.activeRuntimeNamespace.permanentlyRetired === false &&
+    evidence.completedIntentOnActiveRecoveryNamespace?.intentStatus ===
+      "completed" &&
+      evidence.completedIntentOnActiveRecoveryNamespace.namespaceStatus ===
+        "active" &&
+      evidence.completedIntentOnActiveRecoveryNamespace.permanentlyRetired ===
+        false &&
       evidence.provider?.activeSecretNamespaceId ===
-        evidence.activeRuntimeNamespace.namespaceId &&
+        evidence.completedIntentOnActiveRecoveryNamespace.namespaceId &&
       evidence.provider.activeSecretNamespaceEpoch ===
-        evidence.activeRuntimeNamespace.namespaceEpoch &&
+        evidence.completedIntentOnActiveRecoveryNamespace.namespaceEpoch &&
       evidence.provider.activeSecretNamespaceName ===
-        evidence.activeRuntimeNamespace.secretName &&
+        evidence.completedIntentOnActiveRecoveryNamespace.secretName &&
       evidence.provider.activeAccountIdentityHash ===
-        evidence.activeRuntimeNamespace.accountIdentityHash &&
+        evidence.completedIntentOnActiveRecoveryNamespace.accountIdentityHash &&
       evidence.provider.latestGenerationHash ===
-        evidence.activeRuntimeNamespace.latestGenerationHash,
+        evidence.completedIntentOnActiveRecoveryNamespace.latestGenerationHash,
     "runtime production path exact proof:rollback namespace binding is incomplete",
   );
   assert(
-    evidence.confirmedRestartRuntimeTombstone?.intentStatus ===
-      "remote_outcome_unknown" &&
-      evidence.confirmedRestartRuntimeTombstone.namespaceStatus ===
-        "retired_ambiguous" &&
-      evidence.confirmedRestartRuntimeTombstone.permanentlyRetired === true,
-    "runtime production path did not retain the exact confirmed-restart namespace tombstone",
+    evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace
+      ?.intentStatus === "remote_outcome_unknown" &&
+      evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace
+        .namespaceStatus === "active" &&
+      evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace
+        .permanentlyRetired === false,
+    "runtime production path did not retain the confirmed-restart unknown intent on the active namespace",
   );
   assert(
-    BigInt(evidence.initialSetupTombstone.namespaceEpoch) <
-      BigInt(evidence.definiteRuntimeTombstone.namespaceEpoch) &&
-      BigInt(evidence.definiteRuntimeTombstone.namespaceEpoch) <
-        BigInt(evidence.ambiguousRuntimeTombstone.namespaceEpoch) &&
-      BigInt(evidence.ambiguousRuntimeTombstone.namespaceEpoch) <
-        BigInt(evidence.activeRecoverySetupNamespace.namespaceEpoch) &&
+    BigInt(evidence.initialSetupTombstone.namespaceEpoch) ===
+      BigInt(evidence.definiteIntentOnRetiredInitialNamespace.namespaceEpoch) &&
+      BigInt(
+        evidence.definiteIntentOnRetiredInitialNamespace.namespaceEpoch,
+      ) ===
+        BigInt(
+          evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace
+            .namespaceEpoch,
+        ) &&
+      BigInt(
+        evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace
+          .namespaceEpoch,
+      ) < BigInt(evidence.activeRecoverySetupNamespace.namespaceEpoch) &&
       BigInt(evidence.activeRecoverySetupNamespace.namespaceEpoch) ===
-        BigInt(evidence.activeRuntimeNamespace.namespaceEpoch) &&
-      BigInt(evidence.activeRuntimeNamespace.namespaceEpoch) <
-        BigInt(evidence.confirmedRestartRuntimeTombstone.namespaceEpoch),
-    "runtime production path namespace epochs are not monotonic across the evidence chain",
+        BigInt(
+          evidence.completedIntentOnActiveRecoveryNamespace.namespaceEpoch,
+        ) &&
+      BigInt(evidence.activeRecoverySetupNamespace.namespaceEpoch) ===
+        BigInt(
+          evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace
+            .namespaceEpoch,
+        ),
+    "runtime production path namespace reuse epochs are inconsistent across the evidence chain",
   );
   assert(
-    evidence.ambiguousRuntimeTombstone?.namespaceStatus ===
-      "retired_ambiguous" &&
-      evidence.ambiguousRuntimeTombstone.permanentlyRetired === true &&
-      evidence.ambiguousRuntimeTombstone.intentStatus ===
-        "remote_outcome_unknown" &&
-      typeof evidence.ambiguousRuntimeTombstone.recoveryRequestRowId ===
-        "string",
-    "runtime production path did not retain the exact ambiguous namespace tombstone",
+    evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace
+      ?.namespaceStatus === "retired_superseded" &&
+      evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace
+        .permanentlyRetired === true &&
+      evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace
+        .intentStatus === "remote_outcome_unknown" &&
+      typeof evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace
+        .recoveryRequestRowId === "string" &&
+      evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace.namespaceId ===
+        evidence.initialSetupTombstone.namespaceId,
+    "runtime production path did not retain the recovered ambiguous intent on the retired initial namespace",
   );
 
   const initialSetupTombstone = evidence.initialSetupTombstone;
   const activeRecoverySetupNamespace = evidence.activeRecoverySetupNamespace;
-  const activeRuntimeNamespace = evidence.activeRuntimeNamespace;
+  const completedIntentOnActiveRecoveryNamespace =
+    evidence.completedIntentOnActiveRecoveryNamespace;
   const provider = evidence.provider;
   const recreate = psql(
     url,
@@ -1071,19 +1098,19 @@ function proveVersionedNamespaceLedger(url) {
       "codex_oauth_setup_attempt_evidence_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceBlobSha"=repeat('e',40) WHERE "id"=${quoteLiteral(activeRuntimeNamespace.namespaceId)}`,
+      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceBlobSha"=repeat('e',40) WHERE "id"=${quoteLiteral(completedIntentOnActiveRecoveryNamespace.namespaceId)}`,
       "codex_oauth_secret_namespace_identity_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(activeRuntimeNamespace.namespaceId)}`,
+      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(completedIntentOnActiveRecoveryNamespace.namespaceId)}`,
       "codex_oauth_secret_namespace_identity_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSemanticSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(activeRuntimeNamespace.namespaceId)}`,
+      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSemanticSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(completedIntentOnActiveRecoveryNamespace.namespaceId)}`,
       "codex_oauth_secret_namespace_identity_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSecretNamespace" SET "attestedRepositoryId"='900008' WHERE "id"=${quoteLiteral(activeRuntimeNamespace.namespaceId)}`,
+      `UPDATE "CodexOAuthSecretNamespace" SET "attestedRepositoryId"='900008' WHERE "id"=${quoteLiteral(completedIntentOnActiveRecoveryNamespace.namespaceId)}`,
       "codex_oauth_secret_namespace_identity_immutable",
     ],
   ];
@@ -1104,26 +1131,6 @@ function proveVersionedNamespaceLedger(url) {
     [
       "CodexOAuthSecretNamespace",
       activeRecoverySetupNamespace.namespaceId,
-      "codex_oauth_secret_namespace_delete_forbidden",
-    ],
-    [
-      "CodexOAuthSecretNamespace",
-      evidence.definiteRuntimeTombstone.namespaceId,
-      "codex_oauth_secret_namespace_delete_forbidden",
-    ],
-    [
-      "CodexOAuthSecretNamespace",
-      evidence.ambiguousRuntimeTombstone.namespaceId,
-      "codex_oauth_secret_namespace_delete_forbidden",
-    ],
-    [
-      "CodexOAuthSecretNamespace",
-      evidence.confirmedRestartRuntimeTombstone.namespaceId,
-      "codex_oauth_secret_namespace_delete_forbidden",
-    ],
-    [
-      "CodexOAuthSecretNamespace",
-      activeRuntimeNamespace.namespaceId,
       "codex_oauth_secret_namespace_delete_forbidden",
     ],
     [
@@ -1191,39 +1198,45 @@ function assertVersionedNamespaceEvidenceRetained(
       (SELECT count(*) FROM "CodexOAuthWritebackIntent" intent
         JOIN "CodexOAuthSecretNamespace" namespace
           ON namespace."id"=intent."secretNamespaceId"
-        WHERE intent."id"=${quoteLiteral(evidence.definiteRuntimeTombstone.intentId)}
+        WHERE intent."id"=${quoteLiteral(evidence.definiteIntentOnRetiredInitialNamespace.intentId)}
           AND intent."idempotencyKey"='proof:definite'
           AND intent."status"='completed'
-          AND namespace."id"=${quoteLiteral(evidence.definiteRuntimeTombstone.namespaceId)}
+          AND namespace."id"=${quoteLiteral(evidence.definiteIntentOnRetiredInitialNamespace.namespaceId)}
           AND namespace."status"='retired_superseded' AND namespace."permanentlyRetired"),
-      (SELECT count(*) FROM "CodexOAuthSecretNamespace"
-        WHERE "id"=${quoteLiteral(evidence.ambiguousRuntimeTombstone.namespaceId)}
-          AND "status"='retired_ambiguous' AND "permanentlyRetired"),
       (SELECT count(*) FROM "CodexOAuthWritebackIntent" intent
         JOIN "CodexOAuthSecretNamespace" namespace
           ON namespace."id"=intent."secretNamespaceId"
-        WHERE intent."id"=${quoteLiteral(evidence.confirmedRestartRuntimeTombstone.intentId)}
+        WHERE intent."id"=${quoteLiteral(evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace.intentId)}
+          AND intent."idempotencyKey"='proof:ambiguous'
+          AND intent."status"='remote_outcome_unknown'
+          AND intent."recoveryRequestRowId" IS NOT NULL
+          AND namespace."id"=${quoteLiteral(evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace.namespaceId)}
+          AND namespace."status"='retired_superseded' AND namespace."permanentlyRetired"),
+      (SELECT count(*) FROM "CodexOAuthWritebackIntent" intent
+        JOIN "CodexOAuthSecretNamespace" namespace
+          ON namespace."id"=intent."secretNamespaceId"
+        WHERE intent."id"=${quoteLiteral(evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace.intentId)}
           AND intent."idempotencyKey"='proof:confirmed-restart'
           AND intent."status"='remote_outcome_unknown'
-          AND namespace."id"=${quoteLiteral(evidence.confirmedRestartRuntimeTombstone.namespaceId)}
-          AND namespace."status"='retired_ambiguous' AND namespace."permanentlyRetired"),
+          AND namespace."id"=${quoteLiteral(evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace.namespaceId)}
+          AND namespace."status"='active' AND NOT namespace."permanentlyRetired"),
       (SELECT count(*) FROM "CodexOAuthWritebackIntent" intent
         JOIN "CodexOAuthSecretNamespace" namespace
           ON namespace."id"=intent."secretNamespaceId"
-        WHERE intent."id"=${quoteLiteral(evidence.activeRuntimeNamespace.intentId)}
+        WHERE intent."id"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.intentId)}
           AND intent."idempotencyKey"='proof:rollback'
           AND intent."status"='completed'
-          AND namespace."id"=${quoteLiteral(evidence.activeRuntimeNamespace.namespaceId)}
+          AND namespace."id"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.namespaceId)}
           AND namespace."status"='active' AND NOT namespace."permanentlyRetired"),
       (SELECT count(*) FROM "CodexOAuthSecretNamespace"
         WHERE "providerInstanceRowId"=${quoteLiteral(evidence.provider.id)}
           AND "status"='active' AND NOT "permanentlyRetired"),
       (SELECT count(*) FROM "CodexOAuthProviderInstance" WHERE "id"=${quoteLiteral(evidence.provider.id)}
-        AND "activeSecretNamespaceId"=${quoteLiteral(evidence.activeRuntimeNamespace.namespaceId)}
-        AND "activeSecretNamespaceEpoch"=${quoteLiteral(evidence.activeRuntimeNamespace.namespaceEpoch)}::bigint
-        AND "activeSecretNamespaceName"=${quoteLiteral(evidence.activeRuntimeNamespace.secretName)}
-        AND "activeAccountIdentityHash"=${quoteLiteral(evidence.activeRuntimeNamespace.accountIdentityHash)}
-        AND "latestGenerationHash"=${quoteLiteral(evidence.activeRuntimeNamespace.latestGenerationHash)})
+        AND "activeSecretNamespaceId"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.namespaceId)}
+        AND "activeSecretNamespaceEpoch"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.namespaceEpoch)}::bigint
+        AND "activeSecretNamespaceName"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.secretName)}
+        AND "activeAccountIdentityHash"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.accountIdentityHash)}
+        AND "latestGenerationHash"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.latestGenerationHash)})
     )`,
   ]).stdout.trim();
   assert(
