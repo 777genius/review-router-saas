@@ -33,6 +33,7 @@ type DatabaseIdentityProbe = Readonly<{
   activationNamespaceFingerprint: string;
   authorityRoleTopologyExact: boolean;
   activationMigrationBoundaryExact: boolean;
+  activationBootstrapRoutinePrivilegesExact: boolean;
   activationGuardCatalogReadExact: boolean;
   activationApplicationOwnershipExact: boolean;
   activationRecoveryWitnessExact: boolean;
@@ -59,6 +60,7 @@ const absentAuthorityReadiness = (
 ): ReleaseAuthorityDatabaseReadiness => {
   const {
     activationMigrationBoundaryExact,
+    activationBootstrapRoutinePrivilegesExact,
     activationGuardCatalogReadExact,
     activationApplicationOwnershipExact,
     activationRecoveryWitnessExact,
@@ -72,7 +74,9 @@ const absentAuthorityReadiness = (
     ...identity,
     preMigrationPermitBoundaryExact,
     activationGuardExact:
-      preMigrationPermitBoundaryExact && activationApplicationOwnershipExact,
+      preMigrationPermitBoundaryExact &&
+      activationBootstrapRoutinePrivilegesExact &&
+      activationApplicationOwnershipExact,
     schemaVersion: 0,
     migrationManifest: [],
     catalogFingerprint: "",
@@ -331,9 +335,28 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               IS NOT DISTINCT FROM (p.oid IN (
                 to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
                 to_regprocedure('reviewrouter_activation.activate_generation(text)')))
-            AND has_function_privilege('reviewrouter_role_bootstrap',p.oid,'EXECUTE')
-              IS NOT DISTINCT FROM
-                (p.oid=to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'))
+            AND (p.oid=to_regprocedure(
+                  'reviewrouter_activation.assert_no_activation_receipt()')
+                AND EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+                  JOIN pg_roles grantee ON grantee.oid=acl.grantee
+                  WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+                    AND grantee.rolname='reviewrouter_role_bootstrap')
+              OR p.oid IN (
+                  to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
+                  to_regprocedure('reviewrouter_activation.activate_generation(text)'))
+                AND EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+                  JOIN pg_roles grantee ON grantee.oid=acl.grantee
+                  WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+                    AND grantee.rolname='reviewrouter_release_migration')
+              OR p.oid NOT IN (
+                  to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
+                  to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
+                  to_regprocedure('reviewrouter_activation.activate_generation(text)'))
+                AND NOT EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+                  WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner))
             AND NOT EXISTS (SELECT 1
               FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
               LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee
@@ -415,6 +438,19 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'),
               to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)'))),false)
         AS "activationMigrationBoundaryExact",
+      coalesce((SELECT count(*)=6 AND bool_and(
+          has_function_privilege('reviewrouter_role_bootstrap',p.oid,'EXECUTE')
+            IS NOT DISTINCT FROM (p.oid=to_regprocedure(
+              'reviewrouter_activation.assert_no_activation_receipt()')))
+        FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+        WHERE n.nspname='reviewrouter_activation' AND p.oid IN (
+          to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
+          to_regprocedure('reviewrouter_activation.canonical_json(jsonb)'),
+          to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)'),
+          to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)'),
+          to_regprocedure('reviewrouter_activation.activate_generation(text)'),
+          to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'))),false)
+        AS "activationBootstrapRoutinePrivilegesExact",
       coalesce((SELECT
           has_table_privilege(guard.oid,
             to_regclass('public."_prisma_migrations"'),'SELECT')
