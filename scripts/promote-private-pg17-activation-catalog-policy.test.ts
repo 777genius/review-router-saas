@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activationCatalogPromotionOptIn,
+  assertReviewedActivationCatalogPromotionProvenance,
   promotePrivatePg17ActivationCatalogPolicy,
 } from "./promote-private-pg17-activation-catalog-policy.mjs";
 
@@ -38,5 +39,14 @@ describe("activation catalog policy promotion", () => {
     ).rejects.toThrow(
       /activation_catalog_policy_promotion_candidate_(?:size|hash)_drift/u,
     );
+  });
+
+  it("refuses promotion without exact independent GO evidence", () => {
+    expect(() =>
+      assertReviewedActivationCatalogPromotionProvenance({
+        status: "ready",
+        independentReview: { result: "NO-GO" },
+      }),
+    ).toThrow("activation_catalog_policy_promotion_provenance_invalid");
   });
 });

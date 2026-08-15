@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -10,6 +10,7 @@ import {
   canonicalActivationPrincipalNames,
   canonicalBootstrapMembershipRoleNames,
 } from "../packages/features/release-rollout/src/domain/effective-principal-inventory.ts";
+import { assertActivationCatalogPolicyPromotionProvenance } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
 
 export const activationCatalogPromotionOptIn =
   "promote-reviewed-activation-catalog-v20";
@@ -29,6 +30,56 @@ export const activationCatalogArtifactPath = resolve(
   repositoryRoot,
   "packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js",
 );
+export const activationCatalogPromotionProvenancePath = resolve(
+  repositoryRoot,
+  "packages/features/release-rollout/src/domain/activation-catalog-policy-provenance.json",
+);
+
+export const reviewedActivationCatalogPromotionExpectation = Object.freeze({
+  readinessReason:
+    "reviewed-v21-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
+  captureBaseCommit: "03329fc89abe441e094fc9cc15ca6e056bb38452",
+  candidateBytes: reviewedActivationCatalogCandidate.bytes,
+  candidateSha256: reviewedActivationCatalogCandidate.sha256,
+  sourcePg16Image:
+    "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+  targetPg17Image:
+    "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4",
+  preactivationCatalogPolicySha256:
+    reviewedActivationCatalogCandidate.preactivationCatalogPolicySha256,
+  activatedCatalogPolicySha256:
+    reviewedActivationCatalogCandidate.activatedCatalogPolicySha256,
+  artifactCanonicalSha256:
+    reviewedActivationCatalogCandidate.artifactCanonicalSha256,
+});
+
+export function assertReviewedActivationCatalogPromotionProvenance(value) {
+  assertActivationCatalogPolicyPromotionProvenance(
+    value,
+    reviewedActivationCatalogPromotionExpectation,
+  );
+}
+
+async function readPromotionProvenance() {
+  try {
+    return JSON.parse(
+      await readFile(activationCatalogPromotionProvenancePath, "utf8"),
+    );
+  } catch {
+    throw new Error("activation_catalog_policy_promotion_provenance_invalid");
+  }
+}
+
+async function writeArtifactAtomically(generated) {
+  const temporaryPath = `${activationCatalogArtifactPath}.tmp-${process.pid}`;
+  try {
+    await writeFile(temporaryPath, generated, { flag: "wx" });
+    await rename(temporaryPath, activationCatalogArtifactPath);
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
@@ -189,7 +240,10 @@ export async function promotePrivatePg17ActivationCatalogPolicy({
   const generated = canonicalActivationCatalogArtifactSource(
     await readFile(candidatePath),
   );
-  if (write) await writeFile(activationCatalogArtifactPath, generated);
+  assertReviewedActivationCatalogPromotionProvenance(
+    await readPromotionProvenance(),
+  );
+  if (write) await writeArtifactAtomically(generated);
   else {
     let existing;
     try {
