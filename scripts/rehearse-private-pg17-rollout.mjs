@@ -375,6 +375,11 @@ function redactedErrorChain(error) {
 }
 
 export function safePostgresErrorClassification(stderr) {
+  const sqlState = stderr?.match(/ERROR:\s*([0-9A-Z]{5}):/u)?.[1];
+  const normalizedStderr = stderr?.replace(
+    /ERROR:\s*[0-9A-Z]{5}:\s*/gu,
+    "ERROR: ",
+  );
   const prismaCode = stderr?.match(/\b(P[0-9]{4})\b/u)?.[1];
   if (prismaCode) {
     const migration = stderr?.match(
@@ -386,32 +391,33 @@ export function safePostgresErrorClassification(stderr) {
   }
   if (/Error loading config file|Failed to load config/u.test(stderr ?? ""))
     return "prisma configuration load failed";
-  const missingRoutine = stderr?.match(
+  const missingRoutine = normalizedStderr?.match(
     /ERROR:\s*function\s+((?:public|reviewrouter_[a-z_]+)\.(?:"[a-z0-9_]+"|[a-z0-9_]+))\([^\n]*\) does not exist/iu,
   )?.[1];
   if (missingRoutine) return `function ${missingRoutine} does not exist`;
-  const deniedObject = stderr?.match(
+  const deniedObject = normalizedStderr?.match(
     /ERROR:\s*permission denied for (table|schema|function|procedure|sequence|relation) ([A-Za-z_][A-Za-z0-9_$.-]*)/iu,
   );
   if (deniedObject)
     return `permission denied for ${deniedObject[1]?.toLowerCase()} ${deniedObject[2]}`;
-  if (/ERROR:\s*permission denied/iu.test(stderr ?? ""))
+  if (/ERROR:\s*permission denied/iu.test(normalizedStderr ?? ""))
     return "permission denied";
-  if (/ERROR:\s*release migration/iu.test(stderr ?? ""))
+  if (/ERROR:\s*release migration/iu.test(normalizedStderr ?? ""))
     return "release migration invariant rejected";
-  const namedInvariant = stderr?.match(
+  const namedInvariant = normalizedStderr?.match(
     /ERROR:\s*((?:codex_oauth|reviewrouter|runtime|release)_[a-z0-9_]{2,160})(?:\n|$)/iu,
   )?.[1];
   if (namedInvariant) return namedInvariant.toLowerCase();
-  const missingObject = stderr?.match(
+  const missingObject = normalizedStderr?.match(
     /ERROR:\s*((?:relation|role|schema|function|procedure) "[A-Za-z][A-Za-z0-9_.]{0,127}" does not exist)(?:\n|$)/iu,
   )?.[1];
   if (missingObject) return missingObject.toLowerCase();
-  const staticInvariant = stderr?.match(
+  const staticInvariant = normalizedStderr?.match(
     /ERROR:\s*([a-z][a-z ]{2,100})(?:\n|$)/iu,
   )?.[1];
   if (staticInvariant) return staticInvariant.toLowerCase();
-  if (/ERROR:/u.test(stderr ?? "")) return "postgres error";
+  if (sqlState) return `postgres sqlstate ${sqlState}`;
+  if (/ERROR:/u.test(normalizedStderr ?? "")) return "postgres error";
   return undefined;
 }
 
@@ -1582,7 +1588,7 @@ async function verifyProductionPathRehearsal(facts) {
       if (hostIndex < 0 || args[hostIndex + 1] !== "target.internal")
         throw new Error("rehearsal_psql_target_invalid");
       const normalized = normalizeSecretSafePostgresArguments(
-        args,
+        [...args, "--set=VERBOSITY=verbose"],
         options.input,
       );
       const allowedEnvironment = Object.fromEntries(
@@ -1623,7 +1629,10 @@ async function verifyProductionPathRehearsal(facts) {
     }
     const invocation = createSecretSafePostgresInvocation({
       databaseUrl: args[urlIndex],
-      args: args.filter((_, index) => index !== urlIndex),
+      args: [
+        ...args.filter((_, index) => index !== urlIndex),
+        "--set=VERBOSITY=verbose",
+      ],
       input: options.input,
       pgHostAddress: "127.0.0.1",
     });

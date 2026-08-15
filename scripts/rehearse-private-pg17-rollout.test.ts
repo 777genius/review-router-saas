@@ -46,9 +46,14 @@ describe("disposable dual-version rehearsal", () => {
     ).toBe("codex_oauth_provider_identity_mismatch");
     expect(
       safePostgresErrorClassification(
-        'psql: ERROR: relation "CodexOAuthSetupManifest" does not exist\nDETAIL: token=secret',
+        'psql: ERROR:  42P01: relation "CodexOAuthSetupManifest" does not exist\nDETAIL: token=secret',
       ),
     ).toBe('relation "codexoauthsetupmanifest" does not exist');
+    expect(
+      safePostgresErrorClassification(
+        'psql: ERROR:  0A000: unsupported operation near "secret"\nDETAIL: token=secret',
+      ),
+    ).toBe("postgres sqlstate 0A000");
   });
   it("requires explicit opt-in and immutable PG16.13/PG17 images", () => {
     expect(
