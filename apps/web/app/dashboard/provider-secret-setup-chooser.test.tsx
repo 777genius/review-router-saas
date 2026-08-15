@@ -192,6 +192,28 @@ describe("ProviderSecretSetupChooser", () => {
     ).toBeNull();
   });
 
+  it("explains how to finish an incomplete rotating workflow namespace", async () => {
+    mockProviderSetupFetch().mockResolvedValueOnce(
+      providerSetupResponse({
+        params: {
+          error: "codex_rotating_workflow_namespace_not_ready",
+          workspace: "workspace_1",
+          section: "repositories",
+        },
+      }),
+    );
+
+    renderProviderSecretSetupChooser();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Verify versioned setup" }),
+    );
+
+    expect(
+      await screen.findByText(/run the fresh setup command above/i),
+    ).toBeTruthy();
+    expect(pageText()).not.toContain("could not save provider setup");
+  });
+
   it("keeps verification mode when the repository secret is missing", async () => {
     mockProviderSetupFetch().mockResolvedValueOnce(
       providerSetupResponse({
