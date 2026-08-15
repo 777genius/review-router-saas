@@ -126,6 +126,25 @@ try {
     releaseMigrationResult.aclGateState === "open",
     "combined migration rehearsal must exercise the open runtime ACL state",
   );
+  const targetMigrationReceipt = releaseMigrationResult.targetMigrationReceipt;
+  const expectedEffectFingerprint = `sha256:${createHash("sha256")
+    .update(
+      [
+        targetMigrationReceipt.rolloutId,
+        targetMigrationReceipt.transitionSha256,
+        targetMigrationReceipt.permitEpoch,
+        targetMigrationReceipt.permitNonce,
+        targetMigrationReceipt.sourceLegacyAmbiguity.inventorySha256,
+        targetMigrationReceipt.eligibilityCutoff,
+        targetMigrationReceipt.postManifestIdentity,
+        targetMigrationReceipt.postCatalogDigest,
+      ].join(":"),
+    )
+    .digest("hex")}`;
+  assert(
+    targetMigrationReceipt.effectFingerprint === expectedEffectFingerprint,
+    "target migration effect fingerprint must match independently observed receipt facts",
+  );
   const replayMigrationResult = executeCanonicalReleaseMigration(
     {
       ...rehearsalRelease.environment,
@@ -3849,13 +3868,13 @@ function proveLegacyChildWritesRejected(url) {
   );
   assert(
     setup.status !== 0,
-    "legacy setup mutation on a stale active epoch must fail",
+    "legacy setup mutation on recovered evidence must fail",
   );
   assert(
     `${setup.stdout}${setup.stderr}`.includes(
-      "codex_oauth_child_mutation_epoch_mismatch",
+      "codex_oauth_setup_manifest_terminal_evidence_immutable",
     ),
-    "legacy setup rejection must identify the epoch fence",
+    "legacy setup rejection must identify the terminal evidence fence",
   );
   const lease = psql(
     url,
@@ -3878,7 +3897,7 @@ function proveLegacyChildWritesRejected(url) {
   psql(url, [
     "-c",
     String.raw`DO $$ BEGIN
-      IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id='fetched-recovery') <> 'fetched'
+      IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id='fetched-recovery') <> 'recovered'
         OR (SELECT status FROM "CodexOAuthLease" WHERE id='lease-recovery') <> 'preleased'
       THEN RAISE EXCEPTION 'rejected legacy child write changed data'; END IF;
     END $$;`,

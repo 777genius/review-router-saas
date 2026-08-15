@@ -1126,6 +1126,15 @@ describe("canonical exclusive release migration caller", () => {
     expect(completionGuard).not.toContain(
       "current_permit.source_legacy_ambiguity->>'inventorySha256'||':'||",
     );
+    expect(activationAuthority).toContain(
+      "release migration target source evidence catalog invalid",
+    );
+    expect(activationAuthority).toContain(
+      "evidence_attribute.atttypid IS DISTINCT FROM 'jsonb'::pg_catalog.regtype",
+    );
+    expect(activationAuthority).toContain(
+      "evidence_attribute.attnotnull IS DISTINCT FROM true",
+    );
     expect(completionGuard).toContain(
       "'acknowledgement','all_prior_installers_and_writers_are_stopped'",
     );

@@ -968,6 +968,23 @@ END $migration_permit_evidence_upgrade$;
 ALTER TABLE reviewrouter_activation.migration_permit
   ALTER COLUMN source_legacy_ambiguity SET NOT NULL,
   ALTER COLUMN eligibility_cutoff SET NOT NULL;
+DO $migration_permit_evidence_catalog$
+DECLARE evidence_attribute record;
+BEGIN
+  SELECT a.atttypid,a.atttypmod,a.attndims,a.attnotnull
+  INTO evidence_attribute
+  FROM pg_catalog.pg_attribute a
+  WHERE a.attrelid='reviewrouter_activation.migration_permit'::pg_catalog.regclass
+    AND a.attname='source_legacy_ambiguity' AND NOT a.attisdropped;
+  IF NOT FOUND
+     OR evidence_attribute.atttypid IS DISTINCT FROM 'jsonb'::pg_catalog.regtype
+     OR evidence_attribute.atttypmod IS DISTINCT FROM -1
+     OR evidence_attribute.attndims IS DISTINCT FROM 0
+     OR evidence_attribute.attnotnull IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'release migration target source evidence catalog invalid';
+  END IF;
+END
+$migration_permit_evidence_catalog$;
 ALTER TABLE reviewrouter_activation.activation_permit
   ADD COLUMN IF NOT EXISTS preactivation_catalog_policy jsonb,
   ADD COLUMN IF NOT EXISTS preactivation_catalog_policy_sha256 text,

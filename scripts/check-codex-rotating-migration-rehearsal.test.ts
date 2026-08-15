@@ -669,6 +669,21 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toHaveLength(4);
   });
 
+  it("proves the recovered legacy manifest and database-owned effect fingerprint exactly", () => {
+    expect(source).toContain(
+      "targetMigrationReceipt.effectFingerprint === expectedEffectFingerprint",
+    );
+    expect(source).toContain(
+      "targetMigrationReceipt.sourceLegacyAmbiguity.inventorySha256",
+    );
+    expect(source).toContain(
+      "codex_oauth_setup_manifest_terminal_evidence_immutable",
+    );
+    expect(source).toContain(
+      `status FROM "CodexOAuthSetupManifest" WHERE id='fetched-recovery') <> 'recovered'`,
+    );
+  });
+
   it("requires runtime Prisma negative proofs to identify the receipt guard", () => {
     expect(runtimeProofSource).not.toContain("catch {");
     expect(
