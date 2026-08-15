@@ -482,10 +482,10 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 AND has_function_privilege(migration.oid,routine.oid,'EXECUTE')
                   IS NOT DISTINCT FROM
                     (routine.oid=to_regprocedure(
-                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb)')))
+                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)')))
             FROM pg_proc routine WHERE routine.oid IN (
               to_regprocedure(
-                'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb)'),
+                'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)'),
               to_regprocedure(
                 'public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text)')))
           FROM pg_roles owner CROSS JOIN pg_roles migration

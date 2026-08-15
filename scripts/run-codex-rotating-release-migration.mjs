@@ -175,6 +175,13 @@ function guardOwnedRuntimeGrantSql(configuration) {
   );
 }
 
+function guardOwnedRuntimeAclGateSql(configuration) {
+  const databaseName = decodeURIComponent(
+    new URL(configuration.releaseUrl).pathname.slice(1),
+  );
+  return runtimeAclGateStatements(configuration, quoteIdentifier(databaseName));
+}
+
 export const rotatingEvidenceTables = Object.freeze([
   "CodexOAuthChildIdentityQuarantine",
   "CodexOAuthLease",
@@ -2837,6 +2844,10 @@ export function resolveRoleBootstrapConfiguration(env) {
 export function roleProvisioningSql(configuration) {
   const guardedBundle = guardedAtomicReleaseMigrationBundleSql();
   const guardedGrants = guardOwnedRuntimeGrantSql(configuration);
+  const guardedAclGate = guardOwnedRuntimeAclGateSql(configuration);
+  const runtimeRoleLiterals = configuration.roles
+    .map(({ username }) => quoted(username))
+    .join(",");
   const guardedLegacyReconciliation =
     guardedLegacyAmbiguityReconciliationProcedureSql(
       releaseSchemaOwnerRoleName,
@@ -3135,6 +3146,8 @@ WHERE (SELECT owner.rolname FROM pg_namespace namespace JOIN pg_roles owner ON o
 -- convergence back together with the ownership transfer.
 SET LOCAL ROLE ${releaseSchemaOwnerRoleName};
 ${guardedLegacyReconciliation}
+DROP PROCEDURE IF EXISTS public.reviewrouter_execute_release_migration(
+  text,text,text,text,text,bigint,text,jsonb);
 CREATE OR REPLACE PROCEDURE public.reviewrouter_execute_release_migration(
   requested_rollout_id text,
   requested_target_system_identifier text,
@@ -3143,7 +3156,8 @@ CREATE OR REPLACE PROCEDURE public.reviewrouter_execute_release_migration(
   requested_previous_receipt_sha256 text,
   requested_permit_epoch bigint,
   requested_permit_nonce text,
-  requested_legacy_reconciliation jsonb
+  requested_legacy_reconciliation jsonb,
+  requested_acl_gate_closed boolean
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -3155,12 +3169,26 @@ BEGIN
   IF session_user <> 'reviewrouter_release_migration' THEN
     RAISE EXCEPTION 'release migration executor caller invalid';
   END IF;
+  IF requested_acl_gate_closed IS NULL THEN
+    RAISE EXCEPTION 'release migration executor ACL gate mode invalid';
+  END IF;
   permit_result := reviewrouter_activation.consume_migration_permit(
     requested_rollout_id,requested_target_system_identifier,
     requested_target_recovery_witness_sha256,requested_transition_sha256,
     requested_previous_receipt_sha256,requested_permit_epoch,
     requested_permit_nonce);
-  IF permit_result='replay' THEN RETURN; END IF;
+  IF permit_result='replay' THEN
+    IF EXISTS (
+      SELECT 1
+      FROM pg_catalog.unnest(ARRAY[${runtimeRoleLiterals}]) AS roles(role_name)
+      WHERE pg_catalog.has_database_privilege(
+        role_name,pg_catalog.current_database(),'CONNECT'
+      ) IS DISTINCT FROM NOT requested_acl_gate_closed
+    ) THEN
+      RAISE EXCEPTION 'release migration executor replay ACL gate mode conflict';
+    END IF;
+    RETURN;
+  END IF;
   IF permit_result IS DISTINCT FROM 'execute' THEN
     RAISE EXCEPTION 'release migration executor permit invalid';
   END IF;
@@ -3170,6 +3198,45 @@ BEGIN
     requested_legacy_reconciliation->>'inventorySha256');
 ${guardedBundle}
 ${guardedGrants}
+  IF requested_acl_gate_closed THEN
+${guardedAclGate}
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_catalog.unnest(ARRAY[${runtimeRoleLiterals}]) AS roles(role_name)
+    WHERE pg_catalog.has_database_privilege(
+      role_name,pg_catalog.current_database(),'CONNECT'
+    ) IS DISTINCT FROM NOT requested_acl_gate_closed
+  ) THEN
+    RAISE EXCEPTION 'release migration executor runtime CONNECT gate mismatch';
+  END IF;
+  IF requested_acl_gate_closed AND (
+    EXISTS (
+      SELECT 1
+      FROM pg_catalog.unnest(ARRAY[${runtimeRoleLiterals}]) AS roles(role_name)
+      CROSS JOIN pg_catalog.pg_class relation
+      JOIN pg_catalog.pg_namespace namespace
+        ON namespace.oid=relation.relnamespace
+      CROSS JOIN pg_catalog.unnest(
+        ARRAY['INSERT','UPDATE','DELETE','TRUNCATE']
+      ) AS privileges(privilege)
+      WHERE namespace.nspname='public'
+        AND relation.relkind IN ('r','p','v','m','f')
+        AND pg_catalog.has_table_privilege(role_name,relation.oid,privilege)
+    ) OR EXISTS (
+      SELECT 1
+      FROM pg_catalog.unnest(ARRAY[${runtimeRoleLiterals}]) AS roles(role_name)
+      CROSS JOIN pg_catalog.pg_class sequence
+      JOIN pg_catalog.pg_namespace namespace
+        ON namespace.oid=sequence.relnamespace
+      CROSS JOIN pg_catalog.unnest(ARRAY['USAGE','UPDATE'])
+        AS privileges(privilege)
+      WHERE namespace.nspname='public' AND sequence.relkind='S'
+        AND pg_catalog.has_sequence_privilege(role_name,sequence.oid,privilege)
+    )
+  ) THEN
+    RAISE EXCEPTION 'release migration executor runtime write gate mismatch';
+  END IF;
   SELECT digest INTO STRICT observed_post_catalog_digest
   FROM (${fencedLiveV70V72CatalogDigestSql}) live(digest);
   PERFORM reviewrouter_activation.complete_migration_permit(
@@ -3185,9 +3252,9 @@ ${guardedGrants}
 END
 $rr_guarded_release_executor_v1$;
 REVOKE ALL ON PROCEDURE public.reviewrouter_execute_release_migration(
-  text,text,text,text,text,bigint,text,jsonb) FROM PUBLIC;
+  text,text,text,text,text,bigint,text,jsonb,boolean) FROM PUBLIC;
 GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(
-  text,text,text,text,text,bigint,text,jsonb) TO reviewrouter_release_migration;
+  text,text,text,text,text,bigint,text,jsonb,boolean) TO reviewrouter_release_migration;
 DO $transferred_public_routine_acl$
 DECLARE routine_row record;
 BEGIN
@@ -3235,7 +3302,7 @@ BEGIN
 END
 $transferred_public_routine_acl_gate$;
 GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(
-  text,text,text,text,text,bigint,text,jsonb) TO reviewrouter_release_migration;
+  text,text,text,text,text,bigint,text,jsonb,boolean) TO reviewrouter_release_migration;
 GRANT SELECT ON TABLE public._prisma_migrations TO reviewrouter_release_migration;
 GRANT SELECT ("id","status") ON TABLE public."CodexOAuthLease",
   public."CodexOAuthSetupManifest", public."CodexOAuthWritebackIntent"
@@ -3672,10 +3739,15 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
 `;
 }
 
-export function runtimeAclGateStatements(configuration) {
+export function runtimeAclGateStatements(
+  configuration,
+  databaseTarget = ':"DBNAME"',
+) {
   return `${configuration.roles
     .map(
-      ({ username }) => `REVOKE CONNECT ON DATABASE :"DBNAME" FROM ${username};
+      ({
+        username,
+      }) => `REVOKE CONNECT ON DATABASE ${databaseTarget} FROM ${username};
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM ${username};
 REVOKE USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA public FROM ${username};`,
     )
@@ -3783,12 +3855,13 @@ CALL public.reviewrouter_execute_release_migration(
   ${quoted(migrationPermit.previousReceiptSha256)},
   ${migrationPermit.epoch}::bigint,
   ${quoted(migrationPermit.nonce)},
-  ${quoted(JSON.stringify(legacyReconciliation.receipt))}::jsonb);
-${gateClosed ? runtimeAclGateStatements(configuration) : ""}
+  ${quoted(JSON.stringify(legacyReconciliation.receipt))}::jsonb,
+  ${gateClosed ? "true" : "false"}::boolean);
 SET LOCAL search_path = pg_catalog, pg_temp;
 DO $phase_aware_manifest_postcondition$
 DECLARE manifest_identity text;
 DECLARE catalog_digest text;
+DECLARE receipt_catalog_digest text;
 BEGIN
   SELECT 'sha256:' || encode(pg_catalog.sha256(convert_to(
     coalesce(string_agg(migration_name || ':' || checksum, ',' ORDER BY migration_name), ''),
@@ -3816,7 +3889,11 @@ BEGIN
     ) AND NOT prosecdef
   ) THEN RAISE EXCEPTION 'release migration V72 routine security invalid'; END IF;
   SELECT digest INTO STRICT catalog_digest FROM (${liveV70V72CatalogDigestSql}) live(digest);
-  IF catalog_digest IS DISTINCT FROM '${liveV70V72CatalogDigestSha256}'
+  SELECT reviewrouter_activation.read_migration_receipt(
+    ${quoted(migrationPermit.rolloutId)},${migrationPermit.epoch}::bigint,
+    ${quoted(migrationPermit.nonce)}
+  )->>'postCatalogDigest' INTO STRICT receipt_catalog_digest;
+  IF catalog_digest IS DISTINCT FROM receipt_catalog_digest
     THEN RAISE EXCEPTION 'release migration V70-V72 live catalog digest mismatch'; END IF;
 END
 $phase_aware_manifest_postcondition$;

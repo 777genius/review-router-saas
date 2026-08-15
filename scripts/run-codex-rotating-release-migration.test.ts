@@ -378,6 +378,28 @@ describe("canonical exclusive release migration caller", () => {
         },
       },
     });
+    const gateClosedAtomicMigration = atomicMigrationAndGrantSql(
+      configuration,
+      {
+        gateClosed: true,
+        migrationPermit: migrationPermit(),
+        legacyReconciliation: {
+          receipt: {
+            version: 1,
+            acknowledgement: "all_prior_installers_and_writers_are_stopped",
+            inventory: {
+              activeLeaseIds: [],
+              fetchedSetupIds: [],
+              pendingIntentIds: [],
+              intentStatuses: [],
+            },
+            inventorySha256: `sha256:${"1".repeat(64)}`,
+            stableSamples: 2,
+            status: "reconciled",
+          },
+        },
+      },
+    );
     expect(activationAuthority).toContain(
       "reviewrouter_activation.migration_permit",
     );
@@ -393,6 +415,20 @@ describe("canonical exclusive release migration caller", () => {
     );
     expect(atomicMigration).not.toContain("consume_migration_permit");
     expect(atomicMigration).not.toContain("complete_migration_permit");
+    expect(atomicMigration).toContain("false::boolean");
+    expect(gateClosedAtomicMigration).toContain("true::boolean");
+    expect(gateClosedAtomicMigration).not.toContain(
+      'REVOKE CONNECT ON DATABASE :"DBNAME"',
+    );
+    const postCallSql = gateClosedAtomicMigration.slice(
+      gateClosedAtomicMigration.indexOf(
+        "CALL public.reviewrouter_execute_release_migration",
+      ),
+      gateClosedAtomicMigration.indexOf(
+        "SET LOCAL search_path = pg_catalog, pg_temp",
+      ),
+    );
+    expect(postCallSql).not.toContain("REVOKE ");
     for (const migrationSql of [provisioning, grants, activationAuthority]) {
       expect(migrationSql).toContain(
         "pg_advisory_xact_lock(1381126735, 1129271120)",
@@ -617,6 +653,22 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).toContain(
       "PERFORM reviewrouter_activation.complete_migration_permit(",
     );
+    expect(provisioning).toContain("requested_acl_gate_closed boolean");
+    expect(provisioning).toContain(
+      "text,text,text,text,text,bigint,text,jsonb,boolean",
+    );
+    expect(provisioning).toContain(
+      "release migration executor ACL gate mode invalid",
+    );
+    expect(provisioning).toContain(
+      "release migration executor replay ACL gate mode conflict",
+    );
+    expect(provisioning.indexOf("consume_migration_permit(")).toBeLessThan(
+      provisioning.indexOf("IF requested_acl_gate_closed THEN"),
+    );
+    expect(
+      provisioning.indexOf("IF requested_acl_gate_closed THEN"),
+    ).toBeLessThan(provisioning.indexOf("complete_migration_permit("));
     expect(provisioning).toContain(
       "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(",
     );

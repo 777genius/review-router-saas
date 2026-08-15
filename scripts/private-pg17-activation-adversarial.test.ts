@@ -663,7 +663,7 @@ describePg17(
             `CALL public.reviewrouter_execute_release_migration(
               'migration-quarantine','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}',31,'${"1f".padStart(32, "0")}',
-              '{"status":"reconciled"}'::jsonb);`,
+              '{"status":"reconciled"}'::jsonb,true);`,
           ).stderr,
         ).toContain("release migration target permit unavailable");
 
@@ -689,6 +689,25 @@ describePg17(
             "SET ROLE reviewrouter_release_schema_owner;",
           ).status,
         ).not.toBe(0);
+        expect(
+          context.psqlResultAs(
+            releaseUsername,
+            `GRANT SELECT ON TABLE public."RuntimeCanaryChallenge"
+             TO reviewrouter_web;`,
+          ).status,
+        ).not.toBe(0);
+        const databaseName = context.psqlAs(
+          adminUsername,
+          "SELECT current_database();",
+        );
+        expect(
+          context.psqlResultAs(
+            releaseUsername,
+            `REVOKE CONNECT ON DATABASE "${databaseName.replaceAll('"', '""')}"
+             FROM reviewrouter_web
+             GRANTED BY reviewrouter_release_schema_owner;`,
+          ).status,
+        ).not.toBe(0);
         const inventory = JSON.parse(
           context.psqlAs(releaseUsername, legacyAmbiguityInventorySql),
         );
@@ -708,7 +727,7 @@ describePg17(
           `CALL public.reviewrouter_execute_release_migration(
             'migration-completed','${context.systemIdentifier}','${witness}',
             '${transition}','${previous}',32,'${nonce}',
-            '${legacyReceipt}'::jsonb);`,
+            '${legacyReceipt}'::jsonb,true);`,
         );
         expect(
           context.psqlResultAs(
@@ -723,6 +742,100 @@ describePg17(
             `SELECT (reviewrouter_activation.read_migration_receipt(
               'migration-completed',32,'${nonce}')->>'effectFingerprint')
               ~ '^sha256:[a-f0-9]{64}$';`,
+          ),
+        ).toBe("t");
+        expect(
+          context.psqlAs(
+            adminUsername,
+            `SELECT bool_and(NOT has_database_privilege(
+               role_name,current_database(),'CONNECT'))
+             FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
+               'reviewrouter_worker','reviewrouter_codex_effect_authority'])
+               AS roles(role_name);`,
+          ),
+        ).toBe("t");
+        expect(
+          context.psqlAs(
+            adminUsername,
+            `SELECT NOT EXISTS (
+               SELECT 1
+               FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
+                 'reviewrouter_worker','reviewrouter_codex_effect_authority'])
+                 AS roles(role_name)
+               CROSS JOIN pg_class relation
+               JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+               CROSS JOIN unnest(ARRAY['INSERT','UPDATE','DELETE','TRUNCATE'])
+                 AS privileges(privilege)
+               WHERE namespace.nspname='public'
+                 AND relation.relkind IN ('r','p','v','m','f')
+                 AND has_table_privilege(role_name,relation.oid,privilege));`,
+          ),
+        ).toBe("t");
+
+        context.psqlAs(
+          adminUsername,
+          `GRANT CONNECT ON DATABASE "${databaseName.replaceAll('"', '""')}"
+           TO reviewrouter_web;`,
+        );
+        expect(
+          context.psqlResultAs(
+            releaseUsername,
+            `CALL public.reviewrouter_execute_release_migration(
+              'migration-completed','${context.systemIdentifier}','${witness}',
+              '${transition}','${previous}',32,'${nonce}',
+              '${legacyReceipt}'::jsonb,true);`,
+          ).stderr,
+        ).toContain("release migration executor replay ACL gate mode conflict");
+        expect(
+          context.psqlAs(
+            adminUsername,
+            "SELECT has_database_privilege('reviewrouter_web',current_database(),'CONNECT');",
+          ),
+        ).toBe("t");
+
+        context.psqlAs(adminUsername, runtimeGrantSql(configuration));
+        const openCatalogDigest = context
+          .psqlAs(installerUsername, fencedLiveV70V72CatalogDigestSql)
+          .split("\n")
+          .at(-1);
+        expect(openCatalogDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+        context.psqlAs(
+          adminUsername,
+          runtimeGrantSql(configuration, { gateClosed: true }),
+        );
+        const openNonce = "21".padStart(32, "0");
+        expect(
+          context.psqlAs(
+            installerUsername,
+            `SELECT reviewrouter_activation.install_migration_permit(
+              'migration-open','1','${context.systemIdentifier}','${witness}',
+              '${transition}','${previous}','${context.migrationChecksum}',
+              '${openCatalogDigest}',33,'${openNonce}');`,
+          ),
+        ).toBe("t");
+        context.psqlAs(
+          releaseUsername,
+          `CALL public.reviewrouter_execute_release_migration(
+            'migration-open','${context.systemIdentifier}','${witness}',
+            '${transition}','${previous}',33,'${openNonce}',
+            '${legacyReceipt}'::jsonb,false);`,
+        );
+        expect(
+          context.psqlAs(
+            adminUsername,
+            `SELECT bool_and(has_database_privilege(
+               role_name,current_database(),'CONNECT'))
+             FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
+               'reviewrouter_worker','reviewrouter_codex_effect_authority'])
+               AS roles(role_name);`,
+          ),
+        ).toBe("t");
+        expect(
+          context.psqlAs(
+            releaseUsername,
+            `SELECT reviewrouter_activation.read_migration_receipt(
+              'migration-open',33,'${openNonce}')->>'postCatalogDigest'
+              = '${openCatalogDigest}';`,
           ),
         ).toBe("t");
       }),
