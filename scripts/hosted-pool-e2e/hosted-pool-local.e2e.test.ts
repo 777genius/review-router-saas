@@ -9,6 +9,8 @@ import {
 import { HostedCodexSessionStore } from "../../packages/features/hosted-account-pool/src/infrastructure/runtime/hosted-codex-session-runtime";
 
 const actionOidcRequestSecret = "github-actions-oidc-request-secret-sentinel";
+const actionOidcRequestUrl =
+  "https://vstoken.actions.githubusercontent.com/oidc/token";
 const freshOidcSecret = "fresh-github-oidc-token-sentinel-0123456789";
 const relayGrantSecret = "opaque-hosted-relay-grant-sentinel";
 const commentRefreshSecret = "opaque-comment-refresh-capability-sentinel";
@@ -40,15 +42,6 @@ describe("disposable hosted pool local E2E", () => {
 
     const app = Fastify({ logger: false });
     openApps.push(app);
-    app.get("/fake/github-oidc", async (request) => {
-      expect(request.headers.authorization).toBe(
-        `bearer ${actionOidcRequestSecret}`,
-      );
-      expect((request.query as { audience?: string }).audience).toBe(
-        "reviewrouter",
-      );
-      return { value: freshOidcSecret };
-    });
     await registerHostedCodexRelayRoutes(app, {
       enabled: true,
       grants: {
@@ -136,8 +129,19 @@ describe("disposable hosted pool local E2E", () => {
     baseUrl = app.listeningOrigin;
 
     const env: NodeJS.ProcessEnv = {
-      ACTIONS_ID_TOKEN_REQUEST_URL: `${baseUrl}/fake/github-oidc`,
+      ACTIONS_ID_TOKEN_REQUEST_URL: actionOidcRequestUrl,
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: actionOidcRequestSecret,
+    };
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url.startsWith(actionOidcRequestUrl)) {
+        expect(init?.headers).toEqual({
+          authorization: `bearer ${actionOidcRequestSecret}`,
+        });
+        expect(new URL(url).searchParams.get("audience")).toBe("reviewrouter");
+        return Response.json({ value: freshOidcSecret });
+      }
+      return fetch(input, init);
     };
     await runHostedCodexRelayTransport({
       env,
@@ -147,7 +151,7 @@ describe("disposable hosted pool local E2E", () => {
       bindingId: "binding-1",
       bindingVersion: 7,
       maskSecret: (secret) => masks.push(secret),
-      fetchImpl: fetch,
+      fetchImpl,
       run: async ({ baseUrl: proxyBaseUrl, commentTokenRefreshUrl }) => {
         for (const turn of [1, 2]) {
           const response = await fetch(`${proxyBaseUrl}/responses`, {

@@ -10,7 +10,8 @@ import {
 describe("hosted Codex relay transport", () => {
   it("exchanges fresh OIDC without requiring auth JSON and masks both bearer values", async () => {
     const env: NodeJS.ProcessEnv = {
-      ACTIONS_ID_TOKEN_REQUEST_URL: "https://github.test/oidc",
+      ACTIONS_ID_TOKEN_REQUEST_URL:
+        "https://vstoken.actions.githubusercontent.com/oidc/token",
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: "github-request-token",
       INPUT_AUTH_JSON: "must-not-be-read",
       REVIEWROUTER_CODEX_AUTH_JSON: "must-not-be-read-either",
@@ -36,7 +37,11 @@ describe("hosted Codex relay transport", () => {
           ...(init?.body ? { body: String(init.body) } : {}),
           ...(init?.redirect ? { redirect: init.redirect } : {}),
         });
-        if (String(url).startsWith("https://github.test/oidc")) {
+        if (
+          String(url).startsWith(
+            "https://vstoken.actions.githubusercontent.com/oidc/token",
+          )
+        ) {
           return Response.json({ value: "fresh-oidc-token" });
         }
         return Response.json({
@@ -94,30 +99,40 @@ describe("hosted Codex relay transport", () => {
     expect(env).not.toHaveProperty("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
   });
 
-  it("rejects untrusted OIDC request URLs before sending the request token", async () => {
-    const fetchImpl = vi.fn();
+  it.each([
+    "http://vstoken.actions.githubusercontent.com/oidc/token",
+    "https://example.com/oidc/token",
+    "https://vstoken.actions.githubusercontent.com.example.com/oidc/token",
+    "https://request-token@vstoken.actions.githubusercontent.com/oidc/token",
+    "https://vstoken.actions.githubusercontent.com:444/oidc/token",
+  ])(
+    "rejects untrusted OIDC request URL %s before sending the request token",
+    async (requestUrl) => {
+      const fetchImpl = vi.fn();
 
-    await expect(
-      requestHostedRelayGrantWithFreshGitHubOidc({
-        env: {
-          ACTIONS_ID_TOKEN_REQUEST_URL: "http://github.test/oidc",
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: "github-request-token",
-        },
-        apiUrl: "https://reviewrouter.test",
-        providerInstanceId: "provider-1",
-        workflowSchemaVersion: 5,
-        bindingId: "binding-1",
-        bindingVersion: 7,
-        maskSecret: vi.fn(),
-        fetchImpl: fetchImpl as unknown as typeof fetch,
-      }),
-    ).rejects.toThrow("github_oidc_url_untrusted");
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
+      await expect(
+        requestHostedRelayGrantWithFreshGitHubOidc({
+          env: {
+            ACTIONS_ID_TOKEN_REQUEST_URL: requestUrl,
+            ACTIONS_ID_TOKEN_REQUEST_TOKEN: "github-request-token",
+          },
+          apiUrl: "https://reviewrouter.test",
+          providerInstanceId: "provider-1",
+          workflowSchemaVersion: 5,
+          bindingId: "binding-1",
+          bindingVersion: 7,
+          maskSecret: vi.fn(),
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+        }),
+      ).rejects.toThrow("github_oidc_url_untrusted");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
 
   it("retries a lost persisted-grant response with a fresh OIDC token", async () => {
     const env: NodeJS.ProcessEnv = {
-      ACTIONS_ID_TOKEN_REQUEST_URL: "https://github.test/oidc",
+      ACTIONS_ID_TOKEN_REQUEST_URL:
+        "https://vstoken.actions.githubusercontent.com/oidc/token",
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: "github-request-token",
     };
     const oidcTokens = ["fresh-oidc-1", "fresh-oidc-2"];
@@ -153,7 +168,11 @@ describe("hosted Codex relay transport", () => {
         delays.push(ms);
       },
       fetchImpl: vi.fn(async (url: string | URL, init?: RequestInit) => {
-        if (String(url).startsWith("https://github.test/oidc")) {
+        if (
+          String(url).startsWith(
+            "https://vstoken.actions.githubusercontent.com/oidc/token",
+          )
+        ) {
           const value = oidcTokens[oidcCalls++];
           return Response.json({ value });
         }
@@ -196,7 +215,8 @@ describe("hosted Codex relay transport", () => {
     await expect(
       requestHostedRelayGrantWithFreshGitHubOidc({
         env: {
-          ACTIONS_ID_TOKEN_REQUEST_URL: "https://github.test/oidc",
+          ACTIONS_ID_TOKEN_REQUEST_URL:
+            "https://vstoken.actions.githubusercontent.com/oidc/token",
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: "github-request-token",
         },
         apiUrl: "https://reviewrouter.test",
@@ -209,7 +229,11 @@ describe("hosted Codex relay transport", () => {
           delays.push(ms);
         },
         fetchImpl: vi.fn(async (url: string | URL) => {
-          if (String(url).startsWith("https://github.test/oidc")) {
+          if (
+            String(url).startsWith(
+              "https://vstoken.actions.githubusercontent.com/oidc/token",
+            )
+          ) {
             oidcCalls += 1;
             return Response.json({ value: "fresh-oidc" });
           }

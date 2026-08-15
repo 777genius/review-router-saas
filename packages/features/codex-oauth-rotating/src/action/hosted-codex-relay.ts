@@ -499,7 +499,13 @@ function parseTrustedOidcUrl(requestUrl: string): URL {
   } catch {
     throw new Error("github_oidc_url_untrusted");
   }
-  if (url.protocol !== "https:") {
+  if (
+    url.protocol !== "https:" ||
+    !url.hostname.endsWith(".actions.githubusercontent.com") ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.port !== ""
+  ) {
     throw new Error("github_oidc_url_untrusted");
   }
   return url;

@@ -22676,7 +22676,7 @@ function parseTrustedOidcUrl(requestUrl) {
   } catch {
     throw new Error("github_oidc_url_untrusted");
   }
-  if (url2.protocol !== "https:") {
+  if (url2.protocol !== "https:" || !url2.hostname.endsWith(".actions.githubusercontent.com") || url2.username !== "" || url2.password !== "" || url2.port !== "") {
     throw new Error("github_oidc_url_untrusted");
   }
   return url2;

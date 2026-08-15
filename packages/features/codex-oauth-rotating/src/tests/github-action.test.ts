@@ -653,7 +653,11 @@ describe("Codex rotating GitHub Action runtime", () => {
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
       if (typeof init?.body === "string") requestBodies.push(init.body);
-      if (href.startsWith("https://oidc.actions.test/token")) {
+      if (
+        href.startsWith(
+          "https://vstoken.actions.githubusercontent.com/oidc/token",
+        )
+      ) {
         return jsonResponse({ value: "fresh-hosted-oidc" });
       }
       if (href.endsWith("/api/action/v1/hosted-relay/grant")) {
@@ -712,7 +716,8 @@ describe("Codex rotating GitHub Action runtime", () => {
       "INPUT_SESSION-BINDING-VERSION": "4",
       INPUT_AUTH_JSON: "invalid-auth-json-must-not-be-read",
       REVIEWROUTER_CODEX_AUTH_JSON: "legacy-auth-json-must-not-be-read",
-      ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+      ACTIONS_ID_TOKEN_REQUEST_URL:
+        "https://vstoken.actions.githubusercontent.com/oidc/token",
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
       GITHUB_EVENT_NAME: "pull_request_target",
       GITHUB_EVENT_PATH: eventPath,
@@ -791,7 +796,8 @@ describe("Codex rotating GitHub Action runtime", () => {
       "INPUT_SESSION-BINDING-VERSION": "4",
       INPUT_AUTH_JSON: "fork-auth-json-must-not-be-read",
       REVIEWROUTER_CODEX_AUTH_JSON: "fork-legacy-auth-must-not-be-read",
-      ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+      ACTIONS_ID_TOKEN_REQUEST_URL:
+        "https://vstoken.actions.githubusercontent.com/oidc/token",
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
       GITHUB_EVENT_NAME: "pull_request_target",
       GITHUB_EVENT_PATH: eventPath,
@@ -903,7 +909,11 @@ describe("Codex rotating GitHub Action runtime", () => {
       if (typeof init?.body === "string") {
         requestBodies.push(init.body);
       }
-      if (href.startsWith("https://oidc.actions.test/token")) {
+      if (
+        href.startsWith(
+          "https://vstoken.actions.githubusercontent.com/oidc/token",
+        )
+      ) {
         return jsonResponse({ value: "oidc.jwt.value" });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
@@ -1018,7 +1028,8 @@ describe("Codex rotating GitHub Action runtime", () => {
               access_token: "initial-access-token",
             },
           }),
-          ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+          ACTIONS_ID_TOKEN_REQUEST_URL:
+            "https://vstoken.actions.githubusercontent.com/oidc/token",
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
           GITHUB_EVENT_NAME: "pull_request_target",
           GITHUB_EVENT_PATH: eventPath,
@@ -1135,7 +1146,11 @@ describe("Codex rotating GitHub Action runtime", () => {
       if (init?.body) {
         requestBodies.push(String(init.body));
       }
-      if (href.startsWith("https://oidc.actions.test/token")) {
+      if (
+        href.startsWith(
+          "https://vstoken.actions.githubusercontent.com/oidc/token",
+        )
+      ) {
         return jsonResponse({ value: "oidc.jwt.value" });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
@@ -1189,7 +1204,8 @@ describe("Codex rotating GitHub Action runtime", () => {
               access_token: "scheduled-initial-access-token",
             },
           }),
-          ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+          ACTIONS_ID_TOKEN_REQUEST_URL:
+            "https://vstoken.actions.githubusercontent.com/oidc/token",
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
           GITHUB_EVENT_NAME: "schedule",
           GITHUB_REPOSITORY: "777genius/agent-teams-ai",
@@ -1380,7 +1396,8 @@ describe("Codex rotating GitHub Action runtime", () => {
       "INPUT_REVIEW-DRAFTS": "true",
       "INPUT_MAX-CHANGED-LINES": "10000",
       "INPUT_AUTH-JSON": "must-be-cleared-without-being-read",
-      ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+      ACTIONS_ID_TOKEN_REQUEST_URL:
+        "https://vstoken.actions.githubusercontent.com/oidc/token",
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
       GITHUB_EVENT_NAME: "pull_request_target",
       GITHUB_EVENT_PATH: eventPath,
@@ -1429,7 +1446,11 @@ describe("Codex rotating GitHub Action runtime", () => {
     const preleaseTokens: string[] = [];
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
-      if (href.startsWith("https://oidc.actions.test/token")) {
+      if (
+        href.startsWith(
+          "https://vstoken.actions.githubusercontent.com/oidc/token",
+        )
+      ) {
         oidcAttempts += 1;
         return jsonResponse({ value: `oidc.jwt.value.${oidcAttempts}` });
       }
@@ -1458,7 +1479,8 @@ describe("Codex rotating GitHub Action runtime", () => {
               auth_mode: "chatgpt",
               tokens: { refresh_token: "must-not-appear" },
             }),
-            ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+            ACTIONS_ID_TOKEN_REQUEST_URL:
+              "https://vstoken.actions.githubusercontent.com/oidc/token",
             ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
             GITHUB_EVENT_NAME: "pull_request",
             GITHUB_EVENT_PATH: eventPath,
@@ -1503,7 +1525,11 @@ describe("Codex rotating GitHub Action runtime", () => {
 
     const fetchImpl = vi.fn(async (url: string | URL) => {
       const href = String(url);
-      if (href.startsWith("https://oidc.actions.test/token")) {
+      if (
+        href.startsWith(
+          "https://vstoken.actions.githubusercontent.com/oidc/token",
+        )
+      ) {
         return jsonResponse({ value: "oidc.jwt.value" });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
@@ -1521,7 +1547,8 @@ describe("Codex rotating GitHub Action runtime", () => {
       "INPUT_API-URL": "https://api.reviewrouter.site/",
       "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
       "INPUT_WORKFLOW-SCHEMA-VERSION": "1",
-      ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+      ACTIONS_ID_TOKEN_REQUEST_URL:
+        "https://vstoken.actions.githubusercontent.com/oidc/token",
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
       GITHUB_EVENT_NAME: "pull_request",
       GITHUB_EVENT_PATH: eventPath,
@@ -1571,7 +1598,11 @@ describe("Codex rotating GitHub Action runtime", () => {
 
     const fetchImpl = vi.fn(async (url: string | URL) => {
       const href = String(url);
-      if (href.startsWith("https://oidc.actions.test/token")) {
+      if (
+        href.startsWith(
+          "https://vstoken.actions.githubusercontent.com/oidc/token",
+        )
+      ) {
         return jsonResponse({ value: "oidc.jwt.value" });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
@@ -1592,7 +1623,8 @@ describe("Codex rotating GitHub Action runtime", () => {
             "INPUT_API-URL": "https://api.reviewrouter.site/",
             "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
             "INPUT_WORKFLOW-SCHEMA-VERSION": "1",
-            ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+            ACTIONS_ID_TOKEN_REQUEST_URL:
+              "https://vstoken.actions.githubusercontent.com/oidc/token",
             ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
             GITHUB_EVENT_NAME: "pull_request",
             GITHUB_EVENT_PATH: eventPath,
@@ -2274,7 +2306,11 @@ describe("Codex rotating GitHub Action runtime", () => {
       if (typeof init?.body === "string") {
         requestBodies.push(init.body);
       }
-      if (href.startsWith("https://oidc.actions.test/token")) {
+      if (
+        href.startsWith(
+          "https://vstoken.actions.githubusercontent.com/oidc/token",
+        )
+      ) {
         return jsonResponse({ value: "oidc.jwt.value" });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
@@ -2358,7 +2394,8 @@ describe("Codex rotating GitHub Action runtime", () => {
               access_token: "initial-access-token",
             },
           }),
-          ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+          ACTIONS_ID_TOKEN_REQUEST_URL:
+            "https://vstoken.actions.githubusercontent.com/oidc/token",
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
           GITHUB_EVENT_NAME: "pull_request_target",
           GITHUB_EVENT_PATH: eventPath,
@@ -2697,7 +2734,11 @@ describe("Codex rotating GitHub Action runtime", () => {
       if (typeof init?.body === "string") {
         requestBodies.push(init.body);
       }
-      if (href.startsWith("https://oidc.actions.test/token")) {
+      if (
+        href.startsWith(
+          "https://vstoken.actions.githubusercontent.com/oidc/token",
+        )
+      ) {
         return jsonResponse({ value: "oidc.jwt.value" });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
@@ -2873,7 +2914,8 @@ describe("Codex rotating GitHub Action runtime", () => {
               access_token: "initial-access-token",
             },
           }),
-          ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+          ACTIONS_ID_TOKEN_REQUEST_URL:
+            "https://vstoken.actions.githubusercontent.com/oidc/token",
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
           GITHUB_EVENT_NAME: "pull_request",
           GITHUB_EVENT_PATH: eventPath,
@@ -3226,7 +3268,11 @@ describe("Codex rotating GitHub Action runtime", () => {
       ) {
         return jsonResponse({ protocolVersion: 1, status: "cleared" });
       }
-      if (href.startsWith("https://oidc.actions.test/token")) {
+      if (
+        href.startsWith(
+          "https://vstoken.actions.githubusercontent.com/oidc/token",
+        )
+      ) {
         return jsonResponse({ value: "oidc.jwt.value" });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
@@ -3301,7 +3347,8 @@ describe("Codex rotating GitHub Action runtime", () => {
                 access_token: "initial-access-token",
               },
             }),
-            ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+            ACTIONS_ID_TOKEN_REQUEST_URL:
+              "https://vstoken.actions.githubusercontent.com/oidc/token",
             ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
             GITHUB_EVENT_NAME: "pull_request",
             GITHUB_EVENT_PATH: eventPath,
@@ -3393,7 +3440,11 @@ describe("Codex rotating GitHub Action runtime", () => {
     const fetchImpl = vi.fn(async (url: string | URL) => {
       const href = String(url);
       invokedUrls.push(href);
-      if (href.startsWith("https://oidc.actions.test/token")) {
+      if (
+        href.startsWith(
+          "https://vstoken.actions.githubusercontent.com/oidc/token",
+        )
+      ) {
         return jsonResponse({ value: "oidc.jwt.value" });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
@@ -3448,7 +3499,8 @@ describe("Codex rotating GitHub Action runtime", () => {
                 access_token: "initial-access-token",
               },
             }),
-            ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+            ACTIONS_ID_TOKEN_REQUEST_URL:
+              "https://vstoken.actions.githubusercontent.com/oidc/token",
             ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
             GITHUB_EVENT_NAME: "pull_request",
             GITHUB_EVENT_PATH: eventPath,
@@ -3513,7 +3565,11 @@ describe("Codex rotating GitHub Action runtime", () => {
     const fetchImpl = vi.fn(async (url: string | URL) => {
       const href = String(url);
       invokedUrls.push(href);
-      if (href.startsWith("https://oidc.actions.test/token")) {
+      if (
+        href.startsWith(
+          "https://vstoken.actions.githubusercontent.com/oidc/token",
+        )
+      ) {
         return jsonResponse({ value: "oidc.jwt.value" });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
@@ -3565,7 +3621,8 @@ describe("Codex rotating GitHub Action runtime", () => {
                 access_token: "initial-access-token",
               },
             }),
-            ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+            ACTIONS_ID_TOKEN_REQUEST_URL:
+              "https://vstoken.actions.githubusercontent.com/oidc/token",
             ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
             GITHUB_EVENT_NAME: "pull_request",
             GITHUB_EVENT_PATH: eventPath,
