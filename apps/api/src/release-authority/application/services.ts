@@ -8,6 +8,7 @@ import type {
   RolloutClaimBinding,
   RunnerCleanupWitnessPort,
   TargetActivationReceiptReaderPort,
+  TargetMigrationReceiptReaderPort,
   RunnerOperationsLedgerPort,
   ReleaseServiceTransitionLedgerPort,
   ReleaseProviderMutationAuthorityPort,
@@ -29,7 +30,11 @@ export type ExecuteFreshReleaseAuthorityMutation = <Result>(
   mutation: (
     attestation: ReleaseAuthorityFencedAttestation,
   ) => Promise<Result> | Result,
-  targetManifestPhase?: "pre_migration" | "post_migration" | "control_only",
+  targetManifestPhase?:
+    | "pre_migration"
+    | "migration_recovery"
+    | "post_migration"
+    | "control_only",
 ) => Promise<Result>;
 
 export type ReleaseAuthorityFencedAttestation = Readonly<{
@@ -57,21 +62,16 @@ export interface ReleaseAuthorityHighRiskMutationGate {
   ): Promise<Result>;
 }
 
-const withoutHighRiskGate: ReleaseAuthorityHighRiskMutationGate = {
-  execute: async (sequence) =>
-    await sequence(
-      async (_target, mutation) =>
-        await mutation({ systemIdentifier: "", recoveryWitnessSha256: "" }),
-    ),
-};
-
 export class ReleaseAuthorityService {
   constructor(
     private readonly repository: ReleaseAuthorityLedgerPort,
-    private readonly permitInstaller?: ActivationPermitInstallerPort,
-    private readonly targetReceiptReader?: TargetActivationReceiptReaderPort,
-    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate = withoutHighRiskGate,
+    private readonly permitInstaller: ActivationPermitInstallerPort | undefined,
+    private readonly targetReceiptReader:
+      | TargetActivationReceiptReaderPort
+      | undefined,
+    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate,
     private readonly trustedMigrationTransition?: ReleaseMigrationTransitionV1,
+    private readonly targetMigrationReceiptReader?: TargetMigrationReceiptReaderPort,
   ) {}
   claim = (input: RolloutClaimBinding) => {
     if (!this.trustedMigrationTransition)
@@ -83,7 +83,7 @@ export class ReleaseAuthorityService {
     return this.highRiskGate.execute((executeFresh) =>
       executeFresh(
         "installer",
-        (target) => {
+        async (target) => {
           if (
             target.systemIdentifier === input.sourceSystemIdentifier ||
             target.systemIdentifier !== input.targetSystemIdentifier ||
@@ -117,11 +117,24 @@ export class ReleaseAuthorityService {
         this.trustedMigrationTransition.transitionSha256
     )
       throw new Error("release_migration_transition_untrusted");
-    const targetManifestPhase = TargetManifestPhase.PreMigration;
+    const trustedMigrationTransition = this.trustedMigrationTransition;
+    const checkpoint = await this.repository.loadReleaseMigrationCheckpoint({
+      rolloutId: input.rolloutId,
+      targetSystemIdentifier: input.targetSystemIdentifier,
+    });
+    if (
+      checkpoint.targetManifestPhase !== TargetManifestPhase.PreMigration &&
+      checkpoint.targetManifestPhase !== TargetManifestPhase.Migrating
+    )
+      throw new Error("release_migration_begin_phase_invalid");
+    const targetManifestPhase =
+      checkpoint.targetManifestPhase === TargetManifestPhase.Migrating
+        ? ("migration_recovery" as const)
+        : TargetManifestPhase.PreMigration;
     return this.highRiskGate.execute((executeFresh) =>
       executeFresh(
         "installer",
-        (target) => {
+        async (target) => {
           if (
             target.systemIdentifier === input.sourceSystemIdentifier ||
             target.systemIdentifier !== input.targetSystemIdentifier ||
@@ -131,7 +144,7 @@ export class ReleaseAuthorityService {
             !/^[a-f0-9]{64}$/u.test(target.recoveryWitnessSha256)
           )
             throw new Error("release_migration_target_identity_untrusted");
-          return executeFresh(
+          const permit = await executeFresh(
             "control",
             async () => {
               const checkpoint =
@@ -141,7 +154,8 @@ export class ReleaseAuthorityService {
                 });
               if (
                 checkpoint.targetManifestPhase !==
-                TargetManifestPhase.PreMigration
+                  TargetManifestPhase.PreMigration &&
+                checkpoint.targetManifestPhase !== TargetManifestPhase.Migrating
               )
                 throw new Error("release_migration_begin_phase_invalid");
               return this.repository.beginReleaseMigration({
@@ -152,6 +166,17 @@ export class ReleaseAuthorityService {
             },
             targetManifestPhase,
           );
+          if (!this.permitInstaller)
+            throw new Error("release_migration_permit_installer_missing");
+          await this.permitInstaller.installMigrationPermit({
+            permit,
+            sourceSystemIdentifier: input.sourceSystemIdentifier,
+            expectedPostManifestIdentity:
+              trustedMigrationTransition.postManifestIdentity,
+            expectedPostCatalogDigest:
+              trustedMigrationTransition.postCatalogDigest,
+          });
+          return permit;
         },
         targetManifestPhase,
       ),
@@ -161,11 +186,11 @@ export class ReleaseAuthorityService {
     input: Parameters<
       ReleaseAuthorityLedgerPort["completeReleaseMigration"]
     >[0],
-  ) =>
-    this.highRiskGate.execute(async (executeFresh) => {
-      return executeFresh(
+  ) => {
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
         "installer",
-        (target) => {
+        async (target) => {
           if (
             target.systemIdentifier !== input.permit.targetSystemIdentifier ||
             target.systemIdentifier !== input.receipt.targetSystemIdentifier ||
@@ -173,32 +198,21 @@ export class ReleaseAuthorityService {
               input.permit.targetRecoveryWitnessSha256
           )
             throw new Error("release_migration_target_identity_untrusted");
-          return executeFresh(
-            "control",
-            () =>
-              this.repository.completeReleaseMigration({
-                permit: {
-                  ...input.permit,
-                  targetSystemIdentifier: target.systemIdentifier,
-                  targetRecoveryWitnessSha256: target.recoveryWitnessSha256,
-                },
-                receipt: {
-                  ...input.receipt,
-                  targetSystemIdentifier: target.systemIdentifier,
-                },
-              }),
-            TargetManifestPhase.PostMigration,
-          );
+          if (!this.permitInstaller)
+            throw new Error("release_migration_permit_installer_missing");
+          await this.permitInstaller.terminalizeMigrationPermit({
+            permit: input.permit,
+            outcome: "completed",
+          });
         },
         TargetManifestPhase.PostMigration,
-      );
-    });
-  failReleaseMigration = async (
-    input: Parameters<ReleaseAuthorityLedgerPort["failReleaseMigration"]>[0],
-  ) =>
-    this.highRiskGate.execute((executeFresh) =>
+      ),
+    );
+    if (!this.targetMigrationReceiptReader)
+      throw new Error("target_migration_receipt_reader_missing");
+    const targetReceipt = await this.highRiskGate.execute((executeFresh) =>
       executeFresh(
-        "installer",
+        "reader",
         (target) => {
           if (
             target.systemIdentifier !== input.permit.targetSystemIdentifier ||
@@ -206,23 +220,64 @@ export class ReleaseAuthorityService {
               input.permit.targetRecoveryWitnessSha256
           )
             throw new Error("release_migration_target_identity_untrusted");
-          return executeFresh(
-            "control",
-            () =>
-              this.repository.failReleaseMigration({
-                ...input,
-                permit: {
-                  ...input.permit,
-                  targetSystemIdentifier: target.systemIdentifier,
-                  targetRecoveryWitnessSha256: target.recoveryWitnessSha256,
-                },
-              }),
-            "control_only",
+          return this.targetMigrationReceiptReader!.readMigrationReceipt(
+            input.permit,
           );
         },
+        TargetManifestPhase.PostMigration,
+      ),
+    );
+    if (
+      targetReceipt.sourceSystemIdentifier !==
+        input.receipt.sourceSystemIdentifier ||
+      targetReceipt.postManifestIdentity !==
+        input.receipt.postManifestIdentity ||
+      targetReceipt.postCatalogDigest !== input.receipt.postCatalogDigest ||
+      targetReceipt.targetMigrationReceiptSha256 !==
+        input.receipt.targetMigrationReceiptSha256 ||
+      targetReceipt.effectFingerprint !==
+        input.receipt.targetMigrationEffectFingerprint
+    )
+      throw new Error("release_migration_target_receipt_conflict");
+    return this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.completeReleaseMigration(input),
+        TargetManifestPhase.PostMigration,
+      ),
+    );
+  };
+  failReleaseMigration = async (
+    input: Parameters<ReleaseAuthorityLedgerPort["failReleaseMigration"]>[0],
+  ) => {
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "installer",
+        async (target) => {
+          if (
+            target.systemIdentifier !== input.permit.targetSystemIdentifier ||
+            target.recoveryWitnessSha256 !==
+              input.permit.targetRecoveryWitnessSha256
+          )
+            throw new Error("release_migration_target_identity_untrusted");
+          if (!this.permitInstaller)
+            throw new Error("release_migration_permit_installer_missing");
+          await this.permitInstaller.terminalizeMigrationPermit({
+            permit: input.permit,
+            outcome: "quarantined",
+          });
+        },
+        "migration_recovery",
+      ),
+    );
+    return this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.failReleaseMigration(input),
         "control_only",
       ),
     );
+  };
   loadReleaseMigrationCheckpoint = (
     input: Parameters<
       ReleaseAuthorityLedgerPort["loadReleaseMigrationCheckpoint"]
@@ -378,7 +433,7 @@ export class ReleaseAuthorityService {
 export class ProviderAuthorityDecisionService {
   constructor(
     private readonly repository: ReleaseAuthorityLedgerPort,
-    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate = withoutHighRiskGate,
+    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate,
   ) {}
   decide = async (
     input: Parameters<ReleaseAuthorityLedgerPort["decideProviderOperation"]>[0],
@@ -495,7 +550,7 @@ export class ReleaseServiceTransitionService {
 export class ProviderMutationAuthorityService {
   constructor(
     private readonly repository: ReleaseProviderMutationAuthorityPort,
-    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate = withoutHighRiskGate,
+    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate,
   ) {}
   recover = async (
     input: Parameters<ReleaseProviderMutationAuthorityPort["recover"]>[0],
@@ -564,8 +619,10 @@ export class ProviderMutationAuthorityService {
 export class ReleaseRolloutReconciliationService {
   constructor(
     private readonly repository: ReleaseRolloutReconciliationPort,
-    private readonly targetReceiptReader?: TargetActivationReceiptReaderPort,
-    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate = withoutHighRiskGate,
+    private readonly targetReceiptReader:
+      | TargetActivationReceiptReaderPort
+      | undefined,
+    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate,
   ) {}
 
   private write = (

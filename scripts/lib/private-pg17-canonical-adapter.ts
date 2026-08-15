@@ -5,6 +5,7 @@ import {
   type StepObservation,
   assertReleaseMigrationTransition,
   createReleaseMigrationTransition,
+  sha256Canonical,
   type ReleaseMigrationPermit,
   type ReleaseMigrationTransitionV1,
 } from "../../packages/features/release-rollout/src/index";
@@ -14,7 +15,6 @@ import {
   executeCanonicalRoleBootstrap,
 } from "../run-codex-rotating-release-migration.mjs";
 import { secureCanonicalRun } from "../private-pg17-secure-canonical";
-import { reconcileLegacyAmbiguity } from "../reconcile-codex-rotating-legacy-ambiguity.mjs";
 
 /** Normalizes canonical script output into application-port observations. */
 export class PrivatePg17CanonicalAdapter {
@@ -70,32 +70,44 @@ export class PrivatePg17CanonicalAdapter {
     )
       throw new Error("private_pg17_rollout_resume_manifest_untrusted");
     const facts = executeCanonicalReleaseMigration(
-      { ...env, REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed" },
+      {
+        ...env,
+        REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+        REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_SYSTEM_IDENTIFIER:
+          permit.targetSystemIdentifier,
+        REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_RECOVERY_WITNESS_SHA256:
+          permit.targetRecoveryWitnessSha256,
+        REVIEW_ROUTER_MIGRATION_PERMIT_TRANSITION_SHA256:
+          permit.transitionSha256,
+        REVIEW_ROUTER_MIGRATION_PERMIT_PREVIOUS_RECEIPT_SHA256:
+          permit.expectedPreviousReceiptSha256,
+        REVIEW_ROUTER_MIGRATION_PERMIT_EPOCH: String(permit.epoch),
+        REVIEW_ROUTER_MIGRATION_PERMIT_NONCE: permit.nonce,
+      },
       secureCanonicalRun,
     );
     if ((facts as { aclGateState?: string }).aclGateState !== "closed")
       throw new Error("private_pg17_rollout_acl_gate_not_closed");
-    const legacyReconciliation = reconcileLegacyAmbiguity(
-      {
-        databaseUrl: String(env.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL),
-        recoveryWitnessSha256: String(
-          env.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256,
-        ),
-        rolloutId: String(env.REVIEW_ROUTER_ROLLOUT_ID),
-      },
-      secureCanonicalRun,
-    );
     const migrationChecksum = observeManifestIdentity();
     if (!/^sha256:[a-f0-9]{64}$/u.test(migrationChecksum))
       throw new Error("private_pg17_rollout_migration_checksum_unproven");
     if (migrationChecksum !== transition.postManifestIdentity)
       throw new Error("private_pg17_rollout_post_manifest_mismatch");
+    const targetMigrationReceipt = (
+      facts as {
+        targetMigrationReceipt?: Record<string, unknown>;
+      }
+    ).targetMigrationReceipt;
+    if (
+      !targetMigrationReceipt ||
+      typeof targetMigrationReceipt.effectFingerprint !== "string"
+    )
+      throw new Error("private_pg17_rollout_target_receipt_unproven");
     return {
       step: RolloutStep.RunReleaseMigration,
       observedAt: new Date().toISOString(),
       facts: {
         ...(facts as Record<string, unknown>),
-        legacyReconciliation,
         migrationChecksum,
         transitionSha256: transition.transitionSha256,
         migrationArtifactDigest: transition.migrationArtifactDigest,
@@ -105,6 +117,11 @@ export class PrivatePg17CanonicalAdapter {
         postCatalogDigest: transition.postCatalogDigest,
         permitEpoch: permit.epoch,
         permitNonce: permit.nonce,
+        targetMigrationReceiptSha256: `sha256:${sha256Canonical(
+          targetMigrationReceipt,
+        )}`,
+        targetMigrationEffectFingerprint:
+          targetMigrationReceipt.effectFingerprint,
         targetSystemIdentifier: permit.targetSystemIdentifier,
         targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
       },

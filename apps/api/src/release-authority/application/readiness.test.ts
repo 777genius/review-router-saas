@@ -157,6 +157,19 @@ describe("release authority exact readiness contract", () => {
         trusted,
       ),
     ).toBe(true);
+    const guardDriftedInstaller = {
+      ...activation,
+      activationGuardExact: false,
+    };
+    expect(
+      releaseControlMutationDatabaseIsReady(guardDriftedInstaller, trusted),
+    ).toBe(false);
+    expect(
+      releaseControlDatabaseSetIsReady(
+        { control, provider, installer: guardDriftedInstaller, reader },
+        trusted,
+      ),
+    ).toBe(false);
     const postMigrationActivation = {
       ...activation,
       applicationMigrationManifestIdentity: `sha256:${"e".repeat(64)}`,
@@ -167,9 +180,11 @@ describe("release authority exact readiness contract", () => {
     expect(
       releaseControlMutationDatabaseIsReady(postMigrationActivation, {
         ...trusted,
-        allowedTargetMigrationManifestIdentities: [
-          trusted.targetMigrationManifestIdentity,
-          postMigrationActivation.applicationMigrationManifestIdentity,
+        allowedTargetMigrationEndpoints: [
+          {
+            manifestIdentity:
+              postMigrationActivation.applicationMigrationManifestIdentity,
+          },
         ],
       }),
     ).toBe(true);
@@ -182,11 +197,13 @@ describe("release authority exact readiness contract", () => {
         },
         {
           ...trusted,
-          allowedTargetMigrationManifestIdentities: [
-            trusted.targetMigrationManifestIdentity,
-            postMigrationActivation.applicationMigrationManifestIdentity,
+          allowedTargetMigrationEndpoints: [
+            {
+              manifestIdentity:
+                postMigrationActivation.applicationMigrationManifestIdentity,
+              postCatalogDigest: exactPostCatalog,
+            },
           ],
-          targetPostCatalogDigest: exactPostCatalog,
         },
       ),
     ).toBe(true);
@@ -198,10 +215,56 @@ describe("release authority exact readiness contract", () => {
         },
         {
           ...trusted,
-          allowedTargetMigrationManifestIdentities: [
-            postMigrationActivation.applicationMigrationManifestIdentity,
+          allowedTargetMigrationEndpoints: [
+            {
+              manifestIdentity:
+                postMigrationActivation.applicationMigrationManifestIdentity,
+              postCatalogDigest: exactPostCatalog,
+            },
           ],
-          targetPostCatalogDigest: exactPostCatalog,
+        },
+      ),
+    ).toBe(false);
+    const postInstaller = {
+      ...postMigrationActivation,
+      applicationPostCatalogDigest: exactPostCatalog,
+    };
+    const postReader = {
+      ...postInstaller,
+      roleName: "reviewrouter_activation_receipt_reader",
+    };
+    const postPolicy = {
+      ...trusted,
+      targetMigrationManifestIdentity:
+        postMigrationActivation.applicationMigrationManifestIdentity,
+      targetPostCatalogDigest: exactPostCatalog,
+    };
+    expect(
+      releaseControlDatabaseSetIsReady(
+        { control, provider, installer: postInstaller, reader: postReader },
+        postPolicy,
+      ),
+    ).toBe(true);
+    expect(
+      releaseControlDatabaseSetIsReady(
+        {
+          control,
+          provider,
+          installer: {
+            ...postInstaller,
+            applicationPostCatalogDigest: `sha256:${"0".repeat(64)}`,
+          },
+          reader: postReader,
+        },
+        postPolicy,
+      ),
+    ).toBe(false);
+    expect(
+      releaseControlDatabaseSetIsReady(
+        { control, provider, installer: postInstaller, reader: postReader },
+        {
+          ...postPolicy,
+          targetMigrationManifestIdentity: `sha256:${"1".repeat(64)}`,
         },
       ),
     ).toBe(false);

@@ -112,6 +112,7 @@ export const releaseAuthorityFinalAclPolicy = Object.freeze({
   routines: Object.freeze([
     "authorize_activation",
     "observe_state",
+    "release_canonical_json",
     "release_migration_begin",
     "release_migration_checkpoint",
     "release_migration_complete",

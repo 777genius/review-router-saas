@@ -2,7 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import { releaseAuthoritySchemaIsReady } from "../application/readiness";
 import { releaseAuthorityReadOnlyCatalogDigestExpression } from "./catalog-fingerprint.mjs";
-import { observeReleaseAuthorityDatabaseReadiness } from "./postgres-readiness";
+import {
+  observeReleaseAuthorityDatabaseReadiness,
+  observeReleaseAuthorityDatabaseReadinessOnConnection,
+} from "./postgres-readiness";
 
 const adminUrl = process.env.REVIEW_ROUTER_RELEASE_AUTHORITY_ADMIN_TEST_URL;
 const controlUrl = process.env.REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL;
@@ -160,6 +163,35 @@ realDescribe("release authority exact catalog readiness", () => {
       observed.expectedCatalogFingerprint,
     );
     expect(releaseAuthoritySchemaIsReady(observed)).toBe(true);
+  });
+
+  it("normalizes a malformed authority database comment and fails the activation guard closed", async () => {
+    if (!admin) throw new Error("real_postgres_test_unconfigured");
+    const rows = await admin.$queryRawUnsafe<
+      { databaseName: string; comment: string | null }[]
+    >(`SELECT current_database() AS "databaseName",
+      pg_catalog.shobj_description(oid,'pg_database') AS comment
+      FROM pg_catalog.pg_database WHERE datname=current_database()`);
+    const databaseName = rows[0]?.databaseName;
+    if (!databaseName || !/^[A-Za-z_][A-Za-z0-9_$-]*$/u.test(databaseName))
+      throw new Error("real_postgres_database_name_invalid");
+    const quotedDatabase = `"${databaseName.replaceAll('"', '""')}"`;
+    const original = rows[0]?.comment ?? null;
+    await admin.$executeRawUnsafe(
+      `COMMENT ON DATABASE ${quotedDatabase} IS 'legacy:{not-json'`,
+    );
+    try {
+      const observed = await readiness();
+      expect(observed.recoveryWitnessSha256).toBe("");
+      expect(observed.activationGuardExact).toBe(false);
+      expect(releaseAuthoritySchemaIsReady(observed)).toBe(true);
+    } finally {
+      await admin.$executeRawUnsafe(
+        `COMMENT ON DATABASE ${quotedDatabase} IS ${
+          original === null ? "NULL" : `'${original.replaceAll("'", "''")}'`
+        }`,
+      );
+    }
   });
 
   it("distinguishes two databases on the same PostgreSQL 17 cluster", async () => {
@@ -709,6 +741,36 @@ activationDescribe("activation target semantic readiness", () => {
     expect(installerBodySha256).not.toBe(readerBodySha256);
   });
 
+  it("resists a writable-schema shadow during the PG17 catalog digest", async () => {
+    if (!admin || !reader)
+      throw new Error("real_postgres_activation_test_unconfigured");
+    const baseline = await readerReadiness();
+    await admin.$executeRawUnsafe(
+      "CREATE SCHEMA reviewrouter_readiness_shadow AUTHORIZATION reviewrouter_activation_readiness_probe",
+    );
+    await admin.$executeRawUnsafe(
+      "GRANT USAGE, CREATE ON SCHEMA reviewrouter_readiness_shadow TO reviewrouter_activation_receipt_reader",
+    );
+    await admin.$executeRawUnsafe(
+      "CREATE FUNCTION reviewrouter_readiness_shadow.to_regnamespace(text) RETURNS oid LANGUAGE sql IMMUTABLE AS 'SELECT pg_catalog.to_regnamespace(''public'')'",
+    );
+    try {
+      const observed = await reader.$transaction(async (connection) => {
+        await connection.$executeRawUnsafe(
+          "SET LOCAL search_path = reviewrouter_readiness_shadow, pg_catalog",
+        );
+        return observeReleaseAuthorityDatabaseReadinessOnConnection(connection);
+      });
+      expect(observed.applicationPostCatalogDigest).toBe(
+        baseline.applicationPostCatalogDigest,
+      );
+    } finally {
+      await admin.$executeRawUnsafe(
+        "DROP SCHEMA reviewrouter_readiness_shadow CASCADE",
+      );
+    }
+  });
+
   it("rejects installer body, config, owner, and EXECUTE ACL drift", async () => {
     if (!admin) throw new Error("real_postgres_activation_test_unconfigured");
     const cases = [
@@ -772,18 +834,30 @@ activationDescribe("activation target semantic readiness", () => {
 
   it("rejects a changed application migration manifest identity", async () => {
     if (!admin) throw new Error("real_postgres_activation_test_unconfigured");
-    await admin.$executeRawUnsafe(`UPDATE public._prisma_migrations
-      SET checksum=checksum || '-readiness-probe'
-      WHERE migration_name=(SELECT min(migration_name) FROM public._prisma_migrations)`);
+    const originalRows = await admin.$queryRawUnsafe<
+      { migrationName: string; checksum: string }[]
+    >(`SELECT migration_name AS "migrationName",checksum
+      FROM public._prisma_migrations ORDER BY migration_name LIMIT 1`);
+    const original = originalRows[0];
+    if (!original)
+      throw new Error("real_postgres_application_migration_missing");
+    const changedChecksum = `${original.checksum[0] === "0" ? "1" : "0"}${original.checksum.slice(1)}`;
+    await admin.$executeRawUnsafe(
+      `UPDATE public._prisma_migrations SET checksum=$1 WHERE migration_name=$2`,
+      changedChecksum,
+      original.migrationName,
+    );
     try {
       const observed = await installerReadiness();
       expect(observed.applicationMigrationManifestIdentity).not.toBe(
         applicationMigrationManifestIdentity,
       );
     } finally {
-      await admin.$executeRawUnsafe(`UPDATE public._prisma_migrations
-        SET checksum=left(checksum, length(checksum)-length('-readiness-probe'))
-        WHERE checksum LIKE '%-readiness-probe'`);
+      await admin.$executeRawUnsafe(
+        `UPDATE public._prisma_migrations SET checksum=$1 WHERE migration_name=$2`,
+        original.checksum,
+        original.migrationName,
+      );
     }
     expect(
       (await installerReadiness()).applicationMigrationManifestIdentity,

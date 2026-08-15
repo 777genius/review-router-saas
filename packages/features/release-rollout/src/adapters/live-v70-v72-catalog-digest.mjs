@@ -4,7 +4,9 @@
  */
 export const fencedLiveV70V72CatalogDigestSql = `
 WITH selected_relations AS (
-  SELECT c.oid, n.nspname, c.relname, c.relkind, c.relowner, c.relacl
+  SELECT c.oid, n.oid AS namespace_oid, n.nspname, c.relname, c.relkind,
+    c.relowner, c.relacl, c.relrowsecurity, c.relforcerowsecurity,
+    c.relreplident, c.relpersistence, c.relam, c.reltablespace, c.reloptions
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
   WHERE n.nspname='public' AND c.relname IN
@@ -15,28 +17,78 @@ WITH selected_relations AS (
       'relation',r.relname,'position',a.attnum,'name',a.attname,
       'type',pg_catalog.format_type(a.atttypid,a.atttypmod),
       'nullable',NOT a.attnotnull,
-      'default',pg_catalog.pg_get_expr(d.adbin,d.adrelid))
+      'default',pg_catalog.pg_get_expr(d.adbin,d.adrelid),
+      'acl',coalesce((SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
+        FROM unnest(a.attacl) v),'[]'::jsonb),
+      'collation',CASE WHEN a.attcollation=0 THEN NULL
+        ELSE a.attcollation::regcollation::text END,
+      'identity',a.attidentity,'generated',a.attgenerated,
+      'storage',a.attstorage,'compression',a.attcompression,
+      'statisticsTarget',a.attstattarget,'options',a.attoptions,
+      'fdwOptions',a.attfdwoptions)
       ORDER BY r.relname COLLATE "C",a.attnum)
       FROM selected_relations r JOIN pg_catalog.pg_attribute a ON a.attrelid=r.oid
       LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=r.oid AND d.adnum=a.attnum
       WHERE a.attnum>0 AND NOT a.attisdropped),'[]'::jsonb),
     'constraints',coalesce((SELECT jsonb_agg(jsonb_build_object(
       'relation',r.relname,'name',c.conname,'type',c.contype,
-      'definition',pg_catalog.pg_get_constraintdef(c.oid,true))
+      'definition',pg_catalog.pg_get_constraintdef(c.oid,true),
+      'validated',c.convalidated,'deferrable',c.condeferrable,
+      'deferred',c.condeferred,'noInherit',c.connoinherit)
       ORDER BY r.relname COLLATE "C",c.conname COLLATE "C")
       FROM selected_relations r JOIN pg_catalog.pg_constraint c ON c.conrelid=r.oid),'[]'::jsonb),
     'indexes',coalesce((SELECT jsonb_agg(jsonb_build_object(
       'relation',r.relname,'name',i.relname,'valid',x.indisvalid,
-      'unique',x.indisunique,'primary',x.indisprimary,
+      'ready',x.indisready,'live',x.indislive,'unique',x.indisunique,
+      'primary',x.indisprimary,'replicaIdentity',x.indisreplident,
+      'clustered',x.indisclustered,'immediate',x.indimmediate,
+      'exclusion',x.indisexclusion,'nullsNotDistinct',x.indnullsnotdistinct,
       'definition',pg_catalog.pg_get_indexdef(i.oid))
       ORDER BY r.relname COLLATE "C",i.relname COLLATE "C")
       FROM selected_relations r JOIN pg_catalog.pg_index x ON x.indrelid=r.oid
       JOIN pg_catalog.pg_class i ON i.oid=x.indexrelid),'[]'::jsonb),
     'relations',coalesce((SELECT jsonb_agg(jsonb_build_object(
       'name',relname,'kind',relkind,'owner',pg_catalog.pg_get_userbyid(relowner),
+      'rowSecurity',relrowsecurity,'forceRowSecurity',relforcerowsecurity,
+      'replicaIdentity',relreplident,'persistence',relpersistence,
+      'accessMethod',CASE WHEN relam=0 THEN NULL ELSE
+        (SELECT amname FROM pg_catalog.pg_am WHERE oid=relam) END,
+      'tablespace',CASE WHEN reltablespace=0 THEN NULL ELSE
+        (SELECT spcname FROM pg_catalog.pg_tablespace WHERE oid=reltablespace) END,
+      'options',reloptions,
       'acl',coalesce((SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
         FROM unnest(relacl) v),'[]'::jsonb)) ORDER BY relname COLLATE "C")
       FROM selected_relations),'[]'::jsonb),
+    'schemas',coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'name',n.nspname,'owner',pg_catalog.pg_get_userbyid(n.nspowner),
+      'acl',coalesce((SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
+        FROM unnest(n.nspacl) v),'[]'::jsonb)) ORDER BY n.nspname COLLATE "C")
+      FROM pg_catalog.pg_namespace n WHERE n.nspname='public'),'[]'::jsonb),
+    'policies',coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'relation',r.relname,'name',p.polname,'permissive',p.polpermissive,
+      'command',p.polcmd,'roles',p.polroles,'using',pg_catalog.pg_get_expr(p.polqual,p.polrelid),
+      'check',pg_catalog.pg_get_expr(p.polwithcheck,p.polrelid))
+      ORDER BY r.relname COLLATE "C",p.polname COLLATE "C")
+      FROM selected_relations r JOIN pg_catalog.pg_policy p ON p.polrelid=r.oid),'[]'::jsonb),
+    'triggers',coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'relation',r.relname,'name',t.tgname,'enabled',t.tgenabled,
+      'definition',pg_catalog.pg_get_triggerdef(t.oid,true))
+      ORDER BY r.relname COLLATE "C",t.tgname COLLATE "C")
+      FROM selected_relations r JOIN pg_catalog.pg_trigger t ON t.tgrelid=r.oid
+      WHERE NOT t.tgisinternal),'[]'::jsonb),
+    'rules',coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'relation',r.relname,'name',rw.rulename,'enabled',rw.ev_enabled,
+      'definition',pg_catalog.pg_get_ruledef(rw.oid,true))
+      ORDER BY r.relname COLLATE "C",rw.rulename COLLATE "C")
+      FROM selected_relations r JOIN pg_catalog.pg_rewrite rw ON rw.ev_class=r.oid
+      WHERE rw.rulename<>'_RETURN'),'[]'::jsonb),
+    'inheritance',coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'child',child.relname,'parentSchema',parent_namespace.nspname,
+      'parent',parent.relname,'sequence',inherit.inhseqno,'detachPending',inherit.inhdetachpending)
+      ORDER BY child.relname COLLATE "C",inherit.inhseqno)
+      FROM selected_relations child JOIN pg_catalog.pg_inherits inherit ON inherit.inhrelid=child.oid
+      JOIN pg_catalog.pg_class parent ON parent.oid=inherit.inhparent
+      JOIN pg_catalog.pg_namespace parent_namespace ON parent_namespace.oid=parent.relnamespace),'[]'::jsonb),
     'functions',coalesce((SELECT jsonb_agg(jsonb_build_object(
       'identity',p.oid::regprocedure::text,'owner',pg_catalog.pg_get_userbyid(p.proowner),
       'securityDefiner',p.prosecdef,'searchPath',coalesce(to_jsonb(p.proconfig),'null'::jsonb),
@@ -78,4 +130,4 @@ SELECT 'sha256:'||encode(pg_catalog.sha256(convert_to(value::text,'UTF8')),'hex'
 FROM facts`;
 
 export const liveV70V72CatalogDigestSha256 =
-  "sha256:05820ed393b7364c468b62cb19e5cd4c8aaa729021155a18162f1a4b2012a44d";
+  "sha256:edad85736a7f65af596470816fd65b937e44512d5572bcb729f54b3de8549c8a";

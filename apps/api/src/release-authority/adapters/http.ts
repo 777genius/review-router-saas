@@ -498,6 +498,8 @@ export const migrationReceiptRequest = (
     "postCatalogDigest",
     "permitEpoch",
     "permitNonce",
+    "targetMigrationReceiptSha256",
+    "targetMigrationEffectFingerprint",
   ];
   const actualKeys = Object.keys(body);
   if (
@@ -523,6 +525,8 @@ export const migrationReceiptRequest = (
     !stringMatching(body.preManifestIdentity, sha256Digest) ||
     !stringMatching(body.postManifestIdentity, sha256Digest) ||
     !stringMatching(body.postCatalogDigest, sha256Digest) ||
+    !stringMatching(body.targetMigrationReceiptSha256, sha256Digest) ||
+    !stringMatching(body.targetMigrationEffectFingerprint, sha256Digest) ||
     !Number.isSafeInteger(body.permitEpoch) ||
     Number(body.permitEpoch) < 1 ||
     !stringMatching(body.permitNonce, permitNonce) ||
@@ -575,6 +579,14 @@ export const migrationReceiptRequest = (
     postCatalogDigest: requiredPattern(body.postCatalogDigest, sha256Digest),
     permitEpoch: Number(body.permitEpoch),
     permitNonce: requiredPattern(body.permitNonce, permitNonce),
+    targetMigrationReceiptSha256: requiredPattern(
+      body.targetMigrationReceiptSha256,
+      sha256Digest,
+    ),
+    targetMigrationEffectFingerprint: requiredPattern(
+      body.targetMigrationEffectFingerprint,
+      sha256Digest,
+    ),
   };
 };
 

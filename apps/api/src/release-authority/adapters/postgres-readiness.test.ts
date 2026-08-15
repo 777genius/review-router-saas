@@ -66,6 +66,8 @@ describe("release authority ACL readiness observation", () => {
     expect(sql).toContain("expected_execute(routine_name,role_name)");
     expect(sql).toContain("attribute.attacl IS NOT NULL");
     expect(sql).toContain("type_record.typacl IS NOT NULL");
+    expect(sql).toContain("pg_catalog.pg_input_is_valid");
+    expect(sql).not.toContain("'jsonb'::pg_catalog.regtype");
     expect(sql).not.toContain("pg_get_functiondef");
     expect(sql).not.toContain(" LIKE ");
   });
@@ -93,9 +95,7 @@ describe("release authority ACL readiness observation", () => {
     expect(sql).toContain("readerRoutineBodySha256");
     expect(sql).toContain(") bodies(ordinal,body_sha256)),'')");
     expect(sql).not.toContain(") bodies(ordinal,body_sha256))),'')");
-    expect(sql).toContain(
-      "activation_permit','activation_receipt','activation_principal_evidence",
-    );
+    expect(sql).toContain("'activation_principal_evidence','migration_permit'");
     expect(sql).toContain("assert_no_activation_receipt");
     expect(sql).toContain("project_effective_principal_authority(text)");
     expect(sql).toContain("validate_principal_evidence(text,bigint)");
@@ -127,6 +127,15 @@ describe("release authority ACL readiness observation", () => {
     expect(harness.prisma.$queryRaw).not.toHaveBeenCalled();
     expect(harness.executeRawUnsafe).toHaveBeenCalledWith(
       "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY",
+    );
+    expect(harness.executeRawUnsafe).toHaveBeenCalledWith(
+      "SET LOCAL search_path = pg_catalog, pg_temp",
+    );
+    expect(harness.executeRawUnsafe.mock.calls[0]?.[0]).toContain(
+      "SET TRANSACTION",
+    );
+    expect(harness.executeRawUnsafe.mock.calls[1]?.[0]).toBe(
+      "SET LOCAL search_path = pg_catalog, pg_temp",
     );
     expect(harness.released()).toBe(true);
     const sql = sqlText(queryRaw);
@@ -174,6 +183,60 @@ describe("release authority ACL readiness observation", () => {
     expect(harness.transaction).toHaveBeenCalledOnce();
     expect(harness.prisma.$queryRaw).not.toHaveBeenCalled();
     expect(harness.released()).toBe(true);
+  });
+
+  it("preserves normalized probe facts through the final exactness path", async () => {
+    const probe = {
+      roleName: "reviewrouter_release_control",
+      authorityOwnerRoleName: "release_authority_owner",
+      systemIdentifier: "target-system",
+      recoveryWitnessSha256: "",
+      databaseIdentity: {
+        serverIdentity: "target-system",
+        databaseIdentity: "42",
+        databaseName: "authority",
+      },
+      postgresMajor: 17,
+      authorityPresent: true,
+      installerRoutine: true,
+      readerRoutine: true,
+      installerRoutineBodySha256: "installer-body",
+      readerRoutineBodySha256: "reader-body",
+      applicationMigrationManifestIdentity: "application-manifest",
+      applicationPostCatalogDigest: "application-catalog",
+      activationNamespaceFingerprint: "activation-catalog",
+      authorityRoleTopologyExact: true,
+      activationGuardExact: false,
+      activationRuntimePrivilegesExact: true,
+    };
+    const exactness = {
+      schemaVersion: 0,
+      migrationManifest: [],
+      installerRoutine: false,
+      authorityRoleTopologyExact: false,
+      activationGuardExact: false,
+      activationRuntimePrivilegesExact: false,
+    };
+    const queryRaw = withTimeoutSetup([[probe], [exactness]]);
+    const harness = transactionHarness(queryRaw);
+
+    const observed = await observeReleaseAuthorityDatabaseReadiness(
+      harness.prisma as never,
+    );
+
+    expect(observed).toMatchObject({
+      roleName: probe.roleName,
+      authorityOwnerRoleName: probe.authorityOwnerRoleName,
+      systemIdentifier: probe.systemIdentifier,
+      recoveryWitnessSha256: probe.recoveryWitnessSha256,
+      databaseIdentity: probe.databaseIdentity,
+      postgresMajor: probe.postgresMajor,
+    });
+    expect(observed).toMatchObject(exactness);
+    expect(observed.recoveryWitnessSha256).toBe("");
+    expect(sqlText(queryRaw).match(/"recoveryWitnessSha256"/gu)).toHaveLength(
+      1,
+    );
   });
 
   it("skips the authority catalog phase for activation-only databases", async () => {

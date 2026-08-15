@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import {
@@ -31,6 +31,52 @@ const claimBinding = (input: {
     commitSha: input.expectedCommitSha,
     releaseImageDigest: `sha256:${"e".repeat(64)}`,
   }),
+});
+
+const migrationBoundaryReceiptSha256 = (
+  rolloutId: string,
+  step: string,
+  index: number,
+): string =>
+  `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({ fixture: "migration-boundary", rolloutId, step, index }),
+    )
+    .digest("hex")}`;
+
+const preMigrationSteps = [
+  "claim_rollout",
+  "verify_protected_environment",
+  "freeze_provider_services",
+  "provision_role_runner",
+  "capture_source_backup",
+  "quiesce_source",
+  "copy_database_generation",
+  "bootstrap_target_roles",
+  "verify_data_equivalence",
+  "cleanup_role_runner",
+  "provision_cutover_runner",
+] as const;
+
+const migrationBoundaryReceiptSequence = (rolloutId: string) =>
+  preMigrationSteps.map((step, index) =>
+    migrationBoundaryReceiptSha256(rolloutId, step, index),
+  );
+
+describe("migration boundary receipt fixtures", () => {
+  it("binds valid SHA-256 identifiers to rollout identity and ordered step", () => {
+    const first = migrationBoundaryReceiptSequence("rollout-one");
+    const second = migrationBoundaryReceiptSequence("rollout-two");
+
+    expect(
+      [...first, ...second].every((receiptSha256) =>
+        /^sha256:[a-f0-9]{64}$/u.test(receiptSha256),
+      ),
+    ).toBe(true);
+    expect(new Set([...first, ...second]).size).toBe(
+      first.length + second.length,
+    );
+  });
 });
 
 const numericSystemIdentifiers = (unique: string) => {
@@ -510,6 +556,49 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       ...numericSystemIdentifiers(unique),
     });
     await ledger.claim(binding);
+    const advanceToMigrationBoundary = async (target: typeof binding) => {
+      let previousReceiptSha256 = `sha256:${"0".repeat(64)}`;
+      const receiptSequence = migrationBoundaryReceiptSequence(
+        target.rolloutId,
+      );
+      for (const [index, step] of preMigrationSteps.entries()) {
+        const nextReceiptSha256 = receiptSequence[index];
+        if (!nextReceiptSha256)
+          throw new Error("migration_boundary_receipt_missing");
+        await expect(
+          ledger.compareAndSet({
+            rolloutId: target.rolloutId,
+            expectedCommitSha: target.expectedCommitSha,
+            runId: target.runId,
+            runAttempt: 1,
+            sourceSystemIdentifier: target.sourceSystemIdentifier,
+            targetSystemIdentifier: target.targetSystemIdentifier,
+            step,
+            expectedReceiptSha256: previousReceiptSha256,
+            nextReceiptSha256,
+            authoritativeSystemIdentifier: target.sourceSystemIdentifier,
+            expectedActivationBoundary: "before",
+            nextActivationBoundary: "before",
+          }),
+        ).resolves.toBe(true);
+        previousReceiptSha256 = nextReceiptSha256;
+      }
+      return previousReceiptSha256;
+    };
+    await expect(
+      ledger.beginReleaseMigration({
+        rolloutId,
+        expectedCommitSha: binding.expectedCommitSha,
+        runId: binding.runId,
+        runAttempt: 1,
+        sourceSystemIdentifier: binding.sourceSystemIdentifier,
+        targetSystemIdentifier: binding.targetSystemIdentifier,
+        targetRecoveryWitnessSha256: binding.targetRecoveryWitnessSha256,
+        transitionSha256: binding.migrationTransition.transitionSha256,
+        expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      }),
+    ).rejects.toThrow();
+    const provisionReceiptSha256 = await advanceToMigrationBoundary(binding);
     const permit = await ledger.beginReleaseMigration({
       rolloutId,
       expectedCommitSha: binding.expectedCommitSha,
@@ -519,7 +608,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       targetSystemIdentifier: binding.targetSystemIdentifier,
       targetRecoveryWitnessSha256: binding.targetRecoveryWitnessSha256,
       transitionSha256: binding.migrationTransition.transitionSha256,
-      expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      expectedPreviousReceiptSha256: provisionReceiptSha256,
     });
     const migrationReceipt = (observedAt: string, receiptId: string) => {
       const unsigned = {
@@ -546,6 +635,8 @@ realDescribe("release authority API/Postgres runtime contract", () => {
         postCatalogDigest: binding.migrationTransition.postCatalogDigest,
         permitEpoch: permit.epoch,
         permitNonce: permit.nonce,
+        targetMigrationReceiptSha256: `sha256:${"3".repeat(64)}`,
+        targetMigrationEffectFingerprint: `sha256:${"4".repeat(64)}`,
       };
       return {
         ...unsigned,
@@ -556,6 +647,16 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       "2026-08-14T01:02:03.004Z",
       `${rolloutId}:migration:first`,
     );
+    const invalidTimestampReceipt = migrationReceipt(
+      "2026-02-31T01:02:03.004Z",
+      `${rolloutId}:migration:invalid-time`,
+    );
+    await expect(
+      control.$queryRawUnsafe(
+        "SELECT release_authority.release_migration_complete($1::jsonb)",
+        JSON.stringify({ permit, receipt: invalidTimestampReceipt }),
+      ),
+    ).rejects.toThrow();
     await expect(
       ledger.completeReleaseMigration({ permit, receipt: first }),
     ).resolves.toEqual(first);
@@ -566,13 +667,11 @@ realDescribe("release authority API/Postgres runtime contract", () => {
     await expect(
       ledger.completeReleaseMigration({ permit, receipt: retry }),
     ).resolves.toEqual(first);
-    const {
-      receiptSha256: _retryReceiptSha256,
-      ...conflictingUnsignedReceipt
-    } = {
+    const conflictingUnsignedReceipt = {
       ...retry,
       observationSha256: `sha256:${"2".repeat(64)}`,
     };
+    Reflect.deleteProperty(conflictingUnsignedReceipt, "receiptSha256");
     await expect(
       ledger.completeReleaseMigration({
         permit,
@@ -591,6 +690,8 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       ...numericSystemIdentifiers(quarantineUnique),
     });
     await ledger.claim(quarantined);
+    const quarantineProvisionReceiptSha256 =
+      await advanceToMigrationBoundary(quarantined);
     const quarantinePermit = await ledger.beginReleaseMigration({
       rolloutId: quarantined.rolloutId,
       expectedCommitSha: quarantined.expectedCommitSha,
@@ -600,7 +701,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       targetSystemIdentifier: quarantined.targetSystemIdentifier,
       targetRecoveryWitnessSha256: quarantined.targetRecoveryWitnessSha256,
       transitionSha256: quarantined.migrationTransition.transitionSha256,
-      expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      expectedPreviousReceiptSha256: quarantineProvisionReceiptSha256,
     });
     await ledger.failReleaseMigration({
       permit: quarantinePermit,
@@ -612,6 +713,35 @@ realDescribe("release authority API/Postgres runtime contract", () => {
         targetSystemIdentifier: quarantined.targetSystemIdentifier,
       }),
     ).resolves.toMatchObject({ targetManifestPhase: "quarantined" });
+  });
+
+  it("rejects empty arrays and forged transition digests in direct SQL", async () => {
+    if (!control) throw new Error("real_postgres_test_unconfigured");
+    const unique = randomUUID().replaceAll("-", "");
+    const base = claimBinding({
+      rolloutId: `r-transition-sql-${unique.slice(0, 16)}`,
+      expectedCommitSha: "8".repeat(40),
+      runId: "907",
+      ...numericSystemIdentifiers(unique),
+    });
+    const directClaim = (
+      migrationTransition: typeof base.migrationTransition,
+    ) =>
+      control.$queryRawUnsafe(
+        "SELECT release_authority.release_rollout_claim_transition($1::jsonb)",
+        JSON.stringify({ ...base, migrationTransition }),
+      );
+    for (const migrationTransition of [
+      { ...base.migrationTransition, orderedMigrationEntries: [] },
+      { ...base.migrationTransition, allowedResumeManifestIdentities: [] },
+      {
+        ...base.migrationTransition,
+        postCatalogDigest: `sha256:${"9".repeat(64)}`,
+      },
+    ])
+      await expect(
+        directClaim(migrationTransition as typeof base.migrationTransition),
+      ).rejects.toThrow();
   });
 
   it("uses resource-first locks during concurrent recovery", async () => {

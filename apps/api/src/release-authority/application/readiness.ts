@@ -71,26 +71,30 @@ export type TrustedReleaseControlDatabaseIdentity = Readonly<{
   installerRoutineBodySha256: string;
   readerRoutineBodySha256: string;
   targetMigrationManifestIdentity: string;
-  /** Exact transition endpoints accepted only by phase-uncertain quarantine. */
-  allowedTargetMigrationManifestIdentities?: readonly string[];
+  /** Exact additional endpoints accepted only while recovering an unknown outcome. */
+  allowedTargetMigrationEndpoints?: readonly Readonly<{
+    manifestIdentity: string;
+    postCatalogDigest?: string;
+  }>[];
   /** Required only while completing a post-migration target operation. */
   targetPostCatalogDigest?: string;
   activationNamespaceFingerprint: string;
 }>;
 
-const targetManifestIdentityIsTrusted = (
-  actual: string,
+const targetMigrationEndpointIsTrusted = (
+  actualManifest: string,
+  actualCatalogDigest: string,
   trusted: TrustedReleaseControlDatabaseIdentity,
 ): boolean =>
-  actual === trusted.targetMigrationManifestIdentity ||
-  trusted.allowedTargetMigrationManifestIdentities?.includes(actual) === true;
-
-const targetPostCatalogDigestIsTrusted = (
-  actual: string,
-  trusted: TrustedReleaseControlDatabaseIdentity,
-): boolean =>
-  trusted.targetPostCatalogDigest === undefined ||
-  actual === trusted.targetPostCatalogDigest;
+  (actualManifest === trusted.targetMigrationManifestIdentity &&
+    (trusted.targetPostCatalogDigest === undefined ||
+      actualCatalogDigest === trusted.targetPostCatalogDigest)) ||
+  trusted.allowedTargetMigrationEndpoints?.some(
+    (endpoint) =>
+      actualManifest === endpoint.manifestIdentity &&
+      (endpoint.postCatalogDigest === undefined ||
+        actualCatalogDigest === endpoint.postCatalogDigest),
+  ) === true;
 
 export const releaseAuthoritySchemaIsReady = (
   readiness: ReleaseAuthorityDatabaseReadiness,
@@ -136,6 +140,16 @@ export function releaseControlDatabaseSetIsReady(
     sha256.test(trusted.installerRoutineBodySha256) &&
     sha256.test(trusted.readerRoutineBodySha256) &&
     /^sha256:[a-f0-9]{64}$/u.test(trusted.targetMigrationManifestIdentity) &&
+    (trusted.targetPostCatalogDigest === undefined ||
+      /^sha256:[a-f0-9]{64}$/u.test(trusted.targetPostCatalogDigest)) &&
+    (trusted.allowedTargetMigrationEndpoints === undefined ||
+      (trusted.allowedTargetMigrationEndpoints.length > 0 &&
+        trusted.allowedTargetMigrationEndpoints.every(
+          (endpoint) =>
+            /^sha256:[a-f0-9]{64}$/u.test(endpoint.manifestIdentity) &&
+            (endpoint.postCatalogDigest === undefined ||
+              /^sha256:[a-f0-9]{64}$/u.test(endpoint.postCatalogDigest)),
+        ))) &&
     /^sha256:[a-f0-9]{64}$/u.test(trusted.activationNamespaceFingerprint) &&
     control.roleName === "reviewrouter_release_control" &&
     provider.roleName === "reviewrouter_provider_authority" &&
@@ -191,16 +205,22 @@ export function releaseControlDatabaseSetIsReady(
     installer.installerRoutine &&
     installer.installerRoutineBodySha256 ===
       trusted.installerRoutineBodySha256 &&
-    installer.applicationMigrationManifestIdentity ===
-      trusted.targetMigrationManifestIdentity &&
+    targetMigrationEndpointIsTrusted(
+      installer.applicationMigrationManifestIdentity,
+      installer.applicationPostCatalogDigest,
+      trusted,
+    ) &&
     installer.activationNamespaceFingerprint ===
       trusted.activationNamespaceFingerprint &&
     installer.activationGuardExact &&
     installer.activationRuntimePrivilegesExact &&
     reader.readerRoutine &&
     reader.readerRoutineBodySha256 === trusted.readerRoutineBodySha256 &&
-    reader.applicationMigrationManifestIdentity ===
-      trusted.targetMigrationManifestIdentity &&
+    targetMigrationEndpointIsTrusted(
+      reader.applicationMigrationManifestIdentity,
+      reader.applicationPostCatalogDigest,
+      trusted,
+    ) &&
     reader.activationNamespaceFingerprint ===
       trusted.activationNamespaceFingerprint &&
     reader.activationGuardExact &&
@@ -238,11 +258,8 @@ export function releaseControlMutationDatabaseIsReady(
         readiness.installerRoutine &&
         readiness.installerRoutineBodySha256 ===
           trusted.installerRoutineBodySha256 &&
-        targetManifestIdentityIsTrusted(
+        targetMigrationEndpointIsTrusted(
           readiness.applicationMigrationManifestIdentity,
-          trusted,
-        ) &&
-        targetPostCatalogDigestIsTrusted(
           readiness.applicationPostCatalogDigest,
           trusted,
         ) &&
@@ -259,11 +276,8 @@ export function releaseControlMutationDatabaseIsReady(
         ) &&
         readiness.readerRoutine &&
         readiness.readerRoutineBodySha256 === trusted.readerRoutineBodySha256 &&
-        targetManifestIdentityIsTrusted(
+        targetMigrationEndpointIsTrusted(
           readiness.applicationMigrationManifestIdentity,
-          trusted,
-        ) &&
-        targetPostCatalogDigestIsTrusted(
           readiness.applicationPostCatalogDigest,
           trusted,
         ) &&

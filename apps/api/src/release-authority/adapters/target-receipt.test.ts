@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { RoutineTargetActivationReceiptReaderAdapter } from "./target-receipt.js";
+import { sha256Canonical } from "@reviewrouter/features-release-rollout";
 
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const receipt = {
@@ -88,5 +89,58 @@ describe("target activation receipt reader", () => {
     await expect(reader(receipt).read("rollout-activation-2")).rejects.toThrow(
       "target_activation_receipt_result_invalid",
     );
+  });
+});
+
+describe("target migration receipt reader", () => {
+  const permit = {
+    schemaVersion: 1 as const,
+    rolloutId: "rollout-migration-1",
+    runId: "1",
+    runAttempt: 1,
+    targetSystemIdentifier: "200",
+    targetRecoveryWitnessSha256: "a".repeat(64),
+    transitionSha256: digest("b"),
+    expectedPreviousReceiptSha256: digest("c"),
+    epoch: 2,
+    nonce: "d".repeat(32),
+  };
+  const migrationReceipt = {
+    schemaVersion: 1,
+    rolloutId: permit.rolloutId,
+    sourceSystemIdentifier: "100",
+    targetSystemIdentifier: permit.targetSystemIdentifier,
+    targetDatabaseIdentity: "16385",
+    targetDatabaseName: "target",
+    targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
+    transitionSha256: permit.transitionSha256,
+    previousReceiptSha256: permit.expectedPreviousReceiptSha256,
+    permitEpoch: permit.epoch,
+    permitNonce: permit.nonce,
+    postManifestIdentity: digest("e"),
+    postCatalogDigest: digest("f"),
+    legacyReconciliation: { status: "reconciled" },
+    effectFingerprint: digest("1"),
+    completedAt: "2026-08-14T00:00:00.000Z",
+  };
+
+  it("returns the exact guard-owned receipt digest", async () => {
+    await expect(
+      reader(migrationReceipt).readMigrationReceipt(permit),
+    ).resolves.toEqual({
+      ...migrationReceipt,
+      targetMigrationReceiptSha256: `sha256:${sha256Canonical(
+        migrationReceipt,
+      )}`,
+    });
+  });
+
+  it("rejects a replay under another permit nonce", async () => {
+    await expect(
+      reader(migrationReceipt).readMigrationReceipt({
+        ...permit,
+        nonce: "e".repeat(32),
+      }),
+    ).rejects.toThrow("target_migration_receipt_result_invalid");
   });
 });

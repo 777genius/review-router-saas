@@ -10,6 +10,7 @@ import {
   roleProvisioningSql,
 } from "./run-codex-rotating-release-migration.mjs";
 import { effectivePrincipalInventorySql } from "../packages/features/release-rollout/src/index.ts";
+import { fencedLiveV70V72CatalogDigestSql } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 
 const configuration = {
   roles: [
@@ -27,6 +28,9 @@ const configuration = {
     },
   ],
   releasePassword: "release-pass",
+  releaseUrl:
+    "postgresql://reviewrouter_release_migration:release-pass@db.internal:5432/review_router",
+  applicationSchemas: ["public"],
 };
 const forgedLegacyPrincipalEvidence = {
   beforePrincipalInventory: { version: 1, forgedClean: true },
@@ -34,6 +38,12 @@ const forgedLegacyPrincipalEvidence = {
 };
 
 describe("target-local PG17 activation permit", () => {
+  it("canonicalizes the live digest search path across invoker and definer contexts", () => {
+    expect(fencedLiveV70V72CatalogDigestSql).not.toContain("set_config(");
+    expect(fencedLiveV70V72CatalogDigestSql).toContain(
+      "pg_catalog.pg_get_functiondef",
+    );
+  });
   it("publishes deterministic non-secret routine-body trust roots", () => {
     const roots = activationRoutineBodyTrustRoots();
     expect(roots.installerRoutineBodySha256).toMatch(/^[a-f0-9]{64}$/u);
@@ -322,14 +332,26 @@ describe("target-local PG17 activation permit", () => {
     expect(preReadinessAclProof).toContain(
       "GRANT SELECT ON ${applicationRelation} TO rr_inert_acl",
     );
-    expect(preReadinessAclProof).toContain("captureCandidateSql(identity)");
+    expect(preReadinessAclProof).toContain("attestDisposableCaptureSql()");
+    expect(preReadinessAclProof).toContain("captureCandidateSql()");
+    expect(source).toContain("'rr-disposable-'||encode(sha256(convert_to(");
+    expect(source).toContain(
+      "shobj_description(oid,'pg_database')::jsonb\n    ->'disposableCaptureAttestation'->>'identity'",
+    );
+    expect(source).not.toContain(
+      "const attestDisposableCaptureSql = (identity: string)",
+    );
+    expect(source).toContain(
+      '"rejects durable binding and mismatched database identity before activation proof"',
+    );
+    expect(source).toContain('databaseOid: "0"');
     expect(source).toContain(
       '"omits a disconnected role only while it has no application authority"',
     );
     expect(source).toContain("another_disconnected_provider_role");
   });
 
-  it("gives the guard read-only migration history and no other public table access", () => {
+  it("gives the guard only migration history and completion-status reads", () => {
     const sql = activationAuthorityProvisioningSql();
     expect(sql).toContain(
       "IF to_regclass('public._prisma_migrations') IS NULL",
@@ -350,6 +372,13 @@ describe("target-local PG17 activation permit", () => {
     expect(sql).toContain(
       "'reviewrouter_activation_permit_installer', relation.oid",
     );
+    expect(sql).toContain(
+      'GRANT SELECT ("status") ON TABLE public."CodexOAuthLease"',
+    );
+    expect(sql).toContain(
+      "has_column_privilege('reviewrouter_activation_receipt_guard',relation.oid",
+    );
+    expect(sql).toContain("IS DISTINCT FROM (attribute.attname='status')");
     expect(sql).not.toMatch(
       /GRANT\s+(?:INSERT|UPDATE|DELETE|ALL).*_prisma_migrations.*reviewrouter_activation_receipt_guard/iu,
     );

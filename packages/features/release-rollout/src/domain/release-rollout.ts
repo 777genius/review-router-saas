@@ -314,6 +314,10 @@ export interface ReleaseMigrationReceipt extends StepReceipt {
   readonly postCatalogDigest: string;
   readonly permitEpoch: number;
   readonly permitNonce: string;
+  /** Digest of the exact receipt persisted by the target guard. */
+  readonly targetMigrationReceiptSha256: string;
+  /** Effect identity issued and verified by the target guard. */
+  readonly targetMigrationEffectFingerprint: string;
 }
 
 export interface ActivationAuthorization {
@@ -815,6 +819,8 @@ function assertStepFacts(
         facts.targetSystemIdentifier !== rollout.target.systemIdentifier ||
         facts.targetRecoveryWitnessSha256 !==
           rollout.target.recoveryWitnessSha256 ||
+        !digestPattern.test(String(facts.targetMigrationReceiptSha256)) ||
+        !digestPattern.test(String(facts.targetMigrationEffectFingerprint)) ||
         !Array.isArray(facts.roles) ||
         facts.roles.length < 4
       )
@@ -1108,6 +1114,10 @@ export function transitionFromObservation(
       postCatalogDigest: String(facts.postCatalogDigest),
       permitEpoch: Number(facts.permitEpoch),
       permitNonce: String(facts.permitNonce),
+      targetMigrationReceiptSha256: String(facts.targetMigrationReceiptSha256),
+      targetMigrationEffectFingerprint: String(
+        facts.targetMigrationEffectFingerprint,
+      ),
     };
     receipt = {
       ...migrationBase,
@@ -1234,6 +1244,7 @@ export function recoverCompletedReleaseMigration(
   const { receiptSha256, ...unsigned } = receipt;
   if (
     receipt.step !== RolloutStep.RunReleaseMigration ||
+    !identifierPattern.test(receipt.receiptId) ||
     receipt.rolloutId !== rollout.rolloutId ||
     receipt.expectedCommitSha !== rollout.expectedCommitSha ||
     receipt.runId !== rollout.execution.runId ||
@@ -1256,6 +1267,8 @@ export function recoverCompletedReleaseMigration(
       rollout.migrationTransition.postCatalogDigest ||
     receipt.permitEpoch !== permit.epoch ||
     receipt.permitNonce !== permit.nonce ||
+    !digestPattern.test(receipt.targetMigrationReceiptSha256) ||
+    !digestPattern.test(receipt.targetMigrationEffectFingerprint) ||
     receiptSha256 !== `sha256:${sha256Canonical(unsigned)}`
   )
     throw new Error("release_migration_receipt_recovery_invalid");

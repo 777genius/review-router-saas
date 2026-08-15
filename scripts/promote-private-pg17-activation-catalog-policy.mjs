@@ -12,16 +12,16 @@ import {
 } from "../packages/features/release-rollout/src/domain/effective-principal-inventory.ts";
 
 export const activationCatalogPromotionOptIn =
-  "promote-reviewed-activation-catalog-v19";
+  "promote-reviewed-activation-catalog-v20";
 export const reviewedActivationCatalogCandidate = Object.freeze({
-  sha256: "e1e75fe2ec744c6b12fc762ef64a090ea3e66fb778edc4ef1f119614875ba0f0",
-  bytes: 2_044_112,
+  sha256: "84a59601c3a3ae25260ba02fa6102115e60aac70abc205b63d33ad27c393af4c",
+  bytes: 2_073_874,
   preactivationCatalogPolicySha256:
-    "sha256:6e500c32e51fcf9421dc94c3f41a536c1cfaec9af3ce912c6a65b99460c8d5e2",
+    "sha256:c133bacb4a813540245430151ffd80f3380a4123ccc379250828d0317ac514d9",
   activatedCatalogPolicySha256:
-    "sha256:e88f3556a869977de67c02487663d7524dd19c5a3c11bb5541ada5cdc98f9b93",
+    "sha256:7930dc496e760ae4f0577b50db1251f44c55f2db68bf97f790ce290edc8d5253",
   artifactCanonicalSha256:
-    "sha256:d5f654f1dc66936a8f9c8ded9d2245f6f444d1352ef87256de495812a2510796",
+    "sha256:359128995fd88a0f88efd5119bfd3b5eb342da3646266c723f1f2e82adf02f4f",
 });
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));

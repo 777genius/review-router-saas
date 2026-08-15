@@ -114,6 +114,8 @@ BEGIN
       WHERE jsonb_typeof(transition->key) IS DISTINCT FROM 'string')
     OR jsonb_typeof(transition->'orderedMigrationEntries') IS DISTINCT FROM 'array'
     OR jsonb_typeof(transition->'allowedResumeManifestIdentities') IS DISTINCT FROM 'array'
+    OR jsonb_array_length(transition->'orderedMigrationEntries') < 1
+    OR jsonb_array_length(transition->'allowedResumeManifestIdentities') < 1
   THEN RAISE EXCEPTION 'release migration transition claim invalid'; END IF;
   IF EXISTS (SELECT 1 FROM jsonb_array_elements(transition->'orderedMigrationEntries') entry
       WHERE jsonb_typeof(entry) IS DISTINCT FROM 'object'
@@ -142,6 +144,8 @@ BEGIN
     OR transition->>'migrationArtifactDigest' !~ '^sha256:[a-f0-9]{64}$'
     OR transition->>'migrationBundleSha256' !~ '^sha256:[a-f0-9]{64}$'
     OR transition->>'postCatalogDigest' !~ '^sha256:[a-f0-9]{64}$'
+    OR transition->>'transitionSha256' IS DISTINCT FROM 'sha256:'||encode(sha256(convert_to(
+      release_authority.release_canonical_json(transition-'transitionSha256'),'UTF8')),'hex')
   THEN RAISE EXCEPTION 'release migration transition claim invalid'; END IF;
 
   INSERT INTO release_authority.rollout(
@@ -269,31 +273,36 @@ BEGIN
     OR permit->>'epoch' !~ '^[1-9][0-9]{0,18}$'
     OR permit->>'nonce' !~ '^[a-f0-9]{32}$'
   THEN RAISE EXCEPTION 'release migration completion permit invalid'; END IF;
-  IF (SELECT count(*) FROM jsonb_object_keys(receipt)) NOT IN (21,22)
+  IF (SELECT count(*) FROM jsonb_object_keys(receipt)) NOT IN (23,24)
     OR NOT receipt ?& ARRAY['step','receiptId','observedAt','rolloutId','expectedCommitSha',
       'runId','runAttempt','sourceSystemIdentifier','targetSystemIdentifier',
       'observationSha256','previousReceiptSha256','receiptSha256','migrationChecksum',
       'transitionSha256','migrationArtifactDigest','migrationBundleSha256',
       'preManifestIdentity','postManifestIdentity','postCatalogDigest',
-      'permitEpoch','permitNonce']
+      'permitEpoch','permitNonce','targetMigrationReceiptSha256',
+      'targetMigrationEffectFingerprint']
     OR EXISTS (SELECT 1 FROM jsonb_object_keys(receipt) key WHERE NOT key=ANY(ARRAY[
       'step','receiptId','observedAt','rolloutId','expectedCommitSha','runId','runAttempt',
       'sourceSystemIdentifier','targetSystemIdentifier','provider','observationSha256',
       'previousReceiptSha256','receiptSha256','migrationChecksum','transitionSha256',
       'migrationArtifactDigest','migrationBundleSha256','preManifestIdentity',
-      'postManifestIdentity','postCatalogDigest','permitEpoch','permitNonce']))
+      'postManifestIdentity','postCatalogDigest','permitEpoch','permitNonce',
+      'targetMigrationReceiptSha256','targetMigrationEffectFingerprint']))
     OR EXISTS (SELECT 1 FROM unnest(ARRAY['step','receiptId','observedAt','rolloutId',
       'expectedCommitSha','runId','sourceSystemIdentifier','targetSystemIdentifier',
       'observationSha256','previousReceiptSha256','receiptSha256','migrationChecksum',
       'transitionSha256','migrationArtifactDigest','migrationBundleSha256',
-      'preManifestIdentity','postManifestIdentity','postCatalogDigest','permitNonce']) key
+      'preManifestIdentity','postManifestIdentity','postCatalogDigest','permitNonce',
+      'targetMigrationReceiptSha256','targetMigrationEffectFingerprint']) key
       WHERE jsonb_typeof(receipt->key) IS DISTINCT FROM 'string')
     OR jsonb_typeof(receipt->'runAttempt') IS DISTINCT FROM 'number'
     OR jsonb_typeof(receipt->'permitEpoch') IS DISTINCT FROM 'number'
     OR (receipt ? 'provider' AND jsonb_typeof(receipt->'provider') IS DISTINCT FROM 'null')
     OR receipt->>'step' IS DISTINCT FROM 'run_release_migration'
-    OR receipt->>'receiptId' !~ '^[A-Za-z0-9][A-Za-z0-9._:/@-]{2,511}$'
+    OR char_length(receipt->>'receiptId') NOT BETWEEN 3 AND 512
+    OR receipt->>'receiptId' !~ '^[A-Za-z0-9][A-Za-z0-9._:/@-]*$'
     OR receipt->>'observedAt' !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+    OR NOT pg_catalog.pg_input_is_valid(receipt->>'observedAt','timestamptz')
     OR receipt->>'rolloutId' !~ '^[A-Za-z0-9][A-Za-z0-9._:/@-]{2,255}$'
     OR receipt->>'expectedCommitSha' !~ '^[a-f0-9]{40}$'
     OR receipt->>'runId' !~ '^[1-9][0-9]*$'
@@ -303,7 +312,8 @@ BEGIN
     OR receipt->>'sourceSystemIdentifier' IS NOT DISTINCT FROM receipt->>'targetSystemIdentifier'
     OR EXISTS (SELECT 1 FROM unnest(ARRAY['observationSha256','previousReceiptSha256',
       'receiptSha256','migrationChecksum','transitionSha256','migrationArtifactDigest',
-      'migrationBundleSha256','preManifestIdentity','postManifestIdentity','postCatalogDigest']) key
+      'migrationBundleSha256','preManifestIdentity','postManifestIdentity','postCatalogDigest',
+      'targetMigrationReceiptSha256','targetMigrationEffectFingerprint']) key
       WHERE receipt->>key !~ '^sha256:[a-f0-9]{64}$')
     OR receipt->>'permitEpoch' !~ '^[1-9][0-9]{0,18}$'
     OR receipt->>'permitNonce' !~ '^[a-f0-9]{32}$'
@@ -330,6 +340,8 @@ BEGIN
       'preManifestIdentity',receipt->>'preManifestIdentity',
       'postManifestIdentity',receipt->>'postManifestIdentity',
       'postCatalogDigest',receipt->>'postCatalogDigest',
+      'targetMigrationReceiptSha256',receipt->>'targetMigrationReceiptSha256',
+      'targetMigrationEffectFingerprint',receipt->>'targetMigrationEffectFingerprint',
       'permitEpoch',permit->'epoch','permitNonce',permit->>'nonce')),'UTF8')),'hex');
   IF current_row.target_manifest_phase='post_migration' THEN
     IF current_row.migration_permit IS DISTINCT FROM permit

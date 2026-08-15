@@ -169,8 +169,9 @@ if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate 
 fi
 
 # Install the exact origin/main published history in a second disposable
-# database, then run the candidate append-only upgrade. This is intentionally
-# sourced from git objects rather than the candidate worktree.
+# database, advance it through the immutable 000012 boundary, then run the
+# candidate append-only 000012 -> 000013 upgrade. The published portion is
+# intentionally sourced from git objects rather than the candidate worktree.
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
   "CREATE DATABASE rr_authority_origin_upgrade" >/dev/null
 origin_migrations='000001_release_authority 000002_external_effect_protocol 000002_transactional_service_transition 000003_partial_source_freeze 000004_selective_source_recovery 000005_late_runner_effects 000006_runner_provider_creation_boundary 000007_compensation_effect_fence 000008_trigger_helper_acl 000009_authority_history_and_forward_repairs 000010_recovery_effect_permits'
@@ -192,11 +193,25 @@ for origin_migration in $origin_migrations; do
       "INSERT INTO release_authority.schema_migration(position,migration_name,checksum_sha256,byte_variant) VALUES (11,'000010_recovery_effect_permits','sha256:a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd','canonical')" >/dev/null
   fi
 done
+for boundary_migration in \
+  000011_default_and_final_acl_exactness \
+  000012_provider_mutation_resource_fence; do
+  docker cp "$root/packages/platform/release-authority-db/migrations/$boundary_migration/migration.sql" \
+    "$name:/tmp/boundary-$boundary_migration.sql" >/dev/null
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+    -d rr_authority_origin_upgrade \
+    -f "/tmp/boundary-$boundary_migration.sql" >/dev/null
+done
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+  -d rr_authority_origin_upgrade -c \
+  "INSERT INTO release_authority.schema_migration(position,migration_name,checksum_sha256,byte_variant) VALUES
+   (12,'000011_default_and_final_acl_exactness','sha256:727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420','canonical'),
+   (13,'000012_provider_mutation_resource_fence','sha256:45eb81a2715cf8c254cdacc2ca4ce8c80fc6c6527c009fe9dce63c3f80a510b1','canonical')" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
   -d rr_authority_origin_upgrade -f /tmp/release-authority-install.sql >/dev/null
 test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
   -d rr_authority_origin_upgrade -Atc \
-  "SELECT count(*)||':'||max(position) FROM release_authority.schema_migration")" = 13:13
+  "SELECT count(*)||':'||max(position) FROM release_authority.schema_migration")" = 14:14
 fresh_catalog_identity=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
   -d rr_authority_gate -Atc \
   "SELECT obj_description('release_authority'::regnamespace,'pg_namespace')")
@@ -204,6 +219,60 @@ upgrade_catalog_identity=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgr
   -d rr_authority_origin_upgrade -Atc \
   "SELECT obj_description('release_authority'::regnamespace,'pg_namespace')")
 test "$upgrade_catalog_identity" = "$fresh_catalog_identity"
+# The catalog attestation above covers ACLs, but keep a focused normalized ACL
+# projection so a fresh install and the 000012 -> 000013 path mechanically
+# prove identical owners and explicit object edges as well.
+cat > /tmp/release-authority-final-acl-state-$$.sql <<'SQL'
+WITH target AS (
+  SELECT oid FROM pg_catalog.pg_namespace WHERE nspname='release_authority'
+), acl_state AS (
+  SELECT 'schema'::text AS kind,nspname AS identity,
+    pg_catalog.pg_get_userbyid(nspowner) AS owner,nspacl AS acl
+  FROM pg_catalog.pg_namespace CROSS JOIN target
+  WHERE pg_namespace.oid=target.oid
+  UNION ALL
+  SELECT 'relation',relation.oid::regclass::text,
+    pg_catalog.pg_get_userbyid(relation.relowner),relation.relacl
+  FROM pg_catalog.pg_class relation CROSS JOIN target
+  WHERE relation.relnamespace=target.oid
+  UNION ALL
+  SELECT 'routine',procedure.oid::regprocedure::text,
+    pg_catalog.pg_get_userbyid(procedure.proowner),procedure.proacl
+  FROM pg_catalog.pg_proc procedure CROSS JOIN target
+  WHERE procedure.pronamespace=target.oid
+  UNION ALL
+  SELECT 'column',relation.oid::regclass::text||'.'||attribute.attname,
+    pg_catalog.pg_get_userbyid(relation.relowner),attribute.attacl
+  FROM pg_catalog.pg_attribute attribute
+  JOIN pg_catalog.pg_class relation ON relation.oid=attribute.attrelid
+  CROSS JOIN target
+  WHERE relation.relnamespace=target.oid AND attribute.attnum>0
+    AND NOT attribute.attisdropped
+  UNION ALL
+  SELECT 'type',type_record.oid::regtype::text,
+    pg_catalog.pg_get_userbyid(type_record.typowner),type_record.typacl
+  FROM pg_catalog.pg_type type_record CROSS JOIN target
+  WHERE type_record.typnamespace=target.oid
+  UNION ALL
+  SELECT 'default_acl',default_acl.defaclobjtype::text,
+    pg_catalog.pg_get_userbyid(default_acl.defaclrole),default_acl.defaclacl
+  FROM pg_catalog.pg_default_acl default_acl CROSS JOIN target
+  WHERE default_acl.defaclnamespace IN (0,target.oid)
+)
+SELECT jsonb_agg(jsonb_build_object(
+  'kind',kind,'identity',identity,'owner',owner,'acl',coalesce(
+    (SELECT jsonb_agg(item::text ORDER BY item::text COLLATE "C")
+     FROM pg_catalog.unnest(acl) item),'[]'::jsonb))
+  ORDER BY kind COLLATE "C",identity COLLATE "C")::text
+FROM acl_state;
+SQL
+docker cp "/tmp/release-authority-final-acl-state-$$.sql" \
+  "$name:/tmp/release-authority-final-acl-state.sql" >/dev/null
+fresh_acl_state=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+  -d rr_authority_gate -qAtf /tmp/release-authority-final-acl-state.sql)
+upgrade_acl_state=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+  -d rr_authority_origin_upgrade -qAtf /tmp/release-authority-final-acl-state.sql)
+test "$upgrade_acl_state" = "$fresh_acl_state"
 if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d rr_authority_gate \
   -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
@@ -546,7 +615,8 @@ test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_supported_
   "1:legacy_equivalent,2:legacy_equivalent"
 
 rm -f "/tmp/release-authority-install-$$.sql" \
-  "/tmp/release-authority-acl-regression-$$.sql"
+  "/tmp/release-authority-acl-regression-$$.sql" \
+  "/tmp/release-authority-final-acl-state-$$.sql"
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/release-authority-install.sql >/dev/null
 test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT string_agg(position::text||':'||byte_variant,',' ORDER BY position)
@@ -596,17 +666,49 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
    CREATE ROLE reviewrouter_worker LOGIN PASSWORD 'worker';
    CREATE ROLE reviewrouter_codex_effect_authority LOGIN PASSWORD 'effect';
    CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'migration';
-   CREATE ROLE reviewrouter_role_bootstrap LOGIN PASSWORD 'bootstrap'" >/dev/null
+   CREATE ROLE reviewrouter_role_bootstrap LOGIN PASSWORD 'bootstrap' CREATEROLE;
+   GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+   GRANT reviewrouter_web TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+   GRANT reviewrouter_worker TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+   GRANT reviewrouter_codex_effect_authority TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+   GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
-  "CREATE DATABASE rr_activation_target" >/dev/null
-docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_activation_target -c \
-  'CREATE TABLE public."_prisma_migrations" (
-     migration_name text NOT NULL, checksum text NOT NULL,
-     finished_at timestamptz, rolled_back_at timestamptz
-   );
-   INSERT INTO public."_prisma_migrations"(
-     migration_name, checksum, finished_at, rolled_back_at
-   ) VALUES ($fixture$000001_disposable_fixture$fixture$, $fixture$fixture-checksum$fixture$, clock_timestamp(), NULL)' >/dev/null
+  "CREATE DATABASE rr_activation_target OWNER reviewrouter_role_bootstrap" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+  "COMMENT ON DATABASE rr_activation_target IS '{\"recoveryWitnessSha256\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"}'" >/dev/null
+
+# Provision the same pre-release application catalog used by the canonical
+# PG16 -> PG17 rehearsal. The shared boundary helper keeps this fixture at the
+# exact through-000059 plus retained-000067/000068 boundary; Prisma supplies
+# both the real application objects and its canonical migration history.
+RR_FIXTURE_SOURCE="$root/packages/platform/db/prisma" \
+RR_FIXTURE_TARGET="$contract_tmp/pre-release-prisma" \
+RR_FIXTURE_CONFIG="$contract_tmp/pre-release-prisma.config.mjs" \
+  node --import tsx -e '
+    import { cpSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+    import { join } from "node:path";
+    import { resolvePreReleaseMigrationExclusions } from "./scripts/rehearse-private-pg17-rollout.mjs";
+    const source = process.env.RR_FIXTURE_SOURCE;
+    const target = process.env.RR_FIXTURE_TARGET;
+    const config = process.env.RR_FIXTURE_CONFIG;
+    if (!source || !target || !config) throw new Error("activation fixture path missing");
+    cpSync(source, target, { recursive: true });
+    const migrations = join(target, "migrations");
+    const names = readdirSync(migrations, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+    for (const name of resolvePreReleaseMigrationExclusions(names))
+      rmSync(join(migrations, name), { recursive: true });
+    writeFileSync(config, `export default {
+      schema: ${JSON.stringify(join(target, "schema.prisma"))},
+      migrations: { path: ${JSON.stringify(migrations)} },
+      datasource: { url: process.env.REVIEW_ROUTER_ACTIVATION_FIXTURE_DATABASE_URL },
+    };\n`);
+  '
+postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
+REVIEW_ROUTER_ACTIVATION_FIXTURE_DATABASE_URL="postgresql://reviewrouter_role_bootstrap:bootstrap@127.0.0.1:$postgres_port/rr_activation_target" \
+  pnpm --filter @reviewrouter/platform-db exec prisma migrate deploy \
+    --config "$contract_tmp/pre-release-prisma.config.mjs" >/dev/null
 node -e "import('./scripts/run-codex-rotating-release-migration.mjs').then(m => process.stdout.write(m.activationAuthorityProvisioningSql()))" \
   > "$contract_tmp/activation-authority.sql"
 docker cp "$contract_tmp/activation-authority.sql" \
@@ -614,7 +716,6 @@ docker cp "$contract_tmp/activation-authority.sql" \
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_activation_target \
   -f /tmp/activation-authority.sql >/dev/null
 
-postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \
 REVIEW_ROUTER_RELEASE_AUTHORITY_WITNESS_TEST_URL="postgresql://reviewrouter_release_witness:witness@127.0.0.1:$postgres_port/postgres" \
 REVIEW_ROUTER_RELEASE_AUTHORITY_ADMIN_TEST_URL="postgresql://postgres:test@127.0.0.1:$postgres_port/postgres" \

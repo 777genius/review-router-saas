@@ -335,6 +335,8 @@ describe("release rollout application boundary", () => {
         permitNonce: permit.nonce,
         targetSystemIdentifier: permit.targetSystemIdentifier,
         targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
+        targetMigrationReceiptSha256: `sha256:${"d".repeat(64)}`,
+        targetMigrationEffectFingerprint: `sha256:${"e".repeat(64)}`,
       },
     }));
     ports.database = { runReleaseMigration } as never;
@@ -364,7 +366,31 @@ describe("release rollout application boundary", () => {
     expect(runReleaseMigration).not.toHaveBeenCalled();
   });
 
-  it("quarantines an effect failure and never attempts completion", async () => {
+  it("preserves the ledger adapter receiver for migration protocol calls", async () => {
+    const ports = basePorts();
+    const receiverLedger = {
+      ...ports.ledger,
+      receiverMarker: true,
+      async loadReleaseMigrationCheckpoint() {
+        if (this !== receiverLedger)
+          throw new Error("release_migration_ledger_receiver_lost");
+        return {
+          targetManifestPhase: "quarantined" as const,
+          permit: null,
+          receipt: null,
+        };
+      },
+    };
+    ports.ledger = receiverLedger as never;
+
+    await expect(
+      new ReleaseRolloutUseCases(ports).runReleaseMigration(
+        rolloutBeforeMigration(),
+      ),
+    ).rejects.toThrow("release_migration_quarantined");
+  });
+
+  it("keeps an uncertain effect in migrating for exact target-receipt recovery", async () => {
     const ports = basePorts();
     ports.database = {
       runReleaseMigration: vi.fn().mockRejectedValue(new Error("sql_failed")),
@@ -374,13 +400,83 @@ describe("release rollout application boundary", () => {
         rolloutBeforeMigration(),
       ),
     ).rejects.toThrow("sql_failed");
-    expect(ports.ledger.failReleaseMigration).toHaveBeenCalledWith({
-      permit: expect.objectContaining({
-        transitionSha256: rollout.migrationTransition.transitionSha256,
-      }),
-      reasonSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
-    });
+    expect(ports.ledger.failReleaseMigration).not.toHaveBeenCalled();
     expect(ports.ledger.completeReleaseMigration).not.toHaveBeenCalled();
+  });
+
+  it("reuses the stored permit after response loss and completes from the target replay", async () => {
+    const ports = basePorts();
+    const beforeMigration = rolloutBeforeMigration();
+    const permit = await ports.ledger.beginReleaseMigration({
+      rolloutId: beforeMigration.rolloutId,
+      expectedCommitSha: beforeMigration.expectedCommitSha,
+      runId: beforeMigration.execution.runId,
+      runAttempt: 1,
+      sourceSystemIdentifier: beforeMigration.source.systemIdentifier,
+      targetSystemIdentifier: beforeMigration.target.systemIdentifier,
+      targetRecoveryWitnessSha256: beforeMigration.target.recoveryWitnessSha256,
+      transitionSha256: beforeMigration.migrationTransition.transitionSha256,
+      expectedPreviousReceiptSha256:
+        beforeMigration.receipts.at(-1)!.receiptSha256,
+    });
+    ports.ledger.beginReleaseMigration.mockClear();
+    ports.ledger.beginReleaseMigration.mockResolvedValue(permit);
+    ports.ledger.loadReleaseMigrationCheckpoint.mockResolvedValue({
+      targetManifestPhase: "migrating",
+      permit,
+      receipt: null,
+    });
+    const replayObservation = {
+      step: RolloutStep.RunReleaseMigration,
+      observedAt: "2026-08-12T00:00:01.000Z",
+      facts: {
+        version: 3,
+        status: "succeeded",
+        migrationStatus: "succeeded",
+        preflightStatus: "passed",
+        aclGateState: "closed",
+        commit: beforeMigration.expectedCommitSha,
+        imageDigest: beforeMigration.migrationTransition.releaseImageDigest,
+        roles: ["a", "b", "c", "d"],
+        migrationChecksum:
+          beforeMigration.migrationTransition.postManifestIdentity,
+        transitionSha256: beforeMigration.migrationTransition.transitionSha256,
+        migrationArtifactDigest:
+          beforeMigration.migrationTransition.migrationArtifactDigest,
+        migrationBundleSha256:
+          beforeMigration.migrationTransition.migrationBundleSha256,
+        preManifestIdentity:
+          beforeMigration.migrationTransition.preManifestIdentity,
+        postManifestIdentity:
+          beforeMigration.migrationTransition.postManifestIdentity,
+        postCatalogDigest:
+          beforeMigration.migrationTransition.postCatalogDigest,
+        permitEpoch: permit.epoch,
+        permitNonce: permit.nonce,
+        targetSystemIdentifier: permit.targetSystemIdentifier,
+        targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
+        targetMigrationReceiptSha256: `sha256:${"d".repeat(64)}`,
+        targetMigrationEffectFingerprint: `sha256:${"e".repeat(64)}`,
+      },
+    };
+    ports.database = {
+      runReleaseMigration: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("response_lost_after_commit"))
+        .mockResolvedValueOnce(replayObservation),
+    } as never;
+    const useCases = new ReleaseRolloutUseCases(ports);
+    await expect(useCases.runReleaseMigration(beforeMigration)).rejects.toThrow(
+      "response_lost_after_commit",
+    );
+    expect(ports.ledger.failReleaseMigration).not.toHaveBeenCalled();
+    await expect(
+      useCases.runReleaseMigration(beforeMigration),
+    ).resolves.toMatchObject({
+      targetManifestPhase: "post_migration",
+    });
+    expect(ports.ledger.beginReleaseMigration).toHaveBeenCalledTimes(2);
+    expect(ports.ledger.completeReleaseMigration).toHaveBeenCalledOnce();
   });
 
   it("quarantines a stale worker observation instead of accepting its digest", async () => {

@@ -245,6 +245,16 @@ export interface ActivationPermitInstallerPort {
   install(
     authorization: ActivationAuthorization,
   ): Promise<"installed" | "existing">;
+  installMigrationPermit(input: {
+    permit: ReleaseMigrationPermit;
+    sourceSystemIdentifier: string;
+    expectedPostManifestIdentity: string;
+    expectedPostCatalogDigest: string;
+  }): Promise<"installed" | "existing">;
+  terminalizeMigrationPermit(input: {
+    permit: ReleaseMigrationPermit;
+    outcome: "completed" | "quarantined";
+  }): Promise<"terminalized" | "existing">;
 }
 
 export type TargetActivationFacts = Readonly<
@@ -285,6 +295,33 @@ export interface TargetActivationReceiptReaderPort {
   read(
     rolloutId: string,
   ): Promise<TargetActivationFacts | TargetActivationAbsenceProof | null>;
+}
+
+export type TargetMigrationReceiptFacts = Readonly<{
+  schemaVersion: 1;
+  rolloutId: string;
+  sourceSystemIdentifier: string;
+  targetSystemIdentifier: string;
+  targetDatabaseIdentity: string;
+  targetDatabaseName: string;
+  targetRecoveryWitnessSha256: string;
+  transitionSha256: string;
+  previousReceiptSha256: string;
+  permitEpoch: number;
+  permitNonce: string;
+  postManifestIdentity: string;
+  postCatalogDigest: string;
+  legacyReconciliation: Readonly<Record<string, unknown>>;
+  effectFingerprint: string;
+  completedAt: string;
+  targetMigrationReceiptSha256: string;
+}>;
+
+/** Least-privilege target port for the guard-owned migration receipt. */
+export interface TargetMigrationReceiptReaderPort {
+  readMigrationReceipt(
+    permit: ReleaseMigrationPermit,
+  ): Promise<TargetMigrationReceiptFacts>;
 }
 
 export interface RunnerOperationsLedgerPort {

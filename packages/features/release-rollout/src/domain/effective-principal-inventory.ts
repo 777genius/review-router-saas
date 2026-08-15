@@ -179,6 +179,7 @@ export const canonicalActivationPrincipalNames = Object.freeze([
   "reviewrouter_api",
   "reviewrouter_codex_effect_authority",
   "reviewrouter_release_migration",
+  "reviewrouter_release_schema_owner",
   "reviewrouter_role_bootstrap",
   "reviewrouter_web",
   "reviewrouter_worker",
@@ -189,6 +190,7 @@ export const canonicalBootstrapMembershipRoleNames = Object.freeze([
   "reviewrouter_api",
   "reviewrouter_codex_effect_authority",
   "reviewrouter_release_migration",
+  "reviewrouter_release_schema_owner",
   "reviewrouter_web",
   "reviewrouter_worker",
 ] as const);

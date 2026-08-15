@@ -42,8 +42,27 @@ function environment() {
       "postgresql://reviewrouter_codex_effect_authority:signer-secret@db.internal/review_router",
     REVIEW_ROUTER_RELEASE_COMMIT_SHA: "a".repeat(40),
     REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
+    REVIEW_ROUTER_ROLLOUT_ID: "rollout-test",
+    REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_SYSTEM_IDENTIFIER: "200",
+    REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_RECOVERY_WITNESS_SHA256: "c".repeat(
+      64,
+    ),
+    REVIEW_ROUTER_MIGRATION_PERMIT_TRANSITION_SHA256: `sha256:${"d".repeat(64)}`,
+    REVIEW_ROUTER_MIGRATION_PERMIT_PREVIOUS_RECEIPT_SHA256: `sha256:${"e".repeat(64)}`,
+    REVIEW_ROUTER_MIGRATION_PERMIT_EPOCH: "1",
+    REVIEW_ROUTER_MIGRATION_PERMIT_NONCE: "f".repeat(32),
   };
 }
+
+const migrationPermit = () => ({
+  rolloutId: "rollout-test",
+  targetSystemIdentifier: "200",
+  targetRecoveryWitnessSha256: "c".repeat(64),
+  transitionSha256: `sha256:${"d".repeat(64)}`,
+  previousReceiptSha256: `sha256:${"e".repeat(64)}`,
+  epoch: "1",
+  nonce: "f".repeat(32),
+});
 
 describe("application database release-authority isolation", () => {
   it("keeps migration 000069 as an immutable no-op marker", () => {
@@ -87,6 +106,11 @@ describe("application database release-authority isolation", () => {
     const sql = activationAuthorityProvisioningSql();
     expect(sql).toContain("reviewrouter_activation.activation_permit");
     expect(sql).toContain("reviewrouter_activation.activation_receipt");
+    expect(sql).toContain("expected_post_manifest_identity");
+    expect(sql).toContain("expected_post_catalog_digest");
+    expect(sql).toContain(
+      "requested_effect_receipt->>'effectFingerprint' IS DISTINCT FROM",
+    );
     expect(sql).toContain("reviewrouter_activation_permit_installer");
     expect(sql).toContain("SET LOCAL lock_timeout = '5000ms'");
     expect(sql).toContain("pg_advisory_xact_lock(1381126735, 1129271120)");
@@ -156,7 +180,11 @@ describe("application database release-authority isolation", () => {
       ]),
     );
     expect(roleNames).toEqual(
-      new Set([...loginNames, "reviewrouter_activation_receipt_guard"]),
+      new Set([
+        ...loginNames,
+        "reviewrouter_activation_receipt_guard",
+        "reviewrouter_release_schema_owner",
+      ]),
     );
     expect(activationPrincipalRoleCapabilityMatrix).toHaveLength(
       loginNames.size * roleNames.size,
@@ -225,14 +253,16 @@ describe("canonical exclusive release migration caller", () => {
       setRoleMatrix: names.flatMap((member) =>
         names.map((target) => ({ member, target, canSet: member === target })),
       ),
-      bootstrapMemberships: names.map((granted) => ({
-        granted,
-        member: "reviewrouter_role_bootstrap",
-        grantor: "platform_role_authority",
-        adminOption: true,
-        inheritOption: false,
-        setOption: false,
-      })),
+      bootstrapMemberships: [...names, "reviewrouter_release_schema_owner"].map(
+        (granted) => ({
+          granted,
+          member: "reviewrouter_role_bootstrap",
+          grantor: "platform_role_authority",
+          adminOption: true,
+          inheritOption: false,
+          setOption: false,
+        }),
+      ),
       guard: {
         username: "reviewrouter_activation_receipt_guard",
         login: false,
@@ -243,9 +273,20 @@ describe("canonical exclusive release migration caller", () => {
         bypassRls: false,
         membershipCount: 0,
       },
+      schemaOwner: {
+        username: "reviewrouter_release_schema_owner",
+        login: false,
+        superuser: false,
+        createDatabase: false,
+        createRole: false,
+        replication: false,
+        bypassRls: false,
+        migrationCanSet: false,
+        bootstrapCanSet: false,
+      },
       ownership: {
         databaseOwner: "reviewrouter_role_bootstrap",
-        publicSchemaOwner: "reviewrouter_release_migration",
+        publicSchemaOwner: "reviewrouter_release_schema_owner",
         bootstrapSchemaOwner: "reviewrouter_role_bootstrap",
         bootstrapFunctionOwner: "reviewrouter_role_bootstrap",
         bootstrapFunctionCount: 1,
@@ -319,7 +360,39 @@ describe("canonical exclusive release migration caller", () => {
     const provisioning = roleProvisioningSql(configuration);
     const grants = runtimeGrantSql(configuration);
     const activationAuthority = activationAuthorityProvisioningSql();
-    const atomicMigration = atomicMigrationAndGrantSql(configuration);
+    const atomicMigration = atomicMigrationAndGrantSql(configuration, {
+      migrationPermit: migrationPermit(),
+      legacyReconciliation: {
+        receipt: {
+          version: 1,
+          acknowledgement: "all_prior_installers_and_writers_are_stopped",
+          inventory: {
+            activeLeaseIds: [],
+            fetchedSetupIds: [],
+            pendingIntentIds: [],
+            intentStatuses: [],
+          },
+          inventorySha256: `sha256:${"1".repeat(64)}`,
+          stableSamples: 2,
+          status: "reconciled",
+        },
+      },
+    });
+    expect(activationAuthority).toContain(
+      "reviewrouter_activation.migration_permit",
+    );
+    for (const routine of [
+      "install_migration_permit",
+      "consume_migration_permit",
+      "complete_migration_permit",
+      "terminalize_migration_permit",
+    ])
+      expect(activationAuthority).toContain(routine);
+    expect(atomicMigration).toContain(
+      "CALL public.reviewrouter_execute_release_migration",
+    );
+    expect(atomicMigration).not.toContain("consume_migration_permit");
+    expect(atomicMigration).not.toContain("complete_migration_permit");
     for (const migrationSql of [provisioning, grants, activationAuthority]) {
       expect(migrationSql).toContain(
         "pg_advisory_xact_lock(1381126735, 1129271120)",
@@ -338,10 +411,32 @@ describe("canonical exclusive release migration caller", () => {
     expect(
       atomicMigration.indexOf("pg_advisory_xact_lock(1381126735"),
     ).toBeLessThan(
-      atomicMigration.indexOf("000060_codex_oauth_setup_serialization"),
+      atomicMigration.indexOf(
+        "CALL public.reviewrouter_execute_release_migration",
+      ),
     );
+    expect(provisioning).toContain("000060_codex_oauth_setup_serialization");
     expect(atomicMigration.trim().endsWith("COMMIT;")).toBe(true);
     expect(atomicMigration).toContain(liveV70V72CatalogDigestSql);
+    for (const catalogSemantic of [
+      "attacl",
+      "attcollation",
+      "attidentity",
+      "attgenerated",
+      "nspacl",
+      "nspowner",
+      "relrowsecurity",
+      "relforcerowsecurity",
+      "relreplident",
+      "indisvalid",
+      "indisready",
+      "indislive",
+      "pg_policy",
+      "pg_trigger",
+      "pg_rewrite",
+      "pg_inherits",
+    ])
+      expect(liveV70V72CatalogDigestSql).toContain(catalogSemantic);
     expect(liveV70V72CatalogDigestSha256).toBe(
       fencedLiveV70V72CatalogDigestSha256,
     );
@@ -373,8 +468,13 @@ describe("canonical exclusive release migration caller", () => {
     const createdRoleIdentities = [
       ...provisioning.matchAll(/CREATE ROLE ([a-z_]+) ([^;]+);/gu),
     ].map(([, username, attributes]) => ({ attributes, username }));
-    expect(createdRoleIdentities).toEqual(
-      [
+    expect(createdRoleIdentities).toEqual([
+      {
+        username: "reviewrouter_release_schema_owner",
+        attributes:
+          "NOLOGIN NOSUPERUSER NOCREATEDB\n      NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+      },
+      ...[
         "reviewrouter_api",
         "reviewrouter_web",
         "reviewrouter_worker",
@@ -395,7 +495,7 @@ describe("canonical exclusive release migration caller", () => {
                   : "release") +
           "'",
       })),
-    );
+    ]);
     expect(provisioning).not.toMatch(
       /ALTER ROLE [^;]+\b(?:SUPERUSER|NOSUPERUSER|CREATEDB|NOCREATEDB|REPLICATION|NOREPLICATION|BYPASSRLS|NOBYPASSRLS)\b/gu,
     );
@@ -406,7 +506,7 @@ describe("canonical exclusive release migration caller", () => {
       "aclexplode(coalesce(attribute.attacl,'{}'::aclitem[]))",
     );
     expect(provisioning).toContain(
-      "SET LOCAL ROLE reviewrouter_release_migration;",
+      "SET LOCAL ROLE reviewrouter_release_schema_owner;",
     );
     expect(provisioning).toContain("DO $transferred_public_routine_acl$");
     expect(provisioning).toContain("REVOKE EXECUTE ON ROUTINE %s FROM PUBLIC");
@@ -423,7 +523,7 @@ describe("canonical exclusive release migration caller", () => {
       provisioning.indexOf("DO $transferred_public_routine_acl_gate$"),
     ).toBeLessThan(
       provisioning.indexOf(
-        "REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap",
+        "REVOKE reviewrouter_release_schema_owner FROM reviewrouter_role_bootstrap",
       ),
     );
     expect(provisioning).toContain("OR observed.rolcanlogin");
@@ -445,7 +545,6 @@ describe("canonical exclusive release migration caller", () => {
       "release_rollout_claim",
       "release_runner_persist_cleanup_witness",
     ]) {
-      expect(provisioning).not.toContain(removedAuthorityArtifact);
       expect(grants).not.toContain(removedAuthorityArtifact);
       expect(observationSql).not.toContain(removedAuthorityArtifact);
     }
@@ -471,10 +570,10 @@ describe("canonical exclusive release migration caller", () => {
       "refusing to converge unexpectedly privileged role",
     );
     expect(provisioning).toContain(
-      "GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH SET TRUE",
+      "GRANT reviewrouter_release_schema_owner TO reviewrouter_role_bootstrap WITH SET TRUE",
     );
     expect(provisioning).toContain(
-      "ALTER ROUTINE %s OWNER TO reviewrouter_release_migration",
+      "ALTER ROUTINE %s OWNER TO reviewrouter_release_schema_owner",
     );
     expect(provisioning).not.toContain("REASSIGN OWNED");
     expect(provisioning).toContain(
@@ -488,23 +587,44 @@ describe("canonical exclusive release migration caller", () => {
     );
     expect(provisioning).toContain("count(DISTINCT grantor.oid)");
     expect(provisioning).toContain(
-      "REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE",
+      "REVOKE reviewrouter_release_schema_owner FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE",
     );
     expect(provisioning).not.toContain(
       "TO reviewrouter_role_bootstrap WITH ADMIN TRUE",
     );
     expect(provisioning).not.toContain("ALTER DATABASE");
     expect(provisioning).toContain(
-      "GRANT CREATE ON DATABASE %I TO reviewrouter_release_migration",
+      "GRANT CREATE ON DATABASE %I TO reviewrouter_release_schema_owner",
     );
     expect(provisioning).toContain(
-      "GRANT CONNECT ON DATABASE %I TO reviewrouter_release_migration WITH GRANT OPTION",
+      "GRANT CONNECT ON DATABASE %I TO reviewrouter_release_schema_owner WITH GRANT OPTION",
     );
     expect(provisioning).toContain(
       "release migration database delegation is non-canonical",
     );
     expect(provisioning).toContain(
-      "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_migration",
+      "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_schema_owner",
+    );
+    expect(provisioning).toContain(
+      "REVOKE CREATE, TEMPORARY ON DATABASE %I FROM reviewrouter_release_migration",
+    );
+    expect(provisioning).toContain(
+      "CREATE OR REPLACE PROCEDURE public.reviewrouter_execute_release_migration(",
+    );
+    expect(provisioning).toContain(
+      "permit_result := reviewrouter_activation.consume_migration_permit(",
+    );
+    expect(provisioning).toContain(
+      "PERFORM reviewrouter_activation.complete_migration_permit(",
+    );
+    expect(provisioning).toContain(
+      "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(",
+    );
+    expect(provisioning).not.toContain(
+      "GRANT EXECUTE ON FUNCTION reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text) TO reviewrouter_release_migration",
+    );
+    expect(grants).toContain(
+      "ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_schema_owner",
     );
     expect(provisioning).toContain("shobj_description(oid, 'pg_database')");
     expect(provisioning).toContain(
@@ -729,7 +849,10 @@ describe("canonical exclusive release migration caller", () => {
               canSet: member === target,
             })),
           ),
-          bootstrapMemberships: roleNames.map((granted) => ({
+          bootstrapMemberships: [
+            ...roleNames,
+            "reviewrouter_release_schema_owner",
+          ].map((granted) => ({
             granted,
             member: "reviewrouter_role_bootstrap",
             grantor: "platform_role_authority",
@@ -747,9 +870,20 @@ describe("canonical exclusive release migration caller", () => {
             bypassRls: false,
             membershipCount: 0,
           },
+          schemaOwner: {
+            username: "reviewrouter_release_schema_owner",
+            login: false,
+            superuser: false,
+            createDatabase: false,
+            createRole: false,
+            replication: false,
+            bypassRls: false,
+            migrationCanSet: false,
+            bootstrapCanSet: false,
+          },
           ownership: {
             databaseOwner: "reviewrouter_role_bootstrap",
-            publicSchemaOwner: "reviewrouter_release_migration",
+            publicSchemaOwner: "reviewrouter_release_schema_owner",
             bootstrapSchemaOwner: "reviewrouter_role_bootstrap",
             bootstrapFunctionOwner: "reviewrouter_role_bootstrap",
             bootstrapFunctionCount: 1,
@@ -760,6 +894,29 @@ describe("canonical exclusive release migration caller", () => {
         return JSON.stringify({
           systemIdentifier: "7612345678901234567",
           recoveryWitnessSha256: "f".repeat(64),
+        });
+      if (step.startsWith("legacy_ambiguity_inventory_"))
+        return JSON.stringify({
+          activeLeaseIds: [],
+          fetchedSetupIds: [],
+          pendingIntentIds: [],
+          intentStatuses: [],
+        });
+      if (step === "read_target_migration_receipt")
+        return JSON.stringify({
+          legacyReconciliation: {
+            version: 1,
+            acknowledgement: "all_prior_installers_and_writers_are_stopped",
+            inventory: {
+              activeLeaseIds: [],
+              fetchedSetupIds: [],
+              pendingIntentIds: [],
+              intentStatuses: [],
+            },
+            inventorySha256: `sha256:${"1".repeat(64)}`,
+            stableSamples: 2,
+            status: "reconciled",
+          },
         });
       return step === "migration_history_preflight" ? "preflight" : "";
     };
@@ -784,7 +941,12 @@ describe("canonical exclusive release migration caller", () => {
     expect(calls.map((call) => call.step)).toEqual([
       "verify_release_authority",
       "migration_history_preflight",
+      "legacy_ambiguity_inventory_first",
+      "legacy_ambiguity_stabilization",
+      "legacy_ambiguity_inventory_second",
       "deploy_migrations_and_converge_grants",
+      "read_target_migration_receipt",
+      "legacy_ambiguity_inventory_after",
       "verify_roles",
       "verify_database_generation",
     ]);

@@ -24,7 +24,8 @@ const claim = () => ({
   migrationTransition: transition,
 });
 const begin = () => {
-  const { migrationTransition: _migrationTransition, ...binding } = claim();
+  const binding = { ...claim() };
+  Reflect.deleteProperty(binding, "migrationTransition");
   return {
     ...binding,
     transitionSha256: transition.transitionSha256,
@@ -65,6 +66,8 @@ const receipt = () => ({
   postCatalogDigest: transition.postCatalogDigest,
   permitEpoch: 1,
   permitNonce: "d".repeat(32),
+  targetMigrationReceiptSha256: digest("3"),
+  targetMigrationEffectFingerprint: digest("4"),
 });
 
 const without = (value: Record<string, unknown>, key: string) => {
@@ -128,6 +131,18 @@ describe("release migration HTTP DTO validation", () => {
     rejects(() =>
       migrationCompleteRequest(
         { ...valid, receipt: { ...valid.receipt, observedAt: "2026-08-14" } },
+        rolloutId,
+      ),
+    );
+    rejects(() =>
+      migrationCompleteRequest(
+        {
+          ...valid,
+          receipt: {
+            ...valid.receipt,
+            targetMigrationReceiptSha256: "self-declared",
+          },
+        },
         rolloutId,
       ),
     );

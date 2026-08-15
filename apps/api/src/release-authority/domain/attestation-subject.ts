@@ -26,7 +26,11 @@ export type ReleaseAuthorityAttestationSubject = Readonly<{
   }>;
   migrationManifestIdentity: string;
   targetManifestIdentity?: string;
-  targetManifestPhase?: "pre_migration" | "post_migration" | "control_only";
+  targetManifestPhase?:
+    | "pre_migration"
+    | "migration_recovery"
+    | "post_migration"
+    | "control_only";
   migrationTransitionSha256?: string;
   activationFingerprint: string;
   activationCatalogPolicies: Readonly<{
@@ -58,9 +62,12 @@ export function createReleaseAuthorityAttestationSubject(
     (input.targetManifestIdentity !== undefined &&
       !sha256.test(input.targetManifestIdentity)) ||
     (input.targetManifestPhase !== undefined &&
-      !["pre_migration", "post_migration", "control_only"].includes(
-        input.targetManifestPhase,
-      )) ||
+      ![
+        "pre_migration",
+        "migration_recovery",
+        "post_migration",
+        "control_only",
+      ].includes(input.targetManifestPhase)) ||
     (input.migrationTransitionSha256 !== undefined &&
       !sha256.test(input.migrationTransitionSha256)) ||
     !sha256.test(input.activationFingerprint) ||

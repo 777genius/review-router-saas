@@ -355,7 +355,11 @@ const services = (repository: CombinedLedgerPort) => ({
     migrationTransition,
   ),
   runnerOperations: new RunnerOperationsService(repository),
-  reconciliation: new ReleaseRolloutReconciliationService(repository),
+  reconciliation: new ReleaseRolloutReconciliationService(
+    repository,
+    undefined,
+    highRiskGate,
+  ),
   controlTokenSha256: tokenSha256,
 });
 
@@ -396,6 +400,8 @@ describe("release rollout ledger internal API", () => {
       postCatalogDigest: migrationTransition.postCatalogDigest,
       permitEpoch: 1,
       permitNonce: permit.nonce,
+      targetMigrationReceiptSha256: `sha256:${"1".repeat(64)}`,
+      targetMigrationEffectFingerprint: `sha256:${"2".repeat(64)}`,
     };
     const receipt = {
       ...unsignedReceipt,
@@ -491,24 +497,27 @@ describe("release rollout ledger internal API", () => {
       consumedAt: "2026-08-14T00:00:01.000Z",
     };
     expect(() => assertOneShotMutationPermit(permit, new Date())).not.toThrow();
-    const providerMutationAuthority = new ProviderMutationAuthorityService({
-      recover: async () => ({ status: "absent" }),
-      issue: async () => permit,
-      consume: async () => {
-        if (state === "fresh") state = "consumed";
-        return receipt;
+    const providerMutationAuthority = new ProviderMutationAuthorityService(
+      {
+        recover: async () => ({ status: "absent" }),
+        issue: async () => permit,
+        consume: async () => {
+          if (state === "fresh") state = "consumed";
+          return receipt;
+        },
+        validateExecution: async () => {
+          if (state !== "consumed") return false;
+          state = "executing";
+          return true;
+        },
+        complete: async () => {
+          if (state === "executing") state = "completed";
+          if (state !== "completed") throw new Error("not_executing");
+        },
+        reconcile: async () => undefined,
       },
-      validateExecution: async () => {
-        if (state !== "consumed") return false;
-        state = "executing";
-        return true;
-      },
-      complete: async () => {
-        if (state === "executing") state = "completed";
-        if (state !== "completed") throw new Error("not_executing");
-      },
-      reconcile: async () => undefined,
-    });
+      highRiskGate,
+    );
     const app = Fastify();
     await registerReleaseRolloutLedgerRoutes(app, {
       ...services(new ConcurrentRepository()),
@@ -1129,7 +1138,12 @@ describe("release rollout ledger internal API", () => {
   });
 
   it("allows exactly one target-switch lease under adversarial concurrency", async () => {
-    const service = new ReleaseAuthorityService(new ConcurrentRepository());
+    const service = new ReleaseAuthorityService(
+      new ConcurrentRepository(),
+      undefined,
+      undefined,
+      highRiskGate,
+    );
     const results = await Promise.all(
       Array.from({ length: 64 }, () =>
         service.fenceTargetSwitch({

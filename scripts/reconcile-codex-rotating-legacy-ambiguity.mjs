@@ -48,7 +48,7 @@ function parseInventory(value) {
   return parsed;
 }
 
-export function legacyAmbiguityReconciliationSql(input) {
+export function legacyAmbiguityReconciliationEffectSql(input) {
   const expected = JSON.stringify({
     activeLeaseIds: input.inventory.activeLeaseIds,
     fetchedSetupIds: input.inventory.fetchedSetupIds,
@@ -57,9 +57,6 @@ export function legacyAmbiguityReconciliationSql(input) {
   });
   const ambiguous = ambiguousIntentStatuses.map(quoted).join(",");
   return String.raw`
-BEGIN;
-SET LOCAL lock_timeout = '15s';
-SET LOCAL statement_timeout = '5min';
 DO $reconcile$
 DECLARE
   observed jsonb;
@@ -146,64 +143,160 @@ BEGIN
   WHERE "status" IN ('preleased','finalized');
 END
 $reconcile$;
+`;
+}
+
+/**
+ * Fixed, non-public reconciliation procedure installed beside the guarded
+ * migration executor. Runtime data is validated as values; no SQL text is
+ * accepted from the migration login.
+ */
+export function guardedLegacyAmbiguityReconciliationProcedureSql(ownerRole) {
+  if (!/^[a-z_][a-z0-9_]{0,62}$/u.test(ownerRole))
+    throw new Error("legacy_reconciliation_owner_invalid");
+  const sentinel = {
+    inventory: {
+      activeLeaseIds: ["rr-sentinel-active"],
+      fetchedSetupIds: ["rr-sentinel-fetched"],
+      pendingIntentIds: ["rr-sentinel-pending"],
+      intentStatuses: ["completed"],
+    },
+    inventorySha256: `sha256:${"1".repeat(64)}`,
+    recoveryWitnessSha256: "2".repeat(64),
+    rolloutId: "rr-sentinel-rollout",
+  };
+  const expected = JSON.stringify(sentinel.inventory);
+  const effect = legacyAmbiguityReconciliationEffectSql(sentinel);
+  const start = effect.indexOf("DO $reconcile$\n") + "DO $reconcile$\n".length;
+  const end = effect.lastIndexOf("\n$reconcile$;");
+  if (start < "DO $reconcile$\n".length || end < start)
+    throw new Error("legacy_reconciliation_guard_body_invalid");
+  const body = effect
+    .slice(start, end)
+    .replace(
+      "BEGIN\n",
+      `BEGIN
+  IF jsonb_typeof(requested_inventory) IS DISTINCT FROM 'object'
+     OR requested_inventory_sha256 !~ '^sha256:[a-f0-9]{64}$'
+     OR requested_recovery_witness_sha256 !~ '^[a-f0-9]{64}$'
+     OR requested_rollout_id !~ '^[A-Za-z0-9][A-Za-z0-9._:/@-]{2,255}$'
+  THEN RAISE EXCEPTION 'legacy_reconciliation_guard_input_invalid'; END IF;
+`,
+    )
+    .replace(quoted(expected), "requested_inventory")
+    .replaceAll(
+      `'legacy-cutover:${sentinel.rolloutId}:'`,
+      `'legacy-cutover:'||requested_rollout_id||':'`,
+    )
+    .replaceAll(
+      `'release-cutover:${sentinel.rolloutId}'`,
+      `'release-cutover:'||requested_rollout_id`,
+    )
+    .replaceAll(
+      quoted(sentinel.recoveryWitnessSha256),
+      "requested_recovery_witness_sha256",
+    )
+    .replaceAll(quoted(sentinel.inventorySha256), "requested_inventory_sha256");
+  return `CREATE OR REPLACE PROCEDURE public.reviewrouter_reconcile_legacy_ambiguity(
+  requested_rollout_id text, requested_recovery_witness_sha256 text,
+  requested_inventory jsonb, requested_inventory_sha256 text
+)
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $rr_guarded_legacy_reconciliation_v1$
+${body}
+$rr_guarded_legacy_reconciliation_v1$;
+ALTER PROCEDURE public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text)
+  OWNER TO ${ownerRole};
+REVOKE ALL ON PROCEDURE public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text)
+  FROM PUBLIC;`;
+}
+
+export function legacyAmbiguityReconciliationSql(input) {
+  return String.raw`
+BEGIN;
+SET LOCAL lock_timeout = '15s';
+SET LOCAL statement_timeout = '5min';
+${legacyAmbiguityReconciliationEffectSql(input)}
 COMMIT;
 `;
 }
 
-export function reconcileLegacyAmbiguity(input, run) {
-  const first = parseInventory(
-    run("legacy_ambiguity_inventory_first", "psql", [
+export function prepareLegacyAmbiguityReconciliation(input, run) {
+  const observe = (step) =>
+    parseInventory(
+      run(
+        step,
+        "psql",
+        [
+          input.databaseUrl,
+          "--no-psqlrc",
+          "--tuples-only",
+          "--no-align",
+          "--command",
+          legacyAmbiguityInventorySql,
+        ],
+        { env: input.env },
+      ),
+    );
+  const first = observe("legacy_ambiguity_inventory_first");
+  run(
+    "legacy_ambiguity_stabilization",
+    "psql",
+    [
       input.databaseUrl,
       "--no-psqlrc",
-      "--tuples-only",
-      "--no-align",
+      "--quiet",
       "--command",
-      legacyAmbiguityInventorySql,
-    ]),
+      "SELECT pg_sleep(0.2)",
+    ],
+    { env: input.env },
   );
-  run("legacy_ambiguity_stabilization", "psql", [
-    input.databaseUrl,
-    "--no-psqlrc",
-    "--quiet",
-    "--command",
-    "SELECT pg_sleep(0.2)",
-  ]);
-  const second = parseInventory(
-    run("legacy_ambiguity_inventory_second", "psql", [
-      input.databaseUrl,
-      "--no-psqlrc",
-      "--tuples-only",
-      "--no-align",
-      "--command",
-      legacyAmbiguityInventorySql,
-    ]),
-  );
+  const second = observe("legacy_ambiguity_inventory_second");
   const firstCanonical = JSON.stringify(first);
   const secondCanonical = JSON.stringify(second);
   if (firstCanonical !== secondCanonical)
     throw new Error("legacy_reconciliation_inventory_not_stable");
   const inventorySha256 = sha256(secondCanonical);
-  run("legacy_ambiguity_reconcile", "psql", [
-    input.databaseUrl,
-    "--no-psqlrc",
-    "--quiet",
-    "--command",
-    legacyAmbiguityReconciliationSql({
+  return Object.freeze({
+    input: Object.freeze({
       inventory: second,
       inventorySha256,
       recoveryWitnessSha256: input.recoveryWitnessSha256,
       rolloutId: input.rolloutId,
     }),
-  ]);
+    effectSql: legacyAmbiguityReconciliationEffectSql({
+      inventory: second,
+      inventorySha256,
+      recoveryWitnessSha256: input.recoveryWitnessSha256,
+      rolloutId: input.rolloutId,
+    }),
+    receipt: Object.freeze({
+      version: 1,
+      acknowledgement: exactAcknowledgement,
+      inventory: second,
+      inventorySha256,
+      stableSamples: 2,
+      status: "reconciled",
+    }),
+  });
+}
+
+export function verifyLegacyAmbiguityReconciliation(input, run, prepared) {
   const after = parseInventory(
-    run("legacy_ambiguity_inventory_after", "psql", [
-      input.databaseUrl,
-      "--no-psqlrc",
-      "--tuples-only",
-      "--no-align",
-      "--command",
-      legacyAmbiguityInventorySql,
-    ]),
+    run(
+      "legacy_ambiguity_inventory_after",
+      "psql",
+      [
+        input.databaseUrl,
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        legacyAmbiguityInventorySql,
+      ],
+      { env: input.env },
+    ),
   );
   if (
     after.activeLeaseIds.length ||
@@ -211,13 +304,17 @@ export function reconcileLegacyAmbiguity(input, run) {
     after.pendingIntentIds.length
   )
     throw new Error("legacy_reconciliation_raw_status_not_zero");
-  return Object.freeze({
-    version: 1,
-    acknowledgement: exactAcknowledgement,
-    inventory: second,
-    inventorySha256,
-    stableSamples: 2,
-    after,
-    status: "reconciled",
-  });
+  return Object.freeze({ ...prepared.receipt, after });
+}
+
+export function reconcileLegacyAmbiguity(input, run) {
+  const prepared = prepareLegacyAmbiguityReconciliation(input, run);
+  run("legacy_ambiguity_reconcile", "psql", [
+    input.databaseUrl,
+    "--no-psqlrc",
+    "--quiet",
+    "--command",
+    legacyAmbiguityReconciliationSql(prepared.input),
+  ]);
+  return verifyLegacyAmbiguityReconciliation(input, run, prepared);
 }

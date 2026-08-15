@@ -10,7 +10,7 @@ import {
 } from "./activation-catalog-policy-contract";
 
 describe("promoted activation catalog policy trust root", () => {
-  it("pins the independently reviewed phase digests and readiness reason", () => {
+  it("pins the reviewed phase digests and readiness reason", () => {
     const provenance = JSON.parse(
       readFileSync(
         new URL("activation-catalog-policy-provenance.json", import.meta.url),
@@ -28,14 +28,14 @@ describe("promoted activation catalog policy trust root", () => {
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
       status: "ready",
       reason:
-        "independently-reviewed-v19-production-shaped-pg17-candidate-promoted-with-pinned-phase-digests",
+        "reviewed-v20-production-shaped-pg17-candidate-promoted-with-pinned-phase-digests",
     });
     expect(
       canonicalActivationCatalogPolicies.preactivation.policy.grants,
-    ).toHaveLength(2454);
+    ).toHaveLength(2488);
     expect(
       canonicalActivationCatalogPolicies.activated.policy.grants,
-    ).toHaveLength(3319);
+    ).toHaveLength(3353);
   });
 
   it("deep-freezes the source-owned artifact before exposing it", () => {

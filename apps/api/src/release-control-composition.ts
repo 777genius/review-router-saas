@@ -44,6 +44,7 @@ import {
 } from "./release-authority/domain/readiness-contract.mjs";
 import {
   executeAtomicReleaseControlMutation,
+  observeAtomicConnectionAwareReadiness,
   executeSameConnectionFenced,
   type SameConnectionTransactionTiming,
 } from "./release-authority/adapters/same-connection-fence.js";
@@ -67,6 +68,45 @@ export type ReleaseControlCredentials = Readonly<{
   providerAuthorityTokenSha256: string;
 }>;
 
+type TargetManifestPhase =
+  | "pre_migration"
+  | "migration_recovery"
+  | "post_migration"
+  | "control_only";
+
+export function trustedTargetIdentityForPhase(
+  configured: TrustedReleaseControlDatabaseIdentity,
+  transition: ReleaseMigrationTransitionV1,
+  phase: TargetManifestPhase,
+  targetManifestIdentity?: string,
+): TrustedReleaseControlDatabaseIdentity {
+  const base = { ...configured };
+  Reflect.deleteProperty(base, "allowedTargetMigrationEndpoints");
+  Reflect.deleteProperty(base, "targetPostCatalogDigest");
+  const manifestIdentity =
+    targetManifestIdentity ??
+    (phase === "post_migration"
+      ? transition.postManifestIdentity
+      : transition.preManifestIdentity);
+  return {
+    ...base,
+    targetMigrationManifestIdentity: manifestIdentity,
+    ...(phase === "migration_recovery"
+      ? {
+          allowedTargetMigrationEndpoints: [
+            {
+              manifestIdentity: transition.postManifestIdentity,
+              postCatalogDigest: transition.postCatalogDigest,
+            },
+          ],
+        }
+      : {}),
+    ...(phase === "post_migration"
+      ? { targetPostCatalogDigest: transition.postCatalogDigest }
+      : {}),
+  };
+}
+
 const credentialSha256 = /^[a-f0-9]{64}$/u;
 
 export function composeReleaseControlDependencies(
@@ -74,10 +114,10 @@ export function composeReleaseControlDependencies(
   providerAuthorityPrisma: PrismaClient,
   credentials: ReleaseControlCredentials,
   trustedDatabaseIdentity: TrustedReleaseControlDatabaseIdentity,
+  highRiskMutationGate: ReleaseAuthorityHighRiskMutationGate,
   permitInstallerPrisma?: PrismaClient,
   targetReceiptReaderPrisma?: PrismaClient,
   sameConnectionTiming?: SameConnectionTransactionTiming,
-  highRiskMutationGate?: ReleaseAuthorityHighRiskMutationGate,
   trustedMigrationTransition?: ReleaseMigrationTransitionV1,
 ): ReleaseControlRouteDependencies {
   if (
@@ -86,6 +126,8 @@ export function composeReleaseControlDependencies(
     credentials.controlTokenSha256 === credentials.providerAuthorityTokenSha256
   )
     throw new Error("release_control_credential_hash_invalid");
+  if (!highRiskMutationGate)
+    throw new Error("release_authority_high_risk_mutation_gate_missing");
   const adapter = new RoutineReleaseControlLedgerAdapter(
     controlPrisma,
     trustedDatabaseIdentity
@@ -167,6 +209,77 @@ export function composeReleaseControlDependencies(
               ? ("installed" as const)
               : ("existing" as const);
           },
+          installMigrationPermit: async ({
+            permit,
+            sourceSystemIdentifier,
+            expectedPostManifestIdentity,
+            expectedPostCatalogDigest,
+          }) => {
+            const query = (connection: Prisma.TransactionClient) =>
+              connection.$queryRaw<{ result: boolean }[]>(Prisma.sql`
+              SELECT reviewrouter_activation.install_migration_permit(
+                ${permit.rolloutId}, ${sourceSystemIdentifier},
+                ${permit.targetSystemIdentifier},
+                ${permit.targetRecoveryWitnessSha256},
+                ${permit.transitionSha256},
+                ${permit.expectedPreviousReceiptSha256},
+                ${expectedPostManifestIdentity},
+                ${expectedPostCatalogDigest},
+                ${permit.epoch}, ${permit.nonce}) AS result
+            `);
+            const rows =
+              trustedDatabaseIdentity &&
+              typeof permitInstallerPrisma.$transaction === "function"
+                ? await executeSameConnectionFenced(
+                    permitInstallerPrisma,
+                    {
+                      roleName: "reviewrouter_activation_permit_installer",
+                      databaseIdentity:
+                        trustedDatabaseIdentity.targetDatabaseIdentity,
+                      postgresMajor: 17,
+                    },
+                    query,
+                    sameConnectionTiming,
+                  )
+                : await query(permitInstallerPrisma);
+            if (
+              rows.length !== 1 ||
+              (rows[0]?.result !== true && rows[0]?.result !== false)
+            )
+              throw new Error("release_migration_permit_install_unproven");
+            return rows[0].result ? "installed" : "existing";
+          },
+          terminalizeMigrationPermit: async ({ permit, outcome }) => {
+            const query = (connection: Prisma.TransactionClient) =>
+              connection.$queryRaw<{ result: boolean }[]>(Prisma.sql`
+              SELECT reviewrouter_activation.terminalize_migration_permit(
+                ${permit.rolloutId}, ${permit.epoch}, ${permit.nonce},
+                ${outcome}) AS result
+            `);
+            const rows =
+              trustedDatabaseIdentity &&
+              typeof permitInstallerPrisma.$transaction === "function"
+                ? await executeSameConnectionFenced(
+                    permitInstallerPrisma,
+                    {
+                      roleName: "reviewrouter_activation_permit_installer",
+                      databaseIdentity:
+                        trustedDatabaseIdentity.targetDatabaseIdentity,
+                      postgresMajor: 17,
+                    },
+                    query,
+                    sameConnectionTiming,
+                  )
+                : await query(permitInstallerPrisma);
+            if (
+              rows.length !== 1 ||
+              (rows[0]?.result !== true && rows[0]?.result !== false)
+            )
+              throw new Error(
+                "release_migration_permit_terminalization_unproven",
+              );
+            return rows[0].result ? "terminalized" : "existing";
+          },
         }
       : undefined;
   const targetReceiptReader = targetReceiptReaderPrisma
@@ -190,6 +303,7 @@ export function composeReleaseControlDependencies(
       targetReceiptReader,
       highRiskMutationGate,
       trustedMigrationTransition,
+      targetReceiptReader,
     ),
     providerAuthority: new ProviderAuthorityDecisionService(
       providerAuthorityAdapter,
@@ -238,6 +352,7 @@ export async function createReleaseControlApp(input: {
 }): Promise<FastifyInstance> {
   if (!input.trustedDatabaseIdentity)
     throw new Error("release_control_trusted_database_identity_missing");
+  const trustedDatabaseIdentity = input.trustedDatabaseIdentity;
   if (!input.trustedActivationCatalogPolicies)
     throw new Error("trusted_activation_catalog_policy_missing");
   if (
@@ -273,6 +388,9 @@ export async function createReleaseControlApp(input: {
   };
   const readinessObserver =
     input.readinessObserver ?? observeReleaseAuthorityDatabaseReadiness;
+  const atomicReadinessObserver =
+    input.atomicReadinessObserver ??
+    observeReleaseAuthorityDatabaseReadinessOnConnection;
   const observeMutationAuthority = async (
     attestationSubject: import("./release-authority/domain/attestation-subject.js").ReleaseAuthorityAttestationSubject,
     signal: AbortSignal,
@@ -286,33 +404,91 @@ export async function createReleaseControlApp(input: {
       transactionTimeoutMilliseconds:
         readinessPolicyOptions.transactionTimeoutMilliseconds,
     };
-    if (attestationSubject.targetManifestIdentity === undefined) {
+    if (attestationSubject.targetManifestPhase === "control_only") {
       const [control, provider] = await Promise.all([
-        readinessObserver(input.controlPrisma, observationOptions),
-        readinessObserver(input.providerAuthorityPrisma, observationOptions),
+        observeAtomicConnectionAwareReadiness(
+          input.controlPrisma,
+          {
+            roleName: "reviewrouter_release_control",
+            databaseIdentity: trustedDatabaseIdentity.authorityDatabaseIdentity,
+            postgresMajor: 17,
+          },
+          observationOptions,
+          readinessObserver,
+          atomicReadinessObserver,
+        ),
+        observeAtomicConnectionAwareReadiness(
+          input.providerAuthorityPrisma,
+          {
+            roleName: "reviewrouter_provider_authority",
+            databaseIdentity: trustedDatabaseIdentity.authorityDatabaseIdentity,
+            postgresMajor: 17,
+          },
+          observationOptions,
+          readinessObserver,
+          atomicReadinessObserver,
+        ),
       ]);
       if (
-        !input.trustedDatabaseIdentity ||
         !releaseControlMutationDatabaseIsReady(
           control,
-          input.trustedDatabaseIdentity,
+          trustedDatabaseIdentity,
         ) ||
         !releaseControlMutationDatabaseIsReady(
           provider,
-          input.trustedDatabaseIdentity,
+          trustedDatabaseIdentity,
         )
       )
         throw new DefinitiveAttestationMismatchError();
       return;
     }
     const [control, provider, installer, reader] = await Promise.all([
-      readinessObserver(input.controlPrisma, observationOptions),
-      readinessObserver(input.providerAuthorityPrisma, observationOptions),
-      readinessObserver(input.permitInstallerPrisma, observationOptions),
-      readinessObserver(input.targetReceiptReaderPrisma, observationOptions),
+      observeAtomicConnectionAwareReadiness(
+        input.controlPrisma,
+        {
+          roleName: "reviewrouter_release_control",
+          databaseIdentity: trustedDatabaseIdentity.authorityDatabaseIdentity,
+          postgresMajor: 17,
+        },
+        observationOptions,
+        readinessObserver,
+        atomicReadinessObserver,
+      ),
+      observeAtomicConnectionAwareReadiness(
+        input.providerAuthorityPrisma,
+        {
+          roleName: "reviewrouter_provider_authority",
+          databaseIdentity: trustedDatabaseIdentity.authorityDatabaseIdentity,
+          postgresMajor: 17,
+        },
+        observationOptions,
+        readinessObserver,
+        atomicReadinessObserver,
+      ),
+      observeAtomicConnectionAwareReadiness(
+        input.permitInstallerPrisma,
+        {
+          roleName: "reviewrouter_activation_permit_installer",
+          databaseIdentity: trustedDatabaseIdentity.targetDatabaseIdentity,
+          postgresMajor: 17,
+        },
+        observationOptions,
+        readinessObserver,
+        atomicReadinessObserver,
+      ),
+      observeAtomicConnectionAwareReadiness(
+        input.targetReceiptReaderPrisma,
+        {
+          roleName: "reviewrouter_activation_receipt_reader",
+          databaseIdentity: trustedDatabaseIdentity.targetDatabaseIdentity,
+          postgresMajor: 17,
+        },
+        observationOptions,
+        readinessObserver,
+        atomicReadinessObserver,
+      ),
     ]);
     if (
-      !input.trustedDatabaseIdentity ||
       !releaseControlDatabaseSetIsReady(
         {
           control,
@@ -320,12 +496,12 @@ export async function createReleaseControlApp(input: {
           installer,
           reader,
         },
-        {
-          ...input.trustedDatabaseIdentity,
-          targetMigrationManifestIdentity:
-            attestationSubject.targetManifestIdentity ??
-            input.trustedDatabaseIdentity.targetMigrationManifestIdentity,
-        },
+        trustedTargetIdentityForPhase(
+          trustedDatabaseIdentity,
+          trustedMigrationTransition,
+          attestationSubject.targetManifestPhase ?? "pre_migration",
+          attestationSubject.targetManifestIdentity,
+        ),
       )
     )
       throw new DefinitiveAttestationMismatchError();
@@ -415,11 +591,11 @@ export async function createReleaseControlApp(input: {
               ? undefined
               : targetManifestPhase === "post_migration"
                 ? trustedMigrationTransition.postManifestIdentity
-                : trustedMigrationTransition.preManifestIdentity;
-          const {
-            targetManifestIdentity: _baseTargetManifestIdentity,
-            ...phaseSubjectBase
-          } = subject;
+                : targetManifestPhase === "migration_recovery"
+                  ? trustedMigrationTransition.preManifestIdentity
+                  : trustedMigrationTransition.preManifestIdentity;
+          const phaseSubjectBase = { ...subject };
+          Reflect.deleteProperty(phaseSubjectBase, "targetManifestIdentity");
           const phaseSubject = createReleaseAuthorityAttestationSubject({
             ...phaseSubjectBase,
             ...(targetManifestIdentity === undefined
@@ -429,32 +605,12 @@ export async function createReleaseControlApp(input: {
             migrationTransitionSha256:
               trustedMigrationTransition.transitionSha256,
           });
-          const {
-            allowedTargetMigrationManifestIdentities:
-              _configuredManifestAlternatives,
-            targetPostCatalogDigest: _configuredPostCatalogDigest,
-            ...trustedIdentityBase
-          } = input.trustedDatabaseIdentity!;
-          const phaseTrustedIdentity = {
-            ...trustedIdentityBase,
-            targetMigrationManifestIdentity:
-              targetManifestIdentity ??
-              trustedMigrationTransition.preManifestIdentity,
-            ...(targetManifestIdentity === undefined
-              ? {
-                  allowedTargetMigrationManifestIdentities: [
-                    trustedMigrationTransition.preManifestIdentity,
-                    trustedMigrationTransition.postManifestIdentity,
-                  ],
-                }
-              : {}),
-            ...(targetManifestPhase === "post_migration"
-              ? {
-                  targetPostCatalogDigest:
-                    trustedMigrationTransition.postCatalogDigest,
-                }
-              : {}),
-          };
+          const phaseTrustedIdentity = trustedTargetIdentityForPhase(
+            input.trustedDatabaseIdentity!,
+            trustedMigrationTransition,
+            targetManifestPhase ?? "pre_migration",
+            targetManifestIdentity,
+          );
           return executeFresh(
             () =>
               executeAtomicReleaseControlMutation(
@@ -519,10 +675,10 @@ export async function createReleaseControlApp(input: {
     input.providerAuthorityPrisma,
     input.credentials,
     input.trustedDatabaseIdentity,
+    highRiskMutationGate,
     input.permitInstallerPrisma,
     input.targetReceiptReaderPrisma,
     sameConnectionTiming,
-    highRiskMutationGate,
     trustedMigrationTransition,
   );
   const assertMutationAuthorityReady = () => readiness.assertOrdinary(subject);

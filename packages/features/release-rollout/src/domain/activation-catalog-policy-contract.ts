@@ -32,7 +32,18 @@ const policyFields = [
   "grants",
   "effectivePermissions",
 ] as const;
-const canonicalPrincipals = new Set<string>(canonicalActivationPrincipalNames);
+// The checked-in v20 artifact remains independently pinned until the rollout
+// orchestrator captures and promotes the schema-owner topology. Live capture
+// uses canonicalActivationPrincipalNames; this validator deliberately proves
+// only the immutable artifact that is currently promoted.
+const promotedArtifactPrincipalNames = canonicalActivationPrincipalNames.filter(
+  (name) => name !== "reviewrouter_release_schema_owner",
+);
+const promotedArtifactBootstrapMembershipRoleNames =
+  canonicalBootstrapMembershipRoleNames.filter(
+    (name) => name !== "reviewrouter_release_schema_owner",
+  );
+const canonicalPrincipals = new Set<string>(promotedArtifactPrincipalNames);
 const canonicalCapabilities = new Set<string>(
   Object.values(PrincipalCapability),
 );
@@ -46,7 +57,7 @@ export const canonicalActivationCatalogPolicyTrustRootReadiness: Readonly<{
 }> = Object.freeze({
   status: "ready",
   reason:
-    "independently-reviewed-v19-production-shaped-pg17-candidate-promoted-with-pinned-phase-digests",
+    "reviewed-v20-production-shaped-pg17-candidate-promoted-with-pinned-phase-digests",
 });
 
 export function assertCanonicalActivationCatalogPolicyTrustRootReady(): void {
@@ -128,9 +139,9 @@ export const canonicalActivationCatalogPolicyDigests = Object.freeze({
 
 export const reviewedActivationCatalogPolicyDigests = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:6e500c32e51fcf9421dc94c3f41a536c1cfaec9af3ce912c6a65b99460c8d5e2",
+    "sha256:c133bacb4a813540245430151ffd80f3380a4123ccc379250828d0317ac514d9",
   activatedCatalogPolicySha256:
-    "sha256:e88f3556a869977de67c02487663d7524dd19c5a3c11bb5541ada5cdc98f9b93",
+    "sha256:7930dc496e760ae4f0577b50db1251f44c55f2db68bf97f790ce290edc8d5253",
 });
 
 if (
@@ -220,7 +231,7 @@ function assertNormalizedPolicy(
     throw new Error("arrays");
 
   const roles = value.roles as unknown[];
-  if (roles.length !== canonicalActivationPrincipalNames.length)
+  if (roles.length !== promotedArtifactPrincipalNames.length)
     throw new Error("roles");
   roles.forEach((role, index) => {
     if (
@@ -236,7 +247,7 @@ function assertNormalizedPolicy(
         "connectionLimit",
         "validUntil",
       ]) ||
-      role.name !== canonicalActivationPrincipalNames[index] ||
+      role.name !== promotedArtifactPrincipalNames[index] ||
       role.canLogin !==
         (role.name !== "reviewrouter_activation_receipt_guard") ||
       role.inherit !== true ||
@@ -252,7 +263,9 @@ function assertNormalizedPolicy(
   });
 
   const memberships = value.memberships as unknown[];
-  if (memberships.length !== canonicalBootstrapMembershipRoleNames.length)
+  if (
+    memberships.length !== promotedArtifactBootstrapMembershipRoleNames.length
+  )
     throw new Error("memberships");
   memberships.forEach((membership, index) => {
     if (
@@ -265,7 +278,7 @@ function assertNormalizedPolicy(
         "grantor",
       ]) ||
       membership.member !== "reviewrouter_role_bootstrap" ||
-      membership.role !== canonicalBootstrapMembershipRoleNames[index] ||
+      membership.role !== promotedArtifactBootstrapMembershipRoleNames[index] ||
       membership.setOption !== false ||
       membership.inheritOption !== false ||
       membership.adminOption !== true ||
@@ -378,12 +391,12 @@ function assertNormalizedPolicy(
   assertUnique(grants);
 
   const effectivePermissions = value.effectivePermissions as unknown[];
-  if (effectivePermissions.length !== canonicalActivationPrincipalNames.length)
+  if (effectivePermissions.length !== promotedArtifactPrincipalNames.length)
     throw new Error("effective-permissions");
   effectivePermissions.forEach((entry, index) => {
     if (
       !isExactRecord(entry, ["principal", "permissions"]) ||
-      entry.principal !== canonicalActivationPrincipalNames[index] ||
+      entry.principal !== promotedArtifactPrincipalNames[index] ||
       !Array.isArray(entry.permissions)
     )
       throw new Error("effective-permissions");

@@ -223,19 +223,14 @@ export class ReleaseRolloutUseCases {
     );
   }
   async runReleaseMigration(r: ReleaseRollout) {
-    const beginReleaseMigration = this.ports.ledger.beginReleaseMigration;
-    const completeReleaseMigration = this.ports.ledger.completeReleaseMigration;
-    const failReleaseMigration = this.ports.ledger.failReleaseMigration;
-    const loadReleaseMigrationCheckpoint =
-      this.ports.ledger.loadReleaseMigrationCheckpoint;
     if (
-      !beginReleaseMigration ||
-      !completeReleaseMigration ||
-      !failReleaseMigration ||
-      !loadReleaseMigrationCheckpoint
+      !this.ports.ledger.beginReleaseMigration ||
+      !this.ports.ledger.completeReleaseMigration ||
+      !this.ports.ledger.failReleaseMigration ||
+      !this.ports.ledger.loadReleaseMigrationCheckpoint
     )
       throw new Error("release_migration_phase_protocol_unavailable");
-    const checkpoint = await loadReleaseMigrationCheckpoint({
+    const checkpoint = await this.ports.ledger.loadReleaseMigrationCheckpoint({
       rolloutId: r.rolloutId,
       targetSystemIdentifier: r.target.systemIdentifier,
     });
@@ -252,7 +247,7 @@ export class ReleaseRolloutUseCases {
     }
     const previousReceiptSha256 =
       r.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`;
-    const permit = await beginReleaseMigration({
+    const permit = await this.ports.ledger.beginReleaseMigration({
       rolloutId: r.rolloutId,
       expectedCommitSha: r.expectedCommitSha,
       runId: r.execution.runId,
@@ -264,14 +259,17 @@ export class ReleaseRolloutUseCases {
       expectedPreviousReceiptSha256: previousReceiptSha256,
     });
     const migrating = beginReleaseMigrationAttempt(r, permit);
-    let completed: ReleaseRollout;
-    let receipt: ReleaseMigrationReceipt;
-    try {
-      const observation = await this.ports.database.runReleaseMigration(
+    // A transport failure leaves the durable authority checkpoint in
+    // `migrating`; an exact retry uses the stored permit and target receipt.
+    const observation: StepObservation =
+      await this.ports.database.runReleaseMigration(
         r.target,
         r.migrationTransition,
         permit,
       );
+    let completed: ReleaseRollout;
+    let receipt: ReleaseMigrationReceipt;
+    try {
       if (observation.step !== RolloutStep.RunReleaseMigration)
         throw new Error("adapter_observation_step_mismatch");
       completed = transitionFromObservation(migrating, observation);
@@ -280,10 +278,10 @@ export class ReleaseRolloutUseCases {
       const reasonSha256 = `sha256:${sha256Canonical({
         code: error instanceof Error ? error.message : "unknown",
       })}`;
-      await failReleaseMigration({ permit, reasonSha256 });
+      await this.ports.ledger.failReleaseMigration({ permit, reasonSha256 });
       throw error;
     }
-    const canonical = await completeReleaseMigration({
+    const canonical = await this.ports.ledger.completeReleaseMigration({
       permit,
       receipt,
     });

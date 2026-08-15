@@ -477,6 +477,33 @@ describe("release authority database installation", () => {
     expect(migration).toContain("release_migration_fail");
     expect(migration).toContain("target_generation_claim");
     expect(migration).toContain("postCatalogDigest");
+    expect(migration).toContain(
+      "jsonb_array_length(transition->'orderedMigrationEntries') < 1",
+    );
+    expect(migration).toContain("transition-'transitionSha256'");
+    expect(migration).toContain(
+      "pg_catalog.pg_input_is_valid(receipt->>'observedAt','timestamptz')",
+    );
+    expect(migration).toContain(
+      "char_length(receipt->>'receiptId') NOT BETWEEN 3 AND 512",
+    );
+    expect(migration).toContain(
+      "receipt->>'receiptId' !~ '^[A-Za-z0-9][A-Za-z0-9._:/@-]*$'",
+    );
+    expect(migration).not.toContain("{2,511}");
+    expect(migration).not.toContain("'timestamptz'::pg_catalog.regtype");
+  });
+  it("keeps generated PostgreSQL regex bounds within the ARE limit", () => {
+    const bundle = releaseAuthorityMigrationBundle("fresh-install");
+    const bounds = [...bundle.matchAll(/\{(\d+)(?:,(\d+))?\}/gu)];
+    expect(bounds.length).toBeGreaterThan(0);
+    for (const bound of bounds) {
+      const upper = Number(bound[2] ?? bound[1]);
+      expect(
+        upper,
+        `unsupported PostgreSQL regex bound ${bound[0]}`,
+      ).toBeLessThanOrEqual(255);
+    }
   });
   it("removes implicit PUBLIC usage from the declared authority type", () => {
     const migration = readFileSync(
@@ -522,7 +549,7 @@ describe("release authority database installation", () => {
       "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
       "727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
       "45eb81a2715cf8c254cdacc2ca4ce8c80fc6c6527c009fe9dce63c3f80a510b1",
-      "c2c721cef391504da5b2053da017e83b4dd80811f410368071138f0f28352853",
+      "c14c52ce2594f49a23663a22a16ca789454e059bdb9abd6070d1b773cc847465",
     ]);
     const bundle = releaseAuthorityMigrationBundle("fresh-install");
     const first = bundle.indexOf("CREATE SCHEMA release_authority");
@@ -559,6 +586,10 @@ describe("release authority database installation", () => {
       "CREATE TABLE release_authority.provider_resource_lease",
       twelfth,
     );
+    const fourteenth = bundle.indexOf(
+      "CREATE TABLE release_authority.target_generation_claim",
+      thirteenth,
+    );
     expect(first).toBeGreaterThan(-1);
     expect(second).toBeGreaterThan(first);
     expect(third).toBeGreaterThan(second);
@@ -572,6 +603,7 @@ describe("release authority database installation", () => {
     expect(eleventh).toBeGreaterThan(tenth);
     expect(twelfth).toBeGreaterThan(eleventh);
     expect(thirteenth).toBeGreaterThan(twelfth);
+    expect(fourteenth).toBeGreaterThan(thirteenth);
     expect(bundle.match(/^BEGIN;$/gmu)).toHaveLength(1);
     expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
     expect(bundle.match(/CREATE SCHEMA release_authority/gu)).toHaveLength(4);
@@ -602,14 +634,53 @@ describe("release authority database installation", () => {
       expect(bundle).toContain("authority_forward_11_present");
       expect(bundle).toContain("authority_forward_12_present");
       expect(bundle).toContain("authority_forward_13_present");
+      expect(bundle).toContain("authority_forward_14_present");
       expect(bundle).toContain(
-        "release authority forward migration 13 already present",
+        "release authority forward migration 14 already present",
       );
       expect(bundle).toContain(
         "release authority final object ACL matrix mismatch",
       );
       expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
     }
+  });
+
+  it("compares the exact fresh and 000012-to-000013 ACL states", () => {
+    const contract = readFileSync(
+      "packages/platform/release-authority-db/test-contract.sh",
+      "utf8",
+    );
+    expect(contract).toContain(
+      "000011_default_and_final_acl_exactness \\\n  000012_provider_mutation_resource_fence",
+    );
+    expect(contract).toContain("(13,'000012_provider_mutation_resource_fence'");
+    expect(contract).toContain(
+      "SELECT 'column',relation.oid::regclass::text||'.'||attribute.attname",
+    );
+    expect(contract).toContain(
+      "SELECT 'default_acl',default_acl.defaclobjtype::text",
+    );
+    expect(contract).toContain(
+      'test "$upgrade_acl_state" = "$fresh_acl_state"',
+    );
+  });
+
+  it("builds the activation target from the canonical pre-release application fixture", () => {
+    const contract = readFileSync(
+      "packages/platform/release-authority-db/test-contract.sh",
+      "utf8",
+    );
+    expect(contract).toContain("resolvePreReleaseMigrationExclusions");
+    expect(contract).toContain(
+      "pnpm --filter @reviewrouter/platform-db exec prisma migrate deploy",
+    );
+    expect(contract).toContain(
+      "CREATE DATABASE rr_activation_target OWNER reviewrouter_role_bootstrap",
+    );
+    expect(contract).not.toContain('CREATE TABLE public."_prisma_migrations"');
+    expect(contract.indexOf("prisma migrate deploy")).toBeLessThan(
+      contract.indexOf("activationAuthorityProvisioningSql()"),
+    );
   });
 
   it("keeps the static migration ledger identical to the immutable file bytes", () => {
@@ -632,6 +703,7 @@ describe("release authority database installation", () => {
     expect(bundle).toContain("authority_forward_11_present");
     expect(bundle).toContain("authority_forward_12_present");
     expect(bundle).toContain("authority_forward_13_present");
+    expect(bundle).toContain("authority_forward_14_present");
     expect(bundle).toContain("release authority migration history mismatch");
     expect(bundle).toContain("position=1) IS DISTINCT FROM");
     expect(bundle).toContain("VALUES (11, '000010_recovery_effect_permits'");
@@ -640,6 +712,9 @@ describe("release authority database installation", () => {
     );
     expect(bundle).toContain(
       "VALUES (13, '000012_provider_mutation_resource_fence'",
+    );
+    expect(bundle).toContain(
+      "VALUES (14, '000013_phase_aware_application_manifest'",
     );
   });
 

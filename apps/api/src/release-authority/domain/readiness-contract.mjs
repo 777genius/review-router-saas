@@ -63,7 +63,7 @@ export const releaseAuthorityMigrationContract = Object.freeze([
   ],
   [
     "000013_phase_aware_application_manifest",
-    "sha256:c2c721cef391504da5b2053da017e83b4dd80811f410368071138f0f28352853",
+    "sha256:c14c52ce2594f49a23663a22a16ca789454e059bdb9abd6070d1b773cc847465",
   ],
 ]);
 

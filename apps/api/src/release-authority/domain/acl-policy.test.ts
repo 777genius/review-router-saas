@@ -38,6 +38,9 @@ describe("release authority ACL policy", () => {
     expect(releaseAuthorityFinalAclPolicy.routines).toContain(
       "release_recovery_effect_intend",
     );
+    expect(releaseAuthorityFinalAclPolicy.routines).toContain(
+      "release_canonical_json",
+    );
     expect(
       releaseAuthorityFinalAclPolicy.routineExecuteRoles
         .reviewrouter_release_control,
@@ -46,7 +49,7 @@ describe("release authority ACL policy", () => {
     expect(releaseAuthorityFinalAclPolicy.grantOptions).toEqual([]);
     expect(releaseAuthorityFinalAclPolicy.roleMemberships).toEqual([]);
     expect(new Set(releaseAuthorityFinalAclPolicy.relations).size).toBe(14);
-    expect(new Set(releaseAuthorityFinalAclPolicy.routines).size).toBe(79);
+    expect(new Set(releaseAuthorityFinalAclPolicy.routines).size).toBe(80);
     expect(
       new Set(
         releaseAuthorityFinalAclPolicy.routineExecuteRoles

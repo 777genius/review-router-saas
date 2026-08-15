@@ -1,14 +1,14 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   canonicalActivationSql,
-  liveV70V72CatalogDigestSha256,
   liveV70V72CatalogDigestSql,
   roleProvisioningSql,
   runtimeGrantSql,
 } from "./run-codex-rotating-release-migration.mjs";
 import { fencedLiveV70V72CatalogDigestSql } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
+import { legacyAmbiguityInventorySql } from "./reconcile-codex-rotating-legacy-ambiguity.mjs";
 import {
   disposablePg17CanonicalRoleBootstrapSetupSql,
   disposablePg17TargetRoleFoundationSql,
@@ -213,6 +213,21 @@ const initializeSeed = () => {
     migration.status,
     `production migration baseline\n${migration.stderr || migration.stdout}`,
   ).toBe(0);
+  psqlAs(
+    seedContainer,
+    adminUsername,
+    `DO $bind_disposable_database$
+     DECLARE binding jsonb;
+     BEGIN
+       binding := jsonb_build_object(
+         'version',1,
+         'systemIdentifier',(SELECT system_identifier::text FROM pg_control_system()),
+         'recoveryWitnessSha256','${"c".repeat(64)}'
+       );
+       EXECUTE format('COMMENT ON DATABASE %I IS %L',current_database(),binding::text);
+     END
+     $bind_disposable_database$;`,
+  );
   const canonicalRoleBootstrapSetup =
     disposablePg17CanonicalRoleBootstrapSetupSql();
   psqlAs(
@@ -233,7 +248,7 @@ const initializeSeed = () => {
   psqlAs(seedContainer, adminUsername, roleProvisioningSql(configuration));
   psqlAs(
     seedContainer,
-    releaseUsername,
+    adminUsername,
     runtimeGrantSql(configuration, { gateClosed: true }),
   );
   assertCommand(docker(["stop", seedContainer]), "stop immutable seed");
@@ -389,31 +404,54 @@ const isolatedCase =
     }
   };
 
-const captureCandidateSql = (identity: string) =>
+const captureCandidateSql = () =>
   `SET reviewrouter.activation_catalog_candidate_capture = 'disposable-only';
-SET reviewrouter.activation_catalog_disposable_database_identity = '${identity}';
+SELECT set_config(
+  'reviewrouter.activation_catalog_disposable_database_identity',
+  shobj_description(oid,'pg_database')::jsonb
+    ->'disposableCaptureAttestation'->>'identity',
+  false
+) FROM pg_database WHERE datname=current_database();
 SELECT reviewrouter_activation.capture_catalog_policy_candidate('preactivation');`;
 
-const attestDisposableCaptureSql = (identity: string) => `
+const attestDisposableCaptureSql = () => `
 DO $attest_disposable_capture$
 DECLARE binding jsonb;
+DECLARE live_system_identifier text;
+DECLARE live_database_oid text;
+DECLARE live_recovery_witness_sha256 text;
+DECLARE live_identity text;
 BEGIN
-  SELECT shobj_description(oid,'pg_database')::jsonb INTO STRICT binding
+  SELECT system_identifier::text INTO STRICT live_system_identifier
+  FROM pg_control_system();
+  SELECT oid::text,shobj_description(oid,'pg_database')::jsonb
+  INTO STRICT live_database_oid,binding
   FROM pg_database WHERE datname=current_database();
-  IF jsonb_typeof(binding) IS DISTINCT FROM 'object'
-     OR binding->>'systemIdentifier' IS DISTINCT FROM
-       (SELECT system_identifier::text FROM pg_control_system())
+  live_recovery_witness_sha256 := encode(sha256(convert_to(
+    'reviewrouter-pg17-adversarial:'||live_system_identifier||':'||
+      live_database_oid||':'||current_database(),'UTF8')),'hex');
+  live_identity := 'rr-disposable-'||encode(sha256(convert_to(
+    live_system_identifier||':'||live_database_oid||':'||
+      live_recovery_witness_sha256,'UTF8')),'hex');
+  IF binding IS NULL
+     OR binding->>'version' <> '1'
+     OR binding->>'systemIdentifier' <> live_system_identifier
      OR binding->>'recoveryWitnessSha256' !~ '^[a-f0-9]{64}$'
      OR binding ? 'disposableCaptureAttestation' THEN
     RAISE EXCEPTION 'disposable capture test attestation precondition failed';
   END IF;
+  binding := jsonb_set(
+    binding,
+    '{recoveryWitnessSha256}',
+    to_jsonb(live_recovery_witness_sha256)
+  );
   binding := jsonb_set(binding,'{disposableCaptureAttestation}',jsonb_build_object(
     'kind','reviewrouter-disposable-database-attestation-v1',
-    'identity','${identity}',
-    'systemIdentifier',binding->>'systemIdentifier',
-    'databaseOid',(SELECT oid::text FROM pg_database WHERE datname=current_database()),
-    'recoveryWitnessSha256',binding->>'recoveryWitnessSha256',
-    'nonce',repeat('d',64)
+    'identity',live_identity,
+    'systemIdentifier',live_system_identifier,
+    'databaseOid',live_database_oid,
+    'recoveryWitnessSha256',live_recovery_witness_sha256,
+    'nonce',encode(sha256(convert_to('attestation:'||live_identity,'UTF8')),'hex')
   ));
   EXECUTE format('COMMENT ON DATABASE %I IS %L',current_database(),binding::text);
 END
@@ -488,44 +526,205 @@ describePg17(
           return digests[0];
         };
 
-        expect(observeDigest(releaseUsername)).toBe(
-          liveV70V72CatalogDigestSha256,
-        );
+        const canonicalDigest = observeDigest(releaseUsername);
+        expect(canonicalDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
         const mutations = [
           [
-            releaseUsername,
+            adversarialAdminUsername,
             `ALTER TABLE public."RuntimeCanaryChallenge"
                ALTER COLUMN "expiresAt" DROP NOT NULL;`,
           ],
           [
-            releaseUsername,
+            adversarialAdminUsername,
             `ALTER TABLE public."RuntimeCanaryChallengeProof"
                DROP CONSTRAINT "RuntimeCanaryChallengeProof_nonce_fkey";`,
           ],
           [
-            releaseUsername,
+            adversarialAdminUsername,
             `ALTER FUNCTION public.reviewrouter_answer_runtime_canary_challenge(
                text,text,text,text,text,text) SECURITY INVOKER
                SET search_path TO public;`,
           ],
           [
-            releaseUsername,
+            adversarialAdminUsername,
             `GRANT SELECT ON public."RuntimeCanaryChallenge"
                TO reviewrouter_web;
              ALTER DEFAULT PRIVILEGES IN SCHEMA public
                GRANT DELETE ON TABLES TO reviewrouter_web;`,
           ],
           [
-            releaseUsername,
+            adversarialAdminUsername,
+            `GRANT SELECT ("expiresAt") ON public."RuntimeCanaryChallenge"
+               TO reviewrouter_web;`,
+          ],
+          [
+            adversarialAdminUsername,
+            `GRANT CREATE ON SCHEMA public TO reviewrouter_web;`,
+          ],
+          [
+            adversarialAdminUsername,
+            `ALTER TABLE public."RuntimeCanaryChallenge" ENABLE ROW LEVEL SECURITY;
+             ALTER TABLE public."RuntimeCanaryChallenge" FORCE ROW LEVEL SECURITY;`,
+          ],
+          [
+            adversarialAdminUsername,
+            `ALTER TABLE public."RuntimeCanaryChallenge" REPLICA IDENTITY FULL;`,
+          ],
+          [
+            adversarialAdminUsername,
+            `ALTER TABLE public."RuntimeCanaryChallenge"
+               ADD COLUMN "identityDrift" bigint GENERATED ALWAYS AS IDENTITY;`,
+          ],
+          [
+            adversarialAdminUsername,
+            `ALTER TABLE public."RuntimeCanaryChallenge"
+               ALTER COLUMN "rolloutId" TYPE text COLLATE "POSIX";`,
+          ],
+          [
+            adversarialAdminUsername,
+            `ALTER TABLE public."RuntimeCanaryChallenge"
+               ADD COLUMN "generatedDrift" text GENERATED ALWAYS AS ("rolloutId") STORED;`,
+          ],
+          [
+            adversarialAdminUsername,
+            `CREATE INDEX "RuntimeCanaryChallenge_drift_idx"
+               ON public."RuntimeCanaryChallenge" ("rolloutId");`,
+          ],
+          [
+            adversarialAdminUsername,
             `UPDATE public._prisma_migrations SET checksum=repeat('0',64)
              WHERE migration_name='000072_runtime_canary_challenge';`,
           ],
-          [adminUsername, `CREATE SCHEMA release_authority;`],
         ] as const;
         for (const [role, mutation] of mutations)
-          expect(observeDigest(role, mutation)).not.toBe(
-            liveV70V72CatalogDigestSha256,
+          expect(observeDigest(role, mutation)).not.toBe(canonicalDigest);
+        runAs(adminUsername, "CREATE SCHEMA release_authority;");
+        expect(
+          runAs(installerUsername, fencedLiveV70V72CatalogDigestSql),
+        ).not.toBe(canonicalDigest);
+        runAs(adminUsername, "DROP SCHEMA release_authority;");
+      }),
+      120_000,
+    );
+
+    it(
+      "binds one-shot migration permits and closes quarantine and stale-worker races",
+      isolatedCase("migration-permit-races", (context) => {
+        const witness = context.psqlAs(
+          installerUsername,
+          `SELECT CASE WHEN pg_input_is_valid(
+            shobj_description(oid,'pg_database'),'jsonb')
+            THEN shobj_description(oid,'pg_database')::jsonb->>'recoveryWitnessSha256'
+            ELSE '' END FROM pg_database WHERE datname=current_database();`,
+        );
+        const transition = `sha256:${"1".repeat(64)}`;
+        const previous = `sha256:${"2".repeat(64)}`;
+        const observedPostCatalogDigest = context
+          .psqlAs(
+            installerUsername,
+            `SET search_path = pg_catalog, pg_temp;
+             ${fencedLiveV70V72CatalogDigestSql}`,
+          )
+          .split("\n")
+          .at(-1);
+        expect(observedPostCatalogDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+        const install = (rolloutId: string, epoch: number) =>
+          context.psqlAs(
+            installerUsername,
+            `SELECT reviewrouter_activation.install_migration_permit(
+              '${rolloutId}','1','${context.systemIdentifier}','${witness}',
+              '${transition}','${previous}','${context.migrationChecksum}',
+              '${observedPostCatalogDigest}',${epoch},
+              '${epoch.toString(16).padStart(32, "0")}');`,
           );
+
+        expect(install("migration-quarantine", 31)).toBe("t");
+        expect(install("migration-quarantine", 31)).toBe("f");
+        expect(
+          context.psqlResultAs(
+            installerUsername,
+            `SELECT reviewrouter_activation.install_migration_permit(
+              'migration-quarantine','1','${context.systemIdentifier}','${witness}',
+              '${transition}','${previous}','${context.migrationChecksum}',
+              'sha256:${"9".repeat(64)}',31,'${"1f".padStart(32, "0")}');`,
+          ).status,
+        ).not.toBe(0);
+        expect(
+          context.psqlAs(
+            installerUsername,
+            `SELECT reviewrouter_activation.terminalize_migration_permit(
+              'migration-quarantine',31,'${"1f".padStart(32, "0")}',
+              'quarantined');`,
+          ),
+        ).toBe("t");
+        expect(
+          context.psqlResultAs(
+            releaseUsername,
+            `CALL public.reviewrouter_execute_release_migration(
+              'migration-quarantine','${context.systemIdentifier}','${witness}',
+              '${transition}','${previous}',31,'${"1f".padStart(32, "0")}',
+              '{"status":"reconciled"}'::jsonb);`,
+          ).stderr,
+        ).toContain("release migration target permit unavailable");
+
+        expect(install("migration-completed", 32)).toBe("t");
+        const nonce = "20".padStart(32, "0");
+        expect(
+          context.psqlResultAs(
+            releaseUsername,
+            `SELECT reviewrouter_activation.consume_migration_permit(
+              'migration-completed','${context.systemIdentifier}','${witness}',
+              '${transition}','${previous}',32,'${nonce}');`,
+          ).status,
+        ).not.toBe(0);
+        expect(
+          context.psqlResultAs(
+            releaseUsername,
+            "CREATE TABLE public.release_migration_direct_ddl_denied(id integer);",
+          ).status,
+        ).not.toBe(0);
+        expect(
+          context.psqlResultAs(
+            releaseUsername,
+            "SET ROLE reviewrouter_release_schema_owner;",
+          ).status,
+        ).not.toBe(0);
+        const inventory = JSON.parse(
+          context.psqlAs(releaseUsername, legacyAmbiguityInventorySql),
+        );
+        const inventorySha256 = `sha256:${createHash("sha256")
+          .update(JSON.stringify(inventory))
+          .digest("hex")}`;
+        const legacyReceipt = JSON.stringify({
+          version: 1,
+          acknowledgement: "all_prior_installers_and_writers_are_stopped",
+          inventory,
+          inventorySha256,
+          stableSamples: 2,
+          status: "reconciled",
+        }).replaceAll("'", "''");
+        context.psqlAs(
+          releaseUsername,
+          `CALL public.reviewrouter_execute_release_migration(
+            'migration-completed','${context.systemIdentifier}','${witness}',
+            '${transition}','${previous}',32,'${nonce}',
+            '${legacyReceipt}'::jsonb);`,
+        );
+        expect(
+          context.psqlResultAs(
+            installerUsername,
+            `SELECT reviewrouter_activation.terminalize_migration_permit(
+              'migration-completed',32,'${nonce}','quarantined');`,
+          ).stderr,
+        ).toContain("release migration target quarantine conflict");
+        expect(
+          context.psqlAs(
+            releaseUsername,
+            `SELECT (reviewrouter_activation.read_migration_receipt(
+              'migration-completed',32,'${nonce}')->>'effectFingerprint')
+              ~ '^sha256:[a-f0-9]{64}$';`,
+          ),
+        ).toBe("t");
       }),
       120_000,
     );
@@ -533,17 +732,19 @@ describePg17(
     it(
       "recomputes the live V70-V72 digest through the fenced installer connection",
       isolatedCase("fenced-v70-v72-digest", ({ psqlAs: runAs }) => {
-        expect(runAs(installerUsername, fencedLiveV70V72CatalogDigestSql)).toBe(
-          liveV70V72CatalogDigestSha256,
+        const canonicalDigest = runAs(
+          installerUsername,
+          fencedLiveV70V72CatalogDigestSql,
         );
+        expect(canonicalDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
         runAs(
-          releaseUsername,
+          adversarialAdminUsername,
           `ALTER FUNCTION public.reviewrouter_answer_runtime_canary_challenge(
              text,text,text,text,text,text) SECURITY INVOKER;`,
         );
         expect(
           runAs(installerUsername, fencedLiveV70V72CatalogDigestSql),
-        ).not.toBe(liveV70V72CatalogDigestSha256);
+        ).not.toBe(canonicalDigest);
       }),
       120_000,
     );
@@ -561,7 +762,7 @@ describePg17(
 holder_pid=$!
 lock_seen=0
 for attempt in $(seq 1 40); do
-  if [ "$(psql --username ${releaseUsername} --dbname ${databaseName} --no-psqlrc --tuples-only --no-align --command "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND classid=1381126735 AND objid=1129271120 AND mode='ShareLock' AND granted);")" = "t" ]; then
+  if [ "$(psql --username ${adversarialAdminUsername} --dbname ${databaseName} --no-psqlrc --tuples-only --no-align --command "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND classid=1381126735 AND objid=1129271120 AND mode='ShareLock' AND granted);")" = "t" ]; then
     lock_seen=1
     break
   fi
@@ -571,12 +772,12 @@ if [ "$lock_seen" -ne 1 ]; then
   wait "$holder_pid"
   exit 30
 fi
-if psql --username ${releaseUsername} --dbname ${databaseName} --no-psqlrc --set ON_ERROR_STOP=1 --command "SET lock_timeout='200ms'; SELECT pg_advisory_xact_lock(1381126735,1129271120);" >/dev/null 2>&1; then
+if psql --username ${adversarialAdminUsername} --dbname ${databaseName} --no-psqlrc --set ON_ERROR_STOP=1 --command "SET lock_timeout='200ms'; SELECT pg_advisory_xact_lock(1381126735,1129271120);" >/dev/null 2>&1; then
   wait "$holder_pid"
   exit 31
 fi
 wait "$holder_pid"
-psql --username ${releaseUsername} --dbname ${databaseName} --no-psqlrc --set ON_ERROR_STOP=1 --command "BEGIN; SET LOCAL lock_timeout='1s'; SELECT pg_advisory_xact_lock(1381126735,1129271120); ALTER FUNCTION public.reviewrouter_answer_runtime_canary_challenge(text,text,text,text,text,text) SECURITY INVOKER; ROLLBACK;" >/dev/null
+psql --username ${adversarialAdminUsername} --dbname ${databaseName} --no-psqlrc --set ON_ERROR_STOP=1 --command "BEGIN; SET LOCAL lock_timeout='1s'; SELECT pg_advisory_xact_lock(1381126735,1129271120); ALTER FUNCTION public.reviewrouter_answer_runtime_canary_challenge(text,text,text,text,text,text) SECURITY INVOKER; ROLLBACK;" >/dev/null
 printf 'hostile_mutator_excluded\n'`,
           ],
           undefined,
@@ -593,12 +794,8 @@ printf 'hostile_mutator_excluded\n'`,
       isolatedCase(
         "disconnected-omission",
         ({ psqlAs: runAs }) => {
-          const identity = `rr-disposable-adversarial-${process.pid}-disconnected`;
-          runAs(adminUsername, attestDisposableCaptureSql(identity));
-          const captured = runAs(
-            releaseUsername,
-            captureCandidateSql(identity),
-          );
+          runAs(adminUsername, attestDisposableCaptureSql());
+          const captured = runAs(releaseUsername, captureCandidateSql());
           expect(captured).not.toContain(providerAdminUsername);
           expect(captured).not.toContain("another_disconnected_provider_role");
         },
@@ -616,17 +813,16 @@ printf 'hostile_mutator_excluded\n'`,
       isolatedCase(
         "disconnected-direct-acl",
         ({ container, psqlAs: runAs }) => {
-          const identity = `rr-disposable-adversarial-${process.pid}-direct`;
           runAs(adminUsername, "CREATE ROLE rr_inert_acl NOLOGIN;");
           runAs(
-            releaseUsername,
+            adversarialAdminUsername,
             `GRANT SELECT ON ${applicationRelation} TO rr_inert_acl;`,
           );
-          runAs(adminUsername, attestDisposableCaptureSql(identity));
+          runAs(adminUsername, attestDisposableCaptureSql());
           const rejected = psqlResultAs(
             container,
             releaseUsername,
-            captureCandidateSql(identity),
+            captureCandidateSql(),
           );
           expect(rejected.status).not.toBe(0);
           expect(rejected.stderr).toContain("unexpected_grant_principal");
@@ -640,12 +836,8 @@ printf 'hostile_mutator_excluded\n'`,
       isolatedCase(
         "grantor-topology",
         ({ psqlAs: runAs, psqlResultAs: runResultAs }) => {
-          const identity = `rr-disposable-adversarial-${process.pid}-grantor`;
-          runAs(adminUsername, attestDisposableCaptureSql(identity));
-          const result = runResultAs(
-            releaseUsername,
-            captureCandidateSql(identity),
-          );
+          runAs(adminUsername, attestDisposableCaptureSql());
+          const result = runResultAs(releaseUsername, captureCandidateSql());
           expect(result.status).not.toBe(0);
           expect(result.stderr).toContain("candidate safety rejected");
         },
@@ -668,7 +860,7 @@ printf 'hostile_mutator_excluded\n'`,
     );
 
     it(
-      "closes disposable candidate capture before activation proof",
+      "rejects durable binding and mismatched database identity before activation proof",
       isolatedCase("closed-capture", ({ psqlAs: runAs, systemIdentifier }) => {
         const binding = JSON.stringify({
           version: 1,
@@ -677,19 +869,23 @@ printf 'hostile_mutator_excluded\n'`,
           consumedMigrationEvidence: [
             { commit: "b".repeat(40), systemIdentifier },
           ],
+          disposableCaptureAttestation: {
+            kind: "reviewrouter-disposable-database-attestation-v1",
+            identity: "rr-disposable-mismatched-database",
+            systemIdentifier,
+            databaseOid: "0",
+            recoveryWitnessSha256: "c".repeat(64),
+            nonce: "d".repeat(64),
+          },
         }).replaceAll("'", "''");
         runAs(
           adminUsername,
           `COMMENT ON DATABASE review_router IS '${binding}';`,
         );
         expect(() =>
-          runAs(
-            releaseUsername,
-            captureCandidateSql(
-              `rr-disposable-adversarial-${process.pid}-closed`,
-            ),
-          ),
-        ).toThrow();
+          runAs(adminUsername, attestDisposableCaptureSql()),
+        ).toThrow("disposable capture test attestation precondition failed");
+        expect(() => runAs(releaseUsername, captureCandidateSql())).toThrow();
       }),
       120_000,
     );
@@ -725,7 +921,7 @@ printf 'hostile_mutator_excluded\n'`,
           "CREATE ROLE rr_unexpected_direct LOGIN;",
         );
         context.psqlAs(
-          releaseUsername,
+          adversarialAdminUsername,
           `GRANT CONNECT ON DATABASE review_router TO rr_unexpected_direct;
          GRANT SELECT ON ${applicationRelation} TO rr_unexpected_direct;`,
         );
@@ -754,7 +950,7 @@ printf 'hostile_mutator_excluded\n'`,
          GRANT rr_attack_grandparent TO rr_attack_parent WITH INHERIT TRUE, SET TRUE;`,
         );
         context.psqlAs(
-          releaseUsername,
+          adversarialAdminUsername,
           `GRANT SELECT ON ${applicationRelation} TO rr_attack_grandparent;`,
         );
         context.rejectedWithoutReceipt("membership-attack");
@@ -766,7 +962,7 @@ printf 'hostile_mutator_excluded\n'`,
       isolatedCase("public-attack", (context) => {
         context.installPermit("public-attack");
         context.psqlAs(
-          releaseUsername,
+          adversarialAdminUsername,
           `GRANT SELECT ON ${applicationRelation} TO PUBLIC;`,
         );
         context.rejectedWithoutReceipt("public-attack");
@@ -798,19 +994,19 @@ printf 'hostile_mutator_excluded\n'`,
 
         context.psqlAs(adminUsername, "CREATE ROLE rr_inert_acl NOLOGIN;");
         context.psqlAs(
-          releaseUsername,
+          adversarialAdminUsername,
           `GRANT SELECT ON ${applicationRelation} TO rr_inert_acl;`,
         );
         context.rejectedWithoutReceipt("admin-acl-rls");
         context.psqlAs(
-          releaseUsername,
+          adversarialAdminUsername,
           `REVOKE SELECT ON ${applicationRelation} FROM rr_inert_acl;`,
         );
         context.psqlAs(adminUsername, "DROP ROLE rr_inert_acl;");
 
         context.psqlAs(adminUsername, "CREATE ROLE rr_rls_principal NOLOGIN;");
         context.psqlAs(
-          releaseUsername,
+          adversarialAdminUsername,
           `ALTER TABLE ${applicationRelation} ENABLE ROW LEVEL SECURITY;
            CREATE POLICY rr_attack_policy ON ${applicationRelation}
              TO rr_rls_principal USING (true);`,
@@ -825,7 +1021,7 @@ printf 'hostile_mutator_excluded\n'`,
       isolatedCase("approved-direct-grant", (context) => {
         context.installPermit("approved-direct-grant");
         context.psqlAs(
-          releaseUsername,
+          adversarialAdminUsername,
           `GRANT TRUNCATE ON ${applicationRelation} TO reviewrouter_api;`,
         );
         context.rejectedWithoutReceipt(
@@ -861,9 +1057,12 @@ printf 'hostile_mutator_excluded\n'`,
       "rejects exact ACL drift in a non-public schema",
       isolatedCase("non-public-schema", (context) => {
         context.installPermit("non-public-schema-grant");
-        context.psqlAs(releaseUsername, "CREATE SCHEMA private_sensitive;");
         context.psqlAs(
-          releaseUsername,
+          adversarialAdminUsername,
+          "CREATE SCHEMA private_sensitive;",
+        );
+        context.psqlAs(
+          adversarialAdminUsername,
           "GRANT USAGE ON SCHEMA private_sensitive TO reviewrouter_api;",
         );
         context.rejectedWithoutReceipt(
@@ -879,8 +1078,8 @@ printf 'hostile_mutator_excluded\n'`,
       isolatedCase("default-acl-drift", (context) => {
         context.installPermit("default-acl-drift");
         context.psqlAs(
-          releaseUsername,
-          `ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_migration IN SCHEMA public
+          adversarialAdminUsername,
+          `ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_schema_owner IN SCHEMA public
          GRANT TRUNCATE ON TABLES TO reviewrouter_api;`,
         );
         context.rejectedWithoutReceipt(

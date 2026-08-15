@@ -36,6 +36,21 @@ type DatabaseIdentityProbe = Readonly<{
   activationRuntimePrivilegesExact: boolean;
 }>;
 
+type DatabaseIdentityFacts = Pick<
+  DatabaseIdentityProbe,
+  | "roleName"
+  | "authorityOwnerRoleName"
+  | "systemIdentifier"
+  | "recoveryWitnessSha256"
+  | "databaseIdentity"
+  | "postgresMajor"
+>;
+
+type ReleaseAuthorityExactness = Omit<
+  ReleaseAuthorityDatabaseReadiness,
+  keyof DatabaseIdentityFacts
+>;
+
 const absentAuthorityReadiness = (
   probe: DatabaseIdentityProbe,
 ): ReleaseAuthorityDatabaseReadiness => ({
@@ -70,15 +85,27 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
   signal?: AbortSignal,
 ): Promise<ReleaseAuthorityDatabaseReadiness> => {
   signal?.throwIfAborted();
+  // Function and operator names are resolved while PostgreSQL parses a
+  // statement. Establish the trusted namespace before parsing any catalog
+  // projection; a set_config CTE inside that projection is too late.
+  await prisma.$executeRawUnsafe("SET LOCAL search_path = pg_catalog, pg_temp");
+  signal?.throwIfAborted();
   const activationCatalogDigest =
     releaseAuthorityReadOnlyCatalogDigestExpression("reviewrouter_activation");
   const probeRows = await prisma.$queryRaw<DatabaseIdentityProbe[]>(Prisma.sql`
     SELECT current_user AS "roleName",
       (SELECT system_identifier::text FROM pg_control_system()) AS "systemIdentifier",
-      coalesce(pg_catalog.shobj_description(
-        (SELECT oid FROM pg_database WHERE datname=current_database()),
-        'pg_database'
-      )::jsonb->>'recoveryWitnessSha256','') AS "recoveryWitnessSha256",
+      coalesce(CASE
+        WHEN pg_catalog.pg_input_is_valid(pg_catalog.shobj_description(
+          (SELECT oid FROM pg_database WHERE datname=current_database()),
+          'pg_database'
+        ), 'jsonb')
+        THEN pg_catalog.shobj_description(
+          (SELECT oid FROM pg_database WHERE datname=current_database()),
+          'pg_database'
+        )::jsonb->>'recoveryWitnessSha256'
+        ELSE ''
+      END,'') AS "recoveryWitnessSha256",
       jsonb_build_object(
         'serverIdentity', (SELECT system_identifier::text FROM pg_control_system()),
         'databaseIdentity', (SELECT oid::text FROM pg_database
@@ -96,7 +123,12 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           (3,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)')),'')),
           (4,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)')),'')),
           (5,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)')),'')),
-          (6,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.activate_generation(text)')),''))
+          (6,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.activate_generation(text)')),'')),
+          (7,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)')),'')),
+          (8,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)')),'')),
+          (9,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)')),'')),
+          (10,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)')),'')),
+          (11,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)')),''))
         ) bodies(ordinal,body_sha256)),'')
         AS "installerRoutineBodySha256",
       coalesce((SELECT encode(sha256(convert_to(string_agg(body_sha256, ':' ORDER BY ordinal),'UTF8')),'hex')
@@ -112,7 +144,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
         ELSE 'sha256:' || ${Prisma.raw(activationCatalogDigest)} END
         AS "activationNamespaceFingerprint",
       false AS "authorityRoleTopologyExact",
-      coalesce((SELECT count(*)=3 AND bool_and(c.relkind='r'
+      coalesce((SELECT count(*)=4 AND bool_and(c.relkind='r'
           AND c.relowner=guard.oid
           AND (SELECT count(*) FROM pg_attribute attribute
             WHERE attribute.attrelid=c.oid AND attribute.attnum>0
@@ -120,6 +152,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 WHEN 'activation_permit' THEN 15
                 WHEN 'activation_receipt' THEN 22
                 WHEN 'activation_principal_evidence' THEN 23
+                WHEN 'migration_permit' THEN 17
               END
           AND NOT EXISTS (SELECT 1 FROM unnest(CASE c.relname
               WHEN 'activation_permit' THEN ARRAY['rollout_id','source_system_identifier',
@@ -147,6 +180,12 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 'before_principal_inventory_sha256','before_principal_policy_sha256',
                 'activated_principal_inventory_sha256','activated_principal_policy_sha256',
                 'transaction_id','staged_at']
+              WHEN 'migration_permit' THEN ARRAY['rollout_id','source_system_identifier',
+                'target_system_identifier','target_database_identity','target_database_name',
+                'target_recovery_witness_sha256','transition_sha256','previous_receipt_sha256',
+                'expected_post_manifest_identity','expected_post_catalog_digest',
+                'permit_epoch','permit_nonce','state','target_receipt','installed_at',
+                'consumed_at','terminalized_at']
               END) expected_column
             WHERE NOT EXISTS (SELECT 1 FROM pg_attribute attribute
               WHERE attribute.attrelid=c.oid AND attribute.attnum>0
@@ -162,16 +201,19 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                   WHEN attribute.attname IN ('postgres_major') THEN 'integer'::regtype
                   WHEN attribute.attname IN ('target_deploy_ids','preactivation_catalog_policy',
                     'activated_catalog_policy','before_inventory','before_policy',
-                    'activated_inventory','activated_policy') THEN 'jsonb'::regtype
+                    'activated_inventory','activated_policy','target_receipt') THEN 'jsonb'::regtype
                   WHEN attribute.attname IN ('permit_epoch','transaction_id') THEN 'bigint'::regtype
-                  WHEN attribute.attname IN ('installed_at','consumed_at','activated_at','staged_at') THEN 'timestamptz'::regtype
+                  WHEN attribute.attname IN ('installed_at','consumed_at','terminalized_at',
+                    'activated_at','staged_at') THEN 'timestamptz'::regtype
                   ELSE 'text'::regtype END
                 OR attribute.attnotnull IS DISTINCT FROM
-                  (attribute.attname<>'consumed_at')
+                  (attribute.attname NOT IN ('consumed_at','terminalized_at','target_receipt'))
                 OR coalesce(pg_get_expr(default_record.adbin,default_record.adrelid),'')
                   IS DISTINCT FROM CASE
                     WHEN attribute.attname IN ('installed_at','activated_at','staged_at')
                       THEN 'transaction_timestamp()'
+                    WHEN attribute.attname='state' AND c.relname='migration_permit'
+                      THEN '''installed''::text'
                     ELSE '' END))
           AND (SELECT jsonb_object_agg(contype,count ORDER BY contype)
             FROM (SELECT constraint_record.contype, count(*) AS count
@@ -183,6 +225,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 WHEN 'activation_permit' THEN '{"c":12,"p":1,"u":1}'::jsonb
                 WHEN 'activation_receipt' THEN '{"c":1,"p":1,"u":1}'::jsonb
                 WHEN 'activation_principal_evidence' THEN '{"p":1}'::jsonb
+                WHEN 'migration_permit' THEN '{"c":15,"p":1,"u":1}'::jsonb
               END
           AND EXISTS (SELECT 1 FROM pg_constraint constraint_record
             WHERE constraint_record.conrelid=c.oid AND constraint_record.contype='p'
@@ -200,6 +243,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 = CASE c.relname
                     WHEN 'activation_permit' THEN ARRAY['permit_epoch','permit_nonce']
                     WHEN 'activation_receipt' THEN ARRAY['target_system_identifier']
+                    WHEN 'migration_permit' THEN ARRAY['permit_epoch','permit_nonce']
                   END))
           AND NOT EXISTS (
             SELECT 1
@@ -221,7 +265,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           AND guard.rolname='reviewrouter_activation_receipt_guard'
           AND installer.rolname='reviewrouter_activation_permit_installer'
           AND reader.rolname='reviewrouter_activation_receipt_reader'
-          AND c.relname IN ('activation_permit','activation_receipt','activation_principal_evidence')),false)
+          AND c.relname IN ('activation_permit','activation_receipt',
+            'activation_principal_evidence','migration_permit')),false)
         AND coalesce((SELECT n.nspowner=guard.oid AND NOT EXISTS (
             SELECT 1 FROM unnest(ARRAY['USAGE','CREATE']) privilege
             WHERE has_schema_privilege('public',n.oid,privilege))
@@ -291,6 +336,64 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)'),
               to_regprocedure('reviewrouter_activation.activate_generation(text)'),
               to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'))),false)
+        AND coalesce((SELECT count(*)=5 AND bool_and(p.prosecdef
+            AND p.prokind='f' AND p.proowner=guard.oid
+            AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']
+            AND l.lanname='plpgsql'
+            AND p.provolatile=CASE WHEN p.oid=to_regprocedure(
+              'reviewrouter_activation.read_migration_receipt(text,bigint,text)')
+              THEN 's'::"char" ELSE 'v'::"char" END
+            AND p.prorettype=CASE
+              WHEN p.oid IN (
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'))
+                THEN 'boolean'::regtype
+              WHEN p.oid=to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)')
+                THEN 'text'::regtype ELSE 'jsonb'::regtype END
+            AND NOT has_function_privilege('public',p.oid,'EXECUTE')
+            AND has_function_privilege('reviewrouter_activation_permit_installer',p.oid,'EXECUTE')
+              IS NOT DISTINCT FROM (p.oid IN (
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)')))
+            AND has_function_privilege('reviewrouter_release_migration',p.oid,'EXECUTE')
+              IS NOT DISTINCT FROM (p.oid=to_regprocedure(
+                'reviewrouter_activation.read_migration_receipt(text,bigint,text)'))
+            AND has_function_privilege('reviewrouter_release_schema_owner',p.oid,'EXECUTE')
+              IS NOT DISTINCT FROM (p.oid IN (
+                to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)')))
+            AND has_function_privilege('reviewrouter_activation_receipt_reader',p.oid,'EXECUTE')
+              IS NOT DISTINCT FROM (p.oid=to_regprocedure(
+                'reviewrouter_activation.read_migration_receipt(text,bigint,text)'))
+            AND NOT EXISTS (SELECT 1
+              FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+              LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee
+              WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+                AND NOT (
+                  grantee.rolname='reviewrouter_activation_permit_installer'
+                    AND p.oid IN (
+                      to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
+                      to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'))
+                  OR grantee.rolname='reviewrouter_release_migration'
+                    AND p.oid=to_regprocedure(
+                      'reviewrouter_activation.read_migration_receipt(text,bigint,text)')
+                  OR grantee.rolname='reviewrouter_release_schema_owner'
+                    AND p.oid IN (
+                      to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)'),
+                      to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)'))
+                  OR grantee.rolname='reviewrouter_activation_receipt_reader'
+                    AND p.oid=to_regprocedure(
+                      'reviewrouter_activation.read_migration_receipt(text,bigint,text)'))))
+          FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+          JOIN pg_language l ON l.oid=p.prolang CROSS JOIN pg_roles guard
+          WHERE n.nspname='reviewrouter_activation'
+            AND guard.rolname='reviewrouter_activation_receipt_guard'
+            AND p.oid IN (
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
+              to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)'),
+              to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)'),
+              to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'),
+              to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)'))),false)
         AND coalesce((SELECT
           has_table_privilege(guard.oid,
             to_regclass('public."_prisma_migrations"'),'SELECT')
@@ -308,20 +411,112 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                   SELECT 1 FROM unnest(ARRAY['INSERT','UPDATE','DELETE','TRUNCATE',
                     'REFERENCES','TRIGGER']) privilege
                   WHERE has_table_privilege(guard.oid,c.oid,privilege))))
+          AND (SELECT count(*) FROM pg_class c JOIN pg_namespace n
+            ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN
+              ('CodexOAuthLease','CodexOAuthSetupManifest',
+                'CodexOAuthWritebackIntent'))=3
+          AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n
+            ON n.oid=c.relnamespace JOIN pg_attribute a ON a.attrelid=c.oid
+              AND a.attnum>0 AND NOT a.attisdropped
+            WHERE n.nspname='public' AND c.relname IN
+              ('CodexOAuthLease','CodexOAuthSetupManifest',
+                'CodexOAuthWritebackIntent')
+              AND has_column_privilege(guard.oid,c.oid,a.attnum,'SELECT')
+                IS DISTINCT FROM (a.attname='status'))
           FROM pg_roles guard
           WHERE guard.rolname='reviewrouter_activation_receipt_guard'),false)
+        AND coalesce((SELECT
+          NOT owner.rolcanlogin AND NOT owner.rolsuper
+          AND NOT owner.rolcreatedb AND NOT owner.rolcreaterole
+          AND NOT owner.rolreplication AND NOT owner.rolbypassrls
+          AND public_namespace.nspowner=owner.oid
+          AND NOT has_database_privilege(migration.oid,current_database(),'CREATE')
+          AND NOT has_database_privilege(migration.oid,current_database(),'TEMP')
+          AND NOT has_schema_privilege(migration.oid,public_namespace.oid,'CREATE')
+          AND NOT pg_has_role(migration.oid,owner.oid,'MEMBER')
+          AND NOT pg_has_role(migration.oid,owner.oid,'USAGE')
+          AND NOT pg_has_role(migration.oid,owner.oid,'SET')
+          AND has_table_privilege(migration.oid,
+            to_regclass('public._prisma_migrations'),'SELECT')
+          AND NOT EXISTS (SELECT 1 FROM pg_class relation
+            JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+            WHERE namespace.nspname='public' AND relation.relkind IN ('r','p','v','m','f')
+              AND (relation.relname NOT IN ('_prisma_migrations','CodexOAuthLease',
+                    'CodexOAuthSetupManifest','CodexOAuthWritebackIntent')
+                  AND has_table_privilege(migration.oid,relation.oid,'SELECT')
+                OR EXISTS (SELECT 1 FROM unnest(ARRAY['INSERT','UPDATE','DELETE',
+                      'TRUNCATE','REFERENCES','TRIGGER']) privilege
+                    WHERE has_table_privilege(migration.oid,relation.oid,privilege))))
+          AND NOT EXISTS (SELECT 1 FROM pg_class relation
+            JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+            JOIN pg_attribute attribute ON attribute.attrelid=relation.oid
+              AND attribute.attnum>0 AND NOT attribute.attisdropped
+            WHERE namespace.nspname='public'
+              AND relation.relname IN ('CodexOAuthLease','CodexOAuthSetupManifest',
+                'CodexOAuthWritebackIntent')
+              AND has_column_privilege(migration.oid,relation.oid,
+                attribute.attnum,'SELECT') IS DISTINCT FROM
+                  (attribute.attname IN ('id','status')))
+          AND NOT EXISTS (SELECT 1 FROM pg_class object
+            JOIN pg_namespace namespace ON namespace.oid=object.relnamespace
+            WHERE namespace.nspname='public' AND object.relowner=migration.oid)
+          AND NOT EXISTS (SELECT 1 FROM pg_proc routine
+            JOIN pg_namespace namespace ON namespace.oid=routine.pronamespace
+            WHERE namespace.nspname='public' AND routine.proowner=migration.oid)
+          AND NOT EXISTS (SELECT 1 FROM pg_type type
+            JOIN pg_namespace namespace ON namespace.oid=type.typnamespace
+            WHERE namespace.nspname='public' AND type.typowner=migration.oid)
+          AND (SELECT count(*)=1 AND bool_and(edge.admin_option
+                AND NOT edge.inherit_option AND NOT edge.set_option
+                AND grantor.rolname<>bootstrap.rolname
+                AND grantor.rolname<>owner.rolname)
+            FROM pg_auth_members edge JOIN pg_roles grantor ON grantor.oid=edge.grantor
+            WHERE edge.roleid=owner.oid AND edge.member=bootstrap.oid)
+          AND NOT EXISTS (SELECT 1 FROM pg_auth_members edge
+            WHERE (edge.roleid=owner.oid OR edge.member=owner.oid)
+              AND NOT (edge.roleid=owner.oid AND edge.member=bootstrap.oid))
+          AND (SELECT count(*)=2 AND bool_and(routine.prosecdef
+                AND routine.prokind='p' AND routine.proowner=owner.oid
+                AND routine.proconfig=ARRAY['search_path=pg_catalog, public, pg_temp']
+                AND NOT has_function_privilege('public',routine.oid,'EXECUTE')
+                AND has_function_privilege(migration.oid,routine.oid,'EXECUTE')
+                  IS NOT DISTINCT FROM
+                    (routine.oid=to_regprocedure(
+                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb)')))
+            FROM pg_proc routine WHERE routine.oid IN (
+              to_regprocedure(
+                'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb)'),
+              to_regprocedure(
+                'public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text)')))
+          FROM pg_roles owner CROSS JOIN pg_roles migration
+          CROSS JOIN pg_roles bootstrap CROSS JOIN pg_namespace public_namespace
+          WHERE owner.rolname='reviewrouter_release_schema_owner'
+            AND migration.rolname='reviewrouter_release_migration'
+            AND bootstrap.rolname='reviewrouter_role_bootstrap'
+            AND public_namespace.nspname='public'),false)
+        AND coalesce(CASE WHEN pg_catalog.pg_input_is_valid(
+          pg_catalog.shobj_description((SELECT oid FROM pg_database
+            WHERE datname=current_database()),'pg_database'),
+          'jsonb')
+          THEN pg_catalog.shobj_description((SELECT oid FROM pg_database
+            WHERE datname=current_database()),'pg_database')::jsonb
+              ->>'recoveryWitnessSha256' ~ '^[a-f0-9]{64}$'
+          ELSE false END,false)
         AS "activationGuardExact",
-      (SELECT count(*)=7 AND bool_and(role.rolcanlogin IS NOT DISTINCT FROM
-          (role.rolname<>'reviewrouter_activation_receipt_guard'))
+      (SELECT count(*)=8 AND bool_and(role.rolcanlogin IS NOT DISTINCT FROM
+          (role.rolname NOT IN ('reviewrouter_activation_receipt_guard',
+            'reviewrouter_release_schema_owner')))
         FROM pg_roles role WHERE role.rolname=ANY(ARRAY[
           'reviewrouter_activation_receipt_guard','reviewrouter_activation_permit_installer',
           'reviewrouter_activation_receipt_reader','reviewrouter_api','reviewrouter_web',
-          'reviewrouter_worker','reviewrouter_codex_effect_authority']))
+          'reviewrouter_worker','reviewrouter_codex_effect_authority',
+          'reviewrouter_release_schema_owner']))
         AND NOT EXISTS (SELECT 1 FROM pg_roles role
         WHERE role.rolname=ANY(ARRAY['reviewrouter_activation_receipt_guard',
           'reviewrouter_activation_permit_installer',
           'reviewrouter_activation_receipt_reader','reviewrouter_api','reviewrouter_web',
-          'reviewrouter_worker','reviewrouter_codex_effect_authority'])
+          'reviewrouter_worker','reviewrouter_codex_effect_authority',
+          'reviewrouter_release_schema_owner'])
           AND (role.rolsuper OR role.rolcreatedb OR role.rolcreaterole
             OR role.rolreplication OR role.rolbypassrls))
         AND NOT EXISTS (SELECT 1 FROM pg_auth_members edge
@@ -351,14 +546,16 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
             OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
               WHERE n.nspname IN ('public','reviewrouter_activation')
                 AND has_function_privilege(role.oid,p.oid,'EXECUTE')
-                AND p.oid NOT IN (
-                  CASE role.rolname
-                    WHEN 'reviewrouter_activation_permit_installer' THEN
-                      to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)')
-                    WHEN 'reviewrouter_activation_receipt_reader' THEN
-                      to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')
-                  END,
-                  to_regprocedure('reviewrouter_activation.read_activation_migration_manifest_identity()')
+                AND NOT (
+                  role.rolname='reviewrouter_activation_permit_installer' AND p.oid IN (
+                    to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)'),
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
+                    to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'),
+                    to_regprocedure('reviewrouter_activation.read_activation_migration_manifest_identity()'))
+                  OR role.rolname='reviewrouter_activation_receipt_reader' AND p.oid IN (
+                    to_regprocedure('reviewrouter_activation.read_activation_receipt(text)'),
+                    to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)'),
+                    to_regprocedure('reviewrouter_activation.read_activation_migration_manifest_identity()'))
                 ))))
         AND NOT EXISTS (SELECT 1 FROM pg_roles role
           WHERE role.rolname=ANY(ARRAY['reviewrouter_api','reviewrouter_web',
@@ -437,7 +634,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
     releaseAuthorityDefaultAclExactExpression("release_authority");
   const finalAclExact =
     releaseAuthorityFinalAclExactExpression("release_authority");
-  const rows = await prisma.$queryRaw<ReleaseAuthorityDatabaseReadiness[]>(
+  const rows = await prisma.$queryRaw<ReleaseAuthorityExactness[]>(
     Prisma.sql`
       WITH facts AS (
         SELECT
@@ -503,18 +700,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           ) AS role_topology_exact
         FROM facts
       )
-      SELECT current_user AS "roleName",
-        pg_get_userbyid((SELECT nspowner FROM pg_namespace WHERE nspname='release_authority'))
-          AS "authorityOwnerRoleName",
-        (SELECT system_identifier::text FROM pg_control_system()) AS "systemIdentifier",
-        jsonb_build_object(
-          'serverIdentity', (SELECT system_identifier::text FROM pg_control_system()),
-          'databaseIdentity', (SELECT oid::text FROM pg_database
-            WHERE datname=current_database()),
-          'databaseName', current_database()
-        ) AS "databaseIdentity",
-        current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
-        CASE WHEN catalog_exact AND default_acl_exact AND final_acl_exact
+      SELECT CASE WHEN catalog_exact AND default_acl_exact AND final_acl_exact
           AND owner_membership_exact AND role_topology_exact
           THEN ${releaseAuthoritySchemaVersion} ELSE 0 END
           AS "schemaVersion",
@@ -561,7 +747,23 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
   signal?.throwIfAborted();
   if (rows.length !== 1 || !rows[0])
     throw new Error("release_control_database_identity_unavailable");
-  const readiness = rows[0];
+  const {
+    roleName,
+    authorityOwnerRoleName,
+    systemIdentifier,
+    recoveryWitnessSha256,
+    databaseIdentity,
+    postgresMajor,
+  } = probeRows[0];
+  const readiness: ReleaseAuthorityDatabaseReadiness = {
+    ...rows[0],
+    roleName,
+    authorityOwnerRoleName,
+    systemIdentifier,
+    recoveryWitnessSha256,
+    databaseIdentity,
+    postgresMajor,
+  };
   if (
     readiness.schemaVersion !== releaseAuthoritySchemaVersion ||
     readiness.migrationManifest.length > 0

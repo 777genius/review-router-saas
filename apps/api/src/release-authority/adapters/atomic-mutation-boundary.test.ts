@@ -17,6 +17,7 @@ vi.mock("../application/readiness", () => ({
 import {
   executeAtomicReleaseControlMutation,
   executeSameConnectionFenced,
+  observeAtomicConnectionAwareReadiness,
 } from "./same-connection-fence";
 
 const timing = {
@@ -166,6 +167,148 @@ describe("atomic catalog-attested mutation boundary", () => {
       values?: readonly unknown[];
     };
     expect(lockQuery.values).toContain(1129271120);
+  });
+
+  it("reuses the retained connection for matching readiness while unrelated clients stay pooled", async () => {
+    const { clients } = fixture();
+    const pooledObserver = vi.fn(async (prisma: unknown) => {
+      if (prisma === clients.control.prisma)
+        return clients.control.connection.observation;
+      throw new Error("unexpected_pooled_client");
+    });
+    const activeObserver = vi.fn(
+      async (connection: { observation: unknown }) => connection.observation,
+    );
+
+    await executeAtomicReleaseControlMutation(
+      clients as never,
+      "installer",
+      {} as never,
+      async () => {
+        await expect(
+          observeAtomicConnectionAwareReadiness(
+            clients.installer.prisma as never,
+            clients.installer.expected,
+            {},
+            pooledObserver as never,
+            activeObserver as never,
+          ),
+        ).resolves.toBe(clients.installer.connection.observation);
+        await expect(
+          observeAtomicConnectionAwareReadiness(
+            clients.control.prisma as never,
+            clients.control.expected,
+            {},
+            pooledObserver as never,
+            activeObserver as never,
+          ),
+        ).resolves.toBe(clients.control.connection.observation);
+      },
+      timing,
+      () => new Error("unavailable"),
+    );
+
+    expect(clients.installer.prisma.$transaction).toHaveBeenCalledOnce();
+    expect(pooledObserver).toHaveBeenCalledOnce();
+    expect(pooledObserver).toHaveBeenCalledWith(clients.control.prisma, {});
+    expect(activeObserver).toHaveBeenCalledOnce();
+    expect(activeObserver).toHaveBeenCalledWith(
+      clients.installer.connection,
+      undefined,
+    );
+  });
+
+  it("keeps installer then control nesting on one installer transaction", async () => {
+    const { clients } = fixture();
+    const pooledObserver = vi.fn(async (prisma: unknown) => {
+      const entry = Object.values(clients).find(
+        (value) => value.prisma === prisma,
+      );
+      if (!entry) throw new Error("unknown_client");
+      return entry.connection.observation;
+    });
+    const activeObserver = vi.fn(
+      async (connection: { observation: unknown }) => connection.observation,
+    );
+
+    await expect(
+      executeAtomicReleaseControlMutation(
+        clients as never,
+        "installer",
+        {} as never,
+        async () => {
+          await Promise.all(
+            Object.values(clients).map((entry) =>
+              observeAtomicConnectionAwareReadiness(
+                entry.prisma as never,
+                entry.expected,
+                {},
+                pooledObserver as never,
+                activeObserver as never,
+              ),
+            ),
+          );
+          return executeAtomicReleaseControlMutation(
+            clients as never,
+            "control",
+            {} as never,
+            () => "claimed",
+            timing,
+            () => new Error("unavailable"),
+          );
+        },
+        timing,
+        () => new Error("unavailable"),
+      ),
+    ).resolves.toBe("claimed");
+
+    expect(clients.installer.prisma.$transaction).toHaveBeenCalledOnce();
+    expect(clients.control.prisma.$transaction).toHaveBeenCalledOnce();
+    expect(pooledObserver).toHaveBeenCalledTimes(3);
+    expect(activeObserver).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed for active identity mismatch and abort without falling back to the pool", async () => {
+    const { clients } = fixture();
+    const pooledObserver = vi.fn();
+    const activeObserver = vi.fn(
+      async (connection: { observation: unknown }) => connection.observation,
+    );
+
+    await executeAtomicReleaseControlMutation(
+      clients as never,
+      "installer",
+      {} as never,
+      async () => {
+        await expect(
+          observeAtomicConnectionAwareReadiness(
+            clients.installer.prisma as never,
+            { ...clients.installer.expected, roleName: "wrong_role" },
+            {},
+            pooledObserver as never,
+            activeObserver as never,
+          ),
+        ).rejects.toThrow(
+          "release_authority_same_connection_identity_mismatch",
+        );
+        const controller = new AbortController();
+        controller.abort(new Error("observation_aborted"));
+        await expect(
+          observeAtomicConnectionAwareReadiness(
+            clients.installer.prisma as never,
+            clients.installer.expected,
+            { signal: controller.signal },
+            pooledObserver as never,
+            activeObserver as never,
+          ),
+        ).rejects.toThrow("observation_aborted");
+      },
+      timing,
+      () => new Error("unavailable"),
+    );
+
+    expect(pooledObserver).not.toHaveBeenCalled();
+    expect(activeObserver).not.toHaveBeenCalled();
   });
 
   it("fails closed when a target-typed callback tries a different replica connection", async () => {

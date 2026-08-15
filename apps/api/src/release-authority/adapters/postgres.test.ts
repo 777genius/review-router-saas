@@ -143,6 +143,8 @@ describe("release authority postgres JSONB bindings", () => {
       postCatalogDigest: `sha256:${"8".repeat(64)}`,
       permitEpoch: 1,
       permitNonce: "a".repeat(32),
+      targetMigrationReceiptSha256: `sha256:${"9".repeat(64)}`,
+      targetMigrationEffectFingerprint: `sha256:${"a".repeat(64)}`,
     };
     const permit = {
       schemaVersion: 1 as const,

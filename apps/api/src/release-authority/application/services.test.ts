@@ -28,6 +28,23 @@ const targetAttestation = {
   systemIdentifier: "200",
   recoveryWitnessSha256: "e".repeat(64),
 };
+const explicitTestGate: ReleaseAuthorityHighRiskMutationGate = {
+  execute: async (sequence) =>
+    sequence(async (_target, mutation) => mutation(targetAttestation)),
+};
+const migrationPermitInstaller = (
+  events?: string[],
+): ActivationPermitInstallerPort => ({
+  install: vi.fn(async () => "installed" as const),
+  installMigrationPermit: vi.fn(async () => {
+    events?.push("target-permit-installed");
+    return "installed" as const;
+  }),
+  terminalizeMigrationPermit: vi.fn(async ({ outcome }) => {
+    events?.push(`target-permit-${outcome}`);
+    return "terminalized" as const;
+  }),
+});
 
 const authorization: ActivationAuthorization = {
   rolloutId: "rollout-1",
@@ -122,7 +139,12 @@ const service = (proof: TargetActivationFacts | null) => {
   };
   return {
     finalizeActivation,
-    service: new ReleaseAuthorityService(repository, undefined, reader),
+    service: new ReleaseAuthorityService(
+      repository,
+      undefined,
+      reader,
+      explicitTestGate,
+    ),
   };
 };
 
@@ -288,12 +310,13 @@ describe("high-risk activation mutation policy", () => {
       epoch: 1,
       nonce: "f".repeat(32),
     };
+    const loadReleaseMigrationCheckpoint = vi.fn().mockResolvedValue({
+      targetManifestPhase: "pre_migration",
+      permit: null,
+      receipt: null,
+    });
     const repository = {
-      loadReleaseMigrationCheckpoint: vi.fn().mockResolvedValue({
-        targetManifestPhase: "pre_migration",
-        permit: null,
-        receipt: null,
-      }),
+      loadReleaseMigrationCheckpoint,
       beginReleaseMigration: vi.fn().mockResolvedValue(permit),
     } as unknown as ReleaseAuthorityLedgerPort;
     const phases: Array<string | undefined> = [];
@@ -304,9 +327,10 @@ describe("high-risk activation mutation policy", () => {
           return mutation(targetAttestation);
         }),
     };
+    const installer = migrationPermitInstaller();
     const service = new ReleaseAuthorityService(
       repository,
-      undefined,
+      installer,
       undefined,
       gate,
       transition,
@@ -330,6 +354,12 @@ describe("high-risk activation mutation policy", () => {
       rolloutId: permit.rolloutId,
       targetSystemIdentifier: targetAttestation.systemIdentifier,
     });
+    expect(installer.installMigrationPermit).toHaveBeenCalledWith({
+      permit,
+      sourceSystemIdentifier: input.sourceSystemIdentifier,
+      expectedPostManifestIdentity: transition.postManifestIdentity,
+      expectedPostCatalogDigest: transition.postCatalogDigest,
+    });
     await expect(
       service.beginReleaseMigration({
         ...input,
@@ -337,9 +367,19 @@ describe("high-risk activation mutation policy", () => {
       }),
     ).rejects.toThrow("release_migration_target_identity_untrusted");
     expect(repository.beginReleaseMigration).toHaveBeenCalledOnce();
+
+    loadReleaseMigrationCheckpoint.mockResolvedValue({
+      targetManifestPhase: "migrating",
+      permit,
+      receipt: null,
+    });
+    phases.length = 0;
+    await expect(service.beginReleaseMigration(input)).resolves.toEqual(permit);
+    expect(phases).toEqual(["migration_recovery", "migration_recovery"]);
+    expect(repository.beginReleaseMigration).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps deadlock-safe target-then-control nesting across completion", async () => {
+  it("commits target completion and reads its guard receipt before authority", async () => {
     const events: string[] = [];
     const transition = createReleaseMigrationTransition({
       commitSha: "c".repeat(40),
@@ -357,6 +397,27 @@ describe("high-risk activation mutation policy", () => {
       epoch: 1,
       nonce: "f".repeat(32),
     };
+    const targetMigrationReceipt = {
+      schemaVersion: 1 as const,
+      rolloutId: permit.rolloutId,
+      sourceSystemIdentifier: "100",
+      targetSystemIdentifier: permit.targetSystemIdentifier,
+      targetDatabaseIdentity: "16385",
+      targetDatabaseName: "target",
+      targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
+      transitionSha256: permit.transitionSha256,
+      previousReceiptSha256: permit.expectedPreviousReceiptSha256,
+      permitEpoch: permit.epoch,
+      permitNonce: permit.nonce,
+      postManifestIdentity: transition.postManifestIdentity,
+      postCatalogDigest: transition.postCatalogDigest,
+      legacyReconciliation: { status: "reconciled" },
+      effectFingerprint: `sha256:${"3".repeat(64)}`,
+      completedAt: "2026-08-12T00:00:30.000Z",
+    };
+    const targetMigrationReceiptSha256 = `sha256:${sha256Canonical(
+      targetMigrationReceipt,
+    )}`;
     const receipt = {
       step: "run_release_migration" as const,
       receiptId: "receipt-hostile",
@@ -380,6 +441,9 @@ describe("high-risk activation mutation policy", () => {
       postCatalogDigest: transition.postCatalogDigest,
       permitEpoch: permit.epoch,
       permitNonce: permit.nonce,
+      targetMigrationReceiptSha256,
+      targetMigrationEffectFingerprint:
+        targetMigrationReceipt.effectFingerprint,
     };
     const repository = {
       completeReleaseMigration: vi.fn(async () => {
@@ -398,10 +462,16 @@ describe("high-risk activation mutation policy", () => {
     };
     const service = new ReleaseAuthorityService(
       repository,
-      undefined,
+      migrationPermitInstaller(events),
       undefined,
       gate,
       transition,
+      {
+        readMigrationReceipt: vi.fn(async () => {
+          events.push("target-receipt-read");
+          return { ...targetMigrationReceipt, targetMigrationReceiptSha256 };
+        }),
+      },
     );
 
     await expect(
@@ -409,15 +479,34 @@ describe("high-risk activation mutation policy", () => {
     ).resolves.toEqual(receipt);
     expect(events).toEqual([
       "installer-fence-open",
+      "target-permit-completed",
+      "installer-fence-close",
+      "reader-fence-open",
+      "target-receipt-read",
+      "reader-fence-close",
       "control-fence-open",
       "authority-durable",
       "control-fence-close",
-      "installer-fence-close",
     ]);
+    await expect(
+      service.completeReleaseMigration({
+        permit,
+        receipt: {
+          ...receipt,
+          targetMigrationReceiptSha256: `sha256:${"9".repeat(64)}`,
+        },
+      }),
+    ).rejects.toThrow("release_migration_target_receipt_conflict");
+    expect(repository.completeReleaseMigration).toHaveBeenCalledOnce();
+    await expect(
+      service.completeReleaseMigration({ permit, receipt }),
+    ).resolves.toEqual(receipt);
+    expect(repository.completeReleaseMigration).toHaveBeenCalledTimes(2);
   });
 
-  it("holds the target fence across quarantine so a hostile mutator cannot interleave", async () => {
+  it("commits target quarantine before durable authority quarantine", async () => {
     const events: string[] = [];
+    const phases: string[] = [];
     const permit = {
       schemaVersion: 1 as const,
       rolloutId: "rollout-quarantine",
@@ -437,7 +526,8 @@ describe("high-risk activation mutation policy", () => {
     } as unknown as ReleaseAuthorityLedgerPort;
     const gate: ReleaseAuthorityHighRiskMutationGate = {
       execute: async (sequence) =>
-        sequence(async (target, mutation) => {
+        sequence(async (target, mutation, phase) => {
+          phases.push(`${target}:${phase}`);
           events.push(`${target}-fence-open`);
           const result = await mutation(targetAttestation);
           events.push(`${target}-fence-close`);
@@ -446,7 +536,7 @@ describe("high-risk activation mutation policy", () => {
     };
     const service = new ReleaseAuthorityService(
       repository,
-      undefined,
+      migrationPermitInstaller(events),
       undefined,
       gate,
     );
@@ -458,10 +548,15 @@ describe("high-risk activation mutation policy", () => {
 
     expect(events).toEqual([
       "installer-fence-open",
+      "target-permit-quarantined",
+      "installer-fence-close",
       "control-fence-open",
       "quarantine-durable",
       "control-fence-close",
-      "installer-fence-close",
+    ]);
+    expect(phases).toEqual([
+      "installer:migration_recovery",
+      "control:control_only",
     ]);
   });
 
@@ -498,6 +593,83 @@ describe("high-risk activation mutation policy", () => {
       }),
     ).rejects.toThrow("release_migration_target_identity_untrusted");
     expect(failReleaseMigration).not.toHaveBeenCalled();
+  });
+
+  it("does not quarantine authority when the target commit fails", async () => {
+    const failReleaseMigration = vi.fn();
+    const installer = migrationPermitInstaller();
+    const gate: ReleaseAuthorityHighRiskMutationGate = {
+      execute: async (sequence) =>
+        sequence(async (target, mutation) => {
+          await mutation(targetAttestation);
+          if (target === "installer")
+            throw new Error("injected_target_commit_failure");
+          return undefined as never;
+        }),
+    };
+    const service = new ReleaseAuthorityService(
+      { failReleaseMigration } as unknown as ReleaseAuthorityLedgerPort,
+      installer,
+      undefined,
+      gate,
+    );
+    await expect(
+      service.failReleaseMigration({
+        permit: {
+          schemaVersion: 1,
+          rolloutId: "rollout-target-commit-failure",
+          runId: "1",
+          runAttempt: 1,
+          targetSystemIdentifier: targetAttestation.systemIdentifier,
+          targetRecoveryWitnessSha256: targetAttestation.recoveryWitnessSha256,
+          transitionSha256: `sha256:${"a".repeat(64)}`,
+          expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+          epoch: 1,
+          nonce: "f".repeat(32),
+        },
+        reasonSha256: `sha256:${"b".repeat(64)}`,
+      }),
+    ).rejects.toThrow("injected_target_commit_failure");
+    expect(failReleaseMigration).not.toHaveBeenCalled();
+  });
+
+  it("retries idempotently after target commit and authority failure", async () => {
+    const permit = {
+      schemaVersion: 1 as const,
+      rolloutId: "rollout-authority-commit-failure",
+      runId: "1",
+      runAttempt: 1,
+      targetSystemIdentifier: targetAttestation.systemIdentifier,
+      targetRecoveryWitnessSha256: targetAttestation.recoveryWitnessSha256,
+      transitionSha256: `sha256:${"a".repeat(64)}`,
+      expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      epoch: 1,
+      nonce: "f".repeat(32),
+    };
+    const terminalizeMigrationPermit = vi
+      .fn()
+      .mockResolvedValueOnce("terminalized")
+      .mockResolvedValueOnce("existing");
+    const failReleaseMigration = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("injected_authority_commit_failure"))
+      .mockResolvedValueOnce(undefined);
+    const service = new ReleaseAuthorityService(
+      { failReleaseMigration } as unknown as ReleaseAuthorityLedgerPort,
+      {
+        ...migrationPermitInstaller(),
+        terminalizeMigrationPermit,
+      },
+      undefined,
+      explicitTestGate,
+    );
+    const input = { permit, reasonSha256: `sha256:${"b".repeat(64)}` };
+    await expect(service.failReleaseMigration(input)).rejects.toThrow(
+      "injected_authority_commit_failure",
+    );
+    await expect(service.failReleaseMigration(input)).resolves.toBeUndefined();
+    expect(terminalizeMigrationPermit).toHaveBeenCalledTimes(2);
+    expect(failReleaseMigration).toHaveBeenCalledTimes(2);
   });
 
   it("places provider-authority decisions inside the high-risk boundary", async () => {
@@ -571,6 +743,8 @@ describe("high-risk activation mutation policy", () => {
         events.push("target-write");
         return "installed" as const;
       }),
+      installMigrationPermit: vi.fn(async () => "installed" as const),
+      terminalizeMigrationPermit: vi.fn(async () => "existing" as const),
     };
     const gate: ReleaseAuthorityHighRiskMutationGate = {
       execute: async (sequence) =>
@@ -683,9 +857,11 @@ describe("target-aware uncertain activation reconciliation", () => {
     const reader = {
       read: vi.fn().mockResolvedValue(proof),
     } satisfies TargetActivationReceiptReaderPort;
-    await new ReleaseRolloutReconciliationService(repository, reader).reconcile(
-      authorization.rolloutId,
-    );
+    await new ReleaseRolloutReconciliationService(
+      repository,
+      reader,
+      explicitTestGate,
+    ).reconcile(authorization.rolloutId);
     return reconcile.mock.calls[0]?.[0];
   };
 
@@ -831,9 +1007,11 @@ describe("target-aware uncertain activation reconciliation", () => {
     const reader = {
       read: vi.fn().mockRejectedValue(new Error("target unavailable")),
     } satisfies TargetActivationReceiptReaderPort;
-    await new ReleaseRolloutReconciliationService(repository, reader).reconcile(
-      authorization.rolloutId,
-    );
+    await new ReleaseRolloutReconciliationService(
+      repository,
+      reader,
+      explicitTestGate,
+    ).reconcile(authorization.rolloutId);
     expect(reconcile).toHaveBeenCalledWith({
       rolloutId: authorization.rolloutId,
       targetObservation: { kind: "target_read_unavailable" },

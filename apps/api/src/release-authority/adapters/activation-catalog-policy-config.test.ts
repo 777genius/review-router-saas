@@ -59,7 +59,7 @@ describe("activation catalog policy deployment authorization", () => {
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
       status: "ready",
       reason:
-        "independently-reviewed-v19-production-shaped-pg17-candidate-promoted-with-pinned-phase-digests",
+        "reviewed-v20-production-shaped-pg17-candidate-promoted-with-pinned-phase-digests",
     });
     const policies =
       trustedActivationCatalogPoliciesFromEnvironment(configured);

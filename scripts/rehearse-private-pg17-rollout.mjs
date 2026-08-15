@@ -67,14 +67,13 @@ import { parsePrivatePg17ActivationCatalogPolicyCandidate } from "./capture-priv
 
 export const rehearsalActivationCatalogPolicyAuthorization = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:6e500c32e51fcf9421dc94c3f41a536c1cfaec9af3ce912c6a65b99460c8d5e2",
+    "sha256:c133bacb4a813540245430151ffd80f3380a4123ccc379250828d0317ac514d9",
   activatedCatalogPolicySha256:
-    "sha256:e88f3556a869977de67c02487663d7524dd19c5a3c11bb5541ada5cdc98f9b93",
+    "sha256:7930dc496e760ae4f0577b50db1251f44c55f2db68bf97f790ce290edc8d5253",
 });
 import { releaseAuthorityMigrationBundle } from "./install-release-authority-db.mjs";
 import { executePrivateGenerationActivation } from "./activate-private-pg17-generation.mjs";
 import { createSecureCanonicalRun } from "./private-pg17-secure-canonical.ts";
-import { reconcileLegacyAmbiguity } from "./reconcile-codex-rotating-legacy-ambiguity.mjs";
 import {
   createDatabaseCredentialBoundary,
   createSecretSafePostgresInvocation,
@@ -253,21 +252,11 @@ export async function routeRehearsalAfterReleaseMigration({
 
 export async function runRehearsalReleaseMigration({
   captureOnly,
-  rollout,
   runStage,
-  migrationPort,
   runReleaseMigration,
   captureCandidate,
   stageTargetServices,
 }) {
-  if (captureOnly) {
-    await runStage("run_release_migration", migrationPort);
-    return routeRehearsalAfterReleaseMigration({
-      captureOnly,
-      captureCandidate,
-      stageTargetServices,
-    });
-  }
   const migratedRollout = await runStage(
     "run_release_migration",
     runReleaseMigration,
@@ -1390,9 +1379,11 @@ ROLLBACK;`,
       providerAuthorityToken,
       witnessPrisma,
       authorityContainer: authority,
+      sourceContainer: source,
       targetContainer: target,
       sql,
       assertCanonicalPgcryptoAcl,
+      createdContainers,
       captureOnly,
     });
     if (captureOnly) return productionPath;
@@ -1960,28 +1951,23 @@ async function verifyProductionPathRehearsal(facts) {
       {
         ...facts.canonicalEnv,
         REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+        REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_SYSTEM_IDENTIFIER:
+          permit.targetSystemIdentifier,
+        REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_RECOVERY_WITNESS_SHA256:
+          permit.targetRecoveryWitnessSha256,
+        REVIEW_ROUTER_MIGRATION_PERMIT_TRANSITION_SHA256:
+          permit.transitionSha256,
+        REVIEW_ROUTER_MIGRATION_PERMIT_PREVIOUS_RECEIPT_SHA256:
+          permit.expectedPreviousReceiptSha256,
+        REVIEW_ROUTER_MIGRATION_PERMIT_EPOCH: String(permit.epoch),
+        REVIEW_ROUTER_MIGRATION_PERMIT_NONCE: permit.nonce,
       },
       canonicalRun,
     );
     process.stderr.write(
       "rehearsal_migration_substep_completed:canonical_migration\n",
     );
-    process.stderr.write(
-      "rehearsal_migration_substep_started:legacy_reconciliation\n",
-    );
-    legacyReconciliation = reconcileLegacyAmbiguity(
-      {
-        databaseUrl:
-          facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
-        recoveryWitnessSha256:
-          facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256,
-        rolloutId: rollout.rolloutId,
-      },
-      canonicalRun,
-    );
-    process.stderr.write(
-      "rehearsal_migration_substep_completed:legacy_reconciliation\n",
-    );
+    legacyReconciliation = migration.legacyReconciliation;
     process.stderr.write(
       "rehearsal_migration_substep_started:migration_checksum\n",
     );
@@ -2785,12 +2771,11 @@ COMMIT;
     captureOnly: facts.captureOnly,
     rollout,
     runStage,
-    migrationPort: runReleaseMigrationPort,
     runReleaseMigration: () => useCases.runReleaseMigration(rollout),
     captureCandidate: () => {
       const identity = facts.captureOnly.disposableDatabaseIdentity;
       assertDisposableCaptureTarget({
-        createdContainers,
+        createdContainers: facts.createdContainers,
         sourceContainer: facts.sourceContainer,
         targetContainer: facts.targetContainer,
       });

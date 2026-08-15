@@ -10,6 +10,7 @@ import type { RuntimeDatabaseIdentity } from "../domain/database-identity.js";
 import type { ReleaseAuthorityMutationTarget } from "../application/services.js";
 import type { ReleaseAuthorityFencedAttestation } from "../application/services.js";
 import { observeReleaseAuthorityDatabaseReadinessOnConnection } from "./postgres-readiness.js";
+import { observeReleaseAuthorityDatabaseReadiness } from "./postgres-readiness.js";
 
 export type SameConnectionIdentityExpectation = Readonly<{
   roleName: string;
@@ -69,6 +70,46 @@ const atomicConnections = new AsyncLocalStorage<
   ReadonlyMap<PrismaClient, ActiveAtomicConnection>
 >();
 
+type ReadinessObservationOptions = Parameters<
+  typeof observeReleaseAuthorityDatabaseReadiness
+>[1];
+
+const sameExpectedIdentity = (
+  left: SameConnectionIdentityExpectation,
+  right: SameConnectionIdentityExpectation,
+): boolean =>
+  left.roleName === right.roleName &&
+  left.postgresMajor === right.postgresMajor &&
+  left.databaseIdentity.serverIdentity ===
+    right.databaseIdentity.serverIdentity &&
+  left.databaseIdentity.databaseIdentity ===
+    right.databaseIdentity.databaseIdentity &&
+  left.databaseIdentity.databaseName === right.databaseIdentity.databaseName;
+
+/**
+ * Observes readiness on an already-attested atomic connection when this
+ * async sequence owns one for the exact Prisma client and expected identity.
+ * Other clients retain the normal bounded pooled observer. The two observer
+ * overrides are intentionally independent: pooled overrides never receive a
+ * transaction client, and active-connection overrides never open a pool slot.
+ */
+export async function observeAtomicConnectionAwareReadiness(
+  prisma: PrismaClient,
+  expected: SameConnectionIdentityExpectation,
+  options: ReadinessObservationOptions = {},
+  pooledObserver: typeof observeReleaseAuthorityDatabaseReadiness = observeReleaseAuthorityDatabaseReadiness,
+  activeObserver: typeof observeReleaseAuthorityDatabaseReadinessOnConnection = observeReleaseAuthorityDatabaseReadinessOnConnection,
+): Promise<ReleaseAuthorityDatabaseReadiness> {
+  options.signal?.throwIfAborted();
+  const active = atomicConnections.getStore()?.get(prisma);
+  if (!active) return pooledObserver(prisma, options);
+  if (!sameExpectedIdentity(active.expected, expected))
+    throw new Error("release_authority_same_connection_identity_mismatch");
+  const readiness = await activeObserver(active.connection, options.signal);
+  options.signal?.throwIfAborted();
+  return readiness;
+}
+
 const authorityMigrationLock = [1381126735, 1381258071] as const;
 const activationMigrationLock = [1381126735, 1129271120] as const;
 
@@ -123,16 +164,7 @@ export async function executeSameConnectionFenced<T>(
   if (atomic && !active)
     throw new Error("release_authority_atomic_mutation_target_mismatch");
   if (active) {
-    if (
-      active.expected.roleName !== expected.roleName ||
-      active.expected.postgresMajor !== expected.postgresMajor ||
-      active.expected.databaseIdentity.serverIdentity !==
-        expected.databaseIdentity.serverIdentity ||
-      active.expected.databaseIdentity.databaseIdentity !==
-        expected.databaseIdentity.databaseIdentity ||
-      active.expected.databaseIdentity.databaseName !==
-        expected.databaseIdentity.databaseName
-    )
+    if (!sameExpectedIdentity(active.expected, expected))
       throw new Error("release_authority_same_connection_identity_mismatch");
     return routine(active.connection);
   }

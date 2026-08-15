@@ -7,6 +7,7 @@ import { releaseControlDatabaseSetIsReady } from "./release-authority/applicatio
 import {
   composeReleaseControlDependencies,
   createReleaseControlApp as createReleaseControlAppBase,
+  trustedTargetIdentityForPhase,
 } from "./release-control-composition";
 import { createReleaseWitnessApp as createReleaseWitnessAppBase } from "./release-witness-composition";
 import {
@@ -46,6 +47,21 @@ const trustedMigrationTransition = createReleaseMigrationTransition({
   commitSha: "0".repeat(40),
   releaseImageDigest: `sha256:${"0".repeat(64)}`,
 });
+const explicitCompositionTestGate = {
+  execute: async <Result>(
+    sequence: Parameters<
+      import("./release-authority/application/services").ReleaseAuthorityHighRiskMutationGate["execute"]
+    >[0],
+  ): Promise<Result> =>
+    (await sequence(async (target, mutation) =>
+      mutation({
+        systemIdentifier:
+          target === "installer" || target === "reader" ? "200" : "100",
+        recoveryWitnessSha256:
+          target === "installer" || target === "reader" ? "f".repeat(64) : "",
+      }),
+    )) as Result,
+};
 
 const testReadinessObserver = async (
   prisma: PrismaClient,
@@ -206,7 +222,7 @@ const authorityReadiness = (
       ],
       [
         "000013_phase_aware_application_manifest",
-        "c2c721cef391504da5b2053da017e83b4dd80811f410368071138f0f28352853",
+        "c14c52ce2594f49a23663a22a16ca789454e059bdb9abd6070d1b773cc847465",
       ],
     ].map(([migrationName, checksum], index) => ({
       position: index + 1,
@@ -340,6 +356,16 @@ const postMigrationReadiness = <T extends readonly Record<string, unknown>[]>(
       trustedMigrationTransition.postManifestIdentity,
     applicationPostCatalogDigest: trustedMigrationTransition.postCatalogDigest,
   }));
+const targetEndpointReadiness = <T extends readonly Record<string, unknown>[]>(
+  rows: T,
+  manifestIdentity: string,
+  postCatalogDigest: string,
+) =>
+  rows.map((row) => ({
+    ...row,
+    applicationMigrationManifestIdentity: manifestIdentity,
+    applicationPostCatalogDigest: postCatalogDigest,
+  }));
 const witnessReadiness = authorityReadiness("reviewrouter_release_witness");
 type QueryOperation = (query: { text?: string }) => unknown;
 const readinessQuery = (
@@ -437,6 +463,61 @@ const createReleaseControlHealthApp = async (
 };
 
 describe("release authority process composition", () => {
+  it.each([
+    ["pre", "pre_migration", "pre", "untrusted", true],
+    ["pre wrong endpoint", "pre_migration", "wrong", "untrusted", false],
+    ["recovery pre", "migration_recovery", "pre", "untrusted", true],
+    ["recovery post", "migration_recovery", "post", "post", true],
+    ["recovery wrong catalog", "migration_recovery", "post", "wrong", false],
+    ["recovery wrong endpoint", "migration_recovery", "wrong", "post", false],
+    ["post", "post_migration", "post", "post", true],
+    ["post wrong catalog", "post_migration", "post", "wrong", false],
+    ["post wrong endpoint", "post_migration", "wrong", "post", false],
+  ] as const)(
+    "applies the exact coordinator target endpoint policy: %s",
+    (_name, phase, manifestKind, catalogKind, expected) => {
+      const manifest =
+        manifestKind === "pre"
+          ? trustedMigrationTransition.preManifestIdentity
+          : manifestKind === "post"
+            ? trustedMigrationTransition.postManifestIdentity
+            : `sha256:${"9".repeat(64)}`;
+      const catalog =
+        catalogKind === "post"
+          ? trustedMigrationTransition.postCatalogDigest
+          : catalogKind === "wrong"
+            ? `sha256:${"8".repeat(64)}`
+            : "untrusted";
+      const trusted = trustedTargetIdentityForPhase(
+        trustedDatabaseIdentity,
+        trustedMigrationTransition,
+        phase,
+        phase === "post_migration"
+          ? trustedMigrationTransition.postManifestIdentity
+          : trustedMigrationTransition.preManifestIdentity,
+      );
+      expect(
+        releaseControlDatabaseSetIsReady(
+          {
+            control: authorityReadiness("reviewrouter_release_control")[0]!,
+            provider: authorityReadiness("reviewrouter_provider_authority")[0]!,
+            installer: targetEndpointReadiness(
+              installerReadiness,
+              manifest,
+              catalog,
+            )[0]!,
+            reader: targetEndpointReadiness(
+              readerReadiness,
+              manifest,
+              catalog,
+            )[0]!,
+          },
+          trusted,
+        ),
+      ).toBe(expected);
+    },
+  );
+
   it("health reports cached lease state without amplifying catalog observations", async () => {
     const control = {
       $queryRaw: vi.fn().mockResolvedValue([{ value: "claimed" }]),
@@ -495,11 +576,29 @@ describe("release authority process composition", () => {
         providerAuthorityTokenSha256: digest("provider"),
       },
       trustedDatabaseIdentity,
+      explicitCompositionTestGate,
+      undefined,
+      undefined,
     );
     expect(dependencies.authority).not.toBe(dependencies.runnerOperations);
     expect(dependencies.runnerOperations).not.toBe(dependencies.reconciliation);
     expect(dependencies).not.toHaveProperty("cleanupWitness");
     expect(dependencies).not.toHaveProperty("witnessTokenSha256");
+  });
+
+  it("refuses every composition that omits the high-risk mutation gate", () => {
+    expect(() =>
+      composeReleaseControlDependencies(
+        {} as never,
+        {} as never,
+        {
+          controlTokenSha256: digest("control"),
+          providerAuthorityTokenSha256: digest("provider"),
+        },
+        trustedDatabaseIdentity,
+        undefined as never,
+      ),
+    ).toThrow("release_authority_high_risk_mutation_gate_missing");
   });
 
   it("threads configured pool wait and transaction timeout into routine fences", async () => {
@@ -529,12 +628,6 @@ describe("release authority process composition", () => {
         providerAuthorityTokenSha256: digest("provider"),
       },
       trustedDatabaseIdentity,
-      undefined,
-      undefined,
-      {
-        maxWaitMilliseconds: 123,
-        transactionTimeoutMilliseconds: 456,
-      },
       {
         execute: async (sequence) =>
           sequence(async (target, mutation) =>
@@ -544,6 +637,12 @@ describe("release authority process composition", () => {
                 target === "installer" ? "f".repeat(64) : "",
             }),
           ),
+      },
+      undefined,
+      undefined,
+      {
+        maxWaitMilliseconds: 123,
+        transactionTimeoutMilliseconds: 456,
       },
       createReleaseMigrationTransition({
         commitSha: "a".repeat(40),
@@ -581,6 +680,7 @@ describe("release authority process composition", () => {
           providerAuthorityTokenSha256: digest("provider"),
         },
         trustedDatabaseIdentity,
+        undefined as never,
       ),
     ).toThrow("release_control_credential_hash_invalid");
     await expect(
@@ -620,8 +720,8 @@ describe("release authority process composition", () => {
         providerAuthorityTokenSha256: digest("provider"),
       },
       trustedDatabaseIdentity,
+      explicitCompositionTestGate,
       { $queryRaw: installerQuery } as never,
-      undefined,
       undefined,
       undefined,
     );
@@ -932,6 +1032,7 @@ describe("release authority process composition", () => {
           providerAuthorityTokenSha256: digest("same"),
         },
         trustedDatabaseIdentity,
+        undefined as never,
       ),
     ).toThrow("release_control_credential_hash_invalid");
 

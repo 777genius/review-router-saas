@@ -112,6 +112,8 @@ const migrationReceiptResponse = (value: unknown): ReleaseMigrationReceipt => {
     "postCatalogDigest",
     "permitEpoch",
     "permitNonce",
+    "targetMigrationReceiptSha256",
+    "targetMigrationEffectFingerprint",
   ];
   if (
     (!migrationExactKeys(item, keys) &&
@@ -141,6 +143,8 @@ const migrationReceiptResponse = (value: unknown): ReleaseMigrationReceipt => {
       "preManifestIdentity",
       "postManifestIdentity",
       "postCatalogDigest",
+      "targetMigrationReceiptSha256",
+      "targetMigrationEffectFingerprint",
     ].some(
       (key) =>
         typeof item[key] !== "string" ||

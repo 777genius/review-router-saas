@@ -5,12 +5,18 @@ import {
   beginCompensation,
   completeCompensation,
   createReleaseRollout,
+  recoverCompletedReleaseMigration,
   RolloutPhase,
   RolloutStep,
+  sha256Canonical,
   transitionFailure,
   transitionFromObservation,
+  type ReleaseMigrationReceipt,
 } from "./release-rollout";
-import { createReleaseMigrationTransition } from "./release-migration-transition";
+import {
+  createReleaseMigrationTransition,
+  type ReleaseMigrationPermit,
+} from "./release-migration-transition";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const migrationTransitionFixture = createReleaseMigrationTransition({
@@ -344,6 +350,8 @@ const observe = (step: (typeof steps)[number], index: number) => {
           permitNonce: "a".repeat(32),
           targetSystemIdentifier: "200",
           targetRecoveryWitnessSha256: "c".repeat(64),
+          targetMigrationReceiptSha256: `sha256:${"d".repeat(64)}`,
+          targetMigrationEffectFingerprint: `sha256:${"e".repeat(64)}`,
           roles: [1, 2, 3, 4],
         },
       };
@@ -462,6 +470,64 @@ const observe = (step: (typeof steps)[number], index: number) => {
 };
 
 describe("release rollout domain policy", () => {
+  it.each([
+    ["too short", "ab"],
+    ["too long", `a${"b".repeat(512)}`],
+    ["invalid character", "receipt id"],
+    ["invalid first character", "@receipt"],
+  ])("rejects a %s migration receipt identifier", (_case, receiptId) => {
+    let rollout = create();
+    steps.slice(0, 11).forEach((step, index) => {
+      rollout = transitionFromObservation(rollout, observe(step, index));
+    });
+    const permit: ReleaseMigrationPermit = {
+      schemaVersion: 1,
+      rolloutId: rollout.rolloutId,
+      runId: rollout.execution.runId,
+      runAttempt: rollout.execution.runAttempt,
+      targetSystemIdentifier: rollout.target.systemIdentifier,
+      targetRecoveryWitnessSha256: rollout.target.recoveryWitnessSha256,
+      transitionSha256: rollout.migrationTransition.transitionSha256,
+      expectedPreviousReceiptSha256: rollout.receipts.at(-1)!.receiptSha256,
+      epoch: 1,
+      nonce: "a".repeat(32),
+    };
+    const unsigned = {
+      step: RolloutStep.RunReleaseMigration,
+      receiptId,
+      observedAt: "2026-08-12T00:00:00.000Z",
+      rolloutId: rollout.rolloutId,
+      expectedCommitSha: rollout.expectedCommitSha,
+      runId: rollout.execution.runId,
+      runAttempt: rollout.execution.runAttempt,
+      sourceSystemIdentifier: rollout.source.systemIdentifier,
+      targetSystemIdentifier: rollout.target.systemIdentifier,
+      provider: undefined,
+      observationSha256: digest,
+      previousReceiptSha256: permit.expectedPreviousReceiptSha256,
+      migrationChecksum: rollout.migrationTransition.postManifestIdentity,
+      transitionSha256: rollout.migrationTransition.transitionSha256,
+      migrationArtifactDigest:
+        rollout.migrationTransition.migrationArtifactDigest,
+      migrationBundleSha256: rollout.migrationTransition.migrationBundleSha256,
+      preManifestIdentity: rollout.migrationTransition.preManifestIdentity,
+      postManifestIdentity: rollout.migrationTransition.postManifestIdentity,
+      postCatalogDigest: rollout.migrationTransition.postCatalogDigest,
+      permitEpoch: permit.epoch,
+      permitNonce: permit.nonce,
+      targetMigrationReceiptSha256: `sha256:${"d".repeat(64)}`,
+      targetMigrationEffectFingerprint: `sha256:${"e".repeat(64)}`,
+    };
+    const receipt: ReleaseMigrationReceipt = {
+      ...unsigned,
+      receiptSha256: `sha256:${sha256Canonical(unsigned)}`,
+    };
+
+    expect(() =>
+      recoverCompletedReleaseMigration(rollout, permit, receipt),
+    ).toThrow("release_migration_receipt_recovery_invalid");
+  });
+
   it("hash-chains observation-derived receipts through activation, resume, cleanup, and verification", () => {
     let rollout = create();
     steps.forEach((step, index) => {

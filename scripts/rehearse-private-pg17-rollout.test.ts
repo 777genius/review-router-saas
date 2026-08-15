@@ -46,9 +46,9 @@ describe("disposable dual-version rehearsal", () => {
   it("uses the exact reviewed compact digest authorization in normal rehearsal", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual({
       preactivationCatalogPolicySha256:
-        "sha256:6e500c32e51fcf9421dc94c3f41a536c1cfaec9af3ce912c6a65b99460c8d5e2",
+        "sha256:c133bacb4a813540245430151ffd80f3380a4123ccc379250828d0317ac514d9",
       activatedCatalogPolicySha256:
-        "sha256:e88f3556a869977de67c02487663d7524dd19c5a3c11bb5541ada5cdc98f9b93",
+        "sha256:7930dc496e760ae4f0577b50db1251f44c55f2db68bf97f790ce290edc8d5253",
     });
   });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
@@ -189,13 +189,29 @@ describe("disposable dual-version rehearsal", () => {
       }),
     ).toThrow(failure);
   });
-  it("runs the migration port directly for capture-only without rollout CAS or staging", async () => {
+  it("runs capture-only through the authoritative migration use case without staging", async () => {
     const calls: string[] = [];
     const candidate = Object.freeze({ kind: "candidate", version: 1 });
-    const migrationPort = vi.fn(async () => calls.push("migration-port"));
+    const transition = Object.freeze({
+      transitionSha256: `sha256:${"1".repeat(64)}`,
+      migrationArtifactDigest: `sha256:${"2".repeat(64)}`,
+      postManifestIdentity: `sha256:${"3".repeat(64)}`,
+      postCatalogDigest: `sha256:${"4".repeat(64)}`,
+    });
+    const migratedRollout = Object.freeze({
+      targetManifestPhase: "post_migration",
+      migrationTransition: transition,
+      receipts: [
+        {
+          step: "run_release_migration",
+          ...transition,
+          migrationChecksum: transition.postManifestIdentity,
+        },
+      ],
+    });
     const runReleaseMigration = vi.fn(async () => {
       calls.push("rollout-use-case-cas");
-      return { phase: "migrated" };
+      return migratedRollout;
     });
     const captureCandidate = vi.fn(async () => {
       calls.push("capture-candidate");
@@ -215,7 +231,6 @@ describe("disposable dual-version rehearsal", () => {
         captureOnly: { disposableDatabaseIdentity: "rr-disposable-test" },
         rollout: { phase: "pre-migration" },
         runStage,
-        migrationPort,
         runReleaseMigration,
         captureCandidate,
         stageTargetServices,
@@ -223,10 +238,10 @@ describe("disposable dual-version rehearsal", () => {
     ).resolves.toEqual({ mode: "capture-only", candidate });
     expect(calls).toEqual([
       "stage:run_release_migration",
-      "migration-port",
+      "rollout-use-case-cas",
       "capture-candidate",
     ]);
-    expect(runReleaseMigration).not.toHaveBeenCalled();
+    expect(runReleaseMigration).toHaveBeenCalledOnce();
     expect(stageTargetServices).not.toHaveBeenCalled();
   });
   it("keeps normal migration in the rollout use case and stages its result", async () => {
@@ -250,7 +265,6 @@ describe("disposable dual-version rehearsal", () => {
       ],
     });
     const stagedRollout = Object.freeze({ phase: "staged" });
-    const migrationPort = vi.fn();
     const runReleaseMigration = vi.fn(async () => migratedRollout);
     const captureCandidate = vi.fn();
     const stageTargetServices = vi.fn(async () => stagedRollout);
@@ -261,7 +275,6 @@ describe("disposable dual-version rehearsal", () => {
         captureOnly: undefined,
         rollout: preMigrationRollout,
         runStage,
-        migrationPort,
         runReleaseMigration,
         captureCandidate,
         stageTargetServices,
@@ -272,7 +285,6 @@ describe("disposable dual-version rehearsal", () => {
       runReleaseMigration,
     );
     expect(runReleaseMigration).toHaveBeenCalledOnce();
-    expect(migrationPort).not.toHaveBeenCalled();
     expect(captureCandidate).not.toHaveBeenCalled();
     expect(stageTargetServices).toHaveBeenCalledWith(migratedRollout);
   });
@@ -601,6 +613,11 @@ describe("disposable dual-version rehearsal", () => {
       "redactedErrorChain",
     ])
       expect(source).toContain(required);
+    expect(source).toContain("createdContainers: facts.createdContainers");
+    expect(source).toContain("sourceContainer: source");
+    expect(source).toMatch(
+      /verifyProductionPathRehearsal\(\{[\s\S]*createdContainers,[\s\S]*captureOnly,/u,
+    );
     const activationTrustRootContract =
       /export function activationRoutineBodyTrustRoots\(\) \{([\s\S]+?)\n\}/u.exec(
         releaseMigrationSource,
@@ -811,7 +828,9 @@ describe("disposable dual-version rehearsal", () => {
     expect(source).toContain(
       "private_pg17_rehearsal_activation_catalog_policy_trust_root_blocked",
     );
-    const releaseMigration = source.indexOf('runStage("run_release_migration"');
+    const releaseMigration = source.indexOf(
+      "const migratedRollout = await runStage(",
+    );
     const capture = source.indexOf(
       '"capture_activation_catalog_policy_candidate"',
     );
