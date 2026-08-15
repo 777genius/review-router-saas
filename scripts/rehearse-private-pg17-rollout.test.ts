@@ -46,6 +46,11 @@ describe("disposable dual-version rehearsal", () => {
     ).toBe("release migration executor runtime connect gate mismatch");
     expect(
       safePostgresErrorClassification(
+        "psql: ERROR:  P0001: release migration V70-V72 live catalog digest mismatch\nDETAIL: token=secret",
+      ),
+    ).toBe("release migration v70-v72 live catalog digest mismatch");
+    expect(
+      safePostgresErrorClassification(
         "psql: ERROR:  P0001: codex_oauth_provider_identity_mismatch\nDETAIL: token=secret",
       ),
     ).toBe("codex_oauth_provider_identity_mismatch");

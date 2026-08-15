@@ -413,7 +413,7 @@ export function safePostgresErrorClassification(stderr) {
   )?.[1];
   if (missingObject) return missingObject.toLowerCase();
   const staticInvariant = normalizedStderr?.match(
-    /ERROR:\s*([a-z][a-z ]{2,100})(?:\n|$)/iu,
+    /ERROR:\s*([a-z][a-z0-9 -]{2,100})(?:\n|$)/iu,
   )?.[1];
   if (staticInvariant) return staticInvariant.toLowerCase();
   if (/ERROR:\s*release migration/iu.test(normalizedStderr ?? ""))
