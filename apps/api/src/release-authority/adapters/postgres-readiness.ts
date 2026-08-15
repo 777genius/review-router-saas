@@ -629,7 +629,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                     AND (acl.is_grantable OR grantee.oid IS DISTINCT FROM CASE
                       WHEN routine.oid=to_regprocedure(
                         'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)')
-                        THEN migration.oid ELSE NULL END))))
+                        THEN migration.oid ELSE NULL END)))
             FROM pg_proc routine WHERE routine.oid IN (
               to_regprocedure(
                 'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)'),
