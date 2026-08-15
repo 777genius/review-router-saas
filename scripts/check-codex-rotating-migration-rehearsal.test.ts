@@ -7,6 +7,10 @@ import {
   provisionAndAssertRehearsalRoles,
   rehearsalRoleLoginContract,
 } from "./codex-rotating-rehearsal-role-provisioning.mjs";
+import {
+  createRehearsalAuthorityContext,
+  rehearsalSchemaOwnerIdentity,
+} from "./codex-rotating-rehearsal-authority-context.mjs";
 
 describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   const source = readFileSync(
@@ -111,7 +115,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(matrix).not.toContain("name: migration69Name");
     expect(matrix).not.toContain("release_rollout_receipt_ledger");
     expect(matrix).toContain('psql(url, ["-c", testCase.decoy])');
-    expect(matrix).toContain("`${testCase.name} injected failure missing`");
+    expect(matrix).toContain(
+      "`${testCase.name} injected failure did not report its decoy collision`",
+    );
+    expect(matrix).toContain("assertPrismaMigrationFailureEnvelope(");
+    expect(matrix).toContain("testCase.failureMarker");
+    expect(matrix).toContain('includes("already exists")');
+    expect(matrix).toContain(
+      'const directFailure = psql(url, ["-f", testCase.source], false)',
+    );
     expect(matrix).toContain(
       "`${testCase.name} leaked partial catalog state after rollback`",
     );
@@ -168,16 +180,39 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(collection).toContain(").catalog");
   });
 
-  it("checks synthetic release sequence privileges by qualified name", () => {
+  it("proves schema-owner ownership and narrow release authority", () => {
     const privilegeProof =
       /function proveDatabasePrivileges\(url\) \{([\s\S]+?)\n\}/u.exec(
         source,
       )?.[1];
     expect(privilegeProof).toBeDefined();
     expect(privilegeProof).toContain(
-      "format('%I.%I', namespace.nspname, sequence.relname)",
+      "owner.rolname <> 'reviewrouter_release_schema_owner'",
     );
-    expect(privilegeProof).not.toContain("sequence.oid");
+    expect(privilegeProof).toContain(
+      "membership.roleid = 'reviewrouter_release_schema_owner'::regrole",
+    );
+    expect(privilegeProof).toContain("namespace.nspname = 'public'");
+    expect(privilegeProof).toContain("'reviewrouter_release_schema_owner'");
+    expect(privilegeProof).toContain("'SET'");
+    expect(privilegeProof).toContain(
+      "membership.member = 'reviewrouter_release_migration'::regrole",
+    );
+    expect(privilegeProof).toContain(
+      "'reviewrouter_release_migration', 'public', 'USAGE'",
+    );
+    expect(privilegeProof).toContain(
+      "'reviewrouter_release_migration', namespace.oid, 'CREATE'",
+    );
+    expect(privilegeProof).toContain(
+      "'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)'::regprocedure",
+    );
+    expect(privilegeProof).toContain('public."_prisma_migrations"');
+    expect(privilegeProof).toContain("attribute.attname IN ('id','status')");
+    expect(privilegeProof).toContain("is_grantable = 'YES'");
+    expect(privilegeProof).not.toContain(
+      "owner-equivalent data privileges must remain complete",
+    );
   });
 
   it("rehearses fail-closed grantor topology and rejects bootstrap replay", () => {
@@ -274,7 +309,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(privilegeProof).toContain("AND p.prosecdef");
     expect(privilegeProof).toContain(
-      "owner.rolname = 'reviewrouter_release_migration'",
+      "owner.rolname = 'reviewrouter_release_schema_owner'",
     );
     expect(privilegeProof).toContain(
       "p.proconfig = ARRAY['search_path=pg_catalog, public']::text[]",
@@ -319,40 +354,59 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
-  it("rehearses the canonical helper with separate direct bootstrap and release logins", () => {
+  it("routes rehearsal work through explicit authority clients", () => {
     const orchestration = source.slice(
       source.indexOf("try {"),
       source.indexOf("function proveLateMigrationRollbackAndReplayMatrix"),
     );
     const prepareIndex = orchestration.indexOf("prepareCanonicalReleaseRoles(");
     const fixtureSeedIndex = orchestration.indexOf(
-      "seedDirtyFixtures(rehearsalProviderUrl)",
+      "seedDirtyFixtures(providerAdmin)",
     );
-    const releaseLoginIndex = orchestration.indexOf(
-      "rehearsalUrl = rehearsalRoleClients.release",
+    const authorityIndex = orchestration.indexOf(
+      "rehearsalAuthority = rehearsalRelease.authority",
     );
     const helperIndex = orchestration.indexOf(
       "executeCanonicalReleaseMigration(",
     );
     const rehearsalHistoryResetIndex = orchestration.indexOf(
-      "discardRehearsalOnlyRolledBackMigrationHistory(rehearsalUrl)",
+      "discardRehearsalOnlyRolledBackMigrationHistory(providerAdmin)",
     );
     expect(prepareIndex).toBeGreaterThan(-1);
-    expect(fixtureSeedIndex).toBeGreaterThan(prepareIndex);
-    expect(fixtureSeedIndex).toBeLessThan(releaseLoginIndex);
+    expect(authorityIndex).toBeGreaterThan(prepareIndex);
+    expect(fixtureSeedIndex).toBeGreaterThan(authorityIndex);
     expect(source).toContain(
-      "proveMigration60LockTimeout(rehearsalUrl, rehearsalProviderUrl)",
+      "proveMigration60LockTimeout(providerAdmin, providerAdmin)",
     );
     expect(source).toContain(
-      "proveCombinedLockTimeout(rehearsalUrl, rehearsalProviderUrl)",
+      "proveCombinedLockTimeout(providerAdmin, providerAdmin)",
     );
     expect(source).toContain(
       "withApplicationName(fixtureAdminUrl, applicationName)",
+    );
+    expect(source).toContain('output.includes("lock timeout")');
+    expect(source).toContain(
+      'output.includes("current transaction is aborted")',
     );
     expect(prepareIndex).toBeLessThan(helperIndex);
     expect(rehearsalHistoryResetIndex).toBeGreaterThan(prepareIndex);
     expect(rehearsalHistoryResetIndex).toBeLessThan(helperIndex);
     expect(source).not.toContain("psqlInput");
+    expect(source).not.toContain("let rehearsalUrl");
+    expect(source).not.toContain("rehearsalRoleClients");
+    expect(source).toContain("createRehearsalAuthorityContext({");
+    expect(source).toContain("permitInstaller,");
+    expect(source).toContain("installRehearsalMigrationPermit(");
+    expect(source).toContain(
+      "reviewrouter_activation.install_migration_permit(",
+    );
+    expect(source).toContain(
+      "REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_SYSTEM_IDENTIFIER",
+    );
+    expect(source.match(/psql\(release,/gu)).toHaveLength(1);
+    expect(source).toMatch(
+      /psql\(release, \[[\s\S]+?reviewrouter_bootstrap\.consume_migration_evidence/u,
+    );
 
     const provisioning =
       /function prepareCanonicalReleaseRoles\(url, installHistoricalSchema\) \{([\s\S]+?)\n\}/u.exec(
@@ -422,6 +476,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "reviewrouter_worker",
       "reviewrouter_codex_effect_authority",
       "reviewrouter_release_migration",
+      "reviewrouter_release_schema_owner",
     ]) {
       expect(provisioning).toContain(role);
     }
@@ -449,6 +504,92 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).not.toContain(
       "convergeSyntheticReleaseOwnerEquivalentPrivileges",
     );
+    expect(source).toContain(
+      "rehearsalRoleObservationSql(rehearsalRoleMarker)",
+    );
+    expect(source).toContain("schema_owner_cleanup_dependencies_present");
+    expect(source).toContain("dependency.deptype IN ('a','o')");
+    expect(source).toContain('cleanupSafety === "0:0:0"');
+    expect(source).toContain(
+      "rehearsal_database_removal_not_proven_before_role_cleanup",
+    );
+    expect(source.indexOf("cleanupRuntimeRoles(adminUrl)")).toBeGreaterThan(
+      source.indexOf(
+        "rehearsal_database_removal_not_proven_before_role_cleanup",
+      ),
+    );
+  });
+
+  it("models the NOLOGIN schema owner separately from client credentials", () => {
+    const client = (name: string) =>
+      new URL(`postgresql://${name}@localhost/rehearsal`);
+    const context = createRehearsalAuthorityContext({
+      providerAdmin: client("provider-admin"),
+      bootstrap: client("bootstrap"),
+      permitInstaller: client("permit-installer"),
+      releaseMigration: client("release-migration"),
+      runtime: {
+        api: client("api"),
+        web: client("web"),
+        worker: client("worker"),
+        effectAuthority: client("effect-authority"),
+      },
+    });
+
+    expect(context.providerAdmin).not.toBe(context.releaseMigration);
+    expect(context.schemaOwner).toEqual({
+      roleName: "reviewrouter_release_schema_owner",
+      login: false,
+    });
+    expect(rehearsalSchemaOwnerIdentity.login).toBe(false);
+    expect(
+      rehearsalRoleLoginContract.get("reviewrouter_release_schema_owner"),
+    ).toBe(false);
+    expect(Object.isFrozen(context)).toBe(true);
+    expect(Object.isFrozen(context.runtime)).toBe(true);
+    expect(() =>
+      createRehearsalAuthorityContext({
+        providerAdmin: client("provider-admin"),
+        bootstrap: client("bootstrap"),
+        permitInstaller: client("permit-installer"),
+        releaseMigration: client("release-migration"),
+        runtime: {
+          api: client("api"),
+          web: client("web"),
+          effectAuthority: client("effect-authority"),
+        },
+      }),
+    ).toThrow("rehearsal_authority_client_invalid:worker");
+  });
+
+  it("requires Prisma retention failures to identify the expected guard or constraint", () => {
+    expect(prismaRetentionProofSource).not.toContain("catch {");
+    expect(prismaRetentionProofSource).toContain(
+      "attempt.expectedReasons.some",
+    );
+    expect(prismaRetentionProofSource).toContain(
+      "message.includes(expectedReason)",
+    );
+    for (const expectedReason of [
+      "codex_oauth_setup_attempt_delete_forbidden",
+      "codex_oauth_setup_claim_delete_forbidden",
+      "codex_oauth_secret_namespace_delete_forbidden",
+      "CodexOAuthSetupPayloadClaim_provider_fkey",
+      "CodexOAuthSetupPayloadClaim_repository_fkey",
+      "CodexOAuthSetupPayloadClaim_workspace_fkey",
+      "CodexOAuthSecretNamespace_provider_fkey",
+    ]) {
+      expect(prismaRetentionProofSource).toContain(expectedReason);
+    }
+  });
+
+  it("requires runtime Prisma negative proofs to identify the receipt guard", () => {
+    expect(runtimeProofSource).not.toContain("catch {");
+    expect(
+      runtimeProofSource.match(
+        /codex_oauth_database_authority_receipt_required/gu,
+      ),
+    ).toHaveLength(2);
   });
 
   it("cannot false-green when a zero-exit wrapper discards stdin", () => {
@@ -917,12 +1058,12 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
 
   it("runs the positive proof with isolated identities, database time, and replay evidence", () => {
     const runtimeWritebackProof =
-      /function proveRuntimeVersionedWriteback\(url, clients\) \{([\s\S]+?)\n\}/u.exec(
+      /function proveRuntimeVersionedWriteback\(providerAdminUrl, clients\) \{([\s\S]+?)\n\}/u.exec(
         source,
       )?.[1];
     expect(runtimeWritebackProof).toBeDefined();
     for (const environmentName of [
-      "REVIEW_ROUTER_PRISMA_EVIDENCE_RELEASE_DATABASE_URL",
+      "REVIEW_ROUTER_PRISMA_EVIDENCE_PROVIDER_ADMIN_DATABASE_URL",
       "REVIEW_ROUTER_PRISMA_EVIDENCE_API_DATABASE_URL",
       "REVIEW_ROUTER_PRISMA_EVIDENCE_WEB_DATABASE_URL",
       "REVIEW_ROUTER_PRISMA_EVIDENCE_EFFECT_AUTHORITY_DATABASE_URL",
@@ -946,13 +1087,13 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       /already connected\.\*deprecated\|deprecated\.\*already connected/iu,
     );
     expect(runtimeWritebackProof).toContain(
-      "release: createDatabaseCredentialBoundary(clients.release)",
+      "providerAdmin: createDatabaseCredentialBoundary(providerAdminUrl)",
     );
     expect(runtimeWritebackProof).toContain(
-      "REVIEW_ROUTER_PRISMA_EVIDENCE_RELEASE_DATABASE_URL_FILE:",
+      "REVIEW_ROUTER_PRISMA_EVIDENCE_PROVIDER_ADMIN_DATABASE_URL_FILE:",
     );
     expect(runtimeWritebackProof).toContain(
-      "credentials.release.environment.REVIEW_ROUTER_DATABASE_URL_FILE",
+      "credentials.providerAdmin.environment",
     );
     expect(runtimeWritebackProof).not.toContain("clients.release.toString()");
     expect(source).not.toContain("clients.admin");

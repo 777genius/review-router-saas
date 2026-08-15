@@ -42,35 +42,74 @@ const prisma = createPrismaClient({ databaseUrl, poolMax: 1 });
 
 try {
   const destructiveCleanupAttempts = [
-    () =>
-      prisma.codexOAuthSetupDispatchAttempt.delete({
-        where: { id: exact.attemptId },
-      }),
-    () =>
-      prisma.codexOAuthSetupPayloadClaim.delete({
-        where: { id: exact.claimId },
-      }),
-    () =>
-      prisma.codexOAuthSecretNamespace.delete({
-        where: { id: exact.namespaceId },
-      }),
-    () =>
-      prisma.codexOAuthProviderInstance.delete({
-        where: { id: exact.providerId },
-      }),
-    () =>
-      prisma.repositoryConnection.delete({
-        where: { id: exact.repositoryId },
-      }),
-    () => prisma.workspace.delete({ where: { id: exact.workspaceId } }),
+    {
+      expectedReasons: ["codex_oauth_setup_attempt_delete_forbidden"],
+      run: () =>
+        prisma.codexOAuthSetupDispatchAttempt.delete({
+          where: { id: exact.attemptId },
+        }),
+    },
+    {
+      expectedReasons: ["codex_oauth_setup_claim_delete_forbidden"],
+      run: () =>
+        prisma.codexOAuthSetupPayloadClaim.delete({
+          where: { id: exact.claimId },
+        }),
+    },
+    {
+      expectedReasons: ["codex_oauth_secret_namespace_delete_forbidden"],
+      run: () =>
+        prisma.codexOAuthSecretNamespace.delete({
+          where: { id: exact.namespaceId },
+        }),
+    },
+    {
+      expectedReasons: [
+        "CodexOAuthSetupPayloadClaim_provider_fkey",
+        "CodexOAuthSecretNamespace_provider_fkey",
+      ],
+      run: () =>
+        prisma.codexOAuthProviderInstance.delete({
+          where: { id: exact.providerId },
+        }),
+    },
+    {
+      expectedReasons: [
+        "CodexOAuthSetupPayloadClaim_repository_fkey",
+        "CodexOAuthSetupPayloadClaim_provider_fkey",
+        "CodexOAuthSecretNamespace_provider_fkey",
+      ],
+      run: () =>
+        prisma.repositoryConnection.delete({
+          where: { id: exact.repositoryId },
+        }),
+    },
+    {
+      expectedReasons: [
+        "CodexOAuthSetupPayloadClaim_workspace_fkey",
+        "CodexOAuthSetupPayloadClaim_repository_fkey",
+        "CodexOAuthSetupPayloadClaim_provider_fkey",
+        "CodexOAuthSecretNamespace_provider_fkey",
+      ],
+      run: () => prisma.workspace.delete({ where: { id: exact.workspaceId } }),
+    },
   ];
 
   for (const attempt of destructiveCleanupAttempts) {
     let rejected = false;
     try {
-      await attempt();
-    } catch {
-      rejected = true;
+      await attempt.run();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      rejected = attempt.expectedReasons.some((expectedReason) =>
+        message.includes(expectedReason),
+      );
+      if (!rejected) {
+        throw new Error(
+          `Prisma cleanup failed for the wrong reason; expected one of ${attempt.expectedReasons.join(",")}`,
+          { cause: error },
+        );
+      }
     }
     if (!rejected) {
       throw new Error("Prisma cleanup unexpectedly erased permanent evidence");

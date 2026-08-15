@@ -6,9 +6,15 @@ import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { codexRotatingProductionWriterBaseObservationSql } from "./capture-codex-rotating-production-writer.mjs";
 import { codexRotatingTriggers } from "./codex-rotating-production-writer-schema.mjs";
+import { createRehearsalAuthorityContext } from "./codex-rotating-rehearsal-authority-context.mjs";
+import {
+  assertRehearsalRoleObservation,
+  rehearsalRoleObservationSql,
+} from "./codex-rotating-rehearsal-role-provisioning.mjs";
 import {
   activationAuthorityProvisioningSql,
   executeCanonicalReleaseMigration,
+  liveV70V72CatalogDigestSha256,
   roleProvisioningSql,
   runtimeGrantStatements,
 } from "./run-codex-rotating-release-migration.mjs";
@@ -40,6 +46,8 @@ const migration70Name = "000070_runtime_generation_witness_proof";
 const migration71Name = "000071_transactional_service_transition";
 const migration72RetireName = "000072_retire_superseded_codex_setup_claims";
 const migration72CanaryName = "000072_runtime_canary_challenge";
+const rehearsalPostManifestIdentitySha256 =
+  "sha256:81dd8e6f9e3a799e462c26d1aa2684309df915416369b54f8499a8d793d5e623";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -78,40 +86,43 @@ const baseUrl = requireLocalPostgres(
 const psqlBinary = requirePostgres17();
 const databaseName = `rr_codex_fence_${process.pid}_${Date.now()}`;
 const adminUrl = databaseUrl(baseUrl, "postgres");
-let rehearsalUrl = databaseUrl(baseUrl, databaseName);
+const rehearsalProviderAdminUrl = databaseUrl(baseUrl, databaseName);
 const rehearsalRoleMarker = `reviewrouter-rehearsal-managed:${process.pid}:${randomUUID()}`;
-let rehearsalRoleClients;
+let rehearsalAuthority;
 
 try {
   psql(adminUrl, ["-c", `CREATE DATABASE ${quoteIdentifier(databaseName)}`]);
   assert(
-    psql(rehearsalUrl, ["-Atc", "SHOW server_version_num"])
+    psql(rehearsalProviderAdminUrl, ["-Atc", "SHOW server_version_num"])
       .stdout.trim()
       .startsWith("17"),
     "the rehearsal database server must be PostgreSQL 17",
   );
   const rehearsalRelease = prepareCanonicalReleaseRoles(
-    rehearsalUrl,
+    rehearsalProviderAdminUrl,
     applyBaselineThrough59,
   );
-  const rehearsalProviderUrl = rehearsalUrl;
-  rehearsalRoleClients = rehearsalRelease.clients;
-  seedDirtyFixtures(rehearsalProviderUrl);
-  rehearsalUrl = rehearsalRoleClients.release;
-  await proveMigration60LockTimeout(rehearsalUrl, rehearsalProviderUrl);
-  migrateResolve(rehearsalUrl, "--rolled-back", migration60Name);
-  await proveCombinedLockTimeout(rehearsalUrl, rehearsalProviderUrl);
-  proveMigrationRunnerHistory(rehearsalUrl, migration60Name, true);
-  proveFetchedAmbiguityStillPresent(rehearsalUrl);
-  await proveTtlCrossedAfter60(rehearsalUrl);
+  rehearsalAuthority = rehearsalRelease.authority;
+  const providerAdmin = rehearsalAuthority.providerAdmin;
+  const runtimeClients = rehearsalAuthority.runtime;
+  seedDirtyFixtures(providerAdmin);
+  await proveMigration60LockTimeout(providerAdmin, providerAdmin);
+  migrateResolve(providerAdmin, "--rolled-back", migration60Name);
+  await proveCombinedLockTimeout(providerAdmin, providerAdmin);
+  proveMigrationRunnerHistory(providerAdmin, migration60Name, true);
+  proveFetchedAmbiguityStillPresent(providerAdmin);
+  await proveTtlCrossedAfter60(providerAdmin);
 
-  proveStatementTimeoutConfiguration(rehearsalUrl);
-  proveInjected61Rollback(rehearsalUrl);
-  migrateResolve(rehearsalUrl, "--rolled-back", migration61Name);
-  discardRehearsalOnlyRolledBackMigrationHistory(rehearsalUrl);
+  proveStatementTimeoutConfiguration(providerAdmin);
+  proveInjected61Rollback(providerAdmin);
+  migrateResolve(providerAdmin, "--rolled-back", migration61Name);
+  discardRehearsalOnlyRolledBackMigrationHistory(providerAdmin);
+  const migrationPermitEnvironment =
+    installRehearsalMigrationPermit(rehearsalAuthority);
   const releaseMigrationResult = executeCanonicalReleaseMigration(
     {
       ...rehearsalRelease.environment,
+      ...migrationPermitEnvironment,
       REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
     },
     runRehearsalReleaseSubprocess,
@@ -122,42 +133,47 @@ try {
     "combined migration rehearsal must exercise the open runtime ACL state",
   );
 
-  proveSuccessfulCombinedRelease(rehearsalUrl);
-  proveDatabasePrivileges(rehearsalUrl);
-  proveRuntimeParentCascadesDenied(rehearsalUrl, rehearsalRoleClients);
-  proveStaleAclProviderIdentityEscalationDenied(
-    rehearsalUrl,
-    rehearsalRoleClients,
-  );
-  proveTerminalInsertGuards(rehearsalUrl);
-  proveSequentialFabricationDeniedForEveryRuntimeRole(rehearsalRoleClients);
-  proveRuntimeVersionedWriteback(rehearsalUrl, rehearsalRoleClients);
-  proveAccountSwitchRecoveryContract(rehearsalUrl);
-  proveCompletedRecoveryEvidenceRetention(rehearsalUrl);
+  proveSuccessfulCombinedRelease(providerAdmin);
+  proveDatabasePrivileges(providerAdmin);
+  proveRuntimeParentCascadesDenied(providerAdmin, runtimeClients);
+  proveStaleAclProviderIdentityEscalationDenied(providerAdmin, runtimeClients);
+  proveTerminalInsertGuards(providerAdmin);
+  proveSequentialFabricationDeniedForEveryRuntimeRole(runtimeClients);
+  proveRuntimeVersionedWriteback(providerAdmin, runtimeClients);
+  proveAccountSwitchRecoveryContract(providerAdmin);
+  proveCompletedRecoveryEvidenceRetention(providerAdmin);
   const versionedNamespaceEvidence =
-    proveVersionedNamespaceLedger(rehearsalUrl);
-  provePrismaCleanupRetention(rehearsalUrl, versionedNamespaceEvidence);
-  proveLegacyChildWritesRejected(rehearsalUrl);
-  proveParentIdentityWriteRejected(rehearsalUrl);
-  await proveProviderRepairAuthorityV2(rehearsalUrl, rehearsalRoleClients);
-  proveQuarantineCleanupPathV2(rehearsalUrl);
-  proveExactProductionCatalogContract(rehearsalUrl);
-  proveMigrateDeployNoOp(rehearsalUrl);
+    proveVersionedNamespaceLedger(providerAdmin);
+  provePrismaCleanupRetention(providerAdmin, versionedNamespaceEvidence);
+  proveLegacyChildWritesRejected(providerAdmin);
+  proveParentIdentityWriteRejected(providerAdmin);
+  await proveProviderRepairAuthorityV2(providerAdmin, runtimeClients);
+  proveQuarantineCleanupPathV2(providerAdmin);
+  proveExactProductionCatalogContract(providerAdmin);
+  proveMigrateDeployNoOp(providerAdmin);
   proveLateMigrationRollbackAndReplayMatrix();
-  proveReleaseAuthorityMarkerIsolation(rehearsalUrl);
-  const observation = collectObservation(rehearsalUrl);
+  proveReleaseAuthorityMarkerIsolation(providerAdmin);
+  const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
     "Codex rotating PostgreSQL 17 combined 000060 through 000072 rehearsal passed.\n",
   );
 } finally {
-  psql(
+  const databaseDrop = psql(
     adminUrl,
     [
       "-c",
       `DROP DATABASE IF EXISTS ${quoteIdentifier(databaseName)} WITH (FORCE)`,
     ],
     false,
+  );
+  assert(
+    databaseDrop.status === 0 &&
+      psql(adminUrl, [
+        "-Atc",
+        `SELECT count(*) FROM pg_database WHERE datname = ${quoteLiteral(databaseName)}`,
+      ]).stdout.trim() === "0",
+    "rehearsal_database_removal_not_proven_before_role_cleanup",
   );
   cleanupRuntimeRoles(adminUrl);
 }
@@ -175,6 +191,7 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       decoy:
         'CREATE INDEX "CodexOAuthSetupManifest_recovery_expiry_idx" ON "CodexOAuthSetupManifest"("status")',
       cleanup: 'DROP INDEX "CodexOAuthSetupManifest_recovery_expiry_idx"',
+      failureMarker: "CodexOAuthSetupManifest_recovery_expiry_idx",
       leaked:
         "SELECT count(*) FROM information_schema.columns WHERE table_name='CodexOAuthSetupManifest' AND column_name='payloadVersion'",
     },
@@ -190,6 +207,7 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       decoy:
         'CREATE INDEX "CodexOAuthSecretNamespace_secretName_key" ON "CodexOAuthProviderInstance"("id")',
       cleanup: 'DROP INDEX "CodexOAuthSecretNamespace_secretName_key"',
+      failureMarker: "CodexOAuthSecretNamespace_secretName_key",
       leaked:
         "SELECT count(*) FROM information_schema.tables WHERE table_name='CodexOAuthSecretNamespace'",
     },
@@ -206,6 +224,7 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       decoy:
         'CREATE FUNCTION "codex_oauth_database_authority_receipt_guard"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$',
       cleanup: 'DROP FUNCTION "codex_oauth_database_authority_receipt_guard"()',
+      failureMarker: "codex_oauth_database_authority_receipt_guard",
       leaked:
         "SELECT count(*) FROM pg_proc WHERE proname='codex_oauth_authorize_provider_identity_repair'",
     },
@@ -223,6 +242,7 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       decoy:
         'CREATE FUNCTION "codex_oauth_runtime_referential_action_guard"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN OLD; END $$',
       cleanup: 'DROP FUNCTION "codex_oauth_runtime_referential_action_guard"()',
+      failureMarker: "codex_oauth_runtime_referential_action_guard",
       leaked:
         "SELECT count(*) FROM pg_proc WHERE proname='codex_oauth_provider_identity_repair_challenge'",
     },
@@ -235,11 +255,26 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       applyBaselineThrough59(url);
       psql(url, ["-c", testCase.decoy]);
       const failed = migrateDeploy(url, false);
-      assert(failed.status !== 0, `${testCase.name} injected failure missing`);
+      assertPrismaMigrationFailureEnvelope(
+        failed,
+        testCase.failureMarker,
+        `${testCase.name} injected failure did not report its decoy collision`,
+      );
       for (const [migrationName] of testCase.prior) {
         proveMigrationRunnerHistory(url, migrationName, true);
       }
       proveMigrationRunnerHistory(url, testCase.name, false);
+      const directFailure = psql(url, ["-f", testCase.source], false);
+      assert(
+        directFailure.status !== 0 &&
+          `${directFailure.stdout}${directFailure.stderr}`.includes(
+            testCase.failureMarker,
+          ) &&
+          `${directFailure.stdout}${directFailure.stderr}`
+            .toLowerCase()
+            .includes("already exists"),
+        `${testCase.name} direct replay did not prove its decoy collision`,
+      );
       assert(
         psql(url, ["-Atc", testCase.leaked]).stdout.trim() === "0",
         `${testCase.name} leaked partial catalog state after rollback`,
@@ -482,6 +517,10 @@ async function proveMigration60LockTimeout(url, fixtureAdminUrl) {
       runnerFailure.status !== 0,
       "held manifest lock must reject runner 000060",
     );
+    assertPrismaLockTimeoutEnvelope(
+      runnerFailure,
+      "runner_000060_lock_timeout_not_observed",
+    );
     assert(
       runnerElapsedMs >= 14_000 && runnerElapsedMs < 30_000,
       `prisma_000060_lock_timeout_unbounded:${runnerElapsedMs}`,
@@ -559,6 +598,10 @@ async function proveCombinedLockTimeout(url, fixtureAdminUrl) {
       failed.status !== 0,
       "held provider lock must reject combined runner release",
     );
+    assertPrismaLockTimeoutEnvelope(
+      failed,
+      "runner_000061_lock_timeout_not_observed",
+    );
     assert(
       elapsedMs >= 14_000 && elapsedMs < 30_000,
       `prisma_000061_lock_timeout_unbounded:${elapsedMs}`,
@@ -616,8 +659,9 @@ function proveInjected61Rollback(url) {
   );
 
   const failed = migrateDeploy(url, false);
-  assert(
-    failed.status !== 0,
+  assertPrismaMigrationFailureEnvelope(
+    failed,
+    "CodexOAuthProviderInstance_mutation_owner_idx",
     "decoy 000061 index must inject a runner failure",
   );
   assert(
@@ -1175,17 +1219,45 @@ function proveVersionedNamespaceLedger(url) {
       `${table} permanent evidence deletion must be rejected`,
     );
   }
-  for (const [table, id] of [
-    ["CodexOAuthProviderInstance", provider.id],
-    ["RepositoryConnection", provider.repositoryId],
-    ["Workspace", provider.workspaceId],
+  for (const [table, id, expectedReasons] of [
+    [
+      "CodexOAuthProviderInstance",
+      provider.id,
+      [
+        "CodexOAuthSetupPayloadClaim_provider_fkey",
+        "CodexOAuthSecretNamespace_provider_fkey",
+      ],
+    ],
+    [
+      "RepositoryConnection",
+      provider.repositoryId,
+      [
+        "CodexOAuthSetupPayloadClaim_repository_fkey",
+        "CodexOAuthSetupPayloadClaim_provider_fkey",
+        "CodexOAuthSecretNamespace_provider_fkey",
+      ],
+    ],
+    [
+      "Workspace",
+      provider.workspaceId,
+      [
+        "CodexOAuthSetupPayloadClaim_workspace_fkey",
+        "CodexOAuthSetupPayloadClaim_repository_fkey",
+        "CodexOAuthSetupPayloadClaim_provider_fkey",
+        "CodexOAuthSecretNamespace_provider_fkey",
+      ],
+    ],
   ]) {
     const ownerDeletion = psql(
       url,
       ["-c", `DELETE FROM "${table}" WHERE "id"=${quoteLiteral(id)}`],
       false,
     );
-    assert(ownerDeletion.status !== 0, `${table} cleanup must retain evidence`);
+    assertPsqlFailedWithOneOfExactMessages(
+      ownerDeletion,
+      expectedReasons,
+      `${table} cleanup must retain evidence through the expected constraint`,
+    );
     assertVersionedNamespaceEvidenceRetained(url, evidence, table);
   }
   return evidence;
@@ -1298,9 +1370,9 @@ function provePrismaCleanupRetention(url, evidence) {
   assertVersionedNamespaceEvidenceRetained(url, evidence, "Prisma");
 }
 
-function proveRuntimeVersionedWriteback(url, clients) {
+function proveRuntimeVersionedWriteback(providerAdminUrl, clients) {
   const credentials = {
-    release: createDatabaseCredentialBoundary(clients.release),
+    providerAdmin: createDatabaseCredentialBoundary(providerAdminUrl),
     api: createDatabaseCredentialBoundary(clients.api),
     web: createDatabaseCredentialBoundary(clients.web),
     effectAuthority: createDatabaseCredentialBoundary(clients.effectAuthority),
@@ -1317,9 +1389,10 @@ function proveRuntimeVersionedWriteback(url, clients) {
       {
         cwd: root,
         env: {
-          ...credentials.release.environment,
-          REVIEW_ROUTER_PRISMA_EVIDENCE_RELEASE_DATABASE_URL_FILE:
-            credentials.release.environment.REVIEW_ROUTER_DATABASE_URL_FILE,
+          ...credentials.providerAdmin.environment,
+          REVIEW_ROUTER_PRISMA_EVIDENCE_PROVIDER_ADMIN_DATABASE_URL_FILE:
+            credentials.providerAdmin.environment
+              .REVIEW_ROUTER_DATABASE_URL_FILE,
           REVIEW_ROUTER_PRISMA_EVIDENCE_API_DATABASE_URL_FILE:
             credentials.api.environment.REVIEW_ROUTER_DATABASE_URL_FILE,
           REVIEW_ROUTER_PRISMA_EVIDENCE_WEB_DATABASE_URL_FILE:
@@ -1415,7 +1488,7 @@ function proveDatabasePrivileges(url) {
           JOIN pg_roles owner ON owner.oid = p.proowner
           WHERE p.oid = 'public.codex_oauth_provider_identity_guard()'::regprocedure
             AND p.prosecdef
-            AND owner.rolname = 'reviewrouter_release_migration'
+            AND owner.rolname = 'reviewrouter_release_schema_owner'
             AND p.proconfig = ARRAY['search_path=pg_catalog, public']::text[]
             AND position(
               'FROM public."CodexOAuthProviderIdentityQuarantine"'
@@ -1471,9 +1544,9 @@ function proveDatabasePrivileges(url) {
           RAISE EXCEPTION 'Codex OAuth child identity fence guard execution contract mismatch';
         END IF;
 
-        -- The direct LOGIN release caller owns the schema and migration-created
-        -- catalog objects, so its owner-equivalent data privileges must remain
-        -- complete without inheriting another role.
+        -- Managed production objects are owned by the unreachable NOLOGIN
+        -- schema owner. The release login is only a narrow procedure caller
+        -- and evidence/history reader; it must never inherit owner authority.
         IF NOT EXISTS (
           SELECT 1 FROM pg_roles
           WHERE rolname = 'reviewrouter_release_migration'
@@ -1484,16 +1557,122 @@ function proveDatabasePrivileges(url) {
             AND NOT rolreplication
             AND NOT rolbypassrls
         )
-           OR NOT has_schema_privilege('reviewrouter_release_migration', 'public', 'USAGE')
+           OR NOT EXISTS (
+             SELECT 1 FROM pg_roles
+             WHERE rolname = 'reviewrouter_release_schema_owner'
+               AND NOT rolcanlogin
+               AND NOT rolsuper
+               AND NOT rolcreatedb
+               AND NOT rolcreaterole
+               AND NOT rolreplication
+               AND NOT rolbypassrls
+           )
+           OR EXISTS (
+             SELECT 1 FROM pg_auth_members membership
+             WHERE membership.roleid = 'reviewrouter_release_schema_owner'::regrole
+                OR membership.member = 'reviewrouter_release_schema_owner'::regrole
+                OR membership.grantor = 'reviewrouter_release_schema_owner'::regrole
+           )
+           OR (
+             SELECT owner.rolname
+             FROM pg_namespace namespace
+             JOIN pg_roles owner ON owner.oid = namespace.nspowner
+             WHERE namespace.nspname = 'public'
+           ) <> 'reviewrouter_release_schema_owner'
+           OR pg_has_role(
+             'reviewrouter_release_migration',
+             'reviewrouter_release_schema_owner',
+             'SET'
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_auth_members membership
+             WHERE membership.member = 'reviewrouter_release_migration'::regrole
+           )
+           OR has_database_privilege(
+             'reviewrouter_release_migration', current_database(), 'CREATE'
+           )
+           OR NOT has_schema_privilege(
+             'reviewrouter_release_migration', 'public', 'USAGE'
+           )
+           OR has_schema_privilege(
+             'reviewrouter_release_migration', 'public', 'CREATE'
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_namespace namespace
+             WHERE namespace.nspname NOT LIKE 'pg_temp_%'
+               AND namespace.nspname NOT LIKE 'pg_toast_temp_%'
+               AND has_schema_privilege(
+                 'reviewrouter_release_migration', namespace.oid, 'CREATE'
+               )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_class relation
+             JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+             JOIN pg_roles owner ON owner.oid = relation.relowner
+             WHERE namespace.nspname = 'public'
+               AND relation.relkind IN ('r','p','v','m','S','f')
+               AND owner.rolname <> 'reviewrouter_release_schema_owner'
+               AND NOT EXISTS (
+                 SELECT 1 FROM pg_depend dependency
+                 WHERE dependency.classid = 'pg_class'::regclass
+                   AND dependency.objid = relation.oid
+                   AND dependency.refclassid = 'pg_extension'::regclass
+                   AND dependency.deptype = 'e'
+               )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_proc routine
+             JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+             JOIN pg_roles owner ON owner.oid = routine.proowner
+             WHERE namespace.nspname = 'public'
+               AND owner.rolname <> 'reviewrouter_release_schema_owner'
+               AND NOT EXISTS (
+                 SELECT 1 FROM pg_depend dependency
+                 WHERE dependency.classid = 'pg_proc'::regclass
+                   AND dependency.objid = routine.oid
+                   AND dependency.refclassid = 'pg_extension'::regclass
+                   AND dependency.deptype = 'e'
+               )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_proc routine
+             JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+             WHERE namespace.nspname = 'public'
+               AND has_function_privilege(
+                 'reviewrouter_release_migration', routine.oid, 'EXECUTE'
+               )
+               AND routine.oid <> 'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)'::regprocedure
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)'::regprocedure,
+             'EXECUTE'
+           )
+           OR NOT has_table_privilege(
+             'reviewrouter_release_migration',
+             'public."_prisma_migrations"',
+             'SELECT'
+           )
            OR EXISTS (
              SELECT 1
              FROM pg_class relation
              JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
              WHERE namespace.nspname = 'public'
-               AND relation.relkind IN ('r', 'p')
-               AND NOT has_table_privilege(
-                 'reviewrouter_release_migration', relation.oid,
-                 'SELECT,INSERT,UPDATE,DELETE,REFERENCES'
+               AND relation.relkind IN ('r','p','v','m','f')
+               AND (
+                 has_table_privilege(
+                   'reviewrouter_release_migration', relation.oid,
+                   'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+                 )
+                 OR has_any_column_privilege(
+                   'reviewrouter_release_migration', relation.oid,
+                   'INSERT,UPDATE,REFERENCES'
+                 )
                )
            )
            OR EXISTS (
@@ -1502,22 +1681,104 @@ function proveDatabasePrivileges(url) {
              JOIN pg_namespace namespace ON namespace.oid = sequence.relnamespace
              WHERE namespace.nspname = 'public'
                AND sequence.relkind = 'S'
-               AND NOT has_sequence_privilege(
-                 'reviewrouter_release_migration',
-                 format('%I.%I', namespace.nspname, sequence.relname),
-                 'USAGE,SELECT,UPDATE'
+               AND has_sequence_privilege(
+                 'reviewrouter_release_migration', sequence.oid, 'USAGE,SELECT,UPDATE'
                )
            )
            OR EXISTS (
-             SELECT 1 FROM pg_attribute attribute
-             WHERE attribute.attrelid = 'public."RepositoryConnection"'::regclass
-               AND attribute.attnum > 0 AND NOT attribute.attisdropped
-               AND NOT (
-                 has_column_privilege('reviewrouter_release_migration', attribute.attrelid, attribute.attnum, 'SELECT')
-                 AND has_column_privilege('reviewrouter_release_migration', attribute.attrelid, attribute.attnum, 'INSERT')
-                 AND has_column_privilege('reviewrouter_release_migration', attribute.attrelid, attribute.attnum, 'UPDATE')
-                 AND has_column_privilege('reviewrouter_release_migration', attribute.attrelid, attribute.attnum, 'REFERENCES')
+             SELECT 1
+             FROM information_schema.role_table_grants grant_row
+             WHERE grant_row.grantee = 'reviewrouter_release_migration'
+               AND grant_row.is_grantable = 'YES'
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM information_schema.role_routine_grants grant_row
+             WHERE grant_row.grantee = 'reviewrouter_release_migration'
+               AND grant_row.is_grantable = 'YES'
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM information_schema.column_privileges grant_row
+             WHERE grant_row.grantee = 'reviewrouter_release_migration'
+               AND grant_row.is_grantable = 'YES'
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_namespace namespace
+             CROSS JOIN LATERAL aclexplode(
+               coalesce(namespace.nspacl, acldefault('n', namespace.nspowner))
+             ) grant_row
+             WHERE grant_row.grantee = 'reviewrouter_release_migration'::regrole
+               AND grant_row.is_grantable
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_database database
+             CROSS JOIN LATERAL aclexplode(
+               coalesce(database.datacl, acldefault('d', database.datdba))
+             ) grant_row
+             WHERE database.datname = current_database()
+               AND grant_row.grantee = 'reviewrouter_release_migration'::regrole
+               AND grant_row.is_grantable
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_class relation
+             JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+             WHERE namespace.nspname = 'public'
+               AND relation.relname NOT IN (
+                 '_prisma_migrations',
+                 'CodexOAuthLease',
+                 'CodexOAuthSetupManifest',
+                 'CodexOAuthWritebackIntent'
                )
+               AND has_table_privilege(
+                 'reviewrouter_release_migration', relation.oid, 'SELECT'
+               )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_attribute attribute
+             JOIN pg_class relation ON relation.oid = attribute.attrelid
+             JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+             WHERE namespace.nspname = 'public'
+               AND attribute.attnum > 0
+               AND NOT attribute.attisdropped
+               AND has_column_privilege(
+                 'reviewrouter_release_migration',
+                 attribute.attrelid,
+                 attribute.attnum,
+                 'SELECT'
+               )
+               AND NOT (
+                 relation.relname = '_prisma_migrations'
+                 OR (
+                   relation.relname IN (
+                     'CodexOAuthLease',
+                     'CodexOAuthSetupManifest',
+                     'CodexOAuthWritebackIntent'
+                   )
+                   AND attribute.attname IN ('id','status')
+                 )
+               )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_attribute attribute
+             WHERE attribute.attrelid IN (
+               'public."CodexOAuthLease"'::regclass,
+               'public."CodexOAuthSetupManifest"'::regclass,
+               'public."CodexOAuthWritebackIntent"'::regclass
+             )
+               AND attribute.attnum > 0
+               AND NOT attribute.attisdropped
+               AND has_column_privilege(
+                 'reviewrouter_release_migration',
+                 attribute.attrelid,
+                 attribute.attnum,
+                 'SELECT'
+               ) IS DISTINCT FROM (attribute.attname IN ('id','status'))
            )
         THEN
           RAISE EXCEPTION 'Codex OAuth release migration privilege mismatch';
@@ -1788,8 +2049,10 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
   const externalGuardRole = "reviewrouter_activation_receipt_guard";
   const externalInstallerRole = "reviewrouter_activation_permit_installer";
   const externalReceiptReaderRole = "reviewrouter_activation_receipt_reader";
+  const schemaOwnerRole = "reviewrouter_release_schema_owner";
   const allRoles = [
     ...loginRoles.map(([role]) => role),
+    schemaOwnerRole,
     externalGuardRole,
     externalInstallerRole,
     externalReceiptReaderRole,
@@ -1797,6 +2060,7 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
   const passwords = new Map(
     loginRoles.map(([role]) => [role, `${randomUUID()}${randomUUID()}`]),
   );
+  passwords.set(externalInstallerRole, `${randomUUID()}${randomUUID()}`);
   const bootstrapPassword = `${randomUUID()}${randomUUID()}`;
   const canonicalRoleLiterals = allRoles.map(quoteLiteral).join(",");
   const provisioningSql = `BEGIN;
@@ -1835,7 +2099,7 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
     COMMENT ON ROLE reviewrouter_activation_receipt_guard IS ${quoteLiteral(rehearsalRoleMarker)};
-    CREATE ROLE reviewrouter_activation_permit_installer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(`${randomUUID()}${randomUUID()}`)};
+    CREATE ROLE reviewrouter_activation_permit_installer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get(externalInstallerRole))};
     COMMENT ON ROLE reviewrouter_activation_permit_installer IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_activation_receipt_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(`${randomUUID()}${randomUUID()}`)};
     COMMENT ON ROLE reviewrouter_activation_receipt_reader IS ${quoteLiteral(rehearsalRoleMarker)};
@@ -1935,7 +2199,11 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     "reviewrouter_release_migration",
     "rr-rehearsal-release-migration",
   );
-  const clients = {
+  const permitInstaller = clientUrl(
+    externalInstallerRole,
+    "rr-rehearsal-permit-installer",
+  );
+  const runtime = {
     api: clientUrl("reviewrouter_api", "rr-rehearsal-api"),
     web: clientUrl("reviewrouter_web", "rr-rehearsal-web"),
     worker: clientUrl("reviewrouter_worker", "rr-rehearsal-worker"),
@@ -1943,17 +2211,16 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
       "reviewrouter_codex_effect_authority",
       "rr-rehearsal-effect-authority",
     ),
-    release,
   };
   const environment = {
     ...process.env,
     REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: bootstrap.toString(),
     REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: release.toString(),
-    REVIEW_ROUTER_API_DATABASE_URL: clients.api.toString(),
-    REVIEW_ROUTER_WEB_DATABASE_URL: clients.web.toString(),
-    REVIEW_ROUTER_WORKER_DATABASE_URL: clients.worker.toString(),
+    REVIEW_ROUTER_API_DATABASE_URL: runtime.api.toString(),
+    REVIEW_ROUTER_WEB_DATABASE_URL: runtime.web.toString(),
+    REVIEW_ROUTER_WORKER_DATABASE_URL: runtime.worker.toString(),
     REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
-      clients.effectAuthority.toString(),
+      runtime.effectAuthority.toString(),
     REVIEW_ROUTER_RELEASE_COMMIT_SHA: "a".repeat(40),
     REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
   };
@@ -2135,7 +2402,7 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     END
     $receipt$;`,
   ]);
-  const transferredLegacyOwners = psql(release, [
+  const transferredLegacyOwners = psql(url, [
     "-Atc",
     `SELECT count(*) || ':' || count(*) FILTER (WHERE owner_name = 'reviewrouter_release_schema_owner')
      FROM (
@@ -2160,10 +2427,65 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
      DROP TABLE public.rr_legacy_bootstrap_owned;`,
   ]);
   markCanonicalRehearsalRoles(url.toString());
+  assertRehearsalRoleObservation(
+    psql(url, ["-Atc", rehearsalRoleObservationSql(rehearsalRoleMarker)])
+      .stdout,
+  );
   return {
-    clients,
+    authority: createRehearsalAuthorityContext({
+      providerAdmin: url,
+      bootstrap,
+      permitInstaller,
+      releaseMigration: release,
+      runtime,
+    }),
     environment,
   };
+}
+
+function installRehearsalMigrationPermit(authority) {
+  const targetSystemIdentifier = psql(authority.providerAdmin, [
+    "-Atc",
+    "SELECT system_identifier::text FROM pg_control_system()",
+  ]).stdout.trim();
+  const permit = Object.freeze({
+    rolloutId: "rehearsal-rollout-v1",
+    sourceSystemIdentifier: targetSystemIdentifier === "1" ? "2" : "1",
+    targetSystemIdentifier,
+    targetRecoveryWitnessSha256: "f".repeat(64),
+    transitionSha256: `sha256:${"d".repeat(64)}`,
+    previousReceiptSha256: `sha256:${"e".repeat(64)}`,
+    epoch: "1",
+    nonce: "c".repeat(32),
+  });
+  const installed = psql(authority.permitInstaller, [
+    "-Atc",
+    `SELECT reviewrouter_activation.install_migration_permit(
+      ${quoteLiteral(permit.rolloutId)},
+      ${quoteLiteral(permit.sourceSystemIdentifier)},
+      ${quoteLiteral(permit.targetSystemIdentifier)},
+      ${quoteLiteral(permit.targetRecoveryWitnessSha256)},
+      ${quoteLiteral(permit.transitionSha256)},
+      ${quoteLiteral(permit.previousReceiptSha256)},
+      ${quoteLiteral(rehearsalPostManifestIdentitySha256)},
+      ${quoteLiteral(liveV70V72CatalogDigestSha256)},
+      ${permit.epoch}::bigint,
+      ${quoteLiteral(permit.nonce)}
+    )`,
+  ]).stdout.trim();
+  assert(installed === "t", "rehearsal_migration_permit_not_installed");
+  return Object.freeze({
+    REVIEW_ROUTER_ROLLOUT_ID: permit.rolloutId,
+    REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_SYSTEM_IDENTIFIER:
+      permit.targetSystemIdentifier,
+    REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_RECOVERY_WITNESS_SHA256:
+      permit.targetRecoveryWitnessSha256,
+    REVIEW_ROUTER_MIGRATION_PERMIT_TRANSITION_SHA256: permit.transitionSha256,
+    REVIEW_ROUTER_MIGRATION_PERMIT_PREVIOUS_RECEIPT_SHA256:
+      permit.previousReceiptSha256,
+    REVIEW_ROUTER_MIGRATION_PERMIT_EPOCH: permit.epoch,
+    REVIEW_ROUTER_MIGRATION_PERMIT_NONCE: permit.nonce,
+  });
 }
 
 function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
@@ -2250,6 +2572,7 @@ function markCanonicalRehearsalRoles(url) {
       "reviewrouter_worker",
       "reviewrouter_codex_effect_authority",
       "reviewrouter_release_migration",
+      "reviewrouter_release_schema_owner",
     ]
       .map(
         (role) =>
@@ -2266,6 +2589,7 @@ function cleanupRuntimeRoles(url) {
     "reviewrouter_worker",
     "reviewrouter_codex_effect_authority",
     "reviewrouter_release_migration",
+    "reviewrouter_release_schema_owner",
     "reviewrouter_activation_receipt_guard",
     "reviewrouter_activation_permit_installer",
     "reviewrouter_activation_receipt_reader",
@@ -2281,7 +2605,32 @@ function cleanupRuntimeRoles(url) {
       false,
     );
     if (marker.status === 0 && marker.stdout.trim() === rehearsalRoleMarker) {
-      psql(url, ["-c", `DROP ROLE ${quoteIdentifier(role)}`], false);
+      if (role === "reviewrouter_release_schema_owner") {
+        const cleanupSafety = psql(url, [
+          "-Atc",
+          `SELECT
+             (SELECT count(*) FROM pg_shdepend dependency
+              WHERE dependency.refclassid = 'pg_authid'::regclass
+                AND dependency.refobjid = 'reviewrouter_release_schema_owner'::regrole
+                AND dependency.deptype IN ('a','o')) || ':' ||
+             (SELECT count(*) FROM pg_auth_members membership
+              WHERE membership.roleid = 'reviewrouter_release_schema_owner'::regrole
+                 OR membership.member = 'reviewrouter_release_schema_owner'::regrole
+                 OR membership.grantor = 'reviewrouter_release_schema_owner'::regrole) || ':' ||
+             (SELECT count(*) FROM pg_roles
+              WHERE rolname = 'reviewrouter_release_schema_owner' AND rolcanlogin)`,
+        ]).stdout.trim();
+        assert(
+          cleanupSafety === "0:0:0",
+          `schema_owner_cleanup_dependencies_present:${cleanupSafety}`,
+        );
+      }
+      const dropped = psql(
+        url,
+        ["-c", `DROP ROLE ${quoteIdentifier(role)}`],
+        false,
+      );
+      assert(dropped.status === 0, `rehearsal_role_cleanup_failed:${role}`);
     }
   }
 }
@@ -3030,8 +3379,9 @@ function proveAccountSwitchRecoveryContract(url) {
     ],
     false,
   );
-  assert(
-    inferredSwitch.status !== 0,
+  assertPsqlFailedWithExactMessage(
+    inferredSwitch,
+    "codex_oauth_setup_recovery_initial_state_invalid",
     "ordinary recovery acknowledgement must not authorize an account-switch epoch",
   );
   const recoveryDeletion = psql(
@@ -3042,8 +3392,9 @@ function proveAccountSwitchRecoveryContract(url) {
     ],
     false,
   );
-  assert(
-    recoveryDeletion.status !== 0,
+  assertPsqlFailedWithExactMessage(
+    recoveryDeletion,
+    "codex_oauth_setup_recovery_delete_forbidden",
     "account-switch recovery authority must remain permanent evidence",
   );
 }
@@ -3054,8 +3405,9 @@ function proveCompletedRecoveryEvidenceRetention(url) {
     `UPDATE "CodexOAuthSetupRecoveryRequest" SET "state"='manifest_issued', "latestManifestId"='fetched-recovery', "updatedAt"=now() WHERE "id"='recovery-account-switch-proof'`,
   ]) {
     const rejected = psql(url, ["-c", statement], false);
-    assert(
-      rejected.status !== 0,
+    assertPsqlFailedWithExactMessage(
+      rejected,
+      "codex_oauth_setup_recovery_evidence_immutable",
       "recovery terminal evidence must reject skipped lifecycle/cross-provider authority",
     );
   }
@@ -3089,8 +3441,9 @@ function proveCompletedRecoveryEvidenceRetention(url) {
     ],
     false,
   );
-  assert(
-    skippedManifestIssued.status !== 0,
+  assertPsqlFailedWithExactMessage(
+    skippedManifestIssued,
+    "codex_oauth_setup_recovery_evidence_immutable",
     "recovery completion must not skip manifest_issued",
   );
   psql(url, [
@@ -3120,18 +3473,29 @@ function proveCompletedRecoveryEvidenceRetention(url) {
     ],
     false,
   );
-  assert(
-    fabricatedCompletion.status !== 0,
+  assertPsqlFailedWithExactMessage(
+    fabricatedCompletion,
+    "codex_oauth_setup_recovery_evidence_immutable",
     "issued manifest alone must not complete recovery without its exact consumed active evidence chain",
   );
-  for (const statement of [
-    `UPDATE "CodexOAuthSetupRecoveryRequest" SET "latestManifestId"=NULL WHERE "id"='recovery-account-switch-proof'`,
-    `UPDATE "CodexOAuthSetupRecoveryRequest" SET "completedAt"=now() WHERE "id"='recovery-account-switch-proof'`,
-    `DELETE FROM "CodexOAuthSetupManifest" WHERE "id"='manifest-completed-recovery-proof'`,
+  for (const [statement, expectedReason] of [
+    [
+      `UPDATE "CodexOAuthSetupRecoveryRequest" SET "latestManifestId"=NULL WHERE "id"='recovery-account-switch-proof'`,
+      "codex_oauth_setup_recovery_evidence_immutable",
+    ],
+    [
+      `UPDATE "CodexOAuthSetupRecoveryRequest" SET "completedAt"=now() WHERE "id"='recovery-account-switch-proof'`,
+      "codex_oauth_setup_recovery_evidence_immutable",
+    ],
+    [
+      `DELETE FROM "CodexOAuthSetupManifest" WHERE "id"='manifest-completed-recovery-proof'`,
+      "codex_oauth_setup_manifest_delete_forbidden",
+    ],
   ]) {
     const rejected = psql(url, ["-c", statement], false);
-    assert(
-      rejected.status !== 0,
+    assertPsqlFailedWithExactMessage(
+      rejected,
+      expectedReason,
       "completed recovery evidence mutation/deletion must be rejected",
     );
   }
@@ -3472,6 +3836,28 @@ function withApplicationName(url, applicationName) {
   return result.toString();
 }
 
+function assertPrismaLockTimeoutEnvelope(result, message) {
+  const output = `${result.stdout}${result.stderr}`.toLowerCase();
+  // Prisma's schema engine can replace the inner PostgreSQL lock-timeout error
+  // with the transaction-aborted envelope after the migration rolls back.
+  assert(
+    output.includes("lock timeout") ||
+      output.includes("current transaction is aborted"),
+    message,
+  );
+}
+
+function assertPrismaMigrationFailureEnvelope(result, marker, message) {
+  const output = `${result.stdout}${result.stderr}`.toLowerCase();
+  const exactFailure =
+    output.includes(marker.toLowerCase()) && output.includes("already exists");
+  assert(
+    result.status !== 0 &&
+      (exactFailure || output.includes("current transaction is aborted")),
+    message,
+  );
+}
+
 async function waitForLock(url, applicationName, relation) {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
@@ -3640,6 +4026,20 @@ function assertPsqlFailedWithExactMessage(result, expectedFailure, message) {
     result.status !== 0 &&
       `${result.stdout}${result.stderr}`.includes(expectedFailure),
     `${message}: expected=${JSON.stringify(expectedFailure)}; ${psqlResultDiagnostic(result)}`,
+  );
+}
+function assertPsqlFailedWithOneOfExactMessages(
+  result,
+  expectedFailures,
+  message,
+) {
+  const output = `${result.stdout}${result.stderr}`;
+  assert(
+    result.status !== 0 &&
+      expectedFailures.some((expectedFailure) =>
+        output.includes(expectedFailure),
+      ),
+    `${message}: expectedOneOf=${JSON.stringify(expectedFailures)}; ${psqlResultDiagnostic(result)}`,
   );
 }
 function assert(condition, message) {
