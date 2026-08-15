@@ -136,6 +136,25 @@ describe("dashboard Codex rotating setup command route", () => {
       error: "codex_rotating_setup_issuance_quiesced",
     });
   });
+
+  it.each([
+    "invalid_codex_rotating_installer_url",
+    "invalid_codex_rotating_installer_version",
+  ])(
+    "reports an invalid installer tuple as server misconfiguration",
+    async (error) => {
+      mocks.issueCodexRotatingSetupForRepository.mockRejectedValueOnce(
+        new Error(error),
+      );
+
+      const response = await POST(request());
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: "server_misconfigured",
+      });
+    },
+  );
 });
 
 function request(): Request {
