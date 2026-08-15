@@ -693,6 +693,9 @@ describe("target-local PG17 activation permit", () => {
     expect(roleBootstrap).not.toContain(
       "CREATE OR REPLACE FUNCTION reviewrouter_activation.apply_runtime_acl()",
     );
+    expect(roleBootstrap).toContain(
+      "EXECUTE pg_catalog.format('REVOKE CONNECT ON DATABASE %I FROM reviewrouter_api;', pg_catalog.current_database())",
+    );
     const pairStart = provisioning.indexOf(
       "AS $capture_runtime_acl_policy_pair$",
     );

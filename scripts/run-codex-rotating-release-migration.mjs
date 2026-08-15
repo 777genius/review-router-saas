@@ -228,8 +228,6 @@ END IF;`;
     .join("\n");
 }
 
-const quoteIdentifier = (value) => `"${String(value).replaceAll('"', '""')}"`;
-
 function guardOwnedRuntimeGrantSql() {
   const configuration = {
     roles: runtimeRoles.map(([role, username]) => ({ role, username })),
@@ -240,10 +238,9 @@ function guardOwnedRuntimeGrantSql() {
 }
 
 function guardOwnedRuntimeAclGateSql(configuration) {
-  const databaseName = decodeURIComponent(
-    new URL(configuration.releaseUrl).pathname.slice(1),
-  );
-  return runtimeAclGateStatements(configuration, quoteIdentifier(databaseName));
+  return runtimeAclGateStatements(configuration, undefined, {
+    dynamicDatabaseTarget: true,
+  });
 }
 
 function schemaOwnerRuntimeAclRoutinesSql() {
@@ -4510,12 +4507,19 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
 export function runtimeAclGateStatements(
   configuration,
   databaseTarget = ':"DBNAME"',
+  { dynamicDatabaseTarget = false } = {},
 ) {
+  const databaseAclStatement = (statement) => {
+    if (!dynamicDatabaseTarget)
+      return statement.replaceAll("__DATABASE_TARGET__", databaseTarget);
+    const template = statement.replaceAll("__DATABASE_TARGET__", "%I");
+    return `EXECUTE pg_catalog.format(${quoted(template)}, pg_catalog.current_database());`;
+  };
   return `${configuration.roles
     .map(
       ({
         username,
-      }) => `REVOKE CONNECT ON DATABASE ${databaseTarget} FROM ${username};
+      }) => `${databaseAclStatement(`REVOKE CONNECT ON DATABASE __DATABASE_TARGET__ FROM ${username};`)}
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM ${username};
 REVOKE USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA public FROM ${username};`,
     )
