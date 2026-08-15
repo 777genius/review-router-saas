@@ -1330,6 +1330,9 @@ ROLLBACK;`,
     witnessPrisma = createPrismaClient({ databaseUrl: witnessUrl, poolMax: 1 });
     const activationAttestation =
       await observeReleaseAuthorityDatabaseReadiness(permitInstallerPrisma);
+    process.stderr.write(
+      `rehearsal_target_readiness:pre_migration:permit_boundary=${activationAttestation.preMigrationPermitBoundaryExact}:full_guard=${activationAttestation.activationGuardExact}:runtime_privileges=${activationAttestation.activationRuntimePrivilegesExact}\n`,
+    );
     if (
       !activationAttestation.preMigrationPermitBoundaryExact ||
       activationAttestation.activationGuardExact ||
@@ -1516,6 +1519,9 @@ async function verifyProductionPathRehearsal(facts) {
   const assertTargetActivationReadiness = async (stage, expectedFullGuard) => {
     const readiness = await observeReleaseAuthorityDatabaseReadiness(
       facts.permitInstallerPrisma,
+    );
+    process.stderr.write(
+      `rehearsal_target_readiness:${stage}:permit_boundary=${readiness.preMigrationPermitBoundaryExact}:full_guard=${readiness.activationGuardExact}:runtime_privileges=${readiness.activationRuntimePrivilegesExact}\n`,
     );
     if (
       !readiness.preMigrationPermitBoundaryExact ||
