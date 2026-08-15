@@ -380,7 +380,9 @@ export function safePostgresErrorClassification(stderr) {
     /ERROR:\s*[0-9A-Z]{5}:\s*/gu,
     "ERROR: ",
   );
-  const prismaCode = stderr?.match(/\b(P[0-9]{4})\b/u)?.[1];
+  const prismaCode = sqlState
+    ? undefined
+    : stderr?.match(/\b(P[0-9]{4})\b/u)?.[1];
   if (prismaCode) {
     const migration = stderr?.match(
       /Migration name:\s*([0-9]{6}_[a-z0-9_]+)/u,

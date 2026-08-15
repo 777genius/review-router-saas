@@ -41,7 +41,7 @@ describe("disposable dual-version rehearsal", () => {
     ).toBe("public ownership convergence failed");
     expect(
       safePostgresErrorClassification(
-        "psql: ERROR: codex_oauth_provider_identity_mismatch\nDETAIL: token=secret",
+        "psql: ERROR:  P0001: codex_oauth_provider_identity_mismatch\nDETAIL: token=secret",
       ),
     ).toBe("codex_oauth_provider_identity_mismatch");
     expect(
