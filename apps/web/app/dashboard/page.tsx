@@ -4,6 +4,7 @@ import {
   isCodexRotatingOAuthAllowedForRepository,
   isCodexRotatingOAuthAllowedForWorkspaceDefault,
   isClaudeCodeProviderEnabled,
+  isHostedCodexPoolEnabled,
   requireReviewRouterDatabaseRecoveryWitness,
   resolveReviewRouterActionRef,
 } from "@reviewrouter/platform-config";
@@ -17,6 +18,7 @@ import {
   PrismaEntitlementRepository,
 } from "@reviewrouter/features-entitlements";
 import { PrismaAuditLogRepository } from "@reviewrouter/features-audit-log";
+import { PrismaHostedPoolQuery } from "@reviewrouter/features-hosted-account-pool";
 import { buildProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import {
   listWorkspaceOutboxFailures,
@@ -80,6 +82,9 @@ import {
   requestInstallationSyncClientAction,
   retryOutboxEventClientAction,
   enableOrgRulesetWorkflowClientAction,
+  importHostedPoolAccountClientAction,
+  setHostedPoolAccountStateClientAction,
+  setHostedRepositorySessionSourceClientAction,
 } from "./actions";
 import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url";
 import {
@@ -144,6 +149,11 @@ import {
 import { DashboardCollapsibleShell } from "./dashboard-collapsible-shell";
 import { DashboardActionForm } from "./dashboard-action-form";
 import { repositorySourceUrl } from "./repository-source-url";
+import {
+  HostedPoolSettingsPanel,
+  RepositorySessionSourceSelector,
+} from "./hosted-pool-settings";
+import { loadHostedPoolDashboardView } from "../../src/server/hosted-pool-dashboard";
 import {
   buildInstallationSettingsUrl,
   dashboardErrorText,
@@ -341,6 +351,7 @@ async function loadDashboardData(
         memoryPolicySimulation:
           | readonly MemoryPolicySimulationDecision[]
           | null;
+        hostedPool: Awaited<ReturnType<typeof loadHostedPoolDashboardView>>;
       }> => {
         const repositories = await repositoryStore.listWorkspaceRepositories(
           workspace.id,
@@ -360,6 +371,17 @@ async function loadDashboardData(
         const entitlement =
           (await entitlementStore.findWorkspaceEntitlement(workspace.id)) ??
           freeBetaEntitlement(workspace.id);
+        const hostedPool = await loadHostedPoolDashboardView({
+          workspaceId: workspace.id,
+          repositories: visibleRepositories.map((repository) => ({
+            id: repository.id,
+            fullName: repository.fullName,
+            visibility: repository.visibility,
+          })),
+          featureEnabled: isHostedCodexPoolEnabled(),
+          entitled: entitlement.flags.hosted_codex_pool,
+          queries: new PrismaHostedPoolQuery(prisma),
+        });
         const health = (
           await listWorkspaceRepositoryHealth(
             {
@@ -520,6 +542,7 @@ async function loadDashboardData(
           memorySuggestions: memorySuggestions.suggestions,
           memoryWritesEnabled: memoryPolicy.memoryEnabled,
           memoryPolicySimulation,
+          hostedPool,
         };
       },
     ),
@@ -1674,6 +1697,7 @@ function WorkspaceCard({
     memorySuggestions,
     memoryWritesEnabled,
     memoryPolicySimulation,
+    hostedPool,
   } = data;
   const activeConfig =
     data.reviewConfig?.config ?? safeDefaultReviewConfiguration;
@@ -1799,6 +1823,10 @@ function WorkspaceCard({
                 hasWorkspaceWideAccess
                   ? null
                   : repositoryAccess.directConfigRepositoryIds
+              }
+              hostedPool={hostedPool}
+              hostedPoolMutationsEnabled={
+                mutationsEnabled && hasWorkspaceWideAccess
               }
             />
           </>
@@ -2081,6 +2109,20 @@ function WorkspaceCard({
                   ))}
                 </div>
               </details>
+            ) : null}
+
+            {hasWorkspaceWideAccess ? (
+              <HostedPoolSettingsPanel
+                workspaceId={workspace.id}
+                view={hostedPool}
+                mutationsEnabled={mutationsEnabled}
+                actions={{
+                  importAccount: importHostedPoolAccountClientAction,
+                  setAccountState: setHostedPoolAccountStateClientAction,
+                  setRepositorySource:
+                    setHostedRepositorySessionSourceClientAction,
+                }}
+              />
             ) : null}
 
             {hasWorkspaceWideAccess ? (
@@ -2689,6 +2731,8 @@ function RepositoryTable({
   selectedRepositoryFullName,
   providerSecretCheckFailedRepositoryFullName,
   directConfigRepositoryIds,
+  hostedPool,
+  hostedPoolMutationsEnabled,
 }: {
   readonly workspace: DashboardWorkspace;
   readonly repositories: DashboardWorkspaceData["repositories"];
@@ -2706,6 +2750,8 @@ function RepositoryTable({
   readonly selectedRepositoryFullName: string | null;
   readonly providerSecretCheckFailedRepositoryFullName: string | null;
   readonly directConfigRepositoryIds: ReadonlySet<string> | null;
+  readonly hostedPool: DashboardWorkspaceData["hostedPool"];
+  readonly hostedPoolMutationsEnabled: boolean;
 }): React.ReactElement {
   if (repositories.length === 0) {
     return (
@@ -2923,6 +2969,9 @@ function RepositoryTable({
               directConfigRepositoryIds === null ||
               directConfigRepositoryIds.has(repository.id);
             const repositoryUrl = repositorySourceUrl(repository);
+            const hostedRepository = hostedPool.repositories.find(
+              (candidate) => candidate.id === repository.id,
+            );
             const setupDisclosureId = `repo-setup-${repository.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
             const isSelectedRepository =
               repository.fullName === selectedRepositoryFullName;
@@ -3063,6 +3112,17 @@ function RepositoryTable({
                     }
                   />
                 </RepositorySetupReadyGate>
+                {hostedPool.gate === "enabled" && hostedRepository ? (
+                  <RepositorySessionSourceSelector
+                    workspaceId={workspace.id}
+                    repository={hostedRepository}
+                    action={setHostedRepositorySessionSourceClientAction}
+                    mutationsEnabled={hostedPoolMutationsEnabled}
+                    hostedPoolReady={
+                      (hostedPool.pool?.healthyAccountCount ?? 0) > 0
+                    }
+                  />
+                ) : null}
               </div>
             );
           },

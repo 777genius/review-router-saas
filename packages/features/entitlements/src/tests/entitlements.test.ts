@@ -102,6 +102,12 @@ describe("entitlements", () => {
     );
   });
 
+  it("does not enable hosted credential custody for free beta implicitly", () => {
+    expect(freeBetaEntitlement("workspace_1").flags.hosted_codex_pool).toBe(
+      false,
+    );
+  });
+
   it("denies inactive workspace entitlements", async () => {
     const entitlements = new InMemoryEntitlements();
     entitlements.entitlement = {

@@ -11,6 +11,13 @@
 - customer provider secrets in GitHub, not SaaS
 - customer private code in GitHub/CI, not SaaS
 
+Opt-in hosted workspace account pool exception:
+
+- SaaS-custodied, envelope-encrypted Codex account sessions
+- bounded Action run grants
+- transient relay prompts, tool outputs, and Responses events
+- account/repository bindings, credential generations, and database incarnation
+
 ## Trust Boundaries
 
 ```text
@@ -21,6 +28,18 @@ ReviewRouter Action -> customer repository/CI/provider
 ```
 
 ReviewRouter SaaS does not cross into customer code execution in v1.
+
+For repositories explicitly bound under
+[ADR-029](../decisions/029-opt-in-hosted-workspace-account-pool.md), add:
+
+```text
+GitHub Action -> ReviewRouter bounded Responses relay -> ChatGPT upstream
+ReviewRouter relay -> encrypted session store -> KMS/keyring
+```
+
+Checkout, tools, and the agent loop still execute in GitHub Actions. The relay
+transiently processes prompts, tool outputs, and responses, but credentials stay
+inside SaaS and relay bodies are not retained.
 
 ## Threats
 
@@ -75,6 +94,61 @@ Mitigation:
 
 ### Logging sensitive data
 
+Mitigation:
+
+- redaction
+- metadata-only logging
+- no full webhook payload logs
+- no secrets/code/diffs in logs
+
+### Hosted account credential theft
+
+Mitigation:
+
+- envelope encryption with KMS-wrapped data keys
+- AEAD AAD includes tenant, account, generation, and database incarnation
+- least-privilege decrypt role and audited key use/rotation
+- no plaintext in logs, traces, errors, exports, backups, or support tools
+- restore quarantine and audited rewrap before restored credentials can run
+
+### Forged or replayed hosted run grant
+
+Mitigation:
+
+- OIDC-authenticated issuance
+- exact tenant/repository/workflow/run/attempt/account/audience binding
+- short expiry plus request, byte, token, and time ceilings
+- replay-safe consumption counters and immediate revocation/kill switches
+
+### Cross-account races and pool hopping
+
+Mitigation:
+
+- sticky invocation-to-account binding
+- no full-run account mutex; fence only refresh/writeback mutation
+- generation CAS and idempotent credential writeback
+- at most one backup, only for classified auth/quota failure before the first
+  successful response
+
+### Relay content leakage or amplification
+
+Mitigation:
+
+- body capture disabled in logs/APM/queues/retries
+- streaming backpressure and strict request/output/time budgets
+- safe metadata-only telemetry
+- trusted/private explicitly bound repositories first
+- global, workspace, account, and repository kill switches
+
+### Unstable upstream subscription contract
+
+Mitigation:
+
+- hosted mode stays opt-in and disabled until compliance approval
+- supported account-type allowlist and compatibility probes
+- fail closed on upstream contract drift; never silently switch auth modes
+- tested global shutdown path
+
 ### Forged reusable observation
 
 An Action may claim a matching manifest or historical result. The server rebuilds
@@ -94,9 +168,3 @@ ambiguous effects reconcile under the server-side App identity.
 Deleting tenant bindings must not reset authority. Permanent external SCM identity
 and mutation epoch survive disconnect/transfer; reconnect requires explicit rebind
 while paused and a strictly newer resume epoch.
-Mitigation:
-
-- redaction
-- metadata-only logging
-- no full webhook payload logs
-- no secrets/code/diffs in logs

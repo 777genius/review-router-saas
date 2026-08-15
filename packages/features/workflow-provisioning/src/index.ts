@@ -1,5 +1,6 @@
 export * from "./domain/workflow-template";
 export * from "./domain/workflow-provisioning";
+export * from "./domain/hosted-pool-workflow-template";
 export {
   renderCodexRotatingAdvisoryWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
@@ -24,6 +25,7 @@ export * from "./application/ports/workflow-provisioning-target-port";
 export * from "./application/use-cases/list-repository-workflow-provisioning";
 export * from "./application/use-cases/provision-reviewrouter-workflow";
 export * from "./application/use-cases/provision-repository-reviewrouter-workflow";
+export * from "./application/use-cases/provision-hosted-pool-workflow";
 export * from "./infrastructure/github/octokit-workflow-setup-gateway";
 export * from "./infrastructure/prisma/prisma-workflow-provisioning-query";
 export * from "./infrastructure/prisma/prisma-workflow-provisioning-repository";

@@ -50,3 +50,15 @@ Negative:
 - setup requires customer-side secret placement
 - SaaS cannot fully repair broken Codex auth automatically
 - health checks can only infer state unless workflow reports back
+
+## Hosted Pool Scope Amendment
+
+This decision remains authoritative for the default legacy repository-owned
+mode. [ADR-029](./029-opt-in-hosted-workspace-account-pool.md) defines a separate,
+explicitly enabled provider mode in which SaaS stores envelope-encrypted Codex
+credentials and relays Responses traffic for explicitly bound repositories.
+
+In that mode, credentials never leave SaaS, while prompts, tool outputs, and
+responses pass through SaaS transiently without durable body storage. The mode
+must stay feature-flagged, kill-switchable, and unavailable until its compliance
+gate passes.

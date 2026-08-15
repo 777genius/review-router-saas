@@ -78,6 +78,11 @@ const providerAuthModeOrder = [
 ] as const satisfies readonly ProviderAuthMode[];
 
 const providerAuthOptionCopyByAuthMode = {
+  codex_subscription_oauth_hosted_pool: {
+    label: "Hosted workspace pool",
+    description:
+      "Uses the explicitly bound workspace pool without a repository credential secret.",
+  },
   codex_subscription_oauth_rotating: {
     label: "Codex OAuth with refresh",
     description:
@@ -199,6 +204,14 @@ const defaultCodexProvider = {
 } satisfies ReviewProviderConfiguration;
 
 const secretCopyByAuthMode = {
+  codex_subscription_oauth_hosted_pool: {
+    label: "Hosted workspace pool",
+    description:
+      "The repository uses its explicit hosted binding. No GitHub credential secret is read.",
+    commandSuffix: "",
+    recovery:
+      "Ask a workspace owner or admin to reconnect the hosted account or switch this repository back to repository-owned mode.",
+  },
   codex_subscription_oauth_rotating: {
     label: "Codex OAuth with refresh",
     description:
@@ -259,12 +272,13 @@ function ProviderSecretNotice({
   readonly sharedProviderCount?: number;
 }): React.ReactElement {
   const rotatingCodex = authMode === "codex_subscription_oauth_rotating";
+  const hostedCodex = authMode === "codex_subscription_oauth_hosted_pool";
   const [secretStatus, setSecretStatus] = useState<ProviderSecretStatus>(
     secretCheckTarget ? "checking" : "missing",
   );
   const [refreshVersion, setRefreshVersion] = useState(0);
   const authMetadata = getProviderAuthModeMetadata(authMode);
-  const metadata = rotatingCodex ? null : getSecretMetadata(authMode);
+  const metadata = rotatingCodex || hostedCodex ? null : getSecretMetadata(authMode);
   const command = metadata
     ? repositoryFullName
       ? `gh secret set ${metadata.secretName} --repo ${repositoryFullName}${metadata.commandSuffix ? ` ${metadata.commandSuffix}` : ""}`
