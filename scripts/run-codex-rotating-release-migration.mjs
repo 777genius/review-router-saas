@@ -125,8 +125,8 @@ WHERE migration_name='${migrationName}' AND checksum='${checksum}'
 }
 
 /** Fixed bundle body embedded in the guard-owned SECURITY DEFINER executor. */
-function guardedAtomicReleaseMigrationBundleSql() {
-  return atomicReleaseMigrationEntries
+function guardedAtomicReleaseMigrationBundleSql(entries) {
+  return entries
     .map(([migrationName, checksum]) => {
       const path = new URL(
         `../packages/platform/db/prisma/migrations/${migrationName}/migration.sql`,
@@ -2973,7 +2973,20 @@ export function roleProvisioningSql(
 ) {
   if (typeof ownerAuthorizedInitialRuntimeGateClosed !== "boolean")
     throw new Error("release_migration_initial_runtime_gate_mode_invalid");
-  const guardedBundle = guardedAtomicReleaseMigrationBundleSql();
+  const reconciliationPrerequisiteIndex =
+    atomicReleaseMigrationEntries.findIndex(
+      ([migrationName]) =>
+        migrationName === "000061_codex_oauth_provider_mutation_fence",
+    );
+  if (reconciliationPrerequisiteIndex !== 1)
+    throw new Error("release_migration_reconciliation_boundary_invalid");
+  const guardedPreReconciliationBundle = guardedAtomicReleaseMigrationBundleSql(
+    atomicReleaseMigrationEntries.slice(0, reconciliationPrerequisiteIndex + 1),
+  );
+  const guardedPostReconciliationBundle =
+    guardedAtomicReleaseMigrationBundleSql(
+      atomicReleaseMigrationEntries.slice(reconciliationPrerequisiteIndex + 1),
+    );
   const guardedGrants = guardOwnedRuntimeGrantSql(configuration);
   const guardedAclGate = guardOwnedRuntimeAclGateSql(configuration);
   const runtimeRoleLiterals = configuration.roles
@@ -3498,11 +3511,12 @@ BEGIN
   IF permit_result IS DISTINCT FROM 'execute' THEN
     RAISE EXCEPTION 'release migration executor permit invalid';
   END IF;
+${guardedPreReconciliationBundle}
   CALL public.reviewrouter_reconcile_legacy_ambiguity(
     requested_rollout_id,requested_target_recovery_witness_sha256,
     requested_legacy_reconciliation->'inventory',
     requested_legacy_reconciliation->>'inventorySha256');
-${guardedBundle}
+${guardedPostReconciliationBundle}
 ${guardedGrants}
   IF requested_acl_gate_closed THEN
 ${guardedAclGate}

@@ -636,6 +636,30 @@ describe("canonical exclusive release migration caller", () => {
       ),
     );
     expect(provisioning).toContain("000060_codex_oauth_setup_serialization");
+    const reconciliationCall = provisioning.indexOf(
+      "CALL public.reviewrouter_reconcile_legacy_ambiguity",
+    );
+    const migration60 = provisioning.indexOf(
+      "'000060_codex_oauth_setup_serialization'",
+    );
+    const migration61 = provisioning.indexOf(
+      "'000061_codex_oauth_provider_mutation_fence'",
+    );
+    const migration62 = provisioning.indexOf(
+      "'000062_codex_oauth_remote_outcome_unknown'",
+    );
+    expect(migration60).toBeGreaterThan(-1);
+    expect(migration60).toBeLessThan(migration61);
+    expect(migration61).toBeLessThan(reconciliationCall);
+    expect(reconciliationCall).toBeLessThan(migration62);
+    for (const migrationName of [
+      "000060_codex_oauth_setup_serialization",
+      "000061_codex_oauth_provider_mutation_fence",
+      "000062_codex_oauth_remote_outcome_unknown",
+    ])
+      expect(provisioning.match(new RegExp(migrationName, "gu"))).toHaveLength(
+        3,
+      );
     expect(atomicMigration.trim().endsWith("COMMIT;")).toBe(true);
     expect(atomicMigration).toContain(liveV70V72CatalogDigestSql);
     for (const catalogSemantic of [
