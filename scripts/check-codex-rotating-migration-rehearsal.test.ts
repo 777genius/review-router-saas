@@ -326,7 +326,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     const prepareIndex = orchestration.indexOf("prepareCanonicalReleaseRoles(");
     const fixtureSeedIndex = orchestration.indexOf(
-      "seedDirtyFixtures(rehearsalUrl)",
+      "seedDirtyFixtures(rehearsalProviderUrl)",
     );
     const releaseLoginIndex = orchestration.indexOf(
       "rehearsalUrl = rehearsalRoleClients.release",
@@ -340,6 +340,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(prepareIndex).toBeGreaterThan(-1);
     expect(fixtureSeedIndex).toBeGreaterThan(prepareIndex);
     expect(fixtureSeedIndex).toBeLessThan(releaseLoginIndex);
+    expect(source).toContain(
+      "proveMigration60LockTimeout(rehearsalUrl, rehearsalProviderUrl)",
+    );
+    expect(source).toContain(
+      "proveCombinedLockTimeout(rehearsalUrl, rehearsalProviderUrl)",
+    );
+    expect(source).toContain(
+      "withApplicationName(fixtureAdminUrl, applicationName)",
+    );
     expect(prepareIndex).toBeLessThan(helperIndex);
     expect(rehearsalHistoryResetIndex).toBeGreaterThan(prepareIndex);
     expect(rehearsalHistoryResetIndex).toBeLessThan(helperIndex);

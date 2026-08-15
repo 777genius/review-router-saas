@@ -94,12 +94,13 @@ try {
     rehearsalUrl,
     applyBaselineThrough59,
   );
+  const rehearsalProviderUrl = rehearsalUrl;
   rehearsalRoleClients = rehearsalRelease.clients;
-  seedDirtyFixtures(rehearsalUrl);
+  seedDirtyFixtures(rehearsalProviderUrl);
   rehearsalUrl = rehearsalRoleClients.release;
-  await proveMigration60LockTimeout(rehearsalUrl);
+  await proveMigration60LockTimeout(rehearsalUrl, rehearsalProviderUrl);
   migrateResolve(rehearsalUrl, "--rolled-back", migration60Name);
-  await proveCombinedLockTimeout(rehearsalUrl);
+  await proveCombinedLockTimeout(rehearsalUrl, rehearsalProviderUrl);
   proveMigrationRunnerHistory(rehearsalUrl, migration60Name, true);
   proveFetchedAmbiguityStillPresent(rehearsalUrl);
   await proveTtlCrossedAfter60(rehearsalUrl);
@@ -433,9 +434,9 @@ function seedDirtyFixtures(url) {
   ]);
 }
 
-async function proveMigration60LockTimeout(url) {
+async function proveMigration60LockTimeout(url, fixtureAdminUrl) {
   const applicationName = `rr_setup_lock_${process.pid}`;
-  const holderUrl = withApplicationName(url, applicationName);
+  const holderUrl = withApplicationName(fixtureAdminUrl, applicationName);
   const holderInvocation = createSecretSafePostgresInvocation({
     databaseUrl: holderUrl,
     args: [
@@ -452,7 +453,11 @@ async function proveMigration60LockTimeout(url) {
   });
   holder.stdin.end(holderInvocation.input);
   try {
-    await waitForLock(url, applicationName, '"CodexOAuthSetupManifest"');
+    await waitForLock(
+      fixtureAdminUrl,
+      applicationName,
+      '"CodexOAuthSetupManifest"',
+    );
     const directStartedAt = Date.now();
     const directFailure = psql(url, ["-f", migration60], false);
     const directElapsedMs = Date.now() - directStartedAt;
@@ -496,7 +501,7 @@ async function proveMigration60LockTimeout(url) {
     await terminateChild(holder);
     holderInvocation.cleanup();
     psql(
-      url,
+      fixtureAdminUrl,
       [
         "-Atc",
         `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = ${quoteLiteral(applicationName)}`,
@@ -506,9 +511,9 @@ async function proveMigration60LockTimeout(url) {
   }
 }
 
-async function proveCombinedLockTimeout(url) {
+async function proveCombinedLockTimeout(url, fixtureAdminUrl) {
   const applicationName = `rr_fence_lock_${process.pid}`;
-  const holderUrl = withApplicationName(url, applicationName);
+  const holderUrl = withApplicationName(fixtureAdminUrl, applicationName);
   const holderInvocation = createSecretSafePostgresInvocation({
     databaseUrl: holderUrl,
     args: [
@@ -525,7 +530,11 @@ async function proveCombinedLockTimeout(url) {
   });
   holder.stdin.end(holderInvocation.input);
   try {
-    await waitForLock(url, applicationName, '"CodexOAuthProviderInstance"');
+    await waitForLock(
+      fixtureAdminUrl,
+      applicationName,
+      '"CodexOAuthProviderInstance"',
+    );
     const directStartedAt = Date.now();
     const directFailure = psql(url, ["-f", migration61], false);
     const directElapsedMs = Date.now() - directStartedAt;
@@ -574,7 +583,7 @@ async function proveCombinedLockTimeout(url) {
     await terminateChild(holder);
     holderInvocation.cleanup();
     psql(
-      url,
+      fixtureAdminUrl,
       [
         "-Atc",
         `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = ${quoteLiteral(applicationName)}`,
