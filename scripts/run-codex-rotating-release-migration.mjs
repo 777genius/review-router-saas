@@ -85,6 +85,43 @@ const atomicReleaseMigrationEntries = Object.freeze([
   ],
 ]);
 
+export function stripAtomicMigrationEnvelope(source, migrationName) {
+  const lines = source.split("\n");
+  const beginLines = [];
+  const commitLines = [];
+
+  for (const [index, line] of lines.entries()) {
+    const statement = line.trim();
+    if (statement === "BEGIN;") beginLines.push(index);
+    if (statement === "COMMIT;") commitLines.push(index);
+  }
+
+  if (beginLines.length === 0 && commitLines.length === 0) return source;
+
+  const firstContentLine = lines.findIndex((line) => line.trim().length > 0);
+  const beginLine = beginLines[0];
+  const commitLine = commitLines[0];
+  const hasValidTrailingContent = lines
+    .slice((commitLine ?? -1) + 1)
+    .every((line) => line.trim() === "" || line.trimStart().startsWith("--"));
+
+  if (
+    beginLines.length !== 1 ||
+    commitLines.length !== 1 ||
+    firstContentLine !== beginLine ||
+    beginLine >= commitLine ||
+    !hasValidTrailingContent
+  ) {
+    throw new Error(
+      `release_migration_transaction_envelope_invalid:${migrationName}`,
+    );
+  }
+
+  return lines
+    .filter((_, index) => index !== beginLine && index !== commitLine)
+    .join("\n");
+}
+
 export function atomicReleaseMigrationBundleSql() {
   return atomicReleaseMigrationEntries
     .map(([migrationName, checksum], index) => {
@@ -98,9 +135,7 @@ export function atomicReleaseMigrationBundleSql() {
         throw new Error(
           `release_migration_bundle_source_mismatch:${migrationName}`,
         );
-      const body = source
-        .replace(/^BEGIN;\s*/u, "")
-        .replace(/\s*COMMIT;\s*$/u, "\n");
+      const body = stripAtomicMigrationEnvelope(source, migrationName);
       const variable = `apply_release_migration_${index}`;
       return `SELECT NOT EXISTS (
   SELECT 1 FROM public._prisma_migrations
@@ -138,9 +173,7 @@ function guardedAtomicReleaseMigrationBundleSql(entries) {
         throw new Error(
           `release_migration_bundle_source_mismatch:${migrationName}`,
         );
-      const body = source
-        .replace(/^BEGIN;\s*/u, "")
-        .replace(/\s*COMMIT;\s*$/u, "\n");
+      const body = stripAtomicMigrationEnvelope(source, migrationName);
       return `IF NOT EXISTS (
   SELECT 1 FROM public._prisma_migrations
   WHERE migration_name='${migrationName}' AND checksum='${checksum}'

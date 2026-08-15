@@ -24,6 +24,7 @@ import {
   rotatingEvidenceTables,
   runReleaseMigrationSubprocess,
   runtimeGrantSql,
+  stripAtomicMigrationEnvelope,
 } from "./run-codex-rotating-release-migration.mjs";
 
 function environment() {
@@ -65,6 +66,37 @@ const migrationPermit = () => ({
 });
 
 describe("application database release-authority isolation", () => {
+  it("strips only a valid top-level migration transaction envelope", () => {
+    expect(
+      stripAtomicMigrationEnvelope(
+        "BEGIN;\nSELECT 1;\nCOMMIT;\n\n-- trailing rationale\n",
+        "wrapped",
+      ),
+    ).toBe("SELECT 1;\n\n-- trailing rationale\n");
+    expect(stripAtomicMigrationEnvelope("SELECT 1;\n", "unwrapped")).toBe(
+      "SELECT 1;\n",
+    );
+  });
+
+  it("rejects ambiguous migration transaction envelopes", () => {
+    expect(() =>
+      stripAtomicMigrationEnvelope(
+        "BEGIN;\nSELECT 1;\nCOMMIT;\nCOMMIT;\n",
+        "duplicate-commit",
+      ),
+    ).toThrow(
+      "release_migration_transaction_envelope_invalid:duplicate-commit",
+    );
+    expect(() =>
+      stripAtomicMigrationEnvelope(
+        "BEGIN;\nSELECT 1;\nCOMMIT;\nSELECT 2;\n",
+        "content-after-commit",
+      ),
+    ).toThrow(
+      "release_migration_transaction_envelope_invalid:content-after-commit",
+    );
+  });
+
   it("keeps migration 000069 as an immutable no-op marker", () => {
     const migration = readFileSync(
       new URL(
@@ -934,6 +966,8 @@ describe("canonical exclusive release migration caller", () => {
     expect(guardedExecutor).not.toContain("postManifestIdentity");
     expect(guardedExecutor).not.toContain("postCatalogDigest");
     expect(guardedExecutor).not.toContain("observed_post_catalog_digest");
+    expect(guardedExecutor).not.toMatch(/^(?:BEGIN|COMMIT);$/gmu);
+    expect(guardedExecutor).toContain("ON COMMIT DROP");
     const completionGuardStart = activationAuthority.indexOf(
       "CREATE OR REPLACE FUNCTION reviewrouter_activation.complete_migration_permit(",
     );
