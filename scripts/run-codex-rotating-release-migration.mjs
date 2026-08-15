@@ -3481,7 +3481,9 @@ CREATE OR REPLACE PROCEDURE public.reviewrouter_execute_release_migration(
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, pg_temp
+-- pg_catalog remains implicitly first for name resolution. Keeping it out of
+-- the explicit path makes public the creation target for unqualified DDL.
+SET search_path = public, pg_temp
 AS $rr_guarded_release_executor_v1$
 DECLARE permit_result text;
 BEGIN

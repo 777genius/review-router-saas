@@ -603,7 +603,11 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                   OR edge.grantor=owner.oid))
           AND (SELECT count(*)=2 AND bool_and(routine.prosecdef
                 AND routine.prokind='p' AND routine.proowner=owner.oid
-                AND routine.proconfig=ARRAY['search_path=pg_catalog, public, pg_temp']
+                AND routine.proconfig=CASE
+                  WHEN routine.oid=to_regprocedure(
+                    'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)')
+                    THEN ARRAY['search_path=public, pg_temp']
+                  ELSE ARRAY['search_path=pg_catalog, public, pg_temp'] END
                 AND NOT has_function_privilege('public',routine.oid,'EXECUTE')
                 AND has_function_privilege(migration.oid,routine.oid,'EXECUTE')
                   IS NOT DISTINCT FROM

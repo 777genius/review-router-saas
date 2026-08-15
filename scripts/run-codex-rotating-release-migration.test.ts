@@ -927,6 +927,10 @@ describe("canonical exclusive release migration caller", () => {
       "'legacyReconciliation',requested_legacy_reconciliation",
     );
     expect(guardedExecutor).toContain("'effectFingerprint'");
+    expect(guardedExecutor).toContain("SET search_path = public, pg_temp");
+    expect(guardedExecutor).not.toContain(
+      "SET search_path = pg_catalog, public, pg_temp",
+    );
     expect(guardedExecutor).not.toContain("postManifestIdentity");
     expect(guardedExecutor).not.toContain("postCatalogDigest");
     expect(guardedExecutor).not.toContain("observed_post_catalog_digest");
