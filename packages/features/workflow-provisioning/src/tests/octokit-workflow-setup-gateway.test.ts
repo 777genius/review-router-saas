@@ -545,7 +545,7 @@ describe("OctokitWorkflowSetupGateway", () => {
     ).toHaveLength(1);
   });
 
-  it("prefers dev over develop and the repository default branch for setup PRs", async () => {
+  it("uses the GitHub default branch even when integration branches exist", async () => {
     const requester = new FakeRequester(null, {
       existingBranches: ["main", "develop", "dev"],
       pullRequestResponses: [[]],
@@ -557,15 +557,15 @@ describe("OctokitWorkflowSetupGateway", () => {
     const createdRefCall = requester.calls.find(
       (call) => call.route === "POST /repos/{owner}/{repo}/git/refs",
     );
-    expect(createdRefCall?.parameters).toMatchObject({ sha: "dev-sha" });
+    expect(createdRefCall?.parameters).toMatchObject({ sha: "main-sha" });
 
     const postPullCall = requester.calls.find(
       (call) => call.route === "POST /repos/{owner}/{repo}/pulls",
     );
-    expect(postPullCall?.parameters).toMatchObject({ base: "dev" });
+    expect(postPullCall?.parameters).toMatchObject({ base: "main" });
   });
 
-  it("falls back to develop before the repository default branch", async () => {
+  it("does not use develop as a setup base branch", async () => {
     const requester = new FakeRequester(null, {
       existingBranches: ["main", "develop"],
       pullRequestResponses: [[]],
@@ -577,12 +577,12 @@ describe("OctokitWorkflowSetupGateway", () => {
     const createdRefCall = requester.calls.find(
       (call) => call.route === "POST /repos/{owner}/{repo}/git/refs",
     );
-    expect(createdRefCall?.parameters).toMatchObject({ sha: "develop-sha" });
+    expect(createdRefCall?.parameters).toMatchObject({ sha: "main-sha" });
 
     const postPullCall = requester.calls.find(
       (call) => call.route === "POST /repos/{owner}/{repo}/pulls",
     );
-    expect(postPullCall?.parameters).toMatchObject({ base: "develop" });
+    expect(postPullCall?.parameters).toMatchObject({ base: "main" });
   });
 
   it("returns the selected setup pull request base branch", async () => {
@@ -594,7 +594,7 @@ describe("OctokitWorkflowSetupGateway", () => {
 
     await expect(
       gateway.createOrUpdateSetupPullRequest(setupInput),
-    ).resolves.toMatchObject({ baseBranch: "dev" });
+    ).resolves.toMatchObject({ baseBranch: "main" });
   });
 
   it("writes every workflow file into the setup branch", async () => {
