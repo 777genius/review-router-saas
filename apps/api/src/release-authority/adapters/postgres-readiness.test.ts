@@ -106,6 +106,7 @@ describe("release authority ACL readiness observation", () => {
     expect(sql).toContain("count(DISTINCT granted.oid)=5");
     expect(sql).toContain("acl.is_grantable");
     expect(sql).toContain("AND NOT acl.is_grantable");
+    expect(sql).not.toContain("::regrole");
     expect(sql).not.toContain(
       "stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb",
     );

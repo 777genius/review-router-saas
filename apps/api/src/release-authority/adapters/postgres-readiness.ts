@@ -730,8 +730,9 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           AND NOT has_function_privilege('public',p.oid,'EXECUTE')
           AND EXISTS (SELECT 1 FROM aclexplode(
               coalesce(p.proacl,acldefault('f',p.proowner))) acl
+            JOIN pg_roles grantee ON grantee.oid=acl.grantee
             WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
-              AND acl.grantee='reviewrouter_activation_permit_installer'::regrole)
+              AND grantee.rolname='reviewrouter_activation_permit_installer')
           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
             WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
               AND (acl.is_grantable OR NOT EXISTS (SELECT 1 FROM pg_roles grantee
@@ -748,12 +749,14 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           AND NOT has_function_privilege('public',p.oid,'EXECUTE')
           AND EXISTS (SELECT 1 FROM aclexplode(
               coalesce(p.proacl,acldefault('f',p.proowner))) acl
+            JOIN pg_roles grantee ON grantee.oid=acl.grantee
             WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
-              AND acl.grantee='reviewrouter_activation_receipt_reader'::regrole)
+              AND grantee.rolname='reviewrouter_activation_receipt_reader')
           AND EXISTS (SELECT 1 FROM aclexplode(
               coalesce(p.proacl,acldefault('f',p.proowner))) acl
+            JOIN pg_roles grantee ON grantee.oid=acl.grantee
             WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
-              AND acl.grantee='reviewrouter_release_migration'::regrole)
+              AND grantee.rolname='reviewrouter_release_migration')
           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
             WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
               AND (acl.is_grantable OR NOT EXISTS (SELECT 1 FROM pg_roles grantee
