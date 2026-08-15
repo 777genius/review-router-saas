@@ -1106,7 +1106,7 @@ describePg17(
             ),
           ).toBe("2");
         },
-        ({ psqlAs: runAs, psqlResultAs: runResultAs }) => {
+        ({ psqlAs: runAs }) => {
           runAs(
             adversarialAdminUsername,
             `ALTER ROLE ${adminUsername} SUPERUSER CREATEROLE;`,
