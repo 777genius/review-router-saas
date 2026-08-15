@@ -934,6 +934,12 @@ describe("canonical exclusive release migration caller", () => {
       "GRANT CREATE ON DATABASE %I TO reviewrouter_release_schema_owner",
     );
     expect(provisioning).toContain(
+      "GRANT TEMPORARY ON DATABASE %I TO reviewrouter_release_schema_owner",
+    );
+    expect(provisioning).toContain(
+      "'reviewrouter_release_schema_owner',current_database(),'TEMP'",
+    );
+    expect(provisioning).toContain(
       "GRANT CONNECT ON DATABASE %I TO reviewrouter_release_schema_owner WITH GRANT OPTION",
     );
     expect(provisioning).toContain(
@@ -1155,6 +1161,13 @@ describe("canonical exclusive release migration caller", () => {
     expect(grants).toContain(
       "GRANT EXECUTE ON FUNCTION public.reviewrouter_runtime_generation_write_read_canary(TEXT, TEXT) TO reviewrouter_api",
     );
+    expect(grants).toContain(
+      'REVOKE ALL ON TABLE public."RuntimeGenerationWitnessProof" FROM reviewrouter_api',
+    );
+    expect(grants).toContain(
+      "ALTER FUNCTION public.reviewrouter_runtime_generation_write_read_canary(TEXT, TEXT)\n  SET search_path TO pg_catalog, public, pg_temp",
+    );
+    expect(activationAuthority).toContain("'RuntimeGenerationWitnessProof'");
     expect(activationAuthority).toContain(
       "WHEN proname='reviewrouter_record_runtime_generation_witness_proof' THEN",
     );

@@ -552,6 +552,9 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           AND NOT owner.rolcreatedb AND NOT owner.rolcreaterole
           AND NOT owner.rolreplication AND NOT owner.rolbypassrls
           AND public_namespace.nspowner=owner.oid
+          AND has_database_privilege(owner.oid,current_database(),'CONNECT')
+          AND has_database_privilege(owner.oid,current_database(),'CREATE')
+          AND has_database_privilege(owner.oid,current_database(),'TEMP')
           AND NOT has_database_privilege(migration.oid,current_database(),'CREATE')
           AND NOT has_database_privilege(migration.oid,current_database(),'TEMP')
           AND NOT has_schema_privilege(migration.oid,public_namespace.oid,'CREATE')

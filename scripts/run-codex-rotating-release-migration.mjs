@@ -264,6 +264,7 @@ const quarantineTables = Object.freeze([
 const fullyProtectedRuntimeTables = Object.freeze([
   "CodexOAuthDatabaseAuthorityKey",
   "CodexOAuthDatabaseAuthorityReceipt",
+  "RuntimeGenerationWitnessProof",
 ]);
 
 export const providerRuntimeUpdateColumns = Object.freeze([
@@ -2316,20 +2317,24 @@ BEGIN
          OR has_schema_privilege(role_name,'public','CREATE'))
        OR EXISTS (SELECT 1 FROM table_facts WHERE
          can_select IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname <> '_prisma_migrations'
-           AND relname NOT IN ('CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt'))
+           AND relname NOT IN ('CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
+             'RuntimeGenerationWitnessProof'))
          OR can_insert IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
-           'CodexOAuthProviderIdentityQuarantine','CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt'))
+           'CodexOAuthProviderIdentityQuarantine','CodexOAuthDatabaseAuthorityKey',
+           'CodexOAuthDatabaseAuthorityReceipt','RuntimeGenerationWitnessProof'))
          OR can_update IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance',
-           'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt'))
+           'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
+           'RuntimeGenerationWitnessProof'))
          OR can_delete IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine','CodexOAuthLease',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
            'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
            'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
-           'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt'))
+           'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
+           'RuntimeGenerationWitnessProof'))
          OR can_truncate OR can_reference OR can_trigger)
        OR EXISTS (SELECT 1 FROM column_facts WHERE can_update IS DISTINCT FROM (
          role_kind <> 'effect-authority' AND (
@@ -3263,6 +3268,8 @@ SELECT format('GRANT CONNECT ON DATABASE %I TO reviewrouter_release_migration', 
 \\gexec
 SELECT format('GRANT CREATE ON DATABASE %I TO ${releaseSchemaOwnerRoleName}', current_database())
 \\gexec
+SELECT format('GRANT TEMPORARY ON DATABASE %I TO ${releaseSchemaOwnerRoleName}', current_database())
+\\gexec
 SELECT format('GRANT CONNECT ON DATABASE %I TO ${releaseSchemaOwnerRoleName} WITH GRANT OPTION', current_database())
 \\gexec
 DO $database_delegation$
@@ -3275,6 +3282,10 @@ BEGIN
       AND acl.grantee = '${releaseSchemaOwnerRoleName}'::regrole
       AND acl.privilege_type = 'CONNECT'
       AND acl.is_grantable
+  ) OR NOT has_database_privilege(
+    '${releaseSchemaOwnerRoleName}',current_database(),'CREATE'
+  ) OR NOT has_database_privilege(
+    '${releaseSchemaOwnerRoleName}',current_database(),'TEMP'
   ) OR EXISTS (
     SELECT 1
     FROM pg_database database,
@@ -4261,6 +4272,7 @@ REVOKE UPDATE ON TABLE public."CodexOAuthProviderInstance" FROM ${username};
 GRANT UPDATE (${providerUpdateColumnList}) ON TABLE public."CodexOAuthProviderInstance" TO ${username};
 REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityKey" FROM ${username};
 REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityReceipt" FROM ${username};
+REVOKE ALL ON TABLE public."RuntimeGenerationWitnessProof" FROM ${username};
 REVOKE ALL ON TABLE public."RuntimeCanaryChallenge" FROM ${username};
 REVOKE ALL ON TABLE public."RuntimeCanaryChallengeProof" FROM ${username};
 REVOKE TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public FROM ${username};
@@ -4272,6 +4284,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE ${releaseSchemaOwnerRoleName} IN SCHEMA public
 GRANT EXECUTE ON FUNCTION public.reviewrouter_record_runtime_generation_witness_proof(TEXT, TEXT, TEXT, TEXT) TO reviewrouter_web, reviewrouter_api, reviewrouter_worker;
 GRANT EXECUTE ON FUNCTION public.reviewrouter_read_runtime_generation_witness_proofs(TEXT, TEXT) TO reviewrouter_api;
 GRANT EXECUTE ON FUNCTION public.reviewrouter_runtime_generation_write_read_canary(TEXT, TEXT) TO reviewrouter_api;
+ALTER FUNCTION public.reviewrouter_runtime_generation_write_read_canary(TEXT, TEXT)
+  SET search_path TO pg_catalog, public, pg_temp;
 GRANT EXECUTE ON FUNCTION public.reviewrouter_request_runtime_canary_challenge(TEXT, TEXT, TIMESTAMPTZ, TEXT, TEXT, TEXT, JSONB) TO reviewrouter_api;
 GRANT EXECUTE ON FUNCTION public.reviewrouter_read_runtime_canary_challenge_proofs(TEXT) TO reviewrouter_api;
 GRANT EXECUTE ON FUNCTION public.reviewrouter_answer_runtime_canary_challenge(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT) TO reviewrouter_web, reviewrouter_api, reviewrouter_worker;

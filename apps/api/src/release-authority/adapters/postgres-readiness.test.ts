@@ -151,6 +151,9 @@ describe("release authority ACL readiness observation", () => {
     });
     expect(sql).toContain("pg_catalog.aclexplode");
     expect(sql).toContain("'release_authority'::text");
+    expect(sql).toContain(
+      "has_database_privilege(owner.oid,current_database(),'TEMP')",
+    );
     expect(sql).not.toContain("CREATE ");
     expect(sql).not.toContain("CREATE TEMP");
   });
