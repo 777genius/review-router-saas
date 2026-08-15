@@ -1313,7 +1313,7 @@ export function sanitizeReviewComment(
   const sanitized =
     body
       .replace(
-        /<!--\s*reviewrouter:codex-oauth-rotating(?:\s+head=[a-f0-9]{40})?\s*-->\s*/gi,
+        /<!--\s*reviewrouter:(?:codex-oauth-rotating|hosted-pool)(?:\s+head=[a-f0-9]{40})?\s*-->\s*/gi,
         "",
       )
       .replace(
@@ -4175,8 +4175,8 @@ export async function deleteStaleCodexRotatingSummaryComments(input: {
       comment !== null &&
       typeof (comment as GitHubIssueCommentResponse).id === "number" &&
       typeof (comment as GitHubIssueCommentResponse).body === "string" &&
-      (comment as GitHubIssueCommentResponse).body!.startsWith(
-        "<!-- reviewrouter:codex-oauth-rotating",
+      /^<!--\s*reviewrouter:(?:codex-oauth-rotating|hosted-pool)(?:\s|-->)/i.test(
+        (comment as GitHubIssueCommentResponse).body!,
       ),
   );
   for (const comment of staleComments) {

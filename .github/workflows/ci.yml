@@ -171,6 +171,8 @@ jobs:
         run: corepack enable
 
       - name: Run disposable self-hosted E2E
+        env:
+          SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
         run: pnpm self-hosted:e2e
 
   hosted-runtime-image:

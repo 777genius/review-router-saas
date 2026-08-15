@@ -1,3 +1,4 @@
+import { request as httpRequest } from "node:http";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildHostedRelayHeaders,
@@ -15,7 +16,11 @@ describe("hosted Codex relay transport", () => {
       REVIEWROUTER_CODEX_AUTH_JSON: "must-not-be-read-either",
     };
     const masks: string[] = [];
-    const calls: Array<{ url: string; body?: string }> = [];
+    const calls: Array<{
+      url: string;
+      body?: string;
+      redirect?: RequestRedirect | undefined;
+    }> = [];
     let runtimeBaseUrl = "";
     await runHostedCodexRelayTransport({
       env,
@@ -29,6 +34,7 @@ describe("hosted Codex relay transport", () => {
         calls.push({
           url: String(url),
           ...(init?.body ? { body: String(init.body) } : {}),
+          ...(init?.redirect ? { redirect: init.redirect } : {}),
         });
         if (String(url).startsWith("https://github.test/oidc")) {
           return Response.json({ value: "fresh-oidc-token" });
@@ -70,6 +76,7 @@ describe("hosted Codex relay transport", () => {
     expect(runtimeBaseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/.+\/v1$/);
     expect(calls).toHaveLength(2);
     expect(calls[0]?.url).toContain("audience=reviewrouter");
+    expect(calls[0]?.redirect).toBe("error");
     expect(JSON.parse(calls[1]?.body ?? "{}")).toEqual({
       oidcToken: "fresh-oidc-token",
       providerInstanceId: "provider-1",
@@ -85,6 +92,27 @@ describe("hosted Codex relay transport", () => {
       "github-comment-token",
     ]);
     expect(env).not.toHaveProperty("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
+  });
+
+  it("rejects untrusted OIDC request URLs before sending the request token", async () => {
+    const fetchImpl = vi.fn();
+
+    await expect(
+      requestHostedRelayGrantWithFreshGitHubOidc({
+        env: {
+          ACTIONS_ID_TOKEN_REQUEST_URL: "http://github.test/oidc",
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: "github-request-token",
+        },
+        apiUrl: "https://reviewrouter.test",
+        providerInstanceId: "provider-1",
+        workflowSchemaVersion: 5,
+        bindingId: "binding-1",
+        bindingVersion: 7,
+        maskSecret: vi.fn(),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      }),
+    ).rejects.toThrow("github_oidc_url_untrusted");
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("retries a lost persisted-grant response with a fresh OIDC token", async () => {
@@ -367,6 +395,42 @@ describe("hosted Codex relay transport", () => {
     expect(observedSignal?.aborted).toBe(true);
   });
 
+  it("terminates the downstream response when upstream streaming fails after headers", async () => {
+    const proxy = await startHostedCodexRelayProxy({
+      grant: "opaque-relay-grant",
+      commentTokenRefreshCapability: "comment-refresh-capability",
+      invocationLeaseId: "invocation-lease-1",
+      bindingId: "binding-1",
+      bindingVersion: 7,
+      relayUrl: "https://relay.reviewrouter.test/v1/responses",
+      upstreamCommentTokenRefreshUrl:
+        "https://relay.reviewrouter.test/v1/comment-token",
+      policy: { maxRequests: 2 },
+      fetchImpl: vi.fn(async () => {
+        const encoder = new TextEncoder();
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode("data: partial\n\n"));
+              controller.error(new Error("upstream_stream_failed"));
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }) as unknown as typeof fetch,
+    });
+    try {
+      await expect(
+        fetch(`${proxy.baseUrl}/responses`, {
+          method: "POST",
+          body: "{}",
+        }).then((response) => response.text()),
+      ).rejects.toThrow();
+    } finally {
+      await proxy.close();
+    }
+  });
+
   it("refreshes GitHub comment tokens through a separate narrow capability", async () => {
     let observedAuthorization = "";
     let observedBody = "";
@@ -430,6 +494,61 @@ describe("hosted Codex relay transport", () => {
       expect(`${observedAuthorization}\n${observedBody}`).not.toContain(
         "responses-only-grant",
       );
+    } finally {
+      await proxy.close();
+    }
+  });
+
+  it("cancels a refreshed token response body after the downstream disconnects", async () => {
+    let resolveUpstream: ((response: Response) => void) | undefined;
+    let markUpstreamStarted: (() => void) | undefined;
+    const upstreamStarted = new Promise<void>((resolve) => {
+      markUpstreamStarted = resolve;
+    });
+    const upstreamResponse = new Promise<Response>((resolve) => {
+      resolveUpstream = resolve;
+    });
+    let cancelled = false;
+    let upstreamSignal: AbortSignal | undefined;
+    const proxy = await startHostedCodexRelayProxy({
+      grant: "responses-only-grant",
+      commentTokenRefreshCapability: "comment-refresh-capability",
+      invocationLeaseId: "invocation-lease-1",
+      bindingId: "binding-1",
+      bindingVersion: 7,
+      relayUrl:
+        "https://reviewrouter.test/api/action/v1/hosted-codex/responses",
+      upstreamCommentTokenRefreshUrl:
+        "https://reviewrouter.test/api/action/v1/hosted-relay/comment-token",
+      policy: { maxRequests: 2 },
+      fetchImpl: vi.fn(async (_url: string | URL, init?: RequestInit) => {
+        upstreamSignal = init?.signal ?? undefined;
+        markUpstreamStarted?.();
+        return upstreamResponse;
+      }) as unknown as typeof fetch,
+    });
+    try {
+      const downstreamClosed = new Promise<void>((resolve) => {
+        const request = httpRequest(proxy.commentTokenRefreshUrl, {
+          method: "POST",
+        });
+        request.once("error", () => resolve());
+        request.end("{}");
+        void upstreamStarted.then(() => request.destroy());
+      });
+      await upstreamStarted;
+      await downstreamClosed;
+      await vi.waitFor(() => expect(upstreamSignal?.aborted).toBe(true));
+      resolveUpstream?.(
+        new Response(
+          new ReadableStream({
+            cancel() {
+              cancelled = true;
+            },
+          }),
+        ),
+      );
+      await vi.waitFor(() => expect(cancelled).toBe(true));
     } finally {
       await proxy.close();
     }

@@ -2,11 +2,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-describe("000073 hosted Codex account pool", () => {
+describe("000074 hosted Codex account pool", () => {
   const sql = readFileSync(
     resolve(
       import.meta.dirname,
-      "../prisma/migrations/000073_hosted_codex_account_pool/migration.sql",
+      "../prisma/migrations/000074_hosted_codex_account_pool/migration.sql",
     ),
     "utf8",
   );

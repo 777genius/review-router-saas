@@ -312,7 +312,11 @@ export async function startHostedCodexRelayProxy(input: {
               signal: upstreamController.signal,
             },
           );
-          if (!downstreamClosed) await writeUpstreamResponse(res, refreshed);
+          if (!downstreamClosed) {
+            await writeUpstreamResponse(res, refreshed);
+          } else {
+            await refreshed.body?.cancel().catch(() => undefined);
+          }
           return;
         }
         if (path !== `/${nonce}/v1/responses`) {
@@ -352,11 +356,15 @@ export async function startHostedCodexRelayProxy(input: {
             error.message === "proxy_request_body_too_large"
               ? "proxy_request_body_too_large"
               : "proxy_upstream_failed";
-          writeProxyError(
-            res,
-            code === "proxy_request_body_too_large" ? 413 : 502,
-            code,
-          );
+          if (res.headersSent) {
+            res.destroy();
+          } else {
+            writeProxyError(
+              res,
+              code === "proxy_request_body_too_large" ? 413 : 502,
+              code,
+            );
+          }
         }
       } finally {
         req.off("aborted", abortUpstream);
@@ -436,13 +444,17 @@ async function requestGitHubActionsOidcToken(input: {
   const requestUrl = input.env.ACTIONS_ID_TOKEN_REQUEST_URL;
   const requestToken = input.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
   if (!requestUrl || !requestToken) throw new Error("github_oidc_unavailable");
-  const separator = requestUrl.includes("?") ? "&" : "?";
+  const url = parseTrustedOidcUrl(requestUrl);
+  url.searchParams.set("audience", input.audience);
   let response: Response;
   try {
     response = await fetchWithTimeout(
       input.fetchImpl,
-      `${requestUrl}${separator}audience=${encodeURIComponent(input.audience)}`,
-      { headers: { authorization: `bearer ${requestToken}` } },
+      url.toString(),
+      {
+        headers: { authorization: `bearer ${requestToken}` },
+        redirect: "error",
+      },
       oidcRequestTimeoutMs,
       input.totalSignal,
     );
@@ -478,6 +490,19 @@ async function requestGitHubActionsOidcToken(input: {
     throw new Error("github_oidc_request_failed");
   }
   return body.value;
+}
+
+function parseTrustedOidcUrl(requestUrl: string): URL {
+  let url: URL;
+  try {
+    url = new URL(requestUrl);
+  } catch {
+    throw new Error("github_oidc_url_untrusted");
+  }
+  if (url.protocol !== "https:") {
+    throw new Error("github_oidc_url_untrusted");
+  }
+  return url;
 }
 
 async function fetchWithTimeout(

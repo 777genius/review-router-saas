@@ -1928,6 +1928,20 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(comment).not.toContain("secret-id");
   });
 
+  it("replaces a hosted-pool marker without preserving a stale relay marker", () => {
+    const comment = sanitizeReviewComment(
+      "<!-- reviewrouter:hosted-pool head=0123456789abcdef0123456789abcdef01234567 -->\nHosted finding",
+      {
+        marker:
+          "<!-- reviewrouter:hosted-pool head=abcdef0123456789abcdef0123456789abcdef01 -->",
+      },
+    );
+
+    expect(comment).toBe(
+      "<!-- reviewrouter:hosted-pool head=abcdef0123456789abcdef0123456789abcdef01 -->\nHosted finding",
+    );
+  });
+
   it("updates an existing head-specific PR comment marker instead of duplicating", async () => {
     const bodies: string[] = [];
     const methods: string[] = [];
@@ -1972,7 +1986,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(bodies[0]).toContain("New review");
   });
 
-  it("deletes stale static rotating summary comments before full runtime review", async () => {
+  it("deletes stale rotating and hosted summary comments before full runtime review", async () => {
     const methods: string[] = [];
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
@@ -1985,11 +1999,18 @@ describe("Codex rotating GitHub Action runtime", () => {
           },
           {
             id: 456,
+            body: "<!-- reviewrouter:hosted-pool head=0123456789abcdef0123456789abcdef01234567 -->\nOld hosted review",
+          },
+          {
+            id: 789,
             body: "# ReviewRouter\n\nCurrent full runtime summary",
           },
         ]);
       }
-      if (href.endsWith("/issues/comments/123")) {
+      if (
+        href.endsWith("/issues/comments/123") ||
+        href.endsWith("/issues/comments/456")
+      ) {
         return new Response(null, { status: 204 });
       }
       throw new Error(`unexpected_fetch:${href}`);
@@ -2009,8 +2030,11 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(methods).toContain(
       "DELETE https://api.github.com/repos/777genius/agent-teams-ai/issues/comments/123",
     );
-    expect(methods).not.toContain(
+    expect(methods).toContain(
       "DELETE https://api.github.com/repos/777genius/agent-teams-ai/issues/comments/456",
+    );
+    expect(methods).not.toContain(
+      "DELETE https://api.github.com/repos/777genius/agent-teams-ai/issues/comments/789",
     );
   });
 

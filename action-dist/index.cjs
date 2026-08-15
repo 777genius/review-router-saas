@@ -22513,7 +22513,11 @@ async function startHostedCodexRelayProxy(input) {
               signal: upstreamController.signal
             }
           );
-          if (!downstreamClosed) await writeUpstreamResponse(res, refreshed);
+          if (!downstreamClosed) {
+            await writeUpstreamResponse(res, refreshed);
+          } else {
+            await refreshed.body?.cancel().catch(() => void 0);
+          }
           return;
         }
         if (path !== `/${nonce}/v1/responses`) {
@@ -22549,11 +22553,15 @@ async function startHostedCodexRelayProxy(input) {
       } catch (error51) {
         if (!downstreamClosed) {
           const code = error51 instanceof Error && error51.message === "proxy_request_body_too_large" ? "proxy_request_body_too_large" : "proxy_upstream_failed";
-          writeProxyError(
-            res,
-            code === "proxy_request_body_too_large" ? 413 : 502,
-            code
-          );
+          if (res.headersSent) {
+            res.destroy();
+          } else {
+            writeProxyError(
+              res,
+              code === "proxy_request_body_too_large" ? 413 : 502,
+              code
+            );
+          }
         }
       } finally {
         req.off("aborted", abortUpstream);
@@ -22614,13 +22622,17 @@ async function requestGitHubActionsOidcToken(input) {
   const requestUrl = input.env.ACTIONS_ID_TOKEN_REQUEST_URL;
   const requestToken = input.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
   if (!requestUrl || !requestToken) throw new Error("github_oidc_unavailable");
-  const separator = requestUrl.includes("?") ? "&" : "?";
+  const url2 = parseTrustedOidcUrl(requestUrl);
+  url2.searchParams.set("audience", input.audience);
   let response;
   try {
     response = await fetchWithTimeout(
       input.fetchImpl,
-      `${requestUrl}${separator}audience=${encodeURIComponent(input.audience)}`,
-      { headers: { authorization: `bearer ${requestToken}` } },
+      url2.toString(),
+      {
+        headers: { authorization: `bearer ${requestToken}` },
+        redirect: "error"
+      },
       oidcRequestTimeoutMs,
       input.totalSignal
     );
@@ -22656,6 +22668,18 @@ async function requestGitHubActionsOidcToken(input) {
     throw new Error("github_oidc_request_failed");
   }
   return body.value;
+}
+function parseTrustedOidcUrl(requestUrl) {
+  let url2;
+  try {
+    url2 = new URL(requestUrl);
+  } catch {
+    throw new Error("github_oidc_url_untrusted");
+  }
+  if (url2.protocol !== "https:") {
+    throw new Error("github_oidc_url_untrusted");
+  }
+  return url2;
 }
 async function fetchWithTimeout(fetchImpl, url2, init, timeoutMs, totalSignal) {
   const controller = new AbortController();
@@ -23707,7 +23731,7 @@ async function assertSupportedRunnerEnvironment(env, options = {}) {
 }
 function sanitizeReviewComment(body, options = {}) {
   const sanitized = body.replace(
-    /<!--\s*reviewrouter:codex-oauth-rotating(?:\s+head=[a-f0-9]{40})?\s*-->\s*/gi,
+    /<!--\s*reviewrouter:(?:codex-oauth-rotating|hosted-pool)(?:\s+head=[a-f0-9]{40})?\s*-->\s*/gi,
     ""
   ).replace(
     /refresh_token["'\s:=]+[A-Za-z0-9._~+/=-]+/gi,
@@ -25807,8 +25831,8 @@ async function deleteStaleCodexRotatingSummaryComments(input) {
     throw new Error("github_stale_comment_lookup_invalid");
   }
   const staleComments = comments.filter(
-    (comment) => typeof comment === "object" && comment !== null && typeof comment.id === "number" && typeof comment.body === "string" && comment.body.startsWith(
-      "<!-- reviewrouter:codex-oauth-rotating"
+    (comment) => typeof comment === "object" && comment !== null && typeof comment.id === "number" && typeof comment.body === "string" && /^<!--\s*reviewrouter:(?:codex-oauth-rotating|hosted-pool)(?:\s|-->)/i.test(
+      comment.body
     )
   );
   for (const comment of staleComments) {
