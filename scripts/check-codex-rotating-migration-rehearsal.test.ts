@@ -669,7 +669,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toHaveLength(4);
   });
 
-  it("proves the recovered legacy manifest and database-owned effect fingerprint exactly", () => {
+  it("proves terminal legacy recovery evidence and the database-owned effect fingerprint exactly", () => {
     expect(source).toContain(
       "targetMigrationReceipt.effectFingerprint === expectedEffectFingerprint",
     );
@@ -680,7 +680,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "codex_oauth_setup_manifest_terminal_evidence_immutable",
     );
     expect(source).toContain(
-      `status FROM "CodexOAuthSetupManifest" WHERE id='fetched-recovery') <> 'recovered'`,
+      `status FROM "CodexOAuthSetupManifest" WHERE id='fetched-recovery') <> 'fetched'`,
     );
   });
 

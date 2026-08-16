@@ -3897,7 +3897,7 @@ function proveLegacyChildWritesRejected(url) {
   psql(url, [
     "-c",
     String.raw`DO $$ BEGIN
-      IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id='fetched-recovery') <> 'recovered'
+      IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id='fetched-recovery') <> 'fetched'
         OR (SELECT status FROM "CodexOAuthLease" WHERE id='lease-recovery') <> 'preleased'
       THEN RAISE EXCEPTION 'rejected legacy child write changed data'; END IF;
     END $$;`,
