@@ -134,14 +134,19 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
 /** Streams provider output while keeping the provider credential and request policy server-side. */
 export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelayPort {
   private readonly failoverEnabled: boolean;
+  private readonly now: () => Date;
 
   constructor(
     private readonly runtime: HostedCodexSessionRuntime,
     private readonly ledger: PrismaInvocationGrantRepository,
     private readonly fetchImpl: typeof fetch = fetch,
-    options: { readonly failoverEnabled: boolean } = { failoverEnabled: false },
+    options: {
+      readonly failoverEnabled: boolean;
+      readonly now?: () => Date;
+    } = { failoverEnabled: false },
   ) {
     this.failoverEnabled = options.failoverEnabled;
+    this.now = options.now ?? (() => new Date());
   }
 
   async open(input: Parameters<HostedCodexStreamingRelayPort["open"]>[0]) {
@@ -195,7 +200,8 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
           attempt: input.authorization.runAttempt,
           abortSignal: input.abortSignal,
         });
-        const remainingMs = input.authorization.grantExpiresAtMs - Date.now();
+        const remainingMs =
+          input.authorization.grantExpiresAtMs - this.now().getTime();
         if (remainingMs <= 0) throw new Error("hosted_grant_expired");
         upstream = await this.fetchImpl(upstreamResponsesUrl, {
           method: "POST",
@@ -234,7 +240,9 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         accountId = await this.switchToBackup(
           input.authorization,
           upstream.status === 429 ? "rate_limited" : "credential_invalid",
-          upstream.status === 429 ? new Date(Date.now() + 15 * 60_000) : null,
+          upstream.status === 429
+            ? new Date(this.now().getTime() + 15 * 60_000)
+            : null,
         );
         failedOver = true;
         continue;
@@ -276,7 +284,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         failure,
         effectFence: "before_refresh_or_upstream_effect",
         cooldownUntil,
-        now: new Date(),
+        now: this.now(),
       },
       this.ledger,
     );

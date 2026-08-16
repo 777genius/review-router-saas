@@ -8,7 +8,6 @@ export * from "./application/ports/invocation-grant-capability-port";
 export * from "./application/ports/relay-request-ledger-port";
 export * from "./application/ports/comment-token-refresh-capability-port";
 export * from "./application/ports/current-relay-request-failover-port";
-export * from "./application/ports/current-relay-request-failover-port";
 export * from "./application/ports/hosted-pool-query-port";
 export * from "./application/ports/hosted-credential-custody-port";
 export * from "./application/ports/repository-auth-mode-switch-port";
@@ -28,7 +27,6 @@ export * from "./application/use-cases/query-hosted-account-pool";
 export * from "./application/use-cases/import-enroll-hosted-account";
 export * from "./application/use-cases/switch-repository-auth-mode";
 export * from "./application/use-cases/manage-comment-token-refresh-capability";
-export * from "./application/use-cases/failover-current-relay-request";
 export * from "./application/use-cases/failover-current-relay-request";
 export {
   admitRelayRequest as admitHostedPoolRelayRequest,
