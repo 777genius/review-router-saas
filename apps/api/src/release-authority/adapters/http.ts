@@ -23,6 +23,7 @@ import type {
   PersistedJob,
 } from "../domain/model.js";
 import type {
+  LegacyAmbiguityEvidence,
   ReleaseMigrationPermit,
   ReleaseMigrationReceipt,
   ReleaseMigrationTransitionV1,
@@ -53,11 +54,11 @@ export type ReleaseRolloutLedgerRouteDependencies = {
 };
 
 const mutationFingerprint = /^sha256:[a-f0-9]{64}$/u;
-const legacyAmbiguityRequest = (value: unknown) => {
+const legacyAmbiguityRequest = (value: unknown): LegacyAmbiguityEvidence => {
   try {
-    return assertLegacyAmbiguityEvidence(value);
+    return assertLegacyAmbiguityEvidence(value) ?? invalidMigrationRequest();
   } catch {
-    invalidMigrationRequest();
+    return invalidMigrationRequest();
   }
 };
 const mutationResource = (value: unknown) => {

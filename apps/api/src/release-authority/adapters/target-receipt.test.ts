@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { RoutineTargetActivationReceiptReaderAdapter } from "./target-receipt.js";
 import { sha256Canonical } from "@reviewrouter/features-release-rollout";
+import { sourceLegacyAmbiguityFixture } from "../../../../../test/fixtures/source-legacy-ambiguity";
 
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const receipt = {
@@ -102,27 +103,13 @@ describe("target migration receipt reader", () => {
     targetRecoveryWitnessSha256: "a".repeat(64),
     transitionSha256: digest("b"),
     expectedPreviousReceiptSha256: digest("c"),
-    sourceLegacyAmbiguity: {
-      inventorySha256:
-        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-      activeLeaseIds: [],
-      fetchedSetupIds: [],
-      pendingIntentIds: [],
-      intentStatuses: [],
-      observations: [
-        {
-          observedAt: "2026-08-13T23:59:58.000Z",
-          inventorySha256:
-            "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-        },
-        {
-          observedAt: "2026-08-13T23:59:59.000Z",
-          inventorySha256:
-            "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-        },
-      ] as const,
-      stable: true as const,
-    },
+    sourceLegacyAmbiguity: sourceLegacyAmbiguityFixture({
+      rolloutId: "rollout-migration-1",
+      sourceSystemIdentifier: "100",
+      fenceEstablishedAt: "2026-08-13T23:59:57.000Z",
+      firstObservedAt: "2026-08-13T23:59:58.000Z",
+      eligibilityCutoff: "2026-08-14T00:00:00.000Z",
+    }),
     eligibilityCutoff: "2026-08-14T00:00:00.000Z",
     epoch: 2,
     nonce: "d".repeat(32),
