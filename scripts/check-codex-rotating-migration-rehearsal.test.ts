@@ -680,7 +680,10 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "codex_oauth_setup_manifest_terminal_evidence_immutable",
     );
     expect(source).toContain(
-      `status FROM "CodexOAuthSetupManifest" WHERE id='fetched-recovery') <> 'fetched'`,
+      `status FROM "CodexOAuthSetupManifest" WHERE id='fetched-recovery') <> 'recovered'`,
+    );
+    expect(source).toContain(
+      `status FROM "CodexOAuthLease" WHERE id='lease-recovery') <> 'expired'`,
     );
   });
 
