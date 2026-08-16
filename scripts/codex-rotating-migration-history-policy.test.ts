@@ -186,7 +186,7 @@ describe("Codex rotating immutable migration history policy", () => {
     ).not.toThrow();
   });
 
-  it("accepts successful immutable migrations including 000066", () => {
+  it("accepts successful immutable migrations including 000073", () => {
     expect(() =>
       assertCodexRotatingMigrationHistoryIsPristine([
         successfulRow("000060_codex_oauth_setup_serialization"),
@@ -195,6 +195,7 @@ describe("Codex rotating immutable migration history policy", () => {
         successfulRow("000064_codex_oauth_versioned_secret_namespaces"),
         successfulRow("000065_codex_oauth_authority_acl_hardening"),
         successfulRow("000066_codex_oauth_rotating_cascade_authority"),
+        successfulRow("000073_codex_oauth_active_namespace_refresh"),
       ]),
     ).not.toThrow();
   });

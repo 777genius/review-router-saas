@@ -128,24 +128,28 @@ export const canonicalReleaseMigrationEntries = Object.freeze([
     "000072_runtime_canary_challenge",
     "48ac05b9da6031456de6b7bab2bc9ee46dc3b7bc5cb7ef45c7a5db1ee3956b68",
   ],
+  [
+    "000073_codex_oauth_active_namespace_refresh",
+    "3e5b6606f22c8bec6f75f52f48b693806d597fa283155f6e033844c4f6be4de6",
+  ],
 ] as const).map(([name, checksum]) =>
   Object.freeze({ migrationName: name, migrationSqlSha256: checksum }),
 );
 
 export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
-    "sha256:2a6d797c58dcbc09263859c079717ce833a7ee3dd7791582057147395749be3b",
+    "sha256:bc7853ee946ab41b455e786dded6b34fb0f548a4591ca965d066e8efb1479cd5",
   preManifestIdentity:
     "sha256:dac2d257a6b60be214b96b0a809df0ee18cc7615ffae21520802fe568debf554",
   orderedPendingEntriesSha256:
-    "sha256:665edd3be5a7add17d5fc8d8e35d4bab7a32d133cb89385bb10d3030899e2420",
+    "sha256:c2eae628ec1b20ab29f09ae56ea6111a7d97948c8e5fea370c6cf5e45cf330fa",
   migrationBundleSha256:
-    "sha256:729858362159799dcf1967d5bae71f6ffa1e176762337ff22f4c1d77c8f75018",
+    "sha256:b98968fc30e81ab1af1d5e0c47004e158e281b1a690c41c4f2b74eec6400d73a",
   postManifestIdentity:
-    "sha256:81dd8e6f9e3a799e462c26d1aa2684309df915416369b54f8499a8d793d5e623",
-  // Captured digest of the canonical live V70-V72 catalog projection.
+    "sha256:0d6bb8d32a70a0be50801fb6c2950e09e5f625180f431b4f3c07d67554458fda",
+  // Captured digest of the canonical live V70-V73 catalog projection.
   postCatalogDigest:
-    "sha256:071087ed3e7ea32a0bdebaef98fc6d13ff9aedfde8ec54cff8a717fb50f1646e",
+    "sha256:f07b8321acdf1c9d6851e9aaf017ce11572ad1a71d2afe257276c5818dee662d",
 });
 
 export const canonicalReleaseMigrationResumeManifestIdentities = Object.freeze([

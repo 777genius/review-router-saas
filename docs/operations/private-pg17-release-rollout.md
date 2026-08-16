@@ -306,7 +306,7 @@ verifier or upgraded without rerunning the current rollout and witness observati
    routine hashes from the checked-out release without querying the target:
 
    ```bash
-   node -e "import('./scripts/run-codex-rotating-release-migration.mjs').then(m => console.log(m.activationRoutineBodyTrustRoots()))"
+   node --import tsx -e "import('./scripts/run-codex-rotating-release-migration.mjs').then(m => console.log(m.activationRoutineBodyTrustRoots()))"
    ```
 
    Set `REVIEW_ROUTER_RELEASE_AUTHORITY_SYSTEM_IDENTIFIER`,

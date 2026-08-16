@@ -109,6 +109,13 @@ suspended process could still resume after its reservation expires; the
 workflow-side generation check remains the final fail-closed guard and requires
 a fresh reseed after such a mismatch.
 
+Setup and explicit recovery promote a fresh versioned secret namespace. Normal
+GitHub-hosted refreshes overwrite the already-active namespace in place and
+re-attest the unchanged workflow without committing to the default branch. This
+keeps refresh compatible with strict rulesets. If the GitHub secret PUT outcome
+is ambiguous, the provider enters `unknown_auth_state`; automatic reuse stops
+until setup recovery promotes a fresh namespace.
+
 Never reuse the user's interactive Codex Desktop auth file as a hosted review
 secret. Keep the reviewer session isolated, and do not print auth JSON or token
 fields while diagnosing a failed refresh.

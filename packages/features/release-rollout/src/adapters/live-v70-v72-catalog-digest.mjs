@@ -1,8 +1,8 @@
 /**
- * Canonical PostgreSQL projection of the live V70-V72 application catalog.
+ * Canonical PostgreSQL projection of the live V70-V73 application catalog.
  * Keep this in the Postgres adapter layer: the domain receives only its digest.
  */
-export const fencedLiveV70V72CatalogDigestSql = `
+export const fencedLiveV70V73CatalogDigestSql = `
 WITH selected_relations AS (
   SELECT c.oid, n.oid AS namespace_oid, n.nspname, c.relname, c.relkind,
     c.relowner, c.relacl, c.relrowsecurity, c.relforcerowsecurity,
@@ -10,7 +10,7 @@ WITH selected_relations AS (
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
   WHERE n.nspname='public' AND c.relname IN
-    ('RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+    ('CodexOAuthWritebackIntent','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
 ), facts AS (
   SELECT jsonb_build_object(
     'columns',coalesce((SELECT jsonb_agg(jsonb_build_object(
@@ -110,7 +110,7 @@ WITH selected_relations AS (
       FROM pg_catalog.pg_default_acl d LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace
       WHERE n.nspname='public'),'[]'::jsonb),
     'history',CASE WHEN reviewrouter_activation.read_activation_migration_manifest_identity()
-      = 'sha256:81dd8e6f9e3a799e462c26d1aa2684309df915416369b54f8499a8d793d5e623'
+      = 'sha256:0d6bb8d32a70a0be50801fb6c2950e09e5f625180f431b4f3c07d67554458fda'
       THEN jsonb_build_array(
         jsonb_build_object('name','000070_runtime_generation_witness_proof',
           'checksum','cb9c42171f9bd924d21093852a1053cb947100acef1321ec8cf62e8fd5928c6f',
@@ -123,6 +123,9 @@ WITH selected_relations AS (
           'finished',true,'rolledBack',false),
         jsonb_build_object('name','000072_runtime_canary_challenge',
           'checksum','48ac05b9da6031456de6b7bab2bc9ee46dc3b7bc5cb7ef45c7a5db1ee3956b68',
+          'finished',true,'rolledBack',false),
+        jsonb_build_object('name','000073_codex_oauth_active_namespace_refresh',
+          'checksum','3e5b6606f22c8bec6f75f52f48b693806d597fa283155f6e033844c4f6be4de6',
           'finished',true,'rolledBack',false))
       ELSE '[]'::jsonb END,
     'unresolvedHistory',false,
@@ -132,5 +135,10 @@ WITH selected_relations AS (
 SELECT 'sha256:'||encode(pg_catalog.sha256(convert_to(value::text,'UTF8')),'hex')
 FROM facts`;
 
-export const liveV70V72CatalogDigestSha256 =
-  "sha256:071087ed3e7ea32a0bdebaef98fc6d13ff9aedfde8ec54cff8a717fb50f1646e";
+export const liveV70V73CatalogDigestSha256 =
+  "sha256:f07b8321acdf1c9d6851e9aaf017ce11572ad1a71d2afe257276c5818dee662d";
+
+// Compatibility aliases for existing external consumers during the V73 rollout.
+export const fencedLiveV70V72CatalogDigestSql =
+  fencedLiveV70V73CatalogDigestSql;
+export const liveV70V72CatalogDigestSha256 = liveV70V73CatalogDigestSha256;

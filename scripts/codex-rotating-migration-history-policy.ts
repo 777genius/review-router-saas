@@ -21,6 +21,8 @@ export const immutableCodexRotatingMigrationChecksums = Object.freeze({
     "ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c",
   "000066_codex_oauth_rotating_cascade_authority":
     "3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8",
+  "000073_codex_oauth_active_namespace_refresh":
+    "3e5b6606f22c8bec6f75f52f48b693806d597fa283155f6e033844c4f6be4de6",
 });
 
 export const forwardUnpublishedCodexRotatingMigration = Object.freeze({

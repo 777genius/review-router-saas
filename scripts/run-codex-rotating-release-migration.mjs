@@ -16,11 +16,15 @@ import {
   sanitizedDiagnosticError,
 } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
 import { assertLegacyAmbiguityEvidence } from "../packages/features/release-rollout/src/domain/trusted-rollout-evidence.js";
+import {
+  canonicalReleaseMigrationArtifact,
+  canonicalReleaseMigrationEntries,
+} from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
 import { normalizeSecretSafePostgresArguments } from "./lib/secret-safe-command-boundary.mjs";
 import { effectivePrincipalInventorySql } from "../packages/features/release-rollout/src/adapters/effective-principal-postgres.mjs";
 import {
-  liveV70V72CatalogDigestSha256 as fencedLiveV70V72CatalogDigestSha256,
-  fencedLiveV70V72CatalogDigestSql,
+  liveV70V73CatalogDigestSha256 as fencedLiveV70V73CatalogDigestSha256,
+  fencedLiveV70V73CatalogDigestSql,
 } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 import {
   prepareLegacyAmbiguityReconciliation,
@@ -39,56 +43,14 @@ const runtimeRoles = [
   ],
 ];
 
-const atomicReleaseMigrationEntries = Object.freeze([
-  [
-    "000060_codex_oauth_setup_serialization",
-    "f24ab69f681349332e47e121adc72bd3edb14e24bcbffcd26fce4f03ba0d7395",
-  ],
-  [
-    "000061_codex_oauth_provider_mutation_fence",
-    "bba689c8b80580ec649cc3262fb2ee9c97be758f3c4ab7094c48c84d002aeb30",
-  ],
-  [
-    "000062_codex_oauth_remote_outcome_unknown",
-    "0e8bb62933a270d745530f2c4984520e1753f42d8531c24ffdfa4acfe46a73f4",
-  ],
-  [
-    "000063_codex_oauth_setup_payload_claim",
-    "33100d6f5f3f59cd9a4c22f041d19caba6a0e0be88de4a0ee4d543af50619481",
-  ],
-  [
-    "000064_codex_oauth_versioned_secret_namespaces",
-    "4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666",
-  ],
-  [
-    "000065_codex_oauth_authority_acl_hardening",
-    "ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c",
-  ],
-  [
-    "000066_codex_oauth_rotating_cascade_authority",
-    "3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8",
-  ],
-  [
-    "000069_release_rollout_ledger",
-    "82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05",
-  ],
-  [
-    "000070_runtime_generation_witness_proof",
-    "cb9c42171f9bd924d21093852a1053cb947100acef1321ec8cf62e8fd5928c6f",
-  ],
-  [
-    "000071_transactional_service_transition",
-    "36ecd5c6b880bd9cd4ad76a20fdd9e4ceafcc3e524e924eb3c7b0c78116da093",
-  ],
-  [
-    "000072_retire_superseded_codex_setup_claims",
-    "a0105a5498bacf23ec59687f6b43c70cecc075665231c37d970edcf8c0855fb3",
-  ],
-  [
-    "000072_runtime_canary_challenge",
-    "48ac05b9da6031456de6b7bab2bc9ee46dc3b7bc5cb7ef45c7a5db1ee3956b68",
-  ],
-]);
+const atomicReleaseMigrationEntries = Object.freeze(
+  canonicalReleaseMigrationEntries.map(
+    ({ migrationName, migrationSqlSha256 }) => [
+      migrationName,
+      migrationSqlSha256,
+    ],
+  ),
+);
 
 export function stripAtomicMigrationEnvelope(source, migrationName) {
   const lines = source.split("\n");
@@ -1388,7 +1350,7 @@ BEGIN
   INTO STRICT observed_manifest_identity FROM public._prisma_migrations
   WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL;
   SELECT digest INTO STRICT observed_catalog_digest
-  FROM (${fencedLiveV70V72CatalogDigestSql}) live(digest);
+  FROM (${fencedLiveV70V73CatalogDigestSql}) live(digest);
   IF observed_manifest_identity IS DISTINCT FROM
        current_permit.expected_post_manifest_identity THEN
     RAISE EXCEPTION
@@ -4678,12 +4640,15 @@ COMMIT;
 `;
 }
 
-/** Canonical projection of the live V70-V72 security catalog. */
-export const liveV70V72CatalogDigestSha256 =
-  fencedLiveV70V72CatalogDigestSha256;
-export const liveV70V72CatalogDigestSql = fencedLiveV70V72CatalogDigestSql;
+/** Canonical projection of the live V70-V73 security catalog. */
+export const liveV70V73CatalogDigestSha256 =
+  fencedLiveV70V73CatalogDigestSha256;
+export const liveV70V73CatalogDigestSql = fencedLiveV70V73CatalogDigestSql;
 
-if (liveV70V72CatalogDigestSha256 !== fencedLiveV70V72CatalogDigestSha256)
+export const liveV70V72CatalogDigestSha256 = liveV70V73CatalogDigestSha256;
+export const liveV70V72CatalogDigestSql = liveV70V73CatalogDigestSql;
+
+if (liveV70V73CatalogDigestSha256 !== fencedLiveV70V73CatalogDigestSha256)
   throw new Error("release_migration_fenced_catalog_projection_drift");
 
 export function releaseMigrationPermitFromEnv(env) {
@@ -4787,7 +4752,7 @@ BEGIN
   INTO manifest_identity
   FROM public._prisma_migrations
   WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL;
-  IF manifest_identity <> 'sha256:81dd8e6f9e3a799e462c26d1aa2684309df915416369b54f8499a8d793d5e623'
+  IF manifest_identity <> '${canonicalReleaseMigrationArtifact.postManifestIdentity}'
     THEN RAISE EXCEPTION 'release migration post manifest mismatch'; END IF;
   IF EXISTS (SELECT 1 FROM public._prisma_migrations
     WHERE finished_at IS NULL AND rolled_back_at IS NULL)
@@ -4806,13 +4771,13 @@ BEGIN
       'public.reviewrouter_answer_runtime_canary_challenge(text,text,text,text,text,text)'::regprocedure
     ) AND NOT prosecdef
   ) THEN RAISE EXCEPTION 'release migration V72 routine security invalid'; END IF;
-  SELECT digest INTO STRICT catalog_digest FROM (${liveV70V72CatalogDigestSql}) live(digest);
+  SELECT digest INTO STRICT catalog_digest FROM (${liveV70V73CatalogDigestSql}) live(digest);
   SELECT reviewrouter_activation.read_migration_receipt(
     ${quoted(migrationPermit.rolloutId)},${migrationPermit.epoch}::bigint,
     ${quoted(migrationPermit.nonce)}
   )->>'postCatalogDigest' INTO STRICT receipt_catalog_digest;
   IF catalog_digest IS DISTINCT FROM receipt_catalog_digest
-    THEN RAISE EXCEPTION 'release migration V70-V72 live catalog digest mismatch'; END IF;
+    THEN RAISE EXCEPTION 'release migration V70-V73 live catalog digest mismatch'; END IF;
 END
 $phase_aware_manifest_postcondition$;
 COMMIT;

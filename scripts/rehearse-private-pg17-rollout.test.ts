@@ -46,9 +46,9 @@ describe("disposable dual-version rehearsal", () => {
     ).toBe("release migration executor runtime connect gate mismatch");
     expect(
       safePostgresErrorClassification(
-        "psql: ERROR:  P0001: release migration V70-V72 live catalog digest mismatch: internal context redacted\nDETAIL: token=secret",
+        "psql: ERROR:  P0001: release migration V70-V73 live catalog digest mismatch: internal context redacted\nDETAIL: token=secret",
       ),
-    ).toBe("release migration v70-v72 live catalog digest mismatch");
+    ).toBe("release migration v70-v73 live catalog digest mismatch");
     expect(
       safePostgresErrorClassification(
         `psql: ERROR:  P0001: release migration target live completion mismatch:catalog_digest_observed\nDETAIL: expected=sha256:${"1".repeat(64)} observed=sha256:${"2".repeat(64)}\nCONTEXT: token=secret`,
@@ -431,6 +431,7 @@ describe("disposable dual-version rehearsal", () => {
       "000071_transactional_service_transition",
       "000072_retire_superseded_codex_setup_claims",
       "000072_runtime_canary_challenge",
+      "000073_codex_oauth_active_namespace_refresh",
     ]);
     expect(exclusions).not.toContain("000067_review_live_progress");
     expect(exclusions).not.toContain(
@@ -439,13 +440,13 @@ describe("disposable dual-version rehearsal", () => {
     expect(() =>
       resolvePreReleaseMigrationExclusions([
         ...migrationNames,
-        "000073_future_release_migration",
+        "000074_future_release_migration",
       ]),
     ).toThrow("private_pg17_rehearsal_migration_boundary_unclassified");
     expect(() =>
       resolvePreReleaseMigrationExclusions([
         ...migrationNames,
-        "000073_future_review_migration",
+        "000074_future_review_migration",
       ]),
     ).toThrow("private_pg17_rehearsal_migration_boundary_unclassified");
   });

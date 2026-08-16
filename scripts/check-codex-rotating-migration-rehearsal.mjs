@@ -14,7 +14,7 @@ import {
 import {
   activationAuthorityProvisioningSql,
   executeCanonicalReleaseMigration,
-  liveV70V72CatalogDigestSha256,
+  liveV70V73CatalogDigestSha256,
   roleProvisioningSql,
   runtimeGrantStatements,
 } from "./run-codex-rotating-release-migration.mjs";
@@ -24,6 +24,7 @@ import {
   createSanitizedDiagnostic,
   sanitizedDiagnosticError,
 } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
+import { sha256Canonical } from "../packages/features/release-rollout/src/domain/canonical-json.ts";
 import {
   createDatabaseCredentialBoundary,
   createSecretSafePostgresInvocation,
@@ -50,7 +51,8 @@ const migration72CanaryName = "000072_runtime_canary_challenge";
 const rehearsalPreManifestIdentitySha256 =
   "sha256:dac2d257a6b60be214b96b0a809df0ee18cc7615ffae21520802fe568debf554";
 const rehearsalPostManifestIdentitySha256 =
-  "sha256:81dd8e6f9e3a799e462c26d1aa2684309df915416369b54f8499a8d793d5e623";
+  "sha256:0d6bb8d32a70a0be50801fb6c2950e09e5f625180f431b4f3c07d67554458fda";
+const migration73Name = "000073_codex_oauth_active_namespace_refresh";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -78,6 +80,7 @@ assert(
       migration71Name,
       migration72RetireName,
       migration72CanaryName,
+      migration73Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -177,7 +180,7 @@ try {
   proveLegacyChildWritesRejected(providerAdmin);
   proveParentIdentityWriteRejected(providerAdmin);
   await proveProviderRepairAuthorityV2(providerAdmin, runtimeClients);
-  proveQuarantineCleanupPathV2(providerAdmin);
+  await proveQuarantineCleanupPathV2(providerAdmin, runtimeClients);
   proveExactProductionCatalogContract(providerAdmin);
   proveMigrateDeployNoOp(providerAdmin);
   proveLateMigrationRollbackAndReplayMatrix();
@@ -185,7 +188,7 @@ try {
   const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000072 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000073 rehearsal passed.\n",
   );
 } finally {
   const databaseDrop = psql(
@@ -376,6 +379,7 @@ function proveCanonicalLegacyReconciliationNegativeCases() {
               migration71Name,
               migration72RetireName,
               migration72CanaryName,
+              migration73Name,
             ]
               .map(quoteLiteral)
               .join(
@@ -1197,8 +1201,8 @@ function proveVersionedNamespaceLedger(url) {
               AND attempt."idempotencyKey" = 'dispatch:runtime-proof-initial'
           ) exact_initial_setup_tombstone
         ),
-        'recoverySetupTombstone', (
-          SELECT row_to_json(exact_recovery_setup_tombstone) FROM (
+        'activeRecoverySetupNamespace', (
+          SELECT row_to_json(exact_active_recovery_setup_namespace) FROM (
             SELECT claim."id" AS "claimId", attempt."id" AS "attemptId",
               namespace."id" AS "namespaceId", namespace."secretName",
               namespace."namespaceEpoch"::text AS "namespaceEpoch",
@@ -1211,10 +1215,10 @@ function proveVersionedNamespaceLedger(url) {
             WHERE claim."providerInstanceRowId" = 'p-clean'
               AND claim."operationId" = 'operation:runtime-proof-recovery'
               AND attempt."idempotencyKey" = 'dispatch:runtime-proof-recovery'
-          ) exact_recovery_setup_tombstone
+          ) exact_active_recovery_setup_namespace
         ),
-        'definiteRuntimeTombstone', (
-          SELECT row_to_json(exact_definite_runtime_tombstone) FROM (
+        'definiteIntentOnRetiredInitialNamespace', (
+          SELECT row_to_json(exact_definite_intent_on_retired_initial_namespace) FROM (
             SELECT intent."id" AS "intentId", namespace."id" AS "namespaceId",
               namespace."namespaceEpoch"::text AS "namespaceEpoch",
               namespace."status" AS "namespaceStatus", namespace."permanentlyRetired",
@@ -1223,10 +1227,10 @@ function proveVersionedNamespaceLedger(url) {
             JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = intent."secretNamespaceId"
             WHERE intent."providerInstanceRowId" = 'p-clean'
               AND intent."idempotencyKey" = 'proof:definite'
-          ) exact_definite_runtime_tombstone
+          ) exact_definite_intent_on_retired_initial_namespace
         ),
-        'ambiguousRuntimeTombstone', (
-          SELECT row_to_json(exact_ambiguous_runtime_tombstone) FROM (
+        'recoveredAmbiguousIntentOnRetiredInitialNamespace', (
+          SELECT row_to_json(exact_recovered_ambiguous_intent_on_retired_initial_namespace) FROM (
             SELECT intent."id" AS "intentId", namespace."id" AS "namespaceId",
               namespace."namespaceEpoch"::text AS "namespaceEpoch",
               namespace."status" AS "namespaceStatus", namespace."permanentlyRetired",
@@ -1235,10 +1239,10 @@ function proveVersionedNamespaceLedger(url) {
             JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = intent."secretNamespaceId"
             WHERE intent."providerInstanceRowId" = 'p-clean'
               AND intent."idempotencyKey" = 'proof:ambiguous'
-          ) exact_ambiguous_runtime_tombstone
+          ) exact_recovered_ambiguous_intent_on_retired_initial_namespace
         ),
-        'activeRuntimeNamespace', (
-          SELECT row_to_json(exact_active_runtime_namespace) FROM (
+        'completedIntentOnActiveRecoveryNamespace', (
+          SELECT row_to_json(exact_completed_intent_on_active_recovery_namespace) FROM (
             SELECT intent."id" AS "intentId", namespace."id" AS "namespaceId",
               namespace."secretName", namespace."namespaceEpoch"::text AS "namespaceEpoch",
               intent."accountIdentityHash", intent."latestGenerationHash",
@@ -1248,10 +1252,10 @@ function proveVersionedNamespaceLedger(url) {
             JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = intent."secretNamespaceId"
             WHERE intent."providerInstanceRowId" = 'p-clean'
               AND intent."idempotencyKey" = 'proof:rollback'
-          ) exact_active_runtime_namespace
+          ) exact_completed_intent_on_active_recovery_namespace
         ),
-        'confirmedRestartRuntimeTombstone', (
-          SELECT row_to_json(exact_confirmed_restart_runtime_tombstone) FROM (
+        'confirmedRestartUnknownIntentOnActiveRecoveryNamespace', (
+          SELECT row_to_json(exact_confirmed_restart_unknown_intent_on_active_recovery_namespace) FROM (
             SELECT intent."id" AS "intentId", namespace."id" AS "namespaceId",
               namespace."namespaceEpoch"::text AS "namespaceEpoch",
               namespace."status" AS "namespaceStatus", namespace."permanentlyRetired",
@@ -1260,7 +1264,7 @@ function proveVersionedNamespaceLedger(url) {
             JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = intent."secretNamespaceId"
             WHERE intent."providerInstanceRowId" = 'p-clean'
               AND intent."idempotencyKey" = 'proof:confirmed-restart'
-          ) exact_confirmed_restart_runtime_tombstone
+          ) exact_confirmed_restart_unknown_intent_on_active_recovery_namespace
         ),
         'provider', (
           SELECT row_to_json(exact_provider) FROM (
@@ -1286,71 +1290,99 @@ function proveVersionedNamespaceLedger(url) {
     "runtime production path did not retain the exact initial setup namespace tombstone",
   );
   assert(
-    evidence.recoverySetupTombstone?.claimStatus === "active" &&
-      evidence.recoverySetupTombstone.attemptStatus === "confirmed" &&
-      evidence.recoverySetupTombstone.namespaceStatus ===
-        "retired_superseded" &&
-      evidence.recoverySetupTombstone.permanentlyRetired === true,
-    "runtime production path did not retain the exact recovery setup namespace tombstone",
+    evidence.activeRecoverySetupNamespace?.claimStatus === "active" &&
+      evidence.activeRecoverySetupNamespace.attemptStatus === "confirmed" &&
+      evidence.activeRecoverySetupNamespace.namespaceStatus === "active" &&
+      evidence.activeRecoverySetupNamespace.permanentlyRetired === false &&
+      evidence.activeRecoverySetupNamespace.namespaceId ===
+        evidence.completedIntentOnActiveRecoveryNamespace?.namespaceId &&
+      evidence.activeRecoverySetupNamespace.namespaceId ===
+        evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace
+          ?.namespaceId,
+    "runtime production path did not retain the active recovery setup namespace",
   );
   assert(
-    evidence.definiteRuntimeTombstone?.intentStatus === "completed" &&
-      evidence.definiteRuntimeTombstone.namespaceStatus ===
+    evidence.definiteIntentOnRetiredInitialNamespace?.intentStatus ===
+      "completed" &&
+      evidence.definiteIntentOnRetiredInitialNamespace.namespaceStatus ===
         "retired_superseded" &&
-      evidence.definiteRuntimeTombstone.permanentlyRetired === true,
+      evidence.definiteIntentOnRetiredInitialNamespace.permanentlyRetired ===
+        true &&
+      evidence.definiteIntentOnRetiredInitialNamespace.namespaceId ===
+        evidence.initialSetupTombstone.namespaceId,
     "runtime production path did not retain the exact definite namespace tombstone",
   );
   assert(
-    evidence.activeRuntimeNamespace?.intentStatus === "completed" &&
-      evidence.activeRuntimeNamespace.namespaceStatus === "active" &&
-      evidence.activeRuntimeNamespace.permanentlyRetired === false &&
+    evidence.completedIntentOnActiveRecoveryNamespace?.intentStatus ===
+      "completed" &&
+      evidence.completedIntentOnActiveRecoveryNamespace.namespaceStatus ===
+        "active" &&
+      evidence.completedIntentOnActiveRecoveryNamespace.permanentlyRetired ===
+        false &&
       evidence.provider?.activeSecretNamespaceId ===
-        evidence.activeRuntimeNamespace.namespaceId &&
+        evidence.completedIntentOnActiveRecoveryNamespace.namespaceId &&
       evidence.provider.activeSecretNamespaceEpoch ===
-        evidence.activeRuntimeNamespace.namespaceEpoch &&
+        evidence.completedIntentOnActiveRecoveryNamespace.namespaceEpoch &&
       evidence.provider.activeSecretNamespaceName ===
-        evidence.activeRuntimeNamespace.secretName &&
+        evidence.completedIntentOnActiveRecoveryNamespace.secretName &&
       evidence.provider.activeAccountIdentityHash ===
-        evidence.activeRuntimeNamespace.accountIdentityHash &&
+        evidence.completedIntentOnActiveRecoveryNamespace.accountIdentityHash &&
       evidence.provider.latestGenerationHash ===
-        evidence.activeRuntimeNamespace.latestGenerationHash,
+        evidence.completedIntentOnActiveRecoveryNamespace.latestGenerationHash,
     "runtime production path exact proof:rollback namespace binding is incomplete",
   );
   assert(
-    evidence.confirmedRestartRuntimeTombstone?.intentStatus ===
-      "remote_outcome_unknown" &&
-      evidence.confirmedRestartRuntimeTombstone.namespaceStatus ===
-        "retired_ambiguous" &&
-      evidence.confirmedRestartRuntimeTombstone.permanentlyRetired === true,
-    "runtime production path did not retain the exact confirmed-restart namespace tombstone",
+    evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace
+      ?.intentStatus === "remote_outcome_unknown" &&
+      evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace
+        .namespaceStatus === "active" &&
+      evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace
+        .permanentlyRetired === false,
+    "runtime production path did not retain the confirmed-restart unknown intent on the active namespace",
   );
   assert(
-    BigInt(evidence.initialSetupTombstone.namespaceEpoch) <
-      BigInt(evidence.definiteRuntimeTombstone.namespaceEpoch) &&
-      BigInt(evidence.definiteRuntimeTombstone.namespaceEpoch) <
-        BigInt(evidence.ambiguousRuntimeTombstone.namespaceEpoch) &&
-      BigInt(evidence.ambiguousRuntimeTombstone.namespaceEpoch) <
-        BigInt(evidence.recoverySetupTombstone.namespaceEpoch) &&
-      BigInt(evidence.recoverySetupTombstone.namespaceEpoch) <
-        BigInt(evidence.activeRuntimeNamespace.namespaceEpoch) &&
-      BigInt(evidence.activeRuntimeNamespace.namespaceEpoch) <
-        BigInt(evidence.confirmedRestartRuntimeTombstone.namespaceEpoch),
-    "runtime production path namespace epochs are not monotonic across the evidence chain",
+    BigInt(evidence.initialSetupTombstone.namespaceEpoch) ===
+      BigInt(evidence.definiteIntentOnRetiredInitialNamespace.namespaceEpoch) &&
+      BigInt(
+        evidence.definiteIntentOnRetiredInitialNamespace.namespaceEpoch,
+      ) ===
+        BigInt(
+          evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace
+            .namespaceEpoch,
+        ) &&
+      BigInt(
+        evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace
+          .namespaceEpoch,
+      ) < BigInt(evidence.activeRecoverySetupNamespace.namespaceEpoch) &&
+      BigInt(evidence.activeRecoverySetupNamespace.namespaceEpoch) ===
+        BigInt(
+          evidence.completedIntentOnActiveRecoveryNamespace.namespaceEpoch,
+        ) &&
+      BigInt(evidence.activeRecoverySetupNamespace.namespaceEpoch) ===
+        BigInt(
+          evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace
+            .namespaceEpoch,
+        ),
+    "runtime production path namespace reuse epochs are inconsistent across the evidence chain",
   );
   assert(
-    evidence.ambiguousRuntimeTombstone?.namespaceStatus ===
-      "retired_ambiguous" &&
-      evidence.ambiguousRuntimeTombstone.permanentlyRetired === true &&
-      evidence.ambiguousRuntimeTombstone.intentStatus ===
-        "remote_outcome_unknown" &&
-      typeof evidence.ambiguousRuntimeTombstone.recoveryRequestRowId ===
-        "string",
-    "runtime production path did not retain the exact ambiguous namespace tombstone",
+    evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace
+      ?.namespaceStatus === "retired_superseded" &&
+      evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace
+        .permanentlyRetired === true &&
+      evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace
+        .intentStatus === "remote_outcome_unknown" &&
+      typeof evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace
+        .recoveryRequestRowId === "string" &&
+      evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace.namespaceId ===
+        evidence.initialSetupTombstone.namespaceId,
+    "runtime production path did not retain the recovered ambiguous intent on the retired initial namespace",
   );
 
   const initialSetupTombstone = evidence.initialSetupTombstone;
-  const recoverySetupTombstone = evidence.recoverySetupTombstone;
-  const activeRuntimeNamespace = evidence.activeRuntimeNamespace;
+  const activeRecoverySetupNamespace = evidence.activeRecoverySetupNamespace;
+  const completedIntentOnActiveRecoveryNamespace =
+    evidence.completedIntentOnActiveRecoveryNamespace;
   const provider = evidence.provider;
   const recreate = psql(
     url,
@@ -1388,43 +1420,43 @@ function proveVersionedNamespaceLedger(url) {
       "codex_oauth_provider_mutation_fence_required",
     ],
     [
-      `UPDATE "CodexOAuthSetupPayloadClaim" SET "manifestDigest"=repeat('f',64) WHERE "id"=${quoteLiteral(recoverySetupTombstone.claimId)}`,
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "manifestDigest"=repeat('f',64) WHERE "id"=${quoteLiteral(activeRecoverySetupNamespace.claimId)}`,
       "codex_oauth_setup_claim_evidence_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSetupPayloadClaim" SET "recoveryEpoch"="recoveryEpoch"+1 WHERE "id"=${quoteLiteral(recoverySetupTombstone.claimId)}`,
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "recoveryEpoch"="recoveryEpoch"+1 WHERE "id"=${quoteLiteral(activeRecoverySetupNamespace.claimId)}`,
       "codex_oauth_setup_claim_evidence_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSetupPayloadClaim" SET "installerDigest"=repeat('f',64) WHERE "id"=${quoteLiteral(recoverySetupTombstone.claimId)}`,
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "installerDigest"=repeat('f',64) WHERE "id"=${quoteLiteral(activeRecoverySetupNamespace.claimId)}`,
       "codex_oauth_setup_claim_evidence_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSetupPayloadClaim" SET "databaseRecoveryWitness"=repeat('f',64) WHERE "id"=${quoteLiteral(recoverySetupTombstone.claimId)}`,
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "databaseRecoveryWitness"=repeat('f',64) WHERE "id"=${quoteLiteral(activeRecoverySetupNamespace.claimId)}`,
       "codex_oauth_setup_claim_evidence_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSetupPayloadClaim" SET "confirmedAttemptId"=${quoteLiteral(initialSetupTombstone.attemptId)} WHERE "id"=${quoteLiteral(recoverySetupTombstone.claimId)}`,
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "confirmedAttemptId"=${quoteLiteral(initialSetupTombstone.attemptId)} WHERE "id"=${quoteLiteral(activeRecoverySetupNamespace.claimId)}`,
       "codex_oauth_setup_claim_evidence_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSetupDispatchAttempt" SET "dispatchExpiresAt"="dispatchExpiresAt"+interval '1 minute' WHERE "id"=${quoteLiteral(recoverySetupTombstone.attemptId)}`,
+      `UPDATE "CodexOAuthSetupDispatchAttempt" SET "dispatchExpiresAt"="dispatchExpiresAt"+interval '1 minute' WHERE "id"=${quoteLiteral(activeRecoverySetupNamespace.attemptId)}`,
       "codex_oauth_setup_attempt_evidence_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceBlobSha"=repeat('e',40) WHERE "id"=${quoteLiteral(activeRuntimeNamespace.namespaceId)}`,
+      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceBlobSha"=repeat('e',40) WHERE "id"=${quoteLiteral(completedIntentOnActiveRecoveryNamespace.namespaceId)}`,
       "codex_oauth_secret_namespace_identity_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(activeRuntimeNamespace.namespaceId)}`,
+      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(completedIntentOnActiveRecoveryNamespace.namespaceId)}`,
       "codex_oauth_secret_namespace_identity_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSemanticSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(activeRuntimeNamespace.namespaceId)}`,
+      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSemanticSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(completedIntentOnActiveRecoveryNamespace.namespaceId)}`,
       "codex_oauth_secret_namespace_identity_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSecretNamespace" SET "attestedRepositoryId"='900008' WHERE "id"=${quoteLiteral(activeRuntimeNamespace.namespaceId)}`,
+      `UPDATE "CodexOAuthSecretNamespace" SET "attestedRepositoryId"='900008' WHERE "id"=${quoteLiteral(completedIntentOnActiveRecoveryNamespace.namespaceId)}`,
       "codex_oauth_secret_namespace_identity_immutable",
     ],
   ];
@@ -1444,37 +1476,17 @@ function proveVersionedNamespaceLedger(url) {
     ],
     [
       "CodexOAuthSecretNamespace",
-      recoverySetupTombstone.namespaceId,
-      "codex_oauth_secret_namespace_delete_forbidden",
-    ],
-    [
-      "CodexOAuthSecretNamespace",
-      evidence.definiteRuntimeTombstone.namespaceId,
-      "codex_oauth_secret_namespace_delete_forbidden",
-    ],
-    [
-      "CodexOAuthSecretNamespace",
-      evidence.ambiguousRuntimeTombstone.namespaceId,
-      "codex_oauth_secret_namespace_delete_forbidden",
-    ],
-    [
-      "CodexOAuthSecretNamespace",
-      evidence.confirmedRestartRuntimeTombstone.namespaceId,
-      "codex_oauth_secret_namespace_delete_forbidden",
-    ],
-    [
-      "CodexOAuthSecretNamespace",
-      activeRuntimeNamespace.namespaceId,
+      activeRecoverySetupNamespace.namespaceId,
       "codex_oauth_secret_namespace_delete_forbidden",
     ],
     [
       "CodexOAuthSetupDispatchAttempt",
-      recoverySetupTombstone.attemptId,
+      activeRecoverySetupNamespace.attemptId,
       "codex_oauth_setup_attempt_delete_forbidden",
     ],
     [
       "CodexOAuthSetupPayloadClaim",
-      recoverySetupTombstone.claimId,
+      activeRecoverySetupNamespace.claimId,
       "codex_oauth_setup_claim_delete_forbidden",
     ],
   ]) {
@@ -1547,55 +1559,61 @@ function assertVersionedNamespaceEvidenceRetained(
     "-Atc",
     `SELECT concat_ws(':',
       (SELECT count(*) FROM "CodexOAuthSetupPayloadClaim"
-        WHERE "id"=${quoteLiteral(evidence.recoverySetupTombstone.claimId)}
-          AND "confirmedAttemptId"=${quoteLiteral(evidence.recoverySetupTombstone.attemptId)}
+        WHERE "id"=${quoteLiteral(evidence.activeRecoverySetupNamespace.claimId)}
+          AND "confirmedAttemptId"=${quoteLiteral(evidence.activeRecoverySetupNamespace.attemptId)}
           AND "status"='active'),
       (SELECT count(*) FROM "CodexOAuthSetupDispatchAttempt"
-        WHERE "id"=${quoteLiteral(evidence.recoverySetupTombstone.attemptId)}
-          AND "namespaceId"=${quoteLiteral(evidence.recoverySetupTombstone.namespaceId)}
+        WHERE "id"=${quoteLiteral(evidence.activeRecoverySetupNamespace.attemptId)}
+          AND "namespaceId"=${quoteLiteral(evidence.activeRecoverySetupNamespace.namespaceId)}
           AND "status"='confirmed'),
       (SELECT count(*) FROM "CodexOAuthSecretNamespace"
         WHERE "id"=${quoteLiteral(evidence.initialSetupTombstone.namespaceId)}
           AND "status"='retired_superseded' AND "permanentlyRetired"),
       (SELECT count(*) FROM "CodexOAuthSecretNamespace"
-        WHERE "id"=${quoteLiteral(evidence.recoverySetupTombstone.namespaceId)}
-          AND "status"='retired_superseded' AND "permanentlyRetired"),
+        WHERE "id"=${quoteLiteral(evidence.activeRecoverySetupNamespace.namespaceId)}
+          AND "status"='active' AND NOT "permanentlyRetired"),
       (SELECT count(*) FROM "CodexOAuthWritebackIntent" intent
         JOIN "CodexOAuthSecretNamespace" namespace
           ON namespace."id"=intent."secretNamespaceId"
-        WHERE intent."id"=${quoteLiteral(evidence.definiteRuntimeTombstone.intentId)}
+        WHERE intent."id"=${quoteLiteral(evidence.definiteIntentOnRetiredInitialNamespace.intentId)}
           AND intent."idempotencyKey"='proof:definite'
           AND intent."status"='completed'
-          AND namespace."id"=${quoteLiteral(evidence.definiteRuntimeTombstone.namespaceId)}
+          AND namespace."id"=${quoteLiteral(evidence.definiteIntentOnRetiredInitialNamespace.namespaceId)}
           AND namespace."status"='retired_superseded' AND namespace."permanentlyRetired"),
-      (SELECT count(*) FROM "CodexOAuthSecretNamespace"
-        WHERE "id"=${quoteLiteral(evidence.ambiguousRuntimeTombstone.namespaceId)}
-          AND "status"='retired_ambiguous' AND "permanentlyRetired"),
       (SELECT count(*) FROM "CodexOAuthWritebackIntent" intent
         JOIN "CodexOAuthSecretNamespace" namespace
           ON namespace."id"=intent."secretNamespaceId"
-        WHERE intent."id"=${quoteLiteral(evidence.confirmedRestartRuntimeTombstone.intentId)}
+        WHERE intent."id"=${quoteLiteral(evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace.intentId)}
+          AND intent."idempotencyKey"='proof:ambiguous'
+          AND intent."status"='remote_outcome_unknown'
+          AND intent."recoveryRequestRowId" IS NOT NULL
+          AND namespace."id"=${quoteLiteral(evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace.namespaceId)}
+          AND namespace."status"='retired_superseded' AND namespace."permanentlyRetired"),
+      (SELECT count(*) FROM "CodexOAuthWritebackIntent" intent
+        JOIN "CodexOAuthSecretNamespace" namespace
+          ON namespace."id"=intent."secretNamespaceId"
+        WHERE intent."id"=${quoteLiteral(evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace.intentId)}
           AND intent."idempotencyKey"='proof:confirmed-restart'
           AND intent."status"='remote_outcome_unknown'
-          AND namespace."id"=${quoteLiteral(evidence.confirmedRestartRuntimeTombstone.namespaceId)}
-          AND namespace."status"='retired_ambiguous' AND namespace."permanentlyRetired"),
+          AND namespace."id"=${quoteLiteral(evidence.confirmedRestartUnknownIntentOnActiveRecoveryNamespace.namespaceId)}
+          AND namespace."status"='active' AND NOT namespace."permanentlyRetired"),
       (SELECT count(*) FROM "CodexOAuthWritebackIntent" intent
         JOIN "CodexOAuthSecretNamespace" namespace
           ON namespace."id"=intent."secretNamespaceId"
-        WHERE intent."id"=${quoteLiteral(evidence.activeRuntimeNamespace.intentId)}
+        WHERE intent."id"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.intentId)}
           AND intent."idempotencyKey"='proof:rollback'
           AND intent."status"='completed'
-          AND namespace."id"=${quoteLiteral(evidence.activeRuntimeNamespace.namespaceId)}
+          AND namespace."id"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.namespaceId)}
           AND namespace."status"='active' AND NOT namespace."permanentlyRetired"),
       (SELECT count(*) FROM "CodexOAuthSecretNamespace"
         WHERE "providerInstanceRowId"=${quoteLiteral(evidence.provider.id)}
           AND "status"='active' AND NOT "permanentlyRetired"),
       (SELECT count(*) FROM "CodexOAuthProviderInstance" WHERE "id"=${quoteLiteral(evidence.provider.id)}
-        AND "activeSecretNamespaceId"=${quoteLiteral(evidence.activeRuntimeNamespace.namespaceId)}
-        AND "activeSecretNamespaceEpoch"=${quoteLiteral(evidence.activeRuntimeNamespace.namespaceEpoch)}::bigint
-        AND "activeSecretNamespaceName"=${quoteLiteral(evidence.activeRuntimeNamespace.secretName)}
-        AND "activeAccountIdentityHash"=${quoteLiteral(evidence.activeRuntimeNamespace.accountIdentityHash)}
-        AND "latestGenerationHash"=${quoteLiteral(evidence.activeRuntimeNamespace.latestGenerationHash)})
+        AND "activeSecretNamespaceId"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.namespaceId)}
+        AND "activeSecretNamespaceEpoch"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.namespaceEpoch)}::bigint
+        AND "activeSecretNamespaceName"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.secretName)}
+        AND "activeAccountIdentityHash"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.accountIdentityHash)}
+        AND "latestGenerationHash"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.latestGenerationHash)})
     )`,
   ]).stdout.trim();
   assert(
@@ -1622,8 +1640,8 @@ function provePrismaCleanupRetention(url, evidence) {
           REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL_FILE:
             credential.environment.REVIEW_ROUTER_DATABASE_URL_FILE,
           REVIEW_ROUTER_PRISMA_EVIDENCE_IDENTITIES: JSON.stringify({
-            claimId: evidence.recoverySetupTombstone.claimId,
-            attemptId: evidence.recoverySetupTombstone.attemptId,
+            claimId: evidence.activeRecoverySetupNamespace.claimId,
+            attemptId: evidence.activeRecoverySetupNamespace.attemptId,
             namespaceId: evidence.initialSetupTombstone.namespaceId,
             providerId: evidence.provider.id,
             repositoryId: evidence.provider.repositoryId,
@@ -1706,7 +1724,10 @@ function proveExactProductionCatalogContract(url) {
   const result = verifyCodexRotatingDatabaseCatalog(observation.catalog, {
     verifyPrivileges: false,
   });
-  assert(result.ok, "production_catalog_verifier_rejected_rehearsal");
+  assert(
+    result.ok,
+    `production_catalog_verifier_rejected_rehearsal:${JSON.stringify(result)}`,
+  );
 }
 
 function proveDatabasePrivileges(url) {
@@ -2746,21 +2767,45 @@ function installRehearsalMigrationPermit(
   const inventorySha256 = `sha256:${createHash("sha256")
     .update(JSON.stringify(inventory))
     .digest("hex")}`;
+  const observedAt = JSON.parse(
+    psql(authority.providerAdmin, [
+      "-Atc",
+      `SELECT json_build_array(
+        to_char((clock_timestamp() - interval '1 second') AT TIME ZONE 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+        to_char(clock_timestamp() AT TIME ZONE 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))`,
+    ]).stdout.trim(),
+  );
   const capturedSourceLegacyAmbiguity = Object.freeze({
+    schemaVersion: 1,
+    rolloutId: "rehearsal-rollout-v1",
+    sourceSystemIdentifier: targetSystemIdentifier === "1" ? "2" : "1",
+    sourceDatabaseName: "reviewrouter_rehearsal_source",
+    sourceRecoveryWitnessSha256: "a".repeat(64),
+    authorityPrincipal: "reviewrouter_rehearsal_source_authority",
+    fenceId: "source-fence:rehearsal-rollout-v1",
+    fenceEstablishedAt: observedAt[0],
+    fencedInventorySha256: inventorySha256,
     ...inventory,
     inventorySha256,
     observations: [
-      { observedAt: "2026-08-15T00:00:00.000Z", inventorySha256 },
-      { observedAt: "2026-08-15T00:00:01.000Z", inventorySha256 },
+      { observedAt: observedAt[0], inventorySha256 },
+      { observedAt: observedAt[1], inventorySha256 },
     ],
+    eligibilityCutoff: observedAt[1],
     stable: true,
   });
-  const sourceLegacyAmbiguity = Object.freeze(
+  const transformedSourceLegacyAmbiguity = Object.freeze(
     transformSourceEvidence
       ? transformSourceEvidence(capturedSourceLegacyAmbiguity)
       : capturedSourceLegacyAmbiguity,
   );
-  const eligibilityCutoff = new Date().toISOString();
+  const sourceLegacyAmbiguity = Object.freeze({
+    ...transformedSourceLegacyAmbiguity,
+    receiptSha256: `sha256:${sha256Canonical(transformedSourceLegacyAmbiguity)}`,
+  });
+  const eligibilityCutoff = sourceLegacyAmbiguity.eligibilityCutoff;
   const permit = Object.freeze({
     rolloutId: "rehearsal-rollout-v1",
     sourceSystemIdentifier: targetSystemIdentifier === "1" ? "2" : "1",
@@ -2783,7 +2828,7 @@ function installRehearsalMigrationPermit(
       ${quoteLiteral(permit.transitionSha256)},
       ${quoteLiteral(permit.previousReceiptSha256)},
       ${quoteLiteral(rehearsalPostManifestIdentitySha256)},
-      ${quoteLiteral(liveV70V72CatalogDigestSha256)},
+      ${quoteLiteral(liveV70V73CatalogDigestSha256)},
       ${quoteLiteral(JSON.stringify(sourceLegacyAmbiguity))}::jsonb,
       ${quoteLiteral(eligibilityCutoff)}::timestamptz,
       ${permit.epoch}::bigint,
@@ -3947,7 +3992,41 @@ function proveParentIdentityWriteRejected(url) {
   );
 }
 
-function proveQuarantineCleanupPathV2(url) {
+async function executeProviderIdentityRepairWithAuthority(clients, argumentsSql) {
+  const webInvocation = createSecretSafePostgresInvocation({
+    databaseUrl: clients.web,
+    args: ["-X", "-qAt", "-v", "ON_ERROR_STOP=1"],
+  });
+  const web = spawn(psqlBinary, webInvocation.args, {
+    stdio: ["pipe", "pipe", "ignore"],
+    env: webInvocation.environment,
+  });
+  const lines = createInterface({ input: web.stdout })[Symbol.asyncIterator]();
+  try {
+    web.stdin.write(
+      `BEGIN; SELECT codex_oauth_provider_identity_repair_challenge(${argumentsSql});\n`,
+    );
+    const challengeLine = await lines.next();
+    assert(!challengeLine.done, "provider_repair_challenge_missing");
+    const signature = psql(clients.effectAuthority, [
+      "-Atc",
+      `SELECT codex_oauth_sign_database_authority(${quoteLiteral(challengeLine.value)})`,
+    ]).stdout.trim();
+    web.stdin.end(
+      `SELECT codex_oauth_repair_quarantined_provider(
+        ${argumentsSql},${quoteLiteral(signature)}); COMMIT;\n`,
+    );
+    const status = await new Promise((resolveClose) =>
+      web.once("close", resolveClose),
+    );
+    assert(status === 0, "provider_repair_authorized_session_failed");
+  } finally {
+    await terminateChild(web);
+    webInvocation.cleanup();
+  }
+}
+
+async function proveQuarantineCleanupPathV2(adminUrl, clients) {
   const providerRepairs = [
     {
       providerId: "p-parent-dirty",
@@ -3970,44 +4049,26 @@ function proveQuarantineCleanupPathV2(url) {
   ];
   for (const repair of providerRepairs) {
     const oldGithubId = repair.oldGithubId ?? "NULL";
-    psql(url, [
-      "-c",
-      `DO $repair$
-      DECLARE challenge text;
-      DECLARE signature text;
-      BEGIN
-        challenge := codex_oauth_provider_identity_repair_challenge(
-          ${quoteLiteral(repair.providerId)}, 'ws-proof',
-          ${quoteLiteral(repair.repositoryId)},
-          ${quoteLiteral(repair.oldProviderId)},
-          'codex_subscription_oauth_rotating',
-          'REVIEWROUTER_CODEX_AUTH_JSON',
-          ${quoteLiteral(repair.oldRepositoryProvider)}, ${oldGithubId},
-          ${quoteLiteral(repair.oldExternalId)}, 'ws-proof',
-          ${quoteLiteral(repair.repositoryId)},
-          ${quoteLiteral(`codex-rotating:${repair.newGithubId}`)},
-          'codex_subscription_oauth_rotating',
-          'REVIEWROUTER_CODEX_AUTH_JSON', ${repair.newGithubId}
-        );
-        signature := codex_oauth_sign_database_authority(challenge);
-        PERFORM codex_oauth_repair_quarantined_provider(
-          ${quoteLiteral(repair.providerId)}, 'ws-proof',
-          ${quoteLiteral(repair.repositoryId)},
-          ${quoteLiteral(repair.oldProviderId)},
-          'codex_subscription_oauth_rotating',
-          'REVIEWROUTER_CODEX_AUTH_JSON',
-          ${quoteLiteral(repair.oldRepositoryProvider)}, ${oldGithubId},
-          ${quoteLiteral(repair.oldExternalId)}, 'ws-proof',
-          ${quoteLiteral(repair.repositoryId)},
-          ${quoteLiteral(`codex-rotating:${repair.newGithubId}`)},
-          'codex_subscription_oauth_rotating',
-          'REVIEWROUTER_CODEX_AUTH_JSON', ${repair.newGithubId}, signature
-        );
-      END
-      $repair$;`,
-    ]);
+    const argumentsSql = [
+      quoteLiteral(repair.providerId),
+      "'ws-proof'",
+      quoteLiteral(repair.repositoryId),
+      quoteLiteral(repair.oldProviderId),
+      "'codex_subscription_oauth_rotating'",
+      "'REVIEWROUTER_CODEX_AUTH_JSON'",
+      quoteLiteral(repair.oldRepositoryProvider),
+      String(oldGithubId),
+      quoteLiteral(repair.oldExternalId),
+      "'ws-proof'",
+      quoteLiteral(repair.repositoryId),
+      quoteLiteral(`codex-rotating:${repair.newGithubId}`),
+      "'codex_subscription_oauth_rotating'",
+      "'REVIEWROUTER_CODEX_AUTH_JSON'",
+      String(repair.newGithubId),
+    ].join(",");
+    await executeProviderIdentityRepairWithAuthority(clients, argumentsSql);
   }
-  psql(url, [
+  psql(adminUrl, [
     "-c",
     String.raw`
       SELECT codex_oauth_repair_quarantined_child('lease','lease-provider-dirty');

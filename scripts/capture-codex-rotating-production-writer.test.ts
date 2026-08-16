@@ -630,6 +630,10 @@ describe("production-writer rollout observation capture", () => {
           id: "000066_codex_oauth_rotating_cascade_authority",
           sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
         },
+        {
+          id: "000073_codex_oauth_active_namespace_refresh",
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        },
       ],
     });
     expect(query).toHaveBeenCalledTimes(4);

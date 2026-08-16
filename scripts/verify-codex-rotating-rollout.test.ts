@@ -71,6 +71,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "000064_codex_oauth_versioned_secret_namespaces",
       "000065_codex_oauth_authority_acl_hardening",
       "000066_codex_oauth_rotating_cascade_authority",
+      "000073_codex_oauth_active_namespace_refresh",
     ]) {
       const sql = readFileSync(
         join(
@@ -304,7 +305,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
         "Render services still expose independent migration callers",
         "compatibility probe cases are missing executable observations or derived digests",
         "v2 issuance was observed before v1/v2 installer and workflow publication",
-        "000066_codex_oauth_rotating_cascade_authority migration history is not exactly one current success",
+        "000073_codex_oauth_active_namespace_refresh migration history is not exactly one current success",
         "rollback floor must be the fence-aware deployed commit",
       ]),
     );
@@ -1430,6 +1431,12 @@ function observedFixture(): any {
           id: "000066_codex_oauth_rotating_cascade_authority",
           sha256: rotatingCascadeAuthorityForwardChecksum,
         },
+        {
+          id: "000073_codex_oauth_active_namespace_refresh",
+          sha256: sourceDigest(
+            "packages/platform/db/prisma/migrations/000073_codex_oauth_active_namespace_refresh/migration.sql",
+          ),
+        },
       ],
       history: [
         {
@@ -1485,6 +1492,15 @@ function observedFixture(): any {
         {
           migration_name: "000066_codex_oauth_rotating_cascade_authority",
           checksum: rotatingCascadeAuthorityForwardChecksum,
+          finished: true,
+          current: true,
+          applied_steps_count: 1,
+        },
+        {
+          migration_name: "000073_codex_oauth_active_namespace_refresh",
+          checksum: sourceDigest(
+            "packages/platform/db/prisma/migrations/000073_codex_oauth_active_namespace_refresh/migration.sql",
+          ),
           finished: true,
           current: true,
           applied_steps_count: 1,
@@ -2118,9 +2134,9 @@ function observedFixture(): any {
             true,
           ],
           [
-            "CodexOAuthWritebackIntent_secretNamespaceId_key",
+            "CodexOAuthWritebackIntent_secretNamespaceId_idx",
             "secretNamespaceId",
-            true,
+            false,
           ],
           ["CodexOAuthWritebackIntent_versioned_lease_key", "leaseId", true],
         ].map(([name, definition, unique]) => ({
@@ -2362,6 +2378,7 @@ function observedFixture(): any {
             "000064_codex_oauth_versioned_secret_namespaces",
             "000065_codex_oauth_authority_acl_hardening",
             "000066_codex_oauth_rotating_cascade_authority",
+            "000073_codex_oauth_active_namespace_refresh",
           ],
           singleCaller: true,
           caller: "release-migration",

@@ -5,7 +5,6 @@ import {
   type TransactionClock,
 } from "@reviewrouter/platform-db";
 import {
-  allocateVersionedProviderSecretNamespace,
   assertRuntimeVersionedAmbiguousRetirementAuthorized,
   assertSameRuntimeVersionedWritebackIdentity,
   assertProviderSecretTransitionAuthorized,
@@ -320,6 +319,9 @@ export class PrismaCodexRotatingOAuthRepository
           activeSecretNamespaceName: true,
           activeSecretNamespace: {
             select: {
+              id: true,
+              githubRepositoryId: true,
+              namespaceEpoch: true,
               secretName: true,
               status: true,
               databaseRecoveryWitness: true,
@@ -789,6 +791,9 @@ export class PrismaCodexRotatingOAuthRepository
           activeSecretNamespaceName: true,
           activeSecretNamespace: {
             select: {
+              id: true,
+              githubRepositoryId: true,
+              namespaceEpoch: true,
               secretName: true,
               status: true,
               databaseRecoveryWitness: true,
@@ -997,22 +1002,34 @@ export class PrismaCodexRotatingOAuthRepository
               retryAfter: existing.executorLeaseExpiresAt,
             };
           }
-          const retiredNamespace =
-            await tx.codexOAuthSecretNamespace.updateMany({
-              where: {
-                id: existing.secretNamespaceId,
-                status: { in: ["dispatch_authorized", "confirmed_candidate"] },
-              },
-              data: {
-                status: "retired_ambiguous",
-                permanentlyRetired: true,
-                retiredAt: now,
-              },
+          const providerState =
+            await tx.codexOAuthProviderInstance.findUniqueOrThrow({
+              where: { id: existing.providerInstanceRowId },
+              select: { activeSecretNamespaceId: true },
             });
-          if (retiredNamespace.count !== 1) {
-            throw new Error(
-              "codex_rotating_interrupted_namespace_retirement_conflict",
-            );
+          const reusesActiveNamespace =
+            providerState.activeSecretNamespaceId ===
+            existing.secretNamespaceId;
+          if (!reusesActiveNamespace) {
+            const retiredNamespace =
+              await tx.codexOAuthSecretNamespace.updateMany({
+                where: {
+                  id: existing.secretNamespaceId,
+                  status: {
+                    in: ["dispatch_authorized", "confirmed_candidate"],
+                  },
+                },
+                data: {
+                  status: "retired_ambiguous",
+                  permanentlyRetired: true,
+                  retiredAt: now,
+                },
+              });
+            if (retiredNamespace.count !== 1) {
+              throw new Error(
+                "codex_rotating_interrupted_namespace_retirement_conflict",
+              );
+            }
           }
           const retiredIntent = await tx.codexOAuthWritebackIntent.updateMany({
             where: { id: existing.id, status: "pending" },
@@ -1020,7 +1037,7 @@ export class PrismaCodexRotatingOAuthRepository
               status: "remote_outcome_unknown",
               safeErrorCode:
                 RuntimeVersionedDurableMarker.InterruptedAttemptRecoveredV1,
-              namespaceRetiredAt: now,
+              ...(reusesActiveNamespace ? {} : { namespaceRetiredAt: now }),
             },
           });
           if (retiredIntent.count !== 1) {
@@ -1085,6 +1102,9 @@ export class PrismaCodexRotatingOAuthRepository
           activeSecretNamespaceName: true,
           activeSecretNamespace: {
             select: {
+              id: true,
+              githubRepositoryId: true,
+              namespaceEpoch: true,
               secretName: true,
               status: true,
               databaseRecoveryWitness: true,
@@ -1105,11 +1125,6 @@ export class PrismaCodexRotatingOAuthRepository
               secretNamespaceId: true,
               secretNamespaceEpoch: true,
             },
-          },
-          secretNamespaces: {
-            orderBy: { namespaceEpoch: "desc" },
-            take: 1,
-            select: { namespaceEpoch: true },
           },
         },
       });
@@ -1231,12 +1246,13 @@ export class PrismaCodexRotatingOAuthRepository
         };
       }
 
-      const namespace = allocateVersionedProviderSecretNamespace({
+      const repository = requireGitHubRepositoryContext(provider.repository);
+      const namespace = mapActiveVersionedProviderSecretNamespace({
         scope: {
-          repositoryId: provider.repository.githubRepositoryId!.toString(),
+          repositoryId: repository.githubRepositoryId.toString(),
           providerInstanceId: provider.providerInstanceId,
         },
-        epoch: (provider.secretNamespaces[0]?.namespaceEpoch ?? 0n) + 1n,
+        row: provider,
       });
       const attemptId = `wba_${randomUUID()}`;
       const executorOwner = `wbe_${randomUUID()}`;
@@ -1249,18 +1265,6 @@ export class PrismaCodexRotatingOAuthRepository
           now,
           authorizationExpiresAt,
         });
-      await tx.codexOAuthSecretNamespace.create({
-        data: {
-          id: namespace.namespaceId,
-          providerInstanceRowId: provider.id,
-          githubRepositoryId:
-            provider.repository.githubRepositoryId!.toString(),
-          namespaceEpoch: namespace.epoch,
-          secretName: namespace.name,
-          databaseRecoveryWitness,
-          status: "dispatch_authorized",
-        },
-      });
       const intent = await tx.codexOAuthWritebackIntent.create({
         data: {
           providerInstanceRowId: provider.id,
@@ -1285,7 +1289,6 @@ export class PrismaCodexRotatingOAuthRepository
           executorLeaseExpiresAt,
         },
       });
-      const repository = requireGitHubRepositoryContext(provider.repository);
       return {
         status: "ready" as const,
         intentId: intent.id,
@@ -1341,10 +1344,12 @@ export class PrismaCodexRotatingOAuthRepository
           accountIdentityAlgorithm: true,
           executorOwner: true,
           executorLeaseExpiresAt: true,
+          secretNamespace: { select: { status: true } },
           providerInstance: {
             select: {
               activeLeaseId: true,
               activeLeaseExpiresAt: true,
+              activeSecretNamespaceId: true,
               mutationEpoch: true,
               mutationOwner: true,
               mutationOwnerId: true,
@@ -1429,14 +1434,29 @@ export class PrismaCodexRotatingOAuthRepository
       if (updated.count !== 1) {
         throw new Error("codex_rotating_versioned_confirmation_conflict");
       }
-      const confirmedNamespace = await tx.codexOAuthSecretNamespace.updateMany({
-        where: { id: intent.secretNamespaceId, status: "dispatch_authorized" },
-        data: { status: "confirmed_candidate", confirmedAt: now },
-      });
-      if (confirmedNamespace.count !== 1) {
-        throw new Error(
-          "codex_rotating_versioned_namespace_confirmation_conflict",
-        );
+      const reusesActiveNamespace =
+        intent.secretNamespaceId ===
+        intent.providerInstance.activeSecretNamespaceId;
+      if (reusesActiveNamespace) {
+        if (intent.secretNamespace?.status !== "active") {
+          throw new Error(
+            "codex_rotating_versioned_namespace_confirmation_conflict",
+          );
+        }
+      } else {
+        const confirmedNamespace =
+          await tx.codexOAuthSecretNamespace.updateMany({
+            where: {
+              id: intent.secretNamespaceId,
+              status: "dispatch_authorized",
+            },
+            data: { status: "confirmed_candidate", confirmedAt: now },
+          });
+        if (confirmedNamespace.count !== 1) {
+          throw new Error(
+            "codex_rotating_versioned_namespace_confirmation_conflict",
+          );
+        }
       }
     });
   }
@@ -1478,6 +1498,7 @@ export class PrismaCodexRotatingOAuthRepository
           executorLeaseExpiresAt: true,
           providerInstance: {
             select: {
+              activeSecretNamespaceId: true,
               mutationEpoch: true,
               mutationOwner: true,
               mutationOwnerId: true,
@@ -1545,7 +1566,10 @@ export class PrismaCodexRotatingOAuthRepository
       } catch {
         throw new Error("codex_rotating_versioned_retirement_fence_conflict");
       }
-      if (intent.secretNamespaceId) {
+      const reusesActiveNamespace =
+        intent.secretNamespaceId ===
+        intent.providerInstance.activeSecretNamespaceId;
+      if (!reusesActiveNamespace) {
         const retiredNamespace = await tx.codexOAuthSecretNamespace.updateMany({
           where: {
             id: intent.secretNamespaceId,
@@ -1568,7 +1592,7 @@ export class PrismaCodexRotatingOAuthRepository
         data: {
           status: "remote_outcome_unknown",
           safeErrorCode: input.safeErrorCode,
-          namespaceRetiredAt: now,
+          ...(reusesActiveNamespace ? {} : { namespaceRetiredAt: now }),
         },
       });
       if (retiredIntent.count !== 1) {
@@ -1637,6 +1661,7 @@ export class PrismaCodexRotatingOAuthRepository
           databaseRecoveryWitness: true,
           executorOwner: true,
           executorLeaseExpiresAt: true,
+          providerInstance: { select: { activeSecretNamespaceId: true } },
         },
       });
       if (!intent || intent.dispatchAttemptId !== input.attemptId) return;
@@ -1664,21 +1689,26 @@ export class PrismaCodexRotatingOAuthRepository
           "codex_rotating_versioned_predispatch_retirement_conflict",
         );
       }
-      const retiredNamespace = await tx.codexOAuthSecretNamespace.updateMany({
-        where: {
-          id: intent.secretNamespaceId,
-          status: "dispatch_authorized",
-        },
-        data: {
-          status: "retired_predispatch",
-          permanentlyRetired: true,
-          retiredAt: now,
-        },
-      });
-      if (retiredNamespace.count !== 1) {
-        throw new Error(
-          "codex_rotating_versioned_retirement_namespace_conflict",
-        );
+      const reusesActiveNamespace =
+        intent.secretNamespaceId ===
+        intent.providerInstance.activeSecretNamespaceId;
+      if (!reusesActiveNamespace) {
+        const retiredNamespace = await tx.codexOAuthSecretNamespace.updateMany({
+          where: {
+            id: intent.secretNamespaceId,
+            status: "dispatch_authorized",
+          },
+          data: {
+            status: "retired_predispatch",
+            permanentlyRetired: true,
+            retiredAt: now,
+          },
+        });
+        if (retiredNamespace.count !== 1) {
+          throw new Error(
+            "codex_rotating_versioned_retirement_namespace_conflict",
+          );
+        }
       }
       const retiredIntent = await tx.codexOAuthWritebackIntent.updateMany({
         where: {
@@ -1690,7 +1720,7 @@ export class PrismaCodexRotatingOAuthRepository
         data: {
           status: "failed",
           safeErrorCode: input.safeErrorCode,
-          namespaceRetiredAt: now,
+          ...(reusesActiveNamespace ? {} : { namespaceRetiredAt: now }),
           completedAt: now,
         },
       });
@@ -1780,6 +1810,7 @@ export class PrismaCodexRotatingOAuthRepository
               providerInstanceId: true,
               activeLeaseId: true,
               activeLeaseExpiresAt: true,
+              activeSecretNamespaceId: true,
               mutationEpoch: true,
               mutationOwner: true,
               mutationOwnerId: true,
@@ -1839,7 +1870,11 @@ export class PrismaCodexRotatingOAuthRepository
         (intent.providerResponseCode !== 201 &&
           intent.providerResponseCode !== 204) ||
         !namespace ||
-        namespace.status !== "confirmed_candidate" ||
+        (namespace.status !== "confirmed_candidate" &&
+          !(
+            namespace.status === "active" &&
+            intent.providerInstance.activeSecretNamespaceId === namespace.id
+          )) ||
         intent.providerInstance.activeLeaseId !== intent.leaseId ||
         intent.providerInstance.mutationEpoch !== intent.mutationEpoch ||
         intent.providerInstance.mutationOwner !== "runtime" ||
@@ -1879,32 +1914,38 @@ export class PrismaCodexRotatingOAuthRepository
           ${intent.id}, ${databaseAuthoritySignature}
         )
       `;
-      await tx.codexOAuthSecretNamespace.updateMany({
-        where: {
-          providerInstanceRowId: locator.providerInstanceRowId,
-          status: "active",
-          id: { not: namespace.id },
-        },
-        data: {
-          status: "retired_superseded",
-          permanentlyRetired: true,
-          retiredAt: now,
-        },
-      });
-      await tx.codexOAuthSecretNamespace.update({
-        where: { id: namespace.id },
-        data: {
-          status: "active",
-          workflowPath: input.attestation.workflowPath,
-          workflowSourceCommitSha: input.attestation.workflowSourceCommitSha,
-          workflowSourceBlobSha: input.attestation.workflowSourceBlobSha,
-          workflowSourceSha256: input.attestation.workflowSourceSha256,
-          workflowSemanticSha256: input.attestation.workflowSemanticSha256,
-          workflowSourceTrust: input.attestation.sourceTrust,
-          attestedRepositoryId: input.attestation.repositoryId,
-          activatedAt: now,
-        },
-      });
+      const reusesActiveNamespace =
+        intent.providerInstance.activeSecretNamespaceId === namespace.id;
+      if (!reusesActiveNamespace) {
+        await tx.codexOAuthSecretNamespace.updateMany({
+          where: {
+            providerInstanceRowId: locator.providerInstanceRowId,
+            status: "active",
+            id: { not: namespace.id },
+          },
+          data: {
+            status: "retired_superseded",
+            permanentlyRetired: true,
+            retiredAt: now,
+          },
+        });
+        // Active namespace evidence is immutable. Runtime refreshes only
+        // re-attest it; setup/recovery owns namespace promotion and mutation.
+        await tx.codexOAuthSecretNamespace.update({
+          where: { id: namespace.id },
+          data: {
+            status: "active",
+            workflowPath: input.attestation.workflowPath,
+            workflowSourceCommitSha: input.attestation.workflowSourceCommitSha,
+            workflowSourceBlobSha: input.attestation.workflowSourceBlobSha,
+            workflowSourceSha256: input.attestation.workflowSourceSha256,
+            workflowSemanticSha256: input.attestation.workflowSemanticSha256,
+            workflowSourceTrust: input.attestation.sourceTrust,
+            attestedRepositoryId: input.attestation.repositoryId,
+            activatedAt: now,
+          },
+        });
+      }
       await tx.codexOAuthProviderInstance.update({
         where: { id: locator.providerInstanceRowId },
         data: {

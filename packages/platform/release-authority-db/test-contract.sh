@@ -756,7 +756,7 @@ RR_FIXTURE_CONFIG="$contract_tmp/pre-release-prisma.config.mjs" \
 REVIEW_ROUTER_ACTIVATION_FIXTURE_DATABASE_URL="postgresql://reviewrouter_role_bootstrap:bootstrap@127.0.0.1:$postgres_port/rr_activation_target" \
   pnpm --filter @reviewrouter/platform-db exec prisma migrate deploy \
     --config "$contract_tmp/pre-release-prisma.config.mjs" >/dev/null
-node -e "import('./scripts/run-codex-rotating-release-migration.mjs').then(m => process.stdout.write(m.activationAuthorityProvisioningSql()))" \
+node --import tsx -e "import('./scripts/run-codex-rotating-release-migration.mjs').then(m => process.stdout.write(m.activationAuthorityProvisioningSql()))" \
   > "$contract_tmp/activation-authority.sql"
 docker cp "$contract_tmp/activation-authority.sql" \
   "$name:/tmp/activation-authority.sql" >/dev/null

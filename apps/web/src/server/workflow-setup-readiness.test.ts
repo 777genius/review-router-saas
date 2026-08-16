@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
-import type {
-  RepositoryWorkflowCheck,
-  RepositoryWorkflowProbeInput,
-  RepositoryWorkflowProbePort,
+import {
+  OctokitRepositoryWorkflowProbe,
+  type RepositoryWorkflowCheck,
+  type RepositoryWorkflowProbeInput,
+  type RepositoryWorkflowProbePort,
 } from "@reviewrouter/features-repo-health";
 import {
   CodexRotatingReviewActionV2Mode,
   CodexRotatingT0WorkflowSchemaVersion,
+  createVersionedProviderSecretNamespace,
   defaultCodexRotatingWorkflowPath,
   defaultWorkflowPath,
+  renderCodexRotatingAdvisoryWorkflow,
 } from "@reviewrouter/features-workflow-provisioning";
 import { isWorkflowSetupAlreadyCurrent } from "./workflow-setup-readiness";
 
@@ -32,6 +35,58 @@ const readinessInput = {
   defaultBranch: "main",
   actionRef: "777genius/review-router@main",
 };
+
+const v4ActionRef =
+  "777genius/review-router@0123456789abcdef0123456789abcdef01234567";
+const v4ProviderInstanceId = "codex-rotating:123456";
+const v4SecretNamespace = createVersionedProviderSecretNamespace({
+  scope: {
+    repositoryId: "123456",
+    providerInstanceId: v4ProviderInstanceId,
+  },
+  namespaceId: "sns_0123456789abcdef0123456789abcdef",
+  epoch: 4,
+  name: "REVIEWROUTER_CODEX_AUTH_JSON_R123456_Pb3d5f6be619a10be_E4_0123456789abcdef0123456789abcdef",
+});
+
+function canonicalV4Workflow(): string {
+  return renderCodexRotatingAdvisoryWorkflow({
+    actionRef: v4ActionRef,
+    apiUrl: "https://api.reviewrouter.site",
+    providerInstanceId: v4ProviderInstanceId,
+    reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    workflowSchemaVersion:
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+    activeSecretNamespace: v4SecretNamespace,
+  });
+}
+
+function checkV4WorkflowReadiness(workflow: string): Promise<boolean> {
+  const probe = new OctokitRepositoryWorkflowProbe({
+    createRequester: async () => ({
+      request: async () => ({
+        data: {
+          type: "file",
+          encoding: "base64",
+          content: Buffer.from(workflow).toString("base64"),
+        },
+      }),
+    }),
+  });
+
+  return isWorkflowSetupAlreadyCurrent(
+    {
+      ...readinessInput,
+      actionRef: v4ActionRef,
+      codexRotatingProviderInstanceId: v4ProviderInstanceId,
+      codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      codexRotatingWorkflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+      codexRotatingWorkflowSecretNamespace: v4SecretNamespace,
+    },
+    { workflowProbe: probe },
+  );
+}
 
 describe("workflow setup readiness", () => {
   it("treats the workflow as current only when the expected action ref is present", async () => {
@@ -335,5 +390,75 @@ describe("workflow setup readiness", () => {
         "review_timeout_minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '240') }}",
       ]),
     );
+  });
+
+  it("accepts a canonical schema-v4 workflow when setup PR metadata is missing", async () => {
+    await expect(checkV4WorkflowReadiness(canonicalV4Workflow())).resolves.toBe(
+      true,
+    );
+  });
+
+  it.each([
+    [
+      "missing same-repository guard",
+      (workflow: string) =>
+        workflow.replace(
+          " && github.event.pull_request.head.repo.full_name == github.repository",
+          "",
+        ),
+    ],
+    [
+      "missing Bot guard",
+      (workflow: string) =>
+        workflow.replace(
+          " && github.event.pull_request.user.type != 'Bot'",
+          "",
+        ),
+    ],
+    [
+      "commented same-repository guard",
+      (workflow: string) =>
+        workflow
+          .replace(
+            " && github.event.pull_request.head.repo.full_name == github.repository",
+            "",
+          )
+          .replace(
+            "    concurrency:",
+            "    # github.event.pull_request.head.repo.full_name == github.repository\n    concurrency:",
+          ),
+    ],
+    [
+      "commented Bot guard",
+      (workflow: string) =>
+        workflow
+          .replace(" && github.event.pull_request.user.type != 'Bot'", "")
+          .replace(
+            "    concurrency:",
+            "    # github.event.pull_request.user.type != 'Bot'\n    concurrency:",
+          ),
+    ],
+    [
+      "wrong trigger",
+      (workflow: string) =>
+        workflow
+          .replace("  pull_request_target:", "  pull_request:")
+          .replace(
+            "github.event_name == 'pull_request_target'",
+            "github.event_name == 'pull_request'",
+          ),
+    ],
+    [
+      "commented trigger",
+      (workflow: string) =>
+        workflow.replace(
+          "  pull_request_target:\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
+          "  # pull_request_target:\n  #   types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
+        ),
+    ],
+  ])("rejects schema v4 with %s", async (_label, mutateWorkflow) => {
+    await expect(
+      checkV4WorkflowReadiness(mutateWorkflow(canonicalV4Workflow())),
+    ).resolves.toBe(false);
   });
 });

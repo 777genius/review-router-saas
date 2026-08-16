@@ -377,6 +377,9 @@ describe("ambiguous versioned writeback lock ordering", () => {
       ),
       executorOwner: "executor:predispatch",
       executorLeaseExpiresAt: new Date(now.getTime() + 60_000),
+      providerInstance: {
+        activeSecretNamespaceId: "namespace:active",
+      },
     };
     const tx = {
       codexOAuthWritebackIntent: {
@@ -836,133 +839,148 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
     ).resolves.toEqual({ status: "lease_not_active" });
   });
 
-  it("completes and rebinds a changed-generation lease inside the activation transaction", async () => {
-    const allocatedNamespace = allocateVersionedProviderSecretNamespace({
-      scope: {
-        repositoryId: "123456",
-        providerInstanceId: "codex-rotating:123456",
-      },
-      epoch: 2n,
-      randomBytes: () => new Uint8Array(16).fill(17),
-    });
-    const namespace = {
-      id: allocatedNamespace.namespaceId,
-      githubRepositoryId: "123456",
-      namespaceEpoch: allocatedNamespace.epoch,
-      secretName: allocatedNamespace.name,
-      status: "confirmed_candidate",
-    };
-    const leaseUpdate = vi.fn(async () => ({ count: 1 }));
-    const tx = {
-      $executeRaw: vi.fn(async (query: unknown) => {
-        void query;
-        return 1;
-      }),
-      $queryRaw: vi.fn(async (query: { strings?: readonly string[] }) =>
-        (Array.isArray(query)
-          ? Array.from(query).join("")
-          : query.strings?.join("")
-        )?.includes("codex_oauth_database_authority_challenge")
-          ? [{ challenge: '["reviewrouter_api",1,2,"effect","owner",0]' }]
-          : query.strings?.join("").includes("pg_control_system")
-            ? [{ databaseIncarnation: "7777777777777777777" }]
-            : [],
-      ),
-      codexOAuthWritebackIntent: {
-        findUniqueOrThrow: vi
-          .fn()
-          .mockResolvedValueOnce({ providerInstanceRowId: "provider-row-1" })
-          .mockResolvedValueOnce({
-            id: "intent-1",
-            leaseId: "lease-1",
-            generation: 2,
-            latestGenerationHash: "generation-hash-2",
-            accountIdentityHash: "account-identity-hash",
-            accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
-            mutationEpoch: 4n,
-            dispatchAttemptId: "attempt-1",
-            providerResponseCode: 204,
-            providerConfirmedAt: new Date(now.getTime() - 1_000),
-            databaseIncarnation: "7777777777777777777",
-            databaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
-              databaseRecoveryWitness,
-            ),
-            executorOwner: "executor-1",
-            executorLeaseExpiresAt: new Date(now.getTime() + 60_000),
-            secretNamespace: namespace,
-            providerInstance: {
-              id: "provider-row-1",
-              providerInstanceId: "codex-rotating:123456",
-              activeLeaseId: "lease-1",
-              activeLeaseExpiresAt: new Date(now.getTime() + 60_000),
+  it.each([
+    ["promoted candidate", "confirmed_candidate", null, true],
+    ["reused active namespace", "active", "active", false],
+  ] as const)(
+    "completes a changed-generation lease with a %s inside the activation transaction",
+    async (_, namespaceStatus, activeNamespaceMarker, mutatesNamespace) => {
+      const allocatedNamespace = allocateVersionedProviderSecretNamespace({
+        scope: {
+          repositoryId: "123456",
+          providerInstanceId: "codex-rotating:123456",
+        },
+        epoch: 2n,
+        randomBytes: () => new Uint8Array(16).fill(17),
+      });
+      const namespace = {
+        id: allocatedNamespace.namespaceId,
+        githubRepositoryId: "123456",
+        namespaceEpoch: allocatedNamespace.epoch,
+        secretName: allocatedNamespace.name,
+        status: namespaceStatus,
+      };
+      const leaseUpdate = vi.fn(async () => ({ count: 1 }));
+      const tx = {
+        $executeRaw: vi.fn(async (query: unknown) => {
+          void query;
+          return 1;
+        }),
+        $queryRaw: vi.fn(async (query: { strings?: readonly string[] }) =>
+          (Array.isArray(query)
+            ? Array.from(query).join("")
+            : query.strings?.join("")
+          )?.includes("codex_oauth_database_authority_challenge")
+            ? [{ challenge: '["reviewrouter_api",1,2,"effect","owner",0]' }]
+            : query.strings?.join("").includes("pg_control_system")
+              ? [{ databaseIncarnation: "7777777777777777777" }]
+              : [],
+        ),
+        codexOAuthWritebackIntent: {
+          findUniqueOrThrow: vi
+            .fn()
+            .mockResolvedValueOnce({ providerInstanceRowId: "provider-row-1" })
+            .mockResolvedValueOnce({
+              id: "intent-1",
+              leaseId: "lease-1",
+              generation: 2,
+              latestGenerationHash: "generation-hash-2",
+              accountIdentityHash: "account-identity-hash",
+              accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
               mutationEpoch: 4n,
-              mutationOwner: "runtime",
-              mutationOwnerId: "lease-1",
-            },
-            lease: {
-              status: "finalized",
-              expiresAt: new Date(now.getTime() + 60_000),
-            },
-          }),
-        update: vi.fn(async () => ({})),
-      },
-      codexOAuthSecretNamespace: {
-        updateMany: vi.fn(async () => ({ count: 1 })),
-        update: vi.fn(async () => ({})),
-      },
-      codexOAuthProviderInstance: {
-        update: vi.fn(async () => ({})),
-        updateMany: vi.fn(async () => ({ count: 1 })),
-      },
-      codexOAuthLease: { updateMany: leaseUpdate },
-    };
-    const prisma = {
-      $queryRaw: vi.fn(async () => [{ signature: "a".repeat(64) }]),
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) =>
-        callback(tx),
-      ),
-    } as unknown as PrismaClient;
-    const repository = new PrismaCodexRotatingOAuthRepository(prisma, {
-      actionOwnerRepo: "777genius/review-router",
-      databaseRecoveryWitness,
-      transactionClock: fixedClock(now),
-      databaseEffectAuthority: prisma,
-    });
-    const attestation = createVersionedSecretWorkflowSourceAttestation({
-      repositoryId: "123456",
-      workflowPath: ".github/workflows/reviewrouter-codex.yml",
-      workflowSourceCommitSha: "a".repeat(40),
-      workflowSourceBlobSha: "b".repeat(40),
-      workflowSourceSha256: "c".repeat(64),
-      workflowSemanticSha256: "d".repeat(64),
-      sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
-      secretNamespace: allocatedNamespace,
-    });
+              dispatchAttemptId: "attempt-1",
+              providerResponseCode: 204,
+              providerConfirmedAt: new Date(now.getTime() - 1_000),
+              databaseIncarnation: "7777777777777777777",
+              databaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+                databaseRecoveryWitness,
+              ),
+              executorOwner: "executor-1",
+              executorLeaseExpiresAt: new Date(now.getTime() + 60_000),
+              secretNamespace: namespace,
+              providerInstance: {
+                id: "provider-row-1",
+                providerInstanceId: "codex-rotating:123456",
+                activeSecretNamespaceId: activeNamespaceMarker
+                  ? namespace.id
+                  : null,
+                activeLeaseId: "lease-1",
+                activeLeaseExpiresAt: new Date(now.getTime() + 60_000),
+                mutationEpoch: 4n,
+                mutationOwner: "runtime",
+                mutationOwnerId: "lease-1",
+              },
+              lease: {
+                status: "finalized",
+                expiresAt: new Date(now.getTime() + 60_000),
+              },
+            }),
+          update: vi.fn(async () => ({})),
+        },
+        codexOAuthSecretNamespace: {
+          updateMany: vi.fn(async () => ({ count: 1 })),
+          update: vi.fn(async () => ({})),
+        },
+        codexOAuthProviderInstance: {
+          update: vi.fn(async () => ({})),
+          updateMany: vi.fn(async () => ({ count: 1 })),
+        },
+        codexOAuthLease: { updateMany: leaseUpdate },
+      };
+      const prisma = {
+        $queryRaw: vi.fn(async () => [{ signature: "a".repeat(64) }]),
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) =>
+          callback(tx),
+        ),
+      } as unknown as PrismaClient;
+      const repository = new PrismaCodexRotatingOAuthRepository(prisma, {
+        actionOwnerRepo: "777genius/review-router",
+        databaseRecoveryWitness,
+        transactionClock: fixedClock(now),
+        databaseEffectAuthority: prisma,
+      });
+      const attestation = createVersionedSecretWorkflowSourceAttestation({
+        repositoryId: "123456",
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSourceCommitSha: "a".repeat(40),
+        workflowSourceBlobSha: "b".repeat(40),
+        workflowSourceSha256: "c".repeat(64),
+        workflowSemanticSha256: "d".repeat(64),
+        sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+        secretNamespace: allocatedNamespace,
+      });
 
-    await expect(
-      repository.activateVersionedWriteback({
-        intentId: "intent-1",
-        attemptId: "attempt-1",
-        executorOwner: "executor-1",
-        attestation,
-      }),
-    ).resolves.toEqual({ generation: 2 });
-    expect(leaseUpdate).toHaveBeenCalledWith({
-      where: { id: "lease-1", status: "finalized", mutationEpoch: 4n },
-      data: {
-        status: "completed",
-        completedAt: now,
-        secretNamespaceId: namespace.id,
-        secretNamespaceEpoch: namespace.namespaceEpoch,
-      },
-    });
-    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
-    expect(
-      Array.from(tx.$executeRaw.mock.calls[0]?.[0] as readonly string[]).join(
-        "?",
-      ),
-    ).toContain("codex_oauth_authorize_runtime_completion");
-  });
+      await expect(
+        repository.activateVersionedWriteback({
+          intentId: "intent-1",
+          attemptId: "attempt-1",
+          executorOwner: "executor-1",
+          attestation,
+        }),
+      ).resolves.toEqual({ generation: 2 });
+      expect(leaseUpdate).toHaveBeenCalledWith({
+        where: { id: "lease-1", status: "finalized", mutationEpoch: 4n },
+        data: {
+          status: "completed",
+          completedAt: now,
+          secretNamespaceId: namespace.id,
+          secretNamespaceEpoch: namespace.namespaceEpoch,
+        },
+      });
+      expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+      expect(
+        Array.from(tx.$executeRaw.mock.calls[0]?.[0] as readonly string[]).join(
+          "?",
+        ),
+      ).toContain("codex_oauth_authorize_runtime_completion");
+      expect(tx.codexOAuthSecretNamespace.update).toHaveBeenCalledTimes(
+        mutatesNamespace ? 1 : 0,
+      );
+      expect(tx.codexOAuthSecretNamespace.updateMany).toHaveBeenCalledTimes(
+        mutatesNamespace ? 1 : 0,
+      );
+    },
+  );
 });
 
 function buildCodexRotatingRepository(lease: {
@@ -1038,6 +1056,133 @@ function buildCodexRotatingRepository(lease: {
 }
 
 describe("durable runtime database clock", () => {
+  it("prepares a runtime refresh against the active namespace without allocating a new one", async () => {
+    const now = new Date("2026-08-10T00:00:00.000Z");
+    const activeNamespace = allocateVersionedProviderSecretNamespace({
+      scope: {
+        repositoryId: "123456",
+        providerInstanceId: "codex-rotating:123456",
+      },
+      epoch: 3n,
+      randomBytes: () => new Uint8Array(16).fill(0x33),
+    });
+    const request = {
+      protocolVersion: 1 as const,
+      leaseId: "lease:active-refresh",
+      providerInstanceId: "codex-rotating:123456",
+      generation: 4,
+      latestGenerationHash: "generation-hash-active-refresh",
+      accountIdentityHash: "account-identity-active-refresh",
+      accountIdentityAlgorithm: "provider_issuer_subject_account_v1" as const,
+      encryptedValue: "Y2lwaGVydGV4dA==",
+      keyId: "key-active-refresh",
+      idempotencyKey: "writeback:active-refresh",
+    };
+    const namespaceCreate = vi.fn();
+    const intentCreate = vi.fn().mockResolvedValue({
+      id: "intent:active-refresh",
+    });
+    const tx = {
+      $executeRawUnsafe: vi.fn().mockResolvedValue(0),
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([{ id: "provider:active-refresh" }])
+        .mockResolvedValueOnce([
+          { databaseIncarnation: "7612345678901234567" },
+        ]),
+      codexOAuthWritebackIntent: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        findUnique: vi.fn().mockResolvedValue(null),
+        create: intentCreate,
+      },
+      codexOAuthProviderInstance: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "provider:active-refresh",
+          providerInstanceId: request.providerInstanceId,
+          activeLeaseId: request.leaseId,
+          activeLeaseExpiresAt: new Date(now.getTime() + 5 * 60_000),
+          mutationEpoch: 7n,
+          mutationOwner: "runtime",
+          mutationOwnerId: request.leaseId,
+          latestGeneration: 3,
+          latestGenerationHash: "generation-hash-before-refresh",
+          activeAccountIdentityHash: request.accountIdentityHash,
+          activeSecretNamespaceId: activeNamespace.namespaceId,
+          activeSecretNamespaceEpoch: activeNamespace.epoch,
+          activeSecretNamespaceName: activeNamespace.name,
+          activeSecretNamespace: {
+            id: activeNamespace.namespaceId,
+            githubRepositoryId: "123456",
+            namespaceEpoch: activeNamespace.epoch,
+            secretName: activeNamespace.name,
+            status: "active",
+            databaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+              databaseRecoveryWitness,
+            ),
+          },
+          repository: {
+            id: "repository:active-refresh",
+            workspaceId: "workspace:active-refresh",
+            provider: "github",
+            githubRepositoryId: 123456n,
+            fullName: "777genius/example",
+            owner: "777genius",
+            name: "example",
+            selected: true,
+            installation: {
+              githubInstallationId: 789n,
+              status: "active",
+            },
+          },
+          leases: [
+            {
+              id: request.leaseId,
+              status: "finalized",
+              expiresAt: new Date(now.getTime() + 5 * 60_000),
+              nextGeneration: request.generation,
+              restoredGenerationHash: "generation-hash-before-refresh",
+              writebackPreflightKeyId: request.keyId,
+              mutationEpoch: 7n,
+              secretNamespaceId: activeNamespace.namespaceId,
+              secretNamespaceEpoch: activeNamespace.epoch,
+            },
+          ],
+        }),
+      },
+      codexOAuthSecretNamespace: { create: namespaceCreate },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) =>
+        callback(tx),
+      ),
+    };
+    const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
+      actionOwnerRepo: "777genius/review-router",
+      databaseRecoveryWitness,
+      transactionClock: fixedClock(now),
+    });
+
+    await expect(
+      repository.prepareVersionedWriteback({
+        request,
+        encryptedPayloadDigest: "digest-active-refresh",
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      intentId: "intent:active-refresh",
+      namespace: activeNamespace,
+      writeTarget: { secretName: activeNamespace.name },
+      retirementIdentity: { namespaceId: activeNamespace.namespaceId },
+    });
+    expect(namespaceCreate).not.toHaveBeenCalled();
+    expect(intentCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        secretNamespaceId: activeNamespace.namespaceId,
+        safeErrorCode: "runtime_versioned_dispatch_authorized_v1",
+      }),
+    });
+  });
+
   it("writes nothing when the authoritative clock query fails", async () => {
     const namespaceCreate = vi.fn();
     const intentCreate = vi.fn();

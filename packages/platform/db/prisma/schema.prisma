@@ -423,7 +423,7 @@ model CodexOAuthSecretNamespace {
   providerInstance  CodexOAuthProviderInstance      @relation(fields: [providerInstanceRowId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthSecretNamespace_provider_fkey")
   activeForProvider CodexOAuthProviderInstance?     @relation("CodexOAuthActiveSecretNamespace")
   dispatchAttempt   CodexOAuthSetupDispatchAttempt?
-  runtimeWriteback  CodexOAuthWritebackIntent?
+  runtimeWritebacks CodexOAuthWritebackIntent[]
 
   @@unique([providerInstanceRowId, namespaceEpoch], map: "CodexOAuthSecretNamespace_provider_epoch_key")
   @@index([providerInstanceRowId, status], map: "CodexOAuthSecretNamespace_provider_status_idx")
@@ -622,7 +622,7 @@ model CodexOAuthWritebackIntent {
   completedAt              DateTime?
   mutationEpoch            BigInt?
   dispatchAttemptId        String?   @unique
-  secretNamespaceId        String?   @unique
+  secretNamespaceId        String?
   dispatchAuthorizedAt     DateTime? @db.Timestamptz(3)
   providerResponseCode     Int?
   providerConfirmedAt      DateTime? @db.Timestamptz(3)
@@ -644,6 +644,7 @@ model CodexOAuthWritebackIntent {
   @@unique([providerInstanceId, idempotencyKey])
   @@index([providerInstanceId, status])
   @@index([leaseId, status])
+  @@index([secretNamespaceId])
   @@index([providerInstanceRowId, mutationEpoch], map: "CodexOAuthWritebackIntent_provider_epoch_idx")
 }
 

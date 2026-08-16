@@ -142,6 +142,7 @@ const preReleaseMigrationBoundary = Object.freeze({
     "000071_transactional_service_transition",
     "000072_retire_superseded_codex_setup_claims",
     "000072_runtime_canary_challenge",
+    "000073_codex_oauth_active_namespace_refresh",
   ]),
   retained: Object.freeze([
     "000067_review_live_progress",
@@ -432,7 +433,7 @@ const safeReleaseMigrationInvariantMessages = Object.freeze([
   "release migration unresolved history",
   "release migration V72 catalog postcondition missing",
   "release migration V72 routine security invalid",
-  "release migration V70-V72 live catalog digest mismatch",
+  "release migration V70-V73 live catalog digest mismatch",
 ]);
 
 export function safePostgresErrorClassification(stderr) {

@@ -807,7 +807,7 @@ describe("canonical exclusive release migration caller", () => {
     ])
       expect(liveV70V72CatalogDigestSql).toContain(catalogFact);
     expect(atomicMigration).toContain(
-      "release migration V70-V72 live catalog digest mismatch",
+      "release migration V70-V73 live catalog digest mismatch",
     );
     const observationSql = canonicalRoleTopologyObservationSql();
     const createdRoleIdentities = [

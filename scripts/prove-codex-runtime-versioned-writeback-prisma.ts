@@ -609,17 +609,18 @@ try {
     });
   if (
     activated.activeSecretNamespaceId !== definite.namespace.namespaceId ||
+    definite.namespace.namespaceId !== activeA.namespaceId ||
     activated.mutationOwner !== null ||
     activated.latestGenerationHash !== "latest-hash-2"
   )
     throw new Error("runtime proof activation failed");
-  const retiredA =
+  const retainedA =
     await adminPrisma.codexOAuthSecretNamespace.findUniqueOrThrow({
       where: { id: activeA.namespaceId },
       select: { status: true, permanentlyRetired: true },
     });
-  if (retiredA.status !== "retired_superseded" || !retiredA.permanentlyRetired)
-    throw new Error("runtime proof prior namespace not permanently superseded");
+  if (retainedA.status !== "active" || retainedA.permanentlyRetired)
+    throw new Error("runtime proof did not retain the active namespace");
 
   const completedIntent =
     await adminPrisma.codexOAuthWritebackIntent.findUniqueOrThrow({
@@ -770,13 +771,17 @@ try {
       },
       () => undefined,
     );
-  const tombstone =
+  const retainedAmbiguousNamespace =
     await adminPrisma.codexOAuthSecretNamespace.findUniqueOrThrow({
       where: { id: ambiguous.namespace.namespaceId },
       select: { status: true, permanentlyRetired: true },
     });
-  if (tombstone.status !== "retired_ambiguous" || !tombstone.permanentlyRetired)
-    throw new Error("runtime proof ambiguous namespace not tombstoned");
+  if (
+    retainedAmbiguousNamespace.status !== "active" ||
+    retainedAmbiguousNamespace.permanentlyRetired
+  ) {
+    throw new Error("runtime proof ambiguous refresh mutated active namespace");
+  }
 
   // The ambiguous runtime name can only be superseded by a distinct operator
   // recovery decision. That decision remains linked to the unknown-outcome
@@ -926,6 +931,17 @@ try {
     recoveredProvider.state !== "active"
   ) {
     throw new Error("runtime proof recovery activation failed");
+  }
+  const supersededAmbiguousNamespace =
+    await adminPrisma.codexOAuthSecretNamespace.findUniqueOrThrow({
+      where: { id: ambiguous.namespace.namespaceId },
+      select: { status: true, permanentlyRetired: true },
+    });
+  if (
+    supersededAmbiguousNamespace.status !== "retired_superseded" ||
+    !supersededAmbiguousNamespace.permanentlyRetired
+  ) {
+    throw new Error("runtime proof recovery did not retire prior namespace");
   }
   const witnessEvidence = await adminPrisma.codexOAuthSecretNamespace.findMany({
     where: {
@@ -1221,16 +1237,16 @@ try {
   if (confirmedRetry.status !== "writeback_recovery_required") {
     throw new Error("confirmed response restart did not fail closed");
   }
-  const confirmedTombstone =
+  const confirmedAmbiguousNamespace =
     await adminPrisma.codexOAuthSecretNamespace.findUniqueOrThrow({
       where: { id: confirmedRestart.namespace.namespaceId },
       select: { status: true, permanentlyRetired: true },
     });
   if (
-    confirmedTombstone.status !== "retired_ambiguous" ||
-    !confirmedTombstone.permanentlyRetired
+    confirmedAmbiguousNamespace.status !== "active" ||
+    confirmedAmbiguousNamespace.permanentlyRetired
   ) {
-    throw new Error("confirmed response restart reused its namespace");
+    throw new Error("confirmed response restart mutated active namespace");
   }
   const unconsumedReceiptCountRows = await adminPrisma.$queryRaw<
     readonly { count: bigint }[]
