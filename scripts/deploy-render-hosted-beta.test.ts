@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs";
 import {
   addToEnvironment,
+  assertReviewV2ApiWorkerEnvConvergence,
   assertHostedDeployEnv,
   assertMigrationEvidence,
   assertMigrationEvidencePayload,
@@ -25,6 +26,7 @@ import {
   main,
   parseHostedDeployDotenv,
   readVerifiedInstallerReleaseDescriptor,
+  reviewV2SharedRuntimeEnvNames,
   resolveDistinctDatabaseRoleUrls,
   resolveStableSecuritySecrets,
   serviceDetails,
@@ -838,6 +840,15 @@ describe("Render hosted deploy hardening", () => {
     expect(api.REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION).toBe(
       "review-projection-policy.v5-t0",
     );
+    expect(worker.REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION).toBe(
+      "review-projection-policy.v5-t0",
+    );
+    for (const key of reviewV2SharedRuntimeEnvNames) {
+      expect(worker[key], key).toBe(api[key]);
+    }
+    expect(() =>
+      assertReviewV2ApiWorkerEnvConvergence(api, worker),
+    ).not.toThrow();
     expect(worker.REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64).toBe(
       undefined,
     );
@@ -845,6 +856,25 @@ describe("Render hosted deploy hardening", () => {
       undefined,
     );
     expect(api.REVIEW_ROUTER_UNKNOWN_RUNTIME_VALUE).toBe(undefined);
+  });
+
+  it("fails deterministic role convergence on worker vote-lane drift", () => {
+    const shared = {
+      ...activeReviewV2Env(),
+      REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION:
+        "review-projection-policy.v5-t0",
+    };
+    const api = { ...shared };
+    const worker = { ...shared };
+    delete worker.REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64;
+    delete worker.REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID;
+    delete worker.REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON;
+    delete worker.REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256;
+    worker.REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON = "[]-drift";
+
+    expect(() => assertReviewV2ApiWorkerEnvConvergence(api, worker)).toThrow(
+      "Review v2 API/worker environment drift for REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON",
+    );
   });
 
   it("fails closed when an active review v2 tuple is incomplete", () => {
@@ -1116,7 +1146,9 @@ describe("Render hosted deploy hardening", () => {
         { id: "srv-1", name: "reviewrouter-worker" },
         expected,
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual(
+      Object.fromEntries(expected.map(({ key, value }) => [key, value])),
+    );
     client.request.mockResolvedValueOnce(
       expected.map((item) =>
         item.key === "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256"
@@ -1132,6 +1164,52 @@ describe("Render hosted deploy hardening", () => {
       ),
     ).rejects.toThrow(
       "environment did not converge for REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256",
+    );
+  });
+
+  it("readiness rejects a stale Review v2 operator hash on the worker", async () => {
+    const expected = buildServiceEnv({
+      databaseUrl: "postgres://internal/db",
+      privateKey: "private-key-not-logged",
+      role: "worker",
+      webUrl: "https://reviewrouter.example",
+      apiUrl: "https://api.reviewrouter.example",
+      env: {
+        GITHUB_APP_CLIENT_ID: "client",
+        GITHUB_APP_CLIENT_SECRET: "secret",
+        GITHUB_APP_ID: "1",
+        GITHUB_APP_SLUG: "reviewrouter",
+        GITHUB_WEBHOOK_SECRET: "secret",
+        AUTH_SECRET: "a".repeat(32),
+        REVIEW_ROUTER_ACTION_SESSION_SECRET: "s".repeat(32),
+        REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY: "t".repeat(32),
+        REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
+        REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
+        ...installerTuple,
+        ...activeReviewV2Env(),
+      },
+    });
+    const observed = [
+      ...expected,
+      {
+        key: "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256",
+        value: "f".repeat(64),
+      },
+    ];
+    const client = {
+      request: vi
+        .fn()
+        .mockResolvedValue(observed.map((envVar) => ({ envVar }))),
+    };
+
+    await expect(
+      verifyServiceEnvConvergence(
+        client as never,
+        { id: "srv-worker", name: "reviewrouter-worker" },
+        expected,
+      ),
+    ).rejects.toThrow(
+      "Review v2 worker environment contains API-only REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256",
     );
   });
 
