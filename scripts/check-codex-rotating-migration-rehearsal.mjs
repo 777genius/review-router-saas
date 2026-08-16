@@ -3992,7 +3992,10 @@ function proveParentIdentityWriteRejected(url) {
   );
 }
 
-async function executeProviderIdentityRepairWithAuthority(clients, argumentsSql) {
+async function executeProviderIdentityRepairWithAuthority(
+  clients,
+  argumentsSql,
+) {
   const webInvocation = createSecretSafePostgresInvocation({
     databaseUrl: clients.web,
     args: ["-X", "-qAt", "-v", "ON_ERROR_STOP=1"],
