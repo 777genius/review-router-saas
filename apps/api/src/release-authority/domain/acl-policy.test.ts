@@ -47,7 +47,15 @@ describe("release authority ACL policy", () => {
     ).toContain("release_recovery_effect_intend");
     expect(releaseAuthorityFinalAclPolicy.publicPrivileges).toEqual([]);
     expect(releaseAuthorityFinalAclPolicy.grantOptions).toEqual([]);
-    expect(releaseAuthorityFinalAclPolicy.roleMemberships).toEqual([]);
+    expect(releaseAuthorityFinalAclPolicy.roleMemberships).toEqual([
+      {
+        grantedRole: "reviewrouter_authority_owner",
+        memberRole: "reviewrouter_migration_broker",
+        admin: true,
+        inherit: false,
+        set: false,
+      },
+    ]);
     expect(new Set(releaseAuthorityFinalAclPolicy.relations).size).toBe(15);
     expect(new Set(releaseAuthorityFinalAclPolicy.routines).size).toBe(84);
     expect(

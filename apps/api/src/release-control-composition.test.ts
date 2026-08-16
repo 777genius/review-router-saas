@@ -163,7 +163,7 @@ const authorityReadiness = (
     recoveryWitnessSha256: "",
     databaseIdentity: trustedDatabaseIdentity.authorityDatabaseIdentity,
     postgresMajor: 17,
-    schemaVersion: 14,
+    schemaVersion: 15,
     catalogFingerprint: "sha256:canonical-catalog",
     expectedCatalogFingerprint: "sha256:canonical-catalog",
     catalogVerifier: "complete_catalog_v3_acl_exact",
@@ -230,6 +230,10 @@ const authorityReadiness = (
       [
         "000014_source_ambiguity_migration_permit",
         "09f6f3eb861a6610492ba77af708911afbdfee5ded5d82cd6e26f1ce32b9658a",
+      ],
+      [
+        "000015_migration_credential_lease",
+        "f087047188fd280c11b540d809bbc8b50f0f9a84cca4e3342726737a43fc814f",
       ],
     ].map(([migrationName, checksum], index) => ({
       position: index + 1,
@@ -411,7 +415,7 @@ const readinessQuery = (
           authorityOwnerRoleName: readiness.authorityOwnerRoleName,
           systemIdentifier: readiness.systemIdentifier,
           postgresMajor: readiness.postgresMajor,
-          authorityPresent: readiness.schemaVersion === 12,
+          authorityPresent: readiness.schemaVersion === 15,
           installerRoutine: readiness.installerRoutine,
           readerRoutine: readiness.readerRoutine,
           installerRoutineBodySha256: readiness.installerRoutineBodySha256,

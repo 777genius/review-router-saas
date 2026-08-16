@@ -823,8 +823,13 @@ describe("observation-backed Codex rotating rollout verifier", () => {
     const fixture = observedFixture();
     mutate(fixture);
     expect(
-      verifyCodexRotatingRollout(fixture.evidence, fixture.options).failures,
-    ).toContain(expected);
+      verifyCodexRotatingRollout(
+        fixture.evidence,
+        fixture.options,
+      ).failures.some(
+        (failure) => failure === expected || failure.startsWith(`${expected}:`),
+      ),
+    ).toBe(true);
   });
 
   it.each([
@@ -1139,8 +1144,13 @@ describe("observation-backed Codex rotating rollout verifier", () => {
     const fixture = observedFixture();
     mutate(fixture.artifacts.database.catalog);
     expect(
-      verifyCodexRotatingRollout(fixture.evidence, fixture.options).failures,
-    ).toContain(expected);
+      verifyCodexRotatingRollout(
+        fixture.evidence,
+        fixture.options,
+      ).failures.some(
+        (failure) => failure === expected || failure.startsWith(`${expected}:`),
+      ),
+    ).toBe(true);
   });
 });
 

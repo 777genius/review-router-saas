@@ -228,7 +228,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "verifyCodexRotatingDatabaseCatalog(observation.catalog, {",
     );
     expect(source).toContain(
-      'assert(result.ok, "production_catalog_verifier_rejected_rehearsal")',
+      "`production_catalog_verifier_rejected_rehearsal:${JSON.stringify(result)}`",
     );
     expect(source).toContain("verifyPrivileges: false");
     const collection =
