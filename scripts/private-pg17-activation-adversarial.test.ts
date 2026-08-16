@@ -20,6 +20,7 @@ import {
   canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyTrustRootReadiness,
 } from "../packages/features/release-rollout/src/index.js";
+import { sourceLegacyAmbiguityFixture } from "../test/fixtures/source-legacy-ambiguity";
 
 const requiredProof =
   process.env.REVIEW_ROUTER_REQUIRE_PG17_ADVERSARIAL === "1";
@@ -502,19 +503,16 @@ const initializeSeed = () => {
   const inventory = JSON.parse(
     psqlAs(seedContainer, releaseUsername, legacyAmbiguityInventorySql),
   );
-  const inventorySha256 = `sha256:${createHash("sha256")
-    .update(JSON.stringify(inventory))
-    .digest("hex")}`;
-  const sourceLegacyAmbiguity = {
-    ...inventory,
-    inventorySha256,
-    observations: [
-      { observedAt: "2026-08-15T00:00:00.000Z", inventorySha256 },
-      { observedAt: "2026-08-15T00:00:01.000Z", inventorySha256 },
-    ],
-    stable: true,
-  } as const;
   const eligibilityCutoff = new Date().toISOString();
+  const sourceLegacyAmbiguity = sourceLegacyAmbiguityFixture({
+    rolloutId,
+    sourceSystemIdentifier: "1",
+    firstObservedAt: new Date(
+      Date.parse(eligibilityCutoff) - 1_000,
+    ).toISOString(),
+    eligibilityCutoff,
+    inventory,
+  });
   expect(
     psqlAs(
       seedContainer,
@@ -1296,18 +1294,17 @@ describePg17(
             const inventory = JSON.parse(
               context.psqlAs(releaseUsername, legacyAmbiguityInventorySql),
             );
-            const inventorySha256 = `sha256:${createHash("sha256")
-              .update(JSON.stringify(inventory))
-              .digest("hex")}`;
-            const evidence = JSON.stringify({
-              ...inventory,
-              inventorySha256,
-              observations: [
-                { observedAt: "2026-08-15T00:00:00.000Z", inventorySha256 },
-                { observedAt: "2026-08-15T00:00:01.000Z", inventorySha256 },
-              ],
-              stable: true,
-            }).replaceAll("'", "''");
+            const evidence = JSON.stringify(
+              sourceLegacyAmbiguityFixture({
+                rolloutId,
+                sourceSystemIdentifier: "1",
+                firstObservedAt: new Date(
+                  Date.parse(eligibilityCutoff) - 1_000,
+                ).toISOString(),
+                eligibilityCutoff,
+                inventory,
+              }),
+            ).replaceAll("'", "''");
             evidenceByRollout.set(rolloutId, evidence);
             return evidence;
           };

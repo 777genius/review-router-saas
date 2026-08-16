@@ -6,6 +6,7 @@ import {
   migrationFailRequest,
   rolloutClaimRequest,
 } from "./http";
+import { sourceLegacyAmbiguityFixture } from "../../../../../test/fixtures/source-legacy-ambiguity";
 
 const rolloutId = "rollout-validation";
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
@@ -13,27 +14,12 @@ const transition = createReleaseMigrationTransition({
   commitSha: "a".repeat(40),
   releaseImageDigest: digest("b"),
 });
-const sourceLegacyAmbiguity = {
-  inventorySha256:
-    "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-  activeLeaseIds: [],
-  fetchedSetupIds: [],
-  pendingIntentIds: [],
-  intentStatuses: [],
-  observations: [
-    {
-      observedAt: "2026-08-14T12:34:54.000Z",
-      inventorySha256:
-        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-    },
-    {
-      observedAt: "2026-08-14T12:34:55.000Z",
-      inventorySha256:
-        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-    },
-  ],
-  stable: true,
-} as const;
+const sourceLegacyAmbiguity = sourceLegacyAmbiguityFixture({
+  rolloutId,
+  sourceSystemIdentifier: "7000000000000000001",
+  firstObservedAt: "2026-08-14T12:34:55.000Z",
+  eligibilityCutoff: "2026-08-14T12:34:56.000Z",
+});
 const claim = () => ({
   rolloutId,
   expectedCommitSha: "a".repeat(40),

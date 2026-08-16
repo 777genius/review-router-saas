@@ -15,6 +15,7 @@ import {
   isSanitizedDiagnosticError,
   sanitizedDiagnosticError,
 } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
+import { assertLegacyAmbiguityEvidence } from "../packages/features/release-rollout/src/domain/trusted-rollout-evidence.js";
 import { normalizeSecretSafePostgresArguments } from "./lib/secret-safe-command-boundary.mjs";
 import { effectivePrincipalInventorySql } from "../packages/features/release-rollout/src/adapters/effective-principal-postgres.mjs";
 import {
@@ -1199,12 +1200,28 @@ BEGIN
      OR requested_expected_post_manifest_identity !~ '^sha256:[a-f0-9]{64}$'
      OR requested_expected_post_catalog_digest !~ '^sha256:[a-f0-9]{64}$'
      OR jsonb_typeof(requested_source_legacy_ambiguity) IS DISTINCT FROM 'object'
-     OR (SELECT count(*) FROM jsonb_object_keys(requested_source_legacy_ambiguity)) <> 7
-     OR NOT requested_source_legacy_ambiguity ?& ARRAY['inventorySha256',
-       'activeLeaseIds','fetchedSetupIds','pendingIntentIds','intentStatuses',
-       'observations','stable']
+     OR (SELECT count(*) FROM jsonb_object_keys(requested_source_legacy_ambiguity)) <> 18
+     OR NOT requested_source_legacy_ambiguity ?& ARRAY['schemaVersion','rolloutId',
+       'sourceSystemIdentifier','sourceDatabaseName','sourceRecoveryWitnessSha256',
+       'authorityPrincipal','fenceId','fenceEstablishedAt','fencedInventorySha256',
+       'inventorySha256','activeLeaseIds','fetchedSetupIds','pendingIntentIds',
+       'intentStatuses','observations','eligibilityCutoff','stable','receiptSha256']
+     OR requested_source_legacy_ambiguity->'schemaVersion' IS DISTINCT FROM '1'::jsonb
+     OR requested_source_legacy_ambiguity->>'rolloutId' IS DISTINCT FROM requested_rollout_id
+     OR requested_source_legacy_ambiguity->>'sourceSystemIdentifier' IS DISTINCT FROM
+       requested_source_system_identifier
+     OR coalesce(requested_source_legacy_ambiguity->>'sourceDatabaseName','')=''
+     OR requested_source_legacy_ambiguity->>'sourceRecoveryWitnessSha256' !~ '^[a-f0-9]{64}$'
+     OR coalesce(requested_source_legacy_ambiguity->>'authorityPrincipal','')=''
+     OR coalesce(requested_source_legacy_ambiguity->>'fenceId','')=''
+     OR requested_source_legacy_ambiguity->>'fencedInventorySha256' !~ '^sha256:[a-f0-9]{64}$'
      OR requested_source_legacy_ambiguity->'stable' IS DISTINCT FROM 'true'::jsonb
      OR requested_source_legacy_ambiguity->>'inventorySha256' !~ '^sha256:[a-f0-9]{64}$'
+     OR requested_source_legacy_ambiguity->>'receiptSha256' !~ '^sha256:[a-f0-9]{64}$'
+     OR NOT pg_input_is_valid(
+       requested_source_legacy_ambiguity->>'fenceEstablishedAt','timestamptz')
+     OR NOT pg_input_is_valid(
+       requested_source_legacy_ambiguity->>'eligibilityCutoff','timestamptz')
      OR EXISTS (SELECT 1 FROM unnest(ARRAY['activeLeaseIds','fetchedSetupIds',
        'pendingIntentIds','intentStatuses']) key
        WHERE jsonb_typeof(requested_source_legacy_ambiguity->key) IS DISTINCT FROM 'array'
@@ -1219,7 +1236,9 @@ BEGIN
          OR NOT sample ?& ARRAY['observedAt','inventorySha256']
          OR sample->>'inventorySha256' IS DISTINCT FROM
            requested_source_legacy_ambiguity->>'inventorySha256'
-         OR NOT pg_input_is_valid(sample->>'observedAt','timestamptz'))
+         OR NOT pg_input_is_valid(sample->>'observedAt','timestamptz')
+         OR to_char((sample->>'observedAt')::timestamptz AT TIME ZONE 'UTC',
+           'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') IS DISTINCT FROM sample->>'observedAt')
      OR requested_eligibility_cutoff IS NULL
      OR requested_permit_epoch < 1
      OR requested_permit_nonce !~ '^[a-f0-9]{32}$' THEN
@@ -1228,6 +1247,21 @@ BEGIN
   IF (requested_source_legacy_ambiguity->'observations'->1->>'observedAt')::timestamptz
        <= (requested_source_legacy_ambiguity->'observations'->0->>'observedAt')::timestamptz
   THEN RAISE EXCEPTION 'release migration target source evidence ordering invalid'; END IF;
+  IF to_char((requested_source_legacy_ambiguity->>'fenceEstablishedAt')::timestamptz
+       AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') IS DISTINCT FROM
+       requested_source_legacy_ambiguity->>'fenceEstablishedAt'
+     OR to_char((requested_source_legacy_ambiguity->>'eligibilityCutoff')::timestamptz
+       AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') IS DISTINCT FROM
+       requested_source_legacy_ambiguity->>'eligibilityCutoff'
+     OR requested_source_legacy_ambiguity->>'eligibilityCutoff' IS DISTINCT FROM
+       requested_source_legacy_ambiguity->'observations'->1->>'observedAt'
+     OR requested_eligibility_cutoff IS DISTINCT FROM
+       (requested_source_legacy_ambiguity->>'eligibilityCutoff')::timestamptz
+     OR requested_source_legacy_ambiguity->>'receiptSha256' IS DISTINCT FROM
+       'sha256:'||encode(sha256(convert_to(
+         reviewrouter_activation.canonical_json(
+           requested_source_legacy_ambiguity-'receiptSha256'),'UTF8')),'hex')
+  THEN RAISE EXCEPTION 'release migration target source receipt invalid'; END IF;
   INSERT INTO reviewrouter_activation.migration_permit(
     rollout_id,source_system_identifier,target_system_identifier,
     target_database_identity,target_database_name,target_recovery_witness_sha256,
@@ -4687,6 +4721,9 @@ export function releaseMigrationPermitFromEnv(env) {
       "REVIEW_ROUTER_MIGRATION_PERMIT_ELIGIBILITY_CUTOFF",
     ),
   };
+  const trustedSourceReceipt = assertLegacyAmbiguityEvidence(
+    permit.sourceLegacyAmbiguity,
+  );
   if (
     !/^[A-Za-z0-9][A-Za-z0-9._:/@-]{2,255}$/u.test(permit.rolloutId) ||
     !/^[1-9][0-9]{0,19}$/u.test(permit.targetSystemIdentifier) ||
@@ -4696,7 +4733,9 @@ export function releaseMigrationPermitFromEnv(env) {
     !/^[1-9][0-9]{0,18}$/u.test(permit.epoch) ||
     !/^[a-f0-9]{32}$/u.test(permit.nonce) ||
     !Number.isFinite(Date.parse(permit.eligibilityCutoff)) ||
-    permit.sourceLegacyAmbiguity?.stable !== true
+    new Date(permit.eligibilityCutoff).toISOString() !==
+      permit.eligibilityCutoff ||
+    permit.eligibilityCutoff !== trustedSourceReceipt.eligibilityCutoff
   )
     throw new Error("release_migration_target_permit_invalid");
   return Object.freeze(permit);

@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   decomposePostgresConnection,
@@ -11,6 +12,7 @@ import {
   PrincipalCapability,
   type EffectivePrincipalPolicy,
 } from "../domain/effective-principal-inventory";
+import { sha256Canonical } from "../domain/release-rollout";
 
 const sourceGeneration = {
   renderResourceId: "dpg-source",
@@ -18,7 +20,7 @@ const sourceGeneration = {
   databaseName: "reviewrouter",
   systemIdentifier: "100",
   majorVersion: 16,
-  recoveryWitnessSha256: "witness",
+  recoveryWitnessSha256: "b".repeat(64),
 } as const;
 const runtimeRoleNames = [
   "reviewrouter_api",
@@ -237,11 +239,50 @@ describe("target generation pre-binding", () => {
 describe("source quiescence", () => {
   it("requires observed writer suspension, committed effective ACL denial, bounded zeros, and failed reconnect probes", () => {
     let inventoryCalls = 0;
+    const legacyInventory = {
+      activeLeaseIds: ["lease-1"],
+      fetchedSetupIds: ["setup-1"],
+      pendingIntentIds: [],
+      intentStatuses: ["completed", "failed"],
+    };
+    const inventorySha256 = `sha256:${createHash("sha256").update(JSON.stringify(legacyInventory)).digest("hex")}`;
+    const sourceReceiptUnsigned = {
+      schemaVersion: 1,
+      rolloutId: "rollout-1",
+      sourceSystemIdentifier: "100",
+      sourceDatabaseName: "reviewrouter",
+      sourceRecoveryWitnessSha256: sourceGeneration.recoveryWitnessSha256,
+      authorityPrincipal: "admin",
+      fenceId: "source-fence:rollout-1",
+      fenceEstablishedAt: "2026-08-12T00:00:00.000Z",
+      fencedInventorySha256: `sha256:${"f".repeat(64)}`,
+      inventorySha256,
+      ...legacyInventory,
+      observations: [
+        { observedAt: "2026-08-12T00:00:01.000Z", inventorySha256 },
+        { observedAt: "2026-08-12T00:00:02.000Z", inventorySha256 },
+      ],
+      eligibilityCutoff: "2026-08-12T00:00:02.000Z",
+      stable: true,
+    };
+    const sourceReceipt = {
+      ...sourceReceiptUnsigned,
+      receiptSha256: `sha256:${sha256Canonical(sourceReceiptUnsigned)}`,
+    };
     const execute = vi.fn((_command, args: readonly string[]) => {
       const sql = args.at(-1) ?? "";
+      if (sql.includes("source_legacy_ambiguity_receipt"))
+        return { stdout: JSON.stringify(sourceReceipt) + "\n" };
       if (sql.includes("recoveryWitnessSha256"))
         return {
-          stdout: `${JSON.stringify({ systemIdentifier: "100", majorVersion: 16, internalHostname: "source.internal", databaseName: "reviewrouter", recoveryWitnessSha256: "witness" })}\n`,
+          stdout:
+            JSON.stringify({
+              systemIdentifier: "100",
+              majorVersion: 16,
+              internalHostname: "source.internal",
+              databaseName: "reviewrouter",
+              recoveryWitnessSha256: sourceGeneration.recoveryWitnessSha256,
+            }) + "\n",
         };
       if (sql.includes("SELECT system_identifier::text"))
         return { stdout: "100\n" };
@@ -449,7 +490,7 @@ describe("source fence recovery", () => {
       const sql = String(args.at(-1));
       if (sql.includes("recoveryWitnessSha256"))
         return {
-          stdout: `${JSON.stringify({ systemIdentifier: "100", majorVersion: 16, internalHostname: "source.internal", databaseName: "reviewrouter", recoveryWitnessSha256: "witness" })}\n`,
+          stdout: `${JSON.stringify({ systemIdentifier: "100", majorVersion: 16, internalHostname: "source.internal", databaseName: "reviewrouter", recoveryWitnessSha256: sourceGeneration.recoveryWitnessSha256 })}\n`,
         };
       if (sql.includes("to_regclass")) return { stdout: "t\n" };
       if (
@@ -532,7 +573,7 @@ describe("source fence recovery", () => {
       const sql = String(args.at(-1));
       if (sql.includes("recoveryWitnessSha256"))
         return {
-          stdout: `${JSON.stringify({ systemIdentifier: "100", majorVersion: 16, internalHostname: "source.internal", databaseName: "reviewrouter", recoveryWitnessSha256: "witness" })}\n`,
+          stdout: `${JSON.stringify({ systemIdentifier: "100", majorVersion: 16, internalHostname: "source.internal", databaseName: "reviewrouter", recoveryWitnessSha256: sourceGeneration.recoveryWitnessSha256 })}\n`,
         };
       if (sql.includes("'sessionPrincipal',session_user"))
         return {

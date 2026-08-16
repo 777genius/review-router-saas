@@ -23,33 +23,19 @@ import {
   type TargetActivationFacts,
   type TargetActivationReceiptReaderPort,
 } from "../../release-rollout-ledger.js";
+import { sourceLegacyAmbiguityFixture } from "../../../../../test/fixtures/source-legacy-ambiguity";
 
 const targetAttestation = {
   systemIdentifier: "200",
   recoveryWitnessSha256: "e".repeat(64),
 };
-const sourceLegacyAmbiguity = {
-  inventorySha256:
-    "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-  activeLeaseIds: [],
-  fetchedSetupIds: [],
-  pendingIntentIds: [],
-  intentStatuses: [],
-  observations: [
-    {
-      observedAt: "2026-08-12T00:00:00.000Z",
-      inventorySha256:
-        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-    },
-    {
-      observedAt: "2026-08-12T00:00:01.000Z",
-      inventorySha256:
-        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-    },
-  ],
-  stable: true as const,
-} as const;
 const migrationEligibilityCutoff = "2026-08-12T00:00:02.000Z";
+const sourceLegacyAmbiguity = sourceLegacyAmbiguityFixture({
+  rolloutId: "rollout-1",
+  sourceSystemIdentifier: "100",
+  firstObservedAt: "2026-08-12T00:00:01.000Z",
+  eligibilityCutoff: migrationEligibilityCutoff,
+});
 const explicitTestGate: ReleaseAuthorityHighRiskMutationGate = {
   execute: async (sequence) =>
     sequence(async (_target, mutation) => mutation(targetAttestation)),

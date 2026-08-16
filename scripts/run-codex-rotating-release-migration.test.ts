@@ -5,6 +5,7 @@ import {
   fencedLiveV70V72CatalogDigestSql,
 } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
+import { sha256Canonical } from "../packages/features/release-rollout/src/domain/release-rollout";
 import {
   adaptGuardedMigrationForSchemaOwner,
   activationAuthorityProvisioningSql,
@@ -29,7 +30,16 @@ import {
   stripAtomicMigrationEnvelope,
 } from "./run-codex-rotating-release-migration.mjs";
 
-const legacyEvidence = {
+const legacyEvidenceUnsigned = {
+  schemaVersion: 1 as const,
+  rolloutId: "rollout-test",
+  sourceSystemIdentifier: "100",
+  sourceDatabaseName: "review_router",
+  sourceRecoveryWitnessSha256: "b".repeat(64),
+  authorityPrincipal: "source_admin",
+  fenceId: "source-fence:rollout-test",
+  fenceEstablishedAt: "2026-08-15T00:00:00.000Z",
+  fencedInventorySha256: `sha256:${"f".repeat(64)}`,
   inventorySha256:
     "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
   activeLeaseIds: [],
@@ -38,17 +48,22 @@ const legacyEvidence = {
   intentStatuses: [],
   observations: [
     {
-      observedAt: "2026-08-15T00:00:00.000Z",
-      inventorySha256:
-        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-    },
-    {
       observedAt: "2026-08-15T00:00:01.000Z",
       inventorySha256:
         "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
     },
+    {
+      observedAt: "2026-08-15T00:00:02.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
   ],
+  eligibilityCutoff: "2026-08-15T00:00:02.000Z",
   stable: true,
+} as const;
+const legacyEvidence = {
+  ...legacyEvidenceUnsigned,
+  receiptSha256: `sha256:${sha256Canonical(legacyEvidenceUnsigned)}`,
 } as const;
 
 function environment() {

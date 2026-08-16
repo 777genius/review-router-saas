@@ -14,12 +14,13 @@ import {
   type DatabaseGenerationIdentity,
   type StepObservation,
 } from "../domain/release-rollout";
-import type {
-  BackupIdentity,
-  EquivalenceEvidence,
-  LegacyAmbiguityEvidence,
-  QuiescenceEvidence,
-  SourceDatabaseFenceEvidence,
+import {
+  assertLegacyAmbiguityEvidence,
+  type BackupIdentity,
+  type EquivalenceEvidence,
+  type LegacyAmbiguityEvidence,
+  type QuiescenceEvidence,
+  type SourceDatabaseFenceEvidence,
 } from "../domain/trusted-rollout-evidence";
 import type { CommandExecutor } from "./process-command";
 import type { DatabaseAclWitness } from "../application/ports";
@@ -595,52 +596,177 @@ FROM release_authority.source_database_fence WHERE fence_id=${sqlLiteral(input.f
       throw new Error("postgres_source_fence_forward_only_cas_failed");
   }
 
-  private legacyAmbiguityInventory(url: string): {
-    activeLeaseIds: string[];
-    fetchedSetupIds: string[];
-    pendingIntentIds: string[];
-    intentStatuses: string[];
-  } {
-    return JSON.parse(
-      this.psql(
-        url,
-        `SELECT json_build_object(
-          'activeLeaseIds', coalesce((SELECT json_agg("id" ORDER BY "id") FROM "CodexOAuthLease" WHERE "status" IN ('preleased','finalized')), '[]'::json),
-          'fetchedSetupIds', coalesce((SELECT json_agg("id" ORDER BY "id") FROM "CodexOAuthSetupManifest" WHERE "status" = 'fetched'), '[]'::json),
-          'pendingIntentIds', coalesce((SELECT json_agg("id" ORDER BY "id") FROM "CodexOAuthWritebackIntent" WHERE "status" = 'pending'), '[]'::json)
-          ,'intentStatuses', coalesce((SELECT json_agg(DISTINCT "status" ORDER BY "status") FROM "CodexOAuthWritebackIntent"), '[]'::json)
-        )`,
-      ),
-    );
-  }
+  private observeStableLegacyAmbiguity(input: {
+    url: string;
+    source: DatabaseGenerationIdentity;
+    fence: SourceDatabaseFenceEvidence;
+  }): LegacyAmbiguityEvidence {
+    const raw = this.psql(
+      input.url,
+      `BEGIN;
+SELECT pg_advisory_xact_lock(hashtext('reviewrouter_source_database_fence'));
+CREATE OR REPLACE FUNCTION release_authority.source_receipt_canonical_json(value jsonb)
+RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE SET search_path=pg_catalog AS $canonical$
+SELECT CASE jsonb_typeof(value)
+  WHEN 'object' THEN '{'||coalesce((SELECT string_agg(to_json(key)::text||':'||
+    release_authority.source_receipt_canonical_json(item),',' ORDER BY key COLLATE "C")
+    FROM jsonb_each(value) entry(key,item)),'')||'}'
+  WHEN 'array' THEN '['||coalesce((SELECT string_agg(
+    release_authority.source_receipt_canonical_json(item),',' ORDER BY ordinal)
+    FROM jsonb_array_elements(value) WITH ORDINALITY entry(item,ordinal)),'')||']'
+  ELSE value::text
+END
+$canonical$;
+CREATE OR REPLACE FUNCTION release_authority.source_receipt_immutable()
+RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $immutable$
+BEGIN RAISE EXCEPTION 'source legacy ambiguity receipt is immutable'; END
+$immutable$;
+CREATE TABLE IF NOT EXISTS release_authority.source_legacy_ambiguity_receipt (
+  rollout_id text PRIMARY KEY,
+  fence_id text NOT NULL,
+  source_system_identifier text NOT NULL,
+  evidence jsonb NOT NULL,
+  created_at timestamptz(3) NOT NULL DEFAULT date_trunc('milliseconds',clock_timestamp())
+);
+DO $trigger$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger
+    WHERE tgrelid='release_authority.source_legacy_ambiguity_receipt'::regclass
+      AND tgname='source_legacy_ambiguity_receipt_immutable_guard') THEN
+    CREATE TRIGGER source_legacy_ambiguity_receipt_immutable_guard
+    BEFORE UPDATE OR DELETE ON release_authority.source_legacy_ambiguity_receipt
+    FOR EACH ROW EXECUTE FUNCTION release_authority.source_receipt_immutable();
+  END IF;
+END
+$trigger$;
+DO $receipt$
+DECLARE source_fence release_authority.source_database_fence%ROWTYPE;
+DECLARE persisted jsonb;
+DECLARE first_inventory jsonb;
+DECLARE second_inventory jsonb;
+DECLARE first_observed_at timestamptz(3);
+DECLARE second_observed_at timestamptz(3);
+DECLARE inventory_sha256 text;
+DECLARE payload jsonb;
+DECLARE observed_system_identifier text;
+DECLARE observed_database_name text;
+DECLARE observed_recovery_witness_sha256 text;
+BEGIN
+  SELECT * INTO STRICT source_fence
+  FROM release_authority.source_database_fence
+  WHERE rollout_id=@@ROLLOUT@@ FOR UPDATE;
+  SELECT system_identifier::text INTO STRICT observed_system_identifier
+  FROM pg_control_system();
+  SELECT current_database() INTO observed_database_name;
+  SELECT (shobj_description(oid,'pg_database')::jsonb)->>'recoveryWitnessSha256'
+  INTO observed_recovery_witness_sha256
+  FROM pg_database WHERE datname=current_database();
+  IF source_fence.fence_id<>@@FENCE_ID@@
+     OR source_fence.lifecycle<>'active'
+     OR source_fence.source_system_identifier<>@@SOURCE_SYSTEM@@
+     OR source_fence.fenced_inventory_sha256<>@@FENCED_INVENTORY@@
+     OR observed_system_identifier<>@@SOURCE_SYSTEM@@
+     OR observed_database_name<>@@DATABASE_NAME@@
+     OR observed_recovery_witness_sha256<>@@RECOVERY_WITNESS@@
+  THEN RAISE EXCEPTION 'source legacy ambiguity receipt identity mismatch'; END IF;
 
-  private observeStableLegacyAmbiguity(url: string): LegacyAmbiguityEvidence {
-    const firstObservedAt = this.now().toISOString();
-    const first = this.legacyAmbiguityInventory(url);
-    this.psql(url, "SELECT pg_sleep(0.2)");
-    const secondObservedAt = this.now().toISOString();
-    const second = this.legacyAmbiguityInventory(url);
-    const firstDigest = digest(JSON.stringify(first));
-    const secondDigest = digest(JSON.stringify(second));
-    if (firstDigest !== secondDigest)
-      throw new Error("postgres_generation_legacy_ambiguity_not_stable");
-    if (Date.parse(secondObservedAt) <= Date.parse(firstObservedAt))
-      throw new Error("postgres_generation_legacy_ambiguity_clock_invalid");
-    return Object.freeze({
-      ...second,
-      inventorySha256: secondDigest,
-      observations: Object.freeze([
-        Object.freeze({
-          observedAt: firstObservedAt,
-          inventorySha256: firstDigest,
-        }),
-        Object.freeze({
-          observedAt: secondObservedAt,
-          inventorySha256: secondDigest,
-        }),
-      ] as const),
-      stable: true as const,
-    });
+  SELECT evidence INTO persisted
+  FROM release_authority.source_legacy_ambiguity_receipt
+  WHERE rollout_id=@@ROLLOUT@@;
+  SELECT jsonb_build_object(
+    'activeLeaseIds',coalesce((SELECT jsonb_agg("id" ORDER BY "id") FROM public."CodexOAuthLease" WHERE "status" IN ('preleased','finalized')),'[]'::jsonb),
+    'fetchedSetupIds',coalesce((SELECT jsonb_agg("id" ORDER BY "id") FROM public."CodexOAuthSetupManifest" WHERE "status"='fetched'),'[]'::jsonb),
+    'pendingIntentIds',coalesce((SELECT jsonb_agg("id" ORDER BY "id") FROM public."CodexOAuthWritebackIntent" WHERE "status"='pending'),'[]'::jsonb),
+    'intentStatuses',coalesce((SELECT jsonb_agg(DISTINCT "status" ORDER BY "status") FROM public."CodexOAuthWritebackIntent"),'[]'::jsonb))
+  INTO first_inventory;
+  IF persisted IS NOT NULL THEN
+    IF persisted->>'rolloutId'<>@@ROLLOUT@@
+       OR persisted->>'sourceSystemIdentifier'<>observed_system_identifier
+       OR persisted->>'sourceDatabaseName'<>observed_database_name
+       OR persisted->>'sourceRecoveryWitnessSha256'<>observed_recovery_witness_sha256
+       OR persisted->>'authorityPrincipal'<>source_fence.authority_principal
+       OR persisted->>'fenceId'<>source_fence.fence_id
+       OR persisted->>'fencedInventorySha256'<>source_fence.fenced_inventory_sha256
+       OR persisted->>'inventorySha256' IS DISTINCT FROM
+         'sha256:'||encode(digest(convert_to(
+           '{"activeLeaseIds":'||release_authority.source_receipt_canonical_json(first_inventory->'activeLeaseIds')||
+           ',"fetchedSetupIds":'||release_authority.source_receipt_canonical_json(first_inventory->'fetchedSetupIds')||
+           ',"pendingIntentIds":'||release_authority.source_receipt_canonical_json(first_inventory->'pendingIntentIds')||
+           ',"intentStatuses":'||release_authority.source_receipt_canonical_json(first_inventory->'intentStatuses')||'}','UTF8'),'sha256'),'hex')
+       OR persisted->>'receiptSha256' IS DISTINCT FROM
+         'sha256:'||encode(digest(convert_to(
+           release_authority.source_receipt_canonical_json(persisted-'receiptSha256'),'UTF8'),'sha256'),'hex')
+    THEN RAISE EXCEPTION 'source legacy ambiguity receipt replay conflict'; END IF;
+  ELSE
+    first_observed_at := date_trunc('milliseconds',clock_timestamp());
+    PERFORM pg_sleep(0.2);
+    SELECT jsonb_build_object(
+      'activeLeaseIds',coalesce((SELECT jsonb_agg("id" ORDER BY "id") FROM public."CodexOAuthLease" WHERE "status" IN ('preleased','finalized')),'[]'::jsonb),
+      'fetchedSetupIds',coalesce((SELECT jsonb_agg("id" ORDER BY "id") FROM public."CodexOAuthSetupManifest" WHERE "status"='fetched'),'[]'::jsonb),
+      'pendingIntentIds',coalesce((SELECT jsonb_agg("id" ORDER BY "id") FROM public."CodexOAuthWritebackIntent" WHERE "status"='pending'),'[]'::jsonb),
+      'intentStatuses',coalesce((SELECT jsonb_agg(DISTINCT "status" ORDER BY "status") FROM public."CodexOAuthWritebackIntent"),'[]'::jsonb))
+    INTO second_inventory;
+    second_observed_at := date_trunc('milliseconds',clock_timestamp());
+    IF first_inventory IS DISTINCT FROM second_inventory
+       OR second_observed_at<=first_observed_at
+    THEN RAISE EXCEPTION 'source legacy ambiguity inventory not stable'; END IF;
+    inventory_sha256 := 'sha256:'||encode(digest(convert_to(
+      '{"activeLeaseIds":'||release_authority.source_receipt_canonical_json(second_inventory->'activeLeaseIds')||
+      ',"fetchedSetupIds":'||release_authority.source_receipt_canonical_json(second_inventory->'fetchedSetupIds')||
+      ',"pendingIntentIds":'||release_authority.source_receipt_canonical_json(second_inventory->'pendingIntentIds')||
+      ',"intentStatuses":'||release_authority.source_receipt_canonical_json(second_inventory->'intentStatuses')||'}','UTF8'),'sha256'),'hex');
+    payload := jsonb_build_object(
+      'schemaVersion',1,
+      'rolloutId',@@ROLLOUT@@,
+      'sourceSystemIdentifier',observed_system_identifier,
+      'sourceDatabaseName',observed_database_name,
+      'sourceRecoveryWitnessSha256',observed_recovery_witness_sha256,
+      'authorityPrincipal',source_fence.authority_principal,
+      'fenceId',source_fence.fence_id,
+      'fenceEstablishedAt',to_char(source_fence.established_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'fencedInventorySha256',source_fence.fenced_inventory_sha256,
+      'inventorySha256',inventory_sha256,
+      'activeLeaseIds',second_inventory->'activeLeaseIds',
+      'fetchedSetupIds',second_inventory->'fetchedSetupIds',
+      'pendingIntentIds',second_inventory->'pendingIntentIds',
+      'intentStatuses',second_inventory->'intentStatuses',
+      'observations',jsonb_build_array(
+        jsonb_build_object('observedAt',to_char(first_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),'inventorySha256',inventory_sha256),
+        jsonb_build_object('observedAt',to_char(second_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),'inventorySha256',inventory_sha256)),
+      'eligibilityCutoff',to_char(second_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'stable',true);
+    persisted := payload||jsonb_build_object('receiptSha256',
+      'sha256:'||encode(digest(convert_to(
+        release_authority.source_receipt_canonical_json(payload),'UTF8'),'sha256'),'hex'));
+    INSERT INTO release_authority.source_legacy_ambiguity_receipt(
+      rollout_id,fence_id,source_system_identifier,evidence)
+    VALUES(@@ROLLOUT@@,source_fence.fence_id,observed_system_identifier,persisted);
+  END IF;
+END
+$receipt$;
+REVOKE ALL ON TABLE release_authority.source_legacy_ambiguity_receipt FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.source_receipt_canonical_json(jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.source_receipt_immutable() FROM PUBLIC;
+COMMIT;
+SELECT evidence FROM release_authority.source_legacy_ambiguity_receipt
+WHERE rollout_id=@@ROLLOUT@@`
+        .replaceAll("@@ROLLOUT@@", sqlLiteral(input.fence.rolloutId))
+        .replaceAll("@@FENCE_ID@@", sqlLiteral(input.fence.fenceId))
+        .replaceAll(
+          "@@SOURCE_SYSTEM@@",
+          sqlLiteral(input.source.systemIdentifier),
+        )
+        .replaceAll(
+          "@@FENCED_INVENTORY@@",
+          sqlLiteral(input.fence.fencedInventorySha256),
+        )
+        .replaceAll("@@DATABASE_NAME@@", sqlLiteral(input.source.databaseName))
+        .replaceAll(
+          "@@RECOVERY_WITNESS@@",
+          sqlLiteral(input.source.recoveryWitnessSha256),
+        ),
+    );
+    return assertLegacyAmbiguityEvidence(JSON.parse(raw));
   }
 
   observeIdentity(
@@ -846,7 +972,11 @@ FROM release_authority.source_database_fence WHERE fence_id=${sqlLiteral(input.f
       aclSha256: digest(JSON.stringify(acl)),
       stabilizationSeries: Object.freeze(stabilizationSeries),
       reconnectDeniedRoles: Object.freeze(reconnectDenied),
-      legacyAmbiguity: this.observeStableLegacyAmbiguity(input.adminUrl),
+      legacyAmbiguity: this.observeStableLegacyAmbiguity({
+        url: input.adminUrl,
+        source: input.source,
+        fence,
+      }),
       fence,
       complete: true,
     });

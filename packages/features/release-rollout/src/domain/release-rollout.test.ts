@@ -20,7 +20,16 @@ import {
 } from "./release-migration-transition";
 
 const digest = `sha256:${"a".repeat(64)}`;
-const sourceLegacyAmbiguity = {
+const sourceLegacyAmbiguityUnsigned = {
+  schemaVersion: 1 as const,
+  rolloutId: "rollout-2026-08-12",
+  sourceSystemIdentifier: "100",
+  sourceDatabaseName: "reviewrouter",
+  sourceRecoveryWitnessSha256: "b".repeat(64),
+  authorityPrincipal: "source_admin",
+  fenceId: "source-fence:rollout-2026-08-12",
+  fenceEstablishedAt: "2026-08-12T00:00:00.000Z",
+  fencedInventorySha256: `sha256:${"f".repeat(64)}`,
   inventorySha256:
     "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
   activeLeaseIds: [],
@@ -29,17 +38,22 @@ const sourceLegacyAmbiguity = {
   intentStatuses: [],
   observations: [
     {
-      observedAt: "2026-08-12T00:00:00.000Z",
-      inventorySha256:
-        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-    },
-    {
       observedAt: "2026-08-12T00:00:01.000Z",
       inventorySha256:
         "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
     },
+    {
+      observedAt: "2026-08-12T00:00:02.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
   ],
+  eligibilityCutoff: "2026-08-12T00:00:02.000Z",
   stable: true,
+} as const;
+const sourceLegacyAmbiguity = {
+  ...sourceLegacyAmbiguityUnsigned,
+  receiptSha256: `sha256:${sha256Canonical(sourceLegacyAmbiguityUnsigned)}`,
 } as const;
 
 describe("target migration receipt evidence", () => {

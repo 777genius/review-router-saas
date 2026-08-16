@@ -1236,7 +1236,14 @@ export function beginReleaseMigrationAttempt(
     sourceLegacyAmbiguity ?? permit.sourceLegacyAmbiguity,
   );
   if (
-    canonicalJson(permit.sourceLegacyAmbiguity) !== canonicalJson(trustedSource)
+    canonicalJson(permit.sourceLegacyAmbiguity) !==
+      canonicalJson(trustedSource) ||
+    permit.eligibilityCutoff !== trustedSource.eligibilityCutoff ||
+    trustedSource.rolloutId !== rollout.rolloutId ||
+    trustedSource.sourceSystemIdentifier !== rollout.source.systemIdentifier ||
+    trustedSource.sourceDatabaseName !== rollout.source.databaseName ||
+    trustedSource.sourceRecoveryWitnessSha256 !==
+      rollout.source.recoveryWitnessSha256
   )
     throw new Error("release_migration_source_evidence_binding_invalid");
   if (

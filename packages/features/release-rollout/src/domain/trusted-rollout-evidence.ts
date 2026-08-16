@@ -123,6 +123,15 @@ export interface SourceDatabaseFenceEvidence {
   readonly observedAt: string;
 }
 export interface LegacyAmbiguityEvidence {
+  readonly schemaVersion: 1;
+  readonly rolloutId: string;
+  readonly sourceSystemIdentifier: string;
+  readonly sourceDatabaseName: string;
+  readonly sourceRecoveryWitnessSha256: string;
+  readonly authorityPrincipal: string;
+  readonly fenceId: string;
+  readonly fenceEstablishedAt: string;
+  readonly fencedInventorySha256: string;
   readonly inventorySha256: string;
   readonly activeLeaseIds: readonly string[];
   readonly fetchedSetupIds: readonly string[];
@@ -132,10 +141,16 @@ export interface LegacyAmbiguityEvidence {
     { readonly observedAt: string; readonly inventorySha256: string },
     { readonly observedAt: string; readonly inventorySha256: string },
   ];
+  readonly eligibilityCutoff: string;
   readonly stable: true;
+  readonly receiptSha256: string;
 }
 
 const legacyDigest = /^sha256:[a-f0-9]{64}$/u;
+const isCanonicalInstant = (value: unknown): value is string =>
+  typeof value === "string" &&
+  Number.isFinite(Date.parse(value)) &&
+  new Date(value).toISOString() === value;
 
 /** Strict boundary parser for source-owned raw ambiguity evidence. */
 export function assertLegacyAmbiguityEvidence(
@@ -145,13 +160,24 @@ export function assertLegacyAmbiguityEvidence(
     throw new Error("legacy_ambiguity_evidence_invalid");
   const item = value as Record<string, unknown>;
   const keys = [
+    "schemaVersion",
+    "rolloutId",
+    "sourceSystemIdentifier",
+    "sourceDatabaseName",
+    "sourceRecoveryWitnessSha256",
+    "authorityPrincipal",
+    "fenceId",
+    "fenceEstablishedAt",
+    "fencedInventorySha256",
     "inventorySha256",
     "activeLeaseIds",
     "fetchedSetupIds",
     "pendingIntentIds",
     "intentStatuses",
     "observations",
+    "eligibilityCutoff",
     "stable",
+    "receiptSha256",
   ];
   const stringArrays = [
     "activeLeaseIds",
@@ -162,9 +188,28 @@ export function assertLegacyAmbiguityEvidence(
   if (
     Object.keys(item).length !== keys.length ||
     keys.some((key) => !Object.hasOwn(item, key)) ||
+    item.schemaVersion !== 1 ||
     item.stable !== true ||
+    typeof item.rolloutId !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/@-]{2,255}$/u.test(item.rolloutId) ||
+    typeof item.sourceSystemIdentifier !== "string" ||
+    !/^[1-9][0-9]{0,19}$/u.test(item.sourceSystemIdentifier) ||
+    typeof item.sourceDatabaseName !== "string" ||
+    item.sourceDatabaseName.length === 0 ||
+    typeof item.sourceRecoveryWitnessSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(item.sourceRecoveryWitnessSha256) ||
+    typeof item.authorityPrincipal !== "string" ||
+    item.authorityPrincipal.length === 0 ||
+    typeof item.fenceId !== "string" ||
+    item.fenceId.length === 0 ||
+    !isCanonicalInstant(item.fenceEstablishedAt) ||
+    typeof item.fencedInventorySha256 !== "string" ||
+    !legacyDigest.test(item.fencedInventorySha256) ||
     typeof item.inventorySha256 !== "string" ||
     !legacyDigest.test(item.inventorySha256) ||
+    !isCanonicalInstant(item.eligibilityCutoff) ||
+    typeof item.receiptSha256 !== "string" ||
+    !legacyDigest.test(item.receiptSha256) ||
     stringArrays.some(
       (key) =>
         !Array.isArray(item[key]) ||
@@ -187,15 +232,16 @@ export function assertLegacyAmbiguityEvidence(
       throw new Error("legacy_ambiguity_evidence_invalid");
     const record = observation as Record<string, unknown>;
     if (
-      typeof record.observedAt !== "string" ||
-      !Number.isFinite(Date.parse(record.observedAt)) ||
+      !isCanonicalInstant(record.observedAt) ||
       record.inventorySha256 !== item.inventorySha256
     )
       throw new Error("legacy_ambiguity_evidence_invalid");
   }
   if (
     Date.parse((observations[1]! as Record<string, string>).observedAt!) <=
-    Date.parse((observations[0]! as Record<string, string>).observedAt!)
+      Date.parse((observations[0]! as Record<string, string>).observedAt!) ||
+    item.eligibilityCutoff !==
+      (observations[1]! as Record<string, string>).observedAt
   )
     throw new Error("legacy_ambiguity_evidence_invalid");
   const inventory = {
@@ -209,6 +255,9 @@ export function assertLegacyAmbiguityEvidence(
     .digest("hex")}`;
   if (actual !== item.inventorySha256)
     throw new Error("legacy_ambiguity_evidence_digest_invalid");
+  const { receiptSha256, ...unsigned } = item;
+  if (receiptSha256 !== `sha256:${sha256Canonical(unsigned)}`)
+    throw new Error("legacy_ambiguity_evidence_receipt_digest_invalid");
   return Object.freeze(value as LegacyAmbiguityEvidence);
 }
 export interface EquivalenceEvidence {

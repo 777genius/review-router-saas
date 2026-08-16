@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parsePrivatePg17CopyEvidence } from "./private-pg17-copy-evidence";
+import { sourceLegacyAmbiguityFixture } from "../../test/fixtures/source-legacy-ambiguity";
 
-const digest =
-  "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f";
 const evidence = () => ({
   rollout: {},
   releaseImageProvenance: {},
@@ -13,18 +12,7 @@ const evidence = () => ({
     aclSha256: `sha256:${"a".repeat(64)}`,
     stabilizationSeries: [0, 0, 0],
     reconnectDeniedRoles: ["runtime"],
-    legacyAmbiguity: {
-      inventorySha256: digest,
-      activeLeaseIds: [],
-      fetchedSetupIds: [],
-      pendingIntentIds: [],
-      intentStatuses: [],
-      observations: [
-        { observedAt: "2026-08-15T00:00:00.000Z", inventorySha256: digest },
-        { observedAt: "2026-08-15T00:00:01.000Z", inventorySha256: digest },
-      ],
-      stable: true,
-    },
+    legacyAmbiguity: sourceLegacyAmbiguityFixture(),
     fence: {},
     complete: true,
   },

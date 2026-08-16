@@ -66,6 +66,41 @@ import {
 } from "./run-codex-rotating-release-migration.mjs";
 import { parsePrivatePg17ActivationCatalogPolicyCandidate } from "./capture-private-pg17-activation-catalog-policy.mjs";
 
+function rehearsalLegacyAmbiguityReceipt({
+  rollout,
+  fence,
+  inventory,
+  firstObservedAt,
+  eligibilityCutoff,
+}) {
+  const inventorySha256 =
+    "sha256:" +
+    createHash("sha256").update(JSON.stringify(inventory)).digest("hex");
+  const unsigned = {
+    schemaVersion: 1,
+    rolloutId: rollout.rolloutId,
+    sourceSystemIdentifier: rollout.source.systemIdentifier,
+    sourceDatabaseName: rollout.source.databaseName,
+    sourceRecoveryWitnessSha256: rollout.source.recoveryWitnessSha256,
+    authorityPrincipal: fence.authorityPrincipal,
+    fenceId: fence.fenceId,
+    fenceEstablishedAt: fence.observedAt,
+    fencedInventorySha256: fence.fencedInventorySha256,
+    inventorySha256,
+    ...inventory,
+    observations: [
+      { observedAt: firstObservedAt, inventorySha256 },
+      { observedAt: eligibilityCutoff, inventorySha256 },
+    ],
+    eligibilityCutoff,
+    stable: true,
+  };
+  return Object.freeze({
+    ...unsigned,
+    receiptSha256: "sha256:" + sha256Canonical(unsigned),
+  });
+}
+
 export const rehearsalActivationCatalogPolicyAuthorization = Object.freeze({
   preactivationCatalogPolicySha256:
     "sha256:c133bacb4a813540245430151ffd80f3380a4123ccc379250828d0317ac514d9",
@@ -2421,24 +2456,23 @@ COMMIT;
             lifecycle: "active",
             observedAt: "2026-08-12T00:00:02.000Z",
           },
-          legacyAmbiguity: {
-            inventorySha256: digest,
-            activeLeaseIds: [],
-            fetchedSetupIds: [],
-            pendingIntentIds: [],
-            intentStatuses: [],
-            observations: [
-              {
-                observedAt: "2026-08-12T00:00:02.100Z",
-                inventorySha256: digest,
-              },
-              {
-                observedAt: "2026-08-12T00:00:02.300Z",
-                inventorySha256: digest,
-              },
-            ],
-            stable: true,
-          },
+          legacyAmbiguity: rehearsalLegacyAmbiguityReceipt({
+            rollout,
+            fence: {
+              fenceId: "source-fence:" + rollout.rolloutId,
+              authorityPrincipal: "fence_authority",
+              fencedInventorySha256: digest,
+              observedAt: "2026-08-12T00:00:02.000Z",
+            },
+            inventory: {
+              activeLeaseIds: [],
+              fetchedSetupIds: [],
+              pendingIntentIds: [],
+              intentStatuses: [],
+            },
+            firstObservedAt: "2026-08-12T00:00:02.100Z",
+            eligibilityCutoff: "2026-08-12T00:00:02.300Z",
+          }),
           complete: true,
         }),
       copy: async () =>
@@ -2791,25 +2825,18 @@ COMMIT;
                 lifecycle: "active",
                 observedAt: "2026-08-12T00:00:02.000Z",
               },
-              legacyAmbiguity: {
-                inventorySha256: legacyReconciliation.inventorySha256,
-                activeLeaseIds: legacyReconciliation.inventory.activeLeaseIds,
-                fetchedSetupIds: legacyReconciliation.inventory.fetchedSetupIds,
-                pendingIntentIds:
-                  legacyReconciliation.inventory.pendingIntentIds,
-                intentStatuses: legacyReconciliation.inventory.intentStatuses,
-                observations: [
-                  {
-                    observedAt: "2026-08-12T00:00:02.100Z",
-                    inventorySha256: legacyReconciliation.inventorySha256,
-                  },
-                  {
-                    observedAt: "2026-08-12T00:00:02.300Z",
-                    inventorySha256: legacyReconciliation.inventorySha256,
-                  },
-                ],
-                stable: true,
-              },
+              legacyAmbiguity: rehearsalLegacyAmbiguityReceipt({
+                rollout: current,
+                fence: {
+                  fenceId: "source-fence:" + current.rolloutId,
+                  authorityPrincipal: "fence_authority",
+                  fencedInventorySha256: digest,
+                  observedAt: "2026-08-12T00:00:02.000Z",
+                },
+                inventory: legacyReconciliation.inventory,
+                firstObservedAt: "2026-08-12T00:00:02.100Z",
+                eligibilityCutoff: "2026-08-12T00:00:02.300Z",
+              }),
               complete: true,
             },
             equivalence: {

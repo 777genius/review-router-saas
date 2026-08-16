@@ -64,6 +64,38 @@ const base = createReleaseRollout({
     recoveryWitnessSha256: "c".repeat(64),
   },
 });
+const legacyAmbiguityUnsigned = {
+  schemaVersion: 1 as const,
+  rolloutId: base.rolloutId,
+  sourceSystemIdentifier: base.source.systemIdentifier,
+  sourceDatabaseName: base.source.databaseName,
+  sourceRecoveryWitnessSha256: base.source.recoveryWitnessSha256,
+  authorityPrincipal: "fence_authority",
+  fenceId: `source-fence:${base.rolloutId}`,
+  fenceEstablishedAt: "2026-08-12T00:00:01.000Z",
+  fencedInventorySha256: digest,
+  inventorySha256: legacyInventorySha256,
+  activeLeaseIds: ["legacy-lease"],
+  fetchedSetupIds: ["legacy-setup"],
+  pendingIntentIds: [],
+  intentStatuses: ["completed", "failed"],
+  observations: [
+    {
+      observedAt: "2026-08-12T00:00:02.000Z",
+      inventorySha256: legacyInventorySha256,
+    },
+    {
+      observedAt: "2026-08-12T00:00:03.000Z",
+      inventorySha256: legacyInventorySha256,
+    },
+  ],
+  eligibilityCutoff: "2026-08-12T00:00:03.000Z",
+  stable: true as const,
+} as const;
+const legacyAmbiguity = {
+  ...legacyAmbiguityUnsigned,
+  receiptSha256: `sha256:${sha256Canonical(legacyAmbiguityUnsigned)}`,
+};
 const steps = [
   RolloutStep.ClaimRollout,
   RolloutStep.VerifyProtectedEnvironment,
@@ -382,24 +414,7 @@ const create = () =>
           lifecycle: "active",
           observedAt: "2026-08-12T00:00:03.000Z",
         },
-        legacyAmbiguity: {
-          inventorySha256: legacyInventorySha256,
-          activeLeaseIds: ["legacy-lease"],
-          fetchedSetupIds: ["legacy-setup"],
-          pendingIntentIds: [],
-          intentStatuses: ["completed", "failed"],
-          observations: [
-            {
-              observedAt: "2026-08-12T00:00:02.000Z",
-              inventorySha256: legacyInventorySha256,
-            },
-            {
-              observedAt: "2026-08-12T00:00:03.000Z",
-              inventorySha256: legacyInventorySha256,
-            },
-          ],
-          stable: true,
-        },
+        legacyAmbiguity,
         complete: true,
       },
       equivalence: {

@@ -30,6 +30,7 @@ import {
   ProviderMutationAuthorityService,
   type ReleaseAuthorityHighRiskMutationGate,
 } from "./release-authority/application/services";
+import { sourceLegacyAmbiguityFixture } from "../../../test/fixtures/source-legacy-ambiguity";
 import type {
   ReleaseAuthorityLedgerPort,
   ReleaseRolloutReconciliationPort,
@@ -366,28 +367,12 @@ const services = (repository: CombinedLedgerPort) => ({
 describe("release rollout ledger internal API", () => {
   it("parses migration DTOs exactly and rejects malformed or cross-route identities", () => {
     const digestValue = `sha256:${"d".repeat(64)}`;
-    const inventorySha256 = `sha256:${createHash("sha256")
-      .update(
-        JSON.stringify({
-          activeLeaseIds: [],
-          fetchedSetupIds: [],
-          pendingIntentIds: [],
-          intentStatuses: [],
-        }),
-      )
-      .digest("hex")}`;
-    const sourceLegacyAmbiguity = {
-      inventorySha256,
-      activeLeaseIds: [],
-      fetchedSetupIds: [],
-      pendingIntentIds: [],
-      intentStatuses: [],
-      observations: [
-        { observedAt: "2026-08-13T23:59:58.000Z", inventorySha256 },
-        { observedAt: "2026-08-13T23:59:59.000Z", inventorySha256 },
-      ],
-      stable: true as const,
-    };
+    const sourceLegacyAmbiguity = sourceLegacyAmbiguityFixture({
+      rolloutId: binding.rolloutId,
+      sourceSystemIdentifier: binding.sourceSystemIdentifier,
+      firstObservedAt: "2026-08-13T23:59:58.000Z",
+      eligibilityCutoff: "2026-08-13T23:59:59.000Z",
+    });
     const begin = {
       ...binding,
       targetRecoveryWitnessSha256: "c".repeat(64),

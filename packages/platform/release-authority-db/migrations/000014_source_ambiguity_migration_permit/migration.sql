@@ -31,6 +31,7 @@ DECLARE source_evidence jsonb := p_input->'sourceLegacyAmbiguity';
 DECLARE old_permit jsonb;
 DECLARE evidence_row release_authority.release_migration_evidence%ROWTYPE;
 DECLARE inventory_text text;
+DECLARE receipt_text text;
 BEGIN
   IF jsonb_typeof(p_input) IS DISTINCT FROM 'object'
     OR (SELECT count(*) FROM jsonb_object_keys(p_input)) IS DISTINCT FROM 10::bigint
@@ -38,11 +39,29 @@ BEGIN
       'sourceSystemIdentifier','targetSystemIdentifier','targetRecoveryWitnessSha256',
       'transitionSha256','expectedPreviousReceiptSha256','sourceLegacyAmbiguity']
     OR jsonb_typeof(source_evidence) IS DISTINCT FROM 'object'
-    OR (SELECT count(*) FROM jsonb_object_keys(source_evidence)) IS DISTINCT FROM 7::bigint
-    OR NOT source_evidence ?& ARRAY['inventorySha256','activeLeaseIds','fetchedSetupIds',
-      'pendingIntentIds','intentStatuses','observations','stable']
+    OR (SELECT count(*) FROM jsonb_object_keys(source_evidence)) IS DISTINCT FROM 18::bigint
+    OR NOT source_evidence ?& ARRAY['schemaVersion','rolloutId','sourceSystemIdentifier',
+      'sourceDatabaseName','sourceRecoveryWitnessSha256','authorityPrincipal','fenceId',
+      'fenceEstablishedAt','fencedInventorySha256','inventorySha256','activeLeaseIds',
+      'fetchedSetupIds','pendingIntentIds','intentStatuses','observations',
+      'eligibilityCutoff','stable','receiptSha256']
+    OR source_evidence->'schemaVersion' IS DISTINCT FROM '1'::jsonb
+    OR source_evidence->>'rolloutId' IS DISTINCT FROM p_input->>'rolloutId'
+    OR source_evidence->>'sourceSystemIdentifier' IS DISTINCT FROM
+      p_input->>'sourceSystemIdentifier'
+    OR source_evidence->>'sourceDatabaseName' IS NULL
+    OR source_evidence->>'sourceDatabaseName'=''
+    OR source_evidence->>'sourceRecoveryWitnessSha256' !~ '^[a-f0-9]{64}$'
+    OR source_evidence->>'authorityPrincipal' IS NULL
+    OR source_evidence->>'authorityPrincipal'=''
+    OR source_evidence->>'fenceId' IS NULL
+    OR source_evidence->>'fenceId'=''
+    OR source_evidence->>'fencedInventorySha256' !~ '^sha256:[a-f0-9]{64}$'
     OR source_evidence->'stable' IS DISTINCT FROM 'true'::jsonb
     OR source_evidence->>'inventorySha256' !~ '^sha256:[a-f0-9]{64}$'
+    OR source_evidence->>'receiptSha256' !~ '^sha256:[a-f0-9]{64}$'
+    OR NOT pg_input_is_valid(source_evidence->>'fenceEstablishedAt','timestamptz')
+    OR NOT pg_input_is_valid(source_evidence->>'eligibilityCutoff','timestamptz')
     OR EXISTS (SELECT 1 FROM unnest(ARRAY['activeLeaseIds','fetchedSetupIds',
       'pendingIntentIds','intentStatuses']) key
       WHERE jsonb_typeof(source_evidence->key) IS DISTINCT FROM 'array'
@@ -55,8 +74,17 @@ BEGIN
         OR (SELECT count(*) FROM jsonb_object_keys(sample)) IS DISTINCT FROM 2::bigint
         OR NOT sample ?& ARRAY['observedAt','inventorySha256']
         OR sample->>'inventorySha256' IS DISTINCT FROM source_evidence->>'inventorySha256'
-        OR NOT pg_input_is_valid(sample->>'observedAt','timestamptz'))
+        OR NOT pg_input_is_valid(sample->>'observedAt','timestamptz')
+        OR to_char((sample->>'observedAt')::timestamptz AT TIME ZONE 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') IS DISTINCT FROM sample->>'observedAt')
   THEN RAISE EXCEPTION 'release migration source evidence invalid'; END IF;
+  IF to_char((source_evidence->>'fenceEstablishedAt')::timestamptz AT TIME ZONE 'UTC',
+       'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') IS DISTINCT FROM source_evidence->>'fenceEstablishedAt'
+     OR to_char((source_evidence->>'eligibilityCutoff')::timestamptz AT TIME ZONE 'UTC',
+       'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') IS DISTINCT FROM source_evidence->>'eligibilityCutoff'
+     OR source_evidence->>'eligibilityCutoff' IS DISTINCT FROM
+       source_evidence->'observations'->1->>'observedAt'
+  THEN RAISE EXCEPTION 'release migration source evidence timestamp invalid'; END IF;
   IF (source_evidence->'observations'->1->>'observedAt')::timestamptz
        <= (source_evidence->'observations'->0->>'observedAt')::timestamptz
   THEN RAISE EXCEPTION 'release migration source evidence ordering invalid'; END IF;
@@ -69,13 +97,18 @@ BEGIN
   IF source_evidence->>'inventorySha256' IS DISTINCT FROM
     'sha256:'||encode(sha256(convert_to(inventory_text,'UTF8')),'hex')
   THEN RAISE EXCEPTION 'release migration source evidence digest invalid'; END IF;
+  receipt_text := release_authority.release_canonical_json(
+    source_evidence-'receiptSha256');
+  IF source_evidence->>'receiptSha256' IS DISTINCT FROM
+    'sha256:'||encode(sha256(convert_to(receipt_text,'UTF8')),'hex')
+  THEN RAISE EXCEPTION 'release migration source receipt digest invalid'; END IF;
 
   old_permit := release_authority.release_migration_begin_v13(
     p_input-'sourceLegacyAmbiguity');
   INSERT INTO release_authority.release_migration_evidence(
     rollout_id,source_legacy_ambiguity,eligibility_cutoff)
   VALUES(p_input->>'rolloutId',source_evidence,
-    (source_evidence->'observations'->1->>'observedAt')::timestamptz)
+    (source_evidence->>'eligibilityCutoff')::timestamptz)
   ON CONFLICT (rollout_id) DO NOTHING;
   SELECT * INTO STRICT evidence_row
   FROM release_authority.release_migration_evidence

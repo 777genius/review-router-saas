@@ -109,6 +109,28 @@ describe("canonical release migration transition", () => {
     });
     const inventorySha256 =
       "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f";
+    const sourceLegacyAmbiguityUnsigned = {
+      schemaVersion: 1 as const,
+      rolloutId: "rollout-binding",
+      sourceSystemIdentifier: "1",
+      sourceDatabaseName: "reviewrouter",
+      sourceRecoveryWitnessSha256: "b".repeat(64),
+      authorityPrincipal: "source_admin",
+      fenceId: "source-fence:rollout-binding",
+      fenceEstablishedAt: "2026-08-15T00:00:00.000Z",
+      fencedInventorySha256: `sha256:${"f".repeat(64)}`,
+      inventorySha256,
+      activeLeaseIds: [],
+      fetchedSetupIds: [],
+      pendingIntentIds: [],
+      intentStatuses: [],
+      observations: [
+        { observedAt: "2026-08-15T00:00:01.000Z", inventorySha256 },
+        { observedAt: "2026-08-15T00:00:02.000Z", inventorySha256 },
+      ] as const,
+      eligibilityCutoff: "2026-08-15T00:00:02.000Z",
+      stable: true as const,
+    };
     const permit = {
       schemaVersion: 1 as const,
       rolloutId: "rollout-binding",
@@ -119,16 +141,8 @@ describe("canonical release migration transition", () => {
       transitionSha256: transition.transitionSha256,
       expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
       sourceLegacyAmbiguity: {
-        inventorySha256,
-        activeLeaseIds: [],
-        fetchedSetupIds: [],
-        pendingIntentIds: [],
-        intentStatuses: [],
-        observations: [
-          { observedAt: "2026-08-15T00:00:00.000Z", inventorySha256 },
-          { observedAt: "2026-08-15T00:00:01.000Z", inventorySha256 },
-        ] as const,
-        stable: true as const,
+        ...sourceLegacyAmbiguityUnsigned,
+        receiptSha256: sha256(canonicalJson(sourceLegacyAmbiguityUnsigned)),
       },
       eligibilityCutoff: "2026-08-15T00:00:02.000Z",
       epoch: 1,

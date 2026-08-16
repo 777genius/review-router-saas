@@ -10,6 +10,7 @@ import {
   RoutineRunnerCleanupWitnessAdapter,
   RoutineProviderMutationAuthorityAdapter,
 } from "./postgres";
+import { sourceLegacyAmbiguityFixture } from "../../../../../test/fixtures/source-legacy-ambiguity";
 
 const controlUrl = process.env.REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL;
 const witnessUrl = process.env.REVIEW_ROUTER_RELEASE_AUTHORITY_WITNESS_TEST_URL;
@@ -57,28 +58,6 @@ const preMigrationSteps = [
   "cleanup_role_runner",
   "provision_cutover_runner",
 ] as const;
-
-const sourceLegacyAmbiguity = {
-  inventorySha256:
-    "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-  activeLeaseIds: [],
-  fetchedSetupIds: [],
-  pendingIntentIds: [],
-  intentStatuses: [],
-  observations: [
-    {
-      observedAt: "2026-08-14T01:02:00.000Z",
-      inventorySha256:
-        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-    },
-    {
-      observedAt: "2026-08-14T01:02:01.000Z",
-      inventorySha256:
-        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
-    },
-  ],
-  stable: true as const,
-} as const;
 
 const migrationBoundaryReceiptSequence = (rolloutId: string) =>
   preMigrationSteps.map((step, index) =>
@@ -577,6 +556,12 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       runId: "905",
       ...numericSystemIdentifiers(unique),
     });
+    const sourceLegacyAmbiguity = sourceLegacyAmbiguityFixture({
+      rolloutId,
+      sourceSystemIdentifier: binding.sourceSystemIdentifier,
+      firstObservedAt: "2026-08-14T01:02:00.000Z",
+      eligibilityCutoff: "2026-08-14T01:02:01.000Z",
+    });
     await ledger.claim(binding);
     const advanceToMigrationBoundary = async (target: typeof binding) => {
       let previousReceiptSha256 = `sha256:${"0".repeat(64)}`;
@@ -760,7 +745,12 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       targetRecoveryWitnessSha256: quarantined.targetRecoveryWitnessSha256,
       transitionSha256: quarantined.migrationTransition.transitionSha256,
       expectedPreviousReceiptSha256: quarantineProvisionReceiptSha256,
-      sourceLegacyAmbiguity,
+      sourceLegacyAmbiguity: sourceLegacyAmbiguityFixture({
+        rolloutId: quarantined.rolloutId,
+        sourceSystemIdentifier: quarantined.sourceSystemIdentifier,
+        firstObservedAt: "2026-08-14T01:03:00.000Z",
+        eligibilityCutoff: "2026-08-14T01:03:01.000Z",
+      }),
     });
     await ledger.failReleaseMigration({
       permit: quarantinePermit,

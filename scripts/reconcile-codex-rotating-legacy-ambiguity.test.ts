@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { sha256Canonical } from "../packages/features/release-rollout/src/domain/release-rollout";
 import {
   guardedLegacyAmbiguityReconciliationProcedureSql,
   legacyAmbiguityReconciliationSql,
@@ -20,14 +21,28 @@ const inventory = {
 };
 const sourceEvidence = (value = inventory) => {
   const inventorySha256 = `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
-  return {
+  const unsigned = {
+    schemaVersion: 1 as const,
+    rolloutId: "rollout-1",
+    sourceSystemIdentifier: "100",
+    sourceDatabaseName: "reviewrouter",
+    sourceRecoveryWitnessSha256: "b".repeat(64),
+    authorityPrincipal: "source_admin",
+    fenceId: "source-fence:rollout-1",
+    fenceEstablishedAt: "2026-08-15T00:00:00.000Z",
+    fencedInventorySha256: `sha256:${"f".repeat(64)}`,
     ...value,
     inventorySha256,
     observations: [
-      { observedAt: "2026-08-15T00:00:00.000Z", inventorySha256 },
       { observedAt: "2026-08-15T00:00:01.000Z", inventorySha256 },
+      { observedAt: "2026-08-15T00:00:02.000Z", inventorySha256 },
     ],
+    eligibilityCutoff: "2026-08-15T00:00:02.000Z",
     stable: true,
+  } as const;
+  return {
+    ...unsigned,
+    receiptSha256: `sha256:${sha256Canonical(unsigned)}`,
   } as const;
 };
 

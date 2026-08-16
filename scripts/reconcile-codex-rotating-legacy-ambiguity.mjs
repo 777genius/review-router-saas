@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { assertLegacyAmbiguityEvidence } from "../packages/features/release-rollout/src/domain/trusted-rollout-evidence.js";
 
 const exactAcknowledgement = "all_prior_installers_and_writers_are_stopped";
 const knownIntentStatuses = Object.freeze([
@@ -292,27 +293,15 @@ COMMIT;
 
 export function prepareLegacyAmbiguityReconciliation(input, run) {
   void run;
-  const evidence = input.legacyAmbiguity;
-  const evidenceKeys = [
-    ...inventoryKeys,
-    "inventorySha256",
-    "observations",
-    "stable",
-  ];
+  let evidence;
+  try {
+    evidence = assertLegacyAmbiguityEvidence(input.legacyAmbiguity);
+  } catch {
+    throw new Error("legacy_reconciliation_source_evidence_invalid");
+  }
   if (
-    !evidence ||
-    evidence.stable !== true ||
-    evidence.observations?.length !== 2 ||
-    Object.keys(evidence).length !== evidenceKeys.length ||
-    evidenceKeys.some((key) => !Object.hasOwn(evidence, key)) ||
-    evidence.observations.some(
-      (sample) =>
-        !sample ||
-        Object.keys(sample).length !== 2 ||
-        !Number.isFinite(Date.parse(sample.observedAt)),
-    ) ||
-    Date.parse(evidence.observations[1].observedAt) <=
-      Date.parse(evidence.observations[0].observedAt)
+    input.rolloutId !== evidence.rolloutId ||
+    input.eligibilityCutoff !== evidence.eligibilityCutoff
   )
     throw new Error("legacy_reconciliation_source_evidence_invalid");
   const inventory = parseInventory(
