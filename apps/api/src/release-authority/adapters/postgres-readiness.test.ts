@@ -49,7 +49,7 @@ describe("release authority ACL readiness observation", () => {
 
     const sql = sqlText(queryRaw);
     expect(sql).toContain("candidate.rolcanlogin");
-    expect(sql).toContain("candidate.rolsuper");
+    expect(sql).toContain("NOT candidate.rolsuper");
     expect(sql).toContain("'reviewrouter_release_control'");
     expect(sql).toContain("authority_namespace.nspowner, 'MEMBER'");
     expect(sql).toContain("authority_namespace.nspowner, 'USAGE'");
@@ -181,7 +181,7 @@ describe("release authority ACL readiness observation", () => {
           },
         },
       ],
-      [{ schemaVersion: 14, migrationManifest: [] }],
+      [{ schemaVersion: 15, migrationManifest: [] }],
       [{ migrationManifest: manifest }],
     ]);
     const harness = transactionHarness(queryRaw);

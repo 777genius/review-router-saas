@@ -208,9 +208,18 @@ export const releaseAuthorityFinalAclPolicy = Object.freeze({
       "release_schema_migration_manifest",
     ]),
   }),
-  // Authority roles are deliberately standalone. Membership would make the
-  // explicit object ACL matrix incomplete by adding inherited privileges.
-  roleMemberships: Object.freeze([]),
+  // The NOLOGIN broker is the sole role allowed to grant a short-lived
+  // migration session the NOLOGIN authority owner. The lease membership is
+  // consumed and revoked inside one database connection.
+  roleMemberships: Object.freeze([
+    Object.freeze({
+      grantedRole: "reviewrouter_authority_owner",
+      memberRole: "reviewrouter_migration_broker",
+      admin: true,
+      inherit: false,
+      set: false,
+    }),
+  ]),
   // Only the explicitly declared enum is privilege-bearing. PostgreSQL's
   // generated table row/array types are still owner-checked by the adapter.
   declaredTypes: Object.freeze(["aggregate_state"]),

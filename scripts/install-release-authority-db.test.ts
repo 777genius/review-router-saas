@@ -528,9 +528,9 @@ describe("release authority database installation", () => {
     (mode) => {
       const bundle = releaseAuthorityMigrationBundle(mode);
       expect(bundle).toContain("DO $schema_version_marker$");
-      expect(bundle).toContain("'schemaVersion',14");
+      expect(bundle).toContain("'schemaVersion',15");
       const finalCatalog = bundle.indexOf("DO $final_catalog$");
-      const finalMarker = bundle.indexOf("'schemaVersion',14", finalCatalog);
+      const finalMarker = bundle.indexOf("'schemaVersion',15", finalCatalog);
       expect(finalCatalog).toBeGreaterThan(-1);
       expect(finalMarker).toBeGreaterThan(finalCatalog);
       expect(bundle.indexOf("COMMIT;", finalMarker)).toBeGreaterThan(
@@ -576,6 +576,7 @@ describe("release authority database installation", () => {
       "packages/platform/release-authority-db/migrations/000012_provider_mutation_resource_fence/migration.sql",
       "packages/platform/release-authority-db/migrations/000013_phase_aware_application_manifest/migration.sql",
       "packages/platform/release-authority-db/migrations/000014_source_ambiguity_migration_permit/migration.sql",
+      "packages/platform/release-authority-db/migrations/000015_migration_credential_lease/migration.sql",
     ]);
     expect(
       releaseAuthorityMigrationPaths
@@ -598,6 +599,7 @@ describe("release authority database installation", () => {
       "727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
       "45eb81a2715cf8c254cdacc2ca4ce8c80fc6c6527c009fe9dce63c3f80a510b1",
       "c14c52ce2594f49a23663a22a16ca789454e059bdb9abd6070d1b773cc847465",
+      "8130c2bfbb05389172995a26ca541f57a0b4deed8b08d6e512ca7378bb05da42",
     ]);
     const bundle = releaseAuthorityMigrationBundle("fresh-install");
     const first = bundle.indexOf("CREATE SCHEMA release_authority");

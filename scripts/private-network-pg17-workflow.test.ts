@@ -615,7 +615,7 @@ describe("private-network PG17 workflow security contract", () => {
       "ref: ${{ needs.trust-bootstrap.outputs.trusted_sha }}",
     );
     expect(
-      mutation.indexOf("Materialize one-use migration credential"),
+      mutation.indexOf("Materialize one-time bootstrap credential"),
     ).toBeLessThan(mutation.indexOf("Run fresh installation gate"));
     expect(authorityMigrationWorkflow).not.toContain("env | ");
     expect(rolloutRunbook.indexOf("incremental-upgrade")).toBeLessThan(

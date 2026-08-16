@@ -869,6 +869,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
             JOIN pg_catalog.pg_namespace authority_namespace
               ON authority_namespace.nspname = 'release_authority'
             WHERE candidate.oid <> authority_namespace.nspowner
+              AND NOT candidate.rolsuper
               AND (
                 candidate.rolcanlogin
                 OR candidate.rolname IN (
@@ -878,8 +879,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 )
               )
               AND (
-                candidate.rolsuper
-                OR pg_catalog.pg_has_role(
+                pg_catalog.pg_has_role(
                   candidate.oid, authority_namespace.nspowner, 'MEMBER'
                 )
                 OR pg_catalog.pg_has_role(

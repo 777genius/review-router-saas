@@ -5,4 +5,4 @@
  * Keep this in the provider-neutral domain so readiness adapters and evidence
  * verification share one contract without either depending on the other.
  */
-export const releaseAuthoritySchemaVersion = 14 as const;
+export const releaseAuthoritySchemaVersion = 15 as const;

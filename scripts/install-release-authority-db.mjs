@@ -41,6 +41,48 @@ export const releaseAuthorityMigrationModes = Object.freeze([
   "incremental-upgrade",
 ]);
 
+const migrationLeaseKeys = Object.freeze([
+  "leaseId",
+  "loginRole",
+  "databaseName",
+  "ownerRole",
+  "expectedCommitSha",
+  "workflowRunId",
+  "workflowRunAttempt",
+  "operation",
+  "expiresAt",
+  "passwordSha256",
+  "nonce",
+  "receiptSha256",
+]);
+
+const validateMigrationLease = (lease, mode) => {
+  if (!lease) return undefined;
+  if (
+    mode !== "incremental-upgrade" ||
+    typeof lease !== "object" ||
+    Array.isArray(lease) ||
+    Object.keys(lease).sort().join("\n") !==
+      [...migrationLeaseKeys].sort().join("\n") ||
+    !/^rrml-[a-f0-9]{64}$/u.test(lease.leaseId) ||
+    !/^rr_migration_[a-f0-9]{24}$/u.test(lease.loginRole) ||
+    lease.ownerRole !== "reviewrouter_authority_owner" ||
+    !/^[a-f0-9]{40}$/u.test(lease.expectedCommitSha) ||
+    !/^[1-9][0-9]*$/u.test(lease.workflowRunId) ||
+    !Number.isSafeInteger(lease.workflowRunAttempt) ||
+    lease.workflowRunAttempt < 1 ||
+    lease.operation !== mode ||
+    !/^sha256:[a-f0-9]{64}$/u.test(lease.passwordSha256) ||
+    !/^[A-Za-z0-9_-]{43}$/u.test(lease.nonce) ||
+    !/^sha256:[a-f0-9]{64}$/u.test(lease.receiptSha256) ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(lease.expiresAt)
+  )
+    throw new Error("release_authority_migration_lease_invalid");
+  return Object.freeze({ ...lease });
+};
+
+const sqlLiteral = (value) => `'${value.replaceAll("'", "''")}'`;
+
 const migrationGateDefaults = Object.freeze({
   lockTimeoutMs: 5_000,
   statementTimeoutMs: 120_000,
@@ -110,6 +152,8 @@ export function releaseAuthorityMigrationBundle(
     mode,
     options,
   );
+  const lease = validateMigrationLease(options.lease, mode);
+  const leaseJson = lease ? sqlLiteral(JSON.stringify(lease)) : undefined;
   const migrations = releaseAuthorityMigrationPaths.map((path) => ({
     path,
     source: readFileSync(resolve(root, path), "utf8"),
@@ -201,6 +245,14 @@ export function releaseAuthorityMigrationBundle(
   );
   return [
     "\\set ON_ERROR_STOP on",
+    ...(lease
+      ? [
+          "BEGIN;",
+          `SELECT reviewrouter_migration_credential.consume(${leaseJson}::jsonb);`,
+          "COMMIT;",
+          "SET ROLE reviewrouter_authority_owner;",
+        ]
+      : []),
     "BEGIN;",
     `SET LOCAL lock_timeout = '${lockTimeoutMs}ms';`,
     `SET LOCAL statement_timeout = '${statementTimeoutMs}ms';`,
@@ -212,10 +264,20 @@ export function releaseAuthorityMigrationBundle(
        END IF;
        SELECT pg_catalog.pg_get_userbyid(datdba) INTO STRICT authority_owner
          FROM pg_catalog.pg_database WHERE datname=current_database();
-       IF current_user IS DISTINCT FROM session_user
+       ${
+         lease
+           ? `IF current_user IS DISTINCT FROM 'reviewrouter_authority_owner'
+          OR session_user IS DISTINCT FROM '${lease.loginRole}'
+          OR NOT reviewrouter_migration_credential.active(
+            '${lease.leaseId}','${lease.expectedCommitSha}','${lease.workflowRunId}',
+            ${lease.workflowRunAttempt},'${lease.operation}') THEN
+         RAISE EXCEPTION 'release authority migration lease is not active';
+       END IF;`
+           : `IF current_user IS DISTINCT FROM session_user
           OR current_user IS DISTINCT FROM authority_owner THEN
          RAISE EXCEPTION 'release authority migration caller is not the database owner session';
-       END IF;
+       END IF;`
+       }
        IF '${mode}' = 'fresh-install'
           AND pg_catalog.to_regnamespace('release_authority') IS NOT NULL THEN
          RAISE EXCEPTION 'release authority fresh install requires an absent authority schema';
@@ -224,14 +286,19 @@ export function releaseAuthorityMigrationBundle(
           AND pg_catalog.to_regnamespace('release_authority') IS NULL THEN
          RAISE EXCEPTION 'release authority incremental upgrade requires an existing authority schema';
        END IF;
-       IF '${mode}' = 'incremental-upgrade'
+       IF '${mode}' = 'incremental-upgrade' AND ${lease ? "false" : "true"}
           AND (SELECT pg_catalog.pg_get_userbyid(nspowner)
                  FROM pg_catalog.pg_namespace
-                WHERE nspname='release_authority') IS DISTINCT FROM current_user THEN
+                WHERE nspname='release_authority') NOT IN
+              (current_user,'reviewrouter_authority_owner') THEN
          RAISE EXCEPTION 'release authority migration caller does not own the authority schema';
        END IF;
      END
      $upgrade_gate$;`,
+    "SELECT coalesce((SELECT pg_catalog.pg_get_userbyid(nspowner)='reviewrouter_authority_owner' FROM pg_catalog.pg_namespace WHERE nspname='release_authority'),false) AS authority_uses_fixed_owner \\gset",
+    "\\if :authority_uses_fixed_owner",
+    "SET ROLE reviewrouter_authority_owner;",
+    "\\endif",
     releaseAuthorityDefaultAclPreflightSql("release_authority"),
     "SELECT (to_regnamespace('release_authority') IS NULL) AS authority_schema_absent,",
     "  (to_regclass('release_authority.schema_migration') IS NOT NULL) AS authority_history_present \\gset",
@@ -354,14 +421,25 @@ export function releaseAuthorityMigrationBundle(
     ...forwardMigrations.flatMap((migration, forwardIndex) => {
       const position = 11 + forwardIndex;
       const [name, checksum] = releaseAuthorityMigrationManifest[position - 1];
+      const body =
+        name === "000015_migration_credential_lease"
+          ? `DO $schema_version_marker$
+DECLARE marker jsonb := coalesce(pg_catalog.obj_description(
+  'release_authority_verify_final'::pg_catalog.regnamespace,'pg_namespace')::jsonb,'{}'::jsonb);
+BEGIN
+  EXECUTE pg_catalog.format('COMMENT ON SCHEMA release_authority_verify_final IS %L',
+    (marker||pg_catalog.jsonb_build_object('schemaVersion',15))::text);
+END
+$schema_version_marker$;`
+          : migrationBody(
+              rewriteAuthoritySchema(
+                migration.source,
+                "release_authority_verify_final",
+              ),
+              migration.path,
+            );
       return [
-        migrationBody(
-          rewriteAuthoritySchema(
-            migration.source,
-            "release_authority_verify_final",
-          ),
-          migration.path,
-        ),
+        body,
         `INSERT INTO release_authority_verify_final.schema_migration
        (position,migration_name,checksum_sha256,byte_variant)
      VALUES (${position},'${name}','${checksum}','canonical');`,
@@ -382,11 +460,17 @@ export function releaseAuthorityMigrationBundle(
        END IF;
        EXECUTE pg_catalog.format('COMMENT ON SCHEMA release_authority IS %L',
          jsonb_build_object('catalogFingerprint','sha256:'||expected_digest,
-           'schemaVersion',14,
+           'schemaVersion',15,
            'verifier','${releaseAuthorityCatalogVerifier}')::text);
      END
-     $final_catalog$;`,
+    $final_catalog$;`,
     "DROP SCHEMA release_authority_verify_final CASCADE;",
+    ...(lease
+      ? [
+          "RESET ROLE;",
+          `SELECT reviewrouter_migration_credential.finalize(${leaseJson}::jsonb);`,
+        ]
+      : []),
     "COMMIT;",
     "",
   ].join("\n");
@@ -424,7 +508,7 @@ export const postgresEnvironment = (
   };
 };
 
-function postgresPassfileLine(encoded) {
+export function postgresPassfileLine(encoded) {
   const url = new URL(encoded);
   const escape = (value) =>
     value.replaceAll("\\", "\\\\").replaceAll(":", "\\:");
@@ -446,6 +530,20 @@ export function installReleaseAuthorityDatabase(environment = process.env) {
       "release_authority_owner_database_url_file_permissions_invalid",
     );
   const databaseUrl = readFileSync(credentialFile, "utf8").trim();
+  const leaseFile =
+    environment.REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_LEASE_FILE;
+  let lease;
+  if (leaseFile) {
+    const metadata = statSync(leaseFile);
+    if (!metadata.isFile() || (metadata.mode & 0o077) !== 0)
+      throw new Error(
+        "release_authority_migration_lease_file_permissions_invalid",
+      );
+    lease = validateMigrationLease(
+      JSON.parse(readFileSync(leaseFile, "utf8")),
+      mode,
+    );
+  }
   const psqlBinary = environment.REVIEW_ROUTER_PSQL_BINARY ?? "psql";
   if (!/^(?:psql|\/[A-Za-z0-9._+/-]{1,1023})$/u.test(psqlBinary))
     throw new Error("release_authority_psql_binary_invalid");
@@ -462,6 +560,7 @@ export function installReleaseAuthorityDatabase(environment = process.env) {
       input: releaseAuthorityMigrationBundle(
         mode,
         fileURLToPath(new URL("..", import.meta.url)),
+        { lease },
       ),
       env: postgresEnvironment(databaseUrl, environment, passfile),
       maxBuffer: 16 * 1024 * 1024,

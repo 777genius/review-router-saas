@@ -271,11 +271,10 @@ verifier or upgraded without rerunning the current rollout and witness observati
 ## Fresh authority installation (provision once)
 
 1. Create a fresh dedicated PostgreSQL 17 authority DB and the distinct
-   `reviewrouter_release_control`, `reviewrouter_provider_authority`, and
-   `reviewrouter_release_witness` logins. Put the direct database-owner
-   connection URL in a mode-0600 credential file. The session must log in as
-   that owner rather than using `SET ROLE`. Invoke only the explicit fresh
-   installation command:
+   `reviewrouter_release_control`, `reviewrouter_provider_authority`,
+   `reviewrouter_release_witness`, and `reviewrouter_migration_issuer` logins.
+   Put the initial database-owner URL in a mode-0600 credential file and invoke
+   only the explicit fresh installation command:
 
    ```bash
    export REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE=/approved/secret/path/release-authority-migration-url
@@ -283,11 +282,13 @@ verifier or upgraded without rerunning the current rollout and witness observati
    ```
 
    The fresh gate requires the `release_authority` schema to be absent and
-   applies the complete checked-in chain in one transaction. It rejects an
-   existing authority catalog, a non-owner or role-switched session, source
-   checksum mismatch, and a concurrent migration caller. Never use this
-   command for an upgrade and never substitute application Prisma migration
-   tooling. Retain this DB across cutovers.
+   applies the complete checked-in chain in one transaction. Migration 000015
+   transfers the authority catalog to the fixed `NOLOGIN`
+   `reviewrouter_authority_owner`, installs the isolated `NOLOGIN`
+   `reviewrouter_migration_broker`, and sets the bootstrap owner's password to
+   NULL before commit. Remove the bootstrap secret after success. Never use
+   this command for a later upgrade or substitute application Prisma tooling.
+   Retain this DB across cutovers.
 
 2. Deploy control and witness from the same immutable release and verify their
    `/health` service identities. Healthy control must observe the 000002
@@ -342,11 +343,12 @@ verifier or upgraded without rerunning the current rollout and witness observati
 
 Every release that adds an authority migration uses the protected
 `release-authority-migration.yml` workflow with operation
-`incremental-upgrade`. The workflow is the only production caller authorized
-to receive `REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL`, and its
-connection must be the same direct database-owner login that owns the authority
-schema. Do not place that credential in runtime services, private runners,
-general CI, or an operator shell.
+`incremental-upgrade`. The protected environment stores only
+`REVIEW_ROUTER_RELEASE_AUTHORITY_CREDENTIAL_ISSUER_DATABASE_URL`. That login
+can execute `issue` and `reconcile`; it cannot read lease rows, mutate the
+authority catalog, or inherit owner privileges. The broker creates a unique
+10-minute, connection-limit-one login bound to exact commit SHA, workflow run,
+attempt, operation, database, password hash, nonce, and immutable receipt.
 
 The trusted order is:
 
@@ -356,10 +358,10 @@ The trusted order is:
    compatible image; provider auto-deploy remains disabled.
 3. Dispatch `release-authority-migration.yml` on that exact SHA with
    `operation=incremental-upgrade`. The protected
-   `production-release-authority-migration` environment supplies the one-use
-   owner credential. It must have at least one required reviewer, prevent self
+   `production-release-authority-migration` environment supplies the restricted
+   issuer credential. It must have at least one required reviewer, prevent self
    review, and restrict deployments to protected branches. The workflow checks
-   all three settings before the credential-bearing migration job is eligible.
+   all three settings before any credential-bearing job is eligible.
 
    ```bash
    EXPECTED_SHA=$(git rev-parse origin/main)
@@ -388,9 +390,24 @@ The trusted order is:
    DDL on both fresh and upgrade paths. Do not work around this gate by granting
    to `PUBLIC` or another role: remove the noncanonical owner default, preserve
    catalog evidence, and rerun the same operation.
-5. Only after that success may same-SHA control and witness images be deployed
-   and pass health/readiness. Deploy other code that depends on the new
-   authority readiness contract afterward.
+
+The leased connection consumes its capability in a separately committed
+transaction. PostgreSQL immediately changes the login to `NOLOGIN`, then grants
+only `SET` membership in the fixed authority owner for that already-authenticated
+session. The migration finalizer revokes membership and records `finalized`
+before commit. A process failure leaves a non-login role; the issuer's
+unconditional reconcile step revokes any expired membership. Never set the
+generated lease URL as a GitHub secret and never restore the retired bootstrap
+owner secret.
+
+For the single existing-database transition that first installs 000015, dispatch
+`bootstrap-upgrade` with
+`REVIEW_ROUTER_RELEASE_AUTHORITY_BOOTSTRAP_DATABASE_URL`. This operation is
+valid only while the old owner still owns `release_authority`; success nulls
+that password. Delete the bootstrap secret immediately. All subsequent runs
+must use `incremental-upgrade` and the issuer path. 5. Only after that success may same-SHA control and witness images be deployed
+and pass health/readiness. Deploy other code that depends on the new
+authority readiness contract afterward.
 
 The `fresh-install` operation is only for a newly provisioned empty authority
 database. The `incremental-upgrade` operation requires the authority schema to

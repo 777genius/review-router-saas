@@ -14,9 +14,10 @@ for _ in $(seq 1 60); do
   if docker exec "$name" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then break; fi
   sleep 1
 done
+postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
-  "CREATE ROLE reviewrouter_release_control LOGIN PASSWORD 'control'; CREATE ROLE reviewrouter_provider_authority LOGIN PASSWORD 'provider'; CREATE ROLE reviewrouter_release_witness LOGIN PASSWORD 'witness'; CREATE ROLE \"reviewrouter quoted acl probe\" NOLOGIN;"
+  "CREATE ROLE reviewrouter_release_control LOGIN PASSWORD 'control'; CREATE ROLE reviewrouter_provider_authority LOGIN PASSWORD 'provider'; CREATE ROLE reviewrouter_release_witness LOGIN PASSWORD 'witness'; CREATE ROLE reviewrouter_migration_issuer LOGIN PASSWORD 'issuer'; CREATE ROLE \"reviewrouter quoted acl probe\" NOLOGIN;"
 docker cp "$root/packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql" \
   "$name:/tmp/migration.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration.sql >/dev/null
@@ -170,7 +171,7 @@ fi
 
 # Install the exact origin/main published history in a second disposable
 # database, advance it through the immutable 000012 boundary, then run the
-# candidate append-only 000012 -> 000014 upgrade. The published portion is
+# candidate append-only 000012 -> 000015 upgrade. The published portion is
 # intentionally sourced from git objects rather than the candidate worktree.
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
   "CREATE DATABASE rr_authority_origin_upgrade" >/dev/null
@@ -211,7 +212,7 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
   -d rr_authority_origin_upgrade -f /tmp/release-authority-install.sql >/dev/null
 test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
   -d rr_authority_origin_upgrade -Atc \
-  "SELECT count(*)||':'||max(position) FROM release_authority.schema_migration")" = 15:15
+  "SELECT count(*)||':'||max(position) FROM release_authority.schema_migration")" = 16:16
 fresh_catalog_identity=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
   -d rr_authority_gate -Atc \
   "SELECT obj_description('release_authority'::regnamespace,'pg_namespace')")
@@ -220,7 +221,7 @@ upgrade_catalog_identity=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgr
   "SELECT obj_description('release_authority'::regnamespace,'pg_namespace')")
 test "$upgrade_catalog_identity" = "$fresh_catalog_identity"
 # The catalog attestation above covers ACLs, but keep a focused normalized ACL
-# projection so a fresh install and the 000012 -> 000014 path mechanically
+# projection so a fresh install and the 000012 -> 000015 path mechanically
 # prove identical owners and explicit object edges as well.
 cat > /tmp/release-authority-final-acl-state-$$.sql <<'SQL'
 WITH target AS (
@@ -409,14 +410,14 @@ for default_case in \
   'TABLES|SELECT' 'SEQUENCES|USAGE' 'FUNCTIONS|EXECUTE' 'TYPES|USAGE'; do
   IFS='|' read -r objects privilege <<<"$default_case"
   docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
-    "ALTER DEFAULT PRIVILEGES IN SCHEMA release_authority GRANT $privilege ON $objects TO \"reviewrouter quoted acl probe\"" >/dev/null
+    "SET ROLE reviewrouter_authority_owner; ALTER DEFAULT PRIVILEGES IN SCHEMA release_authority GRANT $privilege ON $objects TO \"reviewrouter quoted acl probe\"" >/dev/null
   if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
     -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
     echo "authority upgrade accepted malicious schema $objects defaults" >&2
     exit 1
   fi
   docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
-    "ALTER DEFAULT PRIVILEGES IN SCHEMA release_authority REVOKE $privilege ON $objects FROM \"reviewrouter quoted acl probe\"" >/dev/null
+    "SET ROLE reviewrouter_authority_owner; ALTER DEFAULT PRIVILEGES IN SCHEMA release_authority REVOKE $privilege ON $objects FROM \"reviewrouter quoted acl probe\"" >/dev/null
 done
 
 # A conflicting table lock is bounded by lock_timeout rather than waiting for
@@ -636,6 +637,53 @@ test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
 test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_supported_legacy -Atc \
   "SELECT release_authority.release_schema_migration_manifest()")" = "$legacy_manifest"
 
+# Exercise the production credential adapter against PostgreSQL 17. The
+# issuer never receives owner membership; the generated login becomes NOLOGIN
+# during consume and loses its temporary owner edge before commit.
+issuer_file="$contract_tmp/migration-issuer-url"
+lease_url_file="$contract_tmp/migration-lease-url"
+lease_file="$contract_tmp/migration-lease.json"
+printf '%s' "postgresql://reviewrouter_migration_issuer:issuer@127.0.0.1:$postgres_port/rr_authority_gate?sslmode=disable" > "$issuer_file"
+chmod 600 "$issuer_file"
+REVIEW_ROUTER_RELEASE_AUTHORITY_CREDENTIAL_ISSUER_DATABASE_URL_FILE="$issuer_file" \
+REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE="$lease_url_file" \
+REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_LEASE_FILE="$lease_file" \
+REVIEW_ROUTER_RELEASE_AUTHORITY_EXPECTED_SHA="$(printf 'a%.0s' {1..40})" \
+REVIEW_ROUTER_RELEASE_AUTHORITY_WORKFLOW_RUN_ID=91001 \
+REVIEW_ROUTER_RELEASE_AUTHORITY_WORKFLOW_RUN_ATTEMPT=1 \
+REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_MODE=incremental-upgrade \
+  node scripts/release-authority-migration-credential.mjs issue
+if REVIEW_ROUTER_RELEASE_AUTHORITY_CREDENTIAL_ISSUER_DATABASE_URL_FILE="$issuer_file" \
+  REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE="$contract_tmp/parallel-url" \
+  REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_LEASE_FILE="$contract_tmp/parallel-lease" \
+  REVIEW_ROUTER_RELEASE_AUTHORITY_EXPECTED_SHA="$(printf 'b%.0s' {1..40})" \
+  REVIEW_ROUTER_RELEASE_AUTHORITY_WORKFLOW_RUN_ID=91002 \
+  REVIEW_ROUTER_RELEASE_AUTHORITY_WORKFLOW_RUN_ATTEMPT=1 \
+  REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_MODE=incremental-upgrade \
+    node scripts/release-authority-migration-credential.mjs issue >/dev/null 2>&1; then
+  echo "credential broker admitted a parallel active lease" >&2
+  exit 1
+fi
+REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE="$lease_url_file" \
+REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_LEASE_FILE="$lease_file" \
+REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_MODE=incremental-upgrade \
+  node scripts/install-release-authority-db.mjs --incremental-upgrade
+lease_role=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1])).loginRole)" "$lease_file")
+lease_state=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+  "SELECT state||':'||(consumed_at IS NOT NULL)::text||':'||(finalized_at IS NOT NULL)::text
+     FROM reviewrouter_migration_credential.lease WHERE login_role='$lease_role'")
+test "$lease_state" = finalized:true:true
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT rolcanlogin::text||':'||EXISTS(SELECT 1 FROM pg_auth_members
+     WHERE member='$lease_role'::regrole AND roleid='reviewrouter_authority_owner'::regrole)::text
+   FROM pg_roles WHERE rolname='$lease_role'")" = false:false
+if DATABASE_URL=$(cat "$lease_url_file") node -e \
+  "import('pg').then(async ({default:pg})=>{const c=new pg.Client({connectionString:process.env.DATABASE_URL});await c.connect()})" \
+  >/dev/null 2>&1; then
+  echo "consumed migration credential authenticated a second connection" >&2
+  exit 1
+fi
+
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
   "CREATE DATABASE rr_mixed_ledger TEMPLATE postgres" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_ledger -c \
@@ -705,7 +753,6 @@ RR_FIXTURE_CONFIG="$contract_tmp/pre-release-prisma.config.mjs" \
       datasource: { url: process.env.REVIEW_ROUTER_ACTIVATION_FIXTURE_DATABASE_URL },
     };\n`);
   '
-postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 REVIEW_ROUTER_ACTIVATION_FIXTURE_DATABASE_URL="postgresql://reviewrouter_role_bootstrap:bootstrap@127.0.0.1:$postgres_port/rr_activation_target" \
   pnpm --filter @reviewrouter/platform-db exec prisma migrate deploy \
     --config "$contract_tmp/pre-release-prisma.config.mjs" >/dev/null
@@ -728,6 +775,13 @@ docker cp "$contract_tmp/activation-role-provisioning.sql" \
   "$name:/tmp/activation-role-provisioning.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_role_bootstrap \
   -d rr_activation_target -f /tmp/activation-role-provisioning.sql >/dev/null
+
+# The credential bootstrap deliberately nulls the original authority owner
+# password. This disposable cluster reuses postgres for unrelated activation
+# adapter fixtures below, so restore only the fixture password over its local
+# trusted socket after the revocation assertions have completed.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+  "ALTER ROLE postgres PASSWORD 'test'" >/dev/null
 
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \
 REVIEW_ROUTER_RELEASE_AUTHORITY_WITNESS_TEST_URL="postgresql://reviewrouter_release_witness:witness@127.0.0.1:$postgres_port/postgres" \

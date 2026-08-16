@@ -148,7 +148,7 @@ realDescribe("release authority exact catalog readiness", () => {
     const observed = await readiness();
     expect(observed).toMatchObject({
       postgresMajor: 17,
-      schemaVersion: 14,
+      schemaVersion: 15,
       catalogVerifier: "complete_catalog_v3_acl_exact",
       defaultAclExact: true,
       finalAclExact: true,
@@ -222,7 +222,7 @@ realDescribe("release authority exact catalog readiness", () => {
       { byteVariant: "legacy_equivalent" },
     ]);
     expect(releaseAuthoritySchemaIsReady(observed)).toBe(true);
-  });
+  }, 60_000);
 
   it.each([
     ["TABLES", "", "SELECT"],

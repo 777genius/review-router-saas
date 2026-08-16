@@ -222,15 +222,41 @@ export const releaseAuthorityFinalAclExactExpression = (schema) => {
             AND EXISTS (SELECT 1 FROM unnest(${routineExecutePrivileges}) privilege
               WHERE pg_catalog.has_function_privilege(
                 role.oid,procedure.oid,privilege))))
-      AND NOT EXISTS (
+      AND EXISTS (
         SELECT 1 FROM pg_catalog.pg_auth_members membership
         JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
         JOIN pg_catalog.pg_roles member ON member.oid=membership.member
         CROSS JOIN target
         WHERE membership.roleid=target.nspowner
+          AND granted.rolname='reviewrouter_authority_owner'
+          AND member.rolname='reviewrouter_migration_broker'
+          AND membership.admin_option
+          AND NOT membership.inherit_option
+          AND NOT membership.set_option)
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_auth_members membership
+        JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
+        JOIN pg_catalog.pg_roles member ON member.oid=membership.member
+        CROSS JOIN target
+        WHERE (membership.roleid=target.nspowner
           OR membership.member=target.nspowner
           OR granted.rolname=ANY(${schemaRoles})
           OR member.rolname=ANY(${schemaRoles}))
+          AND NOT (
+            membership.roleid=target.nspowner
+            AND granted.rolname='reviewrouter_authority_owner'
+            AND member.rolname='reviewrouter_migration_broker'
+            AND membership.admin_option
+            AND NOT membership.inherit_option
+            AND NOT membership.set_option)
+          AND NOT (
+            membership.roleid=target.nspowner
+            AND member.rolname=session_user
+            AND NOT membership.admin_option
+            AND NOT membership.inherit_option
+            AND membership.set_option
+            AND reviewrouter_migration_credential.membership_is_active(
+              member.rolname,granted.rolname)))
       AND NOT EXISTS (
         SELECT 1 FROM pg_catalog.pg_attribute attribute
         JOIN pg_catalog.pg_class relation ON relation.oid=attribute.attrelid

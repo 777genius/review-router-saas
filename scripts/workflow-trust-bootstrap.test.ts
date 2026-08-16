@@ -395,6 +395,12 @@ describe("privileged workflow structure", () => {
       "needs: [trust-bootstrap, verify-release-gate-evidence]",
     );
     expect(mutation).toContain(
+      "secrets.REVIEW_ROUTER_RELEASE_AUTHORITY_BOOTSTRAP_DATABASE_URL",
+    );
+    expect(mutation).toContain(
+      "secrets.REVIEW_ROUTER_RELEASE_AUTHORITY_CREDENTIAL_ISSUER_DATABASE_URL",
+    );
+    expect(mutation).not.toContain(
       "secrets.REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL",
     );
   });
