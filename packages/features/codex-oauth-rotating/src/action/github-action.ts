@@ -68,6 +68,10 @@ import {
   startPullRequestHeadSupervisor,
   type PullRequestHeadSupervisor,
 } from "./pull-request-head-supervisor";
+import {
+  forkAgenticSandboxHostedPoolActionMode,
+  runHostedCodexRelayTransport,
+} from "./hosted-codex-relay";
 
 declare const __dirname: string | undefined;
 
@@ -148,6 +152,8 @@ type ActionInputs = {
   readonly maxChangedLines: number;
   readonly reviewTimeoutMinutes: number;
   readonly providerSecrets: ProviderSecretInputs;
+  readonly sessionBindingId?: string | undefined;
+  readonly sessionBindingVersion?: number | undefined;
 };
 
 type ProviderSecretInputs = {
@@ -400,6 +406,13 @@ type FullReviewRuntimeRunner = (input: {
   readonly reviewCheckpointFinalizationPath?: string | undefined;
   readonly executionDeadlineEpochMs: number;
   readonly onCommentTokenUpdated?: ((token: string) => void) | undefined;
+  readonly commentTokenRefreshUrl?: string | undefined;
+  readonly commentTokenRefreshMode?:
+    | "codex-oauth-rotating"
+    | "hosted-relay"
+    | undefined;
+  readonly sessionBindingId?: string | undefined;
+  readonly sessionBindingVersion?: number | undefined;
 }) => Promise<void>;
 
 type CodexBinaryManifest = {
@@ -434,6 +447,28 @@ export async function runCodexRotatingGitHubAction(
   const inputs = readActionInputs(env);
   maskProviderSecretInputs(io, inputs.providerSecrets);
   clearActionProviderSecretEnv(env);
+
+  if (inputs.mode === forkAgenticSandboxHostedPoolActionMode) {
+    const executionDeadlineEpochMs = createReviewExecutionDeadlineEpochMs({
+      jobTimeoutMinutes: inputs.reviewTimeoutMinutes,
+      executionStartedAtEpochMs,
+    });
+    try {
+      await runHostedForkAgenticSandboxGitHubAction({
+        inputs,
+        env,
+        io,
+        fetchImpl,
+        fullReviewRuntimeRunner,
+        executionDeadlineEpochMs,
+        now,
+      });
+    } finally {
+      clearActionAuthEnv(env);
+      clearOidcRequestEnv(env);
+    }
+    return;
+  }
 
   if (inputs.mode === forkAgenticSandboxActionMode) {
     const executionDeadlineEpochMs = createReviewExecutionDeadlineEpochMs({
@@ -1044,6 +1079,149 @@ async function runForkAgenticSandboxGitHubAction(input: {
   notice(input.io, "ReviewRouter fork sandbox review completed.");
 }
 
+async function runHostedForkAgenticSandboxGitHubAction(input: {
+  readonly inputs: ActionInputs;
+  readonly env: NodeJS.ProcessEnv;
+  readonly io: ActionIO;
+  readonly fetchImpl: FetchLike;
+  readonly fullReviewRuntimeRunner: FullReviewRuntimeRunner;
+  readonly executionDeadlineEpochMs: number;
+  readonly now: () => number;
+}): Promise<void> {
+  const bindingId = input.inputs.sessionBindingId;
+  const bindingVersion = input.inputs.sessionBindingVersion;
+  if (!bindingId || bindingVersion === undefined) {
+    throw new Error("hosted_pool_binding_required");
+  }
+  const event = await readTrustedSameRepositoryPullRequestTargetEvent(
+    input.env,
+  );
+  assertSameRepositoryPullRequest(event, input.env);
+  const workspace = await resolveForkSandboxWorkspace(input.env);
+  await assertForkSandboxWorkspace(workspace);
+  await assertSupportedRunnerEnvironment(input.env);
+  const codexBinaryPath = await resolveCodexBinary(input.env);
+  const tempCodexHome = await makeGitHubWorkspaceCodexHomeDirectory(input.env);
+
+  try {
+    await runHostedCodexRelayTransport({
+      env: input.env,
+      fetchImpl: input.fetchImpl,
+      apiUrl: input.inputs.apiUrl,
+      providerInstanceId: input.inputs.providerInstanceId,
+      workflowSchemaVersion: input.inputs.workflowSchemaVersion,
+      bindingId,
+      bindingVersion,
+      maskSecret: (secret) => mask(input.io, secret),
+      run: async ({
+        baseUrl,
+        invocationLeaseId,
+        runtimeConfigVersion,
+        runtimeEnv: grantedRuntimeEnv,
+        repository,
+        commentToken,
+        commentTokenExpiresAt,
+        commentTokenRefreshUrl,
+      }) => {
+        if (repository !== event.repository) {
+          throw new Error("comment_token_repository_mismatch");
+        }
+        mask(input.io, commentToken);
+        const runtimeEnv = forkAgenticSandboxRuntimeEnv(grantedRuntimeEnv);
+        await deleteStaleCodexRotatingSummaryComments({
+          fetchImpl: input.fetchImpl,
+          token: commentToken,
+          owner: event.owner,
+          repo: event.repo,
+          issueNumber: event.number,
+        });
+        await writeCodexProxySnapshot({
+          codexHome: tempCodexHome,
+          baseUrl,
+          model: codexModelForForkRuntime(runtimeEnv),
+        });
+
+        const reviewHome = await makeTempDirectory("reviewrouter-review-home-");
+        try {
+          let cleanupCommentToken = commentToken;
+          let reviewRuntimeFailure: unknown;
+          try {
+            await runReviewRuntimeWithinExecutionBudget({
+              executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+              now: input.now,
+              run: () =>
+                input.fullReviewRuntimeRunner({
+                  inputs: input.inputs,
+                  leaseId: invocationLeaseId,
+                  codexBinaryPath,
+                  env: input.env,
+                  io: input.io,
+                  fetchImpl: input.fetchImpl,
+                  workspace,
+                  tempHome: reviewHome,
+                  tempCodexHome,
+                  event,
+                  commentToken,
+                  commentTokenExpiresAt,
+                  runtimeConfigVersion,
+                  runtimeEnv,
+                  executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+                  commentTokenRefreshUrl,
+                  commentTokenRefreshMode: "hosted-relay",
+                  sessionBindingId: bindingId,
+                  sessionBindingVersion: bindingVersion,
+                  onCommentTokenUpdated: (token) => {
+                    cleanupCommentToken = token;
+                  },
+                }),
+            });
+          } catch (error) {
+            reviewRuntimeFailure = error;
+          }
+          try {
+            await deleteFullRuntimeProgressCommentsWithTokenRefresh({
+              fetchImpl: input.fetchImpl,
+              token: cleanupCommentToken,
+              owner: event.owner,
+              repo: event.repo,
+              issueNumber: event.number,
+              refreshToken: () =>
+                refreshCleanupCommentToken({
+                  fetchImpl: input.fetchImpl,
+                  inputs: input.inputs,
+                  leaseId: invocationLeaseId,
+                  event,
+                  io: input.io,
+                  commentTokenRefreshUrl,
+                }),
+            });
+          } catch {
+            notice(
+              input.io,
+              "ReviewRouter could not clean up progress comments.",
+            );
+          }
+          if (isStalePullRequestHeadError(reviewRuntimeFailure)) {
+            notice(
+              input.io,
+              "ReviewRouter stopped a stale review because the PR head changed; the newer run will review the current head.",
+            );
+            return;
+          }
+          if (reviewRuntimeFailure) throw reviewRuntimeFailure;
+        } finally {
+          await removeTree(reviewHome);
+        }
+      },
+    });
+  } finally {
+    clearActionAuthEnv(input.env);
+    clearOidcRequestEnv(input.env);
+    await removeTree(tempCodexHome);
+  }
+  notice(input.io, "ReviewRouter hosted pool review completed.");
+}
+
 export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
   const mode = readInput(env, "mode") || codexRotatingRuntimeAuthMode;
   const claudeCodeOAuthToken = optionalSecretInput(
@@ -1060,6 +1238,16 @@ export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
   const apiUrl = (
     readInput(env, "control-plane-url") || requireInput(env, "api-url")
   ).replace(/\/+$/, "");
+  const hostedBinding =
+    mode === forkAgenticSandboxHostedPoolActionMode
+      ? {
+          sessionBindingId: requireInput(env, "session-binding-id"),
+          sessionBindingVersion: readPositiveIntegerInput(
+            env,
+            "session-binding-version",
+          ),
+        }
+      : {};
 
   return {
     mode,
@@ -1073,6 +1261,7 @@ export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
       ...(claudeCodeOAuthToken ? { claudeCodeOAuthToken } : {}),
       ...(openRouterApiKey ? { openRouterApiKey } : {}),
     },
+    ...hostedBinding,
   };
 }
 
@@ -1124,7 +1313,7 @@ export function sanitizeReviewComment(
   const sanitized =
     body
       .replace(
-        /<!--\s*reviewrouter:codex-oauth-rotating(?:\s+head=[a-f0-9]{40})?\s*-->\s*/gi,
+        /<!--\s*reviewrouter:(?:codex-oauth-rotating|hosted-pool)(?:\s+head=[a-f0-9]{40})?\s*-->\s*/gi,
         "",
       )
       .replace(
@@ -1207,6 +1396,21 @@ function readNonNegativeIntegerInput(
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) {
     throw new Error(`invalid_non_negative_integer_action_input:${name}`);
+  }
+  return parsed;
+}
+
+function readPositiveIntegerInput(
+  env: NodeJS.ProcessEnv,
+  name: string,
+): number {
+  const value = requireInput(env, name);
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new Error(`invalid_positive_integer_action_input:${name}`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`invalid_positive_integer_action_input:${name}`);
   }
   return parsed;
 }
@@ -1400,6 +1604,60 @@ async function readForkPullRequestTargetEvent(
   };
 }
 
+async function readTrustedSameRepositoryPullRequestTargetEvent(
+  env: NodeJS.ProcessEnv,
+): Promise<PullRequestEvent> {
+  if (env.GITHUB_EVENT_NAME !== "pull_request_target") {
+    throw new Error("unsupported_event");
+  }
+  const eventPath = env.GITHUB_EVENT_PATH;
+  if (!eventPath) {
+    throw new Error("missing_github_event_path");
+  }
+  const event = JSON.parse(await readFile(eventPath, "utf8")) as {
+    readonly number?: unknown;
+    readonly repository?: {
+      readonly id?: unknown;
+      readonly full_name?: unknown;
+      readonly private?: unknown;
+    };
+    readonly pull_request?: {
+      readonly draft?: unknown;
+      readonly head?: {
+        readonly sha?: unknown;
+        readonly repo?: { readonly full_name?: unknown };
+      };
+      readonly base?: { readonly sha?: unknown };
+    };
+  };
+  const repository = requireString(event.repository?.full_name, "event_repo");
+  const headRepo = requireString(
+    event.pull_request?.head?.repo?.full_name,
+    "head_repo",
+  );
+  if (event.repository?.private !== true) {
+    throw new Error("hosted_public_repository_unsupported");
+  }
+  if (repository !== headRepo) {
+    throw new Error("hosted_fork_pull_request_unsupported");
+  }
+  const [owner, repo] = repository.split("/");
+  if (!owner || !repo) {
+    throw new Error("invalid_github_repository");
+  }
+  return {
+    number: requireNumber(event.number, "pr_number"),
+    ...(isSafeGitHubNumericId(event.repository?.id)
+      ? { repositoryId: String(event.repository.id) }
+      : {}),
+    repository,
+    owner,
+    repo,
+    headSha: requireSha(event.pull_request?.head?.sha, "head_sha"),
+    baseSha: requireSha(event.pull_request?.base?.sha, "base_sha"),
+  };
+}
+
 function assertSameRepositoryPullRequest(
   event: PullRequestEvent,
   env: NodeJS.ProcessEnv,
@@ -1549,11 +1807,14 @@ async function refreshCleanupCommentToken(input: {
   readonly leaseId: string;
   readonly event: PullRequestEvent;
   readonly io: ActionIO;
+  readonly commentTokenRefreshUrl?: string | undefined;
 }): Promise<string> {
   const refreshedToken = await postJson<CommentTokenResponse>({
     fetchImpl: input.fetchImpl,
     label: "api_comment_token_cleanup_refresh",
-    url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+    url:
+      input.commentTokenRefreshUrl ??
+      `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
     body: {
       leaseId: input.leaseId,
       providerInstanceId: input.inputs.providerInstanceId,
@@ -3280,6 +3541,13 @@ async function runFullReviewRouterRuntime(input: {
   readonly reviewCheckpointFinalizationPath?: string | undefined;
   readonly executionDeadlineEpochMs: number;
   readonly onCommentTokenUpdated?: ((token: string) => void) | undefined;
+  readonly commentTokenRefreshUrl?: string | undefined;
+  readonly commentTokenRefreshMode?:
+    | "codex-oauth-rotating"
+    | "hosted-relay"
+    | undefined;
+  readonly sessionBindingId?: string | undefined;
+  readonly sessionBindingVersion?: number | undefined;
 }): Promise<void> {
   const actionPath = resolveGitHubActionPath(input.env);
   const runtimePath = join(actionPath, "dist", "index.js");
@@ -3315,7 +3583,9 @@ async function runFullReviewRouterRuntime(input: {
           const refreshedToken = await postJson<CommentTokenResponse>({
             fetchImpl: input.fetchImpl,
             label: "api_comment_token_refresh",
-            url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+            url:
+              input.commentTokenRefreshUrl ??
+              `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
             body: {
               leaseId: input.leaseId,
               providerInstanceId: input.inputs.providerInstanceId,
@@ -3369,6 +3639,10 @@ async function runFullReviewRouterRuntime(input: {
       reviewSnapshotOutputPath: input.reviewSnapshotOutputPath,
       reviewCheckpointFinalizationPath: input.reviewCheckpointFinalizationPath,
       executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+      commentTokenRefreshUrl: input.commentTokenRefreshUrl,
+      commentTokenRefreshMode: input.commentTokenRefreshMode,
+      sessionBindingId: input.sessionBindingId,
+      sessionBindingVersion: input.sessionBindingVersion,
     });
     const toolInstallTimeoutMs = Math.min(
       2 * 60 * 1000,
@@ -3432,6 +3706,13 @@ export function buildFullReviewRuntimeEnv(input: {
   readonly reviewSnapshotOutputPath?: string | undefined;
   readonly reviewCheckpointFinalizationPath?: string | undefined;
   readonly executionDeadlineEpochMs?: number | undefined;
+  readonly commentTokenRefreshUrl?: string | undefined;
+  readonly commentTokenRefreshMode?:
+    | "codex-oauth-rotating"
+    | "hosted-relay"
+    | undefined;
+  readonly sessionBindingId?: string | undefined;
+  readonly sessionBindingVersion?: number | undefined;
 }): Record<string, string> {
   const inherited = pruneCodexRotatingChildEnv(input.sourceEnv);
   const runtimeEnv = normalizeFullReviewRuntimeEnv(input.runtimeEnv);
@@ -3475,11 +3756,24 @@ export function buildFullReviewRuntimeEnv(input: {
       runtimeEnv.FAIL_ON_NO_HEALTHY_PROVIDERS ?? "true",
     REVIEWROUTER_RUNTIME_CONFIG_MODE: "static",
     REVIEWROUTER_STATIC_CONFIG_FALLBACK: "false",
-    REVIEWROUTER_COMMENT_TOKEN_MODE: "codex-oauth-rotating",
-    REVIEWROUTER_COMMENT_TOKEN_REFRESH_URL: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+    REVIEWROUTER_COMMENT_TOKEN_MODE:
+      input.commentTokenRefreshMode ?? "codex-oauth-rotating",
+    REVIEWROUTER_COMMENT_TOKEN_REFRESH_URL:
+      input.commentTokenRefreshUrl ??
+      `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
     REVIEWROUTER_COMMENT_TOKEN_LEASE_ID: input.leaseId,
     REVIEWROUTER_COMMENT_TOKEN_PROVIDER_INSTANCE_ID:
       input.inputs.providerInstanceId,
+    ...(input.sessionBindingId
+      ? { REVIEWROUTER_SESSION_BINDING_ID: input.sessionBindingId }
+      : {}),
+    ...(input.sessionBindingVersion !== undefined
+      ? {
+          REVIEWROUTER_SESSION_BINDING_VERSION: String(
+            input.sessionBindingVersion,
+          ),
+        }
+      : {}),
     ...(input.commentTokenExpiresAt
       ? {
           REVIEWROUTER_COMMENT_TOKEN_EXPIRES_AT: input.commentTokenExpiresAt,
@@ -3494,7 +3788,11 @@ export function buildFullReviewRuntimeEnv(input: {
     REVIEWROUTER_CHANGE_REQUEST_EXTERNAL_ID: String(input.event.number),
     REVIEWROUTER_HEAD_SHA: input.event.headSha,
     REVIEWROUTER_BASE_SHA: input.event.baseSha,
-    REVIEWROUTER_REVIEW_MARKER: `reviewrouter:codex-oauth-rotating head=${input.event.headSha}`,
+    REVIEWROUTER_REVIEW_MARKER: `reviewrouter:${
+      input.commentTokenRefreshMode === "hosted-relay"
+        ? "hosted-pool"
+        : "codex-oauth-rotating"
+    } head=${input.event.headSha}`,
     REVIEWROUTER_API_URL: input.inputs.apiUrl,
     REVIEWROUTER_CONTROL_PLANE_URL: input.inputs.apiUrl,
     REVIEWROUTER_CONFIG_VERSION: String(input.runtimeConfigVersion),
@@ -3877,8 +4175,8 @@ export async function deleteStaleCodexRotatingSummaryComments(input: {
       comment !== null &&
       typeof (comment as GitHubIssueCommentResponse).id === "number" &&
       typeof (comment as GitHubIssueCommentResponse).body === "string" &&
-      (comment as GitHubIssueCommentResponse).body!.startsWith(
-        "<!-- reviewrouter:codex-oauth-rotating",
+      /^<!--\s*reviewrouter:(?:codex-oauth-rotating|hosted-pool)(?:\s|-->)/i.test(
+        (comment as GitHubIssueCommentResponse).body!,
       ),
   );
   for (const comment of staleComments) {

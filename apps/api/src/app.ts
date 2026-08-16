@@ -63,6 +63,10 @@ import {
   type HealthDependencyPort,
 } from "@reviewrouter/features-system-health";
 import {
+  registerHostedCodexRelayRoutes,
+  type RegisterHostedCodexRelayRoutesDependencies,
+} from "@reviewrouter/features-hosted-account-pool";
+import {
   createPrismaClient,
   resolveCodexOAuthDatabaseEffectAuthorityUrl,
   type PrismaClient,
@@ -152,6 +156,10 @@ import {
 import { appRouter } from "./trpc.js";
 import { ProductionHostedReviewPreleaseGate } from "./hosted-review-prelease-gate.js";
 import { registerRuntimeGenerationCanaryRoute } from "./runtime-generation-canary-routes.js";
+import {
+  composeProductionHostedCodexRelayRoutes,
+  readHostedCodexFeatureFlags,
+} from "./hosted-codex-relay-composition.js";
 
 export type CreateApiAppOptions = {
   readonly githubWebhookSecret?: string;
@@ -177,6 +185,7 @@ export type CreateApiAppOptions = {
   readonly actionControlPlaneEnabled?: boolean;
   readonly memoryServiceEnabled?: boolean;
   readonly healthDependencies?: readonly HealthDependencyPort[];
+  readonly hostedCodexRelayDependencies?: RegisterHostedCodexRelayRoutesDependencies;
   readonly prisma?: PrismaClient;
 };
 
@@ -207,6 +216,8 @@ export async function createApiApp(
   const reviewRunControlV2Enabled =
     options.reviewRunControlV2Enabled ??
     reviewActionV2Env.REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED === "1";
+  const hostedCodexFeatureFlags =
+    readHostedCodexFeatureFlags(reviewActionV2Env);
   const prisma =
     options.prisma ??
     (options.githubWebhookSecret ||
@@ -214,7 +225,10 @@ export async function createApiApp(
     reviewRunControlV2Enabled ||
     operatorCredentialSha256 ||
     investigationPromotionCredentialSha256 ||
-    investigationEvaluationImportCredentialSha256
+    investigationEvaluationImportCredentialSha256 ||
+    hostedCodexFeatureFlags.custody ||
+    hostedCodexFeatureFlags.admission ||
+    hostedCodexFeatureFlags.relay
       ? createPrismaClient()
       : undefined);
   const codexEffectAuthorityDatabaseUrl =
@@ -253,6 +267,33 @@ export async function createApiApp(
     ...definedOption("model", process.env.REVIEW_ROUTER_DEFAULT_MODEL),
     ...definedOption("effort", process.env.REVIEW_ROUTER_DEFAULT_EFFORT),
   });
+
+  const hostedCodexRelayDependencies =
+    options.hostedCodexRelayDependencies ??
+    (hostedCodexFeatureFlags.custody &&
+    hostedCodexFeatureFlags.admission &&
+    hostedCodexFeatureFlags.relay
+      ? (() => {
+          if (!prisma) throw new Error("hosted_codex_prisma_unavailable");
+          if (!publicApiUrl)
+            throw new Error("hosted_codex_public_api_url_missing");
+          const githubAppId = reviewActionV2Env.GITHUB_APP_ID?.trim();
+          const githubAppPrivateKey = readGitHubAppPrivateKey();
+          if (!githubAppId || !githubAppPrivateKey) {
+            throw new Error("hosted_codex_github_app_configuration_missing");
+          }
+          return composeProductionHostedCodexRelayRoutes({
+            prisma,
+            env: reviewActionV2Env,
+            publicApiUrl,
+            githubAppId,
+            githubAppPrivateKey,
+          });
+        })()
+      : undefined);
+  if (hostedCodexRelayDependencies) {
+    await registerHostedCodexRelayRoutes(app, hostedCodexRelayDependencies);
+  }
 
   registerSystemHealthRoutes(
     app,

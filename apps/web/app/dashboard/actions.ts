@@ -49,6 +49,7 @@ import {
   isCodexRotatingOAuthAllowedForWorkspaceDefault,
   isConflictReviewFallbackAllowedForRepository,
   isWorkflowProvisioningEnabled,
+  isHostedCodexPoolEnabled,
   requireReviewRouterDatabaseRecoveryWitness,
   resolveReviewRouterActionRef,
   resolveReviewRouterCodexRotatingActionRef,
@@ -65,6 +66,8 @@ import {
   PrismaWorkflowProvisioningRepository,
   PrismaWorkflowProvisioningTarget,
   provisionRepositoryReviewRouterWorkflow,
+  provisionHostedPoolRepositoryWorkflow,
+  canonicalHostedPoolProviderInstanceId,
   assertActiveVersionedSecretWorkflowAttestation,
   assertTrustedCanonicalVersionedWorkflow,
   createVersionedSecretWorkflowSourceAttestation,
@@ -107,6 +110,7 @@ import {
 import { resolveWorkflowPublicApiUrl } from "../../src/server/workflow-public-api-url";
 import { isWorkflowSetupAlreadyCurrent } from "../../src/server/workflow-setup-readiness";
 import { activateConfirmedCodexNamespaceAfterWorkflowMerge } from "../../src/server/codex-rotating-workflow-activation";
+import { activateConfirmedHostedPoolBindingAfterWorkflowMerge } from "../../src/server/hosted-pool-workflow-activation";
 import { PrismaCodexRotatingSetupReadiness } from "../../src/server/prisma-codex-rotating-setup-readiness";
 import { PrismaCodexRotatingWorkflowNamespace } from "../../src/server/prisma-codex-rotating-workflow-namespace";
 import {
@@ -126,6 +130,14 @@ import {
   readWorkflowStyle,
 } from "./dashboard-action-form-readers";
 import { safeDashboardErrorCode } from "./dashboard-error-codes";
+import {
+  changeHostedPoolAccountState,
+  changeHostedRepositorySessionSource,
+  importHostedPoolAccount,
+  type HostedPoolDashboardMutationDependencies,
+  type HostedSessionSource,
+} from "../../src/server/hosted-pool-dashboard";
+import { createPrismaHostedPoolDashboardMutationPort } from "../../src/server/prisma-hosted-pool-mutations";
 
 export async function requestInstallationSyncAction(
   formData: FormData,
@@ -135,6 +147,441 @@ export async function requestInstallationSyncAction(
   revalidatePath("/dashboard");
   revalidatePath("/setup");
   redirectAfterMutation(formData, params);
+}
+
+export async function importHostedPoolAccountClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const workspaceId = readFormString(formData, "workspaceId");
+  const file = formData.get("authJson");
+  let authJson = new Uint8Array();
+  try {
+    await importHostedPoolAccount(
+      {
+        workspaceId,
+        label: readFormString(formData, "label"),
+        priority: readNonNegativeInteger(formData, "priority"),
+        authJson: async () => {
+          if (!(file instanceof File))
+            throw new Error("hosted_account_auth_file_invalid");
+          authJson = new Uint8Array(await file.arrayBuffer());
+          return authJson;
+        },
+      },
+      createHostedPoolDashboardMutationDependencies(),
+    );
+    revalidatePath("/dashboard");
+    return {
+      params: {
+        notice: "hosted_pool_account_added",
+        workspace: workspaceId,
+        section: "setup",
+      },
+    };
+  } catch (error) {
+    return {
+      params: {
+        error: safeDashboardErrorCode(error),
+        workspace: workspaceId,
+        section: "setup",
+      },
+    };
+  } finally {
+    authJson.fill(0);
+  }
+}
+
+export async function setHostedPoolAccountStateClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const workspaceId = readFormString(formData, "workspaceId");
+  try {
+    const state = readFormString(formData, "state");
+    if (state !== "healthy" && state !== "paused")
+      throw new Error("hosted_account_state_invalid");
+    await changeHostedPoolAccountState(
+      {
+        workspaceId,
+        accountId: readFormString(formData, "accountId"),
+        state,
+        expectedVersion: readNonNegativeInteger(formData, "expectedVersion"),
+      },
+      createHostedPoolDashboardMutationDependencies(),
+    );
+    revalidatePath("/dashboard");
+    return {
+      params: {
+        notice: "hosted_pool_account_updated",
+        workspace: workspaceId,
+        section: "setup",
+      },
+    };
+  } catch (error) {
+    return {
+      params: {
+        error: safeDashboardErrorCode(error),
+        workspace: workspaceId,
+        section: "setup",
+      },
+    };
+  }
+}
+
+export async function setHostedRepositorySessionSourceClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const workspaceId = readFormString(formData, "workspaceId");
+  try {
+    const source = readFormString(formData, "source") as HostedSessionSource;
+    if (source !== "repository_secret" && source !== "hosted_workspace_pool")
+      throw new Error("hosted_session_source_invalid");
+    const repositoryId = readFormString(formData, "repositoryId");
+    const expectedVersion = readNonNegativeInteger(formData, "expectedVersion");
+    const result =
+      source === "repository_secret"
+        ? {
+            activation: "pending" as const,
+            setupPullRequest: await provisionPendingRepositoryOwnedWorkflow({
+              workspaceId,
+              repositoryId,
+              expectedBindingRevision: expectedVersion,
+            }),
+          }
+        : await changeHostedRepositorySessionSource(
+            {
+              workspaceId,
+              repositoryId,
+              source,
+              expectedVersion,
+            },
+            createHostedPoolDashboardMutationDependencies(),
+          );
+    const setupPullRequest =
+      "setupPullRequest" in result
+        ? result.setupPullRequest
+        : result.activation === "pending" &&
+            result.bindingId &&
+            result.bindingRevision
+          ? await provisionPendingHostedPoolWorkflow({
+              workspaceId,
+              repositoryId,
+              bindingId: result.bindingId,
+              bindingRevision: result.bindingRevision,
+            })
+          : null;
+    revalidatePath("/dashboard");
+    return {
+      params: {
+        notice:
+          result.activation === "pending"
+            ? "hosted_pool_activation_pending"
+            : "hosted_pool_source_updated",
+        workspace: workspaceId,
+        section: "repositories",
+        ...(setupPullRequest ? { pr: setupPullRequest.url } : {}),
+      },
+    };
+  } catch (error) {
+    return {
+      params: {
+        error: safeDashboardErrorCode(error),
+        workspace: workspaceId,
+        section: "repositories",
+      },
+    };
+  }
+}
+
+async function provisionPendingHostedPoolWorkflow(input: {
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+  readonly bindingId: string;
+  readonly bindingRevision: number;
+}) {
+  const prisma = getPrisma();
+  const repository = await prisma.repositoryConnection.findUnique({
+    where: { id: input.repositoryId },
+    select: {
+      id: true,
+      workspaceId: true,
+      provider: true,
+      githubRepositoryId: true,
+      owner: true,
+      name: true,
+      fullName: true,
+      visibility: true,
+      defaultBranch: true,
+      selected: true,
+      archived: true,
+      installation: {
+        select: { status: true, githubInstallationId: true },
+      },
+    },
+  });
+  if (
+    !repository ||
+    repository.workspaceId !== input.workspaceId ||
+    repository.provider !== "github" ||
+    !repository.githubRepositoryId ||
+    !repository.installation
+  ) {
+    throw new Error("repository_not_found");
+  }
+  const githubRepository = {
+    ...repository,
+    githubRepositoryId: repository.githubRepositoryId,
+    installation: repository.installation,
+  };
+  const actor = await assertDashboardRepositoryMutationAllowed(
+    input.workspaceId,
+    githubRepository,
+  );
+  const octokit = await createGitHubAppInstallationOctokit(
+    repository.installation.githubInstallationId.toString(),
+  );
+  await assertRepositoryVisibleToGitHubApp({
+    octokit,
+    repository: githubRepository,
+  });
+  const setupGateway = new AppFirstWorkflowSetupGateway({
+    primary: new OctokitWorkflowSetupGateway(octokit),
+    ...(actor.accessSource?.source === "repo_manager"
+      ? {
+          fallback: async () =>
+            new OctokitWorkflowSetupGateway(
+              await createGitHubUserOctokit(actor),
+            ),
+        }
+      : {}),
+  });
+  return new PostgresLeaseLock(prisma).withLock(
+    `repo:${input.repositoryId}:workflow-provision`,
+    5 * 60_000,
+    async () =>
+      provisionHostedPoolRepositoryWorkflow(
+        {
+          repositoryId: input.repositoryId,
+          actionRef: resolveReviewRouterCodexRotatingActionRef(),
+          apiUrl: resolveWorkflowPublicApiUrl(),
+          providerInstanceId: canonicalHostedPoolProviderInstanceId(
+            githubRepository.githubRepositoryId.toString(),
+          ),
+          bindingId: input.bindingId,
+          bindingRevision: input.bindingRevision,
+          actor: actor.actor,
+        },
+        {
+          targets: new PrismaWorkflowProvisioningTarget(prisma),
+          setupGateway,
+          provisioning: new PrismaWorkflowProvisioningRepository(prisma),
+          auditLog: new PrismaAuditLogRepository(prisma),
+          enabled: isWorkflowProvisioningEnabled(),
+          auditMetadata: dashboardMutationAccessAuditMetadata(actor),
+        },
+      ),
+  );
+}
+
+async function provisionPendingRepositoryOwnedWorkflow(input: {
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+  readonly expectedBindingRevision: number;
+}) {
+  if (!isHostedCodexPoolEnabled())
+    throw new Error("hosted_pool_feature_disabled");
+  if (input.expectedBindingRevision < 1)
+    throw new Error("hosted_pool_binding_revision_conflict");
+  const prisma = getPrisma();
+  const [repository, binding] = await Promise.all([
+    prisma.repositoryConnection.findUnique({
+      where: { id: input.repositoryId },
+      select: {
+        id: true,
+        workspaceId: true,
+        provider: true,
+        githubRepositoryId: true,
+        owner: true,
+        name: true,
+        fullName: true,
+        visibility: true,
+        defaultBranch: true,
+        selected: true,
+        archived: true,
+        installation: {
+          select: { status: true, githubInstallationId: true },
+        },
+      },
+    }),
+    prisma.hostedCodexRepositoryBinding.findFirst({
+      where: {
+        repositoryConnectionId: input.repositoryId,
+        workspaceId: input.workspaceId,
+        status: "active",
+        revision: BigInt(input.expectedBindingRevision),
+        tombstonedAt: null,
+      },
+      select: { id: true },
+    }),
+  ]);
+  if (
+    !repository ||
+    !binding ||
+    repository.workspaceId !== input.workspaceId ||
+    repository.provider !== "github" ||
+    !repository.githubRepositoryId ||
+    !repository.installation
+  ) {
+    throw new Error("hosted_pool_binding_revision_conflict");
+  }
+  const githubRepository = {
+    ...repository,
+    githubRepositoryId: repository.githubRepositoryId,
+    installation: repository.installation,
+  };
+  assertRepositoryConfigMutable(githubRepository);
+  const actor = await assertDashboardRepositoryMutationAllowed(
+    input.workspaceId,
+    githubRepository,
+  );
+  await assertDashboardEntitlement({
+    prisma,
+    workspaceId: input.workspaceId,
+    actor: actor.actor,
+    feature: "workflow_provisioning",
+  });
+  await assertDashboardEntitlement({
+    prisma,
+    workspaceId: input.workspaceId,
+    actor: actor.actor,
+    feature: "hosted_codex_pool",
+  });
+  const providerInstanceId = `codex-rotating:${repository.githubRepositoryId.toString()}`;
+  await inspectCodexRotatingSetupReadiness(
+    {
+      workspaceId: input.workspaceId,
+      repositoryId: input.repositoryId,
+      githubRepositoryId: repository.githubRepositoryId.toString(),
+      providerInstanceId,
+    },
+    {
+      readiness: new PrismaCodexRotatingSetupReadiness(
+        prisma,
+        requireReviewRouterDatabaseRecoveryWitness(),
+      ),
+    },
+  );
+  const namespaceInspection = await resolveCodexWorkflowSecretNamespace({
+    prisma,
+    workspaceId: input.workspaceId,
+    repositoryId: input.repositoryId,
+    githubRepositoryId: repository.githubRepositoryId.toString(),
+    providerInstanceId,
+  });
+  const resolvedRuntime = await loadResolvedReviewRuntime({
+    prisma,
+    workspaceId: input.workspaceId,
+    repositoryId: input.repositoryId,
+  });
+  const octokit = await createGitHubAppInstallationOctokit(
+    repository.installation.githubInstallationId.toString(),
+  );
+  await assertRepositoryVisibleToGitHubApp({
+    octokit,
+    repository: githubRepository,
+  });
+  const actionRef = await resolveCodexRotatingProvisioningActionRef({
+    prisma,
+    inspection: namespaceInspection,
+    octokit,
+    owner: repository.owner,
+    name: repository.name,
+    defaultBranch: repository.defaultBranch,
+    expectedRepositoryId: repository.githubRepositoryId.toString(),
+    expectedRepositoryFullName: repository.fullName,
+    expectedProviderInstanceId: providerInstanceId,
+  });
+  const setupGateway = new AppFirstWorkflowSetupGateway({
+    primary: new OctokitWorkflowSetupGateway(octokit),
+    ...(actor.accessSource?.source === "repo_manager"
+      ? {
+          fallback: async () =>
+            new OctokitWorkflowSetupGateway(
+              await createGitHubUserOctokit(actor),
+            ),
+        }
+      : {}),
+  });
+  return new PostgresLeaseLock(prisma).withLock(
+    `repo:${input.repositoryId}:workflow-provision`,
+    5 * 60_000,
+    async () =>
+      provisionRepositoryReviewRouterWorkflow(
+        {
+          repositoryId: input.repositoryId,
+          actionRef,
+          apiUrl: resolveWorkflowPublicApiUrl(),
+          runtimeConfigMode: "oidc",
+          staticRuntimeEnv: resolvedRuntime.runtimeEnv,
+          codexRotatingProviderInstanceId: providerInstanceId,
+          codexRotatingWorkflowSecretNamespace: namespaceInspection.namespace,
+          codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+          forkAgenticSandboxEnabled: false,
+          actor: actor.actor,
+        },
+        {
+          targets: new PrismaWorkflowProvisioningTarget(prisma),
+          setupGateway,
+          provisioning: new PrismaWorkflowProvisioningRepository(prisma),
+          auditLog: new PrismaAuditLogRepository(prisma),
+          enabled: isWorkflowProvisioningEnabled(),
+          auditMetadata: {
+            intent: "switch_to_repository_owned_rotating",
+            expectedBindingRevision: input.expectedBindingRevision,
+            ...dashboardMutationAccessAuditMetadata(actor),
+          },
+        },
+      ),
+  );
+}
+
+function createHostedPoolDashboardMutationDependencies(): HostedPoolDashboardMutationDependencies {
+  const prisma = getPrisma();
+  return {
+    featureEnabled: isHostedCodexPoolEnabled(),
+    authorizeWorkspaceAdmin: async (workspaceId) => {
+      const actor = await assertDashboardMutationAllowed(workspaceId);
+      return { actor: actor.actor };
+    },
+    assertEntitled: async (workspaceId, actor) =>
+      assertDashboardEntitlement({
+        prisma,
+        workspaceId,
+        actor,
+        feature: "hosted_codex_pool",
+      }),
+    getRepository: async (repositoryId) =>
+      prisma.repositoryConnection.findUnique({
+        where: { id: repositoryId },
+        select: {
+          id: true,
+          workspaceId: true,
+          fullName: true,
+          visibility: true,
+        },
+      }),
+    mutations: createPrismaHostedPoolDashboardMutationPort({
+      prisma,
+      env: process.env,
+    }),
+    now: () => new Date(),
+  };
+}
+
+function readNonNegativeInteger(formData: FormData, name: string): number {
+  const value = Number(readFormString(formData, name));
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new Error(`${name}_invalid`);
+  return value;
 }
 
 export async function requestInstallationSyncClientAction(
@@ -1000,18 +1447,55 @@ async function confirmSetupPullRequestMergedMutation(
       throw new Error("setup_pr_not_merged");
     }
 
-    await activateConfirmedCodexNamespaceAfterWorkflowMerge({
-      prisma,
-      octokit,
-      workspaceId,
-      repositoryId,
-      githubRepositoryId: githubRepository.githubRepositoryId.toString(),
-      owner: repository.owner,
-      name: repository.name,
-      defaultBranch: repository.defaultBranch,
-      expectedRepositoryFullName: repository.fullName,
-      expectedApiUrl: resolveWorkflowPublicApiUrl(),
+    const hostedBinding = await prisma.hostedCodexRepositoryBinding.findFirst({
+      where: {
+        repositoryConnectionId: repositoryId,
+        workspaceId,
+        status: { in: ["pending_activation", "active"] },
+        tombstonedAt: null,
+      },
+      select: { id: true, status: true, revision: true },
     });
+    if (hostedBinding?.status === "pending_activation") {
+      await activateConfirmedHostedPoolBindingAfterWorkflowMerge({
+        prisma,
+        octokit,
+        workspaceId,
+        repositoryId,
+        githubRepositoryId: githubRepository.githubRepositoryId.toString(),
+        owner: repository.owner,
+        name: repository.name,
+        defaultBranch: repository.defaultBranch,
+        expectedRepositoryFullName: repository.fullName,
+        expectedApiUrl: resolveWorkflowPublicApiUrl(),
+        now: new Date(),
+      });
+    } else {
+      await activateConfirmedCodexNamespaceAfterWorkflowMerge({
+        prisma,
+        octokit,
+        workspaceId,
+        repositoryId,
+        githubRepositoryId: githubRepository.githubRepositoryId.toString(),
+        owner: repository.owner,
+        name: repository.name,
+        defaultBranch: repository.defaultBranch,
+        expectedRepositoryFullName: repository.fullName,
+        expectedApiUrl: resolveWorkflowPublicApiUrl(),
+      });
+      if (hostedBinding?.status === "active") {
+        await createPrismaHostedPoolDashboardMutationPort({
+          prisma,
+          env: process.env,
+        }).setRepositorySource({
+          workspaceId,
+          repositoryId,
+          source: "repository_secret",
+          expectedVersion: Number(hostedBinding.revision),
+          requestedAt: new Date(),
+        });
+      }
+    }
 
     await markRepositoryWorkflowConfigured({
       prisma,

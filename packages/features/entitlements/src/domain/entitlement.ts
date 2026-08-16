@@ -8,6 +8,7 @@ export const entitlementFeatureSchema = z.enum([
   "audit_log",
   "advanced_org_policies",
   "cloud_review_execution",
+  "hosted_codex_pool",
   "compliance_exports",
 ]);
 
@@ -62,6 +63,7 @@ export const freeBetaEntitlement = (
     audit_log: true,
     advanced_org_policies: false,
     cloud_review_execution: false,
+    hosted_codex_pool: false,
     compliance_exports: false,
   },
 });

@@ -25,9 +25,5 @@ export function reviewV2ContextEnvForRole(env, role) {
         : [[key, String(value)]];
     }),
   );
-  if (role === "api") {
-    selected[reviewV2ProjectionPolicyVersionEnvKey] =
-      reviewV2ProjectionPolicyVersion;
-  }
   return selected;
 }

@@ -11,6 +11,11 @@ ReviewRouter v1 should minimize custody:
 
 The SaaS stores metadata and configuration only.
 
+This is the default legacy posture. [ADR-029](../decisions/029-opt-in-hosted-workspace-account-pool.md)
+defines a separate opt-in hosted workspace account pool for explicitly bound
+repositories. In that mode SaaS is credential custodian and a transient
+Responses relay, while checkout, tools, and the agent remain in GitHub Actions.
+
 ## Secret Handling Modes
 
 ### Private release runner
@@ -36,6 +41,22 @@ Recommended v1 mode:
 - optional self-hosted runner with persistent `CODEX_HOME`
 
 SaaS sees only setup state.
+
+Opt-in hosted workspace account pool mode instead requires:
+
+- envelope-encrypted SaaS custody through a KMS/keyring port;
+- tenant/account/generation/database-incarnation AEAD binding;
+- credentials that never leave SaaS and bounded grants that are the Action's
+  only relay capability;
+- body-free logging/tracing/queues for transient prompts, tool outputs, and
+  responses;
+- shared `SessionStorePort`/`LeaseStorePort` adapters, refresh/writeback-only
+  mutation fencing, and generation CAS across replicas;
+- restore quarantine, feature flags, trusted/private repository allowlisting,
+  and global/workspace/account/repository kill switches.
+
+The internal ChatGPT Responses subscription endpoint is not a formally stable
+delegation contract. Compliance approval is a hard enablement gate.
 
 ### OpenAI/OpenRouter API Keys
 
@@ -135,6 +156,11 @@ jobId
 ## Codex OAuth in SaaS Setup
 
 ReviewRouter SaaS must not receive local Codex OAuth auth plaintext. This includes legacy `~/.codex/auth.json` and active account files under `~/.codex/accounts/*.auth.json`.
+
+This paragraph governs legacy repository-owned setup. Hosted pool onboarding is
+a separate explicit flow: the credential is established inside the SaaS custody
+boundary, stored only as an encrypted envelope, and never exported to an Action
+or GitHub secret.
 
 One-click SaaS setup creates workflow PRs, but provider authentication is still customer-side:
 

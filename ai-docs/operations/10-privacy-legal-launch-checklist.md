@@ -46,6 +46,19 @@ Then implementation must enforce:
 - no Codex auth log capture
 - setup docs direct users to GitHub secrets or trusted self-hosted runner
 
+That copy applies to legacy repository-owned mode. Hosted workspace account pool
+copy must instead disclose, before opt-in, that ReviewRouter:
+
+- stores the workspace's Codex session credentials encrypted in SaaS;
+- keeps `auth.json`, refresh tokens, and access tokens out of GitHub Actions;
+- transiently relays prompts, tool outputs, and model responses without retaining
+  their bodies;
+- may disable the mode through a compatibility/compliance kill switch.
+
+🚨 The internal ChatGPT Responses subscription endpoint is not a formally stable
+delegation contract. Hosted mode must remain disabled until product/legal/security
+approve the intended custody and relaying for each supported account type.
+
 ## Data Subject / Workspace Deletion
 
 Before broader public launch:

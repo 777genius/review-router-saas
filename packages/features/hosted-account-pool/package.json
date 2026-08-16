@@ -1,0 +1,24 @@
+{
+  "name": "@reviewrouter/features-hosted-account-pool",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "production": "./dist/index.js",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@777genius/subscription-runtime": "git+ssh://git@github.com/777genius/ar.git#6467c59a06a2ac26e3874cf0d104073e7a6c8a2b",
+    "@openai/codex": "0.147.0",
+    "@prisma/client": "^7.8.0",
+    "fastify": "^5.10.0",
+    "zod": "^4.4.2"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

@@ -49,3 +49,17 @@ Negative:
 ## Future Option
 
 A cloud execution tier may be added later, but it should be explicitly opt-in and use API-key/managed-credit billing. Customer ChatGPT/Codex OAuth custody should remain out of scope unless OpenAI provides a formal delegated enterprise mechanism for that use case.
+
+## Hosted Pool Scope Amendment
+
+[ADR-029](./029-opt-in-hosted-workspace-account-pool.md) adds a gated,
+explicitly opt-in exception. For repositories explicitly bound to a hosted
+workspace account pool, SaaS is the credential custodian and an
+invocation-scoped streaming Responses relay. Checkout, tools, and agent execution
+remain in GitHub Actions. The legacy control-plane-only mode remains the default
+and is unchanged.
+
+This amendment replaces the blanket future statement above for the hosted pool;
+it does not claim that the internal ChatGPT subscription endpoint is a formally
+stable delegation contract. Compliance approval and a kill switch are release
+gates.

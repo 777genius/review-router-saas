@@ -20,7 +20,6 @@ describe("Review v2 Render context environment", () => {
   it("keeps cryptographic material API-only", () => {
     expect(reviewV2ContextEnvForRole(configuredEnv, "api")).toEqual({
       ...configuredEnv,
-      [reviewV2ProjectionPolicyVersionEnvKey]: reviewV2ProjectionPolicyVersion,
     });
     expect(reviewV2ContextEnvForRole(configuredEnv, "worker")).toEqual(
       Object.fromEntries(

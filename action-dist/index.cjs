@@ -61,9 +61,9 @@ __export(github_action_exports, {
 });
 module.exports = __toCommonJS(github_action_exports);
 var import_node_child_process2 = require("node:child_process");
-var import_node_crypto6 = require("node:crypto");
+var import_node_crypto7 = require("node:crypto");
 var import_node_fs2 = require("node:fs");
-var import_node_http = __toESM(require("node:http"), 1);
+var import_node_http2 = __toESM(require("node:http"), 1);
 
 // node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/domain/errors.js
 var RuntimeConfigurationError = class extends Error {
@@ -22285,8 +22285,522 @@ function isStalePullRequestHeadError(error51) {
   return error51 instanceof Error && error51.message === stalePullRequestHeadErrorCode;
 }
 
-// packages/features/codex-oauth-rotating/src/action/github-action.ts
+// packages/features/codex-oauth-rotating/src/action/hosted-codex-relay.ts
+var import_node_crypto6 = require("node:crypto");
+var import_node_http = __toESM(require("node:http"), 1);
 var defaultOidcAudience = "reviewrouter";
+var forkAgenticSandboxHostedPoolActionMode = "fork-agentic-sandbox-hosted-pool";
+var defaultMaxRequestBodyBytes = 2e6;
+var absoluteMaxRelayRequests = 64;
+var maxCommentTokenRefreshes = 8;
+var oidcRequestTimeoutMs = 2e4;
+var grantRequestTimeoutMs = 3e4;
+var grantExchangeTotalTimeoutMs = 75e3;
+var grantExchangeMaxAttempts = 3;
+var grantExchangeBackoffBaseMs = 250;
+var RetryableHostedRelayExchangeError = class extends Error {
+};
+var hostedRelayGrantSchema = external_exports.object({
+  protocolVersion: external_exports.literal(1),
+  grant: external_exports.string().min(1),
+  relayUrl: external_exports.string().url(),
+  invocationLeaseId: external_exports.string().min(1),
+  runtimeConfigVersion: external_exports.number().int().nonnegative(),
+  runtimeEnv: external_exports.record(external_exports.string(), external_exports.string()),
+  repository: external_exports.string().min(1),
+  commentToken: external_exports.string().min(1),
+  commentTokenRefreshCapability: external_exports.string().min(1),
+  grantExpiresAt: external_exports.string().datetime(),
+  commentTokenExpiresAt: external_exports.string().datetime().optional(),
+  policy: external_exports.object({
+    maxRequests: external_exports.number().int().min(1).max(absoluteMaxRelayRequests),
+    maxRequestBodyBytes: external_exports.number().int().min(1).max(defaultMaxRequestBodyBytes).optional()
+  }).strict()
+}).strict();
+async function runHostedCodexRelayTransport(input) {
+  clearHostedActionCredentialEnv(input.env);
+  const relayGrant = await requestHostedRelayGrantWithFreshGitHubOidc(input);
+  const proxy = await startHostedCodexRelayProxy({
+    fetchImpl: input.fetchImpl,
+    relayUrl: relayGrant.relayUrl,
+    upstreamCommentTokenRefreshUrl: `${input.apiUrl.replace(/\/+$/, "")}/api/action/v1/hosted-relay/comment-token`,
+    grant: relayGrant.grant,
+    commentTokenRefreshCapability: relayGrant.commentTokenRefreshCapability,
+    invocationLeaseId: relayGrant.invocationLeaseId,
+    bindingId: input.bindingId,
+    bindingVersion: input.bindingVersion,
+    policy: relayGrant.policy
+  });
+  try {
+    await input.run({
+      baseUrl: proxy.baseUrl,
+      policy: relayGrant.policy,
+      grantExpiresAt: relayGrant.grantExpiresAt,
+      ...relayGrant.commentTokenExpiresAt ? { commentTokenExpiresAt: relayGrant.commentTokenExpiresAt } : {},
+      invocationLeaseId: relayGrant.invocationLeaseId,
+      runtimeConfigVersion: relayGrant.runtimeConfigVersion,
+      runtimeEnv: relayGrant.runtimeEnv,
+      repository: relayGrant.repository,
+      commentToken: relayGrant.commentToken,
+      commentTokenRefreshUrl: proxy.commentTokenRefreshUrl
+    });
+  } finally {
+    await proxy.close();
+    clearHostedActionCredentialEnv(input.env);
+    clearOidcRequestEnv(input.env);
+  }
+}
+async function requestHostedRelayGrantWithFreshGitHubOidc(input) {
+  const totalController = new AbortController();
+  const totalTimer = setTimeout(
+    () => totalController.abort(new Error("hosted_relay_grant_deadline_exceeded")),
+    grantExchangeTotalTimeoutMs
+  );
+  let lastError;
+  try {
+    for (let attempt = 1; attempt <= grantExchangeMaxAttempts; attempt += 1) {
+      if (totalController.signal.aborted) {
+        throw new Error("hosted_relay_grant_deadline_exceeded");
+      }
+      try {
+        const oidcToken = await requestGitHubActionsOidcToken({
+          env: input.env,
+          fetchImpl: input.fetchImpl,
+          audience: defaultOidcAudience,
+          totalSignal: totalController.signal
+        });
+        input.maskSecret(oidcToken);
+        let response;
+        try {
+          response = await fetchWithTimeout(
+            input.fetchImpl,
+            `${input.apiUrl.replace(/\/+$/, "")}/api/action/v1/hosted-relay/grant`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                oidcToken,
+                providerInstanceId: input.providerInstanceId,
+                workflowSchemaVersion: input.workflowSchemaVersion,
+                bindingId: input.bindingId,
+                bindingVersion: input.bindingVersion
+              })
+            },
+            grantRequestTimeoutMs,
+            totalController.signal
+          );
+        } catch (error51) {
+          if (totalController.signal.aborted) {
+            throw new Error("hosted_relay_grant_deadline_exceeded", {
+              cause: error51
+            });
+          }
+          throw new RetryableHostedRelayExchangeError(
+            "hosted_relay_grant_transport_failed",
+            { cause: error51 }
+          );
+        }
+        if (!response.ok) {
+          await response.body?.cancel().catch(() => void 0);
+          if (response.status === 429 || response.status >= 500) {
+            throw new RetryableHostedRelayExchangeError(
+              `hosted_relay_grant_retryable:${response.status}`
+            );
+          }
+          throw new Error(`hosted_relay_grant_failed:${response.status}`);
+        }
+        let rawGrant;
+        try {
+          rawGrant = await response.json();
+        } catch (error51) {
+          throw new RetryableHostedRelayExchangeError(
+            "hosted_relay_grant_response_failed",
+            { cause: error51 }
+          );
+        }
+        if (typeof rawGrant === "object" && rawGrant !== null) {
+          const rawGrantRecord = rawGrant;
+          for (const name of [
+            "grant",
+            "commentTokenRefreshCapability",
+            "commentToken"
+          ]) {
+            const secret = rawGrantRecord[name];
+            if (typeof secret === "string" && secret.length > 0) {
+              input.maskSecret(secret);
+            }
+          }
+        }
+        return hostedRelayGrantSchema.parse(rawGrant);
+      } catch (error51) {
+        lastError = error51;
+        if (!(error51 instanceof RetryableHostedRelayExchangeError) || attempt === grantExchangeMaxAttempts || totalController.signal.aborted) {
+          throw error51;
+        }
+        const backoffMs = grantExchangeBackoffBaseMs * 2 ** (attempt - 1);
+        if (input.retryDelay) {
+          await input.retryDelay(backoffMs);
+        } else {
+          await delayWithSignal(backoffMs, totalController.signal);
+        }
+      }
+    }
+    throw lastError;
+  } finally {
+    clearTimeout(totalTimer);
+    clearOidcRequestEnv(input.env);
+  }
+}
+async function startHostedCodexRelayProxy(input) {
+  const nonce = (0, import_node_crypto6.randomBytes)(24).toString("base64url");
+  const proxyRequestNamespace = (0, import_node_crypto6.randomBytes)(16).toString("base64url");
+  const commentRefreshNamespace = (0, import_node_crypto6.randomBytes)(16).toString("base64url");
+  const maxBodyBytes = input.policy.maxRequestBodyBytes ?? defaultMaxRequestBodyBytes;
+  let requestCount = 0;
+  let commentTokenRefreshCount = 0;
+  let closing = false;
+  const activeUpstreamRequests = /* @__PURE__ */ new Set();
+  const server = import_node_http.default.createServer((req, res) => {
+    void (async () => {
+      let downstreamClosed = false;
+      let upstreamController;
+      const abortUpstream = () => {
+        downstreamClosed = true;
+        upstreamController?.abort(new Error("downstream_closed"));
+      };
+      req.once("aborted", abortUpstream);
+      res.once("close", abortUpstream);
+      try {
+        const path = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+        if (req.method !== "POST") {
+          writeProxyError(res, 404, "proxy_route_denied");
+          return;
+        }
+        if (closing) {
+          writeProxyError(res, 503, "proxy_closing");
+          return;
+        }
+        if (path === `/${nonce}/control/comment-token`) {
+          commentTokenRefreshCount += 1;
+          if (commentTokenRefreshCount > maxCommentTokenRefreshes) {
+            writeProxyError(res, 429, "comment_token_refresh_budget_exceeded");
+            return;
+          }
+          await readRequestBody(req, 16384);
+          const refreshOrdinal = commentTokenRefreshCount;
+          const refreshBody = Buffer.from(
+            JSON.stringify({
+              invocationLeaseId: input.invocationLeaseId,
+              bindingId: input.bindingId,
+              bindingVersion: input.bindingVersion
+            })
+          );
+          upstreamController = new AbortController();
+          activeUpstreamRequests.add(upstreamController);
+          const refreshed = await input.fetchImpl(
+            input.upstreamCommentTokenRefreshUrl,
+            {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${input.commentTokenRefreshCapability}`,
+                accept: "application/json",
+                "content-type": "application/json",
+                "content-length": String(refreshBody.byteLength),
+                "idempotency-key": `${commentRefreshNamespace}:${refreshOrdinal}`,
+                "x-reviewrouter-request-ordinal": String(refreshOrdinal)
+              },
+              body: new Uint8Array(refreshBody),
+              signal: upstreamController.signal
+            }
+          );
+          if (!downstreamClosed) {
+            await writeUpstreamResponse(res, refreshed);
+          } else {
+            await refreshed.body?.cancel().catch(() => void 0);
+          }
+          return;
+        }
+        if (path !== `/${nonce}/v1/responses`) {
+          writeProxyError(res, 404, "proxy_route_denied");
+          return;
+        }
+        requestCount += 1;
+        if (requestCount > input.policy.maxRequests) {
+          writeProxyError(res, 429, "proxy_request_budget_exceeded");
+          return;
+        }
+        const ordinal = requestCount;
+        const body = await readRequestBody(req, maxBodyBytes);
+        upstreamController = new AbortController();
+        activeUpstreamRequests.add(upstreamController);
+        const upstream = await input.fetchImpl(input.relayUrl, {
+          method: "POST",
+          headers: buildHostedRelayHeaders({
+            requestHeaders: req.headers,
+            grant: input.grant,
+            requestOrdinal: ordinal,
+            idempotencyKey: `${proxyRequestNamespace}:${ordinal}`,
+            requestBytes: body.byteLength
+          }),
+          body: new Uint8Array(body),
+          signal: upstreamController.signal
+        });
+        if (!downstreamClosed) {
+          await writeUpstreamResponse(res, upstream);
+        } else {
+          await upstream.body?.cancel().catch(() => void 0);
+        }
+      } catch (error51) {
+        if (!downstreamClosed) {
+          const code = error51 instanceof Error && error51.message === "proxy_request_body_too_large" ? "proxy_request_body_too_large" : "proxy_upstream_failed";
+          if (res.headersSent) {
+            res.destroy();
+          } else {
+            writeProxyError(
+              res,
+              code === "proxy_request_body_too_large" ? 413 : 502,
+              code
+            );
+          }
+        }
+      } finally {
+        req.off("aborted", abortUpstream);
+        res.off("close", abortUpstream);
+        if (upstreamController) {
+          activeUpstreamRequests.delete(upstreamController);
+        }
+      }
+    })();
+  });
+  await new Promise((resolve3, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve3();
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await closeServer(server);
+    throw new Error("proxy_listener_invalid_address");
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/${nonce}/v1`,
+    commentTokenRefreshUrl: `http://127.0.0.1:${address.port}/${nonce}/control/comment-token`,
+    close: async () => {
+      if (closing) return;
+      closing = true;
+      for (const controller of activeUpstreamRequests) {
+        controller.abort(new Error("proxy_closing"));
+      }
+      const closed = closeServer(server);
+      server.closeAllConnections();
+      await closed;
+    }
+  };
+}
+function buildHostedRelayHeaders(input) {
+  const headers = {
+    authorization: `Bearer ${input.grant}`,
+    accept: joinedHeader(input.requestHeaders, "accept") ?? "text/event-stream",
+    "content-type": joinedHeader(input.requestHeaders, "content-type") ?? "application/json",
+    "content-length": String(input.requestBytes),
+    "idempotency-key": input.idempotencyKey,
+    "x-reviewrouter-request-ordinal": String(input.requestOrdinal)
+  };
+  for (const name of ["x-client-request-id", "x-request-id", "traceparent"]) {
+    const value = joinedHeader(input.requestHeaders, name);
+    if (value) headers[name] = value;
+  }
+  return headers;
+}
+function joinedHeader(headers, name) {
+  const value = headers[name];
+  return Array.isArray(value) ? value.join(", ") : value;
+}
+async function requestGitHubActionsOidcToken(input) {
+  const requestUrl = input.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+  const requestToken = input.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+  if (!requestUrl || !requestToken) throw new Error("github_oidc_unavailable");
+  const url2 = parseTrustedOidcUrl(requestUrl);
+  url2.searchParams.set("audience", input.audience);
+  let response;
+  try {
+    response = await fetchWithTimeout(
+      input.fetchImpl,
+      url2.toString(),
+      {
+        headers: { authorization: `bearer ${requestToken}` },
+        redirect: "error"
+      },
+      oidcRequestTimeoutMs,
+      input.totalSignal
+    );
+  } catch (error51) {
+    if (input.totalSignal.aborted) {
+      throw new Error("hosted_relay_grant_deadline_exceeded", { cause: error51 });
+    }
+    throw new RetryableHostedRelayExchangeError(
+      "github_oidc_transport_failed",
+      {
+        cause: error51
+      }
+    );
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => void 0);
+    if (response.status === 429 || response.status >= 500) {
+      throw new RetryableHostedRelayExchangeError(
+        `github_oidc_retryable:${response.status}`
+      );
+    }
+    throw new Error("github_oidc_request_failed");
+  }
+  let body;
+  try {
+    body = await response.json();
+  } catch (error51) {
+    throw new RetryableHostedRelayExchangeError("github_oidc_response_failed", {
+      cause: error51
+    });
+  }
+  if (typeof body.value !== "string" || body.value.length === 0) {
+    throw new Error("github_oidc_request_failed");
+  }
+  return body.value;
+}
+function parseTrustedOidcUrl(requestUrl) {
+  let url2;
+  try {
+    url2 = new URL(requestUrl);
+  } catch {
+    throw new Error("github_oidc_url_untrusted");
+  }
+  if (url2.protocol !== "https:" || !url2.hostname.endsWith(".actions.githubusercontent.com") || url2.username !== "" || url2.password !== "" || url2.port !== "") {
+    throw new Error("github_oidc_url_untrusted");
+  }
+  return url2;
+}
+async function fetchWithTimeout(fetchImpl, url2, init, timeoutMs, totalSignal) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const abortFromTotal = () => controller.abort(totalSignal?.reason ?? new Error("request_aborted"));
+  totalSignal?.addEventListener("abort", abortFromTotal, { once: true });
+  if (totalSignal?.aborted) abortFromTotal();
+  try {
+    return await fetchImpl(url2, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+    totalSignal?.removeEventListener("abort", abortFromTotal);
+  }
+}
+function delayWithSignal(ms, signal) {
+  return new Promise((resolve3, reject) => {
+    if (signal.aborted) {
+      reject(new Error("hosted_relay_grant_deadline_exceeded"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve3();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("hosted_relay_grant_deadline_exceeded"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+function readRequestBody(req, maxBytes) {
+  return new Promise((resolve3, reject) => {
+    const chunks = [];
+    let bytes = 0;
+    let tooLarge = false;
+    req.on("data", (chunk) => {
+      if (tooLarge) return;
+      const buffer = Buffer.from(chunk);
+      bytes += buffer.byteLength;
+      if (bytes > maxBytes) {
+        tooLarge = true;
+        reject(new Error("proxy_request_body_too_large"));
+        req.resume();
+        return;
+      }
+      chunks.push(buffer);
+    });
+    req.once("error", reject);
+    req.once("end", () => resolve3(Buffer.concat(chunks)));
+  });
+}
+async function writeUpstreamResponse(res, upstream) {
+  const headers = {};
+  for (const name of ["content-type", "cache-control", "x-request-id"]) {
+    const value = upstream.headers.get(name);
+    if (value) headers[name] = value;
+  }
+  res.writeHead(upstream.status, headers);
+  if (!upstream.body) {
+    res.end();
+    return;
+  }
+  const reader = upstream.body.getReader();
+  try {
+    for (; ; ) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!res.write(Buffer.from(value))) await waitForDrain(res);
+    }
+    res.end();
+  } finally {
+    reader.releaseLock();
+  }
+}
+async function waitForDrain(res) {
+  await new Promise((resolve3, reject) => {
+    const cleanup = () => {
+      res.off("drain", onDrain);
+      res.off("close", onClose);
+      res.off("error", onError);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve3();
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("downstream_closed"));
+    };
+    const onError = (error51) => {
+      cleanup();
+      reject(error51);
+    };
+    res.once("drain", onDrain);
+    res.once("close", onClose);
+    res.once("error", onError);
+  });
+}
+function writeProxyError(res, status, code) {
+  if (res.headersSent || res.destroyed) return;
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: code }));
+}
+function closeServer(server) {
+  return new Promise((resolve3, reject) => {
+    server.close((error51) => error51 ? reject(error51) : resolve3());
+  });
+}
+function clearHostedActionCredentialEnv(env) {
+  delete env.INPUT_AUTH_JSON;
+  delete env["INPUT_AUTH-JSON"];
+  delete env.REVIEWROUTER_CODEX_AUTH_JSON;
+}
+function clearOidcRequestEnv(env) {
+  delete env.ACTIONS_ID_TOKEN_REQUEST_URL;
+  delete env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+}
+
+// packages/features/codex-oauth-rotating/src/action/github-action.ts
+var defaultOidcAudience2 = "reviewrouter";
 var forkAgenticSandboxActionMode = "fork-agentic-sandbox";
 var defaultChatGptCodexResponsesUrl = "https://chatgpt.com/backend-api/codex/responses";
 var bundledCodexPlatform = "linux-x64";
@@ -22318,7 +22832,7 @@ var supportedRunnerArch = "X64";
 var supportedRunnerImageOs = "ubuntu24";
 var minimumNodeMajor = 20;
 var controlPlaneRequestTimeoutMs = 3e4;
-var oidcRequestTimeoutMs = 2e4;
+var oidcRequestTimeoutMs2 = 2e4;
 var githubRequestTimeoutMs = 3e4;
 var networkRetryMaxAttempts = 3;
 var networkRetryBaseDelayMs = 750;
@@ -22446,6 +22960,27 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
   const inputs = readActionInputs(env);
   maskProviderSecretInputs(io, inputs.providerSecrets);
   clearActionProviderSecretEnv(env);
+  if (inputs.mode === forkAgenticSandboxHostedPoolActionMode) {
+    const executionDeadlineEpochMs2 = createReviewExecutionDeadlineEpochMs({
+      jobTimeoutMinutes: inputs.reviewTimeoutMinutes,
+      executionStartedAtEpochMs
+    });
+    try {
+      await runHostedForkAgenticSandboxGitHubAction({
+        inputs,
+        env,
+        io,
+        fetchImpl,
+        fullReviewRuntimeRunner,
+        executionDeadlineEpochMs: executionDeadlineEpochMs2,
+        now
+      });
+    } finally {
+      clearActionAuthEnv(env);
+      clearOidcRequestEnv2(env);
+    }
+    return;
+  }
   if (inputs.mode === forkAgenticSandboxActionMode) {
     const executionDeadlineEpochMs2 = createReviewExecutionDeadlineEpochMs({
       jobTimeoutMinutes: inputs.reviewTimeoutMinutes,
@@ -22486,7 +23021,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
   });
   if (admission.status === "skipped") {
     clearActionAuthEnv(env);
-    clearOidcRequestEnv(env);
+    clearOidcRequestEnv2(env);
     notice(io, formatReviewAdmissionSkipNotice(event.number, admission));
     return;
   }
@@ -22733,7 +23268,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
     }
   } finally {
     clearActionAuthEnv(env);
-    clearOidcRequestEnv(env);
+    clearOidcRequestEnv2(env);
   }
 }
 async function runCodexRefreshOnlyGitHubAction(input) {
@@ -22814,7 +23349,7 @@ async function runCodexRefreshOnlyGitHubAction(input) {
     notice(input.io, "ReviewRouter Codex OAuth refresh completed.");
   } finally {
     clearActionAuthEnv(input.env);
-    clearOidcRequestEnv(input.env);
+    clearOidcRequestEnv2(input.env);
   }
 }
 async function runForkAgenticSandboxGitHubAction(input) {
@@ -22989,11 +23524,141 @@ async function runForkAgenticSandboxGitHubAction(input) {
     }
   } finally {
     clearActionAuthEnv(input.env);
-    clearOidcRequestEnv(input.env);
+    clearOidcRequestEnv2(input.env);
     await removeTree(tempCodexHome);
     await removeTree(tempHome);
   }
   notice(input.io, "ReviewRouter fork sandbox review completed.");
+}
+async function runHostedForkAgenticSandboxGitHubAction(input) {
+  const bindingId = input.inputs.sessionBindingId;
+  const bindingVersion = input.inputs.sessionBindingVersion;
+  if (!bindingId || bindingVersion === void 0) {
+    throw new Error("hosted_pool_binding_required");
+  }
+  const event = await readTrustedSameRepositoryPullRequestTargetEvent(
+    input.env
+  );
+  assertSameRepositoryPullRequest(event, input.env);
+  const workspace = await resolveForkSandboxWorkspace(input.env);
+  await assertForkSandboxWorkspace(workspace);
+  await assertSupportedRunnerEnvironment(input.env);
+  const codexBinaryPath = await resolveCodexBinary(input.env);
+  const tempCodexHome = await makeGitHubWorkspaceCodexHomeDirectory(input.env);
+  try {
+    await runHostedCodexRelayTransport({
+      env: input.env,
+      fetchImpl: input.fetchImpl,
+      apiUrl: input.inputs.apiUrl,
+      providerInstanceId: input.inputs.providerInstanceId,
+      workflowSchemaVersion: input.inputs.workflowSchemaVersion,
+      bindingId,
+      bindingVersion,
+      maskSecret: (secret) => mask(input.io, secret),
+      run: async ({
+        baseUrl,
+        invocationLeaseId,
+        runtimeConfigVersion,
+        runtimeEnv: grantedRuntimeEnv,
+        repository,
+        commentToken,
+        commentTokenExpiresAt,
+        commentTokenRefreshUrl
+      }) => {
+        if (repository !== event.repository) {
+          throw new Error("comment_token_repository_mismatch");
+        }
+        mask(input.io, commentToken);
+        const runtimeEnv = forkAgenticSandboxRuntimeEnv(grantedRuntimeEnv);
+        await deleteStaleCodexRotatingSummaryComments({
+          fetchImpl: input.fetchImpl,
+          token: commentToken,
+          owner: event.owner,
+          repo: event.repo,
+          issueNumber: event.number
+        });
+        await writeCodexProxySnapshot({
+          codexHome: tempCodexHome,
+          baseUrl,
+          model: codexModelForForkRuntime(runtimeEnv)
+        });
+        const reviewHome = await makeTempDirectory("reviewrouter-review-home-");
+        try {
+          let cleanupCommentToken = commentToken;
+          let reviewRuntimeFailure;
+          try {
+            await runReviewRuntimeWithinExecutionBudget({
+              executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+              now: input.now,
+              run: () => input.fullReviewRuntimeRunner({
+                inputs: input.inputs,
+                leaseId: invocationLeaseId,
+                codexBinaryPath,
+                env: input.env,
+                io: input.io,
+                fetchImpl: input.fetchImpl,
+                workspace,
+                tempHome: reviewHome,
+                tempCodexHome,
+                event,
+                commentToken,
+                commentTokenExpiresAt,
+                runtimeConfigVersion,
+                runtimeEnv,
+                executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+                commentTokenRefreshUrl,
+                commentTokenRefreshMode: "hosted-relay",
+                sessionBindingId: bindingId,
+                sessionBindingVersion: bindingVersion,
+                onCommentTokenUpdated: (token) => {
+                  cleanupCommentToken = token;
+                }
+              })
+            });
+          } catch (error51) {
+            reviewRuntimeFailure = error51;
+          }
+          try {
+            await deleteFullRuntimeProgressCommentsWithTokenRefresh({
+              fetchImpl: input.fetchImpl,
+              token: cleanupCommentToken,
+              owner: event.owner,
+              repo: event.repo,
+              issueNumber: event.number,
+              refreshToken: () => refreshCleanupCommentToken({
+                fetchImpl: input.fetchImpl,
+                inputs: input.inputs,
+                leaseId: invocationLeaseId,
+                event,
+                io: input.io,
+                commentTokenRefreshUrl
+              })
+            });
+          } catch {
+            notice(
+              input.io,
+              "ReviewRouter could not clean up progress comments."
+            );
+          }
+          if (isStalePullRequestHeadError(reviewRuntimeFailure)) {
+            notice(
+              input.io,
+              "ReviewRouter stopped a stale review because the PR head changed; the newer run will review the current head."
+            );
+            return;
+          }
+          if (reviewRuntimeFailure) throw reviewRuntimeFailure;
+        } finally {
+          await removeTree(reviewHome);
+        }
+      }
+    });
+  } finally {
+    clearActionAuthEnv(input.env);
+    clearOidcRequestEnv2(input.env);
+    await removeTree(tempCodexHome);
+  }
+  notice(input.io, "ReviewRouter hosted pool review completed.");
 }
 function readActionInputs(env) {
   const mode = readInput(env, "mode") || codexRotatingRuntimeAuthMode;
@@ -23009,6 +23674,13 @@ function readActionInputs(env) {
     throw new Error("invalid_workflow_schema_version");
   }
   const apiUrl = (readInput(env, "control-plane-url") || requireInput(env, "api-url")).replace(/\/+$/, "");
+  const hostedBinding = mode === forkAgenticSandboxHostedPoolActionMode ? {
+    sessionBindingId: requireInput(env, "session-binding-id"),
+    sessionBindingVersion: readPositiveIntegerInput(
+      env,
+      "session-binding-version"
+    )
+  } : {};
   return {
     mode,
     apiUrl,
@@ -23020,7 +23692,8 @@ function readActionInputs(env) {
     providerSecrets: {
       ...claudeCodeOAuthToken ? { claudeCodeOAuthToken } : {},
       ...openRouterApiKey ? { openRouterApiKey } : {}
-    }
+    },
+    ...hostedBinding
   };
 }
 function readActionAuthJson(env) {
@@ -23058,7 +23731,7 @@ async function assertSupportedRunnerEnvironment(env, options = {}) {
 }
 function sanitizeReviewComment(body, options = {}) {
   const sanitized = body.replace(
-    /<!--\s*reviewrouter:codex-oauth-rotating(?:\s+head=[a-f0-9]{40})?\s*-->\s*/gi,
+    /<!--\s*reviewrouter:(?:codex-oauth-rotating|hosted-pool)(?:\s+head=[a-f0-9]{40})?\s*-->\s*/gi,
     ""
   ).replace(
     /refresh_token["'\s:=]+[A-Za-z0-9._~+/=-]+/gi,
@@ -23120,6 +23793,17 @@ function readNonNegativeIntegerInput(env, name) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) {
     throw new Error(`invalid_non_negative_integer_action_input:${name}`);
+  }
+  return parsed;
+}
+function readPositiveIntegerInput(env, name) {
+  const value = requireInput(env, name);
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new Error(`invalid_positive_integer_action_input:${name}`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`invalid_positive_integer_action_input:${name}`);
   }
   return parsed;
 }
@@ -23247,12 +23931,46 @@ async function readForkPullRequestTargetEvent(env) {
     baseSha: requireSha(event.pull_request?.base?.sha, "base_sha")
   };
 }
+async function readTrustedSameRepositoryPullRequestTargetEvent(env) {
+  if (env.GITHUB_EVENT_NAME !== "pull_request_target") {
+    throw new Error("unsupported_event");
+  }
+  const eventPath = env.GITHUB_EVENT_PATH;
+  if (!eventPath) {
+    throw new Error("missing_github_event_path");
+  }
+  const event = JSON.parse(await (0, import_promises6.readFile)(eventPath, "utf8"));
+  const repository = requireString(event.repository?.full_name, "event_repo");
+  const headRepo = requireString(
+    event.pull_request?.head?.repo?.full_name,
+    "head_repo"
+  );
+  if (event.repository?.private !== true) {
+    throw new Error("hosted_public_repository_unsupported");
+  }
+  if (repository !== headRepo) {
+    throw new Error("hosted_fork_pull_request_unsupported");
+  }
+  const [owner, repo] = repository.split("/");
+  if (!owner || !repo) {
+    throw new Error("invalid_github_repository");
+  }
+  return {
+    number: requireNumber(event.number, "pr_number"),
+    ...isSafeGitHubNumericId(event.repository?.id) ? { repositoryId: String(event.repository.id) } : {},
+    repository,
+    owner,
+    repo,
+    headSha: requireSha(event.pull_request?.head?.sha, "head_sha"),
+    baseSha: requireSha(event.pull_request?.base?.sha, "base_sha")
+  };
+}
 function assertSameRepositoryPullRequest(event, env) {
   if (env.GITHUB_REPOSITORY && env.GITHUB_REPOSITORY !== event.repository) {
     throw new Error("github_repository_mismatch");
   }
 }
-async function requestGitHubActionsOidcToken(input) {
+async function requestGitHubActionsOidcToken2(input) {
   const requestUrl = input.env.ACTIONS_ID_TOKEN_REQUEST_URL;
   const requestToken = input.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
   if (!requestUrl || !requestToken) {
@@ -23262,7 +23980,7 @@ async function requestGitHubActionsOidcToken(input) {
   const { response, body } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_oidc",
-    timeoutMs: oidcRequestTimeoutMs,
+    timeoutMs: oidcRequestTimeoutMs2,
     url: `${requestUrl}${separator}audience=${encodeURIComponent(input.audience)}`,
     init: { headers: { authorization: `bearer ${requestToken}` } },
     consume: async (response2) => ({
@@ -23279,10 +23997,10 @@ async function requestCodexRotatingPreleaseWithFreshOidc(input) {
   let lastError;
   try {
     for (let attempt = 1; attempt <= networkRetryMaxAttempts; attempt += 1) {
-      const oidcToken = await requestGitHubActionsOidcToken({
+      const oidcToken = await requestGitHubActionsOidcToken2({
         env: input.env,
         fetchImpl: input.fetchImpl,
-        audience: defaultOidcAudience
+        audience: defaultOidcAudience2
       });
       mask(input.io, oidcToken);
       try {
@@ -23306,7 +24024,7 @@ async function requestCodexRotatingPreleaseWithFreshOidc(input) {
       }
     }
   } finally {
-    clearOidcRequestEnv(input.env);
+    clearOidcRequestEnv2(input.env);
   }
   throw lastError;
 }
@@ -23351,7 +24069,7 @@ async function refreshCleanupCommentToken(input) {
   const refreshedToken = await postJson({
     fetchImpl: input.fetchImpl,
     label: "api_comment_token_cleanup_refresh",
-    url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+    url: input.commentTokenRefreshUrl ?? `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
     body: {
       leaseId: input.leaseId,
       providerInstanceId: input.inputs.providerInstanceId,
@@ -23743,11 +24461,11 @@ function routeCodexLocalProviderRequest(input) {
   return "responses";
 }
 async function startCodexLocalProviderProxy(input) {
-  const nonce = (0, import_node_crypto6.randomBytes)(24).toString("base64url");
+  const nonce = (0, import_node_crypto7.randomBytes)(24).toString("base64url");
   let requestCount = 0;
   let closing = false;
   const activeUpstreamRequests = /* @__PURE__ */ new Set();
-  const server = import_node_http.default.createServer((req, res) => {
+  const server = import_node_http2.default.createServer((req, res) => {
     void (async () => {
       try {
         const body = await readProxyRequestBody(req);
@@ -23764,11 +24482,11 @@ async function startCodexLocalProviderProxy(input) {
         }
         requestCount += 1;
         if (requestCount > maxProxyRequestsPerReview) {
-          writeProxyError(res, 429, "proxy_request_budget_exceeded");
+          writeProxyError2(res, 429, "proxy_request_budget_exceeded");
           return;
         }
         if (closing) {
-          writeProxyError(res, 503, "proxy_closing");
+          writeProxyError2(res, 503, "proxy_closing");
           return;
         }
         const upstreamController = new AbortController();
@@ -23788,7 +24506,7 @@ async function startCodexLocalProviderProxy(input) {
           activeUpstreamRequests.delete(upstreamController);
         }
       } catch {
-        writeProxyError(res, 502, "proxy_upstream_failed");
+        writeProxyError2(res, 502, "proxy_upstream_failed");
       }
     })();
   });
@@ -23889,9 +24607,9 @@ async function writeProxyUpstreamResponse(res, upstream) {
   }
 }
 function writeProxyDeny(res) {
-  writeProxyError(res, 404, "proxy_route_denied");
+  writeProxyError2(res, 404, "proxy_route_denied");
 }
-function writeProxyError(res, status, code) {
+function writeProxyError2(res, status, code) {
   if (res.headersSent) {
     res.end();
     return;
@@ -24009,7 +24727,7 @@ function validateCodexBinaryManifest(manifest, archiveSize) {
 }
 function sha256File(path) {
   return new Promise((resolve3, reject) => {
-    const hash2 = (0, import_node_crypto6.createHash)("sha256");
+    const hash2 = (0, import_node_crypto7.createHash)("sha256");
     const stream = (0, import_node_fs2.createReadStream)(path);
     stream.on("data", (chunk) => hash2.update(chunk));
     stream.on("error", reject);
@@ -24683,7 +25401,7 @@ async function runFullReviewRouterRuntime(input) {
           const refreshedToken = await postJson({
             fetchImpl: input.fetchImpl,
             label: "api_comment_token_refresh",
-            url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+            url: input.commentTokenRefreshUrl ?? `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
             body: {
               leaseId: input.leaseId,
               providerInstanceId: input.inputs.providerInstanceId,
@@ -24735,7 +25453,11 @@ async function runFullReviewRouterRuntime(input) {
       reviewSnapshotInputPath: input.reviewSnapshotInputPath,
       reviewSnapshotOutputPath: input.reviewSnapshotOutputPath,
       reviewCheckpointFinalizationPath: input.reviewCheckpointFinalizationPath,
-      executionDeadlineEpochMs: input.executionDeadlineEpochMs
+      executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+      commentTokenRefreshUrl: input.commentTokenRefreshUrl,
+      commentTokenRefreshMode: input.commentTokenRefreshMode,
+      sessionBindingId: input.sessionBindingId,
+      sessionBindingVersion: input.sessionBindingVersion
     });
     const toolInstallTimeoutMs = Math.min(
       2 * 60 * 1e3,
@@ -24808,10 +25530,16 @@ function buildFullReviewRuntimeEnv(input) {
     FAIL_ON_NO_HEALTHY_PROVIDERS: runtimeEnv.FAIL_ON_NO_HEALTHY_PROVIDERS ?? "true",
     REVIEWROUTER_RUNTIME_CONFIG_MODE: "static",
     REVIEWROUTER_STATIC_CONFIG_FALLBACK: "false",
-    REVIEWROUTER_COMMENT_TOKEN_MODE: "codex-oauth-rotating",
-    REVIEWROUTER_COMMENT_TOKEN_REFRESH_URL: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+    REVIEWROUTER_COMMENT_TOKEN_MODE: input.commentTokenRefreshMode ?? "codex-oauth-rotating",
+    REVIEWROUTER_COMMENT_TOKEN_REFRESH_URL: input.commentTokenRefreshUrl ?? `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
     REVIEWROUTER_COMMENT_TOKEN_LEASE_ID: input.leaseId,
     REVIEWROUTER_COMMENT_TOKEN_PROVIDER_INSTANCE_ID: input.inputs.providerInstanceId,
+    ...input.sessionBindingId ? { REVIEWROUTER_SESSION_BINDING_ID: input.sessionBindingId } : {},
+    ...input.sessionBindingVersion !== void 0 ? {
+      REVIEWROUTER_SESSION_BINDING_VERSION: String(
+        input.sessionBindingVersion
+      )
+    } : {},
     ...input.commentTokenExpiresAt ? {
       REVIEWROUTER_COMMENT_TOKEN_EXPIRES_AT: input.commentTokenExpiresAt
     } : {},
@@ -24822,7 +25550,7 @@ function buildFullReviewRuntimeEnv(input) {
     REVIEWROUTER_CHANGE_REQUEST_EXTERNAL_ID: String(input.event.number),
     REVIEWROUTER_HEAD_SHA: input.event.headSha,
     REVIEWROUTER_BASE_SHA: input.event.baseSha,
-    REVIEWROUTER_REVIEW_MARKER: `reviewrouter:codex-oauth-rotating head=${input.event.headSha}`,
+    REVIEWROUTER_REVIEW_MARKER: `reviewrouter:${input.commentTokenRefreshMode === "hosted-relay" ? "hosted-pool" : "codex-oauth-rotating"} head=${input.event.headSha}`,
     REVIEWROUTER_API_URL: input.inputs.apiUrl,
     REVIEWROUTER_CONTROL_PLANE_URL: input.inputs.apiUrl,
     REVIEWROUTER_CONFIG_VERSION: String(input.runtimeConfigVersion),
@@ -25103,8 +25831,8 @@ async function deleteStaleCodexRotatingSummaryComments(input) {
     throw new Error("github_stale_comment_lookup_invalid");
   }
   const staleComments = comments.filter(
-    (comment) => typeof comment === "object" && comment !== null && typeof comment.id === "number" && typeof comment.body === "string" && comment.body.startsWith(
-      "<!-- reviewrouter:codex-oauth-rotating"
+    (comment) => typeof comment === "object" && comment !== null && typeof comment.id === "number" && typeof comment.body === "string" && /^<!--\s*reviewrouter:(?:codex-oauth-rotating|hosted-pool)(?:\s|-->)/i.test(
+      comment.body
     )
   );
   for (const comment of staleComments) {
@@ -25535,7 +26263,7 @@ async function makeTempDirectory(prefix) {
 function buildWritebackIdempotencyKey(env, leaseId) {
   const runId = env.GITHUB_RUN_ID || "local";
   const runAttempt = env.GITHUB_RUN_ATTEMPT || "1";
-  const digest = (0, import_node_crypto6.createHash)("sha256").update(`${leaseId}:${runId}:${runAttempt}`).digest("hex").slice(0, 24);
+  const digest = (0, import_node_crypto7.createHash)("sha256").update(`${leaseId}:${runId}:${runAttempt}`).digest("hex").slice(0, 24);
   return `idem:${runId}:${runAttempt}:${digest}`;
 }
 function clearActionAuthEnv(env) {
@@ -25561,7 +26289,7 @@ function maskProviderSecretInputs(io, providerSecrets) {
     mask(io, providerSecrets.openRouterApiKey);
   }
 }
-function clearOidcRequestEnv(env) {
+function clearOidcRequestEnv2(env) {
   delete env.ACTIONS_ID_TOKEN_REQUEST_URL;
   delete env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
 }

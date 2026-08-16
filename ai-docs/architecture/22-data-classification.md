@@ -86,9 +86,20 @@ Examples:
 Handling:
 
 - never log
-- never store customer provider credentials in SaaS v1
+- never store customer provider credentials in SaaS v1 legacy mode
 - deployment secrets live only in secret manager
 - health reports must reject secret-looking payloads
+
+Hosted workspace account pool exception:
+
+- Codex session credentials are restricted secrets stored only as
+  envelope-encrypted session envelopes behind the SaaS KMS/keyring boundary;
+- plaintext exists only in bounded process memory while validating, refreshing,
+  or invoking upstream and never leaves SaaS;
+- relay prompts, tool outputs, and responses are transient restricted customer
+  content: processing is allowed for the bound invocation, durable storage is not;
+- restored encrypted credentials remain quarantined until database-incarnation
+  verification and audited rewrap/reconnect complete.
 
 ## Webhook Payload Policy
 

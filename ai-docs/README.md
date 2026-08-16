@@ -33,6 +33,8 @@ This folder is the canonical planning and architecture knowledge base for Review
 27. [Visual Direction](./product/08-visual-direction.md)
 28. [Review Thread Lifecycle and Auto-Resolve](./architecture/40-review-thread-lifecycle.md)
 29. [Review Action v2 Contract Handoff Runbook](./operations/review-action-v2-contract-handoff.md)
+30. [ADR-029: Opt-in Hosted Workspace Account Pool](./decisions/029-opt-in-hosted-workspace-account-pool.md)
+31. [Hosted Workspace Account Pool Plan](./architecture/49-hosted-workspace-account-pool-plan.md)
 
 ## Folder Map
 

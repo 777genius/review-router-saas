@@ -31,6 +31,7 @@ const migration70Name = "000070_runtime_generation_witness_proof";
 const migration71Name = "000071_transactional_service_transition";
 const migration72Name = "000072_retire_superseded_codex_setup_claims";
 const migration73Name = "000073_codex_oauth_active_namespace_refresh";
+const migration74Name = "000074_hosted_codex_account_pool";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -58,6 +59,7 @@ assert(
       migration71Name,
       migration72Name,
       migration73Name,
+      migration74Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -3231,17 +3233,9 @@ function proveMigrateDeployNoOp(url) {
       .includes("no pending migrations"),
     "post-success migrate deploy did not report a no-op",
   );
-  proveMigrationRunnerHistory(url, migration60Name, true);
-  proveMigrationRunnerHistory(url, migration61Name, true);
-  proveMigrationRunnerHistory(url, migration62Name, true);
-  proveMigrationRunnerHistory(url, migration63Name, true);
-  proveMigrationRunnerHistory(url, migration64Name, true);
-  proveMigrationRunnerHistory(url, migration65Name, true);
-  proveMigrationRunnerHistory(url, migration66Name, true);
-  proveMigrationRunnerHistory(url, migration69Name, true);
-  proveMigrationRunnerHistory(url, migration70Name, true);
-  proveMigrationRunnerHistory(url, migration71Name, true);
-  proveMigrationRunnerHistory(url, migration72Name, true);
+  for (const migrationName of rotatingMigrationNames) {
+    proveMigrationRunnerHistory(url, migrationName, true);
+  }
 }
 
 function collectObservation(url) {

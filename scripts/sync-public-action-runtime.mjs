@@ -21,6 +21,7 @@ const actionRepo = path.resolve(
     path.join(saasRepo, "..", "review-router-action"),
 );
 const write = isTrue(args.write) || isTrue(args.confirm);
+const expectedActionBranch = args.expectedActionBranch ?? "main";
 
 const syncedFiles = [
   "action.yml",
@@ -38,7 +39,7 @@ if (isTrue(args.printFiles)) {
 
 assertGitRepo("saas", saasRepo);
 assertGitRepo("action", actionRepo);
-assertActionRepoOnMain(actionRepo);
+assertActionRepoOnExpectedBranch(actionRepo, expectedActionBranch);
 
 for (const file of syncedFiles) {
   assertReadableFile(path.join(saasRepo, file));
@@ -120,11 +121,18 @@ function assertGitRepo(name, repo) {
   }
 }
 
-function assertActionRepoOnMain(repo) {
+function assertActionRepoOnExpectedBranch(repo, expectedBranch) {
+  if (
+    !/^(?:main|(?:feat|fix|chore|refactor)\/[A-Za-z0-9._/-]+)$/.test(
+      expectedBranch,
+    )
+  ) {
+    throw new Error(`invalid expected action branch: ${expectedBranch}`);
+  }
   const branch = git(repo, ["branch", "--show-current"]);
-  if (branch !== "main") {
+  if (branch !== expectedBranch) {
     throw new Error(
-      `action repo must be on main before syncing public @main, got ${branch || "<detached>"}`,
+      `action repo must be on ${expectedBranch} before syncing, got ${branch || "<detached>"}`,
     );
   }
 }

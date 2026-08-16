@@ -15,6 +15,8 @@ x-reviewrouter-service: &reviewrouter-service
   build:
     context: ../..
     dockerfile: deploy/self-hosted/Dockerfile
+    secrets:
+      - subscription_runtime_deploy_key_b64
     args:
       REVIEW_ROUTER_WEB_URL: ${REVIEW_ROUTER_WEB_URL:?REVIEW_ROUTER_WEB_URL is required}
       REVIEW_ROUTER_API_URL: ${REVIEW_ROUTER_API_URL:?REVIEW_ROUTER_API_URL is required}
@@ -125,3 +127,7 @@ services:
 
 volumes:
   reviewrouter-postgres-data:
+
+secrets:
+  subscription_runtime_deploy_key_b64:
+    environment: SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64

@@ -2,7 +2,7 @@ name: ReviewRouter
 description: ReviewRouter pull request review runtime.
 inputs:
   mode:
-    description: Runtime mode. Use codex-oauth-rotating for PR review or codex-oauth-refresh for scheduled refresh.
+    description: Runtime mode, including hosted pool and repository-owned review strategies.
     required: false
   api-url:
     description: ReviewRouter API URL.
@@ -17,6 +17,12 @@ inputs:
     description: ReviewRouter workflow schema version.
     required: false
     default: "1"
+  session-binding-id:
+    description: Exact hosted pool repository binding identity.
+    required: false
+  session-binding-version:
+    description: Exact hosted pool repository binding revision.
+    required: false
   review-drafts:
     description: Allow same-repository draft review from pull_request_target.
     required: false

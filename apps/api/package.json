@@ -15,6 +15,7 @@
     "@reviewrouter/features-entitlements": "workspace:*",
     "@reviewrouter/features-github-installations": "workspace:*",
     "@reviewrouter/features-gitlab-integration": "workspace:*",
+    "@reviewrouter/features-hosted-account-pool": "workspace:*",
     "@reviewrouter/features-memory": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",

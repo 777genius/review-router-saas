@@ -8,4 +8,7 @@ packages:
   - packages/features/*
 
 onlyBuiltDependencies:
+  - "@prisma/engines"
   - "@vioxen/subscription-runtime"
+  - esbuild
+  - prisma
