@@ -253,6 +253,24 @@ describe("private-network PG17 workflow security contract", () => {
     expect(controller).toContain("scheduled-reconciliation.json");
   });
 
+  it("fails closed while installing private controller dependencies", () => {
+    const installCommand =
+      "node scripts/install-private-dependencies.mjs --frozen-lockfile --require-deploy-key";
+    const controllerJobs = jobs(controller);
+    const installJobs = controllerJobs.filter((job) =>
+      job.includes(installCommand),
+    );
+
+    expect(installJobs).toHaveLength(5);
+    expect(controller).not.toContain("pnpm install --frozen-lockfile");
+    for (const job of installJobs) {
+      expect(job).toContain(
+        "SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}",
+      );
+      expect(job.match(new RegExp(installCommand, "gu"))).toHaveLength(1);
+    }
+  });
+
   it("is dispatch-only because runtime identity requires workflow_dispatch", () => {
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).not.toContain("workflow_call:");
