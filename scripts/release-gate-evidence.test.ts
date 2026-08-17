@@ -333,7 +333,9 @@ describe("release workflow contract", () => {
     expect(ci).toContain(
       "REVIEW_ROUTER_RELEASE_AUTHORITY_CONTRACT_BASELINE_REF=$baseline_sha",
     );
-    expect(ci).toContain("pnpm install --frozen-lockfile --no-optional");
+    expect(ci).toContain(
+      "node scripts/install-private-dependencies.mjs --frozen-lockfile",
+    );
     expect(ci).toContain(
       "node scripts/release-gate-evidence.mjs write release-authority-pg17-contract",
     );
@@ -353,7 +355,7 @@ describe("release workflow contract", () => {
     }
   });
 
-  it("requires the digest-pinned adversarial proof before PG17 evidence publication", () => {
+  it("requires the digest-pinned adversarial proof before trusted PG17 evidence publication", () => {
     const start = ci.indexOf("  release-authority-pg17-contract:");
     const end = ci.indexOf("\n  private-pg16-to-pg17-rehearsal:", start);
     const job = ci.slice(start, end);
@@ -371,6 +373,21 @@ describe("release workflow contract", () => {
     expect(job).toContain('REVIEW_ROUTER_REQUIRE_PG17_ADVERSARIAL: "1"');
     expect(job).toContain(
       "pnpm exec vitest run scripts/private-pg17-activation-adversarial.test.ts",
+    );
+    expect(job).toContain(
+      "Run digest-pinned activation adversarial proof\n        if: ${{ github.event_name != 'pull_request' }}",
+    );
+    expect(job).toContain(
+      "Create exact release-gate evidence\n        if: ${{ github.event_name != 'pull_request' }}",
+    );
+    expect(job).toContain(
+      "Upload exact release-gate evidence\n        if: ${{ github.event_name != 'pull_request' }}",
+    );
+    expect(job).not.toContain(
+      "REVIEW_ROUTER_TARGET_PREACTIVATION_CATALOG_POLICY_SHA256",
+    );
+    expect(job).not.toContain(
+      "REVIEW_ROUTER_TARGET_ACTIVATED_CATALOG_POLICY_SHA256",
     );
     expect(job).not.toContain("docker tag");
     expect(

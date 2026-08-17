@@ -108,13 +108,16 @@ jobs:
       - name: Run dedicated authority contract
         run: bash packages/platform/release-authority-db/test-contract.sh
       - name: Run digest-pinned activation adversarial proof
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           REVIEW_ROUTER_REQUIRE_PG17_ADVERSARIAL: "1"
         run: pnpm exec vitest run scripts/private-pg17-activation-adversarial.test.ts
       - name: Create exact release-gate evidence
+        if: ${{ github.event_name != 'pull_request' }}
         id: evidence
         run: node scripts/release-gate-evidence.mjs write release-authority-pg17-contract >> "$GITHUB_OUTPUT"
       - name: Upload exact release-gate evidence
+        if: ${{ github.event_name != 'pull_request' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ steps.evidence.outputs.artifact_name }}
