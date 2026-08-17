@@ -187,14 +187,16 @@ before code authority. After the exact protected `main` SHA passes the
 and run `.github/workflows/release-authority-migration.yml` at that SHA with
 `operation=incremental-upgrade`. The protected
 `production-release-authority-migration` environment is the sole production
-holder of the direct database-owner migration credential. A successful gate on
+holder of the restricted migration-issuer credential. The issuer can create a
+short-lived, operation-bound login but cannot inherit database-owner authority
+or mutate the authority catalog directly. A successful gate on
 that exact SHA is required before deploying control, witness, or other code
 whose readiness depends on the new authority catalog.
 
 That environment must retain at least one required reviewer, prevent self
 review, and allow only protected branches. The workflow verifies those settings
 through the GitHub API in its repository-independent trust job and fails closed
-before the database-owner credential is available to any job.
+before the issuer credential is available to any job.
 
 Fresh provisioning is a different operation: use `operation=fresh-install`
 only for a new database with no `release_authority` schema. Neither operation
@@ -209,6 +211,9 @@ Before running the workflow:
    production gate must include both `Dedicated Release Authority PG17
 contract` and `Full private PG16 to PG17 rehearsal` as successful jobs.
    Each job uploads its own exact-SHA evidence artifact.
+   A manual CI dispatch that enables the authority contract must set
+   `release_authority_contract_baseline_sha` to the previous protected `main`
+   SHA; push CI derives the same fact from the protected push event.
 3. Confirm the matching Action tag already exists, for example:
 
 ```bash

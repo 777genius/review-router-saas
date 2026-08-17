@@ -24,15 +24,16 @@ are fixed by
 
 ## Identities
 
-| Boundary           | Connection                                                         | Allowed authority                                     |
-| ------------------ | ------------------------------------------------------------------ | ----------------------------------------------------- |
-| Control            | `REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_DATABASE_URL`             | Control routines; no direct tables                    |
-| Provider authority | `REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_DATABASE_URL`            | Provider decision routine only                        |
-| Witness            | Dedicated read-only authority, source, and target connections      | Cleanup plus signed release-binding observations      |
-| Permit installer   | `REVIEW_ROUTER_ACTIVATION_PERMIT_INSTALLER_DATABASE_URL` on target | `install_activation_permit` only                      |
-| Receipt guard      | Target-local, no login/membership edges                            | Own permit, activation, and receipt functions         |
-| Release migration  | `REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL`                     | Migrate and invoke activation; cannot install permits |
-| Runtime roles      | API/web/worker/effect-authority URLs                               | Normal least-privilege runtime work                   |
+| Boundary                | Connection                                                         | Allowed authority                                                                                                                                                           |
+| ----------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Control                 | `REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_DATABASE_URL`             | Control routines; no direct tables                                                                                                                                          |
+| Provider authority      | `REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_DATABASE_URL`            | Provider decision routine only                                                                                                                                              |
+| Bootstrap administrator | `REVIEW_ROUTER_RELEASE_AUTHORITY_BOOTSTRAP_ADMIN_DATABASE_URL`     | Fixed `reviewrouter_bootstrap_administrator` capability: `NOSUPERUSER NOCREATEDB CREATEROLE`, exact PostgreSQL-created ADMIN edges, and `pg_signal_backend`; bootstrap only |
+| Witness                 | Dedicated read-only authority, source, and target connections      | Cleanup plus signed release-binding observations                                                                                                                            |
+| Permit installer        | `REVIEW_ROUTER_ACTIVATION_PERMIT_INSTALLER_DATABASE_URL` on target | `install_activation_permit` only                                                                                                                                            |
+| Receipt guard           | Target-local, no login/membership edges                            | Own permit, activation, and receipt functions                                                                                                                               |
+| Release migration       | `REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL`                     | Migrate and invoke activation; cannot install permits                                                                                                                       |
+| Runtime roles           | API/web/worker/effect-authority URLs                               | Normal least-privilege runtime work                                                                                                                                         |
 
 Control, provider authority, and witness must use exactly three distinct HTTP
 bearer credentials and distinct database roles. Their plaintext secret names
@@ -273,10 +274,14 @@ verifier or upgraded without rerunning the current rollout and witness observati
 1. Create a fresh dedicated PostgreSQL 17 authority DB and the distinct
    `reviewrouter_release_control`, `reviewrouter_provider_authority`,
    `reviewrouter_release_witness`, and `reviewrouter_migration_issuer` logins.
-   Put the initial database-owner URL in a mode-0600 credential file and invoke
-   only the explicit fresh installation command:
+   Put the provider-administrator and initial database-owner URLs in separate
+   mode-0600 credential files. Invoke the convergent fresh installation command;
+   it prepares the minimum database capability, provisions the fixed owner,
+   fixed owner and broker, and a one-shot bootstrap-quiescence helper, runs
+   the migration, and always executes cleanup:
 
    ```bash
+   export REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_DATABASE_URL_FILE=/approved/secret/path/release-authority-bootstrap-admin-url
    export REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE=/approved/secret/path/release-authority-migration-url
    pnpm release-authority:fresh-install
    ```
@@ -284,11 +289,60 @@ verifier or upgraded without rerunning the current rollout and witness observati
    The fresh gate requires the `release_authority` schema to be absent and
    applies the complete checked-in chain in one transaction. Migration 000015
    transfers the authority catalog to the fixed `NOLOGIN`
-   `reviewrouter_authority_owner`, installs the isolated `NOLOGIN`
-   `reviewrouter_migration_broker`, and sets the bootstrap owner's password to
-   NULL before commit. Remove the bootstrap secret after success. Never use
+   `reviewrouter_authority_owner`, retains only the provider-authorized isolated
+   `NOLOGIN` `reviewrouter_migration_broker` authority edge, and atomically
+   removes the two bootstrap `SET` memberships and disables the login before
+   commit. After that bootstrap session exits, the provider administrator
+   verifies the pinned root, absence of sessions and ownership dependencies,
+   removes the exact helper with `RESTRICT`, and executes `DROP ROLE B` without
+   `CASCADE`. A lost-response retry classifies the committed cleanup-pending
+   state and performs that terminal deletion. Failure cleanup terminates all
+   bootstrap sessions, drops the helper, makes the bootstrap `NOLOGIN`, removes
+   its owner/broker edges, and retains only the inert `ADMIN`, `INHERIT FALSE`,
+   `SET FALSE` recovery edge needed for a later retry. Remove both one-time
+   secrets after success. Never use
    this command for a later upgrade or substitute application Prisma tooling.
    Retain this DB across cutovers.
+
+   The bootstrap-admin URL must authenticate exactly as
+   `reviewrouter_bootstrap_administrator LOGIN NOSUPERUSER NOCREATEDB
+CREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 1`, with no role
+   configuration or validity deadline. It must have the standard
+   `pg_signal_backend` membership and must itself have created the initial
+   bootstrap login, producing PostgreSQL 17's exact bootstrap-to-provider edge:
+   the opaque provider root is the grantor, with `ADMIN TRUE`, `INHERIT FALSE`,
+   and `SET FALSE`. The initial database-owner login is likewise
+   `NOSUPERUSER NOCREATEDB CREATEROLE`; ownership of the already-created
+   database does not require cluster-wide `CREATEDB`. Before every provider
+   mutation, a direct P connection sets `createrole_self_grant=''`, creates a
+   cryptographically random disposable `NOLOGIN` role, reads its sole exact
+   membership edge, and drops it in the same transaction. The resulting
+   `system_identifier`, root OID/name, and P OID/name are pinned. B/O/M must
+   share that root; no provider name, superuser bit, or OID is hardcoded. Root
+   rename/drop-recreate, restore to another system identifier, a foreign or
+   duplicate grantor, or option drift requires explicit re-enrollment. The
+   bootstrap always has `CONNECTION LIMIT 1`; recovery restores that exact
+   bound before admitting another migration attempt. Existing sessions survive
+   a limit reduction, so migration separately rejects any foreign bootstrap
+   `session_user`. Preparation grants the administrator
+   database `CREATE` only while it creates the provider-owned helper and the
+   owner login immediately revokes that grant. Migration rejects another
+   bootstrap `session_user`, proves B owns only the target database and
+   session-local temporary objects, transfers them with `REASSIGN OWNED`,
+   removes only P-granted O/M-to-B `SET` edges, and
+   quiesces B. Provider cleanup deletes B after its session exits. Terminal readiness proves neither identity retains database
+   `CREATE`. Provisioning normalizes and attests only the fixed owner/broker
+   ADMIN edges. Any extra membership, ownership in this
+   or another database, role-attribute drift, helper overload, helper-body
+   drift, or helper ACL drift fails closed. Before changing the bootstrap login,
+   provisioning and recovery attest that it is already `NOSUPERUSER NOCREATEDB
+   NOREPLICATION NOBYPASSRLS`; the non-superuser provider never attempts to
+   change those privileged attributes and normalizes only the mutable login,
+   password, `CREATEROLE`, connection-limit, validity, and role configuration
+   properties. Cleanup uses `GRANTED BY P RESTRICT` for known P edges and
+   never rewrites provider edges, impersonates the root, iterates arbitrary
+   catalog grantors, or uses `CASCADE`. This is a provider bootstrap
+   capability contract; it is never the restricted provider-decision URL.
 
 2. Deploy control and witness from the same immutable release and verify their
    `/health` service identities. Healthy control must observe the 000002
@@ -377,7 +431,8 @@ The trusted order is:
    single successful trusted CI run and the dedicated PG17 authority-contract
    and full-rehearsal jobs plus their digest-addressed exact-SHA artifacts. Only
    after both jobs succeed can the protected environment be entered and the
-   owner credential materialized.
+   restricted issuer credential materialized. Database-owner authority exists
+   only in the one-shot lease consumed inside the migration transaction.
 
 4. Require that workflow to succeed. Its gate takes the PostgreSQL advisory
    lock, applies bounded lock and statement timeouts, verifies checked-in and
@@ -391,14 +446,20 @@ The trusted order is:
    to `PUBLIC` or another role: remove the noncanonical owner default, preserve
    catalog evidence, and rerun the same operation.
 
-The leased connection consumes its capability in a separately committed
-transaction. PostgreSQL immediately changes the login to `NOLOGIN`, then grants
-only `SET` membership in the fixed authority owner for that already-authenticated
-session. The migration finalizer revokes membership and records `finalized`
-before commit. A process failure leaves a non-login role; the issuer's
-unconditional reconcile step revokes any expired membership. Never set the
+The leased connection consumes its capability in the same explicit transaction
+that performs DDL, verifies the final catalog, and finalizes the lease.
+PostgreSQL immediately changes the login to `NOLOGIN`, then grants only `SET`
+membership in the fixed authority owner for that already-authenticated session.
+The migration finalizer revokes membership and records `finalized` before that
+transaction commits; a deferred guard rejects autocommit consume or any commit
+without finalize. Issue and the unconditional workflow cleanup reconcile every
+unfinished `issued` or `consumed` lease, not only expired leases. Never set the
 generated lease URL as a GitHub secret and never restore the retired bootstrap
-owner secret.
+owner secret. Reconciliation does not roll back when a terminal login still has
+an authenticated backend: it commits `NOLOGIN`, password removal/expiry, owner
+revocation, terminal lease state, and credential-schema/function ACL revocation.
+The exact inert role is dropped by reconciliation after that backend exits, and
+new lease issuance remains available in the meantime.
 
 For the single existing-database transition that first installs 000015, dispatch
 `bootstrap-upgrade` with
@@ -615,7 +676,7 @@ repositories, user projects, and reused customer runners are forbidden fixtures.
 4. `protected-release-preflight` checks exact identity and durably claims the
    rollout before mutation.
 5. `freeze-source-writers` suspends and re-observes all source writers.
-6. `copy-and-role-bootstrap-private` captures backup, proves quiescence, copies,
+6. `copy-and-role-bootstrap-private` durably records source quiescence, then captures backup, copies,
    proves equivalence, converges target roles, and verifies the pre-provisioned
    guard on a one-use private runner.
 7. `await-role-runner-cleanup` requires provider and independent witness
