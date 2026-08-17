@@ -227,20 +227,21 @@ describe("application database release-authority isolation", () => {
     expect(sql).toContain("current_database())\n\\gexec\nSELECT format(");
     expect(sql).toContain("DO $installer_database_acl$");
     expect(sql).toContain("DO $source_receipt_acl$");
+    expect(sql).toContain("IF receipt_table IS NULL THEN RETURN; END IF");
     expect(sql).toContain(
-      "GRANT USAGE ON SCHEMA release_authority\n  TO reviewrouter_activation_receipt_guard",
+      "source legacy ambiguity receipt catalog is incomplete",
     );
     expect(sql).toContain(
-      "GRANT SELECT ON TABLE release_authority.source_legacy_ambiguity_receipt\n  TO reviewrouter_activation_receipt_guard",
+      "GRANT SELECT ON TABLE '\n    ||'release_authority.source_legacy_ambiguity_receipt",
     );
     expect(sql).toContain(
       "source legacy ambiguity receipt ACL is non-canonical",
     );
     expect(sql).toContain(
-      "REVOKE ALL ON FUNCTION release_authority.source_receipt_canonical_json(jsonb)",
+      "release_authority.source_receipt_canonical_json(jsonb) FROM PUBLIC",
     );
     expect(sql).toContain(
-      "REVOKE ALL ON FUNCTION release_authority.source_receipt_immutable()",
+      "release_authority.source_receipt_immutable() FROM PUBLIC",
     );
     expect(sql).not.toContain(
       "GRANT SELECT ON TABLE release_authority.source_legacy_ambiguity_receipt\n  TO reviewrouter_activation_permit_installer",

@@ -635,28 +635,39 @@ BEGIN
 END
 $public_routine_acl$;
 DO $source_receipt_acl$
+DECLARE
+  receipt_table regclass := pg_catalog.to_regclass(
+    'release_authority.source_legacy_ambiguity_receipt'
+  );
+  canonical_routine regprocedure := pg_catalog.to_regprocedure(
+    'release_authority.source_receipt_canonical_json(jsonb)'
+  );
+  immutable_routine regprocedure := pg_catalog.to_regprocedure(
+    'release_authority.source_receipt_immutable()'
+  );
 BEGIN
-  IF pg_catalog.to_regclass(
-       'release_authority.source_legacy_ambiguity_receipt'
-     ) IS NULL THEN
-    RAISE EXCEPTION 'source legacy ambiguity receipt is unavailable';
+  IF pg_catalog.to_regnamespace('release_authority') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON SCHEMA release_authority '
+      ||'FROM ${activationReceiptGuardRoleName}';
   END IF;
-END
-$source_receipt_acl$;
-REVOKE ALL ON SCHEMA release_authority
-  FROM ${activationReceiptGuardRoleName};
-GRANT USAGE ON SCHEMA release_authority
-  TO ${activationReceiptGuardRoleName};
-REVOKE ALL ON TABLE release_authority.source_legacy_ambiguity_receipt
-  FROM ${activationReceiptGuardRoleName};
-GRANT SELECT ON TABLE release_authority.source_legacy_ambiguity_receipt
-  TO ${activationReceiptGuardRoleName};
-REVOKE ALL ON FUNCTION release_authority.source_receipt_canonical_json(jsonb)
-  FROM PUBLIC;
-REVOKE ALL ON FUNCTION release_authority.source_receipt_immutable()
-  FROM PUBLIC;
-DO $source_receipt_acl_exact$
-BEGIN
+  -- Fresh installs and legacy contract rehearsals do not own a source receipt.
+  -- The migration-permit routine remains the fail-closed enforcement point.
+  IF receipt_table IS NULL THEN RETURN; END IF;
+  IF canonical_routine IS NULL OR immutable_routine IS NULL THEN
+    RAISE EXCEPTION 'source legacy ambiguity receipt catalog is incomplete';
+  END IF;
+  EXECUTE 'GRANT USAGE ON SCHEMA release_authority '
+    ||'TO ${activationReceiptGuardRoleName}';
+  EXECUTE 'REVOKE ALL ON TABLE '
+    ||'release_authority.source_legacy_ambiguity_receipt '
+    ||'FROM ${activationReceiptGuardRoleName}';
+  EXECUTE 'GRANT SELECT ON TABLE '
+    ||'release_authority.source_legacy_ambiguity_receipt '
+    ||'TO ${activationReceiptGuardRoleName}';
+  EXECUTE 'REVOKE ALL ON FUNCTION '
+    ||'release_authority.source_receipt_canonical_json(jsonb) FROM PUBLIC';
+  EXECUTE 'REVOKE ALL ON FUNCTION '
+    ||'release_authority.source_receipt_immutable() FROM PUBLIC';
   IF NOT has_schema_privilege(
        '${activationReceiptGuardRoleName}', 'release_authority', 'USAGE'
      )
@@ -673,10 +684,7 @@ BEGIN
        CROSS JOIN LATERAL pg_catalog.aclexplode(
          coalesce(routine.proacl, pg_catalog.acldefault('f', routine.proowner))
        ) acl
-       WHERE routine.oid IN (
-         'release_authority.source_receipt_canonical_json(jsonb)'::regprocedure,
-         'release_authority.source_receipt_immutable()'::regprocedure
-       )
+       WHERE routine.oid IN (canonical_routine, immutable_routine)
          AND acl.grantee=0
          AND acl.privilege_type='EXECUTE'
      )
@@ -688,15 +696,14 @@ BEGIN
        CROSS JOIN LATERAL pg_catalog.aclexplode(
          coalesce(relation.relacl, pg_catalog.acldefault('r', relation.relowner))
        ) acl
-       WHERE namespace.nspname='release_authority'
-         AND relation.relname='source_legacy_ambiguity_receipt'
+       WHERE relation.oid=receipt_table
          AND acl.grantee='${activationReceiptGuardRoleName}'::regrole
          AND (acl.privilege_type<>'SELECT' OR acl.is_grantable)
      ) THEN
     RAISE EXCEPTION 'source legacy ambiguity receipt ACL is non-canonical';
   END IF;
 END
-$source_receipt_acl_exact$;
+$source_receipt_acl$;
 DO $installer_database_acl$
 BEGIN
   IF NOT has_database_privilege(

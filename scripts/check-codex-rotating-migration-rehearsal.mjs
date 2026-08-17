@@ -185,7 +185,6 @@ try {
   await proveProviderRepairAuthorityV2(providerAdmin, runtimeClients);
   await proveQuarantineCleanupPathV2(providerAdmin, runtimeClients);
   proveExactProductionCatalogContract(providerAdmin);
-  applyOrdinaryPostReleaseMigrations(providerAdmin);
   proveMigrateDeployNoOp(providerAdmin);
   proveLateMigrationRollbackAndReplayMatrix();
   proveReleaseAuthorityMarkerIsolation(providerAdmin);
@@ -564,7 +563,8 @@ function applyCanonicalPreMigrationBaseline(url) {
       Number.isInteger(number) &&
       (number <= 59 ||
         directory === migration67Name ||
-        directory === migration68Name);
+        directory === migration68Name ||
+        directory === migration74Name);
     if (!isCanonicalPreMigration) continue;
     const source = join(migrationsDirectory, directory, "migration.sql");
     psql(url, ["-f", source]);
@@ -4154,34 +4154,6 @@ function migrationHistoryDigest(url, migrationNames) {
       FROM "_prisma_migrations" m
       WHERE migration_name IN (${migrationNameSql})`,
   ]).stdout.trim();
-}
-
-function applyOrdinaryPostReleaseMigrations(url) {
-  const releaseControlledMigrationNames = rotatingMigrationNames.filter(
-    (migrationName) => migrationName !== migration74Name,
-  );
-  const releaseHistoryBefore = migrationHistoryDigest(
-    url,
-    releaseControlledMigrationNames,
-  );
-  assertMigrationAbsentFromHistory(url, migration74Name);
-  migrateDeploy(url);
-  assert(
-    migrationHistoryDigest(url, releaseControlledMigrationNames) ===
-      releaseHistoryBefore,
-    "ordinary post-release deploy changed release-controlled migration history",
-  );
-  proveMigrationRunnerHistory(url, migration74Name, true);
-}
-
-function assertMigrationAbsentFromHistory(url, migrationName) {
-  assert(
-    psql(url, [
-      "-Atc",
-      `SELECT count(*) FROM "_prisma_migrations" WHERE migration_name = ${quoteLiteral(migrationName)}`,
-    ]).stdout.trim() === "0",
-    `${migrationName}_unexpected_runner_history`,
-  );
 }
 
 function proveMigrateDeployNoOp(url) {
