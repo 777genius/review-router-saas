@@ -162,7 +162,7 @@ describe("authorized Render typed replay", () => {
     expect(jobApi.createJob).not.toHaveBeenCalled();
   });
 
-  it("reconciles a lost job-create response after process restart without replay", async () => {
+  it("completes a lost job-create response after process restart without replay", async () => {
     const ownerId = stableRenderMutationOwnerId(
       context.rolloutId,
       context.operation,
@@ -174,7 +174,7 @@ describe("authorized Render typed replay", () => {
       status: "pending",
       createdAt: "2026-08-14T00:00:02.000Z",
     };
-    const reconcile = vi.fn();
+    const complete = vi.fn();
     const authority: ProviderMutationAuthorityPort = {
       recover: vi.fn(async (input) => ({
         status: "receipt" as const,
@@ -195,8 +195,8 @@ describe("authorized Render typed replay", () => {
       issue: vi.fn(),
       consume: vi.fn(),
       validateExecution: vi.fn(),
-      complete: vi.fn(),
-      reconcile,
+      complete,
+      reconcile: vi.fn(),
     };
     const api = {
       listAllJobs: vi.fn().mockResolvedValue([job]),
@@ -211,9 +211,8 @@ describe("authorized Render typed replay", () => {
       ),
     ).resolves.toEqual(job);
     expect(api.createJob).not.toHaveBeenCalled();
-    expect(reconcile).toHaveBeenCalledWith(
+    expect(complete).toHaveBeenCalledWith(
       expect.objectContaining({
-        result: "exact_postcondition",
         observation: expect.objectContaining({
           resultIdentity: { kind: "job", id: job.id },
         }),
@@ -313,8 +312,8 @@ describe("authorized Render exact resume recovery", () => {
     ).rejects.toThrow("provider_mutation_terminal_observation_unproven");
   });
 
-  it("freshly reconciles an executing replay with exact deployment identity", async () => {
-    const reconcile = vi.fn();
+  it("freshly completes an executing replay with exact deployment identity", async () => {
+    const complete = vi.fn();
     const authority: ProviderMutationAuthorityPort = {
       recover: vi.fn(async (input) => ({
         status: "receipt" as const,
@@ -335,8 +334,8 @@ describe("authorized Render exact resume recovery", () => {
       issue: vi.fn(),
       consume: vi.fn(),
       validateExecution: vi.fn(),
-      complete: vi.fn(),
-      reconcile,
+      complete,
+      reconcile: vi.fn(),
     };
     const api = onlineApi();
     await new AuthorizedRenderMutations(api, authority).resumeExact(
@@ -344,9 +343,8 @@ describe("authorized Render exact resume recovery", () => {
       expected,
       deployment,
     );
-    expect(reconcile).toHaveBeenCalledWith(
+    expect(complete).toHaveBeenCalledWith(
       expect.objectContaining({
-        result: "exact_postcondition",
         observation: expect.objectContaining({
           resultIdentity: { kind: "service", id: "srv-one" },
         }),

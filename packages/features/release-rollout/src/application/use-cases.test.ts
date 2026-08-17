@@ -326,6 +326,65 @@ describe("release rollout application boundary", () => {
     expect(rollout.receipts).toHaveLength(0);
   });
 
+  it("persists quiescence before backup and leaves the caller holding it when backup fails", async () => {
+    const ports = basePorts();
+    const quiescence: StepObservation = {
+      step: RolloutStep.QuiesceSource,
+      observedAt: "2026-08-12T00:00:03.000Z",
+      facts: {
+        complete: true,
+        writerServices: [
+          {
+            serviceId: "srv-source",
+            suspended: true,
+            observedAt: "2026-08-12T00:00:03.000Z",
+          },
+        ],
+        stabilizationSeries: [0, 0, 0],
+        reconnectDeniedRoles: ["reviewrouter_api"],
+        aclSha256: `sha256:${"a".repeat(64)}`,
+        fence: {
+          version: 1,
+          lifecycle: "active",
+          fenceId: `source-fence:${rollout.rolloutId}`,
+          rolloutId: rollout.rolloutId,
+          sourceSystemIdentifier: rollout.source.systemIdentifier,
+          authorityPrincipal: "source_admin",
+          observedAt: "2026-08-12T00:00:03.000Z",
+          beforeInventorySha256: `sha256:${"b".repeat(64)}`,
+          fencedInventorySha256: `sha256:${"c".repeat(64)}`,
+          beforePolicySha256: `sha256:${"d".repeat(64)}`,
+          fencedPolicySha256: `sha256:${"e".repeat(64)}`,
+          priorConnectAclSha256: `sha256:${"f".repeat(64)}`,
+        },
+      },
+    };
+    const captureBackup = vi.fn(async () => {
+      throw new Error("pg_dump_failed");
+    });
+    const useCases = new ReleaseRolloutUseCases({
+      ...ports,
+      database: {
+        quiesce: vi.fn(async () => quiescence),
+        captureBackup,
+      } as never,
+    });
+    let authoritative: ReleaseRollout = {
+      ...rollout,
+      phase: RolloutPhase.RoleRunnerProvisioned,
+    };
+    authoritative = await useCases.quiesceSource(authoritative);
+    expect(authoritative.phase).toBe(RolloutPhase.SourceQuiesced);
+    expect(ports.ledger.compareAndSet).toHaveBeenCalledWith(
+      expect.objectContaining({ step: RolloutStep.QuiesceSource }),
+    );
+    await expect(useCases.captureSourceBackup(authoritative)).rejects.toThrow(
+      "pg_dump_failed",
+    );
+    expect(authoritative.phase).toBe(RolloutPhase.SourceQuiesced);
+    expect(captureBackup).toHaveBeenCalledOnce();
+  });
+
   it("durably claims a rollout ID and rejects duplicate/retry execution", async () => {
     const ports = basePorts();
     const useCases = new ReleaseRolloutUseCases(ports);

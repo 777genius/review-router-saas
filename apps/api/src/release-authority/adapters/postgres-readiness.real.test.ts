@@ -148,8 +148,8 @@ realDescribe("release authority exact catalog readiness", () => {
     const observed = await readiness();
     expect(observed).toMatchObject({
       postgresMajor: 17,
-      schemaVersion: 15,
-      catalogVerifier: "complete_catalog_v3_acl_exact",
+      schemaVersion: 16,
+      catalogVerifier: "complete_catalog_v5_provider_root_pin",
       defaultAclExact: true,
       finalAclExact: true,
       catalogExact: true,
@@ -313,6 +313,9 @@ realDescribe("release authority exact catalog readiness", () => {
       await admin.$executeRawUnsafe(
         `ALTER FUNCTION release_authority.release_source_resume_is_rollout_owned() OWNER TO ${quotedOwner}`,
       );
+      await admin.$executeRawUnsafe(
+        "REVOKE ALL ON FUNCTION release_authority.release_source_resume_is_rollout_owned() FROM PUBLIC",
+      );
     }
   });
 
@@ -330,7 +333,9 @@ realDescribe("release authority exact catalog readiness", () => {
     [
       "an unexpected sequence grantee",
       "GRANT SELECT ON SEQUENCE release_authority.source_freeze_observation_observation_id_seq TO reviewrouter_unexpected_acl_probe",
-      "REVOKE ALL ON SEQUENCE release_authority.source_freeze_observation_observation_id_seq FROM reviewrouter_unexpected_acl_probe",
+      `REVOKE ALL ON SEQUENCE release_authority.source_freeze_observation_observation_id_seq FROM reviewrouter_unexpected_acl_probe;
+       REVOKE ALL ON SEQUENCE release_authority.source_freeze_observation_observation_id_seq FROM reviewrouter_authority_owner;
+       GRANT USAGE ON SEQUENCE release_authority.source_freeze_observation_observation_id_seq TO reviewrouter_authority_owner`,
     ],
     [
       "an unexpected type grantee",
@@ -501,6 +506,12 @@ realDescribe("release authority exact catalog readiness", () => {
       await expectCatalogRejected();
     } finally {
       await admin.$executeRawUnsafe(functionDefinition);
+      await admin.$executeRawUnsafe(
+        `ALTER FUNCTION release_authority.release_source_resume_is_rollout_owned() OWNER TO ${quotedOwner}`,
+      );
+      await admin.$executeRawUnsafe(
+        "REVOKE ALL ON FUNCTION release_authority.release_source_resume_is_rollout_owned() FROM PUBLIC",
+      );
       await admin.$executeRawUnsafe(triggerDefinition);
     }
   });
@@ -626,7 +637,7 @@ realDescribe("release authority exact catalog readiness", () => {
     const comment = comments[0]?.comment;
     if (!comment) throw new Error("real_postgres_catalog_attestation_missing");
     await admin.$executeRawUnsafe(
-      'COMMENT ON SCHEMA release_authority IS \'{"verifier":"complete_catalog_v3_acl_exact","catalogFingerprint":"sha256:0000"}\'',
+      'COMMENT ON SCHEMA release_authority IS \'{"verifier":"complete_catalog_v5_provider_root_pin","catalogFingerprint":"sha256:0000"}\'',
     );
     try {
       await expectCatalogRejected();

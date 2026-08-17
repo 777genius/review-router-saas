@@ -309,12 +309,31 @@ describe("release workflow contract", () => {
   );
   const release = readFileSync(".github/workflows/release.yml", "utf8");
 
-  it("runs expensive PostgreSQL gates once on trusted main pushes and skips fork PRs", () => {
+  it("runs the authority contract with an exact event-specific baseline", () => {
     expect(
       ci.match(
         /if: \$\{\{ github\.event_name == 'push' \|\| \(github\.event_name == 'workflow_dispatch' && inputs\.[^)]+\) \}\}/gu,
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
+    expect(ci).toContain(
+      "github.event_name == 'push' || github.event_name == 'pull_request'",
+    );
+    expect(ci).toContain(
+      "PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}",
+    );
+    expect(ci).toContain("PUSH_BASE_SHA: ${{ github.event.before || '' }}");
+    expect(ci).toContain(
+      "DISPATCH_BASE_SHA: ${{ inputs.release_authority_contract_baseline_sha || '' }}",
+    );
+    expect(ci).toContain('git cat-file -e "$baseline_sha^{commit}"');
+    expect(ci).toContain(
+      'git merge-base --is-ancestor "$baseline_sha" "$HEAD_SHA"',
+    );
+    expect(ci).toContain("fetch-depth: 0");
+    expect(ci).toContain(
+      "REVIEW_ROUTER_RELEASE_AUTHORITY_CONTRACT_BASELINE_REF=$baseline_sha",
+    );
+    expect(ci).toContain("pnpm install --frozen-lockfile --no-optional");
     expect(ci).toContain(
       "node scripts/release-gate-evidence.mjs write release-authority-pg17-contract",
     );

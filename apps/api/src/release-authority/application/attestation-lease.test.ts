@@ -45,7 +45,7 @@ const subject = () =>
     serviceKind: ReleaseAuthorityServiceKind.Control,
     deploymentRevision: "a".repeat(40),
     artifactDigest: `sha256:${"b".repeat(64)}`,
-    catalogContractId: "complete_catalog_v3_acl_exact",
+    catalogContractId: "complete_catalog_v5_provider_root_pin",
     expectedDatabases: [
       {
         roleName: "reviewrouter_release_control",

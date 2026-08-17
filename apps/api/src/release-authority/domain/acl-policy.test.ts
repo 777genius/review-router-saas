@@ -51,13 +51,14 @@ describe("release authority ACL policy", () => {
       {
         grantedRole: "reviewrouter_authority_owner",
         memberRole: "reviewrouter_migration_broker",
+        grantorRole: "provisioned_grantor",
         admin: true,
         inherit: false,
         set: false,
       },
     ]);
     expect(new Set(releaseAuthorityFinalAclPolicy.relations).size).toBe(15);
-    expect(new Set(releaseAuthorityFinalAclPolicy.routines).size).toBe(84);
+    expect(new Set(releaseAuthorityFinalAclPolicy.routines).size).toBe(85);
     expect(
       new Set(
         releaseAuthorityFinalAclPolicy.routineExecuteRoles

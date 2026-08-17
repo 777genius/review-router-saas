@@ -50,8 +50,8 @@ const preMigrationSteps = [
   "verify_protected_environment",
   "freeze_provider_services",
   "provision_role_runner",
-  "capture_source_backup",
   "quiesce_source",
+  "capture_source_backup",
   "copy_database_generation",
   "bootstrap_target_roles",
   "verify_data_equivalence",
@@ -274,12 +274,13 @@ realDescribe("release authority API/Postgres runtime contract", () => {
     const unique = randomUUID().replaceAll("-", "");
     const rolloutId = `r-provider-mutation-${unique.slice(0, 16)}`;
     const secondRolloutId = `r-provider-second-${unique.slice(0, 16)}`;
+    const firstIdentifiers = numericSystemIdentifiers(unique);
     await ledger.claim(
       claimBinding({
         rolloutId,
         expectedCommitSha: "a".repeat(40),
         runId: "902",
-        ...numericSystemIdentifiers(unique),
+        ...firstIdentifiers,
       }),
     );
     const secondIdentifiers = numericSystemIdentifiers(`${unique.slice(1)}0`);
@@ -291,13 +292,28 @@ realDescribe("release authority API/Postgres runtime contract", () => {
         ...secondIdentifiers,
       }),
     );
+    for (const [id, identifiers] of [
+      [rolloutId, firstIdentifiers],
+      [secondRolloutId, secondIdentifiers],
+    ] as const)
+      await admin.$queryRawUnsafe(
+        `SELECT release_authority.release_provider_authority_decide(
+          jsonb_build_object('rolloutId',$1::text,'operation','freeze_source',
+            'sourceSystemIdentifier',$2::text,'targetSystemIdentifier',$3::text,
+            'expectedReceiptSha256','sha256:'||repeat('0',64),
+            'activationBoundary','before'))`,
+        id,
+        identifiers.sourceSystemIdentifier,
+        identifiers.targetSystemIdentifier,
+      );
+    const resourceId = `srv-authority-${unique.slice(0, 12)}`;
     const base = {
       rolloutId,
-      operation: `freeze:srv-${unique.slice(0, 12)}`,
+      operation: `freeze:${resourceId}`,
       resource: {
         provider: "render",
         kind: "service",
-        id: `srv-authority-${unique.slice(0, 12)}`,
+        id: resourceId,
       },
       expected: { fingerprint: `sha256:${"b".repeat(64)}`, version: null },
       leaseSeconds: 60,
@@ -307,7 +323,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       {
         ...base,
         rolloutId: secondRolloutId,
-        operation: `resume:srv-${unique.slice(0, 12)}`,
+        operation: `freeze:${resourceId}`,
         ownerId: "actor-two",
       },
     ] as const;
@@ -384,10 +400,18 @@ realDescribe("release authority API/Postgres runtime contract", () => {
     });
     expect(next.epoch).toBeGreaterThan(receipt.epoch);
     const nextReceipt = await authority.consume(next);
+    await expect(authority.validateExecution(nextReceipt)).resolves.toBe(true);
+    await expect(
+      (authority.reconcile as (input: unknown) => Promise<void>)({
+        result: "ambiguous_forward_repair",
+        receipt: nextReceipt,
+        observation: null,
+      }),
+    ).rejects.toThrow();
     await authority.reconcile({
       result: "ambiguous_forward_repair",
       receipt: nextReceipt,
-      observation: null,
+      observation: { ...observation, resource: nextReceipt.resource },
     });
     await expect(
       authority.issue({
@@ -400,7 +424,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
 
     const expiring = await authority.issue({
       ...base,
-      operation: `freeze-expiring:srv-${unique.slice(0, 12)}`,
+      operation: `freeze:srv-expiring-${unique.slice(0, 12)}`,
       resource: { ...base.resource, id: `srv-expiring-${unique.slice(0, 12)}` },
       ownerId: "actor-expiring",
     });
@@ -418,7 +442,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
     const afterExpiry = await authority.issue({
       ...base,
       rolloutId: secondRolloutId,
-      operation: `resume-expired:srv-${unique.slice(0, 12)}`,
+      operation: `freeze:srv-expiring-${unique.slice(0, 12)}`,
       resource: expiring.resource,
       ownerId: "actor-after-expiry",
     });
@@ -435,7 +459,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
 
     const recoverRequest = {
       ...base,
-      operation: `recover:srv-${unique.slice(0, 12)}`,
+      operation: `freeze:srv-recover-${unique.slice(0, 12)}`,
       resource: { ...base.resource, id: `srv-recover-${unique.slice(0, 12)}` },
       ownerId: "actor-recover-one",
     } as const;
@@ -505,8 +529,18 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       reconciliationOnly: true,
       receipt: takeoverReceipt,
     });
-    await authority.reconcile({
-      result: "exact_postcondition",
+    await expect(
+      (authority.reconcile as (input: unknown) => Promise<void>)({
+        result: "exact_postcondition",
+        receipt: takeoverReceipt,
+        observation: {
+          resource: takeoverReceipt.resource,
+          state: base.expected,
+          observedAt: new Date().toISOString(),
+        },
+      }),
+    ).rejects.toThrow();
+    await authority.complete({
       receipt: takeoverReceipt,
       observation: {
         resource: takeoverReceipt.resource,
@@ -535,7 +569,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
     await expect(
       authority.issue({
         ...base,
-        operation: `freeze-unrelated:srv-${unique.slice(0, 12)}`,
+        operation: `freeze:srv-unrelated-${unique.slice(0, 12)}`,
         resource: {
           ...base.resource,
           id: `srv-unrelated-${unique.slice(0, 12)}`,
@@ -798,13 +832,14 @@ realDescribe("release authority API/Postgres runtime contract", () => {
     const ledger = new RoutineReleaseControlLedgerAdapter(control);
     const authority = new RoutineProviderMutationAuthorityAdapter(control);
     const unique = randomUUID().replaceAll("-", "");
+    const lockResourceId = `srv-lock-order-${unique.slice(0, 12)}`;
     const request = {
       rolloutId: `r-lock-order-${unique.slice(0, 16)}`,
-      operation: `lock-order:srv-${unique.slice(0, 12)}`,
+      operation: `freeze:${lockResourceId}`,
       resource: {
         provider: "render",
         kind: "service",
-        id: `srv-lock-order-${unique.slice(0, 12)}`,
+        id: lockResourceId,
       },
       ownerId: "rr-provider-lock-order",
       expected: { fingerprint: `sha256:${"9".repeat(64)}`, version: null },
@@ -817,6 +852,17 @@ realDescribe("release authority API/Postgres runtime contract", () => {
         runId: "904",
         ...numericSystemIdentifiers(unique),
       }),
+    );
+    const identifiers = numericSystemIdentifiers(unique);
+    await admin.$queryRawUnsafe(
+      `SELECT release_authority.release_provider_authority_decide(
+        jsonb_build_object('rolloutId',$1::text,'operation','freeze_source',
+          'sourceSystemIdentifier',$2::text,'targetSystemIdentifier',$3::text,
+          'expectedReceiptSha256','sha256:'||repeat('0',64),
+          'activationBoundary','before'))`,
+      request.rolloutId,
+      identifiers.sourceSystemIdentifier,
+      identifiers.targetSystemIdentifier,
     );
     await authority.issue(request);
 

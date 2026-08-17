@@ -58,6 +58,9 @@ describe("release authority ACL readiness observation", () => {
     expect(sql).toContain("granted.rolname=ANY");
     expect(sql).toContain("member.rolname=ANY");
     expect(sql).toContain("role.rolbypassrls");
+    expect(sql).toContain("membership.grantor=facts.provider_root_oid");
+    expect(sql).toContain("provider_root_pin");
+    expect(sql).toContain("pg_catalog.pg_control_system()");
     expect(sql).toContain('AS "authorityRoleTopologyExact"');
     expect(sql).toContain('AS "catalogExact"');
     expect(sql).toContain('AS "defaultAclExact"');
@@ -181,7 +184,7 @@ describe("release authority ACL readiness observation", () => {
           },
         },
       ],
-      [{ schemaVersion: 15, migrationManifest: [] }],
+      [{ schemaVersion: 16, migrationManifest: [] }],
       [{ migrationManifest: manifest }],
     ]);
     const harness = transactionHarness(queryRaw);
@@ -247,6 +250,12 @@ describe("release authority ACL readiness observation", () => {
     expect(observed.recoveryWitnessSha256).toBe("");
     expect(sqlText(queryRaw).match(/"recoveryWitnessSha256"/gu)).toHaveLength(
       1,
+    );
+    expect(sqlText(queryRaw)).toContain(
+      "reviewrouter_migration_credential.login_role_is_inert",
+    );
+    expect(sqlText(queryRaw)).toContain(
+      "granted.rolname~'^rr_migration_[a-f0-9]{24}$'",
     );
   });
 

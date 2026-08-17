@@ -157,9 +157,8 @@ describe("authority-serialized provider mutation", () => {
       execute(authority, { mutate, observe: async () => observed(after) }),
     ).resolves.toMatchObject({ status: "reconciled" });
     expect(mutate).not.toHaveBeenCalled();
-    expect(authority.reconciliations.at(-1)?.result).toBe(
-      "exact_postcondition",
-    );
+    expect(authority.completed).toBe(1);
+    expect(authority.reconciliations).toHaveLength(0);
   });
 
   it("makes a recovered executing receipt permanently ambiguous when the postcondition is unproven", async () => {
@@ -503,8 +502,7 @@ describe("authority-serialized provider mutation", () => {
       status: "reconciled",
     });
     expect(mutate).toHaveBeenCalledTimes(1);
-    expect(authority.reconciliations.at(-1)?.result).toBe(
-      "exact_postcondition",
-    );
+    expect(authority.completed).toBe(1);
+    expect(authority.reconciliations).toHaveLength(0);
   });
 });

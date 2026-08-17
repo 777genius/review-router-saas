@@ -4,6 +4,8 @@ import {
   releaseAuthorityDefaultAclPreflightSql,
   releaseAuthorityDefaultAclRowsExpression,
   releaseAuthorityFinalAclExactExpression,
+  releaseAuthorityProviderTerminalTopologyExactExpression,
+  releaseAuthorityRuntimeAclExactExpression,
 } from "./acl-policy-postgres.mjs";
 
 describe("release authority PostgreSQL ACL policy adapter", () => {
@@ -40,6 +42,8 @@ describe("release authority PostgreSQL ACL policy adapter", () => {
     expect(finalAcl).toContain("attribute.attacl IS NOT NULL");
     expect(finalAcl).toContain("type_record.typacl IS NOT NULL");
     expect(finalAcl).toContain("pg_catalog.pg_auth_members");
+    expect(finalAcl).toContain("grantor.oid=target.provider_root_oid");
+    expect(finalAcl).toContain("provider_root_pin");
     expect(finalAcl).toContain("acl.is_grantable");
     // Migration 000014 adds one immutable relation and retains the four v13
     // implementations as owner-only helpers behind the public entry points.
@@ -53,6 +57,17 @@ describe("release authority PostgreSQL ACL policy adapter", () => {
       "release_migration_fail_v13",
     ])
       expect(finalAcl).toContain(helper);
+    const providerTopology =
+      releaseAuthorityProviderTerminalTopologyExactExpression();
+    expect(providerTopology).toContain(
+      "reviewrouter_migration_credential.provider_terminal_topology_is_exact()",
+    );
+    expect(providerTopology).not.toContain(
+      "FROM reviewrouter_migration_credential",
+    );
+    expect(
+      releaseAuthorityRuntimeAclExactExpression("release_authority"),
+    ).toContain(providerTopology);
   });
 
   it("rejects untrusted schema interpolation", () => {

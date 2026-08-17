@@ -590,6 +590,16 @@ describe("private-network PG17 workflow security contract", () => {
     );
     expect(mutation).toContain("run: pnpm release-authority:fresh-install");
     expect(mutation).toContain("run: pnpm release-authority:upgrade");
+    expect(mutation).toContain(
+      "REVIEW_ROUTER_RELEASE_AUTHORITY_BOOTSTRAP_ADMIN_DATABASE_URL",
+    );
+    expect(mutation).toContain(
+      "node scripts/install-release-authority-db.mjs --cleanup-bootstrap",
+    );
+    expect(mutation).toContain("if: ${{ always() && (inputs.operation");
+    expect(mutation).toContain(
+      'provider_file="$RUNNER_TEMP/release-authority-provider-url"',
+    );
     expect(trustBootstrap).toContain('required("GITHUB_EVENT_NAME")');
     expect(trustBootstrap).toContain('required("GITHUB_REF")');
     expect(trustBootstrap).toContain('required("GITHUB_SHA")');

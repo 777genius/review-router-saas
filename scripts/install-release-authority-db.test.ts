@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   mkdtempSync,
@@ -11,6 +12,16 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   installReleaseAuthorityDatabase,
+  releaseAuthorityBootstrapAdministratorRole,
+  releaseAuthorityBootstrapCleanupSql,
+  releaseAuthorityBootstrapPreparationSql,
+  releaseAuthorityBootstrapProvisioningSql,
+  releaseAuthorityBootstrapRelinquishSql,
+  releaseAuthorityBootstrapRecoverySql,
+  releaseAuthorityBootstrapTerminalSql,
+  releaseAuthorityBootstrapLifecycleSql,
+  releaseAuthorityProviderRootProbeSql,
+  validateProviderRootAttestation,
   releaseAuthorityAclFingerprintSql,
   releaseAuthorityCatalogFingerprintSql,
   releaseAuthorityMigrationBundle,
@@ -18,8 +29,300 @@ import {
   releaseAuthorityMigrationPaths,
   postgresEnvironment,
 } from "./install-release-authority-db.mjs";
+import {
+  parseReleaseAuthorityPostgresUrl,
+  releaseAuthorityPostgresEndpoint,
+  releaseAuthorityPostgresPassfileLine,
+  releaseAuthorityPostgresUrlWithCredentials,
+} from "./lib/release-authority-postgres-url.mjs";
+
+const providerRoot = Object.freeze({
+  contractVersion: 1,
+  systemIdentifier: "72623859790382856",
+  rootOid: 10,
+  rootName: "opaque_provider_root",
+  providerOid: 16_384,
+  providerName: "reviewrouter_bootstrap_administrator",
+});
 
 describe("release authority database installation", () => {
+  it("probes, pins, and classifies the opaque provider trust root", () => {
+    const probe = releaseAuthorityProviderRootProbeSql(
+      `rr_root_probe_${"a".repeat(32)}`,
+    );
+    expect(probe).toContain("SET LOCAL createrole_self_grant=''");
+    expect(probe).toContain('CREATE ROLE "rr_root_probe_');
+    expect(probe).toContain("pg_catalog.pg_control_system()");
+    expect(probe).toContain('DROP ROLE "rr_root_probe_');
+    expect(probe).not.toContain("postgres");
+    expect(validateProviderRootAttestation(providerRoot)).toEqual(providerRoot);
+    expect(() =>
+      validateProviderRootAttestation({ ...providerRoot, rootOid: 16_384 }),
+    ).toThrow("release_authority_provider_root_attestation_invalid");
+    const lifecycle = releaseAuthorityBootstrapLifecycleSql(
+      "reviewrouter_role_bootstrap",
+      providerRoot,
+    );
+    for (const state of [
+      "fresh",
+      "provisioned",
+      "retryable",
+      "cleanup-pending",
+      "terminal",
+      "drifted",
+    ])
+      expect(lifecycle).toContain(`'${state}'`);
+    expect(lifecycle).toContain("membership.grantor=10");
+    expect(lifecycle).toContain("system_identifier::text");
+  });
+
+  it("provisions an independent grantor and one-shot provider-owned retirement helper", () => {
+    const provisioning = releaseAuthorityBootstrapProvisioningSql(
+      "reviewrouter_role_bootstrap",
+      "unused-password",
+      providerRoot,
+    );
+    expect(provisioning).toContain(
+      "GRANT reviewrouter_authority_owner TO reviewrouter_migration_broker\n  WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
+    );
+    expect(provisioning).toContain(
+      'GRANT reviewrouter_authority_owner TO "reviewrouter_role_bootstrap"\n  WITH ADMIN FALSE, INHERIT TRUE, SET TRUE',
+    );
+    expect(provisioning).toContain(
+      "membership.inherit_option IS NOT DISTINCT FROM",
+    );
+    expect(provisioning).toContain("membership.grantor<>10");
+    expect(provisioning).toContain(
+      "RAISE EXCEPTION 'release authority provider ADMIN topology is noncanonical'",
+    );
+    for (const cyclicGrant of [
+      "GRANT reviewrouter_authority_owner TO reviewrouter_bootstrap_administrator",
+      "GRANT reviewrouter_migration_broker TO reviewrouter_bootstrap_administrator",
+      'GRANT "reviewrouter_role_bootstrap" TO reviewrouter_bootstrap_administrator',
+    ])
+      expect(provisioning).not.toContain(cyclicGrant);
+    expect(provisioning).toContain(
+      "CREATE FUNCTION reviewrouter_migration_bootstrap.quiesce(",
+    );
+    expect(provisioning).not.toContain(" CASCADE");
+    expect(releaseAuthorityBootstrapAdministratorRole).toBe(
+      "reviewrouter_bootstrap_administrator",
+    );
+    expect(provisioning).toContain("AND NOT role.rolsuper");
+    expect(provisioning).toContain(
+      "pg_has_role(current_user,'pg_signal_backend','MEMBER')",
+    );
+    expect(provisioning).toContain("pid<>pg_catalog.pg_backend_pid()");
+    expect(provisioning).toContain(
+      'ALTER ROLE "reviewrouter_role_bootstrap" LOGIN PASSWORD',
+    );
+    expect(provisioning).toContain(
+      "AND NOT owner.rolsuper AND NOT owner.rolcreatedb",
+    );
+    expect(provisioning).toContain("bootstrap quiescence is noncanonical");
+    expect(provisioning).not.toMatch(/\bCREATEDB\b/u);
+    const preparation = releaseAuthorityBootstrapPreparationSql(
+      "reviewrouter_role_bootstrap",
+      providerRoot,
+    );
+    const relinquishment = releaseAuthorityBootstrapRelinquishSql(
+      "reviewrouter_role_bootstrap",
+    );
+    expect(preparation).toContain(
+      'GRANT CREATE ON DATABASE :"DBNAME"\n  TO reviewrouter_bootstrap_administrator',
+    );
+    expect(preparation).toContain(
+      "AND NOT role.rolcreatedb AND role.rolcreaterole",
+    );
+    expect(relinquishment).toContain(
+      'REVOKE CREATE ON DATABASE :"DBNAME"\n  FROM reviewrouter_bootstrap_administrator',
+    );
+    const recovery = releaseAuthorityBootstrapRecoverySql(
+      "reviewrouter_role_bootstrap",
+      "retry-password",
+      providerRoot,
+    );
+    expect(recovery).toContain(
+      "ALTER ROLE \"reviewrouter_role_bootstrap\" LOGIN PASSWORD 'retry-password'",
+    );
+    expect(recovery).toContain("CONNECTION LIMIT 1");
+    expect(recovery).not.toContain("$bound_bootstrap_connections$");
+    expect(recovery).toContain("membership.grantor=10");
+    expect(recovery).toContain(
+      "WHERE role.rolname='reviewrouter_role_bootstrap' AND NOT role.rolsuper\n        AND NOT role.rolcreatedb AND NOT role.rolreplication",
+    );
+    expect(recovery).not.toMatch(/\bCREATEDB\b/u);
+    expect(() =>
+      releaseAuthorityBootstrapProvisioningSql(
+        "bad role;DROP ROLE x",
+        "unused",
+        providerRoot,
+      ),
+    ).toThrow("release_authority_bootstrap_role_invalid");
+  });
+
+  it("attests every helper property and converges sessions and credentials", () => {
+    const provisioning = releaseAuthorityBootstrapProvisioningSql(
+      "reviewrouter_role_bootstrap",
+      "unused-password",
+      providerRoot,
+    );
+    const helperBody = provisioning.match(
+      /CREATE FUNCTION reviewrouter_migration_bootstrap\.quiesce\([\s\S]*?AS \$body\$([\s\S]*?)\$body\$;/u,
+    )?.[1];
+    expect(helperBody).toBeDefined();
+    const helperSha256 = createHash("sha256").update(helperBody!).digest("hex");
+    const migration = readFileSync(
+      "packages/platform/release-authority-db/migrations/000015_migration_credential_lease/migration.sql",
+      "utf8",
+    );
+    for (const contract of [
+      `convert_to(procedure.prosrc,'UTF8')`,
+      `'${helperSha256}'`,
+      "procedure.provolatile='v'",
+      "NOT procedure.proisstrict",
+      "NOT procedure.proleakproof",
+      "procedure.proparallel='u'",
+      "procedure.prosupport=0",
+      "procedure.proargtypes='19 19'",
+      "count(*) FROM pg_catalog.pg_proc procedure",
+      "pg_catalog.pg_operator object",
+      "pg_catalog.pg_extension object",
+      "pg_catalog.pg_statistic_ext object",
+      "pg_catalog.pg_default_acl object",
+      "has_database_privilege",
+      "count(*) FROM pg_catalog.aclexplode(namespace.nspacl)",
+      "count(*) FROM pg_catalog.aclexplode(procedure.proacl)",
+    ])
+      expect(migration).toContain(contract);
+    expect(migration).not.toContain(
+      "ALTER ROLE reviewrouter_authority_owner RESET ALL",
+    );
+    expect(migration).not.toContain(
+      "ALTER ROLE reviewrouter_migration_broker RESET ALL",
+    );
+    expect(migration).not.toContain("procedure.protransform");
+    expect(migration).not.toContain("RESET ROLE;\n\nDO $quiesce_bootstrap$");
+    expect(migration).toContain(
+      "REASSIGN OWNED BY %I TO reviewrouter_authority_owner",
+    );
+    expect(migration).toContain(
+      "release authority bootstrap retained unexpected ownership",
+    );
+    expect(migration).toContain(
+      "GRANT SELECT ON TABLE reviewrouter_migration_credential.provider_root_pin",
+    );
+    expect(migration).toContain(
+      "GRANT SELECT ON TABLE reviewrouter_migration_credential.bootstrap_retirement",
+    );
+    expect(migration).toContain(
+      "TO reviewrouter_release_control,reviewrouter_provider_authority,\n     reviewrouter_release_witness",
+    );
+    expect(migration).toContain(
+      "current_user IS DISTINCT FROM 'reviewrouter_migration_broker'",
+    );
+    expect(migration).toContain(
+      "session_user::pg_catalog.regrole::oid<>p_provider_oid",
+    );
+    expect(migration).toContain(
+      "CREATE FUNCTION reviewrouter_migration_credential.login_role_membership_is_canonical(",
+    );
+    expect(migration).toContain(
+      "CREATE FUNCTION reviewrouter_migration_credential.retire_terminal_login_roles()",
+    );
+    expect(migration).toContain(
+      "CREATE FUNCTION reviewrouter_migration_credential.provider_terminal_topology_is_exact()",
+    );
+    expect(migration).toContain(
+      "CREATE FUNCTION reviewrouter_migration_credential.terminalize_login_role(",
+    );
+    expect(migration).toContain(
+      "reviewrouter_migration_credential.login_role_is_inert(item.login_role)",
+    );
+    expect(migration).toContain(
+      "WHERE usename=item.login_role) THEN\n      CONTINUE;",
+    );
+    expect(migration).toContain(
+      "migration credential terminal role is noncanonical",
+    );
+    expect(migration).toContain(
+      "GRANT EXECUTE ON FUNCTION reviewrouter_migration_credential.bootstrap_is_retired()\n  TO reviewrouter_authority_owner",
+    );
+    const cleanup = releaseAuthorityBootstrapCleanupSql(
+      "reviewrouter_role_bootstrap",
+      providerRoot,
+    );
+    expect(cleanup).toContain("pg_terminate_backend(backend.pid,5000)");
+    expect(cleanup).toContain("NOLOGIN PASSWORD NULL");
+    expect(cleanup).toContain(
+      "role.rolsuper OR role.rolcreatedb OR role.rolreplication",
+    );
+    expect(cleanup).toContain(
+      "membership.member=\n            'reviewrouter_bootstrap_administrator'::pg_catalog.regrole",
+    );
+    expect(cleanup).toContain("membership.grantor=10");
+    expect(cleanup).toContain(
+      "release authority cleanup left bootstrap memberships",
+    );
+    expect(cleanup).toContain(
+      "DROP SCHEMA reviewrouter_migration_bootstrap RESTRICT",
+    );
+    const terminal = releaseAuthorityBootstrapTerminalSql(
+      "reviewrouter_role_bootstrap",
+      providerRoot,
+    );
+    expect(terminal).toContain(
+      "NOT EXISTS (SELECT 1 FROM pg_catalog.pg_stat_activity",
+    );
+    expect(terminal).toContain("provider_root_pin_is_exact");
+    expect(terminal).toContain("bootstrap_is_retired");
+    expect(terminal).toContain("provider_terminal_topology_is_exact");
+    expect(terminal).not.toContain(
+      "FROM reviewrouter_migration_credential.bootstrap_retirement",
+    );
+    expect(terminal).toContain("count(*)=6 AND bool_and");
+    expect(terminal).toContain(
+      "pg_catalog.to_regnamespace('reviewrouter_migration_bootstrap') IS NULL",
+    );
+  });
+
+  it("attests privileged bootstrap attributes before using only provider-permitted ALTER ROLE options", () => {
+    const generated = [
+      releaseAuthorityBootstrapProvisioningSql(
+        "reviewrouter_role_bootstrap",
+        "provision-password",
+        providerRoot,
+      ),
+      releaseAuthorityBootstrapRecoverySql(
+        "reviewrouter_role_bootstrap",
+        "recovery-password",
+        providerRoot,
+      ),
+      releaseAuthorityBootstrapCleanupSql(
+        "reviewrouter_role_bootstrap",
+        providerRoot,
+      ),
+    ];
+    for (const sql of generated) {
+      const firstAlter = sql.indexOf("ALTER ROLE");
+      expect(firstAlter).toBeGreaterThan(-1);
+      for (const attribute of [
+        "rolsuper",
+        "rolcreatedb",
+        "rolreplication",
+        "rolbypassrls",
+      ]) {
+        const attestation = sql.indexOf(attribute);
+        expect(attestation).toBeGreaterThan(-1);
+        expect(attestation).toBeLessThan(firstAlter);
+      }
+      for (const statement of sql.matchAll(/ALTER ROLE[^;]*;/gu))
+        expect(statement[0]).not.toMatch(
+          /\b(?:SUPERUSER|NOSUPERUSER|CREATEDB|NOCREATEDB|REPLICATION|NOREPLICATION|BYPASSRLS|NOBYPASSRLS)\b/u,
+        );
+    }
+  });
+
   it("requires an explicit fresh-install or incremental-upgrade gate", () => {
     expect(() => releaseAuthorityMigrationBundle(undefined)).toThrow(
       "release_authority_migration_mode_required",
@@ -62,6 +365,97 @@ describe("release authority database installation", () => {
         statementTimeoutMs: 2_000,
       }),
     ).toThrow("release_authority_statement_timeout_invalid");
+  });
+
+  it("holds a credential lease and its owner grant inside the migration transaction", () => {
+    const lease = {
+      leaseId: `rrml-${"a".repeat(64)}`,
+      loginRole: `rr_migration_${"b".repeat(24)}`,
+      databaseName: "reviewrouter",
+      ownerRole: "reviewrouter_authority_owner",
+      expectedCommitSha: "c".repeat(40),
+      workflowRunId: "123",
+      workflowRunAttempt: 1,
+      operation: "incremental-upgrade",
+      expiresAt: "2026-08-16T12:00:00.000Z",
+      passwordSha256: `sha256:${"d".repeat(64)}`,
+      nonce: "A".repeat(43),
+      receiptSha256: `sha256:${"e".repeat(64)}`,
+    };
+    const bundle = releaseAuthorityMigrationBundle(
+      "incremental-upgrade",
+      process.cwd(),
+      { lease },
+    );
+    const consume = bundle.indexOf(
+      "SELECT reviewrouter_migration_credential.consume(",
+    );
+    const assumeOwner = bundle.indexOf(
+      "SET ROLE reviewrouter_authority_owner;",
+      consume,
+    );
+    const finalize = bundle.indexOf(
+      "SELECT reviewrouter_migration_credential.finalize(",
+      assumeOwner,
+    );
+    const commit = bundle.indexOf("COMMIT;", finalize);
+    expect(bundle.match(/^BEGIN;$/gmu)).toHaveLength(1);
+    expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
+    expect(consume).toBeGreaterThan(bundle.indexOf("BEGIN;"));
+    expect(assumeOwner).toBeGreaterThan(consume);
+    expect(bundle.slice(consume, assumeOwner)).not.toContain("COMMIT;");
+    expect(finalize).toBeGreaterThan(assumeOwner);
+    expect(commit).toBeGreaterThan(finalize);
+    expect(bundle).toContain(
+      "reviewrouter_migration_credential.membership_is_active(\n                   member.rolname,granted.rolname)",
+    );
+    expect(bundle).toContain(
+      "grantor.rolname='reviewrouter_migration_broker'\n                 AND NOT membership.admin_option\n                 AND NOT membership.inherit_option AND membership.set_option",
+    );
+    expect(bundle).toContain(
+      "reviewrouter_migration_credential.login_role_membership_is_canonical(\n                   granted.rolname,member.rolname)",
+    );
+    expect(bundle).toContain("(CASE WHEN bootstrap_retired THEN 4 ELSE 5 END)");
+    expect(bundle).toContain("(CASE WHEN bootstrap_retired THEN 3 ELSE 4 END)");
+  });
+
+  it("quiesces bootstrap before the final ACL and catalog gates", () => {
+    const bundle = releaseAuthorityMigrationBundle("fresh-install");
+    const migration = bundle.indexOf(
+      "CREATE SCHEMA reviewrouter_migration_credential",
+    );
+    const finalCatalog = bundle.indexOf("DO $final_catalog$", migration);
+    const quiescence = bundle.indexOf(
+      "PERFORM reviewrouter_migration_bootstrap.quiesce(\n    session_user,current_database())",
+      migration,
+    );
+    const commit = bundle.indexOf("COMMIT;", quiescence);
+    expect(migration).toBeGreaterThan(-1);
+    expect(quiescence).toBeGreaterThan(migration);
+    expect(finalCatalog).toBeGreaterThan(quiescence);
+    expect(commit).toBeGreaterThan(quiescence);
+  });
+
+  it("bounds consumed owner authority by the absolute lease expiry", () => {
+    const migration = readFileSync(
+      "packages/platform/release-authority-db/migrations/000015_migration_credential_lease/migration.sql",
+      "utf8",
+    );
+    expect(migration).toContain("set_config('transaction_timeout'");
+    expect(migration).toContain("set_config('statement_timeout'");
+    expect(migration).toContain(
+      "set_config('idle_in_transaction_session_timeout'",
+    );
+    expect(migration).toContain(
+      "active.expires_at-pg_catalog.clock_timestamp()",
+    );
+    expect(migration).toContain(
+      "CREATE CONSTRAINT TRIGGER migration_credential_consume_finalize_guard",
+    );
+    expect(migration).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(migration).toContain(
+      "migration credential consume requires same-transaction finalize",
+    );
   });
 
   it("fails closed on global and schema-scoped creating-owner default ACLs before DDL", () => {
@@ -209,6 +603,164 @@ describe("release authority database installation", () => {
     }
   });
 
+  it("redacts malformed credential URL canaries from every parser diagnostic", () => {
+    const canary = "malformed-url-credential-canary";
+    const malformed = `postgresql://owner:${canary}%ZZ@authority.internal/reviewrouter`;
+    for (const parse of [
+      () => postgresEnvironment(malformed),
+      () => parseReleaseAuthorityPostgresUrl(malformed),
+      () => releaseAuthorityPostgresEndpoint(malformed),
+      () => releaseAuthorityPostgresPassfileLine(malformed),
+      () =>
+        releaseAuthorityPostgresUrlWithCredentials(
+          malformed,
+          "replacement",
+          "replacement",
+        ),
+    ]) {
+      let rejected = false;
+      try {
+        parse();
+      } catch (error) {
+        rejected = true;
+        expect(String(error)).not.toContain(canary);
+        expect(JSON.stringify(error)).not.toContain(canary);
+        expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
+      }
+      expect(rejected).toBe(true);
+    }
+
+    const directory = mkdtempSync(join(tmpdir(), "authority-url-canary-"));
+    try {
+      const issuerFile = join(directory, "issuer-url");
+      writeFileSync(issuerFile, malformed, { mode: 0o600 });
+      const result = spawnSync(
+        process.execPath,
+        ["scripts/release-authority-migration-credential.mjs", "issue"],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: {
+            PATH: process.env.PATH,
+            REVIEW_ROUTER_RELEASE_AUTHORITY_CREDENTIAL_ISSUER_DATABASE_URL_FILE:
+              issuerFile,
+            REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE: join(
+              directory,
+              "lease-url",
+            ),
+            REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_LEASE_FILE: join(
+              directory,
+              "lease",
+            ),
+            REVIEW_ROUTER_RELEASE_AUTHORITY_EXPECTED_SHA: "a".repeat(40),
+            REVIEW_ROUTER_RELEASE_AUTHORITY_WORKFLOW_RUN_ID: "1",
+            REVIEW_ROUTER_RELEASE_AUTHORITY_WORKFLOW_RUN_ATTEMPT: "1",
+            REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_MODE:
+              "incremental-upgrade",
+          },
+        },
+      );
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}${result.stderr}`).not.toContain(canary);
+      expect(result.stderr).toContain("release_authority_database_url_invalid");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["%00", "%0A", "%0D", "%C2%85", "%E2%80%A8"])(
+    "rejects decoded passfile control character %s in every credential field",
+    (encoded) => {
+      const urls = [
+        `postgresql://owner:secret@authority.internal/review${encoded}router`,
+        `postgresql://own${encoded}er:secret@authority.internal/reviewrouter`,
+        `postgresql://owner:sec${encoded}ret@authority.internal/reviewrouter`,
+      ];
+      for (const url of urls) {
+        expect(() => parseReleaseAuthorityPostgresUrl(url)).toThrow(
+          "release_authority_database_url_invalid",
+        );
+        expect(() => releaseAuthorityPostgresPassfileLine(url)).toThrow(
+          "release_authority_database_url_invalid",
+        );
+      }
+    },
+  );
+
+  it.each(["\n", "\r", "\t"])(
+    "rejects literal URL control character %j before parser normalization",
+    (control) => {
+      const unsafe = `postgresql://owner:sec${control}ret@authority.internal/reviewrouter`;
+      for (const parse of [
+        () => parseReleaseAuthorityPostgresUrl(unsafe),
+        () => releaseAuthorityPostgresPassfileLine(unsafe),
+        () => postgresEnvironment(unsafe),
+      ])
+        expect(parse).toThrow("release_authority_database_url_invalid");
+
+      const directory = mkdtempSync(join(tmpdir(), "authority-raw-control-"));
+      try {
+        const credentialFile = join(directory, "credential-url");
+        writeFileSync(credentialFile, unsafe, { mode: 0o600 });
+        expect(() =>
+          installReleaseAuthorityDatabase({
+            PATH: process.env.PATH,
+            REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_MODE:
+              "incremental-upgrade",
+            REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE:
+              credentialFile,
+          }),
+        ).toThrow("release_authority_database_url_invalid");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["\n", "\r", "\t"])(
+    "rejects leading and trailing credential-file control character %j",
+    (control) => {
+      const canonical =
+        "postgresql://owner:secret@authority.internal/reviewrouter";
+      for (const unsafe of [
+        `${control}${canonical}`,
+        `${canonical}${control}`,
+      ]) {
+        const directory = mkdtempSync(
+          join(tmpdir(), "authority-boundary-control-"),
+        );
+        try {
+          const credentialFile = join(directory, "credential-url");
+          writeFileSync(credentialFile, unsafe, { mode: 0o600 });
+          expect(() =>
+            installReleaseAuthorityDatabase({
+              PATH: process.env.PATH,
+              REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_MODE:
+                "incremental-upgrade",
+              REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE:
+                credentialFile,
+            }),
+          ).toThrow("release_authority_database_url_invalid");
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      }
+    },
+  );
+
+  it.each(["user\nname", "user\rname", "user\u0085name", "user\u2028name"])(
+    "rejects replacement credentials containing control characters",
+    (unsafeUsername) => {
+      expect(() =>
+        releaseAuthorityPostgresUrlWithCredentials(
+          "postgresql://owner:secret@authority.internal/reviewrouter",
+          unsafeUsername,
+          "replacement",
+        ),
+      ).toThrow("release_authority_database_url_invalid");
+    },
+  );
+
   it("fails the database compensation gate on unresolved freeze effects", () => {
     const migration = readFileSync(
       "packages/platform/release-authority-db/migrations/000003_partial_source_freeze/migration.sql",
@@ -304,7 +856,7 @@ describe("release authority database installation", () => {
     const bundle = releaseAuthorityMigrationBundle("incremental-upgrade");
     expect(bundle).toContain("release_authority_verify_canonical");
     expect(bundle).toContain("release_authority_verify_legacy");
-    expect(bundle).toContain("complete_catalog_v3_acl_exact");
+    expect(bundle).toContain("complete_catalog_v5_provider_root_pin");
     expect(bundle).toContain(
       "legacy catalog is ambiguous or modified; audited repair required",
     );
@@ -417,7 +969,7 @@ describe("release authority database installation", () => {
     expect(fingerprintEnd).toBeGreaterThan(fingerprintStart);
     const fingerprint = bundle.slice(fingerprintStart, fingerprintEnd).trim();
     expect(fingerprint).toContain(
-      "verifier text NOT NULL CHECK (verifier IN ('complete_catalog_v1','complete_catalog_v3_acl_exact'))",
+      "verifier text NOT NULL CHECK (verifier IN ('complete_catalog_v1','complete_catalog_v5_provider_root_pin'))",
     );
     expect(fingerprint).toContain("SELECT 'default_acl', p_schema");
     expect(fingerprint).toContain("pg_catalog.pg_default_acl default_acl");
@@ -528,9 +1080,9 @@ describe("release authority database installation", () => {
     (mode) => {
       const bundle = releaseAuthorityMigrationBundle(mode);
       expect(bundle).toContain("DO $schema_version_marker$");
-      expect(bundle).toContain("'schemaVersion',15");
+      expect(bundle).toContain("'schemaVersion',16");
       const finalCatalog = bundle.indexOf("DO $final_catalog$");
-      const finalMarker = bundle.indexOf("'schemaVersion',15", finalCatalog);
+      const finalMarker = bundle.indexOf("'schemaVersion',16", finalCatalog);
       expect(finalCatalog).toBeGreaterThan(-1);
       expect(finalMarker).toBeGreaterThan(finalCatalog);
       expect(bundle.indexOf("COMMIT;", finalMarker)).toBeGreaterThan(
@@ -577,10 +1129,11 @@ describe("release authority database installation", () => {
       "packages/platform/release-authority-db/migrations/000013_phase_aware_application_manifest/migration.sql",
       "packages/platform/release-authority-db/migrations/000014_source_ambiguity_migration_permit/migration.sql",
       "packages/platform/release-authority-db/migrations/000015_migration_credential_lease/migration.sql",
+      "packages/platform/release-authority-db/migrations/000016_quiescence_before_backup/migration.sql",
     ]);
     expect(
       releaseAuthorityMigrationPaths
-        .slice(0, -1)
+        .slice(0, -2)
         .map((path) =>
           createHash("sha256").update(readFileSync(path)).digest("hex"),
         ),
@@ -597,7 +1150,7 @@ describe("release authority database installation", () => {
       "bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25",
       "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
       "727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
-      "45eb81a2715cf8c254cdacc2ca4ce8c80fc6c6527c009fe9dce63c3f80a510b1",
+      "095ce8c8859c8ddf51a526aeee2673f1f84853f2c479cef7cb92871ef749554a",
       "c14c52ce2594f49a23663a22a16ca789454e059bdb9abd6070d1b773cc847465",
       "09f6f3eb861a6610492ba77af708911afbdfee5ded5d82cd6e26f1ce32b9658a",
     ]);
@@ -685,6 +1238,8 @@ describe("release authority database installation", () => {
       expect(bundle).toContain("authority_forward_12_present");
       expect(bundle).toContain("authority_forward_13_present");
       expect(bundle).toContain("authority_forward_14_present");
+      expect(bundle).toContain("authority_forward_16_present");
+      expect(bundle).toContain("authority_forward_17_present");
       expect(bundle).toContain(
         "release authority forward migration 14 already present",
       );
