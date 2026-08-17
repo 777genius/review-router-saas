@@ -100,12 +100,7 @@ jobs:
       - name: Install dependencies
         env:
           SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
-        run: |
-          if test "${{ github.event_name }}" = pull_request; then
-            pnpm install --frozen-lockfile --no-optional
-          else
-            node scripts/install-private-dependencies.mjs --frozen-lockfile
-          fi
+        run: node scripts/install-private-dependencies.mjs --frozen-lockfile
       - name: Generate Prisma client
         run: pnpm db:generate
       - name: Pin PostgreSQL 17 contract image
