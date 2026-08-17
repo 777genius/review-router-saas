@@ -124,15 +124,35 @@ describe("private dependency installer", () => {
 
   it("uses a required key without forwarding the control flag or secret", () => {
     const { capturePath, directory } = createFakePnpm();
-    const privateKey = [
+    const invalidPrivateKey = [
       "-----BEGIN OPENSSH PRIVATE KEY-----",
       "test-key-material",
       "-----END OPENSSH PRIVATE KEY-----",
     ].join("\n");
+    const invalidResult = runInstaller(
+      directory,
+      ["--frozen-lockfile", "--require-deploy-key"],
+      Buffer.from(invalidPrivateKey, "utf8").toString("base64"),
+    );
+
+    expect(invalidResult.status).toBe(1);
+    expect(invalidResult.stderr).toContain(
+      "is not a valid OpenSSH private key",
+    );
+    expect(existsSync(capturePath)).toBe(false);
+
+    const keyPath = join(directory, "test-key");
+    const generatedKey = spawnSync(
+      "ssh-keygen",
+      ["-q", "-t", "ed25519", "-N", "", "-f", keyPath],
+      { encoding: "utf8" },
+    );
+    expect(generatedKey.status).toBe(0);
+
     const result = runInstaller(
       directory,
       ["--frozen-lockfile", "--require-deploy-key"],
-      Buffer.from(privateKey, "utf8").toString("base64"),
+      Buffer.from(readFileSync(keyPath, "utf8"), "utf8").toString("base64"),
     );
 
     expect(result.status).toBe(0);

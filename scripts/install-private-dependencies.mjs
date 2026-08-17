@@ -64,17 +64,27 @@ try {
   writeFileSync(keyPath, `${privateKey}\n`, { mode: 0o600 });
   writeFileSync(knownHostsPath, githubKnownHost, { mode: 0o600 });
 
-  const childEnv = { ...process.env };
-  delete childEnv.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64;
-  childEnv.GIT_SSH_COMMAND = [
-    "ssh",
-    `-i ${keyPath}`,
-    "-o IdentitiesOnly=yes",
-    `-o UserKnownHostsFile=${knownHostsPath}`,
-    "-o StrictHostKeyChecking=yes",
-  ].join(" ");
+  const keyValidation = spawnSync("ssh-keygen", ["-y", "-f", keyPath], {
+    stdio: "ignore",
+  });
+  if (keyValidation.signal || keyValidation.status !== 0) {
+    console.error(
+      "SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 is not a valid OpenSSH private key",
+    );
+    process.exitCode = 1;
+  } else {
+    const childEnv = { ...process.env };
+    delete childEnv.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64;
+    childEnv.GIT_SSH_COMMAND = [
+      "ssh",
+      `-i ${keyPath}`,
+      "-o IdentitiesOnly=yes",
+      `-o UserKnownHostsFile=${knownHostsPath}`,
+      "-o StrictHostKeyChecking=yes",
+    ].join(" ");
 
-  process.exitCode = runPnpmInstall(childEnv);
+    process.exitCode = runPnpmInstall(childEnv);
+  }
 } finally {
   rmSync(sshDir, { force: true, recursive: true });
 }
