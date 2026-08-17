@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import type { ComponentProps } from "react";
-import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
+import localFont from "next/font/local";
 import { unstable_rethrow } from "next/navigation";
 import { getServerSession } from "next-auth";
 import { GitBranch, LifeBuoy, Mail, ShieldCheck } from "lucide-react";
@@ -81,16 +81,18 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-const spaceGrotesk = Space_Grotesk({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+const spaceGrotesk = localFont({
+  src: "./fonts/space-grotesk-latin-variable.woff2",
+  weight: "400 700",
+  style: "normal",
   variable: "--font-sans",
   display: "swap",
 });
 
-const jetBrainsMono = JetBrains_Mono({
-  subsets: ["latin"],
-  weight: ["400", "600", "700"],
+const jetBrainsMono = localFont({
+  src: "./fonts/jetbrains-mono-latin-variable.woff2",
+  weight: "400 700",
+  style: "normal",
   variable: "--font-mono",
   display: "swap",
 });
