@@ -13,6 +13,18 @@ const errors = [];
 const compose = loadDockerComposeConfig();
 const services = compose.services ?? {};
 const dockerfile = readFileSync(resolve(repoRoot, dockerfilePath), "utf8");
+const ciWorkflow = readFileSync(
+  resolve(repoRoot, ".github/workflows/ci.yml"),
+  "utf8",
+);
+const selfHostedCiJob =
+  /^ {2}self-hosted-e2e:\n[\s\S]*?(?=^ {2}[a-z][\w-]*:\n|(?![\s\S]))/mu.exec(
+    ciWorkflow,
+  )?.[0] ?? "";
+const selfHostedE2e = readFileSync(
+  resolve(repoRoot, "scripts/run-self-hosted-e2e.mjs"),
+  "utf8",
+);
 const rootPackageJson = readJson("package.json");
 const codexOauthPackageJson = readJson(
   "packages/features/codex-oauth-rotating/package.json",
@@ -105,6 +117,7 @@ for (const service of ["migrate", "web", "api", "worker"]) {
   );
 }
 requireSelfHostedDependencyIsolation();
+requireSelfHostedPrivateDependencyBuildContract();
 
 if (errors.length > 0) {
   console.error("ReviewRouter self-hosted compose contract failed:");
@@ -290,6 +303,68 @@ function requireSelfHostedDependencyIsolation() {
   if (dockerfile.includes("--no-optional")) {
     errors.push(
       "self-hosted Dockerfile must not disable all optional dependencies; Next/Tailwind native packages rely on them.",
+    );
+  }
+}
+
+function requireSelfHostedPrivateDependencyBuildContract() {
+  const secretName = "subscription_runtime_deploy_key_b64";
+  if (!dockerfile.startsWith("# syntax=docker/dockerfile:1.7\n")) {
+    errors.push(
+      "self-hosted Dockerfile must enable Dockerfile 1.7 secret mounts.",
+    );
+  }
+  for (const expected of [
+    "apt-get install -y --no-install-recommends git openssh-client",
+    `--mount=type=secret,id=${secretName},required=false`,
+    "node scripts/install-private-dependencies.mjs --frozen-lockfile",
+  ]) {
+    requireDockerfileText(expected);
+  }
+  const runtimeStageOffset = dockerfile.indexOf("FROM base AS runtime");
+  const buildOnlyToolOffset = dockerfile.indexOf(
+    "apt-get install -y --no-install-recommends git openssh-client",
+  );
+  if (
+    runtimeStageOffset < 0 ||
+    buildOnlyToolOffset < 0 ||
+    buildOnlyToolOffset > runtimeStageOffset
+  ) {
+    errors.push(
+      "git and openssh-client must be installed only before the self-hosted runtime stage.",
+    );
+  }
+  if (
+    compose.secrets?.[secretName]?.environment !==
+    "SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64"
+  ) {
+    errors.push(
+      `${secretName} must source SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 from the build environment.`,
+    );
+  }
+  for (const serviceName of ["migrate", "web", "api", "worker"]) {
+    const secrets = services[serviceName]?.build?.secrets ?? [];
+    if (!secrets.some((secret) => secret.source === secretName)) {
+      errors.push(`service ${serviceName} build must mount ${secretName}.`);
+    }
+  }
+  if (
+    !selfHostedCiJob.includes(
+      "SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}",
+    ) ||
+    !selfHostedCiJob.includes("run: pnpm self-hosted:e2e")
+  ) {
+    errors.push(
+      "self-hosted CI must forward SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64.",
+    );
+  }
+  if (
+    !selfHostedE2e.includes(
+      'process.env.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 ?? ""',
+    )
+  ) {
+    errors.push(
+      "self-hosted E2E must forward SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 to Compose.",
     );
   }
 }

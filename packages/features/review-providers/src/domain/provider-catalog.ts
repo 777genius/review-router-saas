@@ -5,6 +5,7 @@ export const reviewProviderKinds = ["codex", "claude", "openrouter"] as const;
 export const reviewProviderAuthModes = [
   "codex_subscription_oauth",
   "codex_subscription_oauth_rotating",
+  "codex_subscription_oauth_hosted_pool",
   "codex_openai_api_key",
   "claude_code_oauth",
   "openrouter_api_key",
@@ -19,6 +20,7 @@ export type ProviderAuthMode = (typeof reviewProviderAuthModes)[number];
 export type RuntimeAuthMode =
   | "codex-oauth"
   | "codex-oauth-rotating"
+  | "codex-oauth-hosted-pool"
   | "openai-api"
   | "claude-oauth"
   | "openrouter-api";
@@ -32,6 +34,7 @@ export type ProviderCapability =
   | "dynamic_model_catalog"
   | "subscription_oauth"
   | "rotating_oauth"
+  | "hosted_account_pool"
   | "api_key"
   | "reasoning_effort"
   | "fast_mode"
@@ -40,6 +43,7 @@ export type ProviderCapability =
 export type ProviderSetupKind =
   | "codex_oauth"
   | "codex_oauth_rotating"
+  | "codex_oauth_hosted_pool"
   | "openai_api_key"
   | "claude_code_oauth"
   | "openrouter_api_key";
@@ -67,7 +71,10 @@ const providerCatalog = {
   codex: {
     kind: "codex",
     label: "Codex",
-    authModes: ["codex_subscription_oauth_rotating"],
+    authModes: [
+      "codex_subscription_oauth_rotating",
+      "codex_subscription_oauth_hosted_pool",
+    ],
     defaultAuthMode: "codex_subscription_oauth_rotating",
     defaultModel: "gpt-5.5",
     runtimeProviderPrefix: "codex",
@@ -75,6 +82,7 @@ const providerCatalog = {
       "static_model_catalog",
       "subscription_oauth",
       "rotating_oauth",
+      "hosted_account_pool",
       "reasoning_effort",
       "fast_mode",
       "agentic_context",
@@ -117,6 +125,15 @@ const authModeMetadata = {
     label: "Codex subscription rotating",
     // Rotating credentials use a server-authorized, never-reused namespace;
     // there is no stable catalog secret name to probe or inject.
+    secretNames: [],
+  },
+  codex_subscription_oauth_hosted_pool: {
+    authMode: "codex_subscription_oauth_hosted_pool",
+    providerKind: "codex",
+    runtimeAuthMode: "codex-oauth-hosted-pool",
+    setupKind: "codex_oauth_hosted_pool",
+    label: "Codex subscription hosted pool",
+    // GitHub Actions receives only an invocation-bounded relay grant.
     secretNames: [],
   },
   codex_openai_api_key: {

@@ -9,6 +9,11 @@ import {
   isConflictReviewFallbackAllowedForRepository,
   isConflictReviewFallbackEnabled,
   isClaudeCodeProviderEnabled,
+  isHostedCodexPoolEnabled,
+  isHostedCodexCustodyEnabled,
+  isHostedCodexAdmissionEnabled,
+  isHostedCodexRelayEnabled,
+  isHostedCodexFailoverEnabled,
   isWorkflowProvisioningEnabled,
   loadRuntimeEnv,
   parseCodexRotatingOAuthRepositoryAllowlist,
@@ -341,6 +346,48 @@ describe("platform config", () => {
     expect(() =>
       parseCodexRotatingOAuthRepositoryAllowlist("../bad/repo"),
     ).toThrow("invalid_env:REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES");
+  });
+
+  it("keeps hosted Codex pool behind an explicit rollback-safe gate", () => {
+    expect(isHostedCodexPoolEnabled({} as NodeJS.ProcessEnv)).toBe(false);
+    expect(
+      isHostedCodexPoolEnabled({
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(
+      isHostedCodexPoolEnabled({
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0",
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
+  });
+
+  it("keeps every hosted Codex subsystem independently disabled by default", () => {
+    expect(isHostedCodexCustodyEnabled({} as NodeJS.ProcessEnv)).toBe(false);
+    expect(isHostedCodexAdmissionEnabled({} as NodeJS.ProcessEnv)).toBe(false);
+    expect(isHostedCodexRelayEnabled({} as NodeJS.ProcessEnv)).toBe(false);
+    expect(isHostedCodexFailoverEnabled({} as NodeJS.ProcessEnv)).toBe(false);
+
+    expect(
+      isHostedCodexCustodyEnabled({
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(
+      isHostedCodexAdmissionEnabled({
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(
+      isHostedCodexRelayEnabled({
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(
+      isHostedCodexFailoverEnabled({
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
   });
 
   it("reads GitHub App private key from an inline hosted secret", () => {

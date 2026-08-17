@@ -2,7 +2,9 @@
 
 ## Privacy Promise
 
-ReviewRouter SaaS v1 stores metadata, not customer code.
+ReviewRouter SaaS v1 stores metadata, not customer code. The default legacy
+repository-owned provider mode also does not transport raw review bodies through
+SaaS.
 
 Do not store:
 
@@ -12,6 +14,22 @@ Do not store:
 - raw model responses
 - Codex OAuth files
 - provider API keys
+
+Opt-in hosted workspace account pool exception:
+
+- SaaS stores envelope-encrypted Codex session credentials, never plaintext
+  credential columns;
+- prompts, tool outputs, and Responses events pass through the invocation-scoped
+  relay transiently but must not be durably stored in databases, queues, logs,
+  traces, support tooling, or backups;
+- credentials never leave SaaS, while the Action receives only a bounded run
+  grant;
+- safe relay metadata may be retained under the normal operational retention
+  policy: invocation/account opaque IDs, counts, latency, outcome, failure class,
+  and redaction counters;
+- disabling hosted mode does not export credentials into the legacy mode.
+
+See [ADR-029](../decisions/029-opt-in-hosted-workspace-account-pool.md).
 
 ## Stored Metadata
 
@@ -103,3 +121,7 @@ Any change that sends data from customer CI to SaaS must answer:
 3. Is it needed for dashboard value?
 4. Can it be aggregated or categorized instead?
 5. Is retention defined?
+
+Hosted relay changes must additionally prove that infrastructure body capture is
+off, retry/queue paths do not persist bodies, bounded grants are enforced, and a
+kill-switch test terminates new traffic safely.

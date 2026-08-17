@@ -53,6 +53,7 @@ const rehearsalPreManifestIdentitySha256 =
 const rehearsalPostManifestIdentitySha256 =
   "sha256:0d6bb8d32a70a0be50801fb6c2950e09e5f625180f431b4f3c07d67554458fda";
 const migration73Name = "000073_codex_oauth_active_namespace_refresh";
+const migration74Name = "000074_hosted_codex_account_pool";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -81,6 +82,7 @@ assert(
       migration72RetireName,
       migration72CanaryName,
       migration73Name,
+      migration74Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -4125,18 +4127,9 @@ function proveMigrateDeployNoOp(url) {
       .includes("no pending migrations"),
     "post-success migrate deploy did not report a no-op",
   );
-  proveMigrationRunnerHistory(url, migration60Name, true);
-  proveMigrationRunnerHistory(url, migration61Name, true);
-  proveMigrationRunnerHistory(url, migration62Name, true);
-  proveMigrationRunnerHistory(url, migration63Name, true);
-  proveMigrationRunnerHistory(url, migration64Name, true);
-  proveMigrationRunnerHistory(url, migration65Name, true);
-  proveMigrationRunnerHistory(url, migration66Name, true);
-  proveMigrationRunnerHistory(url, migration69Name, true);
-  proveMigrationRunnerHistory(url, migration70Name, true);
-  proveMigrationRunnerHistory(url, migration71Name, true);
-  proveMigrationRunnerHistory(url, migration72RetireName, true);
-  proveMigrationRunnerHistory(url, migration72CanaryName, true);
+  for (const migrationName of rotatingMigrationNames) {
+    proveMigrationRunnerHistory(url, migrationName, true);
+  }
 }
 
 function collectObservation(url) {

@@ -73,6 +73,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "migration72RetireName",
       "migration72CanaryName",
       "migration73Name",
+      "migration74Name",
     ]);
     expect(source).toContain(
       'const migration67Name = "000067_review_live_progress"',
@@ -97,6 +98,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).toContain(
       'const migration73Name = "000073_codex_oauth_active_namespace_refresh"',
+    );
+    expect(source).toContain(
+      'const migration74Name = "000074_hosted_codex_account_pool"',
+    );
+    expect(source).toContain(
+      "for (const migrationName of rotatingMigrationNames)",
+    );
+    expect(source).toContain(
+      "proveMigrationRunnerHistory(url, migrationName, true)",
     );
     expect(source).not.toContain("000067_release_rollout_ledger");
   });

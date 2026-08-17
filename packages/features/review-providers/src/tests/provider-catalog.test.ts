@@ -28,6 +28,7 @@ describe("provider catalog", () => {
     ).toEqual([
       "codex_subscription_oauth",
       "codex_subscription_oauth_rotating",
+      "codex_subscription_oauth_hosted_pool",
       "codex_openai_api_key",
       "claude_code_oauth",
       "openrouter_api_key",
@@ -45,6 +46,9 @@ describe("provider catalog", () => {
     expect(providerKindForAuthMode("codex_subscription_oauth_rotating")).toBe(
       "codex",
     );
+    expect(
+      providerKindForAuthMode("codex_subscription_oauth_hosted_pool"),
+    ).toBe("codex");
     expect(providerKindForAuthMode("codex_openai_api_key")).toBe("codex");
     expect(providerKindForAuthMode("claude_code_oauth")).toBe("claude");
     expect(providerKindForAuthMode("openrouter_api_key")).toBe("openrouter");
@@ -71,6 +75,12 @@ describe("provider catalog", () => {
     expect(getProviderSecretNames("codex_subscription_oauth_rotating")).toEqual(
       [],
     );
+    expect(
+      toLegacyRuntimeAuthMode("codex_subscription_oauth_hosted_pool"),
+    ).toBe("codex-oauth-hosted-pool");
+    expect(
+      getProviderSecretNames("codex_subscription_oauth_hosted_pool"),
+    ).toEqual([]);
     expect(toLegacyRuntimeAuthMode("codex_openai_api_key")).toBe("openai-api");
     expect(toLegacyRuntimeAuthMode("openrouter_api_key")).toBe(
       "openrouter-api",
@@ -87,6 +97,9 @@ describe("provider catalog", () => {
     );
     expect(fromProviderSetupKind("codex_oauth_rotating")).toBe(
       "codex_subscription_oauth_rotating",
+    );
+    expect(fromProviderSetupKind("codex_oauth_hosted_pool")).toBe(
+      "codex_subscription_oauth_hosted_pool",
     );
   });
 
@@ -105,6 +118,7 @@ describe("provider catalog", () => {
     ]);
     expect(getProviderCatalogEntry("codex").authModes).toEqual([
       "codex_subscription_oauth_rotating",
+      "codex_subscription_oauth_hosted_pool",
     ]);
     expect(getProviderCatalogEntry("codex").defaultAuthMode).toBe(
       "codex_subscription_oauth_rotating",

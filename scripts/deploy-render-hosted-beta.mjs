@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import {
   reviewV2ContextEnvForRole,
   reviewV2ProjectionPolicyVersion,
+  reviewV2ProjectionPolicyVersionEnvKey,
 } from "./review-v2-render-env.mjs";
 import { isLoopbackHostname } from "../packages/shared/src/validation/loopback-hostname.mjs";
 import { resolveCodexRotatingInstallerDescriptor } from "../packages/shared/src/validation/codex-rotating-installer-descriptor.mjs";
@@ -575,7 +576,7 @@ function readOptionalEnvVars(env, keys) {
   return values;
 }
 
-const reviewV2ActivationFlagNames = Object.freeze([
+export const reviewV2ActivationFlagNames = Object.freeze([
   "REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED",
   "REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED",
   "REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED",
@@ -585,7 +586,7 @@ const reviewV2ActivationFlagNames = Object.freeze([
   "REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED",
 ]);
 
-const reviewV2RequiredRuntimeEnvNames = Object.freeze([
+export const reviewV2RequiredRuntimeEnvNames = Object.freeze([
   "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID",
   "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON",
   "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID",
@@ -594,12 +595,55 @@ const reviewV2RequiredRuntimeEnvNames = Object.freeze([
   "REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON",
 ]);
 
-const reviewV2ApiOnlyRuntimeEnvNames = Object.freeze([
+export const reviewV2ApiOnlyRuntimeEnvNames = Object.freeze([
   "REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64",
   "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID",
   "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON",
   "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256",
 ]);
+
+export const reviewV2SharedRuntimeEnvNames = Object.freeze([
+  ...reviewV2ActivationFlagNames,
+  "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE",
+  ...reviewV2RequiredRuntimeEnvNames,
+  reviewV2ProjectionPolicyVersionEnvKey,
+]);
+
+function reviewV2RuntimeActive(env) {
+  return (
+    env.REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED === "1" ||
+    env.REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED === "1" ||
+    env.REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE === "1" ||
+    env.REVIEW_ROUTER_PROGRESS_FILE_COVERAGE === "1" ||
+    env.REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES === "1"
+  );
+}
+
+export function assertReviewV2ApiWorkerEnvConvergence(apiEnv, workerEnv) {
+  for (const key of reviewV2SharedRuntimeEnvNames) {
+    if (apiEnv[key] !== workerEnv[key]) {
+      throw new Error(`Review v2 API/worker environment drift for ${key}`);
+    }
+  }
+  const operatorKey = "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256";
+  if (Object.hasOwn(workerEnv, operatorKey)) {
+    throw new Error(
+      `Review v2 worker environment contains API-only ${operatorKey}`,
+    );
+  }
+  if (reviewV2RuntimeActive(workerEnv)) {
+    for (const key of [
+      "REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON",
+      reviewV2ProjectionPolicyVersionEnvKey,
+    ]) {
+      if (!workerEnv[key]) {
+        throw new Error(
+          `active Review v2 worker environment is missing ${key}`,
+        );
+      }
+    }
+  }
+}
 
 function exactBinaryFlag(env, name) {
   const value = requiredEnv(name, env);
@@ -1116,7 +1160,7 @@ export async function syncService(client, service, spec, common) {
     role: spec.role,
   });
   await client.request("PUT", `/services/${service.id}/env-vars`, expectedEnv);
-  await verifyServiceEnvConvergence(client, service, expectedEnv);
+  return verifyServiceEnvConvergence(client, service, expectedEnv);
 }
 
 function renderEnvVars(value) {
@@ -1167,6 +1211,13 @@ export async function verifyServiceEnvConvergence(
       );
     }
   }
+  const role = Object.fromEntries(
+    expectedEnv.map(({ key, value }) => [key, String(value)]),
+  ).REVIEW_ROUTER_RUNTIME_ROLE;
+  if (role === "worker") {
+    assertReviewV2ApiWorkerEnvConvergence(observed, observed);
+  }
+  return observed;
 }
 
 export async function disableAndVerifyPreDeployCommand(client, service) {
@@ -1866,8 +1917,19 @@ export async function main() {
   );
 
   // Scope is fetched again immediately before each complete secret-bearing PUT.
-  for (const { service, spec } of services)
-    await syncService(client, service, spec, common);
+  const convergedEnvByRole = {};
+  for (const { service, spec } of services) {
+    convergedEnvByRole[spec.role] = await syncService(
+      client,
+      service,
+      spec,
+      common,
+    );
+  }
+  assertReviewV2ApiWorkerEnvConvergence(
+    convergedEnvByRole.api,
+    convergedEnvByRole.worker,
+  );
   for (const { service, spec } of services)
     await convergeImmutableRuntimeImage(client, service, spec, imageUrl);
   const resolvedDeploys = [];

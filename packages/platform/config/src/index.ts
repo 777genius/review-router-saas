@@ -45,6 +45,11 @@ export const runtimeEnvSchema = z.object({
   REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER: z.enum(["0", "1"]).default("1"),
   REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES: z.string().default(""),
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: z.enum(["0", "1"]).default("0"),
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: z.enum(["0", "1"]).default("0"),
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: z.enum(["0", "1"]).default("0"),
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: z.enum(["0", "1"]).default("0"),
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_DEFAULT_MODEL: z.string().default("gpt-5.5"),
   REVIEW_ROUTER_DEFAULT_EFFORT: z
     .enum(["low", "medium", "high", "xhigh"])
@@ -284,6 +289,36 @@ export function isCodexRotatingOAuthEnabled(
   input: NodeJS.ProcessEnv = process.env,
 ): boolean {
   return input.REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH === "1";
+}
+
+export function isHostedCodexPoolEnabled(
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return input.REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL === "1";
+}
+
+export function isHostedCodexCustodyEnabled(
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return input.REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY === "1";
+}
+
+export function isHostedCodexAdmissionEnabled(
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return input.REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION === "1";
+}
+
+export function isHostedCodexRelayEnabled(
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return input.REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY === "1";
+}
+
+export function isHostedCodexFailoverEnabled(
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return input.REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER === "1";
 }
 
 export function isCodexRotatingOAuthAllowedForRepository(

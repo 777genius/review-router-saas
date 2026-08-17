@@ -32,3 +32,4 @@ Decision records capture important product and architecture choices.
 - [ADR-026: Balanced Memory Transaction and Outbox Strategy](./026-balanced-memory-transaction-outbox.md)
 - [ADR-027: Branch-Aware Review Action v2 Contract Handoff](./027-review-action-v2-contract-handoff.md)
 - [ADR-028: Revision-Aware Review Evidence](./028-revision-aware-review-evidence.md)
+- [ADR-029: Opt-in Hosted Workspace Account Pool](./029-opt-in-hosted-workspace-account-pool.md)

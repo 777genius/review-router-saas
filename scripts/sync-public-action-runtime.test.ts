@@ -76,6 +76,49 @@ describe("public Action runtime sync", () => {
     }
   });
 
+  it("allows an explicitly named feature branch without weakening the main default", () => {
+    const root = mkdtempSync(join(tmpdir(), "rr-public-action-feature-sync-"));
+    try {
+      const saasRepo = join(root, "saas");
+      const actionRepo = join(root, "action");
+      initializeRepository(saasRepo);
+      initializeRepository(actionRepo);
+      git(actionRepo, [
+        "switch",
+        "-q",
+        "-c",
+        "feat/hosted-account-pool-action",
+      ]);
+      for (const file of syncedFiles) {
+        writeSyncedFixture(saasRepo, file, "feature");
+      }
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          join(process.cwd(), "scripts/sync-public-action-runtime.mjs"),
+          "--saas-repo",
+          saasRepo,
+          "--action-repo",
+          actionRepo,
+          "--expected-action-branch",
+          "feat/hosted-account-pool-action",
+          "--write",
+        ],
+        { encoding: "utf8" },
+      );
+
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      for (const file of syncedFiles) {
+        expect(readFileSync(join(actionRepo, file))).toEqual(
+          readFileSync(join(saasRepo, file)),
+        );
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("parses exact staged and unstaged filenames without truncation", () => {
     expect(
       parseGitPorcelainPaths(

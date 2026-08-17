@@ -298,6 +298,8 @@ function createTestEnvironment() {
     REVIEW_ROUTER_DEFAULT_MODEL: "gpt-5.5",
     REVIEW_ROUTER_DEFAULT_EFFORT: "xhigh",
     REVIEW_ROUTER_SELF_HOSTED_ENV_FILE: envFile,
+    SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64:
+      process.env.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 ?? "",
   };
   for (const name of [
     "CODEX_AUTH_JSON",

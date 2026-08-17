@@ -229,6 +229,13 @@ function normalizeProductionCodexProviders(
   options: NormalizeReviewConfigurationOptions,
 ): readonly ReviewProviderConfiguration[] {
   const normalizedProviders = providers.map((provider) => {
+    if (provider.authMode === "codex_subscription_oauth_hosted_pool") {
+      return {
+        ...provider,
+        kind: "codex" as const,
+        requiredHealthy: true,
+      };
+    }
     if (
       provider.authMode !== "codex_subscription_oauth" &&
       provider.authMode !== "codex_openai_api_key"
