@@ -181,11 +181,6 @@ export class AuthoritySerializedMutation {
     try {
       after = this.withResultIdentity(await input.observe(), input, receipt);
     } catch {
-      await this.authority.reconcile({
-        result: "ambiguous_forward_repair",
-        receipt,
-        observation: null,
-      });
       throw new Error("provider_mutation_forward_repair_required");
     }
     if (!this.matchesPostcondition(after, input.expectedPostcondition)) {
@@ -251,19 +246,10 @@ export class AuthoritySerializedMutation {
         receipt,
       );
     } catch {
-      await this.authority.reconcile({
-        result: "ambiguous_forward_repair",
-        receipt,
-        observation: null,
-      });
       throw new Error("provider_mutation_forward_repair_required");
     }
     if (this.matchesPostcondition(observation, input.expectedPostcondition)) {
-      await this.authority.reconcile({
-        result: "exact_postcondition",
-        receipt,
-        observation,
-      });
+      await this.authority.complete({ receipt, observation });
       return { status: "reconciled", receipt, observation };
     }
     await this.authority.reconcile({
@@ -369,19 +355,10 @@ export class AuthoritySerializedMutation {
         receipt,
       );
     } catch {
-      await this.authority.reconcile({
-        result: "ambiguous_forward_repair",
-        receipt,
-        observation: null,
-      });
       throw new Error("provider_mutation_forward_repair_required");
     }
     if (this.matchesPostcondition(observation, input.expectedPostcondition)) {
-      await this.authority.reconcile({
-        result: "exact_postcondition",
-        receipt,
-        observation,
-      });
+      await this.authority.complete({ receipt, observation });
       return { status: "reconciled", receipt, observation };
     }
     await this.authority.reconcile({

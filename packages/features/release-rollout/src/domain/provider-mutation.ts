@@ -89,12 +89,12 @@ export type ProviderMutationResultIdentity =
 
 export type ProviderMutationReconciliation = Readonly<{
   result:
-    | "exact_postcondition"
     | "precondition_drift"
     | "execution_not_authorized"
     | "ambiguous_forward_repair";
   receipt: MutationExecutionReceipt;
-  observation: ObservedProviderPostcondition | null;
+  /** Authority repair never terminalizes from absence of provider evidence. */
+  observation: ObservedProviderPostcondition;
 }>;
 
 export const ProviderMutationTerminalResult = Object.freeze({

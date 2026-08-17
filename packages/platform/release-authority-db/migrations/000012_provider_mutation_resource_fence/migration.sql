@@ -3,6 +3,77 @@
 -- fencing with idempotent consume and terminal replay.
 BEGIN;
 
+ALTER TABLE release_authority.provider_authority_decision
+  DROP CONSTRAINT provider_authority_decision_operation_check;
+ALTER TABLE release_authority.provider_authority_decision
+  ADD CONSTRAINT provider_authority_decision_operation_check CHECK (
+    operation IN ('freeze_source','deploy_target','resume_target','resume_source'));
+
+CREATE OR REPLACE FUNCTION release_authority.release_provider_authority_decide(p_request jsonb)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $decision$
+DECLARE current_row release_authority.rollout%ROWTYPE;
+DECLARE existing release_authority.provider_authority_decision%ROWTYPE;
+DECLARE required_state release_authority.aggregate_state;
+DECLARE required_boundary text;
+BEGIN
+  IF jsonb_typeof(p_request) <> 'object'
+    OR (SELECT count(*) FROM jsonb_object_keys(p_request)) <> 6
+    OR coalesce(p_request->>'rolloutId','') = ''
+    OR coalesce(p_request->>'sourceSystemIdentifier','') = ''
+    OR coalesce(p_request->>'targetSystemIdentifier','') = ''
+    OR coalesce(p_request->>'expectedReceiptSha256','') !~ '^sha256:[a-f0-9]{64}$'
+    OR p_request->>'operation' NOT IN (
+      'freeze_source','deploy_target','resume_target','resume_source')
+    OR p_request->>'activationBoundary' NOT IN ('before','activated')
+  THEN RAISE EXCEPTION 'provider authority request invalid'; END IF;
+  SELECT * INTO current_row FROM release_authority.rollout
+    WHERE rollout_id = p_request->>'rolloutId' FOR UPDATE;
+  IF NOT FOUND
+    OR current_row.source_system_identifier <> p_request->>'sourceSystemIdentifier'
+    OR current_row.target_system_identifier <> p_request->>'targetSystemIdentifier'
+  THEN RAISE EXCEPTION 'provider authority binding denied'; END IF;
+  SELECT * INTO existing FROM release_authority.provider_authority_decision
+    WHERE rollout_id = current_row.rollout_id AND operation = p_request->>'operation';
+  IF current_row.last_receipt_sha256 <> p_request->>'expectedReceiptSha256'
+  THEN RAISE EXCEPTION 'provider authority receipt denied'; END IF;
+  required_state := CASE p_request->>'operation'
+    WHEN 'freeze_source' THEN 'pre_activation'::release_authority.aggregate_state
+    WHEN 'deploy_target' THEN 'pre_activation'::release_authority.aggregate_state
+    WHEN 'resume_target' THEN 'activated'::release_authority.aggregate_state
+    WHEN 'resume_source' THEN 'compensating'::release_authority.aggregate_state
+  END;
+  required_boundary := CASE p_request->>'operation'
+    WHEN 'resume_target' THEN 'activated' ELSE 'before' END;
+  IF current_row.state <> required_state
+    OR current_row.activation_boundary <> required_boundary
+    OR p_request->>'activationBoundary' <> required_boundary
+    OR (p_request->>'operation' = 'resume_source'
+      AND current_row.authoritative_system_identifier <> current_row.source_system_identifier)
+  THEN RAISE EXCEPTION 'provider authority state denied'; END IF;
+  IF p_request->>'operation' = 'resume_source'
+    AND NOT release_authority.release_compensation_effects_are_safe(current_row.rollout_id)
+  THEN RAISE EXCEPTION 'provider authority runner effects changed during compensation'; END IF;
+  IF existing.decision_id IS NOT NULL THEN
+    IF existing.source_system_identifier <> p_request->>'sourceSystemIdentifier'
+      OR existing.target_system_identifier <> p_request->>'targetSystemIdentifier'
+      OR existing.expected_receipt_sha256 <> p_request->>'expectedReceiptSha256'
+      OR existing.activation_boundary <> p_request->>'activationBoundary'
+    THEN RAISE EXCEPTION 'provider authority replay conflict'; END IF;
+    RETURN p_request || jsonb_build_object('decision','allow',
+      'decisionId',existing.decision_id,'decidedAt',existing.decided_at);
+  END IF;
+  INSERT INTO release_authority.provider_authority_decision
+    (rollout_id,operation,source_system_identifier,target_system_identifier,
+     expected_receipt_sha256,activation_boundary)
+  VALUES (current_row.rollout_id,p_request->>'operation',
+    current_row.source_system_identifier,current_row.target_system_identifier,
+    current_row.last_receipt_sha256,required_boundary)
+  RETURNING * INTO existing;
+  RETURN p_request || jsonb_build_object('decision','allow',
+    'decisionId',existing.decision_id,'decidedAt',existing.decided_at);
+END $decision$;
+REVOKE ALL ON FUNCTION release_authority.release_provider_authority_decide(jsonb) FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION release_authority.release_recovery_effect_observation_is_valid(
   p_kind text, p_observation jsonb
 ) RETURNS boolean LANGUAGE sql IMMUTABLE SET search_path = pg_catalog AS $body$
@@ -497,6 +568,10 @@ CREATE TABLE release_authority.provider_mutation (
   resource_id text NOT NULL CHECK (length(resource_id) BETWEEN 1 AND 256),
   expected_fingerprint text NOT NULL CHECK (expected_fingerprint ~ '^sha256:[a-f0-9]{64}$'),
   expected_version text,
+  authority_operation text NOT NULL CHECK (authority_operation IN (
+    'freeze_source','deploy_target','resume_target','resume_source')),
+  authority_receipt_sha256 text NOT NULL CHECK (
+    authority_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
   state text NOT NULL CHECK (state IN (
     'claimed','consumed','executing','completed','precondition_drift',
     'execution_denied','forward_repair','expired_unconsumed')),
@@ -569,6 +644,21 @@ CREATE FUNCTION release_authority.release_provider_mutation_outcome(
     'completedAt',to_char(p_row.completed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
 $body$;
 
+CREATE FUNCTION release_authority.release_provider_mutation_authority_is_current(
+  p_row release_authority.provider_mutation
+) RETURNS boolean LANGUAGE sql STABLE SET search_path=pg_catalog AS $body$
+  SELECT EXISTS (SELECT 1 FROM release_authority.rollout rollout_row
+    JOIN release_authority.provider_authority_decision decision
+      ON decision.rollout_id=rollout_row.rollout_id
+     AND decision.operation=p_row.authority_operation
+     AND decision.expected_receipt_sha256=p_row.authority_receipt_sha256
+    WHERE rollout_row.rollout_id=p_row.rollout_id
+      AND rollout_row.last_receipt_sha256=p_row.authority_receipt_sha256
+      AND decision.source_system_identifier=rollout_row.source_system_identifier
+      AND decision.target_system_identifier=rollout_row.target_system_identifier
+      AND decision.activation_boundary=rollout_row.activation_boundary)
+$body$;
+
 CREATE FUNCTION release_authority.release_provider_mutation_issue(p_input jsonb)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $body$
 DECLARE mutation release_authority.provider_mutation%ROWTYPE;
@@ -576,6 +666,8 @@ DECLARE resource_lease release_authority.provider_resource_lease%ROWTYPE;
 DECLARE seconds integer;
 DECLARE new_permit_id text;
 DECLARE mutation_exists boolean;
+DECLARE rollout_row release_authority.rollout%ROWTYPE;
+DECLARE required_decision text;
 BEGIN
   IF jsonb_typeof(p_input)<>'object'
     OR jsonb_array_length(jsonb_path_query_array(p_input,'$.keyvalue()'))<>6
@@ -601,9 +693,39 @@ BEGIN
     OR (p_input->>'leaseSeconds')::numeric NOT BETWEEN 5 AND 300
   THEN RAISE EXCEPTION 'provider mutation issue invalid'; END IF;
   seconds := (p_input->>'leaseSeconds')::integer;
-  PERFORM 1 FROM release_authority.rollout
-    WHERE rollout_id=p_input->>'rolloutId';
+  SELECT * INTO rollout_row FROM release_authority.rollout
+    WHERE rollout_id=p_input->>'rolloutId' FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'provider mutation rollout missing'; END IF;
+  IF p_input->>'operation' !~ '^(freeze|target_[a-z_]+|recover_resume_source|service_(suspend|resume)|configure_(target|source)|replace_environment|deploy_(artifact|source)):'
+    OR pg_catalog.right(p_input->>'operation',
+      pg_catalog.length(p_input#>>'{resource,id}')+1)
+      IS DISTINCT FROM ':'||(p_input#>>'{resource,id}')
+  THEN RAISE EXCEPTION 'provider mutation operation resource binding denied'; END IF;
+  required_decision := CASE
+    WHEN p_input->>'operation' LIKE 'freeze:%' THEN 'freeze_source'
+    WHEN rollout_row.state='pre_activation' THEN 'deploy_target'
+    WHEN rollout_row.state='activated' THEN 'resume_target'
+    WHEN rollout_row.state='compensating' THEN 'resume_source'
+    ELSE '__invalid__' END;
+  IF required_decision='__invalid__'
+    OR (required_decision='deploy_target' AND (rollout_row.state<>'pre_activation'
+      OR rollout_row.activation_boundary<>'before'))
+    OR (required_decision='resume_target' AND (rollout_row.state<>'activated'
+      OR rollout_row.activation_boundary<>'activated'))
+    OR (required_decision='resume_source' AND (rollout_row.state<>'compensating'
+      OR rollout_row.activation_boundary<>'before'
+      OR rollout_row.authoritative_system_identifier<>
+        rollout_row.source_system_identifier))
+    OR (required_decision IS NOT NULL AND required_decision<>'__invalid__'
+      AND NOT EXISTS (SELECT 1
+        FROM release_authority.provider_authority_decision decision
+        WHERE decision.rollout_id=rollout_row.rollout_id
+          AND decision.operation=required_decision
+          AND decision.expected_receipt_sha256=rollout_row.last_receipt_sha256
+          AND decision.source_system_identifier=rollout_row.source_system_identifier
+          AND decision.target_system_identifier=rollout_row.target_system_identifier
+          AND decision.activation_boundary=rollout_row.activation_boundary))
+  THEN RAISE EXCEPTION 'provider mutation rollout authority denied'; END IF;
 
   INSERT INTO release_authority.provider_resource_lease(
     provider,resource_kind,resource_id)
@@ -646,6 +768,8 @@ BEGIN
   IF mutation_exists THEN
     IF mutation.expected_fingerprint<>p_input#>>'{expected,fingerprint}'
       OR mutation.expected_version IS DISTINCT FROM nullif(p_input#>>'{expected,version}','')
+      OR mutation.authority_operation<>required_decision
+      OR mutation.authority_receipt_sha256<>rollout_row.last_receipt_sha256
     THEN RAISE EXCEPTION 'provider mutation expected state conflict'; END IF;
     IF mutation.state<>'claimed' THEN
       RAISE EXCEPTION 'provider mutation terminal authorization cannot be renewed';
@@ -671,6 +795,8 @@ BEGIN
   IF mutation_exists THEN
     UPDATE release_authority.provider_mutation SET
       owner_id=p_input->>'ownerId',epoch=resource_lease.fence_epoch,
+      authority_operation=required_decision,
+      authority_receipt_sha256=rollout_row.last_receipt_sha256,
       permit_id=new_permit_id,
       permit_token=replace(gen_random_uuid()::text,'-','')||
         replace(gen_random_uuid()::text,'-',''),
@@ -682,11 +808,13 @@ BEGIN
   ELSE
     INSERT INTO release_authority.provider_mutation(
       rollout_id,operation,provider,resource_kind,resource_id,
-      expected_fingerprint,expected_version,state,owner_id,epoch,permit_id,
+      expected_fingerprint,expected_version,authority_operation,
+      authority_receipt_sha256,state,owner_id,epoch,permit_id,
       permit_token,issued_at,expires_at)
     VALUES (p_input->>'rolloutId',p_input->>'operation','render',
       p_input#>>'{resource,kind}',p_input#>>'{resource,id}',
       p_input#>>'{expected,fingerprint}',nullif(p_input#>>'{expected,version}',''),
+      required_decision,rollout_row.last_receipt_sha256,
       'claimed',p_input->>'ownerId',resource_lease.fence_epoch,new_permit_id,
       replace(gen_random_uuid()::text,'-','')||
         replace(gen_random_uuid()::text,'-',''),
@@ -757,6 +885,9 @@ BEGIN
     RETURN jsonb_build_object('status','terminal','outcome',
       release_authority.release_provider_mutation_outcome(mutation));
   END IF;
+  IF mutation.state<>'executing'
+    AND NOT release_authority.release_provider_mutation_authority_is_current(mutation)
+  THEN RAISE EXCEPTION 'provider mutation recovery authority stale'; END IF;
   IF resource_lease.fence_epoch<>mutation.epoch
     OR resource_lease.active_rollout_id<>mutation.rollout_id
     OR resource_lease.active_operation<>mutation.operation
@@ -825,6 +956,7 @@ BEGIN
     OR resource_lease.active_rollout_id<>mutation.rollout_id
     OR resource_lease.active_operation<>mutation.operation
     OR resource_lease.active_permit_id<>mutation.permit_id
+    OR NOT release_authority.release_provider_mutation_authority_is_current(mutation)
   THEN RAISE EXCEPTION 'provider mutation permit binding conflict'; END IF;
   IF mutation.state<>'claimed' THEN
     IF mutation.receipt_id IS NOT NULL THEN
@@ -871,6 +1003,7 @@ BEGIN
     OR resource_lease.active_rollout_id<>mutation.rollout_id
     OR resource_lease.active_operation<>mutation.operation
     OR resource_lease.active_permit_id<>mutation.permit_id
+    OR NOT release_authority.release_provider_mutation_authority_is_current(mutation)
   THEN RAISE EXCEPTION 'provider mutation execution binding conflict'; END IF;
   IF mutation.state<>'consumed' OR mutation.expires_at<=clock_timestamp()
   THEN RETURN false; END IF;
@@ -893,9 +1026,7 @@ DECLARE resource_lease release_authority.provider_resource_lease%ROWTYPE;
 DECLARE receipt jsonb:=p_input->'receipt';
 DECLARE result text:=CASE WHEN p_reconcile THEN p_input->>'result'
   ELSE 'exact_postcondition' END;
-DECLARE terminal_observation jsonb:=CASE
-  WHEN p_input->'observation'='null'::jsonb THEN NULL
-  ELSE p_input->'observation' END;
+DECLARE terminal_observation jsonb:=p_input->'observation';
 DECLARE next_state text;
 BEGIN
   SELECT * INTO STRICT resource_lease FROM release_authority.provider_resource_lease
@@ -912,7 +1043,8 @@ BEGIN
     OR mutation.receipt_id<>receipt->>'receiptId'
     OR result NOT IN ('exact_postcondition','precondition_drift',
       'execution_not_authorized','ambiguous_forward_repair')
-    OR (terminal_observation IS NOT NULL AND (
+    OR terminal_observation IS NULL OR terminal_observation='null'::jsonb
+    OR (
       jsonb_typeof(terminal_observation)<>'object'
       OR jsonb_array_length(jsonb_path_query_array(
         terminal_observation,'$.keyvalue()'))
@@ -959,7 +1091,7 @@ BEGIN
               ~ '^sha256:[a-f0-9]{64}$'
             AND coalesce(terminal_observation#>>'{resultIdentity,environmentKeysSha256}','')
               ~ '^sha256:[a-f0-9]{64}$'))))
-    ))
+    )
   THEN RAISE EXCEPTION 'provider mutation finish binding conflict'; END IF;
 
   IF mutation.completed_at IS NOT NULL THEN
@@ -978,6 +1110,21 @@ BEGIN
   THEN RAISE EXCEPTION 'provider mutation not executing'; END IF;
   IF p_reconcile AND mutation.state NOT IN ('consumed','executing')
   THEN RAISE EXCEPTION 'provider mutation reconciliation state conflict'; END IF;
+  IF p_reconcile AND (
+      (mutation.state='executing' AND result<>'ambiguous_forward_repair')
+      OR (mutation.state='consumed' AND result NOT IN (
+        'precondition_drift','execution_not_authorized'))
+      OR (mutation.state='consumed' AND result='precondition_drift'
+        AND terminal_observation#>>'{state,fingerprint}'=mutation.expected_fingerprint
+        AND terminal_observation#>>'{state,version}' IS NOT DISTINCT FROM mutation.expected_version)
+      OR (mutation.state='consumed' AND result='execution_not_authorized'
+        AND (terminal_observation#>>'{state,fingerprint}'<>mutation.expected_fingerprint
+          OR terminal_observation#>>'{state,version}' IS DISTINCT FROM mutation.expected_version))
+    )
+  THEN RAISE EXCEPTION 'provider mutation reconciliation decision conflict'; END IF;
+  IF result<>'ambiguous_forward_repair'
+    AND NOT release_authority.release_provider_mutation_authority_is_current(mutation)
+  THEN RAISE EXCEPTION 'provider mutation terminal authority stale'; END IF;
 
   next_state := CASE result
     WHEN 'exact_postcondition' THEN 'completed'
@@ -1023,6 +1170,8 @@ REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_permit(
 REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_receipt(
   release_authority.provider_mutation) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_outcome(
+  release_authority.provider_mutation) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_authority_is_current(
   release_authority.provider_mutation) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_issue(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_recover(jsonb) FROM PUBLIC;

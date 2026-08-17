@@ -151,6 +151,19 @@ jobs:
           printf '%s' "$REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_URL" > "$credential_file"
           echo "REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE=$credential_file" >> "$GITHUB_ENV"
 
+      - name: Materialize provider bootstrap authority
+        if: ${{ inputs.operation == 'fresh-install' || inputs.operation == 'bootstrap-upgrade' }}
+        shell: bash
+        env:
+          REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_AUTHORITY_BOOTSTRAP_ADMIN_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_URL"
+          provider_file="$RUNNER_TEMP/release-authority-provider-url"
+          umask 077
+          printf '%s' "$REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_URL" > "$provider_file"
+          echo "REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_DATABASE_URL_FILE=$provider_file" >> "$GITHUB_ENV"
+
       - name: Materialize restricted credential issuer
         if: ${{ inputs.operation == 'incremental-upgrade' }}
         shell: bash
@@ -163,6 +176,11 @@ jobs:
           umask 077
           printf '%s' "$REVIEW_ROUTER_RELEASE_AUTHORITY_ISSUER_URL" > "$issuer_file"
           echo "REVIEW_ROUTER_RELEASE_AUTHORITY_CREDENTIAL_ISSUER_DATABASE_URL_FILE=$issuer_file" >> "$GITHUB_ENV"
+
+      - name: Reconcile unfinished migration leases before issuance
+        if: ${{ inputs.operation == 'incremental-upgrade' }}
+        shell: bash
+        run: node scripts/release-authority-migration-credential.mjs reconcile
 
       - name: Issue exact-run migration lease
         if: ${{ inputs.operation == 'incremental-upgrade' }}
@@ -192,10 +210,15 @@ jobs:
         if: ${{ inputs.operation == 'bootstrap-upgrade' }}
         run: pnpm release-authority:upgrade
 
-      - name: Reconcile expired migration leases
+      - name: Reconcile every unfinished migration lease
         if: ${{ always() && inputs.operation == 'incremental-upgrade' }}
         shell: bash
         run: node scripts/release-authority-migration-credential.mjs reconcile
+
+      - name: Converge bootstrap authority after every bootstrap attempt
+        if: ${{ always() && (inputs.operation == 'fresh-install' || inputs.operation == 'bootstrap-upgrade') }}
+        shell: bash
+        run: node scripts/install-release-authority-db.mjs --cleanup-bootstrap
 
       - name: Remove migration credential
         if: ${{ always() }}
@@ -204,6 +227,7 @@ jobs:
           credential_file="$RUNNER_TEMP/release-authority-migration-url"
           lease_file="$RUNNER_TEMP/release-authority-migration-lease"
           issuer_file="$RUNNER_TEMP/release-authority-issuer-url"
+          provider_file="$RUNNER_TEMP/release-authority-provider-url"
           if test -f "$credential_file"; then
             shred -u "$credential_file" 2>/dev/null || rm -f "$credential_file"
           fi
@@ -212,4 +236,7 @@ jobs:
           fi
           if test -f "$issuer_file"; then
             shred -u "$issuer_file" 2>/dev/null || rm -f "$issuer_file"
+          fi
+          if test -f "$provider_file"; then
+            shred -u "$provider_file" 2>/dev/null || rm -f "$provider_file"
           fi

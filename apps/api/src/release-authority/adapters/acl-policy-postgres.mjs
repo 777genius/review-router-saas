@@ -108,6 +108,15 @@ const executeRoleValues = Object.entries(
   routines.map((routine) => `(${literal(routine)},${literal(role)})`),
 );
 
+/** PostgreSQL-adapter fact shared by runtime readiness and runtime ACL gates. */
+export const releaseAuthorityProviderTerminalTopologyExactExpression = () =>
+  String.raw`coalesce(
+    reviewrouter_migration_credential.provider_terminal_topology_is_exact(),
+    false)`;
+
+export const releaseAuthorityRuntimeAclExactExpression = (schema) =>
+  `(${releaseAuthorityFinalAclExactExpression(schema)}) AND (${releaseAuthorityProviderTerminalTopologyExactExpression()})`;
+
 export const releaseAuthorityFinalAclExactExpression = (schema) => {
   if (!/^[a-z][a-z0-9_]{0,62}$/u.test(schema))
     throw new Error("release_authority_acl_schema_invalid");
@@ -141,7 +150,17 @@ export const releaseAuthorityFinalAclExactExpression = (schema) => {
   const executeRoles = executeRoleValues.join(",\n        ");
   return String.raw`coalesce((
     WITH target AS (
-      SELECT oid,nspowner,nspacl FROM pg_catalog.pg_namespace
+      SELECT oid,nspowner,nspacl,
+        CASE WHEN pg_catalog.pg_input_is_valid(pg_catalog.obj_description(
+            pg_catalog.to_regnamespace('reviewrouter_migration_credential'),
+            'pg_namespace'),'jsonb')
+          THEN pg_catalog.obj_description(
+            pg_catalog.to_regnamespace('reviewrouter_migration_credential'),
+            'pg_namespace')::jsonb->>'brokerGrantorRole'
+          ELSE NULL END AS broker_grantor_role,
+        (SELECT root_oid FROM reviewrouter_migration_credential.provider_root_pin
+          WHERE singleton) AS provider_root_oid
+      FROM pg_catalog.pg_namespace
       WHERE nspname='${schema}'
     ), expected_execute(routine_name,role_name) AS (VALUES
         ${executeRoles}
@@ -226,10 +245,12 @@ export const releaseAuthorityFinalAclExactExpression = (schema) => {
         SELECT 1 FROM pg_catalog.pg_auth_members membership
         JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
         JOIN pg_catalog.pg_roles member ON member.oid=membership.member
+        JOIN pg_catalog.pg_roles grantor ON grantor.oid=membership.grantor
         CROSS JOIN target
         WHERE membership.roleid=target.nspowner
           AND granted.rolname='reviewrouter_authority_owner'
           AND member.rolname='reviewrouter_migration_broker'
+          AND grantor.rolname=target.broker_grantor_role
           AND membership.admin_option
           AND NOT membership.inherit_option
           AND NOT membership.set_option)
@@ -237,6 +258,7 @@ export const releaseAuthorityFinalAclExactExpression = (schema) => {
         SELECT 1 FROM pg_catalog.pg_auth_members membership
         JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
         JOIN pg_catalog.pg_roles member ON member.oid=membership.member
+        JOIN pg_catalog.pg_roles grantor ON grantor.oid=membership.grantor
         CROSS JOIN target
         WHERE (membership.roleid=target.nspowner
           OR membership.member=target.nspowner
@@ -246,12 +268,22 @@ export const releaseAuthorityFinalAclExactExpression = (schema) => {
             membership.roleid=target.nspowner
             AND granted.rolname='reviewrouter_authority_owner'
             AND member.rolname='reviewrouter_migration_broker'
+            AND grantor.rolname=target.broker_grantor_role
+            AND membership.admin_option
+            AND NOT membership.inherit_option
+            AND NOT membership.set_option)
+          AND NOT (
+            granted.rolname IN ('reviewrouter_authority_owner',
+              'reviewrouter_migration_broker')
+            AND member.rolname='reviewrouter_bootstrap_administrator'
+            AND grantor.oid=target.provider_root_oid
             AND membership.admin_option
             AND NOT membership.inherit_option
             AND NOT membership.set_option)
           AND NOT (
             membership.roleid=target.nspowner
             AND member.rolname=session_user
+            AND grantor.rolname='reviewrouter_migration_broker'
             AND NOT membership.admin_option
             AND NOT membership.inherit_option
             AND membership.set_option

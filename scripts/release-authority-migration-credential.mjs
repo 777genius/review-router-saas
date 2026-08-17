@@ -15,6 +15,7 @@ import {
   postgresEnvironment,
   postgresPassfileLine,
 } from "./install-release-authority-db.mjs";
+import { releaseAuthorityPostgresUrlWithCredentials } from "./lib/release-authority-postgres-url.mjs";
 import { sanitizedDiagnosticError } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -30,7 +31,7 @@ const readCredential = (path) => {
   const metadata = statSync(path);
   if (!metadata.isFile() || (metadata.mode & 0o077) !== 0)
     throw new Error("release_authority_credential_file_permissions_invalid");
-  return readFileSync(path, "utf8").trim();
+  return readFileSync(path, "utf8");
 };
 
 const sqlLiteral = (value) => `'${value.replaceAll("'", "''")}'`;
@@ -72,10 +73,11 @@ const runPsql = ({ databaseUrl, input, environment }) => {
 };
 
 const leasedUrl = (issuerUrl, loginRole, password) => {
-  const url = new URL(issuerUrl);
-  url.username = loginRole;
-  url.password = password;
-  return url.toString();
+  return releaseAuthorityPostgresUrlWithCredentials(
+    issuerUrl,
+    loginRole,
+    password,
+  );
 };
 
 export const issueMigrationCredential = (environment = process.env) => {

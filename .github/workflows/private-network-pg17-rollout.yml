@@ -256,6 +256,7 @@ jobs:
           REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: ${{ vars.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS }}
           REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: preflight/initial-rollout.json
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
+          REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN: ${{ secrets.REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN }}
         run: node --import tsx scripts/release-rollout-render-control.ts freeze
 
   role-bootstrap-private:

@@ -128,6 +128,7 @@ export const releaseAuthorityFinalAclPolicy = Object.freeze({
     "release_late_job_recovery_effect_gate",
     "release_provider_authority_decide",
     "release_provider_mutation_complete",
+    "release_provider_mutation_authority_is_current",
     "release_provider_mutation_consume",
     "release_provider_mutation_finish",
     "release_provider_mutation_issue",
@@ -215,6 +216,7 @@ export const releaseAuthorityFinalAclPolicy = Object.freeze({
     Object.freeze({
       grantedRole: "reviewrouter_authority_owner",
       memberRole: "reviewrouter_migration_broker",
+      grantorRole: "provisioned_grantor",
       admin: true,
       inherit: false,
       set: false,

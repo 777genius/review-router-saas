@@ -7,7 +7,8 @@ import { releaseAuthorityCatalogVerifier } from "../domain/readiness-contract.mj
 import { releaseAuthorityReadOnlyCatalogDigestExpression } from "./catalog-fingerprint.mjs";
 import {
   releaseAuthorityDefaultAclExactExpression,
-  releaseAuthorityFinalAclExactExpression,
+  releaseAuthorityProviderTerminalTopologyExactExpression,
+  releaseAuthorityRuntimeAclExactExpression,
 } from "./acl-policy-postgres.mjs";
 import { fencedLiveV70V73CatalogDigestSql } from "@reviewrouter/features-release-rollout/adapters/live-v70-v72-catalog-digest";
 
@@ -843,7 +844,9 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
   const defaultAclExact =
     releaseAuthorityDefaultAclExactExpression("release_authority");
   const finalAclExact =
-    releaseAuthorityFinalAclExactExpression("release_authority");
+    releaseAuthorityRuntimeAclExactExpression("release_authority");
+  const providerTerminalTopologyExact =
+    releaseAuthorityProviderTerminalTopologyExactExpression();
   const rows = await prisma.$queryRaw<ReleaseAuthorityExactness[]>(
     Prisma.sql`
       WITH facts AS (
@@ -853,7 +856,29 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           ${Prisma.raw(catalogDigest)} AS catalog_digest,
           pg_catalog.obj_description(
             to_regnamespace('release_authority'), 'pg_namespace'
-          )::jsonb AS attestation
+          )::jsonb AS attestation,
+          CASE WHEN pg_catalog.pg_input_is_valid(pg_catalog.obj_description(
+              to_regnamespace('reviewrouter_migration_credential'),'pg_namespace'),'jsonb')
+            THEN pg_catalog.obj_description(
+              to_regnamespace('reviewrouter_migration_credential'),'pg_namespace')::jsonb
+                ->>'bootstrapRole'
+            ELSE NULL END AS bootstrap_role,
+          CASE WHEN pg_catalog.pg_input_is_valid(pg_catalog.obj_description(
+              to_regnamespace('reviewrouter_migration_credential'),'pg_namespace'),'jsonb')
+            THEN pg_catalog.obj_description(
+              to_regnamespace('reviewrouter_migration_credential'),'pg_namespace')::jsonb
+                ->>'brokerGrantorRole'
+            ELSE NULL END AS broker_grantor_role,
+          (SELECT root_oid FROM reviewrouter_migration_credential.provider_root_pin
+            WHERE singleton) AS provider_root_oid,
+          (SELECT provider_oid FROM reviewrouter_migration_credential.provider_root_pin
+            WHERE singleton) AS provider_oid,
+          (SELECT root_name FROM reviewrouter_migration_credential.provider_root_pin
+            WHERE singleton) AS provider_root_name,
+          (SELECT provider_name FROM reviewrouter_migration_credential.provider_root_pin
+            WHERE singleton) AS provider_name,
+          (SELECT system_identifier FROM reviewrouter_migration_credential.provider_root_pin
+            WHERE singleton) AS pinned_system_identifier
       ), exactness AS (
         SELECT facts.*,
           attestation->'schemaVersion' =
@@ -863,12 +888,14 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           AS catalog_exact,
           ${Prisma.raw(defaultAclExact)} AS default_acl_exact,
           ${Prisma.raw(finalAclExact)} AS final_acl_exact,
+          ${Prisma.raw(providerTerminalTopologyExact)} AS provider_terminal_topology_exact,
           NOT EXISTS (
             SELECT 1
             FROM pg_catalog.pg_roles candidate
             JOIN pg_catalog.pg_namespace authority_namespace
               ON authority_namespace.nspname = 'release_authority'
             WHERE candidate.oid <> authority_namespace.nspowner
+              AND candidate.rolname<>'reviewrouter_bootstrap_administrator'
               AND NOT candidate.rolsuper
               AND (
                 candidate.rolcanlogin
@@ -895,7 +922,9 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               AND role.oid<>authority_namespace.nspowner
               AND NOT role.rolsuper AND NOT role.rolcreatedb
               AND NOT role.rolcreaterole AND NOT role.rolreplication
-              AND NOT role.rolbypassrls)
+              AND NOT role.rolbypassrls AND role.rolconnlimit=(-1)
+              AND role.rolvaliduntil IS NULL
+              AND coalesce(array_length(role.rolconfig,1),0)=0)
             FROM pg_catalog.pg_roles role
             JOIN pg_namespace authority_namespace
               ON authority_namespace.nspname='release_authority'
@@ -909,6 +938,173 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 'reviewrouter_provider_authority','reviewrouter_release_witness'])
               OR member.rolname=ANY(ARRAY['reviewrouter_release_control',
                 'reviewrouter_provider_authority','reviewrouter_release_witness'])
+          ) AND (
+            SELECT count(*)=3 AND bool_and(
+              NOT role.rolsuper AND NOT role.rolcreatedb
+              AND NOT role.rolreplication AND NOT role.rolbypassrls
+              AND role.rolvaliduntil IS NULL
+              AND coalesce(array_length(role.rolconfig,1),0)=0
+              AND CASE role.rolname
+                WHEN 'reviewrouter_authority_owner' THEN
+                  NOT role.rolcanlogin AND NOT role.rolcreaterole
+                    AND role.rolconnlimit=(-1)
+                WHEN 'reviewrouter_migration_broker' THEN
+                  NOT role.rolcanlogin AND role.rolcreaterole
+                    AND role.rolconnlimit=(-1)
+                WHEN 'reviewrouter_migration_issuer' THEN
+                  role.rolcanlogin AND NOT role.rolcreaterole
+                    AND role.rolconnlimit=(-1)
+              END)
+            FROM pg_catalog.pg_roles role
+            WHERE role.rolname=ANY(ARRAY['reviewrouter_authority_owner',
+              'reviewrouter_migration_broker','reviewrouter_migration_issuer'])
+          ) AND ${Prisma.raw(providerTerminalTopologyExact)} AND EXISTS (
+            SELECT 1 FROM pg_catalog.pg_database database
+            JOIN pg_catalog.pg_roles owner ON owner.oid=database.datdba
+            WHERE database.datname=current_database()
+              AND owner.rolname='reviewrouter_authority_owner'
+          ) AND EXISTS (
+            SELECT 1 FROM pg_catalog.pg_auth_members membership
+            JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
+            JOIN pg_catalog.pg_roles member ON member.oid=membership.member
+            JOIN pg_catalog.pg_roles grantor ON grantor.oid=membership.grantor
+            WHERE granted.rolname='reviewrouter_authority_owner'
+              AND member.rolname='reviewrouter_migration_broker'
+              AND grantor.rolname=facts.broker_grantor_role
+              AND membership.admin_option AND NOT membership.inherit_option
+              AND NOT membership.set_option
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_auth_members membership
+            JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
+            JOIN pg_catalog.pg_roles member ON member.oid=membership.member
+            JOIN pg_catalog.pg_roles grantor ON grantor.oid=membership.grantor
+            WHERE (granted.rolname=ANY(ARRAY['reviewrouter_authority_owner',
+                'reviewrouter_migration_broker','reviewrouter_migration_issuer'])
+              OR member.rolname=ANY(ARRAY['reviewrouter_authority_owner',
+                'reviewrouter_migration_broker','reviewrouter_migration_issuer']))
+              AND NOT (granted.rolname='reviewrouter_authority_owner'
+                AND member.rolname='reviewrouter_migration_broker'
+                AND grantor.rolname=facts.broker_grantor_role
+                AND membership.admin_option AND NOT membership.inherit_option
+                AND NOT membership.set_option)
+              AND NOT (granted.rolname IN ('reviewrouter_authority_owner',
+                    'reviewrouter_migration_broker')
+                AND member.rolname='reviewrouter_bootstrap_administrator'
+                AND grantor.oid=facts.provider_root_oid
+                AND membership.admin_option AND NOT membership.inherit_option
+                AND NOT membership.set_option)
+              AND NOT (granted.rolname~'^rr_migration_[a-f0-9]{24}$'
+                AND member.rolname='reviewrouter_migration_broker'
+                AND reviewrouter_migration_credential.login_role_is_inert(
+                  granted.rolname))
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles role
+            WHERE role.rolname=facts.bootstrap_role
+          ) AND reviewrouter_migration_credential.bootstrap_is_retired()
+          AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_auth_members membership
+            JOIN pg_catalog.pg_roles role
+              ON role.oid=membership.roleid OR role.oid=membership.member
+            WHERE role.rolname=facts.bootstrap_role
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_shdepend dependency
+            JOIN pg_catalog.pg_roles role ON role.oid=dependency.refobjid
+            WHERE role.rolname=facts.bootstrap_role
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_stat_activity
+            WHERE usename=facts.bootstrap_role
+          ) AND pg_catalog.to_regnamespace('reviewrouter_migration_bootstrap') IS NULL
+          AND (
+            SELECT count(*)=1 AND bool_and(role.rolcanlogin AND NOT role.rolsuper
+                AND NOT role.rolcreatedb AND role.rolcreaterole
+                AND NOT role.rolreplication AND NOT role.rolbypassrls
+                AND role.rolconnlimit=1 AND role.rolvaliduntil IS NULL
+                AND coalesce(array_length(role.rolconfig,1),0)=0)
+            FROM pg_catalog.pg_roles role
+            WHERE role.rolname='reviewrouter_bootstrap_administrator'
+          ) AND (
+            SELECT count(*)=3 AND bool_and(
+              (granted.rolname='pg_signal_backend'
+                AND NOT membership.admin_option
+                AND membership.inherit_option AND membership.set_option)
+              OR (granted.rolname IN ('reviewrouter_authority_owner',
+                    'reviewrouter_migration_broker')
+                AND membership.grantor=facts.provider_root_oid
+                AND membership.admin_option
+                AND NOT membership.inherit_option
+                AND NOT membership.set_option))
+            FROM pg_catalog.pg_auth_members membership
+            JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
+            JOIN pg_catalog.pg_roles member ON member.oid=membership.member
+            WHERE member.rolname='reviewrouter_bootstrap_administrator'
+              AND granted.rolname IN ('reviewrouter_authority_owner',
+                'reviewrouter_migration_broker','pg_signal_backend')
+          ) AND facts.pinned_system_identifier=
+            (SELECT system_identifier::text FROM pg_catalog.pg_control_system())
+          AND EXISTS (SELECT 1 FROM pg_catalog.pg_roles role
+            WHERE role.oid=facts.provider_root_oid
+              AND role.rolname=facts.provider_root_name)
+          AND EXISTS (SELECT 1 FROM pg_catalog.pg_roles role
+            WHERE role.oid=facts.provider_oid AND role.rolname=facts.provider_name
+              AND role.rolname='reviewrouter_bootstrap_administrator')
+          AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_auth_members membership
+            JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
+            JOIN pg_catalog.pg_roles member ON member.oid=membership.member
+            WHERE member.rolname='reviewrouter_bootstrap_administrator'
+              AND granted.rolname NOT IN ('reviewrouter_authority_owner',
+                'reviewrouter_migration_broker','pg_signal_backend')
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_auth_members membership
+            JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
+            WHERE granted.rolname='reviewrouter_bootstrap_administrator'
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_shdepend dependency
+            JOIN pg_catalog.pg_roles role ON role.oid=dependency.refobjid
+            WHERE role.rolname IN ('reviewrouter_migration_issuer',facts.bootstrap_role,
+              'reviewrouter_bootstrap_administrator')
+              AND dependency.deptype='o'
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_shdepend dependency
+            JOIN pg_catalog.pg_roles role ON role.oid=dependency.refobjid
+            WHERE role.rolname='reviewrouter_migration_broker'
+              AND dependency.deptype='o'
+              AND dependency.dbid<>(SELECT oid FROM pg_catalog.pg_database
+                WHERE datname=current_database())
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_shdepend dependency
+            JOIN pg_catalog.pg_roles role ON role.oid=dependency.refobjid
+            WHERE role.rolname='reviewrouter_authority_owner'
+              AND dependency.deptype='o'
+              AND NOT (dependency.dbid=(SELECT oid FROM pg_catalog.pg_database
+                    WHERE datname=current_database())
+                OR (dependency.dbid=0
+                  AND dependency.classid='pg_catalog.pg_database'::regclass
+                  AND dependency.objid=(SELECT oid FROM pg_catalog.pg_database
+                    WHERE datname=current_database())))
+          ) AND NOT pg_catalog.has_database_privilege(
+            (SELECT oid FROM pg_catalog.pg_roles
+              WHERE rolname='reviewrouter_bootstrap_administrator'),
+            current_database(),'CREATE'
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles role
+            WHERE role.rolname=facts.bootstrap_role
+              AND pg_catalog.has_database_privilege(
+                role.oid,current_database(),'CREATE')
+          ) AND (
+            SELECT count(*)=6 AND bool_and(
+              acl.grantor=database.datdba AND NOT acl.is_grantable
+              AND ((acl.grantee=database.datdba
+                    AND acl.privilege_type IN ('CREATE','CONNECT','TEMPORARY'))
+                OR (acl.grantee=0
+                    AND acl.privilege_type IN ('CONNECT','TEMPORARY'))
+                OR (acl.grantee=(SELECT oid FROM pg_catalog.pg_roles
+                      WHERE rolname='reviewrouter_migration_issuer')
+                    AND acl.privilege_type='CONNECT')))
+            FROM pg_catalog.pg_database database
+            CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
+              database.datacl,pg_catalog.acldefault('d',database.datdba))) acl
+            WHERE database.datname=current_database()
           ) AS role_topology_exact
         FROM facts
       )

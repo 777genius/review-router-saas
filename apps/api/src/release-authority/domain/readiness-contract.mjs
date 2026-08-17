@@ -4,7 +4,8 @@
  * Keep catalog identities here, outside PostgreSQL adapters, so installation
  * and runtime readiness cannot silently accept different migration histories.
  */
-export const releaseAuthorityCatalogVerifier = "complete_catalog_v3_acl_exact";
+export const releaseAuthorityCatalogVerifier =
+  "complete_catalog_v5_provider_root_pin";
 
 export const releaseAuthorityMigrationContract = Object.freeze([
   [
@@ -59,7 +60,7 @@ export const releaseAuthorityMigrationContract = Object.freeze([
   ],
   [
     "000012_provider_mutation_resource_fence",
-    "sha256:45eb81a2715cf8c254cdacc2ca4ce8c80fc6c6527c009fe9dce63c3f80a510b1",
+    "sha256:095ce8c8859c8ddf51a526aeee2673f1f84853f2c479cef7cb92871ef749554a",
   ],
   [
     "000013_phase_aware_application_manifest",
@@ -71,7 +72,11 @@ export const releaseAuthorityMigrationContract = Object.freeze([
   ],
   [
     "000015_migration_credential_lease",
-    "sha256:f087047188fd280c11b540d809bbc8b50f0f9a84cca4e3342726737a43fc814f",
+    "sha256:c0467a0357c3f48379a0eae0a6e14fbe63c63b3c292f5fe75f769b82c93facbc",
+  ],
+  [
+    "000016_quiescence_before_backup",
+    "sha256:e8e5c5db24beab9fd14d591a6c7de9bb5f71048772871dc29951e8e6964682af",
   ],
 ]);
 

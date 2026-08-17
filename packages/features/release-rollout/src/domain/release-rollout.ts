@@ -94,16 +94,16 @@ const orderedTransitions: ReadonlyArray<
   ],
   [
     RolloutPhase.RoleRunnerProvisioned,
-    RolloutStep.CaptureSourceBackup,
-    RolloutPhase.SourceBackupCaptured,
-  ],
-  [
-    RolloutPhase.SourceBackupCaptured,
     RolloutStep.QuiesceSource,
     RolloutPhase.SourceQuiesced,
   ],
   [
     RolloutPhase.SourceQuiesced,
+    RolloutStep.CaptureSourceBackup,
+    RolloutPhase.SourceBackupCaptured,
+  ],
+  [
+    RolloutPhase.SourceBackupCaptured,
     RolloutStep.CopyDatabaseGeneration,
     RolloutPhase.GenerationCopied,
   ],

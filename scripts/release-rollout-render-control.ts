@@ -9,6 +9,9 @@ import {
   RenderPrivateRunnerAdapter,
   RenderProviderFreezeAdapter,
   HttpProviderMutationAuthorityAdapter,
+  HttpProviderAuthorityDecisionAdapter,
+  ProviderAuthorityOperation,
+  requestProviderAuthorityDecision,
   type RunnerIdentity,
   type RunnerReconciliationReport,
   type ReleaseRollout,
@@ -198,6 +201,15 @@ if (mode === "freeze") {
   );
   const sourceWriterServiceIds = parseFreezeSourceWriterServiceIds(
     required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
+  );
+  await requestProviderAuthorityDecision(
+    new HttpProviderAuthorityDecisionAdapter(
+      required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
+      required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
+    ),
+    rollout,
+    ProviderAuthorityOperation.FreezeSource,
+    "before",
   );
   const observation = await new RenderProviderFreezeAdapter(
     fetch,

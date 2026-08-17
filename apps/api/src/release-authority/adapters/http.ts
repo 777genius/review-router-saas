@@ -1255,7 +1255,6 @@ export async function registerReleaseRolloutLedgerRoutes(
       if (
         !body ||
         ![
-          "exact_postcondition",
           "precondition_drift",
           "execution_not_authorized",
           "ambiguous_forward_repair",
@@ -1265,10 +1264,7 @@ export async function registerReleaseRolloutLedgerRoutes(
       await providerMutationAuthority().reconcile({
         result: body.result as ProviderMutationReconciliation["result"],
         receipt: mutationReceiptRequest(body.receipt),
-        observation:
-          body.observation === null
-            ? null
-            : mutationObservationRequest(body.observation),
+        observation: mutationObservationRequest(body.observation),
       });
       return { reconciled: true };
     },

@@ -18,6 +18,7 @@ export interface ProviderControlPort {
 }
 
 export const ProviderAuthorityOperation = Object.freeze({
+  FreezeSource: "freeze_source",
   DeployTarget: "deploy_target",
   ResumeTarget: "resume_target",
   ResumeSource: "resume_source",

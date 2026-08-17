@@ -263,8 +263,10 @@ const useCases = new ReleaseRolloutUseCases({
 try {
   rollout = await useCases.freezeProviderServices(rollout);
   ({ rollout } = await useCases.provisionPrivateRunner(rollout));
-  rollout = await useCases.captureSourceBackup(rollout);
+  // Persist the source-owned fence and the quiesced aggregate before pg_dump.
+  // If capture fails, recovery receives this authoritative quiesced state.
   rollout = await useCases.quiesceSource(rollout);
+  rollout = await useCases.captureSourceBackup(rollout);
   rollout = await useCases.copyDatabaseGeneration(rollout);
   rollout = await useCases.bootstrapTargetRoles(rollout);
   rollout = await useCases.verifyDataEquivalence(rollout);

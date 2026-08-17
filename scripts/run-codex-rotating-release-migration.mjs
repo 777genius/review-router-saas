@@ -1140,6 +1140,7 @@ DECLARE database_comment text;
 DECLARE observed_witness text;
 DECLARE observed_system_identifier text;
 DECLARE observed_database_identity text;
+DECLARE restored_source_evidence jsonb;
 BEGIN
   SELECT system_identifier::text INTO STRICT observed_system_identifier
   FROM pg_catalog.pg_control_system();
@@ -1224,6 +1225,16 @@ BEGIN
          reviewrouter_activation.canonical_json(
            requested_source_legacy_ambiguity-'receiptSha256'),'UTF8')),'hex')
   THEN RAISE EXCEPTION 'release migration target source receipt invalid'; END IF;
+  -- This row was created by the fenced source transaction and must travel in
+  -- the pg_dump. A caller-supplied self-hash is never accepted as provenance.
+  IF pg_catalog.to_regclass(
+      'release_authority.source_legacy_ambiguity_receipt') IS NULL
+  THEN RAISE EXCEPTION 'release migration source-owned receipt missing from target'; END IF;
+  EXECUTE 'SELECT evidence FROM release_authority.source_legacy_ambiguity_receipt '
+    ||'WHERE rollout_id=$1' INTO STRICT restored_source_evidence
+    USING requested_rollout_id;
+  IF restored_source_evidence IS DISTINCT FROM requested_source_legacy_ambiguity
+  THEN RAISE EXCEPTION 'release migration source-owned receipt binding conflict'; END IF;
   INSERT INTO reviewrouter_activation.migration_permit(
     rollout_id,source_system_identifier,target_system_identifier,
     target_database_identity,target_database_name,target_recovery_witness_sha256,

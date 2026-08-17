@@ -28,6 +28,42 @@ import type {
 } from "./ports";
 import { ProviderAuthorityOperation } from "./ports";
 
+export const requestProviderAuthorityDecision = async (
+  authority: ProviderAuthorityDecisionPort | undefined,
+  r: ReleaseRollout,
+  operation: ProviderAuthorityRequest["operation"],
+  activationBoundary: ProviderAuthorityRequest["activationBoundary"],
+) => {
+  const request = {
+    rolloutId: r.rolloutId,
+    operation,
+    sourceSystemIdentifier: r.source.systemIdentifier,
+    targetSystemIdentifier: r.target.systemIdentifier,
+    expectedReceiptSha256:
+      r.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`,
+    activationBoundary,
+  } as const;
+  let decision;
+  try {
+    if (!authority) throw new Error("provider_authority_not_configured");
+    decision = await authority.decide(request);
+  } catch (error) {
+    throw new Error("provider_authority_unavailable_or_denied", {
+      cause: error,
+    });
+  }
+  if (
+    decision.decision !== "allow" ||
+    !decision.decisionId ||
+    Number.isNaN(Date.parse(decision.decidedAt)) ||
+    Object.entries(request).some(
+      ([key, value]) => decision[key as keyof typeof decision] !== value,
+    )
+  )
+    throw new Error("provider_authority_decision_invalid");
+  return decision;
+};
+
 export class ReleaseRolloutUseCases {
   constructor(
     private readonly ports: {
@@ -51,35 +87,12 @@ export class ReleaseRolloutUseCases {
     operation: ProviderAuthorityRequest["operation"],
     activationBoundary: ProviderAuthorityRequest["activationBoundary"],
   ) {
-    const request = {
-      rolloutId: r.rolloutId,
+    return requestProviderAuthorityDecision(
+      this.ports.authority,
+      r,
       operation,
-      sourceSystemIdentifier: r.source.systemIdentifier,
-      targetSystemIdentifier: r.target.systemIdentifier,
-      expectedReceiptSha256:
-        r.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`,
       activationBoundary,
-    } as const;
-    let decision;
-    try {
-      if (!this.ports.authority)
-        throw new Error("provider_authority_not_configured");
-      decision = await this.ports.authority.decide(request);
-    } catch (error) {
-      throw new Error("provider_authority_unavailable_or_denied", {
-        cause: error,
-      });
-    }
-    if (
-      decision.decision !== "allow" ||
-      !decision.decisionId ||
-      Number.isNaN(Date.parse(decision.decidedAt)) ||
-      Object.entries(request).some(
-        ([key, value]) => decision[key as keyof typeof decision] !== value,
-      )
-    )
-      throw new Error("provider_authority_decision_invalid");
-    return decision;
+    );
   }
 
   private async accept(
@@ -155,6 +168,7 @@ export class ReleaseRolloutUseCases {
     );
   }
   async freezeProviderServices(r: ReleaseRollout) {
+    await this.authorize(r, ProviderAuthorityOperation.FreezeSource, "before");
     return await this.accept(
       r,
       await this.ports.provider.freezeAndObserve(),

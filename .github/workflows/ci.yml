@@ -13,6 +13,11 @@ on:
         required: false
         type: boolean
         default: false
+      release_authority_contract_baseline_sha:
+        description: Previous protected main SHA used as the immutable migration baseline
+        required: false
+        type: string
+        default: ""
   pull_request:
   push:
     branches:
@@ -55,7 +60,7 @@ env:
 jobs:
   release-authority-pg17-contract:
     name: Dedicated Release Authority PG17 contract
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release_authority_pg17_contract) }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.release_authority_pg17_contract) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -65,6 +70,27 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Pin exact contract baseline
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          PUSH_BASE_SHA: ${{ github.event.before || '' }}
+          DISPATCH_BASE_SHA: ${{ inputs.release_authority_contract_baseline_sha || '' }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) baseline_sha=$PR_BASE_SHA ;;
+            push) baseline_sha=$PUSH_BASE_SHA ;;
+            workflow_dispatch) baseline_sha=$DISPATCH_BASE_SHA ;;
+            *) exit 1 ;;
+          esac
+          printf '%s' "$baseline_sha" | grep -Eq '^[a-f0-9]{40}$'
+          test "$baseline_sha" != 0000000000000000000000000000000000000000
+          test "$baseline_sha" != "$HEAD_SHA"
+          git cat-file -e "$baseline_sha^{commit}"
+          git merge-base --is-ancestor "$baseline_sha" "$HEAD_SHA"
+          echo "REVIEW_ROUTER_RELEASE_AUTHORITY_CONTRACT_BASELINE_REF=$baseline_sha" >> "$GITHUB_ENV"
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -74,7 +100,12 @@ jobs:
       - name: Install dependencies
         env:
           SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
-        run: node scripts/install-private-dependencies.mjs --frozen-lockfile
+        run: |
+          if test "${{ github.event_name }}" = pull_request; then
+            pnpm install --frozen-lockfile --no-optional
+          else
+            node scripts/install-private-dependencies.mjs --frozen-lockfile
+          fi
       - name: Generate Prisma client
         run: pnpm db:generate
       - name: Pin PostgreSQL 17 contract image

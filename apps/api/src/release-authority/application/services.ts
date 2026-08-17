@@ -442,7 +442,8 @@ export class ProviderAuthorityDecisionService {
       executeFresh(
         "provider",
         () => this.repository.decideProviderOperation(input),
-        input.operation === "resume_source"
+        input.operation === "resume_source" ||
+          input.operation === "freeze_source"
           ? "control_only"
           : TargetManifestPhase.PostMigration,
       ),
