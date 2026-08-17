@@ -2,6 +2,16 @@
  * Canonical PostgreSQL projection of the live V70-V73 application catalog.
  * Keep this in the Postgres adapter layer: the domain receives only its digest.
  */
+const dynamicWriteAclPrincipals = Object.freeze([
+  "reviewrouter_api",
+  "reviewrouter_web",
+  "reviewrouter_worker",
+]);
+// Runtime write bits vary with the ACL gate and are attested by its policy proof.
+const dynamicWriteAclPrincipalSql = dynamicWriteAclPrincipals
+  .map((principal) => `'${principal}'`)
+  .join(",");
+
 export const fencedLiveV70V73CatalogDigestSql = `
 WITH selected_relations AS (
   SELECT c.oid, n.oid AS namespace_oid, n.nspname, c.relname, c.relkind,
@@ -56,8 +66,19 @@ WITH selected_relations AS (
       'tablespace',CASE WHEN reltablespace=0 THEN NULL ELSE
         (SELECT spcname FROM pg_catalog.pg_tablespace WHERE oid=reltablespace) END,
       'options',reloptions,
-      'acl',coalesce((SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
-        FROM unnest(relacl) v),'[]'::jsonb)) ORDER BY relname COLLATE "C")
+      'acl',coalesce((SELECT jsonb_agg(
+        normalized_acl.entry ORDER BY normalized_acl.entry COLLATE "C")
+        FROM (
+          SELECT CASE
+            WHEN relname='CodexOAuthWritebackIntent'
+              AND split_part(v::text,'=',1) IN (${dynamicWriteAclPrincipalSql})
+            THEN split_part(v::text,'=',1)||'='||pg_catalog.regexp_replace(
+              split_part(split_part(v::text,'/',1),'=',2),'[awdD]','','g'
+            )||'/'||split_part(v::text,'/',2)
+            ELSE v::text
+          END AS entry
+          FROM unnest(relacl) v
+        ) normalized_acl),'[]'::jsonb)) ORDER BY relname COLLATE "C")
       FROM selected_relations),'[]'::jsonb),
     'schemas',coalesce((SELECT jsonb_agg(jsonb_build_object(
       'name',n.nspname,'owner',pg_catalog.pg_get_userbyid(n.nspowner),

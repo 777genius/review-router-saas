@@ -829,6 +829,18 @@ describe("canonical exclusive release migration caller", () => {
     expect(liveV70V72CatalogDigestSql).toContain(
       "authority_root.relname='rollout'",
     );
+    expect(liveV70V72CatalogDigestSql).toContain(
+      "relname='CodexOAuthWritebackIntent'",
+    );
+    for (const dynamicPrincipal of [
+      "reviewrouter_api",
+      "reviewrouter_web",
+      "reviewrouter_worker",
+    ])
+      expect(liveV70V72CatalogDigestSql).toContain(dynamicPrincipal);
+    expect(liveV70V72CatalogDigestSql).toContain(
+      "pg_catalog.regexp_replace(\n              split_part(split_part(v::text,'/',1),'=',2),'[awdD]','','g'",
+    );
     expect(atomicMigration).toContain(
       "release migration V70-V73 live catalog digest mismatch",
     );
