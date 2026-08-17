@@ -147,6 +147,7 @@ const preReleaseMigrationBoundary = Object.freeze({
   retained: Object.freeze([
     "000067_review_live_progress",
     "000068_validate_review_assignment_manifest",
+    "000074_hosted_codex_account_pool",
   ]),
 });
 

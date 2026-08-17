@@ -437,16 +437,17 @@ describe("disposable dual-version rehearsal", () => {
     expect(exclusions).not.toContain(
       "000068_validate_review_assignment_manifest",
     );
+    expect(exclusions).not.toContain("000074_hosted_codex_account_pool");
     expect(() =>
       resolvePreReleaseMigrationExclusions([
         ...migrationNames,
-        "000074_future_release_migration",
+        "000075_future_release_migration",
       ]),
     ).toThrow("private_pg17_rehearsal_migration_boundary_unclassified");
     expect(() =>
       resolvePreReleaseMigrationExclusions([
         ...migrationNames,
-        "000074_future_review_migration",
+        "000075_future_review_migration",
       ]),
     ).toThrow("private_pg17_rehearsal_migration_boundary_unclassified");
   });
