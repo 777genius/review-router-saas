@@ -48,6 +48,8 @@ describe("release authority ACL readiness observation", () => {
     await observeReleaseAuthorityDatabaseReadiness(harness.prisma as never);
 
     const sql = sqlText(queryRaw);
+    expect(sql).toContain("authority_root.relname='rollout'");
+    expect(sql).toContain("authority_root.relkind IN ('r','p')");
     expect(sql).toContain("candidate.rolcanlogin");
     expect(sql).toContain("NOT candidate.rolsuper");
     expect(sql).toContain("'reviewrouter_release_control'");

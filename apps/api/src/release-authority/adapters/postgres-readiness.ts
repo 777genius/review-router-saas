@@ -142,7 +142,16 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
       current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
       coalesce((SELECT pg_get_userbyid(nspowner) FROM pg_namespace
         WHERE nspname='release_authority'),'') AS "authorityOwnerRoleName",
-      to_regnamespace('release_authority') IS NOT NULL AS "authorityPresent",
+      to_regnamespace('release_authority') IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM pg_catalog.pg_class authority_root
+          JOIN pg_catalog.pg_namespace authority_namespace
+            ON authority_namespace.oid=authority_root.relnamespace
+          WHERE authority_namespace.nspname='release_authority'
+            AND authority_root.relname='rollout'
+            AND authority_root.relkind IN ('r','p')
+        )
+        AS "authorityPresent",
       coalesce((SELECT encode(sha256(convert_to(string_agg(body_sha256, ':' ORDER BY ordinal),'UTF8')),'hex')
         FROM (VALUES
           (1,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)')),'')),

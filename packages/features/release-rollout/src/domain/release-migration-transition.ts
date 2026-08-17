@@ -140,16 +140,16 @@ export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
     "sha256:bc7853ee946ab41b455e786dded6b34fb0f548a4591ca965d066e8efb1479cd5",
   preManifestIdentity:
-    "sha256:dac2d257a6b60be214b96b0a809df0ee18cc7615ffae21520802fe568debf554",
+    "sha256:cff2b9ab89a067c6c3524b19e3aef8a7c4d51aba95aa079c6a025d36dce088f9",
   orderedPendingEntriesSha256:
     "sha256:c2eae628ec1b20ab29f09ae56ea6111a7d97948c8e5fea370c6cf5e45cf330fa",
   migrationBundleSha256:
     "sha256:b98968fc30e81ab1af1d5e0c47004e158e281b1a690c41c4f2b74eec6400d73a",
   postManifestIdentity:
-    "sha256:0d6bb8d32a70a0be50801fb6c2950e09e5f625180f431b4f3c07d67554458fda",
+    "sha256:fb3e60a451ece179a3f0c44748f8500ac51ea5dcf186b0732463db4098de94b8",
   // Captured digest of the canonical live V70-V73 catalog projection.
   postCatalogDigest:
-    "sha256:f07b8321acdf1c9d6851e9aaf017ce11572ad1a71d2afe257276c5818dee662d",
+    "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0",
 });
 
 export const canonicalReleaseMigrationResumeManifestIdentities = Object.freeze([

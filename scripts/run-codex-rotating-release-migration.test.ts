@@ -226,6 +226,25 @@ describe("application database release-authority isolation", () => {
     expect(sql).toContain("REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC;");
     expect(sql).toContain("current_database())\n\\gexec\nSELECT format(");
     expect(sql).toContain("DO $installer_database_acl$");
+    expect(sql).toContain("DO $source_receipt_acl$");
+    expect(sql).toContain(
+      "GRANT USAGE ON SCHEMA release_authority\n  TO reviewrouter_activation_receipt_guard",
+    );
+    expect(sql).toContain(
+      "GRANT SELECT ON TABLE release_authority.source_legacy_ambiguity_receipt\n  TO reviewrouter_activation_receipt_guard",
+    );
+    expect(sql).toContain(
+      "source legacy ambiguity receipt ACL is non-canonical",
+    );
+    expect(sql).toContain(
+      "REVOKE ALL ON FUNCTION release_authority.source_receipt_canonical_json(jsonb)",
+    );
+    expect(sql).toContain(
+      "REVOKE ALL ON FUNCTION release_authority.source_receipt_immutable()",
+    );
+    expect(sql).not.toContain(
+      "GRANT SELECT ON TABLE release_authority.source_legacy_ambiguity_receipt\n  TO reviewrouter_activation_permit_installer",
+    );
     expect(sql).not.toContain(
       "GRANT EXECUTE ON FUNCTION reviewrouter_activation.activate_generation(text,text) TO reviewrouter_activation_permit_installer",
     );
@@ -806,6 +825,9 @@ describe("canonical exclusive release migration caller", () => {
       "searchPath",
     ])
       expect(liveV70V72CatalogDigestSql).toContain(catalogFact);
+    expect(liveV70V72CatalogDigestSql).toContain(
+      "authority_root.relname='rollout'",
+    );
     expect(atomicMigration).toContain(
       "release migration V70-V73 live catalog digest mismatch",
     );

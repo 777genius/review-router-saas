@@ -313,6 +313,8 @@ export type TargetMigrationReceiptFacts = Readonly<{
   permitNonce: string;
   postManifestIdentity: string;
   postCatalogDigest: string;
+  sourceLegacyAmbiguity: LegacyAmbiguityEvidence;
+  eligibilityCutoff: string;
   legacyReconciliation: Readonly<Record<string, unknown>>;
   effectFingerprint: string;
   completedAt: string;

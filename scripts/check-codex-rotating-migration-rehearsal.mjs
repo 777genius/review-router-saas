@@ -25,6 +25,7 @@ import {
   sanitizedDiagnosticError,
 } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
 import { sha256Canonical } from "../packages/features/release-rollout/src/domain/canonical-json.ts";
+import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
 import {
   createDatabaseCredentialBoundary,
   createSecretSafePostgresInvocation,
@@ -49,9 +50,9 @@ const migration71Name = "000071_transactional_service_transition";
 const migration72RetireName = "000072_retire_superseded_codex_setup_claims";
 const migration72CanaryName = "000072_runtime_canary_challenge";
 const rehearsalPreManifestIdentitySha256 =
-  "sha256:dac2d257a6b60be214b96b0a809df0ee18cc7615ffae21520802fe568debf554";
+  canonicalReleaseMigrationArtifact.preManifestIdentity;
 const rehearsalPostManifestIdentitySha256 =
-  "sha256:0d6bb8d32a70a0be50801fb6c2950e09e5f625180f431b4f3c07d67554458fda";
+  canonicalReleaseMigrationArtifact.postManifestIdentity;
 const migration73Name = "000073_codex_oauth_active_namespace_refresh";
 const migration74Name = "000074_hosted_codex_account_pool";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");

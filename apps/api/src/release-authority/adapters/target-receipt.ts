@@ -167,6 +167,8 @@ const migrationReceiptFields = new Set([
   "permitNonce",
   "postManifestIdentity",
   "postCatalogDigest",
+  "sourceLegacyAmbiguity",
+  "eligibilityCutoff",
   "legacyReconciliation",
   "effectFingerprint",
   "completedAt",
@@ -196,6 +198,14 @@ function isTargetMigrationReceipt(
     receipt.permitNonce === permit.nonce &&
     matches(receipt.postManifestIdentity, digest) &&
     matches(receipt.postCatalogDigest, digest) &&
+    Boolean(
+      receipt.sourceLegacyAmbiguity &&
+      typeof receipt.sourceLegacyAmbiguity === "object" &&
+      !Array.isArray(receipt.sourceLegacyAmbiguity),
+    ) &&
+    sha256Canonical(receipt.sourceLegacyAmbiguity) ===
+      sha256Canonical(permit.sourceLegacyAmbiguity) &&
+    receipt.eligibilityCutoff === permit.eligibilityCutoff &&
     Boolean(
       receipt.legacyReconciliation &&
       typeof receipt.legacyReconciliation === "object" &&

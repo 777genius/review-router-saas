@@ -110,7 +110,7 @@ WITH selected_relations AS (
       FROM pg_catalog.pg_default_acl d LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace
       WHERE n.nspname='public'),'[]'::jsonb),
     'history',CASE WHEN reviewrouter_activation.read_activation_migration_manifest_identity()
-      = 'sha256:0d6bb8d32a70a0be50801fb6c2950e09e5f625180f431b4f3c07d67554458fda'
+      = 'sha256:fb3e60a451ece179a3f0c44748f8500ac51ea5dcf186b0732463db4098de94b8'
       THEN jsonb_build_array(
         jsonb_build_object('name','000070_runtime_generation_witness_proof',
           'checksum','cb9c42171f9bd924d21093852a1053cb947100acef1321ec8cf62e8fd5928c6f',
@@ -129,14 +129,20 @@ WITH selected_relations AS (
           'finished',true,'rolledBack',false))
       ELSE '[]'::jsonb END,
     'unresolvedHistory',false,
-    'legacyAuthoritySchemaPresent',to_regnamespace('release_authority') IS NOT NULL
+    'legacyAuthoritySchemaPresent',EXISTS (
+      SELECT 1 FROM pg_catalog.pg_class authority_root
+      JOIN pg_catalog.pg_namespace authority_namespace
+        ON authority_namespace.oid=authority_root.relnamespace
+      WHERE authority_namespace.nspname='release_authority'
+        AND authority_root.relname='rollout'
+        AND authority_root.relkind IN ('r','p'))
   ) AS value
 )
 SELECT 'sha256:'||encode(pg_catalog.sha256(convert_to(value::text,'UTF8')),'hex')
 FROM facts`;
 
 export const liveV70V73CatalogDigestSha256 =
-  "sha256:f07b8321acdf1c9d6851e9aaf017ce11572ad1a71d2afe257276c5818dee662d";
+  "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0";
 
 // Compatibility aliases for existing external consumers during the V73 rollout.
 export const fencedLiveV70V72CatalogDigestSql =

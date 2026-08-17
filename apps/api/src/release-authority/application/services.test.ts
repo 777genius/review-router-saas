@@ -424,6 +424,8 @@ describe("high-risk activation mutation policy", () => {
       permitNonce: permit.nonce,
       postManifestIdentity: transition.postManifestIdentity,
       postCatalogDigest: transition.postCatalogDigest,
+      sourceLegacyAmbiguity,
+      eligibilityCutoff: migrationEligibilityCutoff,
       legacyReconciliation: { status: "reconciled" },
       effectFingerprint: `sha256:${"3".repeat(64)}`,
       completedAt: "2026-08-12T00:00:30.000Z",

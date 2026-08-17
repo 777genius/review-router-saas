@@ -634,6 +634,69 @@ BEGIN
   END LOOP;
 END
 $public_routine_acl$;
+DO $source_receipt_acl$
+BEGIN
+  IF pg_catalog.to_regclass(
+       'release_authority.source_legacy_ambiguity_receipt'
+     ) IS NULL THEN
+    RAISE EXCEPTION 'source legacy ambiguity receipt is unavailable';
+  END IF;
+END
+$source_receipt_acl$;
+REVOKE ALL ON SCHEMA release_authority
+  FROM ${activationReceiptGuardRoleName};
+GRANT USAGE ON SCHEMA release_authority
+  TO ${activationReceiptGuardRoleName};
+REVOKE ALL ON TABLE release_authority.source_legacy_ambiguity_receipt
+  FROM ${activationReceiptGuardRoleName};
+GRANT SELECT ON TABLE release_authority.source_legacy_ambiguity_receipt
+  TO ${activationReceiptGuardRoleName};
+REVOKE ALL ON FUNCTION release_authority.source_receipt_canonical_json(jsonb)
+  FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.source_receipt_immutable()
+  FROM PUBLIC;
+DO $source_receipt_acl_exact$
+BEGIN
+  IF NOT has_schema_privilege(
+       '${activationReceiptGuardRoleName}', 'release_authority', 'USAGE'
+     )
+     OR has_schema_privilege(
+       '${activationReceiptGuardRoleName}', 'release_authority', 'CREATE'
+     )
+     OR NOT has_table_privilege(
+       '${activationReceiptGuardRoleName}',
+       'release_authority.source_legacy_ambiguity_receipt', 'SELECT'
+     )
+     OR EXISTS (
+       SELECT 1
+       FROM pg_catalog.pg_proc routine
+       CROSS JOIN LATERAL pg_catalog.aclexplode(
+         coalesce(routine.proacl, pg_catalog.acldefault('f', routine.proowner))
+       ) acl
+       WHERE routine.oid IN (
+         'release_authority.source_receipt_canonical_json(jsonb)'::regprocedure,
+         'release_authority.source_receipt_immutable()'::regprocedure
+       )
+         AND acl.grantee=0
+         AND acl.privilege_type='EXECUTE'
+     )
+     OR EXISTS (
+       SELECT 1
+       FROM pg_catalog.pg_class relation
+       JOIN pg_catalog.pg_namespace namespace
+         ON namespace.oid=relation.relnamespace
+       CROSS JOIN LATERAL pg_catalog.aclexplode(
+         coalesce(relation.relacl, pg_catalog.acldefault('r', relation.relowner))
+       ) acl
+       WHERE namespace.nspname='release_authority'
+         AND relation.relname='source_legacy_ambiguity_receipt'
+         AND acl.grantee='${activationReceiptGuardRoleName}'::regrole
+         AND (acl.privilege_type<>'SELECT' OR acl.is_grantable)
+     ) THEN
+    RAISE EXCEPTION 'source legacy ambiguity receipt ACL is non-canonical';
+  END IF;
+END
+$source_receipt_acl_exact$;
 DO $installer_database_acl$
 BEGIN
   IF NOT has_database_privilege(

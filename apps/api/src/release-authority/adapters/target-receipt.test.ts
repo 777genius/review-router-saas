@@ -128,6 +128,8 @@ describe("target migration receipt reader", () => {
     permitNonce: permit.nonce,
     postManifestIdentity: digest("e"),
     postCatalogDigest: digest("f"),
+    sourceLegacyAmbiguity: permit.sourceLegacyAmbiguity,
+    eligibilityCutoff: permit.eligibilityCutoff,
     legacyReconciliation: { status: "reconciled" },
     effectFingerprint: digest("1"),
     completedAt: "2026-08-14T00:00:00.000Z",
@@ -152,4 +154,21 @@ describe("target migration receipt reader", () => {
       }),
     ).rejects.toThrow("target_migration_receipt_result_invalid");
   });
+
+  it.each([
+    {
+      sourceLegacyAmbiguity: {
+        ...permit.sourceLegacyAmbiguity,
+        receiptSha256: digest("9"),
+      },
+    },
+    { eligibilityCutoff: "2026-08-14T00:00:01.000Z" },
+  ])(
+    "rejects source evidence that is not bound to the permit",
+    async (drift) => {
+      await expect(
+        reader({ ...migrationReceipt, ...drift }).readMigrationReceipt(permit),
+      ).rejects.toThrow("target_migration_receipt_result_invalid");
+    },
+  );
 });

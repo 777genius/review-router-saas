@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.js";
 import {
   assertDisposableCaptureTarget,
   createRehearsalRunnerJobBinding,
@@ -12,6 +15,9 @@ import {
   resolveRehearsalCaptureOnlyConfiguration,
   resolvePreReleaseMigrationExclusions,
   safePostgresErrorClassification,
+  safeReleaseAuthorityErrorClassification,
+  summarizeErrorShape,
+  summarizeAuthorityReadinessMismatch,
   rehearsalActivationCatalogPolicyAuthorization,
   rehearsalReadinessPolicy,
   routeRehearsalAfterReleaseMigration,
@@ -22,7 +28,139 @@ import {
 } from "./rehearse-private-pg17-rollout.mjs";
 
 const digest = "d".repeat(64);
+
+const migrationManifestIdentity = (migrationNames: readonly string[]) => {
+  const migrationsRoot = "packages/platform/db/prisma/migrations";
+  const manifest = [...migrationNames]
+    .sort()
+    .map((migrationName) => {
+      const checksum = createHash("sha256")
+        .update(
+          readFileSync(join(migrationsRoot, migrationName, "migration.sql")),
+        )
+        .digest("hex");
+      return `${migrationName}:${checksum}`;
+    })
+    .join(",");
+  return `sha256:${createHash("sha256").update(manifest).digest("hex")}`;
+};
+
 describe("disposable dual-version rehearsal", () => {
+  it("classifies only allowlisted nested release-authority errors", () => {
+    expect(
+      safeReleaseAuthorityErrorClassification({
+        meta: {
+          driverAdapterError: {
+            cause: {
+              originalMessage:
+                "ERROR: release migration begin binding conflict",
+            },
+          },
+        },
+      }),
+    ).toBe("release migration begin binding conflict");
+    expect(
+      safeReleaseAuthorityErrorClassification({
+        message: "secret database error token=do-not-print",
+      }),
+    ).toBeUndefined();
+    expect(
+      safeReleaseAuthorityErrorClassification({
+        message: "release_migration_target_receipt_conflict",
+      }),
+    ).toBe("release_migration_target_receipt_conflict");
+    expect(
+      safeReleaseAuthorityErrorClassification({
+        originalCode: "P0001",
+        originalMessage: "release migration source receipt digest invalid",
+      }),
+    ).toBe("release migration source receipt digest invalid");
+    expect(
+      safeReleaseAuthorityErrorClassification({
+        originalCode: "P0001",
+        originalMessage: "release migration token=do-not-print",
+      }),
+    ).toBeUndefined();
+    expect(
+      safeReleaseAuthorityErrorClassification({
+        originalCode: "42501",
+        originalMessage: "permission denied for schema release_authority",
+      }),
+    ).toBe("permission denied for schema release_authority");
+    expect(
+      safeReleaseAuthorityErrorClassification({
+        originalCode: "42501",
+        originalMessage: "permission denied for schema private_customer_data",
+      }),
+    ).toBeUndefined();
+    expect(
+      summarizeErrorShape({
+        message: "not exposed",
+        meta: { driverAdapterError: { cause: new Error("not exposed") } },
+      }),
+    ).toEqual([
+      { path: "error", constructor: "Object", keys: ["message", "meta"] },
+      {
+        path: "error.meta",
+        constructor: "Object",
+        keys: ["driverAdapterError"],
+      },
+      {
+        path: "error.meta.driverAdapterError",
+        constructor: "Object",
+        keys: ["cause"],
+      },
+      {
+        path: "error.meta.driverAdapterError.cause",
+        constructor: "Error",
+        keys: ["message", "stack"],
+      },
+    ]);
+  });
+
+  it("reports authority readiness drift without credential material", () => {
+    expect(
+      summarizeAuthorityReadinessMismatch({
+        roleName: "reviewrouter_release_control",
+        systemIdentifier: "123",
+        databaseIdentity: {
+          serverIdentity: "123",
+          databaseIdentity: "456",
+          databaseName: "review_router",
+        },
+        postgresMajor: 17,
+        schemaVersion: 7,
+        catalogVerifier: "sha256-catalog-v1",
+        catalogFingerprint: "actual",
+        expectedCatalogFingerprint: "expected",
+        catalogExact: false,
+        authorityAclExact: false,
+        migrationManifest: [
+          {
+            migrationName: "000001_release_authority",
+            byteVariant: "canonical",
+          },
+        ],
+      }),
+    ).toEqual({
+      roleName: "reviewrouter_release_control",
+      systemIdentifier: "123",
+      databaseIdentity: {
+        serverIdentity: "123",
+        databaseIdentity: "456",
+        databaseName: "review_router",
+      },
+      postgresMajor: 17,
+      schemaVersion: 7,
+      catalogVerifier: "sha256-catalog-v1",
+      catalogFingerprintMatches: false,
+      falseChecks: ["catalogExact", "authorityAclExact"],
+      migrationManifest: [
+        { migrationName: "000001_release_authority", byteVariant: "canonical" },
+      ],
+    });
+  });
+
   it("classifies a denied catalog object without exposing surrounding stderr", () => {
     expect(
       safePostgresErrorClassification(
@@ -438,6 +576,16 @@ describe("disposable dual-version rehearsal", () => {
       "000068_validate_review_assignment_manifest",
     );
     expect(exclusions).not.toContain("000074_hosted_codex_account_pool");
+    expect(
+      migrationManifestIdentity(
+        migrationNames.filter(
+          (migrationName) => !exclusions.includes(migrationName),
+        ),
+      ),
+    ).toBe(canonicalReleaseMigrationArtifact.preManifestIdentity);
+    expect(migrationManifestIdentity(migrationNames)).toBe(
+      canonicalReleaseMigrationArtifact.postManifestIdentity,
+    );
     expect(() =>
       resolvePreReleaseMigrationExclusions([
         ...migrationNames,
@@ -659,6 +807,11 @@ describe("disposable dual-version rehearsal", () => {
       "createReleaseControlApp",
       "rr-authority-pg17-",
       "releaseAuthorityMigrationBundle",
+      "releaseAuthorityBootstrapCleanupSql",
+      "releaseAuthorityBootstrapTerminalSql",
+      "private_pg17_rehearsal_authority_terminal_state_unproven",
+      "private_pg17_rehearsal_authority_migration_postcondition_unproven",
+      '"reviewrouter_release_control",\n        `SELECT json_build_object(',
       "activationAuthorityProvisioningSql",
       "reviewrouter_activation_permit_installer",
       "reviewrouter_activation_receipt_reader",
@@ -668,6 +821,18 @@ describe("disposable dual-version rehearsal", () => {
       "installerRoutineBodySha256",
       "readerRoutineBodySha256",
       "reviewrouter_provider_authority",
+      "reviewrouter_migration_issuer",
+      "reviewrouter_bootstrap_administrator",
+      "NOSUPERUSER NOCREATEDB CREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 1",
+      "GRANT pg_signal_backend TO reviewrouter_bootstrap_administrator",
+      "reviewrouter_rehearsal_authority_bootstrap",
+      "SET createrole_self_grant=''",
+      "ALTER DATABASE review_router OWNER TO ${authorityBootstrapRole}",
+      "releaseAuthorityProviderRootProbeSql",
+      'rr_root_probe_${randomBytes(16).toString("hex")}',
+      "releaseAuthorityBootstrapPreparationSql",
+      "releaseAuthorityBootstrapProvisioningSql",
+      "releaseAuthorityBootstrapRelinquishSql",
       "providerAuthorityPrisma",
       "Promise.allSettled",
       "private_pg17_rehearsal_authority_replay_unproven",
@@ -702,6 +867,9 @@ describe("disposable dual-version rehearsal", () => {
       "redactedErrorChain",
     ])
       expect(source).toContain(required);
+    expect(source).toMatch(
+      /const authorityProviderRoot[\s\S]+releaseAuthorityProviderRootProbeSql[\s\S]+releaseAuthorityBootstrapPreparationSql[\s\S]+releaseAuthorityBootstrapProvisioningSql[\s\S]+finally[\s\S]+releaseAuthorityBootstrapRelinquishSql[\s\S]+releaseAuthorityMigrationBundle[\s\S]+releaseAuthorityBootstrapCleanupSql[\s\S]+releaseAuthorityBootstrapTerminalSql/u,
+    );
     expect(source).toContain("createdContainers: facts.createdContainers");
     expect(source).toContain("sourceContainer: source");
     expect(source).toMatch(
@@ -918,6 +1086,43 @@ describe("disposable dual-version rehearsal", () => {
     expect(source).toContain("rehearsal_canonical_step_failed:${step}");
     expect(source).toContain("safePostgresErrorClassification(result.stderr)");
     expect(source).toContain("rehearsal_control_stage_started:health_ready");
+    expect(source).toContain("expectedDatabaseIdentity");
+    expect(source.indexOf('runStage("quiesce_source"')).toBeLessThan(
+      source.indexOf('runStage("capture_source_backup"'),
+    );
+    const sourceReceiptSeed = source.indexOf(
+      "persistRehearsalSourceOwnedReceipt(sql, source, sourceLegacyAmbiguity)",
+    );
+    const physicalDump = source.indexOf('"pg_dump"', sourceReceiptSeed);
+    expect(sourceReceiptSeed).toBeGreaterThan(-1);
+    expect(physicalDump).toBeGreaterThan(sourceReceiptSeed);
+    expect(source).toContain(
+      "CREATE TRIGGER source_legacy_ambiguity_receipt_immutable_guard",
+    );
+    expect(source).toContain(
+      "CREATE FUNCTION release_authority.source_receipt_canonical_json(value jsonb)",
+    );
+    expect(source).toContain(
+      "sourceSystemIdentifier,\n      sourceLegacyAmbiguity,",
+    );
+    expect(
+      source.match(/= rehearsalLegacyAmbiguityReceipt\(\{/gu),
+    ).toHaveLength(1);
+    expect(source).toContain(
+      "useCases.runReleaseMigration(rollout, sourceLegacyAmbiguity)",
+    );
+    expect(source).toContain(
+      "REVIEW_ROUTER_MIGRATION_PERMIT_SOURCE_LEGACY_AMBIGUITY_BASE64URL",
+    );
+    expect(source).toContain(
+      "Buffer.from(JSON.stringify(permit.sourceLegacyAmbiguity))",
+    );
+    expect(source).toContain(
+      "REVIEW_ROUTER_MIGRATION_PERMIT_ELIGIBILITY_CUTOFF",
+    );
+    expect(source).toContain(
+      "private_pg17_rehearsal_source_legacy_ambiguity_missing",
+    );
     expect(source).toContain(
       "rehearsal_control_health_not_ready:status=${status}",
     );
@@ -947,11 +1152,8 @@ describe("disposable dual-version rehearsal", () => {
     expect(source).toContain("if (!targetPrincipalDecision.accepted)");
     expect(source).not.toContain("targetPrincipalDecision.allowed");
     expect(source).not.toContain("draftPolicyForDisposableRehearsal");
-    expect(source).toContain(
-      "authorizeCanonicalActivationCatalogPolicies(\n          rehearsalActivationCatalogPolicyAuthorization",
-    );
-    expect(source).not.toContain(
-      "trustedActivationCatalogPolicies: canonicalActivationCatalogPolicies",
+    expect(source).toMatch(
+      /trustedActivationCatalogPolicies:\s+captureOnly\s+\? canonicalActivationCatalogPolicies\s+: authorizeCanonicalActivationCatalogPolicies/u,
     );
     expect(source).toContain(
       "private_pg17_rehearsal_activation_catalog_policy_trust_root_blocked",

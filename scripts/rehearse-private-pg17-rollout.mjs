@@ -46,6 +46,7 @@ import {
   draftEffectivePrincipalPolicy,
   effectivePrincipalInventorySql,
   evaluateEffectivePrincipalInventory,
+  canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
   canonicalActivationCatalogPolicyTrustRootReadiness,
   assertCanonicalActivationCatalogPolicyTrustRootReady,
@@ -54,6 +55,7 @@ import {
 import { createPrismaClient } from "../packages/platform/db/src/index.ts";
 import { createReleaseControlApp } from "../apps/api/src/release-control-composition.ts";
 import { observeReleaseAuthorityDatabaseReadiness } from "../apps/api/src/release-authority/adapters/postgres-readiness.ts";
+import { releaseAuthoritySchemaIsReady } from "../apps/api/src/release-authority/application/readiness.ts";
 import { PostgresCleanupObservationAdapter } from "../apps/api/src/release-witness-adapters.ts";
 import {
   executeCanonicalReleaseMigration,
@@ -101,6 +103,87 @@ function rehearsalLegacyAmbiguityReceipt({
   });
 }
 
+function rehearsalSqlLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function persistRehearsalSourceOwnedReceipt(sql, source, evidence) {
+  sql(
+    source,
+    `CREATE SCHEMA IF NOT EXISTS release_authority;
+CREATE TABLE release_authority.source_database_fence (
+  fence_id text PRIMARY KEY,
+  rollout_id text NOT NULL UNIQUE,
+  source_system_identifier text NOT NULL,
+  authority_principal text NOT NULL,
+  before_inventory_sha256 text NOT NULL,
+  before_policy_sha256 text NOT NULL,
+  fenced_inventory_sha256 text NOT NULL,
+  fenced_policy_sha256 text NOT NULL,
+  prior_connect_acl jsonb NOT NULL,
+  lifecycle text NOT NULL,
+  established_at timestamptz NOT NULL
+);
+CREATE TABLE release_authority.source_legacy_ambiguity_receipt (
+  rollout_id text PRIMARY KEY,
+  fence_id text NOT NULL,
+  source_system_identifier text NOT NULL,
+  evidence jsonb NOT NULL,
+  created_at timestamptz(3) NOT NULL DEFAULT
+    date_trunc('milliseconds', clock_timestamp())
+);
+CREATE FUNCTION release_authority.source_receipt_canonical_json(value jsonb)
+RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE SET search_path=pg_catalog
+AS $canonical$
+SELECT CASE jsonb_typeof(value)
+  WHEN 'object' THEN '{'||coalesce((SELECT string_agg(to_json(key)::text||':'||
+    release_authority.source_receipt_canonical_json(item),',' ORDER BY key COLLATE "C")
+    FROM jsonb_each(value) entry(key,item)),'')||'}'
+  WHEN 'array' THEN '['||coalesce((SELECT string_agg(
+    release_authority.source_receipt_canonical_json(item),',' ORDER BY ordinal)
+    FROM jsonb_array_elements(value) WITH ORDINALITY entry(item,ordinal)),'')||']'
+  ELSE value::text
+END
+$canonical$;
+CREATE FUNCTION release_authority.source_receipt_immutable()
+RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $immutable$
+BEGIN RAISE EXCEPTION 'source legacy ambiguity receipt is immutable'; END
+$immutable$;
+CREATE TRIGGER source_legacy_ambiguity_receipt_immutable_guard
+BEFORE UPDATE OR DELETE ON release_authority.source_legacy_ambiguity_receipt
+FOR EACH ROW EXECUTE FUNCTION release_authority.source_receipt_immutable();
+INSERT INTO release_authority.source_database_fence (
+  fence_id, rollout_id, source_system_identifier, authority_principal,
+  before_inventory_sha256, before_policy_sha256,
+  fenced_inventory_sha256, fenced_policy_sha256, prior_connect_acl,
+  lifecycle, established_at
+) VALUES (
+  ${rehearsalSqlLiteral(evidence.fenceId)},
+  ${rehearsalSqlLiteral(evidence.rolloutId)},
+  ${rehearsalSqlLiteral(evidence.sourceSystemIdentifier)},
+  ${rehearsalSqlLiteral(evidence.authorityPrincipal)},
+  ${rehearsalSqlLiteral(evidence.fencedInventorySha256)},
+  ${rehearsalSqlLiteral(evidence.fencedInventorySha256)},
+  ${rehearsalSqlLiteral(evidence.fencedInventorySha256)},
+  ${rehearsalSqlLiteral(evidence.fencedInventorySha256)},
+  '{}'::jsonb,
+  'active',
+  ${rehearsalSqlLiteral(evidence.fenceEstablishedAt)}::timestamptz
+);
+INSERT INTO release_authority.source_legacy_ambiguity_receipt (
+  rollout_id, fence_id, source_system_identifier, evidence
+) VALUES (
+  ${rehearsalSqlLiteral(evidence.rolloutId)},
+  ${rehearsalSqlLiteral(evidence.fenceId)},
+  ${rehearsalSqlLiteral(evidence.sourceSystemIdentifier)},
+  ${rehearsalSqlLiteral(JSON.stringify(evidence))}::jsonb
+);
+REVOKE ALL ON SCHEMA release_authority FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA release_authority FROM PUBLIC;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA release_authority FROM PUBLIC;`,
+  );
+}
+
 export const rehearsalActivationCatalogPolicyAuthorization = Object.freeze({
   preactivationCatalogPolicySha256:
     "sha256:c133bacb4a813540245430151ffd80f3380a4123ccc379250828d0317ac514d9",
@@ -116,7 +199,57 @@ export const rehearsalReadinessPolicy = Object.freeze({
   leaseMilliseconds: 900_000,
   refreshAfterMilliseconds: 600_000,
 });
-import { releaseAuthorityMigrationBundle } from "./install-release-authority-db.mjs";
+
+const authorityReadinessBooleanFields = Object.freeze([
+  "catalogExact",
+  "defaultAclExact",
+  "finalAclExact",
+  "controlRoutine",
+  "providerRoutine",
+  "externalEffectProtocol",
+  "sourceFreezeProtocol",
+  "selectiveRecoveryProtocol",
+  "lateRunnerEffectProtocol",
+  "recoveryEffectProtocol",
+  "compensationCheckpointDefinition",
+  "runnerProviderBoundary",
+  "cleanupWitnessTemporalSemantics",
+  "requiredTriggers",
+  "authorityOwnershipExact",
+  "authorityAclExact",
+  "publicAuthorityRevoked",
+  "authorityTablesRevoked",
+  "authorityRoleTopologyExact",
+]);
+
+export function summarizeAuthorityReadinessMismatch(readiness) {
+  return Object.freeze({
+    roleName: readiness.roleName,
+    systemIdentifier: readiness.systemIdentifier,
+    databaseIdentity: readiness.databaseIdentity,
+    postgresMajor: readiness.postgresMajor,
+    schemaVersion: readiness.schemaVersion,
+    catalogVerifier: readiness.catalogVerifier,
+    catalogFingerprintMatches:
+      readiness.catalogFingerprint === readiness.expectedCatalogFingerprint,
+    falseChecks: authorityReadinessBooleanFields.filter(
+      (field) => readiness[field] === false,
+    ),
+    migrationManifest: readiness.migrationManifest.map((entry) => ({
+      migrationName: entry.migrationName,
+      byteVariant: entry.byteVariant,
+    })),
+  });
+}
+import {
+  releaseAuthorityBootstrapPreparationSql,
+  releaseAuthorityBootstrapProvisioningSql,
+  releaseAuthorityBootstrapRelinquishSql,
+  releaseAuthorityBootstrapCleanupSql,
+  releaseAuthorityBootstrapTerminalSql,
+  releaseAuthorityMigrationBundle,
+  releaseAuthorityProviderRootProbeSql,
+} from "./install-release-authority-db.mjs";
 import { executePrivateGenerationActivation } from "./activate-private-pg17-generation.mjs";
 import { createSecureCanonicalRun } from "./private-pg17-secure-canonical.ts";
 import {
@@ -436,6 +569,90 @@ const safeReleaseMigrationInvariantMessages = Object.freeze([
   "release migration V72 routine security invalid",
   "release migration V70-V73 live catalog digest mismatch",
 ]);
+
+const safeReleaseAuthorityInvariantMessages = Object.freeze([
+  "release migration source evidence invalid",
+  "release migration source evidence timestamp invalid",
+  "release migration source evidence ordering invalid",
+  "release migration source evidence digest invalid",
+  "release migration source receipt digest invalid",
+  "release migration begin shape invalid",
+  "release migration begin binding conflict",
+  "release migration begin phase conflict",
+]);
+
+export function safeReleaseAuthorityErrorClassification(error) {
+  const pending = [error];
+  const seen = new Set();
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (!current || typeof current !== "object" || seen.has(current)) continue;
+    seen.add(current);
+    for (const key of ["message", "originalMessage"]) {
+      const message = current[key];
+      if (typeof message !== "string") continue;
+      if (key === "message" && /^[a-z][a-z0-9_]{2,160}$/u.test(message))
+        return message;
+      const classification = safeReleaseAuthorityInvariantMessages.find(
+        (candidate) => message.includes(candidate),
+      );
+      if (classification) return classification;
+      if (
+        key === "originalMessage" &&
+        current.originalCode === "P0001" &&
+        /^release (?:migration|rollout|authority) [a-z0-9 _:-]{1,160}$/u.test(
+          message,
+        )
+      )
+        return message;
+      if (
+        key === "originalMessage" &&
+        current.originalCode === "42501" &&
+        /^permission denied for (?:schema release_authority|(?:table|relation) source_legacy_ambiguity_receipt)$/u.test(
+          message,
+        )
+      )
+        return message;
+    }
+    for (const key of ["cause", "meta", "driverAdapterError"])
+      if (current[key] && typeof current[key] === "object")
+        pending.push(current[key]);
+  }
+  return undefined;
+}
+
+export function summarizeErrorShape(error) {
+  const pending = [{ path: "error", value: error, depth: 0 }];
+  const seen = new Set();
+  const objects = [];
+  while (pending.length > 0 && objects.length < 32) {
+    const current = pending.shift();
+    if (
+      !current?.value ||
+      typeof current.value !== "object" ||
+      seen.has(current.value)
+    )
+      continue;
+    seen.add(current.value);
+    const keys = Object.getOwnPropertyNames(current.value).sort();
+    objects.push({
+      path: current.path,
+      constructor: current.value.constructor?.name ?? "Object",
+      keys,
+    });
+    if (current.depth >= 5) continue;
+    for (const key of keys) {
+      const child = current.value[key];
+      if (child && typeof child === "object")
+        pending.push({
+          path: `${current.path}.${key}`,
+          value: child,
+          depth: current.depth + 1,
+        });
+    }
+  }
+  return Object.freeze(objects);
+}
 
 export function safePostgresErrorClassification(stderr) {
   const sqlState = stderr?.match(/ERROR:\s*([0-9A-Z]{5}):/u)?.[1];
@@ -770,6 +987,7 @@ export async function executeDisposableRehearsal(
   let targetReceiptReaderPrisma;
   let witnessPrisma;
   let targetAdministrativeRole = "reviewrouter_provider_administrator";
+  const authorityBootstrapRole = "reviewrouter_rehearsal_authority_bootstrap";
   const createdContainers = [];
   const docker = (...args) => execute(args);
   const sql = (container, statement) =>
@@ -785,6 +1003,23 @@ export async function executeDisposableRehearsal(
       "review_router",
       "-Atqc",
       statement,
+    ).trim();
+  const authoritySql = (username, input, { capture = false } = {}) =>
+    execute(
+      [
+        "exec",
+        "--interactive",
+        authority,
+        "psql",
+        "--no-psqlrc",
+        "--quiet",
+        ...(capture ? ["--tuples-only", "--no-align"] : []),
+        "-U",
+        username,
+        "-d",
+        "review_router",
+      ],
+      { input },
     ).trim();
   try {
     docker("network", "create", network);
@@ -841,23 +1076,105 @@ export async function executeDisposableRehearsal(
     const authorityPort = publishedPort(authority);
     sql(
       authority,
-      "CREATE EXTENSION IF NOT EXISTS pgcrypto; CREATE ROLE reviewrouter_release_control LOGIN PASSWORD 'disposable-control'; CREATE ROLE reviewrouter_provider_authority LOGIN PASSWORD 'disposable-provider'; CREATE ROLE reviewrouter_release_witness LOGIN PASSWORD 'disposable-witness'",
+      "CREATE EXTENSION IF NOT EXISTS pgcrypto; CREATE ROLE reviewrouter_release_control LOGIN PASSWORD 'disposable-control'; CREATE ROLE reviewrouter_provider_authority LOGIN PASSWORD 'disposable-provider'; CREATE ROLE reviewrouter_release_witness LOGIN PASSWORD 'disposable-witness'; CREATE ROLE reviewrouter_migration_issuer LOGIN PASSWORD 'disposable-issuer'; CREATE ROLE reviewrouter_bootstrap_administrator LOGIN PASSWORD 'disposable-bootstrap-admin' NOSUPERUSER NOCREATEDB CREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 1; GRANT pg_signal_backend TO reviewrouter_bootstrap_administrator",
     );
-    execute(
-      [
-        "exec",
-        "--interactive",
-        authority,
-        "psql",
-        "-U",
-        "postgres",
-        "-d",
-        "review_router",
-      ],
-      {
-        input: releaseAuthorityMigrationBundle("fresh-install", process.cwd()),
-      },
+    authoritySql(
+      "reviewrouter_bootstrap_administrator",
+      `SET createrole_self_grant=''; CREATE ROLE ${authorityBootstrapRole} LOGIN PASSWORD 'disposable-authority-bootstrap' NOSUPERUSER NOCREATEDB CREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 1;`,
     );
+    sql(
+      authority,
+      `ALTER DATABASE review_router OWNER TO ${authorityBootstrapRole}`,
+    );
+    const authorityProviderRoot = JSON.parse(
+      authoritySql(
+        "reviewrouter_bootstrap_administrator",
+        releaseAuthorityProviderRootProbeSql(
+          `rr_root_probe_${randomBytes(16).toString("hex")}`,
+        ),
+        { capture: true },
+      ),
+    );
+    authoritySql(
+      authorityBootstrapRole,
+      releaseAuthorityBootstrapPreparationSql(
+        authorityBootstrapRole,
+        authorityProviderRoot,
+      ),
+    );
+    try {
+      authoritySql(
+        "reviewrouter_bootstrap_administrator",
+        releaseAuthorityBootstrapProvisioningSql(
+          authorityBootstrapRole,
+          "disposable-authority-bootstrap",
+          authorityProviderRoot,
+          "fresh",
+        ),
+      );
+    } finally {
+      authoritySql(
+        authorityBootstrapRole,
+        releaseAuthorityBootstrapRelinquishSql(authorityBootstrapRole),
+      );
+    }
+    authoritySql(
+      authorityBootstrapRole,
+      releaseAuthorityMigrationBundle("fresh-install", process.cwd()),
+    );
+    authoritySql(
+      "reviewrouter_bootstrap_administrator",
+      releaseAuthorityBootstrapCleanupSql(
+        authorityBootstrapRole,
+        authorityProviderRoot,
+      ),
+    );
+    const authorityTerminalState = authoritySql(
+      "reviewrouter_bootstrap_administrator",
+      releaseAuthorityBootstrapTerminalSql(
+        authorityBootstrapRole,
+        authorityProviderRoot,
+      ),
+      { capture: true },
+    );
+    if (authorityTerminalState !== "terminal")
+      throw new Error(
+        "private_pg17_rehearsal_authority_terminal_state_unproven",
+      );
+    const authorityMigrationPostcondition = JSON.parse(
+      authoritySql(
+        "reviewrouter_release_control",
+        `SELECT json_build_object(
+          'schemaPresent', to_regnamespace('release_authority') IS NOT NULL,
+          'schemaVersion', coalesce(
+            (SELECT (obj_description(namespace.oid, 'pg_namespace')::jsonb
+              ->> 'schemaVersion')::integer
+             FROM pg_namespace namespace
+             WHERE namespace.nspname='release_authority'),
+            0
+          ),
+          'databaseOwner', (
+            SELECT pg_get_userbyid(datdba)
+            FROM pg_database WHERE datname=current_database()
+          )
+        )`,
+        { capture: true },
+      ),
+    );
+    if (
+      authorityMigrationPostcondition.schemaPresent !== true ||
+      authorityMigrationPostcondition.schemaVersion !==
+        releaseAuthoritySchemaVersion ||
+      authorityMigrationPostcondition.databaseOwner !==
+        "reviewrouter_authority_owner"
+    ) {
+      process.stderr.write(
+        `rehearsal_authority_migration_postcondition_mismatch:${JSON.stringify(authorityMigrationPostcondition)}\n`,
+      );
+      throw new Error(
+        "private_pg17_rehearsal_authority_migration_postcondition_unproven",
+      );
+    }
     const preReleasePrisma = join(directory, "pre-release-prisma");
     cpSync(
       join(process.cwd(), "packages/platform/db/prisma"),
@@ -1030,22 +1347,6 @@ ROLLBACK;`,
       target,
       `COMMENT ON DATABASE review_router IS '{"recoveryWitnessSha256":"${"c".repeat(64)}"}'`,
     );
-    const dump = execute(
-      [
-        "exec",
-        source,
-        "pg_dump",
-        "-U",
-        "postgres",
-        "-d",
-        "review_router",
-        "--format=custom",
-        "--no-owner",
-        "--no-privileges",
-      ],
-      { encoding: "buffer" },
-    );
-    writeFileSync(dumpPath, dump);
     sql(
       source,
       "BEGIN; REVOKE CONNECT ON DATABASE review_router FROM PUBLIC; REVOKE CONNECT ON DATABASE review_router FROM rehearsal_writer; COMMIT; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid();",
@@ -1095,6 +1396,53 @@ ROLLBACK;`,
       source,
       "REVOKE CONNECT ON DATABASE review_router FROM rehearsal_writer",
     );
+    const snapshotSql = `SELECT json_build_object('rows',(SELECT count(*) FROM rehearsal_items),'hash',(SELECT md5(string_agg(row_to_json(t)::text,'' ORDER BY id)) FROM rehearsal_items t),'sequence',(SELECT json_build_object('lastValue',last_value,'isCalled',is_called) FROM rehearsal_items_id_seq),'privateRows',(SELECT json_agg(row_to_json(t) ORDER BY id) FROM app_private.rehearsal_private t),'calledSequence',(SELECT json_build_object('lastValue',last_value,'isCalled',is_called) FROM app_private.called_sequence),'uncalledSequence',(SELECT json_build_object('lastValue',last_value,'isCalled',is_called) FROM app_private.uncalled_sequence),'constraints',(SELECT count(*) FROM pg_constraint WHERE connamespace='public'::regnamespace),'indexes',(SELECT count(*) FROM pg_indexes WHERE schemaname='public'),'migrations',(SELECT json_agg(m ORDER BY migration_name) FROM "_prisma_migrations" m))`;
+    const sourceSnapshot = sql(source, snapshotSql);
+    const sourceSystemIdentifier = sql(
+      source,
+      "SELECT system_identifier::text FROM pg_control_system()",
+    );
+    const sourceLegacyAmbiguity = rehearsalLegacyAmbiguityReceipt({
+      rollout: {
+        rolloutId: "disposable-rehearsal",
+        source: {
+          systemIdentifier: sourceSystemIdentifier,
+          databaseName: "review_router",
+          recoveryWitnessSha256: "a".repeat(64),
+        },
+      },
+      fence: {
+        fenceId: "source-fence:disposable-rehearsal",
+        authorityPrincipal: "fence_authority",
+        fencedInventorySha256: sha256(sourceSnapshot),
+        observedAt: "2026-08-12T00:00:02.000Z",
+      },
+      inventory: {
+        activeLeaseIds: [],
+        fetchedSetupIds: [],
+        pendingIntentIds: [],
+        intentStatuses: [],
+      },
+      firstObservedAt: "2026-08-12T00:00:02.100Z",
+      eligibilityCutoff: "2026-08-12T00:00:02.300Z",
+    });
+    persistRehearsalSourceOwnedReceipt(sql, source, sourceLegacyAmbiguity);
+    const dump = execute(
+      [
+        "exec",
+        source,
+        "pg_dump",
+        "-U",
+        "postgres",
+        "-d",
+        "review_router",
+        "--format=custom",
+        "--no-owner",
+        "--no-privileges",
+      ],
+      { encoding: "buffer" },
+    );
+    writeFileSync(dumpPath, dump);
     docker("cp", dumpPath, `${target}:/tmp/source.dump`);
     docker(
       "exec",
@@ -1109,8 +1457,6 @@ ROLLBACK;`,
       "--exit-on-error",
       "/tmp/source.dump",
     );
-    const snapshotSql = `SELECT json_build_object('rows',(SELECT count(*) FROM rehearsal_items),'hash',(SELECT md5(string_agg(row_to_json(t)::text,'' ORDER BY id)) FROM rehearsal_items t),'sequence',(SELECT json_build_object('lastValue',last_value,'isCalled',is_called) FROM rehearsal_items_id_seq),'privateRows',(SELECT json_agg(row_to_json(t) ORDER BY id) FROM app_private.rehearsal_private t),'calledSequence',(SELECT json_build_object('lastValue',last_value,'isCalled',is_called) FROM app_private.called_sequence),'uncalledSequence',(SELECT json_build_object('lastValue',last_value,'isCalled',is_called) FROM app_private.uncalled_sequence),'constraints',(SELECT count(*) FROM pg_constraint WHERE connamespace='public'::regnamespace),'indexes',(SELECT count(*) FROM pg_indexes WHERE schemaname='public'),'migrations',(SELECT json_agg(m ORDER BY migration_name) FROM "_prisma_migrations" m))`;
-    const sourceSnapshot = sql(source, snapshotSql);
     const targetSnapshot = sql(target, snapshotSql);
     if (sourceSnapshot !== targetSnapshot)
       throw new Error("private_pg17_rehearsal_equivalence_failed");
@@ -1232,10 +1578,7 @@ ROLLBACK;`,
       REVIEW_ROUTER_RELEASE_COMMIT_SHA: "d".repeat(40),
       REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: sha256(sourceSnapshot),
       REVIEW_ROUTER_ROLLOUT_ID: "disposable-rehearsal",
-      REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER: sql(
-        source,
-        "SELECT system_identifier::text FROM pg_control_system()",
-      ),
+      REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER: sourceSystemIdentifier,
       REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER: sql(
         target,
         "SELECT system_identifier::text FROM pg_control_system()",
@@ -1439,6 +1782,25 @@ ROLLBACK;`,
       poolMax: 1,
     });
     witnessPrisma = createPrismaClient({ databaseUrl: witnessUrl, poolMax: 1 });
+    for (const [roleName, prisma] of [
+      ["reviewrouter_release_control", controlPrisma],
+      ["reviewrouter_provider_authority", providerAuthorityPrisma],
+    ]) {
+      const authorityReadiness =
+        await observeReleaseAuthorityDatabaseReadiness(prisma);
+      if (!releaseAuthoritySchemaIsReady(authorityReadiness)) {
+        process.stderr.write(
+          `rehearsal_authority_readiness_mismatch:${JSON.stringify({
+            observed: summarizeAuthorityReadinessMismatch(authorityReadiness),
+            expectedDatabaseIdentity:
+              trustedDatabaseIdentity.authorityDatabaseIdentity,
+          })}\n`,
+        );
+        throw new Error(
+          `private_pg17_rehearsal_authority_readiness_unproven:${roleName}`,
+        );
+      }
+    }
     const activationAttestation =
       await observeReleaseAuthorityDatabaseReadiness(permitInstallerPrisma);
     process.stderr.write(
@@ -1475,14 +1837,25 @@ ROLLBACK;`,
         activationNamespaceFingerprint:
           activationAttestation.activationNamespaceFingerprint,
       },
-      trustedActivationCatalogPolicies:
-        authorizeCanonicalActivationCatalogPolicies(
-          rehearsalActivationCatalogPolicyAuthorization,
-        ),
+      trustedActivationCatalogPolicies: captureOnly
+        ? canonicalActivationCatalogPolicies
+        : authorizeCanonicalActivationCatalogPolicies(
+            rehearsalActivationCatalogPolicyAuthorization,
+          ),
       readinessPolicy: rehearsalReadinessPolicy,
     });
     process.stderr.write("rehearsal_control_stage_completed:create_app\n");
     releaseControl.addHook("onError", async (_request, _reply, error) => {
+      const authorityClassification =
+        safeReleaseAuthorityErrorClassification(error);
+      if (authorityClassification)
+        process.stderr.write(
+          `rehearsal_control_authority_error:${authorityClassification}\n`,
+        );
+      else
+        process.stderr.write(
+          `rehearsal_control_error_shape:${JSON.stringify(summarizeErrorShape(error))}\n`,
+        );
       process.stderr.write(
         `rehearsal_control_error:${redactedErrorChain(error)}\n`,
       );
@@ -1555,10 +1928,8 @@ ROLLBACK;`,
     const productionPath = await verifyProductionPathRehearsal({
       dumpSha256: sha256(dump),
       equivalenceSha256: sha256(sourceSnapshot),
-      sourceSystemIdentifier: sql(
-        source,
-        "SELECT system_identifier::text FROM pg_control_system()",
-      ),
+      sourceSystemIdentifier,
+      sourceLegacyAmbiguity,
       targetSystemIdentifier: sql(
         target,
         "SELECT system_identifier::text FROM pg_control_system()",
@@ -2158,6 +2529,7 @@ async function verifyProductionPathRehearsal(facts) {
   };
   let evidence;
   let legacyReconciliation;
+  const sourceLegacyAmbiguity = facts.sourceLegacyAmbiguity;
   const runReleaseMigrationPort = async (_target, transition, permit) => {
     process.stderr.write(
       "rehearsal_migration_substep_started:canonical_migration\n",
@@ -2176,6 +2548,12 @@ async function verifyProductionPathRehearsal(facts) {
           permit.expectedPreviousReceiptSha256,
         REVIEW_ROUTER_MIGRATION_PERMIT_EPOCH: String(permit.epoch),
         REVIEW_ROUTER_MIGRATION_PERMIT_NONCE: permit.nonce,
+        REVIEW_ROUTER_MIGRATION_PERMIT_SOURCE_LEGACY_AMBIGUITY_BASE64URL:
+          Buffer.from(JSON.stringify(permit.sourceLegacyAmbiguity)).toString(
+            "base64url",
+          ),
+        REVIEW_ROUTER_MIGRATION_PERMIT_ELIGIBILITY_CUTOFF:
+          permit.eligibilityCutoff,
       },
       canonicalRun,
     );
@@ -2427,8 +2805,8 @@ COMMIT;
             recoveryStatus: "AVAILABLE",
           },
         }),
-      quiesce: async () =>
-        observed(RolloutStep.QuiesceSource, {
+      quiesce: async () => {
+        return observed(RolloutStep.QuiesceSource, {
           writerServices: [
             {
               serviceId: "source-writer",
@@ -2458,25 +2836,10 @@ COMMIT;
             lifecycle: "active",
             observedAt: "2026-08-12T00:00:02.000Z",
           },
-          legacyAmbiguity: rehearsalLegacyAmbiguityReceipt({
-            rollout,
-            fence: {
-              fenceId: "source-fence:" + rollout.rolloutId,
-              authorityPrincipal: "fence_authority",
-              fencedInventorySha256: digest,
-              observedAt: "2026-08-12T00:00:02.000Z",
-            },
-            inventory: {
-              activeLeaseIds: [],
-              fetchedSetupIds: [],
-              pendingIntentIds: [],
-              intentStatuses: [],
-            },
-            firstObservedAt: "2026-08-12T00:00:02.100Z",
-            eligibilityCutoff: "2026-08-12T00:00:02.300Z",
-          }),
+          legacyAmbiguity: sourceLegacyAmbiguity,
           complete: true,
-        }),
+        });
+      },
       copy: async () =>
         observed(RolloutStep.CopyDatabaseGeneration, {
           dumpSha256: facts.dumpSha256,
@@ -2827,18 +3190,7 @@ COMMIT;
                 lifecycle: "active",
                 observedAt: "2026-08-12T00:00:02.000Z",
               },
-              legacyAmbiguity: rehearsalLegacyAmbiguityReceipt({
-                rollout: current,
-                fence: {
-                  fenceId: "source-fence:" + current.rolloutId,
-                  authorityPrincipal: "fence_authority",
-                  fencedInventorySha256: digest,
-                  observedAt: "2026-08-12T00:00:02.000Z",
-                },
-                inventory: legacyReconciliation.inventory,
-                firstObservedAt: "2026-08-12T00:00:02.100Z",
-                eligibilityCutoff: "2026-08-12T00:00:02.300Z",
-              }),
+              legacyAmbiguity: sourceLegacyAmbiguity,
               complete: true,
             },
             equivalence: {
@@ -2970,11 +3322,11 @@ COMMIT;
   ({ rollout } = await runStage("provision_private_runner", () =>
     useCases.provisionPrivateRunner(rollout),
   ));
-  rollout = await runStage("capture_source_backup", () =>
-    useCases.captureSourceBackup(rollout),
-  );
   rollout = await runStage("quiesce_source", () =>
     useCases.quiesceSource(rollout),
+  );
+  rollout = await runStage("capture_source_backup", () =>
+    useCases.captureSourceBackup(rollout),
   );
   rollout = await runStage("copy_database_generation", () =>
     useCases.copyDatabaseGeneration(rollout),
@@ -2996,7 +3348,13 @@ COMMIT;
     captureOnly: facts.captureOnly,
     rollout,
     runStage,
-    runReleaseMigration: () => useCases.runReleaseMigration(rollout),
+    runReleaseMigration: () => {
+      if (!sourceLegacyAmbiguity)
+        throw new Error(
+          "private_pg17_rehearsal_source_legacy_ambiguity_missing",
+        );
+      return useCases.runReleaseMigration(rollout, sourceLegacyAmbiguity);
+    },
     captureCandidate: () => {
       const identity = facts.captureOnly.disposableDatabaseIdentity;
       assertDisposableCaptureTarget({
