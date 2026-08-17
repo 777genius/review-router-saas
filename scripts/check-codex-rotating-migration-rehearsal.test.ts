@@ -618,6 +618,46 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
+  it("restores source-owned evidence before installing a rehearsal migration permit", () => {
+    const permitInstallation =
+      /function installRehearsalMigrationPermit\([\s\S]+?\n\}/u.exec(
+        source,
+      )?.[0];
+    expect(permitInstallation).toBeDefined();
+    expect(permitInstallation).toContain("restoreRehearsalSourceOwnedReceipt(");
+    expect(permitInstallation).toMatch(
+      /restoreRehearsalSourceOwnedReceipt\([\s\S]+?reviewrouter_activation\.install_migration_permit\(/u,
+    );
+    expect(permitInstallation).toContain("finally {");
+    expect(permitInstallation).toContain("discardSourceReceipt();");
+
+    const sourceReceiptFixture =
+      /function restoreRehearsalSourceOwnedReceipt\([\s\S]+?\n\}/u.exec(
+        source,
+      )?.[0];
+    expect(sourceReceiptFixture).toBeDefined();
+    expect(sourceReceiptFixture).toContain(
+      "CREATE TABLE release_authority.source_legacy_ambiguity_receipt",
+    );
+    expect(sourceReceiptFixture).toContain(
+      "OWNER TO reviewrouter_activation_receipt_guard",
+    );
+    expect(sourceReceiptFixture).toContain(
+      "INSERT INTO release_authority.source_legacy_ambiguity_receipt",
+    );
+    expect(sourceReceiptFixture).toContain("quoteLiteral(evidence.rolloutId)");
+    expect(sourceReceiptFixture).toContain("quoteLiteral(evidence.fenceId)");
+    expect(sourceReceiptFixture).toContain(
+      "quoteLiteral(evidence.sourceSystemIdentifier)",
+    );
+    expect(sourceReceiptFixture).toContain(
+      "quoteLiteral(JSON.stringify(evidence))",
+    );
+    expect(sourceReceiptFixture).toContain(
+      "DROP SCHEMA release_authority CASCADE",
+    );
+  });
+
   it("models the NOLOGIN schema owner separately from client credentials", () => {
     const client = (name: string) =>
       new URL(`postgresql://${name}@localhost/rehearsal`);

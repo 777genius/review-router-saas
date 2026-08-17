@@ -2820,23 +2820,32 @@ function installRehearsalMigrationPermit(
     sourceLegacyAmbiguity,
     eligibilityCutoff,
   });
-  const installed = psql(authority.permitInstaller, [
-    "-Atc",
-    `SELECT reviewrouter_activation.install_migration_permit(
-      ${quoteLiteral(permit.rolloutId)},
-      ${quoteLiteral(permit.sourceSystemIdentifier)},
-      ${quoteLiteral(permit.targetSystemIdentifier)},
-      ${quoteLiteral(permit.targetRecoveryWitnessSha256)},
-      ${quoteLiteral(permit.transitionSha256)},
-      ${quoteLiteral(permit.previousReceiptSha256)},
-      ${quoteLiteral(rehearsalPostManifestIdentitySha256)},
-      ${quoteLiteral(liveV70V73CatalogDigestSha256)},
-      ${quoteLiteral(JSON.stringify(sourceLegacyAmbiguity))}::jsonb,
-      ${quoteLiteral(eligibilityCutoff)}::timestamptz,
-      ${permit.epoch}::bigint,
-      ${quoteLiteral(permit.nonce)}
-    )`,
-  ]).stdout.trim();
+  const discardSourceReceipt = restoreRehearsalSourceOwnedReceipt(
+    authority,
+    sourceLegacyAmbiguity,
+  );
+  let installed;
+  try {
+    installed = psql(authority.permitInstaller, [
+      "-Atc",
+      `SELECT reviewrouter_activation.install_migration_permit(
+        ${quoteLiteral(permit.rolloutId)},
+        ${quoteLiteral(permit.sourceSystemIdentifier)},
+        ${quoteLiteral(permit.targetSystemIdentifier)},
+        ${quoteLiteral(permit.targetRecoveryWitnessSha256)},
+        ${quoteLiteral(permit.transitionSha256)},
+        ${quoteLiteral(permit.previousReceiptSha256)},
+        ${quoteLiteral(rehearsalPostManifestIdentitySha256)},
+        ${quoteLiteral(liveV70V73CatalogDigestSha256)},
+        ${quoteLiteral(JSON.stringify(sourceLegacyAmbiguity))}::jsonb,
+        ${quoteLiteral(eligibilityCutoff)}::timestamptz,
+        ${permit.epoch}::bigint,
+        ${quoteLiteral(permit.nonce)}
+      )`,
+    ]).stdout.trim();
+  } finally {
+    discardSourceReceipt();
+  }
   assert(installed === "t", "rehearsal_migration_permit_not_installed");
   return Object.freeze({
     REVIEW_ROUTER_ROLLOUT_ID: permit.rolloutId,
@@ -2853,6 +2862,39 @@ function installRehearsalMigrationPermit(
       Buffer.from(JSON.stringify(sourceLegacyAmbiguity)).toString("base64url"),
     REVIEW_ROUTER_MIGRATION_PERMIT_ELIGIBILITY_CUTOFF: eligibilityCutoff,
   });
+}
+
+function restoreRehearsalSourceOwnedReceipt(authority, evidence) {
+  psql(authority.providerAdmin, [
+    "-c",
+    `CREATE SCHEMA release_authority
+       AUTHORIZATION reviewrouter_activation_receipt_guard;
+     CREATE TABLE release_authority.source_legacy_ambiguity_receipt (
+       rollout_id text PRIMARY KEY,
+       fence_id text NOT NULL,
+       source_system_identifier text NOT NULL,
+       evidence jsonb NOT NULL,
+       created_at timestamptz(3) NOT NULL DEFAULT
+         date_trunc('milliseconds', clock_timestamp())
+     );
+     ALTER TABLE release_authority.source_legacy_ambiguity_receipt
+       OWNER TO reviewrouter_activation_receipt_guard;
+     REVOKE ALL ON TABLE release_authority.source_legacy_ambiguity_receipt
+       FROM PUBLIC;
+     INSERT INTO release_authority.source_legacy_ambiguity_receipt (
+       rollout_id, fence_id, source_system_identifier, evidence
+     ) VALUES (
+       ${quoteLiteral(evidence.rolloutId)},
+       ${quoteLiteral(evidence.fenceId)},
+       ${quoteLiteral(evidence.sourceSystemIdentifier)},
+       ${quoteLiteral(JSON.stringify(evidence))}::jsonb
+     );`,
+  ]);
+  return () =>
+    psql(authority.providerAdmin, [
+      "-c",
+      "DROP SCHEMA release_authority CASCADE",
+    ]);
 }
 
 function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
