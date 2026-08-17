@@ -46,7 +46,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
-  it("rehearses every canonical migration from 000060 through 000073 in order", () => {
+  it("rehearses every canonical migration from 000060 through 000074 in order", () => {
     const inventory =
       /JSON\.stringify\(\[([\s\S]+?)\]\),\n\s+"rehearsal migration inventory/u.exec(
         source,
@@ -109,6 +109,30 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "proveMigrationRunnerHistory(url, migrationName, true)",
     );
     expect(source).not.toContain("000067_release_rollout_ledger");
+  });
+
+  it("applies ordinary post-release migrations before proving deploy is a no-op", () => {
+    const ordinaryDeploy =
+      /function applyOrdinaryPostReleaseMigrations\([\s\S]+?\n\}/u.exec(
+        source,
+      )?.[0];
+    expect(ordinaryDeploy).toBeDefined();
+    expect(ordinaryDeploy).toContain("migrationName !== migration74Name");
+    expect(ordinaryDeploy).toContain(
+      "assertMigrationAbsentFromHistory(url, migration74Name)",
+    );
+    expect(ordinaryDeploy).toContain("migrateDeploy(url)");
+    expect(ordinaryDeploy).toContain(
+      "proveMigrationRunnerHistory(url, migration74Name, true)",
+    );
+    expect(ordinaryDeploy).toContain(
+      "ordinary post-release deploy changed release-controlled migration history",
+    );
+
+    expect(
+      source.indexOf("applyOrdinaryPostReleaseMigrations(providerAdmin)"),
+    ).toBeLessThan(source.indexOf("proveMigrateDeployNoOp(providerAdmin)"));
+    expect(source).toContain("combined 000060 through 000074 rehearsal passed");
   });
 
   it("reproduces the trusted production pre-migration manifest", () => {

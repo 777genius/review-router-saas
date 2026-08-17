@@ -184,13 +184,14 @@ try {
   await proveProviderRepairAuthorityV2(providerAdmin, runtimeClients);
   await proveQuarantineCleanupPathV2(providerAdmin, runtimeClients);
   proveExactProductionCatalogContract(providerAdmin);
+  applyOrdinaryPostReleaseMigrations(providerAdmin);
   proveMigrateDeployNoOp(providerAdmin);
   proveLateMigrationRollbackAndReplayMatrix();
   proveReleaseAuthorityMarkerIsolation(providerAdmin);
   const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000073 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000074 rehearsal passed.\n",
   );
 } finally {
   const databaseDrop = psql(
@@ -4144,21 +4145,48 @@ async function proveQuarantineCleanupPathV2(adminUrl, clients) {
   ]);
 }
 
+function migrationHistoryDigest(url, migrationNames) {
+  const migrationNameSql = migrationNames.map(quoteLiteral).join(",");
+  return psql(url, [
+    "-Atc",
+    String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
+      FROM "_prisma_migrations" m
+      WHERE migration_name IN (${migrationNameSql})`,
+  ]).stdout.trim();
+}
+
+function applyOrdinaryPostReleaseMigrations(url) {
+  const releaseControlledMigrationNames = rotatingMigrationNames.filter(
+    (migrationName) => migrationName !== migration74Name,
+  );
+  const releaseHistoryBefore = migrationHistoryDigest(
+    url,
+    releaseControlledMigrationNames,
+  );
+  assertMigrationAbsentFromHistory(url, migration74Name);
+  migrateDeploy(url);
+  assert(
+    migrationHistoryDigest(url, releaseControlledMigrationNames) ===
+      releaseHistoryBefore,
+    "ordinary post-release deploy changed release-controlled migration history",
+  );
+  proveMigrationRunnerHistory(url, migration74Name, true);
+}
+
+function assertMigrationAbsentFromHistory(url, migrationName) {
+  assert(
+    psql(url, [
+      "-Atc",
+      `SELECT count(*) FROM "_prisma_migrations" WHERE migration_name = ${quoteLiteral(migrationName)}`,
+    ]).stdout.trim() === "0",
+    `${migrationName}_unexpected_runner_history`,
+  );
+}
+
 function proveMigrateDeployNoOp(url) {
-  const migrationNameSql = rotatingMigrationNames.map(quoteLiteral).join(",");
-  const before = psql(url, [
-    "-Atc",
-    String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
-      FROM "_prisma_migrations" m
-      WHERE migration_name IN (${migrationNameSql})`,
-  ]).stdout.trim();
+  const before = migrationHistoryDigest(url, rotatingMigrationNames);
   const rerun = migrateDeploy(url);
-  const after = psql(url, [
-    "-Atc",
-    String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
-      FROM "_prisma_migrations" m
-      WHERE migration_name IN (${migrationNameSql})`,
-  ]).stdout.trim();
+  const after = migrationHistoryDigest(url, rotatingMigrationNames);
   assert(
     before === after,
     "post-success migrate deploy changed migration history",
