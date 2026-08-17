@@ -121,9 +121,11 @@ For a new public/stable runtime release:
 
 ```text
 1. Release 777genius/review-router at v1.0.x
-2. Release 777genius/review-router-saas at the same v1.0.x
-3. Verify both v1 tags resolve to the new exact release commits
-4. Verify generated/setup PRs still use @v1 unless an exact pin was requested
+2. Pin REVIEW_ROUTER_PAIRED_ACTION_REF in SaaS CI to that exact Action commit
+3. Merge the pin and wait for SaaS CI on the resulting exact commit
+4. Release 777genius/review-router-saas at the same v1.0.x
+5. Verify both v1 tags resolve to the new exact release commits
+6. Verify generated/setup PRs still use @v1 unless an exact pin was requested
 ```
 
 Why the Action repo goes first:
@@ -207,20 +209,25 @@ procedure is in
 Before running the workflow:
 
 1. Merge the SaaS/runtime commit to `main`.
-2. Wait for the trusted `CI` workflow on the exact `main` commit to pass. Its
-   production gate must include both `Dedicated Release Authority PG17
-contract` and `Full private PG16 to PG17 rehearsal` as successful jobs.
-   Each job uploads its own exact-SHA evidence artifact.
-   A manual CI dispatch that enables the authority contract must set
-   `release_authority_contract_baseline_sha` to the previous protected `main`
-   SHA; push CI derives the same fact from the protected push event.
-3. Confirm the matching Action tag already exists, for example:
+2. Confirm the matching Action tag already exists, for example:
 
 ```bash
 git ls-remote --tags https://github.com/777genius/review-router.git refs/tags/v1.0.40
 ```
 
-4. Confirm the GitHub `production-release` environment exists, requires at
+3. Resolve that tag to its immutable Action commit and update
+   `REVIEW_ROUTER_PAIRED_ACTION_REF` in `.github/workflows/ci.yml` through a PR.
+4. Wait for the trusted `CI` workflow on the resulting exact `main` commit to
+   pass. Its
+   production gate must include both `Dedicated Release Authority PG17
+contract` and `Full private PG16 to PG17 rehearsal` as successful jobs.
+   Each job uploads its own exact-SHA evidence artifact.
+   A manual CI dispatch that enables the authority contract must set
+   `release_authority_contract_baseline_sha` to the previous protected `main`
+   SHA; push CI derives the same fact from the protected push event. Its
+   `paired-action-release-gate` artifact must name the same Action commit as the
+   release tag.
+5. Confirm the GitHub `production-release` environment exists, requires at
    least one reviewer, prevents self-review, and permits protected branches
    only. `main` itself must remain protected. These are external repository
    settings; the workflow audits them and fails closed but does not create or
