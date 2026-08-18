@@ -688,7 +688,6 @@ describe("target-local PG17 activation permit", () => {
     expect(provisioning).toContain("TO reviewrouter_activation_receipt_guard");
     expect(provisioning).toContain(
       runtimeGrantStatements(configuration, undefined, {
-        dynamicDatabaseTarget: true,
         skipDatabaseAcl: true,
       }),
     );
@@ -716,7 +715,13 @@ describe("target-local PG17 activation permit", () => {
       ownerAuthorizedInitialRuntimeGateClosed: true,
     });
     expect(initialGateBootstrap).toContain(
+      'GRANT CONNECT ON DATABASE :"DBNAME" TO reviewrouter_api;',
+    );
+    expect(initialGateBootstrap).toContain(
       'REVOKE CONNECT ON DATABASE :"DBNAME" FROM reviewrouter_api;',
+    );
+    expect(initialGateBootstrap).not.toContain(
+      "EXECUTE format('GRANT CONNECT ON DATABASE",
     );
     const pairStart = provisioning.indexOf(
       "AS $capture_runtime_acl_policy_pair$",

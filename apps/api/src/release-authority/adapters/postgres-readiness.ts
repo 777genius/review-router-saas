@@ -692,6 +692,26 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               to_regprocedure('reviewrouter_activation.apply_runtime_acl()'),
               to_regprocedure(
                 'reviewrouter_activation.capture_runtime_acl_policy_pair()')))
+          AND (SELECT count(*)=1 AND bool_and(routine.prosecdef
+                AND routine.prokind='f' AND routine.proowner=bootstrap.oid
+                AND routine.proconfig=ARRAY['search_path=pg_catalog, pg_temp']
+                AND NOT has_function_privilege('public',routine.oid,'EXECUTE')
+                AND has_function_privilege(owner.oid,routine.oid,'EXECUTE')
+                AND NOT has_function_privilege(migration.oid,routine.oid,'EXECUTE')
+                AND NOT has_function_privilege(
+                  'reviewrouter_activation_receipt_guard',routine.oid,'EXECUTE')
+                AND NOT has_function_privilege(
+                  'reviewrouter_activation_permit_installer',routine.oid,'EXECUTE')
+                AND NOT has_function_privilege(
+                  'reviewrouter_activation_receipt_reader',routine.oid,'EXECUTE')
+                AND NOT EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(routine.proacl,
+                    acldefault('f',routine.proowner))) acl
+                  WHERE acl.privilege_type='EXECUTE'
+                    AND acl.grantee<>routine.proowner
+                    AND (acl.is_grantable OR acl.grantee<>owner.oid)))
+            FROM pg_proc routine WHERE routine.oid=to_regprocedure(
+              'reviewrouter_activation.apply_runtime_database_acl(text)'))
           FROM pg_roles owner CROSS JOIN pg_roles migration
           CROSS JOIN pg_roles bootstrap
           CROSS JOIN pg_namespace public_namespace

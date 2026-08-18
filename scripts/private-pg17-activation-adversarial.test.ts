@@ -1620,6 +1620,7 @@ describePg17(
             const evidence = sourceLegacyAmbiguityFixture({
               rolloutId,
               sourceSystemIdentifier: "1",
+              fenceEstablishedAt: "2026-08-12T00:00:02.000Z",
               firstObservedAt: "2026-08-12T00:00:02.100Z",
               eligibilityCutoff: migrationPermitEligibilityCutoff,
               inventory,

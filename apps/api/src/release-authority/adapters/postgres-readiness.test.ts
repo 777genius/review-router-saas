@@ -105,6 +105,7 @@ describe("release authority ACL readiness observation", () => {
     expect(sql).toContain("project_effective_principal_authority(text)");
     expect(sql).toContain("capture_catalog_policy_candidate_pair()");
     expect(sql).toContain("apply_runtime_acl()");
+    expect(sql).toContain("apply_runtime_database_acl(text)");
     expect(sql).toContain("capture_runtime_acl_policy_pair()");
     expect(sql).toContain("validate_principal_evidence(text,bigint)");
     expect(sql).toContain("stage_principal_evidence(text)");
@@ -114,6 +115,13 @@ describe("release authority ACL readiness observation", () => {
     expect(sql).toContain("count(DISTINCT granted.oid)=5");
     expect(sql).toContain("acl.is_grantable");
     expect(sql).toContain("AND NOT acl.is_grantable");
+    expect(sql).toContain("routine.proowner=bootstrap.oid");
+    expect(sql).toContain(
+      "has_function_privilege(owner.oid,routine.oid,'EXECUTE')",
+    );
+    expect(sql).toContain(
+      "NOT has_function_privilege(migration.oid,routine.oid,'EXECUTE')",
+    );
     expect(sql).not.toContain("::regrole");
     expect(sql).not.toContain(
       "stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb",

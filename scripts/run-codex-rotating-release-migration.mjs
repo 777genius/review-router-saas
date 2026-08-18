@@ -194,6 +194,23 @@ END IF;`;
 const runtimeDatabaseAclRoleNames = runtimeRoles.map(
   ([, username]) => username,
 );
+
+function assertCanonicalRuntimeRoleConfiguration(configuration) {
+  if (
+    !configuration ||
+    !Array.isArray(configuration.roles) ||
+    configuration.roles.length !== runtimeRoles.length ||
+    runtimeRoles.some(([role, username]) => {
+      const matches = configuration.roles.filter(
+        (candidate) =>
+          candidate?.role === role && candidate?.username === username,
+      );
+      return matches.length !== 1;
+    })
+  )
+    throw new Error("release_migration_runtime_role_set_invalid");
+}
+
 const runtimeDatabaseAclRoutineBody = `
 DECLARE runtime_role text;
 BEGIN
@@ -301,7 +318,6 @@ function guardOwnedRuntimeGrantSql() {
   };
   return `PERFORM reviewrouter_activation.apply_runtime_database_acl('activated');
 ${runtimeGrantStatements(configuration, undefined, {
-  dynamicDatabaseTarget: true,
   skipDatabaseAcl: true,
 })}`;
 }
@@ -309,7 +325,6 @@ ${runtimeGrantStatements(configuration, undefined, {
 function guardOwnedRuntimeAclGateSql(configuration) {
   return `PERFORM reviewrouter_activation.apply_runtime_database_acl('preactivation');
 ${runtimeAclGateStatements(configuration, undefined, {
-  dynamicDatabaseTarget: true,
   skipDatabaseAcl: true,
 })}`;
 }
@@ -3494,6 +3509,7 @@ export function roleProvisioningSql(
   configuration,
   { ownerAuthorizedInitialRuntimeGateClosed = false } = {},
 ) {
+  assertCanonicalRuntimeRoleConfiguration(configuration);
   if (typeof ownerAuthorizedInitialRuntimeGateClosed !== "boolean")
     throw new Error("release_migration_initial_runtime_gate_mode_invalid");
   const reconciliationPrerequisiteIndex =
@@ -3510,8 +3526,11 @@ export function roleProvisioningSql(
     guardedAtomicReleaseMigrationBundleSql(
       atomicReleaseMigrationEntries.slice(reconciliationPrerequisiteIndex + 1),
     );
-  const guardedGrants = guardOwnedRuntimeGrantSql(configuration);
+  const guardedGrants = guardOwnedRuntimeGrantSql();
   const guardedAclGate = guardOwnedRuntimeAclGateSql(configuration);
+  // Initial bootstrap runs with database-owner authority before the guarded
+  // helper chain exists. These static statements establish the first
+  // canonical database ACL; later phase transitions must use the helper.
   const initialRuntimeGrants = runtimeGrantStatements(configuration);
   const initialRuntimeAclGate = runtimeAclGateStatements(configuration);
   const runtimeRoleLiterals = configuration.roles
@@ -4688,14 +4707,11 @@ function assertConnectionRole(
 export function runtimeGrantStatements(
   configuration,
   databaseTarget = ':"DBNAME"',
-  { dynamicDatabaseTarget = false, skipDatabaseAcl = false } = {},
+  { skipDatabaseAcl = false } = {},
 ) {
   const databaseAclStatement = (statement) => {
     if (skipDatabaseAcl) return "";
-    if (!dynamicDatabaseTarget)
-      return statement.replaceAll("__DATABASE_TARGET__", databaseTarget);
-    const template = statement.replaceAll("__DATABASE_TARGET__", "%I");
-    return `EXECUTE format(${quoted(template)}, pg_catalog.current_database());`;
+    return statement.replaceAll("__DATABASE_TARGET__", databaseTarget);
   };
   const rotatingEvidenceLiterals = rotatingEvidenceTables
     .map((table) => `'${table}'`)
@@ -4819,14 +4835,11 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
 export function runtimeAclGateStatements(
   configuration,
   databaseTarget = ':"DBNAME"',
-  { dynamicDatabaseTarget = false, skipDatabaseAcl = false } = {},
+  { skipDatabaseAcl = false } = {},
 ) {
   const databaseAclStatement = (statement) => {
     if (skipDatabaseAcl) return "";
-    if (!dynamicDatabaseTarget)
-      return statement.replaceAll("__DATABASE_TARGET__", databaseTarget);
-    const template = statement.replaceAll("__DATABASE_TARGET__", "%I");
-    return `EXECUTE format(${quoted(template)}, pg_catalog.current_database());`;
+    return statement.replaceAll("__DATABASE_TARGET__", databaseTarget);
   };
   return `${configuration.roles
     .map(
