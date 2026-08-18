@@ -1,5 +1,10 @@
 import { spawn } from "node:child_process";
 import { lstat, readdir, rm } from "node:fs/promises";
+import {
+  BoundedProviderHttpClient,
+  ProviderHttpError,
+} from "./bounded-provider-io";
+import { sanitizedDiagnosticError } from "../domain/sanitized-diagnostic.js";
 
 export const credentialNames = Object.freeze([
   "REVIEW_ROUTER_RUNNER_GITHUB_APP_PRIVATE_KEY",
@@ -38,13 +43,19 @@ export async function runOneJobRunner(options: {
   workingDirectory?: string;
 }): Promise<void> {
   if (!options.jitConfig || options.jitConfig.length > 65_536)
-    throw new Error("github_jit_configuration_invalid");
+    throw sanitizedDiagnosticError({
+      code: "release_rollout_process_boundary_rejected",
+      phase: "process_boundary",
+    });
   if (
     !Number.isSafeInteger(options.timeoutMs) ||
     options.timeoutMs < 1_000 ||
     options.timeoutMs > 3_600_000
   )
-    throw new Error("github_jit_timeout_invalid");
+    throw sanitizedDiagnosticError({
+      code: "release_rollout_process_boundary_rejected",
+      phase: "process_boundary",
+    });
   const child = (options.spawnImpl ?? spawn)(
     options.runnerPath,
     ["run", "--jitconfig", options.jitConfig],
@@ -72,29 +83,45 @@ export async function runOneJobRunner(options: {
       stop("SIGTERM");
       killTimer = setTimeout(() => stop("SIGKILL"), 5_000);
     }, options.timeoutMs);
-    const observe = (target: NodeJS.WriteStream, chunk: unknown) => {
+    const observe = (chunk: unknown) => {
       const value = String(chunk);
-      target.write(value);
       if (!assigned && /(?:^|\n).*Running job:/u.test(value)) {
         assigned = true;
         clearTimeout(timer);
       }
     };
-    child.stdout?.on("data", (chunk) => observe(process.stdout, chunk));
-    child.stderr?.on("data", (chunk) => observe(process.stderr, chunk));
+    child.stdout?.on("data", observe);
+    child.stderr?.on("data", observe);
     child.once("error", () => {
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
-      reject(new Error("github_jit_runner_spawn_failed"));
+      reject(
+        sanitizedDiagnosticError({
+          code: "release_rollout_process_failed",
+          phase: "process_execute",
+        }),
+      );
     });
     child.once("exit", (code) => {
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
-      if (timedOut) reject(new Error("github_jit_no_job_timeout"));
+      if (timedOut)
+        reject(
+          sanitizedDiagnosticError({
+            code: "release_rollout_process_failed",
+            phase: "process_execute",
+            timedOut: true,
+          }),
+        );
       else resolve(code ?? 1);
     });
   });
-  if (exitCode !== 0) throw new Error(`github_jit_runner_failed:${exitCode}`);
+  if (exitCode !== 0)
+    throw sanitizedDiagnosticError({
+      code: "release_rollout_process_failed",
+      phase: "process_execute",
+      exitCode,
+    });
 }
 
 export async function cleanupRunnerWorkspace(
@@ -176,14 +203,24 @@ async function json(
   operation: string,
 ): Promise<Record<string, unknown>> {
   if (!response.ok)
-    throw new Error(`github_jit_${operation}_failed:${response.status}`);
+    throw new ProviderHttpError(
+      `github_jit_${operation}`,
+      "response_status",
+      response.status,
+      true,
+    );
   try {
     const value = await response.json();
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw new Error();
     return value as Record<string, unknown>;
   } catch {
-    throw new Error(`github_jit_${operation}_response_invalid`);
+    throw new ProviderHttpError(
+      `github_jit_${operation}`,
+      "response_invalid",
+      response.status,
+      true,
+    );
   }
 }
 function header(token: string): Record<string, string> {
@@ -222,9 +259,12 @@ export async function requestJitConfiguration(
     !token
   )
     throw new Error("github_jit_context_invalid");
+  const http = new BoundedProviderHttpClient(fetchImpl);
+  const request = (url: string, init?: RequestInit) =>
+    http.request("github_jit", url, init);
   const headers = header(token);
   const org = await json(
-    await fetchImpl(`https://api.github.com/orgs/${context.organization}`, {
+    await request(`https://api.github.com/orgs/${context.organization}`, {
       headers,
     }),
     "organization_lookup",
@@ -232,7 +272,7 @@ export async function requestJitConfiguration(
   if (org.login !== context.organization || org.type !== "Organization")
     throw new Error("github_jit_personal_owner_forbidden");
   const repository = await json(
-    await fetchImpl(`https://api.github.com/repos/${context.repository}`, {
+    await request(`https://api.github.com/repos/${context.repository}`, {
       headers,
     }),
     "repository_lookup",
@@ -247,7 +287,7 @@ export async function requestJitConfiguration(
   )
     throw new Error("github_jit_control_repository_mismatch");
   const group = await json(
-    await fetchImpl(
+    await request(
       `https://api.github.com/orgs/${context.organization}/actions/runner-groups/${context.runnerGroupId}`,
       { headers },
     ),
@@ -266,7 +306,7 @@ export async function requestJitConfiguration(
   )
     throw new Error("github_jit_runner_group_policy_mismatch");
   const selected = await json(
-    await fetchImpl(
+    await request(
       `https://api.github.com/orgs/${context.organization}/actions/runner-groups/${context.runnerGroupId}/repositories?per_page=100`,
       { headers },
     ),
@@ -281,7 +321,7 @@ export async function requestJitConfiguration(
   )
     throw new Error("github_jit_runner_group_repository_mismatch");
   const run = await json(
-    await fetchImpl(
+    await request(
       `https://api.github.com/repos/${context.repository}/actions/runs/${context.runId}`,
       { headers },
     ),
@@ -300,14 +340,18 @@ export async function requestJitConfiguration(
   )
     throw new Error("github_jit_run_identity_mismatch");
   const jobs = await json(
-    await fetchImpl(
+    await request(
       `https://api.github.com/repos/${context.repository}/actions/runs/${context.runId}/attempts/${context.runAttempt}/jobs?filter=latest&per_page=100`,
       { headers },
     ),
     "jobs_lookup",
   );
   if (!Array.isArray(jobs.jobs))
-    throw new Error("github_jit_jobs_response_invalid");
+    throw new ProviderHttpError(
+      "github_jit_jobs_lookup",
+      "response_invalid",
+      undefined,
+    );
   const job = jobs.jobs.find(
     (item) =>
       !!item &&
@@ -331,7 +375,7 @@ export async function requestJitConfiguration(
   )
     throw new Error("github_jit_target_job_identity_mismatch");
   const generated = await json(
-    await fetchImpl(
+    await request(
       `https://api.github.com/orgs/${context.organization}/actions/runners/generate-jitconfig`,
       {
         method: "POST",
@@ -372,18 +416,23 @@ export async function requestJitConfiguration(
     !returnedLabels.includes(context.uniqueRunnerLabel) ||
     new Set(returnedLabels).size !== returnedLabels.length
   )
-    throw new Error("github_jit_response_invalid");
+    throw new ProviderHttpError(
+      "github_jit_generation",
+      "response_invalid",
+      undefined,
+      true,
+    );
   const runnerId = Number(returnedRunner.id);
   const [runnerAfterRegistration, groupAfterRegistration] = await Promise.all([
     json(
-      await fetchImpl(
+      await request(
         `https://api.github.com/orgs/${context.organization}/actions/runners/${runnerId}`,
         { headers },
       ),
       "runner_reread",
     ),
     json(
-      await fetchImpl(
+      await request(
         `https://api.github.com/orgs/${context.organization}/actions/runner-groups/${context.runnerGroupId}`,
         { headers },
       ),

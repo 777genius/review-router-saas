@@ -113,25 +113,60 @@ SELECT jsonb_build_object(
     FROM pg_database d WHERE d.datname = current_database()
   ),
   'admittedRecoveryEvidence', jsonb_build_object(
-    'witnessFingerprints', coalesce((
-      SELECT jsonb_agg(value ORDER BY value) FROM (
-        SELECT DISTINCT value FROM (
-          SELECT "databaseRecoveryWitness" AS value FROM "CodexOAuthSetupManifest"
-          UNION ALL SELECT "databaseRecoveryWitness" FROM "CodexOAuthWritebackIntent"
-          UNION ALL SELECT "databaseRecoveryWitness" FROM "CodexOAuthSetupRecoveryRequest"
-          UNION ALL SELECT "databaseRecoveryWitness" FROM "CodexOAuthSetupPayloadClaim"
-          UNION ALL SELECT "databaseRecoveryWitness" FROM "CodexOAuthSecretNamespace"
-        ) admitted WHERE value IS NOT NULL
-      ) unique_values
-    ), '[]'::jsonb),
-    'databaseIncarnations', coalesce((
-      SELECT jsonb_agg(value ORDER BY value) FROM (
-        SELECT DISTINCT value FROM (
-          SELECT "databaseIncarnation" AS value FROM "CodexOAuthWritebackIntent"
-          UNION ALL SELECT "databaseIncarnation" FROM "CodexOAuthSetupPayloadClaim"
-        ) admitted WHERE value IS NOT NULL
-      ) unique_values
-    ), '[]'::jsonb)
+    'sources', (
+      SELECT jsonb_agg(jsonb_build_object(
+        'source', evidence_source.source,
+        'totalRows', evidence_source.total_rows,
+        'witnessPresentRows', evidence_source.witness_present_rows,
+        'incarnationRequired', evidence_source.incarnation_required,
+        'incarnationPresentRows', evidence_source.incarnation_present_rows,
+        'witnessFingerprints', evidence_source.witness_fingerprints,
+        'databaseIncarnations', evidence_source.database_incarnations
+      ) ORDER BY evidence_source.source)
+      FROM (
+        SELECT 'CodexOAuthSetupManifest'::text AS source,
+          count(*)::int AS total_rows,
+          count("databaseRecoveryWitness")::int AS witness_present_rows,
+          false AS incarnation_required, 0::int AS incarnation_present_rows,
+          coalesce(jsonb_agg(DISTINCT "databaseRecoveryWitness")
+            FILTER (WHERE "databaseRecoveryWitness" IS NOT NULL), '[]'::jsonb)
+            AS witness_fingerprints,
+          '[]'::jsonb AS database_incarnations
+        FROM "CodexOAuthSetupManifest"
+        UNION ALL
+        SELECT 'CodexOAuthSetupRecoveryRequest', count(*)::int,
+          count("databaseRecoveryWitness")::int, false, 0::int,
+          coalesce(jsonb_agg(DISTINCT "databaseRecoveryWitness")
+            FILTER (WHERE "databaseRecoveryWitness" IS NOT NULL), '[]'::jsonb),
+          '[]'::jsonb
+        FROM "CodexOAuthSetupRecoveryRequest"
+        UNION ALL
+        SELECT 'CodexOAuthSetupPayloadClaim', count(*)::int,
+          count("databaseRecoveryWitness")::int, true,
+          count("databaseIncarnation")::int,
+          coalesce(jsonb_agg(DISTINCT "databaseRecoveryWitness")
+            FILTER (WHERE "databaseRecoveryWitness" IS NOT NULL), '[]'::jsonb),
+          coalesce(jsonb_agg(DISTINCT "databaseIncarnation")
+            FILTER (WHERE "databaseIncarnation" IS NOT NULL), '[]'::jsonb)
+        FROM "CodexOAuthSetupPayloadClaim"
+        UNION ALL
+        SELECT 'CodexOAuthSecretNamespace', count(*)::int,
+          count("databaseRecoveryWitness")::int, false, 0::int,
+          coalesce(jsonb_agg(DISTINCT "databaseRecoveryWitness")
+            FILTER (WHERE "databaseRecoveryWitness" IS NOT NULL), '[]'::jsonb),
+          '[]'::jsonb
+        FROM "CodexOAuthSecretNamespace"
+        UNION ALL
+        SELECT 'CodexOAuthWritebackIntent', count(*)::int,
+          count("databaseRecoveryWitness")::int, true,
+          count("databaseIncarnation")::int,
+          coalesce(jsonb_agg(DISTINCT "databaseRecoveryWitness")
+            FILTER (WHERE "databaseRecoveryWitness" IS NOT NULL), '[]'::jsonb),
+          coalesce(jsonb_agg(DISTINCT "databaseIncarnation")
+            FILTER (WHERE "databaseIncarnation" IS NOT NULL), '[]'::jsonb)
+        FROM "CodexOAuthWritebackIntent"
+      ) evidence_source
+    )
   ),
   'databaseAuthorization', jsonb_build_object(
     'databaseOwner', (SELECT r.rolname FROM pg_database d JOIN pg_roles r ON r.oid = d.datdba WHERE d.datname = current_database()),
@@ -712,6 +747,14 @@ export function assertProductionWriterCaptureConfiguration(env) {
   const databaseUrl = env.REVIEW_ROUTER_PRODUCTION_WRITER_DATABASE_URL;
   if (!databaseUrl)
     throw new Error("production writer database URL is required");
+  let principalPolicy;
+  try {
+    principalPolicy = JSON.parse(
+      env.REVIEW_ROUTER_PRODUCTION_WRITER_PRINCIPAL_POLICY_JSON ?? "",
+    );
+  } catch {
+    throw new Error("production writer principal policy is required");
+  }
   const parsed = new URL(databaseUrl);
   if (!["postgres:", "postgresql:"].includes(parsed.protocol)) {
     throw new Error("production writer database URL must use PostgreSQL");
@@ -733,15 +776,116 @@ export function assertProductionWriterCaptureConfiguration(env) {
   } catch {
     throw new Error("trusted Render observation is unreadable");
   }
+  const rawResponsesValid =
+    Array.isArray(deployObservation?.rawResponses) &&
+    deployObservation.rawResponses.length > 0 &&
+    deployObservation.rawResponses.every((response) => {
+      let url;
+      try {
+        url = new URL(response?.url);
+      } catch {
+        return false;
+      }
+      return (
+        JSON.stringify(Object.keys(response ?? {}).sort()) ===
+          JSON.stringify(["body", "bodySha256", "status", "url"]) &&
+        url.protocol === "https:" &&
+        url.hostname === "api.render.com" &&
+        !url.username &&
+        !url.password &&
+        response.status === 200 &&
+        response.bodySha256 ===
+          sha256(Buffer.from(canonicalProviderJson(response.body)))
+      );
+    });
+  const runtimeServices = deployObservation?.services;
+  const renderObservedAt = Date.parse(
+    deployObservation?.captureIdentity?.observedAt ?? "",
+  );
   if (
-    deployObservation?.observationVersion !== 2 ||
+    deployObservation?.observationVersion !== 3 ||
     deployObservation?.source !== "render-api" ||
     deployObservation?.captureIdentity?.authenticated !== true ||
     deployObservation?.captureIdentity?.apiHost !== "api.render.com" ||
-    !Array.isArray(deployObservation?.rawResponses) ||
-    deployObservation.rawResponses.length === 0 ||
+    !Number.isFinite(renderObservedAt) ||
+    renderObservedAt > Date.now() + 60_000 ||
+    renderObservedAt < Date.now() - 15 * 60_000 ||
+    !rawResponsesValid ||
     deployObservation.captureIdentity.rawResponsesSha256 !==
-      sha256(Buffer.from(canonicalProviderJson(deployObservation.rawResponses)))
+      sha256(
+        Buffer.from(canonicalProviderJson(deployObservation.rawResponses)),
+      ) ||
+    !Array.isArray(runtimeServices) ||
+    runtimeServices.length !== 3 ||
+    new Set(runtimeServices.map((service) => service?.role)).size !== 3 ||
+    new Set(runtimeServices.map((service) => service?.serviceId)).size !== 3 ||
+    !["api", "web", "worker"].every((role) =>
+      runtimeServices.some(
+        (service) =>
+          service?.role === role &&
+          typeof service?.serviceId === "string" &&
+          service.serviceId.length > 0,
+      ),
+    ) ||
+    deployObservation?.runtimeWitness?.key !==
+      "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS" ||
+    !/^[a-f0-9]{64}$/u.test(deployObservation?.runtimeWitness?.sha256 ?? "") ||
+    !Array.isArray(deployObservation?.runtimeWitness?.observations) ||
+    deployObservation.runtimeWitness.observations.length !== 8 ||
+    new Set(
+      deployObservation.runtimeWitness.observations.map(
+        (observation) => `${observation?.phase}:${observation?.role}`,
+      ),
+    ).size !== 8 ||
+    ["api", "web", "worker", "witness"].some(
+      (role) =>
+        new Set(
+          deployObservation.runtimeWitness.observations
+            .filter((observation) => observation?.role === role)
+            .map((observation) => observation?.serviceId),
+        ).size !== 1,
+    ) ||
+    !["before", "after"].every((phase) =>
+      ["api", "web", "worker", "witness"].every((role) =>
+        deployObservation.runtimeWitness.observations.some(
+          (observation) =>
+            JSON.stringify(Object.keys(observation ?? {}).sort()) ===
+              JSON.stringify([
+                "phase",
+                "role",
+                "serviceId",
+                "sourceResponseSha256",
+              ]) &&
+            observation?.phase === phase &&
+            observation?.role === role &&
+            typeof observation?.serviceId === "string" &&
+            observation.serviceId.length > 0 &&
+            (role === "witness"
+              ? !deployObservation.services?.some(
+                  (service) => service?.serviceId === observation.serviceId,
+                )
+              : deployObservation.services?.some(
+                  (service) =>
+                    service?.role === role &&
+                    service?.serviceId === observation.serviceId,
+                )) &&
+            /^[a-f0-9]{64}$/u.test(observation?.sourceResponseSha256 ?? "") &&
+            deployObservation.rawResponses.some(
+              (response) =>
+                response?.bodySha256 === observation.sourceResponseSha256 &&
+                response?.url ===
+                  `https://api.render.com/v1/services/${encodeURIComponent(observation.serviceId)}/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS` &&
+                JSON.stringify(Object.keys(response?.body ?? {}).sort()) ===
+                  JSON.stringify(["key", "observationPhase", "valueSha256"]) &&
+                response?.body?.key ===
+                  "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS" &&
+                response?.body?.observationPhase === observation.phase &&
+                response?.body?.valueSha256 ===
+                  deployObservation.runtimeWitness.sha256,
+            ),
+        ),
+      ),
+    )
   ) {
     throw new Error("trusted Render runtime observation is invalid");
   }
@@ -752,7 +896,77 @@ export function assertProductionWriterCaptureConfiguration(env) {
     databaseUrl,
     rolloutId,
     runtimeWitnessSha256: deployObservation?.runtimeWitness?.sha256,
+    principalPolicy,
   };
+}
+
+const recoveryEvidenceSources = Object.freeze([
+  ["CodexOAuthSecretNamespace", false],
+  ["CodexOAuthSetupManifest", false],
+  ["CodexOAuthSetupPayloadClaim", true],
+  ["CodexOAuthSetupRecoveryRequest", false],
+  ["CodexOAuthWritebackIntent", true],
+]);
+
+export function assertCompleteAdmittedRecoveryEvidence(
+  observation,
+  recoveryWitnessSha256,
+  systemIdentifier,
+) {
+  const sources = observation?.sources;
+  if (
+    !Array.isArray(sources) ||
+    sources.length !== recoveryEvidenceSources.length ||
+    JSON.stringify(sources.map((source) => source?.source).sort()) !==
+      JSON.stringify(recoveryEvidenceSources.map(([source]) => source)) ||
+    sources.some((source) => {
+      const exactKeys = [
+        "databaseIncarnations",
+        "incarnationPresentRows",
+        "incarnationRequired",
+        "source",
+        "totalRows",
+        "witnessFingerprints",
+        "witnessPresentRows",
+      ];
+      return (
+        !source ||
+        typeof source !== "object" ||
+        Array.isArray(source) ||
+        JSON.stringify(Object.keys(source).sort()) !==
+          JSON.stringify(exactKeys) ||
+        !Number.isSafeInteger(source.totalRows) ||
+        source.totalRows < 0 ||
+        source.witnessPresentRows !== source.totalRows ||
+        source.incarnationRequired !==
+          recoveryEvidenceSources.find(
+            ([expectedSource]) => expectedSource === source.source,
+          )?.[1] ||
+        (source.incarnationRequired
+          ? source.incarnationPresentRows !== source.totalRows
+          : source.incarnationPresentRows !== 0) ||
+        !Array.isArray(source.witnessFingerprints) ||
+        (source.totalRows === 0
+          ? source.witnessFingerprints.length !== 0
+          : source.witnessFingerprints.length !== 1 ||
+            source.witnessFingerprints[0] !== recoveryWitnessSha256) ||
+        !Array.isArray(source.databaseIncarnations) ||
+        (source.incarnationRequired
+          ? source.totalRows === 0
+            ? source.databaseIncarnations.length !== 0
+            : source.databaseIncarnations.length !== 1 ||
+              source.databaseIncarnations[0] !== systemIdentifier
+          : source.databaseIncarnations.length !== 0)
+      );
+    }) ||
+    sources.reduce((total, source) => total + source.totalRows, 0) === 0 ||
+    !sources.some(
+      (source) => source.incarnationRequired && source.totalRows > 0,
+    )
+  )
+    throw new Error(
+      "admitted recovery evidence is incomplete or not source-bound to the database generation",
+    );
 }
 
 function queryJson(databaseUrl, sql) {
@@ -776,6 +990,8 @@ export async function captureProductionWriterObservation(
       new Promise((resolveSleep) => setTimeout(resolveSleep, delayMs)),
   } = {},
 ) {
+  const { assertEffectivePrincipalInventory, effectivePrincipalInventorySql } =
+    await import("../packages/features/release-rollout/src/index.ts");
   const configuration = assertProductionWriterCaptureConfiguration(env);
   const intervalMs = Number(
     env.REVIEW_ROUTER_DRAIN_OBSERVATION_INTERVAL_MS ?? 60_000,
@@ -832,27 +1048,24 @@ export async function captureProductionWriterObservation(
     );
   const migrationReceipt = rolloutReceipts[0];
   const recoveryWitnessSha256 = generationBinding.recoveryWitnessSha256;
-  if (
-    !Array.isArray(base?.admittedRecoveryEvidence?.witnessFingerprints) ||
-    !Array.isArray(base?.admittedRecoveryEvidence?.databaseIncarnations) ||
-    base.admittedRecoveryEvidence.witnessFingerprints.length === 0 ||
-    base.admittedRecoveryEvidence.databaseIncarnations.length === 0 ||
-    !base.admittedRecoveryEvidence.witnessFingerprints.every(
-      (value) => value === recoveryWitnessSha256,
-    ) ||
-    !base.admittedRecoveryEvidence.databaseIncarnations.every(
-      (value) => value === base.databaseIdentity.systemIdentifier,
-    )
-  ) {
-    throw new Error(
-      "admitted recovery evidence does not match the database generation",
-    );
-  }
+  assertCompleteAdmittedRecoveryEvidence(
+    base?.admittedRecoveryEvidence,
+    recoveryWitnessSha256,
+    base.databaseIdentity.systemIdentifier,
+  );
   if (configuration.runtimeWitnessSha256 !== recoveryWitnessSha256) {
     throw new Error(
       "database recovery witness is not independently bound to the Render runtime secret",
     );
   }
+  const effectivePrincipalInventory = query(
+    configuration.databaseUrl,
+    effectivePrincipalInventorySql,
+  );
+  const effectivePrincipalDecision = assertEffectivePrincipalInventory(
+    effectivePrincipalInventory,
+    configuration.principalPolicy,
+  );
   const bindDrainObservation = (observation) => ({
     ...observation,
     recoveryWitnessSha256,
@@ -865,7 +1078,7 @@ export async function captureProductionWriterObservation(
     query(configuration.databaseUrl, drainObservationSql),
   );
   return {
-    observationVersion: 5,
+    observationVersion: 6,
     source: "production-postgresql-writer",
     captureKind: "database-query",
     rehearsal: false,
@@ -900,6 +1113,8 @@ export async function captureProductionWriterObservation(
     })),
     history: base.history,
     catalog: base.catalog,
+    effectivePrincipalInventory,
+    effectivePrincipalDecision,
     drainObservations: [firstDrain, secondDrain],
   };
 }

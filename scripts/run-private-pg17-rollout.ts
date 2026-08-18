@@ -4,47 +4,50 @@ import { readFileSync } from "node:fs";
 import {
   AuthenticatedRunnerLedgerAdapter,
   HttpProviderAuthorityDecisionAdapter,
+  HttpProviderMutationAuthorityAdapter,
   PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
   ReleaseRolloutUseCases,
+  ReleaseCompensationReconciliationUseCase,
   RenderTransactionalServicesAdapter,
   TransactionalServiceCutover,
   RolloutPhase,
-  type ReleaseRollout,
-  type RunnerIdentity,
   type StepObservation,
   type ProtectedSourceEnvironment,
-  type TargetServiceContract,
+  type TargetServiceRelease,
   type TargetServiceExpectation,
-  targetServiceContractSha256,
+  targetServiceConfigurationSha256,
   assertVerifiedReleaseImageProvenance,
   sameReleaseImageProvenance,
   type VerifiedReleaseImageProvenance,
+  type EffectivePrincipalPolicy,
 } from "../packages/features/release-rollout/src/index";
 import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
+import { privatePg17ReleaseImagePolicy } from "./lib/private-pg17-release-image-policy";
+import { createPrivatePg17SourceFreezeRecovery } from "./lib/private-pg17-source-freeze-recovery";
+import { parsePrivatePg17CopyEvidence } from "./lib/private-pg17-copy-evidence";
 
 const required = (name: string): string => {
   const value = process.env[name];
   if (!value) throw new Error(`private_pg17_rollout_required:${name}`);
   return value;
 };
-const copy = JSON.parse(
-  readFileSync(required("REVIEW_ROUTER_COPY_BOOTSTRAP_EVIDENCE_FILE"), "utf8"),
-) as {
-  rollout: ReleaseRollout;
-  releaseImageProvenance: VerifiedReleaseImageProvenance;
-  roleBootstrapRunner: RunnerIdentity;
-  backup: unknown;
-  quiescence: unknown;
-  equivalence: unknown;
-};
+const copy = parsePrivatePg17CopyEvidence(
+  JSON.parse(
+    readFileSync(
+      required("REVIEW_ROUTER_COPY_BOOTSTRAP_EVIDENCE_FILE"),
+      "utf8",
+    ),
+  ),
+);
 let rollout = copy.rollout;
+const trustedImagePolicy = privatePg17ReleaseImagePolicy({
+  sourceRepository: required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY"),
+  sourceRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
+});
 const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
   copy.releaseImageProvenance,
-  {
-    sourceRepository: required("GITHUB_REPOSITORY"),
-    sourceRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
-  },
+  trustedImagePolicy,
 );
 const preflightReleaseImageProvenance = assertVerifiedReleaseImageProvenance(
   JSON.parse(
@@ -53,10 +56,7 @@ const preflightReleaseImageProvenance = assertVerifiedReleaseImageProvenance(
       "utf8",
     ),
   ) as VerifiedReleaseImageProvenance,
-  {
-    sourceRepository: required("GITHUB_REPOSITORY"),
-    sourceRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
-  },
+  trustedImagePolicy,
 );
 if (
   !sameReleaseImageProvenance(
@@ -82,6 +82,10 @@ const ledger = new AuthenticatedRunnerLedgerAdapter(
   required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN"),
 );
 const authority = new HttpProviderAuthorityDecisionAdapter(
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
+);
+const mutationAuthority = new HttpProviderMutationAuthorityAdapter(
   required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
   required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
 );
@@ -152,6 +156,10 @@ const protectedSourceEnvironment = Object.fromEntries(
 ) as ProtectedSourceEnvironment;
 const renderServices = new RenderTransactionalServicesAdapter(
   required("RENDER_TARGET_SWITCH_API_KEY"),
+  fetch,
+  undefined,
+  mutationAuthority,
+  { rolloutId: rollout.rolloutId, ownerId: `cutover-${randomUUID()}` },
 );
 const sourceRecoveryManifest = await renderServices.captureSourceManifest({
   rolloutId: rollout.rolloutId,
@@ -165,7 +173,7 @@ const sourceRecoveryManifest = await renderServices.captureSourceManifest({
   protectedEnvironment: protectedSourceEnvironment,
 });
 const rolloutStartedAt = new Date().toISOString();
-const targetServiceContracts: TargetServiceContract[] = [];
+const targetServiceContracts: TargetServiceRelease[] = [];
 for (const expectation of serviceExpectations) {
   const sourceContract = sourceRecoveryManifest.services.find(
     (item) => item.serviceId === expectation.serviceId,
@@ -187,6 +195,9 @@ for (const expectation of serviceExpectations) {
     REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: rollout.expectedCommitSha,
     REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: rollout.rolloutId,
     REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: rolloutStartedAt,
+    REVIEW_ROUTER_RUNTIME_SERVICE_ID: expectation.serviceId,
+    REVIEW_ROUTER_RUNTIME_DEPLOYMENT_PROVENANCE:
+      releaseImageProvenance.identity.imageDigest.replace(/^sha256:/u, ""),
   };
   if (!environmentDelta.DATABASE_URL)
     throw new Error("private_pg17_target_database_url_missing");
@@ -194,18 +205,21 @@ for (const expectation of serviceExpectations) {
     serviceId: expectation.serviceId,
     set: environmentDelta,
     remove: [],
-    expectedBeforeSha256: sourceContract.sourceEnvSha256,
+    expectedBeforeSha256: sourceContract.sourceEnvironmentSha256,
   });
   const value = {
     serviceId: expectation.serviceId,
-    imageUrl: releaseImageProvenance.identity.imageUrl,
+    artifact: {
+      kind: "container_image" as const,
+      reference: releaseImageProvenance.identity.imageUrl,
+    },
     environmentDelta,
     removeKeys: [] as string[],
     environmentSha256: planned.environmentSha256,
   };
   targetServiceContracts.push({
     ...value,
-    serviceContractSha256: targetServiceContractSha256(value),
+    configurationSha256: targetServiceConfigurationSha256(value),
   });
 }
 const transactionalServices = new TransactionalServiceCutover(
@@ -216,6 +230,12 @@ const transactionalServices = new TransactionalServiceCutover(
 const generation = new PostgreSqlGenerationAdapter(
   new RedactedProcessCommandAdapter(),
 );
+const sourcePrincipalPolicy = JSON.parse(
+  required("REVIEW_ROUTER_SOURCE_PRINCIPAL_POLICY_JSON"),
+) as EffectivePrincipalPolicy;
+const sourceFencedPrincipalPolicy = JSON.parse(
+  required("REVIEW_ROUTER_SOURCE_FENCED_PRINCIPAL_POLICY_JSON"),
+) as EffectivePrincipalPolicy;
 const canonical = new PrivatePg17CanonicalAdapter();
 const unavailable = async (): Promise<never> => {
   throw new Error("private_pg17_port_not_available_in_cutover_phase");
@@ -223,34 +243,55 @@ const unavailable = async (): Promise<never> => {
 let migration: unknown;
 let activation!: StepObservation;
 let staged!: StepObservation;
+const compensation = new ReleaseCompensationReconciliationUseCase({
+  recoveryOwnerId: `recovery-${randomUUID()}`,
+  authority,
+  ledger,
+  compensateDatabase: async () =>
+    generation.restoreSourceFence({
+      adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+      source: rollout.source,
+      fence: copy.quiescence.fence,
+      beforePolicy: sourcePrincipalPolicy,
+    }),
+  observeDatabaseCompensation: async () =>
+    generation.observeRestoredSourceFence({
+      adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+      source: rollout.source,
+      rolloutId: rollout.rolloutId,
+      beforePolicy: sourcePrincipalPolicy,
+    }),
+  provider: createPrivatePg17SourceFreezeRecovery({
+    ledger,
+    ownerId: `recovery-${randomUUID()}`,
+    apiKey: required("RENDER_TARGET_SWITCH_API_KEY"),
+    sourceSystemIdentifier: rollout.source.systemIdentifier,
+    rolloutId: rollout.rolloutId,
+    mutationAuthority,
+    beforeResume: async () => {
+      if ((await ledger.read(rollout.rolloutId)).length === 0) return;
+      await transactionalServices.recover({
+        source: sourceRecoveryManifest,
+        protectedEnvironment: protectedSourceEnvironment,
+        target: targetServiceContracts,
+      });
+      return await transactionalServices.finalizeAuthorizedSourceRecovery({
+        source: sourceRecoveryManifest,
+        protectedEnvironment: protectedSourceEnvironment,
+        target: targetServiceContracts,
+        sourceWriterServiceIds: sourceRecoveryManifest.services.map(
+          (service) => service.serviceId,
+        ),
+        restoreSourceWritesAndVerify: async () => undefined,
+      });
+    },
+  }),
+});
 const useCases = new ReleaseRolloutUseCases({
   authority,
   preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: unavailable,
-    compensateAndObserve: async ({
-      decision,
-      databaseWitness,
-      sourceWriterServiceIds,
-    }) => {
-      if (
-        decision.decision !== "allow" ||
-        decision.operation !== "resume_source" ||
-        decision.activationBoundary !== "before" ||
-        decision.sourceSystemIdentifier !== rollout.source.systemIdentifier ||
-        databaseWitness.systemIdentifier !== rollout.source.systemIdentifier ||
-        !/^sha256:[a-f0-9]{64}$/u.test(databaseWitness.aclSha256) ||
-        databaseWitness.sourceWritesRestored !== true
-      )
-        throw new Error("private_pg17_service_recovery_authority_invalid");
-      return await transactionalServices.finalizeAuthorizedSourceRecovery({
-        source: sourceRecoveryManifest,
-        protectedEnvironment: protectedSourceEnvironment,
-        target: targetServiceContracts,
-        sourceWriterServiceIds,
-        restoreSourceWritesAndVerify: async () => undefined,
-      });
-    },
   },
   runner: {
     provision: async () => ({
@@ -269,9 +310,17 @@ const useCases = new ReleaseRolloutUseCases({
     copy: unavailable,
     verifyEquivalence: unavailable,
     bootstrapTargetRoles: unavailable,
-    runReleaseMigration: async () => {
+    runReleaseMigration: async (
+      _target,
+      transition,
+      permit,
+      sourceLegacyAmbiguity,
+    ) => {
       const observation = canonical.runReleaseMigration(
         canonicalReleaseEnvironment,
+        transition,
+        permit,
+        sourceLegacyAmbiguity,
       );
       migration = observation.facts;
       return observation;
@@ -282,21 +331,6 @@ const useCases = new ReleaseRolloutUseCases({
         rolloutId,
       );
       return activation;
-    },
-    compensateSource: async () => {
-      if ((await ledger.read(rollout.rolloutId)).length > 0)
-        await transactionalServices.recover({
-          source: sourceRecoveryManifest,
-          protectedEnvironment: protectedSourceEnvironment,
-          target: targetServiceContracts,
-        });
-      return generation.compensateSource({
-        adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
-        source: rollout.source,
-        reconnectUrls: JSON.parse(
-          required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
-        ) as Record<string, string>,
-      });
     },
   },
   services: {
@@ -316,6 +350,23 @@ const useCases = new ReleaseRolloutUseCases({
         protectedEnvironment: protectedSourceEnvironment,
         target: targetServiceContracts,
       });
+      const stagedPostconditions = await Promise.all(
+        targetServiceContracts.map((contract) =>
+          renderServices.observe(contract.serviceId),
+        ),
+      );
+      if (
+        stagedPostconditions.some(
+          (observed, index) =>
+            !observed.suspended ||
+            !observed.postcondition ||
+            observed.postcondition.serviceId !==
+              targetServiceContracts[index]?.serviceId ||
+            observed.environmentSha256 !==
+              targetServiceContracts[index]?.environmentSha256,
+        )
+      )
+        throw new Error("private_pg17_target_postcondition_unproven");
       staged = {
         step: "stage_target_services" as never,
         observedAt: new Date().toISOString(),
@@ -324,8 +375,10 @@ const useCases = new ReleaseRolloutUseCases({
           deployId,
           provenance: {
             kind: "image",
-            imageSha: targetServiceContracts[index]!.imageUrl.slice(
-              targetServiceContracts[index]!.imageUrl.indexOf("sha256:"),
+            imageSha: targetServiceContracts[index]!.artifact.reference.slice(
+              targetServiceContracts[index]!.artifact.reference.indexOf(
+                "sha256:",
+              ),
             ),
           },
           envSha256: targetServiceContracts[index]!.environmentSha256,
@@ -333,6 +386,7 @@ const useCases = new ReleaseRolloutUseCases({
             "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256",
           ),
           suspended: true,
+          servicePostcondition: stagedPostconditions[index]!.postcondition!,
         })),
         provider: {
           renderServiceIds: targetServiceContracts.map(
@@ -360,11 +414,15 @@ const useCases = new ReleaseRolloutUseCases({
   },
   evidence: { assembleAndVerify: unavailable },
   ledger,
+  compensation,
 });
 try {
   rollout = await useCases.cleanupRoleRunner(rollout, copy.roleBootstrapRunner);
   ({ rollout } = await useCases.provisionCutoverRunner(rollout));
-  rollout = await useCases.runReleaseMigration(rollout);
+  rollout = await useCases.runReleaseMigration(
+    rollout,
+    copy.quiescence.legacyAmbiguity,
+  );
   rollout = await useCases.stageTargetServices(rollout);
 } catch (error) {
   try {
@@ -383,12 +441,34 @@ try {
     cause: error,
   });
 }
+generation.verifySourceFence({
+  adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+  source: rollout.source,
+  rolloutId: rollout.rolloutId,
+  fencedPolicy: sourceFencedPrincipalPolicy,
+});
 try {
   rollout = await useCases.activateTargetGeneration(
     rollout,
     cutoverRunner.workflowJobId,
   );
+  generation.verifySourceFence({
+    adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+    source: rollout.source,
+    rolloutId: rollout.rolloutId,
+    fencedPolicy: sourceFencedPrincipalPolicy,
+  });
+  generation.markSourceFenceForwardOnly({
+    adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+    source: rollout.source,
+    fence: copy.quiescence.fence,
+  });
 } catch (error) {
+  generation.markSourceFenceForwardOnly({
+    adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+    source: rollout.source,
+    fence: copy.quiescence.fence,
+  });
   rollout = await useCases.recoverFromFailure(rollout, "activation_uncertain");
   throw new Error(
     `private_pg17_activation_uncertain:${error instanceof Error ? error.message : "unknown"}`,

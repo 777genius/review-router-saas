@@ -1,9 +1,51 @@
 import { describe, expect, it, vi } from "vitest";
-import { RenderTransactionalServicesAdapter } from "./render-transactional-services";
+import { RenderTransactionalServicesAdapter as ProductionRenderTransactionalServicesAdapter } from "./render-transactional-services";
+import type { RenderService } from "./render-api";
+import { TestProviderMutationAuthority } from "../test-provider-mutation-authority";
+
+class RenderTransactionalServicesAdapter extends ProductionRenderTransactionalServicesAdapter {
+  constructor(
+    apiKey: string,
+    fetchImpl?: typeof fetch,
+    sleep?: (milliseconds: number) => Promise<void>,
+  ) {
+    super(apiKey, fetchImpl, sleep, new TestProviderMutationAuthority(), {
+      rolloutId: "test-rollout",
+      ownerId: "test-owner",
+    });
+  }
+}
 
 const serviceId = "srv-transactional";
 const commitSha = "a".repeat(40);
 const imageUrl = `registry.example.test/review-router@sha256:${"b".repeat(64)}`;
+const targetContract = {
+  serviceId,
+  artifact: { kind: "container_image" as const, reference: imageUrl },
+  environmentDelta: {},
+  removeKeys: [],
+  environmentSha256: `sha256:${"c".repeat(64)}`,
+  configurationSha256: `sha256:${"d".repeat(64)}`,
+};
+const sourceService = (): RenderService => ({
+  id: serviceId,
+  ownerId: "tea-owner",
+  type: "web_service",
+  repo: "https://example.test/reviewrouter.git",
+  branch: "main",
+  rootDir: "apps/api",
+  suspended: "suspended",
+  autoDeploy: "no",
+  autoDeployTrigger: "off",
+  serviceDetails: {
+    runtime: "node",
+    preDeployCommand: "",
+    region: "oregon",
+    plan: "starter",
+    maxShutdownDelaySeconds: 60,
+    numInstances: 2,
+  },
+});
 const json = (value: unknown) =>
   new Response(JSON.stringify(value), {
     status: 200,
@@ -39,7 +81,7 @@ describe("Render transactional services", () => {
       "render-token",
       fetchImpl,
       sleep,
-    ).quiesceDeploys(serviceId);
+    ).quiesceDeployments(serviceId);
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -84,9 +126,9 @@ describe("Render transactional services", () => {
       new RenderTransactionalServicesAdapter(
         "render-token",
         fetchImpl,
-      ).reconcileCommitDeploy({
+      ).reconcileSourceDeployment({
         serviceId,
-        commitSha,
+        revision: commitSha,
         intentAt: "2026-08-12T00:00:00.000Z",
       }),
     ).resolves.toBe("dep-intended");
@@ -113,9 +155,9 @@ describe("Render transactional services", () => {
       new RenderTransactionalServicesAdapter(
         "render-token",
         fetchImpl,
-      ).reconcileCommitDeploy({
+      ).reconcileSourceDeployment({
         serviceId,
-        commitSha,
+        revision: commitSha,
         intentAt: "2026-08-12T00:00:00.000Z",
       }),
     ).resolves.toBe("dep-live");
@@ -137,9 +179,9 @@ describe("Render transactional services", () => {
       new RenderTransactionalServicesAdapter(
         "render-token",
         fetchImpl,
-      ).reconcileCommitDeploy({
+      ).reconcileSourceDeployment({
         serviceId,
-        commitSha,
+        revision: commitSha,
         intentAt: "2026-08-12T00:00:00.000Z",
       }),
     ).rejects.toThrow("service_transition_deploy_reconciliation_ambiguous");
@@ -156,16 +198,122 @@ describe("Render transactional services", () => {
         "render-token",
         fetchImpl,
         sleep,
-      ).quiesceDeploys(serviceId),
+      ).quiesceDeployments(serviceId),
     ).rejects.toThrow("service_transition_active_deploy_timeout");
     expect(fetchImpl).toHaveBeenCalledTimes(90);
     expect(sleep).toHaveBeenCalledTimes(90);
   });
 
+  it("preserves the operational contract through the nested target PATCH", async () => {
+    let service = sourceService();
+    let patch: Record<string, unknown> | undefined;
+    const fetchImpl = vi.fn(
+      async (_url: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          patch = JSON.parse(String(init.body)) as Record<string, unknown>;
+          const details = patch.serviceDetails as Record<string, unknown>;
+          service = {
+            ...service,
+            autoDeployTrigger: patch.autoDeployTrigger as "off",
+            image: patch.image as { imagePath: string },
+            serviceDetails: {
+              runtime: details.runtime,
+              preDeployCommand: details.preDeployCommand,
+              region: details.region ?? "oregon-reset",
+              plan: details.plan ?? "free-reset",
+              maxShutdownDelaySeconds: details.maxShutdownDelaySeconds ?? 30,
+              numInstances: details.numInstances ?? 1,
+            },
+          };
+          return json({});
+        }
+        return json(service);
+      },
+    );
+
+    await new RenderTransactionalServicesAdapter(
+      "render-token",
+      fetchImpl,
+      async () => undefined,
+    ).configureTarget(targetContract);
+
+    expect(patch).toEqual({
+      autoDeployTrigger: "off",
+      image: { imagePath: imageUrl },
+      serviceDetails: {
+        runtime: "image",
+        preDeployCommand: "",
+        region: "oregon",
+        plan: "starter",
+        maxShutdownDelaySeconds: 60,
+        numInstances: 2,
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `https://api.render.com/v1/services/${serviceId}`,
+      expect.objectContaining({ method: "PATCH" }),
+    );
+  });
+
+  it.each([
+    "region",
+    "plan",
+    "maxShutdownDelaySeconds",
+    "numInstances",
+  ] as const)(
+    "refuses a target PATCH when the current service omits %s",
+    async (field) => {
+      const incomplete = sourceService();
+      delete incomplete.serviceDetails[field];
+      const fetchImpl = vi.fn(async () => json(incomplete));
+
+      await expect(
+        new RenderTransactionalServicesAdapter(
+          "render-token",
+          fetchImpl,
+        ).configureTarget(targetContract),
+      ).rejects.toThrow("service_transition_operational_contract_incomplete");
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("fails closed when Render resets an operational field after PATCH", async () => {
+    let service = sourceService();
+    const sleep = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn(
+      async (_url: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          const patch = JSON.parse(String(init.body)) as Record<
+            string,
+            unknown
+          >;
+          const details = patch.serviceDetails as Record<string, unknown>;
+          service = {
+            ...service,
+            autoDeployTrigger: "off",
+            image: patch.image as { imagePath: string },
+            serviceDetails: { ...details, numInstances: 1 },
+          };
+          return json({});
+        }
+        return json(service);
+      },
+    );
+
+    await expect(
+      new RenderTransactionalServicesAdapter(
+        "render-token",
+        fetchImpl,
+        sleep,
+      ).configureTarget(targetContract),
+    ).rejects.toThrow("provider_mutation_forward_repair_required");
+    expect(sleep).toHaveBeenCalledTimes(30);
+  });
+
   it.each([
     {
       name: "git",
-      expected: { kind: "git" as const, commitSha },
+      expected: { kind: "source_revision" as const, revision: commitSha },
       observed: {
         id: "dep-git",
         status: "live",
@@ -174,7 +322,7 @@ describe("Render transactional services", () => {
     },
     {
       name: "image",
-      expected: { kind: "image" as const, imageUrl },
+      expected: { kind: "container_image" as const, reference: imageUrl },
       observed: {
         id: "dep-image",
         status: "live",
@@ -193,7 +341,7 @@ describe("Render transactional services", () => {
         new RenderTransactionalServicesAdapter(
           "render-token",
           fetchImpl,
-        ).waitForDeploy(serviceId, observed.id, expected),
+        ).waitForDeployment(serviceId, observed.id, expected),
       ).rejects.toThrow("service_transition_deploy_provenance_mismatch");
       expect(fetchImpl).toHaveBeenCalledOnce();
     },

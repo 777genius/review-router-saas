@@ -1,4 +1,16 @@
-import { createHash } from "node:crypto";
+import { canonicalJson, sha256Canonical } from "./canonical-json";
+export { canonicalJson, sha256Canonical } from "./canonical-json";
+import { isNormalizedServicePostcondition } from "./service-transition";
+import {
+  assertReleaseMigrationTransitionIntegrity,
+  TargetManifestPhase,
+  type ReleaseMigrationPermit,
+  type ReleaseMigrationTransitionV1,
+} from "./release-migration-transition";
+import {
+  assertLegacyAmbiguityEvidence,
+  type LegacyAmbiguityEvidence,
+} from "./trusted-rollout-evidence";
 
 /** Authority-owned evidence captured before dispatching provider creation. */
 export type ProviderCreationBoundary = Readonly<{
@@ -82,16 +94,16 @@ const orderedTransitions: ReadonlyArray<
   ],
   [
     RolloutPhase.RoleRunnerProvisioned,
-    RolloutStep.CaptureSourceBackup,
-    RolloutPhase.SourceBackupCaptured,
-  ],
-  [
-    RolloutPhase.SourceBackupCaptured,
     RolloutStep.QuiesceSource,
     RolloutPhase.SourceQuiesced,
   ],
   [
     RolloutPhase.SourceQuiesced,
+    RolloutStep.CaptureSourceBackup,
+    RolloutPhase.SourceBackupCaptured,
+  ],
+  [
+    RolloutPhase.SourceBackupCaptured,
     RolloutStep.CopyDatabaseGeneration,
     RolloutPhase.GenerationCopied,
   ],
@@ -278,19 +290,39 @@ export interface ActivationReceipt extends StepReceipt {
   readonly step: typeof RolloutStep.ActivateTargetGeneration;
   readonly canonicalPrivilegesSha256: string;
   readonly catalogFactsSha256: string;
+  readonly preactivationCatalogPolicySha256: string;
+  readonly activatedCatalogPolicySha256: string;
   readonly transactionId: string;
   readonly firstWriteReceiptSha256: string;
   readonly firstWriteBoundary: true;
   readonly postgresMajor: 17;
   readonly migrationChecksum: string;
+  readonly transitionSha256: string;
+  readonly postManifestIdentity: string;
   readonly permitEpoch: number;
   readonly permitNonce: string;
   readonly targetDeployIds: readonly string[];
+  readonly beforePrincipalInventorySha256: string;
+  readonly beforePrincipalPolicySha256: string;
+  readonly activatedPrincipalInventorySha256: string;
+  readonly activatedPrincipalPolicySha256: string;
 }
 
 export interface ReleaseMigrationReceipt extends StepReceipt {
   readonly step: typeof RolloutStep.RunReleaseMigration;
   readonly migrationChecksum: string;
+  readonly transitionSha256: string;
+  readonly migrationArtifactDigest: string;
+  readonly migrationBundleSha256: string;
+  readonly preManifestIdentity: string;
+  readonly postManifestIdentity: string;
+  readonly postCatalogDigest: string;
+  readonly permitEpoch: number;
+  readonly permitNonce: string;
+  /** Digest of the exact receipt persisted by the target guard. */
+  readonly targetMigrationReceiptSha256: string;
+  /** Effect identity issued and verified by the target guard. */
+  readonly targetMigrationEffectFingerprint: string;
 }
 
 export interface ActivationAuthorization {
@@ -298,6 +330,8 @@ export interface ActivationAuthorization {
   readonly expectedCommitSha: string;
   readonly postgresMajor: 17;
   readonly migrationChecksum: string;
+  readonly transitionSha256: string;
+  readonly postManifestIdentity: string;
   readonly epoch: number;
   readonly nonce: string;
   readonly sourceSystemIdentifier: string;
@@ -322,13 +356,16 @@ export interface TargetSwitchFence {
 }
 
 export interface ReleaseRollout {
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 3;
   readonly rolloutId: string;
   readonly expectedCommitSha: string;
   readonly execution: ReleaseExecutionIdentity;
   readonly phase: RolloutPhase;
   readonly source: DatabaseGenerationIdentity;
   readonly target: DatabaseGenerationIdentity;
+  readonly migrationTransition: ReleaseMigrationTransitionV1;
+  readonly targetManifestPhase: TargetManifestPhase;
+  readonly migrationPermit?: ReleaseMigrationPermit;
   readonly receipts: readonly StepReceipt[];
   readonly activated: boolean;
   readonly activationUncertain: boolean;
@@ -336,19 +373,23 @@ export interface ReleaseRollout {
   readonly activationReceipt?: ActivationReceipt;
 }
 
-export function canonicalJson(value: unknown): string {
-  if (value === undefined) return "null";
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(",")}}`;
-}
-
-export function sha256Canonical(value: unknown): string {
-  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+export function targetMigrationReceiptEvidence(value: unknown): Readonly<{
+  targetMigrationReceiptSha256: string;
+  targetMigrationEffectFingerprint: string;
+}> {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("target_migration_receipt_unproven");
+  const effectFingerprint = (value as Record<string, unknown>)
+    .effectFingerprint;
+  if (
+    typeof effectFingerprint !== "string" ||
+    !digestPattern.test(effectFingerprint)
+  )
+    throw new Error("target_migration_receipt_unproven");
+  return Object.freeze({
+    targetMigrationReceiptSha256: `sha256:${sha256Canonical(value)}`,
+    targetMigrationEffectFingerprint: effectFingerprint,
+  });
 }
 
 function assertIdentifier(value: string, label: string): void {
@@ -422,6 +463,8 @@ export function createReleaseRollout(
     | "activated"
     | "activationUncertain"
     | "sourcePermanentlyIneligible"
+    | "targetManifestPhase"
+    | "migrationPermit"
   >,
 ): ReleaseRollout {
   assertIdentifier(input.rolloutId, "rollout_id");
@@ -433,27 +476,24 @@ export function createReleaseRollout(
     input.source.systemIdentifier === input.target.systemIdentifier
   )
     throw new Error("database_generations_not_distinct");
+  assertReleaseMigrationTransitionIntegrity(input.migrationTransition);
+  if (input.migrationTransition.commitSha !== input.expectedCommitSha)
+    throw new Error("release_migration_transition_commit_mismatch");
   return Object.freeze({
     ...input,
-    schemaVersion: 2,
+    schemaVersion: 3,
     phase: RolloutPhase.Planned,
     receipts: Object.freeze([]),
     activated: false,
     activationUncertain: false,
     sourcePermanentlyIneligible: false,
+    targetManifestPhase: TargetManifestPhase.PreMigration,
   });
 }
 
 function receiptDigest(receipt: Omit<StepReceipt, "receiptSha256">): string {
   return `sha256:${sha256Canonical(receipt)}`;
 }
-
-const runtimeRoles = Object.freeze([
-  "reviewrouter_api",
-  "reviewrouter_web",
-  "reviewrouter_worker",
-  "reviewrouter_codex_effect_authority",
-]);
 
 function record(value: unknown, error: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -535,6 +575,8 @@ function assertStepFacts(
       );
       if (
         facts.complete !== true ||
+        facts.discoveryScope !==
+          "provider_hint_only_database_fence_authoritative" ||
         services.length === 0 ||
         services.some((item) => {
           const service = record(
@@ -628,6 +670,10 @@ function assertStepFacts(
         facts.reconnectDeniedRoles,
         "source_quiescence_observation_invalid",
       );
+      const fence = record(
+        facts.fence,
+        "source_quiescence_observation_invalid",
+      );
       if (
         facts.complete !== true ||
         services.length === 0 ||
@@ -638,10 +684,28 @@ function assertStepFacts(
         ) ||
         series.length < 3 ||
         series.some((count) => count !== 0) ||
-        [...denied].sort().join(",") !== [...runtimeRoles].sort().join(",")
+        denied.length === 0 ||
+        denied.some((role) => typeof role !== "string") ||
+        new Set(denied).size !== denied.length ||
+        fence.version !== 1 ||
+        fence.lifecycle !== "active" ||
+        fence.sourceSystemIdentifier !== rollout.source.systemIdentifier ||
+        typeof fence.fenceId !== "string" ||
+        typeof fence.rolloutId !== "string" ||
+        fence.rolloutId !== rollout.rolloutId ||
+        typeof fence.authorityPrincipal !== "string" ||
+        !validTimestamp(fence.observedAt)
       )
         throw new Error("source_quiescence_observation_invalid");
       assertDigest(facts.aclSha256, "source_quiescence_observation_invalid");
+      for (const key of [
+        "beforeInventorySha256",
+        "fencedInventorySha256",
+        "beforePolicySha256",
+        "fencedPolicySha256",
+        "priorConnectAclSha256",
+      ])
+        assertDigest(fence[key], "source_quiescence_observation_invalid");
       break;
     }
     case RolloutStep.CopyDatabaseGeneration:
@@ -659,6 +723,10 @@ function assertStepFacts(
       );
       const catalogs = record(
         facts.catalogSha256,
+        "database_equivalence_observation_invalid",
+      );
+      const principals = record(
+        facts.effectivePrincipals,
         "database_equivalence_observation_invalid",
       );
       if (
@@ -680,9 +748,20 @@ function assertStepFacts(
         Object.keys(catalogs).length !== 7 ||
         Object.values(catalogs).some(
           (value) => !digestPattern.test(String(value)),
-        )
+        ) ||
+        principals.stable !== true
       )
         throw new Error("database_equivalence_observation_invalid");
+      for (const key of [
+        "sourceInventorySha256",
+        "sourcePolicySha256",
+        "targetInventorySha256",
+        "targetPolicySha256",
+      ])
+        assertDigest(
+          principals[key],
+          "database_equivalence_observation_invalid",
+        );
       break;
     }
     case RolloutStep.BootstrapTargetRoles:
@@ -690,6 +769,7 @@ function assertStepFacts(
         facts.version !== 2 ||
         facts.status !== "succeeded" ||
         facts.commit !== rollout.expectedCommitSha ||
+        facts.imageDigest !== rollout.migrationTransition.releaseImageDigest ||
         !Array.isArray(facts.roles) ||
         facts.roles.length < 4
       )
@@ -723,13 +803,33 @@ function assertStepFacts(
     }
     case RolloutStep.RunReleaseMigration:
       if (
+        rollout.targetManifestPhase !== TargetManifestPhase.Migrating ||
+        !rollout.migrationPermit ||
         facts.version !== 3 ||
         facts.status !== "succeeded" ||
         facts.migrationStatus !== "succeeded" ||
         facts.preflightStatus !== "passed" ||
         facts.aclGateState !== "closed" ||
         facts.commit !== rollout.expectedCommitSha ||
-        !digestPattern.test(String(facts.migrationChecksum)) ||
+        facts.transitionSha256 !==
+          rollout.migrationTransition.transitionSha256 ||
+        facts.migrationArtifactDigest !==
+          rollout.migrationTransition.migrationArtifactDigest ||
+        facts.migrationBundleSha256 !==
+          rollout.migrationTransition.migrationBundleSha256 ||
+        facts.preManifestIdentity !==
+          rollout.migrationTransition.preManifestIdentity ||
+        facts.postManifestIdentity !==
+          rollout.migrationTransition.postManifestIdentity ||
+        facts.postCatalogDigest !==
+          rollout.migrationTransition.postCatalogDigest ||
+        facts.permitEpoch !== rollout.migrationPermit.epoch ||
+        facts.permitNonce !== rollout.migrationPermit.nonce ||
+        facts.targetSystemIdentifier !== rollout.target.systemIdentifier ||
+        facts.targetRecoveryWitnessSha256 !==
+          rollout.target.recoveryWitnessSha256 ||
+        !digestPattern.test(String(facts.targetMigrationReceiptSha256)) ||
+        !digestPattern.test(String(facts.targetMigrationEffectFingerprint)) ||
         !Array.isArray(facts.roles) ||
         facts.roles.length < 4
       )
@@ -749,11 +849,16 @@ function assertStepFacts(
             service.provenance,
             "target_stage_observation_invalid",
           );
+          const postcondition = service.servicePostcondition;
           return (
             service.suspended !== true ||
             typeof service.deployId !== "string" ||
             !digestPattern.test(String(service.envSha256)) ||
             !/^[a-f0-9]{64}$/u.test(String(service.recoveryWitnessSha256)) ||
+            !isNormalizedServicePostcondition(postcondition) ||
+            postcondition.serviceId !== service.serviceId ||
+            postcondition.suspended !== true ||
+            postcondition.environmentSha256 !== service.envSha256 ||
             (provenance.kind === "git"
               ? provenance.commitSha !== rollout.expectedCommitSha
               : provenance.kind !== "image" ||
@@ -796,8 +901,14 @@ function assertStepFacts(
       for (const key of [
         "canonicalPrivilegesSha256",
         "catalogFactsSha256",
+        "preactivationCatalogPolicySha256",
+        "activatedCatalogPolicySha256",
         "firstWriteReceiptSha256",
         "observationSha256",
+        "beforePrincipalInventorySha256",
+        "beforePrincipalPolicySha256",
+        "activatedPrincipalInventorySha256",
+        "activatedPrincipalPolicySha256",
       ])
         assertDigest(facts[key], "activation_observation_invalid");
       break;
@@ -810,8 +921,13 @@ function assertStepFacts(
         services.length === 0 ||
         services.some((item) => {
           const service = record(item, "target_resume_observation_invalid");
+          const postcondition = service.servicePostcondition;
           return (
-            service.resumed !== true || typeof service.deployId !== "string"
+            service.resumed !== true ||
+            typeof service.deployId !== "string" ||
+            !isNormalizedServicePostcondition(postcondition) ||
+            postcondition.serviceId !== service.serviceId ||
+            postcondition.suspended !== false
           );
         }) ||
         canonicalJson(observation.provider?.renderServiceIds) !==
@@ -833,15 +949,68 @@ function assertStepFacts(
       break;
     }
     case RolloutStep.VerifyLiveCanary:
-      if (
-        facts.commitSha !== rollout.expectedCommitSha ||
-        facts.databaseSystemIdentifier !== rollout.target.systemIdentifier ||
-        !/^[a-f0-9]{64}$/u.test(String(facts.recoveryWitnessSha256)) ||
-        !Array.isArray(facts.runtimeWitnessProofs) ||
-        facts.runtimeWitnessProofs.length !== 3 ||
-        facts.writeReadRoundTrip !== true
-      )
-        throw new Error("live_canary_observation_invalid");
+      {
+        const proofs = Array.isArray(facts.runtimeWitnessProofs)
+          ? facts.runtimeWitnessProofs
+          : [];
+        const serviceFacts = Array.isArray(facts.serviceFacts)
+          ? facts.serviceFacts
+          : [];
+        const requestedAt = Date.parse(String(facts.requestedAt));
+        const observedAt = Date.parse(String(facts.observedAt));
+        const generation = record(
+          facts.expectedGeneration,
+          "live_canary_observation_invalid",
+        );
+        if (
+          facts.commitSha !== rollout.expectedCommitSha ||
+          facts.databaseSystemIdentifier !== rollout.target.systemIdentifier ||
+          !/^[a-f0-9]{64}$/u.test(String(facts.recoveryWitnessSha256)) ||
+          !/^[a-f0-9]{48}$/u.test(String(facts.nonce)) ||
+          !Number.isFinite(requestedAt) ||
+          !Number.isFinite(observedAt) ||
+          observedAt < requestedAt ||
+          observedAt > requestedAt + 10_000 ||
+          proofs.length !== 3 ||
+          serviceFacts.length !== 3 ||
+          generation.systemIdentifier !== rollout.target.systemIdentifier ||
+          generation.recoveryWitnessSha256 !== facts.recoveryWitnessSha256 ||
+          proofs.some((item, index) => {
+            const proof = record(item, "live_canary_observation_invalid");
+            const service = record(
+              serviceFacts[index],
+              "live_canary_observation_invalid",
+            );
+            const provedAt = Date.parse(String(proof.provedAt));
+            return (
+              proof.runtimeRole !== ["api", "web", "worker"][index] ||
+              proof.databaseRole !==
+                `reviewrouter_${["api", "web", "worker"][index]}` ||
+              service.runtimeRole !== ["api", "web", "worker"][index] ||
+              typeof service.deployId !== "string" ||
+              !/^[a-f0-9]{40,64}$/u.test(
+                String(service.deploymentProvenance),
+              ) ||
+              !digestPattern.test(String(service.servicePostconditionSha256)) ||
+              proof.nonce !== facts.nonce ||
+              proof.requestedAt !== facts.requestedAt ||
+              proof.serviceId !== service.serviceId ||
+              proof.deployId !== service.deployId ||
+              proof.deploymentProvenance !== service.deploymentProvenance ||
+              proof.servicePostconditionSha256 !==
+                service.servicePostconditionSha256 ||
+              proof.systemIdentifier !== rollout.target.systemIdentifier ||
+              proof.releaseCommitSha !== rollout.expectedCommitSha ||
+              proof.recoveryWitnessSha256 !== facts.recoveryWitnessSha256 ||
+              !Number.isFinite(provedAt) ||
+              provedAt < requestedAt ||
+              provedAt > requestedAt + 10_000
+            );
+          }) ||
+          facts.writeReadRoundTrip !== true
+        )
+          throw new Error("live_canary_observation_invalid");
+      }
       break;
     case RolloutStep.VerifyTrustedRollout:
       assertDigest(
@@ -941,11 +1110,22 @@ export function transitionFromObservation(
   };
   let receipt: StepReceipt;
   if (observation.step === RolloutStep.RunReleaseMigration) {
+    const facts = observation.facts as Record<string, unknown>;
     const migrationBase = {
       ...base,
       step: RolloutStep.RunReleaseMigration,
-      migrationChecksum: String(
-        (observation.facts as Record<string, unknown>).migrationChecksum,
+      migrationChecksum: rollout.migrationTransition.postManifestIdentity,
+      transitionSha256: String(facts.transitionSha256),
+      migrationArtifactDigest: String(facts.migrationArtifactDigest),
+      migrationBundleSha256: String(facts.migrationBundleSha256),
+      preManifestIdentity: String(facts.preManifestIdentity),
+      postManifestIdentity: String(facts.postManifestIdentity),
+      postCatalogDigest: String(facts.postCatalogDigest),
+      permitEpoch: Number(facts.permitEpoch),
+      permitNonce: String(facts.permitNonce),
+      targetMigrationReceiptSha256: String(facts.targetMigrationReceiptSha256),
+      targetMigrationEffectFingerprint: String(
+        facts.targetMigrationEffectFingerprint,
       ),
     };
     receipt = {
@@ -958,10 +1138,14 @@ export function transitionFromObservation(
       facts.firstWriteBoundary !== true ||
       !digestPattern.test(String(facts.canonicalPrivilegesSha256)) ||
       !digestPattern.test(String(facts.catalogFactsSha256)) ||
+      !digestPattern.test(String(facts.preactivationCatalogPolicySha256)) ||
+      !digestPattern.test(String(facts.activatedCatalogPolicySha256)) ||
       !digestPattern.test(String(facts.firstWriteReceiptSha256)) ||
       !/^[0-9]+$/u.test(String(facts.transactionId)) ||
       facts.postgresMajor !== 17 ||
       !digestPattern.test(String(facts.migrationChecksum)) ||
+      !digestPattern.test(String(facts.transitionSha256)) ||
+      !digestPattern.test(String(facts.postManifestIdentity)) ||
       !Number.isSafeInteger(facts.permitEpoch) ||
       Number(facts.permitEpoch) < 1 ||
       !/^[a-f0-9]{32}$/u.test(String(facts.permitNonce)) ||
@@ -974,15 +1158,31 @@ export function transitionFromObservation(
       step: RolloutStep.ActivateTargetGeneration,
       canonicalPrivilegesSha256: String(facts.canonicalPrivilegesSha256),
       catalogFactsSha256: String(facts.catalogFactsSha256),
+      preactivationCatalogPolicySha256: String(
+        facts.preactivationCatalogPolicySha256,
+      ),
+      activatedCatalogPolicySha256: String(facts.activatedCatalogPolicySha256),
       transactionId: String(facts.transactionId),
       firstWriteReceiptSha256: String(facts.firstWriteReceiptSha256),
       firstWriteBoundary: true as const,
       postgresMajor: 17 as const,
       migrationChecksum: String(facts.migrationChecksum),
+      transitionSha256: String(facts.transitionSha256),
+      postManifestIdentity: String(facts.postManifestIdentity),
       permitEpoch: Number(facts.permitEpoch),
       permitNonce: String(facts.permitNonce),
       targetDeployIds: Object.freeze(
         (facts.targetDeployIds as unknown[]).map(String),
+      ),
+      beforePrincipalInventorySha256: String(
+        facts.beforePrincipalInventorySha256,
+      ),
+      beforePrincipalPolicySha256: String(facts.beforePrincipalPolicySha256),
+      activatedPrincipalInventorySha256: String(
+        facts.activatedPrincipalInventorySha256,
+      ),
+      activatedPrincipalPolicySha256: String(
+        facts.activatedPrincipalPolicySha256,
       ),
     };
     receipt = {
@@ -998,7 +1198,115 @@ export function transitionFromObservation(
     activated: rollout.activated || activation,
     sourcePermanentlyIneligible:
       rollout.sourcePermanentlyIneligible || activation,
+    targetManifestPhase:
+      observation.step === RolloutStep.RunReleaseMigration
+        ? TargetManifestPhase.PostMigration
+        : rollout.targetManifestPhase,
     ...(activation ? { activationReceipt: receipt as ActivationReceipt } : {}),
+  });
+}
+
+export function beginReleaseMigrationAttempt(
+  rollout: ReleaseRollout,
+  permit: ReleaseMigrationPermit,
+  sourceLegacyAmbiguity?: LegacyAmbiguityEvidence,
+): ReleaseRollout {
+  const previousReceiptSha256 =
+    rollout.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`;
+  if (
+    rollout.phase !== RolloutPhase.CutoverRunnerProvisioned ||
+    (rollout.targetManifestPhase !== TargetManifestPhase.PreMigration &&
+      rollout.targetManifestPhase !== TargetManifestPhase.Migrating) ||
+    permit.schemaVersion !== 1 ||
+    permit.rolloutId !== rollout.rolloutId ||
+    permit.runId !== rollout.execution.runId ||
+    permit.runAttempt !== rollout.execution.runAttempt ||
+    permit.targetSystemIdentifier !== rollout.target.systemIdentifier ||
+    permit.targetRecoveryWitnessSha256 !==
+      rollout.target.recoveryWitnessSha256 ||
+    permit.transitionSha256 !== rollout.migrationTransition.transitionSha256 ||
+    permit.expectedPreviousReceiptSha256 !== previousReceiptSha256 ||
+    !Number.isFinite(Date.parse(permit.eligibilityCutoff)) ||
+    !Number.isSafeInteger(permit.epoch) ||
+    permit.epoch < 1 ||
+    !/^[a-f0-9]{32}$/u.test(permit.nonce)
+  )
+    throw new Error("release_migration_permit_invalid");
+  const trustedSource = assertLegacyAmbiguityEvidence(
+    sourceLegacyAmbiguity ?? permit.sourceLegacyAmbiguity,
+  );
+  if (
+    canonicalJson(permit.sourceLegacyAmbiguity) !==
+      canonicalJson(trustedSource) ||
+    permit.eligibilityCutoff !== trustedSource.eligibilityCutoff ||
+    trustedSource.rolloutId !== rollout.rolloutId ||
+    trustedSource.sourceSystemIdentifier !== rollout.source.systemIdentifier ||
+    trustedSource.sourceDatabaseName !== rollout.source.databaseName ||
+    trustedSource.sourceRecoveryWitnessSha256 !==
+      rollout.source.recoveryWitnessSha256
+  )
+    throw new Error("release_migration_source_evidence_binding_invalid");
+  if (
+    rollout.migrationPermit &&
+    canonicalJson(rollout.migrationPermit) !== canonicalJson(permit)
+  )
+    throw new Error("release_migration_permit_replay_conflict");
+  return Object.freeze({
+    ...rollout,
+    targetManifestPhase: TargetManifestPhase.Migrating,
+    migrationPermit: Object.freeze({ ...permit }),
+  });
+}
+
+export function recoverCompletedReleaseMigration(
+  rollout: ReleaseRollout,
+  permit: ReleaseMigrationPermit,
+  receipt: ReleaseMigrationReceipt,
+  sourceLegacyAmbiguity?: LegacyAmbiguityEvidence,
+): ReleaseRollout {
+  const migrating = beginReleaseMigrationAttempt(
+    rollout,
+    permit,
+    sourceLegacyAmbiguity,
+  );
+  const previousReceiptSha256 =
+    rollout.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`;
+  const { receiptSha256, ...unsigned } = receipt;
+  if (
+    receipt.step !== RolloutStep.RunReleaseMigration ||
+    !identifierPattern.test(receipt.receiptId) ||
+    receipt.rolloutId !== rollout.rolloutId ||
+    receipt.expectedCommitSha !== rollout.expectedCommitSha ||
+    receipt.runId !== rollout.execution.runId ||
+    receipt.runAttempt !== rollout.execution.runAttempt ||
+    receipt.sourceSystemIdentifier !== rollout.source.systemIdentifier ||
+    receipt.targetSystemIdentifier !== rollout.target.systemIdentifier ||
+    receipt.previousReceiptSha256 !== previousReceiptSha256 ||
+    receipt.transitionSha256 !== rollout.migrationTransition.transitionSha256 ||
+    receipt.migrationChecksum !==
+      rollout.migrationTransition.postManifestIdentity ||
+    receipt.migrationArtifactDigest !==
+      rollout.migrationTransition.migrationArtifactDigest ||
+    receipt.migrationBundleSha256 !==
+      rollout.migrationTransition.migrationBundleSha256 ||
+    receipt.preManifestIdentity !==
+      rollout.migrationTransition.preManifestIdentity ||
+    receipt.postManifestIdentity !==
+      rollout.migrationTransition.postManifestIdentity ||
+    receipt.postCatalogDigest !==
+      rollout.migrationTransition.postCatalogDigest ||
+    receipt.permitEpoch !== permit.epoch ||
+    receipt.permitNonce !== permit.nonce ||
+    !digestPattern.test(receipt.targetMigrationReceiptSha256) ||
+    !digestPattern.test(receipt.targetMigrationEffectFingerprint) ||
+    receiptSha256 !== `sha256:${sha256Canonical(unsigned)}`
+  )
+    throw new Error("release_migration_receipt_recovery_invalid");
+  return Object.freeze({
+    ...migrating,
+    phase: RolloutPhase.MigrationApplied,
+    targetManifestPhase: TargetManifestPhase.PostMigration,
+    receipts: Object.freeze([...rollout.receipts, Object.freeze(receipt)]),
   });
 }
 
@@ -1013,7 +1321,14 @@ export function transitionFailure(
       activationUncertain: true,
       sourcePermanentlyIneligible: true,
     });
-  return Object.freeze({ ...rollout, phase: RolloutPhase.PreActivationFailed });
+  return Object.freeze({
+    ...rollout,
+    phase: RolloutPhase.PreActivationFailed,
+    targetManifestPhase:
+      rollout.targetManifestPhase === TargetManifestPhase.Migrating
+        ? TargetManifestPhase.Quarantined
+        : rollout.targetManifestPhase,
+  });
 }
 
 export function beginCompensation(rollout: ReleaseRollout): ReleaseRollout {
@@ -1117,7 +1432,37 @@ export interface AuthoritativeGenerationLedger {
     runAttempt: number;
     sourceSystemIdentifier: string;
     targetSystemIdentifier: string;
+    targetRecoveryWitnessSha256: string;
+    migrationTransition: ReleaseMigrationTransitionV1;
   }): Promise<"claimed" | "duplicate">;
+  beginReleaseMigration?(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    targetRecoveryWitnessSha256: string;
+    transitionSha256: string;
+    expectedPreviousReceiptSha256: string;
+    sourceLegacyAmbiguity: LegacyAmbiguityEvidence;
+  }): Promise<ReleaseMigrationPermit>;
+  completeReleaseMigration?(input: {
+    permit: ReleaseMigrationPermit;
+    receipt: ReleaseMigrationReceipt;
+  }): Promise<ReleaseMigrationReceipt>;
+  failReleaseMigration?(input: {
+    permit: ReleaseMigrationPermit;
+    reasonSha256: string;
+  }): Promise<void>;
+  loadReleaseMigrationCheckpoint?(input: {
+    rolloutId: string;
+    targetSystemIdentifier: string;
+  }): Promise<{
+    targetManifestPhase: TargetManifestPhase;
+    permit: ReleaseMigrationPermit | null;
+    receipt: ReleaseMigrationReceipt | null;
+  }>;
   compareAndSet(input: {
     rolloutId: string;
     expectedCommitSha: string;
@@ -1162,6 +1507,8 @@ export interface AuthoritativeGenerationLedger {
     targetDeployIds: readonly string[];
     postgresMajor: 17;
     migrationChecksum: string;
+    transitionSha256: string;
+    postManifestIdentity: string;
   }): Promise<ActivationAuthorization>;
   finalizeActivation(input: {
     authorization: ActivationAuthorization;

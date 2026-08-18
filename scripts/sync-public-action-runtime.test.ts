@@ -201,11 +201,16 @@ describe("public Action runtime sync", () => {
     expect(workflow).toContain("group: sync-public-action-runtime\n");
     expect(workflow).toContain('$DISPATCH_REF" != "refs/heads/main"');
     expect(workflow).toContain("current origin/main");
-    expect(workflow).toContain("CI must complete successfully");
+    expect(workflow).toContain("node scripts/release-gate-evidence.mjs verify");
+    expect(workflow).toContain(
+      "REVIEW_ROUTER_RELEASE_GATE_SHA: ${{ steps.source.outputs.sha }}",
+    );
+    expect(workflow).not.toContain("gh run list");
+    expect(workflow).not.toMatch(/uses: [^@\n]+@v\d/gu);
     expect(workflow.match(/--print-files/g)).toHaveLength(2);
     expect(workflow).toContain('git add -- "${synced_files[@]}"');
     expect(workflow).toContain("synced files changed after commit/rebase");
-    expect(workflow.indexOf("Gate exact current main SHA")).toBeLessThan(
+    expect(workflow.indexOf("Resolve exact current main SHA")).toBeLessThan(
       workflow.indexOf("Require cross-repository sync credential"),
     );
     expect(
@@ -216,6 +221,14 @@ describe("public Action runtime sync", () => {
     expect(
       workflow.indexOf("Recheck checkout is exact current origin/main"),
     ).toBeLessThan(workflow.indexOf("Install SaaS dependencies"));
+    expect(
+      workflow.indexOf("Require exact PostgreSQL publication-gate evidence"),
+    ).toBeLessThan(
+      workflow.indexOf("Require cross-repository sync credential"),
+    );
+    expect(
+      workflow.indexOf("Require exact PostgreSQL publication-gate evidence"),
+    ).toBeLessThan(workflow.indexOf("Build and verify public action artifact"));
   });
 
   it("publishes one release descriptor only after both installer bytes match", () => {
@@ -241,7 +254,9 @@ describe("public Action runtime sync", () => {
     expect(workflow).toContain(
       "Rotating installer descriptor SHA-256: $INSTALLER_DESCRIPTOR_SHA256",
     );
-    expect(workflow).toContain('runtime_path="hosted-runtime-image.json"');
+    expect(workflow).toContain(
+      'runtime_path="release-assets/hosted-runtime-image.json"',
+    );
     expect(workflow).toContain("--draft\n");
     expect(workflow).toContain(
       "Published immutable release $VERSION is missing required assets",

@@ -489,7 +489,7 @@ if (databaseUrl) {
       );
     });
 
-    it("compacts terminal lease identities before ordered execution pruning", async () => {
+    it("retains an execution graph until its investigation is pruned and then prunes idempotently", async () => {
       const harness = await createHarness();
       const store = harness.executions as PrismaReviewExecutionStore;
       const now = new Date();
@@ -497,6 +497,7 @@ if (databaseUrl) {
       const protectedExecutionId = `execution-prune-protected-${randomUUID()}`;
       const protectedWorkSlotId = `slot-prune-protected-${randomUUID()}`;
       const leaseId = `lease-prune-${randomUUID()}`;
+      const investigationId = `investigation-prune-${randomUUID()}`;
       await prisma.reviewExecutionStreamV2.create({
         data: {
           ...harness.scope,
@@ -681,6 +682,40 @@ if (databaseUrl) {
           retainUntil: new Date(now.getTime() - 90_000),
         },
       });
+      await prisma.reviewInvestigation.create({
+        data: {
+          investigationId,
+          naturalIdentityHash: hashFromText(investigationId),
+          ...harness.scope,
+          trustDomain: "disposable_test",
+          authorizationScopeHash: hash(12),
+          baseSha: "a".repeat(40),
+          mergeBaseSha: "b".repeat(40),
+          headSha: "c".repeat(40),
+          reviewRevisionHash: hash(1),
+          executionId,
+          workSlotId: "slot-prune",
+          stableReviewUnitKey: "unit-prune",
+          providerVoteLaneId: hash(6),
+          providerStrategyId: "codex-disposable-test",
+          runtimeProfile: "gateway_attested_agent_v1",
+          coverageContractVersion: "coverage-prune.v1",
+          expansionRulesVersion: "expansion-prune.v1",
+          criticPolicyVersion: "critic-prune.v1",
+          gatewayPolicyVersion: "gateway-prune.v1",
+          producerReleaseId: harness.producerReleaseId,
+          runtimeProfileVersion: "runtime-prune.v1",
+          policy: {},
+          state: "concluded",
+          findings: [],
+          turnProvenance: [],
+          conclusion: "verified_clean",
+          dossierDigest: hash(13),
+          createdAt: now,
+          updatedAt: now,
+          retainUntil: new Date(now.getTime() + 60_000),
+        },
+      });
       await prisma.reviewRunAuthorization.update({
         where: { authorizationId: harness.authorizationId },
         data: {
@@ -690,9 +725,46 @@ if (databaseUrl) {
         },
       });
 
+      const retainedResults = await (async () => {
+        try {
+          return [
+            await store.pruneRetainedHistory({ limit: 10 }),
+            await store.pruneRetainedHistory({ limit: 10 }),
+          ];
+        } finally {
+          await prisma.reviewInvestigation.delete({
+            where: { investigationId },
+          });
+        }
+      })();
+
+      expect(retainedResults).toEqual([
+        {
+          compactedLeases: 1,
+          deletedObservationRefs: 0,
+          deletedArtifacts: 0,
+          deletedWorkSlots: 0,
+          deletedExecutions: 0,
+        },
+        {
+          compactedLeases: 0,
+          deletedObservationRefs: 0,
+          deletedArtifacts: 0,
+          deletedWorkSlots: 0,
+          deletedExecutions: 0,
+        },
+      ]);
+      await expect(
+        prisma.reviewExecutionWorkSlotV2.findUnique({
+          where: {
+            executionId_workSlotId: { executionId, workSlotId: "slot-prune" },
+          },
+        }),
+      ).resolves.not.toBeNull();
+
       const result = await store.pruneRetainedHistory({ limit: 10 });
       expect(result).toMatchObject({
-        compactedLeases: 1,
+        compactedLeases: 0,
         deletedWorkSlots: 1,
         deletedExecutions: 1,
       });
@@ -707,6 +779,13 @@ if (databaseUrl) {
       await expect(
         prisma.reviewExecutionV2.findUnique({ where: { executionId } }),
       ).resolves.toBeNull();
+      await expect(store.pruneRetainedHistory({ limit: 10 })).resolves.toEqual({
+        compactedLeases: 0,
+        deletedObservationRefs: 0,
+        deletedArtifacts: 0,
+        deletedWorkSlots: 0,
+        deletedExecutions: 0,
+      });
       await expect(
         prisma.reviewExecutionV2.findUnique({
           where: { executionId: protectedExecutionId },

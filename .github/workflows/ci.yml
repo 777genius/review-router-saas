@@ -13,6 +13,11 @@ on:
         required: false
         type: boolean
         default: false
+      release_authority_contract_baseline_sha:
+        description: Previous protected main SHA used as the immutable migration baseline
+        required: false
+        type: string
+        default: ""
   pull_request:
   push:
     branches:
@@ -55,14 +60,39 @@ env:
 jobs:
   release-authority-pg17-contract:
     name: Dedicated Release Authority PG17 contract
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_authority_pg17_contract }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.release_authority_pg17_contract) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Pin exact contract baseline
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          PUSH_BASE_SHA: ${{ github.event.before || '' }}
+          DISPATCH_BASE_SHA: ${{ inputs.release_authority_contract_baseline_sha || '' }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) baseline_sha=$PR_BASE_SHA ;;
+            push) baseline_sha=$PUSH_BASE_SHA ;;
+            workflow_dispatch) baseline_sha=$DISPATCH_BASE_SHA ;;
+            *) exit 1 ;;
+          esac
+          printf '%s' "$baseline_sha" | grep -Eq '^[a-f0-9]{40}$'
+          test "$baseline_sha" != 0000000000000000000000000000000000000000
+          test "$baseline_sha" != "$HEAD_SHA"
+          git cat-file -e "$baseline_sha^{commit}"
+          git merge-base --is-ancestor "$baseline_sha" "$HEAD_SHA"
+          echo "REVIEW_ROUTER_RELEASE_AUTHORITY_CONTRACT_BASELINE_REF=$baseline_sha" >> "$GITHUB_ENV"
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ env.NODE_VERSION }}
       - name: Enable pnpm
@@ -74,22 +104,39 @@ jobs:
       - name: Generate Prisma client
         run: pnpm db:generate
       - name: Pin PostgreSQL 17 contract image
-        run: |
-          docker pull postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
-          docker tag postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4 postgres:17-alpine
+        run: docker pull "$REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE"
       - name: Run dedicated authority contract
         run: bash packages/platform/release-authority-db/test-contract.sh
+      - name: Run digest-pinned activation adversarial proof
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          REVIEW_ROUTER_REQUIRE_PG17_ADVERSARIAL: "1"
+        run: pnpm exec vitest run scripts/private-pg17-activation-adversarial.test.ts
+      - name: Create exact release-gate evidence
+        if: ${{ github.event_name != 'pull_request' }}
+        id: evidence
+        run: node scripts/release-gate-evidence.mjs write release-authority-pg17-contract >> "$GITHUB_OUTPUT"
+      - name: Upload exact release-gate evidence
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.evidence.outputs.artifact_name }}
+          path: release-gate-evidence.json
+          if-no-files-found: error
+          retention-days: 14
 
   private-pg16-to-pg17-rehearsal:
     name: Full private PG16 to PG17 rehearsal
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.private_pg16_to_pg17_rehearsal }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.private_pg16_to_pg17_rehearsal) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ env.NODE_VERSION }}
       - name: Enable pnpm
@@ -106,6 +153,16 @@ jobs:
           REVIEW_ROUTER_REHEARSAL_PG16_IMAGE: postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60
           REVIEW_ROUTER_REHEARSAL_PG17_IMAGE: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
         run: pnpm release-rollout:rehearsal
+      - name: Create exact release-gate evidence
+        id: evidence
+        run: node scripts/release-gate-evidence.mjs write private-pg16-to-pg17-rehearsal >> "$GITHUB_OUTPUT"
+      - name: Upload exact release-gate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.evidence.outputs.artifact_name }}
+          path: release-gate-evidence.json
+          if-no-files-found: error
+          retention-days: 14
 
   codex-rotating-installer-portability:
     name: Rotating installer lock (${{ matrix.os }})

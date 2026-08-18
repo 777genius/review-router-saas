@@ -4,15 +4,23 @@ import type {
   ProviderAuthorityRequest,
 } from "../application/ports";
 import type { RenderFetch } from "./render-api";
+import {
+  BoundedProviderHttpClient,
+  ProviderHttpError,
+} from "./bounded-provider-io";
 
 export class HttpProviderAuthorityDecisionAdapter implements ProviderAuthorityDecisionPort {
+  private readonly fetchImpl: RenderFetch;
   constructor(
     private readonly origin: string,
     private readonly token: string,
-    private readonly fetchImpl: RenderFetch = fetch,
+    fetchImpl: RenderFetch = fetch,
   ) {
     if (!origin.startsWith("https://") || !token)
       throw new Error("provider_authority_configuration_invalid");
+    const http = new BoundedProviderHttpClient(fetchImpl);
+    this.fetchImpl = (url, init) =>
+      http.request("provider_authority", url, init);
   }
 
   async decide(
@@ -31,15 +39,30 @@ export class HttpProviderAuthorityDecisionAdapter implements ProviderAuthorityDe
       },
     );
     if (response.status !== 200)
-      throw new Error(`provider_authority_decision_denied:${response.status}`);
+      throw new ProviderHttpError(
+        "provider_authority",
+        "response_status",
+        response.status,
+        true,
+      );
     let value: unknown;
     try {
       value = await response.json();
     } catch {
-      throw new Error("provider_authority_decision_response_invalid");
+      throw new ProviderHttpError(
+        "provider_authority",
+        "response_invalid",
+        response.status,
+        true,
+      );
     }
     if (!value || typeof value !== "object" || Array.isArray(value))
-      throw new Error("provider_authority_decision_response_invalid");
+      throw new ProviderHttpError(
+        "provider_authority",
+        "response_invalid",
+        response.status,
+        true,
+      );
     return value as ProviderAuthorityDecision;
   }
 }

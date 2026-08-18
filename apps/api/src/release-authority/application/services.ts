@@ -5,23 +5,284 @@ import type {
   ReleaseAuthorityLedgerPort,
   ReleaseRolloutReconciliationPort,
   RolloutBinding,
+  RolloutClaimBinding,
   RunnerCleanupWitnessPort,
   TargetActivationReceiptReaderPort,
+  TargetMigrationReceiptReaderPort,
   RunnerOperationsLedgerPort,
   ReleaseServiceTransitionLedgerPort,
+  ReleaseProviderMutationAuthorityPort,
 } from "../domain/model.js";
 import type {
   RunnerIdentity,
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
 import { sha256Canonical } from "@reviewrouter/features-release-rollout";
+import {
+  assertReleaseMigrationTransition,
+  TargetManifestPhase,
+  type ReleaseMigrationTransitionV1,
+} from "@reviewrouter/features-release-rollout";
+import { targetActivationIdentityMatches } from "./target-activation-invariant.js";
+
+export type ExecuteFreshReleaseAuthorityMutation = <Result>(
+  target: ReleaseAuthorityMutationTarget,
+  mutation: (
+    attestation: ReleaseAuthorityFencedAttestation,
+  ) => Promise<Result> | Result,
+  targetManifestPhase?:
+    | "pre_migration"
+    | "migration_recovery"
+    | "post_migration"
+    | "control_only",
+) => Promise<Result>;
+
+export type ReleaseAuthorityFencedAttestation = Readonly<{
+  systemIdentifier: string;
+  recoveryWitnessSha256: string;
+}>;
+
+export type ReleaseAuthorityMutationTarget =
+  | "control"
+  | "provider"
+  | "installer"
+  | "reader";
+
+/**
+ * Application policy port for exclusive, freshly attested mutation sequences.
+ * Cross-database operations have one deadlock-safe order: acquire and retain
+ * the target activation fence first, then acquire the control-authority fence.
+ * No control-authority mutation may call back into a target fence.
+ */
+export interface ReleaseAuthorityHighRiskMutationGate {
+  execute<Result>(
+    sequence: (
+      executeFresh: ExecuteFreshReleaseAuthorityMutation,
+    ) => Promise<Result> | Result,
+  ): Promise<Result>;
+}
+
 export class ReleaseAuthorityService {
   constructor(
     private readonly repository: ReleaseAuthorityLedgerPort,
-    private readonly permitInstaller?: ActivationPermitInstallerPort,
-    private readonly targetReceiptReader?: TargetActivationReceiptReaderPort,
+    private readonly permitInstaller: ActivationPermitInstallerPort | undefined,
+    private readonly targetReceiptReader:
+      | TargetActivationReceiptReaderPort
+      | undefined,
+    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate,
+    private readonly trustedMigrationTransition?: ReleaseMigrationTransitionV1,
+    private readonly targetMigrationReceiptReader?: TargetMigrationReceiptReaderPort,
   ) {}
-  claim = (input: RolloutBinding) => this.repository.claim(input);
+  claim = (input: RolloutClaimBinding) => {
+    if (!this.trustedMigrationTransition)
+      throw new Error("trusted_release_migration_transition_missing");
+    assertReleaseMigrationTransition(
+      input.migrationTransition,
+      this.trustedMigrationTransition,
+    );
+    return this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "installer",
+        async (target) => {
+          if (
+            target.systemIdentifier === input.sourceSystemIdentifier ||
+            target.systemIdentifier !== input.targetSystemIdentifier ||
+            target.recoveryWitnessSha256 !==
+              input.targetRecoveryWitnessSha256 ||
+            !/^[1-9][0-9]{0,19}$/u.test(target.systemIdentifier) ||
+            !/^[a-f0-9]{64}$/u.test(target.recoveryWitnessSha256)
+          )
+            throw new Error("release_migration_target_identity_untrusted");
+          return executeFresh(
+            "control",
+            () =>
+              this.repository.claim({
+                ...input,
+                targetSystemIdentifier: target.systemIdentifier,
+                targetRecoveryWitnessSha256: target.recoveryWitnessSha256,
+              }),
+            TargetManifestPhase.PreMigration,
+          );
+        },
+        TargetManifestPhase.PreMigration,
+      ),
+    );
+  };
+  beginReleaseMigration = async (
+    input: Parameters<ReleaseAuthorityLedgerPort["beginReleaseMigration"]>[0],
+  ) => {
+    if (
+      !this.trustedMigrationTransition ||
+      input.transitionSha256 !==
+        this.trustedMigrationTransition.transitionSha256
+    )
+      throw new Error("release_migration_transition_untrusted");
+    const trustedMigrationTransition = this.trustedMigrationTransition;
+    const checkpoint = await this.repository.loadReleaseMigrationCheckpoint({
+      rolloutId: input.rolloutId,
+      targetSystemIdentifier: input.targetSystemIdentifier,
+    });
+    if (
+      checkpoint.targetManifestPhase !== TargetManifestPhase.PreMigration &&
+      checkpoint.targetManifestPhase !== TargetManifestPhase.Migrating
+    )
+      throw new Error("release_migration_begin_phase_invalid");
+    const targetManifestPhase =
+      checkpoint.targetManifestPhase === TargetManifestPhase.Migrating
+        ? ("migration_recovery" as const)
+        : TargetManifestPhase.PreMigration;
+    return this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "installer",
+        async (target) => {
+          if (
+            target.systemIdentifier === input.sourceSystemIdentifier ||
+            target.systemIdentifier !== input.targetSystemIdentifier ||
+            target.recoveryWitnessSha256 !==
+              input.targetRecoveryWitnessSha256 ||
+            !/^[1-9][0-9]{0,19}$/u.test(target.systemIdentifier) ||
+            !/^[a-f0-9]{64}$/u.test(target.recoveryWitnessSha256)
+          )
+            throw new Error("release_migration_target_identity_untrusted");
+          const permit = await executeFresh(
+            "control",
+            async () => {
+              const checkpoint =
+                await this.repository.loadReleaseMigrationCheckpoint({
+                  rolloutId: input.rolloutId,
+                  targetSystemIdentifier: target.systemIdentifier,
+                });
+              if (
+                checkpoint.targetManifestPhase !==
+                  TargetManifestPhase.PreMigration &&
+                checkpoint.targetManifestPhase !== TargetManifestPhase.Migrating
+              )
+                throw new Error("release_migration_begin_phase_invalid");
+              return this.repository.beginReleaseMigration({
+                ...input,
+                targetSystemIdentifier: target.systemIdentifier,
+                targetRecoveryWitnessSha256: target.recoveryWitnessSha256,
+              });
+            },
+            targetManifestPhase,
+          );
+          if (!this.permitInstaller)
+            throw new Error("release_migration_permit_installer_missing");
+          await this.permitInstaller.installMigrationPermit({
+            permit,
+            sourceSystemIdentifier: input.sourceSystemIdentifier,
+            expectedPostManifestIdentity:
+              trustedMigrationTransition.postManifestIdentity,
+            expectedPostCatalogDigest:
+              trustedMigrationTransition.postCatalogDigest,
+          });
+          return permit;
+        },
+        targetManifestPhase,
+      ),
+    );
+  };
+  completeReleaseMigration = async (
+    input: Parameters<
+      ReleaseAuthorityLedgerPort["completeReleaseMigration"]
+    >[0],
+  ) => {
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "installer",
+        async (target) => {
+          if (
+            target.systemIdentifier !== input.permit.targetSystemIdentifier ||
+            target.systemIdentifier !== input.receipt.targetSystemIdentifier ||
+            target.recoveryWitnessSha256 !==
+              input.permit.targetRecoveryWitnessSha256
+          )
+            throw new Error("release_migration_target_identity_untrusted");
+          if (!this.permitInstaller)
+            throw new Error("release_migration_permit_installer_missing");
+          await this.permitInstaller.terminalizeMigrationPermit({
+            permit: input.permit,
+            outcome: "completed",
+          });
+        },
+        TargetManifestPhase.PostMigration,
+      ),
+    );
+    if (!this.targetMigrationReceiptReader)
+      throw new Error("target_migration_receipt_reader_missing");
+    const targetReceipt = await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "reader",
+        (target) => {
+          if (
+            target.systemIdentifier !== input.permit.targetSystemIdentifier ||
+            target.recoveryWitnessSha256 !==
+              input.permit.targetRecoveryWitnessSha256
+          )
+            throw new Error("release_migration_target_identity_untrusted");
+          return this.targetMigrationReceiptReader!.readMigrationReceipt(
+            input.permit,
+          );
+        },
+        TargetManifestPhase.PostMigration,
+      ),
+    );
+    if (
+      targetReceipt.sourceSystemIdentifier !==
+        input.receipt.sourceSystemIdentifier ||
+      targetReceipt.postManifestIdentity !==
+        input.receipt.postManifestIdentity ||
+      targetReceipt.postCatalogDigest !== input.receipt.postCatalogDigest ||
+      targetReceipt.targetMigrationReceiptSha256 !==
+        input.receipt.targetMigrationReceiptSha256 ||
+      targetReceipt.effectFingerprint !==
+        input.receipt.targetMigrationEffectFingerprint
+    )
+      throw new Error("release_migration_target_receipt_conflict");
+    return this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.completeReleaseMigration(input),
+        TargetManifestPhase.PostMigration,
+      ),
+    );
+  };
+  failReleaseMigration = async (
+    input: Parameters<ReleaseAuthorityLedgerPort["failReleaseMigration"]>[0],
+  ) => {
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "installer",
+        async (target) => {
+          if (
+            target.systemIdentifier !== input.permit.targetSystemIdentifier ||
+            target.recoveryWitnessSha256 !==
+              input.permit.targetRecoveryWitnessSha256
+          )
+            throw new Error("release_migration_target_identity_untrusted");
+          if (!this.permitInstaller)
+            throw new Error("release_migration_permit_installer_missing");
+          await this.permitInstaller.terminalizeMigrationPermit({
+            permit: input.permit,
+            outcome: "quarantined",
+          });
+        },
+        "migration_recovery",
+      ),
+    );
+    return this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.failReleaseMigration(input),
+        "control_only",
+      ),
+    );
+  };
+  loadReleaseMigrationCheckpoint = (
+    input: Parameters<
+      ReleaseAuthorityLedgerPort["loadReleaseMigrationCheckpoint"]
+    >[0],
+  ) => this.repository.loadReleaseMigrationCheckpoint(input);
   completeSourceFreeze = (
     input: Parameters<ReleaseAuthorityLedgerPort["completeSourceFreeze"]>[0],
   ) => this.repository.completeSourceFreeze(input);
@@ -35,68 +296,126 @@ export class ReleaseAuthorityService {
       ReleaseAuthorityLedgerPort["recordSourceFreezeMutation"]
     >[0],
   ) => this.repository.recordSourceFreezeMutation(input);
-  cas = (input: Parameters<ReleaseAuthorityLedgerPort["compareAndSet"]>[0]) =>
-    this.repository.compareAndSet(input);
-  markUncertain = (input: RolloutBinding) =>
-    this.repository.markActivationUncertain(input);
-  fenceTargetSwitch = (
+  cas = async (
+    input: Parameters<ReleaseAuthorityLedgerPort["compareAndSet"]>[0],
+  ) => {
+    if (input.step === "run_release_migration")
+      throw new Error("release_migration_requires_phase_protocol");
+    const targetManifestPhase = [
+      "stage_target_services",
+      "activate_target_generation",
+      "cleanup_cutover_runner",
+      "resume_target_services",
+      "verify_live_canary",
+      "verify_trusted_rollout",
+    ].includes(input.step)
+      ? TargetManifestPhase.PostMigration
+      : TargetManifestPhase.PreMigration;
+    return this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.compareAndSet(input),
+        targetManifestPhase,
+      ),
+    );
+  };
+  markUncertain = async (input: RolloutBinding) =>
+    this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.markActivationUncertain(input),
+        "control_only",
+      ),
+    );
+  fenceTargetSwitch = async (
     input: RolloutBinding & { previousReceiptSha256: string },
-  ) => this.repository.fenceTargetSwitch(input);
-  authorizeActivation = (
-    input: Parameters<ReleaseAuthorityLedgerPort["authorizeActivation"]>[0],
-  ) => this.repository.authorizeActivation(input);
-  authorizeAndInstall = async (
+  ) =>
+    this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.fenceTargetSwitch(input),
+        TargetManifestPhase.PostMigration,
+      ),
+    );
+  authorizeActivation = async (
     input: Parameters<ReleaseAuthorityLedgerPort["authorizeActivation"]>[0],
   ) => {
-    const authorization = await this.repository.authorizeActivation(input);
-    if (!this.permitInstaller)
-      throw new Error("activation_permit_installer_unavailable");
-    await this.permitInstaller.install(authorization);
-    return authorization;
+    if (
+      this.trustedMigrationTransition &&
+      (input.transitionSha256 !==
+        this.trustedMigrationTransition.transitionSha256 ||
+        input.postManifestIdentity !==
+          this.trustedMigrationTransition.postManifestIdentity ||
+        input.migrationChecksum !==
+          this.trustedMigrationTransition.postManifestIdentity)
+    )
+      throw new Error("activation_migration_transition_untrusted");
+    return await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.authorizeActivation(input),
+        TargetManifestPhase.PostMigration,
+      ),
+    );
   };
+  authorizeAndInstall = (
+    input: Parameters<ReleaseAuthorityLedgerPort["authorizeActivation"]>[0],
+  ) =>
+    this.highRiskGate.execute(async (executeFresh) => {
+      if (
+        this.trustedMigrationTransition &&
+        (input.transitionSha256 !==
+          this.trustedMigrationTransition.transitionSha256 ||
+          input.postManifestIdentity !==
+            this.trustedMigrationTransition.postManifestIdentity ||
+          input.migrationChecksum !==
+            this.trustedMigrationTransition.postManifestIdentity)
+      )
+        throw new Error("activation_migration_transition_untrusted");
+      const authorization = await executeFresh(
+        "control",
+        () => this.repository.authorizeActivation(input),
+        TargetManifestPhase.PostMigration,
+      );
+      const permitInstaller = this.permitInstaller;
+      if (!permitInstaller)
+        throw new Error("activation_permit_installer_unavailable");
+      await executeFresh(
+        "installer",
+        () => permitInstaller.install(authorization),
+        TargetManifestPhase.PostMigration,
+      );
+      return authorization;
+    });
   finalize = async (
     input: Parameters<ReleaseAuthorityLedgerPort["finalizeActivation"]>[0],
-  ) => {
-    if (!this.targetReceiptReader)
-      throw new Error("target_activation_receipt_reader_unavailable");
-    const receipt = await this.targetReceiptReader.read(
-      input.authorization.rolloutId,
-    );
-    if (!receipt || "receiptAbsent" in receipt)
-      throw new Error("target_activation_receipt_missing");
-    const proposed = input.activationReceipt;
-    const authorization = input.authorization;
-    if (
-      proposed.rolloutId !== authorization.rolloutId ||
-      proposed.expectedCommitSha !== authorization.expectedCommitSha ||
-      proposed.sourceSystemIdentifier !==
-        authorization.sourceSystemIdentifier ||
-      proposed.targetSystemIdentifier !==
-        authorization.targetSystemIdentifier ||
-      proposed.previousReceiptSha256 !== authorization.previousReceiptSha256 ||
-      proposed.postgresMajor !== authorization.postgresMajor ||
-      proposed.migrationChecksum !== authorization.migrationChecksum ||
-      proposed.permitEpoch !== authorization.epoch ||
-      proposed.permitNonce !== authorization.nonce ||
-      JSON.stringify(proposed.targetDeployIds) !==
-        JSON.stringify(authorization.targetDeployIds) ||
-      proposed.canonicalPrivilegesSha256 !==
-        receipt.canonicalPrivilegesSha256 ||
-      proposed.catalogFactsSha256 !== receipt.catalogFactsSha256 ||
-      proposed.transactionId !== receipt.transactionId ||
-      proposed.firstWriteReceiptSha256 !== receipt.firstWriteReceiptSha256 ||
-      proposed.firstWriteBoundary !== receipt.firstWriteBoundary ||
-      proposed.postgresMajor !== receipt.postgresMajor ||
-      proposed.migrationChecksum !== receipt.migrationChecksum ||
-      proposed.permitEpoch !== receipt.permitEpoch ||
-      proposed.permitNonce !== receipt.permitNonce ||
-      JSON.stringify(proposed.targetDeployIds) !==
-        JSON.stringify(receipt.targetDeployIds) ||
-      proposed.receiptSha256 !== input.nextReceiptSha256
-    )
-      throw new Error("target_activation_receipt_mismatch");
-    return this.repository.finalizeActivation(input);
-  };
+  ) =>
+    this.highRiskGate.execute(async (executeFresh) => {
+      if (!this.targetReceiptReader)
+        throw new Error("target_activation_receipt_reader_unavailable");
+      const targetReceiptReader = this.targetReceiptReader;
+      const receipt = await executeFresh(
+        "reader",
+        () => targetReceiptReader.read(input.authorization.rolloutId),
+        TargetManifestPhase.PostMigration,
+      );
+      if (!receipt || "receiptAbsent" in receipt)
+        throw new Error("target_activation_receipt_missing");
+      if (
+        !targetActivationIdentityMatches({
+          target: receipt,
+          authorization: input.authorization,
+          proposedReceipt: input.activationReceipt,
+          expectedReceiptSha256: input.nextReceiptSha256,
+        })
+      )
+        throw new Error("target_activation_receipt_mismatch");
+      return executeFresh(
+        "control",
+        () => this.repository.finalizeActivation(input),
+        TargetManifestPhase.PostMigration,
+      );
+    });
   state = (
     input: Parameters<ReleaseAuthorityLedgerPort["activationState"]>[0],
   ) => this.repository.activationState(input);
@@ -112,10 +431,23 @@ export class ReleaseAuthorityService {
 }
 
 export class ProviderAuthorityDecisionService {
-  constructor(private readonly repository: ReleaseAuthorityLedgerPort) {}
-  decide = (
+  constructor(
+    private readonly repository: ReleaseAuthorityLedgerPort,
+    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate,
+  ) {}
+  decide = async (
     input: Parameters<ReleaseAuthorityLedgerPort["decideProviderOperation"]>[0],
-  ) => this.repository.decideProviderOperation(input);
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "provider",
+        () => this.repository.decideProviderOperation(input),
+        input.operation === "resume_source" ||
+          input.operation === "freeze_source"
+          ? "control_only"
+          : TargetManifestPhase.PostMigration,
+      ),
+    );
 }
 
 export class RunnerOperationsService {
@@ -199,28 +531,121 @@ export class ReleaseServiceTransitionService {
       ReleaseServiceTransitionLedgerPort["consumeRecoveryEffectPermit"]
     >[0],
   ) => this.repository.consumeRecoveryEffectPermit(input);
+  validateRecoveryEffectExecution = (
+    input: Parameters<
+      ReleaseServiceTransitionLedgerPort["validateRecoveryEffectExecution"]
+    >[0],
+  ) => this.repository.validateRecoveryEffectExecution(input);
   completeRecoveryEffect = (
     input: Parameters<
       ReleaseServiceTransitionLedgerPort["completeRecoveryEffect"]
     >[0],
   ) => this.repository.completeRecoveryEffect(input);
+  reconcileRecoveryEffect = (
+    input: Parameters<
+      ReleaseServiceTransitionLedgerPort["reconcileRecoveryEffect"]
+    >[0],
+  ) => this.repository.reconcileRecoveryEffect(input);
+}
+
+export class ProviderMutationAuthorityService {
+  constructor(
+    private readonly repository: ReleaseProviderMutationAuthorityPort,
+    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate,
+  ) {}
+  recover = async (
+    input: Parameters<ReleaseProviderMutationAuthorityPort["recover"]>[0],
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.recover(input),
+        "control_only",
+      ),
+    );
+  issue = async (
+    input: Parameters<ReleaseProviderMutationAuthorityPort["issue"]>[0],
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.issue(input),
+        "control_only",
+      ),
+    );
+  consume = async (
+    input: Parameters<ReleaseProviderMutationAuthorityPort["consume"]>[0],
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.consume(input),
+        "control_only",
+      ),
+    );
+  validateExecution = async (
+    input: Parameters<
+      ReleaseProviderMutationAuthorityPort["validateExecution"]
+    >[0],
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.validateExecution(input),
+        "control_only",
+      ),
+    );
+  complete = async (
+    input: Parameters<ReleaseProviderMutationAuthorityPort["complete"]>[0],
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.complete(input),
+        "control_only",
+      ),
+    );
+  reconcile = async (
+    input: Parameters<ReleaseProviderMutationAuthorityPort["reconcile"]>[0],
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.reconcile(input),
+        "control_only",
+      ),
+    );
 }
 
 export class ReleaseRolloutReconciliationService {
   constructor(
     private readonly repository: ReleaseRolloutReconciliationPort,
-    private readonly targetReceiptReader?: TargetActivationReceiptReaderPort,
+    private readonly targetReceiptReader:
+      | TargetActivationReceiptReaderPort
+      | undefined,
+    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate,
   ) {}
+
+  private write = (
+    input: Parameters<ReleaseRolloutReconciliationPort["reconcile"]>[0],
+  ) =>
+    this.highRiskGate.execute((executeFresh) =>
+      executeFresh(
+        "control",
+        () => this.repository.reconcile(input),
+        "control_only",
+      ),
+    );
 
   reconcile = async (rolloutId: string) => {
     const context = await this.repository.context(rolloutId);
     if (context.activationBoundary !== "uncertain")
-      return this.repository.reconcile({
+      return this.write({
         rolloutId,
         targetObservation: { kind: "not_required" },
       });
     if (!this.targetReceiptReader)
-      return this.repository.reconcile({
+      return this.write({
         rolloutId,
         targetObservation: { kind: "target_read_unavailable" },
       });
@@ -229,25 +654,28 @@ export class ReleaseRolloutReconciliationService {
     try {
       target = await this.targetReceiptReader.read(rolloutId);
     } catch {
-      return this.repository.reconcile({
+      return this.write({
         rolloutId,
         targetObservation: { kind: "target_read_unavailable" },
       });
     }
     if (target && "receiptAbsent" in target)
-      return this.repository.reconcile({
+      return this.write({
         rolloutId,
         targetObservation: { kind: "activation_absent_without_revocation" },
       });
     if (!target)
-      return this.repository.reconcile({
+      return this.write({
         rolloutId,
         targetObservation: { kind: "target_receipt_absent" },
       });
 
     const authorization = context.authorization;
-    if (!authorization || !targetMatchesAuthorization(target, authorization))
-      return this.repository.reconcile({
+    if (
+      !authorization ||
+      !targetActivationIdentityMatches({ target, authorization })
+    )
+      return this.write({
         rolloutId,
         targetObservation: { kind: "target_receipt_conflict" },
       });
@@ -256,7 +684,7 @@ export class ReleaseRolloutReconciliationService {
       authorization,
       target,
     );
-    return this.repository.reconcile({
+    return this.write({
       rolloutId,
       targetObservation: {
         kind: "matching_activation_receipt",
@@ -266,35 +694,6 @@ export class ReleaseRolloutReconciliationService {
       },
     });
   };
-}
-
-function targetMatchesAuthorization(
-  target: Exclude<
-    Awaited<ReturnType<TargetActivationReceiptReaderPort["read"]>>,
-    null | { receiptAbsent: true }
-  >,
-  authorization: import("@reviewrouter/features-release-rollout").ActivationAuthorization,
-): boolean {
-  const digest = /^sha256:[a-f0-9]{64}$/u;
-  return (
-    target.rolloutId === authorization.rolloutId &&
-    target.expectedCommitSha === authorization.expectedCommitSha &&
-    target.sourceSystemIdentifier === authorization.sourceSystemIdentifier &&
-    target.targetSystemIdentifier === authorization.targetSystemIdentifier &&
-    target.postgresMajor === authorization.postgresMajor &&
-    target.migrationChecksum === authorization.migrationChecksum &&
-    target.permitEpoch === authorization.epoch &&
-    target.permitNonce === authorization.nonce &&
-    JSON.stringify(target.targetDeployIds) ===
-      JSON.stringify(authorization.targetDeployIds) &&
-    target.firstWriteBoundary === true &&
-    digest.test(target.canonicalPrivilegesSha256) &&
-    digest.test(target.catalogFactsSha256) &&
-    digest.test(target.firstWriteReceiptSha256) &&
-    digest.test(target.activationObservationSha256) &&
-    /^[0-9]+$/u.test(target.transactionId) &&
-    Number.isFinite(Date.parse(target.activatedAt))
-  );
 }
 
 function activationReceiptFromTarget(
@@ -312,11 +711,19 @@ function activationReceiptFromTarget(
     postgresMajor: target.postgresMajor,
     expectedCommitSha: target.expectedCommitSha,
     migrationChecksum: target.migrationChecksum,
+    transitionSha256: authorization.transitionSha256,
+    postManifestIdentity: authorization.postManifestIdentity,
     targetDeployIds: target.targetDeployIds,
     permitEpoch: target.permitEpoch,
     permitNonce: target.permitNonce,
     canonicalPrivilegesSha256: target.canonicalPrivilegesSha256,
     catalogFactsSha256: target.catalogFactsSha256,
+    preactivationCatalogPolicySha256: target.preactivationCatalogPolicySha256,
+    activatedCatalogPolicySha256: target.activatedCatalogPolicySha256,
+    beforePrincipalInventorySha256: target.beforePrincipalInventorySha256,
+    beforePrincipalPolicySha256: target.beforePrincipalPolicySha256,
+    activatedPrincipalInventorySha256: target.activatedPrincipalInventorySha256,
+    activatedPrincipalPolicySha256: target.activatedPrincipalPolicySha256,
     firstWriteReceiptSha256: target.firstWriteReceiptSha256,
     transactionId: target.transactionId,
     activatedAt: target.activatedAt,
@@ -338,11 +745,19 @@ function activationReceiptFromTarget(
     previousReceiptSha256: authorization.previousReceiptSha256,
     canonicalPrivilegesSha256: target.canonicalPrivilegesSha256,
     catalogFactsSha256: target.catalogFactsSha256,
+    preactivationCatalogPolicySha256: target.preactivationCatalogPolicySha256,
+    activatedCatalogPolicySha256: target.activatedCatalogPolicySha256,
+    beforePrincipalInventorySha256: target.beforePrincipalInventorySha256,
+    beforePrincipalPolicySha256: target.beforePrincipalPolicySha256,
+    activatedPrincipalInventorySha256: target.activatedPrincipalInventorySha256,
+    activatedPrincipalPolicySha256: target.activatedPrincipalPolicySha256,
     transactionId: target.transactionId,
     firstWriteReceiptSha256: target.firstWriteReceiptSha256,
     firstWriteBoundary: true as const,
     postgresMajor: target.postgresMajor,
     migrationChecksum: target.migrationChecksum,
+    transitionSha256: authorization.transitionSha256,
+    postManifestIdentity: authorization.postManifestIdentity,
     permitEpoch: target.permitEpoch,
     permitNonce: target.permitNonce,
     targetDeployIds: target.targetDeployIds,

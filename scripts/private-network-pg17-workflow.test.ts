@@ -12,8 +12,25 @@ const controller = readFileSync(
   "utf8",
 );
 const releaseWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
+const authorityMigrationWorkflow = readFileSync(
+  ".github/workflows/release-authority-migration.yml",
+  "utf8",
+);
 const releaseImageVerifier = readFileSync(
   "scripts/verify-private-pg17-release-image-provenance.ts",
+  "utf8",
+);
+const releaseImagePolicyConsumers = [
+  "scripts/verify-private-pg17-release-image-provenance.ts",
+  "scripts/initialize-private-pg17-rollout.ts",
+  "scripts/run-private-pg17-copy-bootstrap.ts",
+  "scripts/run-private-pg17-rollout.ts",
+  "scripts/finalize-private-pg17-rollout.ts",
+  "scripts/assemble-private-pg17-trusted-evidence.ts",
+  "scripts/verify-private-pg17-trusted-evidence.ts",
+].map((path) => readFileSync(path, "utf8"));
+const rolloutRunbook = readFileSync(
+  "docs/operations/private-pg17-release-rollout.md",
   "utf8",
 );
 const dockerfile = readFileSync("deploy/private-runner/Dockerfile", "utf8");
@@ -39,9 +56,10 @@ function namedSteps(job: string): readonly Readonly<{
     .split(/^ {6}- /mu)
     .slice(1)
     .map((block) => {
-      const name = /^(?:name: ([^\n]+)|uses: ([^@\n]+)|run: ([^\n]+))/u.exec(
-        block,
-      );
+      const name =
+        /^(?:name: ([^\n]+)|uses: ([^@\n]+)|run: ([^\n]+)|id: ([^\n]+))/u.exec(
+          block,
+        );
       if (!name) throw new Error("workflow_test_step_name_missing");
       const condition = /^\s*if:\s*(.+)$/mu.exec(block)?.[1]?.trim();
       if (
@@ -54,7 +72,7 @@ function namedSteps(job: string): readonly Readonly<{
           `workflow_test_step_condition_unsupported:${condition}`,
         );
       return {
-        name: name[1] ?? name[2] ?? name[3]!,
+        name: name[1] ?? name[2] ?? name[3] ?? name[4]!,
         condition: condition ? ("always" as const) : ("success" as const),
       };
     });
@@ -78,6 +96,61 @@ function executeStepComposition(
 }
 
 describe("private-network PG17 workflow security contract", () => {
+  it("documents a valid exact release run and artifact dispatch", () => {
+    expect(rolloutRunbook).toContain('-f release_run_id="$RELEASE_RUN_ID"');
+    expect(rolloutRunbook).toContain(
+      '-f release_artifact_id="$RELEASE_ARTIFACT_ID"',
+    );
+    expect(rolloutRunbook).toContain("actions/runs/$RELEASE_RUN_ID/attempts/1");
+    expect(rolloutRunbook).toContain("actions/artifacts/$RELEASE_ARTIFACT_ID");
+    expect(rolloutRunbook).toContain(
+      ".github/workflows/release.yml\tworkflow_dispatch\t1\t$EXPECTED_SHA\tsuccess",
+    );
+    expect(rolloutRunbook).toContain("$RELEASE_RUN_ID\t$EXPECTED_SHA\tfalse");
+  });
+
+  it("scheduled and manual recovery redrive exact authority-backed compensation after cleanup", () => {
+    const recovery = jobs(controller).find((job) =>
+      job.startsWith("  recover:"),
+    )!;
+    expect(controller).toContain("github.event_name == 'schedule'");
+    expect(controller).toContain("github.event_name == 'workflow_dispatch'");
+    expect(recovery).toContain("ref: ${{ matrix.target.head_sha }}");
+    expect(recovery).toContain("run-id: ${{ matrix.target.run_id }}");
+    expect(recovery).toContain(
+      "protected-preflight-${{ steps.context.outputs.rollout_id }}-${{ matrix.target.run_id }}-1",
+    );
+    expect(recovery.indexOf("cleanup-runners")).toBeLessThan(
+      recovery.indexOf("reconcile-private-pg17-compensation.ts"),
+    );
+    expect(recovery).toContain("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN:");
+    expect(recovery).toContain("REVIEW_ROUTER_RUNNER_LEDGER_URL:");
+    expect(recovery).toContain(
+      "REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: artifacts/preflight/initial-rollout.json",
+    );
+    expect(workflow).toMatch(
+      /name: protected-preflight-\$\{\{ inputs\.rollout_id \}\}-\$\{\{ github\.run_id \}\}-1[\s\S]*?retention-days: 90/u,
+    );
+    expect(recovery).not.toContain("initialize-private-pg17-rollout.ts");
+    expect(recovery).not.toContain("workflow_dispatches");
+  });
+
+  it("does not redrive compensation when safe runner cleanup is incomplete", () => {
+    const recovery = jobs(controller).find((job) =>
+      job.startsWith("  recover:"),
+    )!;
+    const result = executeStepComposition(namedSteps(recovery), {
+      "Reconcile every known or late provider runner with bounded backoff":
+        "failure",
+    });
+
+    expect(result.executed).not.toContain(
+      "Redrive exact durable rollout compensation through authority",
+    );
+    expect(result.executed).toContain("actions/upload-artifact");
+    expect(result.conclusion).toBe("failure");
+  });
+
   it("cryptographically binds the deployed image to the exact release commit before mutation", () => {
     const preflight = jobs(workflow).find((job) =>
       job.startsWith("  protected-preflight:"),
@@ -85,9 +158,11 @@ describe("private-network PG17 workflow security contract", () => {
     expect(workflow).toContain("release_run_id:");
     expect(workflow).toContain("release_artifact_id:");
     expect(preflight).toContain(
-      "artifact-ids: ${{ inputs.release_artifact_id }}",
+      "artifact-ids: ${{ needs.trust-bootstrap.outputs.release_artifact_id }}",
     );
-    expect(preflight).toContain("run-id: ${{ inputs.release_run_id }}");
+    expect(preflight).toContain(
+      "run-id: ${{ needs.trust-bootstrap.outputs.release_run_id }}",
+    );
     expect(preflight).toContain(
       "verify-private-pg17-release-image-provenance.ts",
     );
@@ -134,6 +209,23 @@ describe("private-network PG17 workflow security contract", () => {
       expect(job).toContain("verified-release-image-provenance.json");
       expect(job).toContain("REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE:");
     }
+  });
+  it("loads one external trusted image policy in every production verifier", () => {
+    for (const consumer of releaseImagePolicyConsumers) {
+      expect(consumer).toContain("privatePg17ReleaseImagePolicy");
+      expect(consumer).not.toContain(
+        "releaseImageProvenance.claim.imageRepository",
+      );
+      expect(consumer).not.toContain(
+        "releaseImageProvenance.verification.policySha256",
+      );
+    }
+    expect(releaseImageVerifier).toContain(
+      'required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY")',
+    );
+    expect(releaseImageVerifier).toContain(
+      'required("GITHUB_REPOSITORY") !== repository',
+    );
   });
   it("uses one canonical source-writer value through freeze and compensation", () => {
     const workflowValue = '["srv-api123","srv-worker456"]';
@@ -242,6 +334,12 @@ describe("private-network PG17 workflow security contract", () => {
     );
     expect(controller).toContain(
       "needs.recovery-context.outputs.complete == 'false'",
+    );
+    expect(controller).not.toContain(
+      "needs.recover.result == 'success' || needs.recover.result == 'skipped'",
+    );
+    expect(controller).toContain(
+      "REVIEW_ROUTER_RECOVERY_WINDOW_RESULT: ${{ needs.recover.result }}",
     );
     expect(controller).toContain("actions: write");
     expect(controller).toContain("REVIEW_ROUTER_RECOVERY_MAXIMUM_PAGES: 2");
@@ -468,9 +566,9 @@ describe("private-network PG17 workflow security contract", () => {
   });
 
   it("uses only SHA-pinned actions and preserves the opt-in legacy workflow contracts", () => {
-    expect(`${workflow}\n${controller}`).not.toMatch(
-      /uses: [^\n]+@(main|master|v\d+)/u,
-    );
+    expect(
+      `${workflow}\n${controller}\n${authorityMigrationWorkflow}`,
+    ).not.toMatch(/uses: [^\n]+@(main|master|v\d+)/u);
     for (const path of [
       ".github/workflows/codex-rotating-role-bootstrap.yml",
       ".github/workflows/codex-rotating-release-migration.yml",
@@ -482,6 +580,84 @@ describe("private-network PG17 workflow security contract", () => {
       expect(legacy).toContain("runs-on: ubuntu-24.04");
       expect(legacy).not.toContain("private-network-pg17-rollout.yml");
     }
+  });
+
+  it("keeps fresh authority installation separate from the trusted upgrade gate", () => {
+    const authorityJobs = jobs(authorityMigrationWorkflow);
+    const trustBootstrap = authorityJobs.find((job) =>
+      job.startsWith("  trust-bootstrap:"),
+    )!;
+    const evidenceGate = authorityJobs.find((job) =>
+      job.startsWith("  verify-release-gate-evidence:"),
+    )!;
+    const mutation = authorityJobs.find((job) =>
+      job.startsWith("  trusted-release-authority-migration:"),
+    )!;
+
+    expect(authorityMigrationWorkflow).toContain(
+      "group: release-authority-database-mutation-production",
+    );
+    expect(mutation).toContain(
+      "needs: [trust-bootstrap, verify-release-gate-evidence]",
+    );
+    expect(mutation).toContain(
+      "environment: production-release-authority-migration",
+    );
+    expect(mutation).toContain(
+      "REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL",
+    );
+    expect(mutation).toContain("run: pnpm release-authority:fresh-install");
+    expect(mutation).toContain("run: pnpm release-authority:upgrade");
+    expect(mutation).toContain(
+      "REVIEW_ROUTER_RELEASE_AUTHORITY_BOOTSTRAP_ADMIN_DATABASE_URL",
+    );
+    expect(mutation).toContain(
+      "node scripts/install-release-authority-db.mjs --cleanup-bootstrap",
+    );
+    expect(mutation).toContain("if: ${{ always() && (inputs.operation");
+    expect(mutation).toContain(
+      'provider_file="$RUNNER_TEMP/release-authority-provider-url"',
+    );
+    expect(trustBootstrap).toContain('required("GITHUB_EVENT_NAME")');
+    expect(trustBootstrap).toContain('required("GITHUB_REF")');
+    expect(trustBootstrap).toContain('required("GITHUB_SHA")');
+    expect(trustBootstrap).toContain('required("EXPECTED_SHA")');
+    expect(trustBootstrap).toContain("branch.protected !== true");
+    expect(trustBootstrap).toContain(
+      "branch.commit?.sha?.toLowerCase() !== sha",
+    );
+    expect(trustBootstrap).not.toContain("actions/checkout");
+    expect(trustBootstrap).not.toContain("scripts/");
+    expect(evidenceGate).toContain("needs: trust-bootstrap");
+    expect(evidenceGate).toContain("actions: read");
+    expect(evidenceGate).toContain(
+      "REVIEW_ROUTER_RELEASE_GATE_SHA: ${{ needs.trust-bootstrap.outputs.trusted_sha }}",
+    );
+    expect(evidenceGate).toContain(
+      "node scripts/release-gate-evidence.mjs verify",
+    );
+    expect(evidenceGate).not.toContain(
+      "REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL",
+    );
+    expect(mutation).toContain(
+      "ref: ${{ needs.trust-bootstrap.outputs.trusted_sha }}",
+    );
+    expect(
+      mutation.indexOf("Materialize one-time bootstrap credential"),
+    ).toBeLessThan(mutation.indexOf("Run fresh installation gate"));
+    expect(authorityMigrationWorkflow).not.toContain("env | ");
+    expect(rolloutRunbook.indexOf("incremental-upgrade")).toBeLessThan(
+      rolloutRunbook.indexOf("## Rehearsal and gates"),
+    );
+    expect(rolloutRunbook).toContain(
+      "gh workflow run release-authority-migration.yml",
+    );
+    expect(rolloutRunbook).toContain('-f expected_sha="$EXPECTED_SHA"');
+    expect(rolloutRunbook).toContain("000012_provider_mutation_resource_fence");
+    for (const state of ["`consumed`", "`executing`", "`forward_repair`"]) {
+      expect(rolloutRunbook).toContain(state);
+    }
+    expect(rolloutRunbook).toContain("release_provider_mutation_reconcile");
   });
 
   it("pins base image and runner download, and never supplies the App private key by env", () => {

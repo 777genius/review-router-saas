@@ -13,6 +13,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs/promises")>()),
+  statfs: vi.fn(async () => ({
+    bavail: 5 * 1024 * 1024,
+    bsize: 1024,
+  })),
+}));
+
 const testCodexIdToken = `header.${Buffer.from(
   JSON.stringify({
     iss: "https://auth.openai.com",

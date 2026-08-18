@@ -1,417 +1,1253 @@
 import { Prisma } from "@prisma/client";
+import { releaseAuthoritySchemaVersion } from "@reviewrouter/features-release-rollout";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import type { ReleaseAuthorityDatabaseReadiness } from "../application/readiness.js";
+import type { RuntimeDatabaseIdentity } from "../domain/database-identity.js";
+import { releaseAuthorityCatalogVerifier } from "../domain/readiness-contract.mjs";
+import { releaseAuthorityReadOnlyCatalogDigestExpression } from "./catalog-fingerprint.mjs";
+import {
+  releaseAuthorityDefaultAclExactExpression,
+  releaseAuthorityProviderTerminalTopologyExactExpression,
+  releaseAuthorityRuntimeAclExactExpression,
+} from "./acl-policy-postgres.mjs";
+import { fencedLiveV70V73CatalogDigestSql } from "@reviewrouter/features-release-rollout/adapters/live-v70-v72-catalog-digest";
 
-export async function observeReleaseAuthorityDatabaseReadiness(
-  prisma: PrismaClient,
-): Promise<ReleaseAuthorityDatabaseReadiness> {
-  const rows = await prisma.$queryRaw<ReleaseAuthorityDatabaseReadiness[]>(
+export type ReleaseAuthorityReadinessConnection = Pick<
+  Prisma.TransactionClient,
+  "$queryRaw" | "$executeRawUnsafe"
+>;
+
+type DatabaseIdentityProbe = Readonly<{
+  roleName: string;
+  authorityOwnerRoleName: string;
+  systemIdentifier: string;
+  recoveryWitnessSha256: string;
+  databaseIdentity: RuntimeDatabaseIdentity;
+  postgresMajor: number;
+  authorityPresent: boolean;
+  installerRoutine: boolean;
+  readerRoutine: boolean;
+  installerRoutineBodySha256: string;
+  readerRoutineBodySha256: string;
+  applicationMigrationManifestIdentity: string;
+  applicationPostCatalogDigest: string;
+  activationNamespaceFingerprint: string;
+  authorityRoleTopologyExact: boolean;
+  activationMigrationBoundaryExact: boolean;
+  activationBootstrapRoutinePrivilegesExact: boolean;
+  activationBootstrapRoleDemotedExact: boolean;
+  activationGuardCatalogReadExact: boolean;
+  activationApplicationOwnershipExact: boolean;
+  activationRecoveryWitnessExact: boolean;
+  activationRuntimePrivilegesExact: boolean;
+}>;
+
+type DatabaseIdentityFacts = Pick<
+  DatabaseIdentityProbe,
+  | "roleName"
+  | "authorityOwnerRoleName"
+  | "systemIdentifier"
+  | "recoveryWitnessSha256"
+  | "databaseIdentity"
+  | "postgresMajor"
+>;
+
+type ReleaseAuthorityExactness = Omit<
+  ReleaseAuthorityDatabaseReadiness,
+  keyof DatabaseIdentityFacts
+>;
+
+const absentAuthorityReadiness = (
+  probe: DatabaseIdentityProbe,
+): ReleaseAuthorityDatabaseReadiness => {
+  const {
+    activationMigrationBoundaryExact,
+    activationBootstrapRoutinePrivilegesExact,
+    activationBootstrapRoleDemotedExact,
+    activationGuardCatalogReadExact,
+    activationApplicationOwnershipExact,
+    activationRecoveryWitnessExact,
+    ...identity
+  } = probe;
+  const preMigrationPermitBoundaryExact =
+    activationMigrationBoundaryExact &&
+    activationGuardCatalogReadExact &&
+    activationRecoveryWitnessExact;
+  return {
+    ...identity,
+    preMigrationPermitBoundaryExact,
+    activationGuardExact:
+      preMigrationPermitBoundaryExact &&
+      activationBootstrapRoutinePrivilegesExact &&
+      activationBootstrapRoleDemotedExact &&
+      activationApplicationOwnershipExact,
+    schemaVersion: 0,
+    migrationManifest: [],
+    catalogFingerprint: "",
+    expectedCatalogFingerprint: "",
+    catalogVerifier: "",
+    catalogExact: false,
+    defaultAclExact: false,
+    finalAclExact: false,
+    controlRoutine: false,
+    providerRoutine: false,
+    externalEffectProtocol: false,
+    sourceFreezeProtocol: false,
+    selectiveRecoveryProtocol: false,
+    lateRunnerEffectProtocol: false,
+    recoveryEffectProtocol: false,
+    compensationCheckpointDefinition: false,
+    runnerProviderBoundary: false,
+    cleanupWitnessTemporalSemantics: false,
+    requiredTriggers: false,
+    authorityOwnershipExact: false,
+    authorityAclExact: false,
+    publicAuthorityRevoked: false,
+    authorityTablesRevoked: false,
+  };
+};
+
+export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
+  prisma: ReleaseAuthorityReadinessConnection,
+  signal?: AbortSignal,
+): Promise<ReleaseAuthorityDatabaseReadiness> => {
+  signal?.throwIfAborted();
+  // Function and operator names are resolved while PostgreSQL parses a
+  // statement. Establish the trusted namespace before parsing any catalog
+  // projection; a set_config CTE inside that projection is too late.
+  await prisma.$executeRawUnsafe("SET LOCAL search_path = pg_catalog, pg_temp");
+  signal?.throwIfAborted();
+  const activationCatalogDigest =
+    releaseAuthorityReadOnlyCatalogDigestExpression("reviewrouter_activation");
+  const probeRows = await prisma.$queryRaw<DatabaseIdentityProbe[]>(Prisma.sql`
+    SELECT current_user AS "roleName",
+      (SELECT system_identifier::text FROM pg_control_system()) AS "systemIdentifier",
+      coalesce(CASE
+        WHEN pg_catalog.pg_input_is_valid(pg_catalog.shobj_description(
+          (SELECT oid FROM pg_database WHERE datname=current_database()),
+          'pg_database'
+        ), 'jsonb')
+        THEN pg_catalog.shobj_description(
+          (SELECT oid FROM pg_database WHERE datname=current_database()),
+          'pg_database'
+        )::jsonb->>'recoveryWitnessSha256'
+        ELSE ''
+      END,'') AS "recoveryWitnessSha256",
+      jsonb_build_object(
+        'serverIdentity', (SELECT system_identifier::text FROM pg_control_system()),
+        'databaseIdentity', (SELECT oid::text FROM pg_database
+          WHERE datname=current_database()),
+        'databaseName', current_database()
+      ) AS "databaseIdentity",
+      current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
+      coalesce((SELECT pg_get_userbyid(nspowner) FROM pg_namespace
+        WHERE nspname='release_authority'),'') AS "authorityOwnerRoleName",
+      to_regnamespace('release_authority') IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM pg_catalog.pg_class authority_root
+          JOIN pg_catalog.pg_namespace authority_namespace
+            ON authority_namespace.oid=authority_root.relnamespace
+          WHERE authority_namespace.nspname='release_authority'
+            AND authority_root.relname='rollout'
+            AND authority_root.relkind IN ('r','p')
+        )
+        AS "authorityPresent",
+      coalesce((SELECT encode(sha256(convert_to(string_agg(body_sha256, ':' ORDER BY ordinal),'UTF8')),'hex')
+        FROM (VALUES
+          (1,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)')),'')),
+          (2,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.canonical_json(jsonb)')),'')),
+          (3,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)')),'')),
+          (4,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate(text)')),'')),
+          (5,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()')),'')),
+          (6,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)')),'')),
+          (7,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)')),'')),
+          (8,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.activate_generation(text)')),'')),
+          (9,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)')),'')),
+          (10,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)')),'')),
+          (11,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)')),'')),
+          (12,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)')),'')),
+          (13,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)')),''))
+        ) bodies(ordinal,body_sha256)),'')
+        AS "installerRoutineBodySha256",
+      coalesce((SELECT encode(sha256(convert_to(string_agg(body_sha256, ':' ORDER BY ordinal),'UTF8')),'hex')
+        FROM (VALUES
+          (1,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.canonical_json(jsonb)')),'')),
+          (2,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)')),'')),
+          (3,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')),''))
+        ) bodies(ordinal,body_sha256)),'')
+        AS "readerRoutineBodySha256",
+      '' AS "applicationMigrationManifestIdentity",
+      '' AS "applicationPostCatalogDigest",
+      CASE WHEN to_regnamespace('reviewrouter_activation') IS NULL THEN ''
+        ELSE 'sha256:' || ${Prisma.raw(activationCatalogDigest)} END
+        AS "activationNamespaceFingerprint",
+      false AS "authorityRoleTopologyExact",
+      coalesce((SELECT count(*)=4 AND bool_and(c.relkind='r'
+          AND c.relowner=guard.oid
+          AND (SELECT count(*) FROM pg_attribute attribute
+            WHERE attribute.attrelid=c.oid AND attribute.attnum>0
+              AND NOT attribute.attisdropped) = CASE c.relname
+                WHEN 'activation_permit' THEN 15
+                WHEN 'activation_receipt' THEN 22
+                WHEN 'activation_principal_evidence' THEN 23
+                WHEN 'migration_permit' THEN 19
+              END
+          AND NOT EXISTS (SELECT 1 FROM unnest(CASE c.relname
+              WHEN 'activation_permit' THEN ARRAY['rollout_id','source_system_identifier',
+                'target_system_identifier','postgres_major','expected_commit_sha',
+                'migration_checksum','target_deploy_ids','permit_epoch','permit_nonce',
+                'preactivation_catalog_policy','preactivation_catalog_policy_sha256',
+                'activated_catalog_policy','activated_catalog_policy_sha256',
+                'installed_at','consumed_at']
+              WHEN 'activation_receipt' THEN ARRAY['rollout_id','source_system_identifier',
+                'target_system_identifier','postgres_major','expected_commit_sha',
+                'migration_checksum','target_deploy_ids','permit_epoch','permit_nonce',
+                'canonical_privileges_sha256','catalog_facts_sha256',
+                'preactivation_catalog_policy','preactivation_catalog_policy_sha256',
+                'activated_catalog_policy','activated_catalog_policy_sha256',
+                'before_principal_inventory_sha256','before_principal_policy_sha256',
+                'activated_principal_inventory_sha256','activated_principal_policy_sha256',
+                'first_write_receipt_sha256','transaction_id','activated_at']
+              WHEN 'activation_principal_evidence' THEN ARRAY['rollout_id',
+                'source_system_identifier','target_system_identifier','postgres_major',
+                'expected_commit_sha','migration_checksum','target_deploy_ids',
+                'permit_epoch','permit_nonce',
+                'preactivation_catalog_policy','preactivation_catalog_policy_sha256',
+                'activated_catalog_policy','activated_catalog_policy_sha256',
+                'before_inventory','before_policy','activated_inventory','activated_policy',
+                'before_principal_inventory_sha256','before_principal_policy_sha256',
+                'activated_principal_inventory_sha256','activated_principal_policy_sha256',
+                'transaction_id','staged_at']
+              WHEN 'migration_permit' THEN ARRAY['rollout_id','source_system_identifier',
+                'target_system_identifier','target_database_identity','target_database_name',
+                'target_recovery_witness_sha256','transition_sha256','previous_receipt_sha256',
+                'expected_post_manifest_identity','expected_post_catalog_digest',
+                'source_legacy_ambiguity','eligibility_cutoff',
+                'permit_epoch','permit_nonce','state','target_receipt','installed_at',
+                'consumed_at','terminalized_at']
+              END) expected_column
+            WHERE NOT EXISTS (SELECT 1 FROM pg_attribute attribute
+              WHERE attribute.attrelid=c.oid AND attribute.attnum>0
+                AND NOT attribute.attisdropped
+                AND attribute.attname=expected_column))
+          AND NOT EXISTS (SELECT 1 FROM pg_attribute attribute
+            LEFT JOIN pg_attrdef default_record
+              ON default_record.adrelid=attribute.attrelid
+                AND default_record.adnum=attribute.attnum
+            WHERE attribute.attrelid=c.oid AND attribute.attnum>0
+              AND NOT attribute.attisdropped AND (
+                attribute.atttypid IS DISTINCT FROM CASE
+                  WHEN attribute.attname IN ('postgres_major') THEN 'integer'::regtype
+                  WHEN attribute.attname IN ('target_deploy_ids','preactivation_catalog_policy',
+                    'activated_catalog_policy','before_inventory','before_policy',
+                    'activated_inventory','activated_policy','target_receipt',
+                    'source_legacy_ambiguity') THEN 'jsonb'::regtype
+                  WHEN attribute.attname IN ('permit_epoch','transaction_id') THEN 'bigint'::regtype
+                  WHEN attribute.attname IN ('installed_at','consumed_at','terminalized_at',
+                    'eligibility_cutoff',
+                    'activated_at','staged_at') THEN 'timestamptz'::regtype
+                  ELSE 'text'::regtype END
+                OR attribute.attnotnull IS DISTINCT FROM
+                  (attribute.attname NOT IN ('consumed_at','terminalized_at','target_receipt'))
+                OR coalesce(pg_get_expr(default_record.adbin,default_record.adrelid),'')
+                  IS DISTINCT FROM CASE
+                    WHEN attribute.attname IN ('installed_at','activated_at','staged_at')
+                      THEN 'transaction_timestamp()'
+                    WHEN attribute.attname='state' AND c.relname='migration_permit'
+                      THEN '''installed''::text'
+                    ELSE '' END))
+          AND (SELECT jsonb_object_agg(contype,count ORDER BY contype)
+            FROM (SELECT constraint_record.contype, count(*) AS count
+              FROM pg_constraint constraint_record
+              WHERE constraint_record.conrelid=c.oid
+                AND constraint_record.convalidated
+              GROUP BY constraint_record.contype) constraint_counts)
+            = CASE c.relname
+                WHEN 'activation_permit' THEN '{"c":12,"p":1,"u":1}'::jsonb
+                WHEN 'activation_receipt' THEN '{"c":1,"p":1,"u":1}'::jsonb
+                WHEN 'activation_principal_evidence' THEN '{"p":1}'::jsonb
+                WHEN 'migration_permit' THEN '{"c":15,"p":1,"u":1}'::jsonb
+              END
+          AND EXISTS (SELECT 1 FROM pg_constraint constraint_record
+            WHERE constraint_record.conrelid=c.oid AND constraint_record.contype='p'
+              AND ARRAY(SELECT attribute.attname::text
+                FROM unnest(constraint_record.conkey) WITH ORDINALITY keyed(attnum,ordinality)
+                JOIN pg_attribute attribute ON attribute.attrelid=c.oid
+                  AND attribute.attnum=keyed.attnum ORDER BY keyed.ordinality)
+                = ARRAY['rollout_id'])
+          AND (c.relname='activation_principal_evidence' OR EXISTS (SELECT 1 FROM pg_constraint constraint_record
+            WHERE constraint_record.conrelid=c.oid AND constraint_record.contype='u'
+              AND ARRAY(SELECT attribute.attname::text
+                FROM unnest(constraint_record.conkey) WITH ORDINALITY keyed(attnum,ordinality)
+                JOIN pg_attribute attribute ON attribute.attrelid=c.oid
+                  AND attribute.attnum=keyed.attnum ORDER BY keyed.ordinality)
+                = CASE c.relname
+                    WHEN 'activation_permit' THEN ARRAY['permit_epoch','permit_nonce']
+                    WHEN 'activation_receipt' THEN ARRAY['target_system_identifier']
+                    WHEN 'migration_permit' THEN ARRAY['permit_epoch','permit_nonce']
+                  END))
+          AND NOT EXISTS (
+            SELECT 1
+            FROM aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) acl
+            WHERE acl.grantee<>c.relowner
+          )
+          AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['SELECT','INSERT','UPDATE',
+              'DELETE','TRUNCATE','REFERENCES','TRIGGER']) privilege
+            WHERE has_table_privilege('public',c.oid,privilege))
+          AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['SELECT','INSERT','UPDATE',
+              'DELETE','TRUNCATE','REFERENCES','TRIGGER']) privilege
+            WHERE has_table_privilege(installer.oid,c.oid,privilege))
+          AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['SELECT','INSERT','UPDATE',
+              'DELETE','TRUNCATE','REFERENCES','TRIGGER']) privilege
+            WHERE has_table_privilege(reader.oid,c.oid,privilege)))
+        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        CROSS JOIN pg_roles guard CROSS JOIN pg_roles installer
+        CROSS JOIN pg_roles reader WHERE n.nspname='reviewrouter_activation'
+          AND guard.rolname='reviewrouter_activation_receipt_guard'
+          AND installer.rolname='reviewrouter_activation_permit_installer'
+          AND reader.rolname='reviewrouter_activation_receipt_reader'
+          AND c.relname IN ('activation_permit','activation_receipt',
+            'activation_principal_evidence','migration_permit')),false)
+        AND coalesce((SELECT n.nspowner=guard.oid AND NOT EXISTS (
+            SELECT 1 FROM unnest(ARRAY['USAGE','CREATE']) privilege
+            WHERE has_schema_privilege('public',n.oid,privilege))
+            AND NOT EXISTS (SELECT 1
+              FROM aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) acl
+              WHERE acl.is_grantable AND acl.grantee<>n.nspowner
+                OR acl.privilege_type='CREATE' AND acl.grantee<>n.nspowner
+                OR acl.privilege_type='USAGE' AND acl.grantee<>n.nspowner
+                  AND NOT EXISTS (SELECT 1 FROM pg_roles grantee
+                    WHERE grantee.oid=acl.grantee AND grantee.rolname=ANY(ARRAY[
+                      'reviewrouter_activation_permit_installer',
+                      'reviewrouter_activation_receipt_reader','reviewrouter_role_bootstrap',
+                      'reviewrouter_release_migration',
+                      'reviewrouter_release_schema_owner'])))
+          FROM pg_namespace n CROSS JOIN pg_roles guard
+          WHERE n.nspname='reviewrouter_activation'
+            AND guard.rolname='reviewrouter_activation_receipt_guard'),false)
+        AND coalesce((SELECT count(*)=8 AND bool_and(p.prosecdef
+            AND p.prokind='f' AND p.proowner=guard.oid
+            AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']
+            AND l.lanname=CASE WHEN p.oid=to_regprocedure(
+                'reviewrouter_activation.canonical_json(jsonb)')
+              THEN 'sql' ELSE 'plpgsql' END
+            AND p.provolatile=CASE
+              WHEN p.oid=to_regprocedure('reviewrouter_activation.canonical_json(jsonb)')
+                THEN 'i'::"char"
+              WHEN p.oid IN (
+                to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
+                to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)'),
+                to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)'))
+                THEN 's'::"char" ELSE 'v'::"char" END
+            AND p.prorettype=CASE
+              WHEN p.oid=to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()')
+                THEN 'void'::regtype
+              WHEN p.oid=to_regprocedure('reviewrouter_activation.canonical_json(jsonb)')
+                THEN 'text'::regtype
+              WHEN p.oid=to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)')
+                THEN to_regtype('reviewrouter_activation.activation_principal_evidence')
+              WHEN p.oid=to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)')
+                THEN 'boolean'::regtype ELSE 'jsonb'::regtype END
+            AND NOT has_function_privilege('public',p.oid,'EXECUTE')
+            AND has_function_privilege('reviewrouter_release_migration',p.oid,'EXECUTE')
+              IS NOT DISTINCT FROM (p.oid IN (
+                to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
+                to_regprocedure('reviewrouter_activation.activate_generation(text)'),
+                to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()')))
+            AND (p.oid=to_regprocedure(
+                  'reviewrouter_activation.assert_no_activation_receipt()')
+                AND EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+                  JOIN pg_roles grantee ON grantee.oid=acl.grantee
+                  WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+                    AND NOT acl.is_grantable
+                    AND grantee.rolname='reviewrouter_role_bootstrap')
+              OR p.oid IN (
+                  to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
+                  to_regprocedure('reviewrouter_activation.activate_generation(text)'),
+                  to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()'))
+                AND EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+                  JOIN pg_roles grantee ON grantee.oid=acl.grantee
+                  WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+                    AND NOT acl.is_grantable
+                    AND grantee.rolname='reviewrouter_release_migration')
+              OR p.oid=to_regprocedure(
+                  'reviewrouter_activation.capture_catalog_policy_candidate(text)')
+                AND EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+                  JOIN pg_roles grantee ON grantee.oid=acl.grantee
+                  WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+                    AND NOT acl.is_grantable
+                    AND grantee.rolname='reviewrouter_release_schema_owner')
+              OR p.oid NOT IN (
+                  to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
+                  to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
+                  to_regprocedure('reviewrouter_activation.activate_generation(text)'),
+                  to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate(text)'),
+                  to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()'))
+                AND NOT EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+                  WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner))
+            AND NOT EXISTS (SELECT 1
+              FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+              LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee
+              WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+                AND (acl.is_grantable
+                  OR grantee.rolname IS DISTINCT FROM CASE
+                    WHEN p.oid=to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()')
+                      THEN 'reviewrouter_role_bootstrap'
+                    WHEN p.oid IN (
+                      to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
+                      to_regprocedure('reviewrouter_activation.activate_generation(text)'),
+                      to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()'))
+                      THEN 'reviewrouter_release_migration'
+                    WHEN p.oid=to_regprocedure(
+                      'reviewrouter_activation.capture_catalog_policy_candidate(text)')
+                      THEN 'reviewrouter_release_schema_owner'
+                    ELSE NULL END)))
+          FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+          JOIN pg_language l ON l.oid=p.prolang
+          CROSS JOIN pg_roles guard WHERE n.nspname='reviewrouter_activation'
+            AND guard.rolname='reviewrouter_activation_receipt_guard'
+            AND p.oid IN (to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
+              to_regprocedure('reviewrouter_activation.canonical_json(jsonb)'),
+              to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)'),
+              to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate(text)'),
+              to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()'),
+              to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)'),
+              to_regprocedure('reviewrouter_activation.activate_generation(text)'),
+              to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'))),false)
+        AND coalesce((SELECT count(*)=5 AND bool_and(p.prosecdef
+            AND p.prokind='f' AND p.proowner=guard.oid
+            AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']
+            AND l.lanname='plpgsql'
+            AND p.provolatile=CASE WHEN p.oid=to_regprocedure(
+              'reviewrouter_activation.read_migration_receipt(text,bigint,text)')
+              THEN 's'::"char" ELSE 'v'::"char" END
+            AND p.prorettype=CASE
+              WHEN p.oid IN (
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'))
+                THEN 'boolean'::regtype
+              WHEN p.oid=to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)')
+                THEN 'text'::regtype ELSE 'jsonb'::regtype END
+            AND NOT has_function_privilege('public',p.oid,'EXECUTE')
+            AND has_function_privilege('reviewrouter_activation_permit_installer',p.oid,'EXECUTE')
+              IS NOT DISTINCT FROM (p.oid IN (
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)')))
+            AND has_function_privilege('reviewrouter_release_migration',p.oid,'EXECUTE')
+              IS NOT DISTINCT FROM (p.oid=to_regprocedure(
+                'reviewrouter_activation.read_migration_receipt(text,bigint,text)'))
+            AND has_function_privilege('reviewrouter_release_schema_owner',p.oid,'EXECUTE')
+              IS NOT DISTINCT FROM (p.oid IN (
+                to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)')))
+            AND has_function_privilege('reviewrouter_activation_receipt_reader',p.oid,'EXECUTE')
+              IS NOT DISTINCT FROM (p.oid=to_regprocedure(
+                'reviewrouter_activation.read_migration_receipt(text,bigint,text)'))
+            AND (EXISTS (SELECT 1
+              FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+              JOIN pg_roles grantee ON grantee.oid=acl.grantee
+              WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+                AND grantee.rolname='reviewrouter_activation_permit_installer'))
+              IS NOT DISTINCT FROM (p.oid IN (
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)')))
+            AND (EXISTS (SELECT 1
+              FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+              JOIN pg_roles grantee ON grantee.oid=acl.grantee
+              WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+                AND grantee.rolname='reviewrouter_release_migration'))
+              IS NOT DISTINCT FROM (p.oid=to_regprocedure(
+                'reviewrouter_activation.read_migration_receipt(text,bigint,text)'))
+            AND (EXISTS (SELECT 1
+              FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+              JOIN pg_roles grantee ON grantee.oid=acl.grantee
+              WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+                AND grantee.rolname='reviewrouter_release_schema_owner'))
+              IS NOT DISTINCT FROM (p.oid IN (
+                to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)')))
+            AND (EXISTS (SELECT 1
+              FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+              JOIN pg_roles grantee ON grantee.oid=acl.grantee
+              WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+                AND grantee.rolname='reviewrouter_activation_receipt_reader'))
+              IS NOT DISTINCT FROM (p.oid=to_regprocedure(
+                'reviewrouter_activation.read_migration_receipt(text,bigint,text)'))
+            AND NOT EXISTS (SELECT 1
+              FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+              LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee
+              WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+                AND (acl.is_grantable OR NOT (
+                    grantee.rolname='reviewrouter_activation_permit_installer'
+                      AND p.oid IN (
+                        to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
+                        to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'))
+                    OR grantee.rolname='reviewrouter_release_migration'
+                      AND p.oid=to_regprocedure(
+                        'reviewrouter_activation.read_migration_receipt(text,bigint,text)')
+                    OR grantee.rolname='reviewrouter_release_schema_owner'
+                      AND p.oid IN (
+                        to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
+                        to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)'))
+                    OR grantee.rolname='reviewrouter_activation_receipt_reader'
+                      AND p.oid=to_regprocedure(
+                        'reviewrouter_activation.read_migration_receipt(text,bigint,text)')))))
+          FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+          JOIN pg_language l ON l.oid=p.prolang CROSS JOIN pg_roles guard
+          WHERE n.nspname='reviewrouter_activation'
+            AND guard.rolname='reviewrouter_activation_receipt_guard'
+            AND p.oid IN (
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
+              to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
+              to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)'),
+              to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'),
+              to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)'))),false)
+        AS "activationMigrationBoundaryExact",
+      coalesce((SELECT count(*)=8 AND bool_and(
+          has_function_privilege('reviewrouter_role_bootstrap',p.oid,'EXECUTE')
+            IS NOT DISTINCT FROM (p.oid=to_regprocedure(
+              'reviewrouter_activation.assert_no_activation_receipt()')))
+        FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+        WHERE n.nspname='reviewrouter_activation' AND p.oid IN (
+          to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
+          to_regprocedure('reviewrouter_activation.canonical_json(jsonb)'),
+          to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)'),
+          to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate(text)'),
+          to_regprocedure('reviewrouter_activation.capture_catalog_policy_candidate_pair()'),
+          to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)'),
+          to_regprocedure('reviewrouter_activation.activate_generation(text)'),
+          to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'))),false)
+        AS "activationBootstrapRoutinePrivilegesExact",
+      coalesce((SELECT bootstrap.rolcanlogin AND NOT bootstrap.rolsuper
+          AND NOT bootstrap.rolcreatedb AND NOT bootstrap.rolcreaterole
+          AND NOT bootstrap.rolreplication AND NOT bootstrap.rolbypassrls
+          AND (SELECT count(*)=5
+              AND count(DISTINCT granted.oid)=5
+              AND count(DISTINCT grantor.oid)=1
+              AND bool_and(granted.rolname=ANY(ARRAY['reviewrouter_api',
+                    'reviewrouter_web','reviewrouter_worker',
+                    'reviewrouter_codex_effect_authority',
+                    'reviewrouter_release_migration'])
+                AND member.oid=bootstrap.oid
+                AND grantor.oid<>bootstrap.oid
+                AND grantor.rolname<>'reviewrouter_release_schema_owner'
+                AND grantor.rolname<>ALL(ARRAY['reviewrouter_api',
+                    'reviewrouter_web','reviewrouter_worker',
+                    'reviewrouter_codex_effect_authority',
+                    'reviewrouter_release_migration'])
+                AND edge.admin_option AND NOT edge.inherit_option
+                AND NOT edge.set_option)
+            FROM pg_auth_members edge
+            JOIN pg_roles granted ON granted.oid=edge.roleid
+            JOIN pg_roles member ON member.oid=edge.member
+            JOIN pg_roles grantor ON grantor.oid=edge.grantor
+            WHERE edge.roleid=bootstrap.oid OR edge.member=bootstrap.oid
+              OR edge.grantor=bootstrap.oid)
+        FROM pg_roles bootstrap
+        WHERE bootstrap.rolname='reviewrouter_role_bootstrap'),false)
+        AS "activationBootstrapRoleDemotedExact",
+      coalesce((SELECT
+          has_table_privilege(guard.oid,
+            to_regclass('public."_prisma_migrations"'),'SELECT')
+          AND NOT has_database_privilege(guard.oid,current_database(),'CREATE')
+          AND NOT has_database_privilege(guard.oid,current_database(),'TEMP')
+          AND NOT has_schema_privilege(guard.oid,'public','CREATE')
+          AND NOT EXISTS (SELECT 1 FROM pg_class c
+            JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f')
+              AND (c.relname<>'_prisma_migrations' AND EXISTS (
+                  SELECT 1 FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE',
+                    'TRUNCATE','REFERENCES','TRIGGER']) privilege
+                  WHERE has_table_privilege(guard.oid,c.oid,privilege))
+                OR c.relname='_prisma_migrations' AND EXISTS (
+                  SELECT 1 FROM unnest(ARRAY['INSERT','UPDATE','DELETE','TRUNCATE',
+                    'REFERENCES','TRIGGER']) privilege
+                  WHERE has_table_privilege(guard.oid,c.oid,privilege))))
+          AND (SELECT count(*) FROM pg_class c JOIN pg_namespace n
+            ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN
+              ('CodexOAuthLease','CodexOAuthSetupManifest',
+                'CodexOAuthWritebackIntent'))=3
+          AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n
+            ON n.oid=c.relnamespace JOIN pg_attribute a ON a.attrelid=c.oid
+              AND a.attnum>0 AND NOT a.attisdropped
+            WHERE n.nspname='public' AND c.relname IN
+              ('CodexOAuthLease','CodexOAuthSetupManifest',
+                'CodexOAuthWritebackIntent')
+              AND has_column_privilege(guard.oid,c.oid,a.attnum,'SELECT')
+                IS DISTINCT FROM (a.attname='status'))
+          FROM pg_roles guard
+          WHERE guard.rolname='reviewrouter_activation_receipt_guard'),false)
+        AS "activationGuardCatalogReadExact",
+      coalesce((SELECT
+          NOT owner.rolcanlogin AND NOT owner.rolsuper
+          AND NOT owner.rolcreatedb AND NOT owner.rolcreaterole
+          AND NOT owner.rolreplication AND NOT owner.rolbypassrls
+          AND public_namespace.nspowner=owner.oid
+          AND has_database_privilege(owner.oid,current_database(),'CONNECT')
+          AND has_database_privilege(owner.oid,current_database(),'CREATE')
+          AND has_database_privilege(owner.oid,current_database(),'TEMP')
+          AND NOT has_database_privilege(migration.oid,current_database(),'CREATE')
+          AND NOT has_database_privilege(migration.oid,current_database(),'TEMP')
+          AND NOT has_schema_privilege(migration.oid,public_namespace.oid,'CREATE')
+          AND NOT pg_has_role(migration.oid,owner.oid,'MEMBER')
+          AND NOT pg_has_role(migration.oid,owner.oid,'USAGE')
+          AND NOT pg_has_role(migration.oid,owner.oid,'SET')
+          AND has_table_privilege(migration.oid,
+            to_regclass('public._prisma_migrations'),'SELECT')
+          AND NOT EXISTS (SELECT 1 FROM pg_class relation
+            JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+            WHERE namespace.nspname='public' AND relation.relkind IN ('r','p','v','m','f')
+              AND (relation.relname NOT IN ('_prisma_migrations','CodexOAuthLease',
+                    'CodexOAuthSetupManifest','CodexOAuthWritebackIntent')
+                  AND has_table_privilege(migration.oid,relation.oid,'SELECT')
+                OR EXISTS (SELECT 1 FROM unnest(ARRAY['INSERT','UPDATE','DELETE',
+                      'TRUNCATE','REFERENCES','TRIGGER']) privilege
+                    WHERE has_table_privilege(migration.oid,relation.oid,privilege))))
+          AND NOT EXISTS (SELECT 1 FROM pg_class relation
+            JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+            JOIN pg_attribute attribute ON attribute.attrelid=relation.oid
+              AND attribute.attnum>0 AND NOT attribute.attisdropped
+            WHERE namespace.nspname='public'
+              AND relation.relname IN ('CodexOAuthLease','CodexOAuthSetupManifest',
+                'CodexOAuthWritebackIntent')
+              AND has_column_privilege(migration.oid,relation.oid,
+                attribute.attnum,'SELECT') IS DISTINCT FROM
+                  (attribute.attname IN ('id','status')))
+          AND NOT EXISTS (SELECT 1 FROM pg_class object
+            JOIN pg_namespace namespace ON namespace.oid=object.relnamespace
+            WHERE namespace.nspname='public' AND object.relowner=migration.oid)
+          AND NOT EXISTS (SELECT 1 FROM pg_proc routine
+            JOIN pg_namespace namespace ON namespace.oid=routine.pronamespace
+            WHERE namespace.nspname='public' AND routine.proowner=migration.oid)
+          AND NOT EXISTS (SELECT 1 FROM pg_type type
+            JOIN pg_namespace namespace ON namespace.oid=type.typnamespace
+            WHERE namespace.nspname='public' AND type.typowner=migration.oid)
+          AND (NOT EXISTS (SELECT 1 FROM pg_auth_members edge
+                WHERE edge.roleid=owner.oid OR edge.member=owner.oid
+                  OR edge.grantor=owner.oid)
+            OR (SELECT count(*)=1 AND bool_and(
+                  edge.roleid=owner.oid AND edge.member=bootstrap.oid
+                  AND edge.admin_option AND NOT edge.inherit_option
+                  AND edge.set_option
+                  AND grantor.rolname<>bootstrap.rolname
+                  AND grantor.rolname<>owner.rolname)
+                FROM pg_auth_members edge
+                JOIN pg_roles grantor ON grantor.oid=edge.grantor
+                WHERE edge.roleid=owner.oid OR edge.member=owner.oid
+                  OR edge.grantor=owner.oid))
+          AND (SELECT count(*)=2 AND bool_and(routine.prosecdef
+                AND routine.prokind='p' AND routine.proowner=owner.oid
+                AND routine.proconfig=CASE
+                  WHEN routine.oid=to_regprocedure(
+                    'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)')
+                    THEN ARRAY['search_path=public, pg_temp']
+                  ELSE ARRAY['search_path=pg_catalog, public, pg_temp'] END
+                AND NOT has_function_privilege('public',routine.oid,'EXECUTE')
+                AND has_function_privilege(migration.oid,routine.oid,'EXECUTE')
+                  IS NOT DISTINCT FROM
+                    (routine.oid=to_regprocedure(
+                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'))
+                AND (EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(routine.proacl,
+                    acldefault('f',routine.proowner))) acl
+                  WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+                    AND acl.grantee=migration.oid)) IS NOT DISTINCT FROM
+                    (routine.oid=to_regprocedure(
+                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'))
+                AND NOT EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(routine.proacl,
+                    acldefault('f',routine.proowner))) acl
+                  LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee
+                  WHERE acl.privilege_type='EXECUTE'
+                    AND acl.grantee<>routine.proowner
+                    AND (acl.is_grantable OR grantee.oid IS DISTINCT FROM CASE
+                      WHEN routine.oid=to_regprocedure(
+                        'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)')
+                        THEN migration.oid ELSE NULL END)))
+            FROM pg_proc routine WHERE routine.oid IN (
+              to_regprocedure(
+                'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'),
+              to_regprocedure(
+                'public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text,timestamptz)')))
+          AND (SELECT count(*)=2 AND bool_and(routine.prosecdef
+                AND routine.prokind='f' AND routine.proowner=owner.oid
+                AND routine.proconfig=ARRAY['search_path=pg_catalog, pg_temp']
+                AND NOT has_function_privilege('public',routine.oid,'EXECUTE')
+                AND has_function_privilege(
+                  'reviewrouter_activation_receipt_guard',routine.oid,'EXECUTE')
+                AND NOT EXISTS (SELECT 1
+                  FROM aclexplode(coalesce(routine.proacl,
+                    acldefault('f',routine.proowner))) acl
+                  WHERE acl.privilege_type='EXECUTE'
+                    AND acl.grantee<>routine.proowner
+                    AND (acl.is_grantable OR acl.grantee<>
+                      (SELECT oid FROM pg_roles WHERE rolname=
+                        'reviewrouter_activation_receipt_guard'))))
+            FROM pg_proc routine WHERE routine.oid IN (
+              to_regprocedure('reviewrouter_activation.apply_runtime_acl()'),
+              to_regprocedure(
+                'reviewrouter_activation.capture_runtime_acl_policy_pair()')))
+          FROM pg_roles owner CROSS JOIN pg_roles migration
+          CROSS JOIN pg_roles bootstrap
+          CROSS JOIN pg_namespace public_namespace
+          WHERE owner.rolname='reviewrouter_release_schema_owner'
+            AND migration.rolname='reviewrouter_release_migration'
+            AND bootstrap.rolname='reviewrouter_role_bootstrap'
+            AND public_namespace.nspname='public'),false)
+        AS "activationApplicationOwnershipExact",
+      coalesce(CASE WHEN pg_catalog.pg_input_is_valid(
+          pg_catalog.shobj_description((SELECT oid FROM pg_database
+            WHERE datname=current_database()),'pg_database'),
+          'jsonb')
+          THEN pg_catalog.shobj_description((SELECT oid FROM pg_database
+            WHERE datname=current_database()),'pg_database')::jsonb
+              ->>'recoveryWitnessSha256' ~ '^[a-f0-9]{64}$'
+          ELSE false END,false)
+        AS "activationRecoveryWitnessExact",
+      (SELECT count(*)=8 AND bool_and(role.rolcanlogin IS NOT DISTINCT FROM
+          (role.rolname NOT IN ('reviewrouter_activation_receipt_guard',
+            'reviewrouter_release_schema_owner')))
+        FROM pg_roles role WHERE role.rolname=ANY(ARRAY[
+          'reviewrouter_activation_receipt_guard','reviewrouter_activation_permit_installer',
+          'reviewrouter_activation_receipt_reader','reviewrouter_api','reviewrouter_web',
+          'reviewrouter_worker','reviewrouter_codex_effect_authority',
+          'reviewrouter_release_schema_owner']))
+        AND NOT EXISTS (SELECT 1 FROM pg_roles role
+        WHERE role.rolname=ANY(ARRAY['reviewrouter_activation_receipt_guard',
+          'reviewrouter_activation_permit_installer',
+          'reviewrouter_activation_receipt_reader','reviewrouter_api','reviewrouter_web',
+          'reviewrouter_worker','reviewrouter_codex_effect_authority',
+          'reviewrouter_release_schema_owner'])
+          AND (role.rolsuper OR role.rolcreatedb OR role.rolcreaterole
+            OR role.rolreplication OR role.rolbypassrls))
+        AND NOT EXISTS (SELECT 1 FROM pg_auth_members edge
+          JOIN pg_roles granted ON granted.oid=edge.roleid
+          JOIN pg_roles member ON member.oid=edge.member
+          WHERE granted.rolname=ANY(ARRAY['reviewrouter_activation_receipt_guard',
+              'reviewrouter_activation_permit_installer','reviewrouter_activation_receipt_reader'])
+             OR member.rolname=ANY(ARRAY['reviewrouter_activation_receipt_guard',
+              'reviewrouter_activation_permit_installer','reviewrouter_activation_receipt_reader']))
+        AND NOT EXISTS (SELECT 1 FROM pg_roles role
+          WHERE role.rolname=ANY(ARRAY['reviewrouter_activation_permit_installer',
+              'reviewrouter_activation_receipt_reader']) AND (
+            NOT has_database_privilege(role.oid,current_database(),'CONNECT')
+            OR has_database_privilege(role.oid,current_database(),'CREATE')
+            OR has_database_privilege(role.oid,current_database(),'TEMP')
+            OR has_schema_privilege(role.oid,'public','CREATE')
+            OR NOT coalesce(has_schema_privilege(role.oid,
+              to_regnamespace('reviewrouter_activation'),'USAGE'),false)
+            OR coalesce(has_schema_privilege(role.oid,
+              to_regnamespace('reviewrouter_activation'),'CREATE'),false)
+            OR EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+              WHERE n.nspname IN ('public','reviewrouter_activation')
+                AND c.relkind IN ('r','p','v','m','f')
+                AND EXISTS (SELECT 1 FROM unnest(ARRAY['SELECT','INSERT','UPDATE',
+                    'DELETE','TRUNCATE','REFERENCES','TRIGGER']) privilege
+                  WHERE has_table_privilege(role.oid,c.oid,privilege)))
+            OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+              WHERE n.nspname IN ('public','reviewrouter_activation')
+                AND has_function_privilege(role.oid,p.oid,'EXECUTE')
+                AND NOT (
+                  role.rolname='reviewrouter_activation_permit_installer' AND p.oid IN (
+                    to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)'),
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
+                    to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'),
+                    to_regprocedure('reviewrouter_activation.read_activation_migration_manifest_identity()'))
+                  OR role.rolname='reviewrouter_activation_receipt_reader' AND p.oid IN (
+                    to_regprocedure('reviewrouter_activation.read_activation_receipt(text)'),
+                    to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)'),
+                    to_regprocedure('reviewrouter_activation.read_activation_migration_manifest_identity()'))
+                ))))
+        AND NOT EXISTS (SELECT 1 FROM pg_roles role
+          WHERE role.rolname=ANY(ARRAY['reviewrouter_api','reviewrouter_web',
+              'reviewrouter_worker','reviewrouter_codex_effect_authority'])
+            AND (has_database_privilege(role.oid,current_database(),'CREATE')
+              OR has_database_privilege(role.oid,current_database(),'TEMP')
+              OR coalesce(has_schema_privilege(role.oid,
+                to_regnamespace('reviewrouter_activation'),'USAGE'),false)
+              OR EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE n.nspname='reviewrouter_activation'
+                  AND EXISTS (SELECT 1 FROM unnest(ARRAY['SELECT','INSERT','UPDATE',
+                      'DELETE','TRUNCATE','REFERENCES','TRIGGER']) privilege
+                    WHERE has_table_privilege(role.oid,c.oid,privilege)))
+              OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+                WHERE n.nspname='reviewrouter_activation'
+                  AND has_function_privilege(role.oid,p.oid,'EXECUTE'))))
+        AS "activationRuntimePrivilegesExact",
+      coalesce((SELECT p.prosecdef AND p.prokind='f' AND p.prorettype='boolean'::regtype
+          AND p.provolatile='v' AND l.lanname='plpgsql'
+          AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']
+          AND pg_get_userbyid(p.proowner)='reviewrouter_activation_receipt_guard'
+          AND has_function_privilege('reviewrouter_activation_permit_installer',p.oid,'EXECUTE')
+          AND NOT has_function_privilege('public',p.oid,'EXECUTE')
+          AND EXISTS (SELECT 1 FROM aclexplode(
+              coalesce(p.proacl,acldefault('f',p.proowner))) acl
+            JOIN pg_roles grantee ON grantee.oid=acl.grantee
+            WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+              AND grantee.rolname='reviewrouter_activation_permit_installer')
+          AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+            WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+              AND (acl.is_grantable OR NOT EXISTS (SELECT 1 FROM pg_roles grantee
+                WHERE grantee.oid=acl.grantee
+                  AND grantee.rolname='reviewrouter_activation_permit_installer')))
+        FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang
+        WHERE p.oid=to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)')),false)
+        AS "installerRoutine",
+      coalesce((SELECT p.prosecdef AND p.prokind='f' AND p.prorettype='jsonb'::regtype
+          AND p.provolatile='s' AND l.lanname='plpgsql'
+          AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']
+          AND pg_get_userbyid(p.proowner)='reviewrouter_activation_receipt_guard'
+          AND has_function_privilege('reviewrouter_activation_receipt_reader',p.oid,'EXECUTE')
+          AND NOT has_function_privilege('public',p.oid,'EXECUTE')
+          AND EXISTS (SELECT 1 FROM aclexplode(
+              coalesce(p.proacl,acldefault('f',p.proowner))) acl
+            JOIN pg_roles grantee ON grantee.oid=acl.grantee
+            WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+              AND grantee.rolname='reviewrouter_activation_receipt_reader')
+          AND EXISTS (SELECT 1 FROM aclexplode(
+              coalesce(p.proacl,acldefault('f',p.proowner))) acl
+            JOIN pg_roles grantee ON grantee.oid=acl.grantee
+            WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
+              AND grantee.rolname='reviewrouter_release_migration')
+          AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+            WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+              AND (acl.is_grantable OR NOT EXISTS (SELECT 1 FROM pg_roles grantee
+                WHERE grantee.oid=acl.grantee
+                  AND grantee.rolname IN ('reviewrouter_activation_receipt_reader','reviewrouter_release_migration'))))
+        FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang
+        WHERE p.oid=to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')),false)
+        AS "readerRoutine"
+  `);
+  signal?.throwIfAborted();
+  if (probeRows.length !== 1 || !probeRows[0])
+    throw new Error("release_control_database_identity_unavailable");
+  if (typeof probeRows[0].authorityPresent !== "boolean")
+    throw new Error("release_control_database_identity_unavailable");
+  if (!probeRows[0].authorityPresent) {
+    const readiness = absentAuthorityReadiness(probeRows[0]);
+    if (!probeRows[0].installerRoutine && !probeRows[0].readerRoutine)
+      return readiness;
+    const migrationRows = await prisma.$queryRaw<
+      {
+        applicationMigrationManifestIdentity: string;
+        applicationPostCatalogDigest: string;
+      }[]
+    >(Prisma.sql`
+      SELECT reviewrouter_activation.read_activation_migration_manifest_identity()
+        AS "applicationMigrationManifestIdentity",
+        (${Prisma.raw(fencedLiveV70V73CatalogDigestSql)})
+        AS "applicationPostCatalogDigest"
+    `);
+    signal?.throwIfAborted();
+    if (migrationRows.length !== 1 || !migrationRows[0])
+      throw new Error("release_control_database_migration_history_unavailable");
+    return { ...readiness, ...migrationRows[0] };
+  }
+
+  const catalogDigest =
+    releaseAuthorityReadOnlyCatalogDigestExpression("release_authority");
+  const defaultAclExact =
+    releaseAuthorityDefaultAclExactExpression("release_authority");
+  const finalAclExact =
+    releaseAuthorityRuntimeAclExactExpression("release_authority");
+  const providerTerminalTopologyExact =
+    releaseAuthorityProviderTerminalTopologyExactExpression();
+  const rows = await prisma.$queryRaw<ReleaseAuthorityExactness[]>(
     Prisma.sql`
       WITH facts AS (
         SELECT
-          to_regprocedure('release_authority.release_service_transition_append(jsonb)') AS recovery_append,
-          to_regprocedure('release_authority.release_service_transition_complete(jsonb)') AS recovery_complete,
-          to_regprocedure('release_authority.release_source_resume_is_rollout_owned()') AS recovery_guard,
-          to_regprocedure('release_authority.release_runner_persist_job(jsonb)') AS persist_job,
-          to_regprocedure('release_authority.release_runner_reconcile_effect(jsonb)') AS reconcile_effect,
-          to_regprocedure('release_authority.release_runner_compensation_gate()') AS compensation_gate,
-          to_regprocedure('release_authority.release_compensation_effects_are_safe(text)') AS compensation_effects_safe,
-          to_regprocedure('release_authority.release_compensation_receipt_effect_gate()') AS compensation_receipt_gate,
-          to_regprocedure('release_authority.release_compensation_source_recovery_gate()') AS compensation_recovery_gate,
-          to_regprocedure('release_authority.release_provider_authority_decide(jsonb)') AS provider_decide,
-          to_regprocedure('release_authority.release_rollout_reconcile(text,jsonb)') AS rollout_reconcile,
-          to_regprocedure('release_authority.release_rollout_compensation_checkpoint(text,text,text)') AS compensation_checkpoint,
+          to_regnamespace('release_authority') AS authority_namespace,
           to_regprocedure('release_authority.release_schema_migration_manifest()') AS migration_manifest,
-          to_regprocedure('release_authority.release_runner_persist_cleanup_witness(text,jsonb)') AS persist_cleanup_witness,
-          to_regprocedure('release_authority.release_recovery_effect_intend(jsonb)') AS recovery_effect_intend,
-          to_regprocedure('release_authority.release_recovery_effect_claim(jsonb)') AS recovery_effect_claim,
-          to_regprocedure('release_authority.release_recovery_effect_consume(jsonb)') AS recovery_effect_consume,
-          to_regprocedure('release_authority.release_recovery_effect_complete(jsonb)') AS recovery_effect_complete
-      ), definitions AS (
+          ${Prisma.raw(catalogDigest)} AS catalog_digest,
+          pg_catalog.obj_description(
+            to_regnamespace('release_authority'), 'pg_namespace'
+          )::jsonb AS attestation,
+          CASE WHEN pg_catalog.pg_input_is_valid(pg_catalog.obj_description(
+              to_regnamespace('reviewrouter_migration_credential'),'pg_namespace'),'jsonb')
+            THEN pg_catalog.obj_description(
+              to_regnamespace('reviewrouter_migration_credential'),'pg_namespace')::jsonb
+                ->>'bootstrapRole'
+            ELSE NULL END AS bootstrap_role,
+          CASE WHEN pg_catalog.pg_input_is_valid(pg_catalog.obj_description(
+              to_regnamespace('reviewrouter_migration_credential'),'pg_namespace'),'jsonb')
+            THEN pg_catalog.obj_description(
+              to_regnamespace('reviewrouter_migration_credential'),'pg_namespace')::jsonb
+                ->>'brokerGrantorRole'
+            ELSE NULL END AS broker_grantor_role,
+          (SELECT root_oid FROM reviewrouter_migration_credential.provider_root_pin
+            WHERE singleton) AS provider_root_oid,
+          (SELECT provider_oid FROM reviewrouter_migration_credential.provider_root_pin
+            WHERE singleton) AS provider_oid,
+          (SELECT root_name FROM reviewrouter_migration_credential.provider_root_pin
+            WHERE singleton) AS provider_root_name,
+          (SELECT provider_name FROM reviewrouter_migration_credential.provider_root_pin
+            WHERE singleton) AS provider_name,
+          (SELECT system_identifier FROM reviewrouter_migration_credential.provider_root_pin
+            WHERE singleton) AS pinned_system_identifier
+      ), exactness AS (
         SELECT facts.*,
-          coalesce(pg_get_functiondef(recovery_append), '') AS recovery_append_definition,
-          coalesce(pg_get_functiondef(recovery_complete), '') AS recovery_complete_definition,
-          coalesce(pg_get_functiondef(recovery_guard), '') AS recovery_guard_definition,
-          coalesce(pg_get_functiondef(persist_job), '') AS persist_job_definition,
-          coalesce(pg_get_functiondef(reconcile_effect), '') AS reconcile_effect_definition,
-          coalesce(pg_get_functiondef(compensation_gate), '') AS compensation_gate_definition,
-          coalesce(pg_get_functiondef(compensation_effects_safe), '') AS compensation_effects_safe_definition,
-          coalesce(pg_get_functiondef(compensation_receipt_gate), '') AS compensation_receipt_gate_definition,
-          coalesce(pg_get_functiondef(compensation_recovery_gate), '') AS compensation_recovery_gate_definition,
-          coalesce(pg_get_functiondef(provider_decide), '') AS provider_decide_definition,
-          coalesce(pg_get_functiondef(rollout_reconcile), '') AS rollout_reconcile_definition,
-          coalesce(pg_get_functiondef(compensation_checkpoint), '') AS compensation_checkpoint_definition
-          ,coalesce(pg_get_functiondef(persist_cleanup_witness), '') AS persist_cleanup_witness_definition
-        FROM facts
-      ), authority_functions AS (
-        SELECT procedure.oid
-        FROM pg_catalog.pg_proc procedure
-        JOIN pg_catalog.pg_namespace namespace ON namespace.oid = procedure.pronamespace
-        WHERE namespace.nspname = 'release_authority'
-      ), expected_acl(role_name, allowed, denied) AS (
-        VALUES
-          ('reviewrouter_release_control', ARRAY[
-            to_regprocedure('release_authority.release_rollout_claim(text,text,text,integer,text,text)'),
-            to_regprocedure('release_authority.release_rollout_append_receipt(text,text,text,integer,text,text,text,text,text,text,text,text,jsonb)'),
-            to_regprocedure('release_authority.release_rollout_fence_target_switch(text,text,text,integer,text,text,text)'),
-            to_regprocedure('release_authority.authorize_activation(text,text,text,integer,text,text,text,text,jsonb,integer,text)'),
-            to_regprocedure('release_authority.observe_state(text,text,text)'),
-            to_regprocedure('release_authority.release_runner_persist_registration(text,text,text,bigint,bigint,text[],text,text)'),
-            to_regprocedure('release_authority.release_rollout_mark_activation_uncertain(text,text,text,integer,text,text)'),
-            to_regprocedure('release_authority.release_rollout_activation_state(text,text,text)'),
-            to_regprocedure('release_authority.release_rollout_verify_final_authority(text,text,text,integer,text,text,text,jsonb)'),
-            to_regprocedure('release_authority.release_rollout_finalize_activation(jsonb,jsonb,text,jsonb)'),
-            to_regprocedure('release_authority.release_runner_list_intents(text)'),
-            to_regprocedure('release_authority.release_runner_persist_job(jsonb)'),
-            to_regprocedure('release_authority.release_runner_list_open_jobs(text)'),
-            to_regprocedure('release_authority.release_runner_persist_identity(text,jsonb,jsonb)'),
-            to_regprocedure('release_authority.release_runner_current(text,text)'),
-            to_regprocedure('release_authority.release_runner_mark_terminal(text,jsonb)'),
-            to_regprocedure('release_authority.release_runner_cleanup_observation(text)'),
-            to_regprocedure('release_authority.release_runner_cleanup_witness(text)'),
-            to_regprocedure('release_authority.release_runner_terminal_cleanup_fact(text,text)'),
-            to_regprocedure('release_authority.release_rollout_reconciliation_context(text)'),
-            to_regprocedure('release_authority.release_rollout_compensation_checkpoint(text,text,text)'),
-            to_regprocedure('release_authority.release_rollout_reconcile(text,jsonb)'),
-            to_regprocedure('release_authority.release_runner_prepare_effect(jsonb)'),
-            to_regprocedure('release_authority.release_runner_acquire_dispatch_permit(jsonb)'),
-            to_regprocedure('release_authority.release_runner_reconcile_effect(jsonb)'),
-            to_regprocedure('release_authority.release_runner_abandon_prepared(text,text,bigint)'),
-            to_regprocedure('release_authority.release_service_transition_begin(jsonb)'),
-            to_regprocedure('release_authority.release_service_transition_append(jsonb)'),
-            to_regprocedure('release_authority.release_service_transition_read(text)'),
-            to_regprocedure('release_authority.release_service_transition_contract(text)'),
-            to_regprocedure('release_authority.release_service_transition_complete(jsonb)'),
-            to_regprocedure('release_authority.release_service_transition_activation_gate(text,jsonb)'),
-            to_regprocedure('release_authority.release_source_freeze_prepare(text,text,text,integer,text,text,text,text,timestamptz,jsonb,boolean)'),
-            to_regprocedure('release_authority.release_source_freeze_record(text,text,text,integer,text,text,text,text,timestamptz,jsonb)'),
-            to_regprocedure('release_authority.release_source_freeze_complete(text,text,text,integer,text,text,jsonb,timestamptz)'),
-            to_regprocedure('release_authority.release_schema_migration_manifest()'),
-            to_regprocedure('release_authority.release_recovery_effect_intend(jsonb)'),
-            to_regprocedure('release_authority.release_recovery_effect_claim(jsonb)'),
-            to_regprocedure('release_authority.release_recovery_effect_consume(jsonb)'),
-            to_regprocedure('release_authority.release_recovery_effect_complete(jsonb)')
-          ]::oid[], ARRAY[
-            to_regprocedure('release_authority.release_service_transition_immutable()')
-          ]::oid[]),
-          ('reviewrouter_provider_authority', ARRAY[
-            to_regprocedure('release_authority.release_provider_authority_decide(jsonb)')
-            ,to_regprocedure('release_authority.release_schema_migration_manifest()')
-          ]::oid[], ARRAY[
-            to_regprocedure('release_authority.release_service_transition_immutable()')
-          ]::oid[]),
-          ('reviewrouter_release_witness', ARRAY[
-            to_regprocedure('release_authority.release_runner_cleanup_observation_seed(text)'),
-            to_regprocedure('release_authority.release_runner_persist_cleanup_witness(text,jsonb)')
-            ,to_regprocedure('release_authority.release_schema_migration_manifest()')
-          ]::oid[], ARRAY[
-            to_regprocedure('release_authority.release_service_transition_immutable()')
-          ]::oid[])
-      ), acl_posture AS (
-        SELECT count(DISTINCT roles.rolname) = 3
-          AND bool_and(array_position(expected_acl.allowed, NULL) IS NULL)
-          AND bool_and(array_position(expected_acl.denied, NULL) IS NULL)
-          AND bool_and(pg_catalog.has_schema_privilege(
-            roles.oid, 'release_authority', 'USAGE'
-          ))
-          AND bool_and(
-            pg_catalog.has_function_privilege(roles.oid, functions.oid, 'EXECUTE')
-              = (functions.oid = ANY(expected_acl.allowed))
-          )
-          AND bool_and(
-            functions.oid <> ALL(expected_acl.denied)
-              OR NOT pg_catalog.has_function_privilege(
-                roles.oid, functions.oid, 'EXECUTE'
+          attestation->'schemaVersion' =
+            pg_catalog.to_jsonb(${releaseAuthoritySchemaVersion}::integer)
+          AND attestation->>'verifier' = ${releaseAuthorityCatalogVerifier}
+          AND attestation->>'catalogFingerprint' = 'sha256:' || catalog_digest
+          AS catalog_exact,
+          ${Prisma.raw(defaultAclExact)} AS default_acl_exact,
+          ${Prisma.raw(finalAclExact)} AS final_acl_exact,
+          ${Prisma.raw(providerTerminalTopologyExact)} AS provider_terminal_topology_exact,
+          NOT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_roles candidate
+            JOIN pg_catalog.pg_namespace authority_namespace
+              ON authority_namespace.nspname = 'release_authority'
+            WHERE candidate.oid <> authority_namespace.nspowner
+              AND candidate.rolname<>'reviewrouter_bootstrap_administrator'
+              AND NOT candidate.rolsuper
+              AND (
+                candidate.rolcanlogin
+                OR candidate.rolname IN (
+                  'reviewrouter_release_control',
+                  'reviewrouter_provider_authority',
+                  'reviewrouter_release_witness'
+                )
               )
-          ) AS exact
-        FROM expected_acl
-        JOIN pg_catalog.pg_roles roles ON roles.rolname = expected_acl.role_name
-        CROSS JOIN authority_functions functions
+              AND (
+                pg_catalog.pg_has_role(
+                  candidate.oid, authority_namespace.nspowner, 'MEMBER'
+                )
+                OR pg_catalog.pg_has_role(
+                  candidate.oid, authority_namespace.nspowner, 'USAGE'
+                )
+                OR pg_catalog.pg_has_role(
+                  candidate.oid, authority_namespace.nspowner, 'SET'
+                )
+              )
+          ) AS owner_membership_exact,
+          (
+            SELECT count(*)=3 AND bool_and(role.rolcanlogin
+              AND role.oid<>authority_namespace.nspowner
+              AND NOT role.rolsuper AND NOT role.rolcreatedb
+              AND NOT role.rolcreaterole AND NOT role.rolreplication
+              AND NOT role.rolbypassrls AND role.rolconnlimit=(-1)
+              AND role.rolvaliduntil IS NULL
+              AND coalesce(array_length(role.rolconfig,1),0)=0)
+            FROM pg_catalog.pg_roles role
+            JOIN pg_namespace authority_namespace
+              ON authority_namespace.nspname='release_authority'
+            WHERE role.rolname=ANY(ARRAY['reviewrouter_release_control',
+              'reviewrouter_provider_authority','reviewrouter_release_witness'])
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_auth_members edge
+            JOIN pg_roles granted ON granted.oid=edge.roleid
+            JOIN pg_roles member ON member.oid=edge.member
+            WHERE granted.rolname=ANY(ARRAY['reviewrouter_release_control',
+                'reviewrouter_provider_authority','reviewrouter_release_witness'])
+              OR member.rolname=ANY(ARRAY['reviewrouter_release_control',
+                'reviewrouter_provider_authority','reviewrouter_release_witness'])
+          ) AND (
+            SELECT count(*)=3 AND bool_and(
+              NOT role.rolsuper AND NOT role.rolcreatedb
+              AND NOT role.rolreplication AND NOT role.rolbypassrls
+              AND role.rolvaliduntil IS NULL
+              AND coalesce(array_length(role.rolconfig,1),0)=0
+              AND CASE role.rolname
+                WHEN 'reviewrouter_authority_owner' THEN
+                  NOT role.rolcanlogin AND NOT role.rolcreaterole
+                    AND role.rolconnlimit=(-1)
+                WHEN 'reviewrouter_migration_broker' THEN
+                  NOT role.rolcanlogin AND role.rolcreaterole
+                    AND role.rolconnlimit=(-1)
+                WHEN 'reviewrouter_migration_issuer' THEN
+                  role.rolcanlogin AND NOT role.rolcreaterole
+                    AND role.rolconnlimit=(-1)
+              END)
+            FROM pg_catalog.pg_roles role
+            WHERE role.rolname=ANY(ARRAY['reviewrouter_authority_owner',
+              'reviewrouter_migration_broker','reviewrouter_migration_issuer'])
+          ) AND ${Prisma.raw(providerTerminalTopologyExact)} AND EXISTS (
+            SELECT 1 FROM pg_catalog.pg_database database
+            JOIN pg_catalog.pg_roles owner ON owner.oid=database.datdba
+            WHERE database.datname=current_database()
+              AND owner.rolname='reviewrouter_authority_owner'
+          ) AND EXISTS (
+            SELECT 1 FROM pg_catalog.pg_auth_members membership
+            JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
+            JOIN pg_catalog.pg_roles member ON member.oid=membership.member
+            JOIN pg_catalog.pg_roles grantor ON grantor.oid=membership.grantor
+            WHERE granted.rolname='reviewrouter_authority_owner'
+              AND member.rolname='reviewrouter_migration_broker'
+              AND grantor.rolname=facts.broker_grantor_role
+              AND membership.admin_option AND NOT membership.inherit_option
+              AND NOT membership.set_option
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_auth_members membership
+            JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
+            JOIN pg_catalog.pg_roles member ON member.oid=membership.member
+            JOIN pg_catalog.pg_roles grantor ON grantor.oid=membership.grantor
+            WHERE (granted.rolname=ANY(ARRAY['reviewrouter_authority_owner',
+                'reviewrouter_migration_broker','reviewrouter_migration_issuer'])
+              OR member.rolname=ANY(ARRAY['reviewrouter_authority_owner',
+                'reviewrouter_migration_broker','reviewrouter_migration_issuer']))
+              AND NOT (granted.rolname='reviewrouter_authority_owner'
+                AND member.rolname='reviewrouter_migration_broker'
+                AND grantor.rolname=facts.broker_grantor_role
+                AND membership.admin_option AND NOT membership.inherit_option
+                AND NOT membership.set_option)
+              AND NOT (granted.rolname IN ('reviewrouter_authority_owner',
+                    'reviewrouter_migration_broker')
+                AND member.rolname='reviewrouter_bootstrap_administrator'
+                AND grantor.oid=facts.provider_root_oid
+                AND membership.admin_option AND NOT membership.inherit_option
+                AND NOT membership.set_option)
+              AND NOT (granted.rolname~'^rr_migration_[a-f0-9]{24}$'
+                AND member.rolname='reviewrouter_migration_broker'
+                AND reviewrouter_migration_credential.login_role_is_inert(
+                  granted.rolname))
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles role
+            WHERE role.rolname=facts.bootstrap_role
+          ) AND reviewrouter_migration_credential.bootstrap_is_retired()
+          AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_auth_members membership
+            JOIN pg_catalog.pg_roles role
+              ON role.oid=membership.roleid OR role.oid=membership.member
+            WHERE role.rolname=facts.bootstrap_role
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_shdepend dependency
+            JOIN pg_catalog.pg_roles role ON role.oid=dependency.refobjid
+            WHERE role.rolname=facts.bootstrap_role
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_stat_activity
+            WHERE usename=facts.bootstrap_role
+          ) AND pg_catalog.to_regnamespace('reviewrouter_migration_bootstrap') IS NULL
+          AND (
+            SELECT count(*)=1 AND bool_and(role.rolcanlogin AND NOT role.rolsuper
+                AND NOT role.rolcreatedb AND role.rolcreaterole
+                AND NOT role.rolreplication AND NOT role.rolbypassrls
+                AND role.rolconnlimit=1 AND role.rolvaliduntil IS NULL
+                AND coalesce(array_length(role.rolconfig,1),0)=0)
+            FROM pg_catalog.pg_roles role
+            WHERE role.rolname='reviewrouter_bootstrap_administrator'
+          ) AND (
+            SELECT count(*)=3 AND bool_and(
+              (granted.rolname='pg_signal_backend'
+                AND NOT membership.admin_option
+                AND membership.inherit_option AND membership.set_option)
+              OR (granted.rolname IN ('reviewrouter_authority_owner',
+                    'reviewrouter_migration_broker')
+                AND membership.grantor=facts.provider_root_oid
+                AND membership.admin_option
+                AND NOT membership.inherit_option
+                AND NOT membership.set_option))
+            FROM pg_catalog.pg_auth_members membership
+            JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
+            JOIN pg_catalog.pg_roles member ON member.oid=membership.member
+            WHERE member.rolname='reviewrouter_bootstrap_administrator'
+              AND granted.rolname IN ('reviewrouter_authority_owner',
+                'reviewrouter_migration_broker','pg_signal_backend')
+          ) AND facts.pinned_system_identifier=
+            (SELECT system_identifier::text FROM pg_catalog.pg_control_system())
+          AND EXISTS (SELECT 1 FROM pg_catalog.pg_roles role
+            WHERE role.oid=facts.provider_root_oid
+              AND role.rolname=facts.provider_root_name)
+          AND EXISTS (SELECT 1 FROM pg_catalog.pg_roles role
+            WHERE role.oid=facts.provider_oid AND role.rolname=facts.provider_name
+              AND role.rolname='reviewrouter_bootstrap_administrator')
+          AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_auth_members membership
+            JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
+            JOIN pg_catalog.pg_roles member ON member.oid=membership.member
+            WHERE member.rolname='reviewrouter_bootstrap_administrator'
+              AND granted.rolname NOT IN ('reviewrouter_authority_owner',
+                'reviewrouter_migration_broker','pg_signal_backend')
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_auth_members membership
+            JOIN pg_catalog.pg_roles granted ON granted.oid=membership.roleid
+            WHERE granted.rolname='reviewrouter_bootstrap_administrator'
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_shdepend dependency
+            JOIN pg_catalog.pg_roles role ON role.oid=dependency.refobjid
+            WHERE role.rolname IN ('reviewrouter_migration_issuer',facts.bootstrap_role,
+              'reviewrouter_bootstrap_administrator')
+              AND dependency.deptype='o'
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_shdepend dependency
+            JOIN pg_catalog.pg_roles role ON role.oid=dependency.refobjid
+            WHERE role.rolname='reviewrouter_migration_broker'
+              AND dependency.deptype='o'
+              AND dependency.dbid<>(SELECT oid FROM pg_catalog.pg_database
+                WHERE datname=current_database())
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_shdepend dependency
+            JOIN pg_catalog.pg_roles role ON role.oid=dependency.refobjid
+            WHERE role.rolname='reviewrouter_authority_owner'
+              AND dependency.deptype='o'
+              AND NOT (dependency.dbid=(SELECT oid FROM pg_catalog.pg_database
+                    WHERE datname=current_database())
+                OR (dependency.dbid=0
+                  AND dependency.classid='pg_catalog.pg_database'::regclass
+                  AND dependency.objid=(SELECT oid FROM pg_catalog.pg_database
+                    WHERE datname=current_database())))
+          ) AND NOT pg_catalog.has_database_privilege(
+            (SELECT oid FROM pg_catalog.pg_roles
+              WHERE rolname='reviewrouter_bootstrap_administrator'),
+            current_database(),'CREATE'
+          ) AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles role
+            WHERE role.rolname=facts.bootstrap_role
+              AND pg_catalog.has_database_privilege(
+                role.oid,current_database(),'CREATE')
+          ) AND (
+            SELECT count(*)=6 AND bool_and(
+              acl.grantor=database.datdba AND NOT acl.is_grantable
+              AND ((acl.grantee=database.datdba
+                    AND acl.privilege_type IN ('CREATE','CONNECT','TEMPORARY'))
+                OR (acl.grantee=0
+                    AND acl.privilege_type IN ('CONNECT','TEMPORARY'))
+                OR (acl.grantee=(SELECT oid FROM pg_catalog.pg_roles
+                      WHERE rolname='reviewrouter_migration_issuer')
+                    AND acl.privilege_type='CONNECT')))
+            FROM pg_catalog.pg_database database
+            CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
+              database.datacl,pg_catalog.acldefault('d',database.datdba))) acl
+            WHERE database.datname=current_database()
+          ) AS role_topology_exact
+        FROM facts
       )
-      SELECT current_user AS "roleName",
-        (SELECT system_identifier::text FROM pg_control_system()) AS "systemIdentifier",
-        current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
-        CASE WHEN definitions.recovery_append IS NOT NULL
-          AND definitions.recovery_guard IS NOT NULL
-          AND definitions.recovery_complete IS NOT NULL
-          AND definitions.persist_job IS NOT NULL
-          AND definitions.reconcile_effect IS NOT NULL
-          AND definitions.compensation_gate IS NOT NULL
-          AND definitions.compensation_effects_safe IS NOT NULL
-          AND definitions.compensation_receipt_gate IS NOT NULL
-          AND definitions.compensation_recovery_gate IS NOT NULL
-          AND definitions.provider_decide IS NOT NULL
-          AND definitions.rollout_reconcile IS NOT NULL
-          AND definitions.compensation_checkpoint IS NOT NULL
-          AND definitions.migration_manifest IS NOT NULL
-          AND definitions.recovery_effect_intend IS NOT NULL
-          AND definitions.recovery_effect_claim IS NOT NULL
-          AND definitions.recovery_effect_consume IS NOT NULL
-          AND definitions.recovery_effect_complete IS NOT NULL
-          AND (SELECT count(*) = 10 FROM pg_catalog.pg_class relation
-            JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
-            WHERE namespace.nspname = 'release_authority'
-              AND relation.relkind IN ('r','p')
-              AND relation.relname IN (
-                'rollout','receipt','runner_intent','runner_job',
-                'provider_authority_decision','service_transition',
-                'service_transition_checkpoint','source_freeze_observation',
-                'source_freeze_completion','recovery_effect'
-              ))
-          AND (SELECT count(*) = 8 FROM pg_catalog.pg_attribute attribute
-            JOIN pg_catalog.pg_class relation ON relation.oid = attribute.attrelid
-            JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
-            WHERE namespace.nspname = 'release_authority'
-              AND relation.relname = 'runner_intent'
-              AND attribute.attnum > 0 AND NOT attribute.attisdropped
-              AND attribute.attname IN (
-                'effect_state','effect_epoch','effect_owner',
-                'effect_lease_expires_at','effect_dispatch_started_at',
-                'effect_discovery_deadline','effect_safe_for_compensation',
-                'effect_block_reason'
-              ))
-          THEN 10 ELSE 0 END AS "schemaVersion",
-          '[]'::jsonb AS "migrationManifest",
-        to_regprocedure('release_authority.release_rollout_claim(text,text,text,integer,text,text)') IS NOT NULL AS "controlRoutine",
-        to_regprocedure('release_authority.release_provider_authority_decide(jsonb)') IS NOT NULL AS "providerRoutine",
-        to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)') IS NOT NULL AS "installerRoutine",
-        to_regprocedure('reviewrouter_activation.read_activation_receipt(text)') IS NOT NULL AS "readerRoutine",
-        to_regprocedure('release_authority.release_runner_prepare_effect(jsonb)') IS NOT NULL
-          AND to_regprocedure('release_authority.release_runner_acquire_dispatch_permit(jsonb)') IS NOT NULL
-          AND to_regprocedure('release_authority.release_runner_abandon_prepared(text,text,bigint)') IS NOT NULL
-          AS "externalEffectProtocol",
-        to_regprocedure('release_authority.release_source_freeze_prepare(text,text,text,integer,text,text,text,text,timestamptz,jsonb,boolean)') IS NOT NULL
-          AND to_regprocedure('release_authority.release_source_freeze_record(text,text,text,integer,text,text,text,text,timestamptz,jsonb)') IS NOT NULL
-          AND to_regprocedure('release_authority.release_source_freeze_complete(text,text,text,integer,text,text,jsonb,timestamptz)') IS NOT NULL
-          AS "sourceFreezeProtocol",
-        definitions.recovery_guard IS NOT NULL
-          AND definitions.recovery_guard_definition LIKE '%NEW.step%source_resumed%'
-          AND definitions.recovery_guard_definition LIKE '%phase%suspended%'
-          AND definitions.recovery_guard_definition LIKE '%release source resume lacks rollout suspension evidence%'
-          AND definitions.recovery_complete_definition LIKE '%release source recovery manifest mismatch%'
-          AND definitions.recovery_complete_definition LIKE '%source_acl_restored%'
-          AND definitions.recovery_complete_definition LIKE '%source_verified%'
-          AND definitions.recovery_complete_definition LIKE '%source_resumed%'
-          AS "selectiveRecoveryProtocol",
-        definitions.persist_job_definition LIKE '%rolloutStateAtPersistence%'
-          AND definitions.persist_job_definition LIKE '%rollout.state <> ''pre_activation''%'
-          AND definitions.reconcile_effect_definition LIKE '%release runner reconciliation frozen%'
-          AND definitions.reconcile_effect_definition LIKE '%unresolved_legacy%'
-          AND definitions.compensation_gate_definition LIKE '%release runner duplicate effects unsafe for activation%'
-          AND definitions.compensation_gate_definition LIKE '%release runner effects unsafe for compensation%'
-          AND definitions.compensation_gate_definition LIKE '%release_compensation_effects_are_safe%'
-          AND definitions.compensation_effects_safe_definition LIKE '%effect_safe_for_compensation%'
-          AND definitions.compensation_effects_safe_definition LIKE '%count(*) > 1%'
-          AND definitions.compensation_receipt_gate_definition LIKE '%effect_compensation%complete_compensation%'
-          AND definitions.compensation_recovery_gate_definition LIKE '%restore_config_intent%source_resumed%'
-          AND definitions.recovery_append_definition LIKE '%release_compensation_effects_are_safe%'
-          AND definitions.recovery_append_definition LIKE '%rollout_row.state <> ''compensating''%'
-          AND definitions.provider_decide_definition LIKE '%provider authority runner effects changed during compensation%'
-          AND definitions.rollout_reconcile_definition LIKE '%release_compensation_effects_are_safe%'
-          AND definitions.rollout_reconcile_definition LIKE '%sourceEligible%false%'
-          AS "lateRunnerEffectProtocol",
-        definitions.compensation_checkpoint_definition LIKE '%freeze_inventory_complete%'
-          AND definitions.compensation_checkpoint_definition LIKE '%source_freeze_completion%'
-          AND definitions.compensation_checkpoint_definition LIKE '%sourceFreeze%'
-          AND definitions.compensation_checkpoint_definition LIKE '%phase%intent%'
-          AND definitions.compensation_checkpoint_definition LIKE '%phase%suspended%'
-          AND (SELECT procedure.prosecdef AND procedure.provolatile = 's'
-            AND procedure.proconfig = ARRAY['search_path=pg_catalog']::text[]
-            FROM pg_catalog.pg_proc procedure
-            WHERE procedure.oid = definitions.compensation_checkpoint)
+      SELECT CASE WHEN catalog_exact AND default_acl_exact AND final_acl_exact
+          AND owner_membership_exact AND role_topology_exact
+          THEN (attestation->>'schemaVersion')::integer ELSE 0 END
+          AS "schemaVersion",
+        '[]'::jsonb AS "migrationManifest",
+        'sha256:' || catalog_digest AS "catalogFingerprint",
+        coalesce(attestation->>'catalogFingerprint', '')
+          AS "expectedCatalogFingerprint",
+        coalesce(attestation->>'verifier', '') AS "catalogVerifier",
+        catalog_exact AND owner_membership_exact AND role_topology_exact AS "catalogExact",
+        default_acl_exact AS "defaultAclExact",
+        final_acl_exact AS "finalAclExact",
+        catalog_exact AND owner_membership_exact AS "controlRoutine",
+        catalog_exact AND owner_membership_exact AS "providerRoutine",
+        to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)') IS NOT NULL
+          AS "installerRoutine",
+        to_regprocedure('reviewrouter_activation.read_activation_receipt(text)') IS NOT NULL
+          AS "readerRoutine",
+        '' AS "installerRoutineBodySha256",
+        '' AS "readerRoutineBodySha256",
+        '' AS "applicationMigrationManifestIdentity",
+        '' AS "applicationPostCatalogDigest",
+        '' AS "activationNamespaceFingerprint",
+        role_topology_exact AS "authorityRoleTopologyExact",
+        false AS "preMigrationPermitBoundaryExact",
+        false AS "activationGuardExact",
+        false AS "activationRuntimePrivilegesExact",
+        catalog_exact AND owner_membership_exact AS "externalEffectProtocol",
+        catalog_exact AND owner_membership_exact AS "sourceFreezeProtocol",
+        catalog_exact AND owner_membership_exact AS "selectiveRecoveryProtocol",
+        catalog_exact AND owner_membership_exact AS "lateRunnerEffectProtocol",
+        catalog_exact AND owner_membership_exact AS "recoveryEffectProtocol",
+        catalog_exact AND owner_membership_exact
           AS "compensationCheckpointDefinition",
-        EXISTS (
-          SELECT 1
-          FROM pg_catalog.pg_attribute attribute
-          JOIN pg_catalog.pg_class relation ON relation.oid = attribute.attrelid
-          JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
-          WHERE namespace.nspname = 'release_authority'
-            AND relation.relname = 'runner_job'
-            AND attribute.attname = 'provider_creation_not_before'
-            AND attribute.attnotnull
-            AND NOT attribute.attisdropped
-        ) AND EXISTS (
-          SELECT 1
-          FROM pg_catalog.pg_constraint constraint_record
-          JOIN pg_catalog.pg_class relation ON relation.oid = constraint_record.conrelid
-          JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
-          WHERE namespace.nspname = 'release_authority'
-            AND relation.relname = 'runner_job'
-            AND constraint_record.conname = 'runner_job_provider_creation_boundary'
-            AND constraint_record.contype = 'c'
-            AND constraint_record.convalidated
-            AND pg_catalog.pg_get_constraintdef(constraint_record.oid)
-              LIKE '%observed_at >= provider_creation_not_before%'
-        ) AS "runnerProviderBoundary",
-        definitions.persist_cleanup_witness IS NOT NULL
-          AND definitions.persist_cleanup_witness_definition
-            LIKE '%providerCreatedAt%provider_creation_not_before%'
-          AND definitions.persist_cleanup_witness_definition
-            LIKE '%providerObservedAt%providerCreatedAt%'
-          AND definitions.persist_cleanup_witness_definition
-            LIKE '%providerObservedAt%clock_timestamp()%5 minutes%'
+        catalog_exact AND owner_membership_exact AS "runnerProviderBoundary",
+        catalog_exact AND owner_membership_exact
           AS "cleanupWitnessTemporalSemantics",
-        definitions.recovery_effect_intend IS NOT NULL
-          AND definitions.recovery_effect_claim IS NOT NULL
-          AND definitions.recovery_effect_consume IS NOT NULL
-          AND definitions.recovery_effect_complete IS NOT NULL
-          AND pg_get_functiondef(definitions.recovery_effect_consume) LIKE '%FOR UPDATE%'
-          AND pg_get_functiondef(definitions.recovery_effect_consume) LIKE '%release_compensation_effects_are_safe%'
-          AS "recoveryEffectProtocol",
-        (SELECT count(*) = 12 AND bool_and(trigger.tgenabled = 'O')
-          FROM pg_catalog.pg_trigger trigger
-          JOIN pg_catalog.pg_class relation ON relation.oid = trigger.tgrelid
-          JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
-          WHERE namespace.nspname = 'release_authority'
-            AND NOT trigger.tgisinternal
-            AND (relation.relname, trigger.tgname, trigger.tgfoid) IN (
-              ('receipt', 'release_rollout_receipt_immutable_guard',
-                to_regprocedure('release_authority.release_rollout_receipt_immutable()')),
-              ('provider_authority_decision', 'release_provider_authority_decision_immutable_guard',
-                to_regprocedure('release_authority.release_rollout_receipt_immutable()')),
-              ('service_transition_checkpoint', 'release_service_transition_checkpoint_immutable_guard',
-                to_regprocedure('release_authority.release_service_transition_immutable()')),
-              ('runner_job', 'release_runner_terminal_effect_trigger',
-                to_regprocedure('release_authority.release_runner_terminal_effect()')),
-              ('rollout', 'release_runner_compensation_gate_trigger',
-                definitions.compensation_gate),
-              ('source_freeze_observation', 'release_source_freeze_immutable_guard',
-                to_regprocedure('release_authority.release_source_freeze_immutable()')),
-              ('source_freeze_completion', 'release_source_freeze_completion_immutable_guard',
-                to_regprocedure('release_authority.release_source_freeze_immutable()')),
-              ('service_transition_checkpoint', 'release_source_resume_rollout_ownership_guard',
-                definitions.recovery_guard),
-              ('receipt', 'release_compensation_receipt_effect_gate_trigger',
-                definitions.compensation_receipt_gate),
-              ('service_transition_checkpoint', 'release_compensation_source_recovery_gate_trigger',
-                definitions.compensation_recovery_gate),
-              ('runner_job', 'release_late_job_recovery_effect_gate_trigger',
-                to_regprocedure('release_authority.release_late_job_recovery_effect_gate()')),
-              ('service_transition_checkpoint', 'release_recovery_checkpoint_permit_gate_trigger',
-                to_regprocedure('release_authority.release_recovery_checkpoint_permit_gate()'))
-            )
-        ) AND EXISTS (
-          SELECT 1 FROM pg_catalog.pg_trigger trigger
-          JOIN pg_catalog.pg_class relation ON relation.oid = trigger.tgrelid
-          JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
-          WHERE namespace.nspname = 'release_authority'
-            AND relation.relname = 'service_transition_checkpoint'
-            AND trigger.tgname = 'release_source_resume_rollout_ownership_guard'
-            AND trigger.tgfoid = definitions.recovery_guard
-            AND trigger.tgenabled = 'O' AND NOT trigger.tgisinternal
-            AND pg_get_triggerdef(trigger.oid) LIKE '%BEFORE INSERT%FOR EACH ROW%'
-        ) AND EXISTS (
-          SELECT 1 FROM pg_catalog.pg_trigger trigger
-          JOIN pg_catalog.pg_class relation ON relation.oid = trigger.tgrelid
-          JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
-          WHERE namespace.nspname = 'release_authority'
-            AND relation.relname = 'rollout'
-            AND trigger.tgname = 'release_runner_compensation_gate_trigger'
-            AND trigger.tgfoid = definitions.compensation_gate
-            AND trigger.tgenabled = 'O' AND NOT trigger.tgisinternal
-            AND pg_get_triggerdef(trigger.oid) LIKE '%BEFORE UPDATE OF state%FOR EACH ROW%'
-        ) AS "requiredTriggers",
-        coalesce(acl_posture.exact, false) AS "authorityAclExact",
-        (SELECT count(*) > 1 AND bool_and(object_owner = schema_owner)
-          FROM (
-            SELECT namespace.nspowner AS schema_owner,
-              namespace.nspowner AS object_owner
-            FROM pg_catalog.pg_namespace namespace
-            WHERE namespace.nspname = 'release_authority'
-            UNION ALL
-            SELECT namespace.nspowner, relation.relowner
-            FROM pg_catalog.pg_class relation
-            JOIN pg_catalog.pg_namespace namespace
-              ON namespace.oid = relation.relnamespace
-            WHERE namespace.nspname = 'release_authority'
-              AND relation.relkind IN ('r','p','v','m','S')
-            UNION ALL
-            SELECT namespace.nspowner, procedure.proowner
-            FROM pg_catalog.pg_proc procedure
-            JOIN pg_catalog.pg_namespace namespace
-              ON namespace.oid = procedure.pronamespace
-            WHERE namespace.nspname = 'release_authority'
-          ) ownership
-        ) AS "authorityOwnershipExact",
-        NOT EXISTS (
-          SELECT 1 FROM authority_functions functions
-          CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
-            (SELECT procedure.proacl FROM pg_catalog.pg_proc procedure WHERE procedure.oid = functions.oid),
-            pg_catalog.acldefault('f', (SELECT procedure.proowner FROM pg_catalog.pg_proc procedure WHERE procedure.oid = functions.oid))
-          )) acl
-          WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
-        ) AND NOT EXISTS (
-          SELECT 1 FROM pg_catalog.pg_namespace namespace
-          CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
-            namespace.nspacl, pg_catalog.acldefault('n', namespace.nspowner)
-          )) acl
-          WHERE namespace.nspname = 'release_authority'
-            AND acl.grantee = 0 AND acl.privilege_type = 'USAGE'
-        )
-          AS "publicAuthorityRevoked",
-        NOT EXISTS (
-          SELECT 1 FROM pg_catalog.pg_class relation
-          JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
-          JOIN pg_catalog.pg_roles roles ON roles.rolname IN (
-            'reviewrouter_release_control', 'reviewrouter_provider_authority',
-            'reviewrouter_release_witness'
-          )
-          WHERE namespace.nspname = 'release_authority'
-            AND relation.relkind IN ('r','p','v','m','S')
-            AND (
-              (relation.relkind = 'S' AND (
-                pg_catalog.has_sequence_privilege(roles.oid, relation.oid, 'USAGE')
-                OR pg_catalog.has_sequence_privilege(roles.oid, relation.oid, 'SELECT')
-                OR pg_catalog.has_sequence_privilege(roles.oid, relation.oid, 'UPDATE')
-              ))
-              OR (relation.relkind <> 'S' AND (
-                pg_catalog.has_table_privilege(roles.oid, relation.oid, 'SELECT')
-                OR pg_catalog.has_table_privilege(roles.oid, relation.oid, 'INSERT')
-                OR pg_catalog.has_table_privilege(roles.oid, relation.oid, 'UPDATE')
-                OR pg_catalog.has_table_privilege(roles.oid, relation.oid, 'DELETE')
-                OR pg_catalog.has_table_privilege(roles.oid, relation.oid, 'TRUNCATE')
-                OR pg_catalog.has_table_privilege(roles.oid, relation.oid, 'REFERENCES')
-                OR pg_catalog.has_table_privilege(roles.oid, relation.oid, 'TRIGGER')
-              ))
-            )
-        ) AND NOT EXISTS (
-          SELECT 1 FROM pg_catalog.pg_class relation
-          JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
-          CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
-            relation.relacl, pg_catalog.acldefault(
-              CASE WHEN relation.relkind = 'S' THEN 'S'::"char" ELSE 'r'::"char" END,
-              relation.relowner
-            )
-          )) acl
-          WHERE namespace.nspname = 'release_authority'
-            AND relation.relkind IN ('r','p','v','m','S')
-            AND acl.grantee = 0
-            AND acl.privilege_type IN (
-              'SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','USAGE'
-            )
-        ) AS "authorityTablesRevoked"
-      FROM definitions CROSS JOIN acl_posture
+        catalog_exact AND owner_membership_exact AS "requiredTriggers",
+        final_acl_exact AND owner_membership_exact AS "authorityOwnershipExact",
+        final_acl_exact AND owner_membership_exact AS "authorityAclExact",
+        final_acl_exact AND owner_membership_exact AS "publicAuthorityRevoked",
+        final_acl_exact AND owner_membership_exact AS "authorityTablesRevoked"
+      FROM exactness
     `,
   );
+  signal?.throwIfAborted();
   if (rows.length !== 1 || !rows[0])
     throw new Error("release_control_database_identity_unavailable");
-  const readiness = rows[0];
+  const {
+    roleName,
+    authorityOwnerRoleName,
+    systemIdentifier,
+    recoveryWitnessSha256,
+    databaseIdentity,
+    postgresMajor,
+  } = probeRows[0];
+  const readiness: ReleaseAuthorityDatabaseReadiness = {
+    ...rows[0],
+    roleName,
+    authorityOwnerRoleName,
+    systemIdentifier,
+    recoveryWitnessSha256,
+    databaseIdentity,
+    postgresMajor,
+  };
   if (
-    readiness.schemaVersion === 10 &&
-    readiness.migrationManifest.length === 0
-  ) {
-    const manifestRows = await prisma.$queryRaw<
-      Pick<ReleaseAuthorityDatabaseReadiness, "migrationManifest">[]
-    >(Prisma.sql`
-      SELECT release_authority.release_schema_migration_manifest()
-        AS "migrationManifest"
-    `);
-    if (manifestRows.length !== 1 || !manifestRows[0])
-      throw new Error("release_control_database_migration_history_unavailable");
-    return {
-      ...readiness,
-      migrationManifest: manifestRows[0].migrationManifest,
-    };
-  }
-  return readiness;
+    readiness.schemaVersion !== releaseAuthoritySchemaVersion ||
+    readiness.migrationManifest.length > 0
+  )
+    return readiness;
+  const manifestRows = await prisma.$queryRaw<
+    Pick<ReleaseAuthorityDatabaseReadiness, "migrationManifest">[]
+  >(Prisma.sql`
+    SELECT release_authority.release_schema_migration_manifest()
+      AS "migrationManifest"
+  `);
+  signal?.throwIfAborted();
+  if (manifestRows.length !== 1 || !manifestRows[0])
+    throw new Error("release_control_database_migration_history_unavailable");
+  return { ...readiness, migrationManifest: manifestRows[0].migrationManifest };
+};
+
+export async function observeReleaseAuthorityDatabaseReadiness(
+  prisma: PrismaClient,
+  options: Readonly<{
+    signal?: AbortSignal;
+    poolWaitMilliseconds?: number;
+    lockTimeoutMilliseconds?: number;
+    statementTimeoutMilliseconds?: number;
+    transactionTimeoutMilliseconds?: number;
+  }> = {},
+): Promise<ReleaseAuthorityDatabaseReadiness> {
+  const poolWaitMilliseconds = options.poolWaitMilliseconds ?? 2_000;
+  const lockTimeoutMilliseconds = options.lockTimeoutMilliseconds ?? 2_000;
+  const statementTimeoutMilliseconds =
+    options.statementTimeoutMilliseconds ?? 15_000;
+  const transactionTimeoutMilliseconds =
+    options.transactionTimeoutMilliseconds ?? 17_000;
+  if (
+    ![
+      poolWaitMilliseconds,
+      lockTimeoutMilliseconds,
+      statementTimeoutMilliseconds,
+      transactionTimeoutMilliseconds,
+    ].every(
+      (value) => Number.isSafeInteger(value) && value >= 1 && value <= 60_000,
+    ) ||
+    transactionTimeoutMilliseconds <= statementTimeoutMilliseconds
+  )
+    throw new Error("release_control_readiness_timeout_invalid");
+  options.signal?.throwIfAborted();
+
+  return prisma.$transaction(
+    async (connection) => {
+      options.signal?.throwIfAborted();
+      await connection.$executeRawUnsafe(
+        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY",
+      );
+      await connection.$queryRaw(Prisma.sql`
+        SELECT
+          set_config('statement_timeout', ${`${statementTimeoutMilliseconds}ms`}, true),
+          set_config('lock_timeout', ${`${lockTimeoutMilliseconds}ms`}, true)
+      `);
+      return observeReleaseAuthorityDatabaseReadinessOnConnection(
+        connection,
+        options.signal,
+      );
+    },
+    {
+      maxWait: poolWaitMilliseconds,
+      timeout: transactionTimeoutMilliseconds,
+    },
+  );
 }

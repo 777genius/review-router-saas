@@ -180,6 +180,32 @@ the GitHub Release.
 
 Repository: `777genius/review-router-saas`.
 
+### Release Authority schema ordering
+
+When a candidate adds a migration under
+`packages/platform/release-authority-db/migrations`, database authority moves
+before code authority. After the exact protected `main` SHA passes the
+`Dedicated Release Authority PG17 contract`, keep provider auto-deploy disabled
+and run `.github/workflows/release-authority-migration.yml` at that SHA with
+`operation=incremental-upgrade`. The protected
+`production-release-authority-migration` environment is the sole production
+holder of the restricted migration-issuer credential. The issuer can create a
+short-lived, operation-bound login but cannot inherit database-owner authority
+or mutate the authority catalog directly. A successful gate on
+that exact SHA is required before deploying control, witness, or other code
+whose readiness depends on the new authority catalog.
+
+That environment must retain at least one required reviewer, prevent self
+review, and allow only protected branches. The workflow verifies those settings
+through the GitHub API in its repository-independent trust job and fails closed
+before the issuer credential is available to any job.
+
+Fresh provisioning is a different operation: use `operation=fresh-install`
+only for a new database with no `release_authority` schema. Neither operation
+falls back to the other. The normative setup, upgrade, failure, and recovery
+procedure is in
+[`docs/operations/private-pg17-release-rollout.md`](../../docs/operations/private-pg17-release-rollout.md).
+
 Before running the workflow:
 
 1. Merge the SaaS/runtime commit to `main`.
@@ -191,9 +217,24 @@ git ls-remote --tags https://github.com/777genius/review-router.git refs/tags/v1
 
 3. Resolve that tag to its immutable Action commit and update
    `REVIEW_ROUTER_PAIRED_ACTION_REF` in `.github/workflows/ci.yml` through a PR.
-4. Wait for the `CI` workflow to pass on the resulting exact SaaS commit. Its
+4. Wait for the trusted `CI` workflow on the resulting exact `main` commit to
+   pass. Its
+   production gate must include both `Dedicated Release Authority PG17
+contract` and `Full private PG16 to PG17 rehearsal` as successful jobs.
+   Each job uploads its own exact-SHA evidence artifact.
+   A manual CI dispatch that enables the authority contract must set
+   `release_authority_contract_baseline_sha` to the previous protected `main`
+   SHA; push CI derives the same fact from the protected push event. Its
    `paired-action-release-gate` artifact must name the same Action commit as the
    release tag.
+5. Confirm the GitHub `production-release` environment exists, requires at
+   least one reviewer, prevents self-review, and permits protected branches
+   only. `main` itself must remain protected. These are external repository
+   settings; the workflow audits them and fails closed but does not create or
+   repair them. Store `SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64` there and, when the
+   optional production Action-ref sync is used, store its scoped
+   `RENDER_API_KEY` there as environment secrets rather than repository
+   secrets.
 
 Run the GitHub Actions workflow:
 
@@ -207,13 +248,22 @@ gh workflow run release.yml \
 
 The SaaS `Release` workflow validates:
 
+- an inline, read-only bootstrap runs before checkout or repository code and
+  proves that the dispatch workflow ref is `refs/heads/main`, the dispatch SHA
+  is still current protected `main`, and `production-release` has the required
+  reviewer and protected-branch policy
 - the requested version is `vN.N.N`
 - it is running on `main`
 - local `HEAD` matches `origin/main`
 - the exact tag does not already exist locally or remotely
 - the version is newer than the latest existing `v1.*.*` tag
 - the matching Action tag exists
-- a successful `CI` run exists for the exact SaaS `HEAD`
+- one successful trusted `CI` run exists for the exact SaaS `HEAD`, and that
+  exact run contains successful, non-skipped `Dedicated Release Authority PG17
+contract` and `Full private PG16 to PG17 rehearsal` jobs
+- the same exact CI run owns both unexpired, digest-addressed evidence
+  artifacts; each artifact manifest binds the repository, commit, run ID, run
+  attempt, exact job name, and SHA-derived artifact name
 - when `sync_production_action_ref=true`, production Render credentials can
   dry-run the requested Action ref override
 - one `linux/amd64` hosted runtime image containing web, API, and worker builds
@@ -222,6 +272,10 @@ The SaaS `Release` workflow validates:
   workflow uploads `hosted-runtime-image-<version>` with the exact
   commit/image URL/digest tuple used by the Render deployment gate
 
+The repository checkout uses only the SHA emitted by that bootstrap and never
+persists checkout credentials. The write-capable release job cannot start
+until the `production-release` environment gate is satisfied; package, OIDC,
+tag, release, and Render credentials are introduced only after bootstrap.
 Only after those gates pass, it creates `v1.0.x`, force-moves `v1`, and creates
 the GitHub Release. Hosted beta production keeps `REVIEW_ROUTER_ACTION_REF` on
 `777genius/review-router@main` by default. Normal release invocation:
@@ -242,6 +296,25 @@ anywhere else.
 
 Set `sync_production_action_ref=true` only for a deliberate rollback or smoke
 override.
+
+The two PostgreSQL gates intentionally do not run for pull requests, including
+fork pull requests. They run together on the trusted push to `main`, so an
+ordinary low-risk PR does not duplicate the expensive real-PostgreSQL work.
+They may also be run manually from `main`, but both workflow-dispatch inputs
+must be enabled in the same run for that run to qualify. A successful CI run
+that skipped either job is not release evidence. The release verifier also
+fails closed for a stale commit, a job or artifact from another run, a failed
+job, a missing artifact, an expired artifact, or artifact bytes whose provider
+digest or exact manifest does not match.
+
+If the trusted push run failed for infrastructure reasons, dispatch a new CI
+run on the exact `main` commit with both PostgreSQL inputs enabled. Do not
+bypass the verifier with a generic green CI run or locally created JSON. No
+hosted or GitLab runtime image build, package publication, tag movement,
+GitHub Release, or downstream production deploy may start until the verifier
+accepts the exact run and both immutable artifacts. The `GitLab Runtime Image`
+workflow applies the same gate before GHCR login or image construction for
+both automatic `workflow_run` publication and manual dispatch.
 
 ## Post-Release Verification
 

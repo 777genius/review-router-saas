@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   createPrismaClient,
   type PrismaClient,
@@ -21,8 +22,8 @@ import {
 import { PrismaCodexRotatingSetupRecovery } from "../apps/web/src/server/prisma-codex-rotating-setup-recovery";
 import { PrismaCodexRotatingSetupPayloadClaim } from "../apps/web/src/server/prisma-codex-rotating-setup-payload-claim";
 
-const releaseDatabaseUrl = requiredUrl(
-  "REVIEW_ROUTER_PRISMA_EVIDENCE_RELEASE_DATABASE_URL",
+const providerAdminDatabaseUrl = requiredUrl(
+  "REVIEW_ROUTER_PRISMA_EVIDENCE_PROVIDER_ADMIN_DATABASE_URL",
 );
 const apiDatabaseUrl = requiredUrl(
   "REVIEW_ROUTER_PRISMA_EVIDENCE_API_DATABASE_URL",
@@ -33,7 +34,9 @@ const webDatabaseUrl = requiredUrl(
 const effectAuthorityDatabaseUrl = requiredUrl(
   "REVIEW_ROUTER_PRISMA_EVIDENCE_EFFECT_AUTHORITY_DATABASE_URL",
 );
-const adminPrisma = createPrismaClient({ databaseUrl: releaseDatabaseUrl });
+const adminPrisma = createPrismaClient({
+  databaseUrl: providerAdminDatabaseUrl,
+});
 const apiPrisma = createPrismaClient({
   databaseUrl: apiDatabaseUrl,
   poolMax: 1,
@@ -74,7 +77,10 @@ const attestationFor = (
   });
 
 function requiredUrl(name: string): string {
-  const value = process.env[name]?.trim();
+  const file = process.env[`${name}_FILE`]?.trim();
+  const value = file
+    ? readFileSync(file, "utf8").trim()
+    : process.env[name]?.trim();
   if (!value)
     throw new Error(`runtime versioned writeback proof URL required:${name}`);
   return value;
@@ -536,7 +542,13 @@ try {
       SET "status" = 'completed', "completedAt" = ${now}, "updatedAt" = ${now}
       WHERE "id" = ${definite.intentId}
     `;
-  } catch {
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !error.message.includes("codex_oauth_database_authority_receipt_required")
+    ) {
+      throw error;
+    }
     missingProviderEvidenceRejected = true;
   }
   if (!missingProviderEvidenceRejected) {
@@ -562,7 +574,13 @@ try {
       SET "status" = 'completed', "completedAt" = ${now}, "updatedAt" = ${now}
       WHERE "id" = ${definite.intentId}
     `;
-  } catch {
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !error.message.includes("codex_oauth_database_authority_receipt_required")
+    ) {
+      throw error;
+    }
     prematureActivationEvidenceRejected = true;
   }
   if (!prematureActivationEvidenceRejected) {

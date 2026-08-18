@@ -3,14 +3,44 @@ import {
   createReleaseRollout,
   RolloutPhase,
   RolloutStep,
+  sha256Canonical,
+  type ReleaseRollout,
   type StepObservation,
 } from "../domain/release-rollout";
 import { ReleaseRolloutUseCases } from "./use-cases";
 import { ProviderAuthorityOperation } from "./ports";
+import { createReleaseMigrationTransition } from "../domain/release-migration-transition";
+
+const resumedPostcondition = {
+  serviceId: "srv-target",
+  ownerId: "tea-owner",
+  serviceType: "web_service",
+  suspended: false,
+  region: "frankfurt",
+  plan: "starter",
+  runtime: "image" as const,
+  image: `registry.example.test/app@sha256:${"a".repeat(64)}`,
+  repository: null,
+  branch: null,
+  rootDirectory: null,
+  buildCommand: null,
+  startCommand: null,
+  preDeployCommand: "",
+  healthPath: "/health",
+  automaticDeployments: false as const,
+  automaticDeployTrigger: "off" as const,
+  shutdownDelaySeconds: 60,
+  instanceCount: 1,
+  environmentSha256: `sha256:${"b".repeat(64)}`,
+};
 
 const rollout = createReleaseRollout({
   rolloutId: "rollout-app-test",
   expectedCommitSha: "d".repeat(40),
+  migrationTransition: createReleaseMigrationTransition({
+    commitSha: "d".repeat(40),
+    releaseImageDigest: `sha256:${"e".repeat(64)}`,
+  }),
   execution: {
     organization: "rr-control",
     controlRepository: "rr-control/releases",
@@ -45,6 +75,41 @@ const observed = (step: StepObservation["step"]): StepObservation => ({
   observedAt: "2026-08-12T00:00:00.000Z",
   facts: { ok: true },
 });
+const legacyEvidenceUnsigned = {
+  schemaVersion: 1 as const,
+  rolloutId: rollout.rolloutId,
+  sourceSystemIdentifier: rollout.source.systemIdentifier,
+  sourceDatabaseName: rollout.source.databaseName,
+  sourceRecoveryWitnessSha256: rollout.source.recoveryWitnessSha256,
+  authorityPrincipal: "source_admin",
+  fenceId: `source-fence:${rollout.rolloutId}`,
+  fenceEstablishedAt: "2026-08-12T00:00:00.000Z",
+  fencedInventorySha256: `sha256:${"f".repeat(64)}`,
+  inventorySha256:
+    "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+  activeLeaseIds: [],
+  fetchedSetupIds: [],
+  pendingIntentIds: [],
+  intentStatuses: [],
+  observations: [
+    {
+      observedAt: "2026-08-12T00:00:01.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+    {
+      observedAt: "2026-08-12T00:00:02.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+  ],
+  eligibilityCutoff: "2026-08-12T00:00:02.000Z",
+  stable: true,
+} as const;
+const legacyEvidence = {
+  ...legacyEvidenceUnsigned,
+  receiptSha256: `sha256:${sha256Canonical(legacyEvidenceUnsigned)}`,
+} as const;
 const stagedRollout = {
   ...rollout,
   phase: RolloutPhase.TargetStaged,
@@ -91,7 +156,13 @@ const activationObservation: StepObservation = {
     targetSystemIdentifier: rollout.target.systemIdentifier,
     firstWriteBoundary: true,
     canonicalPrivilegesSha256: `sha256:${"3".repeat(64)}`,
+    beforePrincipalInventorySha256: `sha256:${"8".repeat(64)}`,
+    beforePrincipalPolicySha256: `sha256:${"9".repeat(64)}`,
+    activatedPrincipalInventorySha256: `sha256:${"a".repeat(64)}`,
+    activatedPrincipalPolicySha256: `sha256:${"b".repeat(64)}`,
     catalogFactsSha256: `sha256:${"4".repeat(64)}`,
+    preactivationCatalogPolicySha256: `sha256:${"c".repeat(64)}`,
+    activatedCatalogPolicySha256: `sha256:${"d".repeat(64)}`,
     firstWriteReceiptSha256: `sha256:${"5".repeat(64)}`,
     observationSha256: `sha256:${"6".repeat(64)}`,
     transactionId: "42",
@@ -112,7 +183,7 @@ const basePorts = () => ({
     })),
   },
   preflight: { observeProtectedEnvironment: vi.fn() },
-  provider: { freezeAndObserve: vi.fn(), compensateAndObserve: vi.fn() },
+  provider: { freezeAndObserve: vi.fn() },
   runner: {
     provision: vi.fn(),
     cleanup: vi.fn(),
@@ -123,6 +194,29 @@ const basePorts = () => ({
   evidence: {} as never,
   ledger: {
     claim: vi.fn().mockResolvedValue("claimed"),
+    beginReleaseMigration: vi.fn().mockImplementation(async (input) => ({
+      schemaVersion: 1,
+      rolloutId: input.rolloutId,
+      runId: input.runId,
+      runAttempt: input.runAttempt,
+      targetSystemIdentifier: input.targetSystemIdentifier,
+      targetRecoveryWitnessSha256: input.targetRecoveryWitnessSha256,
+      transitionSha256: input.transitionSha256,
+      expectedPreviousReceiptSha256: input.expectedPreviousReceiptSha256,
+      sourceLegacyAmbiguity: input.sourceLegacyAmbiguity,
+      eligibilityCutoff: "2026-08-12T00:00:02.000Z",
+      epoch: 1,
+      nonce: "f".repeat(32),
+    })),
+    completeReleaseMigration: vi
+      .fn()
+      .mockImplementation(async (input) => input.receipt),
+    failReleaseMigration: vi.fn().mockResolvedValue(undefined),
+    loadReleaseMigrationCheckpoint: vi.fn().mockResolvedValue({
+      targetManifestPhase: "pre_migration",
+      permit: null,
+      receipt: null,
+    }),
     compareAndSet: vi.fn().mockResolvedValue(true),
     markActivationUncertain: vi.fn().mockResolvedValue(undefined),
     fenceTargetSwitch: vi.fn().mockImplementation(async (input) => ({
@@ -137,6 +231,8 @@ const basePorts = () => ({
       expectedCommitSha: rollout.expectedCommitSha,
       postgresMajor: 17,
       migrationChecksum: "sha256:" + "7".repeat(64),
+      transitionSha256: rollout.migrationTransition.transitionSha256,
+      postManifestIdentity: rollout.migrationTransition.postManifestIdentity,
       epoch: 1,
       nonce: "a".repeat(32),
       sourceSystemIdentifier: rollout.source.systemIdentifier,
@@ -151,7 +247,74 @@ const basePorts = () => ({
   },
 });
 
+const rolloutBeforeMigration = (): ReleaseRollout => ({
+  ...rollout,
+  phase: RolloutPhase.CutoverRunnerProvisioned,
+  receipts: [
+    {
+      step: RolloutStep.ProvisionCutoverRunner,
+      receiptId: `${rollout.rolloutId}:provision_cutover_runner:1`,
+      observedAt: "2026-08-12T00:00:00.000Z",
+      rolloutId: rollout.rolloutId,
+      expectedCommitSha: rollout.expectedCommitSha,
+      runId: rollout.execution.runId,
+      runAttempt: 1,
+      sourceSystemIdentifier: rollout.source.systemIdentifier,
+      targetSystemIdentifier: rollout.target.systemIdentifier,
+      provider: undefined,
+      observationSha256: `sha256:${"2".repeat(64)}`,
+      previousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      receiptSha256: `sha256:${"1".repeat(64)}`,
+    },
+  ],
+});
+
 describe("release rollout application boundary", () => {
+  it.each([
+    { stage: "freeze", phase: RolloutPhase.ProviderFrozen },
+    { stage: "quiesce", phase: RolloutPhase.SourceQuiesced },
+    { stage: "copy", phase: RolloutPhase.GenerationCopied },
+    { stage: "bootstrap", phase: RolloutPhase.TargetRolesBootstrapped },
+    { stage: "release migration", phase: RolloutPhase.MigrationApplied },
+    { stage: "transition preflight", phase: RolloutPhase.MigrationApplied },
+    { stage: "partial transition", phase: RolloutPhase.MigrationApplied },
+  ])(
+    "routes a definite failure after $stage through unified recovery",
+    async ({ phase }) => {
+      const ports = basePorts();
+      const recover = vi.fn(async (failed: ReleaseRollout) => ({
+        ...failed,
+        phase: RolloutPhase.RecoveryCompensated,
+      }));
+      const useCases = new ReleaseRolloutUseCases({
+        ...ports,
+        compensation: { recover },
+      });
+      const result = await useCases.recoverFromFailure(
+        { ...rollout, phase },
+        "definite_pre_activation",
+      );
+      expect(result.phase).toBe(RolloutPhase.RecoveryCompensated);
+      expect(recover).toHaveBeenCalledWith(
+        expect.objectContaining({ phase: RolloutPhase.PreActivationFailed }),
+      );
+    },
+  );
+
+  it.each(["uncertain", "activated"] as const)(
+    "never invokes source recovery when durable activation state is %s",
+    async (state) => {
+      const ports = basePorts();
+      ports.ledger.observeActivationState.mockResolvedValue(state);
+      const recover = vi.fn();
+      await new ReleaseRolloutUseCases({
+        ...ports,
+        compensation: { recover },
+      }).recoverFromFailure(rollout, "definite_pre_activation");
+      expect(recover).not.toHaveBeenCalled();
+      expect(ports.ledger.markActivationUncertain).toHaveBeenCalledOnce();
+    },
+  );
   it("is the only transition path and rejects an adapter observation for another step", async () => {
     const ports = basePorts();
     ports.provider.freezeAndObserve.mockResolvedValue(
@@ -161,6 +324,65 @@ describe("release rollout application boundary", () => {
       new ReleaseRolloutUseCases(ports).freezeProviderServices(rollout),
     ).rejects.toThrow("adapter_observation_step_mismatch");
     expect(rollout.receipts).toHaveLength(0);
+  });
+
+  it("persists quiescence before backup and leaves the caller holding it when backup fails", async () => {
+    const ports = basePorts();
+    const quiescence: StepObservation = {
+      step: RolloutStep.QuiesceSource,
+      observedAt: "2026-08-12T00:00:03.000Z",
+      facts: {
+        complete: true,
+        writerServices: [
+          {
+            serviceId: "srv-source",
+            suspended: true,
+            observedAt: "2026-08-12T00:00:03.000Z",
+          },
+        ],
+        stabilizationSeries: [0, 0, 0],
+        reconnectDeniedRoles: ["reviewrouter_api"],
+        aclSha256: `sha256:${"a".repeat(64)}`,
+        fence: {
+          version: 1,
+          lifecycle: "active",
+          fenceId: `source-fence:${rollout.rolloutId}`,
+          rolloutId: rollout.rolloutId,
+          sourceSystemIdentifier: rollout.source.systemIdentifier,
+          authorityPrincipal: "source_admin",
+          observedAt: "2026-08-12T00:00:03.000Z",
+          beforeInventorySha256: `sha256:${"b".repeat(64)}`,
+          fencedInventorySha256: `sha256:${"c".repeat(64)}`,
+          beforePolicySha256: `sha256:${"d".repeat(64)}`,
+          fencedPolicySha256: `sha256:${"e".repeat(64)}`,
+          priorConnectAclSha256: `sha256:${"f".repeat(64)}`,
+        },
+      },
+    };
+    const captureBackup = vi.fn(async () => {
+      throw new Error("pg_dump_failed");
+    });
+    const useCases = new ReleaseRolloutUseCases({
+      ...ports,
+      database: {
+        quiesce: vi.fn(async () => quiescence),
+        captureBackup,
+      } as never,
+    });
+    let authoritative: ReleaseRollout = {
+      ...rollout,
+      phase: RolloutPhase.RoleRunnerProvisioned,
+    };
+    authoritative = await useCases.quiesceSource(authoritative);
+    expect(authoritative.phase).toBe(RolloutPhase.SourceQuiesced);
+    expect(ports.ledger.compareAndSet).toHaveBeenCalledWith(
+      expect.objectContaining({ step: RolloutStep.QuiesceSource }),
+    );
+    await expect(useCases.captureSourceBackup(authoritative)).rejects.toThrow(
+      "pg_dump_failed",
+    );
+    expect(authoritative.phase).toBe(RolloutPhase.SourceQuiesced);
+    expect(captureBackup).toHaveBeenCalledOnce();
   });
 
   it("durably claims a rollout ID and rejects duplicate/retry execution", async () => {
@@ -183,6 +405,205 @@ describe("release rollout application boundary", () => {
     await expect(useCases.claimRollout(rollout)).rejects.toThrow(
       "rollout_id_already_claimed",
     );
+  });
+
+  it("uses durable begin/effect/complete and records only the trusted post manifest", async () => {
+    const ports = basePorts();
+    const beforeMigration = rolloutBeforeMigration();
+    const runReleaseMigration = vi.fn(async (_target, transition, permit) => ({
+      step: RolloutStep.RunReleaseMigration,
+      observedAt: "2026-08-12T00:00:01.000Z",
+      facts: {
+        version: 3,
+        status: "succeeded",
+        migrationStatus: "succeeded",
+        preflightStatus: "passed",
+        aclGateState: "closed",
+        commit: rollout.expectedCommitSha,
+        imageDigest: transition.releaseImageDigest,
+        roles: ["a", "b", "c", "d"],
+        transitionSha256: transition.transitionSha256,
+        migrationArtifactDigest: transition.migrationArtifactDigest,
+        migrationBundleSha256: transition.migrationBundleSha256,
+        preManifestIdentity: transition.preManifestIdentity,
+        postManifestIdentity: transition.postManifestIdentity,
+        postCatalogDigest: transition.postCatalogDigest,
+        permitEpoch: permit.epoch,
+        permitNonce: permit.nonce,
+        targetSystemIdentifier: permit.targetSystemIdentifier,
+        targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
+        targetMigrationReceiptSha256: `sha256:${"d".repeat(64)}`,
+        targetMigrationEffectFingerprint: `sha256:${"e".repeat(64)}`,
+      },
+    }));
+    ports.database = { runReleaseMigration } as never;
+    const useCases = new ReleaseRolloutUseCases(ports);
+    const completed = await useCases.runReleaseMigration(
+      beforeMigration,
+      legacyEvidence,
+    );
+    expect(completed.targetManifestPhase).toBe("post_migration");
+    expect(ports.ledger.beginReleaseMigration).toHaveBeenCalledOnce();
+    expect(ports.ledger.completeReleaseMigration).toHaveBeenCalledOnce();
+    expect(ports.ledger.compareAndSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ step: RolloutStep.RunReleaseMigration }),
+    );
+    expect(completed.receipts.at(-1)).toMatchObject({
+      migrationChecksum: rollout.migrationTransition.postManifestIdentity,
+      transitionSha256: rollout.migrationTransition.transitionSha256,
+      postManifestIdentity: rollout.migrationTransition.postManifestIdentity,
+    });
+    ports.ledger.loadReleaseMigrationCheckpoint.mockResolvedValue({
+      targetManifestPhase: "post_migration",
+      permit: completed.migrationPermit!,
+      receipt: completed.receipts.at(-1),
+    });
+    runReleaseMigration.mockClear();
+    const recovered = await useCases.runReleaseMigration(
+      beforeMigration,
+      legacyEvidence,
+    );
+    expect(recovered.receipts.at(-1)?.receiptSha256).toBe(
+      completed.receipts.at(-1)?.receiptSha256,
+    );
+    expect(runReleaseMigration).not.toHaveBeenCalled();
+  });
+
+  it("preserves the ledger adapter receiver for migration protocol calls", async () => {
+    const ports = basePorts();
+    const receiverLedger = {
+      ...ports.ledger,
+      receiverMarker: true,
+      async loadReleaseMigrationCheckpoint() {
+        if (this !== receiverLedger)
+          throw new Error("release_migration_ledger_receiver_lost");
+        return {
+          targetManifestPhase: "quarantined" as const,
+          permit: null,
+          receipt: null,
+        };
+      },
+    };
+    ports.ledger = receiverLedger as never;
+
+    await expect(
+      new ReleaseRolloutUseCases(ports).runReleaseMigration(
+        rolloutBeforeMigration(),
+        legacyEvidence,
+      ),
+    ).rejects.toThrow("release_migration_quarantined");
+  });
+
+  it("keeps an uncertain effect in migrating for exact target-receipt recovery", async () => {
+    const ports = basePorts();
+    ports.database = {
+      runReleaseMigration: vi.fn().mockRejectedValue(new Error("sql_failed")),
+    } as never;
+    await expect(
+      new ReleaseRolloutUseCases(ports).runReleaseMigration(
+        rolloutBeforeMigration(),
+        legacyEvidence,
+      ),
+    ).rejects.toThrow("sql_failed");
+    expect(ports.ledger.failReleaseMigration).not.toHaveBeenCalled();
+    expect(ports.ledger.completeReleaseMigration).not.toHaveBeenCalled();
+  });
+
+  it("reuses the stored permit after response loss and completes from the target replay", async () => {
+    const ports = basePorts();
+    const beforeMigration = rolloutBeforeMigration();
+    const permit = await ports.ledger.beginReleaseMigration({
+      rolloutId: beforeMigration.rolloutId,
+      expectedCommitSha: beforeMigration.expectedCommitSha,
+      runId: beforeMigration.execution.runId,
+      runAttempt: 1,
+      sourceSystemIdentifier: beforeMigration.source.systemIdentifier,
+      targetSystemIdentifier: beforeMigration.target.systemIdentifier,
+      targetRecoveryWitnessSha256: beforeMigration.target.recoveryWitnessSha256,
+      transitionSha256: beforeMigration.migrationTransition.transitionSha256,
+      expectedPreviousReceiptSha256:
+        beforeMigration.receipts.at(-1)!.receiptSha256,
+      sourceLegacyAmbiguity: legacyEvidence,
+    });
+    ports.ledger.beginReleaseMigration.mockClear();
+    ports.ledger.beginReleaseMigration.mockResolvedValue(permit);
+    ports.ledger.loadReleaseMigrationCheckpoint.mockResolvedValue({
+      targetManifestPhase: "migrating",
+      permit,
+      receipt: null,
+    });
+    const replayObservation = {
+      step: RolloutStep.RunReleaseMigration,
+      observedAt: "2026-08-12T00:00:01.000Z",
+      facts: {
+        version: 3,
+        status: "succeeded",
+        migrationStatus: "succeeded",
+        preflightStatus: "passed",
+        aclGateState: "closed",
+        commit: beforeMigration.expectedCommitSha,
+        imageDigest: beforeMigration.migrationTransition.releaseImageDigest,
+        roles: ["a", "b", "c", "d"],
+        migrationChecksum:
+          beforeMigration.migrationTransition.postManifestIdentity,
+        transitionSha256: beforeMigration.migrationTransition.transitionSha256,
+        migrationArtifactDigest:
+          beforeMigration.migrationTransition.migrationArtifactDigest,
+        migrationBundleSha256:
+          beforeMigration.migrationTransition.migrationBundleSha256,
+        preManifestIdentity:
+          beforeMigration.migrationTransition.preManifestIdentity,
+        postManifestIdentity:
+          beforeMigration.migrationTransition.postManifestIdentity,
+        postCatalogDigest:
+          beforeMigration.migrationTransition.postCatalogDigest,
+        permitEpoch: permit.epoch,
+        permitNonce: permit.nonce,
+        targetSystemIdentifier: permit.targetSystemIdentifier,
+        targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
+        targetMigrationReceiptSha256: `sha256:${"d".repeat(64)}`,
+        targetMigrationEffectFingerprint: `sha256:${"e".repeat(64)}`,
+      },
+    };
+    ports.database = {
+      runReleaseMigration: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("response_lost_after_commit"))
+        .mockResolvedValueOnce(replayObservation),
+    } as never;
+    const useCases = new ReleaseRolloutUseCases(ports);
+    await expect(
+      useCases.runReleaseMigration(beforeMigration, legacyEvidence),
+    ).rejects.toThrow("response_lost_after_commit");
+    expect(ports.ledger.failReleaseMigration).not.toHaveBeenCalled();
+    await expect(
+      useCases.runReleaseMigration(beforeMigration, legacyEvidence),
+    ).resolves.toMatchObject({
+      targetManifestPhase: "post_migration",
+    });
+    expect(ports.ledger.beginReleaseMigration).toHaveBeenCalledTimes(2);
+    expect(ports.ledger.completeReleaseMigration).toHaveBeenCalledOnce();
+  });
+
+  it("quarantines a stale worker observation instead of accepting its digest", async () => {
+    const ports = basePorts();
+    ports.database = {
+      runReleaseMigration: vi.fn().mockResolvedValue({
+        ...observed(RolloutStep.RunReleaseMigration),
+        facts: {
+          migrationStatus: "succeeded",
+          migrationChecksum: `sha256:${"f".repeat(64)}`,
+        },
+      }),
+    } as never;
+    await expect(
+      new ReleaseRolloutUseCases(ports).runReleaseMigration(
+        rolloutBeforeMigration(),
+        legacyEvidence,
+      ),
+    ).rejects.toThrow("migration_observation_invalid");
+    expect(ports.ledger.failReleaseMigration).toHaveBeenCalledOnce();
+    expect(ports.ledger.completeReleaseMigration).not.toHaveBeenCalled();
   });
 
   it("does not transition when exact runner workflow job identity is wrong", async () => {
@@ -365,7 +786,12 @@ describe("release rollout application boundary", () => {
         step: RolloutStep.ResumeTargetServices,
         observedAt: "2026-08-12T00:00:02.000Z",
         facts: [
-          { serviceId: "srv-target", deployId: "dep-target", resumed: true },
+          {
+            serviceId: "srv-target",
+            deployId: "dep-target",
+            resumed: true,
+            servicePostcondition: resumedPostcondition,
+          },
         ],
         provider: {
           renderServiceIds: ["srv-target"],

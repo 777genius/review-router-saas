@@ -10,9 +10,10 @@ import {
 import { assertSafeProcessBoundary } from "./process-command";
 import { RenderBackupIdentityAdapter } from "./render-backup-identity";
 import {
-  RenderPrivateRunnerAdapter,
+  RenderPrivateRunnerAdapter as ProductionRenderPrivateRunnerAdapter,
   type RenderRunnerRequest,
 } from "./render-private-runner";
+const RenderPrivateRunnerAdapter = ProductionRenderPrivateRunnerAdapter;
 
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {
@@ -314,11 +315,43 @@ describe("Render private runner contract", () => {
 
   it("reconciles the deterministic provider job after create response loss", async () => {
     const jobLedger = ledger();
-    jobLedger.persistProvisioningIntent
-      .mockImplementationOnce(async (value) =>
-        preparedEffect(value.creationLeaseOwner),
-      )
-      .mockResolvedValueOnce(dispatchingEffect);
+    let durableEffect:
+      | ReturnType<typeof preparedEffect>
+      | typeof dispatchingEffect
+      | {
+          state: "bound";
+          ownerId: string;
+          epoch: number;
+          providerId: string;
+          safeForCompensation: false;
+        }
+      | undefined;
+    jobLedger.persistProvisioningIntent.mockImplementation(async (value) => {
+      durableEffect ??= preparedEffect(value.creationLeaseOwner);
+      return durableEffect;
+    });
+    jobLedger.acquireProviderDispatchPermit.mockImplementation(
+      async (value) => {
+        durableEffect = {
+          ...dispatchingEffect,
+          ownerId: value.claimantId,
+          epoch: value.expectedEpoch + 1,
+        };
+        return durableEffect;
+      },
+    );
+    jobLedger.reconcileProvisioningEffect.mockImplementation(async (value) => {
+      if (value.reconciliation.result !== "pending" || !value.jobId)
+        throw new Error("unexpected_runner_reconciliation");
+      durableEffect = {
+        state: "bound",
+        ownerId: durableEffect!.ownerId,
+        epoch: durableEffect!.epoch,
+        providerId: value.jobId,
+        safeForCompensation: false,
+      };
+      return durableEffect;
+    });
     let lostStartCommand = "";
     const firstFetch = vi
       .fn()
@@ -335,7 +368,7 @@ describe("Render private runner contract", () => {
       firstFetch,
     );
     await expect(adapter.provision(request)).rejects.toThrow(
-      "connection_lost_after_create",
+      "provider_http_request_failed",
     );
     const durableCreatedAt = String(
       jobLedger.persistProvisioningIntent.mock.calls[0]?.[0].createdAt,
@@ -376,6 +409,12 @@ describe("Render private runner contract", () => {
     expect(
       replayFetch.mock.calls.filter(([, init]) => init?.method === "POST"),
     ).toHaveLength(0);
+    expect(durableEffect).toMatchObject({
+      state: "bound",
+      providerId: created.id,
+      safeForCompensation: false,
+    });
+    expect(jobLedger.reconcileProvisioningEffect).toHaveBeenCalledTimes(1);
   });
 
   it("reuses an existing ledger-bound active job without listing or creating jobs", async () => {
@@ -970,7 +1009,7 @@ describe("Render private runner contract", () => {
     expect(harness.open).toEqual([]);
   });
 
-  it("retries a transient provider discovery failure without changing effect authority", async () => {
+  it("retries a safe transient provider discovery read without changing effect authority", async () => {
     const intentId = "rri-reconciliation-test";
     const harness = reconciliationHarness([
       reconciledJob(intentId, "job-provider-retry"),
@@ -979,15 +1018,9 @@ describe("Render private runner contract", () => {
 
     await expect(
       harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
-    ).rejects.toThrow("render_unavailable");
-    expect(harness.effect()).toMatchObject({ state: "dispatching" });
-    expect(
-      harness.jobLedger.reconcileProvisioningEffect,
-    ).not.toHaveBeenCalled();
-
-    await expect(
-      harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
     ).resolves.toMatchObject({ result: "clean", safeForCompensation: true });
+    expect(harness.effect()).toMatchObject({ state: "cleaned" });
+    expect(harness.fetchImpl).toHaveBeenCalledTimes(3);
     expect(
       harness.fetchImpl.mock.calls.filter(
         ([, init]) => init?.method === "POST",
@@ -1336,6 +1369,24 @@ describe("organization-scoped JIT isolation", () => {
       requestJitConfiguration(jit, "token", jitFetch(override) as typeof fetch),
     ).rejects.toThrow();
   });
+
+  it("does not expose GitHub response or authorization secrets", async () => {
+    const error = await requestJitConfiguration(
+      jit,
+      "github-auth-canary",
+      vi.fn().mockResolvedValue(
+        new Response("github-body-canary", {
+          status: 503,
+          headers: { "set-cookie": "github-cookie-canary" },
+        }),
+      ) as typeof fetch,
+    ).catch((value: unknown) => value);
+    const output = `${String(error)}${JSON.stringify(error)}`;
+    expect(output.length).toBeLessThan(1_536);
+    expect(output).not.toMatch(
+      /github-auth-canary|github-body-canary|github-cookie-canary/u,
+    );
+  });
 });
 
 describe("process and runner secret boundary", () => {
@@ -1351,13 +1402,13 @@ describe("process and runner secret boundary", () => {
       assertSafeProcessBoundary("psql", ["postgresql://u:p@h/d"], {
         PATH: "/bin",
       }),
-    ).toThrow("release_rollout_secret_in_argv");
+    ).toThrow("release_rollout_process_boundary_rejected");
     expect(() =>
       assertSafeProcessBoundary("psql", [], {
         PATH: "/bin",
         PGPASSWORD: "secret",
       }),
-    ).toThrow("release_rollout_broad_child_environment");
+    ).toThrow("release_rollout_process_boundary_rejected");
   });
   it("invokes only Runner.Listener run --jitconfig", async () => {
     const child = {
@@ -1384,6 +1435,8 @@ describe("process and runner secret boundary", () => {
 
   it("cancels only the no-job timer when assignment begins", async () => {
     vi.useFakeTimers();
+    const stdout = vi.spyOn(process.stdout, "write");
+    const stderr = vi.spyOn(process.stderr, "write");
     const child = new EventEmitter() as EventEmitter & {
       stdout: PassThrough;
       stderr: PassThrough;
@@ -1401,11 +1454,22 @@ describe("process and runner secret boundary", () => {
       environment: { PATH: "/bin" },
     });
     await vi.advanceTimersByTimeAsync(900);
-    child.stdout.write("2026-08-12: Running job: private-cutover\n");
+    child.stdout.write(
+      "2026-08-12: Running job: private-cutover stdout-secret-canary\n",
+    );
+    child.stderr.write("runner-stderr-secret-canary\n");
     await vi.advanceTimersByTimeAsync(10_000);
     child.emit("exit", 0);
     await expect(running).resolves.toBeUndefined();
     expect(child.kill).not.toHaveBeenCalled();
+    expect(JSON.stringify(stdout.mock.calls)).not.toContain(
+      "stdout-secret-canary",
+    );
+    expect(JSON.stringify(stderr.mock.calls)).not.toContain(
+      "stderr-secret-canary",
+    );
+    stdout.mockRestore();
+    stderr.mockRestore();
     vi.useRealTimers();
   });
 
@@ -1429,7 +1493,7 @@ describe("process and runner secret boundary", () => {
     });
     await vi.advanceTimersByTimeAsync(1000);
     child.emit("exit", null);
-    await expect(running).rejects.toThrow("github_jit_no_job_timeout");
+    await expect(running).rejects.toThrow("release_rollout_process_failed");
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
     vi.useRealTimers();
   });
@@ -1470,5 +1534,38 @@ describe("Render recovery plus external backup witness", () => {
         "/postgres/dpg-source/recovery",
       ),
     ).toBe(true);
+  });
+
+  it("does not expose Render recovery bodies or authorization secrets", async () => {
+    const externalWitness = {
+      witnessSha256: `sha256:${"a".repeat(64)}`,
+      sourceResourceId: "dpg-source",
+      internalHostname: "source.internal",
+      databaseName: "reviewrouter",
+      systemIdentifier: "100",
+      lsn: "0/16B6C50",
+      capturedAt: "2026-08-12T00:00:00.000Z",
+      recoveryWindowEndsAt: "2026-08-13T00:00:00.000Z",
+      dumpSha256: `sha256:${"b".repeat(64)}`,
+    };
+    const error = await new RenderBackupIdentityAdapter(
+      vi.fn().mockResolvedValue(
+        new Response("render-recovery-body-canary", {
+          status: 200,
+          headers: { "set-cookie": "render-recovery-cookie-canary" },
+        }),
+      ),
+    )
+      .capture({
+        apiKey: "render-recovery-auth-canary",
+        sourceDatabaseId: "dpg-source",
+        externalWitness,
+      })
+      .catch((value: unknown) => value);
+    const output = `${String(error)}${JSON.stringify(error)}`;
+    expect(output.length).toBeLessThan(1_536);
+    expect(output).not.toMatch(
+      /render-recovery-body-canary|render-recovery-cookie-canary|render-recovery-auth-canary/u,
+    );
   });
 });

@@ -23,9 +23,16 @@ group must:
   re-read retain the returned positive runner ID, group ID, and exact labels.
 
 The protected `main` workflow is dispatch-only and rejects run attempts other
-than one. `production-release-preflight` must require at least one reviewer,
-prevent self-review, and allow protected branches only. Preflight reads and
-hashes the observed GitHub policy; a variable claiming the policy is not proof.
+than one. Dispatch must use `--ref main`: environment branch policy evaluates
+the workflow ref, not `inputs.expected_sha`. Every privileged environment must
+require at least one reviewer, prevent self-review, and allow protected branches
+only. Before checkout, an inline read-only bootstrap proves the workflow ref,
+dispatch SHA, current protected `main`, `expected_sha`, release run/artifact
+coordinates, and every environment policy agree. It emits the only SHA later
+checkouts may use, all with persisted credentials disabled. If bootstrap or
+protected preflight fails or is skipped, downstream and always-reconcile jobs
+cannot start or receive secrets. Preflight then reads and hashes the observed
+GitHub policy into durable evidence; a variable claiming the policy is not proof.
 Every dispatch also supplies the immutable release workflow run ID and hosted
 runtime identity artifact ID. Before rollout claim or any provider/database
 mutation, preflight downloads that exact artifact, verifies its GitHub artifact
@@ -137,14 +144,30 @@ Use four independent credentials:
 - `RENDER_RUNNER_CONTROL_API_KEY`: one-off runner creation and terminal polling;
 - `RENDER_PROVENANCE_READ_API_KEY`: read-only service/deploy/recovery/env facts;
 - `RENDER_SERVICE_SUSPENSION_API_KEY`: source/target suspend and resume only.
-- `RENDER_TARGET_SWITCH_API_KEY`: complete target environment replacement and
+- `RENDER_TARGET_SWITCH_API_KEY`: key-scoped target environment mutation and
   immutable deploy creation/polling only.
 
 Adapters accept additive documented fields while requiring their security
-subset. Service/deploy/job/env list cursor wrappers, suspend/resume HTTP 202,
-and full environment replacement follow Render OpenAPI. Full replacement first
-reads every page, preserves every key, writes the complete set, re-reads every
-page, and compares complete key/value digests without logging values.
+subset. Every inventory has explicit page/item ceilings, cursor syntax and
+cycle checks; an incomplete inventory fails closed. Every HTTP request has an
+abort deadline. Only safe reads have bounded automatic retries.
+
+Every Render write consumes a durable, single-use provider-mutation permit
+bound to rollout, operation, exact resource, expected state fingerprint,
+authority epoch and expiry. The adapter re-observes that fingerprint, validates
+the consumed execution receipt immediately before one HTTP write, and records
+the exact postcondition. Environment changes use one bulk
+`PUT /services/{serviceId}/env-vars` replacement per permit. Lost write
+responses are observed and reconciled; they are never blindly replayed.
+
+Render does not document ETags or conditional writes. This protocol is
+authority-serialized compare-and-swap with pre/post state witnesses, not
+provider-native CAS. It serializes ReviewRouter actors, but cannot fence a
+simultaneous Render console or independently credentialed API writer in the
+small interval between the final observation and the provider write. Any drift,
+unproven postcondition, deadline, or response loss closes the operation and
+requires durable reconciliation/forward repair. No environment value, URL,
+token, or provider response body is included in errors or outcomes.
 
 There is no backups-by-ID call. Render contributes only
 `GET /postgres/{id}/recovery`. A separately authenticated export witness binds
@@ -190,18 +213,25 @@ The source sequence is mandatory:
    mutation intent before each required suspend call, re-observe it suspended,
    persist an immutable completion observation, and finally persist the
    complete inspected inventory;
-2. revoke `CONNECT` from PUBLIC and runtime roles and commit it;
-3. terminate existing sessions;
-4. observe at least three bounded zero-session samples;
-5. prove every exact runtime credential connects to the expected source system
-   before revocation, then require the exact database CONNECT
-   permission-denied class from that same credential/system.
+2. install an attested source-local fence ledger, snapshot the exact CONNECT
+   ACL, revoke CONNECT from PUBLIC and every catalog role except the isolated
+   fence authority, commit that database-level fence, and only then terminate
+   all other sessions;
+3. evaluate the complete effective-principal inventory against the reviewed
+   phase policy, deny reconnect for every approved runtime credential, and use
+   bounded zero-session samples only as supporting evidence.
 
 `writersSuspended` is never synthesized. If freeze stops part-way, the durable
 intent/completion observations—not the adapter process—name the exact mutated
 subset. An unresolved intent is an unknown provider effect and denies
-compensation. A definite
-failure before activation enters compensation only after the database gate
+compensation.
+
+Render environment-key discovery is only a provider hint; it is not proof that
+all database-capable processes were found. The complete PostgreSQL principal
+inventory and committed database fence are the security boundary for unlisted
+or external writers.
+
+A definite failure before activation enters compensation only after the database gate
 proves that subset and runner external effects are safe; source ACL/environment
 is restored and exactly that subset is resumed and re-observed. Zero runner
 intents are safe only with partial/complete mutation evidence. A completed
@@ -213,11 +243,17 @@ Equivalence is restricted to `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, streams
 each table/materialized view through a hash with an 8 MiB process ceiling, and
 also binds sequence `last_value`/`is_called`/owner/dependency, columns/defaults,
 constraints/indexes/triggers, policies and RLS, functions/views/schemas,
-ACL/default privileges/ownership, and migration history. Activation rejects an
-unclassified application schema, privileged/bypass-RLS runtime roles, runtime
-ownership, or unsafe PUBLIC privileges. Canonical grants, catalog-fact hash,
-and immutable first-write receipt share one transaction. Duplicate activation,
-including an identical replay, is rejected.
+ACL/default privileges/ownership, and migration history. Activation independently
+projects every relevant schema/object/owner/grant/default ACL, membership and
+effective privilege inside its transaction (including large objects and full
+RLS predicates, but excluding ephemeral `pg_temp_*` state) and compares the normalized facts
+exactly with the reviewed contracts bound by release-control into the one-shot
+permit. Extra direct grants to approved roles, approved-role ownership drift,
+non-public schema paths, PUBLIC paths, default-ACL drift, role reachability and
+policy digest mismatch all fail closed. The principal evidence and immutable
+receipt bind both reviewed policy digests and both live catalog projections.
+Byte-identical activation replay returns the durable receipt without mutating
+catalog state.
 
 ## Workflow completion
 
@@ -227,7 +263,13 @@ are terminal. After activation, the second runner is also cleanup-proven. Only
 then may the hosted finalizer use the service-suspension credential to resume
 the exact target services, observe their live deploys, execute the unique
 authenticated no-store POST write/read canary, and assemble/verify trusted
-evidence. The evidence binds the
+evidence. Each API, web, and worker database-role proof is challenge-bound to
+its service ID, exact Render deploy ID, immutable provenance, and normalized
+service-postcondition digest. After all three proofs, the finalizer performs a
+fresh Render observation and fails if the live deploy identity, provenance, or
+postcondition moved. The trusted `liveCanarySha256` must equal the
+`VerifyLiveCanary` receipt's observation digest; a shape-valid replacement
+digest is not accepted. The evidence also binds the
 protected-environment receipt, rollout/SHA/run/job/attempt/deploy identities,
 both generations, external backup witness, receipt chain, activation boundary,
 both runner lifecycles, resumed deploys, and live canary.

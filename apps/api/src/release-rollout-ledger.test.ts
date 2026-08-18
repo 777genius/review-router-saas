@@ -4,21 +4,43 @@ import { describe, expect, it } from "vitest";
 import type {
   ActivationAuthorization,
   ExternalEffectRecord,
+  MutationExecutionReceipt,
+  OneShotMutationPermit,
   ProviderAuthorityRequest,
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
-import { registerReleaseRolloutLedgerRoutes } from "./release-authority/adapters/http";
+import {
+  assertOneShotMutationPermit,
+  createReleaseMigrationTransition,
+  sha256Canonical,
+  ProviderIdentifier,
+  ProviderResourceKind,
+} from "@reviewrouter/features-release-rollout";
+import {
+  migrationBeginRequest,
+  migrationCompleteRequest,
+  migrationFailRequest,
+  registerReleaseRolloutLedgerRoutes,
+  rolloutClaimRequest,
+} from "./release-authority/adapters/http";
 import {
   ReleaseAuthorityService,
   ReleaseRolloutReconciliationService,
   RunnerOperationsService,
+  ProviderMutationAuthorityService,
+  type ReleaseAuthorityHighRiskMutationGate,
 } from "./release-authority/application/services";
+import { sourceLegacyAmbiguityFixture } from "../../../test/fixtures/source-legacy-ambiguity";
 import type {
   ReleaseAuthorityLedgerPort,
   ReleaseRolloutReconciliationPort,
   RunnerOperationsLedgerPort,
 } from "./release-authority/domain/model";
 
+const migrationTransition = createReleaseMigrationTransition({
+  commitSha: "a".repeat(40),
+  releaseImageDigest: `sha256:${"b".repeat(64)}`,
+});
 const binding = {
   rolloutId: "rollout-ledger-test",
   expectedCommitSha: "a".repeat(40),
@@ -27,12 +49,29 @@ const binding = {
   sourceSystemIdentifier: "100",
   targetSystemIdentifier: "200",
 };
+const claimBinding = {
+  ...binding,
+  targetRecoveryWitnessSha256: "c".repeat(64),
+  migrationTransition,
+};
 
 type CombinedLedgerPort = ReleaseAuthorityLedgerPort &
   RunnerOperationsLedgerPort &
   ReleaseRolloutReconciliationPort;
 
 class ConcurrentRepository implements CombinedLedgerPort {
+  async beginReleaseMigration(): Promise<never> {
+    throw new Error("not_implemented_in_legacy_concurrency_fixture");
+  }
+  async completeReleaseMigration(): Promise<never> {
+    throw new Error("not_implemented_in_legacy_concurrency_fixture");
+  }
+  async failReleaseMigration(): Promise<void> {
+    throw new Error("not_implemented_in_legacy_concurrency_fixture");
+  }
+  async loadReleaseMigrationCheckpoint(): Promise<never> {
+    throw new Error("not_implemented_in_legacy_concurrency_fixture");
+  }
   async completeSourceFreeze() {
     return "recorded" as const;
   }
@@ -118,6 +157,8 @@ class ConcurrentRepository implements CombinedLedgerPort {
       expectedCommitSha: input.expectedCommitSha,
       postgresMajor: input.postgresMajor,
       migrationChecksum: input.migrationChecksum,
+      transitionSha256: input.transitionSha256,
+      postManifestIdentity: input.postManifestIdentity,
       epoch: 1,
       nonce: "c".repeat(32),
       sourceSystemIdentifier: input.sourceSystemIdentifier,
@@ -295,14 +336,258 @@ class ConcurrentRepository implements CombinedLedgerPort {
 
 const token = "ledger-control-secret";
 const tokenSha256 = createHash("sha256").update(token).digest("hex");
+const highRiskGate: ReleaseAuthorityHighRiskMutationGate = {
+  execute: async (sequence) =>
+    sequence(async (target, mutation) =>
+      mutation({
+        systemIdentifier:
+          target === "installer" || target === "reader" ? "200" : "100",
+        recoveryWitnessSha256:
+          target === "installer" || target === "reader" ? "c".repeat(64) : "",
+      }),
+    ),
+};
 const services = (repository: CombinedLedgerPort) => ({
-  authority: new ReleaseAuthorityService(repository),
+  authority: new ReleaseAuthorityService(
+    repository,
+    undefined,
+    undefined,
+    highRiskGate,
+    migrationTransition,
+  ),
   runnerOperations: new RunnerOperationsService(repository),
-  reconciliation: new ReleaseRolloutReconciliationService(repository),
+  reconciliation: new ReleaseRolloutReconciliationService(
+    repository,
+    undefined,
+    highRiskGate,
+  ),
   controlTokenSha256: tokenSha256,
 });
 
 describe("release rollout ledger internal API", () => {
+  it("parses migration DTOs exactly and rejects malformed or cross-route identities", () => {
+    const digestValue = `sha256:${"d".repeat(64)}`;
+    const sourceLegacyAmbiguity = sourceLegacyAmbiguityFixture({
+      rolloutId: binding.rolloutId,
+      sourceSystemIdentifier: binding.sourceSystemIdentifier,
+      firstObservedAt: "2026-08-13T23:59:58.000Z",
+      eligibilityCutoff: "2026-08-13T23:59:59.000Z",
+    });
+    const begin = {
+      ...binding,
+      targetRecoveryWitnessSha256: "c".repeat(64),
+      transitionSha256: migrationTransition.transitionSha256,
+      expectedPreviousReceiptSha256: digestValue,
+      sourceLegacyAmbiguity,
+    };
+    const permit = {
+      schemaVersion: 1 as const,
+      rolloutId: binding.rolloutId,
+      runId: binding.runId,
+      runAttempt: 1,
+      targetSystemIdentifier: binding.targetSystemIdentifier,
+      targetRecoveryWitnessSha256: "c".repeat(64),
+      transitionSha256: migrationTransition.transitionSha256,
+      expectedPreviousReceiptSha256: digestValue,
+      sourceLegacyAmbiguity,
+      eligibilityCutoff: "2026-08-13T23:59:59.000Z",
+      epoch: 1,
+      nonce: "e".repeat(32),
+    };
+    const unsignedReceipt = {
+      step: "run_release_migration" as const,
+      receiptId: `${binding.rolloutId}:run_release_migration:12`,
+      observedAt: "2026-08-14T00:00:00.000Z",
+      ...binding,
+      observationSha256: digestValue,
+      previousReceiptSha256: digestValue,
+      migrationChecksum: migrationTransition.postManifestIdentity,
+      transitionSha256: migrationTransition.transitionSha256,
+      migrationArtifactDigest: migrationTransition.migrationArtifactDigest,
+      migrationBundleSha256: migrationTransition.migrationBundleSha256,
+      preManifestIdentity: migrationTransition.preManifestIdentity,
+      postManifestIdentity: migrationTransition.postManifestIdentity,
+      postCatalogDigest: migrationTransition.postCatalogDigest,
+      permitEpoch: 1,
+      permitNonce: permit.nonce,
+      targetMigrationReceiptSha256: `sha256:${"1".repeat(64)}`,
+      targetMigrationEffectFingerprint: `sha256:${"2".repeat(64)}`,
+    };
+    const receipt = {
+      ...unsignedReceipt,
+      receiptSha256: `sha256:${sha256Canonical(unsignedReceipt)}`,
+    };
+    expect(rolloutClaimRequest(claimBinding)).toEqual(claimBinding);
+    expect(migrationBeginRequest(begin, binding.rolloutId)).toEqual(begin);
+    expect(
+      migrationCompleteRequest({ permit, receipt }, binding.rolloutId),
+    ).toEqual({ permit, receipt: { ...receipt, provider: undefined } });
+    expect(
+      migrationFailRequest(
+        { permit, reasonSha256: digestValue },
+        binding.rolloutId,
+      ),
+    ).toEqual({ permit, reasonSha256: digestValue });
+    const malformed = [
+      () => rolloutClaimRequest({ ...claimBinding, unknown: true }),
+      () => rolloutClaimRequest({ ...claimBinding, runId: 123 }),
+      () => rolloutClaimRequest({ ...claimBinding, expectedCommitSha: "bad" }),
+      () =>
+        migrationBeginRequest(
+          { ...begin, rolloutId: "other" },
+          binding.rolloutId,
+        ),
+      () =>
+        migrationBeginRequest(
+          { ...begin, transitionSha256: null },
+          binding.rolloutId,
+        ),
+      () =>
+        migrationCompleteRequest(
+          { permit, receipt, extra: true },
+          binding.rolloutId,
+        ),
+      () =>
+        migrationCompleteRequest(
+          { permit: { ...permit, epoch: "1" }, receipt },
+          binding.rolloutId,
+        ),
+      () =>
+        migrationCompleteRequest(
+          { permit, receipt: { ...receipt, observedAt: "yesterday" } },
+          binding.rolloutId,
+        ),
+      () =>
+        migrationFailRequest(
+          { permit, reasonSha256: "bad" },
+          binding.rolloutId,
+        ),
+      () =>
+        migrationFailRequest(
+          {
+            permit: { ...permit, rolloutId: "other" },
+            reasonSha256: digestValue,
+          },
+          binding.rolloutId,
+        ),
+    ];
+    for (const parse of malformed)
+      expect(parse).toThrow("release_migration_request_invalid");
+  });
+  it("exposes the authenticated one-shot provider mutation authority protocol", async () => {
+    let state: "fresh" | "consumed" | "executing" | "completed" = "fresh";
+    const expected = { fingerprint: `sha256:${"b".repeat(64)}`, version: null };
+    const resource = {
+      provider: ProviderIdentifier.Render,
+      kind: ProviderResourceKind.Service,
+      id: "srv-one",
+    };
+    const permit: OneShotMutationPermit = {
+      rolloutId: binding.rolloutId,
+      operation: "freeze:srv-one",
+      resource,
+      ownerId: "actor-one",
+      epoch: 1,
+      permitId: "c".repeat(64),
+      token: "d".repeat(64),
+      expected,
+      issuedAt: "2020-01-01T00:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      singleUse: true as const,
+    };
+    const receipt: MutationExecutionReceipt = {
+      rolloutId: permit.rolloutId,
+      operation: permit.operation,
+      resource,
+      ownerId: permit.ownerId,
+      epoch: permit.epoch,
+      permitId: permit.permitId,
+      receiptId: "e".repeat(64),
+      expected,
+      consumedAt: "2026-08-14T00:00:01.000Z",
+    };
+    expect(() => assertOneShotMutationPermit(permit, new Date())).not.toThrow();
+    const providerMutationAuthority = new ProviderMutationAuthorityService(
+      {
+        recover: async () => ({ status: "absent" }),
+        issue: async () => permit,
+        consume: async () => {
+          if (state === "fresh") state = "consumed";
+          return receipt;
+        },
+        validateExecution: async () => {
+          if (state !== "consumed") return false;
+          state = "executing";
+          return true;
+        },
+        complete: async () => {
+          if (state === "executing") state = "completed";
+          if (state !== "completed") throw new Error("not_executing");
+        },
+        reconcile: async () => undefined,
+      },
+      highRiskGate,
+    );
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, {
+      ...services(new ConcurrentRepository()),
+      providerMutationAuthority,
+      providerAuthorityTokenSha256: tokenSha256,
+    });
+    const request = (path: string, payload: object) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/provider-mutations/${path}`,
+        headers: { authorization: `Bearer ${token}` },
+        payload,
+      });
+    expect(
+      (
+        await request("recover", {
+          rolloutId: permit.rolloutId,
+          operation: permit.operation,
+          resource,
+          ownerId: permit.ownerId,
+          expected,
+          leaseSeconds: 60,
+        })
+      ).json(),
+    ).toEqual({ status: "absent" });
+    expect(
+      (
+        await request("issue", {
+          rolloutId: permit.rolloutId,
+          operation: permit.operation,
+          resource,
+          ownerId: permit.ownerId,
+          expected,
+          leaseSeconds: 60,
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect((await request("consume", permit)).json()).toEqual(receipt);
+    expect((await request("consume", permit)).json()).toEqual(receipt);
+    expect((await request("validate-execution", receipt)).json()).toEqual({
+      authorized: true,
+    });
+    expect((await request("validate-execution", receipt)).json()).toEqual({
+      authorized: false,
+    });
+    const observation = {
+      resource,
+      state: expected,
+      observedAt: "2026-08-14T00:00:02.000Z",
+    };
+    const completed = await request("complete", { receipt, observation });
+    expect(completed.statusCode).toBe(200);
+    expect(await request("complete", { receipt, observation })).toMatchObject({
+      statusCode: 200,
+      body: completed.body,
+    });
+    expect(state).toBe("completed");
+    await app.close();
+  });
+
   it("requires the authority-owned provider creation boundary on runner jobs", async () => {
     const repository = new ConcurrentRepository();
     const app = Fastify();
@@ -379,6 +664,155 @@ describe("release rollout ledger internal API", () => {
     expect(completed).toEqual([
       { rolloutId: "rollout-1", outcome: "source_recovered" },
     ]);
+    await app.close();
+  });
+
+  it("validates exact recovery-effect requests and rejects secret-bearing observations", async () => {
+    const dispatched: string[] = [];
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, {
+      ...services(new ConcurrentRepository()),
+      serviceTransition: {
+        intendRecoveryEffect: async () => {
+          dispatched.push("intend");
+          return {};
+        },
+        claimRecoveryEffect: async () => {
+          dispatched.push("claim");
+          return {};
+        },
+        consumeRecoveryEffectPermit: async () => {
+          dispatched.push("consume");
+          return {};
+        },
+        validateRecoveryEffectExecution: async () => {
+          dispatched.push("validate-execution");
+          return {};
+        },
+        completeRecoveryEffect: async () => {
+          dispatched.push("complete");
+          return {};
+        },
+        reconcileRecoveryEffect: async () => {
+          dispatched.push("reconcile");
+          return {};
+        },
+      } as never,
+    });
+    const headers = { authorization: `Bearer ${token}` };
+    const base = {
+      rolloutId: "rollout-1",
+      effectKey: "restore_database_writes",
+      kind: "restore_database_writes",
+    };
+    const request = (route: string, payload: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/service-transitions/rollout-1/recovery-effects/${route}`,
+        headers,
+        payload,
+      });
+    for (const [route, payload] of [
+      ["intend", { ...base, token: "secret" }],
+      [
+        "claim",
+        { ...base, ownerId: "worker-1", leaseSeconds: 60, extra: true },
+      ],
+      [
+        "consume",
+        {
+          ...base,
+          ownerId: "worker-1",
+          epoch: 1,
+          permitToken: "a".repeat(64),
+          password: "secret",
+        },
+      ],
+      [
+        "complete",
+        {
+          ...base,
+          ownerId: "worker-1",
+          epoch: 1,
+          permitToken: "a".repeat(64),
+          executionReceipt: "b".repeat(64),
+          observation: {
+            sourceWritesRestored: true,
+            observedAt: "2026-08-13T00:00:00.000Z",
+            environmentDelta: { PASSWORD: "secret" },
+          },
+        },
+      ],
+      [
+        "validate-execution",
+        {
+          ...base,
+          ownerId: "worker-1",
+          epoch: 1,
+          permitToken: "a".repeat(64),
+          executionReceipt: "b".repeat(64),
+          token: "secret",
+        },
+      ],
+      [
+        "reconcile",
+        {
+          ...base,
+          ownerId: "worker-1",
+          epoch: 1,
+          permitToken: "a".repeat(64),
+          observation: {
+            sourceWritesRestored: true,
+            observedAt: "2026-08-13T00:00:00.000Z",
+            token: "secret",
+          },
+        },
+      ],
+      [
+        "complete",
+        {
+          ...base,
+          ownerId: "worker-1",
+          epoch: 1,
+          permitToken: "a".repeat(64),
+          executionReceipt: "b".repeat(64),
+          observation: {
+            sourceWritesRestored: true,
+            observedAt: "https://user:password@example.test/token",
+          },
+        },
+      ],
+    ] as const)
+      expect((await request(route, payload)).statusCode).toBe(400);
+    expect(dispatched).toEqual([]);
+
+    expect((await request("intend", base)).statusCode).toBe(200);
+    const permit = {
+      ...base,
+      ownerId: "worker-1",
+      epoch: 1,
+      permitToken: "a".repeat(64),
+    };
+    expect(
+      (
+        await request("validate-execution", {
+          ...permit,
+          executionReceipt: "b".repeat(64),
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await request("reconcile", {
+          ...permit,
+          observation: {
+            sourceWritesRestored: true,
+            observedAt: "2026-08-13T00:00:00.000Z",
+          },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(dispatched).toEqual(["intend", "validate-execution", "reconcile"]);
     await app.close();
   });
 
@@ -585,7 +1019,7 @@ describe("release rollout ledger internal API", () => {
         await app.inject({
           method: "POST",
           url: "/v1/rollouts/claim",
-          payload: binding,
+          payload: claimBinding,
         })
       ).statusCode,
     ).toBe(401);
@@ -593,13 +1027,13 @@ describe("release rollout ledger internal API", () => {
       method: "POST",
       url: "/v1/rollouts/claim",
       headers: { authorization: `Bearer ${token}` },
-      payload: binding,
+      payload: claimBinding,
     });
     const duplicate = await app.inject({
       method: "POST",
       url: "/v1/rollouts/claim",
       headers: { authorization: `Bearer ${token}` },
-      payload: binding,
+      payload: claimBinding,
     });
     expect(first.json()).toEqual({ result: "claimed" });
     expect(duplicate.json()).toEqual({ result: "duplicate" });
@@ -671,8 +1105,14 @@ describe("release rollout ledger internal API", () => {
   });
 
   it("replays one exact activation permit and denies conflicting concurrency", async () => {
-    const service = new ReleaseAuthorityService(new ConcurrentRepository());
-    await service.claim(binding);
+    const service = new ReleaseAuthorityService(
+      new ConcurrentRepository(),
+      undefined,
+      undefined,
+      highRiskGate,
+      migrationTransition,
+    );
+    await service.claim(claimBinding);
     const results = await Promise.allSettled(
       Array.from({ length: 64 }, (_, index) =>
         service.authorizeActivation({
@@ -681,7 +1121,9 @@ describe("release rollout ledger internal API", () => {
           previousReceiptSha256: `sha256:${"0".repeat(64)}`,
           targetDeployIds: ["dep-target"],
           postgresMajor: 17,
-          migrationChecksum: `sha256:${"7".repeat(64)}`,
+          migrationChecksum: migrationTransition.postManifestIdentity,
+          transitionSha256: migrationTransition.transitionSha256,
+          postManifestIdentity: migrationTransition.postManifestIdentity,
         }),
       ),
     );
@@ -697,14 +1139,21 @@ describe("release rollout ledger internal API", () => {
       previousReceiptSha256: `sha256:${"0".repeat(64)}`,
       targetDeployIds: ["dep-target"],
       postgresMajor: 17,
-      migrationChecksum: `sha256:${"7".repeat(64)}`,
+      migrationChecksum: migrationTransition.postManifestIdentity,
+      transitionSha256: migrationTransition.transitionSha256,
+      postManifestIdentity: migrationTransition.postManifestIdentity,
     });
     expect(exactReplay.epoch).toBe(1);
     expect(await service.state(binding)).toBe("uncertain");
   });
 
   it("allows exactly one target-switch lease under adversarial concurrency", async () => {
-    const service = new ReleaseAuthorityService(new ConcurrentRepository());
+    const service = new ReleaseAuthorityService(
+      new ConcurrentRepository(),
+      undefined,
+      undefined,
+      highRiskGate,
+    );
     const results = await Promise.all(
       Array.from({ length: 64 }, () =>
         service.fenceTargetSwitch({

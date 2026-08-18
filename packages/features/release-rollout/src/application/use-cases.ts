@@ -1,6 +1,9 @@
 import {
   assertRunnerIdentity,
+  beginReleaseMigrationAttempt,
+  recoverCompletedReleaseMigration,
   RolloutStep,
+  sha256Canonical,
   transitionFailure,
   transitionFromObservation,
   type ReleaseRollout,
@@ -8,6 +11,10 @@ import {
   type RunnerIdentity,
   type StepObservation,
 } from "../domain/release-rollout";
+import {
+  assertLegacyAmbiguityEvidence,
+  type LegacyAmbiguityEvidence,
+} from "../domain/trusted-rollout-evidence";
 import type {
   DatabaseRolloutPort,
   ProviderAuthorityDecisionPort,
@@ -20,6 +27,42 @@ import type {
   TrustedEvidencePort,
 } from "./ports";
 import { ProviderAuthorityOperation } from "./ports";
+
+export const requestProviderAuthorityDecision = async (
+  authority: ProviderAuthorityDecisionPort | undefined,
+  r: ReleaseRollout,
+  operation: ProviderAuthorityRequest["operation"],
+  activationBoundary: ProviderAuthorityRequest["activationBoundary"],
+) => {
+  const request = {
+    rolloutId: r.rolloutId,
+    operation,
+    sourceSystemIdentifier: r.source.systemIdentifier,
+    targetSystemIdentifier: r.target.systemIdentifier,
+    expectedReceiptSha256:
+      r.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`,
+    activationBoundary,
+  } as const;
+  let decision;
+  try {
+    if (!authority) throw new Error("provider_authority_not_configured");
+    decision = await authority.decide(request);
+  } catch (error) {
+    throw new Error("provider_authority_unavailable_or_denied", {
+      cause: error,
+    });
+  }
+  if (
+    decision.decision !== "allow" ||
+    !decision.decisionId ||
+    Number.isNaN(Date.parse(decision.decidedAt)) ||
+    Object.entries(request).some(
+      ([key, value]) => decision[key as keyof typeof decision] !== value,
+    )
+  )
+    throw new Error("provider_authority_decision_invalid");
+  return decision;
+};
 
 export class ReleaseRolloutUseCases {
   constructor(
@@ -44,35 +87,12 @@ export class ReleaseRolloutUseCases {
     operation: ProviderAuthorityRequest["operation"],
     activationBoundary: ProviderAuthorityRequest["activationBoundary"],
   ) {
-    const request = {
-      rolloutId: r.rolloutId,
+    return requestProviderAuthorityDecision(
+      this.ports.authority,
+      r,
       operation,
-      sourceSystemIdentifier: r.source.systemIdentifier,
-      targetSystemIdentifier: r.target.systemIdentifier,
-      expectedReceiptSha256:
-        r.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`,
       activationBoundary,
-    } as const;
-    let decision;
-    try {
-      if (!this.ports.authority)
-        throw new Error("provider_authority_not_configured");
-      decision = await this.ports.authority.decide(request);
-    } catch (error) {
-      throw new Error("provider_authority_unavailable_or_denied", {
-        cause: error,
-      });
-    }
-    if (
-      decision.decision !== "allow" ||
-      !decision.decisionId ||
-      Number.isNaN(Date.parse(decision.decidedAt)) ||
-      Object.entries(request).some(
-        ([key, value]) => decision[key as keyof typeof decision] !== value,
-      )
-    )
-      throw new Error("provider_authority_decision_invalid");
-    return decision;
+    );
   }
 
   private async accept(
@@ -133,6 +153,8 @@ export class ReleaseRolloutUseCases {
       runAttempt: r.execution.runAttempt,
       sourceSystemIdentifier: r.source.systemIdentifier,
       targetSystemIdentifier: r.target.systemIdentifier,
+      targetRecoveryWitnessSha256: r.target.recoveryWitnessSha256,
+      migrationTransition: r.migrationTransition,
     });
     if (claimed !== "claimed") throw new Error("rollout_id_already_claimed");
     return await this.accept(
@@ -146,6 +168,7 @@ export class ReleaseRolloutUseCases {
     );
   }
   async freezeProviderServices(r: ReleaseRollout) {
+    await this.authorize(r, ProviderAuthorityOperation.FreezeSource, "before");
     return await this.accept(
       r,
       await this.ports.provider.freezeAndObserve(),
@@ -217,12 +240,85 @@ export class ReleaseRolloutUseCases {
       RolloutStep.CleanupRoleRunner,
     );
   }
-  async runReleaseMigration(r: ReleaseRollout) {
-    return await this.accept(
-      r,
-      await this.ports.database.runReleaseMigration(r.target),
-      RolloutStep.RunReleaseMigration,
+  async runReleaseMigration(
+    r: ReleaseRollout,
+    sourceLegacyAmbiguity: LegacyAmbiguityEvidence,
+  ) {
+    const trustedSourceLegacyAmbiguity = assertLegacyAmbiguityEvidence(
+      sourceLegacyAmbiguity,
     );
+    if (
+      !this.ports.ledger.beginReleaseMigration ||
+      !this.ports.ledger.completeReleaseMigration ||
+      !this.ports.ledger.failReleaseMigration ||
+      !this.ports.ledger.loadReleaseMigrationCheckpoint
+    )
+      throw new Error("release_migration_phase_protocol_unavailable");
+    const checkpoint = await this.ports.ledger.loadReleaseMigrationCheckpoint({
+      rolloutId: r.rolloutId,
+      targetSystemIdentifier: r.target.systemIdentifier,
+    });
+    if (checkpoint.targetManifestPhase === "quarantined")
+      throw new Error("release_migration_quarantined");
+    if (checkpoint.targetManifestPhase === "post_migration") {
+      if (!checkpoint.permit || !checkpoint.receipt)
+        throw new Error("release_migration_checkpoint_invalid");
+      return recoverCompletedReleaseMigration(
+        r,
+        checkpoint.permit,
+        checkpoint.receipt,
+        trustedSourceLegacyAmbiguity,
+      );
+    }
+    const previousReceiptSha256 =
+      r.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`;
+    const permit = await this.ports.ledger.beginReleaseMigration({
+      rolloutId: r.rolloutId,
+      expectedCommitSha: r.expectedCommitSha,
+      runId: r.execution.runId,
+      runAttempt: r.execution.runAttempt,
+      sourceSystemIdentifier: r.source.systemIdentifier,
+      targetSystemIdentifier: r.target.systemIdentifier,
+      targetRecoveryWitnessSha256: r.target.recoveryWitnessSha256,
+      transitionSha256: r.migrationTransition.transitionSha256,
+      expectedPreviousReceiptSha256: previousReceiptSha256,
+      sourceLegacyAmbiguity: trustedSourceLegacyAmbiguity,
+    });
+    const migrating = beginReleaseMigrationAttempt(
+      r,
+      permit,
+      trustedSourceLegacyAmbiguity,
+    );
+    // A transport failure leaves the durable authority checkpoint in
+    // `migrating`; an exact retry uses the stored permit and target receipt.
+    const observation: StepObservation =
+      await this.ports.database.runReleaseMigration(
+        r.target,
+        r.migrationTransition,
+        permit,
+        trustedSourceLegacyAmbiguity,
+      );
+    let completed: ReleaseRollout;
+    let receipt: ReleaseMigrationReceipt;
+    try {
+      if (observation.step !== RolloutStep.RunReleaseMigration)
+        throw new Error("adapter_observation_step_mismatch");
+      completed = transitionFromObservation(migrating, observation);
+      receipt = completed.receipts.at(-1) as ReleaseMigrationReceipt;
+    } catch (error) {
+      const reasonSha256 = `sha256:${sha256Canonical({
+        code: error instanceof Error ? error.message : "unknown",
+      })}`;
+      await this.ports.ledger.failReleaseMigration({ permit, reasonSha256 });
+      throw error;
+    }
+    const canonical = await this.ports.ledger.completeReleaseMigration({
+      permit,
+      receipt,
+    });
+    if (canonical.receiptSha256 !== receipt.receiptSha256)
+      throw new Error("release_migration_receipt_recovery_conflict");
+    return completed;
   }
   async stageTargetServices(r: ReleaseRollout) {
     const previousReceiptSha256 = r.receipts.at(-1)!.receiptSha256;
@@ -281,6 +377,8 @@ export class ReleaseRolloutUseCases {
         targetDeployIds,
         postgresMajor: 17,
         migrationChecksum,
+        transitionSha256: r.migrationTransition.transitionSha256,
+        postManifestIdentity: r.migrationTransition.postManifestIdentity,
       });
       this.assertActivationAuthorization(r, authorization, {
         jobId,
@@ -289,7 +387,15 @@ export class ReleaseRolloutUseCases {
         migrationChecksum,
       });
       authorized = true;
-      const observation = await this.ports.database.activate(r.rolloutId);
+      const rawObservation = await this.ports.database.activate(r.rolloutId);
+      const observation = {
+        ...rawObservation,
+        facts: {
+          ...(rawObservation.facts as Record<string, unknown>),
+          transitionSha256: authorization.transitionSha256,
+          postManifestIdentity: authorization.postManifestIdentity,
+        },
+      };
       if (observation.step !== RolloutStep.ActivateTargetGeneration)
         throw new Error("activation_receipt_step_mismatch");
       const next = transitionFromObservation(r, observation);
@@ -347,6 +453,10 @@ export class ReleaseRolloutUseCases {
       authorization.expectedCommitSha !== r.expectedCommitSha ||
       authorization.postgresMajor !== 17 ||
       authorization.migrationChecksum !== expected.migrationChecksum ||
+      authorization.transitionSha256 !==
+        r.migrationTransition.transitionSha256 ||
+      authorization.postManifestIdentity !==
+        r.migrationTransition.postManifestIdentity ||
       authorization.sourceSystemIdentifier !== r.source.systemIdentifier ||
       authorization.targetSystemIdentifier !== r.target.systemIdentifier ||
       authorization.previousReceiptSha256 !== expected.previousReceiptSha256 ||
@@ -371,6 +481,8 @@ export class ReleaseRolloutUseCases {
       authorization.expectedCommitSha !== r.expectedCommitSha ||
       receipt.postgresMajor !== authorization.postgresMajor ||
       receipt.migrationChecksum !== authorization.migrationChecksum ||
+      receipt.transitionSha256 !== authorization.transitionSha256 ||
+      receipt.postManifestIdentity !== authorization.postManifestIdentity ||
       receipt.sourceSystemIdentifier !== authorization.sourceSystemIdentifier ||
       receipt.targetSystemIdentifier !== authorization.targetSystemIdentifier ||
       receipt.previousReceiptSha256 !== authorization.previousReceiptSha256 ||
@@ -457,7 +569,7 @@ export class ReleaseRolloutUseCases {
       return failed;
     }
     if (!this.ports.compensation)
-      throw new Error("legacy_compensation_path_disabled");
+      throw new Error("authority_mediated_compensation_not_configured");
     return this.ports.compensation.recover(failed);
   }
 }

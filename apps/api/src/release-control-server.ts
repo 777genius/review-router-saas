@@ -1,6 +1,8 @@
 import { config as loadDotenv } from "dotenv";
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import { createReleaseControlApp } from "./release-control-composition.js";
+import { readinessTimingPolicyFromEnvironment } from "./release-authority/adapters/readiness-config.js";
+import { trustedActivationCatalogPoliciesFromEnvironment } from "./release-authority/adapters/activation-catalog-policy-config.js";
 
 for (const path of ["../../.env.local", "../../.env", ".env.local", ".env"])
   loadDotenv({ path, override: false });
@@ -42,6 +44,47 @@ const app = await createReleaseControlApp({
       "REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN_SHA256",
     ),
   },
+  deploymentRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
+  artifactDigest: required("REVIEW_ROUTER_RELEASE_IMAGE_DIGEST"),
+  readinessPolicy: readinessTimingPolicyFromEnvironment(process.env),
+  trustedDatabaseIdentity: {
+    authorityDatabaseIdentity: {
+      serverIdentity: required(
+        "REVIEW_ROUTER_RELEASE_AUTHORITY_SYSTEM_IDENTIFIER",
+      ),
+      databaseIdentity: required(
+        "REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_OID",
+      ),
+      databaseName: required("REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_NAME"),
+    },
+    targetDatabaseIdentity: {
+      serverIdentity: required(
+        "REVIEW_ROUTER_ACTIVATION_TARGET_SYSTEM_IDENTIFIER",
+      ),
+      databaseIdentity: required(
+        "REVIEW_ROUTER_ACTIVATION_TARGET_DATABASE_OID",
+      ),
+      databaseName: required("REVIEW_ROUTER_ACTIVATION_TARGET_DATABASE_NAME"),
+    },
+    authorityOwnerRoleName: required(
+      "REVIEW_ROUTER_RELEASE_AUTHORITY_OWNER_ROLE",
+    ),
+    activationGuardRoleName: required("REVIEW_ROUTER_ACTIVATION_GUARD_ROLE"),
+    installerRoutineBodySha256: required(
+      "REVIEW_ROUTER_ACTIVATION_INSTALLER_BODY_SHA256",
+    ),
+    readerRoutineBodySha256: required(
+      "REVIEW_ROUTER_ACTIVATION_READER_BODY_SHA256",
+    ),
+    targetMigrationManifestIdentity: required(
+      "REVIEW_ROUTER_ACTIVATION_MIGRATION_MANIFEST_SHA256",
+    ),
+    activationNamespaceFingerprint: required(
+      "REVIEW_ROUTER_ACTIVATION_NAMESPACE_FINGERPRINT",
+    ),
+  },
+  trustedActivationCatalogPolicies:
+    trustedActivationCatalogPoliciesFromEnvironment(process.env),
 });
 
 app.addHook("onClose", async () => {

@@ -1,0 +1,50 @@
+{
+  "kind": "reviewrouter-activation-catalog-policy-promotion-provenance",
+  "version": 3,
+  "status": "ready",
+  "readinessReason": "reviewed-v22-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
+  "promotedAt": "2026-08-18T20:58:29.335Z",
+  "captureBaseCommit": "09854060647768cac8a436d0c837aae65aba99f2",
+  "candidate": {
+    "bytes": 2388930,
+    "sha256": "5edc211d4576d919181e2b2d3ad099ff20f74f1986da7c14e0d8ff107f39096e",
+    "captures": [
+      {
+        "label": "rr-v65-activation-catalog-v22-candidate.trace45.raw",
+        "sha256": "5edc211d4576d919181e2b2d3ad099ff20f74f1986da7c14e0d8ff107f39096e"
+      },
+      {
+        "label": "rr-v65-activation-catalog-v22-candidate.trace46.raw",
+        "sha256": "5edc211d4576d919181e2b2d3ad099ff20f74f1986da7c14e0d8ff107f39096e"
+      }
+    ]
+  },
+  "postgresImages": {
+    "sourcePg16": "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+    "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
+  },
+  "canonicalDigests": {
+    "preactivation": "sha256:7d782d8feee32282cfc43c3e295482d16f71cd7f50380b8b9131439d208ff817",
+    "activated": "sha256:07cc2dba4d106051a66e7f3c7a5c3e20ed29943204d8e3501c13fd77fbaa7924",
+    "artifact": "sha256:3605b4a6545565dd11cf5d37ff39808350a13d992e3a3f1428084104d5293020"
+  },
+  "independentReview": {
+    "result": "GO",
+    "reviewerRunId": "rr-v65-security-audit-v74",
+    "reviewedAt": "2026-08-18T20:56:25.998Z",
+    "baseCommit": "09854060647768cac8a436d0c837aae65aba99f2",
+    "auditedHead": "09854060647768cac8a436d0c837aae65aba99f2",
+    "reviewArtifactSha256": "5bbd5d7f5e49636b361945f0370b4934febb3e64333ca0a34c66951775541629",
+    "candidateBytes": 2388930,
+    "candidateSha256": "5edc211d4576d919181e2b2d3ad099ff20f74f1986da7c14e0d8ff107f39096e",
+    "postgresImages": {
+      "sourcePg16": "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+      "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
+    },
+    "canonicalDigests": {
+      "preactivation": "sha256:7d782d8feee32282cfc43c3e295482d16f71cd7f50380b8b9131439d208ff817",
+      "activated": "sha256:07cc2dba4d106051a66e7f3c7a5c3e20ed29943204d8e3501c13fd77fbaa7924",
+      "artifact": "sha256:3605b4a6545565dd11cf5d37ff39808350a13d992e3a3f1428084104d5293020"
+    }
+  }
+}

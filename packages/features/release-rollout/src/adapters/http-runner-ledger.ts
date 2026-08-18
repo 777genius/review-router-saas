@@ -6,13 +6,17 @@ import type {
   RunnerJobLedger,
 } from "./render-private-runner";
 import type { RenderFetch } from "./render-api";
+import { BoundedProviderHttpClient } from "./bounded-provider-io";
 import type {
   ActivationAuthorization,
   ActivationReceipt,
   AuthoritativeGenerationLedger,
+  ReleaseMigrationReceipt,
   StepObservation,
   TargetSwitchFence,
 } from "../domain/release-rollout";
+import type { ReleaseMigrationPermit } from "../domain/release-migration-transition";
+import { assertLegacyAmbiguityEvidence } from "../domain/trusted-rollout-evidence";
 import type { ServiceTransitionCheckpoint } from "../application/transactional-service-cutover";
 import type { ServiceTransitionLedger } from "../application/transactional-service-cutover";
 import type { RunnerIdentity } from "../domain/release-rollout";
@@ -23,7 +27,144 @@ import {
   type ExternalEffectControlReconciliation,
   type ExternalEffectRecord,
 } from "../domain/external-effect";
-import { assertRecoveryEffectRecord } from "../domain/recovery-effect";
+import {
+  assertRecoveryEffectConsumptionResult,
+  assertRecoveryEffectRecordBinding,
+} from "../domain/recovery-effect";
+import {
+  fromRenderSourceRecoveryManifestV1,
+  fromRenderTargetServiceContractV1,
+  toRenderSourceRecoveryManifestV1,
+  toRenderTargetServiceContractV1,
+  type RenderSourceRecoveryManifestV1,
+  type RenderTargetServiceContractV1,
+} from "./render-service-transition-compatibility";
+
+const migrationRecord = (value: unknown): Record<string, unknown> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("runner_ledger_migration_response_invalid");
+  return value as Record<string, unknown>;
+};
+const migrationExactKeys = (
+  value: Record<string, unknown>,
+  keys: readonly string[],
+) =>
+  Object.keys(value).length === keys.length &&
+  keys.every((key) => Object.hasOwn(value, key));
+const migrationDigest = /^sha256:[a-f0-9]{64}$/u;
+const migrationSystem = /^[1-9][0-9]{0,19}$/u;
+const migrationPermitResponse = (value: unknown): ReleaseMigrationPermit => {
+  const item = migrationRecord(value);
+  if (
+    !migrationExactKeys(item, [
+      "schemaVersion",
+      "rolloutId",
+      "runId",
+      "runAttempt",
+      "targetSystemIdentifier",
+      "targetRecoveryWitnessSha256",
+      "transitionSha256",
+      "expectedPreviousReceiptSha256",
+      "sourceLegacyAmbiguity",
+      "eligibilityCutoff",
+      "epoch",
+      "nonce",
+    ]) ||
+    item.schemaVersion !== 1 ||
+    typeof item.rolloutId !== "string" ||
+    typeof item.runId !== "string" ||
+    item.runAttempt !== 1 ||
+    typeof item.targetSystemIdentifier !== "string" ||
+    !migrationSystem.test(item.targetSystemIdentifier) ||
+    typeof item.targetRecoveryWitnessSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(item.targetRecoveryWitnessSha256) ||
+    typeof item.transitionSha256 !== "string" ||
+    !migrationDigest.test(item.transitionSha256) ||
+    typeof item.expectedPreviousReceiptSha256 !== "string" ||
+    !migrationDigest.test(item.expectedPreviousReceiptSha256) ||
+    typeof item.eligibilityCutoff !== "string" ||
+    !Number.isFinite(Date.parse(item.eligibilityCutoff)) ||
+    !Number.isSafeInteger(item.epoch) ||
+    Number(item.epoch) < 1 ||
+    typeof item.nonce !== "string" ||
+    !/^[a-f0-9]{32}$/u.test(item.nonce)
+  )
+    throw new Error("runner_ledger_migration_permit_invalid");
+  assertLegacyAmbiguityEvidence(item.sourceLegacyAmbiguity);
+  return item as ReleaseMigrationPermit;
+};
+
+const migrationReceiptResponse = (value: unknown): ReleaseMigrationReceipt => {
+  const item = migrationRecord(value);
+  const keys = [
+    "step",
+    "receiptId",
+    "observedAt",
+    "rolloutId",
+    "expectedCommitSha",
+    "runId",
+    "runAttempt",
+    "sourceSystemIdentifier",
+    "targetSystemIdentifier",
+    "observationSha256",
+    "previousReceiptSha256",
+    "receiptSha256",
+    "migrationChecksum",
+    "transitionSha256",
+    "migrationArtifactDigest",
+    "migrationBundleSha256",
+    "preManifestIdentity",
+    "postManifestIdentity",
+    "postCatalogDigest",
+    "permitEpoch",
+    "permitNonce",
+    "targetMigrationReceiptSha256",
+    "targetMigrationEffectFingerprint",
+  ];
+  if (
+    (!migrationExactKeys(item, keys) &&
+      !migrationExactKeys(item, [...keys, "provider"])) ||
+    item.step !== "run_release_migration" ||
+    typeof item.receiptId !== "string" ||
+    typeof item.observedAt !== "string" ||
+    !Number.isFinite(Date.parse(item.observedAt)) ||
+    typeof item.rolloutId !== "string" ||
+    typeof item.expectedCommitSha !== "string" ||
+    !/^[a-f0-9]{40}$/u.test(item.expectedCommitSha) ||
+    typeof item.runId !== "string" ||
+    item.runAttempt !== 1 ||
+    typeof item.sourceSystemIdentifier !== "string" ||
+    !migrationSystem.test(item.sourceSystemIdentifier) ||
+    typeof item.targetSystemIdentifier !== "string" ||
+    !migrationSystem.test(item.targetSystemIdentifier) ||
+    item.sourceSystemIdentifier === item.targetSystemIdentifier ||
+    [
+      "observationSha256",
+      "previousReceiptSha256",
+      "receiptSha256",
+      "migrationChecksum",
+      "transitionSha256",
+      "migrationArtifactDigest",
+      "migrationBundleSha256",
+      "preManifestIdentity",
+      "postManifestIdentity",
+      "postCatalogDigest",
+      "targetMigrationReceiptSha256",
+      "targetMigrationEffectFingerprint",
+    ].some(
+      (key) =>
+        typeof item[key] !== "string" ||
+        !migrationDigest.test(String(item[key])),
+    ) ||
+    !Number.isSafeInteger(item.permitEpoch) ||
+    Number(item.permitEpoch) < 1 ||
+    typeof item.permitNonce !== "string" ||
+    !/^[a-f0-9]{32}$/u.test(item.permitNonce) ||
+    (Object.hasOwn(item, "provider") && item.provider !== null)
+  )
+    throw new Error("runner_ledger_migration_receipt_invalid");
+  return { ...item, provider: undefined } as ReleaseMigrationReceipt;
+};
 
 export class AuthenticatedRunnerLedgerAdapter
   implements
@@ -31,13 +172,16 @@ export class AuthenticatedRunnerLedgerAdapter
     RunnerCleanupWitnessPort,
     AuthoritativeGenerationLedger
 {
+  private readonly fetchImpl: RenderFetch;
   constructor(
     private readonly origin: string,
     private readonly token: string,
-    private readonly fetchImpl: RenderFetch = fetch,
+    fetchImpl: RenderFetch = fetch,
   ) {
     if (!origin.startsWith("https://") || !token)
       throw new Error("runner_ledger_configuration_invalid");
+    const http = new BoundedProviderHttpClient(fetchImpl);
+    this.fetchImpl = (url, init) => http.request("authority", url, init);
   }
   private async request(
     path: string,
@@ -238,6 +382,8 @@ export class AuthenticatedRunnerLedgerAdapter
     runAttempt: number;
     sourceSystemIdentifier: string;
     targetSystemIdentifier: string;
+    targetRecoveryWitnessSha256: string;
+    migrationTransition: import("../domain/release-migration-transition").ReleaseMigrationTransitionV1;
   }): Promise<"claimed" | "duplicate"> {
     const value = (await this.request("/v1/rollouts/claim", {
       method: "POST",
@@ -246,6 +392,93 @@ export class AuthenticatedRunnerLedgerAdapter
     if (value.result !== "claimed" && value.result !== "duplicate")
       throw new Error("runner_ledger_rollout_claim_invalid");
     return value.result;
+  }
+  async beginReleaseMigration(
+    input: Parameters<
+      NonNullable<AuthoritativeGenerationLedger["beginReleaseMigration"]>
+    >[0],
+  ): Promise<ReleaseMigrationPermit> {
+    const value = await this.request(
+      `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/release-migration/begin`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    const envelope = migrationRecord(value);
+    if (!migrationExactKeys(envelope, ["permit"]))
+      throw new Error("runner_ledger_migration_permit_missing");
+    return migrationPermitResponse(envelope.permit);
+  }
+  async completeReleaseMigration(
+    input: Parameters<
+      NonNullable<AuthoritativeGenerationLedger["completeReleaseMigration"]>
+    >[0],
+  ): Promise<ReleaseMigrationReceipt> {
+    const value = await this.request(
+      `/v1/rollouts/${encodeURIComponent(input.permit.rolloutId)}/release-migration/complete`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    const envelope = migrationRecord(value);
+    if (!migrationExactKeys(envelope, ["receipt"]))
+      throw new Error("runner_ledger_migration_receipt_missing");
+    return migrationReceiptResponse(envelope.receipt);
+  }
+  async failReleaseMigration(
+    input: Parameters<
+      NonNullable<AuthoritativeGenerationLedger["failReleaseMigration"]>
+    >[0],
+  ): Promise<void> {
+    await this.request(
+      `/v1/rollouts/${encodeURIComponent(input.permit.rolloutId)}/release-migration/fail`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+  }
+  async loadReleaseMigrationCheckpoint(
+    input: Parameters<
+      NonNullable<
+        AuthoritativeGenerationLedger["loadReleaseMigrationCheckpoint"]
+      >
+    >[0],
+  ): Promise<
+    Awaited<
+      ReturnType<
+        NonNullable<
+          AuthoritativeGenerationLedger["loadReleaseMigrationCheckpoint"]
+        >
+      >
+    >
+  > {
+    const envelope = migrationRecord(
+      await this.request(
+        `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/release-migration/checkpoint?target_system_identifier=${encodeURIComponent(input.targetSystemIdentifier)}`,
+      ),
+    );
+    if (
+      !migrationExactKeys(envelope, [
+        "targetManifestPhase",
+        "permit",
+        "receipt",
+      ]) ||
+      !["pre_migration", "migrating", "post_migration", "quarantined"].includes(
+        String(envelope.targetManifestPhase),
+      )
+    )
+      throw new Error("runner_ledger_migration_checkpoint_invalid");
+    return {
+      targetManifestPhase: envelope.targetManifestPhase,
+      permit:
+        envelope.permit === null
+          ? null
+          : migrationPermitResponse(envelope.permit),
+      receipt:
+        envelope.receipt === null
+          ? null
+          : migrationReceiptResponse(envelope.receipt),
+    } as Awaited<
+      ReturnType<
+        NonNullable<
+          AuthoritativeGenerationLedger["loadReleaseMigrationCheckpoint"]
+        >
+      >
+    >;
   }
   async compareAndSet(input: {
     rolloutId: string;
@@ -445,7 +678,13 @@ export class AuthenticatedRunnerLedgerAdapter
   ): Promise<"created" | "existing"> {
     const value = (await this.request("/v1/service-transitions", {
       method: "POST",
-      body: JSON.stringify(input),
+      body: JSON.stringify({
+        ...input,
+        sourceManifest: toRenderSourceRecoveryManifestV1(input.sourceManifest),
+        targetContracts: input.targetContracts.map(
+          toRenderTargetServiceContractV1,
+        ),
+      }),
     })) as Record<string, unknown>;
     if (value.result !== "created" && value.result !== "existing")
       throw new Error("runner_ledger_service_transition_begin_invalid");
@@ -454,9 +693,22 @@ export class AuthenticatedRunnerLedgerAdapter
   async readContract(
     rolloutId: string,
   ): Promise<Awaited<ReturnType<ServiceTransitionLedger["readContract"]>>> {
-    return (await this.request(
+    const value = (await this.request(
       `/v1/service-transitions/${encodeURIComponent(rolloutId)}/contract`,
-    )) as Awaited<ReturnType<ServiceTransitionLedger["readContract"]>>;
+    )) as {
+      sourceManifest: RenderSourceRecoveryManifestV1;
+      targetContracts: readonly RenderTargetServiceContractV1[];
+    } | null;
+    return value
+      ? {
+          sourceManifest: fromRenderSourceRecoveryManifestV1(
+            value.sourceManifest,
+          ),
+          targetContracts: value.targetContracts.map(
+            fromRenderTargetServiceContractV1,
+          ),
+        }
+      : null;
   }
   async append(
     checkpoint: Omit<ServiceTransitionCheckpoint, "sequence">,
@@ -492,21 +744,33 @@ export class AuthenticatedRunnerLedgerAdapter
   async intendRecoveryEffect(
     input: Parameters<ServiceTransitionLedger["intendRecoveryEffect"]>[0],
   ): ReturnType<ServiceTransitionLedger["intendRecoveryEffect"]> {
-    return assertRecoveryEffectRecord(
+    return assertRecoveryEffectRecordBinding(
       await this.request(
         `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/intend`,
         { method: "POST", body: JSON.stringify(input) },
       ),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        serviceId: input.serviceId ?? null,
+      },
     );
   }
   async claimRecoveryEffect(
     input: Parameters<ServiceTransitionLedger["claimRecoveryEffect"]>[0],
   ): ReturnType<ServiceTransitionLedger["claimRecoveryEffect"]> {
-    return assertRecoveryEffectRecord(
+    return assertRecoveryEffectRecordBinding(
       await this.request(
         `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/claim`,
         { method: "POST", body: JSON.stringify(input) },
       ),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        ownerId: input.ownerId,
+      },
     );
   }
   async consumeRecoveryEffectPermit(
@@ -514,21 +778,61 @@ export class AuthenticatedRunnerLedgerAdapter
       ServiceTransitionLedger["consumeRecoveryEffectPermit"]
     >[0],
   ): ReturnType<ServiceTransitionLedger["consumeRecoveryEffectPermit"]> {
-    return assertRecoveryEffectRecord(
+    return assertRecoveryEffectConsumptionResult(
       await this.request(
         `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/consume`,
         { method: "POST", body: JSON.stringify(input) },
       ),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        ownerId: input.ownerId,
+        epoch: input.epoch,
+        permitToken: input.permitToken,
+      },
     );
   }
   async completeRecoveryEffect(
     input: Parameters<ServiceTransitionLedger["completeRecoveryEffect"]>[0],
   ): ReturnType<ServiceTransitionLedger["completeRecoveryEffect"]> {
-    return assertRecoveryEffectRecord(
+    return assertRecoveryEffectRecordBinding(
       await this.request(
         `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/complete`,
         { method: "POST", body: JSON.stringify(input) },
       ),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        ownerId: input.ownerId,
+        epoch: input.epoch,
+        permitToken: input.permitToken,
+      },
+    );
+  }
+  async validateRecoveryEffectExecution(
+    input: Parameters<
+      ServiceTransitionLedger["validateRecoveryEffectExecution"]
+    >[0],
+  ): ReturnType<ServiceTransitionLedger["validateRecoveryEffectExecution"]> {
+    return assertRecoveryEffectConsumptionResult(
+      await this.request(
+        `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/validate-execution`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+      input,
+    );
+  }
+  async reconcileRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["reconcileRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["reconcileRecoveryEffect"]> {
+    return assertRecoveryEffectRecordBinding(
+      await this.request(
+        `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/reconcile`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+      input,
     );
   }
   async recordSourceFreezeMutation(input: {
@@ -659,13 +963,16 @@ export class AuthenticatedRunnerLedgerAdapter
 
 /** Triggers the separately credentialed provider-side observer by job identity. */
 export class AuthenticatedProviderWitnessAdapter {
+  private readonly fetchImpl: RenderFetch;
   constructor(
     private readonly origin: string,
     private readonly token: string,
-    private readonly fetchImpl: RenderFetch = fetch,
+    fetchImpl: RenderFetch = fetch,
   ) {
     if (!origin.startsWith("https://") || !token)
       throw new Error("runner_witness_configuration_invalid");
+    const http = new BoundedProviderHttpClient(fetchImpl);
+    this.fetchImpl = (url, init) => http.request("runner_witness", url, init);
   }
 
   async observe(jobId: string): Promise<void> {

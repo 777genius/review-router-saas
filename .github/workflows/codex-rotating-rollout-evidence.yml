@@ -80,7 +80,8 @@ jobs:
       - name: Capture production writer and drain
         env:
           REVIEW_ROUTER_RENDER_OBSERVATION_PATH: trusted-rollout/artifacts/deployments.json
-        run: node scripts/capture-codex-rotating-production-writer.mjs > trusted-rollout/artifacts/database.json
+          REVIEW_ROUTER_PRODUCTION_WRITER_PRINCIPAL_POLICY_JSON: ${{ vars.REVIEW_ROUTER_TARGET_PRINCIPAL_POLICY_JSON }}
+        run: node --import tsx scripts/capture-codex-rotating-production-writer.mjs > trusted-rollout/artifacts/database.json
 
       - name: Capture exact GitHub workflow drain
         env:

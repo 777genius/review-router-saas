@@ -1,0 +1,242 @@
+name: Trusted Release Authority migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact protected main commit containing the migration chain
+        required: true
+        type: string
+      operation:
+        description: Fresh database installation or existing database upgrade
+        required: true
+        type: choice
+        options:
+          - incremental-upgrade
+          - bootstrap-upgrade
+          - fresh-install
+
+permissions: {}
+
+concurrency:
+  group: release-authority-database-mutation-production
+  cancel-in-progress: false
+
+jobs:
+  trust-bootstrap:
+    name: verify-protected-main-for-authority-migration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      trusted_sha: ${{ steps.trust.outputs.trusted_sha }}
+    steps:
+      - name: Establish immutable migration trust before repository execution
+        id: trust
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          GH_TOKEN: ${{ github.token }}
+          REQUIRED_ENVIRONMENT: production-release-authority-migration
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          // trust-bootstrap-node:start
+          const { appendFileSync } = require("node:fs");
+          const required = (name) => {
+            const value = process.env[name];
+            if (!value) throw new Error(`authority_migration_trust_missing:${name}`);
+            return value;
+          };
+          const fail = (reason) => {
+            throw new Error(`authority_migration_trust_rejected:${reason}`);
+          };
+          const repository = required("GITHUB_REPOSITORY");
+          const sha = required("GITHUB_SHA").toLowerCase();
+          const expectedSha = required("EXPECTED_SHA").toLowerCase();
+          if (required("GITHUB_EVENT_NAME") !== "workflow_dispatch") fail("event");
+          if (required("GITHUB_REF") !== "refs/heads/main") fail("workflow_ref");
+          if (!/^[a-f0-9]{40}$/.test(sha) || expectedSha !== sha)
+            fail("dispatch_sha");
+          const headers = {
+            Authorization: `Bearer ${required("GH_TOKEN")}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          };
+          const get = async (path) => {
+            const response = await fetch(`https://api.github.com${path}`, { headers });
+            if (!response.ok) fail(`github_api_${response.status}`);
+            return response.json();
+          };
+          const branch = await get(`/repos/${repository}/branches/main`);
+          if (branch.protected !== true || branch.commit?.sha?.toLowerCase() !== sha)
+            fail("stale_or_unprotected_main");
+          const environmentName = required("REQUIRED_ENVIRONMENT");
+          const environment = await get(
+            `/repos/${repository}/environments/${encodeURIComponent(environmentName)}`,
+          );
+          const rules = environment.protection_rules;
+          const reviewers = Array.isArray(rules)
+            ? rules.find((rule) => rule?.type === "required_reviewers")
+            : undefined;
+          const branchPolicy = Array.isArray(rules)
+            ? rules.find((rule) => rule?.type === "branch_policy")
+            : undefined;
+          if (
+            !reviewers ||
+            !Array.isArray(reviewers.reviewers) ||
+            reviewers.reviewers.length < 1 ||
+            reviewers.prevent_self_review !== true ||
+            !branchPolicy ||
+            environment.deployment_branch_policy?.protected_branches !== true
+          ) fail("environment_unprotected");
+          appendFileSync(required("GITHUB_OUTPUT"), `trusted_sha=${sha}\n`, "utf8");
+          // trust-bootstrap-node:end
+          NODE
+
+  verify-release-gate-evidence:
+    name: verify-exact-sha-release-gate-evidence
+    needs: trust-bootstrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout immutable evidence verifier
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
+
+      - name: Require exact PostgreSQL release-gate evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_RELEASE_GATE_SHA: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
+        run: node scripts/release-gate-evidence.mjs verify
+
+  trusted-release-authority-migration:
+    name: trusted-release-authority-migration
+    needs: [trust-bootstrap, verify-release-gate-evidence]
+    environment: production-release-authority-migration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout immutable migration source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
+
+      - name: Install exact package manager and dependencies
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.0 --activate
+          pnpm install --frozen-lockfile
+
+      - name: Materialize one-time bootstrap credential
+        if: ${{ inputs.operation == 'fresh-install' || inputs.operation == 'bootstrap-upgrade' }}
+        shell: bash
+        env:
+          REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_AUTHORITY_BOOTSTRAP_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_URL"
+          credential_file="$RUNNER_TEMP/release-authority-migration-url"
+          umask 077
+          printf '%s' "$REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_URL" > "$credential_file"
+          echo "REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE=$credential_file" >> "$GITHUB_ENV"
+
+      - name: Materialize provider bootstrap authority
+        if: ${{ inputs.operation == 'fresh-install' || inputs.operation == 'bootstrap-upgrade' }}
+        shell: bash
+        env:
+          REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_AUTHORITY_BOOTSTRAP_ADMIN_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_URL"
+          provider_file="$RUNNER_TEMP/release-authority-provider-url"
+          umask 077
+          printf '%s' "$REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_URL" > "$provider_file"
+          echo "REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_DATABASE_URL_FILE=$provider_file" >> "$GITHUB_ENV"
+
+      - name: Materialize restricted credential issuer
+        if: ${{ inputs.operation == 'incremental-upgrade' }}
+        shell: bash
+        env:
+          REVIEW_ROUTER_RELEASE_AUTHORITY_ISSUER_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_AUTHORITY_CREDENTIAL_ISSUER_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$REVIEW_ROUTER_RELEASE_AUTHORITY_ISSUER_URL"
+          issuer_file="$RUNNER_TEMP/release-authority-issuer-url"
+          umask 077
+          printf '%s' "$REVIEW_ROUTER_RELEASE_AUTHORITY_ISSUER_URL" > "$issuer_file"
+          echo "REVIEW_ROUTER_RELEASE_AUTHORITY_CREDENTIAL_ISSUER_DATABASE_URL_FILE=$issuer_file" >> "$GITHUB_ENV"
+
+      - name: Reconcile unfinished migration leases before issuance
+        if: ${{ inputs.operation == 'incremental-upgrade' }}
+        shell: bash
+        run: node scripts/release-authority-migration-credential.mjs reconcile
+
+      - name: Issue exact-run migration lease
+        if: ${{ inputs.operation == 'incremental-upgrade' }}
+        shell: bash
+        env:
+          REVIEW_ROUTER_RELEASE_AUTHORITY_EXPECTED_SHA: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
+          REVIEW_ROUTER_RELEASE_AUTHORITY_WORKFLOW_RUN_ID: ${{ github.run_id }}
+          REVIEW_ROUTER_RELEASE_AUTHORITY_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_MODE: incremental-upgrade
+          REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE: ${{ runner.temp }}/release-authority-migration-url
+          REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_LEASE_FILE: ${{ runner.temp }}/release-authority-migration-lease
+        run: |
+          set -euo pipefail
+          node scripts/release-authority-migration-credential.mjs issue
+          echo "REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE=$REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE" >> "$GITHUB_ENV"
+          echo "REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_LEASE_FILE=$REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_LEASE_FILE" >> "$GITHUB_ENV"
+
+      - name: Run fresh installation gate
+        if: ${{ inputs.operation == 'fresh-install' }}
+        run: pnpm release-authority:fresh-install
+
+      - name: Run incremental upgrade gate
+        if: ${{ inputs.operation == 'incremental-upgrade' }}
+        run: pnpm release-authority:upgrade
+
+      - name: Run one-time credential-contract bootstrap upgrade
+        if: ${{ inputs.operation == 'bootstrap-upgrade' }}
+        run: pnpm release-authority:upgrade
+
+      - name: Reconcile every unfinished migration lease
+        if: ${{ always() && inputs.operation == 'incremental-upgrade' }}
+        shell: bash
+        run: node scripts/release-authority-migration-credential.mjs reconcile
+
+      - name: Converge bootstrap authority after every bootstrap attempt
+        if: ${{ always() && (inputs.operation == 'fresh-install' || inputs.operation == 'bootstrap-upgrade') }}
+        shell: bash
+        run: node scripts/install-release-authority-db.mjs --cleanup-bootstrap
+
+      - name: Remove migration credential
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          credential_file="$RUNNER_TEMP/release-authority-migration-url"
+          lease_file="$RUNNER_TEMP/release-authority-migration-lease"
+          issuer_file="$RUNNER_TEMP/release-authority-issuer-url"
+          provider_file="$RUNNER_TEMP/release-authority-provider-url"
+          if test -f "$credential_file"; then
+            shred -u "$credential_file" 2>/dev/null || rm -f "$credential_file"
+          fi
+          if test -f "$lease_file"; then
+            shred -u "$lease_file" 2>/dev/null || rm -f "$lease_file"
+          fi
+          if test -f "$issuer_file"; then
+            shred -u "$issuer_file" 2>/dev/null || rm -f "$issuer_file"
+          fi
+          if test -f "$provider_file"; then
+            shred -u "$provider_file" 2>/dev/null || rm -f "$provider_file"
+          fi

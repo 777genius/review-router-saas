@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { decideRecoverySweepCursor } from "../packages/features/release-rollout/src/application/recovery-sweep-policy";
 import {
   discoverPrivatePg17RecoveryRuns,
   dispatchPrivatePg17RecoveryContinuation,
@@ -96,6 +97,86 @@ describe("private PG17 scheduled recovery discovery", () => {
     expect(resumeRequest.mock.calls[0]?.[0]).toContain(
       "created=%3C%3D2026-08-13T12%3A00%3A00Z",
     );
+  });
+
+  it("advances beyond a failed first 200-run window without erasing its failure", async () => {
+    const first = await discoverPrivatePg17RecoveryRuns({
+      repository: "owner/repository",
+      workflowPath,
+      token: "token",
+      maximumPages: 2,
+      scanStartedAt,
+      request: vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          response({
+            total_count: 201,
+            workflow_runs: descendingRuns(500, 100),
+          }),
+        )
+        .mockResolvedValueOnce(
+          response({
+            total_count: 201,
+            workflow_runs: descendingRuns(400, 100),
+          }),
+        ),
+    });
+    const decision = decideRecoverySweepCursor({
+      hasNextWindow: true,
+      windowResult: "failure",
+    });
+    expect(decision).toEqual({
+      dispatchNextWindow: true,
+      preserveWindowFailure: true,
+    });
+    const later = await discoverPrivatePg17RecoveryRuns({
+      repository: "owner/repository",
+      workflowPath,
+      token: "token",
+      maximumPages: 2,
+      checkpoint: JSON.stringify(first.checkpoint),
+      request: vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          response({ total_count: 201, workflow_runs: [run(300)] }),
+        ),
+    });
+
+    expect(first.runs).toHaveLength(200);
+    expect(later).toEqual({
+      runs: [{ run_id: "300", run_attempt: "1", head_sha: "0".repeat(40) }],
+      complete: true,
+    });
+  });
+
+  it("gives concurrent redrives the same deterministic window and restart cursor", async () => {
+    const discover = () =>
+      discoverPrivatePg17RecoveryRuns({
+        repository: "owner/repository",
+        workflowPath,
+        token: "token",
+        maximumPages: 2,
+        scanStartedAt,
+        request: vi
+          .fn<typeof fetch>()
+          .mockResolvedValueOnce(
+            response({
+              total_count: 201,
+              workflow_runs: descendingRuns(500, 100),
+            }),
+          )
+          .mockResolvedValueOnce(
+            response({
+              total_count: 201,
+              workflow_runs: descendingRuns(400, 100),
+            }),
+          ),
+      });
+
+    const [left, right] = await Promise.all([discover(), discover()]);
+    expect(left).toEqual(right);
+    expect(left.runs).toHaveLength(200);
+    expect(left.checkpoint?.next_page).toBe(3);
   });
 
   it("keeps each sweep window below the matrix resource cap", async () => {
@@ -259,5 +340,14 @@ describe("private PG17 scheduled recovery discovery", () => {
         wait,
       }),
     ).rejects.toThrow("recovery_continuation_failed:403");
+  });
+
+  it("rejects a continuation when the prior window has no terminal result", () => {
+    expect(() =>
+      decideRecoverySweepCursor({
+        hasNextWindow: true,
+        windowResult: "cancelled",
+      }),
+    ).toThrow("sweep_window_result_invalid");
   });
 });

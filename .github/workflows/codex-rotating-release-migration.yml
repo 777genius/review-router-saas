@@ -74,7 +74,7 @@ jobs:
           NODE
 
       - name: Run canonical migration from the immutable checkout
-        run: node scripts/run-codex-rotating-release-migration.mjs > migration-output.json
+        run: node --import tsx scripts/run-codex-rotating-release-migration.mjs > migration-output.json
 
       - name: Capture read-only Render database identity
         env:

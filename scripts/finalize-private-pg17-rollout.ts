@@ -6,6 +6,7 @@ import {
   HttpProviderAuthorityDecisionAdapter,
   ReleaseRolloutUseCases,
   RenderTargetServicesAdapter,
+  HttpProviderMutationAuthorityAdapter,
   RolloutStep,
   sha256Canonical,
   type CleanupEvidence,
@@ -13,11 +14,14 @@ import {
   type RunnerIdentity,
   type StepObservation,
   type TargetServiceExpectation,
+  type StagedTargetService,
   type TrustedRolloutEvidence,
+  type ReleaseWitnessBindingEvidence,
   assertVerifiedReleaseImageProvenance,
   sameReleaseImageProvenance,
   type VerifiedReleaseImageProvenance,
 } from "../packages/features/release-rollout/src/index";
+import { privatePg17ReleaseImagePolicy } from "./lib/private-pg17-release-image-policy";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -34,31 +38,36 @@ const body = read<{
   quiescence: TrustedRolloutEvidence["quiescence"];
   equivalence: TrustedRolloutEvidence["equivalence"];
   staged: StepObservation<
-    readonly {
-      serviceId: string;
-      deployId: string;
+    readonly (Omit<StagedTargetService, "provenance"> & {
       provenance: { kind: "image"; imageSha: string };
-    }[]
+    })[]
   >;
   migration: {
     legacyReconciliation: TrustedRolloutEvidence["legacyReconciliation"];
   };
 }>("REVIEW_ROUTER_PRIVATE_ROLLOUT_BODY_FILE");
+const trustedImagePolicy = privatePg17ReleaseImagePolicy({
+  sourceRepository: required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY"),
+  sourceRevision: required("REVIEW_ROUTER_EXPECTED_SHA"),
+});
+const trustedWitnessPolicy = Object.freeze({
+  keyId: required("REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_KEY_ID"),
+  publicKeyPem: required(
+    "REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_PUBLIC_KEY_PEM",
+  ),
+  maximumAgeMilliseconds: Number(
+    process.env.REVIEW_ROUTER_RELEASE_WITNESS_MAXIMUM_AGE_MS || "300000",
+  ),
+});
 const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
   body.releaseImageProvenance,
-  {
-    sourceRepository: required("GITHUB_REPOSITORY"),
-    sourceRevision: body.rollout.expectedCommitSha,
-  },
+  trustedImagePolicy,
 );
 const preflightReleaseImageProvenance = assertVerifiedReleaseImageProvenance(
   read<VerifiedReleaseImageProvenance>(
     "REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE",
   ),
-  {
-    sourceRepository: required("GITHUB_REPOSITORY"),
-    sourceRevision: body.rollout.expectedCommitSha,
-  },
+  trustedImagePolicy,
 );
 if (
   !sameReleaseImageProvenance(
@@ -72,6 +81,15 @@ const targetDeploys = body.staged.facts.map((deploy) => ({
   deployId: deploy.deployId,
   imageDigest: deploy.provenance.imageSha,
 }));
+const stagedReceipt = body.rollout.receipts.find(
+  (receipt) => receipt.step === RolloutStep.StageTargetServices,
+);
+if (
+  !stagedReceipt ||
+  stagedReceipt.observationSha256 !==
+    `sha256:${sha256Canonical(body.staged.facts)}`
+)
+  throw new Error("private_pg17_staged_observation_receipt_mismatch");
 if (
   targetDeploys.length === 0 ||
   targetDeploys.some(
@@ -86,7 +104,16 @@ const preflight = read<Record<string, unknown>>(
 const expectations = JSON.parse(
   required("REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON"),
 ) as TargetServiceExpectation[];
-const render = new RenderTargetServicesAdapter();
+const mutationAuthority = new HttpProviderMutationAuthorityAdapter(
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
+);
+const render = new RenderTargetServicesAdapter(
+  fetch,
+  undefined,
+  undefined,
+  mutationAuthority,
+);
 const ledger = new AuthenticatedRunnerLedgerAdapter(
   required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
   required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN"),
@@ -107,11 +134,17 @@ const cutoverCleanupObservation: StepObservation = {
   step: RolloutStep.CleanupCutoverRunner,
   observedAt: cutoverCleanupWitness.observedAt,
   facts: {
-    providerStatus: cutoverCleanupWitness.providerStatus,
-    listenerStopped: cutoverCleanupWitness.listenerStopped,
-    workspaceRemoved: cutoverCleanupWitness.workspaceRemoved,
-    credentialProcessGone: cutoverCleanupWitness.credentialProcessGone,
-    canary: cutoverCleanupWitness.canary,
+    provider: {
+      id: body.runners[1].renderJobId,
+      status: cutoverCleanupWitness.providerStatus,
+    },
+    runner: {
+      listenerStopped: cutoverCleanupWitness.listenerStopped,
+      workspaceRemoved: cutoverCleanupWitness.workspaceRemoved,
+      credentialProcessGone: cutoverCleanupWitness.credentialProcessGone,
+      canary: cutoverCleanupWitness.canary,
+      observedAt: cutoverCleanupWitness.observedAt,
+    },
   },
   provider: { renderJobId: body.runners[1].renderJobId },
 };
@@ -125,7 +158,12 @@ if (
 )
   throw new Error("private_pg17_preflight_receipt_binding_invalid");
 let resumed: StepObservation<
-  readonly { serviceId: string; deployId: string; resumed: true }[]
+  readonly {
+    serviceId: string;
+    deployId: string;
+    resumed: true;
+    servicePostcondition: StagedTargetService["servicePostcondition"];
+  }[]
 >;
 let canary: StepObservation;
 let evidence: TrustedRolloutEvidence;
@@ -151,7 +189,6 @@ const useCases = new ReleaseRolloutUseCases({
   preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: unavailable,
-    compensateAndObserve: unavailable,
   },
   runner: {
     provision: unavailable,
@@ -166,7 +203,6 @@ const useCases = new ReleaseRolloutUseCases({
     bootstrapTargetRoles: unavailable,
     runReleaseMigration: unavailable,
     activate: unavailable,
-    compensateSource: unavailable,
   },
   services: {
     stageTarget: unavailable,
@@ -179,6 +215,8 @@ const useCases = new ReleaseRolloutUseCases({
         targetSystemIdentifier: rollout.target.systemIdentifier,
         expectedReceiptSha256: rollout.receipts.at(-1)!.receiptSha256,
         decision,
+        mutationOwnerId: `finalize-${rollout.execution.runId}-${rollout.execution.runAttempt}`,
+        stagedServices: body.staged.facts,
       })) as typeof resumed;
       return resumed;
     },
@@ -192,36 +230,113 @@ const useCases = new ReleaseRolloutUseCases({
         ),
         rolloutId: rollout.rolloutId,
         bearerToken: required("REVIEW_ROUTER_LIVE_CANARY_TOKEN"),
+        expectedServices: resumed.facts
+          .map((service) => {
+            const expectation = expectations.find(
+              (item) => item.serviceId === service.serviceId,
+            );
+            if (!expectation)
+              throw new Error("private_pg17_canary_service_unexpected");
+            const runtimeRole = expectation.databaseRole.replace(
+              /^reviewrouter_/u,
+              "",
+            );
+            if (!["api", "web", "worker"].includes(runtimeRole))
+              throw new Error("private_pg17_canary_runtime_role_invalid");
+            return {
+              runtimeRole: runtimeRole as "api" | "web" | "worker",
+              serviceId: service.serviceId,
+              deployId: service.deployId,
+              provenance: expectation.provenance,
+              servicePostcondition: service.servicePostcondition,
+            };
+          })
+          .sort((left, right) =>
+            left.runtimeRole.localeCompare(right.runtimeRole),
+          ),
       });
       return canary;
     },
   },
   evidence: {
     assembleAndVerify: async (current) => {
-      evidence = assembleTrustedRolloutEvidence({
-        rolloutId: current.rolloutId,
-        releaseCommitSha: current.expectedCommitSha,
-        releaseImageProvenance,
-        targetDeploys,
-        execution: current.execution,
-        runners: body.runners,
-        source: current.source,
-        target: current.target,
-        backup: body.backup,
-        quiescence: body.quiescence,
-        equivalence: body.equivalence,
-        legacyReconciliation: body.migration.legacyReconciliation,
-        protectedEnvironmentPreflightSha256: preflightReceipt.observationSha256,
-        receipts: current.receipts,
-        activation: current.activationReceipt!,
-        resumedTargetDeployIds: resumed.facts.map((item) => item.deployId),
-        liveCanarySha256: `sha256:${sha256Canonical(canary.facts)}`,
-        cleanups: [
-          cleanupEvidence(roleCleanupWitness, body.runners[0]),
-          cleanupEvidence(cutoverCleanupWitness, body.runners[1]),
-        ],
-        assembledAt: new Date().toISOString(),
-      });
+      const witnessResponse = await fetch(
+        new URL(
+          "/v1/release-binding-attestations",
+          required("REVIEW_ROUTER_RELEASE_WITNESS_URL"),
+        ),
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${required("REVIEW_ROUTER_RELEASE_WITNESS_TOKEN")}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            rolloutId: current.rolloutId,
+            execution: {
+              repository: current.execution.controlRepository,
+              workflowPath: current.execution.workflowPath,
+              workflowRef: current.execution.workflowRef,
+              commitSha: current.expectedCommitSha,
+              runId: current.execution.runId,
+              runAttempt: current.execution.runAttempt,
+            },
+            source: {
+              renderResourceId: current.source.renderResourceId,
+              databaseName: current.source.databaseName,
+              systemIdentifier: current.source.systemIdentifier,
+              majorVersion: current.source.majorVersion,
+              recoveryWitnessSha256: current.source.recoveryWitnessSha256,
+            },
+            target: {
+              renderResourceId: current.target.renderResourceId,
+              databaseName: current.target.databaseName,
+              systemIdentifier: current.target.systemIdentifier,
+              majorVersion: current.target.majorVersion,
+              recoveryWitnessSha256: current.target.recoveryWitnessSha256,
+            },
+            deployments: targetDeploys.map((deploy) => ({
+              serviceId: deploy.serviceId,
+              deployId: deploy.deployId,
+              revision: deploy.imageDigest,
+            })),
+          }),
+        },
+      );
+      if (!witnessResponse.ok)
+        throw new Error("private_pg17_release_witness_unavailable");
+      const releaseWitness =
+        (await witnessResponse.json()) as ReleaseWitnessBindingEvidence;
+      evidence = assembleTrustedRolloutEvidence(
+        {
+          rolloutId: current.rolloutId,
+          releaseCommitSha: current.expectedCommitSha,
+          releaseImageProvenance,
+          targetDeploys,
+          execution: current.execution,
+          runners: body.runners,
+          source: current.source,
+          target: current.target,
+          backup: body.backup,
+          quiescence: body.quiescence,
+          equivalence: body.equivalence,
+          legacyReconciliation: body.migration.legacyReconciliation,
+          protectedEnvironmentPreflightSha256:
+            preflightReceipt.observationSha256,
+          receipts: current.receipts,
+          activation: current.activationReceipt!,
+          resumedTargetDeployIds: resumed.facts.map((item) => item.deployId),
+          liveCanarySha256: `sha256:${sha256Canonical(canary.facts)}`,
+          releaseWitness,
+          cleanups: [
+            cleanupEvidence(roleCleanupWitness, body.runners[0]),
+            cleanupEvidence(cutoverCleanupWitness, body.runners[1]),
+          ],
+          assembledAt: new Date().toISOString(),
+        },
+        trustedImagePolicy,
+        trustedWitnessPolicy,
+      );
       return {
         step: RolloutStep.VerifyTrustedRollout,
         observedAt: new Date().toISOString(),

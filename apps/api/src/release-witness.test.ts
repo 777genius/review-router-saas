@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { createReleaseWitnessApp } from "./release-witness-composition";
+import { createReleaseWitnessApp as createReleaseWitnessAppBase } from "./release-witness-composition";
 import { RenderCleanupObservationAdapter } from "./release-witness-adapters";
 
 const digest = (value: string) =>
@@ -16,6 +16,27 @@ const json = (value: unknown) =>
   new Response(JSON.stringify(value), {
     status: 200,
     headers: { "content-type": "application/json" },
+  });
+const readyMutation = () => ({
+  assertOrdinary: vi.fn(async () => undefined),
+  assertForceNew: vi.fn(async () => undefined),
+});
+const createReleaseWitnessApp = (
+  input: Parameters<typeof createReleaseWitnessAppBase>[0],
+) =>
+  createReleaseWitnessAppBase({
+    ...input,
+    deploymentRevision: input.deploymentRevision ?? "0".repeat(40),
+    artifactDigest: input.artifactDigest ?? `sha256:${"0".repeat(64)}`,
+    authorityOwnerRoleName:
+      input.authorityOwnerRoleName ?? "reviewrouter_release_authority_owner",
+    activationGuardRoleName:
+      input.activationGuardRoleName ?? "reviewrouter_activation_receipt_guard",
+    trustedDatabaseIdentity: input.trustedDatabaseIdentity ?? {
+      serverIdentity: "1",
+      databaseIdentity: "2",
+      databaseName: "authority",
+    },
   });
 
 const renderJob = (status: string) => ({
@@ -98,6 +119,7 @@ describe("release witness observation", () => {
       triggerTokenSha256: digest("trigger"),
       renderReadToken: "render-read-only",
       renderFetch,
+      mutationReadiness: readyMutation(),
     });
 
     const response = await app.inject({
@@ -111,6 +133,74 @@ describe("release witness observation", () => {
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(renderFetch).not.toHaveBeenCalled();
     await app.close();
+  });
+
+  it("denies every cleanup witness mutation when authority readiness is degraded", async () => {
+    const degraded = Object.assign(
+      new Error("release_witness_authority_readiness_degraded"),
+      { statusCode: 503 },
+    );
+    const initiallyDegradedPrisma = { $queryRaw: vi.fn() };
+    const initiallyDegradedFetch = vi.fn();
+    const initiallyDegraded = await createReleaseWitnessApp({
+      witnessPrisma: initiallyDegradedPrisma as never,
+      triggerTokenSha256: digest("trigger"),
+      renderReadToken: "render-read-only",
+      renderFetch: initiallyDegradedFetch,
+      readinessObserver: vi.fn(async () => ({
+        roleName: "reviewrouter_release_witness",
+        postgresMajor: 17,
+      })) as never,
+    });
+    const denied = await initiallyDegraded.inject({
+      method: "POST",
+      url: "/v1/runner-jobs/job-1/cleanup-observation",
+      headers: { authorization: "Bearer trigger" },
+      payload: {},
+    });
+    expect(denied.statusCode).toBe(503);
+    expect(initiallyDegradedPrisma.$queryRaw).not.toHaveBeenCalled();
+    expect(initiallyDegradedFetch).not.toHaveBeenCalled();
+    await initiallyDegraded.close();
+
+    const queries: unknown[] = [];
+    const degradesBeforePersistPrisma = {
+      $queryRaw: vi.fn(async (query: unknown) => {
+        queries.push(query);
+        return [{ value: seed }];
+      }),
+    };
+    const degradesBeforePersistFetch = vi
+      .fn()
+      .mockImplementation(async (url: string) => {
+        if (url.includes("/jobs/job-1")) return json(renderJob("succeeded"));
+        if (url.endsWith("/services/srv-1")) return json(renderService);
+        return json({ logs: [cleanupLog()] });
+      });
+    const assertReady = vi
+      .fn<() => Promise<void>>()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(degraded);
+    const degradesBeforePersist = await createReleaseWitnessApp({
+      witnessPrisma: degradesBeforePersistPrisma as never,
+      triggerTokenSha256: digest("trigger"),
+      renderReadToken: "render-read-only",
+      renderFetch: degradesBeforePersistFetch,
+      mutationReadiness: {
+        assertOrdinary: assertReady,
+        assertForceNew: assertReady,
+      },
+    });
+    const fenced = await degradesBeforePersist.inject({
+      method: "POST",
+      url: "/v1/runner-jobs/job-1/cleanup-observation",
+      headers: { authorization: "Bearer trigger" },
+      payload: {},
+    });
+    expect(fenced.statusCode).toBe(503);
+    expect(assertReady).toHaveBeenCalledTimes(2);
+    expect(queries).toHaveLength(1);
+    await degradesBeforePersist.close();
   });
 
   it.each(["succeeded", "failed", "canceled"] as const)(
@@ -143,6 +233,7 @@ describe("release witness observation", () => {
         triggerTokenSha256: digest("trigger"),
         renderReadToken: "render-read-only",
         renderFetch,
+        mutationReadiness: readyMutation(),
       });
 
       const response = await app.inject({
@@ -192,6 +283,7 @@ describe("release witness observation", () => {
       triggerTokenSha256: digest("trigger"),
       renderReadToken: "render-read-only",
       renderFetch,
+      mutationReadiness: readyMutation(),
     });
 
     const response = await app.inject({
@@ -226,6 +318,7 @@ describe("release witness observation", () => {
         triggerTokenSha256: digest("trigger"),
         renderReadToken: "render-read-only",
         renderFetch,
+        mutationReadiness: readyMutation(),
       });
 
       const response = await app.inject({

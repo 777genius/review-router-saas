@@ -1,0 +1,77 @@
+{
+  "verdict": "GO",
+  "exactHead": "6b50e36fce2dacbbfc1da3bcfe0b7fe2302183f3",
+  "candidateSha256": "321e9ec9a1a525640df0e82df37066301ebf74b6298d8e6dc4beee72b2b0cab5",
+  "candidateBytes": 2147606,
+  "canonicalDigests": {
+    "preactivation": "sha256:fd10781b8716338b98191bc5f1631afb40b956f8027321eb2f2352bca658fe25",
+    "activated": "sha256:f3245ae1409631c6ceb31228e642b787bb591f682cc5c7be8e4c3621a50933e7",
+    "artifact": "sha256:0d8b873c7523390cbc9fbb48c41f3ab83a827e978203af0926c67b3785896877"
+  },
+  "findings": [],
+  "evidenceChecked": [
+    {
+      "subject": "Exact-head scope",
+      "result": "HEAD and origin branch resolve to 6b50e36fce2dacbbfc1da3bcfe0b7fe2302183f3; its sole parent is the previously approved a10c9ae30b5c79dcf9bed1d4b7891f866e14b546; the worktree is clean."
+    },
+    {
+      "subject": "Test-only delta",
+      "result": "Only scripts/check-codex-rotating-migration-rehearsal.mjs and its contract test changed. Production provisioning SQL, candidate capture, normalization/domain validation, promotion, provenance-v3 contract, and generated policy sources are unchanged."
+    },
+    {
+      "subject": "Deterministic topology",
+      "result": "The fresh foreign-role→foreign-grantor helper edge supplies ADMIN authority without involving a canonical runtime role. Convergence therefore leaves the foreign-role→bootstrap edge intact; the exact topology query includes it through member=reviewrouter_role_bootstrap, increasing total_count from 6 to 7 and deterministically reaching the fail-closed 'refusing non-canonical role membership topology' guard."
+    },
+    {
+      "subject": "Cleanup",
+      "result": "A finally block runs for expected rejection, unexpected success, and thrown failures. It revokes the bootstrap edge GRANTED BY its exact foreign grantor, revokes the helper edge, then drops both roles in dependency order. psql uses ON_ERROR_STOP=1, so incomplete cleanup cannot be silently accepted."
+    },
+    {
+      "subject": "Candidate identities",
+      "result": "v191 and v192 are byte-identical; each is 2147606 bytes with the stated SHA-256. Independent canonical hashing reproduced all three stated digests."
+    },
+    {
+      "subject": "Focused verification",
+      "result": "The modified rehearsal contract and production provisioning tests passed: 2 files, 44 tests. Prettier, ESLint, and git diff checks passed."
+    },
+    {
+      "subject": "Security review",
+      "result": "The delta adds only fixed disposable role identifiers and SQL assertions; no credential, URL, token, key, production authority, candidate-byte, or secret-output path was introduced."
+    },
+    {
+      "subject": "Audit execution",
+      "result": "Completed in 3m43s."
+    }
+  ],
+  "residualRisks": [
+    {
+      "risk": "The checked-in promotion constants and provenance still describe the prior candidate and do not yet authorize this candidate.",
+      "disposition": "Expected fail-closed state; replace them only in the authorized mechanical publication."
+    },
+    {
+      "risk": "The two candidate files are mutable external filesystem evidence.",
+      "disposition": "Publication must bind both labels to the exact byte count, candidate hash, and canonical digests above."
+    },
+    {
+      "risk": "A disposable local PostgreSQL 17 service and authenticated hosted-CI access were unavailable for rerunning the full exact-head rehearsal.",
+      "disposition": "Before merge or release, confirm the exact-head PostgreSQL 17 CI rehearsal. The GO rests on the unchanged parent-approved production path, exact SQL control-flow audit, and passing focused tests."
+    }
+  ],
+  "promotionProvenanceRecommendation": {
+    "status": "publication-required",
+    "currentCheckedInProvenanceReady": false,
+    "authorization": "GO only for the following mechanical publication of this exact review artifact, provenance v3, pinned candidate constants, and generated policy artifact.",
+    "auditedHead": "6b50e36fce2dacbbfc1da3bcfe0b7fe2302183f3",
+    "captureBaseCommit": "56944d0167c5298958556a8a51f7aeac2bb87958",
+    "candidateCaptures": [
+      "/var/data/worker-jobs/rr-pg17-candidate-v191.json",
+      "/var/data/worker-jobs/rr-pg17-candidate-v192.json"
+    ],
+    "requiredActions": [
+      "Persist this exact GO result as an immutable review artifact and pin its SHA-256 in provenance v3.",
+      "Pin the exact candidate bytes, candidate SHA-256, audited HEAD, capture base, both unique capture labels, image identities, and all three canonical digests.",
+      "Generate the policy artifact mechanically from one verified candidate and rerun no-write verification and focused checks.",
+      "Any production-code, SQL, topology, candidate-byte, validation, promotion-contract, or provenance-contract change requires a new audit."
+    ]
+  }
+}

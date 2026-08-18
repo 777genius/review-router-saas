@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { ProviderStateWitness } from "./ports";
 import { sourceWriterServiceIdsAreValid } from "../domain/source-writer-service-ids";
 import type { RecoveryEffectAuthorityPort } from "./recovery-effect-protocol";
@@ -8,69 +7,16 @@ import {
   RecoveryEffectState,
   type RecoveryEffectRecord,
 } from "../domain/recovery-effect";
-
-const sha256 = (value: unknown): string =>
-  `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
-const digest = /^sha256:[a-f0-9]{64}$/u;
-const rawSha256 = /^[a-f0-9]{64}$/u;
-const witness = /^[A-Za-z0-9_-]{43,256}$/u;
-const witnessSha256 = (value: string): string =>
-  createHash("sha256").update(value, "utf8").digest("hex");
-const commit = /^[a-f0-9]{40}$/u;
-const image =
-  /^ghcr\.io\/777genius\/review-router-saas-runtime@sha256:[a-f0-9]{64}$/u;
-
-export type RenderServiceContract = Readonly<{
-  serviceId: string;
-  ownerId: string;
-  type: "web_service" | "background_worker";
-  runtime: "node";
-  repository: string;
-  branch: string;
-  rootDir: string;
-  sourceCommitSha: string;
-  buildCommand: string;
-  startCommand: string;
-  preDeployCommand: string;
-  healthCheckPath: string | null;
-  region: string;
-  plan: string;
-  maxShutdownDelaySeconds: number;
-  autoDeploy: "no";
-  databaseEnvKey: string;
-  databaseRole: string;
-  sourceEnvSha256: string;
-  sourceEnvKeysSha256: string;
-  serviceContractSha256: string;
-}>;
-
-export type SourceRecoveryManifest = Readonly<{
-  schemaVersion: "reviewrouter.render-source-recovery.v1";
-  rolloutId: string;
-  services: readonly RenderServiceContract[];
-  manifestSha256: string;
-}>;
-
-export type ProtectedSourceEnvironment = Readonly<
-  Record<
-    string,
-    Readonly<{
-      DATABASE_URL: string;
-      REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: string;
-      REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256: string;
-      REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL?: string;
-    }>
-  >
->;
-
-export type TargetServiceContract = Readonly<{
-  serviceId: string;
-  imageUrl: string;
-  environmentDelta: Readonly<Record<string, string>>;
-  removeKeys: readonly string[];
-  environmentSha256: string;
-  serviceContractSha256: string;
-}>;
+import {
+  ServiceTransitionPolicy,
+  type ProtectedSourceEnvironment,
+  type SourceRecoveryManifest,
+  type TargetServiceRelease,
+} from "../domain/service-transition";
+import type {
+  EnvironmentMutationOutcome,
+  TransactionalServiceProvider,
+} from "./service-transition-ports";
 
 export type ServiceTransitionCheckpoint = Readonly<{
   rolloutId: string;
@@ -111,11 +57,11 @@ export interface ServiceTransitionLedger extends RecoveryEffectAuthorityPort {
     targetContractSha256: string;
     serviceIds: readonly string[];
     sourceManifest: SourceRecoveryManifest;
-    targetContracts: readonly Omit<TargetServiceContract, "environmentDelta">[];
+    targetContracts: readonly Omit<TargetServiceRelease, "environmentDelta">[];
   }): Promise<"created" | "existing">;
   readContract(rolloutId: string): Promise<{
     sourceManifest: SourceRecoveryManifest;
-    targetContracts: readonly Omit<TargetServiceContract, "environmentDelta">[];
+    targetContracts: readonly Omit<TargetServiceRelease, "environmentDelta">[];
   } | null>;
   append(
     checkpoint: Omit<ServiceTransitionCheckpoint, "sequence">,
@@ -127,262 +73,29 @@ export interface ServiceTransitionLedger extends RecoveryEffectAuthorityPort {
   }): Promise<void>;
 }
 
-export type ObservedRenderService = Readonly<{
-  serviceId: string;
-  suspended: boolean;
-  serviceContractSha256: string;
-  environmentSha256: string;
-  provenance:
-    | { kind: "git"; commitSha: string }
-    | { kind: "image"; imageUrl: string; deployId: string };
-}>;
+const transitionPolicy = new ServiceTransitionPolicy();
 
-export interface TransactionalRenderProvider {
-  observe(serviceId: string): Promise<ObservedRenderService>;
-  suspend(serviceId: string): Promise<void>;
-  resume(serviceId: string): Promise<void>;
-  configureTarget(contract: TargetServiceContract): Promise<void>;
-  configureSource(contract: RenderServiceContract): Promise<void>;
-  replaceEnvironment(
-    serviceId: string,
-    input: {
-      set: Readonly<Record<string, string>>;
-      remove: readonly string[];
-      expectedBeforeSha256?: string;
-    },
-  ): Promise<string>;
-  captureSourceManifest(input: {
-    rolloutId: string;
-    services: readonly Readonly<{
-      serviceId: string;
-      databaseEnvKey: string;
-      databaseRole: string;
-    }>[];
-    protectedEnvironment: ProtectedSourceEnvironment;
-  }): Promise<SourceRecoveryManifest>;
-  planEnvironmentDelta(input: {
-    serviceId: string;
-    set: Readonly<Record<string, string>>;
-    remove: readonly string[];
-    expectedBeforeSha256: string;
-  }): Promise<{ environmentSha256: string; environmentKeysSha256: string }>;
-  deployImage(serviceId: string, imageUrl: string): Promise<string>;
-  deployCommit(serviceId: string, commitSha: string): Promise<string>;
-  waitForDeploy(
-    serviceId: string,
-    deployId: string,
-    expected:
-      | { kind: "image"; imageUrl: string }
-      | { kind: "git"; commitSha: string },
-  ): Promise<void>;
-  reconcileCommitDeploy(input: {
-    serviceId: string;
-    commitSha: string;
-    intentAt: string;
-  }): Promise<string | null>;
-  quiesceDeploys(serviceId: string): Promise<void>;
-}
-
-const canonicalEnv = (
-  values: readonly Readonly<{ key: string; value: string }>[],
-): readonly Readonly<{ key: string; value: string }>[] => {
-  const result = [...values].sort((a, b) => a.key.localeCompare(b.key));
-  if (
-    result.length === 0 ||
-    result.some(
-      (item, index) =>
-        !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(item.key) ||
-        (index > 0 && result[index - 1]?.key === item.key),
-    )
-  )
-    throw new Error("service_transition_environment_invalid");
-  return result;
-};
-
-export const environmentSha256 = (
-  values: readonly Readonly<{ key: string; value: string }>[],
-): string => sha256(canonicalEnv(values));
-export const environmentKeysSha256 = (
-  values: readonly Readonly<{ key: string; value: string }>[],
-): string => sha256(canonicalEnv(values).map(({ key }) => key));
-
-export const sourceRecoveryManifestSha256 = (
-  value: Omit<SourceRecoveryManifest, "manifestSha256">,
-): string => sha256(value);
-
-const withoutHash = <T extends Record<string, unknown>>(
-  value: T,
-  field: keyof T,
-): Record<string, unknown> =>
-  Object.fromEntries(Object.entries(value).filter(([key]) => key !== field));
-
-export const sourceServiceContractSha256 = (
-  value: Omit<RenderServiceContract, "serviceContractSha256">,
-): string =>
-  sha256({
-    serviceId: value.serviceId,
-    ownerId: value.ownerId,
-    type: value.type,
-    runtime: value.runtime,
-    repository: value.repository,
-    branch: value.branch,
-    rootDir: value.rootDir,
-    buildCommand: value.buildCommand,
-    startCommand: value.startCommand,
-    preDeployCommand: value.preDeployCommand,
-    healthCheckPath: value.healthCheckPath,
-    region: value.region,
-    plan: value.plan,
-    maxShutdownDelaySeconds: value.maxShutdownDelaySeconds,
-    autoDeploy: value.autoDeploy,
-  });
-export const targetServiceContractSha256 = (
-  value: Pick<
-    TargetServiceContract,
-    "serviceId" | "imageUrl" | "environmentSha256"
-  >,
-): string =>
-  sha256({
-    serviceId: value.serviceId,
-    runtime: "image",
-    imageUrl: value.imageUrl,
-    environmentSha256: value.environmentSha256,
-    autoDeploy: "no",
-    preDeployCommand: "",
-  });
-
-export function validateServiceTransitionContracts(
+export const validateServiceTransitionContracts = (
   source: SourceRecoveryManifest,
   protectedEnvironment: ProtectedSourceEnvironment,
-  target: readonly TargetServiceContract[],
-): string {
-  if (
-    source.schemaVersion !== "reviewrouter.render-source-recovery.v1" ||
-    !digest.test(source.manifestSha256) ||
-    sha256(
-      withoutHash(
-        source as unknown as Record<string, unknown>,
-        "manifestSha256",
-      ),
-    ) !== source.manifestSha256 ||
-    source.services.length !== 3 ||
-    target.length !== 3
-  )
-    throw new Error("service_transition_manifest_invalid");
-  const sourceIds = source.services.map((item) => item.serviceId);
-  if (
-    new Set(sourceIds).size !== 3 ||
-    sourceIds.join("\0") !== target.map((item) => item.serviceId).join("\0")
-  )
-    throw new Error("service_transition_scope_invalid");
-  for (const service of source.services) {
-    const originals = protectedEnvironment[service.serviceId];
-    const requiresEffectAuthority =
-      service.databaseRole === "reviewrouter_api" ||
-      service.databaseRole === "reviewrouter_web";
-    const expectedProtectedKeys = [
-      "DATABASE_URL",
-      "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
-      "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256",
-      ...(requiresEffectAuthority
-        ? ["REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL"]
-        : []),
-    ].sort();
-    if (
-      service.runtime !== "node" ||
-      service.autoDeploy !== "no" ||
-      !commit.test(service.sourceCommitSha) ||
-      !digest.test(service.sourceEnvSha256) ||
-      !digest.test(service.sourceEnvKeysSha256) ||
-      !digest.test(service.serviceContractSha256) ||
-      sourceServiceContractSha256(
-        withoutHash(
-          service as unknown as Record<string, unknown>,
-          "serviceContractSha256",
-        ) as Omit<RenderServiceContract, "serviceContractSha256">,
-      ) !== service.serviceContractSha256 ||
-      !originals ||
-      typeof originals.DATABASE_URL !== "string" ||
-      typeof originals.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS !== "string" ||
-      !witness.test(originals.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS) ||
-      !rawSha256.test(
-        originals.REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256,
-      ) ||
-      (requiresEffectAuthority &&
-        typeof originals.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL !==
-          "string") ||
-      witnessSha256(originals.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS) !==
-        originals.REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256 ||
-      Object.keys(originals).sort().join("\0") !==
-        expectedProtectedKeys.join("\0")
-    )
-      throw new Error("service_transition_source_contract_invalid");
-  }
-  for (const service of target) {
-    const sourceService = source.services.find(
-      (item) => item.serviceId === service.serviceId,
-    )!;
-    const requiresEffectAuthority =
-      sourceService.databaseRole === "reviewrouter_api" ||
-      sourceService.databaseRole === "reviewrouter_web";
-    const expectedSet = [
-      "DATABASE_URL",
-      "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256",
-      "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
-      "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
-      "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
-      "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
-      ...(requiresEffectAuthority
-        ? ["REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL"]
-        : []),
-    ];
-    if (
-      !image.test(service.imageUrl) ||
-      !digest.test(service.environmentSha256) ||
-      Object.keys(service.environmentDelta).sort().join("\0") !==
-        expectedSet.sort().join("\0") ||
-      !rawSha256.test(
-        service.environmentDelta[
-          "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256"
-        ] ?? "",
-      ) ||
-      !witness.test(
-        service.environmentDelta["REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS"] ??
-          "",
-      ) ||
-      witnessSha256(
-        service.environmentDelta["REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS"] ??
-          "",
-      ) !==
-        service.environmentDelta[
-          "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256"
-        ] ||
-      service.removeKeys.length !== 0 ||
-      targetServiceContractSha256({
-        serviceId: service.serviceId,
-        imageUrl: service.imageUrl,
-        environmentSha256: service.environmentSha256,
-      }) !== service.serviceContractSha256
-    )
-      throw new Error("service_transition_target_contract_invalid");
-  }
-  return sha256(
-    target.map(
-      ({ serviceId, imageUrl, environmentSha256, serviceContractSha256 }) => ({
-        serviceId,
-        imageUrl,
-        environmentSha256,
-        serviceContractSha256,
-      }),
-    ),
-  );
-}
+  target: readonly TargetServiceRelease[],
+): string => transitionPolicy.validate(source, protectedEnvironment, target);
+
+const requireAppliedEnvironment = (
+  outcome: EnvironmentMutationOutcome,
+): string => {
+  if (outcome.status === "conflict")
+    throw new Error("service_transition_environment_conflict");
+  if (outcome.status === "ambiguous")
+    throw new Error("service_transition_environment_ambiguous");
+  return outcome.environmentSha256;
+};
 
 export class TransactionalServiceCutover {
   private readonly recoveryEffects: RecoveryEffectProtocol;
   constructor(
     private readonly ledger: ServiceTransitionLedger,
-    private readonly provider: TransactionalRenderProvider,
+    private readonly provider: TransactionalServiceProvider,
     private readonly recoveryOwnerId: string,
   ) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/u.test(recoveryOwnerId))
@@ -393,7 +106,7 @@ export class TransactionalServiceCutover {
   async stage(input: {
     source: SourceRecoveryManifest;
     protectedEnvironment: ProtectedSourceEnvironment;
-    target: readonly TargetServiceContract[];
+    target: readonly TargetServiceRelease[];
   }): Promise<readonly string[]> {
     const targetContractSha256 = validateServiceTransitionContracts(
       input.source,
@@ -421,10 +134,10 @@ export class TransactionalServiceCutover {
       const observed = await this.provider.observe(service.serviceId);
       if (
         !observed.suspended ||
-        observed.serviceContractSha256 !== service.serviceContractSha256 ||
-        observed.environmentSha256 !== service.sourceEnvSha256 ||
-        observed.provenance.kind !== "git" ||
-        observed.provenance.commitSha !== service.sourceCommitSha
+        observed.configurationSha256 !== service.configuration.sha256 ||
+        observed.environmentSha256 !== service.sourceEnvironmentSha256 ||
+        observed.provenance.kind !== "source_revision" ||
+        observed.provenance.revision !== service.sourceRevision
       )
         throw new Error("service_transition_source_preflight_mismatch");
     }
@@ -435,10 +148,10 @@ export class TransactionalServiceCutover {
       sourceManifest: input.source,
       targetContracts: input.target.map((item) => ({
         serviceId: item.serviceId,
-        imageUrl: item.imageUrl,
+        artifact: item.artifact,
         removeKeys: item.removeKeys,
         environmentSha256: item.environmentSha256,
-        serviceContractSha256: item.serviceContractSha256,
+        configurationSha256: item.configurationSha256,
       })),
     });
     if (transition === "existing")
@@ -454,27 +167,29 @@ export class TransactionalServiceCutover {
       const source = input.source.services.find(
         (item) => item.serviceId === contract.serviceId,
       )!;
-      const envHash = await this.provider.replaceEnvironment(
+      const envMutation = await this.provider.replaceEnvironment(
         contract.serviceId,
         {
           set: contract.environmentDelta,
           remove: contract.removeKeys,
-          expectedBeforeSha256: source.sourceEnvSha256,
+          expectedBeforeSha256: source.sourceEnvironmentSha256,
+          expectedAfterSha256: contract.environmentSha256,
         },
       );
+      const envHash = requireAppliedEnvironment(envMutation);
       if (envHash !== contract.environmentSha256)
         throw new Error("service_transition_target_env_mismatch");
       await this.checkpoint(common, contract.serviceId, "target_env_applied", {
         observedEnvSha256: envHash,
       });
       await this.checkpoint(common, contract.serviceId, "target_deploy_intent");
-      const deployId = await this.provider.deployImage(
+      const deployId = await this.provider.deployArtifact(
         contract.serviceId,
-        contract.imageUrl,
+        contract.artifact.reference,
       );
-      await this.provider.waitForDeploy(contract.serviceId, deployId, {
-        kind: "image",
-        imageUrl: contract.imageUrl,
+      await this.provider.waitForDeployment(contract.serviceId, deployId, {
+        kind: "container_image",
+        reference: contract.artifact.reference,
       });
       await this.checkpoint(common, contract.serviceId, "target_deployed", {
         deployId,
@@ -483,15 +198,15 @@ export class TransactionalServiceCutover {
       if (
         !observed.suspended ||
         observed.environmentSha256 !== contract.environmentSha256 ||
-        observed.serviceContractSha256 !== contract.serviceContractSha256 ||
-        observed.provenance.kind !== "image" ||
-        observed.provenance.imageUrl !== contract.imageUrl ||
-        observed.provenance.deployId !== deployId
+        observed.configurationSha256 !== contract.configurationSha256 ||
+        observed.provenance.kind !== "container_image" ||
+        observed.provenance.reference !== contract.artifact.reference ||
+        observed.provenance.deploymentId !== deployId
       )
         throw new Error("service_transition_target_verification_failed");
       await this.checkpoint(common, contract.serviceId, "target_verified", {
         deployId,
-        observedContractSha256: observed.serviceContractSha256,
+        observedContractSha256: observed.configurationSha256,
         observedEnvSha256: observed.environmentSha256,
       });
       deployIds.push(deployId);
@@ -506,7 +221,7 @@ export class TransactionalServiceCutover {
   async recover(input: {
     source: SourceRecoveryManifest;
     protectedEnvironment: ProtectedSourceEnvironment;
-    target: readonly TargetServiceContract[];
+    target: readonly TargetServiceRelease[];
     targetContractSha256?: string;
   }): Promise<void> {
     const targetContractSha256 =
@@ -536,7 +251,7 @@ export class TransactionalServiceCutover {
       if (!sourceEnv)
         throw new Error("service_transition_source_environment_missing");
       await this.provider.suspend(contract.serviceId);
-      await this.provider.quiesceDeploys(contract.serviceId);
+      await this.provider.quiesceDeployments(contract.serviceId);
       const beforeRestore = await this.provider.observe(contract.serviceId);
       if (!beforeRestore.suspended)
         throw new Error("service_transition_recovery_quiescence_unproven");
@@ -544,7 +259,7 @@ export class TransactionalServiceCutover {
         (item) => item.serviceId === contract.serviceId,
       )!;
       if (
-        beforeRestore.environmentSha256 !== contract.sourceEnvSha256 &&
+        beforeRestore.environmentSha256 !== contract.sourceEnvironmentSha256 &&
         beforeRestore.environmentSha256 !== target.environmentSha256
       )
         throw new Error("service_transition_recovery_environment_ambiguous");
@@ -560,20 +275,22 @@ export class TransactionalServiceCutover {
           kind: RecoveryEffectKind.RestoreServiceConfig,
           serviceId: contract.serviceId,
           ownerId: this.recoveryOwnerId,
-          effect: async () => {
-            await this.provider.configureSource(contract);
+          effect: async (_permit, executeAuthorized) => {
+            await executeAuthorized(() =>
+              this.provider.configureSource(contract),
+            );
             return this.provider.observe(contract.serviceId);
           },
           reconcileConsumed: async () => {
             const observed = await this.provider.observe(contract.serviceId);
             return observed.suspended &&
-              observed.serviceContractSha256 === contract.serviceContractSha256
+              observed.configurationSha256 === contract.configuration.sha256
               ? observed
               : null;
           },
           observe: async (observed) => ({
             serviceId: contract.serviceId,
-            serviceContractSha256: observed.serviceContractSha256,
+            serviceContractSha256: observed.configurationSha256,
             suspended: observed.suspended,
           }),
         }),
@@ -590,21 +307,28 @@ export class TransactionalServiceCutover {
         kind: RecoveryEffectKind.RestoreServiceEnvironment,
         serviceId: contract.serviceId,
         ownerId: this.recoveryOwnerId,
-        effect: async () =>
-          beforeRestore.environmentSha256 === contract.sourceEnvSha256
-            ? contract.sourceEnvSha256
-            : await this.provider.replaceEnvironment(contract.serviceId, {
-                set: sourceEnv,
-                remove: [
-                  "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
-                  "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
-                  "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
-                ],
-                expectedBeforeSha256: target.environmentSha256,
-              }),
+        effect: async (_permit, executeAuthorized) =>
+          await executeAuthorized(async () =>
+            beforeRestore.environmentSha256 === contract.sourceEnvironmentSha256
+              ? beforeRestore.environmentSha256
+              : requireAppliedEnvironment(
+                  await this.provider.replaceEnvironment(contract.serviceId, {
+                    set: sourceEnv,
+                    remove: [
+                      "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
+                      "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
+                      "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
+                      "REVIEW_ROUTER_RUNTIME_SERVICE_ID",
+                      "REVIEW_ROUTER_RUNTIME_DEPLOYMENT_PROVENANCE",
+                    ],
+                    expectedBeforeSha256: target.environmentSha256,
+                    expectedAfterSha256: contract.sourceEnvironmentSha256,
+                  }),
+                ),
+          ),
         reconcileConsumed: async () => {
           const observed = await this.provider.observe(contract.serviceId);
-          return observed.environmentSha256 === contract.sourceEnvSha256
+          return observed.environmentSha256 === contract.sourceEnvironmentSha256
             ? observed.environmentSha256
             : null;
         },
@@ -614,8 +338,13 @@ export class TransactionalServiceCutover {
         }),
       });
       await this.requireCompletedRecoveryEffect(envEffect);
-      const envHash = contract.sourceEnvSha256;
-      if (envHash !== contract.sourceEnvSha256)
+      const envObservation = envEffect.observation as {
+        environmentSha256?: unknown;
+      } | null;
+      const envHash = envObservation?.environmentSha256;
+      if (typeof envHash !== "string")
+        throw new Error("service_transition_source_env_observation_missing");
+      if (envHash !== contract.sourceEnvironmentSha256)
         throw new Error("service_transition_source_env_restore_failed");
       await this.checkpoint(common, contract.serviceId, "source_env_restored", {
         observedEnvSha256: envHash,
@@ -648,34 +377,36 @@ export class TransactionalServiceCutover {
         kind: RecoveryEffectKind.RestoreServiceDeploy,
         serviceId: contract.serviceId,
         ownerId: this.recoveryOwnerId,
-        effect: async () => {
+        effect: async (_permit, executeAuthorized) => {
           const deployId =
             persistedDeploy ??
-            (await this.provider.reconcileCommitDeploy({
+            (await this.provider.reconcileSourceDeployment({
               serviceId: contract.serviceId,
-              commitSha: contract.sourceCommitSha,
+              revision: contract.sourceRevision,
               intentAt: persistedIntentAt ?? restoreIntentAt,
             })) ??
-            (await this.provider.deployCommit(
-              contract.serviceId,
-              contract.sourceCommitSha,
+            (await executeAuthorized(() =>
+              this.provider.deploySourceRevision(
+                contract.serviceId,
+                contract.sourceRevision,
+              ),
             ));
-          await this.provider.waitForDeploy(contract.serviceId, deployId, {
-            kind: "git",
-            commitSha: contract.sourceCommitSha,
+          await this.provider.waitForDeployment(contract.serviceId, deployId, {
+            kind: "source_revision",
+            revision: contract.sourceRevision,
           });
           return deployId;
         },
         reconcileConsumed: async () => {
-          const deployId = await this.provider.reconcileCommitDeploy({
+          const deployId = await this.provider.reconcileSourceDeployment({
             serviceId: contract.serviceId,
-            commitSha: contract.sourceCommitSha,
+            revision: contract.sourceRevision,
             intentAt: persistedIntentAt ?? restoreIntentAt,
           });
           if (!deployId) return null;
-          await this.provider.waitForDeploy(contract.serviceId, deployId, {
-            kind: "git",
-            commitSha: contract.sourceCommitSha,
+          await this.provider.waitForDeployment(contract.serviceId, deployId, {
+            kind: "source_revision",
+            revision: contract.sourceRevision,
           });
           return deployId;
         },
@@ -692,15 +423,16 @@ export class TransactionalServiceCutover {
       const observed = await this.provider.observe(contract.serviceId);
       if (
         !observed.suspended ||
-        observed.serviceContractSha256 !== contract.serviceContractSha256 ||
-        observed.environmentSha256 !== contract.sourceEnvSha256 ||
-        observed.provenance.kind !== "git" ||
-        observed.provenance.commitSha !== contract.sourceCommitSha
+        observed.configurationSha256 !== contract.configuration.sha256 ||
+        observed.environmentSha256 !== contract.sourceEnvironmentSha256 ||
+        observed.provenance.kind !== "source_revision" ||
+        observed.provenance.revision !== contract.sourceRevision ||
+        observed.provenance.deploymentId !== deployId
       )
         throw new Error("service_transition_source_restore_unproven");
       await this.checkpoint(common, contract.serviceId, "source_verified", {
         deployId,
-        observedContractSha256: observed.serviceContractSha256,
+        observedContractSha256: observed.configurationSha256,
         observedEnvSha256: observed.environmentSha256,
       });
     }
@@ -709,7 +441,7 @@ export class TransactionalServiceCutover {
   async finalizeAuthorizedSourceRecovery(input: {
     source: SourceRecoveryManifest;
     protectedEnvironment: ProtectedSourceEnvironment;
-    target: readonly TargetServiceContract[];
+    target: readonly TargetServiceRelease[];
     /** Exact authority-ledger IDs durably observed suspended by this rollout. */
     sourceWriterServiceIds: readonly string[];
     restoreSourceWritesAndVerify: () => Promise<void>;
@@ -758,8 +490,8 @@ export class TransactionalServiceCutover {
         effectKey: "restore_database_writes",
         kind: RecoveryEffectKind.RestoreDatabaseWrites,
         ownerId: this.recoveryOwnerId,
-        effect: async () => {
-          await input.restoreSourceWritesAndVerify();
+        effect: async (_permit, executeAuthorized) => {
+          await executeAuthorized(input.restoreSourceWritesAndVerify);
           return { sourceWritesRestored: true as const };
         },
         observe: async (value) => ({
@@ -784,8 +516,30 @@ export class TransactionalServiceCutover {
         kind: RecoveryEffectKind.ResumeSourceService,
         serviceId: service.serviceId,
         ownerId: this.recoveryOwnerId,
-        effect: async () => {
-          await this.provider.resume(service.serviceId);
+        effect: async (_permit, executeAuthorized) => {
+          const beforeResume = await this.provider.observe(service.serviceId);
+          if (
+            !beforeResume.suspended ||
+            beforeResume.configurationSha256 !== service.configuration.sha256 ||
+            beforeResume.environmentSha256 !==
+              service.sourceEnvironmentSha256 ||
+            beforeResume.provenance.kind !== "source_revision" ||
+            beforeResume.provenance.revision !== service.sourceRevision ||
+            beforeResume.provenance.deploymentId !==
+              verifiedDeployIds.get(service.serviceId)
+          )
+            throw new Error(
+              "service_transition_source_resume_precondition_drift",
+            );
+          await executeAuthorized(() =>
+            this.provider.resume(service.serviceId, beforeResume, {
+              deploymentId: verifiedDeployIds.get(service.serviceId)!,
+              provenance: {
+                kind: "source_revision",
+                revision: service.sourceRevision,
+              },
+            }),
+          );
           return this.provider.observe(service.serviceId);
         },
         reconcileConsumed: async () => {
@@ -795,7 +549,7 @@ export class TransactionalServiceCutover {
         observe: async (observed) => ({
           serviceId: service.serviceId,
           resumed: !observed.suspended,
-          serviceContractSha256: observed.serviceContractSha256,
+          serviceContractSha256: observed.configurationSha256,
           environmentSha256: observed.environmentSha256,
         }),
       });
@@ -803,10 +557,12 @@ export class TransactionalServiceCutover {
       const observed = await this.provider.observe(service.serviceId);
       if (
         observed.suspended ||
-        observed.serviceContractSha256 !== service.serviceContractSha256 ||
-        observed.environmentSha256 !== service.sourceEnvSha256 ||
-        observed.provenance.kind !== "git" ||
-        observed.provenance.commitSha !== service.sourceCommitSha
+        observed.configurationSha256 !== service.configuration.sha256 ||
+        observed.environmentSha256 !== service.sourceEnvironmentSha256 ||
+        observed.provenance.kind !== "source_revision" ||
+        observed.provenance.revision !== service.sourceRevision ||
+        observed.provenance.deploymentId !==
+          verifiedDeployIds.get(service.serviceId)
       )
         throw new Error("service_transition_source_resume_unproven");
       await this.checkpoint(common, service.serviceId, "source_resumed");

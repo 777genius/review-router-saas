@@ -109,10 +109,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
 
   it("rejects vacuous database evidence and unpaginated GitHub cohorts", () => {
     const fixture = observedFixture();
-    fixture.artifacts.database.admittedRecoveryEvidence = {
-      witnessFingerprints: [],
-      databaseIncarnations: [],
-    };
+    fixture.artifacts.database.admittedRecoveryEvidence.sources[0].witnessPresentRows = 0;
     fixture.artifacts.workflowRuns.observations[0].rawResponses.find(
       (entry: any) => entry.body?.workflow_runs,
     ).nextUrl = "https://api.github.com/unbound-page";
@@ -121,10 +118,41 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       fixture.options,
     ).failures;
     expect(failures).toContain(
-      "admitted recovery evidence is not bound to this database generation",
+      "admitted recovery evidence is incomplete or not source-bound to this database generation",
     );
     expect(failures).toContain(
       "workflow-run inventory does not prove exact repository/workflow cohort pagination",
+    );
+  });
+
+  it("rejects positive recovery row counts with vacuous source aggregates", () => {
+    const fixture = observedFixture();
+    fixture.artifacts.database.admittedRecoveryEvidence.sources[0].witnessFingerprints =
+      [];
+    fixture.artifacts.database.admittedRecoveryEvidence.sources[2].databaseIncarnations =
+      [];
+
+    expect(
+      verifyCodexRotatingRollout(fixture.evidence, fixture.options).failures,
+    ).toContain(
+      "admitted recovery evidence is incomplete or not source-bound to this database generation",
+    );
+  });
+
+  it("rejects substituted per-source incarnation requirements", () => {
+    const fixture = observedFixture();
+    const source =
+      fixture.artifacts.database.admittedRecoveryEvidence.sources.find(
+        (entry: any) => entry.source === "CodexOAuthSetupPayloadClaim",
+      );
+    source.incarnationRequired = false;
+    source.incarnationPresentRows = 0;
+    source.databaseIncarnations = [];
+
+    expect(
+      verifyCodexRotatingRollout(fixture.evidence, fixture.options).failures,
+    ).toContain(
+      "admitted recovery evidence is incomplete or not source-bound to this database generation",
     );
   });
 
@@ -769,12 +797,39 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       },
       "Render deployment service names, roles, or immutable IDs are invalid",
     ],
+    [
+      "substituted deployment commit fact",
+      (fixture: any) => {
+        fixture.artifacts.deployments.services[0].commit = "0".repeat(40);
+      },
+      "Render deployment facts are not derivable from immutable raw API responses",
+    ],
+    [
+      "duplicate Render runtime service identity",
+      (fixture: any) => {
+        fixture.artifacts.deployments.services[1].serviceId =
+          fixture.artifacts.deployments.services[0].serviceId;
+      },
+      "Render deployment service identities are not unique",
+    ],
+    [
+      "omitted after-phase runtime witness observation",
+      (fixture: any) => {
+        fixture.artifacts.deployments.runtimeWitness.observations.pop();
+      },
+      "Render runtime witness observation is absent, mixed, or not source-bound",
+    ],
   ])("rejects terminal transition: %s", (_name, mutate, expected) => {
     const fixture = observedFixture();
     mutate(fixture);
     expect(
-      verifyCodexRotatingRollout(fixture.evidence, fixture.options).failures,
-    ).toContain(expected);
+      verifyCodexRotatingRollout(
+        fixture.evidence,
+        fixture.options,
+      ).failures.some(
+        (failure) => failure === expected || failure.startsWith(`${expected}:`),
+      ),
+    ).toBe(true);
   });
 
   it.each([
@@ -1089,8 +1144,13 @@ describe("observation-backed Codex rotating rollout verifier", () => {
     const fixture = observedFixture();
     mutate(fixture.artifacts.database.catalog);
     expect(
-      verifyCodexRotatingRollout(fixture.evidence, fixture.options).failures,
-    ).toContain(expected);
+      verifyCodexRotatingRollout(
+        fixture.evidence,
+        fixture.options,
+      ).failures.some(
+        (failure) => failure === expected || failure.startsWith(`${expected}:`),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -1119,10 +1179,25 @@ function observedFixture(): any {
   );
   const artifacts: any = {
     database: {
-      observationVersion: 5,
+      observationVersion: 6,
       source: "production-postgresql-writer",
       captureKind: "database-query",
       rehearsal: false,
+      effectivePrincipalInventory: {
+        version: 1,
+        database: "review_router",
+        sessionPrincipal: "reviewrouter_release_migration",
+        roles: [],
+        memberships: [],
+        grants: [],
+      },
+      effectivePrincipalDecision: {
+        accepted: true,
+        inventorySha256: `sha256:${"8".repeat(64)}`,
+        policySha256: `sha256:${"9".repeat(64)}`,
+        violations: [],
+        effectivePermissions: {},
+      },
       databaseIdentity: {
         currentDatabase: "review_router",
         currentSchema: "public",
@@ -1162,8 +1237,23 @@ function observedFixture(): any {
         ],
       },
       admittedRecoveryEvidence: {
-        witnessFingerprints: ["f".repeat(64)],
-        databaseIncarnations: ["7612345678901234567"],
+        sources: [
+          ["CodexOAuthSecretNamespace", false],
+          ["CodexOAuthSetupManifest", false],
+          ["CodexOAuthSetupPayloadClaim", true],
+          ["CodexOAuthSetupRecoveryRequest", false],
+          ["CodexOAuthWritebackIntent", true],
+        ].map(([source, incarnationRequired]) => ({
+          source,
+          totalRows: 1,
+          witnessPresentRows: 1,
+          incarnationRequired,
+          incarnationPresentRows: incarnationRequired ? 1 : 0,
+          witnessFingerprints: ["f".repeat(64)],
+          databaseIncarnations: incarnationRequired
+            ? ["7612345678901234567"]
+            : [],
+        })),
       },
       databaseAuthorization: {
         databaseOwner: "reviewrouter_role_bootstrap",
@@ -2383,27 +2473,74 @@ function observedFixture(): any {
     body,
     ...extra,
   });
-  artifacts.deployments.observationVersion = 2;
+  artifacts.deployments.observationVersion = 3;
   artifacts.deployments.database.ownerId = "own-production";
   artifacts.deployments.runtimeWitness = {
-    serviceId: "srv-api",
     key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
     sha256: "f".repeat(64),
-    sourceResponseSha256: "",
+    observations: [],
   };
-  const renderBody = {
-    ownerId: "own-production",
-    database: artifacts.deployments.database,
-    services: artifacts.deployments.services,
-    witnessServiceId: "srv-api",
-  };
-  const renderRaw = rawEntry(
-    "https://api.render.com/v1/provenance",
-    renderBody,
+  const ownerRaw = rawEntry("https://api.render.com/v1/owners/own-production", {
+    id: "own-production",
+    name: "production",
+  });
+  const databaseRaw = rawEntry(
+    `https://api.render.com/v1/postgres/${artifacts.deployments.database.id}`,
+    { ...artifacts.deployments.database },
   );
-  artifacts.deployments.runtimeWitness.sourceResponseSha256 =
-    renderRaw.bodySha256;
-  artifacts.deployments.rawResponses = [renderRaw];
+  const serviceRaw = artifacts.deployments.services.flatMap((service: any) => [
+    rawEntry(`https://api.render.com/v1/services/${service.serviceId}`, {
+      id: service.serviceId,
+      name: service.name,
+      serviceDetails: { envSpecificDetails: { preDeployCommand: "" } },
+    }),
+    rawEntry(
+      `https://api.render.com/v1/services/${service.serviceId}/deploys/${service.deployId}`,
+      {
+        id: service.deployId,
+        commit: { id: service.commit },
+        image: { digest: service.imageDigest },
+        status: service.status,
+        updatedAt: service.observedAt,
+      },
+    ),
+    rawEntry(
+      `https://api.render.com/v1/services/${service.serviceId}/env-vars/REVIEW_ROUTER_CODEX_ROTATING_MUTATION_ADMISSION`,
+      { value: service.rotatingMutationAdmission },
+    ),
+  ]);
+  const witnessObservations = ["before", "after"].flatMap((phase) =>
+    [
+      ["api", "srv-api"],
+      ["web", "srv-web"],
+      ["worker", "srv-worker"],
+      ["witness", "srv-witness"],
+    ].map(([role, serviceId]) => {
+      const response = rawEntry(
+        `https://api.render.com/v1/services/${serviceId}/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS`,
+        {
+          key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+          observationPhase: phase,
+          valueSha256: "f".repeat(64),
+        },
+      );
+      return { phase, role, serviceId, response };
+    }),
+  );
+  artifacts.deployments.runtimeWitness.observations = witnessObservations.map(
+    ({ phase, role, serviceId, response }) => ({
+      phase,
+      role,
+      serviceId,
+      sourceResponseSha256: response.bodySha256,
+    }),
+  );
+  artifacts.deployments.rawResponses = [
+    ownerRaw,
+    databaseRaw,
+    ...serviceRaw,
+    ...witnessObservations.map(({ response }) => response),
+  ];
   artifacts.deployments.captureIdentity = {
     ownerId: "own-production",
     ownerName: "production",
@@ -2411,7 +2548,7 @@ function observedFixture(): any {
     apiHost: "api.render.com",
     observedAt: "2026-08-09T00:04:01Z",
     rawResponsesSha256: digest(
-      Buffer.from(canonicalJson([renderRaw]).trimEnd()),
+      Buffer.from(canonicalJson(artifacts.deployments.rawResponses).trimEnd()),
     ),
   };
 

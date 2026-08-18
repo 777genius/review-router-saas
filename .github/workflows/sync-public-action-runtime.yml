@@ -39,7 +39,7 @@ jobs:
       }}
 
     steps:
-      - name: Gate exact current main SHA and successful CI
+      - name: Resolve exact current main SHA
         id: source
         shell: bash
         env:
@@ -64,25 +64,10 @@ jobs:
             exit 1
           fi
 
-          CI_RUN="$(
-            gh run list \
-              --repo "$GITHUB_REPOSITORY" \
-              --workflow CI \
-              --branch main \
-              --limit 50 \
-              --json databaseId,headSha,status,conclusion,url \
-              --jq ".[] | select(.headSha == \"$REQUESTED_SHA\" and .status == \"completed\" and .conclusion == \"success\") | [.databaseId, .url] | @tsv" \
-              | head -n 1
-          )"
-          if [[ -z "$CI_RUN" ]]; then
-            echo "::error::CI must complete successfully on current origin/main $REQUESTED_SHA before synchronization"
-            exit 1
-          fi
           echo "sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
-          echo "Using CI gate: ${CI_RUN#*$'\t'}"
 
       - name: Checkout SaaS runtime
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: ${{ steps.source.outputs.sha }}
           path: review-router-saas
@@ -101,6 +86,18 @@ jobs:
             exit 1
           fi
 
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Require exact PostgreSQL publication-gate evidence
+        working-directory: review-router-saas
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_RELEASE_GATE_SHA: ${{ steps.source.outputs.sha }}
+        run: node scripts/release-gate-evidence.mjs verify
+
       - name: Require cross-repository sync credential
         shell: bash
         env:
@@ -112,11 +109,6 @@ jobs:
             echo "::error::REVIEW_ROUTER_ACTION_SYNC_SSH_KEY or REVIEW_ROUTER_ACTION_SYNC_TOKEN is required. Prefer a write deploy key scoped to ${ACTION_REPOSITORY}; alternatively use a fine-grained PAT or GitHub App token with Contents: write and permission to push ${ACTION_BRANCH}."
             exit 1
           fi
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
 
       - name: Enable pnpm
         run: corepack enable
@@ -133,7 +125,7 @@ jobs:
 
       - name: Checkout public Action repository with token
         if: ${{ env.ACTION_SYNC_TOKEN_PRESENT == 'true' }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: ${{ env.ACTION_REPOSITORY }}
           ref: ${{ env.ACTION_BRANCH }}
@@ -146,7 +138,7 @@ jobs:
             env.ACTION_SYNC_TOKEN_PRESENT != 'true' &&
             env.ACTION_SYNC_SSH_KEY_PRESENT == 'true'
           }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: ${{ env.ACTION_REPOSITORY }}
           ref: ${{ env.ACTION_BRANCH }}

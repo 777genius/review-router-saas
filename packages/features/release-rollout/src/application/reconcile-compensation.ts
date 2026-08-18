@@ -5,6 +5,8 @@ import {
   type ExternalEffectReconciliation,
 } from "../domain/external-effect";
 import {
+  beginCompensation,
+  completeCompensation,
   RolloutStep,
   sha256Canonical,
   type ReleaseRollout,
@@ -15,7 +17,7 @@ import {
   type CompensationCheckpoint,
   type DatabaseAclWitness,
   type ProviderAuthorityDecisionPort,
-  type ProviderControlPort,
+  type SourceFreezeEvidence,
 } from "./ports";
 import { sourceWriterServiceIdsAreValid } from "../domain/source-writer-service-ids";
 import {
@@ -63,9 +65,16 @@ type CompensationPorts = {
   };
   compensateDatabase(): Promise<DatabaseAclWitness>;
   observeDatabaseCompensation(): Promise<DatabaseAclWitness | null>;
-  provider: Pick<ProviderControlPort, "compensateAndObserve"> & {
+  provider: {
     /** The implementation consumes per-service recovery permits internally. */
     readonly recoveryEffectsAreAuthorityMediated: true;
+    recoverSourceFreeze(input: {
+      decision: import("./ports").ProviderAuthorityDecision;
+      databaseWitness: DatabaseAclWitness;
+      sourceWriterServiceIds: readonly string[];
+      sourceFreeze: SourceFreezeEvidence;
+      activationBoundary: CompensationCheckpoint["activationBoundary"];
+    }): Promise<import("./ports").ProviderStateWitness>;
   };
 };
 
@@ -203,6 +212,15 @@ export class ReleaseCompensationReconciliationUseCase {
     this.recoveryEffects = new RecoveryEffectProtocol(ports.ledger);
   }
 
+  /** Immediate-failure entry point; scheduled reconciliation uses execute(). */
+  async recover(rollout: ReleaseRollout): Promise<ReleaseRollout> {
+    const result = await this.execute(rollout);
+    if (result.outcome !== "compensated" && result.outcome !== "no_op")
+      throw new Error(`release_compensation_${result.outcome}`);
+    if (rollout.phase === "recovery_compensated") return rollout;
+    return completeCompensation(beginCompensation(rollout));
+  }
+
   async execute(rollout: ReleaseRollout): Promise<{
     outcome: "compensated" | "forward_only" | "denied" | "no_op";
     externalEffects?: CompensationSafetyReconciliation;
@@ -294,8 +312,10 @@ export class ReleaseCompensationReconciliationUseCase {
         effectKey: "restore_database_writes",
         kind: RecoveryEffectKind.RestoreDatabaseWrites,
         ownerId: this.ports.recoveryOwnerId,
-        effect: async () => {
-          databaseWitness = await this.ports.compensateDatabase();
+        effect: async (_permit, executeAuthorized) => {
+          databaseWitness = await executeAuthorized(() =>
+            this.ports.compensateDatabase(),
+          );
           return databaseWitness;
         },
         observe: async (witness) => witness,
@@ -317,10 +337,12 @@ export class ReleaseCompensationReconciliationUseCase {
       if (!externalEffects.safeForCompensation)
         return { outcome: "denied", externalEffects, reconciliation: null };
 
-      const providerWitness = await this.ports.provider.compensateAndObserve({
+      const providerWitness = await this.ports.provider.recoverSourceFreeze({
         decision,
         databaseWitness,
         sourceWriterServiceIds: checkpoint.sourceFreeze.serviceIds,
+        sourceFreeze: checkpoint.sourceFreeze,
+        activationBoundary: checkpoint.activationBoundary,
       });
 
       ({ checkpoint, externalEffects } = await this.safetySnapshot(rollout));

@@ -77,7 +77,27 @@ describe("private PG17 target workflow job resolution", () => {
 
     await expect(
       resolveWorkflowJobId("pg17-cutover-private", options(request)),
-    ).rejects.toThrow("target_job_list_ambiguous");
+    ).rejects.toThrow("provider_http_response_invalid");
+  });
+
+  it("does not expose GitHub auth, headers, or malformed bodies", async () => {
+    vi.stubEnv("GITHUB_REPOSITORY", "owner/repository");
+    vi.stubEnv("GITHUB_CONTROL_READ_TOKEN", "github-control-token-canary");
+    const request = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("github-control-body-canary{", {
+        status: 200,
+        headers: { "set-cookie": "github-control-cookie-canary" },
+      }),
+    );
+    const error = await resolveWorkflowJobId(
+      "pg17-cutover-private",
+      options(request),
+    ).catch((value: unknown) => value);
+    const output = `${String(error)}${JSON.stringify(error)}`;
+    expect(output.length).toBeLessThan(1_536);
+    expect(output).not.toMatch(
+      /github-control-token-canary|github-control-body-canary|github-control-cookie-canary/u,
+    );
   });
 
   it("stops after the configured polling bound", async () => {

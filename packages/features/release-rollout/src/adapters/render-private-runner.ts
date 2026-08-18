@@ -324,6 +324,10 @@ export class RenderPrivateRunnerAdapter {
       effectId: provisioningIntentId,
       ownerId: claimantId,
       prepare: prepareInput,
+      // Runner creation has one durable convergence owner: the provisioning
+      // effect protocol keyed by its deterministic start command. Wrapping a
+      // second provider-mutation protocol here can leave contradictory inner
+      // forward-repair and outer bound states after a lost response.
       dispatch: async () =>
         await api.createJob(input.baseServiceId, {
           startCommand,
@@ -644,31 +648,24 @@ export class RenderPrivateRunnerAdapter {
     ]);
     const discovered: PersistedRunnerJob[] = [];
     for (const intent of intents) {
-      let cursor: string | undefined;
-      do {
-        const page = await this.client(apiKey).listJobs(
-          intent.serviceId,
-          cursor,
-        );
-        for (const job of page.items)
-          if (
-            !knownJobIds.has(job.id) &&
-            job.startCommand.includes(`--intent ${intent.id} --context `)
-          ) {
-            knownJobIds.add(job.id);
-            discovered.push({
-              rolloutId,
-              serviceId: intent.serviceId,
-              jobId: job.id,
-              observedAt: this.now().toISOString(),
-              providerCreationNotBefore: intent.createdAt,
-              cleanupCanary: `rr-cleanup:${rolloutId}:${intent.runnerName}`,
-              lifecycle: intent.lifecycle,
-              provisioningIntentId: intent.id,
-            });
-          }
-        cursor = page.nextCursor ?? undefined;
-      } while (cursor);
+      const jobs = await this.client(apiKey).listAllJobs(intent.serviceId);
+      for (const job of jobs)
+        if (
+          !knownJobIds.has(job.id) &&
+          job.startCommand.includes(`--intent ${intent.id} --context `)
+        ) {
+          knownJobIds.add(job.id);
+          discovered.push({
+            rolloutId,
+            serviceId: intent.serviceId,
+            jobId: job.id,
+            observedAt: this.now().toISOString(),
+            providerCreationNotBefore: intent.createdAt,
+            cleanupCanary: `rr-cleanup:${rolloutId}:${intent.runnerName}`,
+            lifecycle: intent.lifecycle,
+            provisioningIntentId: intent.id,
+          });
+        }
     }
     let duplicateObserved = false;
 

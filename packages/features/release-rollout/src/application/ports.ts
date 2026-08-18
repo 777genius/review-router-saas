@@ -6,18 +6,19 @@ import type {
   StepObservation,
   TargetSwitchFence,
 } from "../domain/release-rollout";
+import type {
+  ReleaseMigrationObservation,
+  ReleaseMigrationPermit,
+  ReleaseMigrationTransitionV1,
+} from "../domain/release-migration-transition";
+import type { LegacyAmbiguityEvidence } from "../domain/trusted-rollout-evidence";
 
 export interface ProviderControlPort {
   freezeAndObserve(): Promise<StepObservation>;
-  compensateAndObserve(input: {
-    decision: ProviderAuthorityDecision;
-    databaseWitness: DatabaseAclWitness;
-    /** Exact authority-ledger IDs whose suspension was caused by this rollout. */
-    sourceWriterServiceIds: readonly string[];
-  }): Promise<ProviderStateWitness>;
 }
 
 export const ProviderAuthorityOperation = Object.freeze({
+  FreezeSource: "freeze_source",
   DeployTarget: "deploy_target",
   ResumeTarget: "resume_target",
   ResumeSource: "resume_source",
@@ -107,11 +108,13 @@ export interface DatabaseRolloutPort {
   ): Promise<StepObservation>;
   runReleaseMigration(
     target: DatabaseGenerationIdentity,
-  ): Promise<StepObservation>;
+    transition: ReleaseMigrationTransitionV1,
+    permit: ReleaseMigrationPermit,
+    sourceLegacyAmbiguity: LegacyAmbiguityEvidence,
+  ): Promise<
+    StepObservation<ReleaseMigrationObservation & Record<string, unknown>>
+  >;
   activate(rolloutId: string): Promise<StepObservation>;
-  compensateSource(
-    source: DatabaseGenerationIdentity,
-  ): Promise<DatabaseAclWitness>;
 }
 
 export interface TargetServicesPort {

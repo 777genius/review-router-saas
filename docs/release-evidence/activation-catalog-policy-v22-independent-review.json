@@ -1,0 +1,75 @@
+{
+  "verdict": "GO",
+  "exactHead": "09854060647768cac8a436d0c837aae65aba99f2",
+  "reviewedAt": "2026-08-18T20:56:25.998Z",
+  "reviewerRunId": "rr-v65-security-audit-v74",
+  "candidateSha256": "5edc211d4576d919181e2b2d3ad099ff20f74f1986da7c14e0d8ff107f39096e",
+  "candidateBytes": 2388930,
+  "candidateCaptures": [
+    "/var/data/worker-jobs/rr-v65-activation-catalog-v22-candidate.trace45.raw.json",
+    "/var/data/worker-jobs/rr-v65-activation-catalog-v22-candidate.trace46.raw.json"
+  ],
+  "postgresImages": {
+    "sourcePg16": "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+    "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
+  },
+  "canonicalDigests": {
+    "preactivation": "sha256:7d782d8feee32282cfc43c3e295482d16f71cd7f50380b8b9131439d208ff817",
+    "activated": "sha256:07cc2dba4d106051a66e7f3c7a5c3e20ed29943204d8e3501c13fd77fbaa7924",
+    "artifact": "sha256:3605b4a6545565dd11cf5d37ff39808350a13d992e3a3f1428084104d5293020"
+  },
+  "findings": [],
+  "evidenceChecked": [
+    {
+      "subject": "Full exact-head security review",
+      "result": "Run rr-v65-security-audit-v73 reviewed the complete 240-file branch delta at exact SHA 09854060647768cac8a436d0c837aae65aba99f2. It found no unresolved high or medium security finding and left only the external activation-catalog evidence gate unresolved."
+    },
+    {
+      "subject": "Independent blocker closure",
+      "result": "Run rr-v65-security-audit-v74 independently verified the external captures and returned GO for mechanical publication of these exact bytes, digests, pinned images, and provenance on top of the audited SHA."
+    },
+    {
+      "subject": "Capture reproducibility",
+      "result": "trace45 and trace46 are byte-identical, each 2388930 bytes with SHA-256 5edc211d4576d919181e2b2d3ad099ff20f74f1986da7c14e0d8ff107f39096e. Both completed the current migration-permit flow with permit_boundary=true, full_guard=true, and runtime_privileges=true."
+    },
+    {
+      "subject": "Canonical hashing",
+      "result": "Repository-owned normalization and canonical hashing reproduced the preactivation, activated, and artifact digests recorded above."
+    },
+    {
+      "subject": "ACL normalization safety",
+      "result": "Dynamic normalization removes only a/w/d/D bits for the three runtime principals on CodexOAuthWritebackIntent. Grant-option markers, grantor, all other privileges, and the independent effective-principal ACL gate remain represented and enforced."
+    },
+    {
+      "subject": "PostgreSQL proof",
+      "result": "The pinned PostgreSQL 17.5 combined rehearsal completed migrations 000060 through 000074 and passed."
+    },
+    {
+      "subject": "Exact-head CI",
+      "result": "GitHub Actions run 31997613866 passed Quality Gates, Dedicated Release Authority PG17, Self-hosted E2E, Hosted runtime OCI, and both rotating installer lock jobs on exact SHA 09854060647768cac8a436d0c837aae65aba99f2."
+    }
+  ],
+  "residualRisks": [
+    {
+      "risk": "The external capture paths are mutable filesystem locations.",
+      "disposition": "Publication binds both labels to the exact byte count, whole-file SHA-256, three canonical digests, pinned PostgreSQL images, audited SHA, and this immutable review artifact hash."
+    },
+    {
+      "risk": "Any later production-code, SQL, capture, validation, or digest change invalidates this authorization.",
+      "disposition": "Fail closed and require a new capture and independent audit."
+    }
+  ],
+  "promotionProvenanceRecommendation": {
+    "status": "publication-authorized",
+    "currentCheckedInProvenanceReady": false,
+    "authorization": "GO only for mechanical activation catalog policy v22 publication using the exact reviewed candidate and provenance in this artifact.",
+    "auditedHead": "09854060647768cac8a436d0c837aae65aba99f2",
+    "captureBaseCommit": "09854060647768cac8a436d0c837aae65aba99f2",
+    "requiredActions": [
+      "Pin this review artifact SHA-256 in provenance v3.",
+      "Generate the policy artifact mechanically from one verified candidate.",
+      "Rerun no-write verification and focused promotion, provenance, policy, typecheck, lint, and format gates.",
+      "Require exact-head CI before merge."
+    ]
+  }
+}

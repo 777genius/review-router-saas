@@ -19,23 +19,55 @@ const renderObservationPath = join(
   "render.json",
 );
 const renderObservation = {
-  observationVersion: 2,
+  observationVersion: 3,
   source: "render-api",
+  services: ["api", "web", "worker"].map((role) => ({
+    role,
+    serviceId: `srv-${role}`,
+  })),
   captureIdentity: {
     authenticated: true,
     apiHost: "api.render.com",
+    observedAt: new Date().toISOString(),
     rawResponsesSha256: "",
   },
-  rawResponses: [
-    {
-      url: "https://api.render.com/v1/services/srv-migration/jobs/job-migration",
-      status: 200,
-      bodySha256: "0".repeat(64),
-      body: { id: "job-migration" },
-    },
-  ],
-  runtimeWitness: { sha256: "f".repeat(64) },
+  rawResponses: [] as Array<{
+    url: string;
+    status: number;
+    bodySha256: string;
+    body: Record<string, string>;
+  }>,
+  runtimeWitness: {
+    key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+    sha256: "f".repeat(64),
+    observations: ["before", "after"].flatMap((phase) =>
+      ["api", "web", "worker", "witness"].map((role) => ({
+        phase,
+        role,
+        serviceId: `srv-${role}`,
+        sourceResponseSha256: "0".repeat(64),
+      })),
+    ),
+  },
 };
+renderObservation.rawResponses =
+  renderObservation.runtimeWitness.observations.map((observation) => {
+    const body = {
+      key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+      observationPhase: observation.phase,
+      valueSha256: "f".repeat(64),
+    };
+    const bodySha256 = createHash("sha256")
+      .update(canonicalProviderJson(body))
+      .digest("hex");
+    observation.sourceResponseSha256 = bodySha256;
+    return {
+      url: `https://api.render.com/v1/services/${observation.serviceId}/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS`,
+      status: 200,
+      bodySha256,
+      body,
+    };
+  });
 renderObservation.captureIdentity.rawResponsesSha256 = createHash("sha256")
   .update(canonicalProviderJson(renderObservation.rawResponses))
   .digest("hex");
@@ -48,6 +80,20 @@ const validEnv = {
   REVIEW_ROUTER_RENDER_OBSERVATION_PATH: renderObservationPath,
   REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID: "rollout-1",
   REVIEW_ROUTER_DRAIN_OBSERVATION_INTERVAL_MS: "15000",
+  REVIEW_ROUTER_PRODUCTION_WRITER_PRINCIPAL_POLICY_JSON: JSON.stringify({
+    version: 1,
+    publicPermissions: [],
+    principals: [
+      {
+        principal: "release",
+        mayLogin: true,
+        inherit: true,
+        connectionLimit: -1,
+        validUntil: null,
+        permissions: [],
+      },
+    ],
+  }),
 };
 
 describe("production-writer rollout observation capture", () => {
@@ -329,6 +375,75 @@ describe("production-writer rollout observation capture", () => {
     );
   });
 
+  it.each([
+    [
+      "substituted source URL",
+      (response: (typeof renderObservation.rawResponses)[number]) => ({
+        ...response,
+        url: `${response.url}/substituted`,
+      }),
+    ],
+    [
+      "secret-bearing witness body",
+      (response: (typeof renderObservation.rawResponses)[number]) => ({
+        ...response,
+        body: { ...response.body, value: "plaintext-secret" },
+      }),
+    ],
+  ])("rejects a %s in trusted runtime configuration", (_label, mutate) => {
+    const path = join(
+      mkdtempSync(join(tmpdir(), "rr-render-substitution-")),
+      "render.json",
+    );
+    const rawResponses = renderObservation.rawResponses.map(
+      (response, index) => (index === 0 ? mutate(response) : response),
+    );
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...renderObservation,
+        rawResponses,
+        captureIdentity: {
+          ...renderObservation.captureIdentity,
+          rawResponsesSha256: createHash("sha256")
+            .update(canonicalProviderJson(rawResponses))
+            .digest("hex"),
+        },
+      }),
+    );
+
+    expect(() =>
+      assertProductionWriterCaptureConfiguration({
+        ...validEnv,
+        REVIEW_ROUTER_RENDER_OBSERVATION_PATH: path,
+      }),
+    ).toThrow("trusted Render runtime observation is invalid");
+  });
+
+  it("rejects stale trusted runtime configuration", () => {
+    const path = join(
+      mkdtempSync(join(tmpdir(), "rr-render-stale-")),
+      "render.json",
+    );
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...renderObservation,
+        captureIdentity: {
+          ...renderObservation.captureIdentity,
+          observedAt: "2026-08-10T00:00:00.000Z",
+        },
+      }),
+    );
+
+    expect(() =>
+      assertProductionWriterCaptureConfiguration({
+        ...validEnv,
+        REVIEW_ROUTER_RENDER_OBSERVATION_PATH: path,
+      }),
+    ).toThrow("trusted Render runtime observation is invalid");
+  });
+
   it("captures DB identity, caller identity, catalog/history, and two stable drain queries", async () => {
     const base = {
       databaseIdentity: {
@@ -372,8 +487,23 @@ describe("production-writer rollout observation capture", () => {
         ],
       },
       admittedRecoveryEvidence: {
-        witnessFingerprints: ["f".repeat(64)],
-        databaseIncarnations: ["7612345678901234567"],
+        sources: [
+          ["CodexOAuthSecretNamespace", false],
+          ["CodexOAuthSetupManifest", false],
+          ["CodexOAuthSetupPayloadClaim", true],
+          ["CodexOAuthSetupRecoveryRequest", false],
+          ["CodexOAuthWritebackIntent", true],
+        ].map(([source, incarnationRequired]) => ({
+          source,
+          totalRows: 1,
+          witnessPresentRows: 1,
+          incarnationRequired,
+          incarnationPresentRows: incarnationRequired ? 1 : 0,
+          witnessFingerprints: ["f".repeat(64)],
+          databaseIncarnations: incarnationRequired
+            ? ["7612345678901234567"]
+            : [],
+        })),
       },
       databaseAuthorization: { roles: [] },
       isWriter: true,
@@ -401,9 +531,31 @@ describe("production-writer rollout observation capture", () => {
       ...firstDrain,
       observedAt: "2026-08-09T00:00:15.000Z",
     };
+    const effectivePrincipalInventory = {
+      version: 1,
+      database: "review_router",
+      sessionPrincipal: "release",
+      roles: [
+        {
+          name: "release",
+          canLogin: true,
+          inherit: true,
+          superuser: false,
+          bypassRls: false,
+          replication: false,
+          createDatabase: false,
+          createRole: false,
+          connectionLimit: -1,
+          validUntil: null,
+        },
+      ],
+      memberships: [],
+      grants: [],
+    };
     const query = vi
       .fn()
       .mockReturnValueOnce(base)
+      .mockReturnValueOnce(effectivePrincipalInventory)
       .mockReturnValueOnce(firstDrain)
       .mockReturnValueOnce(secondDrain);
     const sleep = vi.fn(async () => undefined);
@@ -438,6 +590,7 @@ describe("production-writer rollout observation capture", () => {
         recoveryWitnessSha256: "f".repeat(64),
       },
       recoveryOwnerId: "setup-recovery:fetched",
+      effectivePrincipalDecision: { accepted: true },
       drainObservations: [
         {
           ...firstDrain,
@@ -483,7 +636,7 @@ describe("production-writer rollout observation capture", () => {
         },
       ],
     });
-    expect(query).toHaveBeenCalledTimes(3);
+    expect(query).toHaveBeenCalledTimes(4);
     expect(sleep).toHaveBeenCalledWith(15_000);
 
     await expect(
@@ -531,13 +684,95 @@ describe("production-writer rollout observation capture", () => {
         query: vi.fn().mockReturnValue({
           ...base,
           admittedRecoveryEvidence: {
-            witnessFingerprints: [],
-            databaseIncarnations: [],
+            sources: base.admittedRecoveryEvidence.sources.map(
+              (source, index) =>
+                index === 0 ? { ...source, witnessPresentRows: 0 } : source,
+            ),
           },
         }),
         sleep,
       }),
-    ).rejects.toThrow("admitted recovery evidence does not match");
+    ).rejects.toThrow("admitted recovery evidence is incomplete");
+
+    await expect(
+      captureProductionWriterObservation(validEnv, {
+        query: vi.fn().mockReturnValue({
+          ...base,
+          admittedRecoveryEvidence: {
+            sources: base.admittedRecoveryEvidence.sources.map(
+              (source, index) =>
+                index === 2
+                  ? { ...source, witnessFingerprints: ["e".repeat(64)] }
+                  : source,
+            ),
+          },
+        }),
+        sleep,
+      }),
+    ).rejects.toThrow("not source-bound to the database generation");
+
+    await expect(
+      captureProductionWriterObservation(validEnv, {
+        query: vi.fn().mockReturnValue({
+          ...base,
+          admittedRecoveryEvidence: {
+            sources: base.admittedRecoveryEvidence.sources.map((source) =>
+              source.source === "CodexOAuthSetupPayloadClaim"
+                ? {
+                    ...source,
+                    incarnationRequired: false,
+                    incarnationPresentRows: 0,
+                    databaseIncarnations: [],
+                  }
+                : source,
+            ),
+          },
+        }),
+        sleep,
+      }),
+    ).rejects.toThrow("not source-bound to the database generation");
+
+    await expect(
+      captureProductionWriterObservation(validEnv, {
+        query: vi.fn().mockReturnValue({
+          ...base,
+          admittedRecoveryEvidence: {
+            sources: base.admittedRecoveryEvidence.sources.map(
+              (source, index) =>
+                index === 0 ? { ...source, witnessFingerprints: [] } : source,
+            ),
+          },
+        }),
+        sleep,
+      }),
+    ).rejects.toThrow("not source-bound to the database generation");
+
+    await expect(
+      captureProductionWriterObservation(validEnv, {
+        query: vi.fn().mockReturnValue({
+          ...base,
+          admittedRecoveryEvidence: {
+            sources: base.admittedRecoveryEvidence.sources.map(
+              (source, index) =>
+                index === 2 ? { ...source, databaseIncarnations: [] } : source,
+            ),
+          },
+        }),
+        sleep,
+      }),
+    ).rejects.toThrow("not source-bound to the database generation");
+
+    await expect(
+      captureProductionWriterObservation(validEnv, {
+        query: vi.fn().mockReturnValue({
+          ...base,
+          admittedRecoveryEvidence: {
+            sources: base.admittedRecoveryEvidence.sources.slice(1),
+          },
+        }),
+        sleep,
+      }),
+    ).rejects.toThrow("not source-bound to the database generation");
 
     await expect(
       captureProductionWriterObservation(
@@ -548,11 +783,50 @@ describe("production-writer rollout observation capture", () => {
               mkdtempSync(join(tmpdir(), "rr-render-witness-")),
               "render.json",
             );
+            const rawResponses = renderObservation.rawResponses.map(
+              (response) => {
+                const body = {
+                  ...response.body,
+                  valueSha256: "e".repeat(64),
+                };
+                return {
+                  ...response,
+                  body,
+                  bodySha256: createHash("sha256")
+                    .update(canonicalProviderJson(body))
+                    .digest("hex"),
+                };
+              },
+            );
             writeFileSync(
               path,
               JSON.stringify({
                 ...renderObservation,
-                runtimeWitness: { sha256: "e".repeat(64) },
+                rawResponses,
+                captureIdentity: {
+                  ...renderObservation.captureIdentity,
+                  rawResponsesSha256: createHash("sha256")
+                    .update(canonicalProviderJson(rawResponses))
+                    .digest("hex"),
+                },
+                runtimeWitness: {
+                  ...renderObservation.runtimeWitness,
+                  sha256: "e".repeat(64),
+                  observations:
+                    renderObservation.runtimeWitness.observations.map(
+                      (observation) => ({
+                        ...observation,
+                        sourceResponseSha256: rawResponses.find(
+                          (response) =>
+                            response.body.observationPhase ===
+                              observation.phase &&
+                            response.url.includes(
+                              `/services/${observation.serviceId}/`,
+                            ),
+                        )?.bodySha256,
+                      }),
+                    ),
+                },
               }),
             );
             return path;

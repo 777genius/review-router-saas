@@ -7,14 +7,36 @@ const bodySchema = z.strictObject({
   rolloutId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u),
   nonce: z.string().regex(/^[a-f0-9]{48}$/u),
   requestedAt: z.iso.datetime(),
+  expectedGeneration: z.strictObject({
+    systemIdentifier: z.string().regex(/^[0-9]+$/u),
+    recoveryWitnessSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  }),
+  serviceFacts: z
+    .array(
+      z.strictObject({
+        runtimeRole: z.enum(["api", "web", "worker"]),
+        serviceId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u),
+        deployId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u),
+        deploymentProvenance: z.string().regex(/^[a-f0-9]{40,64}$/u),
+        servicePostconditionSha256: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+      }),
+    )
+    .length(3),
 });
 type ProofRow = {
+  nonce: string;
+  rolloutId: string;
+  requestedAt: Date;
   runtimeRole: string;
   databaseRole: string;
   systemIdentifier: string;
   recoveryWitnessSha256: string;
   releaseCommitSha: string;
   provedAt: Date;
+  serviceId: string;
+  deployId: string;
+  deploymentProvenance: string;
+  servicePostconditionSha256: string;
 };
 
 export async function registerRuntimeGenerationCanaryRoute(
@@ -25,6 +47,8 @@ export async function registerRuntimeGenerationCanaryRoute(
     releaseCommitSha: string;
     expectedRecoveryWitnessSha256: string;
     rolloutStartedAt: Date;
+    sleep?: (milliseconds: number) => Promise<void>;
+    now?: () => Date;
   },
 ): Promise<void> {
   if (
@@ -56,16 +80,58 @@ export async function registerRuntimeGenerationCanaryRoute(
           .header("Cache-Control", "private, no-store")
           .code(400)
           .send({ error: "invalid_request" });
+      const requestedAt = Date.parse(body.data.requestedAt);
+      const now = (input.now ?? (() => new Date()))().getTime();
+      if (
+        body.data.expectedGeneration.recoveryWitnessSha256 !==
+          input.expectedRecoveryWitnessSha256 ||
+        requestedAt < now - 10_000 ||
+        requestedAt > now + 5_000 ||
+        requestedAt < input.rolloutStartedAt.getTime() ||
+        body.data.serviceFacts.map((item) => item.runtimeRole).join("\0") !==
+          "api\0web\0worker"
+      )
+        return reply
+          .header("Cache-Control", "private, no-store")
+          .code(400)
+          .send({ error: "invalid_request" });
       const [identity] = await input.prisma.$queryRawUnsafe<
         Array<{ systemIdentifier: string }>
       >(
         'SELECT system_identifier::text AS "systemIdentifier" FROM pg_control_system()',
       );
-      const proofs = await input.prisma.$queryRawUnsafe<ProofRow[]>(
-        "SELECT * FROM public.reviewrouter_read_runtime_generation_witness_proofs($1,$2)",
+      if (
+        !identity ||
+        body.data.expectedGeneration.systemIdentifier !==
+          identity.systemIdentifier
+      )
+        throw Object.assign(
+          new Error("runtime_generation_canary_identity_invalid"),
+          { statusCode: 503 },
+        );
+      await input.prisma.$queryRawUnsafe(
+        "SELECT public.reviewrouter_request_runtime_canary_challenge($1,$2,$3,$4,$5,$6,$7::jsonb)",
         body.data.rolloutId,
+        body.data.nonce,
+        new Date(requestedAt),
         input.releaseCommitSha,
+        identity.systemIdentifier,
+        input.expectedRecoveryWitnessSha256,
+        JSON.stringify(body.data.serviceFacts),
       );
+      let proofs: ProofRow[] = [];
+      for (let poll = 0; poll < 8; poll += 1) {
+        proofs = await input.prisma.$queryRawUnsafe<ProofRow[]>(
+          "SELECT * FROM public.reviewrouter_read_runtime_canary_challenge_proofs($1)",
+          body.data.nonce,
+        );
+        if (proofs.length === 3) break;
+        await (
+          input.sleep ??
+          ((milliseconds) =>
+            new Promise((resolve) => setTimeout(resolve, milliseconds)))
+        )(1_000);
+      }
       const [roundTrip] = await input.prisma.$queryRawUnsafe<
         Array<{ nonce: string }>
       >(
@@ -75,42 +141,72 @@ export async function registerRuntimeGenerationCanaryRoute(
       );
       const roles = ["api", "web", "worker"];
       if (
-        !identity ||
         roundTrip?.nonce !== body.data.nonce ||
         proofs.length !== roles.length ||
         proofs.some(
           (proof, index) =>
             proof.runtimeRole !== roles[index] ||
+            proof.nonce !== body.data.nonce ||
+            proof.rolloutId !== body.data.rolloutId ||
+            !(proof.requestedAt instanceof Date) ||
+            proof.requestedAt.getTime() !== requestedAt ||
             proof.databaseRole !== `reviewrouter_${proof.runtimeRole}` ||
             proof.systemIdentifier !== identity.systemIdentifier ||
             proof.recoveryWitnessSha256 !==
               input.expectedRecoveryWitnessSha256 ||
             proof.releaseCommitSha !== input.releaseCommitSha ||
+            proof.serviceId !== body.data.serviceFacts[index]?.serviceId ||
+            proof.deployId !== body.data.serviceFacts[index]?.deployId ||
+            proof.deploymentProvenance !==
+              body.data.serviceFacts[index]?.deploymentProvenance ||
+            proof.servicePostconditionSha256 !==
+              body.data.serviceFacts[index]?.servicePostconditionSha256 ||
             !(proof.provedAt instanceof Date) ||
-            proof.provedAt.getTime() < input.rolloutStartedAt.getTime(),
+            proof.provedAt.getTime() < requestedAt ||
+            proof.provedAt.getTime() > requestedAt + 10_000,
         )
       )
         throw Object.assign(
           new Error("runtime_generation_canary_proof_invalid"),
           { statusCode: 503 },
         );
+      const observedServiceFacts = proofs.map((proof) => ({
+        runtimeRole: proof.runtimeRole,
+        serviceId: proof.serviceId,
+        deployId: proof.deployId,
+        deploymentProvenance: proof.deploymentProvenance,
+        servicePostconditionSha256: proof.servicePostconditionSha256,
+      }));
       return reply
         .header("Cache-Control", "private, no-store")
         .code(200)
         .send({
-          rolloutId: body.data.rolloutId,
-          nonce: body.data.nonce,
-          requestedAt: body.data.requestedAt,
+          rolloutId: proofs[0]!.rolloutId,
+          nonce: proofs[0]!.nonce,
+          requestedAt: proofs[0]!.requestedAt.toISOString(),
           observedAt: new Date().toISOString(),
-          commitSha: input.releaseCommitSha,
-          databaseSystemIdentifier: identity.systemIdentifier,
-          recoveryWitnessSha256: input.expectedRecoveryWitnessSha256,
+          commitSha: proofs[0]!.releaseCommitSha,
+          databaseSystemIdentifier: proofs[0]!.systemIdentifier,
+          recoveryWitnessSha256: proofs[0]!.recoveryWitnessSha256,
           runtimeWitnessProofs: proofs.map((proof) => ({
             runtimeRole: proof.runtimeRole,
             databaseRole: proof.databaseRole,
             recoveryWitnessSha256: proof.recoveryWitnessSha256,
+            systemIdentifier: proof.systemIdentifier,
+            releaseCommitSha: proof.releaseCommitSha,
             provedAt: proof.provedAt.toISOString(),
+            serviceId: proof.serviceId,
+            deployId: proof.deployId,
+            deploymentProvenance: proof.deploymentProvenance,
+            servicePostconditionSha256: proof.servicePostconditionSha256,
+            nonce: proof.nonce,
+            requestedAt: proof.requestedAt.toISOString(),
           })),
+          expectedGeneration: {
+            systemIdentifier: proofs[0]!.systemIdentifier,
+            recoveryWitnessSha256: proofs[0]!.recoveryWitnessSha256,
+          },
+          serviceFacts: observedServiceFacts,
           writeReadRoundTrip: true,
         });
     },

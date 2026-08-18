@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import { sanitizedDiagnosticError } from "../domain/sanitized-diagnostic.js";
 
 export type PgCommand =
   | "psql"
@@ -14,6 +15,7 @@ export interface CommandOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly input?: string;
   readonly maxBuffer?: number;
+  readonly timeoutMs?: number;
 }
 export interface CommandExecutor {
   execute(
@@ -42,9 +44,27 @@ const allowedEnvironment = new Set([
   "PGSSLMODE",
   "PGCONNECT_TIMEOUT",
   "PGHOSTADDR",
+  "REVIEW_ROUTER_DATABASE_URL_FILE",
 ]);
 const secretPattern =
   /postgres(?:ql)?:\/\/|BEGIN [A-Z ]*PRIVATE KEY|(?:password|token|private[_-]?key)=/iu;
+const environmentValuePatterns: Readonly<Record<string, RegExp>> = {
+  PATH: /^(?:\/[A-Za-z0-9._+\-/]+)(?::\/[A-Za-z0-9._+\-/]+)*$/u,
+  LANG: /^[A-Za-z]{1,16}(?:_[A-Za-z]{1,16})?(?:\.[A-Za-z0-9-]{1,16})?$/u,
+  LC_ALL: /^[A-Za-z]{1,16}(?:_[A-Za-z]{1,16})?(?:\.[A-Za-z0-9-]{1,16})?$/u,
+  TZ: /^(?:UTC|Etc\/[A-Za-z0-9_+\-/]{1,64})$/u,
+  PGPASSFILE: /^\/[A-Za-z0-9._+\-/]{1,1023}$/u,
+  PGSSLMODE: /^(?:disable|allow|prefer|require|verify-ca|verify-full)$/u,
+  PGCONNECT_TIMEOUT: /^(?:[1-9]|[1-9][0-9]|1[0-1][0-9]|120)$/u,
+  PGHOSTADDR: /^(?:[0-9.]{7,15}|[A-Fa-f0-9:]{2,45})$/u,
+  REVIEW_ROUTER_DATABASE_URL_FILE: /^\/[A-Za-z0-9._+\-/]{1,1023}$/u,
+};
+
+function boundedTimeout(value: number | undefined): number {
+  return Number.isSafeInteger(value) && value !== undefined && value > 0
+    ? Math.min(value, 600_000)
+    : 600_000;
+}
 
 export function assertSafeProcessBoundary(
   command: PgCommand,
@@ -52,15 +72,31 @@ export function assertSafeProcessBoundary(
   env: NodeJS.ProcessEnv = {},
 ): void {
   if (args.some((arg) => secretPattern.test(arg) || arg.includes("PGPASSWORD")))
-    throw new Error("release_rollout_secret_in_argv");
+    throw sanitizedDiagnosticError({
+      code: "release_rollout_process_boundary_rejected",
+      phase: "process_boundary",
+    });
   for (const [name, value] of Object.entries(env)) {
     if (!allowedEnvironment.has(name))
-      throw new Error(`release_rollout_broad_child_environment:${name}`);
-    if (name !== "PGPASSFILE" && value && secretPattern.test(value))
-      throw new Error("release_rollout_secret_in_child_environment");
+      throw sanitizedDiagnosticError({
+        code: "release_rollout_process_boundary_rejected",
+        phase: "process_boundary",
+      });
+    if (
+      value &&
+      (secretPattern.test(value) ||
+        !environmentValuePatterns[name]!.test(value))
+    )
+      throw sanitizedDiagnosticError({
+        code: "release_rollout_process_boundary_rejected",
+        phase: "process_boundary",
+      });
   }
-  if (env.PGPASSWORD) throw new Error("release_rollout_pgpassword_forbidden");
-  if (!command) throw new Error("release_rollout_command_invalid");
+  if (env.PGPASSWORD || !command)
+    throw sanitizedDiagnosticError({
+      code: "release_rollout_process_boundary_rejected",
+      phase: "process_boundary",
+    });
 }
 
 export class RedactedProcessCommandAdapter implements CommandExecutor {
@@ -79,9 +115,18 @@ export class RedactedProcessCommandAdapter implements CommandExecutor {
         options.maxBuffer ?? 8 * 1024 * 1024,
         8 * 1024 * 1024,
       ),
+      timeout: boundedTimeout(options.timeoutMs),
     });
-    if (result.status !== 0)
-      throw new Error(`release_rollout_process_failed:${command}`);
+    if (result.status !== 0 || result.error)
+      throw sanitizedDiagnosticError({
+        code: "release_rollout_process_failed",
+        phase: "process_execute",
+        exitCode: result.status,
+        signal: result.signal,
+        timedOut:
+          (result.error as NodeJS.ErrnoException | undefined)?.code ===
+          "ETIMEDOUT",
+      });
     return { stdout: result.stdout };
   }
 
@@ -105,18 +150,38 @@ export class RedactedProcessCommandAdapter implements CommandExecutor {
           "ignore",
         ],
       });
+      let timedOut = false;
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+      }, boundedTimeout(options.timeoutMs));
       child.stdout!.on("data", (chunk: Buffer) => {
         sawBytes = true;
         for (const byte of chunk) if (byte === 10) rows += 1;
         lastByte = chunk.at(-1) ?? lastByte;
         hash.update(chunk);
       });
-      child.once("error", () =>
-        reject(new Error(`release_rollout_process_failed:${command}`)),
-      );
-      child.once("exit", (code) => {
+      child.once("error", () => {
+        clearTimeout(timeout);
+        reject(
+          sanitizedDiagnosticError({
+            code: "release_rollout_process_failed",
+            phase: "process_hash",
+          }),
+        );
+      });
+      child.once("exit", (code, signal) => {
+        clearTimeout(timeout);
         if (code !== 0)
-          reject(new Error(`release_rollout_process_failed:${command}`));
+          reject(
+            sanitizedDiagnosticError({
+              code: "release_rollout_process_failed",
+              phase: "process_hash",
+              exitCode: code,
+              signal,
+              timedOut,
+            }),
+          );
         else
           resolve({
             rows: sawBytes ? rows + (lastByte === 10 ? 0 : 1) : 0,
@@ -139,6 +204,7 @@ export class RedactedProcessCommandAdapter implements CommandExecutor {
       env,
       input: options.input,
       maxBuffer: 256 * 1024,
+      timeout: boundedTimeout(options.timeoutMs),
     });
     const diagnostic = String(result.stderr ?? "");
     if (
@@ -150,7 +216,15 @@ export class RedactedProcessCommandAdapter implements CommandExecutor {
         diagnostic,
       )
     )
-      throw new Error("release_rollout_expected_connect_denial_unproven");
+      throw sanitizedDiagnosticError({
+        code: "release_rollout_process_failed",
+        phase: "process_denial_probe",
+        exitCode: result.status,
+        signal: result.signal,
+        timedOut:
+          (result.error as NodeJS.ErrnoException | undefined)?.code ===
+          "ETIMEDOUT",
+      });
     return { reason: "database_connect_permission_denied" };
   }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import ts from "typescript";
@@ -84,23 +84,27 @@ if (
 await checkReviewActionV2ProtocolBoundaries(violations);
 await checkRevisionAwareReviewRatchet(violations);
 await checkPrismaTransactionQuerySerialization(violations);
+await checkReleaseRolloutProviderNeutrality(violations);
 
 if (violations.length > 0) {
-  console.error("Architecture boundary violations found:");
-  for (const violation of violations) {
-    console.error(
-      `- ${relative(root, violation.file)} imports ${violation.imported}: ${violation.reason}`,
-    );
-  }
-  console.error(
-    "Move framework/SDK/database code to infrastructure or interface adapters and expose a port to application code.",
+  writeSync(
+    2,
+    `Architecture boundary violations found:\n${violations
+      .map(
+        (violation) =>
+          `- ${relative(root, violation.file)} imports ${violation.imported}: ${violation.reason}`,
+      )
+      .join(
+        "\n",
+      )}\nMove framework/SDK/database code to infrastructure or interface adapters and expose a port to application code.\n`,
   );
-  process.exit(1);
+  process.exitCode = 1;
+} else {
+  writeSync(
+    1,
+    `Architecture boundary check passed for ${files.length} domain/application files.\n`,
+  );
 }
-
-console.log(
-  `Architecture boundary check passed for ${files.length} domain/application files.`,
-);
 
 async function collectBoundaryFiles(directory, boundaryRoot) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -130,6 +134,56 @@ function isSourceFile(fileName) {
   return [...sourceExtensions].some((extension) =>
     fileName.endsWith(extension),
   );
+}
+
+async function checkReleaseRolloutProviderNeutrality(violations) {
+  const sourceRoot = join(
+    root,
+    "packages",
+    "features",
+    "release-rollout",
+    "src",
+  );
+  if (!existsSync(sourceRoot)) return;
+  const neutralBoundaryFiles = (await collectAllSourceFiles(sourceRoot)).filter(
+    (file) =>
+      !/\.(?:test|spec)\.[cm]?tsx?$/u.test(file) &&
+      /(?:^|[\\/])(?:domain|application)[\\/]/u.test(
+        relative(sourceRoot, file),
+      ) &&
+      /(?:service-transition[^/\\]*|transactional-service-cutover)\.[cm]?tsx?$/u.test(
+        file,
+      ),
+  );
+  for (const file of neutralBoundaryFiles) {
+    const source = readFileSync(file, "utf8");
+    if (/\bRender|reviewrouter\.render|api\.render\.com/u.test(source)) {
+      violations.push({
+        file,
+        imported: "Render provider vocabulary",
+        reason:
+          "release-rollout domain/application contracts must be provider-neutral",
+      });
+    }
+    for (const imported of extractImportSpecifiers(source)) {
+      if (/(?:^|\/)adapters(?:\/|$)/u.test(imported)) {
+        violations.push({
+          file,
+          imported,
+          reason:
+            "release-rollout domain/application must not import provider adapters",
+        });
+      }
+    }
+    if (/ghcr\.io\/777genius\/review-router-saas-runtime/iu.test(source)) {
+      violations.push({
+        file,
+        imported: "fixed release image repository",
+        reason:
+          "release-rollout policy accepts digest-pinned artifacts independently of registry",
+      });
+    }
+  }
 }
 
 function isDomainOrApplicationFile(path, boundaryRoot) {

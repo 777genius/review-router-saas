@@ -1,4 +1,13 @@
 import { createHash } from "node:crypto";
+import type { EnvironmentMutationOutcome } from "../application/service-transition-ports";
+import {
+  BoundedProviderHttpClient,
+  ProviderHttpError,
+  collectCompleteInventory,
+  type BoundedHttpPolicy,
+  type CompleteInventory,
+  type InventoryLimits,
+} from "./bounded-provider-io";
 
 export interface RenderFetch {
   (input: string, init?: RequestInit): Promise<Response>;
@@ -21,6 +30,12 @@ export interface RenderService {
   readonly imagePath?: string;
   readonly image?: { readonly imagePath: string };
   readonly serviceDetails: Record<string, unknown>;
+}
+export interface RenderPostgres {
+  readonly id: string;
+  readonly ownerId: string;
+  readonly name: string;
+  readonly version: string;
 }
 export interface RenderDeploy {
   readonly id: string;
@@ -46,7 +61,6 @@ export interface RenderLog {
   readonly message: string;
   readonly timestamp: string;
 }
-
 const origin = "https://api.render.com/v1";
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -73,21 +87,43 @@ async function body(
   response: Response,
   operation: string,
   status = 200,
+  write = false,
 ): Promise<unknown> {
   if (response.status !== status)
-    throw new Error(`render_api_${operation}_failed:${response.status}`);
+    throw new ProviderHttpError(
+      operation,
+      "response_status",
+      response.status,
+      write && response.status >= 500,
+    );
   try {
     return await response.json();
   } catch {
-    throw new Error(`render_api_${operation}_response_invalid`);
+    throw new ProviderHttpError(
+      operation,
+      "response_invalid",
+      undefined,
+      write,
+    );
   }
 }
 
+const DEFAULT_INVENTORY_LIMITS: InventoryLimits = Object.freeze({
+  maxPages: 100,
+  maxItems: 10_000,
+});
+
 export class RenderApiAdapter {
+  private readonly fetchImpl: RenderFetch;
   constructor(
     private readonly token: string,
-    private readonly fetchImpl: RenderFetch = fetch,
-  ) {}
+    fetchImpl: RenderFetch = fetch,
+    httpPolicy?: BoundedHttpPolicy,
+    private readonly inventoryLimits: InventoryLimits = DEFAULT_INVENTORY_LIMITS,
+  ) {
+    const http = new BoundedProviderHttpClient(fetchImpl, httpPolicy);
+    this.fetchImpl = (input, init) => http.request("render_api", input, init);
+  }
 
   async getService(id: string): Promise<RenderService> {
     const value = requireSubset(
@@ -108,6 +144,27 @@ export class RenderApiAdapter {
     )
       throw new Error("render_service_response_invalid");
     return value as unknown as RenderService;
+  }
+
+  async getPostgres(id: string): Promise<RenderPostgres> {
+    const value = requireSubset(
+      await body(
+        await this.fetchImpl(`${origin}/postgres/${encodeURIComponent(id)}`, {
+          headers: headers(this.token),
+        }),
+        "postgres",
+      ),
+      ["id", "ownerId", "name", "version"],
+      "render_postgres_response_invalid",
+    );
+    if (![value.id, value.ownerId, value.name, value.version].every(string))
+      throw new Error("render_postgres_response_invalid");
+    return Object.freeze({
+      id: value.id,
+      ownerId: value.ownerId,
+      name: value.name,
+      version: value.version,
+    }) as RenderPostgres;
   }
 
   async listServices(cursor?: string): Promise<CursorPage<RenderService>> {
@@ -141,15 +198,15 @@ export class RenderApiAdapter {
     };
   }
 
+  async inventoryServices(): Promise<CompleteInventory<RenderService>> {
+    return collectCompleteInventory(
+      (cursor) => this.listServices(cursor),
+      this.inventoryLimits,
+    );
+  }
+
   async listAllServices(): Promise<readonly RenderService[]> {
-    const all: RenderService[] = [];
-    let cursor: string | undefined;
-    do {
-      const page = await this.listServices(cursor);
-      all.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    return Object.freeze(all);
+    return this.requireComplete(await this.inventoryServices());
   }
 
   async listDeploys(
@@ -199,15 +256,17 @@ export class RenderApiAdapter {
     };
   }
 
+  async inventoryDeploys(
+    serviceId: string,
+  ): Promise<CompleteInventory<RenderDeploy>> {
+    return collectCompleteInventory(
+      (cursor) => this.listDeploys(serviceId, cursor),
+      this.inventoryLimits,
+    );
+  }
+
   async listAllDeploys(serviceId: string): Promise<readonly RenderDeploy[]> {
-    const all: RenderDeploy[] = [];
-    let cursor: string | undefined;
-    do {
-      const page = await this.listDeploys(serviceId, cursor);
-      all.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    return Object.freeze(all);
+    return this.requireComplete(await this.inventoryDeploys(serviceId));
   }
 
   async getDeploy(serviceId: string, deployId: string): Promise<RenderDeploy> {
@@ -260,6 +319,7 @@ export class RenderApiAdapter {
         ),
         "deploy_create",
         201,
+        true,
       ),
       ["id", "status"],
       "render_deploy_response_invalid",
@@ -289,6 +349,7 @@ export class RenderApiAdapter {
         ),
         "job_create",
         201,
+        true,
       ),
       ["id", "serviceId", "startCommand", "status"],
       "render_job_response_invalid",
@@ -375,15 +436,17 @@ export class RenderApiAdapter {
     };
   }
 
+  async inventoryJobs(
+    serviceId: string,
+  ): Promise<CompleteInventory<RenderJob>> {
+    return collectCompleteInventory(
+      (cursor) => this.listJobs(serviceId, cursor),
+      this.inventoryLimits,
+    );
+  }
+
   async listAllJobs(serviceId: string): Promise<readonly RenderJob[]> {
-    const all: RenderJob[] = [];
-    let cursor: string | undefined;
-    do {
-      const page = await this.listJobs(serviceId, cursor);
-      all.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    return Object.freeze(all);
+    return this.requireComplete(await this.inventoryJobs(serviceId));
   }
 
   async listLogs(input: {
@@ -429,7 +492,12 @@ export class RenderApiAdapter {
       { method: "POST", headers: headers(this.token) },
     );
     if (response.status !== 202)
-      throw new Error(`render_api_suspend_failed:${response.status}`);
+      throw new ProviderHttpError(
+        "suspend",
+        "response_status",
+        response.status,
+        response.status >= 500,
+      );
   }
 
   async resume(serviceId: string): Promise<void> {
@@ -438,7 +506,12 @@ export class RenderApiAdapter {
       { method: "POST", headers: headers(this.token) },
     );
     if (response.status !== 202)
-      throw new Error(`render_api_resume_failed:${response.status}`);
+      throw new ProviderHttpError(
+        "resume",
+        "response_status",
+        response.status,
+        response.status >= 500,
+      );
   }
 
   async getEnv(
@@ -478,88 +551,19 @@ export class RenderApiAdapter {
     };
   }
 
+  async inventoryEnv(
+    serviceId: string,
+  ): Promise<CompleteInventory<{ key: string; value: string }>> {
+    return collectCompleteInventory(
+      (cursor) => this.getEnv(serviceId, cursor),
+      this.inventoryLimits,
+    );
+  }
+
   async listAllEnv(
     serviceId: string,
   ): Promise<readonly { key: string; value: string }[]> {
-    const all: Array<{ key: string; value: string }> = [];
-    let cursor: string | undefined;
-    do {
-      const page = await this.getEnv(serviceId, cursor);
-      all.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    return Object.freeze(all);
-  }
-
-  async replaceEnvPreservingAll(
-    serviceId: string,
-    replacements: Readonly<Record<string, string>>,
-  ): Promise<{ beforeSha256: string; afterSha256: string }> {
-    const all: Array<{ key: string; value: string }> = [];
-    let cursor: string | undefined;
-    do {
-      const page = await this.getEnv(serviceId, cursor);
-      all.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    const merged = new Map(all.map(({ key, value }) => [key, value]));
-    for (const [key, value] of Object.entries(replacements))
-      merged.set(key, value);
-    const canonical = [...merged]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, value]) => ({ key, value }));
-    const digest = (v: unknown) =>
-      `sha256:${createHash("sha256").update(JSON.stringify(v)).digest("hex")}`;
-    const beforeSha256 = digest(
-      [...all].sort((a, b) => a.key.localeCompare(b.key)),
-    );
-    const response = await this.fetchImpl(
-      `${origin}/services/${encodeURIComponent(serviceId)}/env-vars`,
-      {
-        method: "PUT",
-        headers: headers(this.token, true),
-        body: JSON.stringify(canonical),
-      },
-    );
-    if (response.status !== 200)
-      throw new Error(`render_api_env_replace_failed:${response.status}`);
-    const verified: Array<{ key: string; value: string }> = [];
-    cursor = undefined;
-    do {
-      const page = await this.getEnv(serviceId, cursor);
-      verified.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    const afterSha256 = digest(
-      verified.sort((a, b) => a.key.localeCompare(b.key)),
-    );
-    const expectedSha256 = digest(canonical);
-    if (afterSha256 !== expectedSha256)
-      throw new Error("render_api_env_replace_verification_failed");
-    return { beforeSha256, afterSha256 };
-  }
-
-  async replaceEnvExact(
-    serviceId: string,
-    values: readonly { readonly key: string; readonly value: string }[],
-  ): Promise<{ beforeSha256: string; afterSha256: string }> {
-    const canonical = canonicalEnv(values);
-    const before = canonicalEnv(await this.listAllEnv(serviceId));
-    const response = await this.fetchImpl(
-      `${origin}/services/${encodeURIComponent(serviceId)}/env-vars`,
-      {
-        method: "PUT",
-        headers: headers(this.token, true),
-        body: JSON.stringify(canonical),
-      },
-    );
-    if (response.status !== 200)
-      throw new Error(`render_api_env_replace_failed:${response.status}`);
-    const verified = canonicalEnv(await this.listAllEnv(serviceId));
-    const afterSha256 = digest(verified);
-    if (afterSha256 !== digest(canonical))
-      throw new Error("render_api_env_replace_verification_failed");
-    return { beforeSha256: digest(before), afterSha256 };
+    return this.requireComplete(await this.inventoryEnv(serviceId));
   }
 
   async patchEnvPreservingAll(input: {
@@ -567,50 +571,102 @@ export class RenderApiAdapter {
     set: Readonly<Record<string, string>>;
     remove: readonly string[];
     expectedBeforeSha256?: string;
-  }): Promise<{
-    beforeSha256: string;
-    afterSha256: string;
-    keysSha256: string;
-  }> {
+    expectedAfterSha256?: string;
+  }): Promise<EnvironmentMutationOutcome> {
     const before = canonicalEnv(await this.listAllEnv(input.serviceId));
     const beforeSha256 = digest(before);
+    const removed = new Set(input.remove);
     if (
-      input.expectedBeforeSha256 !== undefined &&
-      beforeSha256 !== input.expectedBeforeSha256
+      removed.size !== input.remove.length ||
+      input.remove.some(
+        (key) =>
+          !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) ||
+          Object.hasOwn(input.set, key),
+      )
     )
-      throw new Error("render_api_env_concurrent_mutation_detected");
+      throw new Error("render_api_env_contract_invalid");
     const merged = new Map(before.map(({ key, value }) => [key, value]));
-    for (const key of input.remove) {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key))
-        throw new Error("render_api_env_contract_invalid");
-      merged.delete(key);
-    }
+    for (const key of removed) merged.delete(key);
     for (const [key, value] of Object.entries(input.set))
       merged.set(key, value);
     const after = canonicalEnv(
       [...merged].map(([key, value]) => ({ key, value })),
     );
-    const secondBefore = canonicalEnv(await this.listAllEnv(input.serviceId));
-    if (digest(secondBefore) !== beforeSha256)
-      throw new Error("render_api_env_concurrent_mutation_detected");
-    const response = await this.fetchImpl(
-      `${origin}/services/${encodeURIComponent(input.serviceId)}/env-vars`,
-      {
-        method: "PUT",
-        headers: headers(this.token, true),
-        body: JSON.stringify(after),
-      },
-    );
-    if (response.status !== 200)
-      throw new Error(`render_api_env_replace_failed:${response.status}`);
-    const verified = canonicalEnv(await this.listAllEnv(input.serviceId));
-    if (digest(verified) !== digest(after))
-      throw new Error("render_api_env_replace_verification_failed");
-    return {
-      beforeSha256,
-      afterSha256: digest(after),
-      keysSha256: digest(after.map(({ key }) => key)),
-    };
+    const afterSha256 = digest(after);
+    if (
+      beforeSha256 === input.expectedAfterSha256 &&
+      afterSha256 === beforeSha256
+    )
+      return appliedEnvironment(before, beforeSha256, true);
+    if (
+      input.expectedBeforeSha256 !== undefined &&
+      beforeSha256 !== input.expectedBeforeSha256
+    )
+      return { status: "conflict", observedEnvironmentSha256: beforeSha256 };
+    if (
+      input.expectedAfterSha256 !== undefined &&
+      afterSha256 !== input.expectedAfterSha256
+    )
+      throw new Error("render_api_env_contract_invalid");
+
+    let response: Response;
+    try {
+      // Render's bulk replacement endpoint is deliberately used so a consumed
+      // authority permit can authorize exactly one provider write.
+      response = await this.fetchImpl(
+        `${origin}/services/${encodeURIComponent(input.serviceId)}/env-vars`,
+        {
+          method: "PUT",
+          headers: headers(this.token, true),
+          body: JSON.stringify(after),
+        },
+      );
+    } catch {
+      return this.observeAmbiguousEnvironment(input.serviceId);
+    }
+    if (response.status === 409 || response.status === 412) {
+      const conflict = canonicalEnv(await this.listAllEnv(input.serviceId));
+      return {
+        status: "conflict",
+        observedEnvironmentSha256: digest(conflict),
+      };
+    }
+    if (response.status !== 200) {
+      if (response.status >= 500)
+        return this.observeAmbiguousEnvironment(input.serviceId);
+      throw new ProviderHttpError(
+        "environment_mutation",
+        "response_status",
+        response.status,
+        false,
+      );
+    }
+    let verified: readonly { key: string; value: string }[];
+    try {
+      verified = canonicalEnv(await this.listAllEnv(input.serviceId));
+    } catch {
+      return { status: "ambiguous" };
+    }
+    if (digest(verified) !== afterSha256)
+      return {
+        status: "conflict",
+        observedEnvironmentSha256: digest(verified),
+      };
+    return appliedEnvironment(verified, beforeSha256, false);
+  }
+
+  private async observeAmbiguousEnvironment(
+    serviceId: string,
+  ): Promise<EnvironmentMutationOutcome> {
+    try {
+      const observed = canonicalEnv(await this.listAllEnv(serviceId));
+      return {
+        status: "ambiguous",
+        observedEnvironmentSha256: digest(observed),
+      };
+    } catch {
+      return { status: "ambiguous" };
+    }
   }
 
   async planEnvPatch(input: {
@@ -648,7 +704,18 @@ export class RenderApiAdapter {
       },
     );
     if (response.status !== 200)
-      throw new Error(`render_api_service_patch_failed:${response.status}`);
+      throw new ProviderHttpError(
+        "service_patch",
+        "response_status",
+        response.status,
+        response.status >= 500,
+      );
+  }
+
+  private requireComplete<T>(inventory: CompleteInventory<T>): readonly T[] {
+    if (!inventory.complete)
+      throw new Error(`render_inventory_incomplete:${inventory.reason}`);
+    return inventory.items;
   }
 }
 
@@ -670,3 +737,15 @@ const canonicalEnv = (
 
 const digest = (value: unknown): string =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+
+const appliedEnvironment = (
+  environment: readonly { readonly key: string; readonly value: string }[],
+  previousEnvironmentSha256: string,
+  replayed: boolean,
+): EnvironmentMutationOutcome => ({
+  status: "applied",
+  previousEnvironmentSha256,
+  environmentSha256: digest(environment),
+  environmentKeysSha256: digest(environment.map(({ key }) => key)),
+  replayed,
+});

@@ -66,6 +66,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+          ref: ${{ matrix.target.head_sha }}
       - name: Install private dependencies
         env:
           SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
@@ -78,6 +79,14 @@ jobs:
           REVIEW_ROUTER_TARGET_SHA: ${{ matrix.target.head_sha }}
           REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
         run: node --import tsx scripts/resolve-private-pg17-run-context.ts
+      - name: Download exact original rollout context
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: protected-preflight-${{ steps.context.outputs.rollout_id }}-${{ matrix.target.run_id }}-1
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ matrix.target.run_id }}
+          path: artifacts/preflight
       - name: Reconcile every known or late provider runner with bounded backoff
         env:
           RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
@@ -91,11 +100,30 @@ jobs:
           REVIEW_ROUTER_RECONCILIATION_INITIAL_DELAY_MS: 5000
           REVIEW_ROUTER_RECONCILIATION_MAXIMUM_DELAY_MS: 30000
         run: node --import tsx scripts/release-rollout-render-control.ts cleanup-runners
+      - name: Redrive exact durable rollout compensation through authority
+        env:
+          REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN: ${{ secrets.REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN }}
+          REVIEW_ROUTER_PROVIDER_AUTHORITY_URL: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_URL }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_URL }}
+          RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
+          RENDER_TARGET_SWITCH_API_KEY: ${{ secrets.RENDER_TARGET_SWITCH_API_KEY }}
+          REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: ${{ vars.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS }}
+          REVIEW_ROUTER_SOURCE_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_COMPENSATION_SOURCE_DATABASE_URL }}
+          REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON }}
+          REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS }}
+          REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256 }}
+          REVIEW_ROUTER_TARGET_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS }}
+          REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
+          REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: artifacts/preflight/initial-rollout.json
+        run: node --import tsx scripts/reconcile-private-pg17-compensation.ts > scheduled-compensation-reconciliation.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}
         with:
           name: scheduled-runner-reconciliation-${{ steps.context.outputs.rollout_id }}-${{ matrix.target.run_id }}
-          path: scheduled-reconciliation.json
+          path: |
+            scheduled-reconciliation.json
+            scheduled-compensation-reconciliation.json
           if-no-files-found: warn
           retention-days: 30
           compression-level: 0
@@ -105,7 +133,6 @@ jobs:
     if: >-
       always() &&
       needs.recovery-context.result == 'success' &&
-      (needs.recover.result == 'success' || needs.recover.result == 'skipped') &&
       needs.recovery-context.outputs.complete == 'false'
     permissions:
       actions: write
@@ -124,6 +151,7 @@ jobs:
         env:
           GITHUB_CONTROL_WRITE_TOKEN: ${{ github.token }}
           REVIEW_ROUTER_RECOVERY_SWEEP_CHECKPOINT: ${{ needs.recovery-context.outputs.checkpoint }}
+          REVIEW_ROUTER_RECOVERY_WINDOW_RESULT: ${{ needs.recover.result }}
         run: node --import tsx scripts/dispatch-private-pg17-recovery-continuation.ts
 
   provision:

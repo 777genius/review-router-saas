@@ -1,6 +1,20 @@
+import {
+  releaseAuthorityCatalogVerifier,
+  releaseAuthorityMigrationManifestIsExact,
+} from "../domain/readiness-contract.mjs";
+import { releaseAuthoritySchemaVersion } from "@reviewrouter/features-release-rollout";
+import {
+  runtimeDatabaseIdentityEquals,
+  runtimeDatabaseIdentityIsCanonical,
+  type RuntimeDatabaseIdentity,
+} from "../domain/database-identity.js";
+
 export type ReleaseAuthorityDatabaseReadiness = Readonly<{
   roleName: string;
+  authorityOwnerRoleName: string;
   systemIdentifier: string;
+  recoveryWitnessSha256: string;
+  databaseIdentity: RuntimeDatabaseIdentity;
   postgresMajor: number;
   schemaVersion: number;
   migrationManifest: readonly Readonly<{
@@ -9,10 +23,25 @@ export type ReleaseAuthorityDatabaseReadiness = Readonly<{
     checksumSha256: string;
     byteVariant: "canonical" | "legacy_equivalent";
   }>[];
+  catalogFingerprint: string;
+  expectedCatalogFingerprint: string;
+  catalogVerifier: string;
+  catalogExact: boolean;
+  defaultAclExact: boolean;
+  finalAclExact: boolean;
   controlRoutine: boolean;
   providerRoutine: boolean;
   installerRoutine: boolean;
   readerRoutine: boolean;
+  installerRoutineBodySha256: string;
+  readerRoutineBodySha256: string;
+  applicationMigrationManifestIdentity: string;
+  applicationPostCatalogDigest: string;
+  activationNamespaceFingerprint: string;
+  authorityRoleTopologyExact: boolean;
+  preMigrationPermitBoundaryExact: boolean;
+  activationGuardExact: boolean;
+  activationRuntimePrivilegesExact: boolean;
   externalEffectProtocol: boolean;
   sourceFreezeProtocol: boolean;
   selectiveRecoveryProtocol: boolean;
@@ -28,6 +57,13 @@ export type ReleaseAuthorityDatabaseReadiness = Readonly<{
   authorityTablesRevoked: boolean;
 }>;
 
+export enum ReleaseControlReadinessPhase {
+  PreMigration = "pre_migration",
+  MigrationRecovery = "migration_recovery",
+  PostMigration = "post_migration",
+  ControlOnly = "control_only",
+}
+
 export type ReleaseControlDatabaseSet = Readonly<{
   control: ReleaseAuthorityDatabaseReadiness;
   provider: ReleaseAuthorityDatabaseReadiness;
@@ -35,82 +71,50 @@ export type ReleaseControlDatabaseSet = Readonly<{
   reader: ReleaseAuthorityDatabaseReadiness;
 }>;
 
-const expectedMigrationIdentities = [
-  [
-    "000001_release_authority",
-    [
-      "sha256:eb4039b43228a07c241593d4d6dd863eceac7731d5898b0264e9bc67b3d746cf",
-      "sha256:e88a7cc8f29e91a86434bf14b4051f1fb17b5df02f8fc2dae6ec63d5792b398b",
-    ],
-  ],
-  [
-    "000002_external_effect_protocol",
-    [
-      "sha256:66a1cd48303f31691596ae4e64d952d0fe3543444d042b17243c1a60efb10201",
-      "sha256:cd50e36c2b357fe03a81204b99f38c5c1e6b9ff94660dfecb9a2fccb782a512e",
-    ],
-  ],
-  [
-    "000002_transactional_service_transition",
-    ["sha256:5f52fdc1fcf6e37fabe9a69908d3c4e4bf82dfa6ab24c6b2ee9c4f3cda2a1099"],
-  ],
-  [
-    "000003_partial_source_freeze",
-    ["sha256:02dcd03e3d86c362598537e2ac7afc1dff2d20713fa01158f65e02db621d0da5"],
-  ],
-  [
-    "000004_selective_source_recovery",
-    ["sha256:c86e2546a9e135f5b23142a2ef1eb70bc12a0b41345f29abd5d2e5b7cbcaed97"],
-  ],
-  [
-    "000005_late_runner_effects",
-    ["sha256:35db45ebd364e6f8cbeafbfb0ab6ac0056fe7e51de2b5fe844b91f1207ba1cfb"],
-  ],
-  [
-    "000006_runner_provider_creation_boundary",
-    ["sha256:4ee3a75a1528870df6d66a24eded9fc588aed2681b82aef57335ad7bbadf1260"],
-  ],
-  [
-    "000007_compensation_effect_fence",
-    ["sha256:99e384395f93e2c82ea900fdfd86a810f5067bfafec5c32fe5ccd7d51a8d93a9"],
-  ],
-  [
-    "000008_trigger_helper_acl",
-    ["sha256:550e7c1e5f11bd795a867c03873d09a6b681c559f07b2101b8e8a3dbea3408c8"],
-  ],
-  [
-    "000009_authority_history_and_forward_repairs",
-    ["sha256:bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25"],
-  ],
-  [
-    "000010_recovery_effect_permits",
-    ["sha256:a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd"],
-  ],
-] as const;
+export type TrustedReleaseControlDatabaseIdentity = Readonly<{
+  authorityDatabaseIdentity: RuntimeDatabaseIdentity;
+  targetDatabaseIdentity: RuntimeDatabaseIdentity;
+  authorityOwnerRoleName: string;
+  activationGuardRoleName: string;
+  installerRoutineBodySha256: string;
+  readerRoutineBodySha256: string;
+  targetMigrationManifestIdentity: string;
+  /** Exact additional endpoints accepted only while recovering an unknown outcome. */
+  allowedTargetMigrationEndpoints?: readonly Readonly<{
+    manifestIdentity: string;
+    postCatalogDigest?: string;
+  }>[];
+  /** Required only while completing a post-migration target operation. */
+  targetPostCatalogDigest?: string;
+  activationNamespaceFingerprint: string;
+}>;
 
-const migrationManifestIsReady = (
-  manifest: ReleaseAuthorityDatabaseReadiness["migrationManifest"],
+const targetMigrationEndpointIsTrusted = (
+  actualManifest: string,
+  actualCatalogDigest: string,
+  trusted: TrustedReleaseControlDatabaseIdentity,
 ): boolean =>
-  manifest.length === expectedMigrationIdentities.length &&
-  expectedMigrationIdentities.every(([name, checksums], index) => {
-    const applied = manifest[index];
-    if (
-      applied?.position !== index + 1 ||
-      applied.migrationName !== name ||
-      !checksums.includes(applied.checksumSha256 as never)
-    )
-      return false;
-    const canonical = applied.checksumSha256 === checksums[0];
-    return (
-      applied.byteVariant === (canonical ? "canonical" : "legacy_equivalent")
-    );
-  });
+  (actualManifest === trusted.targetMigrationManifestIdentity &&
+    (trusted.targetPostCatalogDigest === undefined ||
+      actualCatalogDigest === trusted.targetPostCatalogDigest)) ||
+  trusted.allowedTargetMigrationEndpoints?.some(
+    (endpoint) =>
+      actualManifest === endpoint.manifestIdentity &&
+      (endpoint.postCatalogDigest === undefined ||
+        actualCatalogDigest === endpoint.postCatalogDigest),
+  ) === true;
 
 export const releaseAuthoritySchemaIsReady = (
   readiness: ReleaseAuthorityDatabaseReadiness,
 ): boolean =>
-  readiness.schemaVersion === 10 &&
-  migrationManifestIsReady(readiness.migrationManifest) &&
+  readiness.schemaVersion === releaseAuthoritySchemaVersion &&
+  readiness.catalogExact &&
+  readiness.defaultAclExact &&
+  readiness.finalAclExact &&
+  readiness.authorityRoleTopologyExact &&
+  readiness.catalogVerifier === releaseAuthorityCatalogVerifier &&
+  readiness.catalogFingerprint === readiness.expectedCatalogFingerprint &&
+  releaseAuthorityMigrationManifestIsExact(readiness.migrationManifest) &&
   readiness.controlRoutine &&
   readiness.providerRoutine &&
   readiness.externalEffectProtocol &&
@@ -129,22 +133,193 @@ export const releaseAuthoritySchemaIsReady = (
 
 export function releaseControlDatabaseSetIsReady(
   input: ReleaseControlDatabaseSet,
+  trusted: TrustedReleaseControlDatabaseIdentity,
+  phase: Exclude<
+    ReleaseControlReadinessPhase,
+    ReleaseControlReadinessPhase.ControlOnly
+  >,
 ): boolean {
   const { control, provider, installer, reader } = input;
+  const roleName = /^[a-z_][a-z0-9_]{0,62}$/u;
+  const systemIdentifier = /^[0-9]{1,64}$/u;
+  const sha256 = /^[a-f0-9]{64}$/u;
   return (
+    runtimeDatabaseIdentityIsCanonical(trusted.authorityDatabaseIdentity) &&
+    runtimeDatabaseIdentityIsCanonical(trusted.targetDatabaseIdentity) &&
+    trusted.authorityDatabaseIdentity.serverIdentity !==
+      trusted.targetDatabaseIdentity.serverIdentity &&
+    roleName.test(trusted.authorityOwnerRoleName) &&
+    sha256.test(trusted.installerRoutineBodySha256) &&
+    sha256.test(trusted.readerRoutineBodySha256) &&
+    /^sha256:[a-f0-9]{64}$/u.test(trusted.targetMigrationManifestIdentity) &&
+    (trusted.targetPostCatalogDigest === undefined ||
+      /^sha256:[a-f0-9]{64}$/u.test(trusted.targetPostCatalogDigest)) &&
+    (trusted.allowedTargetMigrationEndpoints === undefined ||
+      (trusted.allowedTargetMigrationEndpoints.length > 0 &&
+        trusted.allowedTargetMigrationEndpoints.every(
+          (endpoint) =>
+            /^sha256:[a-f0-9]{64}$/u.test(endpoint.manifestIdentity) &&
+            (endpoint.postCatalogDigest === undefined ||
+              /^sha256:[a-f0-9]{64}$/u.test(endpoint.postCatalogDigest)),
+        ))) &&
+    /^sha256:[a-f0-9]{64}$/u.test(trusted.activationNamespaceFingerprint) &&
     control.roleName === "reviewrouter_release_control" &&
     provider.roleName === "reviewrouter_provider_authority" &&
     installer.roleName === "reviewrouter_activation_permit_installer" &&
     reader.roleName === "reviewrouter_activation_receipt_reader" &&
-    control.systemIdentifier === provider.systemIdentifier &&
-    control.systemIdentifier !== installer.systemIdentifier &&
-    installer.systemIdentifier === reader.systemIdentifier &&
+    [control, provider, installer, reader].every(
+      (readiness) =>
+        systemIdentifier.test(readiness.systemIdentifier) &&
+        readiness.systemIdentifier ===
+          readiness.databaseIdentity.serverIdentity,
+    ) &&
+    control.authorityOwnerRoleName === trusted.authorityOwnerRoleName &&
+    provider.authorityOwnerRoleName === trusted.authorityOwnerRoleName &&
+    runtimeDatabaseIdentityEquals(
+      control.databaseIdentity,
+      trusted.authorityDatabaseIdentity,
+    ) &&
+    runtimeDatabaseIdentityEquals(
+      provider.databaseIdentity,
+      trusted.authorityDatabaseIdentity,
+    ) &&
+    runtimeDatabaseIdentityEquals(
+      installer.databaseIdentity,
+      trusted.targetDatabaseIdentity,
+    ) &&
+    runtimeDatabaseIdentityEquals(
+      reader.databaseIdentity,
+      trusted.targetDatabaseIdentity,
+    ) &&
+    !runtimeDatabaseIdentityEquals(
+      trusted.authorityDatabaseIdentity,
+      trusted.targetDatabaseIdentity,
+    ) &&
+    trusted.activationGuardRoleName ===
+      "reviewrouter_activation_receipt_guard" &&
+    runtimeDatabaseIdentityEquals(
+      control.databaseIdentity,
+      provider.databaseIdentity,
+    ) &&
+    !runtimeDatabaseIdentityEquals(
+      control.databaseIdentity,
+      installer.databaseIdentity,
+    ) &&
+    runtimeDatabaseIdentityEquals(
+      installer.databaseIdentity,
+      reader.databaseIdentity,
+    ) &&
     [control, provider, installer, reader].every(
       (readiness) => readiness.postgresMajor === 17,
     ) &&
     releaseAuthoritySchemaIsReady(control) &&
     releaseAuthoritySchemaIsReady(provider) &&
     installer.installerRoutine &&
-    reader.readerRoutine
+    installer.installerRoutineBodySha256 ===
+      trusted.installerRoutineBodySha256 &&
+    targetMigrationEndpointIsTrusted(
+      installer.applicationMigrationManifestIdentity,
+      installer.applicationPostCatalogDigest,
+      trusted,
+    ) &&
+    installer.activationNamespaceFingerprint ===
+      trusted.activationNamespaceFingerprint &&
+    targetActivationPhaseIsReady(installer, trusted, phase) &&
+    installer.activationRuntimePrivilegesExact &&
+    reader.readerRoutine &&
+    reader.readerRoutineBodySha256 === trusted.readerRoutineBodySha256 &&
+    targetMigrationEndpointIsTrusted(
+      reader.applicationMigrationManifestIdentity,
+      reader.applicationPostCatalogDigest,
+      trusted,
+    ) &&
+    reader.activationNamespaceFingerprint ===
+      trusted.activationNamespaceFingerprint &&
+    targetActivationPhaseIsReady(reader, trusted, phase) &&
+    reader.activationRuntimePrivilegesExact
   );
+}
+
+const targetActivationPhaseIsReady = (
+  readiness: ReleaseAuthorityDatabaseReadiness,
+  trusted: TrustedReleaseControlDatabaseIdentity,
+  phase: ReleaseControlReadinessPhase,
+): boolean => {
+  if (
+    phase === ReleaseControlReadinessPhase.ControlOnly ||
+    !readiness.preMigrationPermitBoundaryExact
+  )
+    return false;
+  const finalGuardRequired =
+    phase === ReleaseControlReadinessPhase.PostMigration ||
+    (phase === ReleaseControlReadinessPhase.MigrationRecovery &&
+      readiness.applicationMigrationManifestIdentity !==
+        trusted.targetMigrationManifestIdentity);
+  return !finalGuardRequired || readiness.activationGuardExact;
+};
+
+/** Exact policy for the database connection that performs one high-risk write. */
+export function releaseControlMutationDatabaseIsReady(
+  readiness: ReleaseAuthorityDatabaseReadiness,
+  trusted: TrustedReleaseControlDatabaseIdentity,
+  phase: ReleaseControlReadinessPhase,
+): boolean {
+  if (
+    readiness.postgresMajor !== 17 ||
+    readiness.systemIdentifier !== readiness.databaseIdentity.serverIdentity
+  )
+    return false;
+  switch (readiness.roleName) {
+    case "reviewrouter_release_control":
+    case "reviewrouter_provider_authority":
+      return (
+        runtimeDatabaseIdentityEquals(
+          readiness.databaseIdentity,
+          trusted.authorityDatabaseIdentity,
+        ) &&
+        readiness.authorityOwnerRoleName === trusted.authorityOwnerRoleName &&
+        releaseAuthoritySchemaIsReady(readiness)
+      );
+    case "reviewrouter_activation_permit_installer":
+      return (
+        phase !== ReleaseControlReadinessPhase.ControlOnly &&
+        runtimeDatabaseIdentityEquals(
+          readiness.databaseIdentity,
+          trusted.targetDatabaseIdentity,
+        ) &&
+        readiness.installerRoutine &&
+        readiness.installerRoutineBodySha256 ===
+          trusted.installerRoutineBodySha256 &&
+        targetMigrationEndpointIsTrusted(
+          readiness.applicationMigrationManifestIdentity,
+          readiness.applicationPostCatalogDigest,
+          trusted,
+        ) &&
+        readiness.activationNamespaceFingerprint ===
+          trusted.activationNamespaceFingerprint &&
+        targetActivationPhaseIsReady(readiness, trusted, phase) &&
+        readiness.activationRuntimePrivilegesExact
+      );
+    case "reviewrouter_activation_receipt_reader":
+      return (
+        phase !== ReleaseControlReadinessPhase.ControlOnly &&
+        runtimeDatabaseIdentityEquals(
+          readiness.databaseIdentity,
+          trusted.targetDatabaseIdentity,
+        ) &&
+        readiness.readerRoutine &&
+        readiness.readerRoutineBodySha256 === trusted.readerRoutineBodySha256 &&
+        targetMigrationEndpointIsTrusted(
+          readiness.applicationMigrationManifestIdentity,
+          readiness.applicationPostCatalogDigest,
+          trusted,
+        ) &&
+        readiness.activationNamespaceFingerprint ===
+          trusted.activationNamespaceFingerprint &&
+        targetActivationPhaseIsReady(readiness, trusted, phase) &&
+        readiness.activationRuntimePrivilegesExact
+      );
+    default:
+      return false;
+  }
 }

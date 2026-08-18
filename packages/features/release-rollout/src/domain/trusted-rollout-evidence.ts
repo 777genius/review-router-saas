@@ -10,8 +10,77 @@ import {
 } from "./release-rollout";
 import {
   assertVerifiedReleaseImageProvenance,
+  type TrustedReleaseImagePolicy,
   type VerifiedReleaseImageProvenance,
 } from "./release-image-provenance";
+import { releaseAuthoritySchemaVersion } from "./release-authority-contract";
+import { createHash, createPublicKey, verify } from "node:crypto";
+import { activationCatalogPolicyDigestsEqual } from "./activation-catalog-policy-contract";
+
+export interface TrustedReleaseWitnessVerificationPolicy {
+  readonly keyId: string;
+  readonly publicKeyPem: string;
+  readonly maximumAgeMilliseconds: number;
+}
+
+export interface ReleaseWitnessBindingEvidence {
+  readonly schemaVersion: 3;
+  readonly rolloutId: string;
+  readonly deploymentRevision: string;
+  readonly artifactDigest: string;
+  readonly execution: {
+    readonly repository: string;
+    readonly workflowPath: string;
+    readonly workflowRef: string;
+    readonly commitSha: string;
+    readonly runId: string;
+    readonly runAttempt: number;
+  };
+  readonly sourceDatabaseIdentity: {
+    readonly serverIdentity: string;
+    readonly databaseIdentity: string;
+    readonly databaseName: string;
+  };
+  readonly authorityDatabaseIdentity: {
+    readonly serverIdentity: string;
+    readonly databaseIdentity: string;
+    readonly databaseName: string;
+  };
+  readonly targetDatabaseIdentity: {
+    readonly serverIdentity: string;
+    readonly databaseIdentity: string;
+    readonly databaseName: string;
+  };
+  readonly releaseAuthority: {
+    readonly schemaVersion: number;
+    readonly migrationManifestIdentity: string;
+    readonly catalogFingerprint: string;
+    readonly catalogVerifier: string;
+  };
+  readonly activation: {
+    readonly migrationManifestIdentity: string;
+    readonly namespaceFingerprint: string;
+    readonly installerRoutineBodySha256: string;
+    readonly readerRoutineBodySha256: string;
+    readonly preactivationCatalogPolicySha256: string;
+    readonly activatedCatalogPolicySha256: string;
+  };
+  readonly source: Omit<DatabaseGenerationIdentity, "internalHostname">;
+  readonly target: Omit<DatabaseGenerationIdentity, "internalHostname">;
+  readonly deployments: readonly {
+    readonly serviceId: string;
+    readonly deployId: string;
+    readonly revision: string;
+  }[];
+  readonly observedAt: string;
+  readonly expiresAt: string;
+  readonly bindingSha256: string;
+  readonly signature: {
+    readonly algorithm: "Ed25519";
+    readonly keyId: string;
+    readonly value: string;
+  };
+}
 
 export interface BackupIdentity {
   readonly renderResourceId: string;
@@ -36,9 +105,33 @@ export interface QuiescenceEvidence {
   readonly stabilizationSeries: readonly number[];
   readonly reconnectDeniedRoles: readonly string[];
   readonly legacyAmbiguity: LegacyAmbiguityEvidence;
+  readonly fence: SourceDatabaseFenceEvidence;
   readonly complete: true;
 }
+export interface SourceDatabaseFenceEvidence {
+  readonly version: 1;
+  readonly fenceId: string;
+  readonly rolloutId: string;
+  readonly sourceSystemIdentifier: string;
+  readonly authorityPrincipal: string;
+  readonly beforeInventorySha256: string;
+  readonly fencedInventorySha256: string;
+  readonly beforePolicySha256: string;
+  readonly fencedPolicySha256: string;
+  readonly priorConnectAclSha256: string;
+  readonly lifecycle: "active";
+  readonly observedAt: string;
+}
 export interface LegacyAmbiguityEvidence {
+  readonly schemaVersion: 1;
+  readonly rolloutId: string;
+  readonly sourceSystemIdentifier: string;
+  readonly sourceDatabaseName: string;
+  readonly sourceRecoveryWitnessSha256: string;
+  readonly authorityPrincipal: string;
+  readonly fenceId: string;
+  readonly fenceEstablishedAt: string;
+  readonly fencedInventorySha256: string;
   readonly inventorySha256: string;
   readonly activeLeaseIds: readonly string[];
   readonly fetchedSetupIds: readonly string[];
@@ -48,7 +141,124 @@ export interface LegacyAmbiguityEvidence {
     { readonly observedAt: string; readonly inventorySha256: string },
     { readonly observedAt: string; readonly inventorySha256: string },
   ];
+  readonly eligibilityCutoff: string;
   readonly stable: true;
+  readonly receiptSha256: string;
+}
+
+const legacyDigest = /^sha256:[a-f0-9]{64}$/u;
+const isCanonicalInstant = (value: unknown): value is string =>
+  typeof value === "string" &&
+  Number.isFinite(Date.parse(value)) &&
+  new Date(value).toISOString() === value;
+
+/** Strict boundary parser for source-owned raw ambiguity evidence. */
+export function assertLegacyAmbiguityEvidence(
+  value: unknown,
+): LegacyAmbiguityEvidence {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("legacy_ambiguity_evidence_invalid");
+  const item = value as Record<string, unknown>;
+  const keys = [
+    "schemaVersion",
+    "rolloutId",
+    "sourceSystemIdentifier",
+    "sourceDatabaseName",
+    "sourceRecoveryWitnessSha256",
+    "authorityPrincipal",
+    "fenceId",
+    "fenceEstablishedAt",
+    "fencedInventorySha256",
+    "inventorySha256",
+    "activeLeaseIds",
+    "fetchedSetupIds",
+    "pendingIntentIds",
+    "intentStatuses",
+    "observations",
+    "eligibilityCutoff",
+    "stable",
+    "receiptSha256",
+  ];
+  const stringArrays = [
+    "activeLeaseIds",
+    "fetchedSetupIds",
+    "pendingIntentIds",
+    "intentStatuses",
+  ] as const;
+  if (
+    Object.keys(item).length !== keys.length ||
+    keys.some((key) => !Object.hasOwn(item, key)) ||
+    item.schemaVersion !== 1 ||
+    item.stable !== true ||
+    typeof item.rolloutId !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/@-]{2,255}$/u.test(item.rolloutId) ||
+    typeof item.sourceSystemIdentifier !== "string" ||
+    !/^[1-9][0-9]{0,19}$/u.test(item.sourceSystemIdentifier) ||
+    typeof item.sourceDatabaseName !== "string" ||
+    item.sourceDatabaseName.length === 0 ||
+    typeof item.sourceRecoveryWitnessSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(item.sourceRecoveryWitnessSha256) ||
+    typeof item.authorityPrincipal !== "string" ||
+    item.authorityPrincipal.length === 0 ||
+    typeof item.fenceId !== "string" ||
+    item.fenceId.length === 0 ||
+    !isCanonicalInstant(item.fenceEstablishedAt) ||
+    typeof item.fencedInventorySha256 !== "string" ||
+    !legacyDigest.test(item.fencedInventorySha256) ||
+    typeof item.inventorySha256 !== "string" ||
+    !legacyDigest.test(item.inventorySha256) ||
+    !isCanonicalInstant(item.eligibilityCutoff) ||
+    typeof item.receiptSha256 !== "string" ||
+    !legacyDigest.test(item.receiptSha256) ||
+    stringArrays.some(
+      (key) =>
+        !Array.isArray(item[key]) ||
+        item[key].some((entry) => typeof entry !== "string"),
+    ) ||
+    !Array.isArray(item.observations) ||
+    item.observations.length !== 2
+  )
+    throw new Error("legacy_ambiguity_evidence_invalid");
+  const observations = item.observations as unknown[];
+  for (const observation of observations) {
+    if (
+      observation === null ||
+      typeof observation !== "object" ||
+      Array.isArray(observation) ||
+      Object.keys(observation).length !== 2 ||
+      !Object.hasOwn(observation, "observedAt") ||
+      !Object.hasOwn(observation, "inventorySha256")
+    )
+      throw new Error("legacy_ambiguity_evidence_invalid");
+    const record = observation as Record<string, unknown>;
+    if (
+      !isCanonicalInstant(record.observedAt) ||
+      record.inventorySha256 !== item.inventorySha256
+    )
+      throw new Error("legacy_ambiguity_evidence_invalid");
+  }
+  if (
+    Date.parse((observations[1]! as Record<string, string>).observedAt!) <=
+      Date.parse((observations[0]! as Record<string, string>).observedAt!) ||
+    item.eligibilityCutoff !==
+      (observations[1]! as Record<string, string>).observedAt
+  )
+    throw new Error("legacy_ambiguity_evidence_invalid");
+  const inventory = {
+    activeLeaseIds: item.activeLeaseIds,
+    fetchedSetupIds: item.fetchedSetupIds,
+    pendingIntentIds: item.pendingIntentIds,
+    intentStatuses: item.intentStatuses,
+  };
+  const actual = `sha256:${createHash("sha256")
+    .update(JSON.stringify(inventory))
+    .digest("hex")}`;
+  if (actual !== item.inventorySha256)
+    throw new Error("legacy_ambiguity_evidence_digest_invalid");
+  const { receiptSha256, ...unsigned } = item;
+  if (receiptSha256 !== `sha256:${sha256Canonical(unsigned)}`)
+    throw new Error("legacy_ambiguity_evidence_receipt_digest_invalid");
+  return Object.freeze(value as LegacyAmbiguityEvidence);
 }
 export interface EquivalenceEvidence {
   readonly tables: readonly {
@@ -73,6 +283,13 @@ export interface EquivalenceEvidence {
   readonly equivalent: true;
   readonly streamingHash: true;
   readonly maxProcessBufferBytes: number;
+  readonly effectivePrincipals: {
+    readonly sourceInventorySha256: string;
+    readonly sourcePolicySha256: string;
+    readonly targetInventorySha256: string;
+    readonly targetPolicySha256: string;
+    readonly stable: true;
+  };
 }
 export interface CleanupEvidence {
   readonly renderJobId: string;
@@ -103,7 +320,7 @@ export interface LegacyReconciliationEvidence {
   readonly status: "reconciled";
 }
 export interface TrustedRolloutEvidence {
-  readonly schemaVersion: 5;
+  readonly schemaVersion: 8;
   readonly rolloutId: string;
   readonly releaseCommitSha: string;
   readonly releaseImageProvenance: VerifiedReleaseImageProvenance;
@@ -125,6 +342,7 @@ export interface TrustedRolloutEvidence {
   readonly activation: ActivationReceipt;
   readonly resumedTargetDeployIds: readonly string[];
   readonly liveCanarySha256: string;
+  readonly releaseWitness: ReleaseWitnessBindingEvidence;
   readonly cleanups: readonly [CleanupEvidence, CleanupEvidence];
   readonly assembledAt: string;
   readonly evidenceSha256: string;
@@ -145,18 +363,27 @@ const exact = (value: object, keys: readonly string[]): boolean =>
 
 export function assembleTrustedRolloutEvidence(
   value: Omit<TrustedRolloutEvidence, "schemaVersion" | "evidenceSha256">,
+  trustedImagePolicy: TrustedReleaseImagePolicy,
+  trustedWitnessPolicy: TrustedReleaseWitnessVerificationPolicy,
 ): TrustedRolloutEvidence {
-  const unsigned = Object.freeze({ ...value, schemaVersion: 5 as const });
+  const unsigned = Object.freeze({ ...value, schemaVersion: 8 as const });
   const evidence = Object.freeze({
     ...unsigned,
     evidenceSha256: `sha256:${sha256Canonical(unsigned)}`,
   });
-  return assertTrustedRolloutEvidence(evidence);
+  return assertTrustedRolloutEvidence(
+    evidence,
+    trustedImagePolicy,
+    trustedWitnessPolicy,
+  );
 }
 
 export function assertTrustedRolloutEvidence(
   value: TrustedRolloutEvidence,
+  trustedImagePolicy: TrustedReleaseImagePolicy,
+  trustedWitnessPolicy: TrustedReleaseWitnessVerificationPolicy,
 ): TrustedRolloutEvidence {
+  assertLegacyAmbiguityEvidence(value.quiescence.legacyAmbiguity);
   if (
     !exact(value, [
       "schemaVersion",
@@ -177,11 +404,12 @@ export function assertTrustedRolloutEvidence(
       "activation",
       "resumedTargetDeployIds",
       "liveCanarySha256",
+      "releaseWitness",
       "cleanups",
       "assembledAt",
       "evidenceSha256",
     ]) ||
-    value.schemaVersion !== 5 ||
+    value.schemaVersion !== 8 ||
     !sha.test(value.releaseCommitSha) ||
     value.execution.runAttempt !== 1 ||
     value.execution.event !== "workflow_dispatch" ||
@@ -201,7 +429,20 @@ export function assertTrustedRolloutEvidence(
     !value.quiescence.writerServices.length ||
     value.quiescence.stabilizationSeries.length < 3 ||
     value.quiescence.stabilizationSeries.some((count) => count !== 0) ||
-    value.quiescence.reconnectDeniedRoles.length !== 4 ||
+    value.quiescence.reconnectDeniedRoles.length < 1 ||
+    new Set(value.quiescence.reconnectDeniedRoles).size !==
+      value.quiescence.reconnectDeniedRoles.length ||
+    value.quiescence.fence?.version !== 1 ||
+    value.quiescence.fence.lifecycle !== "active" ||
+    value.quiescence.fence.rolloutId !== value.rolloutId ||
+    value.quiescence.fence.sourceSystemIdentifier !==
+      value.source.systemIdentifier ||
+    !timestamp(value.quiescence.fence.observedAt) ||
+    !digest.test(value.quiescence.fence.beforeInventorySha256) ||
+    !digest.test(value.quiescence.fence.fencedInventorySha256) ||
+    !digest.test(value.quiescence.fence.beforePolicySha256) ||
+    !digest.test(value.quiescence.fence.fencedPolicySha256) ||
+    !digest.test(value.quiescence.fence.priorConnectAclSha256) ||
     !digest.test(value.quiescence.aclSha256) ||
     !digest.test(value.quiescence.legacyAmbiguity.inventorySha256) ||
     value.quiescence.legacyAmbiguity.stable !== true ||
@@ -227,6 +468,14 @@ export function assertTrustedRolloutEvidence(
     Object.keys(value.equivalence.catalogSha256).length !== 7 ||
     Object.values(value.equivalence.catalogSha256).some(
       (item) => !digest.test(item),
+    ) ||
+    value.equivalence.effectivePrincipals.stable !== true ||
+    value.quiescence.fence.fencedInventorySha256 !==
+      value.equivalence.effectivePrincipals.sourceInventorySha256 ||
+    value.quiescence.fence.fencedPolicySha256 !==
+      value.equivalence.effectivePrincipals.sourcePolicySha256 ||
+    Object.entries(value.equivalence.effectivePrincipals).some(
+      ([key, item]) => key !== "stable" && !digest.test(String(item)),
     ) ||
     value.legacyReconciliation.version !== 1 ||
     value.legacyReconciliation.acknowledgement !==
@@ -254,13 +503,15 @@ export function assertTrustedRolloutEvidence(
     !value.resumedTargetDeployIds.length
   )
     throw new Error("trusted_rollout_evidence_invariant_failed");
-  assertVerifiedReleaseImageProvenance(value.releaseImageProvenance, {
-    sourceRepository: value.execution.controlRepository,
-    sourceRevision: value.releaseCommitSha,
-    imageRepository: value.releaseImageProvenance.claim.imageRepository,
-    verificationPolicySha256:
-      value.releaseImageProvenance.verification.policySha256,
-  });
+  assertVerifiedReleaseImageProvenance(
+    value.releaseImageProvenance,
+    trustedImagePolicy,
+  );
+  if (
+    value.execution.controlRepository !== trustedImagePolicy.sourceRepository ||
+    value.releaseCommitSha !== trustedImagePolicy.sourceRevision
+  )
+    throw new Error("trusted_rollout_evidence_release_policy_mismatch");
   if (
     value.targetDeploys.length === 0 ||
     new Set(value.targetDeploys.map((deploy) => deploy.serviceId)).size !==
@@ -282,8 +533,8 @@ export function assertTrustedRolloutEvidence(
     RolloutStep.VerifyProtectedEnvironment,
     RolloutStep.FreezeProviderServices,
     RolloutStep.ProvisionRoleRunner,
-    RolloutStep.CaptureSourceBackup,
     RolloutStep.QuiesceSource,
+    RolloutStep.CaptureSourceBackup,
     RolloutStep.CopyDatabaseGeneration,
     RolloutStep.BootstrapTargetRoles,
     RolloutStep.VerifyDataEquivalence,
@@ -325,6 +576,9 @@ export function assertTrustedRolloutEvidence(
     )
       throw new Error("trusted_rollout_evidence_receipt_chain_invalid");
   }
+  const migrationReceipt = value.receipts.find(
+    (receipt) => receipt.step === RolloutStep.RunReleaseMigration,
+  );
   if (
     value.receipts.find(
       (receipt) => receipt.step === RolloutStep.VerifyProtectedEnvironment,
@@ -339,13 +593,32 @@ export function assertTrustedRolloutEvidence(
     !value.receipts.some(
       (receipt) => canonicalJson(receipt) === canonicalJson(value.activation),
     ) ||
+    migrationReceipt?.step !== RolloutStep.RunReleaseMigration ||
+    !("postManifestIdentity" in migrationReceipt) ||
+    migrationReceipt.postManifestIdentity !==
+      value.activation.postManifestIdentity ||
+    migrationReceipt.postManifestIdentity !==
+      value.activation.migrationChecksum ||
     value.activation.firstWriteBoundary !== true ||
     value.activation.sourceSystemIdentifier !== value.source.systemIdentifier ||
     value.activation.targetSystemIdentifier !== value.target.systemIdentifier ||
     !digest.test(value.activation.firstWriteReceiptSha256) ||
-    !digest.test(value.activation.catalogFactsSha256)
+    !digest.test(value.activation.catalogFactsSha256) ||
+    !digest.test(value.activation.preactivationCatalogPolicySha256) ||
+    !digest.test(value.activation.activatedCatalogPolicySha256) ||
+    !activationCatalogPolicyDigestsEqual(value.activation) ||
+    !digest.test(value.activation.beforePrincipalInventorySha256) ||
+    !digest.test(value.activation.beforePrincipalPolicySha256) ||
+    !digest.test(value.activation.activatedPrincipalInventorySha256) ||
+    !digest.test(value.activation.activatedPrincipalPolicySha256)
   )
     throw new Error("trusted_rollout_evidence_activation_invalid");
+  if (
+    value.receipts.find(
+      (receipt) => receipt.step === RolloutStep.VerifyLiveCanary,
+    )?.observationSha256 !== value.liveCanarySha256
+  )
+    throw new Error("trusted_rollout_evidence_live_canary_binding_invalid");
   value.runners.forEach((runner, index) => {
     if (
       runner.organization !== value.execution.organization ||
@@ -370,6 +643,186 @@ export function assertTrustedRolloutEvidence(
   );
   if (Date.parse(value.assembledAt) <= latestPrerequisite)
     throw new Error("trusted_rollout_evidence_assembled_too_early");
+  const witness = value.releaseWitness;
+  const witnessUnsigned = witness
+    ? Object.fromEntries(
+        Object.entries(witness).filter(
+          ([key]) => key !== "bindingSha256" && key !== "signature",
+        ),
+      )
+    : undefined;
+  const witnessSignatureValid = (() => {
+    try {
+      const publicKey = createPublicKey(trustedWitnessPolicy.publicKeyPem);
+      return (
+        publicKey.asymmetricKeyType === "ed25519" &&
+        verify(
+          null,
+          Buffer.from(witness.bindingSha256, "utf8"),
+          publicKey,
+          Buffer.from(witness.signature.value, "base64"),
+        )
+      );
+    } catch {
+      return false;
+    }
+  })();
+  if (
+    !witness ||
+    !/^[A-Za-z0-9._:-]{1,128}$/u.test(trustedWitnessPolicy.keyId) ||
+    !Number.isSafeInteger(trustedWitnessPolicy.maximumAgeMilliseconds) ||
+    trustedWitnessPolicy.maximumAgeMilliseconds <= 0 ||
+    !exact(witness, [
+      "schemaVersion",
+      "rolloutId",
+      "deploymentRevision",
+      "artifactDigest",
+      "execution",
+      "sourceDatabaseIdentity",
+      "authorityDatabaseIdentity",
+      "targetDatabaseIdentity",
+      "releaseAuthority",
+      "activation",
+      "source",
+      "target",
+      "deployments",
+      "observedAt",
+      "expiresAt",
+      "bindingSha256",
+      "signature",
+    ]) ||
+    witness.schemaVersion !== 3 ||
+    witness.rolloutId !== value.rolloutId ||
+    witness.deploymentRevision !== value.releaseCommitSha ||
+    witness.artifactDigest !==
+      value.releaseImageProvenance.identity.imageDigest ||
+    !exact(witness.execution, [
+      "repository",
+      "workflowPath",
+      "workflowRef",
+      "commitSha",
+      "runId",
+      "runAttempt",
+    ]) ||
+    !exact(witness.sourceDatabaseIdentity, [
+      "serverIdentity",
+      "databaseIdentity",
+      "databaseName",
+    ]) ||
+    !exact(witness.authorityDatabaseIdentity, [
+      "serverIdentity",
+      "databaseIdentity",
+      "databaseName",
+    ]) ||
+    !exact(witness.targetDatabaseIdentity, [
+      "serverIdentity",
+      "databaseIdentity",
+      "databaseName",
+    ]) ||
+    !exact(witness.releaseAuthority, [
+      "schemaVersion",
+      "migrationManifestIdentity",
+      "catalogFingerprint",
+      "catalogVerifier",
+    ]) ||
+    !exact(witness.activation, [
+      "migrationManifestIdentity",
+      "namespaceFingerprint",
+      "installerRoutineBodySha256",
+      "readerRoutineBodySha256",
+      "preactivationCatalogPolicySha256",
+      "activatedCatalogPolicySha256",
+    ]) ||
+    !exact(witness.source, [
+      "renderResourceId",
+      "databaseName",
+      "systemIdentifier",
+      "majorVersion",
+      "recoveryWitnessSha256",
+    ]) ||
+    !exact(witness.target, [
+      "renderResourceId",
+      "databaseName",
+      "systemIdentifier",
+      "majorVersion",
+      "recoveryWitnessSha256",
+    ]) ||
+    witness.deployments.length === 0 ||
+    new Set(witness.deployments.map((item) => item.serviceId)).size !==
+      witness.deployments.length ||
+    witness.deployments.some(
+      (item) => !exact(item, ["serviceId", "deployId", "revision"]),
+    ) ||
+    !exact(witness.signature, ["algorithm", "keyId", "value"]) ||
+    witness.execution.repository !== value.execution.controlRepository ||
+    witness.execution.workflowPath !== value.execution.workflowPath ||
+    witness.execution.workflowRef !== value.execution.workflowRef ||
+    witness.execution.commitSha !== value.releaseCommitSha ||
+    witness.execution.runId !== value.execution.runId ||
+    witness.execution.runAttempt !== value.execution.runAttempt ||
+    witness.source.renderResourceId !== value.source.renderResourceId ||
+    witness.source.databaseName !== value.source.databaseName ||
+    witness.source.systemIdentifier !== value.source.systemIdentifier ||
+    witness.source.majorVersion !== value.source.majorVersion ||
+    witness.source.recoveryWitnessSha256 !==
+      value.source.recoveryWitnessSha256 ||
+    witness.sourceDatabaseIdentity.serverIdentity !==
+      value.source.systemIdentifier ||
+    witness.sourceDatabaseIdentity.databaseName !== value.source.databaseName ||
+    !/^[A-Za-z0-9._:-]{1,255}$/u.test(
+      witness.sourceDatabaseIdentity.databaseIdentity,
+    ) ||
+    witness.target.renderResourceId !== value.target.renderResourceId ||
+    witness.target.databaseName !== value.target.databaseName ||
+    witness.target.systemIdentifier !== value.target.systemIdentifier ||
+    witness.target.majorVersion !== value.target.majorVersion ||
+    witness.target.recoveryWitnessSha256 !==
+      value.target.recoveryWitnessSha256 ||
+    witness.targetDatabaseIdentity.serverIdentity !==
+      value.target.systemIdentifier ||
+    witness.targetDatabaseIdentity.databaseName !== value.target.databaseName ||
+    !/^[A-Za-z0-9._:-]{1,255}$/u.test(
+      witness.targetDatabaseIdentity.databaseIdentity,
+    ) ||
+    witness.authorityDatabaseIdentity.serverIdentity ===
+      witness.sourceDatabaseIdentity.serverIdentity ||
+    witness.authorityDatabaseIdentity.serverIdentity ===
+      witness.targetDatabaseIdentity.serverIdentity ||
+    canonicalJson(witness.deployments) !==
+      canonicalJson(
+        value.targetDeploys.map(({ serviceId, deployId, imageDigest }) => ({
+          serviceId,
+          deployId,
+          revision: imageDigest,
+        })),
+      ) ||
+    !digest.test(witness.releaseAuthority.migrationManifestIdentity) ||
+    witness.releaseAuthority.schemaVersion !== releaseAuthoritySchemaVersion ||
+    !digest.test(witness.releaseAuthority.catalogFingerprint) ||
+    !witness.releaseAuthority.catalogVerifier ||
+    !digest.test(witness.activation.migrationManifestIdentity) ||
+    witness.activation.migrationManifestIdentity !==
+      value.activation.postManifestIdentity ||
+    !digest.test(witness.activation.namespaceFingerprint) ||
+    !/^[a-f0-9]{64}$/u.test(witness.activation.installerRoutineBodySha256) ||
+    !/^[a-f0-9]{64}$/u.test(witness.activation.readerRoutineBodySha256) ||
+    !activationCatalogPolicyDigestsEqual(witness.activation) ||
+    witness.activation.preactivationCatalogPolicySha256 !==
+      value.activation.preactivationCatalogPolicySha256 ||
+    witness.activation.activatedCatalogPolicySha256 !==
+      value.activation.activatedCatalogPolicySha256 ||
+    !timestamp(witness.observedAt) ||
+    !timestamp(witness.expiresAt) ||
+    Date.parse(witness.observedAt) > Date.parse(value.assembledAt) ||
+    Date.parse(value.assembledAt) > Date.parse(witness.expiresAt) ||
+    Date.parse(witness.expiresAt) - Date.parse(witness.observedAt) !==
+      trustedWitnessPolicy.maximumAgeMilliseconds ||
+    witness.bindingSha256 !== `sha256:${sha256Canonical(witnessUnsigned)}` ||
+    witness.signature.algorithm !== "Ed25519" ||
+    witness.signature.keyId !== trustedWitnessPolicy.keyId ||
+    !witnessSignatureValid
+  )
+    throw new Error("trusted_rollout_evidence_release_witness_invalid");
   const { evidenceSha256, ...unsigned } = value;
   if (evidenceSha256 !== `sha256:${sha256Canonical(unsigned)}`)
     throw new Error("trusted_rollout_evidence_digest_mismatch");

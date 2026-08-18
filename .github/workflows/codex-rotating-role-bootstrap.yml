@@ -39,7 +39,7 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Run isolated role bootstrap
-        run: node scripts/run-codex-rotating-role-bootstrap.mjs > role-bootstrap-output.json
+        run: node --import tsx scripts/run-codex-rotating-role-bootstrap.mjs > role-bootstrap-output.json
 
       - name: Upload role-bootstrap receipt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -6,13 +6,31 @@ import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { codexRotatingProductionWriterBaseObservationSql } from "./capture-codex-rotating-production-writer.mjs";
 import { codexRotatingTriggers } from "./codex-rotating-production-writer-schema.mjs";
+import { createRehearsalAuthorityContext } from "./codex-rotating-rehearsal-authority-context.mjs";
+import {
+  assertRehearsalRoleObservation,
+  rehearsalRoleObservationSql,
+} from "./codex-rotating-rehearsal-role-provisioning.mjs";
 import {
   activationAuthorityProvisioningSql,
   executeCanonicalReleaseMigration,
+  liveV70V73CatalogDigestSha256,
   roleProvisioningSql,
   runtimeGrantStatements,
 } from "./run-codex-rotating-release-migration.mjs";
+import { legacyAmbiguityInventorySql } from "./reconcile-codex-rotating-legacy-ambiguity.mjs";
 import { verifyCodexRotatingDatabaseCatalog } from "./verify-codex-rotating-rollout.mjs";
+import {
+  createSanitizedDiagnostic,
+  sanitizedDiagnosticError,
+} from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
+import { sha256Canonical } from "../packages/features/release-rollout/src/domain/canonical-json.ts";
+import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
+import {
+  createDatabaseCredentialBoundary,
+  createSecretSafePostgresInvocation,
+  runSecretSafePostgresCommand,
+} from "./lib/secret-safe-command-boundary.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const dbDirectory = join(root, "packages/platform/db");
@@ -29,7 +47,12 @@ const migration68Name = "000068_validate_review_assignment_manifest";
 const migration69Name = "000069_release_rollout_ledger";
 const migration70Name = "000070_runtime_generation_witness_proof";
 const migration71Name = "000071_transactional_service_transition";
-const migration72Name = "000072_retire_superseded_codex_setup_claims";
+const migration72RetireName = "000072_retire_superseded_codex_setup_claims";
+const migration72CanaryName = "000072_runtime_canary_challenge";
+const rehearsalPreManifestIdentitySha256 =
+  canonicalReleaseMigrationArtifact.preManifestIdentity;
+const rehearsalPostManifestIdentitySha256 =
+  canonicalReleaseMigrationArtifact.postManifestIdentity;
 const migration73Name = "000073_codex_oauth_active_namespace_refresh";
 const migration74Name = "000074_hosted_codex_account_pool";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
@@ -57,7 +80,8 @@ assert(
       migration69Name,
       migration70Name,
       migration71Name,
-      migration72Name,
+      migration72RetireName,
+      migration72CanaryName,
       migration73Name,
       migration74Name,
     ]),
@@ -71,37 +95,34 @@ const baseUrl = requireLocalPostgres(
 const psqlBinary = requirePostgres17();
 const databaseName = `rr_codex_fence_${process.pid}_${Date.now()}`;
 const adminUrl = databaseUrl(baseUrl, "postgres");
-let rehearsalUrl = databaseUrl(baseUrl, databaseName);
+const rehearsalProviderAdminUrl = databaseUrl(baseUrl, databaseName);
 const rehearsalRoleMarker = `reviewrouter-rehearsal-managed:${process.pid}:${randomUUID()}`;
-let rehearsalRoleClients;
+let rehearsalAuthority;
 
 try {
   psql(adminUrl, ["-c", `CREATE DATABASE ${quoteIdentifier(databaseName)}`]);
   assert(
-    psql(rehearsalUrl, ["-Atc", "SHOW server_version_num"])
+    psql(rehearsalProviderAdminUrl, ["-Atc", "SHOW server_version_num"])
       .stdout.trim()
       .startsWith("17"),
     "the rehearsal database server must be PostgreSQL 17",
   );
-  const rehearsalRelease = prepareCanonicalReleaseRoles(rehearsalUrl);
-  rehearsalRoleClients = rehearsalRelease.clients;
-  rehearsalUrl = rehearsalRoleClients.release;
-  applyBaselineThrough59(rehearsalUrl);
-  seedDirtyFixtures(rehearsalUrl);
-  await proveMigration60LockTimeout(rehearsalUrl);
-  migrateResolve(rehearsalUrl, "--rolled-back", migration60Name);
-  await proveCombinedLockTimeout(rehearsalUrl);
-  proveMigrationRunnerHistory(rehearsalUrl, migration60Name, true);
-  proveFetchedAmbiguityStillPresent(rehearsalUrl);
-  await proveTtlCrossedAfter60(rehearsalUrl);
-
-  proveStatementTimeoutConfiguration(rehearsalUrl);
-  proveInjected61Rollback(rehearsalUrl);
-  migrateResolve(rehearsalUrl, "--rolled-back", migration61Name);
-  discardRehearsalOnlyRolledBackMigrationHistory(rehearsalUrl);
+  await proveMigrationSpecificLegacyBehavior();
+  proveCanonicalLegacyReconciliationNegativeCases();
+  const rehearsalRelease = prepareCanonicalReleaseRoles(
+    rehearsalProviderAdminUrl,
+    applyCanonicalPreMigrationBaseline,
+  );
+  rehearsalAuthority = rehearsalRelease.authority;
+  const providerAdmin = rehearsalAuthority.providerAdmin;
+  const runtimeClients = rehearsalAuthority.runtime;
+  seedDirtyFixtures(providerAdmin, { canonicalSuccess: true });
+  const migrationPermitEnvironment =
+    installRehearsalMigrationPermit(rehearsalAuthority);
   const releaseMigrationResult = executeCanonicalReleaseMigration(
     {
       ...rehearsalRelease.environment,
+      ...migrationPermitEnvironment,
       REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
     },
     runRehearsalReleaseSubprocess,
@@ -111,37 +132,69 @@ try {
     releaseMigrationResult.aclGateState === "open",
     "combined migration rehearsal must exercise the open runtime ACL state",
   );
-
-  proveSuccessfulCombinedRelease(rehearsalUrl);
-  proveDatabasePrivileges(rehearsalUrl);
-  proveRuntimeParentCascadesDenied(rehearsalUrl, rehearsalRoleClients);
-  proveStaleAclProviderIdentityEscalationDenied(
-    rehearsalUrl,
-    rehearsalRoleClients,
+  const targetMigrationReceipt = releaseMigrationResult.targetMigrationReceipt;
+  const expectedEffectFingerprint = `sha256:${createHash("sha256")
+    .update(
+      [
+        targetMigrationReceipt.rolloutId,
+        targetMigrationReceipt.transitionSha256,
+        targetMigrationReceipt.permitEpoch,
+        targetMigrationReceipt.permitNonce,
+        targetMigrationReceipt.sourceLegacyAmbiguity.inventorySha256,
+        targetMigrationReceipt.eligibilityCutoff,
+        targetMigrationReceipt.postManifestIdentity,
+        targetMigrationReceipt.postCatalogDigest,
+      ].join(":"),
+    )
+    .digest("hex")}`;
+  assert(
+    targetMigrationReceipt.effectFingerprint === expectedEffectFingerprint,
+    "target migration effect fingerprint must match independently observed receipt facts",
   );
-  proveTerminalInsertGuards(rehearsalUrl);
-  proveSequentialFabricationDeniedForEveryRuntimeRole(rehearsalRoleClients);
-  proveRuntimeVersionedWriteback(rehearsalUrl, rehearsalRoleClients);
-  proveAccountSwitchRecoveryContract(rehearsalUrl);
-  proveCompletedRecoveryEvidenceRetention(rehearsalUrl);
+  const replayMigrationResult = executeCanonicalReleaseMigration(
+    {
+      ...rehearsalRelease.environment,
+      ...migrationPermitEnvironment,
+      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
+    },
+    runRehearsalReleaseSubprocess,
+    loopbackRehearsalDatabaseIdentity,
+  );
+  assert(
+    JSON.stringify(replayMigrationResult.targetMigrationReceipt) ===
+      JSON.stringify(releaseMigrationResult.targetMigrationReceipt) &&
+      JSON.stringify(replayMigrationResult.legacyReconciliation.inventory) ===
+        JSON.stringify(releaseMigrationResult.legacyReconciliation.inventory),
+    "canonical replay did not return the immutable original receipt",
+  );
+
+  proveSuccessfulCombinedRelease(providerAdmin);
+  proveDatabasePrivileges(providerAdmin);
+  proveRuntimeParentCascadesDenied(providerAdmin, runtimeClients);
+  proveStaleAclProviderIdentityEscalationDenied(providerAdmin, runtimeClients);
+  proveTerminalInsertGuards(providerAdmin);
+  proveSequentialFabricationDeniedForEveryRuntimeRole(runtimeClients);
+  proveRuntimeVersionedWriteback(providerAdmin, runtimeClients);
+  proveAccountSwitchRecoveryContract(providerAdmin);
+  proveCompletedRecoveryEvidenceRetention(providerAdmin);
   const versionedNamespaceEvidence =
-    proveVersionedNamespaceLedger(rehearsalUrl);
-  provePrismaCleanupRetention(rehearsalUrl, versionedNamespaceEvidence);
-  proveLegacyChildWritesRejected(rehearsalUrl);
-  proveParentIdentityWriteRejected(rehearsalUrl);
-  await proveProviderRepairAuthorityV2(rehearsalUrl, rehearsalRoleClients);
-  proveQuarantineCleanupPathV2(rehearsalUrl);
-  proveExactProductionCatalogContract(rehearsalUrl);
-  proveMigrateDeployNoOp(rehearsalUrl);
+    proveVersionedNamespaceLedger(providerAdmin);
+  provePrismaCleanupRetention(providerAdmin, versionedNamespaceEvidence);
+  proveLegacyChildWritesRejected(providerAdmin);
+  proveParentIdentityWriteRejected(providerAdmin);
+  await proveProviderRepairAuthorityV2(providerAdmin, runtimeClients);
+  await proveQuarantineCleanupPathV2(providerAdmin, runtimeClients);
+  proveExactProductionCatalogContract(providerAdmin);
+  proveMigrateDeployNoOp(providerAdmin);
   proveLateMigrationRollbackAndReplayMatrix();
-  proveReleaseAuthorityMarkerIsolation(rehearsalUrl);
-  const observation = collectObservation(rehearsalUrl);
+  proveReleaseAuthorityMarkerIsolation(providerAdmin);
+  const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000073 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000074 rehearsal passed.\n",
   );
 } finally {
-  psql(
+  const databaseDrop = psql(
     adminUrl,
     [
       "-c",
@@ -149,7 +202,210 @@ try {
     ],
     false,
   );
+  assert(
+    databaseDrop.status === 0 &&
+      psql(adminUrl, [
+        "-Atc",
+        `SELECT count(*) FROM pg_database WHERE datname = ${quoteLiteral(databaseName)}`,
+      ]).stdout.trim() === "0",
+    "rehearsal_database_removal_not_proven_before_role_cleanup",
+  );
   cleanupRuntimeRoles(adminUrl);
+}
+
+async function proveMigrationSpecificLegacyBehavior() {
+  const name = `${databaseName}_legacy_migrations`;
+  const url = databaseUrl(baseUrl, name);
+  psql(adminUrl, ["-c", `CREATE DATABASE ${quoteIdentifier(name)}`]);
+  try {
+    const release = prepareCanonicalReleaseRoles(
+      url,
+      applyCanonicalPreMigrationBaseline,
+    );
+    const providerAdmin = release.authority.providerAdmin;
+    seedDirtyFixtures(providerAdmin);
+    await proveMigration60LockTimeout(providerAdmin, providerAdmin);
+    migrateResolve(providerAdmin, "--rolled-back", migration60Name);
+    await proveCombinedLockTimeout(providerAdmin, providerAdmin);
+    proveMigrationRunnerHistory(providerAdmin, migration60Name, true);
+    proveFetchedAmbiguityStillPresent(providerAdmin);
+    await proveTtlCrossedAfter60(providerAdmin);
+    proveStatementTimeoutConfiguration(providerAdmin);
+    proveInjected61Rollback(providerAdmin);
+    migrateResolve(providerAdmin, "--rolled-back", migration61Name);
+    discardRehearsalOnlyRolledBackMigrationHistory(providerAdmin);
+    psql(providerAdmin, ["-f", migration61]);
+    psql(providerAdmin, ["-f", migration62]);
+    psql(providerAdmin, [
+      "-Atc",
+      String.raw`DO $$ BEGIN
+        IF (SELECT "status" FROM "CodexOAuthWritebackIntent"
+            WHERE "id"='intent-pending') <> 'remote_outcome_unknown'
+           OR (SELECT "safeErrorCode" FROM "CodexOAuthWritebackIntent"
+               WHERE "id"='intent-pending') <> 'legacy_remote_outcome_unknown'
+        THEN RAISE EXCEPTION 'pending-to-failed-to-remote-outcome-unknown proof failed';
+        END IF;
+        IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id = 'issued-crossing') <> 'expired'
+          OR (SELECT "mutationEpoch" FROM "CodexOAuthSetupManifest" WHERE id = 'issued-crossing') IS NOT NULL
+          OR (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 0
+          OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') IS NOT NULL
+          OR (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') IS NOT NULL
+        THEN RAISE EXCEPTION '000061 made a post-observation TTL crossing newly eligible for reconciliation';
+        END IF;
+      END $$;`,
+    ]);
+  } finally {
+    psql(
+      adminUrl,
+      ["-c", `DROP DATABASE IF EXISTS ${quoteIdentifier(name)} WITH (FORCE)`],
+      false,
+    );
+    cleanupRuntimeRoles(adminUrl);
+  }
+}
+
+function proveCanonicalLegacyReconciliationNegativeCases() {
+  for (const testCase of [
+    { name: "unresolved", options: { canonicalSuccess: false } },
+    {
+      name: "unexpired",
+      options: { canonicalSuccess: true, retainUnexpiredLease: true },
+    },
+    {
+      name: "inventory_race",
+      options: { canonicalSuccess: true },
+      injectInventoryRace: true,
+    },
+    {
+      name: "ttl_crossing",
+      options: { canonicalSuccess: true },
+      injectTtlCrossing: true,
+    },
+    {
+      name: "unknown_status",
+      options: { canonicalSuccess: true },
+      injectUnknownStatus: true,
+    },
+    {
+      name: "forged_digest",
+      options: { canonicalSuccess: true },
+      transformSourceEvidence: (evidence) => ({
+        ...evidence,
+        inventorySha256: `sha256:${"0".repeat(64)}`,
+        observations: evidence.observations.map((sample) => ({
+          ...sample,
+          inventorySha256: `sha256:${"0".repeat(64)}`,
+        })),
+      }),
+    },
+  ]) {
+    const name = `${databaseName}_legacy_${testCase.name}`;
+    const url = databaseUrl(baseUrl, name);
+    psql(adminUrl, ["-c", `CREATE DATABASE ${quoteIdentifier(name)}`]);
+    try {
+      const release = prepareCanonicalReleaseRoles(
+        url,
+        applyCanonicalPreMigrationBaseline,
+      );
+      seedDirtyFixtures(release.authority.providerAdmin, testCase.options);
+      if (testCase.injectUnknownStatus)
+        psql(release.authority.providerAdmin, [
+          "-c",
+          `UPDATE "CodexOAuthWritebackIntent" SET "status"='new_state'
+           WHERE "id"='intent-history'`,
+        ]);
+      const permit = installRehearsalMigrationPermit(release.authority, {
+        transformSourceEvidence: testCase.transformSourceEvidence,
+      });
+      if (testCase.injectTtlCrossing) {
+        const cutoff = permit.REVIEW_ROUTER_MIGRATION_PERMIT_ELIGIBILITY_CUTOFF;
+        psql(release.authority.providerAdmin, [
+          "-c",
+          `UPDATE "CodexOAuthLease"
+             SET "expiresAt"=${quoteLiteral(cutoff)}::timestamptz + interval '100 milliseconds'
+           WHERE "id"='lease-active';
+           UPDATE "CodexOAuthProviderInstance"
+             SET "activeLeaseExpiresAt"=${quoteLiteral(cutoff)}::timestamptz + interval '100 milliseconds'
+           WHERE "id"='p-active-lease';
+           SELECT pg_sleep(0.2)`,
+        ]);
+      }
+      let rejected = false;
+      try {
+        let inventoryRaceInjected = false;
+        const releaseRun = (step, command, args, options) => {
+          if (
+            testCase.injectInventoryRace &&
+            !inventoryRaceInjected &&
+            step === "deploy_migrations_and_converge_grants"
+          ) {
+            inventoryRaceInjected = true;
+            psql(release.authority.providerAdmin, [
+              "-c",
+              `UPDATE "CodexOAuthLease" SET status='expired' WHERE id='lease-expired'`,
+            ]);
+          }
+          return runRehearsalReleaseSubprocess(step, command, args, options);
+        };
+        executeCanonicalReleaseMigration(
+          {
+            ...release.environment,
+            ...permit,
+            REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
+          },
+          releaseRun,
+          loopbackRehearsalDatabaseIdentity,
+        );
+      } catch {
+        rejected = true;
+      }
+      assert(rejected, `canonical ${testCase.name} fixture was not rejected`);
+      const rollback = JSON.parse(
+        psql(release.authority.providerAdmin, [
+          "-Atc",
+          `SELECT json_build_object(
+          'permitState',(SELECT state FROM reviewrouter_activation.migration_permit
+            WHERE rollout_id='rehearsal-rollout-v1'),
+          'targetReceipt',(SELECT target_receipt FROM reviewrouter_activation.migration_permit
+            WHERE rollout_id='rehearsal-rollout-v1'),
+          'committedTargetMigrations',(SELECT count(*) FROM public._prisma_migrations
+            WHERE migration_name IN (${[
+              migration60Name,
+              migration61Name,
+              migration62Name,
+              migration63Name,
+              migration64Name,
+              migration65Name,
+              migration66Name,
+              migration69Name,
+              migration70Name,
+              migration71Name,
+              migration72RetireName,
+              migration72CanaryName,
+              migration73Name,
+            ]
+              .map(quoteLiteral)
+              .join(
+                ",",
+              )}) AND finished_at IS NOT NULL AND rolled_back_at IS NULL)
+        )`,
+        ]).stdout.trim(),
+      );
+      assert(
+        rollback.permitState === "installed" &&
+          rollback.targetReceipt === null &&
+          rollback.committedTargetMigrations === 0,
+        `canonical ${testCase.name} rejection was not fully retryable`,
+      );
+    } finally {
+      psql(
+        adminUrl,
+        ["-c", `DROP DATABASE IF EXISTS ${quoteIdentifier(name)} WITH (FORCE)`],
+        false,
+      );
+      cleanupRuntimeRoles(adminUrl);
+    }
+  }
 }
 
 function proveLateMigrationRollbackAndReplayMatrix() {
@@ -165,6 +421,7 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       decoy:
         'CREATE INDEX "CodexOAuthSetupManifest_recovery_expiry_idx" ON "CodexOAuthSetupManifest"("status")',
       cleanup: 'DROP INDEX "CodexOAuthSetupManifest_recovery_expiry_idx"',
+      failureMarker: "CodexOAuthSetupManifest_recovery_expiry_idx",
       leaked:
         "SELECT count(*) FROM information_schema.columns WHERE table_name='CodexOAuthSetupManifest' AND column_name='payloadVersion'",
     },
@@ -180,6 +437,7 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       decoy:
         'CREATE INDEX "CodexOAuthSecretNamespace_secretName_key" ON "CodexOAuthProviderInstance"("id")',
       cleanup: 'DROP INDEX "CodexOAuthSecretNamespace_secretName_key"',
+      failureMarker: "CodexOAuthSecretNamespace_secretName_key",
       leaked:
         "SELECT count(*) FROM information_schema.tables WHERE table_name='CodexOAuthSecretNamespace'",
     },
@@ -196,6 +454,7 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       decoy:
         'CREATE FUNCTION "codex_oauth_database_authority_receipt_guard"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$',
       cleanup: 'DROP FUNCTION "codex_oauth_database_authority_receipt_guard"()',
+      failureMarker: "codex_oauth_database_authority_receipt_guard",
       leaked:
         "SELECT count(*) FROM pg_proc WHERE proname='codex_oauth_authorize_provider_identity_repair'",
     },
@@ -213,6 +472,7 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       decoy:
         'CREATE FUNCTION "codex_oauth_runtime_referential_action_guard"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN OLD; END $$',
       cleanup: 'DROP FUNCTION "codex_oauth_runtime_referential_action_guard"()',
+      failureMarker: "codex_oauth_runtime_referential_action_guard",
       leaked:
         "SELECT count(*) FROM pg_proc WHERE proname='codex_oauth_provider_identity_repair_challenge'",
     },
@@ -222,14 +482,29 @@ function proveLateMigrationRollbackAndReplayMatrix() {
     const url = databaseUrl(baseUrl, name);
     psql(adminUrl, ["-c", `CREATE DATABASE ${quoteIdentifier(name)}`]);
     try {
-      applyBaselineThrough59(url);
+      applyCanonicalPreMigrationBaseline(url);
       psql(url, ["-c", testCase.decoy]);
       const failed = migrateDeploy(url, false);
-      assert(failed.status !== 0, `${testCase.name} injected failure missing`);
+      assertPrismaMigrationFailureEnvelope(
+        failed,
+        testCase.failureMarker,
+        `${testCase.name} injected failure did not report its decoy collision`,
+      );
       for (const [migrationName] of testCase.prior) {
         proveMigrationRunnerHistory(url, migrationName, true);
       }
       proveMigrationRunnerHistory(url, testCase.name, false);
+      const directFailure = psql(url, ["-f", testCase.source], false);
+      assert(
+        directFailure.status !== 0 &&
+          `${directFailure.stdout}${directFailure.stderr}`.includes(
+            testCase.failureMarker,
+          ) &&
+          `${directFailure.stdout}${directFailure.stderr}`
+            .toLowerCase()
+            .includes("already exists"),
+        `${testCase.name} direct replay did not prove its decoy collision`,
+      );
       assert(
         psql(url, ["-Atc", testCase.leaked]).stdout.trim() === "0",
         `${testCase.name} leaked partial catalog state after rollback`,
@@ -280,11 +555,17 @@ function proveReleaseAuthorityMarkerIsolation(url) {
   }
 }
 
-function applyBaselineThrough59(url) {
+function applyCanonicalPreMigrationBaseline(url) {
   const applied = [];
   for (const directory of readdirSync(migrationsDirectory).sort()) {
     const number = Number.parseInt(directory.slice(0, 6), 10);
-    if (!Number.isInteger(number) || number > 59) continue;
+    const isCanonicalPreMigration =
+      Number.isInteger(number) &&
+      (number <= 59 ||
+        directory === migration67Name ||
+        directory === migration68Name ||
+        directory === migration74Name);
+    if (!isCanonicalPreMigration) continue;
     const source = join(migrationsDirectory, directory, "migration.sql");
     psql(url, ["-f", source]);
     applied.push({
@@ -312,9 +593,38 @@ function applyBaselineThrough59(url) {
       `INSERT INTO "_prisma_migrations" ("id", "checksum", "finished_at", "migration_name", "applied_steps_count") VALUES (${quoteLiteral(randomUUID())}, ${quoteLiteral(migration.checksum)}, now(), ${quoteLiteral(migration.name)}, 1)`,
     ]);
   }
+  const manifestIdentity = `sha256:${createHash("sha256")
+    .update(
+      applied
+        .map(({ name, checksum }) => `${name}:${checksum}`)
+        .sort()
+        .join(","),
+    )
+    .digest("hex")}`;
+  assert(
+    manifestIdentity === rehearsalPreManifestIdentitySha256,
+    "rehearsal baseline must reproduce the trusted pre-migration manifest",
+  );
 }
 
-function seedDirtyFixtures(url) {
+function seedDirtyFixtures(
+  url,
+  { canonicalSuccess = false, retainUnexpiredLease = false } = {},
+) {
+  const activeLeaseExpiry =
+    canonicalSuccess && !retainUnexpiredLease
+      ? "now() - interval '10 minutes'"
+      : "now() + interval '10 minutes'";
+  const otherLeaseExpiry = canonicalSuccess
+    ? "now() - interval '1 minute'"
+    : "now() + interval '1 minute'";
+  const intentRows = canonicalSuccess
+    ? String.raw`('intent-pending', 'p-pending', 'lease-pending', 'codex-rotating:900005', 'intent-key', 2, 'hash', 'digest', 'kid', 'failed', 'canonical_fixture_terminal', now()),
+        ('intent-history', 'p-pending', 'lease-pending', 'codex-rotating:900005', 'history-key', 1, 'hash', 'digest', 'kid', 'completed', NULL, now()),
+        ('intent-dirty', 'p-dirty-child', 'lease-dirty', 'wrong-provider-id', 'dirty-key', 1, 'hash', 'digest', 'kid', 'failed', 'identity_quarantined', now())`
+    : String.raw`('intent-pending', 'p-pending', 'lease-pending', 'codex-rotating:900005', 'intent-key', 2, 'hash', 'digest', 'kid', 'pending', NULL, now()),
+        ('intent-history', 'p-pending', 'lease-pending', 'codex-rotating:900005', 'history-key', 1, 'hash', 'digest', 'kid', 'completed', NULL, now()),
+        ('intent-dirty', 'p-dirty-child', 'lease-dirty', 'wrong-provider-id', 'dirty-key', 1, 'hash', 'digest', 'kid', 'pending', NULL, now())`;
   psql(url, [
     "-c",
     String.raw`
@@ -369,12 +679,12 @@ function seedDirtyFixtures(url) {
       ) VALUES
         ('p-fetched', 'ws-proof', 'repo-1', 'codex-rotating:900001', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'setup_pending', 'salt', 'salt', NULL, NULL, now()),
         ('p-issued', 'ws-proof', 'repo-2', 'codex-rotating:900002', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'setup_pending', 'salt', 'salt', NULL, NULL, now()),
-        ('p-active-lease', 'ws-proof', 'repo-3', 'codex-rotating:900003', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'active', 'salt', 'salt', 'lease-active', now() + interval '10 minutes', now()),
+        ('p-active-lease', 'ws-proof', 'repo-3', 'codex-rotating:900003', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'active', 'salt', 'salt', 'lease-active', ${activeLeaseExpiry}, now()),
         ('p-expired-lease', 'ws-proof', 'repo-4', 'codex-rotating:900004', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'active', 'salt', 'salt', 'lease-expired', now() - interval '1 minute', now()),
         ('p-pending', 'ws-proof', 'repo-5', 'codex-rotating:900005', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'active', 'salt', 'salt', NULL, NULL, now()),
         ('p-quarantine', 'ws-proof', 'repo-6', 'legacy-wrong-id', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'active', 'salt', 'salt', NULL, NULL, now()),
         ('p-clean', 'ws-proof', 'repo-7', 'codex-rotating:900007', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'active', 'salt', 'salt', NULL, NULL, now()),
-        ('p-recovery', 'ws-proof', 'repo-8', 'codex-rotating:900008', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'unknown_auth_state', 'salt', 'salt', 'lease-recovery', now() + interval '1 minute', now());
+        ('p-recovery', 'ws-proof', 'repo-8', 'codex-rotating:900008', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'unknown_auth_state', 'salt', 'salt', 'lease-recovery', ${otherLeaseExpiry}, now());
       INSERT INTO "CodexOAuthProviderInstance" (
         "id", "workspaceId", "repositoryId", "providerInstanceId", "authMode",
         "secretName", "state", "generationHashSalt", "accountFingerprintSalt", "updatedAt"
@@ -406,41 +716,46 @@ function seedDirtyFixtures(url) {
         "id", "providerInstanceRowId", "providerInstanceId", "workspaceId", "repositoryId",
         "githubRunId", "githubRunAttempt", "leaseKey", "status", "expiresAt"
       ) VALUES
-        ('lease-active', 'p-active-lease', 'codex-rotating:900003', 'ws-proof', 'repo-3', 'run-3', '1', 'key-3', 'preleased', now() + interval '10 minutes'),
+        ('lease-active', 'p-active-lease', 'codex-rotating:900003', 'ws-proof', 'repo-3', 'run-3', '1', 'key-3', 'preleased', ${activeLeaseExpiry}),
         ('lease-expired', 'p-expired-lease', 'codex-rotating:900004', 'ws-proof', 'repo-4', 'run-4', '1', 'key-4', 'finalized', now() - interval '1 minute'),
-        ('lease-pending', 'p-pending', 'codex-rotating:900005', 'ws-proof', 'repo-5', 'run-5', '1', 'key-5', 'preleased', now() + interval '1 minute'),
-        ('lease-recovery', 'p-recovery', 'codex-rotating:900008', 'ws-proof', 'repo-8', 'run-8', '1', 'key-8', 'preleased', now() + interval '1 minute'),
-        ('lease-stray', 'p-stray-lease', 'codex-rotating:900009', 'ws-proof', 'repo-9', 'run-9', '1', 'key-9', 'preleased', now() + interval '1 minute'),
-        ('lease-provider-dirty', 'p-quarantine', 'legacy-wrong-id', 'ws-proof', 'repo-6', 'run-6', '1', 'key-6', 'preleased', now() + interval '1 minute'),
-        ('lease-dirty', 'p-dirty-child', 'wrong-provider-id', 'ws-proof', 'repo-9', 'run-10', '1', 'key-10', 'preleased', now() + interval '1 minute');
+        ('lease-pending', 'p-pending', 'codex-rotating:900005', 'ws-proof', 'repo-5', 'run-5', '1', 'key-5', 'preleased', ${otherLeaseExpiry}),
+        ('lease-recovery', 'p-recovery', 'codex-rotating:900008', 'ws-proof', 'repo-8', 'run-8', '1', 'key-8', 'preleased', ${otherLeaseExpiry}),
+        ('lease-stray', 'p-stray-lease', 'codex-rotating:900009', 'ws-proof', 'repo-9', 'run-9', '1', 'key-9', 'preleased', ${otherLeaseExpiry}),
+        ('lease-provider-dirty', 'p-quarantine', 'legacy-wrong-id', 'ws-proof', 'repo-6', 'run-6', '1', 'key-6', 'preleased', ${otherLeaseExpiry}),
+        ('lease-dirty', 'p-dirty-child', 'wrong-provider-id', 'ws-proof', 'repo-9', 'run-10', '1', 'key-10', 'preleased', ${otherLeaseExpiry});
       INSERT INTO "CodexOAuthWritebackIntent" (
         "id", "providerInstanceRowId", "leaseId", "providerInstanceId", "idempotencyKey",
-        "generation", "latestGenerationHash", "encryptedPayloadDigest", "keyId", "status", "updatedAt"
+        "generation", "latestGenerationHash", "encryptedPayloadDigest", "keyId", "status", "safeErrorCode", "updatedAt"
       ) VALUES
-        ('intent-pending', 'p-pending', 'lease-pending', 'codex-rotating:900005', 'intent-key', 2, 'hash', 'digest', 'kid', 'pending', now()),
-        ('intent-history', 'p-pending', 'lease-pending', 'codex-rotating:900005', 'history-key', 1, 'hash', 'digest', 'kid', 'completed', now()),
-        ('intent-dirty', 'p-dirty-child', 'lease-dirty', 'wrong-provider-id', 'dirty-key', 1, 'hash', 'digest', 'kid', 'pending', now());
+        ${intentRows};
     `,
   ]);
 }
 
-async function proveMigration60LockTimeout(url) {
+async function proveMigration60LockTimeout(url, fixtureAdminUrl) {
   const applicationName = `rr_setup_lock_${process.pid}`;
-  const holderUrl = withApplicationName(url, applicationName);
-  const holder = spawn(
-    psqlBinary,
-    [
-      holderUrl,
+  const holderUrl = withApplicationName(fixtureAdminUrl, applicationName);
+  const holderInvocation = createSecretSafePostgresInvocation({
+    databaseUrl: holderUrl,
+    args: [
       "-X",
       "-v",
       "ON_ERROR_STOP=1",
       "-c",
       'BEGIN; LOCK TABLE "CodexOAuthSetupManifest" IN ACCESS SHARE MODE; SELECT pg_sleep(60);',
     ],
-    { stdio: "ignore", env: process.env },
-  );
+  });
+  const holder = spawn(psqlBinary, holderInvocation.args, {
+    stdio: ["pipe", "ignore", "ignore"],
+    env: holderInvocation.environment,
+  });
+  holder.stdin.end(holderInvocation.input);
   try {
-    await waitForLock(url, applicationName, '"CodexOAuthSetupManifest"');
+    await waitForLock(
+      fixtureAdminUrl,
+      applicationName,
+      '"CodexOAuthSetupManifest"',
+    );
     const directStartedAt = Date.now();
     const directFailure = psql(url, ["-f", migration60], false);
     const directElapsedMs = Date.now() - directStartedAt;
@@ -451,7 +766,7 @@ async function proveMigration60LockTimeout(url) {
     );
     assert(
       directOutput.toLowerCase().includes("lock timeout"),
-      `direct 000060 must expose lock timeout: ${directOutput}`,
+      "direct_000060_lock_timeout_not_observed",
     );
     assert(
       directElapsedMs >= 14_000 && directElapsedMs < 30_000,
@@ -461,14 +776,17 @@ async function proveMigration60LockTimeout(url) {
     const runnerStartedAt = Date.now();
     const runnerFailure = migrateDeploy(url, false);
     const runnerElapsedMs = Date.now() - runnerStartedAt;
-    const runnerOutput = `${runnerFailure.stdout}${runnerFailure.stderr}`;
     assert(
       runnerFailure.status !== 0,
       "held manifest lock must reject runner 000060",
     );
+    assertPrismaLockTimeoutEnvelope(
+      runnerFailure,
+      "runner_000060_lock_timeout_not_observed",
+    );
     assert(
       runnerElapsedMs >= 14_000 && runnerElapsedMs < 30_000,
-      `Prisma 000060 lock timeout was not bounded near 15s (${runnerElapsedMs}ms): ${runnerOutput}`,
+      `prisma_000060_lock_timeout_unbounded:${runnerElapsedMs}`,
     );
     proveMigrationRunnerHistory(url, migration60Name, false);
     psql(url, [
@@ -483,8 +801,9 @@ async function proveMigration60LockTimeout(url) {
     ]);
   } finally {
     await terminateChild(holder);
+    holderInvocation.cleanup();
     psql(
-      url,
+      fixtureAdminUrl,
       [
         "-Atc",
         `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = ${quoteLiteral(applicationName)}`,
@@ -494,23 +813,30 @@ async function proveMigration60LockTimeout(url) {
   }
 }
 
-async function proveCombinedLockTimeout(url) {
+async function proveCombinedLockTimeout(url, fixtureAdminUrl) {
   const applicationName = `rr_fence_lock_${process.pid}`;
-  const holderUrl = withApplicationName(url, applicationName);
-  const holder = spawn(
-    psqlBinary,
-    [
-      holderUrl,
+  const holderUrl = withApplicationName(fixtureAdminUrl, applicationName);
+  const holderInvocation = createSecretSafePostgresInvocation({
+    databaseUrl: holderUrl,
+    args: [
       "-X",
       "-v",
       "ON_ERROR_STOP=1",
       "-c",
       'BEGIN; LOCK TABLE "CodexOAuthProviderInstance" IN ACCESS SHARE MODE; SELECT pg_sleep(60);',
     ],
-    { stdio: "ignore", env: process.env },
-  );
+  });
+  const holder = spawn(psqlBinary, holderInvocation.args, {
+    stdio: ["pipe", "ignore", "ignore"],
+    env: holderInvocation.environment,
+  });
+  holder.stdin.end(holderInvocation.input);
   try {
-    await waitForLock(url, applicationName, '"CodexOAuthProviderInstance"');
+    await waitForLock(
+      fixtureAdminUrl,
+      applicationName,
+      '"CodexOAuthProviderInstance"',
+    );
     const directStartedAt = Date.now();
     const directFailure = psql(url, ["-f", migration61], false);
     const directElapsedMs = Date.now() - directStartedAt;
@@ -521,7 +847,7 @@ async function proveCombinedLockTimeout(url) {
     );
     assert(
       directFailureOutput.toLowerCase().includes("lock timeout"),
-      `direct 000061 execution must expose lock timeout: ${directFailureOutput}`,
+      "direct_000061_lock_timeout_not_observed",
     );
     assert(
       directElapsedMs >= 14_000 && directElapsedMs < 30_000,
@@ -531,14 +857,17 @@ async function proveCombinedLockTimeout(url) {
     const startedAt = Date.now();
     const failed = migrateDeploy(url, false);
     const elapsedMs = Date.now() - startedAt;
-    const failedOutput = `${failed.stdout}${failed.stderr}`;
     assert(
       failed.status !== 0,
       "held provider lock must reject combined runner release",
     );
+    assertPrismaLockTimeoutEnvelope(
+      failed,
+      "runner_000061_lock_timeout_not_observed",
+    );
     assert(
       elapsedMs >= 14_000 && elapsedMs < 30_000,
-      `Prisma 000061 lock failure was not bounded near 15s (${elapsedMs}ms): ${failedOutput}`,
+      `prisma_000061_lock_timeout_unbounded:${elapsedMs}`,
     );
     proveMigrationRunnerHistory(url, migration60Name, true);
     proveMigrationRunnerHistory(url, migration61Name, false);
@@ -558,8 +887,9 @@ async function proveCombinedLockTimeout(url) {
     ]);
   } finally {
     await terminateChild(holder);
+    holderInvocation.cleanup();
     psql(
-      url,
+      fixtureAdminUrl,
       [
         "-Atc",
         `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = ${quoteLiteral(applicationName)}`,
@@ -584,7 +914,7 @@ function proveInjected61Rollback(url) {
   );
   assert(
     directFailureOutput.toLowerCase().includes("already exists"),
-    `direct injected failure did not reach the late 000061 index: ${directFailureOutput}`,
+    "direct_000061_injected_failure_not_observed",
   );
   assert(
     databaseFingerprintBefore61(url) === before,
@@ -592,8 +922,9 @@ function proveInjected61Rollback(url) {
   );
 
   const failed = migrateDeploy(url, false);
-  assert(
-    failed.status !== 0,
+  assertPrismaMigrationFailureEnvelope(
+    failed,
+    "CodexOAuthProviderInstance_mutation_owner_idx",
     "decoy 000061 index must inject a runner failure",
   );
   assert(
@@ -673,7 +1004,7 @@ function proveStatementTimeoutConfiguration(url) {
   assert(failed.status !== 0, "statement-timeout observer must abort 000061");
   assert(
     output.includes("rr_000061_statement_timeout_observed_5min"),
-    `000061 did not expose its transaction-local 5m statement timeout: ${output}`,
+    "migration_000061_statement_timeout_not_observed",
   );
   assert(
     databaseFingerprintBefore61(url) === before,
@@ -709,9 +1040,21 @@ function proveSuccessfulCombinedRelease(url) {
     "-c",
     String.raw`DO $$ DECLARE actual text[]; expected text[]; BEGIN
       IF (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-fetched') <> 'recovery'
-        OR (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-fetched') <> 'versioned-namespace-cutover:p-fetched'
+        OR (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-fetched') <> 'setup-recovery:legacy-cutover:rehearsal-rollout-v1:p-fetched'
+        OR (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE id = 'p-fetched') <> 3
+        OR (SELECT status FROM "CodexOAuthSetupManifest" WHERE id = 'fetched-new') <> 'recovered'
         OR (SELECT "mutationEpoch" FROM "CodexOAuthSetupManifest" WHERE id = 'fetched-new') <> 1
-      THEN RAISE EXCEPTION 'fetched ambiguity did not enter versioned recovery ownership'; END IF;
+        OR (SELECT state FROM "CodexOAuthSetupRecoveryRequest"
+            WHERE id = 'legacy-cutover:rehearsal-rollout-v1:p-fetched') <> 'superseded'
+        OR (SELECT "mutationEpoch" FROM "CodexOAuthSetupRecoveryRequest"
+            WHERE id = 'legacy-cutover:rehearsal-rollout-v1:p-fetched') <> 3
+        OR (SELECT "databaseRecoveryWitness" FROM "CodexOAuthSetupRecoveryRequest"
+            WHERE id = 'legacy-cutover:rehearsal-rollout-v1:p-fetched') <> repeat('f', 64)
+        OR (SELECT "confirmationJson"->>'recoveryRequestId' FROM "CodexOAuthSetupManifest"
+            WHERE id = 'fetched-new') <> 'legacy-cutover:rehearsal-rollout-v1:p-fetched'
+        OR (SELECT "confirmationJson"->>'legacyInventorySha256' FROM "CodexOAuthSetupManifest"
+            WHERE id = 'fetched-new') !~ '^sha256:[a-f0-9]{64}$'
+      THEN RAISE EXCEPTION 'fetched ambiguity did not enter durable setup recovery ownership'; END IF;
       IF (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-issued') <> 'versioned-namespace-cutover:p-issued'
         OR (SELECT "mutationEpoch" FROM "CodexOAuthSetupManifest" WHERE id = 'issued-new') <> 1
         OR (SELECT "mutationEpoch" FROM "CodexOAuthLease" WHERE id = 'lease-active') <> 1
@@ -720,28 +1063,33 @@ function proveSuccessfulCombinedRelease(url) {
         OR (SELECT "mutationEpoch" FROM "CodexOAuthLease" WHERE id = 'lease-stray') <> 1
         OR (SELECT "mutationEpoch" FROM "CodexOAuthSetupManifest" WHERE id = 'fetched-recovery') <> 1
         OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-recovery') <> 'recovery'
+        OR (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-recovery') <> 'setup-recovery:legacy-cutover:rehearsal-rollout-v1:p-recovery'
+        OR (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE id = 'p-recovery') <> 3
         OR (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-stray-lease') <> 'versioned-namespace-cutover:p-stray-lease'
         OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-clean') <> 'recovery'
         OR EXISTS (
           SELECT 1 FROM "CodexOAuthProviderInstance" p
           WHERE p."activeSecretNamespaceId" IS NULL
             AND NOT EXISTS (SELECT 1 FROM "CodexOAuthProviderIdentityQuarantine" q WHERE q."providerInstanceRowId" = p.id AND q."resolvedAt" IS NULL)
-            AND (p."state" <> 'unknown_auth_state' OR p."mutationOwner" <> 'recovery' OR p."mutationOwnerId" <> 'versioned-namespace-cutover:' || p.id)
+            AND (p."state" <> 'unknown_auth_state' OR p."mutationOwner" <> 'recovery' OR NOT (
+              p."mutationOwnerId" = 'versioned-namespace-cutover:' || p.id
+              OR EXISTS (
+                SELECT 1 FROM "CodexOAuthSetupRecoveryRequest" request
+                WHERE request."providerInstanceRowId" = p.id
+                  AND request.id = 'legacy-cutover:rehearsal-rollout-v1:' || p.id
+                  AND request.state = 'superseded'
+              )
+            ))
         )
       THEN RAISE EXCEPTION 'setup/lease/provider versioned cutover backfills are wrong'; END IF;
-      IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id = 'issued-crossing') <> 'expired'
-        OR (SELECT "mutationEpoch" FROM "CodexOAuthSetupManifest" WHERE id = 'issued-crossing') IS NOT NULL
-        OR (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 1
-        OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 'recovery'
-      THEN RAISE EXCEPTION '000061 did not re-expire the TTL-crossing issued manifest safely'; END IF;
-      -- 000061 first terminalizes a legacy pending write. 000062 then
-      -- deliberately upgrades that evidence to the stronger, permanent
-      -- remote-outcome-unknown classification; the combined-release proof
-      -- must assert the final inventory, not the intermediate 000061 value.
-      IF (SELECT status FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-pending') <> 'remote_outcome_unknown'
-        OR (SELECT "safeErrorCode" FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-pending') <> 'legacy_remote_outcome_unknown'
-        OR (SELECT "mutationEpoch" FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-pending') <> 1
-      THEN RAISE EXCEPTION 'pending intent recovery backfill is wrong'; END IF;
+      -- Canonical success starts with terminal evidence only. The dedicated
+      -- migration proof above retains pending -> failed ->
+      -- remote_outcome_unknown coverage without weakening the release gate.
+      IF (SELECT status FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-pending') <> 'failed'
+        OR (SELECT "safeErrorCode" FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-pending') <> 'canonical_fixture_terminal'
+        OR EXISTS (SELECT 1 FROM "CodexOAuthWritebackIntent"
+          WHERE status IN ('pending','remote_outcome_unknown'))
+      THEN RAISE EXCEPTION 'canonical success fixture retained unresolved intent evidence'; END IF;
       IF NOT EXISTS (SELECT 1 FROM "CodexOAuthProviderIdentityQuarantine" WHERE "providerInstanceRowId" = 'p-quarantine' AND reason = 'canonical_id_mismatch')
         OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-quarantine') <> 'recovery'
         OR (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-quarantine') <> 'child-quarantine:lease:lease-provider-dirty'
@@ -1121,7 +1469,7 @@ function proveVersionedNamespaceLedger(url) {
     assert(
       rejected.status !== 0 &&
         `${rejected.stdout}${rejected.stderr}`.includes(expectedError),
-      `fence-critical mutation unexpectedly succeeded: ${statement}`,
+      "fence_critical_mutation_not_rejected",
     );
   }
   for (const [table, id, expectedError] of [
@@ -1159,17 +1507,48 @@ function proveVersionedNamespaceLedger(url) {
       `${table} permanent evidence deletion must be rejected`,
     );
   }
-  for (const [table, id] of [
-    ["CodexOAuthProviderInstance", provider.id],
-    ["RepositoryConnection", provider.repositoryId],
-    ["Workspace", provider.workspaceId],
+  for (const [table, id, expectedReasons] of [
+    [
+      "CodexOAuthProviderInstance",
+      provider.id,
+      [
+        "codex_oauth_setup_manifest_delete_forbidden",
+        "CodexOAuthSetupPayloadClaim_provider_fkey",
+        "CodexOAuthSecretNamespace_provider_fkey",
+      ],
+    ],
+    [
+      "RepositoryConnection",
+      provider.repositoryId,
+      [
+        "codex_oauth_setup_manifest_delete_forbidden",
+        "CodexOAuthSetupPayloadClaim_repository_fkey",
+        "CodexOAuthSetupPayloadClaim_provider_fkey",
+        "CodexOAuthSecretNamespace_provider_fkey",
+      ],
+    ],
+    [
+      "Workspace",
+      provider.workspaceId,
+      [
+        "codex_oauth_setup_manifest_delete_forbidden",
+        "CodexOAuthSetupPayloadClaim_workspace_fkey",
+        "CodexOAuthSetupPayloadClaim_repository_fkey",
+        "CodexOAuthSetupPayloadClaim_provider_fkey",
+        "CodexOAuthSecretNamespace_provider_fkey",
+      ],
+    ],
   ]) {
     const ownerDeletion = psql(
       url,
       ["-c", `DELETE FROM "${table}" WHERE "id"=${quoteLiteral(id)}`],
       false,
     );
-    assert(ownerDeletion.status !== 0, `${table} cleanup must retain evidence`);
+    assertPsqlFailedWithOneOfExactMessages(
+      ownerDeletion,
+      expectedReasons,
+      `${table} cleanup must retain evidence through the expected constraint`,
+    );
     assertVersionedNamespaceEvidenceRetained(url, evidence, table);
   }
   return evidence;
@@ -1243,67 +1622,93 @@ function assertVersionedNamespaceEvidenceRetained(
   ]).stdout.trim();
   assert(
     retained === "1:1:1:1:1:1:1:1:1:1",
-    `${attemptedTable} cleanup changed the exact runtime evidence chain (${retained})`,
+    `${attemptedTable}_cleanup_changed_runtime_evidence_chain`,
   );
 }
 
 function provePrismaCleanupRetention(url, evidence) {
-  const result = spawnSync(
-    process.execPath,
-    [
-      "--import",
-      "tsx",
-      join(root, "scripts/prove-codex-rotating-evidence-prisma.ts"),
-    ],
-    {
-      cwd: root,
-      env: {
-        ...process.env,
-        REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL: url.toString(),
-        REVIEW_ROUTER_PRISMA_EVIDENCE_IDENTITIES: JSON.stringify({
-          claimId: evidence.activeRecoverySetupNamespace.claimId,
-          attemptId: evidence.activeRecoverySetupNamespace.attemptId,
-          namespaceId: evidence.initialSetupTombstone.namespaceId,
-          providerId: evidence.provider.id,
-          repositoryId: evidence.provider.repositoryId,
-          workspaceId: evidence.provider.workspaceId,
-        }),
+  const credential = createDatabaseCredentialBoundary(url);
+  let result;
+  try {
+    result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        join(root, "scripts/prove-codex-rotating-evidence-prisma.ts"),
+      ],
+      {
+        cwd: root,
+        env: {
+          ...credential.environment,
+          REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL_FILE:
+            credential.environment.REVIEW_ROUTER_DATABASE_URL_FILE,
+          REVIEW_ROUTER_PRISMA_EVIDENCE_IDENTITIES: JSON.stringify({
+            claimId: evidence.activeRecoverySetupNamespace.claimId,
+            attemptId: evidence.activeRecoverySetupNamespace.attemptId,
+            namespaceId: evidence.initialSetupTombstone.namespaceId,
+            providerId: evidence.provider.id,
+            repositoryId: evidence.provider.repositoryId,
+            workspaceId: evidence.provider.workspaceId,
+          }),
+        },
+        encoding: "utf8",
+        timeout: 600_000,
+        maxBuffer: 16 * 1024 * 1024,
       },
-      encoding: "utf8",
-    },
-  );
+    );
+  } finally {
+    credential.cleanup();
+  }
   assert(
     result.status === 0,
-    `Prisma evidence cleanup proof failed (${result.status}): ${result.stderr || result.stdout}`,
+    JSON.stringify(rehearsalProcessDiagnostic(result)),
   );
   assertVersionedNamespaceEvidenceRetained(url, evidence, "Prisma");
 }
 
-function proveRuntimeVersionedWriteback(url, clients) {
-  const result = spawnSync(
-    process.execPath,
-    [
-      "--import",
-      "tsx",
-      join(root, "scripts/prove-codex-runtime-versioned-writeback-prisma.ts"),
-    ],
-    {
-      cwd: root,
-      env: {
-        ...process.env,
-        REVIEW_ROUTER_PRISMA_EVIDENCE_RELEASE_DATABASE_URL:
-          clients.release.toString(),
-        REVIEW_ROUTER_PRISMA_EVIDENCE_API_DATABASE_URL: clients.api.toString(),
-        REVIEW_ROUTER_PRISMA_EVIDENCE_WEB_DATABASE_URL: clients.web.toString(),
-        REVIEW_ROUTER_PRISMA_EVIDENCE_EFFECT_AUTHORITY_DATABASE_URL:
-          clients.effectAuthority.toString(),
+function proveRuntimeVersionedWriteback(providerAdminUrl, clients) {
+  const credentials = {
+    providerAdmin: createDatabaseCredentialBoundary(providerAdminUrl),
+    api: createDatabaseCredentialBoundary(clients.api),
+    web: createDatabaseCredentialBoundary(clients.web),
+    effectAuthority: createDatabaseCredentialBoundary(clients.effectAuthority),
+  };
+  let result;
+  try {
+    result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        join(root, "scripts/prove-codex-runtime-versioned-writeback-prisma.ts"),
+      ],
+      {
+        cwd: root,
+        env: {
+          ...credentials.providerAdmin.environment,
+          REVIEW_ROUTER_PRISMA_EVIDENCE_PROVIDER_ADMIN_DATABASE_URL_FILE:
+            credentials.providerAdmin.environment
+              .REVIEW_ROUTER_DATABASE_URL_FILE,
+          REVIEW_ROUTER_PRISMA_EVIDENCE_API_DATABASE_URL_FILE:
+            credentials.api.environment.REVIEW_ROUTER_DATABASE_URL_FILE,
+          REVIEW_ROUTER_PRISMA_EVIDENCE_WEB_DATABASE_URL_FILE:
+            credentials.web.environment.REVIEW_ROUTER_DATABASE_URL_FILE,
+          REVIEW_ROUTER_PRISMA_EVIDENCE_EFFECT_AUTHORITY_DATABASE_URL_FILE:
+            credentials.effectAuthority.environment
+              .REVIEW_ROUTER_DATABASE_URL_FILE,
+        },
+        encoding: "utf8",
+        timeout: 600_000,
+        maxBuffer: 16 * 1024 * 1024,
       },
-      encoding: "utf8",
-    },
-  );
+    );
+  } finally {
+    for (const credential of Object.values(credentials)) credential.cleanup();
+  }
   assert(
     result.status === 0,
-    `runtime versioned Prisma proof failed (${result.status}): ${result.stderr || result.stdout}`,
+    JSON.stringify(rehearsalProcessDiagnostic(result)),
   );
   assert(
     !/already connected.*deprecated|deprecated.*already connected/iu.test(
@@ -1325,7 +1730,7 @@ function proveExactProductionCatalogContract(url) {
   });
   assert(
     result.ok,
-    `production catalog verifier rejected the PostgreSQL 17 rehearsal: ${result.failures.join(", ")}`,
+    `production_catalog_verifier_rejected_rehearsal:${JSON.stringify(result)}`,
   );
 }
 
@@ -1383,7 +1788,7 @@ function proveDatabasePrivileges(url) {
           JOIN pg_roles owner ON owner.oid = p.proowner
           WHERE p.oid = 'public.codex_oauth_provider_identity_guard()'::regprocedure
             AND p.prosecdef
-            AND owner.rolname = 'reviewrouter_release_migration'
+            AND owner.rolname = 'reviewrouter_release_schema_owner'
             AND p.proconfig = ARRAY['search_path=pg_catalog, public']::text[]
             AND position(
               'FROM public."CodexOAuthProviderIdentityQuarantine"'
@@ -1439,9 +1844,9 @@ function proveDatabasePrivileges(url) {
           RAISE EXCEPTION 'Codex OAuth child identity fence guard execution contract mismatch';
         END IF;
 
-        -- The direct LOGIN release caller owns the schema and migration-created
-        -- catalog objects, so its owner-equivalent data privileges must remain
-        -- complete without inheriting another role.
+        -- Managed production objects are owned by the unreachable NOLOGIN
+        -- schema owner. The release login is only a narrow procedure caller
+        -- and evidence/history reader; it must never inherit owner authority.
         IF NOT EXISTS (
           SELECT 1 FROM pg_roles
           WHERE rolname = 'reviewrouter_release_migration'
@@ -1452,40 +1857,232 @@ function proveDatabasePrivileges(url) {
             AND NOT rolreplication
             AND NOT rolbypassrls
         )
-           OR NOT has_schema_privilege('reviewrouter_release_migration', 'public', 'USAGE')
+           OR NOT EXISTS (
+             SELECT 1 FROM pg_roles
+             WHERE rolname = 'reviewrouter_release_schema_owner'
+               AND NOT rolcanlogin
+               AND NOT rolsuper
+               AND NOT rolcreatedb
+               AND NOT rolcreaterole
+               AND NOT rolreplication
+               AND NOT rolbypassrls
+           )
+           OR EXISTS (
+             SELECT 1 FROM pg_auth_members membership
+             WHERE membership.roleid = 'reviewrouter_release_schema_owner'::regrole
+                OR membership.member = 'reviewrouter_release_schema_owner'::regrole
+                OR membership.grantor = 'reviewrouter_release_schema_owner'::regrole
+           )
+           OR (
+             SELECT owner.rolname
+             FROM pg_namespace namespace
+             JOIN pg_roles owner ON owner.oid = namespace.nspowner
+             WHERE namespace.nspname = 'public'
+           ) <> 'reviewrouter_release_schema_owner'
+           OR pg_has_role(
+             'reviewrouter_release_migration',
+             'reviewrouter_release_schema_owner',
+             'SET'
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_auth_members membership
+             WHERE membership.member = 'reviewrouter_release_migration'::regrole
+           )
+           OR has_database_privilege(
+             'reviewrouter_release_migration', current_database(), 'CREATE'
+           )
+           OR NOT has_schema_privilege(
+             'reviewrouter_release_migration', 'public', 'USAGE'
+           )
+           OR has_schema_privilege(
+             'reviewrouter_release_migration', 'public', 'CREATE'
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_namespace namespace
+             WHERE namespace.nspname NOT LIKE 'pg_temp_%'
+               AND namespace.nspname NOT LIKE 'pg_toast_temp_%'
+               AND has_schema_privilege(
+                 'reviewrouter_release_migration', namespace.oid, 'CREATE'
+               )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_class relation
+             JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+             JOIN pg_roles owner ON owner.oid = relation.relowner
+             WHERE namespace.nspname = 'public'
+               AND relation.relkind IN ('r','p','v','m','S','f')
+               AND owner.rolname <> 'reviewrouter_release_schema_owner'
+               AND NOT EXISTS (
+                 SELECT 1 FROM pg_depend dependency
+                 WHERE dependency.classid = 'pg_class'::regclass
+                   AND dependency.objid = relation.oid
+                   AND dependency.refclassid = 'pg_extension'::regclass
+                   AND dependency.deptype = 'e'
+               )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_proc routine
+             JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+             JOIN pg_roles owner ON owner.oid = routine.proowner
+             WHERE namespace.nspname = 'public'
+               AND owner.rolname <> 'reviewrouter_release_schema_owner'
+               AND NOT EXISTS (
+                 SELECT 1 FROM pg_depend dependency
+                 WHERE dependency.classid = 'pg_proc'::regclass
+                   AND dependency.objid = routine.oid
+                   AND dependency.refclassid = 'pg_extension'::regclass
+                   AND dependency.deptype = 'e'
+               )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_proc routine
+             JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+             WHERE namespace.nspname = 'public'
+               AND has_function_privilege(
+                 'reviewrouter_release_migration', routine.oid, 'EXECUTE'
+               )
+               AND routine.oid <> 'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure,
+             'EXECUTE'
+           )
+           OR NOT has_table_privilege(
+             'reviewrouter_release_migration',
+             'public."_prisma_migrations"',
+             'SELECT'
+           )
            OR EXISTS (
              SELECT 1
              FROM pg_class relation
              JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
              WHERE namespace.nspname = 'public'
-               AND relation.relkind IN ('r', 'p')
-               AND NOT has_table_privilege(
-                 'reviewrouter_release_migration', relation.oid,
-                 'SELECT,INSERT,UPDATE,DELETE,REFERENCES'
+               AND relation.relkind IN ('r','p','v','m','f')
+               AND (
+                 has_table_privilege(
+                   'reviewrouter_release_migration', relation.oid,
+                   'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+                 )
+                 OR has_any_column_privilege(
+                   'reviewrouter_release_migration', relation.oid,
+                   'INSERT,UPDATE,REFERENCES'
+                 )
+               )
+           )
+           OR EXISTS (
+             WITH public_sequences AS MATERIALIZED (
+               SELECT sequence.oid
+               FROM pg_sequence sequence_metadata
+               JOIN pg_class sequence ON sequence.oid = sequence_metadata.seqrelid
+               JOIN pg_namespace namespace ON namespace.oid = sequence.relnamespace
+               WHERE namespace.nspname = 'public'
+             )
+             SELECT 1
+             FROM public_sequences sequence
+             WHERE has_sequence_privilege(
+               'reviewrouter_release_migration', sequence.oid, 'USAGE,SELECT,UPDATE'
                )
            )
            OR EXISTS (
              SELECT 1
-             FROM pg_class sequence
-             JOIN pg_namespace namespace ON namespace.oid = sequence.relnamespace
+             FROM information_schema.role_table_grants grant_row
+             WHERE grant_row.grantee = 'reviewrouter_release_migration'
+               AND grant_row.is_grantable = 'YES'
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM information_schema.role_routine_grants grant_row
+             WHERE grant_row.grantee = 'reviewrouter_release_migration'
+               AND grant_row.is_grantable = 'YES'
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM information_schema.column_privileges grant_row
+             WHERE grant_row.grantee = 'reviewrouter_release_migration'
+               AND grant_row.is_grantable = 'YES'
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_namespace namespace
+             CROSS JOIN LATERAL aclexplode(
+               coalesce(namespace.nspacl, acldefault('n', namespace.nspowner))
+             ) grant_row
+             WHERE grant_row.grantee = 'reviewrouter_release_migration'::regrole
+               AND grant_row.is_grantable
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_database database
+             CROSS JOIN LATERAL aclexplode(
+               coalesce(database.datacl, acldefault('d', database.datdba))
+             ) grant_row
+             WHERE database.datname = current_database()
+               AND grant_row.grantee = 'reviewrouter_release_migration'::regrole
+               AND grant_row.is_grantable
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_class relation
+             JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
              WHERE namespace.nspname = 'public'
-               AND sequence.relkind = 'S'
-               AND NOT has_sequence_privilege(
-                 'reviewrouter_release_migration',
-                 format('%I.%I', namespace.nspname, sequence.relname),
-                 'USAGE,SELECT,UPDATE'
+               AND relation.relname NOT IN (
+                 '_prisma_migrations',
+                 'CodexOAuthLease',
+                 'CodexOAuthSetupManifest',
+                 'CodexOAuthWritebackIntent'
+               )
+               AND has_table_privilege(
+                 'reviewrouter_release_migration', relation.oid, 'SELECT'
                )
            )
            OR EXISTS (
-             SELECT 1 FROM pg_attribute attribute
-             WHERE attribute.attrelid = 'public."RepositoryConnection"'::regclass
-               AND attribute.attnum > 0 AND NOT attribute.attisdropped
-               AND NOT (
-                 has_column_privilege('reviewrouter_release_migration', attribute.attrelid, attribute.attnum, 'SELECT')
-                 AND has_column_privilege('reviewrouter_release_migration', attribute.attrelid, attribute.attnum, 'INSERT')
-                 AND has_column_privilege('reviewrouter_release_migration', attribute.attrelid, attribute.attnum, 'UPDATE')
-                 AND has_column_privilege('reviewrouter_release_migration', attribute.attrelid, attribute.attnum, 'REFERENCES')
+             SELECT 1
+             FROM pg_attribute attribute
+             JOIN pg_class relation ON relation.oid = attribute.attrelid
+             JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+             WHERE namespace.nspname = 'public'
+               AND attribute.attnum > 0
+               AND NOT attribute.attisdropped
+               AND has_column_privilege(
+                 'reviewrouter_release_migration',
+                 attribute.attrelid,
+                 attribute.attnum,
+                 'SELECT'
                )
+               AND NOT (
+                 relation.relname = '_prisma_migrations'
+                 OR (
+                   relation.relname IN (
+                     'CodexOAuthLease',
+                     'CodexOAuthSetupManifest',
+                     'CodexOAuthWritebackIntent'
+                   )
+                   AND attribute.attname IN ('id','status')
+                 )
+               )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_attribute attribute
+             WHERE attribute.attrelid IN (
+               'public."CodexOAuthLease"'::regclass,
+               'public."CodexOAuthSetupManifest"'::regclass,
+               'public."CodexOAuthWritebackIntent"'::regclass
+             )
+               AND attribute.attnum > 0
+               AND NOT attribute.attisdropped
+               AND has_column_privilege(
+                 'reviewrouter_release_migration',
+                 attribute.attrelid,
+                 attribute.attnum,
+                 'SELECT'
+               ) IS DISTINCT FROM (attribute.attname IN ('id','status'))
            )
         THEN
           RAISE EXCEPTION 'Codex OAuth release migration privilege mismatch';
@@ -1513,6 +2110,9 @@ function proveDatabasePrivileges(url) {
                  AND relation.relname NOT IN (
                    'RepositoryConnection',
                    '_prisma_migrations',
+                   'RuntimeCanaryChallenge',
+                   'RuntimeCanaryChallengeProof',
+                   'RuntimeGenerationWitnessProof',
                    'CodexOAuthDatabaseAuthorityKey',
                    'CodexOAuthDatabaseAuthorityReceipt',
                    'CodexOAuthChildIdentityQuarantine',
@@ -1614,7 +2214,10 @@ function proveDatabasePrivileges(url) {
                WHERE namespace.nspname = 'public'
                  AND relation.relname IN (
                    'CodexOAuthDatabaseAuthorityKey',
-                   'CodexOAuthDatabaseAuthorityReceipt'
+                   'CodexOAuthDatabaseAuthorityReceipt',
+                   'RuntimeCanaryChallenge',
+                   'RuntimeCanaryChallengeProof',
+                   'RuntimeGenerationWitnessProof'
                  )
                  AND (
                    has_table_privilege(
@@ -1739,7 +2342,14 @@ function proveDatabasePrivileges(url) {
   ]);
 }
 
-function prepareCanonicalReleaseRoles(url) {
+function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
+  if (typeof installHistoricalSchema !== "function")
+    throw new Error("historical_schema_installer_required");
+  const targetDatabaseName = decodeURIComponent(
+    new URL(String(url)).pathname.slice(1),
+  );
+  if (!targetDatabaseName)
+    throw new Error("rehearsal_target_database_name_required");
   const loginRoles = [
     ["reviewrouter_api", "rr-rehearsal-api"],
     ["reviewrouter_web", "rr-rehearsal-web"],
@@ -1750,8 +2360,10 @@ function prepareCanonicalReleaseRoles(url) {
   const externalGuardRole = "reviewrouter_activation_receipt_guard";
   const externalInstallerRole = "reviewrouter_activation_permit_installer";
   const externalReceiptReaderRole = "reviewrouter_activation_receipt_reader";
+  const schemaOwnerRole = "reviewrouter_release_schema_owner";
   const allRoles = [
     ...loginRoles.map(([role]) => role),
+    schemaOwnerRole,
     externalGuardRole,
     externalInstallerRole,
     externalReceiptReaderRole,
@@ -1759,6 +2371,7 @@ function prepareCanonicalReleaseRoles(url) {
   const passwords = new Map(
     loginRoles.map(([role]) => [role, `${randomUUID()}${randomUUID()}`]),
   );
+  passwords.set(externalInstallerRole, `${randomUUID()}${randomUUID()}`);
   const bootstrapPassword = `${randomUUID()}${randomUUID()}`;
   const canonicalRoleLiterals = allRoles.map(quoteLiteral).join(",");
   const provisioningSql = `BEGIN;
@@ -1778,7 +2391,7 @@ function prepareCanonicalReleaseRoles(url) {
         RAISE EXCEPTION 'refusing to take over pre-existing canonical role %', existing_role;
       END IF;
     END $ownership$;
-    CREATE ROLE reviewrouter_role_bootstrap LOGIN NOSUPERUSER NOCREATEDB CREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(bootstrapPassword)};
+    CREATE ROLE reviewrouter_role_bootstrap LOGIN SUPERUSER NOCREATEDB CREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(bootstrapPassword)};
     COMMENT ON ROLE reviewrouter_role_bootstrap IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_api"))};
     COMMENT ON ROLE reviewrouter_api IS ${quoteLiteral(rehearsalRoleMarker)};
@@ -1797,12 +2410,12 @@ function prepareCanonicalReleaseRoles(url) {
     GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
     COMMENT ON ROLE reviewrouter_activation_receipt_guard IS ${quoteLiteral(rehearsalRoleMarker)};
-    CREATE ROLE reviewrouter_activation_permit_installer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(`${randomUUID()}${randomUUID()}`)};
+    CREATE ROLE reviewrouter_activation_permit_installer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get(externalInstallerRole))};
     COMMENT ON ROLE reviewrouter_activation_permit_installer IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_activation_receipt_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(`${randomUUID()}${randomUUID()}`)};
     COMMENT ON ROLE reviewrouter_activation_receipt_reader IS ${quoteLiteral(rehearsalRoleMarker)};
     ALTER SCHEMA public OWNER TO reviewrouter_role_bootstrap;
-    ALTER DATABASE ${quoteIdentifier(databaseName)} OWNER TO reviewrouter_role_bootstrap;
+    ALTER DATABASE ${quoteIdentifier(targetDatabaseName)} OWNER TO reviewrouter_role_bootstrap;
     DO $generation$
     DECLARE binding jsonb;
     BEGIN
@@ -1818,7 +2431,7 @@ function prepareCanonicalReleaseRoles(url) {
   psql(url, ["-c", provisioningSql]);
 
   const clientUrl = (role, applicationName) => {
-    const client = databaseUrl(url, databaseName);
+    const client = databaseUrl(url, targetDatabaseName);
     client.username = role;
     client.password = passwords.get(role);
     client.searchParams.set("application_name", applicationName);
@@ -1833,7 +2446,7 @@ function prepareCanonicalReleaseRoles(url) {
   psql(bootstrap, [
     "-c",
     String.raw`
-      CREATE TABLE public."_prisma_migrations" (
+      CREATE TABLE IF NOT EXISTS public."_prisma_migrations" (
         "id" VARCHAR(36) PRIMARY KEY NOT NULL,
         "checksum" VARCHAR(64) NOT NULL,
         "finished_at" TIMESTAMPTZ,
@@ -1844,6 +2457,10 @@ function prepareCanonicalReleaseRoles(url) {
         "applied_steps_count" INTEGER NOT NULL DEFAULT 0
       )`,
   ]);
+  // The hardened authority is installed over an existing historical schema,
+  // matching a real upgrade. Bootstrap owns these objects temporarily so the
+  // following canonical role transaction can transfer them atomically.
+  installHistoricalSchema(bootstrap);
   runRehearsalReleaseSubprocess(
     "external_activation_authority_provisioning",
     "psql",
@@ -1893,7 +2510,11 @@ function prepareCanonicalReleaseRoles(url) {
     "reviewrouter_release_migration",
     "rr-rehearsal-release-migration",
   );
-  const clients = {
+  const permitInstaller = clientUrl(
+    externalInstallerRole,
+    "rr-rehearsal-permit-installer",
+  );
+  const runtime = {
     api: clientUrl("reviewrouter_api", "rr-rehearsal-api"),
     web: clientUrl("reviewrouter_web", "rr-rehearsal-web"),
     worker: clientUrl("reviewrouter_worker", "rr-rehearsal-worker"),
@@ -1901,17 +2522,16 @@ function prepareCanonicalReleaseRoles(url) {
       "reviewrouter_codex_effect_authority",
       "rr-rehearsal-effect-authority",
     ),
-    release,
   };
   const environment = {
     ...process.env,
     REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: bootstrap.toString(),
     REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: release.toString(),
-    REVIEW_ROUTER_API_DATABASE_URL: clients.api.toString(),
-    REVIEW_ROUTER_WEB_DATABASE_URL: clients.web.toString(),
-    REVIEW_ROUTER_WORKER_DATABASE_URL: clients.worker.toString(),
+    REVIEW_ROUTER_API_DATABASE_URL: runtime.api.toString(),
+    REVIEW_ROUTER_WEB_DATABASE_URL: runtime.web.toString(),
+    REVIEW_ROUTER_WORKER_DATABASE_URL: runtime.worker.toString(),
     REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
-      clients.effectAuthority.toString(),
+      runtime.effectAuthority.toString(),
     REVIEW_ROUTER_RELEASE_COMMIT_SHA: "a".repeat(40),
     REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
   };
@@ -1946,15 +2566,6 @@ function prepareCanonicalReleaseRoles(url) {
       },
     ],
   });
-  runRehearsalReleaseSubprocess(
-    "initial_role_provisioning",
-    "psql",
-    [bootstrap.toString(), "--no-psqlrc", "--quiet"],
-    {
-      env: { ...environment, DATABASE_URL: bootstrap.toString() },
-      input: canonicalProvisioningSql,
-    },
-  );
   for (const role of allRoles) {
     psql(url, [
       "-c",
@@ -1981,47 +2592,61 @@ function prepareCanonicalReleaseRoles(url) {
          OR granted.rolname = 'reviewrouter_role_bootstrap'
          OR member.rolname = 'reviewrouter_role_bootstrap'`,
     ]).stdout.trim();
-  const firstBootstrapTopology = observeMembershipTopology();
   const foreignGrantor = "reviewrouter_rehearsal_foreign_grantor";
+  const foreignGrantedRole = "reviewrouter_rehearsal_foreign_role";
   psql(url, [
     "-c",
-    `CREATE ROLE ${foreignGrantor} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-     GRANT reviewrouter_api TO ${foreignGrantor} WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+    `CREATE ROLE ${foreignGrantedRole} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+     CREATE ROLE ${foreignGrantor} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+     GRANT ${foreignGrantedRole} TO ${foreignGrantor} WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
      SET ROLE ${foreignGrantor};
-     GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE GRANTED BY ${foreignGrantor};
+     GRANT ${foreignGrantedRole} TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
      RESET ROLE;`,
   ]);
-  let rejectedForeignGrantor = false;
+  assert(
+    psql(url, [
+      "-Atc",
+      `SELECT count(*) FROM pg_auth_members membership
+       JOIN pg_roles granted ON granted.oid=membership.roleid
+       JOIN pg_roles member ON member.oid=membership.member
+       JOIN pg_roles grantor ON grantor.oid=membership.grantor
+       WHERE granted.rolname='${foreignGrantedRole}'
+         AND (
+           member.rolname='${foreignGrantor}'
+           OR (
+             member.rolname='reviewrouter_role_bootstrap'
+             AND grantor.rolname='${foreignGrantor}'
+           )
+         )`,
+    ]).stdout.trim() === "2",
+    "independent adversarial membership chain was not installed",
+  );
+  let expectedFailure;
   try {
-    runRehearsalReleaseSubprocess(
-      "adversarial_foreign_grantor_role_provisioning",
-      "psql",
-      [bootstrap.toString(), "--no-psqlrc", "--quiet"],
-      {
-        env: { ...environment, DATABASE_URL: bootstrap.toString() },
-        input: canonicalProvisioningSql,
-      },
-    );
-  } catch (error) {
-    rejectedForeignGrantor = String(error).includes(
-      "refusing non-canonical role membership topology",
-    );
+    expectedFailure = runSecretSafePostgresCommand({
+      databaseUrl: bootstrap,
+      binary: psqlBinary,
+      args: ["-X", "-v", "ON_ERROR_STOP=1", "--no-psqlrc", "--quiet"],
+      input: canonicalProvisioningSql,
+      kind: "rehearsal",
+      expectFailureContaining:
+        "refusing non-canonical role membership topology",
+    });
   } finally {
     psql(url, [
       "-c",
-      `SET ROLE ${foreignGrantor};
-       REVOKE reviewrouter_api FROM reviewrouter_role_bootstrap GRANTED BY ${foreignGrantor};
-       RESET ROLE;
-       REVOKE reviewrouter_api FROM ${foreignGrantor};
-       DROP ROLE ${foreignGrantor};`,
+      `REVOKE ${foreignGrantedRole} FROM reviewrouter_role_bootstrap GRANTED BY ${foreignGrantor};
+       REVOKE ${foreignGrantedRole} FROM ${foreignGrantor};
+       DROP ROLE ${foreignGrantor};
+       DROP ROLE ${foreignGrantedRole};`,
     ]);
   }
   assert(
-    rejectedForeignGrantor,
+    expectedFailure?.expectedFailure === true,
     "role bootstrap did not reject an adversarial foreign membership grantor",
   );
   runRehearsalReleaseSubprocess(
-    "idempotent_second_role_provisioning",
+    "initial_role_provisioning",
     "psql",
     [bootstrap.toString(), "--no-psqlrc", "--quiet"],
     {
@@ -2029,9 +2654,22 @@ function prepareCanonicalReleaseRoles(url) {
       input: canonicalProvisioningSql,
     },
   );
+  const firstBootstrapTopology = observeMembershipTopology();
+  const demotedReplay = runSecretSafePostgresCommand({
+    databaseUrl: bootstrap,
+    binary: psqlBinary,
+    args: ["-X", "-v", "ON_ERROR_STOP=1", "--no-psqlrc", "--quiet"],
+    input: canonicalProvisioningSql,
+    kind: "rehearsal",
+    expectFailureContaining: "trusted role bootstrap authority is not exact",
+  });
+  assert(
+    demotedReplay.expectedFailure === true,
+    "demoted role bootstrap unexpectedly retained provisioning authority",
+  );
   assert(
     observeMembershipTopology() === firstBootstrapTopology,
-    "second role bootstrap changed the canonical membership topology",
+    "rejected role bootstrap replay changed the canonical membership topology",
   );
   assert(
     psql(url, [
@@ -2075,9 +2713,9 @@ function prepareCanonicalReleaseRoles(url) {
     END
     $receipt$;`,
   ]);
-  const transferredLegacyOwners = psql(release, [
+  const transferredLegacyOwners = psql(url, [
     "-Atc",
-    `SELECT count(*) || ':' || count(*) FILTER (WHERE owner_name = 'reviewrouter_release_migration')
+    `SELECT count(*) || ':' || count(*) FILTER (WHERE owner_name = 'reviewrouter_release_schema_owner')
      FROM (
        SELECT owner.rolname AS owner_name
        FROM pg_class relation
@@ -2092,42 +2730,248 @@ function prepareCanonicalReleaseRoles(url) {
   ]).stdout.trim();
   assert(
     transferredLegacyOwners === "2:2",
-    "role bootstrap did not transfer pre-existing public objects to the release role",
+    "role bootstrap did not transfer pre-existing public objects to the schema owner",
   );
-  psql(release, [
+  psql(url, [
     "-c",
     `DROP FUNCTION public.rr_legacy_bootstrap_owned_fn();
      DROP TABLE public.rr_legacy_bootstrap_owned;`,
   ]);
-  markCanonicalRehearsalRoles(bootstrap.toString());
+  markCanonicalRehearsalRoles(url.toString());
+  assertRehearsalRoleObservation(
+    psql(url, ["-Atc", rehearsalRoleObservationSql(rehearsalRoleMarker)])
+      .stdout,
+  );
   return {
-    clients,
+    authority: createRehearsalAuthorityContext({
+      providerAdmin: url,
+      bootstrap,
+      permitInstaller,
+      releaseMigration: release,
+      runtime,
+    }),
     environment,
   };
 }
 
-function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
-  const invocation =
-    command === "psql"
-      ? { executable: psqlBinary, args }
-      : command === "pnpm" && process.env.npm_execpath
-        ? {
-            executable: process.execPath,
-            args: [process.env.npm_execpath, ...args],
-          }
-        : { executable: command, args };
-  const result = spawnSync(invocation.executable, invocation.args, {
-    cwd: root,
-    encoding: "utf8",
-    env: options.env,
-    input: options.input,
-    maxBuffer: 16 * 1024 * 1024,
+function installRehearsalMigrationPermit(
+  authority,
+  { transformSourceEvidence } = {},
+) {
+  const targetSystemIdentifier = psql(authority.providerAdmin, [
+    "-Atc",
+    "SELECT system_identifier::text FROM pg_control_system()",
+  ]).stdout.trim();
+  const inventory = JSON.parse(
+    psql(authority.providerAdmin, [
+      "-Atc",
+      legacyAmbiguityInventorySql,
+    ]).stdout.trim(),
+  );
+  const inventorySha256 = `sha256:${createHash("sha256")
+    .update(JSON.stringify(inventory))
+    .digest("hex")}`;
+  const observedAt = JSON.parse(
+    psql(authority.providerAdmin, [
+      "-Atc",
+      `SELECT json_build_array(
+        to_char((clock_timestamp() - interval '1 second') AT TIME ZONE 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+        to_char(clock_timestamp() AT TIME ZONE 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))`,
+    ]).stdout.trim(),
+  );
+  const capturedSourceLegacyAmbiguity = Object.freeze({
+    schemaVersion: 1,
+    rolloutId: "rehearsal-rollout-v1",
+    sourceSystemIdentifier: targetSystemIdentifier === "1" ? "2" : "1",
+    sourceDatabaseName: "reviewrouter_rehearsal_source",
+    sourceRecoveryWitnessSha256: "a".repeat(64),
+    authorityPrincipal: "reviewrouter_rehearsal_source_authority",
+    fenceId: "source-fence:rehearsal-rollout-v1",
+    fenceEstablishedAt: observedAt[0],
+    fencedInventorySha256: inventorySha256,
+    ...inventory,
+    inventorySha256,
+    observations: [
+      { observedAt: observedAt[0], inventorySha256 },
+      { observedAt: observedAt[1], inventorySha256 },
+    ],
+    eligibilityCutoff: observedAt[1],
+    stable: true,
   });
-  if (result.status !== 0)
-    throw new Error(
-      `rehearsal release helper failed at ${step}: ${result.stderr || result.stdout}`,
+  const transformedSourceLegacyAmbiguity = Object.freeze(
+    transformSourceEvidence
+      ? transformSourceEvidence(capturedSourceLegacyAmbiguity)
+      : capturedSourceLegacyAmbiguity,
+  );
+  const sourceLegacyAmbiguity = Object.freeze({
+    ...transformedSourceLegacyAmbiguity,
+    receiptSha256: `sha256:${sha256Canonical(transformedSourceLegacyAmbiguity)}`,
+  });
+  const eligibilityCutoff = sourceLegacyAmbiguity.eligibilityCutoff;
+  const permit = Object.freeze({
+    rolloutId: "rehearsal-rollout-v1",
+    sourceSystemIdentifier: targetSystemIdentifier === "1" ? "2" : "1",
+    targetSystemIdentifier,
+    targetRecoveryWitnessSha256: "f".repeat(64),
+    transitionSha256: `sha256:${"d".repeat(64)}`,
+    previousReceiptSha256: `sha256:${"e".repeat(64)}`,
+    epoch: "1",
+    nonce: "c".repeat(32),
+    sourceLegacyAmbiguity,
+    eligibilityCutoff,
+  });
+  const discardSourceReceipt = restoreRehearsalSourceOwnedReceipt(
+    authority,
+    sourceLegacyAmbiguity,
+  );
+  let installed;
+  try {
+    installed = psql(authority.permitInstaller, [
+      "-Atc",
+      `SELECT reviewrouter_activation.install_migration_permit(
+        ${quoteLiteral(permit.rolloutId)},
+        ${quoteLiteral(permit.sourceSystemIdentifier)},
+        ${quoteLiteral(permit.targetSystemIdentifier)},
+        ${quoteLiteral(permit.targetRecoveryWitnessSha256)},
+        ${quoteLiteral(permit.transitionSha256)},
+        ${quoteLiteral(permit.previousReceiptSha256)},
+        ${quoteLiteral(rehearsalPostManifestIdentitySha256)},
+        ${quoteLiteral(liveV70V73CatalogDigestSha256)},
+        ${quoteLiteral(JSON.stringify(sourceLegacyAmbiguity))}::jsonb,
+        ${quoteLiteral(eligibilityCutoff)}::timestamptz,
+        ${permit.epoch}::bigint,
+        ${quoteLiteral(permit.nonce)}
+      )`,
+    ]).stdout.trim();
+  } finally {
+    discardSourceReceipt();
+  }
+  assert(installed === "t", "rehearsal_migration_permit_not_installed");
+  return Object.freeze({
+    REVIEW_ROUTER_ROLLOUT_ID: permit.rolloutId,
+    REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_SYSTEM_IDENTIFIER:
+      permit.targetSystemIdentifier,
+    REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_RECOVERY_WITNESS_SHA256:
+      permit.targetRecoveryWitnessSha256,
+    REVIEW_ROUTER_MIGRATION_PERMIT_TRANSITION_SHA256: permit.transitionSha256,
+    REVIEW_ROUTER_MIGRATION_PERMIT_PREVIOUS_RECEIPT_SHA256:
+      permit.previousReceiptSha256,
+    REVIEW_ROUTER_MIGRATION_PERMIT_EPOCH: permit.epoch,
+    REVIEW_ROUTER_MIGRATION_PERMIT_NONCE: permit.nonce,
+    REVIEW_ROUTER_MIGRATION_PERMIT_SOURCE_LEGACY_AMBIGUITY_BASE64URL:
+      Buffer.from(JSON.stringify(sourceLegacyAmbiguity)).toString("base64url"),
+    REVIEW_ROUTER_MIGRATION_PERMIT_ELIGIBILITY_CUTOFF: eligibilityCutoff,
+  });
+}
+
+function restoreRehearsalSourceOwnedReceipt(authority, evidence) {
+  psql(authority.providerAdmin, [
+    "-c",
+    `CREATE SCHEMA release_authority
+       AUTHORIZATION reviewrouter_activation_receipt_guard;
+     CREATE TABLE release_authority.source_legacy_ambiguity_receipt (
+       rollout_id text PRIMARY KEY,
+       fence_id text NOT NULL,
+       source_system_identifier text NOT NULL,
+       evidence jsonb NOT NULL,
+       created_at timestamptz(3) NOT NULL DEFAULT
+         date_trunc('milliseconds', clock_timestamp())
+     );
+     ALTER TABLE release_authority.source_legacy_ambiguity_receipt
+       OWNER TO reviewrouter_activation_receipt_guard;
+     REVOKE ALL ON TABLE release_authority.source_legacy_ambiguity_receipt
+       FROM PUBLIC;
+     INSERT INTO release_authority.source_legacy_ambiguity_receipt (
+       rollout_id, fence_id, source_system_identifier, evidence
+     ) VALUES (
+       ${quoteLiteral(evidence.rolloutId)},
+       ${quoteLiteral(evidence.fenceId)},
+       ${quoteLiteral(evidence.sourceSystemIdentifier)},
+       ${quoteLiteral(JSON.stringify(evidence))}::jsonb
+     );`,
+  ]);
+  return () =>
+    psql(authority.providerAdmin, [
+      "-c",
+      "DROP SCHEMA release_authority CASCADE",
+    ]);
+}
+
+function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
+  let cleanup;
+  let executable;
+  let childArgs;
+  let childEnvironment;
+  let childInput = options.input;
+  if (command === "psql") {
+    const urlIndex = args.findIndex(
+      (arg) => arg.startsWith("postgres://") || arg.startsWith("postgresql://"),
     );
-  return result.stdout;
+    if (urlIndex < 0)
+      throw sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+      });
+    const postgres = createSecretSafePostgresInvocation({
+      databaseUrl: args[urlIndex],
+      args: args.filter((_, index) => index !== urlIndex),
+      input: options.input,
+    });
+    const credential = createDatabaseCredentialBoundary(args[urlIndex]);
+    executable = psqlBinary;
+    childArgs = postgres.args;
+    childEnvironment = {
+      ...postgres.environment,
+      REVIEW_ROUTER_DATABASE_URL_FILE:
+        credential.environment.REVIEW_ROUTER_DATABASE_URL_FILE,
+    };
+    childInput = postgres.input;
+    cleanup = () => {
+      postgres.cleanup();
+      credential.cleanup();
+    };
+  } else {
+    const databaseUrl = options.env?.DATABASE_URL;
+    if (!databaseUrl)
+      throw sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+      });
+    const credential = createDatabaseCredentialBoundary(databaseUrl);
+    executable =
+      command === "pnpm" && process.env.npm_execpath
+        ? process.execPath
+        : command;
+    childArgs =
+      command === "pnpm" && process.env.npm_execpath
+        ? [process.env.npm_execpath, ...args]
+        : args;
+    childEnvironment = credential.environment;
+    cleanup = credential.cleanup;
+  }
+  try {
+    const result = spawnSync(executable, childArgs, {
+      cwd: root,
+      encoding: "utf8",
+      env: childEnvironment,
+      input: childInput,
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: 600_000,
+    });
+    if (result.status !== 0 || result.error)
+      throw sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+        exitCode: result.status,
+        signal: result.signal,
+        timedOut: result.error?.code === "ETIMEDOUT",
+      });
+    return result.stdout;
+  } finally {
+    cleanup();
+  }
 }
 
 function markCanonicalRehearsalRoles(url) {
@@ -2139,6 +2983,7 @@ function markCanonicalRehearsalRoles(url) {
       "reviewrouter_worker",
       "reviewrouter_codex_effect_authority",
       "reviewrouter_release_migration",
+      "reviewrouter_release_schema_owner",
     ]
       .map(
         (role) =>
@@ -2155,6 +3000,7 @@ function cleanupRuntimeRoles(url) {
     "reviewrouter_worker",
     "reviewrouter_codex_effect_authority",
     "reviewrouter_release_migration",
+    "reviewrouter_release_schema_owner",
     "reviewrouter_activation_receipt_guard",
     "reviewrouter_activation_permit_installer",
     "reviewrouter_activation_receipt_reader",
@@ -2170,7 +3016,68 @@ function cleanupRuntimeRoles(url) {
       false,
     );
     if (marker.status === 0 && marker.stdout.trim() === rehearsalRoleMarker) {
-      psql(url, ["-c", `DROP ROLE ${quoteIdentifier(role)}`], false);
+      if (role === "reviewrouter_release_schema_owner") {
+        // The role handoff used while transferring migration-created objects is
+        // cluster-global.  A failed or completed rehearsal must remove any
+        // remaining edge by its PG17 catalog-recorded grantor after the
+        // disposable database has gone away.  Only edges whose two endpoints
+        // belong to this rehearsal are eligible for cleanup.
+        psql(url, [
+          "-c",
+          `DO $rehearsal_schema_owner_membership_cleanup$
+           DECLARE edge record;
+           BEGIN
+             FOR edge IN
+               SELECT granted.rolname AS granted_name,
+                 member.rolname AS member_name,
+                 grantor.rolname AS grantor_name,
+                 coalesce(shobj_description(granted.oid, 'pg_authid'), '') AS granted_marker,
+                 coalesce(shobj_description(member.oid, 'pg_authid'), '') AS member_marker
+               FROM pg_auth_members membership
+               JOIN pg_roles granted ON granted.oid=membership.roleid
+               JOIN pg_roles member ON member.oid=membership.member
+               JOIN pg_roles grantor ON grantor.oid=membership.grantor
+               WHERE membership.roleid='reviewrouter_release_schema_owner'::regrole
+                  OR membership.member='reviewrouter_release_schema_owner'::regrole
+                  OR membership.grantor='reviewrouter_release_schema_owner'::regrole
+             LOOP
+               IF edge.granted_marker IS DISTINCT FROM ${quoteLiteral(rehearsalRoleMarker)}
+                  OR edge.member_marker IS DISTINCT FROM ${quoteLiteral(rehearsalRoleMarker)} THEN
+                 RAISE EXCEPTION
+                   'refusing non-rehearsal schema-owner membership cleanup: % -> % granted by %',
+                   edge.granted_name,edge.member_name,edge.grantor_name;
+               END IF;
+               EXECUTE format('REVOKE %I FROM %I GRANTED BY %I CASCADE',
+                 edge.granted_name,edge.member_name,edge.grantor_name);
+             END LOOP;
+           END
+           $rehearsal_schema_owner_membership_cleanup$;`,
+        ]);
+        const cleanupSafety = psql(url, [
+          "-Atc",
+          `SELECT
+             (SELECT count(*) FROM pg_shdepend dependency
+              WHERE dependency.refclassid = 'pg_authid'::regclass
+                AND dependency.refobjid = 'reviewrouter_release_schema_owner'::regrole
+                AND dependency.deptype IN ('a','o')) || ':' ||
+             (SELECT count(*) FROM pg_auth_members membership
+              WHERE membership.roleid = 'reviewrouter_release_schema_owner'::regrole
+                 OR membership.member = 'reviewrouter_release_schema_owner'::regrole
+                 OR membership.grantor = 'reviewrouter_release_schema_owner'::regrole) || ':' ||
+             (SELECT count(*) FROM pg_roles
+              WHERE rolname = 'reviewrouter_release_schema_owner' AND rolcanlogin)`,
+        ]).stdout.trim();
+        assert(
+          cleanupSafety === "0:0:0",
+          `schema_owner_cleanup_dependencies_present:${cleanupSafety}`,
+        );
+      }
+      const dropped = psql(
+        url,
+        ["-c", `DROP ROLE ${quoteIdentifier(role)}`],
+        false,
+      );
+      assert(dropped.status === 0, `rehearsal_role_cleanup_failed:${role}`);
     }
   }
 }
@@ -2661,22 +3568,22 @@ async function proveProviderRepairAuthorityV2(adminUrl, clients) {
     "900006",
   ];
   const args = repairArgs.join(",");
-  const web = spawn(
-    psqlBinary,
-    [clients.web.toString(), "-X", "-qAt", "-v", "ON_ERROR_STOP=1"],
-    { stdio: ["pipe", "pipe", "pipe"] },
-  );
-  const lines = createInterface({ input: web.stdout })[Symbol.asyncIterator]();
-  let stderr = "";
-  web.stderr.setEncoding("utf8");
-  web.stderr.on("data", (chunk) => {
-    stderr += chunk;
+  const webInvocation = createSecretSafePostgresInvocation({
+    databaseUrl: clients.web,
+    args: ["-X", "-qAt", "-v", "ON_ERROR_STOP=1"],
   });
+  const web = spawn(psqlBinary, webInvocation.args, {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: webInvocation.environment,
+  });
+  web.once("close", () => webInvocation.cleanup());
+  const lines = createInterface({ input: web.stdout })[Symbol.asyncIterator]();
+  web.stderr.resume();
   web.stdin.write(
     `BEGIN; SELECT "codex_oauth_provider_identity_repair_challenge"(${args});\n`,
   );
   const challengeLine = await lines.next();
-  assert(!challengeLine.done, `repair challenge missing: ${stderr}`);
+  assert(!challengeLine.done, "provider_repair_challenge_missing");
   const signature = psql(clients.effectAuthority, [
     "-Atc",
     `SELECT "codex_oauth_sign_database_authority"(${quoteLiteral(challengeLine.value)})`,
@@ -2739,16 +3646,13 @@ async function proveProviderRepairAuthorityV2(adminUrl, clients) {
   const terminal = await lines.next();
   assert(
     !terminal.done && terminal.value === "provider-repair-v2-passed",
-    `provider repair v2 proof failed: ${stderr}`,
+    "provider_repair_v2_proof_failed",
   );
   web.stdin.end("\\q\n");
   const status = await new Promise((resolveExit) =>
     web.once("close", resolveExit),
   );
-  assert(
-    status === 0,
-    `provider repair v2 client failed (${status}): ${stderr}`,
-  );
+  assert(status === 0, "provider_repair_v2_client_failed");
   const receiptsAfter = Number(
     psql(adminUrl, [
       "-Atc",
@@ -2922,8 +3826,9 @@ function proveAccountSwitchRecoveryContract(url) {
     ],
     false,
   );
-  assert(
-    inferredSwitch.status !== 0,
+  assertPsqlFailedWithExactMessage(
+    inferredSwitch,
+    "codex_oauth_setup_recovery_initial_state_invalid",
     "ordinary recovery acknowledgement must not authorize an account-switch epoch",
   );
   const recoveryDeletion = psql(
@@ -2934,8 +3839,9 @@ function proveAccountSwitchRecoveryContract(url) {
     ],
     false,
   );
-  assert(
-    recoveryDeletion.status !== 0,
+  assertPsqlFailedWithExactMessage(
+    recoveryDeletion,
+    "codex_oauth_setup_recovery_delete_forbidden",
     "account-switch recovery authority must remain permanent evidence",
   );
 }
@@ -2946,8 +3852,9 @@ function proveCompletedRecoveryEvidenceRetention(url) {
     `UPDATE "CodexOAuthSetupRecoveryRequest" SET "state"='manifest_issued', "latestManifestId"='fetched-recovery', "updatedAt"=now() WHERE "id"='recovery-account-switch-proof'`,
   ]) {
     const rejected = psql(url, ["-c", statement], false);
-    assert(
-      rejected.status !== 0,
+    assertPsqlFailedWithExactMessage(
+      rejected,
+      "codex_oauth_setup_recovery_evidence_immutable",
       "recovery terminal evidence must reject skipped lifecycle/cross-provider authority",
     );
   }
@@ -2981,8 +3888,9 @@ function proveCompletedRecoveryEvidenceRetention(url) {
     ],
     false,
   );
-  assert(
-    skippedManifestIssued.status !== 0,
+  assertPsqlFailedWithExactMessage(
+    skippedManifestIssued,
+    "codex_oauth_setup_recovery_evidence_immutable",
     "recovery completion must not skip manifest_issued",
   );
   psql(url, [
@@ -3012,18 +3920,29 @@ function proveCompletedRecoveryEvidenceRetention(url) {
     ],
     false,
   );
-  assert(
-    fabricatedCompletion.status !== 0,
+  assertPsqlFailedWithExactMessage(
+    fabricatedCompletion,
+    "codex_oauth_setup_recovery_evidence_immutable",
     "issued manifest alone must not complete recovery without its exact consumed active evidence chain",
   );
-  for (const statement of [
-    `UPDATE "CodexOAuthSetupRecoveryRequest" SET "latestManifestId"=NULL WHERE "id"='recovery-account-switch-proof'`,
-    `UPDATE "CodexOAuthSetupRecoveryRequest" SET "completedAt"=now() WHERE "id"='recovery-account-switch-proof'`,
-    `DELETE FROM "CodexOAuthSetupManifest" WHERE "id"='manifest-completed-recovery-proof'`,
+  for (const [statement, expectedReason] of [
+    [
+      `UPDATE "CodexOAuthSetupRecoveryRequest" SET "latestManifestId"=NULL WHERE "id"='recovery-account-switch-proof'`,
+      "codex_oauth_setup_recovery_evidence_immutable",
+    ],
+    [
+      `UPDATE "CodexOAuthSetupRecoveryRequest" SET "completedAt"=now() WHERE "id"='recovery-account-switch-proof'`,
+      "codex_oauth_setup_recovery_evidence_immutable",
+    ],
+    [
+      `DELETE FROM "CodexOAuthSetupManifest" WHERE "id"='manifest-completed-recovery-proof'`,
+      "codex_oauth_setup_manifest_delete_forbidden",
+    ],
   ]) {
     const rejected = psql(url, ["-c", statement], false);
-    assert(
-      rejected.status !== 0,
+    assertPsqlFailedWithExactMessage(
+      rejected,
+      expectedReason,
       "completed recovery evidence mutation/deletion must be rejected",
     );
   }
@@ -3040,13 +3959,13 @@ function proveLegacyChildWritesRejected(url) {
   );
   assert(
     setup.status !== 0,
-    "legacy setup mutation on a stale active epoch must fail",
+    "legacy setup mutation on recovered evidence must fail",
   );
   assert(
     `${setup.stdout}${setup.stderr}`.includes(
-      "codex_oauth_child_mutation_epoch_mismatch",
+      "codex_oauth_setup_manifest_terminal_evidence_immutable",
     ),
-    "legacy setup rejection must identify the epoch fence",
+    "legacy setup rejection must identify the terminal evidence fence",
   );
   const lease = psql(
     url,
@@ -3069,8 +3988,8 @@ function proveLegacyChildWritesRejected(url) {
   psql(url, [
     "-c",
     String.raw`DO $$ BEGIN
-      IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id='fetched-recovery') <> 'fetched'
-        OR (SELECT status FROM "CodexOAuthLease" WHERE id='lease-recovery') <> 'preleased'
+      IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id='fetched-recovery') <> 'recovered'
+        OR (SELECT status FROM "CodexOAuthLease" WHERE id='lease-recovery') <> 'expired'
       THEN RAISE EXCEPTION 'rejected legacy child write changed data'; END IF;
     END $$;`,
   ]);
@@ -3119,7 +4038,44 @@ function proveParentIdentityWriteRejected(url) {
   );
 }
 
-function proveQuarantineCleanupPathV2(url) {
+async function executeProviderIdentityRepairWithAuthority(
+  clients,
+  argumentsSql,
+) {
+  const webInvocation = createSecretSafePostgresInvocation({
+    databaseUrl: clients.web,
+    args: ["-X", "-qAt", "-v", "ON_ERROR_STOP=1"],
+  });
+  const web = spawn(psqlBinary, webInvocation.args, {
+    stdio: ["pipe", "pipe", "ignore"],
+    env: webInvocation.environment,
+  });
+  const lines = createInterface({ input: web.stdout })[Symbol.asyncIterator]();
+  try {
+    web.stdin.write(
+      `BEGIN; SELECT codex_oauth_provider_identity_repair_challenge(${argumentsSql});\n`,
+    );
+    const challengeLine = await lines.next();
+    assert(!challengeLine.done, "provider_repair_challenge_missing");
+    const signature = psql(clients.effectAuthority, [
+      "-Atc",
+      `SELECT codex_oauth_sign_database_authority(${quoteLiteral(challengeLine.value)})`,
+    ]).stdout.trim();
+    web.stdin.end(
+      `SELECT codex_oauth_repair_quarantined_provider(
+        ${argumentsSql},${quoteLiteral(signature)}); COMMIT;\n`,
+    );
+    const status = await new Promise((resolveClose) =>
+      web.once("close", resolveClose),
+    );
+    assert(status === 0, "provider_repair_authorized_session_failed");
+  } finally {
+    await terminateChild(web);
+    webInvocation.cleanup();
+  }
+}
+
+async function proveQuarantineCleanupPathV2(adminUrl, clients) {
   const providerRepairs = [
     {
       providerId: "p-parent-dirty",
@@ -3142,44 +4098,26 @@ function proveQuarantineCleanupPathV2(url) {
   ];
   for (const repair of providerRepairs) {
     const oldGithubId = repair.oldGithubId ?? "NULL";
-    psql(url, [
-      "-c",
-      `DO $repair$
-      DECLARE challenge text;
-      DECLARE signature text;
-      BEGIN
-        challenge := codex_oauth_provider_identity_repair_challenge(
-          ${quoteLiteral(repair.providerId)}, 'ws-proof',
-          ${quoteLiteral(repair.repositoryId)},
-          ${quoteLiteral(repair.oldProviderId)},
-          'codex_subscription_oauth_rotating',
-          'REVIEWROUTER_CODEX_AUTH_JSON',
-          ${quoteLiteral(repair.oldRepositoryProvider)}, ${oldGithubId},
-          ${quoteLiteral(repair.oldExternalId)}, 'ws-proof',
-          ${quoteLiteral(repair.repositoryId)},
-          ${quoteLiteral(`codex-rotating:${repair.newGithubId}`)},
-          'codex_subscription_oauth_rotating',
-          'REVIEWROUTER_CODEX_AUTH_JSON', ${repair.newGithubId}
-        );
-        signature := codex_oauth_sign_database_authority(challenge);
-        PERFORM codex_oauth_repair_quarantined_provider(
-          ${quoteLiteral(repair.providerId)}, 'ws-proof',
-          ${quoteLiteral(repair.repositoryId)},
-          ${quoteLiteral(repair.oldProviderId)},
-          'codex_subscription_oauth_rotating',
-          'REVIEWROUTER_CODEX_AUTH_JSON',
-          ${quoteLiteral(repair.oldRepositoryProvider)}, ${oldGithubId},
-          ${quoteLiteral(repair.oldExternalId)}, 'ws-proof',
-          ${quoteLiteral(repair.repositoryId)},
-          ${quoteLiteral(`codex-rotating:${repair.newGithubId}`)},
-          'codex_subscription_oauth_rotating',
-          'REVIEWROUTER_CODEX_AUTH_JSON', ${repair.newGithubId}, signature
-        );
-      END
-      $repair$;`,
-    ]);
+    const argumentsSql = [
+      quoteLiteral(repair.providerId),
+      "'ws-proof'",
+      quoteLiteral(repair.repositoryId),
+      quoteLiteral(repair.oldProviderId),
+      "'codex_subscription_oauth_rotating'",
+      "'REVIEWROUTER_CODEX_AUTH_JSON'",
+      quoteLiteral(repair.oldRepositoryProvider),
+      String(oldGithubId),
+      quoteLiteral(repair.oldExternalId),
+      "'ws-proof'",
+      quoteLiteral(repair.repositoryId),
+      quoteLiteral(`codex-rotating:${repair.newGithubId}`),
+      "'codex_subscription_oauth_rotating'",
+      "'REVIEWROUTER_CODEX_AUTH_JSON'",
+      String(repair.newGithubId),
+    ].join(",");
+    await executeProviderIdentityRepairWithAuthority(clients, argumentsSql);
   }
-  psql(url, [
+  psql(adminUrl, [
     "-c",
     String.raw`
       SELECT codex_oauth_repair_quarantined_child('lease','lease-provider-dirty');
@@ -3208,21 +4146,20 @@ function proveQuarantineCleanupPathV2(url) {
   ]);
 }
 
+function migrationHistoryDigest(url, migrationNames) {
+  const migrationNameSql = migrationNames.map(quoteLiteral).join(",");
+  return psql(url, [
+    "-Atc",
+    String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
+      FROM "_prisma_migrations" m
+      WHERE migration_name IN (${migrationNameSql})`,
+  ]).stdout.trim();
+}
+
 function proveMigrateDeployNoOp(url) {
-  const migrationNameSql = rotatingMigrationNames.map(quoteLiteral).join(",");
-  const before = psql(url, [
-    "-Atc",
-    String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
-      FROM "_prisma_migrations" m
-      WHERE migration_name IN (${migrationNameSql})`,
-  ]).stdout.trim();
+  const before = migrationHistoryDigest(url, rotatingMigrationNames);
   const rerun = migrateDeploy(url);
-  const after = psql(url, [
-    "-Atc",
-    String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
-      FROM "_prisma_migrations" m
-      WHERE migration_name IN (${migrationNameSql})`,
-  ]).stdout.trim();
+  const after = migrationHistoryDigest(url, rotatingMigrationNames);
   assert(
     before === after,
     "post-success migrate deploy changed migration history",
@@ -3297,7 +4234,7 @@ function proveMigrationRunnerHistory(url, name, successful) {
   const [total, current] = row.split(":").map(Number);
   assert(
     total >= 1 && current === (successful ? 1 : 0),
-    `${name} runner history does not prove expected state (${row})`,
+    `${name}_runner_history_state_invalid`,
   );
 }
 
@@ -3315,7 +4252,7 @@ function discardRehearsalOnlyRolledBackMigrationHistory(url) {
       total >= 2 &&
         successful === expectedSuccessful &&
         current === expectedSuccessful,
-      `rehearsal-only rolled-back history contract mismatch for ${migrationName} (${observation})`,
+      `rehearsal_rolled_back_history_contract_mismatch:${migrationName}`,
     );
     psql(url, [
       "-c",
@@ -3327,7 +4264,7 @@ function discardRehearsalOnlyRolledBackMigrationHistory(url) {
     ]).stdout.trim();
     assert(
       remaining === `${expectedSuccessful}:${expectedSuccessful}`,
-      `rehearsal-only rolled-back history reset failed for ${migrationName} (${remaining})`,
+      `rehearsal_rolled_back_history_reset_failed:${migrationName}`,
     );
   }
 }
@@ -3353,6 +4290,28 @@ function withApplicationName(url, applicationName) {
   const result = new URL(url);
   result.searchParams.set("application_name", applicationName);
   return result.toString();
+}
+
+function assertPrismaLockTimeoutEnvelope(result, message) {
+  const output = `${result.stdout}${result.stderr}`.toLowerCase();
+  // Prisma's schema engine can replace the inner PostgreSQL lock-timeout error
+  // with the transaction-aborted envelope after the migration rolls back.
+  assert(
+    output.includes("lock timeout") ||
+      output.includes("current transaction is aborted"),
+    message,
+  );
+}
+
+function assertPrismaMigrationFailureEnvelope(result, marker, message) {
+  const output = `${result.stdout}${result.stderr}`.toLowerCase();
+  const exactFailure =
+    output.includes(marker.toLowerCase()) && output.includes("already exists");
+  assert(
+    result.status !== 0 &&
+      (exactFailure || output.includes("current transaction is aborted")),
+    message,
+  );
 }
 
 async function waitForLock(url, applicationName, relation) {
@@ -3407,16 +4366,27 @@ function prisma(url, args, requireSuccess = true) {
         args: [process.env.npm_execpath, "exec", "prisma", ...args],
       }
     : { executable: "pnpm", args: ["exec", "prisma", ...args] };
-  const result = spawnSync(command.executable, command.args, {
-    cwd: dbDirectory,
-    env: { ...process.env, DATABASE_URL: url.toString() },
-    encoding: "utf8",
-  });
-  if (requireSuccess && result.status !== 0)
-    throw new Error(
-      `Prisma migration runner failed (${result.status}): ${result.stderr || result.stdout}`,
-    );
-  return result;
+  const credential = createDatabaseCredentialBoundary(url);
+  try {
+    const result = spawnSync(command.executable, command.args, {
+      cwd: dbDirectory,
+      env: credential.environment,
+      encoding: "utf8",
+      timeout: 600_000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    if (requireSuccess && (result.status !== 0 || result.error))
+      throw sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+        exitCode: result.status,
+        signal: result.signal,
+        timedOut: result.error?.code === "ETIMEDOUT",
+      });
+    return result;
+  } finally {
+    credential.cleanup();
+  }
 }
 
 function requireLocalPostgres(value) {
@@ -3445,29 +4415,42 @@ function requirePostgres17() {
     "/usr/lib/postgresql/17/bin/psql",
     "psql",
   ].filter(Boolean);
-  const diagnostics = [];
   for (const candidate of candidates) {
     const result = spawnSync(candidate, ["--version"], { encoding: "utf8" });
     if (result.status === 0 && /\b17\.\d+/u.test(result.stdout))
       return candidate;
-    diagnostics.push(`${candidate}: ${psqlResultDiagnostic(result)}`);
   }
-  throw new Error(
-    `PostgreSQL 17 psql is required; the rehearsal never skips or falls back to another major: ${diagnostics.join(" | ")}`,
-  );
+  throw sanitizedDiagnosticError({
+    code: "private_pg17_rehearsal_command_failed",
+    phase: "rehearsal",
+  });
 }
 
 function psql(url, args, requireSuccess = true) {
-  const result = spawnSync(
-    psqlBinary,
-    [url.toString(), "-X", "-v", "ON_ERROR_STOP=1", ...args],
-    { encoding: "utf8" },
-  );
-  if (requireSuccess && result.status !== 0)
-    throw new Error(
-      `psql failed (${result.status}): ${result.stderr || result.stdout}`,
-    );
-  return result;
+  const invocation = createSecretSafePostgresInvocation({
+    databaseUrl: url,
+    args: ["-X", "-v", "ON_ERROR_STOP=1", ...args],
+  });
+  try {
+    const result = spawnSync(psqlBinary, invocation.args, {
+      encoding: "utf8",
+      env: invocation.environment,
+      input: invocation.input,
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: 600_000,
+    });
+    if (requireSuccess && (result.status !== 0 || result.error))
+      throw sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+        exitCode: result.status,
+        signal: result.signal,
+        timedOut: result.error?.code === "ETIMEDOUT",
+      });
+    return result;
+  } finally {
+    invocation.cleanup();
+  }
 }
 
 function databaseUrl(base, name) {
@@ -3483,13 +4466,36 @@ function quoteLiteral(value) {
   return `'${value.replaceAll("'", "''")}'`;
 }
 function psqlResultDiagnostic(result) {
-  return `status=${result.status}; signal=${result.signal ?? "none"}; error=${JSON.stringify(result.error?.message ?? null)}; stdout=${JSON.stringify(result.stdout)}; stderr=${JSON.stringify(result.stderr)}`;
+  return JSON.stringify(rehearsalProcessDiagnostic(result));
+}
+function rehearsalProcessDiagnostic(result) {
+  return createSanitizedDiagnostic({
+    code: "private_pg17_rehearsal_command_failed",
+    phase: "rehearsal",
+    exitCode: result.status,
+    signal: result.signal,
+    timedOut: result.error?.code === "ETIMEDOUT",
+  });
 }
 function assertPsqlFailedWithExactMessage(result, expectedFailure, message) {
   assert(
     result.status !== 0 &&
       `${result.stdout}${result.stderr}`.includes(expectedFailure),
     `${message}: expected=${JSON.stringify(expectedFailure)}; ${psqlResultDiagnostic(result)}`,
+  );
+}
+function assertPsqlFailedWithOneOfExactMessages(
+  result,
+  expectedFailures,
+  message,
+) {
+  const output = `${result.stdout}${result.stderr}`;
+  assert(
+    result.status !== 0 &&
+      expectedFailures.some((expectedFailure) =>
+        output.includes(expectedFailure),
+      ),
+    `${message}: expectedOneOf=${JSON.stringify(expectedFailures)}; ${psqlResultDiagnostic(result)}`,
   );
 }
 function assert(condition, message) {

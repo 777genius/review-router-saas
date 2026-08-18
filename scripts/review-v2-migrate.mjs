@@ -2,7 +2,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
 import {
   reviewV2ForeignKeyValuesSql,
   reviewV2ExpandGuardStep,
@@ -16,8 +15,11 @@ import {
   reviewV2ValidateConstraintsStep,
 } from "./lib/review-v2-migration-contract.mjs";
 import { psqlConnectionUrl } from "./lib/psql-connection-url.mjs";
+import { runSecretSafePostgresCommand } from "./lib/secret-safe-command-boundary.mjs";
 
-const databaseUrl = process.env.DATABASE_URL;
+const databaseUrl = process.env.REVIEW_ROUTER_DATABASE_URL_FILE
+  ? readFileSync(process.env.REVIEW_ROUTER_DATABASE_URL_FILE, "utf8").trim()
+  : process.env.DATABASE_URL;
 if (!databaseUrl) fail("DATABASE_URL is required");
 const psqlDatabaseUrl = normalizePsqlConnectionUrl(databaseUrl);
 
@@ -266,7 +268,7 @@ function runRepositoryIdentityBackfill() {
     if (finish.status === "completed") return;
     if (finish.status === "failed") {
       fail(
-        `Repository identity backfill quarantined ${finish.unresolvedQuarantineCount} unresolved collision(s); repair and resolve the quarantine before rerunning`,
+        "Repository identity backfill has unresolved collisions; repair and resolve the quarantine before rerunning",
       );
     }
   }
@@ -1137,31 +1139,24 @@ function initialEmergencyStopGuardSql(stepName, errorCode) {
 }
 
 function runPsql(sql) {
-  const result = spawnSync(
-    "psql",
-    [psqlDatabaseUrl, "-v", "ON_ERROR_STOP=1", "-X", "-c", sql],
-    { stdio: "inherit" },
-  );
-  if (result.error) fail(`Unable to start psql: ${result.error.message}`);
-  if (result.status !== 0) fail(`psql exited with ${result.status}`);
+  runSecretSafePostgresCommand({
+    databaseUrl: psqlDatabaseUrl,
+    args: ["-v", "ON_ERROR_STOP=1", "-X", "-c", sql],
+  });
 }
 
 function queryScalar(sql) {
-  const result = spawnSync(
-    "psql",
-    [psqlDatabaseUrl, "-v", "ON_ERROR_STOP=1", "-X", "-qAt", "-c", sql],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
-  );
-  if (result.error) fail(`Unable to start psql: ${result.error.message}`);
-  if (result.status !== 0) fail(`psql exited with ${result.status}`);
-  return result.stdout.trim();
+  return runSecretSafePostgresCommand({
+    databaseUrl: psqlDatabaseUrl,
+    args: ["-v", "ON_ERROR_STOP=1", "-X", "-qAt", "-c", sql],
+  }).stdout.trim();
 }
 
 function normalizePsqlConnectionUrl(value) {
   try {
     return psqlConnectionUrl(value);
-  } catch (error) {
-    fail(error instanceof Error ? error.message : String(error));
+  } catch {
+    fail("DATABASE_URL is not a supported PostgreSQL connection URL");
   }
 }
 
@@ -1192,7 +1187,7 @@ function parseJsonResult(value, errorCode) {
     }
     return parsed;
   } catch {
-    fail(`${errorCode}: ${value.slice(0, 200)}`);
+    fail(errorCode);
   }
 }
 

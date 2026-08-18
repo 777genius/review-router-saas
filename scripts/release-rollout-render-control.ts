@@ -3,9 +3,15 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import {
   AuthenticatedRunnerLedgerAdapter,
   AuthenticatedProviderWitnessAdapter,
+  BoundedProviderHttpClient,
+  ProviderHttpError,
   PrivateRunnerControlUseCases,
   RenderPrivateRunnerAdapter,
   RenderProviderFreezeAdapter,
+  HttpProviderMutationAuthorityAdapter,
+  HttpProviderAuthorityDecisionAdapter,
+  ProviderAuthorityOperation,
+  requestProviderAuthorityDecision,
   type RunnerIdentity,
   type RunnerReconciliationReport,
   type ReleaseRollout,
@@ -25,6 +31,11 @@ const output = (values: Record<string, string>) => {
       mode: 0o600,
     });
 };
+const mutationAuthority = () =>
+  new HttpProviderMutationAuthorityAdapter(
+    required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
+    required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
+  );
 const runnerControl = () => {
   const ledger = new AuthenticatedRunnerLedgerAdapter(
     required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
@@ -53,6 +64,32 @@ type WorkflowJob = {
   run_id?: number;
   run_attempt?: number;
   head_sha?: string;
+};
+const providerJson = async <T>(
+  response: Response,
+  operation: string,
+  ambiguousWrite = false,
+): Promise<T> => {
+  if (!response.ok)
+    throw new ProviderHttpError(
+      operation,
+      "response_status",
+      response.status,
+      ambiguousWrite,
+    );
+  try {
+    const value: unknown = await response.json();
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error();
+    return value as T;
+  } catch {
+    throw new ProviderHttpError(
+      operation,
+      "response_invalid",
+      response.status,
+      ambiguousWrite,
+    );
+  }
 };
 const positiveInteger = (name: string, fallback: number): number => {
   const value = Number(process.env[name] ?? fallback);
@@ -102,13 +139,14 @@ export const resolveWorkflowJobId = async (
     sleep?: (milliseconds: number) => Promise<void>;
   },
 ): Promise<string> => {
-  const request = options.request ?? fetch;
+  const request = new BoundedProviderHttpClient(options.request ?? fetch);
   const sleep =
     options.sleep ??
     ((milliseconds: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   for (let attempt = 1; attempt <= options.attempts; attempt += 1) {
-    const response = await request(
+    const response = await request.request(
+      "github_job_inventory",
       `https://api.github.com/repos/${required("GITHUB_REPOSITORY")}/actions/runs/${options.runId}/attempts/${options.runAttempt}/jobs?filter=all&per_page=100`,
       {
         headers: {
@@ -118,18 +156,20 @@ export const resolveWorkflowJobId = async (
         },
       },
     );
-    if (!response.ok)
-      throw new Error(`release_rollout_job_lookup_failed:${response.status}`);
-    const value = (await response.json()) as {
+    const value = await providerJson<{
       total_count?: number;
       jobs?: WorkflowJob[];
-    };
+    }>(response, "github_job_inventory");
     if (
       !Array.isArray(value.jobs) ||
       !Number.isSafeInteger(value.total_count) ||
       value.total_count! > value.jobs.length
     )
-      throw new Error("release_rollout_target_job_list_ambiguous");
+      throw new ProviderHttpError(
+        "github_job_inventory",
+        "response_invalid",
+        response.status,
+      );
     const named = value.jobs.filter((job) => job.name === name);
     const matches = named.filter(
       (job) =>
@@ -162,9 +202,24 @@ if (mode === "freeze") {
   const sourceWriterServiceIds = parseFreezeSourceWriterServiceIds(
     required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
   );
-  const observation = await new RenderProviderFreezeAdapter().freezeAndObserve({
+  await requestProviderAuthorityDecision(
+    new HttpProviderAuthorityDecisionAdapter(
+      required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
+      required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
+    ),
+    rollout,
+    ProviderAuthorityOperation.FreezeSource,
+    "before",
+  );
+  const observation = await new RenderProviderFreezeAdapter(
+    fetch,
+    undefined,
+    mutationAuthority(),
+  ).freezeAndObserve({
     apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
     ownerId: required("RENDER_OWNER_ID"),
+    rolloutId: rollout.rolloutId,
+    mutationOwnerId: `freeze-${rollout.execution.runId}-${rollout.execution.runAttempt}`,
     sourceWriterServiceIds,
     prepareMutation: async (evidence) =>
       await ledger.prepareSourceFreezeMutation({
@@ -219,7 +274,8 @@ if (mode === "freeze") {
     "REVIEW_ROUTER_TARGET_SHA",
     "REVIEW_ROUTER_EXPECTED_SHA",
   );
-  const runResponse = await fetch(
+  const runResponse = await new BoundedProviderHttpClient(fetch).request(
+    "github_run",
     `https://api.github.com/repos/${required("GITHUB_REPOSITORY")}/actions/runs/${targetRunId}/attempts/${targetRunAttempt}`,
     {
       headers: {
@@ -229,17 +285,13 @@ if (mode === "freeze") {
       },
     },
   );
-  if (!runResponse.ok)
-    throw new Error(
-      `release_rollout_target_run_lookup_failed:${runResponse.status}`,
-    );
-  const targetRun = (await runResponse.json()) as {
+  const targetRun = await providerJson<{
     actor?: { login?: string };
     event?: string;
     head_sha?: string;
     path?: string;
     run_attempt?: number;
-  };
+  }>(runResponse, "github_run");
   if (
     targetRun.event !== "workflow_dispatch" ||
     targetRun.head_sha !== expectedSha ||

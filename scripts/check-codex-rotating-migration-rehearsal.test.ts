@@ -7,6 +7,10 @@ import {
   provisionAndAssertRehearsalRoles,
   rehearsalRoleLoginContract,
 } from "./codex-rotating-rehearsal-role-provisioning.mjs";
+import {
+  createRehearsalAuthorityContext,
+  rehearsalSchemaOwnerIdentity,
+} from "./codex-rotating-rehearsal-authority-context.mjs";
 
 describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   const source = readFileSync(
@@ -42,7 +46,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
-  it("rehearses every canonical migration from 000060 through 000073 in order", () => {
+  it("rehearses every canonical migration from 000060 through 000074 in order", () => {
     const inventory =
       /JSON\.stringify\(\[([\s\S]+?)\]\),\n\s+"rehearsal migration inventory/u.exec(
         source,
@@ -50,7 +54,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
 
     expect(inventory).toBeDefined();
     expect(
-      [...(inventory ?? "").matchAll(/migration\d+Name/gu)].map(
+      [...(inventory ?? "").matchAll(/migration\d+[A-Za-z]*Name/gu)].map(
         ([name]) => name,
       ),
     ).toEqual([
@@ -66,7 +70,8 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "migration69Name",
       "migration70Name",
       "migration71Name",
-      "migration72Name",
+      "migration72RetireName",
+      "migration72CanaryName",
       "migration73Name",
       "migration74Name",
     ]);
@@ -86,7 +91,10 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       'const migration71Name = "000071_transactional_service_transition"',
     );
     expect(source).toContain(
-      'const migration72Name = "000072_retire_superseded_codex_setup_claims"',
+      'const migration72RetireName = "000072_retire_superseded_codex_setup_claims"',
+    );
+    expect(source).toContain(
+      'const migration72CanaryName = "000072_runtime_canary_challenge"',
     );
     expect(source).toContain(
       'const migration73Name = "000073_codex_oauth_active_namespace_refresh"',
@@ -101,6 +109,71 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "proveMigrationRunnerHistory(url, migrationName, true)",
     );
     expect(source).not.toContain("000067_release_rollout_ledger");
+  });
+
+  it("retains ordinary migration 000074 in the pre-release source manifest", () => {
+    expect(source).toContain("directory === migration74Name");
+    expect(source).not.toContain("applyOrdinaryPostReleaseMigrations");
+    expect(source).not.toContain("assertMigrationAbsentFromHistory");
+    expect(source).toContain("proveMigrateDeployNoOp(providerAdmin)");
+    expect(source).toContain("combined 000060 through 000074 rehearsal passed");
+  });
+
+  it("reproduces the trusted production pre-migration manifest", () => {
+    expect(source).toContain("applyCanonicalPreMigrationBaseline");
+    expect(source).toContain("directory === migration67Name");
+    expect(source).toContain("directory === migration68Name");
+    expect(source).toContain("directory === migration74Name");
+    expect(source).toContain(
+      "rehearsal baseline must reproduce the trusted pre-migration manifest",
+    );
+    expect(source).not.toContain("applyBaselineThrough59");
+  });
+
+  it("splits safe canonical fixtures from rollback-only legacy negatives", () => {
+    expect(source).toContain("canonicalSuccess: true");
+    expect(source).toContain("retainUnexpiredLease: true");
+    expect(source).toContain('name: "inventory_race"');
+    expect(source).toContain('name: "ttl_crossing"');
+    expect(source).toContain('name: "unknown_status"');
+    expect(source).toContain('name: "forged_digest"');
+    expect(source).toContain(
+      'step === "deploy_migrations_and_converge_grants"',
+    );
+    expect(source).toContain("canonical_fixture_terminal");
+    expect(source).toContain(
+      "pending-to-failed-to-remote-outcome-unknown proof failed",
+    );
+    expect(source).toContain('rollback.permitState === "installed"');
+    expect(source).toContain("rollback.targetReceipt === null");
+    expect(source).toContain("rollback.committedTargetMigrations === 0");
+    expect(source).toContain("transformSourceEvidence");
+    expect(source).toContain("interval '100 milliseconds'");
+    expect(source).toContain("SELECT pg_sleep(0.2)");
+    expect(source).toContain(
+      "canonical replay did not return the immutable original receipt",
+    );
+  });
+
+  it("keeps a post-observation TTL crossing outside release reconciliation", () => {
+    const proof =
+      /async function proveMigrationSpecificLegacyBehavior\(\) \{([\s\S]+?)\n\}/u.exec(
+        source,
+      )?.[1];
+    expect(proof).toBeDefined();
+    expect(proof).toContain("id = 'issued-crossing') <> 'expired'");
+    expect(proof).toContain(
+      `"mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 0`,
+    );
+    expect(proof).toContain(
+      `"mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') IS NOT NULL`,
+    );
+    expect(proof).toContain(
+      "made a post-observation TTL crossing newly eligible for reconciliation",
+    );
+    expect(proof).not.toContain(
+      `"mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 'recovery'`,
+    );
   });
 
   it("reads the database generation binding as shared-object metadata", () => {
@@ -121,7 +194,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(matrix).not.toContain("name: migration69Name");
     expect(matrix).not.toContain("release_rollout_receipt_ledger");
     expect(matrix).toContain('psql(url, ["-c", testCase.decoy])');
-    expect(matrix).toContain("`${testCase.name} injected failure missing`");
+    expect(matrix).toContain(
+      "`${testCase.name} injected failure did not report its decoy collision`",
+    );
+    expect(matrix).toContain("assertPrismaMigrationFailureEnvelope(");
+    expect(matrix).toContain("testCase.failureMarker");
+    expect(matrix).toContain('includes("already exists")');
+    expect(matrix).toContain(
+      'const directFailure = psql(url, ["-f", testCase.source], false)',
+    );
     expect(matrix).toContain(
       "`${testCase.name} leaked partial catalog state after rollback`",
     );
@@ -166,7 +247,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "verifyCodexRotatingDatabaseCatalog(observation.catalog, {",
     );
     expect(source).toContain(
-      "production catalog verifier rejected the PostgreSQL 17 rehearsal",
+      "`production_catalog_verifier_rejected_rehearsal:${JSON.stringify(result)}`",
     );
     expect(source).toContain("verifyPrivileges: false");
     const collection =
@@ -178,27 +259,98 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(collection).toContain(").catalog");
   });
 
-  it("checks synthetic release sequence privileges by qualified name", () => {
+  it("proves schema-owner ownership and narrow release authority", () => {
     const privilegeProof =
       /function proveDatabasePrivileges\(url\) \{([\s\S]+?)\n\}/u.exec(
         source,
       )?.[1];
     expect(privilegeProof).toBeDefined();
     expect(privilegeProof).toContain(
-      "format('%I.%I', namespace.nspname, sequence.relname)",
+      "owner.rolname <> 'reviewrouter_release_schema_owner'",
     );
-    expect(privilegeProof).not.toContain("sequence.oid");
+    expect(privilegeProof).toContain(
+      "membership.roleid = 'reviewrouter_release_schema_owner'::regrole",
+    );
+    expect(privilegeProof).toContain("namespace.nspname = 'public'");
+    expect(privilegeProof).toContain("'reviewrouter_release_schema_owner'");
+    expect(privilegeProof).toContain("'SET'");
+    expect(privilegeProof).toContain(
+      "membership.member = 'reviewrouter_release_migration'::regrole",
+    );
+    expect(privilegeProof).toContain(
+      "'reviewrouter_release_migration', 'public', 'USAGE'",
+    );
+    expect(privilegeProof).toContain(
+      "'reviewrouter_release_migration', namespace.oid, 'CREATE'",
+    );
+    expect(privilegeProof).toContain(
+      "'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure",
+    );
+    expect(privilegeProof).toContain('public."_prisma_migrations"');
+    expect(privilegeProof).toContain("attribute.attname IN ('id','status')");
+    expect(privilegeProof).toContain("is_grantable = 'YES'");
+    expect(privilegeProof).not.toContain(
+      "owner-equivalent data privileges must remain complete",
+    );
   });
 
-  it("rehearses fail-closed grantor topology and an idempotent second bootstrap", () => {
-    expect(source).toContain("adversarial_foreign_grantor_role_provisioning");
+  it("rehearses fail-closed grantor topology and rejects bootstrap replay", () => {
+    const provisioning =
+      /function prepareCanonicalReleaseRoles\(url, installHistoricalSchema\) \{([\s\S]+?)\n\}/u.exec(
+        source,
+      )?.[1];
+    expect(provisioning).toBeDefined();
+    expect(provisioning).toContain("const targetDatabaseName");
+    expect(provisioning).toContain("databaseUrl(url, targetDatabaseName)");
+    expect(provisioning).not.toContain("databaseUrl(url, databaseName)");
+    expect(provisioning).toContain("runSecretSafePostgresCommand({");
+    expect(provisioning).toContain(
+      'expectFailureContaining:\n        "refusing non-canonical role membership topology"',
+    );
+    expect(provisioning).toContain("expectedFailure?.expectedFailure === true");
+    expect(provisioning).not.toContain("rejectedForeignGrantor");
+    expect(provisioning).not.toContain("String(error)");
+    expect(provisioning).not.toContain(".stderr");
     expect(source).toContain("refusing non-canonical role membership topology");
-    expect(source).toContain("idempotent_second_role_provisioning");
     expect(source).toContain(
-      "second role bootstrap changed the canonical membership topology",
+      "demoted role bootstrap unexpectedly retained provisioning authority",
+    );
+    expect(source).toContain(
+      "rejected role bootstrap replay changed the canonical membership topology",
+    );
+    expect(provisioning.indexOf("const foreignGrantor")).toBeLessThan(
+      provisioning.indexOf('"initial_role_provisioning"'),
+    );
+    expect(provisioning).toContain(
+      'expectFailureContaining: "trusted role bootstrap authority is not exact"',
     );
     expect(source).toContain(
       "adversarial grantor retained role membership revoke authority",
+    );
+    expect(provisioning).toContain(
+      'const foreignGrantedRole = "reviewrouter_rehearsal_foreign_role"',
+    );
+    expect(source).toContain(
+      "independent adversarial membership chain was not installed",
+    );
+    expect(provisioning).toContain(
+      "GRANT ${foreignGrantedRole} TO ${foreignGrantor}",
+    );
+    expect(provisioning).toContain(
+      "GRANT ${foreignGrantedRole} TO reviewrouter_role_bootstrap",
+    );
+    expect(provisioning).toContain(
+      "REVOKE ${foreignGrantedRole} FROM reviewrouter_role_bootstrap GRANTED BY ${foreignGrantor}",
+    );
+    expect(provisioning).toContain("DROP ROLE ${foreignGrantedRole}");
+    expect(provisioning).toContain(
+      "owner_name = 'reviewrouter_release_schema_owner'",
+    );
+    expect(provisioning).toContain(
+      "role bootstrap did not transfer pre-existing public objects to the schema owner",
+    );
+    expect(provisioning).toMatch(
+      /psql\(url, \[\s+"-c",\s+`DROP FUNCTION public\.rr_legacy_bootstrap_owned_fn\(\);/u,
     );
     expect(source).toContain("membership_grantor_count <> 1");
     expect(source).toContain(
@@ -239,7 +391,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(privilegeProof).toContain("AND p.prosecdef");
     expect(privilegeProof).toContain(
-      "owner.rolname = 'reviewrouter_release_migration'",
+      "owner.rolname = 'reviewrouter_release_schema_owner'",
     );
     expect(privilegeProof).toContain(
       "p.proconfig = ARRAY['search_path=pg_catalog, public']::text[]",
@@ -284,32 +436,86 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
-  it("rehearses the canonical helper with separate direct bootstrap and release logins", () => {
+  it("routes rehearsal work through explicit authority clients", () => {
     const orchestration = source.slice(
       source.indexOf("try {"),
       source.indexOf("function proveLateMigrationRollbackAndReplayMatrix"),
     );
-    const prepareIndex = orchestration.indexOf(
-      "prepareCanonicalReleaseRoles(rehearsalUrl)",
+    const prepareIndex = orchestration.indexOf("prepareCanonicalReleaseRoles(");
+    const fixtureSeedIndex = orchestration.indexOf(
+      "seedDirtyFixtures(providerAdmin, { canonicalSuccess: true })",
+    );
+    const authorityIndex = orchestration.indexOf(
+      "rehearsalAuthority = rehearsalRelease.authority",
     );
     const helperIndex = orchestration.indexOf(
       "executeCanonicalReleaseMigration(",
     );
-    const rehearsalHistoryResetIndex = orchestration.indexOf(
-      "discardRehearsalOnlyRolledBackMigrationHistory(rehearsalUrl)",
+    const migrationSpecificIndex = orchestration.indexOf(
+      "await proveMigrationSpecificLegacyBehavior()",
+    );
+    const negativeCasesIndex = orchestration.indexOf(
+      "proveCanonicalLegacyReconciliationNegativeCases()",
     );
     expect(prepareIndex).toBeGreaterThan(-1);
+    expect(authorityIndex).toBeGreaterThan(prepareIndex);
+    expect(fixtureSeedIndex).toBeGreaterThan(authorityIndex);
+    expect(migrationSpecificIndex).toBeLessThan(prepareIndex);
+    expect(negativeCasesIndex).toBeLessThan(prepareIndex);
+    expect(source).toContain(
+      "proveMigration60LockTimeout(providerAdmin, providerAdmin)",
+    );
+    expect(source).toContain(
+      "proveCombinedLockTimeout(providerAdmin, providerAdmin)",
+    );
+    expect(source).toContain(
+      "withApplicationName(fixtureAdminUrl, applicationName)",
+    );
+    expect(source).toContain('output.includes("lock timeout")');
+    expect(source).toContain(
+      'output.includes("current transaction is aborted")',
+    );
     expect(prepareIndex).toBeLessThan(helperIndex);
-    expect(rehearsalHistoryResetIndex).toBeGreaterThan(prepareIndex);
-    expect(rehearsalHistoryResetIndex).toBeLessThan(helperIndex);
+    expect(source).toContain(
+      "discardRehearsalOnlyRolledBackMigrationHistory(providerAdmin)",
+    );
+    expect(source).toContain('{ name: "unresolved"');
+    expect(source).toContain("retainUnexpiredLease: true");
+    expect(source).toContain('rollback.permitState === "installed"');
+    expect(source).toContain("rollback.committedTargetMigrations === 0");
     expect(source).not.toContain("psqlInput");
+    expect(source).not.toContain("let rehearsalUrl");
+    expect(source).not.toContain("rehearsalRoleClients");
+    expect(source).toContain("createRehearsalAuthorityContext({");
+    expect(source).toContain("permitInstaller,");
+    expect(source).toContain("installRehearsalMigrationPermit(");
+    expect(source).toContain("receiptSha256: `sha256:${sha256Canonical(");
+    expect(source).toContain(
+      "const eligibilityCutoff = sourceLegacyAmbiguity.eligibilityCutoff",
+    );
+    expect(source).not.toContain(
+      "const eligibilityCutoff = new Date().toISOString()",
+    );
+    expect(source).toContain(
+      "reviewrouter_activation.install_migration_permit(",
+    );
+    expect(source).toContain(
+      "REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_SYSTEM_IDENTIFIER",
+    );
+    expect(source.match(/psql\(release,/gu)).toHaveLength(1);
+    expect(source).toMatch(
+      /psql\(release, \[[\s\S]+?reviewrouter_bootstrap\.consume_migration_evidence/u,
+    );
 
     const provisioning =
-      /function prepareCanonicalReleaseRoles\(url\) \{([\s\S]+?)\n\}/u.exec(
+      /function prepareCanonicalReleaseRoles\(url, installHistoricalSchema\) \{([\s\S]+?)\n\}/u.exec(
         source,
       )?.[1];
     expect(provisioning).toBeDefined();
     expect(provisioning).toContain("reviewrouter_role_bootstrap");
+    expect(provisioning).toContain(
+      "CREATE ROLE reviewrouter_role_bootstrap LOGIN SUPERUSER NOCREATEDB CREATEROLE",
+    );
     expect(provisioning).toContain(
       "CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN",
     );
@@ -330,7 +536,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(provisioning).toContain(
       "CREATE ROLE reviewrouter_activation_receipt_reader LOGIN",
     );
-    expect(provisioning).toContain('CREATE TABLE public."_prisma_migrations"');
+    expect(provisioning).toContain(
+      'CREATE TABLE IF NOT EXISTS public."_prisma_migrations"',
+    );
+    expect(provisioning).toContain("installHistoricalSchema(bootstrap)");
+    expect(
+      provisioning.indexOf("installHistoricalSchema(bootstrap)"),
+    ).toBeLessThan(
+      provisioning.indexOf('"external_activation_authority_provisioning"'),
+    );
     expect(provisioning).toContain(
       '"external_activation_authority_provisioning"',
     );
@@ -361,6 +575,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "reviewrouter_worker",
       "reviewrouter_codex_effect_authority",
       "reviewrouter_release_migration",
+      "reviewrouter_release_schema_owner",
     ]) {
       expect(provisioning).toContain(role);
     }
@@ -376,18 +591,179 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).toContain("runRehearsalReleaseSubprocess");
     expect(provisioning).toContain(
-      "markCanonicalRehearsalRoles(bootstrap.toString())",
+      "markCanonicalRehearsalRoles(url.toString())",
     );
     expect(source).toContain(
       'searchParams.set("application_name", applicationName)',
     );
     expect(source).not.toContain("PGAPPNAME");
     expect(source).toContain(
-      "rehearsal-only rolled-back history contract mismatch",
+      "rehearsal_rolled_back_history_contract_mismatch:${migrationName}",
     );
     expect(source).not.toContain(
       "convergeSyntheticReleaseOwnerEquivalentPrivileges",
     );
+    expect(source).toContain(
+      "rehearsalRoleObservationSql(rehearsalRoleMarker)",
+    );
+    expect(source).toContain("schema_owner_cleanup_dependencies_present");
+    expect(source).toContain("dependency.deptype IN ('a','o')");
+    expect(source).toContain("DO $rehearsal_schema_owner_membership_cleanup$");
+    expect(source).toContain(
+      "refusing non-rehearsal schema-owner membership cleanup",
+    );
+    expect(source).toContain("REVOKE %I FROM %I GRANTED BY %I CASCADE");
+    expect(
+      source.indexOf("$rehearsal_schema_owner_membership_cleanup$;"),
+    ).toBeLessThan(source.indexOf('cleanupSafety === "0:0:0"'));
+    expect(source).toContain('cleanupSafety === "0:0:0"');
+    expect(source).toContain(
+      "rehearsal_database_removal_not_proven_before_role_cleanup",
+    );
+    expect(source.indexOf("cleanupRuntimeRoles(adminUrl)")).toBeGreaterThan(
+      source.indexOf(
+        "rehearsal_database_removal_not_proven_before_role_cleanup",
+      ),
+    );
+  });
+
+  it("restores source-owned evidence before installing a rehearsal migration permit", () => {
+    const permitInstallation =
+      /function installRehearsalMigrationPermit\([\s\S]+?\n\}/u.exec(
+        source,
+      )?.[0];
+    expect(permitInstallation).toBeDefined();
+    expect(permitInstallation).toContain("restoreRehearsalSourceOwnedReceipt(");
+    expect(permitInstallation).toMatch(
+      /restoreRehearsalSourceOwnedReceipt\([\s\S]+?reviewrouter_activation\.install_migration_permit\(/u,
+    );
+    expect(permitInstallation).toContain("finally {");
+    expect(permitInstallation).toContain("discardSourceReceipt();");
+
+    const sourceReceiptFixture =
+      /function restoreRehearsalSourceOwnedReceipt\([\s\S]+?\n\}/u.exec(
+        source,
+      )?.[0];
+    expect(sourceReceiptFixture).toBeDefined();
+    expect(sourceReceiptFixture).toContain(
+      "CREATE TABLE release_authority.source_legacy_ambiguity_receipt",
+    );
+    expect(sourceReceiptFixture).toContain(
+      "OWNER TO reviewrouter_activation_receipt_guard",
+    );
+    expect(sourceReceiptFixture).toContain(
+      "INSERT INTO release_authority.source_legacy_ambiguity_receipt",
+    );
+    expect(sourceReceiptFixture).toContain("quoteLiteral(evidence.rolloutId)");
+    expect(sourceReceiptFixture).toContain("quoteLiteral(evidence.fenceId)");
+    expect(sourceReceiptFixture).toContain(
+      "quoteLiteral(evidence.sourceSystemIdentifier)",
+    );
+    expect(sourceReceiptFixture).toContain(
+      "quoteLiteral(JSON.stringify(evidence))",
+    );
+    expect(sourceReceiptFixture).toContain(
+      "DROP SCHEMA release_authority CASCADE",
+    );
+  });
+
+  it("models the NOLOGIN schema owner separately from client credentials", () => {
+    const client = (name: string) =>
+      new URL(`postgresql://${name}@localhost/rehearsal`);
+    const context = createRehearsalAuthorityContext({
+      providerAdmin: client("provider-admin"),
+      bootstrap: client("bootstrap"),
+      permitInstaller: client("permit-installer"),
+      releaseMigration: client("release-migration"),
+      runtime: {
+        api: client("api"),
+        web: client("web"),
+        worker: client("worker"),
+        effectAuthority: client("effect-authority"),
+      },
+    });
+
+    expect(context.providerAdmin).not.toBe(context.releaseMigration);
+    expect(context.schemaOwner).toEqual({
+      roleName: "reviewrouter_release_schema_owner",
+      login: false,
+    });
+    expect(rehearsalSchemaOwnerIdentity.login).toBe(false);
+    expect(
+      rehearsalRoleLoginContract.get("reviewrouter_release_schema_owner"),
+    ).toBe(false);
+    expect(Object.isFrozen(context)).toBe(true);
+    expect(Object.isFrozen(context.runtime)).toBe(true);
+    expect(() =>
+      createRehearsalAuthorityContext({
+        providerAdmin: client("provider-admin"),
+        bootstrap: client("bootstrap"),
+        permitInstaller: client("permit-installer"),
+        releaseMigration: client("release-migration"),
+        runtime: {
+          api: client("api"),
+          web: client("web"),
+          effectAuthority: client("effect-authority"),
+        },
+      }),
+    ).toThrow("rehearsal_authority_client_invalid:worker");
+  });
+
+  it("requires Prisma retention failures to identify the expected guard or constraint", () => {
+    expect(prismaRetentionProofSource).not.toContain("catch {");
+    expect(prismaRetentionProofSource).toContain(
+      "attempt.expectedReasons.some",
+    );
+    expect(prismaRetentionProofSource).toContain(
+      "message.includes(expectedReason)",
+    );
+    for (const expectedReason of [
+      "codex_oauth_setup_attempt_delete_forbidden",
+      "codex_oauth_setup_claim_delete_forbidden",
+      "codex_oauth_setup_manifest_delete_forbidden",
+      "codex_oauth_secret_namespace_delete_forbidden",
+      "CodexOAuthSetupPayloadClaim_provider_fkey",
+      "CodexOAuthSetupPayloadClaim_repository_fkey",
+      "CodexOAuthSetupPayloadClaim_workspace_fkey",
+      "CodexOAuthSecretNamespace_provider_fkey",
+    ]) {
+      expect(prismaRetentionProofSource).toContain(expectedReason);
+    }
+    expect(
+      prismaRetentionProofSource.match(
+        /codex_oauth_setup_manifest_delete_forbidden/gu,
+      ),
+    ).toHaveLength(3);
+    expect(
+      source.match(/codex_oauth_setup_manifest_delete_forbidden/gu),
+    ).toHaveLength(4);
+  });
+
+  it("proves terminal legacy recovery evidence and the database-owned effect fingerprint exactly", () => {
+    expect(source).toContain(
+      "targetMigrationReceipt.effectFingerprint === expectedEffectFingerprint",
+    );
+    expect(source).toContain(
+      "targetMigrationReceipt.sourceLegacyAmbiguity.inventorySha256",
+    );
+    expect(source).toContain(
+      "codex_oauth_setup_manifest_terminal_evidence_immutable",
+    );
+    expect(source).toContain(
+      `status FROM "CodexOAuthSetupManifest" WHERE id='fetched-recovery') <> 'recovered'`,
+    );
+    expect(source).toContain(
+      `status FROM "CodexOAuthLease" WHERE id='lease-recovery') <> 'expired'`,
+    );
+  });
+
+  it("requires runtime Prisma negative proofs to identify the receipt guard", () => {
+    expect(runtimeProofSource).not.toContain("catch {");
+    expect(
+      runtimeProofSource.match(
+        /codex_oauth_database_authority_receipt_required/gu,
+      ),
+    ).toHaveLength(2);
   });
 
   it("cannot false-green when a zero-exit wrapper discards stdin", () => {
@@ -485,6 +861,16 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(oneShotIdentityMutationProof).toContain(
       "codex_oauth_database_authority_signature_invalid",
     );
+    const cleanupProof =
+      /async function proveQuarantineCleanupPathV2\(adminUrl, clients\) \{([\s\S]+?)\n\}/u.exec(
+        source,
+      )?.[1];
+    expect(cleanupProof).toBeDefined();
+    expect(cleanupProof).toContain(
+      "await executeProviderIdentityRepairWithAuthority",
+    );
+    expect(source).toContain("psql(clients.effectAuthority");
+    expect(source).toContain("databaseUrl: clients.web");
     expect(oneShotIdentityMutationProof).toContain(
       "provider repair replay succeeded",
     );
@@ -572,6 +958,12 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "Codex OAuth child identity fence guard execution contract mismatch",
     );
     expect(source).toContain("Codex OAuth runtime least privilege mismatch");
+    expect(source).toMatch(
+      /relation\.relname NOT IN \([\s\S]+?RuntimeCanaryChallenge[\s\S]+?RuntimeCanaryChallengeProof[\s\S]+?RuntimeGenerationWitnessProof/u,
+    );
+    expect(source).toMatch(
+      /relation\.relname IN \([\s\S]+?CodexOAuthDatabaseAuthorityReceipt[\s\S]+?RuntimeCanaryChallenge[\s\S]+?RuntimeCanaryChallengeProof[\s\S]+?RuntimeGenerationWitnessProof[\s\S]+?has_table_privilege/u,
+    );
     expect(source).toContain(
       "Codex OAuth release migration privilege mismatch",
     );
@@ -869,8 +1261,13 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   });
 
   it("runs the positive proof with isolated identities, database time, and replay evidence", () => {
+    const runtimeWritebackProof =
+      /function proveRuntimeVersionedWriteback\(providerAdminUrl, clients\) \{([\s\S]+?)\n\}/u.exec(
+        source,
+      )?.[1];
+    expect(runtimeWritebackProof).toBeDefined();
     for (const environmentName of [
-      "REVIEW_ROUTER_PRISMA_EVIDENCE_RELEASE_DATABASE_URL",
+      "REVIEW_ROUTER_PRISMA_EVIDENCE_PROVIDER_ADMIN_DATABASE_URL",
       "REVIEW_ROUTER_PRISMA_EVIDENCE_API_DATABASE_URL",
       "REVIEW_ROUTER_PRISMA_EVIDENCE_WEB_DATABASE_URL",
       "REVIEW_ROUTER_PRISMA_EVIDENCE_EFFECT_AUTHORITY_DATABASE_URL",
@@ -893,7 +1290,16 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toMatch(
       /already connected\.\*deprecated\|deprecated\.\*already connected/iu,
     );
-    expect(source).toContain("clients.release.toString()");
+    expect(runtimeWritebackProof).toContain(
+      "providerAdmin: createDatabaseCredentialBoundary(providerAdminUrl)",
+    );
+    expect(runtimeWritebackProof).toContain(
+      "REVIEW_ROUTER_PRISMA_EVIDENCE_PROVIDER_ADMIN_DATABASE_URL_FILE:",
+    );
+    expect(runtimeWritebackProof).toContain(
+      "credentials.providerAdmin.environment",
+    );
+    expect(runtimeWritebackProof).not.toContain("clients.release.toString()");
     expect(source).not.toContain("clients.admin");
   });
 
