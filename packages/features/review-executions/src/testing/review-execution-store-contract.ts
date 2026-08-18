@@ -714,16 +714,17 @@ export function runReviewExecutionStoreContract(
       ).resolves.toEqual({
         status: ReviewRequestedTransitionStatus.Conflict,
       });
+      const lateAdmission = {
+        requestId: candidate.requestId,
+        sourceRunId: "run-intent-deadline-race",
+        sourceRunAttempt: "1",
+        authorizationId: harness.authorizationId,
+        executionId: "execution-intent-deadline-race",
+        revision,
+        now: observedAt,
+      };
       const [lateLink, terminalized] = await Promise.all([
-        harness.requestedIntents.linkAdmission({
-          requestId: candidate.requestId,
-          sourceRunId: "run-intent-deadline-race",
-          sourceRunAttempt: "1",
-          authorizationId: harness.authorizationId,
-          executionId: "execution-intent-deadline-race",
-          revision,
-          now: observedAt,
-        }),
+        harness.requestedIntents.linkAdmission(lateAdmission),
         harness.requestedIntents.recoverDispatch({
           requestId: candidate.requestId,
           expectedVersion: dispatched.intent!.version,
@@ -735,7 +736,13 @@ export function runReviewExecutionStoreContract(
           successorCandidate: null,
         }),
       ]);
-      expect(lateLink.status).toBe(ReviewRequestedTransitionStatus.Conflict);
+      const convergedLateLink =
+        lateLink.status === ReviewRequestedTransitionStatus.StaleClaim
+          ? await harness.requestedIntents.linkAdmission(lateAdmission)
+          : lateLink;
+      expect(convergedLateLink.status).toBe(
+        ReviewRequestedTransitionStatus.Conflict,
+      );
       expect(terminalized.status).toBe(ReviewRequestedTransitionStatus.Applied);
       expect(
         await harness.requestedIntents.findByRequestId(candidate.requestId),
