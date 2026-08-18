@@ -22,19 +22,20 @@ describe("promoted activation catalog policy trust root", () => {
         provenance.canonicalDigests.preactivation,
       activatedCatalogPolicySha256: provenance.canonicalDigests.activated,
     });
-    expect(canonicalActivationCatalogPolicyDigests).not.toEqual(
+    expect(canonicalActivationCatalogPolicyDigests).toEqual(
       reviewedActivationCatalogPolicyDigests,
     );
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
-      status: "blocked",
-      reason: "pg17-recapture-required-after-migration-permit-contract-change",
+      status: "ready",
+      reason:
+        "reviewed-v22-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
     });
     expect(
       canonicalActivationCatalogPolicies.preactivation.policy.grants,
-    ).toHaveLength(2510);
+    ).toHaveLength(2803);
     expect(
       canonicalActivationCatalogPolicies.activated.policy.grants,
-    ).toHaveLength(3366);
+    ).toHaveLength(3749);
   });
 
   it("deep-freezes the source-owned artifact before exposing it", () => {
@@ -47,11 +48,11 @@ describe("promoted activation catalog policy trust root", () => {
   });
 
   it("requires independent exact compact digest authorization", () => {
-    expect(() =>
+    expect(
       authorizeCanonicalActivationCatalogPolicies(
         canonicalActivationCatalogPolicyDigests,
       ),
-    ).toThrow("activation_catalog_policy_trust_root_blocked");
+    ).toBe(canonicalActivationCatalogPolicies);
     expect(() =>
       authorizeCanonicalActivationCatalogPolicies({
         ...reviewedActivationCatalogPolicyDigests,

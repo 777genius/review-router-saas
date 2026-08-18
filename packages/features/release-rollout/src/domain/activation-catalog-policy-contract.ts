@@ -22,8 +22,9 @@ export const canonicalActivationCatalogPolicyTrustRootReadiness: Readonly<{
   status: "blocked" | "ready";
   reason: string;
 }> = Object.freeze({
-  status: "blocked",
-  reason: "pg17-recapture-required-after-migration-permit-contract-change",
+  status: "ready",
+  reason:
+    "reviewed-v22-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
 });
 
 export function assertCanonicalActivationCatalogPolicyTrustRootReady(): void {
@@ -105,9 +106,9 @@ export const canonicalActivationCatalogPolicyDigests = Object.freeze({
 
 export const reviewedActivationCatalogPolicyDigests = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:fd10781b8716338b98191bc5f1631afb40b956f8027321eb2f2352bca658fe25",
+    "sha256:7d782d8feee32282cfc43c3e295482d16f71cd7f50380b8b9131439d208ff817",
   activatedCatalogPolicySha256:
-    "sha256:f3245ae1409631c6ceb31228e642b787bb591f682cc5c7be8e4c3621a50933e7",
+    "sha256:07cc2dba4d106051a66e7f3c7a5c3e20ed29943204d8e3501c13fd77fbaa7924",
 });
 
 if (
