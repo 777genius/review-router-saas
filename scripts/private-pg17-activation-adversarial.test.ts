@@ -940,12 +940,14 @@ describePg17(
                'reviewrouter_web','reviewrouter_worker',
                'reviewrouter_codex_effect_authority']) principal
              CROSS JOIN unnest(ARRAY[
+               'reviewrouter_activation.apply_runtime_database_acl(text)'::regprocedure,
                'reviewrouter_activation.apply_runtime_acl()'::regprocedure,
                'reviewrouter_activation.capture_runtime_acl_policy_pair()'::regprocedure
              ]) routine;`,
           ),
         ).toBe("t");
         for (const invocation of [
+          "SELECT reviewrouter_activation.apply_runtime_database_acl('activated');",
           "SELECT reviewrouter_activation.apply_runtime_acl();",
           "SELECT reviewrouter_activation.capture_runtime_acl_policy_pair();",
         ]) {
