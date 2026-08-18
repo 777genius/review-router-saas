@@ -107,7 +107,7 @@ function rehearsalSqlLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-function persistRehearsalSourceOwnedReceipt(sql, source, evidence) {
+export function persistRehearsalSourceOwnedReceipt(sql, source, evidence) {
   sql(
     source,
     `CREATE SCHEMA IF NOT EXISTS release_authority;
