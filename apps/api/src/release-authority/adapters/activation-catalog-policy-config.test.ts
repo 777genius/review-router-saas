@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
   canonicalActivationCatalogPolicyTrustRootReadiness,
 } from "@reviewrouter/features-release-rollout";
@@ -55,13 +56,14 @@ describe("activation catalog policy deployment authorization", () => {
     ).toThrow("activation_catalog_policy_digest_mismatch");
   });
 
-  it("blocks the changed artifact until PG17 policy recapture is reviewed", () => {
+  it("authorizes the independently reviewed PG17 policy recapture", () => {
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
-      status: "blocked",
-      reason: "pg17-recapture-required-after-migration-permit-contract-change",
+      status: "ready",
+      reason:
+        "reviewed-v22-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
     });
-    expect(() =>
-      trustedActivationCatalogPoliciesFromEnvironment(configured),
-    ).toThrow("activation_catalog_policy_trust_root_blocked");
+    expect(trustedActivationCatalogPoliciesFromEnvironment(configured)).toBe(
+      canonicalActivationCatalogPolicies,
+    );
   });
 });
