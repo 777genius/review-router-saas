@@ -28,14 +28,14 @@ describe("promoted activation catalog policy trust root", () => {
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
       status: "ready",
       reason:
-        "reviewed-v22-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
+        "reviewed-v23-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
     });
     expect(
       canonicalActivationCatalogPolicies.preactivation.policy.grants,
-    ).toHaveLength(2803);
+    ).toHaveLength(2806);
     expect(
       canonicalActivationCatalogPolicies.activated.policy.grants,
-    ).toHaveLength(3749);
+    ).toHaveLength(3752);
   });
 
   it("deep-freezes the source-owned artifact before exposing it", () => {

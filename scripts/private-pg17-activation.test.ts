@@ -454,6 +454,18 @@ describe("target-local PG17 activation permit", () => {
       "RAISE EXCEPTION 'runtime ACL is not canonical'",
     );
     expect(authority).toContain(
+      "'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'",
+    );
+    expect(authority).toContain(
+      "proname='reviewrouter_request_runtime_canary_challenge'",
+    );
+    expect(authority).toContain(
+      "proname='reviewrouter_read_runtime_canary_challenge_proofs'",
+    );
+    expect(authority).toContain(
+      "proname='reviewrouter_answer_runtime_canary_challenge'",
+    );
+    expect(authority).toContain(
       "has_database_privilege('public',current_database(),'CONNECT')",
     );
     expect(authority).toContain("has_table_privilege('public',oid,privilege)");

@@ -1,0 +1,91 @@
+{
+  "verdict": "GO",
+  "exactHead": "3240f6971bc0992ecfcc73d5a822ff255d873ac7",
+  "reviewedAt": "2026-08-18T23:48:00.000Z",
+  "reviewerRunId": "coderabbit:8609fd64-400a-4e7b-ae4c-84a74dc5367f:pr192-remediation",
+  "candidateSha256": "8f089eb7a9d1a8ed2388102d25ed8dcf1266d1ebc74e35a821b2552a54ff648b",
+  "candidateBytes": 2391094,
+  "candidateCaptures": [
+    "/var/data/worker-jobs/rr-pg17-db-acl-v23-remediation-trace1.clean.json",
+    "/var/data/worker-jobs/rr-pg17-db-acl-v23-remediation-trace2.raw.json"
+  ],
+  "postgresImages": {
+    "sourcePg16": "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+    "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
+  },
+  "canonicalDigests": {
+    "preactivation": "sha256:3ae78c7e2d4a76e7ff8f7b7852a1c7ab195c70ea563278a1c77a69242e7e9217",
+    "activated": "sha256:f8fe1748dc02bfe87d4f487c2d74cc42e10efe66030215117d30565c21a47459",
+    "artifact": "sha256:3eca5cf4475edab7156757d4f99fe995dbc4551e403c40efac46592141dffc50"
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "subject": "Database ACL helper readiness exactness",
+      "disposition": "Fixed in 3240f697. Readiness now validates the exact owner, SECURITY DEFINER flag, search_path and schema-owner-only non-grantable EXECUTE ACL."
+    },
+    {
+      "severity": "minor",
+      "subject": "Permit-race source fence chronology",
+      "disposition": "Fixed in 3240f697. The fence is established before first observation and the eligibility cutoff."
+    },
+    {
+      "severity": "major",
+      "subject": "Initial static database ACL projection",
+      "disposition": "Reviewed and retained. It is opt-in bootstrap behavior before the helper chain exists; later phase transitions use the attested helper exclusively. The dead dynamic SQL path was removed and both boundaries are tested."
+    }
+  ],
+  "evidenceChecked": [
+    {
+      "subject": "Independent branch review",
+      "result": "CodeRabbit run 8609fd64-400a-4e7b-ae4c-84a74dc5367f reviewed all six changed files from 17cd43513de2ccea195ef0f4f5bf2283c29e9ef4 through 64f186002d9b3ea960f4a4918afc4d8c61982135 and published three actionable findings."
+    },
+    {
+      "subject": "Finding remediation",
+      "result": "Commit 3240f6971bc0992ecfcc73d5a822ff255d873ac7 fixes both accepted findings, fail-closes divergent runtime-role configuration, removes the unreachable dynamic database ACL branch, and documents the intentionally separate initial bootstrap boundary. All PR review threads have explicit dispositions and are resolved."
+    },
+    {
+      "subject": "Capture reproducibility after remediation",
+      "result": "Two new production-shaped capture-only runs are byte-identical, each 2391094 bytes with SHA-256 8f089eb7a9d1a8ed2388102d25ed8dcf1266d1ebc74e35a821b2552a54ff648b. They also match the two pre-review captures exactly."
+    },
+    {
+      "subject": "PostgreSQL boundary proof",
+      "result": "The focused real PostgreSQL 17 helper direct-execution proof and migration permit race pass. Both capture runs completed post-migration readiness with permit_boundary=true, full_guard=true and runtime_privileges=true."
+    },
+    {
+      "subject": "Static and type safety proof",
+      "result": "The 51 focused release tests, API typecheck, formatting and diff checks pass on the remediated state."
+    },
+    {
+      "subject": "Exact-head CI evidence",
+      "result": "On exact SHA 3240f6971bc0992ecfcc73d5a822ff255d873ac7, Dedicated Release Authority PG17, Hosted runtime OCI, Self-hosted E2E and both rotating installer lock jobs passed. The promotion commit must still pass the complete exact-head CI and full local PG17 gates before merge."
+    }
+  ],
+  "residualRisks": [
+    {
+      "risk": "The external capture paths are mutable filesystem locations.",
+      "disposition": "Publication binds both labels to the exact byte count, whole-file SHA-256, canonical digests, pinned PostgreSQL images, exact code SHA and this immutable review artifact hash."
+    },
+    {
+      "risk": "The independent reviewer did not rerun after remediation because its hourly quota was exhausted.",
+      "disposition": "The remediation is narrowly scoped, every finding has an explicit disposition, the candidate remained byte-identical, focused tests and exact-head CI prove the changed boundaries, and the final promotion commit still requires full gates."
+    },
+    {
+      "risk": "Any later SQL, capture, validation or digest change invalidates this authorization.",
+      "disposition": "Fail closed and require a new capture and review artifact."
+    }
+  ],
+  "promotionProvenanceRecommendation": {
+    "status": "publication-authorized",
+    "currentCheckedInProvenanceReady": false,
+    "authorization": "GO only for mechanical activation catalog policy v23 publication using the exact reviewed candidate and provenance in this artifact.",
+    "auditedHead": "3240f6971bc0992ecfcc73d5a822ff255d873ac7",
+    "captureBaseCommit": "3240f6971bc0992ecfcc73d5a822ff255d873ac7",
+    "requiredActions": [
+      "Pin this review artifact SHA-256 in provenance v3.",
+      "Generate the policy artifact mechanically from one verified candidate.",
+      "Rerun no-write verification, full PostgreSQL 17 adversarial proof and full PostgreSQL 16 to 17 rehearsal.",
+      "Require exact-head CI before merge."
+    ]
+  }
+}

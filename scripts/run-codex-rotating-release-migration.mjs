@@ -2400,7 +2400,15 @@ BEGIN
   IF catalog_policy IS DISTINCT FROM permit.preactivation_catalog_policy
      OR permit.preactivation_catalog_policy_sha256 <> 'sha256:' || encode(pg_catalog.sha256(convert_to(
        reviewrouter_activation.canonical_json(catalog_policy),'UTF8')),'hex') THEN
-    RAISE EXCEPTION 'activation catalog policy mismatch';
+    RAISE EXCEPTION 'activation catalog policy mismatch'
+      USING DETAIL = format('sections=%s expected=%s observed=%s',
+        (SELECT string_agg(observed.key,',' ORDER BY observed.key COLLATE "C")
+         FROM jsonb_each(catalog_policy) observed
+         JOIN jsonb_each(permit.preactivation_catalog_policy) expected USING (key)
+         WHERE observed.value IS DISTINCT FROM expected.value),
+        permit.preactivation_catalog_policy_sha256,
+        'sha256:' || encode(pg_catalog.sha256(convert_to(
+          reviewrouter_activation.canonical_json(catalog_policy),'UTF8')),'hex'));
   END IF;
   INSERT INTO reviewrouter_activation.activation_principal_evidence (
     rollout_id,source_system_identifier,target_system_identifier,postgres_major,
@@ -2767,23 +2775,24 @@ BEGIN
        OR EXISTS (SELECT 1 FROM table_facts WHERE
          can_select IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname <> '_prisma_migrations'
            AND relname NOT IN ('CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-             'RuntimeGenerationWitnessProof'))
+             'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'))
          OR can_insert IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthDatabaseAuthorityKey',
-           'CodexOAuthDatabaseAuthorityReceipt','RuntimeGenerationWitnessProof'))
+           'CodexOAuthDatabaseAuthorityReceipt','RuntimeGenerationWitnessProof',
+           'RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'))
          OR can_update IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance',
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-           'RuntimeGenerationWitnessProof'))
+           'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'))
          OR can_delete IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine','CodexOAuthLease',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
            'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
            'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-           'RuntimeGenerationWitnessProof'))
+           'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'))
          OR can_truncate OR can_reference OR can_trigger)
        OR EXISTS (SELECT 1 FROM column_facts WHERE can_update IS DISTINCT FROM (
          role_kind <> 'effect-authority' AND (
@@ -2809,6 +2818,13 @@ BEGIN
            argument_types='text, text'
          WHEN role_kind='api' AND proname='reviewrouter_runtime_generation_write_read_canary' THEN
            argument_types='text, text'
+         WHEN role_kind='api' AND proname='reviewrouter_request_runtime_canary_challenge' THEN
+           argument_types='text, text, timestamp with time zone, text, text, text, jsonb'
+         WHEN role_kind='api' AND proname='reviewrouter_read_runtime_canary_challenge_proofs' THEN
+           argument_types='text'
+         WHEN proname='reviewrouter_answer_runtime_canary_challenge' THEN
+           role_kind IN ('api','web','worker')
+           AND argument_types='text, text, text, text, text, text'
          WHEN proname='codex_oauth_database_authority_challenge' THEN argument_types='text, text, integer'
          WHEN proname='codex_oauth_consume_database_authority' THEN argument_types='text, text, integer'
          WHEN role_kind='api' AND proname='codex_oauth_authorize_runtime_confirmation' THEN argument_types='text, text, integer, text'

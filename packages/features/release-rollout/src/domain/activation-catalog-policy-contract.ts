@@ -24,7 +24,7 @@ export const canonicalActivationCatalogPolicyTrustRootReadiness: Readonly<{
 }> = Object.freeze({
   status: "ready",
   reason:
-    "reviewed-v22-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
+    "reviewed-v23-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
 });
 
 export function assertCanonicalActivationCatalogPolicyTrustRootReady(): void {
@@ -106,9 +106,9 @@ export const canonicalActivationCatalogPolicyDigests = Object.freeze({
 
 export const reviewedActivationCatalogPolicyDigests = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:7d782d8feee32282cfc43c3e295482d16f71cd7f50380b8b9131439d208ff817",
+    "sha256:3ae78c7e2d4a76e7ff8f7b7852a1c7ab195c70ea563278a1c77a69242e7e9217",
   activatedCatalogPolicySha256:
-    "sha256:07cc2dba4d106051a66e7f3c7a5c3e20ed29943204d8e3501c13fd77fbaa7924",
+    "sha256:f8fe1748dc02bfe87d4f487c2d74cc42e10efe66030215117d30565c21a47459",
 });
 
 if (
