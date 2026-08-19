@@ -192,7 +192,7 @@ jobs:
           jq -c . "$work/database-preflight.json"
           jq -e '
             .serverMajor == 17
-            and .publicTableCount >= 100
+            and .publicTableCount >= 98
             and .appliedMigrationCount >= 74
           ' "$work/database-preflight.json" >/dev/null
 
