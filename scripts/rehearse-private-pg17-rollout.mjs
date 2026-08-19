@@ -546,6 +546,19 @@ export function safeRehearsalStageErrorCode(error) {
     : undefined;
 }
 
+async function cleanupDisposableRehearsalResourcesWithDiagnostics(options) {
+  process.stderr.write("rehearsal_cleanup_started\n");
+  try {
+    await cleanupDisposableRehearsalResources(options);
+    process.stderr.write("rehearsal_cleanup_completed\n");
+  } catch (error) {
+    process.stderr.write(
+      `rehearsal_cleanup_failed:${safeRehearsalStageErrorCode(error) ?? redactedErrorChain(error)}\n`,
+    );
+    throw error;
+  }
+}
+
 const safeReleaseMigrationInvariantMessages = Object.freeze([
   "release migration target permit invalid",
   "release migration target permit binding conflict",
@@ -2014,30 +2027,21 @@ ROLLBACK;`,
     });
   } finally {
     // The disposable rehearsal must fail when resource cleanup is incomplete.
-    process.stderr.write("rehearsal_cleanup_started\n");
-    try {
-      await cleanupDisposableRehearsalResources({
-        releaseControl,
-        prismaClients: [
-          controlPrisma,
-          providerAuthorityPrisma,
-          permitInstallerPrisma,
-          targetReceiptReaderPrisma,
-          witnessPrisma,
-        ],
-        createdContainers,
-        networkCreated,
-        network,
-        directory,
-        docker,
-      });
-      process.stderr.write("rehearsal_cleanup_completed\n");
-    } catch (error) {
-      process.stderr.write(
-        `rehearsal_cleanup_failed:${safeRehearsalStageErrorCode(error) ?? redactedErrorChain(error)}\n`,
-      );
-      throw error;
-    }
+    await cleanupDisposableRehearsalResourcesWithDiagnostics({
+      releaseControl,
+      prismaClients: [
+        controlPrisma,
+        providerAuthorityPrisma,
+        permitInstallerPrisma,
+        targetReceiptReaderPrisma,
+        witnessPrisma,
+      ],
+      createdContainers,
+      networkCreated,
+      network,
+      directory,
+      docker,
+    });
   }
 }
 
