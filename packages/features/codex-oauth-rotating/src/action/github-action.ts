@@ -115,6 +115,7 @@ const githubRequestTimeoutMs = 30_000;
 const networkRetryMaxAttempts = 3;
 const networkRetryBaseDelayMs = 750;
 const hostedPoolMaxLeaseAttempts = 3;
+const hostedPoolMinimumRetryBudgetMs = 90_000;
 const fullRuntimeProgressCommentMarker =
   "<!-- review-router-progress-tracker -->";
 const providerNeutralReviewFindingsArtifactFileName =
@@ -1109,10 +1110,10 @@ async function runHostedForkAgenticSandboxGitHubAction(input: {
     await runHostedPoolLeaseFailover({
       maxAttempts: hostedPoolMaxLeaseAttempts,
       canRetry: () =>
-        remainingReviewExecutionBudgetMs({
+        hasHostedPoolRetryBudget({
           executionDeadlineEpochMs: input.executionDeadlineEpochMs,
           nowEpochMs: input.now(),
-        }) > 0,
+        }),
       onRetry: ({ attempt, maxAttempts, reason }) => {
         notice(
           input.io,
@@ -1261,6 +1262,15 @@ export type HostedPoolFailoverInput<T> = {
       }) => void | Promise<void>)
     | undefined;
 };
+
+export function hasHostedPoolRetryBudget(input: {
+  readonly executionDeadlineEpochMs: number;
+  readonly nowEpochMs: number;
+}): boolean {
+  return (
+    remainingReviewExecutionBudgetMs(input) >= hostedPoolMinimumRetryBudgetMs
+  );
+}
 
 export async function runHostedPoolLeaseFailover<T>(
   input: HostedPoolFailoverInput<T>,

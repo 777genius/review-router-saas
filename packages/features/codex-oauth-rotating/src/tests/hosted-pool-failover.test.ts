@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  hasHostedPoolRetryBudget,
   hostedPoolAccountFailureReason,
   runHostedPoolLeaseFailover,
 } from "../action/github-action";
@@ -22,6 +23,21 @@ describe("hosted pool account failover", () => {
     "hosted_relay_grant_failed:403",
   ])("does not rotate accounts for %s", (message) => {
     expect(hostedPoolAccountFailureReason(new Error(message))).toBeUndefined();
+  });
+
+  it("requires enough time for another lease exchange before retrying", () => {
+    expect(
+      hasHostedPoolRetryBudget({
+        executionDeadlineEpochMs: 189_999,
+        nowEpochMs: 100_000,
+      }),
+    ).toBe(false);
+    expect(
+      hasHostedPoolRetryBudget({
+        executionDeadlineEpochMs: 190_000,
+        nowEpochMs: 100_000,
+      }),
+    ).toBe(true);
   });
 
   it("releases failed leases and resumes on the next eligible lease", async () => {

@@ -40,6 +40,7 @@ __export(github_action_exports, {
   didReviewRuntimeComplete: () => didReviewRuntimeComplete,
   extractReviewRouterRuntimeFailure: () => extractReviewRouterRuntimeFailure,
   formatTopLevelActionErrorMessage: () => formatTopLevelActionErrorMessage,
+  hasHostedPoolRetryBudget: () => hasHostedPoolRetryBudget,
   hostedPoolAccountFailureReason: () => hostedPoolAccountFailureReason,
   isReviewRouterTargetRevisionMismatchFailure: () => isReviewRouterTargetRevisionMismatchFailure,
   postPullRequestComment: () => postPullRequestComment,
@@ -22843,6 +22844,7 @@ var githubRequestTimeoutMs = 3e4;
 var networkRetryMaxAttempts = 3;
 var networkRetryBaseDelayMs = 750;
 var hostedPoolMaxLeaseAttempts = 3;
+var hostedPoolMinimumRetryBudgetMs = 9e4;
 var fullRuntimeProgressCommentMarker = "<!-- review-router-progress-tracker -->";
 var providerNeutralReviewFindingsArtifactFileName = "reviewrouter-findings.json";
 var reviewThreadLifecycleResolveTokenEnvKey = "REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN";
@@ -23555,10 +23557,10 @@ async function runHostedForkAgenticSandboxGitHubAction(input) {
   try {
     await runHostedPoolLeaseFailover({
       maxAttempts: hostedPoolMaxLeaseAttempts,
-      canRetry: () => remainingReviewExecutionBudgetMs({
+      canRetry: () => hasHostedPoolRetryBudget({
         executionDeadlineEpochMs: input.executionDeadlineEpochMs,
         nowEpochMs: input.now()
-      }) > 0,
+      }),
       onRetry: ({ attempt, maxAttempts, reason }) => {
         notice(
           input.io,
@@ -23682,6 +23684,9 @@ async function runHostedForkAgenticSandboxGitHubAction(input) {
     await removeTree(tempCodexHome);
   }
   notice(input.io, "ReviewRouter hosted pool review completed.");
+}
+function hasHostedPoolRetryBudget(input) {
+  return remainingReviewExecutionBudgetMs(input) >= hostedPoolMinimumRetryBudgetMs;
 }
 async function runHostedPoolLeaseFailover(input) {
   const maxAttempts = input.maxAttempts ?? hostedPoolMaxLeaseAttempts;
@@ -26461,6 +26466,7 @@ if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) 
   didReviewRuntimeComplete,
   extractReviewRouterRuntimeFailure,
   formatTopLevelActionErrorMessage,
+  hasHostedPoolRetryBudget,
   hostedPoolAccountFailureReason,
   isReviewRouterTargetRevisionMismatchFailure,
   postPullRequestComment,
