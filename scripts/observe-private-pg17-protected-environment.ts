@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
+import { ReleaseApprovalMode } from "@reviewrouter/features-release-rollout";
 const required = (name: string): string => {
   const value = process.env[name];
   if (!value) throw new Error(`private_pg17_preflight_missing:${name}`);
@@ -8,6 +9,13 @@ const required = (name: string): string => {
 };
 const repository = required("GITHUB_REPOSITORY");
 const organization = required("REVIEW_ROUTER_RELEASE_CONTROL_ORG");
+const approvalMode = required("REVIEW_ROUTER_RELEASE_APPROVAL_MODE");
+if (
+  !Object.values(ReleaseApprovalMode).includes(
+    approvalMode as ReleaseApprovalMode,
+  )
+)
+  throw new Error("private_pg17_preflight_approval_mode_invalid");
 if (
   repository !== required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY") ||
   repository.split("/")[0] !== organization ||
@@ -71,6 +79,9 @@ for (const environmentName of environmentNames as string[]) {
     !reviewerRule ||
     !Array.isArray(reviewerRule.reviewers) ||
     reviewerRule.reviewers.length < 1 ||
+    typeof reviewerRule.prevent_self_review !== "boolean" ||
+    (approvalMode === ReleaseApprovalMode.Independent &&
+      reviewerRule.prevent_self_review !== true) ||
     !branchRule ||
     !environment.deployment_branch_policy ||
     typeof environment.deployment_branch_policy !== "object" ||
@@ -81,7 +92,7 @@ for (const environmentName of environmentNames as string[]) {
   environments.push({
     name: environmentName,
     requiredReviewerCount: reviewerRule.reviewers.length,
-    preventSelfReview: reviewerRule.prevent_self_review === true,
+    preventSelfReview: reviewerRule.prevent_self_review,
     protectedBranchesOnly: true,
   });
 }
@@ -95,6 +106,7 @@ const facts = {
   actor: required("GITHUB_ACTOR"),
   runId: required("GITHUB_RUN_ID"),
   runAttempt: 1,
+  approvalMode,
   environments,
   runnerGroupId: Number(required("REVIEW_ROUTER_RUNNER_GROUP_ID")),
   observedAt: new Date().toISOString(),

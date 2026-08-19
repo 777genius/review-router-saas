@@ -39,6 +39,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           GH_TOKEN: ${{ github.token }}
           REQUIRED_ENVIRONMENT: production-release-authority-migration
+          REVIEW_ROUTER_RELEASE_APPROVAL_MODE: ${{ vars.REVIEW_ROUTER_RELEASE_APPROVAL_MODE }}
         run: |
           set -euo pipefail
           node <<'NODE'
@@ -55,6 +56,9 @@ jobs:
           const repository = required("GITHUB_REPOSITORY");
           const sha = required("GITHUB_SHA").toLowerCase();
           const expectedSha = required("EXPECTED_SHA").toLowerCase();
+          const approvalMode = required("REVIEW_ROUTER_RELEASE_APPROVAL_MODE");
+          if (!["solo_owner", "independent"].includes(approvalMode))
+            fail("approval_mode");
           if (required("GITHUB_EVENT_NAME") !== "workflow_dispatch") fail("event");
           if (required("GITHUB_REF") !== "refs/heads/main") fail("workflow_ref");
           if (!/^[a-f0-9]{40}$/.test(sha) || expectedSha !== sha)
@@ -87,6 +91,8 @@ jobs:
             !reviewers ||
             !Array.isArray(reviewers.reviewers) ||
             reviewers.reviewers.length < 1 ||
+            typeof reviewers.prevent_self_review !== "boolean" ||
+            (approvalMode === "independent" && reviewers.prevent_self_review !== true) ||
             !branchPolicy ||
             environment.deployment_branch_policy?.protected_branches !== true
           ) fail("environment_unprotected");

@@ -91,6 +91,7 @@ const releaseEnvironment = {
   GITHUB_SHA: sha,
   GH_TOKEN: "read-only-test-token",
   REQUIRED_ENVIRONMENT: "production-release",
+  REVIEW_ROUTER_RELEASE_APPROVAL_MODE: "solo_owner",
 };
 const releaseFixture: Fixture = {
   "/repos/777genius/review-router-saas/branches/main": {
@@ -123,6 +124,7 @@ const rolloutEnvironment = {
   RELEASE_ARTIFACT_ID: "8001",
   EXPECTED_ORGANIZATION: "777genius",
   EXPECTED_REPOSITORY: "777genius/review-router-saas",
+  REVIEW_ROUTER_RELEASE_APPROVAL_MODE: "solo_owner",
   REQUIRED_ENVIRONMENTS_JSON: JSON.stringify([
     "production-release-preflight",
     "production-runner-control",
@@ -232,6 +234,16 @@ describe("release-authority migration protected environment bootstrap", () => {
       },
     ],
     [
+      "missing self-review policy fact",
+      {
+        protection_rules: [
+          { type: "required_reviewers", reviewers: [{ type: "Team", id: 1 }] },
+          { type: "branch_policy" },
+        ],
+        deployment_branch_policy: { protected_branches: true },
+      },
+    ],
+    [
       "unprotected branches",
       {
         ...protectedEnvironment,
@@ -260,6 +272,21 @@ describe("release-authority migration protected environment bootstrap", () => {
       );
     },
   );
+
+  it("requires self-review prevention only in explicit independent mode", () => {
+    const result = executeBootstrap(
+      authorityMigration,
+      {
+        ...authorityMigrationEnvironment,
+        REVIEW_ROUTER_RELEASE_APPROVAL_MODE: "independent",
+      },
+      authorityMigrationFixture,
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      "authority_migration_trust_rejected:environment_unprotected",
+    );
+  });
 
   it("fails closed and redacts credentials when the GitHub environment API fails", () => {
     const ownerCredential = "owner-database-credential-must-not-appear";

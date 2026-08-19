@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ReleaseApprovalMode,
   assertPromotionAllowed,
   beginReleaseMigrationAttempt,
   beginCompensation,
@@ -216,6 +217,7 @@ const observe = (step: (typeof steps)[number], index: number) => {
           actor: "release-operator",
           runId: "123",
           runAttempt: 1,
+          approvalMode: ReleaseApprovalMode.SoloOwner,
           environments: [
             {
               name: "production-release-preflight",

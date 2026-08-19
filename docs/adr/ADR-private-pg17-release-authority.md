@@ -53,9 +53,12 @@ Protected production environments require an explicit reviewer and protected
 branch policy. Independent approval is recommended when an independent operator
 exists, but it is not treated as a security claim in a repository with one
 owner. Such a repository may allow the dispatching owner to approve the
-deployment. Exact protected-main identity, successful release gates, immutable
-artifacts, scoped credentials, durable database authority, and reconciliation
-remain mandatory and are the enforceable trust boundaries.
+deployment by explicitly selecting `solo_owner`. The `independent` mode requires
+GitHub's prevent-self-review policy. The selected mode and observed boolean
+policy are written into durable rollout evidence; missing or malformed policy
+facts fail closed. Exact protected-main identity, successful release gates,
+immutable artifacts, scoped credentials, durable database authority, and
+reconciliation remain mandatory and are the enforceable trust boundaries.
 
 ### Target-local one-shot permit
 
