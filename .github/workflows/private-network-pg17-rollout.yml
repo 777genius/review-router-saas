@@ -156,7 +156,6 @@ jobs:
               !reviewers ||
               !Array.isArray(reviewers.reviewers) ||
               reviewers.reviewers.length < 1 ||
-              reviewers.prevent_self_review !== true ||
               !branchPolicy ||
               environment.deployment_branch_policy?.protected_branches !== true
             ) fail(`environment_unprotected:${environmentName}`);

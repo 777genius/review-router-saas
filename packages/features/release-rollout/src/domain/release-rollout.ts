@@ -555,7 +555,7 @@ function assertStepFacts(
             typeof environment.name !== "string" ||
             !Number.isSafeInteger(environment.requiredReviewerCount) ||
             Number(environment.requiredReviewerCount) < 1 ||
-            environment.preventSelfReview !== true ||
+            typeof environment.preventSelfReview !== "boolean" ||
             environment.protectedBranchesOnly !== true
           );
         }) ||

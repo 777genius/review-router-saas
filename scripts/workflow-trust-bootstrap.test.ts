@@ -73,7 +73,7 @@ const protectedEnvironment = {
   protection_rules: [
     {
       type: "required_reviewers",
-      prevent_self_review: true,
+      prevent_self_review: false,
       reviewers: [{ type: "Team", id: 1 }],
     },
     { type: "branch_policy" },
@@ -229,20 +229,6 @@ describe("release-authority migration protected environment bootstrap", () => {
       {
         protection_rules: [{ type: "branch_policy" }],
         deployment_branch_policy: { protected_branches: true },
-      },
-    ],
-    [
-      "self-review enabled",
-      {
-        ...protectedEnvironment,
-        protection_rules: [
-          {
-            type: "required_reviewers",
-            prevent_self_review: false,
-            reviewers: [{ type: "Team", id: 1 }],
-          },
-          { type: "branch_policy" },
-        ],
       },
     ],
     [

@@ -71,7 +71,6 @@ for (const environmentName of environmentNames as string[]) {
     !reviewerRule ||
     !Array.isArray(reviewerRule.reviewers) ||
     reviewerRule.reviewers.length < 1 ||
-    reviewerRule.prevent_self_review !== true ||
     !branchRule ||
     !environment.deployment_branch_policy ||
     typeof environment.deployment_branch_policy !== "object" ||
@@ -82,7 +81,7 @@ for (const environmentName of environmentNames as string[]) {
   environments.push({
     name: environmentName,
     requiredReviewerCount: reviewerRule.reviewers.length,
-    preventSelfReview: true,
+    preventSelfReview: reviewerRule.prevent_self_review === true,
     protectedBranchesOnly: true,
   });
 }

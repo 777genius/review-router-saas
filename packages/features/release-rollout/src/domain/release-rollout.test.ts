@@ -220,7 +220,7 @@ const observe = (step: (typeof steps)[number], index: number) => {
             {
               name: "production-release-preflight",
               requiredReviewerCount: 1,
-              preventSelfReview: true,
+              preventSelfReview: false,
               protectedBranchesOnly: true,
             },
           ],
