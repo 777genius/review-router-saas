@@ -1,100 +1,183 @@
-name: Codex rotating trusted release migration
+name: PG17 maintenance migration
 
 on:
   workflow_dispatch:
     inputs:
-      rollout_id:
-        description: Unique non-reusable rollout identifier
+      source_db_id:
+        description: Exact Render PostgreSQL 16 source database ID
         required: true
         type: string
 
 permissions:
   actions: read
   contents: read
-  id-token: write
 
 concurrency:
-  group: codex-rotating-database-mutation-production
+  group: reviewrouter-pg17-maintenance-migration
   cancel-in-progress: false
 
 jobs:
-  trusted-release-migration:
-    name: trusted-release-migration
+  verified-backup:
+    name: Create verified encrypted PG16 backup
     environment: production
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 35
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-      RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
-      RENDER_PROJECT_ID: ${{ vars.RENDER_PROJECT_ID }}
-      RENDER_ENVIRONMENT_ID: ${{ vars.RENDER_ENVIRONMENT_ID }}
-      REVIEW_ROUTER_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_RENDER_DATABASE_ID }}
-      REVIEW_ROUTER_RENDER_DATABASE_IDENTITY: ${{ vars.REVIEW_ROUTER_RENDER_DATABASE_IDENTITY }}
-      REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ github.sha }}
-      REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RENDER_IMAGE_DIGEST }}
-      REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
-      REVIEW_ROUTER_API_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_API_DATABASE_URL }}
-      REVIEW_ROUTER_WEB_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WEB_DATABASE_URL }}
-      REVIEW_ROUTER_WORKER_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WORKER_DATABASE_URL }}
-      REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL }}
-      REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID: ${{ inputs.rollout_id }}
-      REVIEW_ROUTER_ROLLOUT_EVIDENCE_ARTIFACT_NAME: reviewrouter-trusted-rollout-${{ github.run_id }}-${{ github.run_attempt }}
+      PG17_MIGRATION_BACKUP_KEY: ${{ secrets.PG17_MIGRATION_BACKUP_KEY }}
+      SOURCE_DB_ID: ${{ inputs.source_db_id }}
     steps:
-      - name: Checkout immutable release
+      - name: Checkout immutable migration tooling
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Install exact package manager
-        run: corepack enable && corepack prepare pnpm@10.33.0 --activate
-
-      - name: Install locked dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Resolve immutable GitHub job identity
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Create, validate, and encrypt logical backup
+        id: backup
+        shell: bash
         run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync } from "node:fs";
-          const response = await fetch(
-            `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}/jobs?filter=latest&per_page=100`,
-            { headers: { Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: "application/vnd.github+json" } },
-          );
-          if (!response.ok) throw new Error(`job identity lookup failed: ${response.status}`);
-          const value = await response.json();
-          const jobs = value.jobs.filter((job) =>
-            job.name === "trusted-release-migration" &&
-            job.run_attempt === Number(process.env.GITHUB_RUN_ATTEMPT),
-          );
-          if (value.total_count !== value.jobs.length || jobs.length !== 1)
-            throw new Error("job identity is not unique and complete");
-          appendFileSync(process.env.GITHUB_ENV, `REVIEW_ROUTER_GITHUB_JOB_ID=${jobs[0].id}\n`);
-          NODE
+          set -euo pipefail
+          umask 077
+          test -n "${RENDER_API_KEY:-}"
+          test -n "${PG17_MIGRATION_BACKUP_KEY:-}"
+          [[ "$SOURCE_DB_ID" =~ ^dpg-[a-z0-9-]+$ ]]
 
-      - name: Run canonical migration from the immutable checkout
-        run: node --import tsx scripts/run-codex-rotating-release-migration.mjs > migration-output.json
+          work="$RUNNER_TEMP/reviewrouter-pg17-backup"
+          mkdir -p "$work"
+          connection_info="$work/connection-info.json"
+          export_list="$work/exports.json"
+          plain_backup="$work/reviewrouter-pg16.dir.tar.gz"
+          encrypted_backup="$work/reviewrouter-pg16.dir.tar.gz.enc"
+          trap 'rm -f "$connection_info" "$plain_backup"' EXIT
 
-      - name: Capture read-only Render database identity
-        env:
-          REVIEW_ROUTER_PROVENANCE_PROVIDER: render-database
-          REVIEW_ROUTER_RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
-        run: node scripts/codex-rotating-provider-provenance.mjs > render-database-observation.json
+          render_api() {
+            curl --fail --silent --show-error \
+              --retry 4 --retry-all-errors --retry-delay 3 \
+              --connect-timeout 15 --max-time 90 \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
 
-      - name: Assemble provider-bound migration evidence
-        env:
-          REVIEW_ROUTER_MIGRATION_OUTPUT_FILE: migration-output.json
-          REVIEW_ROUTER_RENDER_DATABASE_OBSERVATION_FILE: render-database-observation.json
-        run: |
-          mkdir trusted-evidence
-          node scripts/assemble-codex-rotating-trusted-evidence.mjs > trusted-evidence/reviewrouter-trusted-rollout-evidence.json
+          render_api \
+            "https://api.render.com/v1/postgres/$SOURCE_DB_ID/connection-info" \
+            > "$connection_info"
+          export DATABASE_URL
+          DATABASE_URL="$(jq -er '.externalConnectionString' "$connection_info")"
 
-      - name: Upload immutable trusted evidence
+          docker pull postgres:16-alpine >/dev/null
+          docker run --rm -e DATABASE_URL postgres:16-alpine \
+            sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "
+              SELECT json_build_object(
+                '\''serverVersion'\'', current_setting('\''server_version'\''),
+                '\''serverMajor'\'', current_setting('\''server_version_num'\'')::integer / 10000,
+                '\''databaseSizeBytes'\'', pg_database_size(current_database()),
+                '\''publicTableCount'\'', (
+                  SELECT count(*) FROM information_schema.tables
+                  WHERE table_schema = '\''public'\'' AND table_type = '\''BASE TABLE'\''
+                ),
+                '\''appliedMigrationCount'\'', (
+                  SELECT count(*) FROM \"_prisma_migrations\"
+                  WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL
+                )
+              );
+            "' > "$work/source-stats.json"
+          jq -e '.serverMajor == 16' "$work/source-stats.json" >/dev/null
+
+          started_at="$(date -u -d '2 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+          render_api -X POST \
+            "https://api.render.com/v1/postgres/$SOURCE_DB_ID/export" \
+            -o "$work/export-start.json"
+
+          export_id=""
+          export_created_at=""
+          export_url=""
+          for _ in $(seq 1 100); do
+            render_api \
+              "https://api.render.com/v1/postgres/$SOURCE_DB_ID/export" \
+              > "$export_list"
+            export_id="$(
+              jq -er --arg started "$started_at" '
+                [.[] | select(.url != null and .createdAt >= $started)]
+                | sort_by(.createdAt) | last | .id // empty
+              ' "$export_list" 2>/dev/null || true
+            )"
+            if [[ -n "$export_id" ]]; then
+              export_created_at="$(
+                jq -er --arg id "$export_id" '.[] | select(.id == $id) | .createdAt' "$export_list"
+              )"
+              export_url="$(
+                jq -er --arg id "$export_id" '.[] | select(.id == $id) | .url' "$export_list"
+              )"
+              break
+            fi
+            sleep 12
+          done
+          test -n "$export_id"
+          test -n "$export_url"
+
+          curl --fail --silent --show-error \
+            --retry 5 --retry-all-errors --retry-delay 5 \
+            --connect-timeout 20 --max-time 1200 \
+            "$export_url" -o "$plain_backup"
+          test -s "$plain_backup"
+          gzip -t "$plain_backup"
+          tar -tzf "$plain_backup" > "$work/archive-list.txt"
+          test -s "$work/archive-list.txt"
+          if awk '
+            /^\// { bad=1 }
+            /(^|\/)\.\.(\/|$)/ { bad=1 }
+            END { exit bad ? 0 : 1 }
+          ' "$work/archive-list.txt"; then
+            echo "::error::backup archive contains an unsafe path"
+            exit 1
+          fi
+
+          plain_sha256="$(sha256sum "$plain_backup" | cut -d' ' -f1)"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -in "$plain_backup" -out "$encrypted_backup" \
+            -pass env:PG17_MIGRATION_BACKUP_KEY
+          encrypted_sha256="$(sha256sum "$encrypted_backup" | cut -d' ' -f1)"
+          rm -f "$plain_backup" "$connection_info"
+          unset DATABASE_URL export_url
+
+          jq -n \
+            --arg sourceDbId "$SOURCE_DB_ID" \
+            --arg exportId "$export_id" \
+            --arg exportCreatedAt "$export_created_at" \
+            --arg plainSha256 "$plain_sha256" \
+            --arg encryptedSha256 "$encrypted_sha256" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --slurpfile sourceStats "$work/source-stats.json" \
+            '{
+              formatVersion: 1,
+              sourceDbId: $sourceDbId,
+              exportId: $exportId,
+              exportCreatedAt: $exportCreatedAt,
+              plainSha256: $plainSha256,
+              encryptedSha256: $encryptedSha256,
+              githubRunId: $runId,
+              sourceStats: $sourceStats[0]
+            }' > "$work/manifest.json"
+
+          echo "artifact_name=reviewrouter-pg16-backup-$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Verified encrypted PG16 backup"
+            echo
+            echo "- Source database: \`$SOURCE_DB_ID\`"
+            echo "- Export: \`$export_id\`"
+            echo "- Encrypted SHA-256: \`$encrypted_sha256\`"
+            echo "- Source facts: \`$(jq -c . "$work/source-stats.json")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload encrypted recovery artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ${{ env.REVIEW_ROUTER_ROLLOUT_EVIDENCE_ARTIFACT_NAME }}
-          path: trusted-evidence/reviewrouter-trusted-rollout-evidence.json
+          name: ${{ steps.backup.outputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/reviewrouter-pg17-backup/reviewrouter-pg16.dir.tar.gz.enc
+            ${{ runner.temp }}/reviewrouter-pg17-backup/manifest.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
           compression-level: 0
