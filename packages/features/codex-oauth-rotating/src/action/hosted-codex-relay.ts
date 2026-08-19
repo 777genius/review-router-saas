@@ -64,6 +64,7 @@ export type HostedRelayTransportInput = {
   readonly bindingId: string;
   readonly bindingVersion: number;
   readonly maskSecret: MaskSecret;
+  readonly deferOidcRequestEnvCleanup?: boolean | undefined;
   readonly retryDelay?: ((ms: number) => Promise<void>) | undefined;
   readonly run: (input: {
     readonly baseUrl: string;
@@ -117,7 +118,9 @@ export async function runHostedCodexRelayTransport(
   } finally {
     await proxy.close();
     clearHostedActionCredentialEnv(input.env);
-    clearOidcRequestEnv(input.env);
+    if (!input.deferOidcRequestEnvCleanup) {
+      clearOidcRequestEnv(input.env);
+    }
   }
 }
 
@@ -130,6 +133,7 @@ export async function requestHostedRelayGrantWithFreshGitHubOidc(input: {
   readonly bindingId: string;
   readonly bindingVersion: number;
   readonly maskSecret: MaskSecret;
+  readonly deferOidcRequestEnvCleanup?: boolean | undefined;
   readonly retryDelay?: ((ms: number) => Promise<void>) | undefined;
 }): Promise<HostedRelayGrant> {
   const totalController = new AbortController();
@@ -234,7 +238,9 @@ export async function requestHostedRelayGrantWithFreshGitHubOidc(input: {
     throw lastError;
   } finally {
     clearTimeout(totalTimer);
-    clearOidcRequestEnv(input.env);
+    if (!input.deferOidcRequestEnvCleanup) {
+      clearOidcRequestEnv(input.env);
+    }
   }
 }
 
@@ -444,7 +450,7 @@ async function requestGitHubActionsOidcToken(input: {
   const requestUrl = input.env.ACTIONS_ID_TOKEN_REQUEST_URL;
   const requestToken = input.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
   if (!requestUrl || !requestToken) throw new Error("github_oidc_unavailable");
-  const url = parseTrustedOidcUrl(requestUrl);
+  const url = parseTrustedGitHubActionsOidcUrl(requestUrl);
   url.searchParams.set("audience", input.audience);
   let response: Response;
   try {
@@ -492,7 +498,7 @@ async function requestGitHubActionsOidcToken(input: {
   return body.value;
 }
 
-function parseTrustedOidcUrl(requestUrl: string): URL {
+export function parseTrustedGitHubActionsOidcUrl(requestUrl: string): URL {
   let url: URL;
   try {
     url = new URL(requestUrl);

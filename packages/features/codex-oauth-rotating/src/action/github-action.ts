@@ -70,6 +70,7 @@ import {
 } from "./pull-request-head-supervisor";
 import {
   forkAgenticSandboxHostedPoolActionMode,
+  parseTrustedGitHubActionsOidcUrl,
   runHostedCodexRelayTransport,
 } from "./hosted-codex-relay";
 
@@ -113,6 +114,7 @@ const oidcRequestTimeoutMs = 20_000;
 const githubRequestTimeoutMs = 30_000;
 const networkRetryMaxAttempts = 3;
 const networkRetryBaseDelayMs = 750;
+const hostedPoolMaxLeaseAttempts = 3;
 const fullRuntimeProgressCommentMarker =
   "<!-- review-router-progress-tracker -->";
 const providerNeutralReviewFindingsArtifactFileName =
@@ -1104,115 +1106,135 @@ async function runHostedForkAgenticSandboxGitHubAction(input: {
   const tempCodexHome = await makeGitHubWorkspaceCodexHomeDirectory(input.env);
 
   try {
-    await runHostedCodexRelayTransport({
-      env: input.env,
-      fetchImpl: input.fetchImpl,
-      apiUrl: input.inputs.apiUrl,
-      providerInstanceId: input.inputs.providerInstanceId,
-      workflowSchemaVersion: input.inputs.workflowSchemaVersion,
-      bindingId,
-      bindingVersion,
-      maskSecret: (secret) => mask(input.io, secret),
-      run: async ({
-        baseUrl,
-        invocationLeaseId,
-        runtimeConfigVersion,
-        runtimeEnv: grantedRuntimeEnv,
-        repository,
-        commentToken,
-        commentTokenExpiresAt,
-        commentTokenRefreshUrl,
-      }) => {
-        if (repository !== event.repository) {
-          throw new Error("comment_token_repository_mismatch");
-        }
-        mask(input.io, commentToken);
-        const runtimeEnv = forkAgenticSandboxRuntimeEnv(grantedRuntimeEnv);
-        await deleteStaleCodexRotatingSummaryComments({
+    await runHostedPoolLeaseFailover({
+      maxAttempts: hostedPoolMaxLeaseAttempts,
+      canRetry: () =>
+        remainingReviewExecutionBudgetMs({
+          executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+          nowEpochMs: input.now(),
+        }) > 0,
+      onRetry: ({ attempt, maxAttempts, reason }) => {
+        notice(
+          input.io,
+          `ReviewRouter released a ${
+            reason === "quota_exhausted" ? "quota-exhausted" : "failed"
+          } hosted account lease and will resume from the durable checkpoint with the next eligible account (${attempt + 1}/${maxAttempts}).`,
+        );
+      },
+      runAttempt: async () =>
+        runHostedCodexRelayTransport({
+          env: input.env,
           fetchImpl: input.fetchImpl,
-          token: commentToken,
-          owner: event.owner,
-          repo: event.repo,
-          issueNumber: event.number,
-        });
-        await writeCodexProxySnapshot({
-          codexHome: tempCodexHome,
-          baseUrl,
-          model: codexModelForForkRuntime(runtimeEnv),
-        });
-
-        const reviewHome = await makeTempDirectory("reviewrouter-review-home-");
-        try {
-          let cleanupCommentToken = commentToken;
-          let reviewRuntimeFailure: unknown;
-          try {
-            await runReviewRuntimeWithinExecutionBudget({
-              executionDeadlineEpochMs: input.executionDeadlineEpochMs,
-              now: input.now,
-              run: () =>
-                input.fullReviewRuntimeRunner({
-                  inputs: input.inputs,
-                  leaseId: invocationLeaseId,
-                  codexBinaryPath,
-                  env: input.env,
-                  io: input.io,
-                  fetchImpl: input.fetchImpl,
-                  workspace,
-                  tempHome: reviewHome,
-                  tempCodexHome,
-                  event,
-                  commentToken,
-                  commentTokenExpiresAt,
-                  runtimeConfigVersion,
-                  runtimeEnv,
-                  executionDeadlineEpochMs: input.executionDeadlineEpochMs,
-                  commentTokenRefreshUrl,
-                  commentTokenRefreshMode: "hosted-relay",
-                  sessionBindingId: bindingId,
-                  sessionBindingVersion: bindingVersion,
-                  onCommentTokenUpdated: (token) => {
-                    cleanupCommentToken = token;
-                  },
-                }),
-            });
-          } catch (error) {
-            reviewRuntimeFailure = error;
-          }
-          try {
-            await deleteFullRuntimeProgressCommentsWithTokenRefresh({
+          apiUrl: input.inputs.apiUrl,
+          providerInstanceId: input.inputs.providerInstanceId,
+          workflowSchemaVersion: input.inputs.workflowSchemaVersion,
+          bindingId,
+          bindingVersion,
+          deferOidcRequestEnvCleanup: true,
+          maskSecret: (secret) => mask(input.io, secret),
+          run: async ({
+            baseUrl,
+            invocationLeaseId,
+            runtimeConfigVersion,
+            runtimeEnv: grantedRuntimeEnv,
+            repository,
+            commentToken,
+            commentTokenExpiresAt,
+            commentTokenRefreshUrl,
+          }) => {
+            if (repository !== event.repository) {
+              throw new Error("comment_token_repository_mismatch");
+            }
+            mask(input.io, commentToken);
+            const runtimeEnv = forkAgenticSandboxRuntimeEnv(grantedRuntimeEnv);
+            await deleteStaleCodexRotatingSummaryComments({
               fetchImpl: input.fetchImpl,
-              token: cleanupCommentToken,
+              token: commentToken,
               owner: event.owner,
               repo: event.repo,
               issueNumber: event.number,
-              refreshToken: () =>
-                refreshCleanupCommentToken({
-                  fetchImpl: input.fetchImpl,
-                  inputs: input.inputs,
-                  leaseId: invocationLeaseId,
-                  event,
-                  io: input.io,
-                  commentTokenRefreshUrl,
-                }),
             });
-          } catch {
-            notice(
-              input.io,
-              "ReviewRouter could not clean up progress comments.",
+            await writeCodexProxySnapshot({
+              codexHome: tempCodexHome,
+              baseUrl,
+              model: codexModelForForkRuntime(runtimeEnv),
+            });
+
+            const reviewHome = await makeTempDirectory(
+              "reviewrouter-review-home-",
             );
-          }
-          if (isStalePullRequestHeadError(reviewRuntimeFailure)) {
-            notice(
-              input.io,
-              "ReviewRouter stopped a stale review because the PR head changed; the newer run will review the current head.",
-            );
-            return;
-          }
-          if (reviewRuntimeFailure) throw reviewRuntimeFailure;
-        } finally {
-          await removeTree(reviewHome);
-        }
-      },
+            try {
+              let cleanupCommentToken = commentToken;
+              let reviewRuntimeFailure: unknown;
+              try {
+                await runReviewRuntimeWithinExecutionBudget({
+                  executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+                  now: input.now,
+                  run: () =>
+                    input.fullReviewRuntimeRunner({
+                      inputs: input.inputs,
+                      leaseId: invocationLeaseId,
+                      codexBinaryPath,
+                      env: input.env,
+                      io: input.io,
+                      fetchImpl: input.fetchImpl,
+                      workspace,
+                      tempHome: reviewHome,
+                      tempCodexHome,
+                      event,
+                      commentToken,
+                      commentTokenExpiresAt,
+                      runtimeConfigVersion,
+                      runtimeEnv,
+                      executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+                      commentTokenRefreshUrl,
+                      commentTokenRefreshMode: "hosted-relay",
+                      sessionBindingId: bindingId,
+                      sessionBindingVersion: bindingVersion,
+                      onCommentTokenUpdated: (token) => {
+                        cleanupCommentToken = token;
+                      },
+                    }),
+                });
+              } catch (error) {
+                reviewRuntimeFailure = error;
+              }
+              try {
+                await deleteFullRuntimeProgressCommentsWithTokenRefresh({
+                  fetchImpl: input.fetchImpl,
+                  token: cleanupCommentToken,
+                  owner: event.owner,
+                  repo: event.repo,
+                  issueNumber: event.number,
+                  refreshToken: () =>
+                    refreshCleanupCommentToken({
+                      fetchImpl: input.fetchImpl,
+                      inputs: input.inputs,
+                      leaseId: invocationLeaseId,
+                      event,
+                      io: input.io,
+                      commentTokenRefreshUrl,
+                    }),
+                });
+              } catch {
+                notice(
+                  input.io,
+                  "ReviewRouter could not clean up progress comments.",
+                );
+              }
+              if (isStalePullRequestHeadError(reviewRuntimeFailure)) {
+                notice(
+                  input.io,
+                  "ReviewRouter stopped a stale review because the PR head changed; the newer run will review the current head.",
+                );
+                return;
+              }
+              if (reviewRuntimeFailure) throw reviewRuntimeFailure;
+            } finally {
+              await removeTree(reviewHome);
+            }
+          },
+        }),
     });
   } finally {
     clearActionAuthEnv(input.env);
@@ -1220,6 +1242,81 @@ async function runHostedForkAgenticSandboxGitHubAction(input: {
     await removeTree(tempCodexHome);
   }
   notice(input.io, "ReviewRouter hosted pool review completed.");
+}
+
+export type HostedPoolFailureReason = "quota_exhausted" | "failed" | undefined;
+
+export type HostedPoolFailoverInput<T> = {
+  readonly maxAttempts?: number | undefined;
+  readonly canRetry: () => boolean;
+  readonly runAttempt: (input: {
+    readonly attempt: number;
+    readonly maxAttempts: number;
+  }) => Promise<T>;
+  readonly onRetry?:
+    | ((input: {
+        readonly attempt: number;
+        readonly maxAttempts: number;
+        readonly reason: Exclude<HostedPoolFailureReason, undefined>;
+      }) => void | Promise<void>)
+    | undefined;
+};
+
+export async function runHostedPoolLeaseFailover<T>(
+  input: HostedPoolFailoverInput<T>,
+): Promise<T> {
+  const maxAttempts = input.maxAttempts ?? hostedPoolMaxLeaseAttempts;
+  if (
+    !Number.isSafeInteger(maxAttempts) ||
+    maxAttempts < 1 ||
+    maxAttempts > hostedPoolMaxLeaseAttempts
+  ) {
+    throw new Error("hosted_pool_retry_budget_invalid");
+  }
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await input.runAttempt({ attempt, maxAttempts });
+    } catch (error) {
+      const reason = hostedPoolAccountFailureReason(error);
+      if (!reason) throw error;
+      lastError = error;
+      if (attempt === maxAttempts || !input.canRetry()) {
+        throw new Error("hosted_pool_capacity_exhausted", { cause: error });
+      }
+      await input.onRetry?.({ attempt, maxAttempts, reason });
+    }
+  }
+  throw new Error("hosted_pool_capacity_exhausted", { cause: lastError });
+}
+
+export function hostedPoolAccountFailureReason(
+  error: unknown,
+): HostedPoolFailureReason {
+  const normalized = String(
+    error instanceof Error ? error.message : error,
+  ).toLowerCase();
+  if (
+    normalized === "quota_limited" ||
+    /\b(?:account[_ -]?)?(?:quota|capacity)[_ -]?(?:exhausted|depleted|limited|unavailable)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:insufficient_quota|quota_exceeded|usage[_ -]?limit(?:ed| reached| exceeded)?)\b/.test(
+      normalized,
+    )
+  ) {
+    return "quota_exhausted";
+  }
+  if (
+    normalized === "hosted_pool_account_failed" ||
+    /\b(?:hosted[_ -]?(?:relay|pool)[_ -]?)?(?:provider[_ -]?)?account(?:[_ -]?status)?[_ -]?(?:failed|failure|unavailable)\b/.test(
+      normalized,
+    )
+  ) {
+    return "failed";
+  }
+  return undefined;
 }
 
 export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
@@ -1677,13 +1774,17 @@ async function requestGitHubActionsOidcToken(input: {
   if (!requestUrl || !requestToken) {
     throw new Error("github_oidc_unavailable");
   }
-  const separator = requestUrl.includes("?") ? "&" : "?";
+  const url = parseTrustedGitHubActionsOidcUrl(requestUrl);
+  url.searchParams.set("audience", input.audience);
   const { response, body } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_oidc",
     timeoutMs: oidcRequestTimeoutMs,
-    url: `${requestUrl}${separator}audience=${encodeURIComponent(input.audience)}`,
-    init: { headers: { authorization: `bearer ${requestToken}` } },
+    url: url.toString(),
+    init: {
+      headers: { authorization: `bearer ${requestToken}` },
+      redirect: "error",
+    },
     consume: async (response) => ({
       response,
       body: (await response.json()) as { readonly value?: unknown },
@@ -4642,6 +4743,13 @@ function classifyPostWritebackCodexFailure(error: unknown): Error {
   if (isReviewRouterTargetRevisionMismatchFailure(output)) {
     return new Error(stalePullRequestHeadErrorCode);
   }
+  const hostedPoolFailure = hostedPoolAccountFailureReason(output);
+  if (hostedPoolFailure === "quota_exhausted") {
+    return new Error("quota_limited");
+  }
+  if (hostedPoolFailure === "failed") {
+    return new Error("hosted_pool_account_failed");
+  }
   const reviewFailure = extractReviewRouterRuntimeFailure(output);
   if (reviewFailure) {
     return new AlreadyReportedRuntimeFailure(reviewFailure);
@@ -4691,6 +4799,8 @@ export function formatTopLevelActionErrorMessage(error: unknown): string {
       return "needs_reconnect: Codex OAuth session is expired or revoked. Reconnect the Codex provider in ReviewRouter.";
     case "quota_limited":
       return "quota_limited: Codex usage, rate, or billing limit was reached. Add credits, wait for reset, or change account entitlement.";
+    case "hosted_pool_capacity_exhausted":
+      return "hosted_pool_capacity_exhausted: No eligible hosted Codex account remained after bounded failover attempts. The pool will retry accounts after their cooldowns expire.";
     case "permission_required":
       return "permission_required: Codex permission is required.";
     case "review_runtime_budget_exhausted_before_launch":
