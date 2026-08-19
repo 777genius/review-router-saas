@@ -38,6 +38,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - name: Enable pnpm
+        run: corepack enable
       - name: Install private dependencies
         env:
           SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
@@ -67,6 +69,8 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ matrix.target.head_sha }}
+      - name: Enable pnpm
+        run: corepack enable
       - name: Install private dependencies
         env:
           SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
@@ -143,6 +147,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - name: Enable pnpm
+        run: corepack enable
       - name: Install private dependencies
         env:
           SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
@@ -175,6 +181,8 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Enable pnpm
+        run: corepack enable
       - name: Install private dependencies
         env:
           SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
@@ -251,6 +259,8 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Enable pnpm
+        run: corepack enable
       - name: Install private dependencies
         env:
           SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
