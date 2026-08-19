@@ -73,13 +73,31 @@ export class ReleaseAuthorityService {
     private readonly trustedMigrationTransition?: ReleaseMigrationTransitionV1,
     private readonly targetMigrationReceiptReader?: TargetMigrationReceiptReaderPort,
   ) {}
-  claim = (input: RolloutClaimBinding) => {
+  claim = async (input: RolloutClaimBinding) => {
     if (!this.trustedMigrationTransition)
       throw new Error("trusted_release_migration_transition_missing");
     assertReleaseMigrationTransition(
       input.migrationTransition,
       this.trustedMigrationTransition,
     );
+
+    if (this.repository.findClaimReplayContext) {
+      const replay = await this.highRiskGate.execute((executeFresh) =>
+        executeFresh(
+          "control",
+          async () => {
+            const context = await this.repository.findClaimReplayContext!(
+              input.rolloutId,
+            );
+            if (!context?.authorization) return undefined;
+            return this.repository.claim(input);
+          },
+          "control_only",
+        ),
+      );
+      if (replay) return replay;
+    }
+
     return this.highRiskGate.execute((executeFresh) =>
       executeFresh(
         "installer",

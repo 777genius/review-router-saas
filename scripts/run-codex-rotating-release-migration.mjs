@@ -191,19 +191,142 @@ END IF;`;
     .join("\n");
 }
 
+const runtimeDatabaseAclRoleNames = runtimeRoles.map(
+  ([, username]) => username,
+);
+
+function assertCanonicalRuntimeRoleConfiguration(configuration) {
+  if (
+    !configuration ||
+    !Array.isArray(configuration.roles) ||
+    configuration.roles.length !== runtimeRoles.length ||
+    runtimeRoles.some(([role, username]) => {
+      const matches = configuration.roles.filter(
+        (candidate) =>
+          candidate?.role === role && candidate?.username === username,
+      );
+      return matches.length !== 1;
+    })
+  )
+    throw new Error("release_migration_runtime_role_set_invalid");
+}
+
+const runtimeDatabaseAclRoutineBody = `
+DECLARE runtime_role text;
+BEGIN
+  IF session_user <> 'reviewrouter_release_migration' THEN
+    RAISE EXCEPTION 'runtime database ACL caller invalid';
+  END IF;
+  IF requested_phase NOT IN ('preactivation','activated') THEN
+    RAISE EXCEPTION 'runtime database ACL phase invalid';
+  END IF;
+  EXECUTE format(
+    'REVOKE CREATE, CONNECT, TEMPORARY ON DATABASE %I FROM PUBLIC',
+    pg_catalog.current_database()
+  );
+  FOREACH runtime_role IN ARRAY ARRAY[${runtimeDatabaseAclRoleNames.map(quoted).join(",")}] LOOP
+    EXECUTE format(
+      'REVOKE CREATE, TEMPORARY ON DATABASE %I FROM %I',
+      pg_catalog.current_database(),runtime_role
+    );
+    IF requested_phase='activated' THEN
+      EXECUTE format(
+        'GRANT CONNECT ON DATABASE %I TO %I',
+        pg_catalog.current_database(),runtime_role
+      );
+    ELSE
+      EXECUTE format(
+        'REVOKE CONNECT ON DATABASE %I FROM %I',
+        pg_catalog.current_database(),runtime_role
+      );
+    END IF;
+  END LOOP;
+END;`;
+const runtimeDatabaseAclRoutineBodySha256 = createHash("sha256")
+  .update(`${runtimeDatabaseAclRoutineBody}\n`)
+  .digest("hex");
+
+function databaseOwnerRuntimeAclRoutineSql() {
+  return `CREATE OR REPLACE FUNCTION reviewrouter_activation.apply_runtime_database_acl(
+  requested_phase text
+) RETURNS void LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $apply_runtime_database_acl$${runtimeDatabaseAclRoutineBody}
+$apply_runtime_database_acl$;
+ALTER FUNCTION reviewrouter_activation.apply_runtime_database_acl(text)
+  OWNER TO ${canonicalBootstrapRoleName};
+REVOKE ALL ON FUNCTION reviewrouter_activation.apply_runtime_database_acl(text)
+  FROM PUBLIC, ${activationReceiptGuardRoleName}, reviewrouter_release_migration,
+    ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName},
+    ${runtimeDatabaseAclRoleNames.join(", ")};
+GRANT EXECUTE ON FUNCTION reviewrouter_activation.apply_runtime_database_acl(text)
+  TO ${releaseSchemaOwnerRoleName};
+DO $runtime_database_acl_routine_boundary$
+DECLARE routine_fact record;
+DECLARE unexpected_grantee text;
+BEGIN
+  SELECT routine.prosrc,routine.prosecdef,routine.proconfig,
+    owner.rolname AS owner_name INTO STRICT routine_fact
+  FROM pg_catalog.pg_proc routine
+  JOIN pg_catalog.pg_roles owner ON owner.oid=routine.proowner
+  WHERE routine.oid=
+    'reviewrouter_activation.apply_runtime_database_acl(text)'::regprocedure;
+  IF routine_fact.owner_name <> '${canonicalBootstrapRoleName}'
+     OR NOT routine_fact.prosecdef
+     OR routine_fact.proconfig IS DISTINCT FROM
+        ARRAY['search_path=pg_catalog, pg_temp']::text[]
+     OR pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+          routine_fact.prosrc,'UTF8')),'hex') <>
+        '${runtimeDatabaseAclRoutineBodySha256}' THEN
+    RAISE EXCEPTION 'runtime database ACL routine integrity boundary invalid';
+  END IF;
+  SELECT coalesce(grantee.rolname,'PUBLIC') INTO unexpected_grantee
+  FROM pg_catalog.pg_proc routine
+  CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
+    routine.proacl,pg_catalog.acldefault('f',routine.proowner))) acl
+  LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee
+  WHERE routine.oid=
+      'reviewrouter_activation.apply_runtime_database_acl(text)'::regprocedure
+    AND acl.privilege_type='EXECUTE'
+    AND acl.grantee NOT IN (
+      '${canonicalBootstrapRoleName}'::regrole,
+      '${releaseSchemaOwnerRoleName}'::regrole)
+  LIMIT 1;
+  IF unexpected_grantee IS NOT NULL
+     OR NOT pg_catalog.has_function_privilege(
+       '${releaseSchemaOwnerRoleName}',
+       'reviewrouter_activation.apply_runtime_database_acl(text)','EXECUTE')
+     OR EXISTS (
+       SELECT 1 FROM pg_catalog.pg_proc routine
+       CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
+         routine.proacl,pg_catalog.acldefault('f',routine.proowner))) acl
+       WHERE routine.oid=
+         'reviewrouter_activation.apply_runtime_database_acl(text)'::regprocedure
+         AND acl.grantee='${releaseSchemaOwnerRoleName}'::regrole
+         AND acl.is_grantable
+     ) THEN
+    RAISE EXCEPTION 'runtime database ACL routine execute boundary invalid: %',
+      unexpected_grantee;
+  END IF;
+END
+$runtime_database_acl_routine_boundary$;`;
+}
+
 function guardOwnedRuntimeGrantSql() {
   const configuration = {
     roles: runtimeRoles.map(([role, username]) => ({ role, username })),
   };
-  return runtimeGrantStatements(configuration, undefined, {
-    dynamicDatabaseTarget: true,
-  });
+  return `PERFORM reviewrouter_activation.apply_runtime_database_acl('activated');
+${runtimeGrantStatements(configuration, undefined, {
+  skipDatabaseAcl: true,
+})}`;
 }
 
 function guardOwnedRuntimeAclGateSql(configuration) {
-  return runtimeAclGateStatements(configuration, undefined, {
-    dynamicDatabaseTarget: true,
-  });
+  return `PERFORM reviewrouter_activation.apply_runtime_database_acl('preactivation');
+${runtimeAclGateStatements(configuration, undefined, {
+  skipDatabaseAcl: true,
+})}`;
 }
 
 function schemaOwnerRuntimeAclRoutinesSql() {
@@ -2277,7 +2400,15 @@ BEGIN
   IF catalog_policy IS DISTINCT FROM permit.preactivation_catalog_policy
      OR permit.preactivation_catalog_policy_sha256 <> 'sha256:' || encode(pg_catalog.sha256(convert_to(
        reviewrouter_activation.canonical_json(catalog_policy),'UTF8')),'hex') THEN
-    RAISE EXCEPTION 'activation catalog policy mismatch';
+    RAISE EXCEPTION 'activation catalog policy mismatch'
+      USING DETAIL = format('sections=%s expected=%s observed=%s',
+        (SELECT string_agg(observed.key,',' ORDER BY observed.key COLLATE "C")
+         FROM jsonb_each(catalog_policy) observed
+         JOIN jsonb_each(permit.preactivation_catalog_policy) expected USING (key)
+         WHERE observed.value IS DISTINCT FROM expected.value),
+        permit.preactivation_catalog_policy_sha256,
+        'sha256:' || encode(pg_catalog.sha256(convert_to(
+          reviewrouter_activation.canonical_json(catalog_policy),'UTF8')),'hex'));
   END IF;
   INSERT INTO reviewrouter_activation.activation_principal_evidence (
     rollout_id,source_system_identifier,target_system_identifier,postgres_major,
@@ -2436,12 +2567,26 @@ BEGIN
           AND routine.prosecdef
           AND routine.proconfig IS NOT DISTINCT FROM
             ARRAY['search_path=pg_catalog, pg_temp']::text[]) <> 2
+       OR (SELECT count(*) FROM pg_catalog.pg_proc routine
+           JOIN pg_catalog.pg_roles owner ON owner.oid=routine.proowner
+           WHERE routine.oid=
+             'reviewrouter_activation.apply_runtime_database_acl(text)'::regprocedure
+             AND owner.rolname='${canonicalBootstrapRoleName}'
+             AND routine.prosecdef
+             AND routine.proconfig IS NOT DISTINCT FROM
+               ARRAY['search_path=pg_catalog, pg_temp']::text[]
+             AND pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+               routine.prosrc,'UTF8')),'hex')=
+               '${runtimeDatabaseAclRoutineBodySha256}') <> 1
        OR NOT pg_catalog.has_function_privilege(
          '${activationReceiptGuardRoleName}',
          'reviewrouter_activation.apply_runtime_acl()','EXECUTE')
        OR NOT pg_catalog.has_function_privilege(
          '${activationReceiptGuardRoleName}',
          'reviewrouter_activation.capture_runtime_acl_policy_pair()','EXECUTE')
+       OR NOT pg_catalog.has_function_privilege(
+         '${releaseSchemaOwnerRoleName}',
+         'reviewrouter_activation.apply_runtime_database_acl(text)','EXECUTE')
        OR EXISTS (
          SELECT 1 FROM pg_catalog.pg_proc routine
          CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
@@ -2452,7 +2597,21 @@ BEGIN
            AND acl.privilege_type='EXECUTE'
            AND acl.grantee NOT IN (
              '${releaseSchemaOwnerRoleName}'::regrole,
-             '${activationReceiptGuardRoleName}'::regrole)) THEN
+             '${activationReceiptGuardRoleName}'::regrole))
+       OR EXISTS (
+         SELECT 1 FROM pg_catalog.pg_proc routine
+         CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
+           routine.proacl,pg_catalog.acldefault('f',routine.proowner))) acl
+         WHERE routine.oid=
+           'reviewrouter_activation.apply_runtime_database_acl(text)'::regprocedure
+           AND acl.privilege_type='EXECUTE'
+           AND (
+             acl.grantee NOT IN (
+               '${canonicalBootstrapRoleName}'::regrole,
+               '${releaseSchemaOwnerRoleName}'::regrole)
+             OR (acl.grantee='${releaseSchemaOwnerRoleName}'::regrole
+                 AND acl.is_grantable)
+           )) THEN
       RAISE EXCEPTION 'runtime ACL activation authority boundary invalid';
     END IF;
     PERFORM reviewrouter_activation.apply_runtime_acl();
@@ -2616,23 +2775,24 @@ BEGIN
        OR EXISTS (SELECT 1 FROM table_facts WHERE
          can_select IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname <> '_prisma_migrations'
            AND relname NOT IN ('CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-             'RuntimeGenerationWitnessProof'))
+             'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'))
          OR can_insert IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthDatabaseAuthorityKey',
-           'CodexOAuthDatabaseAuthorityReceipt','RuntimeGenerationWitnessProof'))
+           'CodexOAuthDatabaseAuthorityReceipt','RuntimeGenerationWitnessProof',
+           'RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'))
          OR can_update IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance',
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-           'RuntimeGenerationWitnessProof'))
+           'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'))
          OR can_delete IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine','CodexOAuthLease',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
            'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
            'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-           'RuntimeGenerationWitnessProof'))
+           'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'))
          OR can_truncate OR can_reference OR can_trigger)
        OR EXISTS (SELECT 1 FROM column_facts WHERE can_update IS DISTINCT FROM (
          role_kind <> 'effect-authority' AND (
@@ -2658,6 +2818,13 @@ BEGIN
            argument_types='text, text'
          WHEN role_kind='api' AND proname='reviewrouter_runtime_generation_write_read_canary' THEN
            argument_types='text, text'
+         WHEN role_kind='api' AND proname='reviewrouter_request_runtime_canary_challenge' THEN
+           argument_types='text, text, timestamp with time zone, text, text, text, jsonb'
+         WHEN role_kind='api' AND proname='reviewrouter_read_runtime_canary_challenge_proofs' THEN
+           argument_types='text'
+         WHEN proname='reviewrouter_answer_runtime_canary_challenge' THEN
+           role_kind IN ('api','web','worker')
+           AND argument_types='text, text, text, text, text, text'
          WHEN proname='codex_oauth_database_authority_challenge' THEN argument_types='text, text, integer'
          WHEN proname='codex_oauth_consume_database_authority' THEN argument_types='text, text, integer'
          WHEN role_kind='api' AND proname='codex_oauth_authorize_runtime_confirmation' THEN argument_types='text, text, integer, text'
@@ -2713,20 +2880,23 @@ BEGIN
     'canonicalJsonBodySha256',encode(pg_catalog.sha256(convert_to(canonical.prosrc,'UTF8')),'hex'),
     'principalProjectorBodySha256',encode(pg_catalog.sha256(convert_to(projector.prosrc,'UTF8')),'hex'),
     'principalEvidenceValidatorBodySha256',encode(pg_catalog.sha256(convert_to(validator.prosrc,'UTF8')),'hex'),
-    'stagePrincipalEvidenceBodySha256',encode(pg_catalog.sha256(convert_to(stage.prosrc,'UTF8')),'hex'),
-    'runtimeAclBodySha256',encode(pg_catalog.sha256(convert_to(runtime_acl.prosrc,'UTF8')),'hex'),
+      'stagePrincipalEvidenceBodySha256',encode(pg_catalog.sha256(convert_to(stage.prosrc,'UTF8')),'hex'),
+      'runtimeDatabaseAclBodySha256',encode(pg_catalog.sha256(convert_to(database_acl.prosrc,'UTF8')),'hex'),
+      'runtimeAclBodySha256',encode(pg_catalog.sha256(convert_to(runtime_acl.prosrc,'UTF8')),'hex'),
     'runtimeAclPolicyPairBodySha256',encode(pg_catalog.sha256(convert_to(runtime_acl_pair.prosrc,'UTF8')),'hex'),
     'activateGenerationBodySha256',encode(pg_catalog.sha256(convert_to(activate.prosrc,'UTF8')),'hex'),
     'readActivationReceiptBodySha256',encode(pg_catalog.sha256(convert_to(reader.prosrc,'UTF8')),'hex')
   ) INTO activation_body_facts
   FROM pg_proc installer, pg_proc canonical, pg_proc projector, pg_proc validator,
-    pg_proc stage, pg_proc runtime_acl, pg_proc runtime_acl_pair,
+    pg_proc stage, pg_proc database_acl, pg_proc runtime_acl, pg_proc runtime_acl_pair,
     pg_proc activate, pg_proc reader
   WHERE installer.oid='reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)'::regprocedure
     AND canonical.oid='reviewrouter_activation.canonical_json(jsonb)'::regprocedure
     AND projector.oid='reviewrouter_activation.project_effective_principal_authority(text)'::regprocedure
     AND validator.oid='reviewrouter_activation.validate_principal_evidence(text,bigint)'::regprocedure
     AND stage.oid='reviewrouter_activation.stage_principal_evidence(text)'::regprocedure
+    AND database_acl.oid=
+      'reviewrouter_activation.apply_runtime_database_acl(text)'::regprocedure
     AND runtime_acl.oid='reviewrouter_activation.apply_runtime_acl()'::regprocedure
     AND runtime_acl_pair.oid='reviewrouter_activation.capture_runtime_acl_policy_pair()'::regprocedure
     AND activate.oid='reviewrouter_activation.activate_generation(text)'::regprocedure
@@ -2955,6 +3125,7 @@ GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_activation_migration_mani
 -- trusted namespace after release-control readiness has been attested.
 GRANT CREATE ON SCHEMA reviewrouter_activation
   TO ${releaseSchemaOwnerRoleName};
+${databaseOwnerRuntimeAclRoutineSql()}
 ${schemaOwnerRuntimeAclRoutinesSql()}
 REVOKE CREATE ON SCHEMA reviewrouter_activation
   FROM ${releaseSchemaOwnerRoleName};
@@ -2987,6 +3158,7 @@ export function activationRoutineBodyTrustRoots() {
           digestBody("capture_catalog_policy_candidate_pair"),
           digestBody("validate_principal_evidence"),
           digestBody("stage_principal_evidence"),
+          digestBody("apply_runtime_database_acl"),
           digestBody("activate"),
           digestBody("install_migration_permit"),
           digestBody("consume_migration_permit"),
@@ -3353,6 +3525,7 @@ export function roleProvisioningSql(
   configuration,
   { ownerAuthorizedInitialRuntimeGateClosed = false } = {},
 ) {
+  assertCanonicalRuntimeRoleConfiguration(configuration);
   if (typeof ownerAuthorizedInitialRuntimeGateClosed !== "boolean")
     throw new Error("release_migration_initial_runtime_gate_mode_invalid");
   const reconciliationPrerequisiteIndex =
@@ -3369,8 +3542,13 @@ export function roleProvisioningSql(
     guardedAtomicReleaseMigrationBundleSql(
       atomicReleaseMigrationEntries.slice(reconciliationPrerequisiteIndex + 1),
     );
-  const guardedGrants = guardOwnedRuntimeGrantSql(configuration);
+  const guardedGrants = guardOwnedRuntimeGrantSql();
   const guardedAclGate = guardOwnedRuntimeAclGateSql(configuration);
+  // Initial bootstrap runs with database-owner authority before the guarded
+  // helper chain exists. These static statements establish the first
+  // canonical database ACL; later phase transitions must use the helper.
+  const initialRuntimeGrants = runtimeGrantStatements(configuration);
+  const initialRuntimeAclGate = runtimeAclGateStatements(configuration);
   const runtimeRoleLiterals = configuration.roles
     .map(({ username }) => quoted(username))
     .join(",");
@@ -4041,8 +4219,8 @@ ${
 -- external permit can bind the expected post-catalog digest. This executes
 -- only while the transaction-local schema-owner SET edge is active. The
 -- guarded executor must still consume and complete a one-shot permit below.
-${guardedGrants}
-${guardedAclGate}`
+${initialRuntimeGrants}
+${initialRuntimeAclGate}`
     : ""
 }
 GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(
@@ -4137,6 +4315,8 @@ BEGIN
       failed_invariant := 'capture_catalog_policy_candidate_pair_routine_missing';
     WHEN to_regprocedure('reviewrouter_activation.apply_runtime_acl()') IS NULL THEN
       failed_invariant := 'apply_runtime_acl_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.apply_runtime_database_acl(text)') IS NULL THEN
+      failed_invariant := 'apply_runtime_database_acl_routine_missing';
     WHEN to_regprocedure('reviewrouter_activation.capture_runtime_acl_policy_pair()') IS NULL THEN
       failed_invariant := 'capture_runtime_acl_policy_pair_routine_missing';
     WHEN to_regprocedure('reviewrouter_activation.read_activation_receipt(text)') IS NULL THEN
@@ -4196,12 +4376,16 @@ BEGIN
         failed_invariant := 'release_migration_capture_catalog_policy_candidate_pair_execute_missing';
       WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.apply_runtime_acl()','EXECUTE') THEN
         failed_invariant := 'release_migration_apply_runtime_acl_execute_present';
+      WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.apply_runtime_database_acl(text)','EXECUTE') THEN
+        failed_invariant := 'release_migration_apply_runtime_database_acl_execute_present';
       WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.capture_runtime_acl_policy_pair()','EXECUTE') THEN
         failed_invariant := 'release_migration_capture_runtime_acl_policy_pair_execute_present';
       WHEN NOT has_function_privilege('${activationReceiptGuardRoleName}','reviewrouter_activation.apply_runtime_acl()','EXECUTE') THEN
         failed_invariant := 'activation_guard_apply_runtime_acl_execute_missing';
       WHEN NOT has_function_privilege('${activationReceiptGuardRoleName}','reviewrouter_activation.capture_runtime_acl_policy_pair()','EXECUTE') THEN
         failed_invariant := 'activation_guard_capture_runtime_acl_policy_pair_execute_missing';
+      WHEN NOT has_function_privilege('${releaseSchemaOwnerRoleName}','reviewrouter_activation.apply_runtime_database_acl(text)','EXECUTE') THEN
+        failed_invariant := 'schema_owner_apply_runtime_database_acl_execute_missing';
       WHEN NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.read_activation_receipt(text)','EXECUTE') THEN
         failed_invariant := 'release_migration_read_activation_receipt_execute_missing';
       WHEN has_table_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.activation_receipt','SELECT') THEN
@@ -4539,13 +4723,11 @@ function assertConnectionRole(
 export function runtimeGrantStatements(
   configuration,
   databaseTarget = ':"DBNAME"',
-  { dynamicDatabaseTarget = false } = {},
+  { skipDatabaseAcl = false } = {},
 ) {
   const databaseAclStatement = (statement) => {
-    if (!dynamicDatabaseTarget)
-      return statement.replaceAll("__DATABASE_TARGET__", databaseTarget);
-    const template = statement.replaceAll("__DATABASE_TARGET__", "%I");
-    return `EXECUTE pg_catalog.format(${quoted(template)}, pg_catalog.current_database());`;
+    if (skipDatabaseAcl) return "";
+    return statement.replaceAll("__DATABASE_TARGET__", databaseTarget);
   };
   const rotatingEvidenceLiterals = rotatingEvidenceTables
     .map((table) => `'${table}'`)
@@ -4669,13 +4851,11 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
 export function runtimeAclGateStatements(
   configuration,
   databaseTarget = ':"DBNAME"',
-  { dynamicDatabaseTarget = false } = {},
+  { skipDatabaseAcl = false } = {},
 ) {
   const databaseAclStatement = (statement) => {
-    if (!dynamicDatabaseTarget)
-      return statement.replaceAll("__DATABASE_TARGET__", databaseTarget);
-    const template = statement.replaceAll("__DATABASE_TARGET__", "%I");
-    return `EXECUTE pg_catalog.format(${quoted(template)}, pg_catalog.current_database());`;
+    if (skipDatabaseAcl) return "";
+    return statement.replaceAll("__DATABASE_TARGET__", databaseTarget);
   };
   return `${configuration.roles
     .map(

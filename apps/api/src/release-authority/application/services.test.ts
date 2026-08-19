@@ -260,6 +260,57 @@ describe("independent target activation receipt verification", () => {
 });
 
 describe("high-risk activation mutation policy", () => {
+  it("replays an activated claim from authority without stale target attestation", async () => {
+    const transition = createReleaseMigrationTransition({
+      commitSha: authorization.expectedCommitSha,
+      releaseImageDigest: `sha256:${"d".repeat(64)}`,
+    });
+    const claim = vi.fn().mockResolvedValue("duplicate");
+    const findClaimReplayContext = vi.fn().mockResolvedValue({
+      rolloutId: authorization.rolloutId,
+      runId: "run-1",
+      runAttempt: 1,
+      state: "activated",
+      activationBoundary: "activated",
+      receiptOrdinal: 1,
+      authorization,
+    });
+    const observations: string[] = [];
+    const gate: ReleaseAuthorityHighRiskMutationGate = {
+      execute: async (sequence) =>
+        sequence(async (target, mutation, phase) => {
+          observations.push(`${target}:${phase}`);
+          return mutation(targetAttestation);
+        }),
+    };
+    const authority = new ReleaseAuthorityService(
+      {
+        claim,
+        findClaimReplayContext,
+      } as unknown as ReleaseAuthorityLedgerPort,
+      undefined,
+      undefined,
+      gate,
+      transition,
+    );
+    const input = {
+      rolloutId: authorization.rolloutId,
+      expectedCommitSha: transition.commitSha,
+      runId: "run-1",
+      runAttempt: 1 as const,
+      sourceSystemIdentifier: authorization.sourceSystemIdentifier,
+      targetSystemIdentifier: authorization.targetSystemIdentifier,
+      targetRecoveryWitnessSha256: targetAttestation.recoveryWitnessSha256,
+      migrationTransition: transition,
+    };
+
+    await expect(authority.claim(input)).resolves.toBe("duplicate");
+
+    expect(findClaimReplayContext).toHaveBeenCalledWith(input.rolloutId);
+    expect(claim).toHaveBeenCalledWith(input);
+    expect(observations).toEqual(["control:control_only"]);
+  });
+
   it("rejects a claimant target that differs from the fenced configured generation", async () => {
     const transition = createReleaseMigrationTransition({
       commitSha: "c".repeat(40),

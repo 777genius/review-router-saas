@@ -198,10 +198,13 @@ export class ReleaseAuthorityAttestationCoordinator {
     if (this.forcedFlight) {
       if (this.forcedFlight.subjectKey === key)
         return this.forcedFlight.promise;
-      return this.forcedFlight.promise.then(() => this.assertOrdinary(subject));
+      return this.assertAfterUnrelatedFlight(this.forcedFlight, subject);
     }
-    if (this.ordinaryFlight?.subjectKey === key)
-      return this.ordinaryFlight.promise;
+    if (this.ordinaryFlight) {
+      if (this.ordinaryFlight.subjectKey === key)
+        return this.ordinaryFlight.promise;
+      return this.assertAfterUnrelatedFlight(this.ordinaryFlight, subject);
+    }
     return this.startFlight("ordinary", subject).promise;
   }
 
@@ -275,6 +278,16 @@ export class ReleaseAuthorityAttestationCoordinator {
     return this.lease?.subjectKey === attestationSubjectKey(subject)
       ? this.lease
       : undefined;
+  }
+
+  private assertAfterUnrelatedFlight(
+    flight: Flight,
+    subject: ReleaseAuthorityAttestationSubject,
+  ): Promise<void> {
+    return flight.promise.then(
+      () => this.assertOrdinary(subject),
+      () => this.assertOrdinary(subject),
+    );
   }
 
   private startFlight(

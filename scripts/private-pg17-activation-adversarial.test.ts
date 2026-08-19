@@ -15,6 +15,7 @@ import {
   disposablePg17CanonicalRoleBootstrapSetupSql,
   disposablePg17TargetRoleFoundationSql,
   disposableSqlConfiguration,
+  persistRehearsalSourceOwnedReceipt,
 } from "./rehearse-private-pg17-rollout.mjs";
 import {
   canonicalActivationCatalogPolicies,
@@ -33,6 +34,7 @@ const docker = (args: readonly string[], input?: string, timeout = 30_000) =>
   spawnSync("docker", [...args], {
     encoding: "utf8",
     input,
+    maxBuffer: 16 * 1024 * 1024,
     timeout,
   });
 
@@ -64,6 +66,46 @@ const readerUsername = "reviewrouter_activation_receipt_reader";
 const databaseName = "review_router";
 const applicationRelation = 'public."RepositoryConnection"';
 const configuration = disposableSqlConfiguration();
+const migrationPermitEligibilityCutoff = "2026-08-12T00:00:02.300Z";
+type SourceLegacyAmbiguityEvidence = ReturnType<
+  typeof sourceLegacyAmbiguityFixture
+>;
+const migrationPermitEvidenceByRollout = new Map<
+  string,
+  SourceLegacyAmbiguityEvidence
+>();
+
+const persistAdditionalSourceOwnedReceipt = (
+  context: CaseContext,
+  evidence: SourceLegacyAmbiguityEvidence,
+) => {
+  const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
+  context.psqlAs(
+    adversarialAdminUsername,
+    `INSERT INTO release_authority.source_database_fence (
+       fence_id,rollout_id,source_system_identifier,authority_principal,
+       before_inventory_sha256,before_policy_sha256,
+       fenced_inventory_sha256,fenced_policy_sha256,prior_connect_acl,
+       lifecycle,established_at
+     ) VALUES (
+       ${literal(evidence.fenceId)},${literal(evidence.rolloutId)},
+       ${literal(evidence.sourceSystemIdentifier)},
+       ${literal(evidence.authorityPrincipal)},
+       ${literal(evidence.fencedInventorySha256)},
+       ${literal(evidence.fencedInventorySha256)},
+       ${literal(evidence.fencedInventorySha256)},
+       ${literal(evidence.fencedInventorySha256)},'{}'::jsonb,'active',
+       ${literal(evidence.fenceEstablishedAt)}::timestamptz
+     );
+     INSERT INTO release_authority.source_legacy_ambiguity_receipt (
+       rollout_id,fence_id,source_system_identifier,evidence
+     ) VALUES (
+       ${literal(evidence.rolloutId)},${literal(evidence.fenceId)},
+       ${literal(evidence.sourceSystemIdentifier)},
+       ${literal(JSON.stringify(evidence))}::jsonb
+     );`,
+  );
+};
 const seedSuffix = `${process.pid}-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 const seedContainer = `rr-pg17-activation-seed-${seedSuffix}`;
 const seedVolume = `rr-pg17-activation-seed-${seedSuffix}`;
@@ -285,6 +327,26 @@ const initializeSeed = () => {
     adminUsername,
     canonicalRoleBootstrapSetup.publicTableAclCanonicalization,
   );
+  const rolloutId = "seed-runtime-grant-convergence";
+  const inventory = JSON.parse(
+    psqlAs(seedContainer, adminUsername, legacyAmbiguityInventorySql),
+  );
+  const eligibilityCutoff = new Date().toISOString();
+  const sourceLegacyAmbiguity = sourceLegacyAmbiguityFixture({
+    rolloutId,
+    sourceSystemIdentifier: "1",
+    firstObservedAt: new Date(
+      Date.parse(eligibilityCutoff) - 1_000,
+    ).toISOString(),
+    eligibilityCutoff,
+    inventory,
+  });
+  persistRehearsalSourceOwnedReceipt(
+    (_container: string, sql: string) =>
+      psqlAs(seedContainer, adminUsername, sql),
+    seedContainer,
+    sourceLegacyAmbiguity,
+  );
   psqlAs(
     seedContainer,
     adminUsername,
@@ -496,23 +558,9 @@ const initializeSeed = () => {
     .split("\n")
     .at(-1);
   expect(expectedPostCatalogDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
-  const rolloutId = "seed-runtime-grant-convergence";
   const transitionSha256 = `sha256:${"1".repeat(64)}`;
   const previousReceiptSha256 = `sha256:${"2".repeat(64)}`;
   const nonce = "1".padStart(32, "0");
-  const inventory = JSON.parse(
-    psqlAs(seedContainer, releaseUsername, legacyAmbiguityInventorySql),
-  );
-  const eligibilityCutoff = new Date().toISOString();
-  const sourceLegacyAmbiguity = sourceLegacyAmbiguityFixture({
-    rolloutId,
-    sourceSystemIdentifier: "1",
-    firstObservedAt: new Date(
-      Date.parse(eligibilityCutoff) - 1_000,
-    ).toISOString(),
-    eligibilityCutoff,
-    inventory,
-  });
   expect(
     psqlAs(
       seedContainer,
@@ -851,7 +899,7 @@ describePg17(
       isolatedCase("runtime-acl-pair", (context) => {
         context.psqlAs(adminUsername, attestDisposableCaptureSql());
         const before = context.psqlAs(
-          adversarialAdminUsername,
+          adminUsername,
           runtimeAclAuthoritySnapshotSql,
         );
         const captureOutput = context.psqlAs(
@@ -869,7 +917,7 @@ describePg17(
         expect(captured.activated.phase).toBe("activated");
         expect(
           context.psqlAs(
-            adversarialAdminUsername,
+            adminUsername,
             `SELECT bool_and(NOT has_function_privilege(principal,
               'public.pgp_sym_decrypt(bytea,text)'::regprocedure,'EXECUTE'))
              FROM unnest(ARRAY['public','${releaseUsername}',
@@ -886,18 +934,20 @@ describePg17(
         );
         expect(
           context.psqlAs(
-            adversarialAdminUsername,
+            adminUsername,
             `SELECT bool_and(NOT has_function_privilege(principal,routine,'EXECUTE'))
              FROM unnest(ARRAY['${releaseUsername}','reviewrouter_api',
                'reviewrouter_web','reviewrouter_worker',
                'reviewrouter_codex_effect_authority']) principal
              CROSS JOIN unnest(ARRAY[
+               'reviewrouter_activation.apply_runtime_database_acl(text)'::regprocedure,
                'reviewrouter_activation.apply_runtime_acl()'::regprocedure,
                'reviewrouter_activation.capture_runtime_acl_policy_pair()'::regprocedure
              ]) routine;`,
           ),
         ).toBe("t");
         for (const invocation of [
+          "SELECT reviewrouter_activation.apply_runtime_database_acl('activated');",
           "SELECT reviewrouter_activation.apply_runtime_acl();",
           "SELECT reviewrouter_activation.capture_runtime_acl_policy_pair();",
         ]) {
@@ -906,56 +956,69 @@ describePg17(
           ).not.toBe(0);
         }
         expect(
-          context.psqlAs(
-            adversarialAdminUsername,
-            runtimeAclAuthoritySnapshotSql,
-          ),
+          context.psqlAs(adminUsername, runtimeAclAuthoritySnapshotSql),
         ).toBe(before);
-
-        context.psqlAs(
-          adversarialAdminUsername,
-          `ALTER FUNCTION public."codex_oauth_database_authority_challenge"(text,text,integer)
-             RENAME TO rr_injected_missing_authority_challenge;`,
-        );
-        const beforeUnexpectedError = context.psqlAs(
-          adversarialAdminUsername,
-          runtimeAclAuthoritySnapshotSql,
-        );
-        context.psqlAs(
-          releaseUsername,
-          `BEGIN;
-           DO $catch_unexpected$
-           BEGIN
-             PERFORM reviewrouter_activation.capture_catalog_policy_candidate_pair();
-             RAISE EXCEPTION 'expected runtime ACL pair failure';
-           EXCEPTION WHEN undefined_function THEN
-             NULL;
-           END
-           $catch_unexpected$;
-           COMMIT;`,
-        );
-        expect(
-          context.psqlAs(
-            adversarialAdminUsername,
-            runtimeAclAuthoritySnapshotSql,
-          ),
-        ).toBe(beforeUnexpectedError);
-        context.psqlAs(
-          adversarialAdminUsername,
-          `ALTER FUNCTION public.rr_injected_missing_authority_challenge(text,text,integer)
-             RENAME TO "codex_oauth_database_authority_challenge";`,
-        );
       }),
       120_000,
     );
 
     it(
+      "rolls back catalog capture when a required authority routine is missing",
+      isolatedCase(
+        "runtime-acl-missing-routine",
+        (context) => {
+          context.psqlAs(adminUsername, attestDisposableCaptureSql());
+          const before = context.psqlAs(
+            adminUsername,
+            runtimeAclAuthoritySnapshotSql,
+          );
+          const capture = context.psqlResultAs(
+            releaseUsername,
+            `BEGIN; ${captureCandidateSql()} COMMIT;`,
+          );
+          expect(capture.status).not.toBe(0);
+          expect(capture.stderr).toContain("does not exist");
+          expect(
+            context.psqlAs(adminUsername, runtimeAclAuthoritySnapshotSql),
+          ).toBe(before);
+        },
+        ({ psqlAs: runAs }) => {
+          runAs(
+            adversarialAdminUsername,
+            `ALTER FUNCTION public."codex_oauth_database_authority_challenge"(text,text,integer)
+               RENAME TO rr_injected_missing_authority_challenge;`,
+          );
+        },
+      ),
+      120_000,
+    );
+
+    it(
       "rejects an early rollback SQLSTATE collision without leaking ACL changes",
-      isolatedCase("runtime-acl-sqlstate-collision", (context) => {
-        context.psqlAs(adminUsername, attestDisposableCaptureSql());
-        context.psqlAs(
-          adversarialAdminUsername,
-          `CREATE OR REPLACE FUNCTION reviewrouter_activation.apply_runtime_acl()
+      isolatedCase(
+        "runtime-acl-sqlstate-collision",
+        (context) => {
+          context.psqlAs(adminUsername, attestDisposableCaptureSql());
+          const before = context.psqlAs(
+            adminUsername,
+            runtimeAclAuthoritySnapshotSql,
+          );
+          const capture = context.psqlResultAs(
+            releaseUsername,
+            `BEGIN; ${captureCandidateSql()} COMMIT;`,
+          );
+          expect(capture.status).not.toBe(0);
+          expect(capture.stderr).toContain(
+            "injected early runtime ACL collision",
+          );
+          expect(
+            context.psqlAs(adminUsername, runtimeAclAuthoritySnapshotSql),
+          ).toBe(before);
+        },
+        ({ psqlAs: runAs }) => {
+          runAs(
+            adversarialAdminUsername,
+            `CREATE OR REPLACE FUNCTION reviewrouter_activation.apply_runtime_acl()
            RETURNS void LANGUAGE plpgsql SECURITY DEFINER
            SET search_path = pg_catalog, pg_temp
            AS $injected_rracl$
@@ -964,26 +1027,9 @@ describePg17(
                USING ERRCODE = 'RRACL';
            END
            $injected_rracl$;`,
-        );
-        const before = context.psqlAs(
-          adversarialAdminUsername,
-          runtimeAclAuthoritySnapshotSql,
-        );
-        const capture = context.psqlResultAs(
-          releaseUsername,
-          `BEGIN; ${captureCandidateSql()} COMMIT;`,
-        );
-        expect(capture.status).not.toBe(0);
-        expect(capture.stderr).toContain(
-          "injected early runtime ACL collision",
-        );
-        expect(
-          context.psqlAs(
-            adversarialAdminUsername,
-            runtimeAclAuthoritySnapshotSql,
-          ),
-        ).toBe(before);
-      }),
+          );
+        },
+      ),
       120_000,
     );
 
@@ -1246,7 +1292,10 @@ describePg17(
           expect(invalidManifest.stderr).toContain(
             "activation migration manifest read request invalid",
           );
-          runAs(adversarialAdminUsername, "CREATE SCHEMA release_authority;");
+          runAs(
+            adversarialAdminUsername,
+            "CREATE TABLE release_authority.rollout(id bigint);",
+          );
           const fencedSchemaMutation = runResultAs(
             installerUsername,
             fencedLiveV70V72CatalogDigestSql,
@@ -1257,7 +1306,10 @@ describePg17(
             expect(fencedSchemaMutation.stderr).toContain(
               "activation migration manifest read request invalid",
             );
-          runAs(adversarialAdminUsername, "DROP SCHEMA release_authority;");
+          runAs(
+            adversarialAdminUsername,
+            "DROP TABLE release_authority.rollout;",
+          );
         },
       ),
       120_000,
@@ -1286,27 +1338,14 @@ describePg17(
             .split("\n")
             .at(-1);
           expect(observedPostCatalogDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
-          const eligibilityCutoff = new Date().toISOString();
-          const evidenceByRollout = new Map<string, string>();
+          const eligibilityCutoff = migrationPermitEligibilityCutoff;
           const evidenceFor = (rolloutId: string) => {
-            const existing = evidenceByRollout.get(rolloutId);
-            if (existing) return existing;
-            const inventory = JSON.parse(
-              context.psqlAs(releaseUsername, legacyAmbiguityInventorySql),
-            );
-            const evidence = JSON.stringify(
-              sourceLegacyAmbiguityFixture({
-                rolloutId,
-                sourceSystemIdentifier: "1",
-                firstObservedAt: new Date(
-                  Date.parse(eligibilityCutoff) - 1_000,
-                ).toISOString(),
-                eligibilityCutoff,
-                inventory,
-              }),
-            ).replaceAll("'", "''");
-            evidenceByRollout.set(rolloutId, evidence);
-            return evidence;
+            const evidence = migrationPermitEvidenceByRollout.get(rolloutId);
+            if (!evidence)
+              throw new Error(
+                `migration_permit_source_evidence_missing:${rolloutId}`,
+              );
+            return JSON.stringify(evidence).replaceAll("'", "''");
           };
           const install = (rolloutId: string, epoch: number) =>
             context.psqlAs(
@@ -1558,14 +1597,37 @@ describePg17(
             "release migration target receipt unavailable",
           );
         },
-        ({ psqlAs: runAs }) => {
+        (context) => {
           // This isolated permit-race proof derives both closed and open
           // post-state digests after the first migration. Final bootstrap
           // self-demotion is exercised by the production-readiness cases.
-          runAs(
+          context.psqlAs(
             adversarialAdminUsername,
             `ALTER ROLE ${adminUsername} SUPERUSER CREATEROLE;`,
           );
+          const inventory = JSON.parse(
+            context.psqlAs(
+              adversarialAdminUsername,
+              legacyAmbiguityInventorySql,
+            ),
+          );
+          migrationPermitEvidenceByRollout.clear();
+          for (const rolloutId of [
+            "migration-quarantine",
+            "migration-completed",
+            "migration-open",
+          ]) {
+            const evidence = sourceLegacyAmbiguityFixture({
+              rolloutId,
+              sourceSystemIdentifier: "1",
+              fenceEstablishedAt: "2026-08-12T00:00:02.000Z",
+              firstObservedAt: "2026-08-12T00:00:02.100Z",
+              eligibilityCutoff: migrationPermitEligibilityCutoff,
+              inventory,
+            });
+            migrationPermitEvidenceByRollout.set(rolloutId, evidence);
+            persistAdditionalSourceOwnedReceipt(context, evidence);
+          }
           return true;
         },
       ),
@@ -1769,7 +1831,7 @@ printf 'hostile_mutator_excluded\n'`,
       "applies runtime grants only inside a permit-guarded activation call",
       isolatedCase("permit-guarded-runtime-acl", (context) => {
         const before = context.psqlAs(
-          adversarialAdminUsername,
+          adminUsername,
           runtimeAclAuthoritySnapshotSql,
         );
         const unpermitted = context.psqlResultAs(
@@ -1781,12 +1843,28 @@ printf 'hostile_mutator_excluded\n'`,
         expect(unpermitted.status).not.toBe(0);
         expect(unpermitted.stderr).toContain("activation permit absent");
         expect(
-          context.psqlAs(
-            adversarialAdminUsername,
-            runtimeAclAuthoritySnapshotSql,
-          ),
+          context.psqlAs(adminUsername, runtimeAclAuthoritySnapshotSql),
         ).toBe(before);
 
+        context.psqlAs(
+          adminUsername,
+          `DO $record_consumed_migration$
+           DECLARE binding jsonb;
+           BEGIN
+             SELECT shobj_description(oid,'pg_database')::jsonb INTO STRICT binding
+             FROM pg_database WHERE datname=current_database();
+             binding := binding || jsonb_build_object(
+               'consumedMigrationEvidence',jsonb_build_array(jsonb_build_object(
+                 'commit','${"b".repeat(40)}',
+                 'systemIdentifier','${context.systemIdentifier}'
+               ))
+             );
+             EXECUTE format(
+               'COMMENT ON DATABASE %I IS %L',current_database(),binding::text
+             );
+           END
+           $record_consumed_migration$;`,
+        );
         context.installPermit("permit-guarded-runtime-acl");
         const activationOutput = context.psqlAs(
           releaseUsername,
@@ -1803,7 +1881,7 @@ printf 'hostile_mutator_excluded\n'`,
         expect(receipt.firstWriteBoundary).toBe(true);
         expect(
           context.psqlAs(
-            adversarialAdminUsername,
+            adminUsername,
             `SELECT bool_and(has_database_privilege(role_name,current_database(),'CONNECT'))
              FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
                'reviewrouter_worker','reviewrouter_codex_effect_authority']) role_name;`,

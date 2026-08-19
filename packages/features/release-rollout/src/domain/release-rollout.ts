@@ -1156,6 +1156,7 @@ export function transitionFromObservation(
     const activationBase = {
       ...base,
       step: RolloutStep.ActivateTargetGeneration,
+      observationSha256: String(facts.observationSha256),
       canonicalPrivilegesSha256: String(facts.canonicalPrivilegesSha256),
       catalogFactsSha256: String(facts.catalogFactsSha256),
       preactivationCatalogPolicySha256: String(

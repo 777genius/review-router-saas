@@ -15,6 +15,7 @@ import {
   resolveRehearsalCaptureOnlyConfiguration,
   resolvePreReleaseMigrationExclusions,
   safePostgresErrorClassification,
+  safeRehearsalStageErrorCode,
   safeReleaseAuthorityErrorClassification,
   summarizeErrorShape,
   summarizeAuthorityReadinessMismatch,
@@ -46,6 +47,19 @@ const migrationManifestIdentity = (migrationNames: readonly string[]) => {
 };
 
 describe("disposable dual-version rehearsal", () => {
+  it("reports only allowlisted static rehearsal stage errors", () => {
+    expect(
+      safeRehearsalStageErrorCode(
+        new Error("trusted_rollout_evidence_receipt_chain_invalid"),
+      ),
+    ).toBe("trusted_rollout_evidence_receipt_chain_invalid");
+    expect(
+      safeRehearsalStageErrorCode(
+        new Error("database failed token=do-not-print"),
+      ),
+    ).toBeUndefined();
+  });
+
   it("classifies only allowlisted nested release-authority errors", () => {
     expect(
       safeReleaseAuthorityErrorClassification({
@@ -196,6 +210,13 @@ describe("disposable dual-version rehearsal", () => {
     );
     expect(
       safePostgresErrorClassification(
+        `psql: ERROR:  P0001: activation catalog policy mismatch\nDETAIL: sections=grants,roleReachability expected=sha256:${"3".repeat(64)} observed=sha256:${"4".repeat(64)}\nCONTEXT: token=secret`,
+      ),
+    ).toBe(
+      `activation catalog policy mismatch:sections=grants,roleReachability:expected=sha256:${"3".repeat(64)}:observed=sha256:${"4".repeat(64)}`,
+    );
+    expect(
+      safePostgresErrorClassification(
         "psql: ERROR:  P0001: codex_oauth_provider_identity_mismatch\nDETAIL: token=secret",
       ),
     ).toBe("codex_oauth_provider_identity_mismatch");
@@ -260,9 +281,9 @@ describe("disposable dual-version rehearsal", () => {
   it("uses the exact reviewed compact digest authorization in normal rehearsal", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual({
       preactivationCatalogPolicySha256:
-        "sha256:c133bacb4a813540245430151ffd80f3380a4123ccc379250828d0317ac514d9",
+        "sha256:3ae78c7e2d4a76e7ff8f7b7852a1c7ab195c70ea563278a1c77a69242e7e9217",
       activatedCatalogPolicySha256:
-        "sha256:7930dc496e760ae4f0577b50db1251f44c55f2db68bf97f790ce290edc8d5253",
+        "sha256:f8fe1748dc02bfe87d4f487c2d74cc42e10efe66030215117d30565c21a47459",
     });
   });
   it("allows loaded disposable catalog observations without changing production timing", () => {
@@ -816,6 +837,7 @@ describe("disposable dual-version rehearsal", () => {
       "reviewrouter_activation_permit_installer",
       "reviewrouter_activation_receipt_reader",
       "targetReceiptReaderPrisma",
+      "durableActivationReceipt",
       "trustedDatabaseIdentity",
       "authorityOwnerRoleName",
       "installerRoutineBodySha256",
@@ -867,6 +889,9 @@ describe("disposable dual-version rehearsal", () => {
       "redactedErrorChain",
     ])
       expect(source).toContain(required);
+    expect(source).not.toContain(
+      "SELECT count(*) FROM reviewrouter_activation.activation_receipt",
+    );
     expect(source).toMatch(
       /const authorityProviderRoot[\s\S]+releaseAuthorityProviderRootProbeSql[\s\S]+releaseAuthorityBootstrapPreparationSql[\s\S]+releaseAuthorityBootstrapProvisioningSql[\s\S]+finally[\s\S]+releaseAuthorityBootstrapRelinquishSql[\s\S]+releaseAuthorityMigrationBundle[\s\S]+releaseAuthorityBootstrapCleanupSql[\s\S]+releaseAuthorityBootstrapTerminalSql/u,
     );
@@ -1128,7 +1153,10 @@ describe("disposable dual-version rehearsal", () => {
     );
     expect(source).toContain("rehearsal_canonical_postgres_error:${step}");
     expect(source).toContain(
-      "rehearsal_stage_failed:${safeName}:${redactedErrorChain(error)}",
+      "rehearsal_stage_failed:${safeName}:${safeError ?? redactedErrorChain(error)}",
+    );
+    expect(source).toContain(
+      "migrationManifestIdentity:\n              current.activationReceipt.postManifestIdentity",
     );
     expect(source).toContain(
       "rehearsal_migration_substep_started:canonical_migration",
@@ -1173,10 +1201,16 @@ describe("disposable dual-version rehearsal", () => {
     );
     expect(source).toContain("facts.sql(facts.targetContainer, statement)");
     expect(source).toContain(
-      'if (captureOnly) {\n      sql(source, "DROP TABLE public.rehearsal_items CASCADE")',
+      'if (captureOnly) sql(source, "DROP TABLE public.rehearsal_items CASCADE")',
     );
     expect(source).toContain(
       'sql(target, "DROP TABLE public.rehearsal_items CASCADE")',
+    );
+    expect(source).not.toContain(
+      "ALTER TABLE rehearsal_items OWNER TO reviewrouter_role_bootstrap",
+    );
+    expect(source).toContain(
+      `'reviewrouter_api','public."AuditEvent"','INSERT'`,
     );
     const stageTarget = source.indexOf(
       "useCases.stageTargetServices(migratedRollout)",

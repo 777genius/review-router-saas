@@ -499,6 +499,12 @@ describe("canonical exclusive release migration caller", () => {
       "reviewrouter_worker",
       "reviewrouter_codex_effect_authority",
     ]);
+    expect(() =>
+      roleProvisioningSql({
+        ...configuration,
+        roles: configuration.roles.slice(0, -1),
+      }),
+    ).toThrow("release_migration_runtime_role_set_invalid");
     const provisioning = roleProvisioningSql(configuration);
     const ownerAuthorizedInitialProjection = roleProvisioningSql(
       configuration,
@@ -669,7 +675,7 @@ describe("canonical exclusive release migration caller", () => {
       activationBoundary.matchAll(/failed_invariant := '([a-z_]+)'/gu),
       (match) => match[1],
     );
-    expect(stableBoundaryReasons).toHaveLength(51);
+    expect(stableBoundaryReasons).toHaveLength(54);
     expect(new Set(stableBoundaryReasons).size).toBe(
       stableBoundaryReasons.length,
     );

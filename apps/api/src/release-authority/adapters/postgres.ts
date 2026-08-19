@@ -175,6 +175,17 @@ export class RoutineReleaseControlLedgerAdapter
     return value;
   }
 
+  async findClaimReplayContext(
+    rolloutId: string,
+  ): Promise<ReleaseRolloutReconciliationContext | null> {
+    try {
+      return await this.context(rolloutId);
+    } catch (error) {
+      if (error instanceof ReleaseAuthorityAdapterConflictError) return null;
+      throw error;
+    }
+  }
+
   async beginReleaseMigration(
     input: Parameters<ReleaseAuthorityLedgerPort["beginReleaseMigration"]>[0],
   ): ReturnType<ReleaseAuthorityLedgerPort["beginReleaseMigration"]> {

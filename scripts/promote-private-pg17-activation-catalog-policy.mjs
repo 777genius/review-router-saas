@@ -13,16 +13,16 @@ import {
 import { assertActivationCatalogPolicyPromotionProvenance } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
 
 export const activationCatalogPromotionOptIn =
-  "promote-reviewed-activation-catalog-v22";
+  "promote-reviewed-activation-catalog-v23";
 export const reviewedActivationCatalogCandidate = Object.freeze({
-  sha256: "5edc211d4576d919181e2b2d3ad099ff20f74f1986da7c14e0d8ff107f39096e",
-  bytes: 2_388_930,
+  sha256: "8f089eb7a9d1a8ed2388102d25ed8dcf1266d1ebc74e35a821b2552a54ff648b",
+  bytes: 2_391_094,
   preactivationCatalogPolicySha256:
-    "sha256:7d782d8feee32282cfc43c3e295482d16f71cd7f50380b8b9131439d208ff817",
+    "sha256:3ae78c7e2d4a76e7ff8f7b7852a1c7ab195c70ea563278a1c77a69242e7e9217",
   activatedCatalogPolicySha256:
-    "sha256:07cc2dba4d106051a66e7f3c7a5c3e20ed29943204d8e3501c13fd77fbaa7924",
+    "sha256:f8fe1748dc02bfe87d4f487c2d74cc42e10efe66030215117d30565c21a47459",
   artifactCanonicalSha256:
-    "sha256:3605b4a6545565dd11cf5d37ff39808350a13d992e3a3f1428084104d5293020",
+    "sha256:3eca5cf4475edab7156757d4f99fe995dbc4551e403c40efac46592141dffc50",
 });
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -37,11 +37,11 @@ export const activationCatalogPromotionProvenancePath = resolve(
 
 export const reviewedActivationCatalogPromotionExpectation = Object.freeze({
   readinessReason:
-    "reviewed-v22-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
-  captureBaseCommit: "09854060647768cac8a436d0c837aae65aba99f2",
-  auditedHead: "09854060647768cac8a436d0c837aae65aba99f2",
+    "reviewed-v23-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
+  captureBaseCommit: "3240f6971bc0992ecfcc73d5a822ff255d873ac7",
+  auditedHead: "3240f6971bc0992ecfcc73d5a822ff255d873ac7",
   reviewArtifactSha256:
-    "5bbd5d7f5e49636b361945f0370b4934febb3e64333ca0a34c66951775541629",
+    "324a7dc2763680740a6ba2a2019da4c62b936eac1b3a06a74c3fe4fc42a7b997",
   candidateBytes: reviewedActivationCatalogCandidate.bytes,
   candidateSha256: reviewedActivationCatalogCandidate.sha256,
   sourcePg16Image:

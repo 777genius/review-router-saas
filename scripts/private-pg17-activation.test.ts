@@ -454,6 +454,18 @@ describe("target-local PG17 activation permit", () => {
       "RAISE EXCEPTION 'runtime ACL is not canonical'",
     );
     expect(authority).toContain(
+      "'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'",
+    );
+    expect(authority).toContain(
+      "proname='reviewrouter_request_runtime_canary_challenge'",
+    );
+    expect(authority).toContain(
+      "proname='reviewrouter_read_runtime_canary_challenge_proofs'",
+    );
+    expect(authority).toContain(
+      "proname='reviewrouter_answer_runtime_canary_challenge'",
+    );
+    expect(authority).toContain(
       "has_database_privilege('public',current_database(),'CONNECT')",
     );
     expect(authority).toContain("has_table_privilege('public',oid,privilege)");
@@ -668,6 +680,18 @@ describe("target-local PG17 activation permit", () => {
     expect(provisioning).toContain(
       "CREATE OR REPLACE FUNCTION reviewrouter_activation.capture_runtime_acl_policy_pair()",
     );
+    expect(provisioning).toContain(
+      "CREATE OR REPLACE FUNCTION reviewrouter_activation.apply_runtime_database_acl(",
+    );
+    expect(provisioning).toContain(
+      "ALTER FUNCTION reviewrouter_activation.apply_runtime_database_acl(text)\n  OWNER TO reviewrouter_role_bootstrap",
+    );
+    expect(provisioning).toContain(
+      "GRANT EXECUTE ON FUNCTION reviewrouter_activation.apply_runtime_database_acl(text)\n  TO reviewrouter_release_schema_owner",
+    );
+    expect(provisioning).toContain(
+      "IF session_user <> 'reviewrouter_release_migration' THEN",
+    );
     expect(provisioning).toContain("SECURITY DEFINER");
     expect(provisioning).toContain("SET search_path = pg_catalog, pg_temp");
     expect(provisioning).toContain(
@@ -676,8 +700,11 @@ describe("target-local PG17 activation permit", () => {
     expect(provisioning).toContain("TO reviewrouter_activation_receipt_guard");
     expect(provisioning).toContain(
       runtimeGrantStatements(configuration, undefined, {
-        dynamicDatabaseTarget: true,
+        skipDatabaseAcl: true,
       }),
+    );
+    expect(provisioning).toContain(
+      "PERFORM reviewrouter_activation.apply_runtime_database_acl('activated')",
     );
     expect(provisioning).toContain("USING ERRCODE = 'RRACL'");
     expect(provisioning).toContain("EXCEPTION WHEN SQLSTATE 'RRACL' THEN");
@@ -694,7 +721,19 @@ describe("target-local PG17 activation permit", () => {
       "CREATE OR REPLACE FUNCTION reviewrouter_activation.apply_runtime_acl()",
     );
     expect(roleBootstrap).toContain(
-      "EXECUTE pg_catalog.format('REVOKE CONNECT ON DATABASE %I FROM reviewrouter_api;', pg_catalog.current_database())",
+      "PERFORM reviewrouter_activation.apply_runtime_database_acl('preactivation')",
+    );
+    const initialGateBootstrap = roleProvisioningSql(configuration, {
+      ownerAuthorizedInitialRuntimeGateClosed: true,
+    });
+    expect(initialGateBootstrap).toContain(
+      'GRANT CONNECT ON DATABASE :"DBNAME" TO reviewrouter_api;',
+    );
+    expect(initialGateBootstrap).toContain(
+      'REVOKE CONNECT ON DATABASE :"DBNAME" FROM reviewrouter_api;',
+    );
+    expect(initialGateBootstrap).not.toContain(
+      "EXECUTE format('GRANT CONNECT ON DATABASE",
     );
     const pairStart = provisioning.indexOf(
       "AS $capture_runtime_acl_policy_pair$",

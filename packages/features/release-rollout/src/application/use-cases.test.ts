@@ -750,9 +750,56 @@ describe("release rollout application boundary", () => {
     expect(activated.activationReceipt).toMatchObject({
       permitNonce: "a".repeat(32),
       permitEpoch: 1,
+      observationSha256: `sha256:${"6".repeat(64)}`,
     });
+    expect(ports.ledger.finalizeActivation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        activationReceipt: expect.objectContaining({
+          observationSha256: `sha256:${"6".repeat(64)}`,
+        }),
+      }),
+    );
     expect(ports.ledger.finalizeActivation).toHaveBeenCalledOnce();
     expect(ports.ledger.markActivationUncertain).not.toHaveBeenCalled();
+  });
+
+  it("verifies final authority against its latest persisted receipt", async () => {
+    const ports = basePorts();
+    ports.database = {
+      activate: vi.fn().mockResolvedValue(activationObservation),
+    } as never;
+    ports.evidence = {
+      assembleAndVerify: vi
+        .fn()
+        .mockRejectedValue(new Error("stop_after_authority_verification")),
+    } as never;
+    const useCases = new ReleaseRolloutUseCases(ports);
+    const activated = await useCases.activateTargetGeneration(
+      stagedRollout,
+      "44",
+    );
+    const activationReceipt = activated.activationReceipt!;
+    const liveCanaryReceipt = {
+      ...activationReceipt,
+      step: RolloutStep.VerifyLiveCanary,
+      receiptId: `${rollout.rolloutId}:verify_live_canary:4`,
+      previousReceiptSha256: activationReceipt.receiptSha256,
+      receiptSha256: `sha256:${"e".repeat(64)}`,
+    };
+
+    await expect(
+      useCases.verifyTrustedRollout({
+        ...activated,
+        phase: RolloutPhase.LiveCanaryVerified,
+        receipts: [...activated.receipts, liveCanaryReceipt],
+      }),
+    ).rejects.toThrow("stop_after_authority_verification");
+    expect(ports.ledger.verifyFinalAuthority).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedReceiptSha256: liveCanaryReceipt.receiptSha256,
+        activationReceipt,
+      }),
+    );
   });
 
   it("denies provider resume before any effect when authority is absent or mismatched", async () => {

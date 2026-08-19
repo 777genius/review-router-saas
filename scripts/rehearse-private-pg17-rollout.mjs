@@ -56,6 +56,8 @@ import { createPrismaClient } from "../packages/platform/db/src/index.ts";
 import { createReleaseControlApp } from "../apps/api/src/release-control-composition.ts";
 import { observeReleaseAuthorityDatabaseReadiness } from "../apps/api/src/release-authority/adapters/postgres-readiness.ts";
 import { releaseAuthoritySchemaIsReady } from "../apps/api/src/release-authority/application/readiness.ts";
+import { RoutineTargetActivationReceiptReaderAdapter } from "../apps/api/src/release-authority/adapters/target-receipt.ts";
+import { targetActivationIdentityMatches } from "../apps/api/src/release-authority/application/target-activation-invariant.ts";
 import { PostgresCleanupObservationAdapter } from "../apps/api/src/release-witness-adapters.ts";
 import {
   executeCanonicalReleaseMigration,
@@ -107,7 +109,7 @@ function rehearsalSqlLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-function persistRehearsalSourceOwnedReceipt(sql, source, evidence) {
+export function persistRehearsalSourceOwnedReceipt(sql, source, evidence) {
   sql(
     source,
     `CREATE SCHEMA IF NOT EXISTS release_authority;
@@ -186,9 +188,9 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA release_authority FROM PUBLIC;`,
 
 export const rehearsalActivationCatalogPolicyAuthorization = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:c133bacb4a813540245430151ffd80f3380a4123ccc379250828d0317ac514d9",
+    "sha256:3ae78c7e2d4a76e7ff8f7b7852a1c7ab195c70ea563278a1c77a69242e7e9217",
   activatedCatalogPolicySha256:
-    "sha256:7930dc496e760ae4f0577b50db1251f44c55f2db68bf97f790ce290edc8d5253",
+    "sha256:f8fe1748dc02bfe87d4f487c2d74cc42e10efe66030215117d30565c21a47459",
 });
 export const rehearsalReadinessPolicy = Object.freeze({
   poolWaitMilliseconds: 5_000,
@@ -535,6 +537,28 @@ function redactedErrorChain(error) {
   return JSON.stringify(safe);
 }
 
+export function safeRehearsalStageErrorCode(error) {
+  const message = error instanceof Error ? error.message : "";
+  return /^(?:private_pg17_rehearsal|release_rollout|runner_ledger|trusted_rollout)_[a-z0-9_]{2,160}$/u.test(
+    message,
+  )
+    ? message
+    : undefined;
+}
+
+async function cleanupDisposableRehearsalResourcesWithDiagnostics(options) {
+  process.stderr.write("rehearsal_cleanup_started\n");
+  try {
+    await cleanupDisposableRehearsalResources(options);
+    process.stderr.write("rehearsal_cleanup_completed\n");
+  } catch (error) {
+    process.stderr.write(
+      `rehearsal_cleanup_failed:${safeRehearsalStageErrorCode(error) ?? redactedErrorChain(error)}\n`,
+    );
+    throw error;
+  }
+}
+
 const safeReleaseMigrationInvariantMessages = Object.freeze([
   "release migration target permit invalid",
   "release migration target permit binding conflict",
@@ -695,7 +719,18 @@ export function safePostgresErrorClassification(stderr) {
   const staticInvariant = normalizedStderr?.match(
     /ERROR:\s*([a-z][a-z0-9 -]{2,100})(?:\n|$)/iu,
   )?.[1];
-  if (staticInvariant) return staticInvariant.toLowerCase();
+  if (staticInvariant) {
+    const normalizedInvariant = staticInvariant.toLowerCase();
+    const digestEvidence =
+      normalizedInvariant === "activation catalog policy mismatch"
+        ? stderr?.match(
+            /DETAIL:\s*sections=([A-Za-z,]+) expected=(sha256:[a-f0-9]{64}) observed=(sha256:[a-f0-9]{64})(?:\n|$)/u,
+          )
+        : undefined;
+    return digestEvidence
+      ? `${normalizedInvariant}:sections=${digestEvidence[1]}:expected=${digestEvidence[2]}:observed=${digestEvidence[3]}`
+      : normalizedInvariant;
+  }
   const releaseInvariant = safeReleaseMigrationInvariantMessages.find(
     (message) => normalizedStderr?.includes(message),
   );
@@ -1462,22 +1497,17 @@ ROLLBACK;`,
       throw new Error("private_pg17_rehearsal_equivalence_failed");
     sql(source, "DROP SCHEMA app_private CASCADE");
     sql(target, "DROP SCHEMA app_private CASCADE");
-    if (captureOnly) {
-      sql(source, "DROP TABLE public.rehearsal_items CASCADE");
-      sql(target, "DROP TABLE public.rehearsal_items CASCADE");
-    }
+    if (captureOnly) sql(source, "DROP TABLE public.rehearsal_items CASCADE");
+    // Equivalence is already proven. The target must now match the reviewed
+    // production catalog instead of carrying a rehearsal-only relation into
+    // permit installation and activation.
+    sql(target, "DROP TABLE public.rehearsal_items CASCADE");
     const configuration = disposableSqlConfiguration();
     const canonicalRoleBootstrapSetup =
       disposablePg17CanonicalRoleBootstrapSetupSql();
     sql(
       target,
       `ALTER DATABASE review_router OWNER TO reviewrouter_role_bootstrap;
-       ${
-         captureOnly
-           ? ""
-           : `ALTER TABLE rehearsal_items OWNER TO reviewrouter_role_bootstrap;
-       ALTER SEQUENCE rehearsal_items_id_seq OWNER TO reviewrouter_role_bootstrap;`
-       }
        DO $transfer$ DECLARE item record; BEGIN
          FOR item IN SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proowner=to_regrole('postgres') LOOP
            EXECUTE format('ALTER ROUTINE %s OWNER TO reviewrouter_role_bootstrap', item.oid::regprocedure);
@@ -1943,7 +1973,10 @@ ROLLBACK;`,
       authorityOrigin,
       controlToken,
       providerAuthorityToken,
+      controlPrisma,
+      providerAuthorityPrisma,
       permitInstallerPrisma,
+      targetReceiptReaderPrisma,
       witnessPrisma,
       authorityContainer: authority,
       sourceContainer: source,
@@ -1956,16 +1989,25 @@ ROLLBACK;`,
       captureOnly,
     });
     if (captureOnly) return productionPath;
-    if (
-      sql(
-        target,
-        "SELECT count(*) FROM reviewrouter_activation.activation_receipt WHERE rollout_id='disposable-rehearsal'",
-      ) !== "1" ||
-      sql(
-        target,
-        "SELECT has_table_privilege('reviewrouter_api','rehearsal_items','INSERT')",
-      ) !== "t"
-    )
+    process.stderr.write(
+      "rehearsal_postcondition_started:activation_receipt\n",
+    );
+    const durableActivationReceipt =
+      await new RoutineTargetActivationReceiptReaderAdapter(
+        targetReceiptReaderPrisma,
+      ).read("disposable-rehearsal");
+    process.stderr.write(
+      "rehearsal_postcondition_completed:activation_receipt\n",
+    );
+    process.stderr.write("rehearsal_postcondition_started:api_privilege\n");
+    const apiInsertPrivilege = sql(
+      target,
+      `SELECT has_table_privilege(
+        'reviewrouter_api','public."AuditEvent"','INSERT'
+      )`,
+    );
+    process.stderr.write("rehearsal_postcondition_completed:api_privilege\n");
+    if (!durableActivationReceipt || apiInsertPrivilege !== "t")
       throw new Error("private_pg17_rehearsal_activation_failed");
     if (!productionPath.activationReplayStable)
       throw new Error("private_pg17_rehearsal_activation_replay_unstable");
@@ -1985,7 +2027,7 @@ ROLLBACK;`,
     });
   } finally {
     // The disposable rehearsal must fail when resource cleanup is incomplete.
-    await cleanupDisposableRehearsalResources({
+    await cleanupDisposableRehearsalResourcesWithDiagnostics({
       releaseControl,
       prismaClients: [
         controlPrisma,
@@ -3064,7 +3106,8 @@ COMMIT;
             catalogVerifier: "disposable-rehearsal",
           },
           activation: {
-            migrationManifestIdentity: digest,
+            migrationManifestIdentity:
+              current.activationReceipt.postManifestIdentity,
             namespaceFingerprint: digest,
             installerRoutineBodySha256: "a".repeat(64),
             readerRoutineBodySha256: "b".repeat(64),
@@ -3294,8 +3337,9 @@ COMMIT;
       process.stderr.write(`rehearsal_stage_completed:${safeName}\n`);
       return result;
     } catch (error) {
+      const safeError = safeRehearsalStageErrorCode(error);
       process.stderr.write(
-        `rehearsal_stage_failed:${safeName}:${redactedErrorChain(error)}\n`,
+        `rehearsal_stage_failed:${safeName}:${safeError ?? redactedErrorChain(error)}\n`,
       );
       throw error;
     } finally {
@@ -3454,34 +3498,69 @@ $attest_disposable_capture_database$;\n`,
   rollout = await runStage("verify_trusted_rollout", () =>
     useCases.verifyTrustedRollout(rollout),
   );
-  const authorityState = await ledger.observeActivationState({
-    rolloutId: rollout.rolloutId,
-    sourceSystemIdentifier: rollout.source.systemIdentifier,
-    targetSystemIdentifier: rollout.target.systemIdentifier,
-  });
+  const authorityState = await runStage("verify_durable_authority_state", () =>
+    ledger.observeActivationState({
+      rolloutId: rollout.rolloutId,
+      sourceSystemIdentifier: rollout.source.systemIdentifier,
+      targetSystemIdentifier: rollout.target.systemIdentifier,
+    }),
+  );
   if (authorityState !== "activated")
     throw new Error("private_pg17_rehearsal_durable_ledger_unproven");
-  const replayedActivation = executePrivateGenerationActivation(
-    facts.canonicalEnv,
-    activationCommands,
+  const activationReplayStable = await runStage(
+    "verify_activation_replay",
+    async () => {
+      const replayedActivation = executePrivateGenerationActivation(
+        facts.canonicalEnv,
+        activationCommands,
+      );
+      const activationReceipt = rollout.activationReceipt;
+      const durableActivation =
+        await new RoutineTargetActivationReceiptReaderAdapter(
+          facts.targetReceiptReaderPrisma,
+        ).read(rollout.rolloutId);
+      return (
+        activationReceipt !== undefined &&
+        durableActivation !== null &&
+        replayedActivation.facts.firstWriteReceiptSha256 ===
+          durableActivation.firstWriteReceiptSha256 &&
+        targetActivationIdentityMatches({
+          target: durableActivation,
+          authorization: {
+            rolloutId: activationReceipt.rolloutId,
+            expectedCommitSha: activationReceipt.expectedCommitSha,
+            postgresMajor: activationReceipt.postgresMajor,
+            migrationChecksum: activationReceipt.migrationChecksum,
+            transitionSha256: activationReceipt.transitionSha256,
+            postManifestIdentity: activationReceipt.postManifestIdentity,
+            epoch: activationReceipt.permitEpoch,
+            nonce: activationReceipt.permitNonce,
+            sourceSystemIdentifier: activationReceipt.sourceSystemIdentifier,
+            targetSystemIdentifier: activationReceipt.targetSystemIdentifier,
+            previousReceiptSha256: activationReceipt.previousReceiptSha256,
+            targetDeployIds: activationReceipt.targetDeployIds,
+            authorizedAt: activationReceipt.observedAt,
+          },
+          proposedReceipt: activationReceipt,
+          expectedReceiptSha256: activationReceipt.receiptSha256,
+        })
+      );
+    },
   );
-  const activationReplayStable =
-    replayedActivation.facts.firstWriteReceiptSha256 ===
-      rollout.activationReceipt?.firstWriteReceiptSha256 &&
-    facts.sql(
-      facts.targetContainer,
-      "SELECT count(*) = 1 AND bool_and(permit.consumed_at IS NOT NULL) FROM reviewrouter_activation.activation_receipt receipt JOIN reviewrouter_activation.activation_permit permit USING (rollout_id) WHERE receipt.rollout_id='disposable-rehearsal'",
-    ) === "t";
-  const uncertain = transitionFailure(rollout, "activation_uncertain");
-  let sourceBanProven = false;
-  try {
-    assertPromotionAllowed(uncertain, uncertain.source.systemIdentifier);
-  } catch {
-    sourceBanProven = true;
-  }
+  const sourceBanProven = await runStage("verify_source_ban", () => {
+    const uncertain = transitionFailure(rollout, "activation_uncertain");
+    try {
+      assertPromotionAllowed(uncertain, uncertain.source.systemIdentifier);
+      return false;
+    } catch {
+      return true;
+    }
+  });
   if (!sourceBanProven)
     throw new Error("private_pg17_rehearsal_source_ban_unproven");
-  const adversarial = await verifyAuthorityAdversarialChecks(facts, rollout);
+  const adversarial = await runStage("verify_authority_adversarial", () =>
+    verifyAuthorityAdversarialChecks(facts, rollout),
+  );
   const compensated = completeCompensation(
     beginCompensation(
       transitionFailure(
@@ -3528,6 +3607,27 @@ async function verifyAuthorityAdversarialChecks(facts, rollout) {
       },
       body: JSON.stringify(body),
     });
+  const requestIdempotentReplay = async (path, body) => {
+    let response;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      response = await request(path, body);
+      if (response.status !== 503) return response;
+      if (attempt < 2)
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
+    return response;
+  };
+  const [controlReadiness, providerReadiness] = await Promise.all([
+    observeReleaseAuthorityDatabaseReadiness(facts.controlPrisma),
+    observeReleaseAuthorityDatabaseReadiness(facts.providerAuthorityPrisma),
+  ]);
+  if (
+    !releaseAuthoritySchemaIsReady(controlReadiness) ||
+    !releaseAuthoritySchemaIsReady(providerReadiness)
+  )
+    throw new Error(
+      "private_pg17_rehearsal_post_activation_authority_readiness_unproven",
+    );
   const binding = {
     rolloutId: rollout.rolloutId,
     expectedCommitSha: rollout.expectedCommitSha,
@@ -3538,7 +3638,7 @@ async function verifyAuthorityAdversarialChecks(facts, rollout) {
     targetRecoveryWitnessSha256: rollout.target.recoveryWitnessSha256,
     migrationTransition: rollout.migrationTransition,
   };
-  const replay = await request("/v1/rollouts/claim", binding);
+  const replay = await requestIdempotentReplay("/v1/rollouts/claim", binding);
   if (replay.status !== 200 || (await replay.json()).result !== "duplicate")
     throw new Error("private_pg17_rehearsal_authority_replay_unproven");
   const conflict = await request("/v1/rollouts/claim", {
