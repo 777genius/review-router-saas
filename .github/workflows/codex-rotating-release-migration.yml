@@ -242,12 +242,22 @@ jobs:
           DATABASE_URL="$external_url" pnpm db:migrate:deploy
           node --import tsx --input-type=module <<'NODE' > "$work/runtime-grants.sql"
           import { runtimeGrantSql } from "./scripts/run-codex-rotating-release-migration.mjs";
-          process.stdout.write(runtimeGrantSql({ roles: [
+          const canonical = runtimeGrantSql({ roles: [
             { role: "api", username: "reviewrouter_api" },
             { role: "web", username: "reviewrouter_web" },
             { role: "worker", username: "reviewrouter_worker" },
             { role: "effect-authority", username: "reviewrouter_codex_effect_authority" },
-          ] }));
+          ] });
+          let removed = 0;
+          const compatible = canonical.split("\n").filter((line) => {
+            const skip = line.startsWith(
+              "ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_schema_owner IN SCHEMA public",
+            );
+            if (skip) removed += 1;
+            return !skip;
+          }).join("\n");
+          if (removed !== 6) throw new Error(`unexpected_default_privilege_statement_count:${removed}`);
+          process.stdout.write(compatible);
           NODE
           docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
             sh -ceu 'psql "$DATABASE_URL" --no-psqlrc --quiet --file=/work/runtime-grants.sql'
