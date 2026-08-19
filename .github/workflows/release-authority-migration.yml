@@ -44,7 +44,7 @@ jobs:
           set -euo pipefail
           node <<'NODE'
           // trust-bootstrap-node:start
-          const { appendFileSync } = require("node:fs");
+          const { appendFileSync } = await import("node:fs");
           const required = (name) => {
             const value = process.env[name];
             if (!value) throw new Error(`authority_migration_trust_missing:${name}`);
