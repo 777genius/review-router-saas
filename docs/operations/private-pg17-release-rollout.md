@@ -50,15 +50,15 @@ release service values by the workflows.
 
 Repository variables:
 
-| Group             | Variables                                                                                                                                                                                                        |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workflow identity | `REVIEW_ROUTER_RELEASE_CONTROL_ORG`, `REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY`, release-witness signing key ID and public key                                                                                   |
-| Service origins   | `REVIEW_ROUTER_RELEASE_CONTROL_URL`, `REVIEW_ROUTER_RELEASE_WITNESS_URL`                                                                                                                                         |
-| Runners           | `REVIEW_ROUTER_RUNNER_GROUP_ID`, `REVIEW_ROUTER_RUNNER_GROUP_NAME`, `REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID`                                                                                                       |
-| Provider          | `REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS`, `RENDER_OWNER_ID`                                                                                                                                                     |
-| Generations       | source/target `RENDER_DATABASE_ID`, `INTERNAL_HOSTNAME`, `DATABASE_NAME`, `DATABASE_SYSTEM_IDENTIFIER`, `RECOVERY_WITNESS_SHA256`                                                                                |
-| Release           | `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, `REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON`, source/source-fenced/target-equivalence principal policy JSON, and the two compact activation catalog policy digests |
-| Canary            | `REVIEW_ROUTER_LIVE_CANARY_URL`                                                                                                                                                                                  |
+| Group             | Variables                                                                                                                                                                                                                                                                               |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workflow identity | `REVIEW_ROUTER_RELEASE_CONTROL_ORG`, `REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY`, release-witness signing key ID and public key                                                                                                                                                          |
+| Service origins   | `REVIEW_ROUTER_RELEASE_CONTROL_URL`, `REVIEW_ROUTER_RELEASE_WITNESS_URL`                                                                                                                                                                                                                |
+| Runners           | `REVIEW_ROUTER_RUNNER_GROUP_ID`, `REVIEW_ROUTER_RUNNER_GROUP_NAME`, `REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID`                                                                                                                                                                              |
+| Provider          | `REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS`, `RENDER_OWNER_ID`                                                                                                                                                                                                                            |
+| Generations       | source/target `RENDER_DATABASE_ID`, `INTERNAL_HOSTNAME`, `DATABASE_NAME`, `DATABASE_SYSTEM_IDENTIFIER`, `RECOVERY_WITNESS_SHA256`                                                                                                                                                       |
+| Release           | `REVIEW_ROUTER_RELEASE_APPROVAL_MODE` (`solo_owner` or `independent`), `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, `REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON`, source/source-fenced/target-equivalence principal policy JSON, and the two compact activation catalog policy digests |
+| Canary            | `REVIEW_ROUTER_LIVE_CANARY_URL`                                                                                                                                                                                                                                                         |
 
 `REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS` has one canonical encoding in every
 phase: a compact JSON array of unique Render service IDs, for example
@@ -219,10 +219,16 @@ Protected environment secrets:
 | `production`                    | release-control and provider-authority tokens, target-switch key, release-migration and target runtime URLs                                                                             |
 | `production-service-switch`     | release-control, provider-authority, and release-witness tokens; suspension key and live-canary token                                                                                   |
 
-Every environment in this table must exist, require at least one reviewer,
-prevent self-review, and allow protected branches only. `main` must be a
+Every environment in this table must exist, require at least one reviewer, and
+allow protected branches only. A solo-owner repository may allow the dispatching
+owner to approve the deployment; organizations with a genuinely independent
+operator should enable GitHub's prevent-self-review setting and select
+`REVIEW_ROUTER_RELEASE_APPROVAL_MODE=independent`. The `solo_owner` mode records
+the configured self-review setting without claiming independent approval. A
+missing, unknown, or non-boolean policy fact fails closed. `main` must be a
 protected branch. These are external GitHub settings: the workflow's read-only
-bootstrap verifies all of them before checkout, but it never configures them.
+bootstrap verifies the reviewer and branch gates before checkout, but it never
+configures them.
 
 Server-only service values:
 
@@ -413,9 +419,12 @@ The trusted order is:
 3. Dispatch `release-authority-migration.yml` on that exact SHA with
    `operation=incremental-upgrade`. The protected
    `production-release-authority-migration` environment supplies the restricted
-   issuer credential. It must have at least one required reviewer, prevent self
-   review, and restrict deployments to protected branches. The workflow checks
-   all three settings before any credential-bearing job is eligible.
+   issuer credential. It must have at least one required reviewer and restrict
+   deployments to protected branches. Solo owners may approve their own
+   deployment; prevent-self-review remains recommended when an independent
+   operator actually exists. The workflow checks the explicit approval mode,
+   reviewer policy, and branch gates before any credential-bearing job is
+   eligible.
 
    ```bash
    EXPECTED_SHA=$(git rev-parse origin/main)

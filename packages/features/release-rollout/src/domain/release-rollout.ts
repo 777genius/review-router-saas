@@ -17,6 +17,11 @@ export type ProviderCreationBoundary = Readonly<{
   providerCreationNotBefore: string;
 }>;
 
+export enum ReleaseApprovalMode {
+  SoloOwner = "solo_owner",
+  Independent = "independent",
+}
+
 export const RolloutPhase = Object.freeze({
   Planned: "planned",
   PreflightVerified: "preflight_verified",
@@ -544,6 +549,9 @@ function assertStepFacts(
         facts.actor !== rollout.execution.actor ||
         facts.runId !== rollout.execution.runId ||
         facts.runAttempt !== 1 ||
+        !Object.values(ReleaseApprovalMode).includes(
+          facts.approvalMode as ReleaseApprovalMode,
+        ) ||
         !Array.isArray(facts.environments) ||
         facts.environments.length < 1 ||
         facts.environments.some((item) => {
@@ -555,7 +563,9 @@ function assertStepFacts(
             typeof environment.name !== "string" ||
             !Number.isSafeInteger(environment.requiredReviewerCount) ||
             Number(environment.requiredReviewerCount) < 1 ||
-            environment.preventSelfReview !== true ||
+            typeof environment.preventSelfReview !== "boolean" ||
+            (facts.approvalMode === ReleaseApprovalMode.Independent &&
+              environment.preventSelfReview !== true) ||
             environment.protectedBranchesOnly !== true
           );
         }) ||

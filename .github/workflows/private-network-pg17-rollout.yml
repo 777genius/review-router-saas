@@ -74,6 +74,7 @@ jobs:
           REQUIRED_ENVIRONMENTS_JSON: '["production-release-preflight","production-runner-control","production-role-bootstrap","production-runner-ledger-read","production","production-service-switch"]'
           EXPECTED_ORGANIZATION: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_ORG }}
           EXPECTED_REPOSITORY: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY }}
+          REVIEW_ROUTER_RELEASE_APPROVAL_MODE: ${{ vars.REVIEW_ROUTER_RELEASE_APPROVAL_MODE }}
         run: |
           set -euo pipefail
           node <<'NODE'
@@ -92,6 +93,9 @@ jobs:
           const expectedSha = required("EXPECTED_SHA").toLowerCase();
           const releaseRunId = required("RELEASE_RUN_ID");
           const releaseArtifactId = required("RELEASE_ARTIFACT_ID");
+          const approvalMode = required("REVIEW_ROUTER_RELEASE_APPROVAL_MODE");
+          if (!["solo_owner", "independent"].includes(approvalMode))
+            fail("approval_mode");
           if (required("GITHUB_EVENT_NAME") !== "workflow_dispatch") fail("event");
           if (required("GITHUB_RUN_ATTEMPT") !== "1") fail("run_attempt");
           if (required("GITHUB_REF") !== "refs/heads/main") fail("workflow_ref");
@@ -156,7 +160,8 @@ jobs:
               !reviewers ||
               !Array.isArray(reviewers.reviewers) ||
               reviewers.reviewers.length < 1 ||
-              reviewers.prevent_self_review !== true ||
+              typeof reviewers.prevent_self_review !== "boolean" ||
+              (approvalMode === "independent" && reviewers.prevent_self_review !== true) ||
               !branchPolicy ||
               environment.deployment_branch_policy?.protected_branches !== true
             ) fail(`environment_unprotected:${environmentName}`);
@@ -206,6 +211,7 @@ jobs:
       - name: Observe protected environment and exact release identity
         env:
           GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_RELEASE_APPROVAL_MODE: ${{ vars.REVIEW_ROUTER_RELEASE_APPROVAL_MODE }}
           REVIEW_ROUTER_PRIVILEGED_ENVIRONMENTS_JSON: '["production-release-preflight","production-runner-control","production-role-bootstrap","production-runner-ledger-read","production","production-service-switch"]'
           REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE: protected-environment-preflight.json
         run: node --import tsx scripts/observe-private-pg17-protected-environment.ts
