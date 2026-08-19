@@ -83,7 +83,7 @@ jobs:
           pnpm db:generate
           docker pull postgres:17-alpine >/dev/null
 
-      - name: Capture and validate existing runtime database roles
+      - name: Validate source database identity and stage runtime roles
         shell: bash
         run: |
           set -euo pipefail
@@ -105,6 +105,7 @@ jobs:
           render_api "https://api.render.com/v1/services/$WORKER_SERVICE_ID/env-vars?limit=100" \
             > "$work/worker-env.json"
           WORK="$work" node --input-type=module <<'NODE'
+          import { randomBytes } from "node:crypto";
           import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 
           const readEnv = (name) => {
@@ -115,46 +116,35 @@ jobs:
               return [envVar?.key, String(envVar?.value ?? envVar?.envVarValue?.value ?? "")];
             }));
           };
-          const parseRole = (value, expectedUser, label) => {
+          const parseDatabaseIdentity = (value, label) => {
             const url = new URL(value);
             if (!["postgres:", "postgresql:"].includes(url.protocol)) {
               throw new Error(`${label}_protocol_invalid`);
             }
-            if (decodeURIComponent(url.username) !== expectedUser || !url.password) {
-              throw new Error(`${label}_role_invalid`);
+            if (!url.username || !url.password || !url.pathname || url.pathname === "/") {
+              throw new Error(`${label}_credential_invalid`);
             }
-            return {
-              username: expectedUser,
-              password: decodeURIComponent(url.password),
-              identity: `${url.hostname.toLowerCase()}:${url.port || "5432"}${url.pathname}`,
-            };
+            return `${url.hostname.toLowerCase()}:${url.port || "5432"}${url.pathname}`;
           };
           const api = readEnv("api");
           const web = readEnv("web");
           const worker = readEnv("worker");
+          const identities = new Set([
+            parseDatabaseIdentity(api.DATABASE_URL, "api_database"),
+            parseDatabaseIdentity(web.DATABASE_URL, "web_database"),
+            parseDatabaseIdentity(worker.DATABASE_URL, "worker_database"),
+          ]);
+          if (identities.size !== 1) throw new Error("runtime_database_generation_mismatch");
+          const credential = () => randomBytes(32).toString("base64url");
           const roles = {
-            api: parseRole(api.DATABASE_URL, "reviewrouter_api", "api_database"),
-            web: parseRole(web.DATABASE_URL, "reviewrouter_web", "web_database"),
-            worker: parseRole(worker.DATABASE_URL, "reviewrouter_worker", "worker_database"),
-            effectAuthority: parseRole(
-              api.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL,
-              "reviewrouter_codex_effect_authority",
-              "api_effect_authority",
-            ),
+            api: { username: "reviewrouter_api", password: credential() },
+            web: { username: "reviewrouter_web", password: credential() },
+            worker: { username: "reviewrouter_worker", password: credential() },
+            effectAuthority: {
+              username: "reviewrouter_codex_effect_authority",
+              password: credential(),
+            },
           };
-          const webAuthority = parseRole(
-            web.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL,
-            "reviewrouter_codex_effect_authority",
-            "web_effect_authority",
-          );
-          const identities = new Set(Object.values(roles).map((role) => role.identity));
-          if (identities.size !== 1 || webAuthority.identity !== roles.effectAuthority.identity) {
-            throw new Error("runtime_database_generation_mismatch");
-          }
-          if (webAuthority.password !== roles.effectAuthority.password) {
-            throw new Error("effect_authority_credential_mismatch");
-          }
-          for (const role of Object.values(roles)) delete role.identity;
           const target = `${process.env.WORK}/runtime-role-secrets.json`;
           writeFileSync(target, `${JSON.stringify({ roles })}\n`, { mode: 0o600 });
           chmodSync(target, 0o600);
@@ -667,9 +657,12 @@ jobs:
               "$@"
           }
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-            render_api -X POST \
-              "https://api.render.com/v1/services/$service_id/resume" \
-              -o /dev/null
+            state="$(render_api "https://api.render.com/v1/services/$service_id" | jq -r '.suspended')"
+            if [[ "$state" == "suspended" ]]; then
+              render_api -X POST \
+                "https://api.render.com/v1/services/$service_id/resume" \
+                -o /dev/null
+            fi
           done
 
       - name: Upload cutover evidence
@@ -692,11 +685,18 @@ jobs:
             exit 0
           fi
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-            curl --fail --silent --show-error \
+            state="$(curl --fail --silent --show-error \
               --retry 4 --retry-all-errors --retry-delay 3 \
               --connect-timeout 15 --max-time 90 \
               -H "Authorization: Bearer $RENDER_API_KEY" \
-              -X POST \
-              "https://api.render.com/v1/services/$service_id/resume" \
-              -o /dev/null
+              "https://api.render.com/v1/services/$service_id" | jq -r '.suspended')"
+            if [[ "$state" == "suspended" ]]; then
+              curl --fail --silent --show-error \
+                --retry 4 --retry-all-errors --retry-delay 3 \
+                --connect-timeout 15 --max-time 90 \
+                -H "Authorization: Bearer $RENDER_API_KEY" \
+                -X POST \
+                "https://api.render.com/v1/services/$service_id/resume" \
+                -o /dev/null
+            fi
           done
