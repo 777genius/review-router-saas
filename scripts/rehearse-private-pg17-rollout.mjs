@@ -27,6 +27,7 @@ import {
   completeCompensation,
   createReleaseRollout,
   createReleaseMigrationTransition,
+  ReleaseApprovalMode,
   ReleaseRolloutUseCases,
   AuthenticatedRunnerLedgerAdapter,
   HttpProviderAuthorityDecisionAdapter,
@@ -2734,6 +2735,7 @@ COMMIT;
           actor: execution.actor,
           runId: execution.runId,
           runAttempt: 1,
+          approvalMode: ReleaseApprovalMode.SoloOwner,
           environments: [
             {
               name: "disposable-rehearsal",
