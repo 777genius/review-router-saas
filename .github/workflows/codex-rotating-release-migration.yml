@@ -44,11 +44,11 @@ jobs:
 
           work="$RUNNER_TEMP/reviewrouter-pg17-backup"
           mkdir -p "$work"
-          connection_info="$work/connection-info.json"
+          source_db_info="$work/source-db.json"
           export_list="$work/exports.json"
           plain_backup="$work/reviewrouter-pg16.dir.tar.gz"
           encrypted_backup="$work/reviewrouter-pg16.dir.tar.gz.enc"
-          trap 'rm -f "$connection_info" "$plain_backup"' EXIT
+          trap 'rm -f "$plain_backup"' EXIT
 
           render_api() {
             curl --fail --silent --show-error \
@@ -60,28 +60,15 @@ jobs:
           }
 
           render_api \
-            "https://api.render.com/v1/postgres/$SOURCE_DB_ID/connection-info" \
-            > "$connection_info"
-          export DATABASE_URL
-          DATABASE_URL="$(jq -er '.externalConnectionString' "$connection_info")"
-
-          docker pull postgres:16-alpine >/dev/null
-          docker run --rm -e DATABASE_URL postgres:16-alpine \
-            sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "
-              SELECT json_build_object(
-                '\''serverVersion'\'', current_setting('\''server_version'\''),
-                '\''serverMajor'\'', current_setting('\''server_version_num'\'')::integer / 10000,
-                '\''databaseSizeBytes'\'', pg_database_size(current_database()),
-                '\''publicTableCount'\'', (
-                  SELECT count(*) FROM information_schema.tables
-                  WHERE table_schema = '\''public'\'' AND table_type = '\''BASE TABLE'\''
-                ),
-                '\''appliedMigrationCount'\'', (
-                  SELECT count(*) FROM \"_prisma_migrations\"
-                  WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL
-                )
-              );
-            "' > "$work/source-stats.json"
+            "https://api.render.com/v1/postgres/$SOURCE_DB_ID" \
+            > "$source_db_info"
+          jq '{
+            serverMajor: (.version | tonumber),
+            diskSizeGB,
+            plan,
+            region,
+            status
+          }' "$source_db_info" > "$work/source-stats.json"
           jq -e '.serverMajor == 16' "$work/source-stats.json" >/dev/null
 
           started_at="$(date -u -d '2 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
@@ -138,8 +125,8 @@ jobs:
             -in "$plain_backup" -out "$encrypted_backup" \
             -pass env:PG17_MIGRATION_BACKUP_KEY
           encrypted_sha256="$(sha256sum "$encrypted_backup" | cut -d' ' -f1)"
-          rm -f "$plain_backup" "$connection_info"
-          unset DATABASE_URL export_url
+          rm -f "$plain_backup"
+          unset export_url
 
           jq -n \
             --arg sourceDbId "$SOURCE_DB_ID" \
