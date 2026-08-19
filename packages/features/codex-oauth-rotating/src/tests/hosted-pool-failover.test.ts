@@ -21,6 +21,7 @@ describe("hosted pool account failover", () => {
     "permission_required",
     "review_runtime_timeout",
     "hosted_relay_grant_failed:403",
+    "The selected account unavailable message was informational",
   ])("does not rotate accounts for %s", (message) => {
     expect(hostedPoolAccountFailureReason(new Error(message))).toBeUndefined();
   });

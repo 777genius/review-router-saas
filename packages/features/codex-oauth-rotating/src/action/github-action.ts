@@ -1320,7 +1320,7 @@ export function hostedPoolAccountFailureReason(
   }
   if (
     normalized === "hosted_pool_account_failed" ||
-    /\b(?:hosted[_ -]?(?:relay|pool)[_ -]?)?(?:provider[_ -]?)?account(?:[_ -]?status)?[_ -]?(?:failed|failure|unavailable)\b/.test(
+    /\b(?:hosted[_ -]?(?:relay|pool)[_ -]?|relay[_ -]?error:\s*)(?:provider[_ -]?)?account(?:[_ -]?status)?[_ -](?:failed|failure|unavailable)\b/.test(
       normalized,
     )
   ) {
