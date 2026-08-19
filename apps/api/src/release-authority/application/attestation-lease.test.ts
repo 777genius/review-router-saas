@@ -70,6 +70,11 @@ const subject = () =>
       activatedCatalogPolicySha256: `sha256:${"2".repeat(64)}`,
     },
   });
+const otherSubject = () =>
+  createReleaseAuthorityAttestationSubject({
+    ...subject(),
+    deploymentRevision: "9".repeat(40),
+  });
 const unavailable = () =>
   Object.assign(new Error("unavailable"), { statusCode: 503 });
 const timing = {
@@ -286,6 +291,66 @@ describe("process-local full-attestation lease", () => {
     expect(probe).toHaveBeenCalledOnce();
     forcedObservation.resolve();
     await Promise.all([forced, ordinary]);
+    expect(gate.state(subject()).status).toBe("ready");
+  });
+
+  it("attests an ordinary subject after an unrelated forced flight fails", async () => {
+    const clock = new FakeScheduler();
+    const unrelated = deferred();
+    const current = deferred();
+    const probe = vi
+      .fn()
+      .mockReturnValueOnce(unrelated.promise)
+      .mockReturnValueOnce(current.promise);
+    const gate = new ReleaseAuthorityAttestationCoordinator(
+      probe,
+      unavailable,
+      timing,
+      clock,
+    );
+    const forced = gate
+      .forceNew(otherSubject(), gate.captureFreshnessBoundary())
+      .catch((error) => error);
+    await Promise.resolve();
+    const ordinary = gate.assertOrdinary(subject());
+
+    unrelated.reject(new Error("unrelated_transient"));
+    const forcedResult = await forced;
+    await Promise.resolve();
+    expect(probe).toHaveBeenCalledTimes(2);
+    current.resolve();
+
+    await expect(ordinary).resolves.toBeUndefined();
+    expect(forcedResult).toMatchObject({ message: "unavailable" });
+    expect(gate.state(subject()).status).toBe("ready");
+  });
+
+  it("serializes different ordinary subjects without superseding either", async () => {
+    const clock = new FakeScheduler();
+    const unrelated = deferred();
+    const current = deferred();
+    const probe = vi
+      .fn()
+      .mockReturnValueOnce(unrelated.promise)
+      .mockReturnValueOnce(current.promise);
+    const gate = new ReleaseAuthorityAttestationCoordinator(
+      probe,
+      unavailable,
+      timing,
+      clock,
+    );
+    const first = gate.assertOrdinary(otherSubject()).catch((error) => error);
+    await Promise.resolve();
+    const second = gate.assertOrdinary(subject());
+
+    unrelated.reject(new Error("unrelated_transient"));
+    const firstResult = await first;
+    await Promise.resolve();
+    expect(probe).toHaveBeenCalledTimes(2);
+    current.resolve();
+
+    await expect(second).resolves.toBeUndefined();
+    expect(firstResult).toMatchObject({ message: "unavailable" });
     expect(gate.state(subject()).status).toBe("ready");
   });
 

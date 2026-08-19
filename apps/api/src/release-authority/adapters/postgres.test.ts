@@ -444,6 +444,44 @@ describe("release authority postgres JSONB bindings", () => {
     },
   );
 
+  it("loads an existing claim replay context and normalizes only absence", async () => {
+    const context = {
+      rolloutId: "rollout",
+      runId: "1",
+      runAttempt: 1,
+      state: "activated",
+      activationBoundary: "activated",
+      receiptOrdinal: 1,
+      authorization: { expectedCommitSha: "a".repeat(40) },
+    };
+    let outcome: "found" | "missing" | "failed" = "found";
+    const prisma = {
+      $queryRaw: async () => {
+        if (outcome === "found") return [{ value: context }];
+        if (outcome === "missing")
+          throw Object.assign(new Error("raw query failed"), {
+            code: "P2010",
+            meta: { code: "P0002", message: "rollout missing" },
+          });
+        throw Object.assign(new Error("raw query failed"), {
+          code: "P2010",
+          meta: { code: "XX000", message: "database unavailable" },
+        });
+      },
+    } as unknown as PrismaClient;
+    const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+
+    await expect(adapter.findClaimReplayContext("rollout")).resolves.toEqual(
+      context,
+    );
+    outcome = "missing";
+    await expect(adapter.findClaimReplayContext("rollout")).resolves.toBeNull();
+    outcome = "failed";
+    await expect(
+      adapter.findClaimReplayContext("rollout"),
+    ).rejects.toBeInstanceOf(ReleaseAuthorityAdapterUnexpectedError);
+  });
+
   it("does not expose malformed transition routine failures as client errors", async () => {
     const malformed = Object.assign(new Error("raw query failed"), {
       code: "P2010",

@@ -146,6 +146,9 @@ export interface ReleaseAuthorityLedgerPort {
     input: RecordSourceFreezeMutation,
   ): Promise<"recorded" | "existing">;
   claim(input: RolloutClaimBinding): Promise<"claimed" | "duplicate">;
+  findClaimReplayContext?(
+    rolloutId: string,
+  ): Promise<ReleaseRolloutReconciliationContext | null>;
   beginReleaseMigration(
     input: RolloutBinding & {
       targetRecoveryWitnessSha256: string;

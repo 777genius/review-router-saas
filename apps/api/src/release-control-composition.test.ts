@@ -632,16 +632,23 @@ describe("release authority process composition", () => {
 
   it("threads configured pool wait and transaction timeout into routine fences", async () => {
     const connection = {
-      $queryRaw: vi
-        .fn()
-        .mockResolvedValueOnce([
+      $queryRaw: vi.fn(async (query: { text?: string }) => {
+        const text = String(query.text);
+        if (text.includes("release_rollout_reconciliation_context"))
+          throw Object.assign(new Error("raw query failed"), {
+            code: "P2010",
+            meta: { code: "P0002", message: "rollout missing" },
+          });
+        if (text.includes("release_rollout_claim_transition"))
+          return [{ value: "claimed" }];
+        return [
           {
             roleName: "reviewrouter_release_control",
             ...trustedDatabaseIdentity.authorityDatabaseIdentity,
             postgresMajor: 17,
           },
-        ])
-        .mockResolvedValueOnce([{ value: "claimed" }]),
+        ];
+      }),
     };
     const transaction = vi.fn(
       async (operation: (connection: unknown) => unknown, options: unknown) => {
@@ -1251,15 +1258,19 @@ describe("release authority process composition", () => {
 
   it("bypasses a healthy lease for provider mutations while retaining it for ordinary control calls", async () => {
     let catalogDrifted = false;
-    const controlOperation = vi.fn((query: { text?: string }) =>
-      Promise.resolve([
+    const controlOperation = vi.fn((query: { text?: string }) => {
+      const text = String(query.text);
+      if (text.includes("release_rollout_reconciliation_context"))
+        throw Object.assign(new Error("raw query failed"), {
+          code: "P2010",
+          meta: { code: "P0002", message: "rollout missing" },
+        });
+      return Promise.resolve([
         {
-          value: String(query.text).includes("release_rollout_claim")
-            ? "claimed"
-            : null,
+          value: text.includes("release_rollout_claim") ? "claimed" : null,
         },
-      ]),
-    );
+      ]);
+    });
     const atomicQuery = <T extends ReturnType<typeof vi.fn>>(query: T): T =>
       Object.assign(query, { atomicTest: true });
     const control = {
@@ -1340,11 +1351,11 @@ describe("release authority process composition", () => {
       firstClaim.statusCode,
       `${firstClaim.body}:${observedConnections.join(",")}`,
     ).toBe(200);
-    expect(observer).toHaveBeenCalledTimes(12);
+    expect(observer).toHaveBeenCalledTimes(15);
     catalogDrifted = true;
 
     expect((await claim()).statusCode).toBe(503);
-    expect(observer).toHaveBeenCalledTimes(14);
+    expect(observer).toHaveBeenCalledTimes(17);
     const protectedMutation = await app.inject({
       method: "POST",
       url: "/v1/provider-mutations/issue",
@@ -1359,8 +1370,8 @@ describe("release authority process composition", () => {
       },
     });
     expect(protectedMutation.statusCode).toBe(503);
-    expect(observer).toHaveBeenCalledTimes(16);
-    expect(controlOperation).toHaveBeenCalledTimes(3);
+    expect(observer).toHaveBeenCalledTimes(19);
+    expect(controlOperation).toHaveBeenCalledTimes(6);
     await app.close();
   });
 
