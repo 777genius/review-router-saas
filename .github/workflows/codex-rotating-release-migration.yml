@@ -181,13 +181,20 @@ jobs:
             external_url="$external_url?sslmode=require&connect_timeout=15"
           fi
           export DATABASE_URL="$external_url"
-          database_preflight="$(docker run --rm -e DATABASE_URL postgres:17-alpine \
+          docker run --rm -e DATABASE_URL postgres:17-alpine \
             sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "
-              SELECT CASE WHEN current_setting('\''server_version_num'\'')::integer / 10000 = 17 THEN 1 ELSE 0 END;
-              SELECT CASE WHEN (SELECT count(*) FROM information_schema.tables WHERE table_schema='\''public'\'' AND table_type='\''BASE TABLE'\'') >= 100 THEN 1 ELSE 0 END;
-              SELECT CASE WHEN (SELECT count(*) FROM \"_prisma_migrations\" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL) >= 74 THEN 1 ELSE 0 END;
-            "')"
-          test "$database_preflight" = $'1\n1\n1'
+              SELECT json_build_object(
+                '\''serverMajor'\'', current_setting('\''server_version_num'\'')::integer / 10000,
+                '\''publicTableCount'\'', (SELECT count(*) FROM information_schema.tables WHERE table_schema='\''public'\'' AND table_type='\''BASE TABLE'\''),
+                '\''appliedMigrationCount'\'', (SELECT count(*) FROM \"_prisma_migrations\" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL)
+              );
+            "' > "$work/database-preflight.json"
+          jq -c . "$work/database-preflight.json"
+          jq -e '
+            .serverMajor == 17
+            and .publicTableCount >= 100
+            and .appliedMigrationCount >= 74
+          ' "$work/database-preflight.json" >/dev/null
 
           cat > "$work/create-runtime-roles.sql" <<'SQL'
           \set ON_ERROR_STOP on
