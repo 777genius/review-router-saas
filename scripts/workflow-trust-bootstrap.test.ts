@@ -48,12 +48,8 @@ globalThis.fetch = async (url) => {
   if (!(path in fixture)) return { ok: false, status: 404, json: async () => ({}) };
   return { ok: true, status: 200, json: async () => fixture[path] };
 };
-(async () => {
 ${inlineBootstrap(source)}
-})().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});`;
+`;
   const result = spawnSync(process.execPath, ["-e", program], {
     encoding: "utf8",
     env: {
