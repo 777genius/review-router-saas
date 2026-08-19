@@ -365,6 +365,11 @@ describe("private-network PG17 workflow security contract", () => {
       expect(job).toContain(
         "SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}",
       );
+      expect(job.match(/name: Enable pnpm/gu)).toHaveLength(1);
+      expect(job).toContain("run: corepack enable");
+      expect(job.indexOf("name: Enable pnpm")).toBeLessThan(
+        job.indexOf(installCommand),
+      );
       expect(job.match(new RegExp(installCommand, "gu"))).toHaveLength(1);
     }
   });
