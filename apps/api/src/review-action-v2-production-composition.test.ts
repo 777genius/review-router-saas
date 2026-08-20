@@ -520,6 +520,40 @@ describe("Review Action v2 production composition", () => {
     );
   });
 
+  it("does not block authorization when diagnostics never settle", async () => {
+    const diagnostics = vi.fn(() => new Promise<void>(() => undefined));
+    const capability = new ProductionReviewInvestigationAuthorizationCapability(
+      {
+        resolveAllowedCapabilitiesForTargets: vi.fn(),
+      },
+      { record: diagnostics },
+    );
+    const settled = vi.fn();
+
+    void capability
+      .resolve({
+        target: {
+          workspaceId: "workspace-secret",
+          repositoryConnectionId: "repository-secret",
+          scmRepositoryIdentityId: "scm-secret",
+          trustDomain: "trusted",
+          producerReleaseId: "release-secret",
+          providerVoteLanes: [{ providerKind: "codex" }],
+        } as never,
+        producerRelease: {
+          reviewInvestigationProfile: null,
+        } as never,
+      })
+      .then(settled);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toHaveBeenCalledOnce();
+    expect(settled).toHaveBeenCalledWith(null);
+    expect(diagnostics).toHaveBeenCalledWith(
+      ReviewInvestigationOperationsDiagnosticCode.AuthorizationReleaseProfileMissing,
+    );
+  });
+
   it("preserves the investigation profile while materializing a trusted release", async () => {
     const registerProducerRelease = vi.fn().mockResolvedValue({
       status: "created",

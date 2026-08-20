@@ -990,7 +990,7 @@ export class ProductionReviewInvestigationAuthorizationCapability implements Rev
       profile === null ||
       profile.capability !== reviewInvestigationCapabilityV1
     ) {
-      await this.recordDiagnostic(
+      this.recordDiagnostic(
         ReviewInvestigationOperationsDiagnosticCode.AuthorizationReleaseProfileMissing,
       );
       return null;
@@ -1008,7 +1008,7 @@ export class ProductionReviewInvestigationAuthorizationCapability implements Rev
       .map(investigationAuthorizationProvider)
       .filter((provider) => provider !== null);
     if (providers.length === 0) {
-      await this.recordDiagnostic(
+      this.recordDiagnostic(
         ReviewInvestigationOperationsDiagnosticCode.AuthorizationProviderUnsupported,
       );
       return null;
@@ -1026,7 +1026,7 @@ export class ProductionReviewInvestigationAuthorizationCapability implements Rev
       resolvedCapabilities =
         await this.rollout.resolveAllowedCapabilitiesForTargets({ targets });
     } catch {
-      await this.recordDiagnostic(
+      this.recordDiagnostic(
         ReviewInvestigationOperationsDiagnosticCode.AuthorizationRolloutUnavailable,
       );
       return null;
@@ -1047,7 +1047,7 @@ export class ProductionReviewInvestigationAuthorizationCapability implements Rev
       );
     }
     if (providerCapabilities.length === 0) {
-      await this.recordDiagnostic(
+      this.recordDiagnostic(
         ReviewInvestigationOperationsDiagnosticCode.AuthorizationRecordingNotGranted,
       );
       return null;
@@ -1065,11 +1065,13 @@ export class ProductionReviewInvestigationAuthorizationCapability implements Rev
     });
   }
 
-  private async recordDiagnostic(
+  private recordDiagnostic(
     code: ReviewInvestigationOperationsDiagnosticCode,
-  ): Promise<void> {
+  ): void {
     try {
-      await this.diagnostics.record(code);
+      void Promise.resolve(this.diagnostics.record(code)).catch(
+        () => undefined,
+      );
     } catch {
       // Diagnostics must not change the fail-closed authorization result.
     }
