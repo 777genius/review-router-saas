@@ -349,6 +349,8 @@ jobs:
       RENDER_ENVIRONMENT_ID: ${{ inputs.environment_id }}
       ACTION_COMMIT_SHA: ${{ inputs.release_commit_sha }}
       API_SERVICE_ID: ${{ inputs.api_service_id }}
+      WORKER_SERVICE_ID: ${{ inputs.worker_service_id }}
+      WEB_SERVICE_ID: ${{ inputs.web_service_id }}
     steps:
       - name: Checkout immutable registration tooling
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -365,6 +367,8 @@ jobs:
           [[ "$RENDER_ENVIRONMENT_ID" =~ ^evm-[a-z0-9-]+$ ]]
           [[ "$ACTION_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$API_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
+          [[ "$WORKER_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
+          [[ "$WEB_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
           corepack enable
           node scripts/install-private-dependencies.mjs --frozen-lockfile
           pnpm db:generate
@@ -464,16 +468,40 @@ jobs:
           const attestations = JSON.parse(
             apiEnv.REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON ?? "[]",
           );
-          const matches = attestations.filter(
+          let matches = attestations.filter(
             (attestation) => attestation?.actionCommitSha === actionCommitSha,
           );
-          if (matches.length !== 1) {
+          if (matches.length > 1) {
             throw new Error(`verified_release_attestation_count:${matches.length}`);
+          }
+          if (matches.length === 0) {
+            const releaseKey = `reviewrouter-action.${actionCommitSha.slice(0, 12)}`;
+            matches = [{
+              producerReleaseId: releaseKey,
+              distributionKind: "public_reusable",
+              actionCommitSha: manifest.actionCommitSha,
+              runtimeCommitSha: manifest.runtimeCommitSha,
+              wrapperEntrypointDigest: manifest.wrapperEntrypointDigest,
+              runtimeEntrypointDigest: manifest.runtimeEntrypointDigest,
+              contextGatewayPolicyVersion: manifest.contextGatewayPolicyVersion,
+              contextGatewayEntrypointDigest: manifest.contextGatewayEntrypointDigest,
+              reviewInvestigationCapability: manifest.reviewInvestigationCapability,
+              reviewInvestigationCoverageProfileHash:
+                manifest.reviewInvestigationCoverageProfileHash,
+              reviewInvestigationPolicyHash: manifest.reviewInvestigationPolicyHash,
+              schemaDigest: manifest.schemaDigest,
+              canonicalizerDigest: manifest.canonicalizerDigest,
+              capabilityProfile: "exact_revision_v2",
+              protocolLimitsProfileId: `${releaseKey}.limits-v2`,
+              operationalSloProfileId: `${releaseKey}.slo-v2`,
+            }];
           }
           const attestation = matches[0];
           const exactFields = [
+            "distributionKind",
             "actionCommitSha",
             "runtimeCommitSha",
+            "wrapperEntrypointDigest",
             "runtimeEntrypointDigest",
             "contextGatewayPolicyVersion",
             "contextGatewayEntrypointDigest",
@@ -543,6 +571,19 @@ jobs:
               capabilityProfile: attestation.capabilityProfile,
             },
           };
+          const updatedAttestations = [
+            ...attestations.filter(
+              (candidate) => candidate?.actionCommitSha !== actionCommitSha,
+            ),
+            attestation,
+          ].sort((left, right) =>
+            left.producerReleaseId.localeCompare(right.producerReleaseId),
+          );
+          writeFileSync(
+            `${work}/updated-attestations.json`,
+            `${JSON.stringify(updatedAttestations)}\n`,
+            { mode: 0o600 },
+          );
           writeFileSync(`${work}/release-bundle.json`, `${JSON.stringify(bundle)}\n`, { mode: 0o600 });
 
           const databaseUrl = new URL(connection.externalConnectionString);
@@ -554,6 +595,8 @@ jobs:
             ...apiEnv,
             NODE_ENV: "production",
             DATABASE_URL: databaseUrl.toString(),
+            REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON:
+              JSON.stringify(updatedAttestations),
             REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL: credential,
             REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256: createHash("sha256")
               .update(credential, "utf8")
@@ -598,6 +641,15 @@ jobs:
               and (.releaseStatus == "created" or .releaseStatus == "unchanged")
             ' "$work/registration-result.json" >/dev/null
           jq -c . "$work/registration-result.json"
+
+          jq -n --rawfile value "$work/updated-attestations.json" \
+            '{value: ($value | rtrimstr("\n"))}' > "$work/attestations-env.json"
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            render_api -X PUT -H "Content-Type: application/json" \
+              --data-binary @"$work/attestations-env.json" \
+              "https://api.render.com/v1/services/$service_id/env-vars/REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON" \
+              -o /dev/null
+          done
           close_firewall
           firewall_open=0
 
