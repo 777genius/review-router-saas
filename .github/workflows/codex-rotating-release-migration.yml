@@ -47,6 +47,7 @@ concurrency:
 jobs:
   recover:
     name: Complete restored PG17 cutover
+    if: ${{ inputs.confirmation == 'RECOVER_EXISTING_PG17' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -331,6 +332,278 @@ jobs:
         with:
           name: reviewrouter-pg17-recovery-${{ github.run_id }}
           path: ${{ runner.temp }}/reviewrouter-pg17-recovery/recovery-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  register-release:
+    name: Register verified Review Action release
+    if: ${{ inputs.confirmation == 'REGISTER_VERIFIED_REVIEW_ACTION_RELEASE' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
+      TARGET_DB_ID: ${{ inputs.target_db_id }}
+      RENDER_OWNER_ID: ${{ inputs.owner_id }}
+      RENDER_ENVIRONMENT_ID: ${{ inputs.environment_id }}
+      ACTION_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+      API_SERVICE_ID: ${{ inputs.api_service_id }}
+    steps:
+      - name: Checkout immutable registration tooling
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Install registration tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_DB_ID" =~ ^dpg-[a-z0-9-]+$ ]]
+          [[ "$RENDER_OWNER_ID" =~ ^tea-[a-z0-9-]+$ ]]
+          [[ "$RENDER_ENVIRONMENT_ID" =~ ^evm-[a-z0-9-]+$ ]]
+          [[ "$ACTION_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$API_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
+          corepack enable
+          node scripts/install-private-dependencies.mjs --frozen-lockfile
+          pnpm db:generate
+          pnpm --filter @reviewrouter/api... build
+          docker pull postgres:17-alpine >/dev/null
+
+      - name: Verify and register release
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$RUNNER_TEMP/reviewrouter-release-registration"
+          mkdir -p "$work"
+          firewall_open=0
+          render_api() {
+            curl --fail --silent --show-error \
+              --retry 4 --retry-all-errors --retry-delay 3 \
+              --connect-timeout 15 --max-time 120 \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+          close_firewall() {
+            if [[ "$firewall_open" -eq 1 ]]; then
+              render_api -X PATCH \
+                -H "Content-Type: application/json" \
+                --data-binary '{"ipAllowList":[]}' \
+                "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
+                -o /dev/null || true
+            fi
+          }
+          cleanup() {
+            close_firewall
+            rm -f "$work/api-env.json" "$work/api-env-object.json" \
+              "$work/connection-info.json" "$work/operator-input.json"
+          }
+          trap cleanup EXIT
+
+          render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" > "$work/target.json"
+          jq -e \
+            --arg ownerId "$RENDER_OWNER_ID" \
+            --arg environmentId "$RENDER_ENVIRONMENT_ID" '
+              .version == "17"
+              and .status == "available"
+              and .environmentId == $environmentId
+              and ((.ownerId // .owner.id) == $ownerId)
+            ' "$work/target.json" >/dev/null
+
+          render_api "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars" \
+            > "$work/api-env.json"
+          jq -e '
+            map(.envVar // .)
+            | map(select((.key | type) == "string" and (.value | type) == "string"))
+            | map({key, value})
+            | from_entries
+          ' "$work/api-env.json" > "$work/api-env-object.json"
+
+          git clone --filter=blob:none https://github.com/777genius/review-router.git "$work/action"
+          git -C "$work/action" fetch origin "$ACTION_COMMIT_SHA"
+          git -C "$work/action" switch -c verified-release "$ACTION_COMMIT_SHA"
+          pnpm protocol:release-manifest \
+            --action-repo "$work/action" \
+            --target-branch verified-release \
+            --expected-head "$ACTION_COMMIT_SHA" \
+            --output "$work/release-manifest.json" >/dev/null
+          pnpm protocol:release-manifest:check \
+            --manifest "$work/release-manifest.json" \
+            --action-repo "$work/action" >/dev/null
+
+          runner_ip="$(curl --fail --silent --show-error --max-time 30 https://api.ipify.org)"
+          [[ "$runner_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          jq -n --arg cidr "$runner_ip/32" '{ipAllowList: [{
+            cidrBlock: $cidr,
+            description: "temporary verified release registration"
+          }]}' > "$work/firewall.json"
+          render_api -X PATCH -H "Content-Type: application/json" \
+            --data-binary @"$work/firewall.json" \
+            "https://api.render.com/v1/postgres/$TARGET_DB_ID" -o /dev/null
+          firewall_open=1
+          render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID/connection-info" \
+            > "$work/connection-info.json"
+
+          WORK="$work" ACTION_COMMIT_SHA="$ACTION_COMMIT_SHA" node --input-type=module <<'NODE'
+          import { createHash, randomBytes } from "node:crypto";
+          import { readFileSync, writeFileSync } from "node:fs";
+          import { spawnSync } from "node:child_process";
+
+          const work = process.env.WORK;
+          const actionCommitSha = process.env.ACTION_COMMIT_SHA;
+          const apiEnv = JSON.parse(readFileSync(`${work}/api-env-object.json`, "utf8"));
+          const manifest = JSON.parse(readFileSync(`${work}/release-manifest.json`, "utf8"));
+          const connection = JSON.parse(readFileSync(`${work}/connection-info.json`, "utf8"));
+          const attestations = JSON.parse(
+            apiEnv.REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON ?? "[]",
+          );
+          const matches = attestations.filter(
+            (attestation) => attestation?.actionCommitSha === actionCommitSha,
+          );
+          if (matches.length !== 1) {
+            throw new Error(`verified_release_attestation_count:${matches.length}`);
+          }
+          const attestation = matches[0];
+          const exactFields = [
+            "actionCommitSha",
+            "runtimeCommitSha",
+            "runtimeEntrypointDigest",
+            "contextGatewayPolicyVersion",
+            "contextGatewayEntrypointDigest",
+            "schemaDigest",
+            "canonicalizerDigest",
+          ];
+          for (const field of exactFields) {
+            if (attestation[field] !== manifest[field]) {
+              throw new Error(`verified_release_manifest_mismatch:${field}`);
+            }
+          }
+          const investigationFields = [
+            ["reviewInvestigationCapability", "reviewInvestigationCapability"],
+            ["reviewInvestigationCoverageProfileHash", "reviewInvestigationCoverageProfileHash"],
+            ["reviewInvestigationPolicyHash", "reviewInvestigationPolicyHash"],
+          ];
+          for (const [attestationField, manifestField] of investigationFields) {
+            if (attestation[attestationField] !== manifest[manifestField]) {
+              throw new Error(`verified_release_manifest_mismatch:${attestationField}`);
+            }
+          }
+          const bundle = {
+            protocolLimitsProfileId: attestation.protocolLimitsProfileId,
+            limits: {
+              maxWorkSlots: 200,
+              maxAttemptsPerSlot: 4,
+              maxObservationBytes: 1_000_000,
+              maxObservationFindings: 1_000,
+              maxProjectionBytes: 2_000_000,
+              maxProjectionFindings: 2_000,
+              maxPublicationOperations: 500,
+              maxPublicationChunks: 500,
+              maxPublicationBodyBytes: 2_000_000,
+              maxRequestBatchSize: 100,
+              maxLeaseDurationMs: 600_000,
+              maxResultReportDurationMs: 1_200_000,
+              maxReconciliationDurationMs: 3_600_000,
+            },
+            operationalSloProfileId: attestation.operationalSloProfileId,
+            thresholds: {
+              integrationEventDeliveryMs: 60_000,
+              outboxClaimAgeMs: 120_000,
+              missingCompletionProcessMs: 300_000,
+              dueCompletionProcessMs: 300_000,
+              publicationReconciliationMs: 600_000,
+              v1DrainMs: 3_600_000,
+              admissionMs: 30_000,
+              pruningBacklogAgeMs: 86_400_000,
+            },
+            ownerRefs: ["team-reviewrouter"],
+            runbookRefs: ["docs/operations/review-action-v2-cutover.md"],
+            candidate: {
+              producerReleaseId: attestation.producerReleaseId,
+              distributionKind: attestation.distributionKind,
+              actionCommitSha: manifest.actionCommitSha,
+              runtimeCommitSha: manifest.runtimeCommitSha,
+              wrapperEntrypointDigest: manifest.wrapperEntrypointDigest,
+              runtimeEntrypointDigest: manifest.runtimeEntrypointDigest,
+              contextGatewayPolicyVersion: manifest.contextGatewayPolicyVersion,
+              contextGatewayEntrypointDigest: manifest.contextGatewayEntrypointDigest,
+              reviewInvestigationProfile: {
+                capability: manifest.reviewInvestigationCapability,
+                coverageProfileHash: manifest.reviewInvestigationCoverageProfileHash,
+                policyHash: manifest.reviewInvestigationPolicyHash,
+              },
+              schemaDigest: manifest.schemaDigest,
+              capabilityProfile: attestation.capabilityProfile,
+            },
+          };
+          writeFileSync(`${work}/release-bundle.json`, `${JSON.stringify(bundle)}\n`, { mode: 0o600 });
+
+          const databaseUrl = new URL(connection.externalConnectionString);
+          databaseUrl.searchParams.set("sslmode", "require");
+          databaseUrl.searchParams.set("connect_timeout", "15");
+          const credential = randomBytes(32).toString("base64url");
+          const operatorEnv = {
+            ...process.env,
+            ...apiEnv,
+            NODE_ENV: "production",
+            DATABASE_URL: databaseUrl.toString(),
+            REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL: credential,
+            REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256: createHash("sha256")
+              .update(credential, "utf8")
+              .digest("hex"),
+          };
+          const result = spawnSync(
+            "node",
+            [
+              "--conditions=production",
+              "apps/api/dist/review-action-v2-operator-cli.js",
+              "release",
+              "register",
+              "--bundle",
+              `${work}/release-bundle.json`,
+              "--confirm",
+              "release",
+            ],
+            { cwd: process.cwd(), env: operatorEnv, encoding: "utf8" },
+          );
+          if (result.status !== 0) {
+            writeFileSync(`${work}/registration-error.log`, result.stderr, { mode: 0o600 });
+            throw new Error(`verified_release_registration_failed:exit_${result.status ?? "unknown"}`);
+          }
+          const registration = JSON.parse(result.stdout);
+          writeFileSync(
+            `${work}/registration-result.json`,
+            `${JSON.stringify({
+              actionCommitSha,
+              producerReleaseId: attestation.producerReleaseId,
+              limitsStatus: registration.limitsResult?.status,
+              sloStatus: registration.sloResult?.status,
+              releaseStatus: registration.releaseResult?.status,
+            })}\n`,
+            { mode: 0o644 },
+          );
+          NODE
+
+          jq -e \
+            --arg sha "$ACTION_COMMIT_SHA" '
+              .actionCommitSha == $sha
+              and (.producerReleaseId | type == "string" and length > 0)
+              and (.releaseStatus == "created" or .releaseStatus == "unchanged")
+            ' "$work/registration-result.json" >/dev/null
+          jq -c . "$work/registration-result.json"
+          close_firewall
+          firewall_open=0
+
+      - name: Upload release registration evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reviewrouter-release-registration-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/reviewrouter-release-registration/release-manifest.json
+            ${{ runner.temp }}/reviewrouter-release-registration/registration-result.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
