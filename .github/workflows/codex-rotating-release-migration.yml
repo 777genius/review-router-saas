@@ -372,7 +372,7 @@ jobs:
           corepack enable
           node scripts/install-private-dependencies.mjs --frozen-lockfile
           pnpm db:generate
-          pnpm --filter @reviewrouter/api... build
+          pnpm build
           docker pull postgres:17-alpine >/dev/null
 
       - name: Verify and register release
