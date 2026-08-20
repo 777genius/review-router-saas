@@ -6,6 +6,7 @@ import type { PersistedReviewConfiguration } from "./review-configuration-reposi
 export enum ReviewConfigurationOperatorOperation {
   Read = "read_review_configuration",
   SetReasoningEffort = "set_review_reasoning_effort",
+  SetInvestigationRollout = "set_review_investigation_rollout",
 }
 
 export type ReviewConfigurationOperatorPrincipal = Readonly<{

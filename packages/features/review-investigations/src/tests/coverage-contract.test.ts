@@ -8,6 +8,7 @@ import {
   reviewInvestigationCoverageProfileV2,
   reviewInvestigationCoverageProfileV3,
   reviewInvestigationCoverageProfileV4,
+  reviewInvestigationCoverageProfileV5,
 } from "../domain/coverage-contract";
 import { canonicalJson } from "../domain/canonicalization";
 
@@ -21,15 +22,15 @@ describe("review investigation coverage profile", () => {
     ).not.toThrow();
     expect(() =>
       assertSupportedReviewInvestigationCoverageProfile({
-        ...reviewInvestigationCoverageProfileV4,
+        ...reviewInvestigationCoverageProfileV5,
         producerReleaseId: "release-1",
       }),
     ).not.toThrow();
 
-    for (const field of Object.keys(reviewInvestigationCoverageProfileV4)) {
+    for (const field of Object.keys(reviewInvestigationCoverageProfileV5)) {
       expect(() =>
         assertSupportedReviewInvestigationCoverageProfile({
-          ...reviewInvestigationCoverageProfileV4,
+          ...reviewInvestigationCoverageProfileV5,
           producerReleaseId: "release-1",
           [field]: `${field}.unsupported`,
         }),
@@ -73,6 +74,12 @@ describe("review investigation coverage profile", () => {
         producerReleaseId: "release-current-v4",
       }),
     ).toBe(ReviewInvestigationCoverageProfileGeneration.V4);
+    expect(
+      resolveReviewInvestigationCoverageProfileGeneration({
+        ...reviewInvestigationCoverageProfileV5,
+        producerReleaseId: "release-current-v5",
+      }),
+    ).toBe(ReviewInvestigationCoverageProfileGeneration.V5);
     expect(
       resolveReviewInvestigationCoverageProfileGeneration({
         ...reviewInvestigationCoverageProfileV2,

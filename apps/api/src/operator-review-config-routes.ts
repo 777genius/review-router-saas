@@ -4,6 +4,7 @@ import {
   ReviewConfigurationOperatorError,
   ReviewConfigurationOperatorErrorCode,
   ReviewReasoningEffort,
+  setOperatorReviewInvestigationRollout,
   setOperatorReviewReasoningEffort,
   type OperatorReviewConfigurationDependencies,
 } from "@reviewrouter/features-review-config";
@@ -23,6 +24,25 @@ const setReasoningEffortBodySchema = z.strictObject({
   workspace: z.string().trim().min(1).max(120).optional(),
   sourceBaseUrl: z.url().max(500).optional(),
   effort: z.enum(ReviewReasoningEffort),
+  reason: z.string().trim().min(1).max(120).optional(),
+});
+
+const investigationRolloutSchema = z.strictObject({
+  recordingEnabled: z.boolean(),
+  shadowEnabled: z.boolean(),
+  contextCriticEnabled: z.boolean(),
+  verifiedCleanEnabled: z.boolean(),
+  crossRevisionReplayEnabled: z.boolean(),
+  productionEffectsEnabled: z.boolean(),
+});
+
+const setInvestigationRolloutBodySchema = z.strictObject({
+  repository: z.string().trim().min(3).max(255),
+  provider: z.enum(scmProviders).default("github"),
+  workspace: z.string().trim().min(1).max(120).optional(),
+  sourceBaseUrl: z.url().max(500).optional(),
+  expectedCurrentVersion: z.number().int().positive().nullable(),
+  investigationRollout: investigationRolloutSchema,
   reason: z.string().trim().min(1).max(120).optional(),
 });
 
@@ -89,6 +109,40 @@ export async function registerOperatorReviewConfigRoutes(
       }
     },
   );
+
+  app.put(
+    "/api/operator/v1/review-config/investigation-rollout",
+    { bodyLimit: 4_096 },
+    async (request, reply) => {
+      const body = setInvestigationRolloutBodySchema.safeParse(request.body);
+      if (!body.success) {
+        return sendOperatorError(reply, 400, "invalid_request");
+      }
+      try {
+        const result = await setOperatorReviewInvestigationRollout(
+          {
+            credential: readBearerCredential(request.headers.authorization),
+            repositoryFullName: body.data.repository,
+            provider: body.data.provider,
+            expectedCurrentVersion: body.data.expectedCurrentVersion,
+            investigationRollout: body.data.investigationRollout,
+            ...(body.data.workspace ? { workspace: body.data.workspace } : {}),
+            ...(body.data.sourceBaseUrl
+              ? { sourceBaseUrl: body.data.sourceBaseUrl }
+              : {}),
+            ...(body.data.reason ? { reason: body.data.reason } : {}),
+          },
+          dependencies,
+        );
+        return reply
+          .header("Cache-Control", "no-store")
+          .code(200)
+          .send({ result });
+      } catch (error) {
+        return handleOperatorError(error, reply);
+      }
+    },
+  );
 }
 
 function readBearerCredential(authorization: string | undefined): string {
@@ -109,6 +163,7 @@ function handleOperatorError(error: unknown, reply: FastifyReply) {
     case ReviewConfigurationOperatorErrorCode.RepositoryAmbiguous:
       return sendOperatorError(reply, 409, error.code);
     case ReviewConfigurationOperatorErrorCode.InvalidRepository:
+    case ReviewConfigurationOperatorErrorCode.InvalidInvestigationRollout:
       return sendOperatorError(reply, 400, error.code);
     case ReviewConfigurationOperatorErrorCode.RateLimited:
       return sendOperatorError(reply, 429, error.code);

@@ -42,6 +42,7 @@ import {
   evaluateInvestigationRollout,
 } from "@reviewrouter/features-review-investigation-operations";
 import { investigationRolloutSelectorsEnv } from "@reviewrouter/features-review-investigation-operations/composition";
+import { ReviewInvestigationOperationsDiagnosticCode } from "./review-investigation-operations-composition.js";
 import { reviewActionV2ProjectionPolicyVersion } from "./review-action-v2-projection-policy.js";
 
 const runtime = {
@@ -365,6 +366,7 @@ describe("Review Action v2 production composition", () => {
   });
 
   it("advertises a recording-only target with an explicit V2 grant", async () => {
+    const diagnostics = vi.fn();
     const resolveAllowedCapabilitiesForTargets = vi
       .fn()
       .mockResolvedValue([[InvestigationRolloutCapability.Recording]]);
@@ -372,6 +374,7 @@ describe("Review Action v2 production composition", () => {
       {
         resolveAllowedCapabilitiesForTargets,
       },
+      { record: diagnostics },
     );
 
     await expect(
@@ -409,6 +412,7 @@ describe("Review Action v2 production composition", () => {
       ],
     });
     expect(resolveAllowedCapabilitiesForTargets).toHaveBeenCalledOnce();
+    expect(diagnostics).not.toHaveBeenCalled();
     expect(resolveAllowedCapabilitiesForTargets).toHaveBeenCalledWith({
       targets: [
         expect.objectContaining({
@@ -416,6 +420,104 @@ describe("Review Action v2 production composition", () => {
         }),
       ],
     });
+  });
+
+  it.each([
+    {
+      name: "missing release profile",
+      profile: null,
+      providerVoteLanes: [{ providerKind: "codex" }],
+      rolloutResult: [[InvestigationRolloutCapability.Recording]],
+      expected:
+        ReviewInvestigationOperationsDiagnosticCode.AuthorizationReleaseProfileMissing,
+    },
+    {
+      name: "unsupported provider",
+      profile: {
+        capability: "review_investigation_v1",
+        coverageProfileHash: "a".repeat(64),
+        policyHash: "b".repeat(64),
+      },
+      providerVoteLanes: [{ providerKind: "openrouter" }],
+      rolloutResult: [[InvestigationRolloutCapability.Recording]],
+      expected:
+        ReviewInvestigationOperationsDiagnosticCode.AuthorizationProviderUnsupported,
+    },
+    {
+      name: "recording not granted",
+      profile: {
+        capability: "review_investigation_v1",
+        coverageProfileHash: "a".repeat(64),
+        policyHash: "b".repeat(64),
+      },
+      providerVoteLanes: [{ providerKind: "codex" }],
+      rolloutResult: [[]],
+      expected:
+        ReviewInvestigationOperationsDiagnosticCode.AuthorizationRecordingNotGranted,
+    },
+  ])("emits one bounded diagnostic for $name denial", async (testCase) => {
+    const diagnostics = vi.fn();
+    const resolveAllowedCapabilitiesForTargets = vi
+      .fn()
+      .mockResolvedValue(testCase.rolloutResult);
+    const capability = new ProductionReviewInvestigationAuthorizationCapability(
+      { resolveAllowedCapabilitiesForTargets },
+      { record: diagnostics },
+    );
+
+    await expect(
+      capability.resolve({
+        target: {
+          workspaceId: "workspace-secret",
+          repositoryConnectionId: "repository-secret",
+          scmRepositoryIdentityId: "scm-secret",
+          trustDomain: "trusted",
+          producerReleaseId: "release-secret",
+          providerVoteLanes: testCase.providerVoteLanes,
+        } as never,
+        producerRelease: {
+          reviewInvestigationProfile: testCase.profile,
+        } as never,
+      }),
+    ).resolves.toBeNull();
+    expect(diagnostics).toHaveBeenCalledOnce();
+    expect(diagnostics).toHaveBeenCalledWith(testCase.expected);
+  });
+
+  it("emits one bounded diagnostic when rollout resolution is unavailable", async () => {
+    const diagnostics = vi.fn();
+    const capability = new ProductionReviewInvestigationAuthorizationCapability(
+      {
+        resolveAllowedCapabilitiesForTargets: vi
+          .fn()
+          .mockRejectedValue(new Error("selector with secret identifiers")),
+      },
+      { record: diagnostics },
+    );
+
+    await expect(
+      capability.resolve({
+        target: {
+          workspaceId: "workspace-secret",
+          repositoryConnectionId: "repository-secret",
+          scmRepositoryIdentityId: "scm-secret",
+          trustDomain: "trusted",
+          producerReleaseId: "release-secret",
+          providerVoteLanes: [{ providerKind: "codex" }],
+        } as never,
+        producerRelease: {
+          reviewInvestigationProfile: {
+            capability: "review_investigation_v1",
+            coverageProfileHash: "a".repeat(64),
+            policyHash: "b".repeat(64),
+          },
+        } as never,
+      }),
+    ).resolves.toBeNull();
+    expect(diagnostics).toHaveBeenCalledOnce();
+    expect(diagnostics).toHaveBeenCalledWith(
+      ReviewInvestigationOperationsDiagnosticCode.AuthorizationRolloutUnavailable,
+    );
   });
 
   it("preserves the investigation profile while materializing a trusted release", async () => {

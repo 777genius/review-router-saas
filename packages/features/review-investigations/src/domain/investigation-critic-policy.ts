@@ -7,6 +7,8 @@ import {
 
 export const reviewInvestigationCriticPolicyV1 =
   "review-investigation-critic.v1";
+export const reviewInvestigationCriticPolicyV2 =
+  "review-investigation-critic.v2";
 export const investigationRiskPriorityMaximum = 1_000_000;
 export const independentCriticRiskPriorityV1 = 800_000;
 

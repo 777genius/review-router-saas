@@ -1,6 +1,9 @@
 import type { ScmProvider } from "@reviewrouter/shared";
 import { isCodexBackedProvider } from "@reviewrouter/features-review-providers";
-import type { ReviewConfiguration } from "../../domain/review-configuration";
+import type {
+  ReviewConfiguration,
+  ReviewInvestigationRolloutConfiguration,
+} from "../../domain/review-configuration";
 import { ReviewReasoningEffort } from "../../domain/review-reasoning-effort";
 import {
   isReviewConfigurationWriteConflictError,
@@ -29,6 +32,7 @@ export enum ReviewConfigurationOperatorErrorCode {
   RateLimited = "rate_limited",
   ReviewProviderNotFound = "review_provider_not_found",
   ConfigurationChanged = "configuration_changed",
+  InvalidInvestigationRollout = "invalid_investigation_rollout",
 }
 
 export class ReviewConfigurationOperatorError extends Error {
@@ -46,7 +50,9 @@ export type OperatorReviewConfiguration = Readonly<{
   workspaceSlug: string;
   source: ResolvedReviewConfigurationSource;
   version: number;
+  repositoryVersion: number | null;
   reasoningEffort: ReviewReasoningEffort | null;
+  investigationRollout: ReviewInvestigationRolloutConfiguration;
   providers: number;
 }>;
 
@@ -56,6 +62,15 @@ export type SetOperatorReviewReasoningEffortResult =
       changed: boolean;
       previousSource: ResolvedReviewConfigurationSource;
       previousVersion: number;
+    }>;
+
+export type SetOperatorReviewInvestigationRolloutResult =
+  OperatorReviewConfiguration &
+    Readonly<{
+      previousSource: ResolvedReviewConfigurationSource;
+      previousVersion: number;
+      previousRepositoryVersion: number | null;
+      previousInvestigationRollout: ReviewInvestigationRolloutConfiguration;
     }>;
 
 export type OperatorReviewConfigurationDependencies = Readonly<{
@@ -192,8 +207,115 @@ export async function setOperatorReviewReasoningEffort(
   };
 }
 
-function normalizeReason(reason: string | undefined): string {
-  const normalized = reason?.trim() || "operator_cli_config_set";
+export async function setOperatorReviewInvestigationRollout(
+  input: OperatorReviewConfigurationInput &
+    Readonly<{
+      expectedCurrentVersion: number | null;
+      investigationRollout: ReviewInvestigationRolloutConfiguration;
+    }>,
+  dependencies: OperatorReviewConfigurationDependencies,
+): Promise<SetOperatorReviewInvestigationRolloutResult> {
+  const principal = await authorize(
+    input.credential,
+    ReviewConfigurationOperatorOperation.SetInvestigationRollout,
+    dependencies.authorization,
+  );
+  await assertRateLimit(
+    input,
+    principal,
+    ReviewConfigurationOperatorOperation.SetInvestigationRollout,
+    dependencies,
+  );
+  const repository = await resolveRepository(input, dependencies.repositories);
+  const target = repositoryTarget(repository);
+  const previous = await resolveReviewConfiguration(target, dependencies);
+  const previousRepositoryVersion =
+    previous.source === "repository" ? previous.version : null;
+  if (previousRepositoryVersion !== input.expectedCurrentVersion) {
+    throw new ReviewConfigurationOperatorError(
+      ReviewConfigurationOperatorErrorCode.ConfigurationChanged,
+    );
+  }
+  assertValidInvestigationRollout(input.investigationRollout);
+
+  const auditEvent = {
+    workspaceId: repository.workspaceId,
+    actor: principal.operatorId,
+    action: "review_config.operator_investigation_rollout_set",
+    targetType: "repository",
+    targetId: repository.id,
+    metadata: {
+      repository: repository.fullName,
+      provider: repository.provider,
+      expectedCurrentVersion: input.expectedCurrentVersion,
+      previousSource: previous.source,
+      previousVersion: previous.version,
+      previousRepositoryVersion,
+      previousInvestigationRollout: previous.config.investigationRollout,
+      investigationRollout: input.investigationRollout,
+      reason: normalizeReason(
+        input.reason,
+        "operator_investigation_rollout_set",
+      ),
+    },
+  } as const;
+
+  let saved: { readonly version: number; readonly config: ReviewConfiguration };
+  try {
+    saved = await dependencies.mutations.commit({
+      target,
+      expectedRevisionToken: previous.revisionToken,
+      config: {
+        ...previous.config,
+        investigationRollout: { ...input.investigationRollout },
+      },
+      auditEvent,
+    });
+  } catch (error) {
+    if (isReviewConfigurationWriteConflictError(error)) {
+      throw new ReviewConfigurationOperatorError(
+        ReviewConfigurationOperatorErrorCode.ConfigurationChanged,
+      );
+    }
+    throw error;
+  }
+
+  return {
+    ...toOperatorReviewConfiguration(repository, {
+      source: "repository",
+      version: saved.version,
+      config: saved.config,
+    }),
+    previousSource: previous.source,
+    previousVersion: previous.version,
+    previousRepositoryVersion,
+    previousInvestigationRollout: previous.config.investigationRollout,
+  };
+}
+
+function assertValidInvestigationRollout(
+  rollout: ReviewInvestigationRolloutConfiguration,
+): void {
+  const valid =
+    (!rollout.shadowEnabled || rollout.recordingEnabled) &&
+    (!rollout.contextCriticEnabled || rollout.shadowEnabled) &&
+    (!rollout.productionEffectsEnabled ||
+      (rollout.shadowEnabled && rollout.contextCriticEnabled)) &&
+    (!rollout.verifiedCleanEnabled ||
+      (rollout.contextCriticEnabled && rollout.productionEffectsEnabled)) &&
+    (!rollout.crossRevisionReplayEnabled || rollout.shadowEnabled);
+  if (!valid) {
+    throw new ReviewConfigurationOperatorError(
+      ReviewConfigurationOperatorErrorCode.InvalidInvestigationRollout,
+    );
+  }
+}
+
+function normalizeReason(
+  reason: string | undefined,
+  fallback = "operator_cli_config_set",
+): string {
+  const normalized = reason?.trim() || fallback;
   return normalized.slice(0, 120);
 }
 
@@ -326,9 +448,12 @@ function toOperatorReviewConfiguration(
     workspaceSlug: repository.workspaceSlug,
     source: resolved.source,
     version: resolved.version,
+    repositoryVersion:
+      resolved.source === "repository" ? resolved.version : null,
     reasoningEffort:
       (resolved.config.providers.find(isCodexBackedProvider)
         ?.reasoningEffort as ReviewReasoningEffort | undefined) ?? null,
+    investigationRollout: { ...resolved.config.investigationRollout },
     providers: resolved.config.providers.length,
   };
 }
