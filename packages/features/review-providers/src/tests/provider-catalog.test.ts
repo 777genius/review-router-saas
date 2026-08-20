@@ -123,6 +123,7 @@ describe("provider catalog", () => {
     expect(getProviderCatalogEntry("codex").defaultAuthMode).toBe(
       "codex_subscription_oauth_rotating",
     );
+    expect(getProviderCatalogEntry("codex").defaultModel).toBe("gpt-5.6-sol");
     expect(getProviderCatalogEntry("codex").capabilities).not.toContain(
       "api_key",
     );

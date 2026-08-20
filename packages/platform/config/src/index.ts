@@ -50,7 +50,7 @@ export const runtimeEnvSchema = z.object({
   REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: z.enum(["0", "1"]).default("0"),
-  REVIEW_ROUTER_DEFAULT_MODEL: z.string().default("gpt-5.5"),
+  REVIEW_ROUTER_DEFAULT_MODEL: z.string().default("gpt-5.6-sol"),
   REVIEW_ROUTER_DEFAULT_EFFORT: z
     .enum(["low", "medium", "high", "xhigh"])
     .default("xhigh"),

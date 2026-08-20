@@ -1,4 +1,5 @@
 import {
+  defaultCodexModel,
   defaultProviderReasoningEffort,
   providerAuthModeBelongsToKind,
   providerAuthModeSchema,
@@ -159,7 +160,7 @@ export const safeDefaultReviewConfiguration = parseReviewConfiguration({
     {
       kind: "codex",
       authMode: "codex_subscription_oauth_rotating",
-      model: "gpt-5.5",
+      model: defaultCodexModel,
       reasoningEffort: defaultProviderReasoningEffort,
       agenticContext: true,
       fastMode: false,

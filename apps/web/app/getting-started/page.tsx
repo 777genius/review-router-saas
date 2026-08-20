@@ -117,7 +117,7 @@ const providerRows = [
   {
     name: "Codex",
     auth: "Server-issued versioned namespace",
-    model: "gpt-5.5 default",
+    model: "gpt-5.6-sol default",
     setup:
       "Copy the dashboard-generated command. It claims one exact versioned setup attempt, writes its encrypted payload directly to GitHub, and confirms activation before readiness.",
     icon: "openai",
