@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  ImmutableRegistryWriteStatus,
   ReviewSafetyCapability,
   ReviewSafetyRolloutMode,
 } from "@reviewrouter/features-review-run-control";
@@ -14,6 +15,7 @@ import {
   reviewV2CohortOperationForCommand,
   reviewV2CohortRolloutModes,
   reviewV2GlobalEmergencyTransitionForCommand,
+  resolveImmutableRegistryProfileId,
   serializeOperatorCliJson,
 } from "./review-action-v2-operator-cli";
 
@@ -94,6 +96,29 @@ describe("review action v2 operator CLI", () => {
           .digest("hex"),
       }),
     ).toEqual({ ready: true, missing: [], invalid: [] });
+  });
+
+  it("reuses an existing immutable profile only when the digest owns another id", () => {
+    expect(
+      resolveImmutableRegistryProfileId(
+        {
+          status: ImmutableRegistryWriteStatus.Conflict,
+          existingId: "limits-existing",
+        },
+        "limits-requested",
+        "limits_conflict",
+      ),
+    ).toBe("limits-existing");
+    expect(() =>
+      resolveImmutableRegistryProfileId(
+        {
+          status: ImmutableRegistryWriteStatus.Conflict,
+          existingId: "limits-requested",
+        },
+        "limits-requested",
+        "limits_conflict",
+      ),
+    ).toThrow("limits_conflict");
   });
 
   it("serializes bigint fencing values as decimal strings", () => {

@@ -5,6 +5,7 @@ import {
   ReviewMutationAuthorityCommandKind,
   ReviewMutationAuthorityPreflightStatus,
   ReviewMutationLaneKind,
+  ImmutableRegistryWriteStatus,
   ProducerDistributionKind,
   ProducerReleaseState,
   ReviewCapabilityProfile,
@@ -527,17 +528,50 @@ async function registerRelease(
       ownerRefs,
       runbookRefs,
     });
+  const resolvedProtocolLimitsProfileId = resolveImmutableRegistryProfileId(
+    limitsResult,
+    protocolLimitsProfileId,
+    "protocol_limits_profile_conflict",
+  );
+  const resolvedOperationalSloProfileId = resolveImmutableRegistryProfileId(
+    sloResult,
+    operationalSloProfileId,
+    "operational_slo_profile_conflict",
+  );
   const releaseResult =
     await runtime.runControl.producerReleases.registerProducerRelease({
       candidate: {
         ...candidate,
-        protocolLimitsProfileId,
-        operationalSloProfileId,
+        protocolLimitsProfileId: resolvedProtocolLimitsProfileId,
+        operationalSloProfileId: resolvedOperationalSloProfileId,
       },
       expectedProtocolLimitsDigest: limitsDigest,
       expectedOperationalSloDigest: sloDigest,
     });
-  return { limitsResult, sloResult, releaseResult };
+  return {
+    limitsResult,
+    sloResult,
+    releaseResult,
+    resolvedProtocolLimitsProfileId,
+    resolvedOperationalSloProfileId,
+  };
+}
+
+export function resolveImmutableRegistryProfileId(
+  result: Readonly<{
+    status: ImmutableRegistryWriteStatus;
+    existingId?: string;
+  }>,
+  requestedId: string,
+  conflictCode: string,
+) {
+  if (result.status !== ImmutableRegistryWriteStatus.Conflict) {
+    return requestedId;
+  }
+  if (!result.existingId || result.existingId === requestedId) {
+    throw new Error(conflictCode);
+  }
+  return result.existingId;
 }
 
 async function readStatus(

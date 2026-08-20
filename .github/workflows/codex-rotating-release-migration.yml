@@ -593,19 +593,6 @@ jobs:
               capabilityProfile: attestation.capabilityProfile,
             },
           };
-          const updatedAttestations = [
-            ...attestations.filter(
-              (candidate) => candidate?.actionCommitSha !== actionCommitSha,
-            ),
-            attestation,
-          ].sort((left, right) =>
-            left.producerReleaseId.localeCompare(right.producerReleaseId),
-          );
-          writeFileSync(
-            `${work}/updated-attestations.json`,
-            `${JSON.stringify(updatedAttestations)}\n`,
-            { mode: 0o600 },
-          );
           writeFileSync(`${work}/release-bundle.json`, `${JSON.stringify(bundle)}\n`, { mode: 0o600 });
 
           const databaseUrl = new URL(connection.externalConnectionString);
@@ -617,8 +604,6 @@ jobs:
             ...apiEnv,
             NODE_ENV: "production",
             DATABASE_URL: databaseUrl.toString(),
-            REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON:
-              JSON.stringify(updatedAttestations),
             REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL: credential,
             REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256: createHash("sha256")
               .update(credential, "utf8")
@@ -685,6 +670,24 @@ jobs:
             throw new Error(`verified_release_registration_failed:exit_${result.status ?? "unknown"}`);
           }
           const registration = JSON.parse(result.stdout);
+          const convergedAttestation = {
+            ...attestation,
+            protocolLimitsProfileId: registration.resolvedProtocolLimitsProfileId,
+            operationalSloProfileId: registration.resolvedOperationalSloProfileId,
+          };
+          const updatedAttestations = [
+            ...attestations.filter(
+              (candidate) => candidate?.actionCommitSha !== actionCommitSha,
+            ),
+            convergedAttestation,
+          ].sort((left, right) =>
+            left.producerReleaseId.localeCompare(right.producerReleaseId),
+          );
+          writeFileSync(
+            `${work}/updated-attestations.json`,
+            `${JSON.stringify(updatedAttestations)}\n`,
+            { mode: 0o600 },
+          );
           writeFileSync(
             `${work}/registration-result.json`,
             `${JSON.stringify({
