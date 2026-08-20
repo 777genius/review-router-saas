@@ -425,6 +425,10 @@ jobs:
           git clone --filter=blob:none https://github.com/777genius/review-router.git "$work/action"
           git -C "$work/action" fetch origin "$ACTION_COMMIT_SHA"
           git -C "$work/action" switch -c verified-release "$ACTION_COMMIT_SHA"
+          saas_source_commit="$(jq -er '.saasSourceCommit' \
+            "$work/action/src/control-plane/generated/review-action-v2/handoff-manifest.json")"
+          [[ "$saas_source_commit" =~ ^[a-f0-9]{40}$ ]]
+          git fetch origin "$saas_source_commit" --depth=1
           pnpm protocol:release-manifest \
             --action-repo "$work/action" \
             --target-branch verified-release \
