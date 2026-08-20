@@ -643,7 +643,7 @@ jobs:
             --arg sha "$ACTION_COMMIT_SHA" '
               .actionCommitSha == $sha
               and (.producerReleaseId | type == "string" and length > 0)
-              and (.releaseStatus == "created" or .releaseStatus == "unchanged")
+              and (.releaseStatus == "created" or .releaseStatus == "restored")
             ' "$work/registration-result.json" >/dev/null
           jq -c . "$work/registration-result.json"
 
