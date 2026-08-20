@@ -21,7 +21,7 @@ import {
   obligationIdentity,
   relationSearchProofVersion,
   reviewInvestigationCoverageProfileV2,
-  reviewInvestigationCoverageProfileV3,
+  reviewInvestigationCoverageProfileV5,
   type InvestigationPageEvidence,
   type ReviewInvestigationContract,
   type SeedInvestigationObligation,
@@ -72,7 +72,7 @@ describe("versioned coverage policies", () => {
   });
 
   it.each([
-    ["V3", contract()],
+    ["V5", contract()],
     ["V2 drain", legacyContract()],
   ])(
     "rejects a legacy changed-file seed under the %s capability",
@@ -325,7 +325,7 @@ describe("versioned coverage policies", () => {
 
 function contract(): ReviewInvestigationContract {
   return {
-    ...reviewInvestigationCoverageProfileV3,
+    ...reviewInvestigationCoverageProfileV5,
     producerReleaseId: "release-1",
   };
 }

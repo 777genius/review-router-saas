@@ -91,6 +91,10 @@ export interface ReviewInvestigationTerminalTelemetrySourcePort {
 }
 
 export enum ReviewInvestigationOperationsDiagnosticCode {
+  AuthorizationReleaseProfileMissing = "authorization_release_profile_missing",
+  AuthorizationProviderUnsupported = "authorization_provider_unsupported",
+  AuthorizationRecordingNotGranted = "authorization_recording_not_granted",
+  AuthorizationRolloutUnavailable = "authorization_rollout_unavailable",
   TerminalTelemetrySampleUnavailable = "terminal_telemetry_sample_unavailable",
   TerminalTelemetrySampleInvestigationMismatch = "terminal_telemetry_sample_investigation_mismatch",
   TerminalTelemetryRecordFailed = "terminal_telemetry_record_failed",

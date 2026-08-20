@@ -193,7 +193,8 @@ import {
 } from "./review-investigation-rollout-guard.js";
 import {
   composePrismaReviewInvestigationTerminalTelemetry,
-  type ReviewInvestigationOperationsDiagnosticCode,
+  ReviewInvestigationOperationsDiagnosticCode,
+  type ReviewInvestigationOperationsDiagnosticPort,
   type ReviewInvestigationTerminalTelemetrySourcePort,
   type ReviewInvestigationTerminalTelemetrySamplePort,
 } from "./review-investigation-operations-composition.js";
@@ -375,7 +376,9 @@ export function composeReviewActionV2ProductionRoutes(input: {
     | ReviewInvestigationTerminalTelemetrySamplePort
     | undefined;
   readonly recordInvestigationOperationsDiagnostic?:
-    | ((code: ReviewInvestigationOperationsDiagnosticCode) => void)
+    | ((
+        code: ReviewInvestigationOperationsDiagnosticCode,
+      ) => Promise<void> | void)
     | undefined;
 }): ReviewActionV2ProductionRoutes {
   if (!input.enabled) {
@@ -475,6 +478,10 @@ export function composeReviewActionV2ProductionRoutes(input: {
   const revisionHashes: ReviewActionV2RevisionHashPort = {
     digest: (revision) => digest.digestUtf8(canonicalJson(revision)),
   };
+  const investigationOperationsDiagnostics: ReviewInvestigationOperationsDiagnosticPort =
+    {
+      record: (code) => input.recordInvestigationOperationsDiagnostic?.(code),
+    };
   const runControlHandlers = {
     oidcVerifier: new JoseGitHubActionsOidcTokenVerifier(),
     oidcAudience,
@@ -499,6 +506,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
     reviewInvestigationCapability:
       new ProductionReviewInvestigationAuthorizationCapability(
         investigationRolloutGuard,
+        investigationOperationsDiagnostics,
       ),
   } as const;
 
@@ -567,9 +575,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
       ...(input.investigationTelemetrySamples
         ? { samples: input.investigationTelemetrySamples }
         : {}),
-      diagnostics: {
-        record: (code) => input.recordInvestigationOperationsDiagnostic?.(code),
-      },
+      diagnostics: investigationOperationsDiagnostics,
     });
   const contextAttestationVerifier = new VerifyAcceptedContextAttestation({
     store: contextAttestationStore,
@@ -969,6 +975,9 @@ export class ProductionReviewInvestigationAuthorizationCapability implements Rev
       ReviewInvestigationRolloutCapabilityResolutionPort,
       "resolveAllowedCapabilitiesForTargets"
     >,
+    private readonly diagnostics: ReviewInvestigationOperationsDiagnosticPort = {
+      record: () => undefined,
+    },
   ) {}
 
   async resolve(
@@ -981,6 +990,9 @@ export class ProductionReviewInvestigationAuthorizationCapability implements Rev
       profile === null ||
       profile.capability !== reviewInvestigationCapabilityV1
     ) {
+      this.recordDiagnostic(
+        ReviewInvestigationOperationsDiagnosticCode.AuthorizationReleaseProfileMissing,
+      );
       return null;
     }
     const providerCapabilities: {
@@ -995,6 +1007,12 @@ export class ProductionReviewInvestigationAuthorizationCapability implements Rev
     const providers = providerKinds
       .map(investigationAuthorizationProvider)
       .filter((provider) => provider !== null);
+    if (providers.length === 0) {
+      this.recordDiagnostic(
+        ReviewInvestigationOperationsDiagnosticCode.AuthorizationProviderUnsupported,
+      );
+      return null;
+    }
     const targets = providers.map((provider) => ({
       workspaceId: input.target.workspaceId,
       repositoryConnectionId: input.target.repositoryConnectionId,
@@ -1008,6 +1026,9 @@ export class ProductionReviewInvestigationAuthorizationCapability implements Rev
       resolvedCapabilities =
         await this.rollout.resolveAllowedCapabilitiesForTargets({ targets });
     } catch {
+      this.recordDiagnostic(
+        ReviewInvestigationOperationsDiagnosticCode.AuthorizationRolloutUnavailable,
+      );
       return null;
     }
     for (const [index, provider] of providers.entries()) {
@@ -1025,7 +1046,12 @@ export class ProductionReviewInvestigationAuthorizationCapability implements Rev
         }),
       );
     }
-    if (providerCapabilities.length === 0) return null;
+    if (providerCapabilities.length === 0) {
+      this.recordDiagnostic(
+        ReviewInvestigationOperationsDiagnosticCode.AuthorizationRecordingNotGranted,
+      );
+      return null;
+    }
     return Object.freeze({
       authorizationDescriptorVersion: 3,
       capability: reviewInvestigationCapabilityV1,
@@ -1037,6 +1063,18 @@ export class ProductionReviewInvestigationAuthorizationCapability implements Rev
       policyHash: profile.policyHash,
       providerCapabilities: Object.freeze(providerCapabilities),
     });
+  }
+
+  private recordDiagnostic(
+    code: ReviewInvestigationOperationsDiagnosticCode,
+  ): void {
+    try {
+      void Promise.resolve(this.diagnostics.record(code)).catch(
+        () => undefined,
+      );
+    } catch {
+      // Diagnostics must not change the fail-closed authorization result.
+    }
   }
 }
 

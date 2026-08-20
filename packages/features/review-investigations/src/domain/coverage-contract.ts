@@ -3,7 +3,10 @@ import {
   assertIdentifier,
   canonicalJson,
 } from "./canonicalization";
-import { reviewInvestigationCriticPolicyV1 } from "./investigation-critic-policy";
+import {
+  reviewInvestigationCriticPolicyV1,
+  reviewInvestigationCriticPolicyV2,
+} from "./investigation-critic-policy";
 import type { InvestigationObligationKind } from "./review-investigation-types";
 
 export type ReviewInvestigationScope = Readonly<{
@@ -44,6 +47,7 @@ export enum ReviewInvestigationCoverageProfileGeneration {
   V2 = 2,
   V3 = 3,
   V4 = 4,
+  V5 = 5,
 }
 
 export const reviewInvestigationCoverageProfileV1 = Object.freeze({
@@ -77,6 +81,11 @@ export const reviewInvestigationCoverageProfileV4 = Object.freeze({
     "41ad2e193eb96dfe8d091a76051652d4db4eb90a48560a33d07b31ef7f46b3d0",
 } as const);
 
+export const reviewInvestigationCoverageProfileV5 = Object.freeze({
+  ...reviewInvestigationCoverageProfileV4,
+  criticPolicyVersion: reviewInvestigationCriticPolicyV2,
+} as const);
+
 export function resolveReviewInvestigationCoverageProfileGeneration(
   contract: ReviewInvestigationContract,
 ): ReviewInvestigationCoverageProfileGeneration | null {
@@ -104,6 +113,10 @@ export function resolveReviewInvestigationCoverageProfileGeneration(
       ReviewInvestigationCoverageProfileGeneration.V4,
       reviewInvestigationCoverageProfileV4,
     ],
+    [
+      ReviewInvestigationCoverageProfileGeneration.V5,
+      reviewInvestigationCoverageProfileV5,
+    ],
   ] as const) {
     const expectedKeys = [...Object.keys(profile), "producerReleaseId"].sort();
     if (
@@ -128,7 +141,8 @@ export function isTypedReviewInvestigationCoverageProfile(
   return (
     generation === ReviewInvestigationCoverageProfileGeneration.V2 ||
     generation === ReviewInvestigationCoverageProfileGeneration.V3 ||
-    generation === ReviewInvestigationCoverageProfileGeneration.V4
+    generation === ReviewInvestigationCoverageProfileGeneration.V4 ||
+    generation === ReviewInvestigationCoverageProfileGeneration.V5
   );
 }
 

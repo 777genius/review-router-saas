@@ -42,6 +42,7 @@ import {
   TurnResultAuthority,
   decideTurnResultAdmission,
   reviewInvestigationCriticPolicyV1,
+  reviewInvestigationCriticPolicyV2,
   obligationEvidenceRequirementVersionV2,
   serializeReviewInvestigation,
   summarizeTerminalDiscoveryProvenance,
@@ -755,6 +756,58 @@ describe("review investigation in-memory vertical slice", () => {
       criticCycles: policy.maxCriticCycles,
       nextAction: ReviewInvestigationNextActionKind.Conclude,
     });
+  });
+
+  it("accepts a fresh same-provider high-risk critic under critic policy v2", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(
+      criticPolicyOpenCommand(
+        "open-high-risk-same-provider-v2",
+        independentCriticRiskPriorityV1,
+        reviewInvestigationCriticPolicyV2,
+      ),
+    );
+    const discovery = await planDiscovery(harness, opened);
+    const awaitingCritic = await harness.commit.execute({
+      ...emptyCommit(discovery, "commit-high-risk-discovery-v2"),
+      closureClaims: [
+        {
+          obligationId: discovery.turn!.obligationIds[0]!,
+          receipt: receipt("receipt-high-risk-v2", changedSubject),
+        },
+      ],
+    });
+    const critic = await harness.plan.execute({
+      commandId: "plan-high-risk-critic-v2",
+      investigationId: opened.investigationId,
+      expectedVersion: awaitingCritic.version,
+      leaseDurationMs: 60_000,
+      maxObligationsForTurn: 10,
+    });
+
+    const ready = await harness.commit.execute({
+      ...emptyCommit(critic, "commit-high-risk-critic-v2"),
+      criticDecision: ContextCriticDecision.Accept,
+    });
+
+    expect(ready).toMatchObject({
+      state: ReviewInvestigationState.ReadyToConclude,
+      criticCycles: 1,
+    });
+
+    await harness.conclude.execute({
+      commandId: "conclude-high-risk-same-provider-v2",
+      investigationId: opened.investigationId,
+      expectedVersion: ready.version,
+      certificateTtlMs: 86_400_000,
+    });
+    const snapshot = await harness.restore.snapshot(opened.investigationId);
+    expect(snapshot.conclusion).toBe(
+      ReviewInvestigationConclusion.VerifiedClean,
+    );
+    expect(snapshot.certificate?.criticPolicyVersion).toBe(
+      reviewInvestigationCriticPolicyV2,
+    );
   });
 
   it("accepts an independent provider for high risk and same provider for normal risk", async () => {
@@ -1973,12 +2026,24 @@ function criticPolicyV1OpenCommand(
   commandId: string,
   semanticRisk: number,
 ): OpenReviewInvestigationCommand {
+  return criticPolicyOpenCommand(
+    commandId,
+    semanticRisk,
+    reviewInvestigationCriticPolicyV1,
+  );
+}
+
+function criticPolicyOpenCommand(
+  commandId: string,
+  semanticRisk: number,
+  criticPolicyVersion: string,
+): OpenReviewInvestigationCommand {
   const command = openCommand(commandId);
   return {
     ...command,
     contract: {
       ...command.contract,
-      criticPolicyVersion: reviewInvestigationCriticPolicyV1,
+      criticPolicyVersion,
     },
     seedObligations: command.seedObligations.map((obligation) => ({
       ...obligation,

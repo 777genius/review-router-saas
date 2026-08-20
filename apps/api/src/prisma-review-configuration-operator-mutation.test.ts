@@ -32,6 +32,12 @@ type VersionRow = {
   inlineMinAgreement: number;
   targetTokensPerBatch: number;
   reviewLanguage: string | null;
+  investigationRecordingEnabled: boolean;
+  investigationShadowEnabled: boolean;
+  investigationContextCriticEnabled: boolean;
+  investigationVerifiedCleanEnabled: boolean;
+  investigationCrossRevisionReplayEnabled: boolean;
+  investigationProductionEffectsEnabled: boolean;
   providers: ProviderRow[];
 };
 
@@ -219,6 +225,12 @@ function versionRow(
     targetTokensPerBatch:
       safeDefaultReviewConfiguration.limits.targetTokensPerBatch,
     reviewLanguage: null,
+    investigationRecordingEnabled: false,
+    investigationShadowEnabled: false,
+    investigationContextCriticEnabled: false,
+    investigationVerifiedCleanEnabled: false,
+    investigationCrossRevisionReplayEnabled: false,
+    investigationProductionEffectsEnabled: false,
     providers: [
       {
         providerKind: provider.kind,
@@ -249,11 +261,19 @@ function mutationInput() {
       ...safeDefaultReviewConfiguration,
       provider,
       providers: [provider],
+      investigationRollout: {
+        recordingEnabled: true,
+        shadowEnabled: true,
+        contextCriticEnabled: false,
+        verifiedCleanEnabled: false,
+        crossRevisionReplayEnabled: false,
+        productionEffectsEnabled: false,
+      },
     },
     auditEvent: {
       workspaceId: "workspace_1",
       actor: "operator:test",
-      action: "review_config.operator_reasoning_effort_set",
+      action: "review_config.operator_investigation_rollout_set",
       targetType: "repository",
       targetId: "repo_1",
       metadata: {
@@ -280,6 +300,16 @@ describe("Prisma review configuration operator mutation", () => {
     expect(
       stub.state().configurations.get("repo:repo_1")?.versions,
     ).toHaveLength(1);
+    expect(
+      stub.state().configurations.get("repo:repo_1")?.versions[0],
+    ).toMatchObject({
+      investigationRecordingEnabled: true,
+      investigationShadowEnabled: true,
+      investigationContextCriticEnabled: false,
+      investigationVerifiedCleanEnabled: false,
+      investigationCrossRevisionReplayEnabled: false,
+      investigationProductionEffectsEnabled: false,
+    });
     expect(stub.state().audits).toHaveLength(1);
   });
 
