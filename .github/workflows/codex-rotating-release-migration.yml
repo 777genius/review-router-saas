@@ -607,6 +607,29 @@ jobs:
               .update(credential, "utf8")
               .digest("hex"),
           };
+          const preflight = spawnSync(
+            "node",
+            [
+              "--conditions=production",
+              "apps/api/dist/review-action-v2-operator-cli.js",
+              "env-preflight",
+            ],
+            { cwd: process.cwd(), env: operatorEnv, encoding: "utf8" },
+          );
+          if (preflight.status !== 0) {
+            throw new Error(`verified_release_environment_preflight_exit:${preflight.status ?? "unknown"}`);
+          }
+          const preflightResult = JSON.parse(preflight.stdout);
+          writeFileSync(
+            `${work}/environment-preflight.json`,
+            `${JSON.stringify(preflightResult)}\n`,
+            { mode: 0o644 },
+          );
+          if (preflightResult.ready !== true) {
+            throw new Error(
+              `verified_release_environment_not_ready:missing=${preflightResult.missing.join(",")}:invalid=${preflightResult.invalid.join(",")}`,
+            );
+          }
           const result = spawnSync(
             "node",
             [
@@ -623,6 +646,24 @@ jobs:
           );
           if (result.status !== 0) {
             writeFileSync(`${work}/registration-error.log`, result.stderr, { mode: 0o600 });
+            const diagnosticCodes = [
+              ...new Set(
+                `${result.stdout}\n${result.stderr}`.match(
+                  /\b(?:review|producer|protocol|operational|database|prisma|context|invalid)[A-Za-z0-9_.:-]{2,160}\b/gi,
+                ) ?? [],
+              ),
+            ].slice(0, 12);
+            const diagnostic = {
+              exitStatus: result.status,
+              diagnosticCodes,
+              stderrSha256: createHash("sha256").update(result.stderr, "utf8").digest("hex"),
+            };
+            writeFileSync(
+              `${work}/registration-diagnostic.json`,
+              `${JSON.stringify(diagnostic)}\n`,
+              { mode: 0o644 },
+            );
+            console.error(JSON.stringify(diagnostic));
             throw new Error(`verified_release_registration_failed:exit_${result.status ?? "unknown"}`);
           }
           const registration = JSON.parse(result.stdout);
@@ -659,12 +700,15 @@ jobs:
           firewall_open=0
 
       - name: Upload release registration evidence
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: reviewrouter-release-registration-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/reviewrouter-release-registration/release-manifest.json
+            ${{ runner.temp }}/reviewrouter-release-registration/environment-preflight.json
             ${{ runner.temp }}/reviewrouter-release-registration/registration-result.json
+            ${{ runner.temp }}/reviewrouter-release-registration/registration-diagnostic.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
