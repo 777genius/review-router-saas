@@ -372,7 +372,8 @@ jobs:
           corepack enable
           node scripts/install-private-dependencies.mjs --frozen-lockfile
           pnpm db:generate
-          pnpm build
+          pnpm --filter @reviewrouter/api... build
+          node scripts/rewrite-dist-esm-imports.mjs
           docker pull postgres:17-alpine >/dev/null
 
       - name: Verify and register release
@@ -709,6 +710,6 @@ jobs:
             ${{ runner.temp }}/reviewrouter-release-registration/environment-preflight.json
             ${{ runner.temp }}/reviewrouter-release-registration/registration-result.json
             ${{ runner.temp }}/reviewrouter-release-registration/registration-diagnostic.json
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
           compression-level: 0
