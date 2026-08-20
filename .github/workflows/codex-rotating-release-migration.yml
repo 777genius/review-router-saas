@@ -497,11 +497,16 @@ jobs:
             }];
           }
           const attestation = matches[0];
+          if (
+            manifest.distributionKind !== "PublicReusable" ||
+            attestation.distributionKind !== "public_reusable" ||
+            attestation.wrapperEntrypointDigest !== null
+          ) {
+            throw new Error("verified_release_distribution_shape_mismatch");
+          }
           const exactFields = [
-            "distributionKind",
             "actionCommitSha",
             "runtimeCommitSha",
-            "wrapperEntrypointDigest",
             "runtimeEntrypointDigest",
             "contextGatewayPolicyVersion",
             "contextGatewayEntrypointDigest",
