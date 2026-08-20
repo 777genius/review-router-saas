@@ -469,6 +469,42 @@ jobs:
           const attestations = JSON.parse(
             apiEnv.REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON ?? "[]",
           );
+          const limits = {
+            maxWorkSlots: 200,
+            maxAttemptsPerSlot: 4,
+            maxObservationBytes: 1_000_000,
+            maxObservationFindings: 1_000,
+            maxProjectionBytes: 2_000_000,
+            maxProjectionFindings: 2_000,
+            maxPublicationOperations: 500,
+            maxPublicationChunks: 500,
+            maxPublicationBodyBytes: 2_000_000,
+            maxRequestBatchSize: 100,
+            maxLeaseDurationMs: 600_000,
+            maxResultReportDurationMs: 1_200_000,
+            maxReconciliationDurationMs: 3_600_000,
+          };
+          const thresholds = {
+            integrationEventDeliveryMs: 60_000,
+            outboxClaimAgeMs: 120_000,
+            missingCompletionProcessMs: 300_000,
+            dueCompletionProcessMs: 300_000,
+            publicationReconciliationMs: 600_000,
+            v1DrainMs: 3_600_000,
+            admissionMs: 30_000,
+            pruningBacklogAgeMs: 86_400_000,
+          };
+          const ownerRefs = ["team-reviewrouter"];
+          const runbookRefs = ["docs/operations/review-action-v2-cutover.md"];
+          const releaseKey = `reviewrouter-action.${actionCommitSha.slice(0, 12)}`;
+          const contentId = (value) =>
+            createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex").slice(0, 16);
+          const protocolLimitsProfileId = `${releaseKey}.limits-${contentId(limits)}`;
+          const operationalSloProfileId = `${releaseKey}.slo-${contentId({
+            thresholds,
+            ownerRefs,
+            runbookRefs,
+          })}`;
           let matches = attestations.filter(
             (attestation) => attestation?.actionCommitSha === actionCommitSha,
           );
@@ -476,7 +512,6 @@ jobs:
             throw new Error(`verified_release_attestation_count:${matches.length}`);
           }
           if (matches.length === 0) {
-            const releaseKey = `reviewrouter-action.${actionCommitSha.slice(0, 12)}`;
             matches = [{
               producerReleaseId: releaseKey,
               distributionKind: "public_reusable",
@@ -493,11 +528,15 @@ jobs:
               schemaDigest: manifest.schemaDigest,
               canonicalizerDigest: manifest.canonicalizerDigest,
               capabilityProfile: "exact_revision_v2",
-              protocolLimitsProfileId: `${releaseKey}.limits-v2`,
-              operationalSloProfileId: `${releaseKey}.slo-v2`,
+              protocolLimitsProfileId,
+              operationalSloProfileId,
             }];
           }
-          const attestation = matches[0];
+          const attestation = {
+            ...matches[0],
+            protocolLimitsProfileId,
+            operationalSloProfileId,
+          };
           if (
             manifest.distributionKind !== "PublicReusable" ||
             attestation.distributionKind !== "public_reusable" ||
@@ -531,34 +570,11 @@ jobs:
           }
           const bundle = {
             protocolLimitsProfileId: attestation.protocolLimitsProfileId,
-            limits: {
-              maxWorkSlots: 200,
-              maxAttemptsPerSlot: 4,
-              maxObservationBytes: 1_000_000,
-              maxObservationFindings: 1_000,
-              maxProjectionBytes: 2_000_000,
-              maxProjectionFindings: 2_000,
-              maxPublicationOperations: 500,
-              maxPublicationChunks: 500,
-              maxPublicationBodyBytes: 2_000_000,
-              maxRequestBatchSize: 100,
-              maxLeaseDurationMs: 600_000,
-              maxResultReportDurationMs: 1_200_000,
-              maxReconciliationDurationMs: 3_600_000,
-            },
+            limits,
             operationalSloProfileId: attestation.operationalSloProfileId,
-            thresholds: {
-              integrationEventDeliveryMs: 60_000,
-              outboxClaimAgeMs: 120_000,
-              missingCompletionProcessMs: 300_000,
-              dueCompletionProcessMs: 300_000,
-              publicationReconciliationMs: 600_000,
-              v1DrainMs: 3_600_000,
-              admissionMs: 30_000,
-              pruningBacklogAgeMs: 86_400_000,
-            },
-            ownerRefs: ["team-reviewrouter"],
-            runbookRefs: ["docs/operations/review-action-v2-cutover.md"],
+            thresholds,
+            ownerRefs,
+            runbookRefs,
             candidate: {
               producerReleaseId: attestation.producerReleaseId,
               distributionKind: attestation.distributionKind,
