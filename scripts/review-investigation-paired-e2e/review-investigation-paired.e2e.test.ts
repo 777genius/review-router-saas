@@ -178,7 +178,7 @@ describeWithDatabase.sequential(
       expect(fixture.diagnostics).toEqual([]);
     }, 180_000);
 
-    it("normalizes high-risk proposals and stays inconclusive without an independent critic", async () => {
+    it("normalizes high-risk proposals and accepts a fresh same-provider critic", async () => {
       const fixture = requireHarness(harness);
       const action = await fixture.run(PairedActionScenario.HighRiskProposal);
       const persistedState = await investigationFailureState(fixture);
@@ -191,7 +191,9 @@ describeWithDatabase.sequential(
         scenario: PairedActionScenario.HighRiskProposal,
         releaseManifestHash: fixture.releaseManifestHash,
         observation: {
-          qualityFlags: expect.arrayContaining(["investigation_inconclusive"]),
+          qualityFlags: expect.arrayContaining([
+            "investigation_verified_clean",
+          ]),
         },
       });
       await expect(
@@ -203,9 +205,9 @@ describeWithDatabase.sequential(
           },
         }),
       ).resolves.toEqual({
-        state: "inconclusive",
-        conclusion: "inconclusive",
-        criticDecision: "abstain",
+        state: "concluded",
+        conclusion: "verified_clean",
+        criticDecision: "accept",
       });
       await expect(
         fixture.prisma.reviewInvestigationObligation.findFirstOrThrow({

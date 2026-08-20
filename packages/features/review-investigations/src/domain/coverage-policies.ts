@@ -315,7 +315,8 @@ export class VersionedCoverageExpansionPolicy implements CoverageExpansionPolicy
         requiredPathHashes: Object.freeze([...chain.pathHashes]),
         ...(profileGeneration ===
           ReviewInvestigationCoverageProfileGeneration.V3 ||
-        profileGeneration === ReviewInvestigationCoverageProfileGeneration.V4
+        profileGeneration === ReviewInvestigationCoverageProfileGeneration.V4 ||
+        profileGeneration === ReviewInvestigationCoverageProfileGeneration.V5
           ? { searchProofVersion: relationSearchProofVersion }
           : { requiredQueryDigest: chain.pages[0]!.queryDigest }),
         sourcePathHash: sourceProfile.sourcePathHash,
