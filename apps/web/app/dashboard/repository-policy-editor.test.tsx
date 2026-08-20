@@ -43,8 +43,8 @@ vi.mock("./actions", () => ({
 
 const modelOptions = [
   {
-    value: "gpt-5.5",
-    label: "gpt-5.5",
+    value: "gpt-5.6-sol",
+    label: "gpt-5.6-sol",
     provider: "codex" as const,
     description: "Codex default model.",
   },
@@ -196,7 +196,7 @@ describe("ReviewConfigForm", () => {
       screen.getAllByRole("button", { name: "Open model options" })[0]!,
     );
 
-    expect(screen.getByRole("option", { name: /gpt-5\.5/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /gpt-5\.6-sol/ })).toBeTruthy();
     expect(screen.queryByRole("option", { name: /Poolside/ })).toBeNull();
   });
 

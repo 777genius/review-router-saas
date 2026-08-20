@@ -67,6 +67,8 @@ export type ProviderAuthModeMetadata = {
   readonly secretNames: readonly string[];
 };
 
+export const defaultCodexModel = "gpt-5.6-sol";
+
 const providerCatalog = {
   codex: {
     kind: "codex",
@@ -76,7 +78,7 @@ const providerCatalog = {
       "codex_subscription_oauth_hosted_pool",
     ],
     defaultAuthMode: "codex_subscription_oauth_rotating",
-    defaultModel: "gpt-5.5",
+    defaultModel: defaultCodexModel,
     runtimeProviderPrefix: "codex",
     capabilities: [
       "static_model_catalog",

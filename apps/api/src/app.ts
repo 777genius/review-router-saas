@@ -494,7 +494,8 @@ export async function createApiApp(
             repositories: new PrismaActionControlPlaneRepository(prisma),
             defaultProvider: {
               model:
-                process.env.REVIEW_ROUTER_DEFAULT_MODEL?.trim() || "gpt-5.5",
+                process.env.REVIEW_ROUTER_DEFAULT_MODEL?.trim() ||
+                "gpt-5.6-sol",
               reasoningEffort: readDefaultReasoningEffort(
                 process.env.REVIEW_ROUTER_DEFAULT_EFFORT,
               ),

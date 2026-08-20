@@ -69,13 +69,13 @@ describe("review configuration", () => {
 
     expect(env).toMatchObject({
       REVIEW_AUTH_MODE: "codex-oauth-rotating",
-      CODEX_MODEL: "gpt-5.5",
+      CODEX_MODEL: "gpt-5.6-sol",
       CODEX_REASONING_EFFORT: "xhigh",
       CODEX_AGENTIC_CONTEXT: "true",
       CODEX_FAST_MODE: "false",
-      REVIEW_PROVIDERS: "codex/gpt-5.5",
-      REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
-      SYNTHESIS_MODEL: "codex/gpt-5.5",
+      REVIEW_PROVIDERS: "codex/gpt-5.6-sol",
+      REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.6-sol",
+      SYNTHESIS_MODEL: "codex/gpt-5.6-sol",
       PROVIDER_LIMIT: "1",
       PROVIDER_MAX_PARALLEL: "1",
       INLINE_MIN_AGREEMENT: "1",
@@ -628,7 +628,7 @@ describe("review configuration", () => {
       resolveReviewConfiguration(repositoryTarget, { configurations }),
     ).resolves.toMatchObject({
       source: "default",
-      config: { provider: { model: "gpt-5.5" } },
+      config: { provider: { model: "gpt-5.6-sol" } },
     });
 
     await saveReviewConfiguration(

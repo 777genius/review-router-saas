@@ -217,7 +217,9 @@ describe("operator review config routes", () => {
     });
     const saved = [...harness.versions.values()].flat().at(-1)?.config;
     expect(saved?.providers).toEqual(
-      expect.arrayContaining([expect.objectContaining({ model: "gpt-5.5" })]),
+      expect.arrayContaining([
+        expect.objectContaining({ model: "gpt-5.6-sol" }),
+      ]),
     );
     expect(saved?.investigationRollout).toEqual(fullRollout);
   });

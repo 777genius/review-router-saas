@@ -1,4 +1,4 @@
-import type { ProviderKind } from "./provider-catalog";
+import { defaultCodexModel, type ProviderKind } from "./provider-catalog";
 
 export type ReviewModelOption = {
   readonly value: string;
@@ -11,10 +11,16 @@ export type ReviewModelOption = {
 
 export const codexModelOptions: readonly ReviewModelOption[] = [
   {
+    value: defaultCodexModel,
+    label: defaultCodexModel,
+    provider: "codex",
+    description: "Codex default model.",
+  },
+  {
     value: "gpt-5.5",
     label: "gpt-5.5",
     provider: "codex",
-    description: "Codex default model.",
+    description: "Codex model.",
   },
   {
     value: "gpt-5.4",

@@ -11,6 +11,10 @@ describe("provider model catalog", () => {
     const options = listStaticReviewModelOptions();
 
     expect(options.some((option) => option.provider === "codex")).toBe(true);
+    expect(options[0]).toMatchObject({
+      provider: "codex",
+      value: "gpt-5.6-sol",
+    });
     expect(options).toContainEqual(
       expect.objectContaining({
         provider: "claude",
