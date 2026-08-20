@@ -6,6 +6,7 @@ import {
 } from "@reviewrouter/features-review-run-control";
 import {
   inspectEnvironment,
+  inspectReleaseRegistrationEnvironment,
   parseArguments,
   parseReviewV2ReleaseBundleCandidate,
   requireConfirmation,
@@ -80,6 +81,19 @@ describe("review action v2 operator CLI", () => {
       invalid: ["REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON"],
     });
     expect(JSON.stringify(result)).not.toContain(credential);
+  });
+
+  it("preflights release registration without unrelated runtime secrets", () => {
+    const credential = "release-operator-secret";
+    expect(
+      inspectReleaseRegistrationEnvironment({
+        DATABASE_URL: "postgresql://example.invalid/reviewrouter",
+        REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL: credential,
+        REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256: createHash("sha256")
+          .update(credential, "utf8")
+          .digest("hex"),
+      }),
+    ).toEqual({ ready: true, missing: [], invalid: [] });
   });
 
   it("serializes bigint fencing values as decimal strings", () => {

@@ -19,6 +19,7 @@ import {
   type ProducerReleaseCandidate,
   type ReviewOperationalSloThresholds,
   type ReviewProtocolLimits,
+  type Sha256DigestPort,
 } from "@reviewrouter/features-review-run-control";
 import {
   AuthenticatedReviewMutationAuthorityOperatorService,
@@ -27,6 +28,7 @@ import {
 } from "@reviewrouter/features-review-run-control/composition";
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import { composeReviewActionV2ProductionRunControl } from "./review-action-v2-production-composition.js";
+import { composeReviewActionV2ReleaseRegistry } from "./review-action-v2-release-registry-composition.js";
 
 const requiredRuntimeEnv = Object.freeze([
   "DATABASE_URL",
@@ -151,24 +153,26 @@ async function main() {
     printJson(inspectEnvironment(process.env));
     return;
   }
+  const command = parsed.positionals.join(" ");
+  if (command === "release env-preflight") {
+    printJson(inspectReleaseRegistrationEnvironment(process.env));
+    return;
+  }
 
   const prisma = createPrismaClient({
     transactionMaxWaitMs: 30_000,
     transactionTimeoutMs: 60_000,
   });
   try {
-    const runtime = composeReviewActionV2ProductionRunControl({
-      env: process.env,
-      prisma,
-    });
-    const command = parsed.positionals.join(" ");
     if (command === "release register") {
+      const runtime = composeReviewActionV2ReleaseRegistry(prisma);
       await authenticateOperator(runtime.digest, process.env);
       requireConfirmation(parsed, "release");
       printJson(await registerRelease(parsed, runtime));
       return;
     }
     if (command === "release revoke") {
+      const runtime = composeReviewActionV2ReleaseRegistry(prisma);
       await authenticateOperator(runtime.digest, process.env);
       const releaseId = requireOption(parsed, "release");
       requireConfirmation(parsed, releaseId);
@@ -179,6 +183,10 @@ async function main() {
       );
       return;
     }
+    const runtime = composeReviewActionV2ProductionRunControl({
+      env: process.env,
+      prisma,
+    });
     const globalEmergencyTransition =
       reviewV2GlobalEmergencyTransitionForCommand(command);
     if (globalEmergencyTransition) {
@@ -474,7 +482,7 @@ export function reviewV2CohortOperationForCommand(
 
 async function registerRelease(
   parsed: ParsedArguments,
-  runtime: ReturnType<typeof composeReviewActionV2ProductionRunControl>,
+  runtime: ReturnType<typeof composeReviewActionV2ReleaseRegistry>,
 ) {
   const bundle = await readJsonObject(requireOption(parsed, "bundle"));
   const limits = requireObject(bundle, "limits") as ReviewProtocolLimits;
@@ -681,9 +689,7 @@ async function requireInstalledRelease(
 }
 
 function createOperatorAuthentication(
-  digest: ReturnType<
-    typeof composeReviewActionV2ProductionRunControl
-  >["digest"],
+  digest: Sha256DigestPort,
   env: Readonly<Record<string, string | undefined>>,
 ) {
   return new HashedReviewMutationOperatorAuthenticator(digest, [
@@ -699,9 +705,7 @@ function createOperatorAuthentication(
 }
 
 async function authenticateOperator(
-  digest: ReturnType<
-    typeof composeReviewActionV2ProductionRunControl
-  >["digest"],
+  digest: Sha256DigestPort,
   env: Readonly<Record<string, string | undefined>>,
 ) {
   const authentication = createOperatorAuthentication(digest, env);
@@ -746,6 +750,32 @@ export function inspectEnvironment(
     ready: missing.length === 0 && invalid.length === 0,
     missing: [...new Set(missing)].sort(),
     invalid: [...new Set(invalid)].sort(),
+  } as const;
+}
+
+export function inspectReleaseRegistrationEnvironment(
+  env: Readonly<Record<string, string | undefined>>,
+) {
+  const required = [
+    "DATABASE_URL",
+    "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL",
+    "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256",
+  ] as const;
+  const missing = required.filter((name) => !env[name]?.trim());
+  const invalid: string[] = [];
+  const credential = env.REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL;
+  const expected = env.REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256;
+  if (
+    credential &&
+    expected &&
+    createHash("sha256").update(credential, "utf8").digest("hex") !== expected
+  ) {
+    invalid.push("REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256");
+  }
+  return {
+    ready: missing.length === 0 && invalid.length === 0,
+    missing: [...missing].sort(),
+    invalid: invalid.sort(),
   } as const;
 }
 
@@ -1002,6 +1032,7 @@ export function serializeOperatorCliJson(value: unknown) {
 function printUsage() {
   process.stdout.write(`ReviewRouter review-v2 admin\n\n`);
   process.stdout.write(`  env-preflight\n`);
+  process.stdout.write(`  release env-preflight\n`);
   process.stdout.write(`  status --repo OWNER/REPO\n`);
   process.stdout.write(`  release register --bundle FILE --confirm release\n`);
   process.stdout.write(

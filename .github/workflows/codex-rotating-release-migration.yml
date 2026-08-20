@@ -613,6 +613,7 @@ jobs:
             [
               "--conditions=production",
               "apps/api/dist/review-action-v2-operator-cli.js",
+              "release",
               "env-preflight",
             ],
             { cwd: process.cwd(), env: operatorEnv, encoding: "utf8" },
