@@ -76,10 +76,6 @@ import {
   ReviewExecutionProviderKind,
   ReviewInvocationLeasePurpose,
   ReviewTaskKind as ExecutionTaskKind,
-  reviewExecutionAbsoluteMaxAttemptBudget,
-  reviewExecutionAbsoluteMaxFindingCount,
-  reviewExecutionAbsoluteMaxProjectionBytes,
-  reviewExecutionAbsoluteMaxWorkSlots,
   type CurrentReviewRevisionPort,
   type ReviewExecution,
   type ReviewExecutionAuthorizationFactsPort,
@@ -131,6 +127,7 @@ import {
   composeReviewRunControl,
   createPrismaReviewRunControlRepositories,
 } from "@reviewrouter/features-review-run-control/composition";
+import { reviewActionV2AbsoluteProtocolMaxima } from "./review-action-v2-protocol-policy.js";
 import {
   readGitHubAppPrivateKey,
   resolveReviewRouterPublicApiUrl,
@@ -351,7 +348,7 @@ export function composeReviewActionV2ProductionRunControl(input: {
     safetyInspections: repositories.safetyControls,
     authorizationQueries: repositories.authorizations,
     authorizationCommands: repositories.authorizations,
-    absoluteProtocolMaxima,
+    absoluteProtocolMaxima: reviewActionV2AbsoluteProtocolMaxima,
   });
   return Object.freeze({
     clock,
@@ -496,7 +493,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
     revisionHashes,
     authorizations: runControl.authorizations,
     digest,
-    absoluteProtocolMaxima,
+    absoluteProtocolMaxima: reviewActionV2AbsoluteProtocolMaxima,
     authorizationTtlMs: productionTiming.authorizationTtlMs,
     maxAuthorizationLifetimeMs: productionTiming.maxAuthorizationLifetimeMs,
     reviewInvestigationCapability:
@@ -2236,22 +2233,6 @@ function finalizationFailure(issue: string): ReviewActionV2RouteFailure {
 function isSha256(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
-
-const absoluteProtocolMaxima: ReviewProtocolLimits = Object.freeze({
-  maxWorkSlots: reviewExecutionAbsoluteMaxWorkSlots,
-  maxAttemptsPerSlot: reviewExecutionAbsoluteMaxAttemptBudget,
-  maxObservationBytes: 2 * 1024 * 1024,
-  maxObservationFindings: 2_000,
-  maxProjectionBytes: reviewExecutionAbsoluteMaxProjectionBytes,
-  maxProjectionFindings: reviewExecutionAbsoluteMaxFindingCount,
-  maxPublicationOperations: 1_000,
-  maxPublicationChunks: 1_000,
-  maxPublicationBodyBytes: 2 * 1024 * 1024,
-  maxRequestBatchSize: 100,
-  maxLeaseDurationMs: 60 * 60 * 1_000,
-  maxResultReportDurationMs: 6 * 60 * 60 * 1_000,
-  maxReconciliationDurationMs: 24 * 60 * 60 * 1_000,
-});
 
 const trustedProducerReleaseMaterializationLimits: ReviewProtocolLimits =
   Object.freeze({

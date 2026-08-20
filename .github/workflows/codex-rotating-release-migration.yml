@@ -1,100 +1,735 @@
-name: Codex rotating trusted release migration
+name: PG17 cutover recovery
 
 on:
   workflow_dispatch:
     inputs:
-      rollout_id:
-        description: Unique non-reusable rollout identifier
+      target_db_id:
+        description: Existing restored Render PostgreSQL 17 database ID
+        required: true
+        type: string
+      owner_id:
+        description: Exact Render workspace owner ID
+        required: true
+        type: string
+      environment_id:
+        description: Exact Render environment ID
+        required: true
+        type: string
+      release_commit_sha:
+        description: Exact review-router-saas main commit
+        required: true
+        type: string
+      api_service_id:
+        description: Exact Render API service ID
+        required: true
+        type: string
+      worker_service_id:
+        description: Exact Render worker service ID
+        required: true
+        type: string
+      web_service_id:
+        description: Exact Render web service ID
+        required: true
+        type: string
+      confirmation:
+        description: Type RECOVER_EXISTING_PG17
         required: true
         type: string
 
 permissions:
   actions: read
   contents: read
-  id-token: write
 
 concurrency:
-  group: codex-rotating-database-mutation-production
+  group: reviewrouter-pg17-maintenance-migration
   cancel-in-progress: false
 
 jobs:
-  trusted-release-migration:
-    name: trusted-release-migration
-    environment: production
+  recover:
+    name: Complete restored PG17 cutover
+    if: ${{ inputs.confirmation == 'RECOVER_EXISTING_PG17' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 35
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-      RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
-      RENDER_PROJECT_ID: ${{ vars.RENDER_PROJECT_ID }}
-      RENDER_ENVIRONMENT_ID: ${{ vars.RENDER_ENVIRONMENT_ID }}
-      REVIEW_ROUTER_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_RENDER_DATABASE_ID }}
-      REVIEW_ROUTER_RENDER_DATABASE_IDENTITY: ${{ vars.REVIEW_ROUTER_RENDER_DATABASE_IDENTITY }}
-      REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ github.sha }}
-      REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RENDER_IMAGE_DIGEST }}
-      REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
-      REVIEW_ROUTER_API_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_API_DATABASE_URL }}
-      REVIEW_ROUTER_WEB_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WEB_DATABASE_URL }}
-      REVIEW_ROUTER_WORKER_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WORKER_DATABASE_URL }}
-      REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL }}
-      REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID: ${{ inputs.rollout_id }}
-      REVIEW_ROUTER_ROLLOUT_EVIDENCE_ARTIFACT_NAME: reviewrouter-trusted-rollout-${{ github.run_id }}-${{ github.run_attempt }}
+      SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
+      TARGET_DB_ID: ${{ inputs.target_db_id }}
+      RENDER_OWNER_ID: ${{ inputs.owner_id }}
+      RENDER_ENVIRONMENT_ID: ${{ inputs.environment_id }}
+      RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+      API_SERVICE_ID: ${{ inputs.api_service_id }}
+      WORKER_SERVICE_ID: ${{ inputs.worker_service_id }}
+      WEB_SERVICE_ID: ${{ inputs.web_service_id }}
+      MIGRATION_CONFIRMATION: ${{ inputs.confirmation }}
     steps:
-      - name: Checkout immutable release
+      - name: Checkout immutable recovery tooling
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Install exact package manager
-        run: corepack enable && corepack prepare pnpm@10.33.0 --activate
-
-      - name: Install locked dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Resolve immutable GitHub job identity
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Install and validate recovery tooling
+        shell: bash
         run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync } from "node:fs";
-          const response = await fetch(
-            `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}/jobs?filter=latest&per_page=100`,
-            { headers: { Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: "application/vnd.github+json" } },
-          );
-          if (!response.ok) throw new Error(`job identity lookup failed: ${response.status}`);
-          const value = await response.json();
-          const jobs = value.jobs.filter((job) =>
-            job.name === "trusted-release-migration" &&
-            job.run_attempt === Number(process.env.GITHUB_RUN_ATTEMPT),
-          );
-          if (value.total_count !== value.jobs.length || jobs.length !== 1)
-            throw new Error("job identity is not unique and complete");
-          appendFileSync(process.env.GITHUB_ENV, `REVIEW_ROUTER_GITHUB_JOB_ID=${jobs[0].id}\n`);
+          set -euo pipefail
+          test "$MIGRATION_CONFIRMATION" = "RECOVER_EXISTING_PG17"
+          [[ "$TARGET_DB_ID" =~ ^dpg-[a-z0-9-]+$ ]]
+          [[ "$RENDER_OWNER_ID" =~ ^tea-[a-z0-9-]+$ ]]
+          [[ "$RENDER_ENVIRONMENT_ID" =~ ^evm-[a-z0-9-]+$ ]]
+          [[ "$RELEASE_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            [[ "$service_id" =~ ^srv-[a-z0-9-]+$ ]]
+          done
+          corepack enable
+          node scripts/install-private-dependencies.mjs --frozen-lockfile
+          pnpm db:generate
+          docker pull postgres:17-alpine >/dev/null
+
+      - name: Provision roles, migrate, switch services, and resume
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$RUNNER_TEMP/reviewrouter-pg17-recovery"
+          mkdir -p "$work"
+          firewall_open=0
+          render_api() {
+            curl --fail --silent --show-error \
+              --retry 4 --retry-all-errors --retry-delay 3 \
+              --connect-timeout 15 --max-time 120 \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+          close_firewall() {
+            if [[ "$firewall_open" -eq 1 ]]; then
+              render_api -X PATCH \
+                -H "Content-Type: application/json" \
+                --data-binary '{"ipAllowList":[]}' \
+                "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
+                -o /dev/null || true
+            fi
+          }
+          cleanup() {
+            close_firewall
+            rm -f "$work"/*secret* "$work"/*url* "$work"/*env.json "$work/connection-info.json"
+          }
+          trap cleanup EXIT
+
+          render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" > "$work/target.json"
+          jq -e \
+            --arg ownerId "$RENDER_OWNER_ID" \
+            --arg environmentId "$RENDER_ENVIRONMENT_ID" '
+              .version == "17"
+              and .status == "available"
+              and .name == "reviewrouter-db"
+              and .environmentId == $environmentId
+              and ((.ownerId // .owner.id) == $ownerId)
+            ' "$work/target.json" >/dev/null
+
+          runner_ip="$(curl --fail --silent --show-error --max-time 30 https://api.ipify.org)"
+          [[ "$runner_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          jq -n --arg cidr "$runner_ip/32" '{ipAllowList: [{
+            cidrBlock: $cidr,
+            description: "temporary GitHub PG17 cutover recovery"
+          }]}' > "$work/firewall.json"
+          render_api -X PATCH -H "Content-Type: application/json" \
+            --data-binary @"$work/firewall.json" \
+            "https://api.render.com/v1/postgres/$TARGET_DB_ID" -o /dev/null
+          firewall_open=1
+
+          render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID/connection-info" \
+            > "$work/connection-info.json"
+          WORK="$work" node --input-type=module <<'NODE'
+          import { randomBytes } from "node:crypto";
+          import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+
+          const work = process.env.WORK;
+          const connection = JSON.parse(readFileSync(`${work}/connection-info.json`, "utf8"));
+          const credential = () => randomBytes(32).toString("base64url");
+          const roles = {
+            api: { username: "reviewrouter_api", password: credential() },
+            web: { username: "reviewrouter_web", password: credential() },
+            worker: { username: "reviewrouter_worker", password: credential() },
+            effectAuthority: {
+              username: "reviewrouter_codex_effect_authority",
+              password: credential(),
+            },
+          };
+          const project = (base, role) => {
+            const url = new URL(base);
+            url.username = role.username;
+            url.password = role.password;
+            return url.toString();
+          };
+          const urls = { roles: {} };
+          for (const [name, role] of Object.entries(roles)) {
+            urls.roles[name] = {
+              external: project(connection.externalConnectionString, role),
+              internal: project(connection.internalConnectionString, role),
+            };
+          }
+          writeFileSync(`${work}/runtime-role-secrets.json`, `${JSON.stringify({ roles })}\n`, { mode: 0o600 });
+          writeFileSync(`${work}/runtime-role-urls.json`, `${JSON.stringify(urls)}\n`, { mode: 0o600 });
+          chmodSync(`${work}/runtime-role-secrets.json`, 0o600);
+          chmodSync(`${work}/runtime-role-urls.json`, 0o600);
           NODE
 
-      - name: Run canonical migration from the immutable checkout
-        run: node --import tsx scripts/run-codex-rotating-release-migration.mjs > migration-output.json
+          external_url="$(jq -er '.externalConnectionString' "$work/connection-info.json")"
+          if [[ "$external_url" == *\?* ]]; then
+            external_url="$external_url&sslmode=require&connect_timeout=15"
+          else
+            external_url="$external_url?sslmode=require&connect_timeout=15"
+          fi
+          export DATABASE_URL="$external_url"
+          docker run --rm -e DATABASE_URL postgres:17-alpine \
+            sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "
+              SELECT json_build_object(
+                '\''serverMajor'\'', current_setting('\''server_version_num'\'')::integer / 10000,
+                '\''publicTableCount'\'', (SELECT count(*) FROM information_schema.tables WHERE table_schema='\''public'\'' AND table_type='\''BASE TABLE'\''),
+                '\''appliedMigrationCount'\'', (SELECT count(*) FROM \"_prisma_migrations\" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL)
+              );
+            "' > "$work/database-preflight.json"
+          jq -c . "$work/database-preflight.json"
+          jq -e '
+            .serverMajor == 17
+            and .publicTableCount >= 98
+            and .appliedMigrationCount >= 74
+          ' "$work/database-preflight.json" >/dev/null
 
-      - name: Capture read-only Render database identity
-        env:
-          REVIEW_ROUTER_PROVENANCE_PROVIDER: render-database
-          REVIEW_ROUTER_RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
-        run: node scripts/codex-rotating-provider-provenance.mjs > render-database-observation.json
+          cat > "$work/create-runtime-roles.sql" <<'SQL'
+          \set ON_ERROR_STOP on
+          \getenv api_password RR_API_PASSWORD
+          \getenv web_password RR_WEB_PASSWORD
+          \getenv worker_password RR_WORKER_PASSWORD
+          \getenv effect_password RR_EFFECT_PASSWORD
+          BEGIN;
+          SELECT 'CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
+            WHERE to_regrole('reviewrouter_release_schema_owner') IS NULL \gexec
+          SELECT format('CREATE ROLE reviewrouter_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L', :'api_password')
+            WHERE to_regrole('reviewrouter_api') IS NULL \gexec
+          SELECT format('CREATE ROLE reviewrouter_web LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L', :'web_password')
+            WHERE to_regrole('reviewrouter_web') IS NULL \gexec
+          SELECT format('CREATE ROLE reviewrouter_worker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L', :'worker_password')
+            WHERE to_regrole('reviewrouter_worker') IS NULL \gexec
+          SELECT format('CREATE ROLE reviewrouter_codex_effect_authority LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L', :'effect_password')
+            WHERE to_regrole('reviewrouter_codex_effect_authority') IS NULL \gexec
+          ALTER ROLE reviewrouter_api LOGIN NOCREATEROLE PASSWORD :'api_password';
+          ALTER ROLE reviewrouter_web LOGIN NOCREATEROLE PASSWORD :'web_password';
+          ALTER ROLE reviewrouter_worker LOGIN NOCREATEROLE PASSWORD :'worker_password';
+          ALTER ROLE reviewrouter_codex_effect_authority LOGIN NOCREATEROLE PASSWORD :'effect_password';
+          DO $membership$
+          BEGIN
+            IF NOT pg_has_role(current_user, 'reviewrouter_release_schema_owner', 'MEMBER') THEN
+              RAISE EXCEPTION 'database owner lacks schema-owner membership';
+            END IF;
+          END
+          $membership$;
+          COMMIT;
+          SQL
+          chmod 600 "$work/create-runtime-roles.sql"
+          export RR_API_PASSWORD RR_WEB_PASSWORD RR_WORKER_PASSWORD RR_EFFECT_PASSWORD
+          RR_API_PASSWORD="$(jq -er '.roles.api.password' "$work/runtime-role-secrets.json")"
+          RR_WEB_PASSWORD="$(jq -er '.roles.web.password' "$work/runtime-role-secrets.json")"
+          RR_WORKER_PASSWORD="$(jq -er '.roles.worker.password' "$work/runtime-role-secrets.json")"
+          RR_EFFECT_PASSWORD="$(jq -er '.roles.effectAuthority.password' "$work/runtime-role-secrets.json")"
+          docker run --rm \
+            -e DATABASE_URL \
+            -e RR_API_PASSWORD -e RR_WEB_PASSWORD -e RR_WORKER_PASSWORD -e RR_EFFECT_PASSWORD \
+            -v "$work:/work:ro" postgres:17-alpine \
+            sh -ceu 'psql "$DATABASE_URL" --no-psqlrc --quiet --file=/work/create-runtime-roles.sql'
+          unset RR_API_PASSWORD RR_WEB_PASSWORD RR_WORKER_PASSWORD RR_EFFECT_PASSWORD
 
-      - name: Assemble provider-bound migration evidence
-        env:
-          REVIEW_ROUTER_MIGRATION_OUTPUT_FILE: migration-output.json
-          REVIEW_ROUTER_RENDER_DATABASE_OBSERVATION_FILE: render-database-observation.json
-        run: |
-          mkdir trusted-evidence
-          node scripts/assemble-codex-rotating-trusted-evidence.mjs > trusted-evidence/reviewrouter-trusted-rollout-evidence.json
+          DATABASE_URL="$external_url" pnpm db:migrate:deploy
+          node --import tsx --input-type=module <<'NODE' > "$work/runtime-grants.sql"
+          import { runtimeGrantSql } from "./scripts/run-codex-rotating-release-migration.mjs";
+          const canonical = runtimeGrantSql({ roles: [
+            { role: "api", username: "reviewrouter_api" },
+            { role: "web", username: "reviewrouter_web" },
+            { role: "worker", username: "reviewrouter_worker" },
+            { role: "effect-authority", username: "reviewrouter_codex_effect_authority" },
+          ] });
+          let removed = 0;
+          const compatible = canonical.split("\n").filter((line) => {
+            const skip = line.startsWith(
+              "ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_schema_owner IN SCHEMA public",
+            );
+            if (skip) removed += 1;
+            return !skip;
+          }).join("\n");
+          if (removed !== 6) throw new Error(`unexpected_default_privilege_statement_count:${removed}`);
+          process.stdout.write(compatible);
+          NODE
+          docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
+            sh -ceu 'psql "$DATABASE_URL" --no-psqlrc --quiet --file=/work/runtime-grants.sql'
 
-      - name: Upload immutable trusted evidence
+          docker run --rm -e DATABASE_URL postgres:17-alpine \
+            sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "
+              SELECT json_build_object(
+                '\''serverMajor'\'', current_setting('\''server_version_num'\'')::integer / 10000,
+                '\''publicTableCount'\'', (SELECT count(*) FROM information_schema.tables WHERE table_schema='\''public'\'' AND table_type='\''BASE TABLE'\''),
+                '\''appliedMigrationCount'\'', (SELECT count(*) FROM \"_prisma_migrations\" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL),
+                '\''runtimeRoleCount'\'', (SELECT count(*) FROM pg_roles WHERE rolname IN ('\''reviewrouter_api'\'','\''reviewrouter_web'\'','\''reviewrouter_worker'\'','\''reviewrouter_codex_effect_authority'\'')),
+                '\''publicConnect'\'', has_database_privilege('\''public'\'', current_database(), '\''CONNECT'\''),
+                '\''apiConnect'\'', has_database_privilege('\''reviewrouter_api'\'', current_database(), '\''CONNECT'\''),
+                '\''effectFunction'\'', has_function_privilege('\''reviewrouter_codex_effect_authority'\'', '\''public.codex_oauth_sign_database_authority(text)'\'', '\''EXECUTE'\'')
+              );
+            "' > "$work/target-stats.json"
+          jq -e '
+            .serverMajor == 17
+            and .publicTableCount >= 110
+            and .appliedMigrationCount == 76
+            and .runtimeRoleCount == 4
+            and .publicConnect == false
+            and .apiConnect == true
+            and .effectFunction == true
+          ' "$work/target-stats.json" >/dev/null
+
+          jq -n --arg value "$(jq -er '.roles.api.internal' "$work/runtime-role-urls.json")" \
+            '{value: $value}' > "$work/api-env.json"
+          jq -n --arg value "$(jq -er '.roles.web.internal' "$work/runtime-role-urls.json")" \
+            '{value: $value}' > "$work/web-env.json"
+          jq -n --arg value "$(jq -er '.roles.worker.internal' "$work/runtime-role-urls.json")" \
+            '{value: $value}' > "$work/worker-env.json"
+          jq -n --arg value "$(jq -er '.roles.effectAuthority.internal' "$work/runtime-role-urls.json")" \
+            '{value: $value}' > "$work/effect-env.json"
+          render_api -X PUT -H "Content-Type: application/json" --data-binary @"$work/api-env.json" \
+            "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars/DATABASE_URL" -o /dev/null
+          render_api -X PUT -H "Content-Type: application/json" --data-binary @"$work/web-env.json" \
+            "https://api.render.com/v1/services/$WEB_SERVICE_ID/env-vars/DATABASE_URL" -o /dev/null
+          render_api -X PUT -H "Content-Type: application/json" --data-binary @"$work/worker-env.json" \
+            "https://api.render.com/v1/services/$WORKER_SERVICE_ID/env-vars/DATABASE_URL" -o /dev/null
+          for service_id in "$API_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            render_api -X PUT -H "Content-Type: application/json" --data-binary @"$work/effect-env.json" \
+              "https://api.render.com/v1/services/$service_id/env-vars/REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL" -o /dev/null
+          done
+
+          close_firewall
+          firewall_open=0
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            state="$(render_api "https://api.render.com/v1/services/$service_id" | jq -r '.suspended')"
+            if [[ "$state" == "suspended" ]]; then
+              render_api -X POST "https://api.render.com/v1/services/$service_id/resume" -o /dev/null
+            fi
+          done
+
+          jq -n \
+            --arg targetDbId "$TARGET_DB_ID" \
+            --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+            --arg recoveryRunId "$GITHUB_RUN_ID" \
+            --slurpfile targetStats "$work/target-stats.json" \
+            '{
+              targetDbId: $targetDbId,
+              targetVersion: 17,
+              releaseCommitSha: $releaseCommitSha,
+              recoveryRunId: $recoveryRunId,
+              targetStats: $targetStats[0]
+            }' > "$work/recovery-manifest.json"
+          unset DATABASE_URL external_url
+
+      - name: Upload recovery evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ${{ env.REVIEW_ROUTER_ROLLOUT_EVIDENCE_ARTIFACT_NAME }}
-          path: trusted-evidence/reviewrouter-trusted-rollout-evidence.json
+          name: reviewrouter-pg17-recovery-${{ github.run_id }}
+          path: ${{ runner.temp }}/reviewrouter-pg17-recovery/recovery-manifest.json
           if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  register-release:
+    name: Register verified Review Action release
+    if: ${{ inputs.confirmation == 'REGISTER_VERIFIED_REVIEW_ACTION_RELEASE' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
+      TARGET_DB_ID: ${{ inputs.target_db_id }}
+      RENDER_OWNER_ID: ${{ inputs.owner_id }}
+      RENDER_ENVIRONMENT_ID: ${{ inputs.environment_id }}
+      ACTION_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+      API_SERVICE_ID: ${{ inputs.api_service_id }}
+      WORKER_SERVICE_ID: ${{ inputs.worker_service_id }}
+      WEB_SERVICE_ID: ${{ inputs.web_service_id }}
+    steps:
+      - name: Checkout immutable registration tooling
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Install registration tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_DB_ID" =~ ^dpg-[a-z0-9-]+$ ]]
+          [[ "$RENDER_OWNER_ID" =~ ^tea-[a-z0-9-]+$ ]]
+          [[ "$RENDER_ENVIRONMENT_ID" =~ ^evm-[a-z0-9-]+$ ]]
+          [[ "$ACTION_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$API_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
+          [[ "$WORKER_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
+          [[ "$WEB_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
+          corepack enable
+          node scripts/install-private-dependencies.mjs --frozen-lockfile
+          pnpm db:generate
+          pnpm --filter @reviewrouter/api... build
+          node scripts/rewrite-dist-esm-imports.mjs
+          docker pull postgres:17-alpine >/dev/null
+
+      - name: Verify and register release
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$RUNNER_TEMP/reviewrouter-release-registration"
+          mkdir -p "$work"
+          firewall_open=0
+          render_api() {
+            curl --fail --silent --show-error \
+              --retry 4 --retry-all-errors --retry-delay 3 \
+              --connect-timeout 15 --max-time 120 \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+          close_firewall() {
+            if [[ "$firewall_open" -eq 1 ]]; then
+              render_api -X PATCH \
+                -H "Content-Type: application/json" \
+                --data-binary '{"ipAllowList":[]}' \
+                "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
+                -o /dev/null || true
+            fi
+          }
+          cleanup() {
+            close_firewall
+            rm -f "$work/api-env.json" "$work/api-env-object.json" \
+              "$work/connection-info.json" "$work/operator-input.json"
+          }
+          trap cleanup EXIT
+
+          render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" > "$work/target.json"
+          jq -e \
+            --arg ownerId "$RENDER_OWNER_ID" \
+            --arg environmentId "$RENDER_ENVIRONMENT_ID" '
+              .version == "17"
+              and .status == "available"
+              and .environmentId == $environmentId
+              and ((.ownerId // .owner.id) == $ownerId)
+            ' "$work/target.json" >/dev/null
+
+          render_api "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars" \
+            > "$work/api-env.json"
+          jq -e '
+            map(.envVar // .)
+            | map(select((.key | type) == "string" and (.value | type) == "string"))
+            | map({key, value})
+            | from_entries
+          ' "$work/api-env.json" > "$work/api-env-object.json"
+
+          git clone --filter=blob:none https://github.com/777genius/review-router.git "$work/action"
+          git -C "$work/action" fetch origin "$ACTION_COMMIT_SHA"
+          git -C "$work/action" switch -c verified-release "$ACTION_COMMIT_SHA"
+          saas_source_commit="$(jq -er '.saasSourceCommit' \
+            "$work/action/src/control-plane/generated/review-action-v2/handoff-manifest.json")"
+          [[ "$saas_source_commit" =~ ^[a-f0-9]{40}$ ]]
+          git fetch origin "$saas_source_commit" --depth=1
+          pnpm protocol:release-manifest \
+            --action-repo "$work/action" \
+            --target-branch verified-release \
+            --expected-head "$ACTION_COMMIT_SHA" \
+            --output "$work/release-manifest.json" >/dev/null
+          pnpm protocol:release-manifest:check \
+            --manifest "$work/release-manifest.json" \
+            --action-repo "$work/action" >/dev/null
+
+          runner_ip="$(curl --fail --silent --show-error --max-time 30 https://api.ipify.org)"
+          [[ "$runner_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          jq -n --arg cidr "$runner_ip/32" '{ipAllowList: [{
+            cidrBlock: $cidr,
+            description: "temporary verified release registration"
+          }]}' > "$work/firewall.json"
+          render_api -X PATCH -H "Content-Type: application/json" \
+            --data-binary @"$work/firewall.json" \
+            "https://api.render.com/v1/postgres/$TARGET_DB_ID" -o /dev/null
+          firewall_open=1
+          render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID/connection-info" \
+            > "$work/connection-info.json"
+
+          WORK="$work" ACTION_COMMIT_SHA="$ACTION_COMMIT_SHA" node --input-type=module <<'NODE'
+          import { createHash, randomBytes } from "node:crypto";
+          import { readFileSync, writeFileSync } from "node:fs";
+          import { spawnSync } from "node:child_process";
+
+          const work = process.env.WORK;
+          const actionCommitSha = process.env.ACTION_COMMIT_SHA;
+          const apiEnv = JSON.parse(readFileSync(`${work}/api-env-object.json`, "utf8"));
+          const manifest = JSON.parse(readFileSync(`${work}/release-manifest.json`, "utf8"));
+          const connection = JSON.parse(readFileSync(`${work}/connection-info.json`, "utf8"));
+          const attestations = JSON.parse(
+            apiEnv.REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON ?? "[]",
+          );
+          const limits = {
+            maxWorkSlots: 200,
+            maxAttemptsPerSlot: 4,
+            maxObservationBytes: 1_000_000,
+            maxObservationFindings: 1_000,
+            maxProjectionBytes: 2_000_000,
+            maxProjectionFindings: 2_000,
+            maxPublicationOperations: 500,
+            maxPublicationChunks: 500,
+            maxPublicationBodyBytes: 2_000_000,
+            maxRequestBatchSize: 100,
+            maxLeaseDurationMs: 600_000,
+            maxResultReportDurationMs: 1_200_000,
+            maxReconciliationDurationMs: 3_600_000,
+          };
+          const thresholds = {
+            integrationEventDeliveryMs: 60_000,
+            outboxClaimAgeMs: 120_000,
+            missingCompletionProcessMs: 300_000,
+            dueCompletionProcessMs: 300_000,
+            publicationReconciliationMs: 600_000,
+            v1DrainMs: 3_600_000,
+            admissionMs: 30_000,
+            pruningBacklogAgeMs: 86_400_000,
+          };
+          const ownerRefs = ["team-reviewrouter"];
+          const runbookRefs = ["docs/operations/review-action-v2-cutover.md"];
+          const releaseKey = `reviewrouter-action.${actionCommitSha.slice(0, 12)}`;
+          const contentId = (value) =>
+            createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex").slice(0, 16);
+          const protocolLimitsProfileId = `${releaseKey}.limits-${contentId(limits)}`;
+          const operationalSloProfileId = `${releaseKey}.slo-${contentId({
+            thresholds,
+            ownerRefs,
+            runbookRefs,
+          })}`;
+          let matches = attestations.filter(
+            (attestation) => attestation?.actionCommitSha === actionCommitSha,
+          );
+          if (matches.length > 1) {
+            throw new Error(`verified_release_attestation_count:${matches.length}`);
+          }
+          if (matches.length === 0) {
+            matches = [{
+              producerReleaseId: releaseKey,
+              distributionKind: "public_reusable",
+              actionCommitSha: manifest.actionCommitSha,
+              runtimeCommitSha: manifest.runtimeCommitSha,
+              wrapperEntrypointDigest: null,
+              runtimeEntrypointDigest: manifest.runtimeEntrypointDigest,
+              contextGatewayPolicyVersion: manifest.contextGatewayPolicyVersion,
+              contextGatewayEntrypointDigest: manifest.contextGatewayEntrypointDigest,
+              reviewInvestigationCapability: manifest.reviewInvestigationCapability,
+              reviewInvestigationCoverageProfileHash:
+                manifest.reviewInvestigationCoverageProfileHash,
+              reviewInvestigationPolicyHash: manifest.reviewInvestigationPolicyHash,
+              schemaDigest: manifest.schemaDigest,
+              canonicalizerDigest: manifest.canonicalizerDigest,
+              capabilityProfile: "exact_revision_v2",
+              protocolLimitsProfileId,
+              operationalSloProfileId,
+            }];
+          }
+          const attestation = {
+            ...matches[0],
+            protocolLimitsProfileId,
+            operationalSloProfileId,
+          };
+          if (
+            manifest.distributionKind !== "PublicReusable" ||
+            attestation.distributionKind !== "public_reusable" ||
+            attestation.wrapperEntrypointDigest !== null
+          ) {
+            throw new Error("verified_release_distribution_shape_mismatch");
+          }
+          const exactFields = [
+            "actionCommitSha",
+            "runtimeCommitSha",
+            "runtimeEntrypointDigest",
+            "contextGatewayPolicyVersion",
+            "contextGatewayEntrypointDigest",
+            "schemaDigest",
+            "canonicalizerDigest",
+          ];
+          for (const field of exactFields) {
+            if (attestation[field] !== manifest[field]) {
+              throw new Error(`verified_release_manifest_mismatch:${field}`);
+            }
+          }
+          const investigationFields = [
+            ["reviewInvestigationCapability", "reviewInvestigationCapability"],
+            ["reviewInvestigationCoverageProfileHash", "reviewInvestigationCoverageProfileHash"],
+            ["reviewInvestigationPolicyHash", "reviewInvestigationPolicyHash"],
+          ];
+          for (const [attestationField, manifestField] of investigationFields) {
+            if (attestation[attestationField] !== manifest[manifestField]) {
+              throw new Error(`verified_release_manifest_mismatch:${attestationField}`);
+            }
+          }
+          const bundle = {
+            protocolLimitsProfileId: attestation.protocolLimitsProfileId,
+            limits,
+            operationalSloProfileId: attestation.operationalSloProfileId,
+            thresholds,
+            ownerRefs,
+            runbookRefs,
+            candidate: {
+              producerReleaseId: attestation.producerReleaseId,
+              distributionKind: attestation.distributionKind,
+              actionCommitSha: manifest.actionCommitSha,
+              runtimeCommitSha: manifest.runtimeCommitSha,
+              wrapperEntrypointDigest: null,
+              runtimeEntrypointDigest: manifest.runtimeEntrypointDigest,
+              contextGatewayPolicyVersion: manifest.contextGatewayPolicyVersion,
+              contextGatewayEntrypointDigest: manifest.contextGatewayEntrypointDigest,
+              reviewInvestigationProfile: {
+                capability: manifest.reviewInvestigationCapability,
+                coverageProfileHash: manifest.reviewInvestigationCoverageProfileHash,
+                policyHash: manifest.reviewInvestigationPolicyHash,
+              },
+              schemaDigest: manifest.schemaDigest,
+              capabilityProfile: attestation.capabilityProfile,
+            },
+          };
+          writeFileSync(`${work}/release-bundle.json`, `${JSON.stringify(bundle)}\n`, { mode: 0o600 });
+
+          const databaseUrl = new URL(connection.externalConnectionString);
+          databaseUrl.searchParams.set("sslmode", "require");
+          databaseUrl.searchParams.set("connect_timeout", "15");
+          const credential = randomBytes(32).toString("base64url");
+          const operatorEnv = {
+            ...process.env,
+            ...apiEnv,
+            NODE_ENV: "production",
+            DATABASE_URL: databaseUrl.toString(),
+            REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL: credential,
+            REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256: createHash("sha256")
+              .update(credential, "utf8")
+              .digest("hex"),
+          };
+          const preflight = spawnSync(
+            "node",
+            [
+              "--conditions=production",
+              "apps/api/dist/review-action-v2-operator-cli.js",
+              "release",
+              "env-preflight",
+            ],
+            { cwd: process.cwd(), env: operatorEnv, encoding: "utf8" },
+          );
+          if (preflight.status !== 0) {
+            throw new Error(`verified_release_environment_preflight_exit:${preflight.status ?? "unknown"}`);
+          }
+          const preflightResult = JSON.parse(preflight.stdout);
+          writeFileSync(
+            `${work}/environment-preflight.json`,
+            `${JSON.stringify(preflightResult)}\n`,
+            { mode: 0o644 },
+          );
+          if (preflightResult.ready !== true) {
+            throw new Error(
+              `verified_release_environment_not_ready:missing=${preflightResult.missing.join(",")}:invalid=${preflightResult.invalid.join(",")}`,
+            );
+          }
+          const result = spawnSync(
+            "node",
+            [
+              "--conditions=production",
+              "apps/api/dist/review-action-v2-operator-cli.js",
+              "release",
+              "register",
+              "--bundle",
+              `${work}/release-bundle.json`,
+              "--confirm",
+              "release",
+            ],
+            { cwd: process.cwd(), env: operatorEnv, encoding: "utf8" },
+          );
+          if (result.status !== 0) {
+            writeFileSync(`${work}/registration-error.log`, result.stderr, { mode: 0o600 });
+            const diagnosticCodes = [
+              ...new Set(
+                `${result.stdout}\n${result.stderr}`.match(
+                  /\b(?:review|producer|protocol|operational|database|prisma|context|invalid)[A-Za-z0-9_.:-]{2,160}\b/gi,
+                ) ?? [],
+              ),
+            ].slice(0, 12);
+            const diagnostic = {
+              exitStatus: result.status,
+              diagnosticCodes,
+              stderrSha256: createHash("sha256").update(result.stderr, "utf8").digest("hex"),
+            };
+            writeFileSync(
+              `${work}/registration-diagnostic.json`,
+              `${JSON.stringify(diagnostic)}\n`,
+              { mode: 0o644 },
+            );
+            console.error(JSON.stringify(diagnostic));
+            throw new Error(`verified_release_registration_failed:exit_${result.status ?? "unknown"}`);
+          }
+          const registration = JSON.parse(result.stdout);
+          const convergedAttestation = {
+            ...attestation,
+            protocolLimitsProfileId: registration.resolvedProtocolLimitsProfileId,
+            operationalSloProfileId: registration.resolvedOperationalSloProfileId,
+          };
+          const updatedAttestations = [
+            ...attestations.filter(
+              (candidate) => candidate?.actionCommitSha !== actionCommitSha,
+            ),
+            convergedAttestation,
+          ].sort((left, right) =>
+            left.producerReleaseId.localeCompare(right.producerReleaseId),
+          );
+          writeFileSync(
+            `${work}/updated-attestations.json`,
+            `${JSON.stringify(updatedAttestations)}\n`,
+            { mode: 0o600 },
+          );
+          writeFileSync(
+            `${work}/registration-result.json`,
+            `${JSON.stringify({
+              actionCommitSha,
+              producerReleaseId: attestation.producerReleaseId,
+              limitsStatus: registration.limitsResult?.status,
+              sloStatus: registration.sloResult?.status,
+              releaseStatus: registration.releaseResult?.status,
+            })}\n`,
+            { mode: 0o644 },
+          );
+          NODE
+
+          jq -e \
+            --arg sha "$ACTION_COMMIT_SHA" '
+              .actionCommitSha == $sha
+              and (.producerReleaseId | type == "string" and length > 0)
+              and (.releaseStatus == "created" or .releaseStatus == "restored")
+            ' "$work/registration-result.json" >/dev/null
+          jq -c . "$work/registration-result.json"
+
+          jq -n --rawfile value "$work/updated-attestations.json" \
+            '{value: ($value | rtrimstr("\n"))}' > "$work/attestations-env.json"
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            render_api -X PUT -H "Content-Type: application/json" \
+              --data-binary @"$work/attestations-env.json" \
+              "https://api.render.com/v1/services/$service_id/env-vars/REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON" \
+              -o /dev/null
+          done
+          close_firewall
+          firewall_open=0
+
+      - name: Upload release registration evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reviewrouter-release-registration-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/reviewrouter-release-registration/release-manifest.json
+            ${{ runner.temp }}/reviewrouter-release-registration/environment-preflight.json
+            ${{ runner.temp }}/reviewrouter-release-registration/registration-result.json
+            ${{ runner.temp }}/reviewrouter-release-registration/registration-diagnostic.json
+          if-no-files-found: warn
           retention-days: 30
           compression-level: 0
