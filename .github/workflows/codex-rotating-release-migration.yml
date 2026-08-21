@@ -509,6 +509,34 @@ jobs:
           const releaseKey = `reviewrouter-action.${actionCommitSha.slice(0, 12)}`;
           const contentId = (value) =>
             createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex").slice(0, 16);
+          const diagnosticCodes = (stdout, stderr) => {
+            const output = `${stdout ?? ""}\n${stderr ?? ""}`;
+            const codes = [
+              ...(output.match(
+                /\b(?:review_v2|review|producer|protocol|operational|database|prisma|context|invalid)_[a-z0-9_]{2,120}\b/gi,
+              ) ?? []),
+              ...(output.match(/\bP\d{4}\b/g) ?? []),
+              ...[...output.matchAll(/\bSQLSTATE(?:\s+(?:code)?)?[:=]?\s*([0-9A-Z]{5})\b/gi)].map(
+                (match) => `sqlstate_${match[1].toLowerCase()}`,
+              ),
+            ];
+            if (/permission denied/i.test(output)) codes.push("database_permission_denied");
+            if (
+              /(?:can't reach database server|connection (?:refused|terminated|failed)|ECONNREFUSED|timeout expired|database .* unavailable|SSL\/TLS required)/i.test(
+                output,
+              )
+            ) {
+              codes.push("database_connection_failed");
+            }
+            if (
+              /(?:review_safety_control_conflict|version conflict|serialization conflict|\bP2034\b)/i.test(
+                output,
+              )
+            ) {
+              codes.push("review_safety_control_conflict");
+            }
+            return [...new Set(codes.map((code) => code.toLowerCase()))].slice(0, 12);
+          };
           const protocolLimitsProfileId = `${releaseKey}.limits-${contentId(limits)}`;
           const operationalSloProfileId = `${releaseKey}.slo-${contentId({
             thresholds,
@@ -659,16 +687,9 @@ jobs:
           );
           if (result.status !== 0) {
             writeFileSync(`${work}/registration-error.log`, result.stderr, { mode: 0o600 });
-            const diagnosticCodes = [
-              ...new Set(
-                `${result.stdout}\n${result.stderr}`.match(
-                  /\b(?:review|producer|protocol|operational|database|prisma|context|invalid)[A-Za-z0-9_.:-]{2,160}\b/gi,
-                ) ?? [],
-              ),
-            ].slice(0, 12);
             const diagnostic = {
               exitStatus: result.status,
-              diagnosticCodes,
+              diagnosticCodes: diagnosticCodes(result.stdout, result.stderr),
               stderrSha256: createHash("sha256").update(result.stderr, "utf8").digest("hex"),
             };
             writeFileSync(
@@ -680,50 +701,6 @@ jobs:
             throw new Error(`verified_release_registration_failed:exit_${result.status ?? "unknown"}`);
           }
           const registration = JSON.parse(result.stdout);
-          if (process.env.OPEN_GLOBAL_EMERGENCY === "true") {
-            const emergency = spawnSync(
-              "node",
-              [
-                "--conditions=production",
-                "apps/api/dist/review-action-v2-operator-cli.js",
-                "emergency",
-                "global",
-                "open",
-                "--confirm",
-                "global",
-              ],
-              { cwd: process.cwd(), env: operatorEnv, encoding: "utf8" },
-            );
-            if (emergency.status !== 0) {
-              const diagnostic = {
-                exitStatus: emergency.status,
-                stderrSha256: createHash("sha256")
-                  .update(emergency.stderr, "utf8")
-                  .digest("hex"),
-              };
-              writeFileSync(
-                `${work}/emergency-control-diagnostic.json`,
-                `${JSON.stringify(diagnostic)}\n`,
-                { mode: 0o644 },
-              );
-              throw new Error(
-                `review_v2_global_emergency_open_failed:exit_${emergency.status ?? "unknown"}`,
-              );
-            }
-            const emergencyResult = JSON.parse(emergency.stdout);
-            if (emergencyResult.control?.stopped !== false) {
-              throw new Error("review_v2_global_emergency_open_not_confirmed");
-            }
-            writeFileSync(
-              `${work}/emergency-control-result.json`,
-              `${JSON.stringify({
-                requestedState: "open",
-                writeStatus: emergencyResult.status,
-                stopped: emergencyResult.control.stopped,
-              })}\n`,
-              { mode: 0o644 },
-            );
-          }
           const convergedAttestation = {
             ...attestation,
             protocolLimitsProfileId: registration.resolvedProtocolLimitsProfileId,
@@ -753,6 +730,51 @@ jobs:
             })}\n`,
             { mode: 0o644 },
           );
+          if (process.env.OPEN_GLOBAL_EMERGENCY === "true") {
+            const emergency = spawnSync(
+              "node",
+              [
+                "--conditions=production",
+                "apps/api/dist/review-action-v2-operator-cli.js",
+                "emergency",
+                "global",
+                "open",
+                "--confirm",
+                "global",
+              ],
+              { cwd: process.cwd(), env: operatorEnv, encoding: "utf8" },
+            );
+            if (emergency.status !== 0) {
+              const diagnostic = {
+                exitStatus: emergency.status,
+                diagnosticCodes: diagnosticCodes(emergency.stdout, emergency.stderr),
+                stderrSha256: createHash("sha256")
+                  .update(emergency.stderr, "utf8")
+                  .digest("hex"),
+              };
+              writeFileSync(
+                `${work}/emergency-control-diagnostic.json`,
+                `${JSON.stringify(diagnostic)}\n`,
+                { mode: 0o644 },
+              );
+              throw new Error(
+                `review_v2_global_emergency_open_failed:exit_${emergency.status ?? "unknown"}`,
+              );
+            }
+            const emergencyResult = JSON.parse(emergency.stdout);
+            if (emergencyResult.control?.stopped !== false) {
+              throw new Error("review_v2_global_emergency_open_not_confirmed");
+            }
+            writeFileSync(
+              `${work}/emergency-control-result.json`,
+              `${JSON.stringify({
+                requestedState: "open",
+                writeStatus: emergencyResult.status,
+                stopped: emergencyResult.control.stopped,
+              })}\n`,
+              { mode: 0o644 },
+            );
+          }
           NODE
 
           jq -e \

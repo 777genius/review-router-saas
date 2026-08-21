@@ -36,4 +36,21 @@ describe("Codex rotating release migration workflow", () => {
     expect(workflow).toContain('"open",');
     expect(workflow).toContain("emergency-control-result.json");
   });
+
+  it("preserves registration evidence and emits redacted emergency diagnostics", () => {
+    const registrationEvidence = workflow.indexOf("registration-result.json");
+    const emergencyMutation = workflow.indexOf(
+      'process.env.OPEN_GLOBAL_EMERGENCY === "true"',
+    );
+
+    expect(registrationEvidence).toBeGreaterThan(-1);
+    expect(emergencyMutation).toBeGreaterThan(registrationEvidence);
+    expect(workflow).toContain(
+      "diagnosticCodes: diagnosticCodes(emergency.stdout, emergency.stderr)",
+    );
+    expect(workflow).toContain("database_permission_denied");
+    expect(workflow).toContain("database_connection_failed");
+    expect(workflow).toContain("review_safety_control_conflict");
+    expect(workflow).not.toContain("emergency-error.log");
+  });
 });
