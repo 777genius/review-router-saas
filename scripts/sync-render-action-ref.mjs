@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveCodexRotatingInstallerDescriptor } from "../packages/shared/src/validation/codex-rotating-installer-descriptor.mjs";
 
 const renderApi = "https://api.render.com/v1";
 const defaultActionRepository = "777genius/review-router";
@@ -24,6 +25,7 @@ Options:
   --services a,b,c                     Render service names. Default: ${defaultServiceNames.join(",")}
   --allowlist-window n                 Keep n trusted refs including the new ref. Default: 2
   --extra-allowed-action-ref ref        Keep an additional full-SHA action ref in the allowlist. Can be repeated or comma-separated.
+  --installer-descriptor path           Verified rotating installer descriptor required for immutable Action refs.
   --no-deploy                          Update env vars without triggering Render deploys.
   --wait                               Wait for requested Render deploys to become live.
   --wait-timeout-ms n                  Maximum time to wait for deploys. Default: 900000
@@ -42,6 +44,7 @@ function parseArgs(argv) {
     serviceNames: defaultServiceNames,
     allowlistWindow: 2,
     extraAllowedActionRefs: [],
+    installerDescriptorPath: "",
     deploy: true,
     wait: false,
     waitTimeoutMs: 900_000,
@@ -84,6 +87,8 @@ function parseArgs(argv) {
             normalizeFullShaActionRef(actionRef, "--extra-allowed-action-ref"),
           ),
       );
+    } else if (arg === "--installer-descriptor") {
+      args.installerDescriptorPath = next();
     } else if (arg === "--no-deploy") {
       args.deploy = false;
     } else if (arg === "--wait") {
@@ -331,11 +336,112 @@ function describePlan(plan) {
   return {
     actionRef: plan.nextActionRef,
     allowedActionRefs: plan.allowedActionRefs.join(","),
+    rotatingActionRef: plan.rotatingActionRef,
+    rotatingAllowedActionRefs: plan.rotatingAllowedActionRefs.join(","),
+    rotatingInstallerVersion: plan.installerDescriptor?.version ?? null,
+    rotatingInstallerUrl: plan.installerDescriptor?.url ?? null,
     services: plan.services.map((service) => service.name),
     deploy: plan.deploy,
     wait: plan.wait,
     dryRun: plan.dryRun,
   };
+}
+
+function buildTrustedRefWindows(input) {
+  const allowedActionRefs = buildTrustedRefs({
+    nextActionRef: input.nextActionRef,
+    currentActionRefs: input.currentActionRefs,
+    currentAllowedActionRefs: input.currentAllowedActionRefs,
+    extraAllowedActionRefs: input.extraAllowedActionRefs,
+    allowlistWindow: input.allowlistWindow,
+  });
+  const syncRotatingRef = isFullShaActionRef(input.nextActionRef);
+  const rotatingAllowedActionRefs = syncRotatingRef
+    ? buildTrustedRefs({
+        nextActionRef: input.nextActionRef,
+        currentActionRefs: input.currentRotatingActionRefs,
+        currentAllowedActionRefs: input.currentRotatingAllowedActionRefs,
+        extraAllowedActionRefs: input.extraAllowedActionRefs,
+        allowlistWindow: input.allowlistWindow,
+      })
+    : [];
+  return {
+    allowedActionRefs,
+    rotatingActionRef: syncRotatingRef ? input.nextActionRef : null,
+    rotatingAllowedActionRefs,
+  };
+}
+
+function actionRefEnvUpdates(plan) {
+  const updates = [
+    { key: "REVIEW_ROUTER_ACTION_REF", value: plan.nextActionRef },
+  ];
+  const allowedActionRefsValue = allowedActionRefsEnvValue(
+    plan.allowedActionRefs,
+  );
+  if (allowedActionRefsValue) {
+    updates.push({
+      key: "REVIEW_ROUTER_ALLOWED_ACTION_REFS",
+      value: allowedActionRefsValue,
+    });
+  }
+  if (plan.rotatingActionRef) {
+    updates.push({
+      key: "REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF",
+      value: plan.rotatingActionRef,
+    });
+    const rotatingAllowedActionRefsValue = allowedActionRefsEnvValue(
+      plan.rotatingAllowedActionRefs,
+    );
+    if (rotatingAllowedActionRefsValue) {
+      updates.push({
+        key: "REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS",
+        value: rotatingAllowedActionRefsValue,
+      });
+    }
+    if (plan.installerDescriptor) {
+      updates.push(
+        {
+          key: "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL",
+          value: plan.installerDescriptor.url,
+        },
+        {
+          key: "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION",
+          value: plan.installerDescriptor.version,
+        },
+        {
+          key: "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256",
+          value: plan.installerDescriptor.sha256,
+        },
+      );
+    }
+  }
+  return updates;
+}
+
+function readInstallerDescriptor(input) {
+  if (!input.path) {
+    if (isFullShaActionRef(input.nextActionRef)) {
+      throw new Error(
+        "--installer-descriptor is required when syncing an immutable Action ref",
+      );
+    }
+    return null;
+  }
+  const descriptor = JSON.parse(fs.readFileSync(input.path, "utf8"));
+  if (
+    descriptor?.schemaVersion !==
+      "reviewrouter.codex-rotating-installer-descriptor.v1" ||
+    String(descriptor.actionRef ?? "").toLowerCase() !== input.nextActionRef
+  ) {
+    throw new Error("installer descriptor does not match the Action ref");
+  }
+  return resolveCodexRotatingInstallerDescriptor({
+    REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: input.nextActionRef,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: descriptor.url,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: descriptor.version,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: descriptor.sha256,
+  });
 }
 
 function allowedActionRefsEnvValue(allowedActionRefs) {
@@ -397,10 +503,16 @@ async function waitForDeploys(client, deploys, input) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const nextActionRef = await resolveActionRef(args);
+  const installerDescriptor = readInstallerDescriptor({
+    path: args.installerDescriptorPath,
+    nextActionRef,
+  });
   const client = new RenderClient(readRenderApiKey());
   const services = await client.listServicesByName(args.serviceNames);
   const currentActionRefs = [];
   const currentAllowedActionRefs = [];
+  const currentRotatingActionRefs = [];
+  const currentRotatingAllowedActionRefs = [];
   for (const service of services) {
     currentActionRefs.push(
       await client.getEnvVar(service.id, "REVIEW_ROUTER_ACTION_REF"),
@@ -408,17 +520,33 @@ async function main() {
     currentAllowedActionRefs.push(
       await client.getEnvVar(service.id, "REVIEW_ROUTER_ALLOWED_ACTION_REFS"),
     );
+    currentRotatingActionRefs.push(
+      await client.getEnvVar(
+        service.id,
+        "REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF",
+      ),
+    );
+    currentRotatingAllowedActionRefs.push(
+      await client.getEnvVar(
+        service.id,
+        "REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS",
+      ),
+    );
   }
-  const allowedActionRefs = buildTrustedRefs({
+  const trustedRefs = buildTrustedRefWindows({
     nextActionRef,
     currentActionRefs: currentActionRefs.filter(Boolean),
     currentAllowedActionRefs: currentAllowedActionRefs.filter(Boolean),
+    currentRotatingActionRefs: currentRotatingActionRefs.filter(Boolean),
+    currentRotatingAllowedActionRefs:
+      currentRotatingAllowedActionRefs.filter(Boolean),
     extraAllowedActionRefs: args.extraAllowedActionRefs,
     allowlistWindow: args.allowlistWindow,
   });
   const plan = {
     nextActionRef,
-    allowedActionRefs,
+    ...trustedRefs,
+    installerDescriptor,
     services,
     deploy: args.deploy,
     wait: args.wait,
@@ -431,19 +559,11 @@ async function main() {
   const deploys = [];
   for (const service of services) {
     console.log(`updating ${service.name}`);
-    const allowedActionRefsValue = allowedActionRefsEnvValue(allowedActionRefs);
-    await client.setEnvVar(
-      service.id,
-      "REVIEW_ROUTER_ACTION_REF",
-      nextActionRef,
-    );
-    if (allowedActionRefsValue) {
-      await client.setEnvVar(
-        service.id,
-        "REVIEW_ROUTER_ALLOWED_ACTION_REFS",
-        allowedActionRefsValue,
-      );
-    } else {
+    const updates = actionRefEnvUpdates(plan);
+    for (const update of updates) {
+      await client.setEnvVar(service.id, update.key, update.value);
+    }
+    if (!allowedActionRefsEnvValue(plan.allowedActionRefs)) {
       console.log(
         `skipping REVIEW_ROUTER_ALLOWED_ACTION_REFS for ${service.name}: no full-SHA refs to allowlist`,
       );
@@ -474,12 +594,15 @@ if (invokedPath && fileURLToPath(import.meta.url) === invokedPath) {
 }
 
 export {
+  actionRefEnvUpdates,
   allowedActionRefsEnvValue,
   buildTrustedRefs,
+  buildTrustedRefWindows,
   describePlan,
   isFullShaActionRef,
   isHostedActionRef,
   parseArgs,
+  readInstallerDescriptor,
   resolveActionRef,
   waitForDeploys,
 };
