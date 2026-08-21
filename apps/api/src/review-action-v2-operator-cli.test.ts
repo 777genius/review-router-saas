@@ -15,6 +15,7 @@ import {
   reviewV2CohortOperationForCommand,
   reviewV2CohortRolloutModes,
   reviewV2GlobalEmergencyTransitionForCommand,
+  reviewV2RepositoryEmergencyTransitionForCommand,
   resolveImmutableRegistryProfileId,
   serializeOperatorCliJson,
 } from "./review-action-v2-operator-cli";
@@ -278,6 +279,28 @@ describe("review action v2 operator CLI", () => {
     });
     expect(
       reviewV2GlobalEmergencyTransitionForCommand("emergency repository open"),
+    ).toBeNull();
+  });
+
+  it("maps only explicit repository emergency transitions", () => {
+    expect(
+      reviewV2RepositoryEmergencyTransitionForCommand(
+        "emergency repository open",
+      ),
+    ).toEqual({
+      stopped: false,
+      reason: "review-v2-repository-emergency-opened",
+    });
+    expect(
+      reviewV2RepositoryEmergencyTransitionForCommand(
+        "emergency repository stop",
+      ),
+    ).toEqual({
+      stopped: true,
+      reason: "review-v2-repository-emergency-stopped",
+    });
+    expect(
+      reviewV2RepositoryEmergencyTransitionForCommand("emergency global open"),
     ).toBeNull();
   });
 });

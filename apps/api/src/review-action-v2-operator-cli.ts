@@ -140,6 +140,25 @@ export function reviewV2GlobalEmergencyTransitionForCommand(command: string) {
   }
 }
 
+export function reviewV2RepositoryEmergencyTransitionForCommand(
+  command: string,
+) {
+  switch (command) {
+    case "emergency repository open":
+      return {
+        stopped: false,
+        reason: "review-v2-repository-emergency-opened",
+      } as const;
+    case "emergency repository stop":
+      return {
+        stopped: true,
+        reason: "review-v2-repository-emergency-stopped",
+      } as const;
+    default:
+      return null;
+  }
+}
+
 type ParsedArguments = Readonly<{
   positionals: readonly string[];
   options: Readonly<Record<string, string | true>>;
@@ -193,6 +212,23 @@ async function main() {
       requireConfirmation(parsed, "global");
       printJson(
         await updateGlobalEmergencyControl(runtime, globalEmergencyTransition),
+      );
+      return;
+    }
+    const repositoryEmergencyTransition =
+      reviewV2RepositoryEmergencyTransitionForCommand(command);
+    if (repositoryEmergencyTransition) {
+      const runtime = composeReviewActionV2SafetyControlRuntime(prisma);
+      await authenticateOperator(runtime.digest, process.env);
+      const repository = requireOption(parsed, "repo");
+      const target = await resolveRepositoryTarget(prisma, runtime, repository);
+      requireConfirmation(parsed, repository);
+      printJson(
+        await updateRepositoryEmergencyControl(
+          runtime,
+          target,
+          repositoryEmergencyTransition,
+        ),
       );
       return;
     }
@@ -466,6 +502,29 @@ async function updateGlobalEmergencyControl(
   });
 }
 
+async function updateRepositoryEmergencyControl(
+  runtime: ReturnType<typeof composeReviewActionV2SafetyControlRuntime>,
+  target: Awaited<ReturnType<typeof resolveRepositoryTarget>>,
+  transition: {
+    readonly stopped: boolean;
+    readonly reason: string;
+  },
+) {
+  const scope = repositorySafetyScope(target);
+  const existing =
+    await runtime.repositories.safetyControls.findReviewSafetyEmergencyControl(
+      scope,
+    );
+  const result =
+    await runtime.runControl.safetyControls.setReviewSafetyEmergencyStop({
+      expectedVersion: existing?.version ?? 0,
+      scope,
+      ...transition,
+      updatedBy: "review-v2-operator",
+    });
+  return { repository: target.repository.fullName, ...result };
+}
+
 export function reviewV2CohortOperationForCommand(
   command: string,
 ): ReviewV2CohortOperation | null {
@@ -645,7 +704,10 @@ async function requireAuthority(
 
 async function resolveRepositoryTarget(
   prisma: ReturnType<typeof createPrismaClient>,
-  runtime: ReturnType<typeof composeReviewActionV2ProductionRunControl>,
+  runtime: Pick<
+    ReturnType<typeof composeReviewActionV2SafetyControlRuntime>,
+    "actionRepositories" | "repositories"
+  >,
   fullName: string,
 ) {
   const repository = await prisma.repositoryConnection.findFirst({
@@ -694,6 +756,17 @@ async function resolveRepositoryTarget(
     throw new Error("review_v2_repository_identity_unbound");
   }
   return { repository, actionRepository, identity } as const;
+}
+
+function repositorySafetyScope(
+  target: Awaited<ReturnType<typeof resolveRepositoryTarget>>,
+) {
+  return {
+    scope: ReviewSafetyPolicyScope.Repository,
+    workspaceId: target.identity.currentWorkspaceId!,
+    repositoryConnectionId: target.identity.currentRepositoryConnectionId!,
+    scmRepositoryIdentityId: target.identity.scmRepositoryIdentityId,
+  } as const;
 }
 
 async function requireInstalledRelease(
@@ -1075,6 +1148,9 @@ function printUsage() {
     `  release revoke --release RELEASE_ID --confirm RELEASE_ID\n`,
   );
   process.stdout.write(`  emergency global open|stop --confirm global\n`);
+  process.stdout.write(
+    `  emergency repository open|stop --repo OWNER/REPO --confirm OWNER/REPO\n`,
+  );
   process.stdout.write(
     `  cohort stage --repo OWNER/REPO --confirm OWNER/REPO\n`,
   );

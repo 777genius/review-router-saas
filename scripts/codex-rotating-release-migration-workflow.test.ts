@@ -37,6 +37,22 @@ describe("Codex rotating release migration workflow", () => {
     expect(workflow).toContain("emergency-control-result.json");
   });
 
+  it("opens an explicitly confirmed repository kill switch after the global switch", () => {
+    expect(workflow).toContain("operator_repository:");
+    expect(workflow).toContain(
+      "OPERATOR_REPOSITORY: ${{ inputs.operator_repository }}",
+    );
+    expect(workflow).toContain('"repository",');
+    expect(workflow).toContain('"--repo",');
+    expect(workflow).toContain('"--confirm",');
+    expect(workflow).toContain("operatorRepository,");
+    expect(workflow).toContain(
+      "repositoryEmergencyResult.repository !== operatorRepository",
+    );
+    expect(workflow).toContain("repository-emergency-control-result.json");
+    expect(workflow).toContain("repository-emergency-control-diagnostic.json");
+  });
+
   it("preserves registration evidence and emits redacted emergency diagnostics", () => {
     const registrationEvidence = workflow.indexOf("registration-result.json");
     const emergencyMutation = workflow.indexOf(
