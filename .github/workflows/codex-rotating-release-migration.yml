@@ -922,7 +922,7 @@ jobs:
                   "--repo",
                   operatorRepository,
                   "--release",
-                  releaseKey,
+                  attestation.producerReleaseId,
                   "--provider",
                   "codex",
                 ],

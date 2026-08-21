@@ -74,6 +74,10 @@ describe("Codex rotating release migration workflow", () => {
     expect(workflow).toContain('"investigation",');
     expect(workflow).toContain('"rollout-status",');
     expect(workflow).toContain('"--release",');
+    expect(workflow).toContain("attestation.producerReleaseId,");
+    expect(workflow).not.toContain(
+      '"--release",\n                  releaseKey,',
+    );
     expect(workflow).toContain('"--provider",');
     expect(workflow).toContain(
       'rolloutStatusResult.decisions?.recording !== "allowed"',
