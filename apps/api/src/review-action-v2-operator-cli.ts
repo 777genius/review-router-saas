@@ -30,6 +30,7 @@ import {
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import { composeReviewActionV2ProductionRunControl } from "./review-action-v2-production-composition.js";
 import { composeReviewActionV2ReleaseRegistry } from "./review-action-v2-release-registry-composition.js";
+import { composeReviewActionV2SafetyControlRuntime } from "./review-action-v2-safety-control-composition.js";
 
 const requiredRuntimeEnv = Object.freeze([
   "DATABASE_URL",
@@ -184,13 +185,10 @@ async function main() {
       );
       return;
     }
-    const runtime = composeReviewActionV2ProductionRunControl({
-      env: process.env,
-      prisma,
-    });
     const globalEmergencyTransition =
       reviewV2GlobalEmergencyTransitionForCommand(command);
     if (globalEmergencyTransition) {
+      const runtime = composeReviewActionV2SafetyControlRuntime(prisma);
       await authenticateOperator(runtime.digest, process.env);
       requireConfirmation(parsed, "global");
       printJson(
@@ -198,6 +196,10 @@ async function main() {
       );
       return;
     }
+    const runtime = composeReviewActionV2ProductionRunControl({
+      env: process.env,
+      prisma,
+    });
 
     const repository = requireOption(parsed, "repo");
     const target = await resolveRepositoryTarget(prisma, runtime, repository);
@@ -442,7 +444,7 @@ async function updateRepositoryCohortPolicies(
 }
 
 async function updateGlobalEmergencyControl(
-  runtime: ReturnType<typeof composeReviewActionV2ProductionRunControl>,
+  runtime: ReturnType<typeof composeReviewActionV2SafetyControlRuntime>,
   transition: {
     readonly stopped: boolean;
     readonly reason: string;
