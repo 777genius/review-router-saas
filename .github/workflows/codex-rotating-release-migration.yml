@@ -485,10 +485,32 @@ jobs:
               and ((.ownerId // .owner.id) == $ownerId)
             ' "$work/target.json" >/dev/null
 
+          render_api "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars" \
+            > "$work/api-env.json"
+          jq -e '
+            map(.envVar // .)
+            | map(select((.key | type) == "string" and (.value | type) == "string"))
+            | map({key, value})
+            | from_entries
+          ' "$work/api-env.json" > "$work/api-env-object.json"
+
           if [[ "$INVESTIGATION_ROLLOUT_PROFILE" != "preserve" ]]; then
             production_effects=0
             selectors_json='{}'
             if [[ "$INVESTIGATION_ROLLOUT_PROFILE" == "production" ]]; then
+              attested_producer_release_id="$(
+                jq -er --arg sha "$ACTION_COMMIT_SHA" '
+                  ((.REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON // "[]") | fromjson)
+                  | map(select(.actionCommitSha == $sha))
+                  | if length > 1 then error("verified_release_attestation_count")
+                    elif length == 1 then
+                      .[0].producerReleaseId
+                      | select(type == "string" and length > 0)
+                    else "reviewrouter-action.\($sha[0:12])"
+                    end
+                ' "$work/api-env-object.json"
+              )"
+              [[ "$INVESTIGATION_PRODUCER_RELEASE_ID" == "$attested_producer_release_id" ]]
               production_effects=1
               selectors_json="$(
                 jq -cn \
@@ -1084,6 +1106,15 @@ jobs:
               );
               const rolloutProfile =
                 process.env.INVESTIGATION_ROLLOUT_PROFILE ?? "preserve";
+              if (
+                rolloutProfile === "production" &&
+                process.env.INVESTIGATION_PRODUCER_RELEASE_ID !==
+                  attestation.producerReleaseId
+              ) {
+                throw new Error(
+                  "review_v2_investigation_producer_release_mismatch",
+                );
+              }
               const requiredCapabilities =
                 rolloutProfile === "production"
                   ? ["recording", "shadow", "context_critic", "production_effects"]

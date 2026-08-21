@@ -104,6 +104,12 @@ describe("Codex rotating release migration workflow", () => {
     );
     expect(workflow).toContain("repositoryConnectionIds");
     expect(workflow).toContain("producerReleaseIds");
+    expect(workflow).toContain(
+      '[[ "$INVESTIGATION_PRODUCER_RELEASE_ID" == "$attested_producer_release_id" ]]',
+    );
+    expect(workflow).toContain(
+      "review_v2_investigation_producer_release_mismatch",
+    );
     expect(workflow).toContain("investigation-env-proof.json");
   });
 
