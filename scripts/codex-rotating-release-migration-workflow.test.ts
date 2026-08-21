@@ -79,11 +79,32 @@ describe("Codex rotating release migration workflow", () => {
       '"--release",\n                  releaseKey,',
     );
     expect(workflow).toContain('"--provider",');
+    expect(workflow).toContain('rolloutProfile === "production"');
     expect(workflow).toContain(
-      'rolloutStatusResult.decisions?.recording !== "allowed"',
+      '["recording", "shadow", "context_critic", "production_effects"]',
+    );
+    expect(workflow).toContain(
+      'rolloutStatusResult.decisions?.[capability] !== "allowed"',
     );
     expect(workflow).toContain("investigation-rollout-status-result.json");
     expect(workflow).toContain("investigation-rollout-status-diagnostic.json");
+  });
+
+  it("persists and verifies an explicit investigation rollout profile", () => {
+    expect(workflow).toContain("investigation_rollout_profile:");
+    expect(workflow).toContain("- preserve");
+    expect(workflow).toContain("- shadow");
+    expect(workflow).toContain("- production");
+    expect(workflow).toContain("put_investigation_env");
+    expect(workflow).toContain(
+      "REVIEW_ROUTER_REVIEW_INVESTIGATION_CONTEXT_CRITIC_ENABLED",
+    );
+    expect(workflow).toContain(
+      "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED",
+    );
+    expect(workflow).toContain("repositoryConnectionIds");
+    expect(workflow).toContain("producerReleaseIds");
+    expect(workflow).toContain("investigation-env-proof.json");
   });
 
   it("preserves registration evidence and emits redacted emergency diagnostics", () => {
