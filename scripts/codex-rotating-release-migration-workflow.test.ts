@@ -70,6 +70,18 @@ describe("Codex rotating release migration workflow", () => {
     );
   });
 
+  it("proves the exact investigation rollout target before deployment", () => {
+    expect(workflow).toContain('"investigation",');
+    expect(workflow).toContain('"rollout-status",');
+    expect(workflow).toContain('"--release",');
+    expect(workflow).toContain('"--provider",');
+    expect(workflow).toContain(
+      'rolloutStatusResult.decisions?.recording !== "allowed"',
+    );
+    expect(workflow).toContain("investigation-rollout-status-result.json");
+    expect(workflow).toContain("investigation-rollout-status-diagnostic.json");
+  });
+
   it("preserves registration evidence and emits redacted emergency diagnostics", () => {
     const registrationEvidence = workflow.indexOf("registration-result.json");
     const emergencyMutation = workflow.indexOf(

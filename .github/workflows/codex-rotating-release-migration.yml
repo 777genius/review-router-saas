@@ -912,6 +912,54 @@ jobs:
                 })}\n`,
                 { mode: 0o644 },
               );
+              const rolloutStatus = spawnSync(
+                "node",
+                [
+                  "--conditions=production",
+                  "apps/api/dist/review-action-v2-operator-cli.js",
+                  "investigation",
+                  "rollout-status",
+                  "--repo",
+                  operatorRepository,
+                  "--release",
+                  releaseKey,
+                  "--provider",
+                  "codex",
+                ],
+                { cwd: process.cwd(), env: operatorEnv, encoding: "utf8" },
+              );
+              if (rolloutStatus.status !== 0) {
+                const diagnostic = {
+                  repository: operatorRepository,
+                  exitStatus: rolloutStatus.status,
+                  diagnosticCodes: diagnosticCodes(
+                    rolloutStatus.stdout,
+                    rolloutStatus.stderr,
+                  ),
+                  stderrSha256: createHash("sha256")
+                    .update(rolloutStatus.stderr, "utf8")
+                    .digest("hex"),
+                };
+                writeFileSync(
+                  `${work}/investigation-rollout-status-diagnostic.json`,
+                  `${JSON.stringify(diagnostic)}\n`,
+                  { mode: 0o644 },
+                );
+                throw new Error(
+                  `review_v2_investigation_rollout_status_failed:exit_${rolloutStatus.status ?? "unknown"}`,
+                );
+              }
+              const rolloutStatusResult = JSON.parse(rolloutStatus.stdout);
+              writeFileSync(
+                `${work}/investigation-rollout-status-result.json`,
+                `${JSON.stringify(rolloutStatusResult)}\n`,
+                { mode: 0o644 },
+              );
+              if (rolloutStatusResult.decisions?.recording !== "allowed") {
+                throw new Error(
+                  "review_v2_investigation_recording_not_allowed",
+                );
+              }
             }
           }
           NODE
@@ -1008,6 +1056,8 @@ jobs:
             ${{ runner.temp }}/reviewrouter-release-registration/workspace-emergency-control-diagnostic.json
             ${{ runner.temp }}/reviewrouter-release-registration/repository-emergency-control-result.json
             ${{ runner.temp }}/reviewrouter-release-registration/repository-emergency-control-diagnostic.json
+            ${{ runner.temp }}/reviewrouter-release-registration/investigation-rollout-status-result.json
+            ${{ runner.temp }}/reviewrouter-release-registration/investigation-rollout-status-diagnostic.json
             ${{ runner.temp }}/reviewrouter-release-registration/deployment-result.json
           if-no-files-found: warn
           retention-days: 30
