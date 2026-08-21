@@ -1,6 +1,9 @@
 import { canonicalJson } from "../../domain/canonicalization";
 import { planInvestigationTurn } from "../../domain/review-investigation";
-import type { InvestigationTurn } from "../../domain/investigation-turn";
+import {
+  investigationTurnMaximumObligations,
+  type InvestigationTurn,
+} from "../../domain/investigation-turn";
 import {
   InvestigationObligationKind,
   InvestigationObligationState,
@@ -77,7 +80,8 @@ export class PlanNextInvestigationTurn {
     }
     if (
       !Number.isSafeInteger(command.maxObligationsForTurn) ||
-      command.maxObligationsForTurn <= 0
+      command.maxObligationsForTurn <= 0 ||
+      command.maxObligationsForTurn > investigationTurnMaximumObligations
     ) {
       throw new Error("turn_obligation_limit_invalid");
     }

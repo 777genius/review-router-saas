@@ -63,6 +63,21 @@ const inventorySubject = "inventory:canonical";
 const changedSubject = "src/service.ts@head";
 
 describe("review investigation in-memory vertical slice", () => {
+  it("rejects turn plans that exceed the portable turn envelope", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("oversized-turn"));
+
+    await expect(
+      harness.plan.execute({
+        commandId: "oversized-turn-plan",
+        investigationId: opened.investigationId,
+        expectedVersion: opened.version,
+        leaseDurationMs: 60_000,
+        maxObligationsForTurn: 65,
+      }),
+    ).rejects.toThrow("turn_obligation_limit_invalid");
+  });
+
   it("normalizes manifest identity adapter failures at the application boundary", async () => {
     const harness = createHarness();
     const open = new OpenReviewInvestigation(

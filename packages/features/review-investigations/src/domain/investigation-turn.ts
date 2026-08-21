@@ -17,6 +17,8 @@ import {
   ReviewInvestigationTurnPurpose,
 } from "./review-investigation-types";
 
+export const investigationTurnMaximumObligations = 64;
+
 export type InvestigationFinding = Readonly<{
   fingerprint: string;
   severity: InvestigationFindingSeverity;
