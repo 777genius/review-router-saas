@@ -4,6 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@reviewrouter/features-review-run-control/composition", () => ({
   PrismaReviewSafetyControlRepository: class {},
+  PrismaScmRepositoryIdentityRepository: class {},
+}));
+
+vi.mock("@reviewrouter/features-action-control-plane", () => ({
+  PrismaActionControlPlaneRepository: class {},
 }));
 
 describe("Review Action v2 safety-control composition", () => {
@@ -17,6 +22,8 @@ describe("Review Action v2 safety-control composition", () => {
     await expect(runtime.digest.digestUtf8("operator")).resolves.toBe(
       createHash("sha256").update("operator", "utf8").digest("hex"),
     );
+    expect(runtime.actionRepositories).toBeDefined();
+    expect(runtime.repositories.repositoryIdentities).toBeDefined();
     expect(runtime.repositories.safetyControls).toBeDefined();
     expect(runtime.runControl.safetyControls).toBeDefined();
   });

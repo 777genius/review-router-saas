@@ -1,10 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
+import { PrismaActionControlPlaneRepository } from "@reviewrouter/features-action-control-plane";
 import {
   ManageReviewSafetyControls,
   type Sha256DigestPort,
 } from "@reviewrouter/features-review-run-control";
-import { PrismaReviewSafetyControlRepository } from "@reviewrouter/features-review-run-control/composition";
+import {
+  PrismaReviewSafetyControlRepository,
+  PrismaScmRepositoryIdentityRepository,
+} from "@reviewrouter/features-review-run-control/composition";
 import { SystemClock } from "@reviewrouter/shared";
 
 export function composeReviewActionV2SafetyControlRuntime(
@@ -17,6 +21,10 @@ export function composeReviewActionV2SafetyControlRuntime(
     },
   };
   const safetyControls = new PrismaReviewSafetyControlRepository(prisma);
+  const repositoryIdentities = new PrismaScmRepositoryIdentityRepository(
+    prisma,
+  );
+  const actionRepositories = new PrismaActionControlPlaneRepository(prisma);
   const management = new ManageReviewSafetyControls({
     clock,
     identifiers: { nextId: (prefix) => `${prefix}-${randomUUID()}` },
@@ -26,8 +34,9 @@ export function composeReviewActionV2SafetyControlRuntime(
   });
 
   return Object.freeze({
+    actionRepositories,
     digest,
-    repositories: Object.freeze({ safetyControls }),
+    repositories: Object.freeze({ repositoryIdentities, safetyControls }),
     runControl: Object.freeze({ safetyControls: management }),
   });
 }
