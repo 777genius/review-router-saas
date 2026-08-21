@@ -36,6 +36,7 @@ import {
 } from "./investigation-policy";
 import { isValidInvestigationTokenUsage } from "./investigation-token-usage";
 import {
+  assertInvestigationTurnObligationEnvelope,
   assertInvestigationTurnObligationClaimScope,
   findingCanonicalValue,
   turnCanonicalValue,
@@ -216,6 +217,7 @@ export function planInvestigationTurn(input: {
   readonly turn: InvestigationTurn;
 }): ReviewInvestigation {
   const current = input.investigation;
+  assertInvestigationTurnObligationEnvelope(input.turn);
   const expectedPurpose =
     current.state === ReviewInvestigationState.AwaitingCritic
       ? ReviewInvestigationTurnPurpose.Critic

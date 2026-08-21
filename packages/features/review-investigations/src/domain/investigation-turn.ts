@@ -17,6 +17,8 @@ import {
   ReviewInvestigationTurnPurpose,
 } from "./review-investigation-types";
 
+export const investigationTurnMaximumObligations = 64;
+
 export type InvestigationFinding = Readonly<{
   fingerprint: string;
   severity: InvestigationFindingSeverity;
@@ -38,6 +40,14 @@ export type InvestigationTurn = Readonly<{
   leasedAt: string;
   expiresAt: string;
 }>;
+
+export function assertInvestigationTurnObligationEnvelope(
+  turn: Pick<InvestigationTurn, "obligationIds">,
+): void {
+  if (turn.obligationIds.length > investigationTurnMaximumObligations) {
+    throw new ReviewInvestigationDomainError("turn_obligation_limit_invalid");
+  }
+}
 
 export type InvestigationTurnCommit = Readonly<{
   turnId: string;

@@ -48,6 +48,7 @@ import {
   summarizeTerminalDiscoveryProvenance,
   type CommitInvestigationTurnCommand,
   type OpenReviewInvestigationCommand,
+  type ReviewInvestigation,
   type ReviewInvestigationPolicy,
 } from "../index";
 import { InMemoryInvestigationStore } from "../infrastructure/memory/in-memory-investigation-store";
@@ -63,6 +64,69 @@ const inventorySubject = "inventory:canonical";
 const changedSubject = "src/service.ts@head";
 
 describe("review investigation in-memory vertical slice", () => {
+  it("accepts the inclusive portable turn envelope boundary", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("maximum-turn"));
+
+    const planned = await harness.plan.execute({
+      commandId: "maximum-turn-plan",
+      investigationId: opened.investigationId,
+      expectedVersion: opened.version,
+      leaseDurationMs: 60_000,
+      maxObligationsForTurn: 64,
+    });
+
+    expect(planned.turn).not.toBeNull();
+  });
+
+  it("rejects turn plans that exceed the portable turn envelope", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("oversized-turn"));
+
+    await expect(
+      harness.plan.execute({
+        commandId: "oversized-turn-plan",
+        investigationId: opened.investigationId,
+        expectedVersion: opened.version,
+        leaseDurationMs: 60_000,
+        maxObligationsForTurn: 65,
+      }),
+    ).rejects.toThrow("turn_obligation_limit_invalid");
+  });
+
+  it("rejects persisted active turns outside the portable envelope", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("persisted-turn"));
+    await harness.plan.execute({
+      commandId: "persisted-turn-plan",
+      investigationId: opened.investigationId,
+      expectedVersion: opened.version,
+      leaseDurationMs: 60_000,
+      maxObligationsForTurn: 64,
+    });
+    const snapshot = JSON.parse(harness.store.exportSnapshot()) as {
+      investigations: [string, ReviewInvestigation][];
+    };
+    const [key, investigation] = snapshot.investigations[0]!;
+    snapshot.investigations[0] = [
+      key,
+      {
+        ...investigation,
+        activeTurn: {
+          ...investigation.activeTurn!,
+          obligationIds: Array.from(
+            { length: 65 },
+            (_, index) => `oversized-${index}`,
+          ),
+        },
+      },
+    ];
+
+    expect(() =>
+      InMemoryInvestigationStore.fromSnapshot(JSON.stringify(snapshot)),
+    ).toThrow("turn_obligation_limit_invalid");
+  });
+
   it("normalizes manifest identity adapter failures at the application boundary", async () => {
     const harness = createHarness();
     const open = new OpenReviewInvestigation(

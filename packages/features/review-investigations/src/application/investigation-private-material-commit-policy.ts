@@ -12,6 +12,7 @@ import {
 } from "../domain/obligation-closure-policy";
 import type { ReviewInvestigation } from "../domain/review-investigation";
 import { isTypedReviewInvestigationCoverageProfile } from "../domain/coverage-contract";
+import { assertInvestigationTurnObligationEnvelope } from "../domain/investigation-turn";
 
 export function validateInvestigationPrivateMaterialCommit(input: {
   readonly investigation: ReviewInvestigation;
@@ -147,6 +148,9 @@ export function assertPersistedInvestigationRequirementsSanitized(
 function persistedSearchQueryPrivateMaterialObligationIds(
   investigation: ReviewInvestigation,
 ): ReadonlySet<string> {
+  if (investigation.activeTurn !== null) {
+    assertInvestigationTurnObligationEnvelope(investigation.activeTurn);
+  }
   if (!isTypedReviewInvestigationCoverageProfile(investigation.contract)) {
     return new Set();
   }
