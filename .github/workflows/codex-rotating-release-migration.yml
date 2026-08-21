@@ -36,6 +36,23 @@ on:
         description: Optional ReviewRouter workspace whose kill switch is opened after the global switch
         required: false
         type: string
+      investigation_rollout_profile:
+        description: Deterministic Review Investigation capability profile to persist before deployment
+        required: false
+        default: preserve
+        type: choice
+        options:
+          - preserve
+          - shadow
+          - production
+      investigation_repository_connection_id:
+        description: Exact repository connection ID required by the production investigation cohort
+        required: false
+        type: string
+      investigation_producer_release_id:
+        description: Exact producer release ID required by the production investigation cohort
+        required: false
+        type: string
       api_service_id:
         description: Exact Render API service ID
         required: true
@@ -368,6 +385,9 @@ jobs:
       OPEN_GLOBAL_EMERGENCY: ${{ inputs.open_global_emergency }}
       OPERATOR_REPOSITORY: ${{ inputs.operator_repository }}
       OPERATOR_WORKSPACE_ID: ${{ inputs.operator_workspace_id }}
+      INVESTIGATION_ROLLOUT_PROFILE: ${{ inputs.investigation_rollout_profile }}
+      INVESTIGATION_REPOSITORY_CONNECTION_ID: ${{ inputs.investigation_repository_connection_id }}
+      INVESTIGATION_PRODUCER_RELEASE_ID: ${{ inputs.investigation_producer_release_id }}
       API_SERVICE_ID: ${{ inputs.api_service_id }}
       WORKER_SERVICE_ID: ${{ inputs.worker_service_id }}
       WEB_SERVICE_ID: ${{ inputs.web_service_id }}
@@ -398,6 +418,22 @@ jobs:
             [[ "$OPEN_GLOBAL_EMERGENCY" == "true" ]]
             [[ "$OPERATOR_WORKSPACE_ID" =~ ^[A-Za-z0-9_-]+$ ]]
           fi
+          case "$INVESTIGATION_ROLLOUT_PROFILE" in
+            preserve) ;;
+            shadow)
+              [[ "$OPEN_GLOBAL_EMERGENCY" == "true" ]]
+              [[ -n "$OPERATOR_REPOSITORY" ]]
+              [[ -n "$OPERATOR_WORKSPACE_ID" ]]
+              ;;
+            production)
+              [[ "$OPEN_GLOBAL_EMERGENCY" == "true" ]]
+              [[ -n "$OPERATOR_REPOSITORY" ]]
+              [[ -n "$OPERATOR_WORKSPACE_ID" ]]
+              [[ "$INVESTIGATION_REPOSITORY_CONNECTION_ID" =~ ^[A-Za-z0-9_-]+$ ]]
+              [[ "$INVESTIGATION_PRODUCER_RELEASE_ID" =~ ^[A-Za-z0-9._-]+$ ]]
+              ;;
+            *) exit 2 ;;
+          esac
           corepack enable
           node scripts/install-private-dependencies.mjs --frozen-lockfile
           pnpm db:generate
@@ -433,7 +469,9 @@ jobs:
           cleanup() {
             close_firewall
             rm -f "$work/api-env.json" "$work/api-env-object.json" \
-              "$work/connection-info.json" "$work/operator-input.json"
+              "$work/connection-info.json" "$work/operator-input.json" \
+              "$work/investigation-env-value.json" \
+              "$work"/investigation-service-env-*.json
           }
           trap cleanup EXIT
 
@@ -446,6 +484,117 @@ jobs:
               and .environmentId == $environmentId
               and ((.ownerId // .owner.id) == $ownerId)
             ' "$work/target.json" >/dev/null
+
+          render_api "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars" \
+            > "$work/api-env.json"
+          jq -e '
+            map(.envVar // .)
+            | map(select((.key | type) == "string" and (.value | type) == "string"))
+            | map({key, value})
+            | from_entries
+          ' "$work/api-env.json" > "$work/api-env-object.json"
+
+          if [[ "$INVESTIGATION_ROLLOUT_PROFILE" != "preserve" ]]; then
+            production_effects=0
+            selectors_json='{}'
+            if [[ "$INVESTIGATION_ROLLOUT_PROFILE" == "production" ]]; then
+              attested_producer_release_id="$(
+                jq -er --arg sha "$ACTION_COMMIT_SHA" '
+                  ((.REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON // "[]") | fromjson)
+                  | map(select(.actionCommitSha == $sha))
+                  | if length > 1 then error("verified_release_attestation_count")
+                    elif length == 1 then
+                      .[0].producerReleaseId
+                      | select(type == "string" and length > 0)
+                    else "reviewrouter-action.\($sha[0:12])"
+                    end
+                ' "$work/api-env-object.json"
+              )"
+              [[ "$INVESTIGATION_PRODUCER_RELEASE_ID" == "$attested_producer_release_id" ]]
+              production_effects=1
+              selectors_json="$(
+                jq -cn \
+                  --arg workspaceId "$OPERATOR_WORKSPACE_ID" \
+                  --arg repositoryConnectionId "$INVESTIGATION_REPOSITORY_CONNECTION_ID" \
+                  --arg producerReleaseId "$INVESTIGATION_PRODUCER_RELEASE_ID" '
+                    {production_effects: [{
+                      workspaceIds: [$workspaceId],
+                      repositoryConnectionIds: [$repositoryConnectionId],
+                      providers: ["codex"],
+                      trustDomains: ["trusted_managed"],
+                      producerReleaseIds: [$producerReleaseId]
+                    }]}
+                  '
+              )"
+            fi
+            put_investigation_env() {
+              local service_id="$1"
+              local key="$2"
+              local value="$3"
+              jq -n --arg value "$value" '{value: $value}' \
+                > "$work/investigation-env-value.json"
+              render_api -X PUT -H "Content-Type: application/json" \
+                --data-binary @"$work/investigation-env-value.json" \
+                "https://api.render.com/v1/services/$service_id/env-vars/$key" \
+                -o /dev/null
+            }
+            investigation_env_keys=(
+              REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED
+              REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED
+              REVIEW_ROUTER_REVIEW_INVESTIGATION_CONTEXT_CRITIC_ENABLED
+              REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED
+              REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED
+              REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED
+              REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED
+              REVIEW_ROUTER_REVIEW_INVESTIGATION_SELECTORS_JSON
+            )
+            investigation_env_values=(
+              1
+              1
+              1
+              0
+              0
+              "$production_effects"
+              0
+              "$selectors_json"
+            )
+            investigation_env_proof='[]'
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              for index in "${!investigation_env_keys[@]}"; do
+                put_investigation_env \
+                  "$service_id" \
+                  "${investigation_env_keys[$index]}" \
+                  "${investigation_env_values[$index]}"
+              done
+              render_api "https://api.render.com/v1/services/$service_id/env-vars" \
+                > "$work/investigation-service-env-$service_id.json"
+              jq -e \
+                --arg productionEffects "$production_effects" \
+                --arg selectors "$selectors_json" '
+                  map(.envVar // .)
+                  | map(select((.key | type) == "string" and (.value | type) == "string"))
+                  | map({key, value})
+                  | from_entries
+                  | .REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED == "1"
+                    and .REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED == "1"
+                    and .REVIEW_ROUTER_REVIEW_INVESTIGATION_CONTEXT_CRITIC_ENABLED == "1"
+                    and .REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED == "0"
+                    and .REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED == "0"
+                    and .REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED == $productionEffects
+                    and .REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED == "0"
+                    and .REVIEW_ROUTER_REVIEW_INVESTIGATION_SELECTORS_JSON == $selectors
+                ' "$work/investigation-service-env-$service_id.json" >/dev/null
+              investigation_env_proof="$(
+                jq -c \
+                  --arg serviceId "$service_id" \
+                  --arg profile "$INVESTIGATION_ROLLOUT_PROFILE" \
+                  '. + [{serviceId: $serviceId, profile: $profile, verified: true}]' \
+                  <<<"$investigation_env_proof"
+              )"
+            done
+            printf '%s\n' "$investigation_env_proof" \
+              > "$work/investigation-env-proof.json"
+          fi
 
           render_api "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars" \
             > "$work/api-env.json"
@@ -955,9 +1104,31 @@ jobs:
                 `${JSON.stringify(rolloutStatusResult)}\n`,
                 { mode: 0o644 },
               );
-              if (rolloutStatusResult.decisions?.recording !== "allowed") {
+              const rolloutProfile =
+                process.env.INVESTIGATION_ROLLOUT_PROFILE ?? "preserve";
+              if (
+                rolloutProfile === "production" &&
+                process.env.INVESTIGATION_PRODUCER_RELEASE_ID !==
+                  attestation.producerReleaseId
+              ) {
                 throw new Error(
-                  "review_v2_investigation_recording_not_allowed",
+                  "review_v2_investigation_producer_release_mismatch",
+                );
+              }
+              const requiredCapabilities =
+                rolloutProfile === "production"
+                  ? ["recording", "shadow", "context_critic", "production_effects"]
+                  : rolloutProfile === "shadow"
+                    ? ["recording", "shadow", "context_critic"]
+                    : ["recording"];
+              if (
+                requiredCapabilities.some(
+                  (capability) =>
+                    rolloutStatusResult.decisions?.[capability] !== "allowed",
+                )
+              ) {
+                throw new Error(
+                  "review_v2_investigation_profile_not_allowed",
                 );
               }
             }
@@ -1058,6 +1229,7 @@ jobs:
             ${{ runner.temp }}/reviewrouter-release-registration/repository-emergency-control-diagnostic.json
             ${{ runner.temp }}/reviewrouter-release-registration/investigation-rollout-status-result.json
             ${{ runner.temp }}/reviewrouter-release-registration/investigation-rollout-status-diagnostic.json
+            ${{ runner.temp }}/reviewrouter-release-registration/investigation-env-proof.json
             ${{ runner.temp }}/reviewrouter-release-registration/deployment-result.json
           if-no-files-found: warn
           retention-days: 30
