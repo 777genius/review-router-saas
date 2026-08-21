@@ -17,8 +17,17 @@ on:
         type: string
       release_commit_sha:
         description: Exact review-router-saas main commit
-        required: true
+        required: false
         type: string
+      action_commit_sha:
+        description: Exact review-router Action commit to register
+        required: false
+        type: string
+      open_global_emergency:
+        description: Open the Review v2 global kill switch after verified registration
+        required: false
+        default: false
+        type: boolean
       api_service_id:
         description: Exact Render API service ID
         required: true
@@ -32,7 +41,7 @@ on:
         required: true
         type: string
       confirmation:
-        description: Type RECOVER_EXISTING_PG17
+        description: Type the confirmation required by the selected operation
         required: true
         type: string
 
@@ -347,7 +356,8 @@ jobs:
       TARGET_DB_ID: ${{ inputs.target_db_id }}
       RENDER_OWNER_ID: ${{ inputs.owner_id }}
       RENDER_ENVIRONMENT_ID: ${{ inputs.environment_id }}
-      ACTION_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+      ACTION_COMMIT_SHA: ${{ inputs.action_commit_sha }}
+      OPEN_GLOBAL_EMERGENCY: ${{ inputs.open_global_emergency }}
       API_SERVICE_ID: ${{ inputs.api_service_id }}
       WORKER_SERVICE_ID: ${{ inputs.worker_service_id }}
       WEB_SERVICE_ID: ${{ inputs.web_service_id }}
@@ -670,6 +680,50 @@ jobs:
             throw new Error(`verified_release_registration_failed:exit_${result.status ?? "unknown"}`);
           }
           const registration = JSON.parse(result.stdout);
+          if (process.env.OPEN_GLOBAL_EMERGENCY === "true") {
+            const emergency = spawnSync(
+              "node",
+              [
+                "--conditions=production",
+                "apps/api/dist/review-action-v2-operator-cli.js",
+                "emergency",
+                "global",
+                "open",
+                "--confirm",
+                "global",
+              ],
+              { cwd: process.cwd(), env: operatorEnv, encoding: "utf8" },
+            );
+            if (emergency.status !== 0) {
+              const diagnostic = {
+                exitStatus: emergency.status,
+                stderrSha256: createHash("sha256")
+                  .update(emergency.stderr, "utf8")
+                  .digest("hex"),
+              };
+              writeFileSync(
+                `${work}/emergency-control-diagnostic.json`,
+                `${JSON.stringify(diagnostic)}\n`,
+                { mode: 0o644 },
+              );
+              throw new Error(
+                `review_v2_global_emergency_open_failed:exit_${emergency.status ?? "unknown"}`,
+              );
+            }
+            const emergencyResult = JSON.parse(emergency.stdout);
+            if (emergencyResult.control?.stopped !== false) {
+              throw new Error("review_v2_global_emergency_open_not_confirmed");
+            }
+            writeFileSync(
+              `${work}/emergency-control-result.json`,
+              `${JSON.stringify({
+                requestedState: "open",
+                writeStatus: emergencyResult.status,
+                stopped: emergencyResult.control.stopped,
+              })}\n`,
+              { mode: 0o644 },
+            );
+          }
           const convergedAttestation = {
             ...attestation,
             protocolLimitsProfileId: registration.resolvedProtocolLimitsProfileId,
@@ -717,6 +771,63 @@ jobs:
               "https://api.render.com/v1/services/$service_id/env-vars/REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON" \
               -o /dev/null
           done
+
+          deploys='[]'
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            deploy="$(
+              render_api -X POST -H "Content-Type: application/json" \
+                --data-binary '{"clearCache":"do_not_clear"}' \
+                "https://api.render.com/v1/services/$service_id/deploys"
+            )"
+            deploy_id="$(jq -er '.id // .deploy.id' <<<"$deploy")"
+            deploys="$(
+              jq -c \
+                --arg serviceId "$service_id" \
+                --arg deployId "$deploy_id" \
+                '. + [{serviceId: $serviceId, deployId: $deployId}]' \
+                <<<"$deploys"
+            )"
+          done
+
+          deadline=$((SECONDS + 900))
+          while (( SECONDS < deadline )); do
+            pending=0
+            failed=0
+            statuses='[]'
+            while IFS=$'\t' read -r service_id deploy_id; do
+              deploy="$(
+                render_api \
+                  "https://api.render.com/v1/services/$service_id/deploys/$deploy_id"
+              )"
+              status="$(jq -er '.status // .deploy.status' <<<"$deploy")"
+              statuses="$(
+                jq -c \
+                  --arg serviceId "$service_id" \
+                  --arg deployId "$deploy_id" \
+                  --arg status "$status" \
+                  '. + [{serviceId: $serviceId, deployId: $deployId, status: $status}]' \
+                  <<<"$statuses"
+              )"
+              case "$status" in
+                live) ;;
+                build_failed|update_failed|pre_deploy_failed|canceled|deactivated|failed|*_failed)
+                  failed=1
+                  ;;
+                *) pending=1 ;;
+              esac
+            done < <(jq -r '.[] | [.serviceId, .deployId] | @tsv' <<<"$deploys")
+            printf '%s\n' "$statuses" > "$work/deployment-result.json"
+            if (( failed == 1 )); then
+              jq -c . "$work/deployment-result.json"
+              exit 1
+            fi
+            if (( pending == 0 )); then
+              break
+            fi
+            sleep 10
+          done
+          jq -e 'length == 3 and all(.status == "live")' \
+            "$work/deployment-result.json" >/dev/null
           close_firewall
           firewall_open=0
 
@@ -730,6 +841,9 @@ jobs:
             ${{ runner.temp }}/reviewrouter-release-registration/environment-preflight.json
             ${{ runner.temp }}/reviewrouter-release-registration/registration-result.json
             ${{ runner.temp }}/reviewrouter-release-registration/registration-diagnostic.json
+            ${{ runner.temp }}/reviewrouter-release-registration/emergency-control-result.json
+            ${{ runner.temp }}/reviewrouter-release-registration/emergency-control-diagnostic.json
+            ${{ runner.temp }}/reviewrouter-release-registration/deployment-result.json
           if-no-files-found: warn
           retention-days: 30
           compression-level: 0

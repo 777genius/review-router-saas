@@ -312,6 +312,17 @@ create-job mutation cannot bind a deploy ID and instead snapshots the base
 service's latest successful build, leaving a pre-mutation image race. The
 obsolete Render migration launchers have therefore been removed.
 
+The recovery and Action-registration modes use distinct immutable identities:
+`release_commit_sha` is the ReviewRouter SaaS commit used only by PG17 recovery,
+while `action_commit_sha` is the Review Action commit used only by verified
+producer-release registration. Registration updates the attestation environment
+on API, worker, and web, then explicitly deploys all three services and waits
+until each exact deploy is `live`; an environment update by itself is not rollout
+evidence. Keep `open_global_emergency` disabled by default. Set it only during an
+explicit cutover to open the database-backed Review v2 kill switch through the
+same ephemeral authenticated maintenance process. The workflow records the
+sanitized control result and never persists the plaintext operator credential.
+
 The bootstrap caller creates or converges login roles
 `reviewrouter_web`, `reviewrouter_api`, and `reviewrouter_worker`, then verifies
 the exact five canonical membership edges and every role attribute. The release
