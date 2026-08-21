@@ -39,6 +39,8 @@ export type ReviewInvestigationContract = Readonly<{
 
 export const reviewInvestigationProbePolicyV1 =
   "review-investigation-probe-policy.v1" as const;
+export const reviewInvestigationProbePolicyV2 =
+  "review-investigation-probe-policy.v2" as const;
 export const reviewInvestigationSearchPolicyV1 =
   "review-investigation-fixed-string-search.v1" as const;
 
@@ -48,6 +50,7 @@ export enum ReviewInvestigationCoverageProfileGeneration {
   V3 = 3,
   V4 = 4,
   V5 = 5,
+  V6 = 6,
 }
 
 export const reviewInvestigationCoverageProfileV1 = Object.freeze({
@@ -86,6 +89,11 @@ export const reviewInvestigationCoverageProfileV5 = Object.freeze({
   criticPolicyVersion: reviewInvestigationCriticPolicyV2,
 } as const);
 
+export const reviewInvestigationCoverageProfileV6 = Object.freeze({
+  ...reviewInvestigationCoverageProfileV5,
+  probePolicyVersion: reviewInvestigationProbePolicyV2,
+} as const);
+
 export function resolveReviewInvestigationCoverageProfileGeneration(
   contract: ReviewInvestigationContract,
 ): ReviewInvestigationCoverageProfileGeneration | null {
@@ -117,6 +125,10 @@ export function resolveReviewInvestigationCoverageProfileGeneration(
       ReviewInvestigationCoverageProfileGeneration.V5,
       reviewInvestigationCoverageProfileV5,
     ],
+    [
+      ReviewInvestigationCoverageProfileGeneration.V6,
+      reviewInvestigationCoverageProfileV6,
+    ],
   ] as const) {
     const expectedKeys = [...Object.keys(profile), "producerReleaseId"].sort();
     if (
@@ -142,7 +154,8 @@ export function isTypedReviewInvestigationCoverageProfile(
     generation === ReviewInvestigationCoverageProfileGeneration.V2 ||
     generation === ReviewInvestigationCoverageProfileGeneration.V3 ||
     generation === ReviewInvestigationCoverageProfileGeneration.V4 ||
-    generation === ReviewInvestigationCoverageProfileGeneration.V5
+    generation === ReviewInvestigationCoverageProfileGeneration.V5 ||
+    generation === ReviewInvestigationCoverageProfileGeneration.V6
   );
 }
 
