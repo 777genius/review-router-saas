@@ -5,13 +5,13 @@
       "criticPolicyVersion": "review-investigation-critic.v2",
       "expansionRulesVersion": "review-investigation-expansion.v3",
       "gatewayPolicyVersion": "context-gateway-v4",
-      "probePolicyVersion": "review-investigation-probe-policy.v1",
+      "probePolicyVersion": "review-investigation-probe-policy.v2",
       "runtimeProfileVersion": "gateway-attested-agent.v1",
       "searchPolicyVersion": "review-investigation-fixed-string-search.v1",
       "turnPromptContractHash": "41ad2e193eb96dfe8d091a76051652d4db4eb90a48560a33d07b31ef7f46b3d0"
     },
-    "canonicalJson": "{\"coverageContractVersion\":\"review-investigation-coverage.v1\",\"criticPolicyVersion\":\"review-investigation-critic.v2\",\"expansionRulesVersion\":\"review-investigation-expansion.v3\",\"gatewayPolicyVersion\":\"context-gateway-v4\",\"probePolicyVersion\":\"review-investigation-probe-policy.v1\",\"runtimeProfileVersion\":\"gateway-attested-agent.v1\",\"searchPolicyVersion\":\"review-investigation-fixed-string-search.v1\",\"turnPromptContractHash\":\"41ad2e193eb96dfe8d091a76051652d4db4eb90a48560a33d07b31ef7f46b3d0\"}",
-    "sha256": "d4a8c40b4755d9a4dbe9aeeedf63ff207613f18410525ed50890160263c350aa"
+    "canonicalJson": "{\"coverageContractVersion\":\"review-investigation-coverage.v1\",\"criticPolicyVersion\":\"review-investigation-critic.v2\",\"expansionRulesVersion\":\"review-investigation-expansion.v3\",\"gatewayPolicyVersion\":\"context-gateway-v4\",\"probePolicyVersion\":\"review-investigation-probe-policy.v2\",\"runtimeProfileVersion\":\"gateway-attested-agent.v1\",\"searchPolicyVersion\":\"review-investigation-fixed-string-search.v1\",\"turnPromptContractHash\":\"41ad2e193eb96dfe8d091a76051652d4db4eb90a48560a33d07b31ef7f46b3d0\"}",
+    "sha256": "a5e7cec2158b3c8ef91e51f633e51e43287c2e50deb572716f63d7007d978407"
   },
   "policy": {
     "value": {
