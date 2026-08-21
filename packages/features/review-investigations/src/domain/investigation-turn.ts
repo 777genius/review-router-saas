@@ -41,6 +41,14 @@ export type InvestigationTurn = Readonly<{
   expiresAt: string;
 }>;
 
+export function assertInvestigationTurnObligationEnvelope(
+  turn: Pick<InvestigationTurn, "obligationIds">,
+): void {
+  if (turn.obligationIds.length > investigationTurnMaximumObligations) {
+    throw new ReviewInvestigationDomainError("turn_obligation_limit_invalid");
+  }
+}
+
 export type InvestigationTurnCommit = Readonly<{
   turnId: string;
   closureClaims: readonly Readonly<{
