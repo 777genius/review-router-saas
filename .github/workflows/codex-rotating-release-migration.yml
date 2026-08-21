@@ -32,6 +32,10 @@ on:
         description: Optional OWNER/REPO whose repository kill switch is opened after the global switch
         required: false
         type: string
+      operator_workspace_id:
+        description: Optional ReviewRouter workspace whose kill switch is opened after the global switch
+        required: false
+        type: string
       api_service_id:
         description: Exact Render API service ID
         required: true
@@ -363,6 +367,7 @@ jobs:
       ACTION_COMMIT_SHA: ${{ inputs.action_commit_sha }}
       OPEN_GLOBAL_EMERGENCY: ${{ inputs.open_global_emergency }}
       OPERATOR_REPOSITORY: ${{ inputs.operator_repository }}
+      OPERATOR_WORKSPACE_ID: ${{ inputs.operator_workspace_id }}
       API_SERVICE_ID: ${{ inputs.api_service_id }}
       WORKER_SERVICE_ID: ${{ inputs.worker_service_id }}
       WEB_SERVICE_ID: ${{ inputs.web_service_id }}
@@ -386,7 +391,12 @@ jobs:
           [[ "$WEB_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
           if [[ -n "$OPERATOR_REPOSITORY" ]]; then
             [[ "$OPEN_GLOBAL_EMERGENCY" == "true" ]]
+            [[ -n "$OPERATOR_WORKSPACE_ID" ]]
             [[ "$OPERATOR_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          fi
+          if [[ -n "$OPERATOR_WORKSPACE_ID" ]]; then
+            [[ "$OPEN_GLOBAL_EMERGENCY" == "true" ]]
+            [[ "$OPERATOR_WORKSPACE_ID" =~ ^[A-Za-z0-9_-]+$ ]]
           fi
           corepack enable
           node scripts/install-private-dependencies.mjs --frozen-lockfile
@@ -783,6 +793,66 @@ jobs:
               })}\n`,
               { mode: 0o644 },
             );
+            const operatorWorkspaceId = process.env.OPERATOR_WORKSPACE_ID;
+            if (operatorWorkspaceId) {
+              const workspaceEmergency = spawnSync(
+                "node",
+                [
+                  "--conditions=production",
+                  "apps/api/dist/review-action-v2-operator-cli.js",
+                  "emergency",
+                  "workspace",
+                  "open",
+                  "--workspace",
+                  operatorWorkspaceId,
+                  "--confirm",
+                  operatorWorkspaceId,
+                ],
+                { cwd: process.cwd(), env: operatorEnv, encoding: "utf8" },
+              );
+              if (workspaceEmergency.status !== 0) {
+                const diagnostic = {
+                  workspaceId: operatorWorkspaceId,
+                  exitStatus: workspaceEmergency.status,
+                  diagnosticCodes: diagnosticCodes(
+                    workspaceEmergency.stdout,
+                    workspaceEmergency.stderr,
+                  ),
+                  stderrSha256: createHash("sha256")
+                    .update(workspaceEmergency.stderr, "utf8")
+                    .digest("hex"),
+                };
+                writeFileSync(
+                  `${work}/workspace-emergency-control-diagnostic.json`,
+                  `${JSON.stringify(diagnostic)}\n`,
+                  { mode: 0o644 },
+                );
+                throw new Error(
+                  `review_v2_workspace_emergency_open_failed:exit_${workspaceEmergency.status ?? "unknown"}`,
+                );
+              }
+              const workspaceEmergencyResult = JSON.parse(
+                workspaceEmergency.stdout,
+              );
+              if (
+                workspaceEmergencyResult.workspaceId !== operatorWorkspaceId ||
+                workspaceEmergencyResult.control?.stopped !== false
+              ) {
+                throw new Error(
+                  "review_v2_workspace_emergency_open_not_confirmed",
+                );
+              }
+              writeFileSync(
+                `${work}/workspace-emergency-control-result.json`,
+                `${JSON.stringify({
+                  workspaceId: operatorWorkspaceId,
+                  requestedState: "open",
+                  writeStatus: workspaceEmergencyResult.status,
+                  stopped: workspaceEmergencyResult.control.stopped,
+                })}\n`,
+                { mode: 0o644 },
+              );
+            }
             const operatorRepository = process.env.OPERATOR_REPOSITORY;
             if (operatorRepository) {
               const repositoryEmergency = spawnSync(
@@ -934,6 +1004,8 @@ jobs:
             ${{ runner.temp }}/reviewrouter-release-registration/registration-diagnostic.json
             ${{ runner.temp }}/reviewrouter-release-registration/emergency-control-result.json
             ${{ runner.temp }}/reviewrouter-release-registration/emergency-control-diagnostic.json
+            ${{ runner.temp }}/reviewrouter-release-registration/workspace-emergency-control-result.json
+            ${{ runner.temp }}/reviewrouter-release-registration/workspace-emergency-control-diagnostic.json
             ${{ runner.temp }}/reviewrouter-release-registration/repository-emergency-control-result.json
             ${{ runner.temp }}/reviewrouter-release-registration/repository-emergency-control-diagnostic.json
             ${{ runner.temp }}/reviewrouter-release-registration/deployment-result.json

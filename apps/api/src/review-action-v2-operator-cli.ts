@@ -159,6 +159,25 @@ export function reviewV2RepositoryEmergencyTransitionForCommand(
   }
 }
 
+export function reviewV2WorkspaceEmergencyTransitionForCommand(
+  command: string,
+) {
+  switch (command) {
+    case "emergency workspace open":
+      return {
+        stopped: false,
+        reason: "review-v2-workspace-emergency-opened",
+      } as const;
+    case "emergency workspace stop":
+      return {
+        stopped: true,
+        reason: "review-v2-workspace-emergency-stopped",
+      } as const;
+    default:
+      return null;
+  }
+}
+
 type ParsedArguments = Readonly<{
   positionals: readonly string[];
   options: Readonly<Record<string, string | true>>;
@@ -212,6 +231,27 @@ async function main() {
       requireConfirmation(parsed, "global");
       printJson(
         await updateGlobalEmergencyControl(runtime, globalEmergencyTransition),
+      );
+      return;
+    }
+    const workspaceEmergencyTransition =
+      reviewV2WorkspaceEmergencyTransitionForCommand(command);
+    if (workspaceEmergencyTransition) {
+      const runtime = composeReviewActionV2SafetyControlRuntime(prisma);
+      await authenticateOperator(runtime.digest, process.env);
+      const workspaceId = requireOption(parsed, "workspace");
+      const workspace = await prisma.workspace.findUnique({
+        where: { id: workspaceId },
+        select: { id: true },
+      });
+      if (!workspace) throw new Error("review_v2_workspace_not_found");
+      requireConfirmation(parsed, workspaceId);
+      printJson(
+        await updateWorkspaceEmergencyControl(
+          runtime,
+          workspace.id,
+          workspaceEmergencyTransition,
+        ),
       );
       return;
     }
@@ -523,6 +563,32 @@ async function updateRepositoryEmergencyControl(
       updatedBy: "review-v2-operator",
     });
   return { repository: target.repository.fullName, ...result };
+}
+
+async function updateWorkspaceEmergencyControl(
+  runtime: ReturnType<typeof composeReviewActionV2SafetyControlRuntime>,
+  workspaceId: string,
+  transition: {
+    readonly stopped: boolean;
+    readonly reason: string;
+  },
+) {
+  const scope = {
+    scope: ReviewSafetyPolicyScope.Workspace,
+    workspaceId,
+  } as const;
+  const existing =
+    await runtime.repositories.safetyControls.findReviewSafetyEmergencyControl(
+      scope,
+    );
+  const result =
+    await runtime.runControl.safetyControls.setReviewSafetyEmergencyStop({
+      expectedVersion: existing?.version ?? 0,
+      scope,
+      ...transition,
+      updatedBy: "review-v2-operator",
+    });
+  return { workspaceId, ...result };
 }
 
 export function reviewV2CohortOperationForCommand(
@@ -1148,6 +1214,9 @@ function printUsage() {
     `  release revoke --release RELEASE_ID --confirm RELEASE_ID\n`,
   );
   process.stdout.write(`  emergency global open|stop --confirm global\n`);
+  process.stdout.write(
+    `  emergency workspace open|stop --workspace WORKSPACE_ID --confirm WORKSPACE_ID\n`,
+  );
   process.stdout.write(
     `  emergency repository open|stop --repo OWNER/REPO --confirm OWNER/REPO\n`,
   );

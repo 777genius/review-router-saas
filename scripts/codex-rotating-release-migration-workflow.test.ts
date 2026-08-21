@@ -53,6 +53,23 @@ describe("Codex rotating release migration workflow", () => {
     expect(workflow).toContain("repository-emergency-control-diagnostic.json");
   });
 
+  it("opens an explicitly confirmed workspace kill switch before its repository", () => {
+    expect(workflow).toContain("operator_workspace_id:");
+    expect(workflow).toContain(
+      "OPERATOR_WORKSPACE_ID: ${{ inputs.operator_workspace_id }}",
+    );
+    expect(workflow).toContain('"workspace",');
+    expect(workflow).toContain('"--workspace",');
+    expect(workflow).toContain(
+      "workspaceEmergencyResult.workspaceId !== operatorWorkspaceId",
+    );
+    expect(workflow).toContain("workspace-emergency-control-result.json");
+    expect(workflow).toContain("workspace-emergency-control-diagnostic.json");
+    expect(workflow.indexOf("workspaceEmergencyResult")).toBeLessThan(
+      workflow.indexOf("repositoryEmergencyResult"),
+    );
+  });
+
   it("preserves registration evidence and emits redacted emergency diagnostics", () => {
     const registrationEvidence = workflow.indexOf("registration-result.json");
     const emergencyMutation = workflow.indexOf(
