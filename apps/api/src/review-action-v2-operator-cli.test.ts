@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { InvestigationRolloutProvider } from "@reviewrouter/features-review-investigation-operations";
 import {
   ImmutableRegistryWriteStatus,
   ReviewSafetyCapability,
@@ -9,6 +10,7 @@ import {
   inspectEnvironment,
   inspectReleaseRegistrationEnvironment,
   parseArguments,
+  parseInvestigationRolloutProvider,
   parseReviewV2ReleaseBundleCandidate,
   requireConfirmation,
   reviewV2CohortEmergencyInitialization,
@@ -327,6 +329,18 @@ describe("review action v2 operator CLI", () => {
         "emergency repository open",
       ),
     ).toBeNull();
+  });
+
+  it("maps only supported investigation rollout providers", () => {
+    expect(parseInvestigationRolloutProvider("codex")).toBe(
+      InvestigationRolloutProvider.Codex,
+    );
+    expect(parseInvestigationRolloutProvider("claude")).toBe(
+      InvestigationRolloutProvider.Claude,
+    );
+    expect(() => parseInvestigationRolloutProvider("openrouter")).toThrow(
+      "review_v2_investigation_provider_invalid:openrouter",
+    );
   });
 });
 

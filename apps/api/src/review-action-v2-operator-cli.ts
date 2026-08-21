@@ -2,6 +2,14 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import {
+  InvestigationRolloutProvider,
+  ResolveInvestigationRollout,
+} from "@reviewrouter/features-review-investigation-operations";
+import {
+  EnvironmentInvestigationRolloutPolicyQuery,
+  RunControlInvestigationEmergencyStopQuery,
+} from "@reviewrouter/features-review-investigation-operations/composition";
+import {
   ReviewMutationAuthorityCommandKind,
   ReviewMutationAuthorityPreflightStatus,
   ReviewMutationLaneKind,
@@ -12,6 +20,7 @@ import {
   ReviewSafetyCapability,
   ReviewSafetyPolicyScope,
   ReviewSafetyRolloutMode,
+  ReviewTrustDomain,
   ScmProvider,
   canonicalReviewOperationalSloProfile,
   canonicalReviewProtocolLimits,
@@ -269,6 +278,24 @@ async function main() {
           target,
           repositoryEmergencyTransition,
         ),
+      );
+      return;
+    }
+    if (command === "investigation rollout-status") {
+      const runtime = composeReviewActionV2SafetyControlRuntime(prisma);
+      await authenticateOperator(runtime.digest, process.env);
+      const repository = requireOption(parsed, "repo");
+      const target = await resolveRepositoryTarget(prisma, runtime, repository);
+      printJson(
+        await readInvestigationRolloutStatus({
+          env: process.env,
+          producerReleaseId: requireOption(parsed, "release"),
+          provider: parseInvestigationRolloutProvider(
+            requireOption(parsed, "provider"),
+          ),
+          runtime,
+          target,
+        }),
       );
       return;
     }
@@ -589,6 +616,77 @@ async function updateWorkspaceEmergencyControl(
       updatedBy: "review-v2-operator",
     });
   return { workspaceId, ...result };
+}
+
+async function readInvestigationRolloutStatus(input: {
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly producerReleaseId: string;
+  readonly provider: InvestigationRolloutProvider;
+  readonly runtime: ReturnType<
+    typeof composeReviewActionV2SafetyControlRuntime
+  >;
+  readonly target: Awaited<ReturnType<typeof resolveRepositoryTarget>>;
+}) {
+  const target = {
+    workspaceId: input.target.identity.currentWorkspaceId!,
+    repositoryConnectionId:
+      input.target.identity.currentRepositoryConnectionId!,
+    scmRepositoryIdentityId: input.target.identity.scmRepositoryIdentityId,
+    provider: input.provider,
+    trustDomain: ReviewTrustDomain.TrustedManaged,
+    producerReleaseId: input.producerReleaseId,
+  } as const;
+  const policies = new EnvironmentInvestigationRolloutPolicyQuery(input.env);
+  const policy = await policies.readCurrentPolicy();
+  const controls =
+    await input.runtime.repositories.safetyControls.findApplicableReviewSafetyEmergencyControls(
+      target,
+    );
+  const resolver = new ResolveInvestigationRollout(
+    policies,
+    new RunControlInvestigationEmergencyStopQuery({
+      async findApplicable() {
+        return controls.map((control) => ({
+          global: control.scope.scope === ReviewSafetyPolicyScope.Global,
+          stopped: control.stopped,
+        }));
+      },
+    }),
+  );
+  const decisions = await resolver.executeAll({ target });
+  return {
+    repository: input.target.repository.fullName,
+    target,
+    policy: {
+      emergencyDisabled: policy.emergencyDisabled,
+      enabledCapabilities: [...policy.enabledCapabilities].sort(),
+      selectorCounts: Object.fromEntries(
+        Object.entries(policy.selectors)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([capability, selectors]) => [
+            capability,
+            selectors?.length ?? 0,
+          ]),
+      ),
+    },
+    controls: controls.map((control) => ({
+      scope: control.scope.scope,
+      stopped: control.stopped,
+      version: control.version,
+    })),
+    decisions,
+  };
+}
+
+export function parseInvestigationRolloutProvider(value: string) {
+  switch (value) {
+    case "codex":
+      return InvestigationRolloutProvider.Codex;
+    case "claude":
+      return InvestigationRolloutProvider.Claude;
+    default:
+      throw new Error(`review_v2_investigation_provider_invalid:${value}`);
+  }
 }
 
 export function reviewV2CohortOperationForCommand(
@@ -1219,6 +1317,9 @@ function printUsage() {
   );
   process.stdout.write(
     `  emergency repository open|stop --repo OWNER/REPO --confirm OWNER/REPO\n`,
+  );
+  process.stdout.write(
+    `  investigation rollout-status --repo OWNER/REPO --release RELEASE_ID --provider codex|claude\n`,
   );
   process.stdout.write(
     `  cohort stage --repo OWNER/REPO --confirm OWNER/REPO\n`,
