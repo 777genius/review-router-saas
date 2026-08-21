@@ -266,6 +266,40 @@ If a rotating run instead reports `refresh token was already used`:
 4. Check the workflow's pinned ReviewRouter Action SHA separately. Reseeding
    changes rotating auth, not the workflow runtime version.
 
+### Activate a merged rotating workflow
+
+Reseeding confirms a secret candidate, but it does not attest workflow bytes
+that have not yet landed on the repository's default branch. After a setup or
+reseed changes the namespace metadata in the workflow, merge that workflow to
+the default branch and activate the confirmed namespace before rerunning a pull
+request review:
+
+```bash
+set -euo pipefail
+github_token="$(gh auth token)"
+curl --fail-with-body --silent --show-error \
+  --request POST \
+  --header "Authorization: Bearer $github_token" \
+  --header 'Content-Type: application/json' \
+  --data '{"repository":"OWNER/REPOSITORY"}' \
+  https://reviewrouter.site/api/codex-rotating/cli/workflow-activate
+unset github_token
+```
+
+The endpoint authorizes the caller against the target repository, reads the
+exact workflow from the current default-branch head through the GitHub App, and
+atomically binds its source attestation to the confirmed namespace. A successful
+response is `activated` or `already_active` and includes the namespace epoch and
+default-branch commit SHA. It never reads or rewrites the Codex auth payload.
+
+Do not activate from a pull request branch, and do not rerun a historical
+workflow revision after activation. Historical runs remain bound to their
+original `workflow_sha` and may correctly fail with `workflow_schema_mismatch`.
+Trigger a new pull request event so the run uses the attested default-branch
+workflow. A fresh run that reports `action_repository_mismatch` after reseed is
+usually missing this activation step; it is not a reason to write the rotating
+secret directly.
+
 ## Codex Rotating Action Ref Mismatch
 
 Use this when a GitHub Actions run fails with `action_repository_mismatch`,
