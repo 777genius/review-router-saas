@@ -486,6 +486,7 @@ jobs:
 
           node scripts/sync-render-action-ref.mjs \
             --action-ref "$ACTION_REF" \
+            --installer-descriptor release-assets/reviewrouter-codex-rotating-installer-descriptor.json \
             --dry-run \
             --no-deploy
 
@@ -524,6 +525,7 @@ jobs:
 
           node scripts/sync-render-action-ref.mjs \
             --action-ref "$ACTION_REF" \
+            --installer-descriptor release-assets/reviewrouter-codex-rotating-installer-descriptor.json \
             --wait
 
       - name: Create GitHub Release
