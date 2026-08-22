@@ -146,14 +146,17 @@ function assertReadableFile(file) {
 
 function assertFreshExternalSubscriptionRuntime(bundlePath) {
   const bundle = readFileSync(bundlePath, "utf8");
-  if (!bundle.includes("@vioxen/subscription-runtime")) {
+  if (
+    !bundle.includes("@vioxen/subscription-runtime 0.1.0-main.28") ||
+    !bundle.includes("777genius/ar@6467c59a06a2ac26e3874cf0d104073e7a6c8a2b")
+  ) {
     throw new Error(
       "action bundle does not include external @vioxen/subscription-runtime; run pnpm action:build from the updated SaaS repo first",
     );
   }
-  if (!bundle.includes("777genius+ar")) {
+  if (/node_modules\/.pnpm|\/var\/data|\/tmp/u.test(bundle)) {
     throw new Error(
-      "action bundle does not include 777genius/ar dependency metadata; refresh dependencies and rebuild before syncing",
+      "action bundle contains non-reproducible dependency or worktree paths; rebuild before syncing",
     );
   }
 }

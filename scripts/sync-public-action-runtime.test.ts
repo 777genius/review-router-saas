@@ -48,7 +48,7 @@ describe("public Action runtime sync", () => {
         mkdirSync(dirname(source), { recursive: true });
         const contents =
           file === "action-dist/index.cjs"
-            ? "@vioxen/subscription-runtime 777genius+ar\n"
+            ? "@vioxen/subscription-runtime 0.1.0-main.28 777genius/ar@6467c59a06a2ac26e3874cf0d104073e7a6c8a2b\n"
             : `exact bytes for ${file}\n`;
         writeFileSync(source, contents);
       }
@@ -286,7 +286,7 @@ function writeSyncedFixture(repo: string, file: string, version: string): void {
   mkdirSync(dirname(target), { recursive: true });
   const runtimeMarker =
     file === "action-dist/index.cjs"
-      ? "@vioxen/subscription-runtime 777genius+ar "
+      ? "@vioxen/subscription-runtime 0.1.0-main.28 777genius/ar@6467c59a06a2ac26e3874cf0d104073e7a6c8a2b "
       : "";
   writeFileSync(target, `${runtimeMarker}${version} bytes for ${file}\n`);
 }

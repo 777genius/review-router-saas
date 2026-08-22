@@ -12,6 +12,7 @@ import {
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { buildCodexRotatingAction } from "./lib/codex-rotating-action-build.mjs";
 
 const outfile = "action-dist/index.cjs";
 const bundledCodexOutfile = "action-dist/codex/linux-x64/codex";
@@ -25,17 +26,7 @@ const codexBinaryPathInArchive =
 
 mkdirSync(dirname(outfile), { recursive: true });
 
-run("pnpm", [
-  "exec",
-  "esbuild",
-  "packages/features/codex-oauth-rotating/src/action/github-action.ts",
-  "--bundle",
-  "--platform=node",
-  "--target=node20",
-  "--format=cjs",
-  "--legal-comments=none",
-  `--outfile=${outfile}`,
-]);
+await buildCodexRotatingAction({ outfile: join(process.cwd(), outfile) });
 await stripTrailingWhitespace(outfile);
 
 rmSync(bundledCodexOutfile, { force: true });
