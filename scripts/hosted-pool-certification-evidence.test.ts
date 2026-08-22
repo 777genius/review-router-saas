@@ -47,7 +47,14 @@ describe("hosted pool certification evidence", () => {
 
   it("binds evidence to the exact commit, parent, tree, and migration hashes", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "rr-hosted-evidence-repo-"));
-    const outputDirectory = join(workspace, ".artifacts");
+    const runnerTemp = await mkdtemp(
+      join(tmpdir(), "rr-hosted-evidence-output-"),
+    );
+    const outputDirectory = join(runnerTemp, "hosted-certification");
+    const workspaceSnapshotPath = join(
+      runnerTemp,
+      "hosted-certification-workspace.json",
+    );
     try {
       git(workspace, ["init"]);
       git(workspace, ["config", "user.email", "certification@example.invalid"]);
@@ -68,10 +75,17 @@ describe("hosted pool certification evidence", () => {
       git(workspace, ["add", "."]);
       git(workspace, ["commit", "-m", "fixture migrations"]);
       const commitSha = git(workspace, ["rev-parse", "HEAD"]);
+      await mkdir(join(outputDirectory, "logs"), { recursive: true });
+      await writeFile(join(outputDirectory, "logs", "verify.log"), "valid\n");
+      await writeFile(
+        workspaceSnapshotPath,
+        `${JSON.stringify(captureHostedCertificationWorkspace(workspace))}\n`,
+      );
       const result = await buildHostedCertificationEvidence({
         workspace,
         outputDirectory,
         expectedCommitSha: commitSha,
+        workspaceSnapshotPath,
       });
       const evidence = JSON.parse(await readFile(result.path, "utf8")) as {
         subject: { commitSha: string; parentSha: string; treeSha: string };
@@ -88,31 +102,57 @@ describe("hosted pool certification evidence", () => {
           /^[a-f0-9]{64}$/u.test(sha256),
         ),
       ).toBe(true);
+      expect(captureHostedCertificationWorkspace(workspace)).toMatchObject({
+        commitSha,
+        treeSha: evidence.subject.treeSha,
+      });
     } finally {
       await rm(workspace, { recursive: true, force: true });
+      await rm(runnerTemp, { recursive: true, force: true });
     }
   });
 
-  it("rejects tracked changes and untracked bytes instead of certifying only HEAD", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "rr-hosted-dirty-repo-"));
-    try {
-      git(workspace, ["init"]);
-      git(workspace, ["config", "user.email", "certification@example.invalid"]);
-      git(workspace, ["config", "user.name", "Certification Test"]);
-      await writeFile(join(workspace, "tracked.txt"), "clean\n");
-      git(workspace, ["add", "tracked.txt"]);
-      git(workspace, ["commit", "-m", "fixture"]);
-      expect(captureHostedCertificationWorkspace(workspace)).toMatchObject({
-        schemaVersion: 1,
-      });
-      await writeFile(join(workspace, "untracked.txt"), "not-tested\n");
-      expect(() => captureHostedCertificationWorkspace(workspace)).toThrow(
-        "hosted_certification_workspace_dirty",
+  it.each([
+    ["tracked", "tracked.txt"],
+    ["untracked", "untracked.txt"],
+  ] as const)(
+    "rejects an unexpected %s mutation after the workflow snapshot",
+    async (_kind, mutationPath) => {
+      const workspace = await mkdtemp(join(tmpdir(), "rr-hosted-dirty-repo-"));
+      const runnerTemp = await mkdtemp(
+        join(tmpdir(), "rr-hosted-dirty-output-"),
       );
-    } finally {
-      await rm(workspace, { recursive: true, force: true });
-    }
-  });
+      try {
+        git(workspace, ["init"]);
+        git(workspace, [
+          "config",
+          "user.email",
+          "certification@example.invalid",
+        ]);
+        git(workspace, ["config", "user.name", "Certification Test"]);
+        await writeFile(join(workspace, "tracked.txt"), "clean\n");
+        git(workspace, ["add", "tracked.txt"]);
+        git(workspace, ["commit", "-m", "fixture"]);
+        const snapshotPath = join(runnerTemp, "workspace.json");
+        await writeFile(
+          snapshotPath,
+          `${JSON.stringify(captureHostedCertificationWorkspace(workspace))}\n`,
+        );
+        await writeFile(join(workspace, mutationPath), "not-tested\n");
+        await expect(
+          buildHostedCertificationEvidence({
+            workspace,
+            outputDirectory: join(runnerTemp, "hosted-certification"),
+            expectedCommitSha: git(workspace, ["rev-parse", "HEAD"]),
+            workspaceSnapshotPath: snapshotPath,
+          }),
+        ).rejects.toThrow("hosted_certification_workspace_dirty");
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+        await rm(runnerTemp, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 function git(workspace: string, args: readonly string[]): string {

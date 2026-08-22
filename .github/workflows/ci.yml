@@ -344,9 +344,11 @@ jobs:
       - name: Hosted pool security certification
         id: hosted_verify
         continue-on-error: true
+        env:
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT: ${{ runner.temp }}/hosted-certification
         run: |
-          mkdir -p .artifacts/hosted-certification/logs
-          if ! pnpm hosted-pool:verify >.artifacts/hosted-certification/logs/verify.log 2>&1; then
+          mkdir -p "$REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT/logs"
+          if ! pnpm hosted-pool:verify >"$REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT/logs/verify.log" 2>&1; then
             echo "::error::Hosted pool verification failed; retained log is withheld pending sensitive-data scan"
             exit 1
           fi
@@ -357,8 +359,10 @@ jobs:
       - name: Hosted pool populated migration rehearsal
         id: hosted_migration
         continue-on-error: true
+        env:
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT: ${{ runner.temp }}/hosted-certification
         run: |
-          if ! pnpm hosted-pool:migration-rehearsal >.artifacts/hosted-certification/logs/migration.log 2>&1; then
+          if ! pnpm hosted-pool:migration-rehearsal >"$REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT/logs/migration.log" 2>&1; then
             echo "::error::Hosted pool migration rehearsal failed; retained log is withheld pending sensitive-data scan"
             exit 1
           fi
@@ -367,9 +371,10 @@ jobs:
         id: hosted_postgres
         continue-on-error: true
         env:
-          REVIEW_ROUTER_HOSTED_CERTIFICATION_DB_EXPORT: .artifacts/hosted-certification/logs/relay-effect-rows.jsonl
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT: ${{ runner.temp }}/hosted-certification
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_DB_EXPORT: ${{ runner.temp }}/hosted-certification/logs/relay-effect-rows.jsonl
         run: |
-          if ! pnpm hosted-pool:e2e:postgres >.artifacts/hosted-certification/logs/postgres-e2e.log 2>&1; then
+          if ! pnpm hosted-pool:e2e:postgres >"$REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT/logs/postgres-e2e.log" 2>&1; then
             echo "::error::Hosted pool PostgreSQL E2E failed; retained log is withheld pending sensitive-data scan"
             exit 1
           fi
@@ -382,6 +387,7 @@ jobs:
           REVIEW_ROUTER_HOSTED_MIGRATION_STATUS: ${{ steps.hosted_migration.outcome }}
           REVIEW_ROUTER_HOSTED_POSTGRES_STATUS: ${{ steps.hosted_postgres.outcome }}
           REVIEW_ROUTER_HOSTED_CERTIFICATION_WORKSPACE_SNAPSHOT: ${{ runner.temp }}/hosted-certification-workspace.json
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT: ${{ runner.temp }}/hosted-certification
         run: pnpm hosted-pool:certification-evidence
 
       - name: Upload hosted certification evidence
@@ -389,7 +395,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: hosted-security-certification-${{ github.sha }}
-          path: .artifacts/hosted-certification/hosted-certification-evidence.json
+          path: ${{ runner.temp }}/hosted-certification/hosted-certification-evidence.json
           if-no-files-found: error
           retention-days: 30
 
