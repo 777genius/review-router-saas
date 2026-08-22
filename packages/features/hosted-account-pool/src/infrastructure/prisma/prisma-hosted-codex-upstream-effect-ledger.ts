@@ -53,7 +53,8 @@ export class PrismaHostedCodexUpstreamEffectLedger {
       throw new Error("hosted_codex_effect_lease_invalid");
     }
     const now = this.now();
-    return this.prisma.$transaction(
+    return serializableTransaction(
+      this.prisma,
       async (transaction) => {
         const request = await transaction.hostedCodexRelayRequest.findFirst({
           where: {
@@ -127,7 +128,8 @@ export class PrismaHostedCodexUpstreamEffectLedger {
 
   async markDispatching(lease: HostedCodexUpstreamEffectLease): Promise<void> {
     const now = this.now();
-    await this.prisma.$transaction(
+    await serializableTransaction(
+      this.prisma,
       async (transaction) => {
         const attempt =
           await transaction.hostedCodexUpstreamEffectAttempt.findFirst({
@@ -456,6 +458,35 @@ function requireHash(value: string): void {
   if (!/^[a-f0-9]{64}$/u.test(value)) {
     throw new Error("hosted_codex_effect_hash_invalid");
   }
+}
+
+async function serializableTransaction<T>(
+  prisma: PrismaClient,
+  operation: (transaction: Prisma.TransactionClient) => Promise<T>,
+  options: { readonly isolationLevel: "Serializable" },
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await prisma.$transaction(operation, options);
+    } catch (error) {
+      if (attempt >= 3 || !isSerializableWriteConflict(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 5 * 2 ** attempt));
+    }
+  }
+}
+
+function isSerializableWriteConflict(error: unknown): boolean {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? (error as { readonly code?: unknown }).code
+      : undefined;
+  if (code === "P2034") return true;
+  const message = error instanceof Error ? error.message : "";
+  return (
+    message.includes("TransactionWriteConflict") ||
+    message.includes("write conflict") ||
+    message.includes("could not serialize access")
+  );
 }
 
 function sha256(value: string): string {
