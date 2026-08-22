@@ -38,7 +38,11 @@ export class PrismaInvocationGrantRepository
     RelayResponseStartedPort,
     CurrentRelayRequestFailoverPort
 {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly prisma: PrismaClient;
+
+  constructor(readonly prismaClient: PrismaClient) {
+    this.prisma = prismaClient;
+  }
 
   async findByInvocationId(id: ReturnType<typeof invocationId>) {
     const stored = await this.prisma.hostedCodexInvocationGrant.findUnique({
@@ -309,6 +313,28 @@ export class PrismaInvocationGrantRepository
         const next = input.transition(current);
         assertImmutableGrantFields(current, next);
         const succeeded = input.errorCode === null;
+        if (input.effect) {
+          const effect = await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+            where: {
+              id: input.effect.attemptId,
+              relayRequestId: input.requestId,
+              grantId: input.grantId,
+              ownerIdHash: input.effect.ownerIdHash,
+              fenceEpoch: input.effect.fenceEpoch,
+              state: "response_started",
+            },
+            data: {
+              state: input.effect.terminalState,
+              completedAt: input.completedAt,
+              heartbeatAt: input.completedAt,
+              terminalEvidenceHash: input.effect.terminalEvidenceHash,
+              errorCode: input.errorCode,
+            },
+          });
+          if (effect.count !== 1) {
+            throw new Error("hosted_codex_effect_completion_conflict");
+          }
+        }
         const updatedRequest =
           await transaction.hostedCodexRelayRequest.updateMany({
             where: {
@@ -362,6 +388,28 @@ export class PrismaInvocationGrantRepository
         if (!stored) throw new Error("invocation_grant_not_found");
         const current = restoreGrant(stored);
         const next = input.transition(current);
+        if (input.effect) {
+          const effect = await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+            where: {
+              id: input.effect.attemptId,
+              relayRequestId: input.requestId,
+              grantId: input.grantId,
+              ownerIdHash: input.effect.ownerIdHash,
+              fenceEpoch: input.effect.fenceEpoch,
+              state: "dispatching",
+              leaseExpiresAt: { gt: input.startedAt },
+            },
+            data: {
+              state: "response_started",
+              responseStartedAt: input.startedAt,
+              heartbeatAt: input.startedAt,
+              providerResponseIdHash: input.effect.providerResponseIdHash,
+            },
+          });
+          if (effect.count !== 1) {
+            throw new Error("hosted_codex_effect_response_started_conflict");
+          }
+        }
         const updated = await transaction.hostedCodexRelayRequest.updateMany({
           where: {
             id: input.requestId,
@@ -463,6 +511,46 @@ export class PrismaInvocationGrantRepository
           include: grantInclude,
         });
         if (!stored) throw new Error("invocation_grant_not_found");
+        let siblingEffectRecorded = false;
+        if (input.effect) {
+          const siblingEffect =
+            await transaction.hostedCodexUpstreamEffectAttempt.count({
+              where: {
+                grantId: input.grantId,
+                id: { not: input.effect.attemptId },
+                state: {
+                  in: [
+                    "dispatching",
+                    "response_started",
+                    "succeeded",
+                    "terminal_unknown",
+                  ],
+                },
+              },
+            });
+          siblingEffectRecorded = siblingEffect > 0;
+          const classified =
+            await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+              where: {
+                id: input.effect.attemptId,
+                relayRequestId: input.requestId,
+                grantId: input.grantId,
+                ownerIdHash: input.effect.ownerIdHash,
+                fenceEpoch: input.effect.fenceEpoch,
+                state: "response_started",
+              },
+              data: {
+                state: "failed_classified",
+                completedAt: input.now,
+                heartbeatAt: input.now,
+                terminalEvidenceHash: input.effect.terminalEvidenceHash,
+                errorCode: input.effect.errorCode,
+              },
+            });
+          if (classified.count !== 1) {
+            throw new Error("hosted_codex_effect_classification_conflict");
+          }
+        }
         const accountIds = [
           stored.activeAccountId,
           stored.backupAccountId,
@@ -481,6 +569,14 @@ export class PrismaInvocationGrantRepository
         );
         if (!failedStored) throw new Error("hosted_failover_primary_missing");
         const failedAccount = restorePoolAccount(failedStored);
+        if (siblingEffectRecorded) {
+          return {
+            status: "denied" as const,
+            reason: "sibling_effect_recorded" as const,
+            grant: restoreGrant(stored),
+            failedAccount,
+          };
+        }
         const backupStored = accounts.find(
           (account) => account.id === stored.backupAccountId,
         );

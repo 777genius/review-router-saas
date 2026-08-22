@@ -73,45 +73,54 @@ values in documentation, logs, tickets, shell history, or committed env files:
 
 ```text
 REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION
+REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY
 REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER
-REVIEW_ROUTER_HOSTED_CODEX_KEK_CURRENT_ID
-REVIEW_ROUTER_HOSTED_CODEX_KEK_KEYRING_JSON
+REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE=external_kms
+REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN
+REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE
+AWS_REGION
 REVIEW_ROUTER_HOSTED_CODEX_CAPABILITY_HMAC_KEY
 ```
 
-Secret placement follows least privilege. API relay replicas receive the full
-custody/relay set. Web receives only the master pool flag, database incarnation,
-fingerprint pepper, and trusted Action refs needed for dashboard binding and
-workflow provisioning. Do not copy `KEK_KEYRING_JSON` or
-`CAPABILITY_HMAC_KEY` into web/worker environments that do not compose the relay.
+Secret placement follows least privilege. API relay replicas receive the relay
+KMS role and relay/capability set. The enrollment process receives Encrypt only;
+relay receives Decrypt only. The separately deployed recovery command receives
+the recovery KMS role and recovery authority public key, never a signing key.
+Do not copy `CAPABILITY_HMAC_KEY` into web/worker environments that do not
+compose the relay.
 
 Operational meaning:
 
 - `DATABASE_INCARNATION` is an externally recorded opaque identity for the live
   database lineage. Keep it stable across ordinary deploys; create a new value
   for a restore/cutover and quarantine old envelopes until audited rewrap.
+- `DATABASE_RESOURCE_IDENTITY` is the provider-issued immutable database
+  resource identifier. It is independent of the database contents and must be
+  obtained from the provider control plane, not restored from a backup.
 - `FINGERPRINT_PEPPER` is secret base64 material of at least 32 decoded bytes.
   It has no online overlap mechanism: changing it changes account fingerprints,
   so rotate only with an explicit fingerprint migration/reconciliation plan.
-- `KEK_CURRENT_ID` selects the wrapping key for new envelopes.
-- `KEK_KEYRING_JSON` is the current env-keyring adapter's JSON map of key IDs to
-  base64-encoded 32-byte keys. It supports decrypt overlap by retaining old key
-  IDs while `KEK_CURRENT_ID` advances.
+- `KEYRING_MODE` must be `external_kms` in production. `KMS_KEY_ARN` must be an
+  immutable AWS KMS key ARN; aliases, shorthand IDs, redirects, and a different
+  ARN returned by Encrypt or Decrypt fail closed. `KMS_ROLE` is exactly `relay`
+  in the normal serving process and exactly `recovery` in the restore process.
+  KMS policy must independently authorize those roles and the versioned
+  encryption context, including purpose, workspace/pool/account/generation,
+  external database resource, incarnation, schema, and AAD hash.
 - `CAPABILITY_HMAC_KEY` is canonical base64 secret material of at least 32 decoded
   bytes. The current issuer supports one active key and no verification overlap;
   rotation therefore invalidates outstanding grants.
 
-The env keyring is allowed only for disposable development, certification, and
-time-bounded bootstrap. Steady-state production requires an external KMS/keyring
-adapter with non-exportable KEKs, least-privilege unwrap permissions, key-use
-audit, rotation, and revocation. Keep all five flags at `0` if production is still
-composed with `EnvCredentialKeyring`; putting raw KEKs in a hosted service env is
-not the accepted production custody boundary.
+The env keyring is allowed only for disposable development and certification.
+Production composition rejects it even when injected by a caller. Keep all five
+flags at `0` until the immutable KMS ARN, separate relay/recovery roles, external
+database resource identity, key-use audit, rotation, and revocation policies are
+in place.
 
-KEK rotation order is add new key -> retain old decrypt keys -> change current
-key -> deploy -> rewrap every live envelope -> verify no live envelope references
-the old key -> remove it only after the backup/recovery retention decision. An
-env JSON overlap is not a substitute for production KMS policy. For capability
+KMS rotation order is authorize a new immutable key ARN -> retain old-key
+Decrypt for recovery -> deploy the new ARN -> rewrap every live envelope with a
+witnessed recovery operation -> verify no live envelope references the old key
+-> revoke it only after the backup/recovery retention decision. For capability
 HMAC rotation, set `ADMISSION=0` and `RELAY=0`, wait for or revoke outstanding
 grants, rotate the key on every API replica, then re-enable. Never accept both
 capability keys by an undocumented fallback.
@@ -165,7 +174,7 @@ For an upstream, privacy, credential, or compatibility incident, first set
 `RELAY=0` and `ADMISSION=0` on every API replica, revoke outstanding grants, and
 confirm relay traffic stops. Set `FAILOVER=0` to prevent backup selection. Then
 set `POOL=0` and `CUSTODY=0` to hide onboarding and freeze all hosted custody
-operations. Do not delete encrypted envelopes, remove old KEKs, export credentials
+operations. Do not delete encrypted envelopes, revoke old KMS keys, export credentials
 to GitHub, or silently switch repositories to legacy mode during the incident.
 
 Roll back API/web only to a commit compatible with the additive schema and the

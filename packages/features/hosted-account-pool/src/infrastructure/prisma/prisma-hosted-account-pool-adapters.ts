@@ -60,10 +60,14 @@ export class PrismaHostedCredentialEnrollment implements HostedCredentialEnrollm
     private readonly prisma: HostedPoolPrismaClient,
     private readonly vault: CredentialEnvelopeVault,
     private readonly databaseIncarnation: string,
+    private readonly databaseResourceIdentity: string,
     fingerprintPepper: Uint8Array,
   ) {
     if (!databaseIncarnation.trim()) {
       throw new Error("hosted_codex_database_incarnation_missing");
+    }
+    if (databaseResourceIdentity.trim().length < 16) {
+      throw new Error("hosted_codex_database_resource_identity_invalid");
     }
     if (fingerprintPepper.byteLength < 32) {
       throw new Error("hosted_codex_fingerprint_pepper_invalid");
@@ -100,6 +104,7 @@ export class PrismaHostedCredentialEnrollment implements HostedCredentialEnrollm
         accountId: input.accountId,
         generation: 1,
         databaseIncarnation: this.databaseIncarnation,
+        databaseResourceIdentity: this.databaseResourceIdentity,
       });
 
       return await this.prisma.$transaction(async (transaction) => {
@@ -166,6 +171,42 @@ export class PrismaHostedCredentialEnrollment implements HostedCredentialEnrollm
           credentialId: credential.id,
           kind: "credential_created",
           subjectFingerprint,
+        });
+        const actorIdHash = subjectFingerprint;
+        const kmsKeyArn = isImmutableKmsKeyArn(envelope.keyId)
+          ? envelope.keyId
+          : null;
+        await transaction.hostedCodexCredentialEnvelopeRevision.create({
+          data: {
+            id: randomUUID(),
+            credentialVersionId: credential.id,
+            accountId: input.accountId,
+            workspaceId: input.workspaceId,
+            poolId: input.poolId,
+            generation: 1n,
+            revision: 1n,
+            custodyMode: kmsKeyArn ? "aws_kms" : "local_test",
+            kmsKeyArn,
+            kmsContextVersion: 1,
+            databaseResourceIdentity: this.databaseResourceIdentity,
+            databaseIncarnation: this.databaseIncarnation,
+            reason: "credential_created",
+            envelopeVersion: envelope.schemaVersion,
+            encryptionAlgorithm: envelope.encryptionAlgorithm,
+            aadHash: envelope.associatedDataHash,
+            ciphertextHash: envelope.ciphertextHash,
+            encryptedCiphertext: envelope.ciphertext,
+            envelopeMetadata: {
+              nonce: envelope.nonce,
+              authenticationTag: envelope.authenticationTag,
+              wrappedDataEncryptionKey: envelope.wrappedDataEncryptionKey,
+            },
+            actorIdHash,
+            idempotencyKeyHash: createHash("sha256")
+              .update(`credential-created\u0000${credential.id}`, "utf8")
+              .digest("hex"),
+            createdAt: input.now,
+          },
         });
         await transaction.hostedCodexGenerationReceipt.create({
           data: {
@@ -690,6 +731,7 @@ export function createPrismaHostedAccountPoolAdapters(input: {
   readonly prisma: PrismaClient;
   readonly vault: CredentialEnvelopeVault;
   readonly databaseIncarnation: string;
+  readonly databaseResourceIdentity: string;
   readonly fingerprintPepper: Uint8Array;
   readonly configurationAuthority?: RepositoryReviewConfigurationAuthModeAuthority;
 }) {
@@ -706,9 +748,16 @@ export function createPrismaHostedAccountPoolAdapters(input: {
       input.prisma,
       input.vault,
       input.databaseIncarnation,
+      input.databaseResourceIdentity,
       input.fingerprintPepper,
     ),
   };
+}
+
+function isImmutableKmsKeyArn(value: string): boolean {
+  return /^arn:(?:aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:\d{12}:key\/(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$/iu.test(
+    value,
+  );
 }
 
 async function isEligibleRepository(

@@ -98,6 +98,7 @@ export type ArProviderFailureClassification =
 
 export type ProviderEffectFence =
   | "before_refresh_or_upstream_effect"
+  | "classified_response_before_success"
   | "refresh_outcome_unknown"
   | "upstream_effect_started";
 
@@ -411,12 +412,26 @@ export function classifyFailoverEligibility(input: {
       accountDisposition: "none",
     };
   }
-  if (input.effectFence !== "before_refresh_or_upstream_effect") {
+  if (
+    input.effectFence !== "before_refresh_or_upstream_effect" &&
+    input.effectFence !== "classified_response_before_success"
+  ) {
     return {
       eligible: false,
       reason: "not_failover_class",
       accountDisposition:
         input.effectFence === "refresh_outcome_unknown" ? "quarantine" : "none",
+    };
+  }
+  if (
+    input.effectFence === "classified_response_before_success" &&
+    input.failure !== "rate_limited" &&
+    input.failure !== "credential_invalid"
+  ) {
+    return {
+      eligible: false,
+      reason: "not_failover_class",
+      accountDisposition: "none",
     };
   }
   const disposition = failureDisposition(input.failure);
@@ -468,7 +483,8 @@ export type CurrentRelayRequestFailover =
       readonly reason:
         | FailoverEligibility["reason"]
         | "request_not_in_flight"
-        | "backup_unhealthy";
+        | "backup_unhealthy"
+        | "sibling_effect_recorded";
       readonly grant: InvocationGrant;
       readonly failedAccount: HostedPoolAccount;
     };

@@ -1,6 +1,5 @@
 import {
   CredentialEnvelopeVault,
-  EnvCredentialKeyring,
   FetchHostedCodexStreamingRelay,
   HostedCodexMutationFenceLeaseStore,
   HostedCodexSessionRuntime,
@@ -9,6 +8,9 @@ import {
   PrismaHostedCodexRelayAuthorization,
   PrismaHostedCodexSessionPersistence,
   PrismaInvocationGrantRepository,
+  resolveHostedCodexKeyring,
+  PrismaHostedCodexUpstreamEffectLedger,
+  startHostedCodexEffectSweeper,
   type RegisterHostedCodexRelayRoutesDependencies,
 } from "@reviewrouter/features-hosted-account-pool";
 import type { PrismaClient } from "@reviewrouter/platform-db";
@@ -77,6 +79,11 @@ export function composeProductionHostedCodexRelayRoutes(input: {
   if (!databaseIncarnation) {
     throw new Error("hosted_codex_database_incarnation_missing");
   }
+  const databaseResourceIdentity =
+    input.env.REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY?.trim();
+  if (!databaseResourceIdentity || databaseResourceIdentity.length < 16) {
+    throw new Error("hosted_codex_database_resource_identity_invalid");
+  }
   const fingerprintPepper = Buffer.from(
     input.env.REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER ?? "",
     "base64",
@@ -94,16 +101,20 @@ export function composeProductionHostedCodexRelayRoutes(input: {
     privateKey: input.githubAppPrivateKey,
   });
   const ledger = new PrismaInvocationGrantRepository(input.prisma);
-  const vault = new CredentialEnvelopeVault(
-    new EnvCredentialKeyring(input.env),
+  startHostedCodexEffectSweeper(
+    new PrismaHostedCodexUpstreamEffectLedger(input.prisma),
   );
+  const keyring = resolveHostedCodexKeyring({ env: input.env, purpose: "relay" });
+  const vault = new CredentialEnvelopeVault(keyring, "relay");
   const runtime = new HostedCodexSessionRuntime({
     sessionStore: new HostedCodexSessionStore(
       new PrismaHostedCodexSessionPersistence(
         input.prisma,
         vault,
         databaseIncarnation,
+        databaseResourceIdentity,
         fingerprintPepper,
+        input.env.NODE_ENV === "production" ? keyring.currentKeyId : undefined,
       ),
     ),
     leaseStore: new HostedCodexMutationFenceLeaseStore(

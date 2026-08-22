@@ -15,6 +15,13 @@ export type CredentialEnvelopeContext = {
   readonly accountId: string;
   readonly generation: number;
   readonly databaseIncarnation: string;
+  /** Externally witnessed immutable database resource identity, never copied from a restore. */
+  readonly databaseResourceIdentity: string;
+};
+
+export type CredentialKeyringContext = CredentialEnvelopeContext & {
+  readonly purpose: "relay" | "recovery";
+  readonly schemaVersion: typeof schemaVersion;
 };
 
 export type WrappedDataEncryptionKey = {
@@ -26,13 +33,16 @@ export type WrappedDataEncryptionKey = {
 
 export interface CredentialKeyringPort {
   readonly currentKeyId: string;
+  readonly custodyMode?: "local_env" | "aws_kms";
   wrapDataEncryptionKey(input: {
     readonly dataEncryptionKey: Uint8Array;
     readonly associatedData: Uint8Array;
+    readonly context: CredentialKeyringContext;
   }): Promise<WrappedDataEncryptionKey>;
   unwrapDataEncryptionKey(input: {
     readonly wrappedKey: WrappedDataEncryptionKey;
     readonly associatedData: Uint8Array;
+    readonly context: CredentialKeyringContext;
   }): Promise<Uint8Array>;
 }
 
@@ -49,7 +59,14 @@ export type EncryptedCredentialEnvelope = {
 };
 
 export class CredentialEnvelopeVault {
-  constructor(private readonly keyring: CredentialKeyringPort) {}
+  constructor(
+    private readonly keyring: CredentialKeyringPort,
+    private readonly purpose: CredentialKeyringContext["purpose"] = "relay",
+  ) {}
+
+  get currentKeyId(): string {
+    return this.keyring.currentKeyId;
+  }
 
   async encrypt(
     plaintext: Uint8Array,
@@ -72,6 +89,7 @@ export class CredentialEnvelopeVault {
         {
           dataEncryptionKey,
           associatedData,
+          context: this.keyringContext(context),
         },
       );
       if (wrappedDataEncryptionKey.keyId !== this.keyring.currentKeyId) {
@@ -116,6 +134,7 @@ export class CredentialEnvelopeVault {
       await this.keyring.unwrapDataEncryptionKey({
         wrappedKey: envelope.wrappedDataEncryptionKey,
         associatedData,
+        context: this.keyringContext(context),
       }),
     );
     if (dataEncryptionKey.byteLength !== 32) {
@@ -137,9 +156,53 @@ export class CredentialEnvelopeVault {
       dataEncryptionKey.fill(0);
     }
   }
+
+  /** Rotates only the wrapped DEK; credential ciphertext remains encrypted. */
+  async rewrap(
+    envelope: EncryptedCredentialEnvelope,
+    context: CredentialEnvelopeContext,
+  ): Promise<EncryptedCredentialEnvelope> {
+    const associatedData = encodeAssociatedData(context);
+    if (sha256(associatedData) !== envelope.associatedDataHash) {
+      throw new Error("credential_envelope_context_mismatch");
+    }
+    const dataEncryptionKey = Buffer.from(
+      await this.keyring.unwrapDataEncryptionKey({
+        wrappedKey: envelope.wrappedDataEncryptionKey,
+        associatedData,
+        context: this.keyringContext(context),
+      }),
+    );
+    if (dataEncryptionKey.byteLength !== 32) {
+      dataEncryptionKey.fill(0);
+      throw new Error("credential_data_key_invalid");
+    }
+    try {
+      const wrappedDataEncryptionKey = await this.keyring.wrapDataEncryptionKey({
+        dataEncryptionKey,
+        associatedData,
+        context: this.keyringContext(context),
+      });
+      if (wrappedDataEncryptionKey.keyId !== this.keyring.currentKeyId) {
+        throw new Error("credential_keyring_current_key_mismatch");
+      }
+      return {
+        ...envelope,
+        keyId: wrappedDataEncryptionKey.keyId,
+        wrappedDataEncryptionKey,
+      };
+    } finally {
+      dataEncryptionKey.fill(0);
+    }
+  }
+
+  private keyringContext(context: CredentialEnvelopeContext): CredentialKeyringContext {
+    return { ...context, purpose: this.purpose, schemaVersion };
+  }
 }
 
 export class EnvCredentialKeyring implements CredentialKeyringPort {
+  readonly custodyMode = "local_env" as const;
   readonly currentKeyId: string;
   private readonly keys: ReadonlyMap<string, Buffer>;
 
@@ -242,6 +305,7 @@ function encodeAssociatedData(context: CredentialEnvelopeContext): Buffer {
     String(context.generation),
     `schema:${schemaVersion}`,
     context.databaseIncarnation,
+    context.databaseResourceIdentity,
   ];
   if (fields.some((field) => !field || field.includes("\u0000"))) {
     throw new Error("credential_envelope_context_invalid");

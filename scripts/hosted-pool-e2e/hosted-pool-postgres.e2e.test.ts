@@ -6,10 +6,13 @@ import {
   EnvCredentialKeyring,
   FetchHostedCodexStreamingRelay,
   HostedCodexSessionStore,
+  HostedCodexMutationFenceLeaseStore,
+  HostedCodexSessionRuntime,
   PrismaHostedAccountRepository,
   PrismaHostedCodexMutationFence,
   PrismaHostedCodexRelayAuthorization,
   PrismaHostedCodexSessionPersistence,
+  PrismaHostedCodexUpstreamEffectLedger,
   PrismaHostedCredentialEnrollment,
   PrismaHostedPoolBindingRepository,
   PrismaHostedPoolRepository,
@@ -30,7 +33,6 @@ import {
   relayRequestId,
   repositoryId,
   workspaceId,
-  type HostedCodexSessionRuntime,
   type InvocationGrantCapabilityPort,
 } from "../../packages/features/hosted-account-pool/src/index";
 import { createPrismaClient } from "../../packages/platform/db/src/index";
@@ -53,6 +55,7 @@ const pool = hostedPoolId("pool-e2e");
 const repository = repositoryId("repository-e2e");
 const binding = hostedBindingId("binding-e2e");
 const databaseIncarnation = "disposable-postgres-e2e-incarnation";
+const databaseResourceIdentity = "disposable-postgres-e2e-resource";
 const keyringEnv = {
   REVIEW_ROUTER_HOSTED_CODEX_KEK_CURRENT_ID: "e2e-kek",
   REVIEW_ROUTER_HOSTED_CODEX_KEK_KEYRING_JSON: JSON.stringify({
@@ -104,6 +107,7 @@ beforeAll(async () => {
     prisma,
     vault,
     databaseIncarnation,
+    databaseResourceIdentity,
     Buffer.alloc(32, 29),
   );
   await enrollment.importCodexAuth({
@@ -172,7 +176,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     const parallelStarted = new Promise<void>((resolve) => {
       releaseParallel = resolve;
     });
-    const parallelSafetyTimer = setTimeout(() => releaseParallel?.(), 2_000);
+    const parallelSafetyTimer = setTimeout(() => releaseParallel?.(), 15_000);
     const runtime = {
       ensureFreshSession: vi.fn(async () => ({
         accessToken: "fake-provider-access-token",
@@ -448,6 +452,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       prisma,
       vault,
       databaseIncarnation,
+      databaseResourceIdentity,
       Buffer.alloc(32, 29),
     );
     const store = new HostedCodexSessionStore(persistence);
@@ -490,7 +495,316 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     });
     expect(stale.status).toBe("stale_generation");
     await fences.release({ leaseId: acquired.leaseId, reason: "e2e-complete" });
+    const released = await prisma.hostedCodexMutationFence.findUniqueOrThrow({
+      where: { accountId: "account-primary" },
+    });
+    expect(released.ownerIdHash).toBeNull();
+    expect(released.fenceEpoch).toBeGreaterThanOrEqual(1n);
+    const current = await store.read({ providerInstanceId: "account-primary" });
+    const successor = await fences.acquire({
+      accountId: "account-primary",
+      runId: "refresh-successor-after-process-restart",
+      attempt: 1,
+      ttlMs: 30_000,
+      restoredGenerationHash: current!.generationHash,
+    });
+    expect(successor.status).toBe("granted");
+    if (successor.status !== "granted")
+      throw new Error("successor_fence_denied");
+    expect(
+      (
+        await prisma.hostedCodexMutationFence.findUniqueOrThrow({
+          where: { accountId: "account-primary" },
+        })
+      ).fenceEpoch,
+    ).toBe(released.fenceEpoch + 1n);
+    await expect(
+      store.write({
+        providerInstanceId: "account-primary",
+        expectedGeneration: current!.generation,
+        nextArtifact: current!.artifact,
+        idempotencyKey: "stale-owner-after-successor",
+        leaseId: acquired.leaseId,
+      }),
+    ).rejects.toThrow("hosted_codex_mutation_fence_invalid");
+    await expect(
+      fences.release({ leaseId: acquired.leaseId, reason: "stale-release" }),
+    ).rejects.toThrow("hosted_codex_mutation_fence_invalid");
+    expect(
+      (
+        await prisma.hostedCodexMutationFence.findUniqueOrThrow({
+          where: { accountId: "account-primary" },
+        })
+      ).ownerIdHash,
+    ).not.toBeNull();
+    await fences.release({
+      leaseId: successor.leaseId,
+      reason: "successor-complete",
+    });
+    const finalFence = await prisma.hostedCodexMutationFence.findUniqueOrThrow({
+      where: { accountId: "account-primary" },
+    });
+    expect(finalFence.ownerIdHash).toBeNull();
+    expect(finalFence.fenceEpoch).toBe(released.fenceEpoch + 1n);
   });
+
+  it("recovers upstream crash phases conservatively with renewable leases and exact counters", async () => {
+    let clock = new Date();
+    const effects = new PrismaHostedCodexUpstreamEffectLedger(
+      prisma,
+      () => clock,
+    );
+    const authorization = new PrismaHostedCodexRelayAuthorization(prisma);
+    const prepareRequest = async (suffix: string) => {
+      const issued = await issueGrant(`effect-${suffix}`);
+      const admitted = await authorization.authorize({
+        opaqueGrant: issued.plaintextToken,
+        requestOrdinal: 1,
+        idempotencyKey: `effect-${suffix}`,
+        requestBytes: 64,
+      });
+      const requestHash = sha256(`effect-body-${suffix}`);
+      await ledger.recordRequestHash({
+        grantId: issued.grant.id,
+        requestId: admitted.requestId,
+        requestHash,
+      });
+      return {
+        issued,
+        admitted,
+        requestHash,
+        prepare: () =>
+          effects.prepare({
+            relayRequestId: admitted.requestId,
+            grantId: issued.grant.id,
+            workspaceId: workspace,
+            poolId: pool,
+            accountId: "account-primary",
+            requestHash,
+            leaseMs: 5_000,
+          }),
+      };
+    };
+
+    const beforeSend = await prepareRequest("before-send");
+    const firstPrepared = await beforeSend.prepare();
+    clock = new Date(clock.getTime() + 5_001);
+    expect(await effects.sweepExpired()).toBe(1);
+    expect(
+      await prisma.hostedCodexUpstreamEffectAttempt.findUniqueOrThrow({
+        where: { id: firstPrepared.attemptId },
+      }),
+    ).toMatchObject({ state: "failed_no_effect", attemptOrdinal: 1 });
+    const retry = await beforeSend.prepare();
+    expect(retry.fenceEpoch).toBe(2n);
+    await effects.finish(retry, {
+      state: "terminal_unknown",
+      errorCode: "test_terminal_unknown",
+      evidence: "no-provider-reconciliation",
+    });
+    clock = new Date(clock.getTime() + 30_001);
+    await effects.sweepExpired();
+
+    const afterSend = await prepareRequest("after-send");
+    const dispatched = await afterSend.prepare();
+    await effects.markDispatching(dispatched);
+    clock = new Date(clock.getTime() + 30_001);
+    expect(await effects.sweepExpired()).toBeGreaterThanOrEqual(1);
+    await expect(afterSend.prepare()).rejects.toThrow(
+      "hosted_codex_effect_request_invalid",
+    );
+
+    const longRunning = await prepareRequest("heartbeat");
+    const live = await longRunning.prepare();
+    await effects.markDispatching(live);
+    for (let heartbeat = 0; heartbeat < 20; heartbeat += 1) {
+      clock = new Date(clock.getTime() + 20_000);
+      await effects.heartbeat(live);
+    }
+    await effects.markResponseStarted(live, "provider-response-opaque");
+    await effects.finish(live, {
+      state: "terminal_unknown",
+      errorCode: "midstream_outcome_unknown",
+      evidence: "response-started-without-provider-reconciliation",
+    });
+    clock = new Date(clock.getTime() + 30_001);
+    await effects.sweepExpired();
+
+    for (const subject of [beforeSend, afterSend, longRunning]) {
+      const [request, grant] = await Promise.all([
+        prisma.hostedCodexRelayRequest.findUniqueOrThrow({
+          where: { id: subject.admitted.requestId },
+        }),
+        prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+          where: { id: subject.issued.grant.id },
+        }),
+      ]);
+      expect(request.status).toBe("terminal_unknown");
+      expect(grant).toMatchObject({ requestCount: 1, inFlight: 0 });
+    }
+    expect(
+      await prisma.hostedCodexUpstreamEffectAttempt.findMany({
+        where: { relayRequestId: beforeSend.admitted.requestId },
+        orderBy: { attemptOrdinal: "asc" },
+      }),
+    ).toMatchObject([
+      { attemptOrdinal: 1, state: "failed_no_effect" },
+      { attemptOrdinal: 2, state: "terminal_unknown" },
+    ]);
+  });
+
+  it("runs 52 grants through two real session-runtime replicas without an invocation gate", async () => {
+    const replica = createPrismaClient({
+      databaseUrl: databaseUrl!,
+      poolMax: 30,
+    });
+    await replica.$connect();
+    try {
+      const runtimeFor = (client: typeof prisma) =>
+        new HostedCodexSessionRuntime({
+          sessionStore: new HostedCodexSessionStore(
+            new PrismaHostedCodexSessionPersistence(
+              client,
+              vault,
+              databaseIncarnation,
+              databaseResourceIdentity,
+              Buffer.alloc(32, 29),
+            ),
+          ),
+          leaseStore: new HostedCodexMutationFenceLeaseStore(
+            new PrismaHostedCodexMutationFence(client),
+          ),
+        });
+      const runtimes = [runtimeFor(prisma), runtimeFor(replica)];
+      const beforeFence = await prisma.hostedCodexMutationFence.findUnique({
+        where: { accountId: "account-primary" },
+      });
+      const grants = await Promise.all(
+        Array.from({ length: 52 }, (_, index) =>
+          issueGrant(`parallel-52-${index}`),
+        ),
+      );
+      let active = 0;
+      let maximumActive = 0;
+      let entered = 0;
+      let release: (() => void) | undefined;
+      const allEntered = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const safety = setTimeout(() => release?.(), 10_000);
+      await Promise.all(
+        grants.map(async (grant, index) => {
+          const session = await runtimes[index % 2]!.ensureFreshSession({
+            accountId: grant.grant.activeAccountId,
+            runId: `real-runtime-${index}`,
+            attempt: 1,
+            abortSignal: AbortSignal.timeout(15_000),
+          });
+          expect(session.chatgptAccountId).toBe("chatgpt-primary");
+          active += 1;
+          maximumActive = Math.max(maximumActive, active);
+          entered += 1;
+          if (entered === grants.length) release?.();
+          await allEntered;
+          active -= 1;
+        }),
+      );
+      clearTimeout(safety);
+      expect(maximumActive).toBe(52);
+      const afterFence = await prisma.hostedCodexMutationFence.findUnique({
+        where: { accountId: "account-primary" },
+      });
+      expect(afterFence?.fenceEpoch).toBe(beforeFence?.fenceEpoch);
+      expect(afterFence?.ownerIdHash ?? null).toBeNull();
+
+      const enrollment = new PrismaHostedCredentialEnrollment(
+        prisma,
+        vault,
+        databaseIncarnation,
+        databaseResourceIdentity,
+        Buffer.alloc(32, 29),
+      );
+      await enrollment.importCodexAuth({
+        workspaceId: workspace,
+        poolId: pool,
+        accountId: hostedAccountId("account-expired-concurrency"),
+        label: "Expired concurrency",
+        priority: 5,
+        expectedPoolRevision: 3,
+        authJsonBytes: validAuthJson(
+          "expired-concurrency",
+          "expired-access",
+          "expired-refresh",
+          new Date(Date.now() - 2 * 60 * 60_000),
+        ),
+        now: new Date(),
+      });
+      let refreshCalls = 0;
+      for (const runtime of runtimes) {
+        vi.spyOn(runtime.sessionDriver, "refreshSession").mockImplementation(
+          async ({ session }) => {
+            refreshCalls += 1;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            const refreshed = JSON.parse(
+              Buffer.from(session.bytes).toString("utf8"),
+            ) as { last_refresh: string; tokens: { access_token: string } };
+            refreshed.last_refresh = new Date().toISOString();
+            refreshed.tokens.access_token = "refreshed-access";
+            return {
+              artifact: {
+                ...session,
+                bytes: Buffer.from(JSON.stringify(refreshed), "utf8"),
+                updatedAt: new Date(),
+              },
+              providerState: "refreshed",
+              warnings: [],
+            };
+          },
+        );
+      }
+      active = 0;
+      maximumActive = 0;
+      entered = 0;
+      const expiredAllEntered = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const expiredSafety = setTimeout(() => release?.(), 45_000);
+      await Promise.all(
+        grants.map(async (_grant, index) => {
+          const session = await runtimes[index % 2]!.ensureFreshSession({
+            accountId: "account-expired-concurrency",
+            runId: `expired-real-runtime-${index}`,
+            attempt: 1,
+            abortSignal: AbortSignal.timeout(45_000),
+          });
+          expect(session.accessToken).toBe("refreshed-access");
+          active += 1;
+          maximumActive = Math.max(maximumActive, active);
+          entered += 1;
+          if (entered === grants.length) release?.();
+          await expiredAllEntered;
+          active -= 1;
+        }),
+      );
+      clearTimeout(expiredSafety);
+      expect(refreshCalls).toBe(1);
+      expect(maximumActive).toBe(52);
+      expect(
+        await prisma.hostedCodexCredentialVersion.count({
+          where: { accountId: "account-expired-concurrency" },
+        }),
+      ).toBe(2);
+      expect(
+        (
+          await prisma.hostedCodexMutationFence.findUniqueOrThrow({
+            where: { accountId: "account-expired-concurrency" },
+          })
+        ).ownerIdHash,
+      ).toBeNull();
+    } finally {
+      await replica.$disconnect();
+    }
+  }, 60_000);
 
   it("rejects enrolled identity drift without persisting plaintext", async () => {
     const secret = "identity-drift-refresh-token-sentinel";
@@ -499,6 +813,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       prisma,
       vault,
       databaseIncarnation,
+      databaseResourceIdentity,
       Buffer.alloc(32, 29),
     );
     await expect(
@@ -508,7 +823,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         accountId: hostedAccountId("account-identity-drift"),
         label: "Identity drift",
         priority: 3,
-        expectedPoolRevision: 3,
+        expectedPoolRevision: 4,
         authJsonBytes: bytes,
         now: new Date(),
       }),
@@ -523,6 +838,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
 });
 
 async function issueGrant(suffix: string) {
+  const expiresAt = new Date(Date.now() + 10 * 60_000);
   return issueHostedPoolInvocationGrant(
     {
       id: invocationGrantId(`grant-${suffix}`),
@@ -542,13 +858,13 @@ async function issueGrant(suffix: string) {
         authzEpoch: 1n,
       },
       budget: {
-        expiresAt: new Date(Date.now() + 10 * 60_000),
+        expiresAt,
         maxRequests: 4,
         maxConcurrentRequests: 2,
         maxRequestBytes: 16_384,
       },
       commentRefreshBudget: {
-        expiresAt: new Date(Date.now() + 10 * 60_000),
+        expiresAt,
         maxUses: 2,
       },
       now: new Date(),
@@ -609,6 +925,7 @@ function validAuthJson(
   subject: string,
   accessToken: string,
   refreshToken: string,
+  lastRefresh = now,
 ) {
   const claims = Buffer.from(
     JSON.stringify({
@@ -627,7 +944,7 @@ function validAuthJson(
         refresh_token: refreshToken,
         id_token: `e30.${claims}.signature`,
       },
-      last_refresh: now.toISOString(),
+      last_refresh: lastRefresh.toISOString(),
     }),
   );
 }

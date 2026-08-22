@@ -278,12 +278,7 @@ export class HostedCodexSessionRuntime {
     } as const;
     const waitDeadline = Date.now() + 15_000;
     let refresh = await this.runtime.refreshSession(refreshInput);
-    while (
-      refresh.status === "blocked" &&
-      refresh.reason === "permission_required" &&
-      refresh.safeMessage === "Account is refreshing." &&
-      Date.now() < waitDeadline
-    ) {
+    while (isConcurrentRefreshResult(refresh) && Date.now() < waitDeadline) {
       await abortableDelay(100, input.abortSignal);
       refresh = await this.runtime.refreshSession(refreshInput);
     }
@@ -311,6 +306,19 @@ export class HostedCodexSessionRuntime {
       chatgptAccountId: extractChatgptAccountId(idToken),
     };
   }
+}
+
+function isConcurrentRefreshResult(result: {
+  readonly status: string;
+  readonly reason?: string;
+  readonly safeMessage?: string;
+}): boolean {
+  return (
+    (result.status === "blocked" &&
+      result.reason === "permission_required" &&
+      result.safeMessage === "Account is refreshing.") ||
+    (result.status === "skipped" && result.reason === "stale_generation")
+  );
 }
 
 function abortableDelay(

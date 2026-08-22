@@ -333,6 +333,15 @@ jobs:
       - name: Apply test database migrations
         run: DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir packages/platform/db db:migrate:deploy
 
+      - name: Hosted pool security certification
+        run: pnpm hosted-pool:verify
+
+      - name: Hosted pool populated migration rehearsal
+        run: pnpm hosted-pool:migration-rehearsal
+
+      - name: Hosted pool PostgreSQL 17 E2E
+        run: pnpm hosted-pool:e2e:postgres
+
       - name: Rotating Codex dropped-response loopback proof
         run: pnpm codex-rotating:loopback-proof
 
