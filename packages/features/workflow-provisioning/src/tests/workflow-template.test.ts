@@ -369,7 +369,7 @@ describe("renderReviewRouterWorkflow", () => {
           runtimeConfigMode: "oidc",
         }),
       ),
-    ).toBe("ce04f5c0022cdd029142c8c9b1def33f54208a96e58dc68b8b8e6fca5ffc9d5d");
+    ).toBe("84a2d9bf1a7df8902e286fbf107f334bb314f7d163bfb05dbe6eeb71f29142b3");
     expect(
       workflowDocumentSemanticSha256(
         renderCanonicalCodexRotatingInteractionWorkflowV1({
@@ -379,7 +379,7 @@ describe("renderReviewRouterWorkflow", () => {
           runtimeConfigMode: "oidc",
         }),
       ),
-    ).toBe("d8fd345029d506b221cabfbe6e53da429f40f9a1876388cb8c52c026112250ee");
+    ).toBe("fb84012531a80de8ebe881b11fc7de6deb1b9074916b13e5c5d113d888bce865");
     expect(
       areWorkflowDocumentsSemanticallyEqual(
         workflow,
@@ -513,7 +513,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("uses: 777genius/review-router@v1");
     expect(workflow).toContain("uses: actions/setup-node@v6");
     expect(workflow).toContain('node-version: "24"');
-    expect(workflow).toContain("npm install -g @openai/codex@0.141.0");
+    expect(workflow).toContain("npm install -g @openai/codex@0.144.0");
     expect(workflow).toContain("env.OPENROUTER_API_KEY_PRESENT == '1'");
     expect(workflow).toContain("github.event.pull_request.user.type != 'Bot'");
     expect(workflow).toContain(
@@ -605,7 +605,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction"');
     expect(workflow).toContain("OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}");
     expect(workflow).toContain(
-      "CODEX_MODEL: ${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}",
+      "CODEX_MODEL: ${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.6-sol' }}",
     );
     expect(workflow).toContain(
       "CODEX_REASONING_EFFORT: ${{ vars.REVIEW_CODEX_EFFORT || 'xhigh' }}",
@@ -652,7 +652,7 @@ describe("renderReviewRouterWorkflow", () => {
       "discussion_mode: ${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}",
     );
     expect(interactionWorkflowContent).toContain(
-      "discussion_model: ${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}",
+      "discussion_model: ${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.6-sol' }}",
     );
     expect(interactionWorkflowContent).toContain(
       "discussion_reasoning_effort: ${{ vars.REVIEW_CODEX_EFFORT || 'xhigh' }}",

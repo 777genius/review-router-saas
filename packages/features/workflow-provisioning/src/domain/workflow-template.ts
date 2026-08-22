@@ -100,6 +100,8 @@ const interactionJobGuardExpression =
   "github.event_name == 'workflow_dispatch' || ((github.event_name != 'issue_comment' || github.event.issue.pull_request) && github.event.comment.user.type != 'Bot')";
 const actionsCheckoutV6Commit = "d23441a48e516b6c34aea4fa41551a30e30af803";
 const actionsSetupNodeV6Commit = "249970729cb0ef3589644e2896645e5dc5ba9c38";
+const defaultCodexCliVersion = "0.144.0";
+const defaultCodexReviewModel = "gpt-5.6-sol";
 
 function discussionModeExpression(
   options: Pick<ReviewRouterWorkflowOptions, "discussionMode">,
@@ -165,7 +167,7 @@ jobs:
       - name: Install Codex CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' || env.OPENROUTER_API_KEY_PRESENT == '1') }}
         shell: bash
-        run: npm install -g @openai/codex@0.141.0
+        run: npm install -g @openai/codex@${defaultCodexCliVersion}
 
       - name: Install Claude Code CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && env.CLAUDE_CODE_OAUTH_TOKEN_PRESENT == '1' }}
@@ -300,7 +302,7 @@ jobs:
       - name: Install Codex CLI for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
         shell: bash
-        run: npm install -g @openai/codex@0.141.0
+        run: npm install -g @openai/codex@${defaultCodexCliVersion}
 
       - name: Restore Codex subscription auth for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
@@ -355,7 +357,7 @@ jobs:
           REVIEW_ROUTER_DISCUSSION_MAX_PER_PR: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}
           REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD || '5' }}
           REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS: \${{ vars.REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS || '60' }}
-          CODEX_MODEL: \${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}
+          CODEX_MODEL: \${{ vars.REVIEW_CODEX_MODEL || '${defaultCodexReviewModel}' }}
           CODEX_REASONING_EFFORT: \${{ vars.REVIEW_CODEX_EFFORT || 'xhigh' }}
           OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
 `;
@@ -467,7 +469,7 @@ jobs:
       - name: Install Codex CLI for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
         shell: bash
-        run: npm install -g @openai/codex@0.141.0
+        run: npm install -g @openai/codex@${defaultCodexCliVersion}
 
       - name: Restore Codex subscription auth for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
@@ -497,7 +499,7 @@ jobs:
           REVIEW_ROUTER_DISCUSSION_MAX_PER_PR: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}
           REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD || '5' }}
           REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS: \${{ vars.REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS || '60' }}
-          CODEX_MODEL: \${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}
+          CODEX_MODEL: \${{ vars.REVIEW_CODEX_MODEL || '${defaultCodexReviewModel}' }}
           CODEX_REASONING_EFFORT: \${{ vars.REVIEW_CODEX_EFFORT || 'xhigh' }}
         run: node .reviewrouter-runtime/dist/index.js
 `;
@@ -627,7 +629,7 @@ jobs:
       runtime_config_mode: ${options.runtimeConfigMode}
       review_workflow_file: reviewrouter.yml
       discussion_mode: ${discussionModeExpression(options)}
-      discussion_model: \${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}
+      discussion_model: \${{ vars.REVIEW_CODEX_MODEL || '${defaultCodexReviewModel}' }}
       discussion_reasoning_effort: \${{ vars.REVIEW_CODEX_EFFORT || 'xhigh' }}
       discussion_max_per_pr: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}
       discussion_max_per_thread: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD || '5' }}
@@ -702,7 +704,7 @@ jobs:
       - name: Install Codex CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' || env.OPENROUTER_API_KEY_PRESENT == '1') }}
         shell: bash
-        run: npm install -g @openai/codex@0.141.0
+        run: npm install -g @openai/codex@${defaultCodexCliVersion}
 
       - name: Install Claude Code CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && env.CLAUDE_CODE_OAUTH_TOKEN_PRESENT == '1' }}
