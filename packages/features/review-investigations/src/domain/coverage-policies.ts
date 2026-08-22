@@ -317,7 +317,8 @@ export class VersionedCoverageExpansionPolicy implements CoverageExpansionPolicy
           ReviewInvestigationCoverageProfileGeneration.V3 ||
         profileGeneration === ReviewInvestigationCoverageProfileGeneration.V4 ||
         profileGeneration === ReviewInvestigationCoverageProfileGeneration.V5 ||
-        profileGeneration === ReviewInvestigationCoverageProfileGeneration.V6
+        profileGeneration === ReviewInvestigationCoverageProfileGeneration.V6 ||
+        profileGeneration === ReviewInvestigationCoverageProfileGeneration.V7
           ? { searchProofVersion: relationSearchProofVersion }
           : { requiredQueryDigest: chain.pages[0]!.queryDigest }),
         sourcePathHash: sourceProfile.sourcePathHash,

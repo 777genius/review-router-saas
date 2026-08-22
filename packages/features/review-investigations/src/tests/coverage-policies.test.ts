@@ -21,7 +21,7 @@ import {
   obligationIdentity,
   relationSearchProofVersion,
   reviewInvestigationCoverageProfileV2,
-  reviewInvestigationCoverageProfileV6,
+  reviewInvestigationCoverageProfileV7,
   type InvestigationPageEvidence,
   type ReviewInvestigationContract,
   type SeedInvestigationObligation,
@@ -325,7 +325,7 @@ describe("versioned coverage policies", () => {
 
 function contract(): ReviewInvestigationContract {
   return {
-    ...reviewInvestigationCoverageProfileV6,
+    ...reviewInvestigationCoverageProfileV7,
     producerReleaseId: "release-1",
   };
 }

@@ -51,6 +51,7 @@ export enum ReviewInvestigationCoverageProfileGeneration {
   V4 = 4,
   V5 = 5,
   V6 = 6,
+  V7 = 7,
 }
 
 export const reviewInvestigationCoverageProfileV1 = Object.freeze({
@@ -94,6 +95,12 @@ export const reviewInvestigationCoverageProfileV6 = Object.freeze({
   probePolicyVersion: reviewInvestigationProbePolicyV2,
 } as const);
 
+export const reviewInvestigationCoverageProfileV7 = Object.freeze({
+  ...reviewInvestigationCoverageProfileV6,
+  turnPromptContractHash:
+    "87996321aa77575ce5c434a555d238c57fe319cd4131b8cac412c9fa6bf08feb",
+} as const);
+
 export function resolveReviewInvestigationCoverageProfileGeneration(
   contract: ReviewInvestigationContract,
 ): ReviewInvestigationCoverageProfileGeneration | null {
@@ -129,6 +136,10 @@ export function resolveReviewInvestigationCoverageProfileGeneration(
       ReviewInvestigationCoverageProfileGeneration.V6,
       reviewInvestigationCoverageProfileV6,
     ],
+    [
+      ReviewInvestigationCoverageProfileGeneration.V7,
+      reviewInvestigationCoverageProfileV7,
+    ],
   ] as const) {
     const expectedKeys = [...Object.keys(profile), "producerReleaseId"].sort();
     if (
@@ -155,7 +166,8 @@ export function isTypedReviewInvestigationCoverageProfile(
     generation === ReviewInvestigationCoverageProfileGeneration.V3 ||
     generation === ReviewInvestigationCoverageProfileGeneration.V4 ||
     generation === ReviewInvestigationCoverageProfileGeneration.V5 ||
-    generation === ReviewInvestigationCoverageProfileGeneration.V6
+    generation === ReviewInvestigationCoverageProfileGeneration.V6 ||
+    generation === ReviewInvestigationCoverageProfileGeneration.V7
   );
 }
 
