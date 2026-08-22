@@ -34,7 +34,7 @@ export function verifyHostedCodexRestorePermit(input: {
   }
   const payload = parts[1]!;
   const signature = decodeBase64Url(parts[2]!);
-  let verified = false;
+  let verified: boolean;
   try {
     verified = verify(
       null,

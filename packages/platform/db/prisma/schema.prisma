@@ -1575,7 +1575,7 @@ model HostedCodexRestoreOperation {
 
   items HostedCodexRestoreItem[]
 
-  @@unique([inventoryHash, databaseResourceIdentity, targetIncarnation], map: "HostedCodexRestoreOperation_inventory_target_key")
+  @@index([inventoryHash, databaseResourceIdentity, targetIncarnation], map: "HostedCodexRestoreOperation_inventory_target_idx")
 }
 
 model HostedCodexRestoreItem {

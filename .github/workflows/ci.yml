@@ -337,16 +337,66 @@ jobs:
         run: DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir packages/platform/db db:migrate:deploy
 
       - name: Hosted pool security certification
-        run: pnpm hosted-pool:verify
+        id: hosted_verify
+        continue-on-error: true
+        run: |
+          mkdir -p .artifacts/hosted-certification/logs
+          if ! pnpm hosted-pool:verify >.artifacts/hosted-certification/logs/verify.log 2>&1; then
+            echo "::error::Hosted pool verification failed; retained log is withheld pending sensitive-data scan"
+            exit 1
+          fi
 
       - name: Hosted pool production and one-shot canary contracts
         run: pnpm hosted-pool:production-contract
 
       - name: Hosted pool populated migration rehearsal
-        run: pnpm hosted-pool:migration-rehearsal
+        id: hosted_migration
+        continue-on-error: true
+        run: |
+          if ! pnpm hosted-pool:migration-rehearsal >.artifacts/hosted-certification/logs/migration.log 2>&1; then
+            echo "::error::Hosted pool migration rehearsal failed; retained log is withheld pending sensitive-data scan"
+            exit 1
+          fi
 
       - name: Hosted pool PostgreSQL 17 E2E
-        run: pnpm hosted-pool:e2e:postgres
+        id: hosted_postgres
+        continue-on-error: true
+        env:
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_DB_EXPORT: .artifacts/hosted-certification/logs/relay-effect-rows.jsonl
+        run: |
+          if ! pnpm hosted-pool:e2e:postgres >.artifacts/hosted-certification/logs/postgres-e2e.log 2>&1; then
+            echo "::error::Hosted pool PostgreSQL E2E failed; retained log is withheld pending sensitive-data scan"
+            exit 1
+          fi
+
+      - name: Seal SHA-bound hosted certification evidence
+        if: always()
+        env:
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_SENTINELS_JSON: '["rr-hosted-certification-sentinel","rr-hosted-auth-body-sentinel"]'
+          REVIEW_ROUTER_HOSTED_VERIFY_STATUS: ${{ steps.hosted_verify.outcome }}
+          REVIEW_ROUTER_HOSTED_MIGRATION_STATUS: ${{ steps.hosted_migration.outcome }}
+          REVIEW_ROUTER_HOSTED_POSTGRES_STATUS: ${{ steps.hosted_postgres.outcome }}
+        run: pnpm hosted-pool:certification-evidence
+
+      - name: Upload hosted certification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hosted-security-certification-${{ github.sha }}
+          path: .artifacts/hosted-certification/hosted-certification-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce hosted certification gates
+        if: always()
+        env:
+          HOSTED_VERIFY_STATUS: ${{ steps.hosted_verify.outcome }}
+          HOSTED_MIGRATION_STATUS: ${{ steps.hosted_migration.outcome }}
+          HOSTED_POSTGRES_STATUS: ${{ steps.hosted_postgres.outcome }}
+        run: |
+          test "$HOSTED_VERIFY_STATUS" = success
+          test "$HOSTED_MIGRATION_STATUS" = success
+          test "$HOSTED_POSTGRES_STATUS" = success
 
       - name: Rotating Codex dropped-response loopback proof
         run: pnpm codex-rotating:loopback-proof

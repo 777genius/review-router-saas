@@ -8,7 +8,11 @@ const databaseUrl =
 if (!databaseUrl)
   throw new Error("hosted_pool_migration_database_url_required");
 const phase = process.env.REVIEW_ROUTER_HOSTED_POOL_MIGRATION_PHASE;
-if (phase !== "seed-000074" && phase !== "verify-000075") {
+if (
+  phase !== "seed-000074" &&
+  phase !== "verify-000075" &&
+  phase !== "verify-000076"
+) {
   throw new Error("hosted_pool_migration_phase_required");
 }
 const parsed = new URL(databaseUrl);
@@ -21,8 +25,6 @@ if (
 
 const migration74Path =
   "packages/platform/db/prisma/migrations/000074_hosted_codex_account_pool/migration.sql";
-const migration75Path =
-  "packages/platform/db/prisma/migrations/000075_hosted_codex_security_certification/migration.sql";
 const expectedMigration74Sha256 =
   "c992feca661fba44d5f147bab3834c2fd9223c43b1a161dcd1f1787993b32014";
 const client = new Client({ connectionString: databaseUrl });
@@ -72,6 +74,32 @@ describe("hosted pool populated 000074 to 000075 migration", () => {
       expect(account.rows[0]).toEqual({
         state: "restore_quarantined",
         healthVersion: "2",
+      });
+    },
+  );
+
+  it.runIf(phase === "verify-000076")(
+    "applies the terminalization invariants after the populated certification migration",
+    async () => {
+      const migration = await client.query(`
+        SELECT COUNT(*)::int AS count
+        FROM "_prisma_migrations"
+        WHERE migration_name = '000076_hosted_codex_terminalization_restore_invariants'
+          AND finished_at IS NOT NULL AND rolled_back_at IS NULL
+      `);
+      expect(migration.rows[0]?.count).toBe(1);
+      const populated = await client.query(`
+        SELECT
+          (SELECT count(*) FROM "HostedCodexRepositoryBinding")::int AS attestations,
+          (SELECT count(*) FROM "HostedCodexCommentRefreshCapability")::int AS comment_capabilities,
+          (SELECT count(*) FROM "HostedCodexMutationFence")::int AS mutation_fences,
+          (SELECT count(*) FROM "HostedCodexGenerationReceipt")::int AS generation_receipts
+      `);
+      expect(populated.rows[0]).toEqual({
+        attestations: 1,
+        comment_capabilities: 1,
+        mutation_fences: 1,
+        generation_receipts: 1,
       });
     },
   );
@@ -178,5 +206,31 @@ const seedLegacyRows = `
   ) VALUES (
     'request-legacy', 'grant-legacy', 1, '${h64.replaceAll("a", "c")}', '${h64}',
     'processing', 128, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+  );
+  INSERT INTO "HostedCodexCommentRefreshCapability" (
+    "id", "grantId", "invocationId", "repositoryBindingId", "workspaceId",
+    "poolId", "repositoryConnectionId", "capabilityTokenHash", "expiresAt",
+    "maxUses", "updatedAt"
+  ) VALUES (
+    'comment-capability-legacy', 'grant-legacy', 'invocation-legacy',
+    'binding-legacy', 'workspace-legacy', 'pool-legacy', 'repository-legacy',
+    '${h64.replaceAll("a", "d")}', CURRENT_TIMESTAMP + INTERVAL '1 hour', 2,
+    CURRENT_TIMESTAMP
+  );
+  INSERT INTO "HostedCodexMutationFence" (
+    "accountId", "workspaceId", "poolId", "fenceEpoch", "ownerIdHash",
+    "expectedGeneration", "expiresAt", "updatedAt"
+  ) VALUES (
+    'account-legacy', 'workspace-legacy', 'pool-legacy', 1,
+    '${h64.replaceAll("a", "e")}', 1, CURRENT_TIMESTAMP + INTERVAL '1 hour',
+    CURRENT_TIMESTAMP
+  );
+  INSERT INTO "HostedCodexGenerationReceipt" (
+    "id", "credentialVersionId", "accountId", "workspaceId", "poolId",
+    "generation", "kind", "mutationFenceEpoch", "actorIdHash", "receiptHash"
+  ) VALUES (
+    'generation-receipt-legacy', 'credential-legacy', 'account-legacy',
+    'workspace-legacy', 'pool-legacy', 1, 'credential_created', 1,
+    '${h64.replaceAll("a", "f")}', '${h64.replaceAll("a", "9")}'
   );
 `;

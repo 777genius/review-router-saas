@@ -53,7 +53,9 @@ export class PrismaHostedCodexRestoreReconciler {
         item.custodyMode !== "aws_kms",
     );
     if (mismatched.length > 0) {
-      await this.quarantineAccounts(mismatched.map((item) => item.accountId));
+      await this.quarantineAccountsAndRevokeGrants(
+        mismatched.map((item) => item.accountId),
+      );
       throw new Error("hosted_codex_external_database_witness_mismatch");
     }
     const quarantined = await this.prisma.hostedCodexAccount.count({
@@ -88,74 +90,128 @@ export class PrismaHostedCodexRestoreReconciler {
       where: { nonceHash },
     });
     if (replay) {
-      if (
-        replay.inventoryHash !== inventoryHash ||
-        replay.databaseResourceIdentity !== this.databaseResourceIdentity ||
-        replay.targetIncarnation !== this.databaseIncarnation
-      ) {
-        throw new Error("hosted_codex_restore_permit_replay_conflict");
-      }
-      return replay.id;
+      return this.assertReplayBinding(replay, inventoryHash);
     }
     const operationId = randomUUID();
-    await this.prisma.$transaction(
-      async (transaction) => {
-        await transaction.hostedCodexAccount.updateMany({
-          where: {
-            id: { in: sourceItems.map((item) => item.accountId) },
-            state: { notIn: ["restore_quarantined", "tombstoned"] },
-          },
-          data: { state: "restore_quarantined", healthVersion: { increment: 1 } },
+    try {
+      await this.prisma.$transaction(
+        async (transaction) => {
+          await transaction.hostedCodexAccount.updateMany({
+            where: {
+              id: { in: sourceItems.map((item) => item.accountId) },
+              state: { notIn: ["restore_quarantined", "tombstoned"] },
+            },
+            data: {
+              state: "restore_quarantined",
+              healthVersion: { increment: 1 },
+            },
+          });
+          const affectedGrantIds = (
+            await transaction.hostedCodexInvocationGrant.findMany({
+              where: {
+                status: "issued",
+                OR: [
+                  {
+                    activeAccountId: {
+                      in: sourceItems.map((item) => item.accountId),
+                    },
+                  },
+                  {
+                    primaryAccountId: {
+                      in: sourceItems.map((item) => item.accountId),
+                    },
+                  },
+                  {
+                    backupAccountId: {
+                      in: sourceItems.map((item) => item.accountId),
+                    },
+                  },
+                ],
+              },
+              select: { id: true },
+            })
+          ).map((grant) => grant.id);
+          await transaction.hostedCodexInvocationGrant.updateMany({
+            where: {
+              id: { in: affectedGrantIds },
+              status: "issued",
+            },
+            data: {
+              status: "revoked",
+              revokedAt: this.now(),
+              inFlight: 0,
+              revision: { increment: 1 },
+            },
+          });
+          await transaction.hostedCodexCommentRefreshCapability.updateMany({
+            where: { grantId: { in: affectedGrantIds }, revokedAt: null },
+            data: { revokedAt: this.now(), revision: { increment: 1 } },
+          });
+          await transaction.hostedCodexRestoreOperation.create({
+            data: {
+              id: operationId,
+              inventoryHash,
+              databaseResourceIdentity: permit.databaseResourceIdentity,
+              sourceIncarnation: permit.sourceIncarnation,
+              targetIncarnation: permit.targetIncarnation,
+              sourceKmsKeyArn: permit.sourceKmsKeyArn,
+              targetKmsKeyArn: permit.targetKmsKeyArn,
+              authorityKeyId: permit.authorityKeyId,
+              actorIdHash: sha256(permit.actorId),
+              nonceHash,
+              permitExpiresAt: permit.expiresAt,
+              itemCount: sourceItems.length,
+              createdAt: this.now(),
+            },
+          });
+          await transaction.hostedCodexRestoreItem.createMany({
+            data: sourceItems.map((item) => ({
+              id: randomUUID(),
+              restoreOperationId: operationId,
+              credentialVersionId: item.credentialVersionId,
+              accountId: item.accountId,
+              workspaceId: item.workspaceId,
+              poolId: item.poolId,
+              generation: item.generation,
+              sourceRevision: item.revision,
+              sourceAadHash: item.aadHash,
+              sourceCiphertextHash: item.ciphertextHash,
+              createdAt: this.now(),
+            })),
+          });
+        },
+        { isolationLevel: "Serializable" },
+      );
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) throw error;
+      const racedReplay =
+        await this.prisma.hostedCodexRestoreOperation.findUnique({
+          where: { nonceHash },
         });
-        await transaction.hostedCodexInvocationGrant.updateMany({
-          where: {
-            activeAccountId: { in: sourceItems.map((item) => item.accountId) },
-            status: "issued",
-          },
-          data: {
-            status: "revoked",
-            revokedAt: this.now(),
-            inFlight: 0,
-            revision: { increment: 1 },
-          },
-        });
-        await transaction.hostedCodexRestoreOperation.create({
-          data: {
-            id: operationId,
-            inventoryHash,
-            databaseResourceIdentity: permit.databaseResourceIdentity,
-            sourceIncarnation: permit.sourceIncarnation,
-            targetIncarnation: permit.targetIncarnation,
-            sourceKmsKeyArn: permit.sourceKmsKeyArn,
-            targetKmsKeyArn: permit.targetKmsKeyArn,
-            authorityKeyId: permit.authorityKeyId,
-            actorIdHash: sha256(permit.actorId),
-            nonceHash,
-            permitExpiresAt: permit.expiresAt,
-            itemCount: sourceItems.length,
-            createdAt: this.now(),
-          },
-        });
-        await transaction.hostedCodexRestoreItem.createMany({
-          data: sourceItems.map((item) => ({
-            id: randomUUID(),
-            restoreOperationId: operationId,
-            credentialVersionId: item.credentialVersionId,
-            accountId: item.accountId,
-            workspaceId: item.workspaceId,
-            poolId: item.poolId,
-            generation: item.generation,
-            sourceRevision: item.revision,
-            sourceAadHash: item.aadHash,
-            sourceCiphertextHash: item.ciphertextHash,
-            createdAt: this.now(),
-          })),
-        });
-      },
-      { isolationLevel: "Serializable" },
-    );
+      if (!racedReplay) throw error;
+      return this.assertReplayBinding(racedReplay, inventoryHash);
+    }
     this.fault?.("after_witness_persisted");
     return operationId;
+  }
+
+  private assertReplayBinding(
+    replay: {
+      readonly id: string;
+      readonly inventoryHash: string;
+      readonly databaseResourceIdentity: string;
+      readonly targetIncarnation: string;
+    },
+    inventoryHash: string,
+  ): string {
+    if (
+      replay.inventoryHash !== inventoryHash ||
+      replay.databaseResourceIdentity !== this.databaseResourceIdentity ||
+      replay.targetIncarnation !== this.databaseIncarnation
+    ) {
+      throw new Error("hosted_codex_restore_permit_replay_conflict");
+    }
+    return replay.id;
   }
 
   async reconcile(operationId: string): Promise<{
@@ -164,9 +220,16 @@ export class PrismaHostedCodexRestoreReconciler {
   }> {
     const operation = await this.requireOperation(operationId);
     if (operation.state === "promoted") return { reconciled: 0, busy: 0 };
-    if (operation.permitExpiresAt <= this.now()) {
-      throw new Error("hosted_codex_restore_permit_expired");
+    if (operation.state === "failed") {
+      throw new Error(
+        "hosted_codex_restore_operation_failed_new_permit_required",
+      );
     }
+    // Expiry is an admission boundary checked before the immutable witnessed
+    // operation is persisted. Once witnessed, the operation must remain
+    // resumable after a process crash; otherwise a partially rewrapped
+    // inventory could become permanently stranded when the original permit
+    // expires between attempts.
     if (operation.targetKmsKeyArn !== this.recoveryVault.currentKeyId) {
       throw new Error("hosted_codex_restore_target_kms_mismatch");
     }
@@ -175,7 +238,10 @@ export class PrismaHostedCodexRestoreReconciler {
       data: { state: "reconciling", reconciliationStartedAt: this.now() },
     });
     const items = await this.prisma.hostedCodexRestoreItem.findMany({
-      where: { restoreOperationId: operationId, state: { in: ["pending", "busy"] } },
+      where: {
+        restoreOperationId: operationId,
+        state: { in: ["pending", "busy"] },
+      },
       orderBy: { id: "asc" },
     });
     let reconciled = 0;
@@ -228,7 +294,9 @@ export class PrismaHostedCodexRestoreReconciler {
         this.fault?.("after_item_encrypt", item.id);
         const nextRevision = item.sourceRevision + 1n;
         const idempotencyKeyHash = sha256(
-          [operationId, item.credentialVersionId, nextRevision.toString()].join("\u0000"),
+          [operationId, item.credentialVersionId, nextRevision.toString()].join(
+            "\u0000",
+          ),
         );
         await this.prisma.$transaction(
           async (transaction) => {
@@ -238,15 +306,19 @@ export class PrismaHostedCodexRestoreReconciler {
               authority,
               now: this.now(),
             });
-            const current = await transaction.hostedCodexRestoreItem.findUniqueOrThrow({
-              where: { id: item.id },
-            });
-            if (current.state === "rewrapped" || current.state === "promoted") return;
-            const latest =
-              await transaction.hostedCodexCredentialEnvelopeRevision.findFirst({
-                where: { credentialVersionId: item.credentialVersionId },
-                orderBy: { revision: "desc" },
+            const current =
+              await transaction.hostedCodexRestoreItem.findUniqueOrThrow({
+                where: { id: item.id },
               });
+            if (current.state === "rewrapped" || current.state === "promoted")
+              return;
+            const latest =
+              await transaction.hostedCodexCredentialEnvelopeRevision.findFirst(
+                {
+                  where: { credentialVersionId: item.credentialVersionId },
+                  orderBy: { revision: "desc" },
+                },
+              );
             if (
               !latest ||
               latest.revision !== item.sourceRevision ||
@@ -306,7 +378,10 @@ export class PrismaHostedCodexRestoreReconciler {
       }
     }
     const remaining = await this.prisma.hostedCodexRestoreItem.count({
-      where: { restoreOperationId: operationId, state: { notIn: ["rewrapped", "promoted"] } },
+      where: {
+        restoreOperationId: operationId,
+        state: { notIn: ["rewrapped", "promoted"] },
+      },
     });
     if (remaining === 0) {
       await this.assertInventoryMembership(operationId, operation.itemCount);
@@ -361,7 +436,8 @@ export class PrismaHostedCodexRestoreReconciler {
     const remaining = await this.prisma.hostedCodexRestoreItem.count({
       where: { restoreOperationId: operationId, state: { not: "promoted" } },
     });
-    if (remaining !== 0) throw new Error("hosted_codex_restore_promotion_incomplete");
+    if (remaining !== 0)
+      throw new Error("hosted_codex_restore_promotion_incomplete");
     await this.prisma.hostedCodexRestoreOperation.updateMany({
       where: { id: operationId, state: "reconciled" },
       data: { state: "promoted", promotedAt: this.now() },
@@ -371,36 +447,61 @@ export class PrismaHostedCodexRestoreReconciler {
 
   private async loadInventory() {
     const accounts = await this.prisma.hostedCodexAccount.findMany({
-      where: { activeGeneration: { not: null }, state: { notIn: ["tombstoned", "draining"] } },
+      where: {
+        activeGeneration: { not: null },
+        state: { notIn: ["tombstoned", "draining"] },
+      },
       include: {
         credentialVersions: {
           orderBy: { generation: "desc" },
           take: 1,
-          include: { envelopeRevisions: { orderBy: { revision: "desc" }, take: 1 } },
+          include: {
+            envelopeRevisions: { orderBy: { revision: "desc" }, take: 1 },
+          },
         },
       },
       orderBy: { id: "asc" },
     });
+    const incompleteAccountIds = accounts
+      .filter((account) => {
+        const credential = account.credentialVersions[0];
+        return (
+          !credential ||
+          credential.envelopeRevisions.length !== 1 ||
+          account.activeGeneration !== credential.generation
+        );
+      })
+      .map((account) => account.id);
+    if (incompleteAccountIds.length > 0) {
+      await this.quarantineAccountsAndRevokeGrants(incompleteAccountIds);
+      throw new Error("hosted_codex_restore_inventory_incomplete");
+    }
     return accounts.flatMap((account) => {
       const credential = account.credentialVersions[0];
       const revision = credential?.envelopeRevisions[0];
-      if (!credential || !revision || account.activeGeneration !== credential.generation) {
+      if (
+        !credential ||
+        !revision ||
+        account.activeGeneration !== credential.generation
+      ) {
         return [];
       }
-      return [{
-        accountId: account.id,
-        workspaceId: account.workspaceId,
-        poolId: account.poolId,
-        credentialVersionId: credential.id,
-        generation: credential.generation,
-        revision: revision.revision,
-        custodyMode: revision.custodyMode,
-        kmsKeyArn: revision.kmsKeyArn,
-        databaseResourceIdentity: revision.databaseResourceIdentity,
-        databaseIncarnation: revision.databaseIncarnation,
-        aadHash: revision.aadHash,
-        ciphertextHash: revision.ciphertextHash,
-      }];
+      return [
+        {
+          accountId: account.id,
+          workspaceId: account.workspaceId,
+          poolId: account.poolId,
+          credentialVersionId: credential.id,
+          generation: credential.generation,
+          revision: revision.revision,
+          custodyMode: revision.custodyMode,
+          kmsKeyArn: revision.kmsKeyArn,
+          databaseResourceIdentity: revision.databaseResourceIdentity,
+          databaseIncarnation: revision.databaseIncarnation,
+          aadHash: revision.aadHash,
+          ciphertextHash: revision.ciphertextHash,
+        },
+      ];
     });
   }
 
@@ -410,15 +511,16 @@ export class PrismaHostedCodexRestoreReconciler {
     readonly sourceAadHash: string;
     readonly sourceCiphertextHash: string;
   }) {
-    const credential = await this.prisma.hostedCodexCredentialVersion.findUniqueOrThrow({
-      where: { id: item.credentialVersionId },
-      include: {
-        envelopeRevisions: {
-          where: { revision: item.sourceRevision },
-          take: 1,
+    const credential =
+      await this.prisma.hostedCodexCredentialVersion.findUniqueOrThrow({
+        where: { id: item.credentialVersionId },
+        include: {
+          envelopeRevisions: {
+            where: { revision: item.sourceRevision },
+            take: 1,
+          },
         },
-      },
-    });
+      });
     const revision = credential.envelopeRevisions[0];
     if (
       !revision ||
@@ -437,25 +539,38 @@ export class PrismaHostedCodexRestoreReconciler {
     };
   }
 
-  private async assertInventoryMembership(operationId: string, itemCount: number) {
+  private async assertInventoryMembership(
+    operationId: string,
+    itemCount: number,
+  ) {
     const [operation, items] = await Promise.all([
       this.requireOperation(operationId),
       this.prisma.hostedCodexRestoreItem.findMany({
         where: { restoreOperationId: operationId },
-        select: { credentialVersionId: true, accountId: true, generation: true },
+        select: {
+          credentialVersionId: true,
+          accountId: true,
+          generation: true,
+          targetRevision: true,
+          state: true,
+        },
       }),
     ]);
-    if (items.length !== itemCount) throw new Error("hosted_codex_restore_inventory_changed");
+    if (items.length !== itemCount)
+      throw new Error("hosted_codex_restore_inventory_changed");
     const active = await this.prisma.hostedCodexAccount.findMany({
       where: { id: { in: items.map((item) => item.accountId) } },
       select: { id: true, activeGeneration: true },
     });
     if (
       active.length !== items.length ||
-      active.some((account) =>
-        !items.some(
-          (item) => item.accountId === account.id && item.generation === account.activeGeneration,
-        ),
+      active.some(
+        (account) =>
+          !items.some(
+            (item) =>
+              item.accountId === account.id &&
+              item.generation === account.activeGeneration,
+          ),
       )
     ) {
       throw new Error("hosted_codex_restore_inventory_changed");
@@ -478,14 +593,41 @@ export class PrismaHostedCodexRestoreReconciler {
     ) {
       throw new Error("hosted_codex_restore_inventory_changed");
     }
+    const affectedInventory = currentInventory.filter((entry) =>
+      witnessedCredentialIds.has(entry.credentialVersionId),
+    );
+    if (
+      affectedInventory.length !== items.length ||
+      affectedInventory.some((entry) => {
+        const witnessed = items.find(
+          (item) => item.credentialVersionId === entry.credentialVersionId,
+        );
+        return (
+          !witnessed ||
+          witnessed.targetRevision === null ||
+          entry.revision !== witnessed.targetRevision ||
+          entry.databaseResourceIdentity !==
+            operation.databaseResourceIdentity ||
+          entry.databaseIncarnation !== operation.targetIncarnation ||
+          entry.kmsKeyArn !== operation.targetKmsKeyArn ||
+          !["rewrapped", "promoted"].includes(witnessed.state)
+        );
+      })
+    ) {
+      throw new Error("hosted_codex_restore_inventory_changed");
+    }
   }
 
   private assertPermit(
     permit: HostedCodexRestorePermit,
-    items: Awaited<ReturnType<PrismaHostedCodexRestoreReconciler["loadInventory"]>>,
+    items: Awaited<
+      ReturnType<PrismaHostedCodexRestoreReconciler["loadInventory"]>
+    >,
     inventoryHash: string,
   ) {
-    const sourceIncarnations = new Set(items.map((item) => item.databaseIncarnation));
+    const sourceIncarnations = new Set(
+      items.map((item) => item.databaseIncarnation),
+    );
     const sourceKeys = new Set(items.map((item) => item.kmsKeyArn));
     if (
       permit.inventoryHash !== inventoryHash ||
@@ -503,15 +645,59 @@ export class PrismaHostedCodexRestoreReconciler {
   }
 
   private requireOperation(id: string) {
-    return this.prisma.hostedCodexRestoreOperation.findUniqueOrThrow({ where: { id } });
-  }
-
-  private quarantineAccounts(accountIds: readonly string[]) {
-    return this.prisma.hostedCodexAccount.updateMany({
-      where: { id: { in: [...new Set(accountIds)] }, state: { not: "tombstoned" } },
-      data: { state: "restore_quarantined", healthVersion: { increment: 1 } },
+    return this.prisma.hostedCodexRestoreOperation.findUniqueOrThrow({
+      where: { id },
     });
   }
+
+  private quarantineAccountsAndRevokeGrants(accountIds: readonly string[]) {
+    const uniqueAccountIds = [...new Set(accountIds)];
+    const now = this.now();
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.hostedCodexAccount.updateMany({
+        where: { id: { in: uniqueAccountIds }, state: { not: "tombstoned" } },
+        data: {
+          state: "restore_quarantined",
+          healthVersion: { increment: 1 },
+        },
+      });
+      const grants = await transaction.hostedCodexInvocationGrant.findMany({
+        where: {
+          status: "issued",
+          OR: [
+            { activeAccountId: { in: uniqueAccountIds } },
+            { primaryAccountId: { in: uniqueAccountIds } },
+            { backupAccountId: { in: uniqueAccountIds } },
+          ],
+        },
+        select: { id: true },
+      });
+      if (grants.length === 0) return;
+      const grantIds = grants.map((grant) => grant.id);
+      await transaction.hostedCodexInvocationGrant.updateMany({
+        where: { id: { in: grantIds }, status: "issued" },
+        data: {
+          status: "revoked",
+          revokedAt: now,
+          inFlight: 0,
+          revision: { increment: 1 },
+        },
+      });
+      await transaction.hostedCodexCommentRefreshCapability.updateMany({
+        where: { grantId: { in: grantIds }, revokedAt: null },
+        data: { revokedAt: now, revision: { increment: 1 } },
+      });
+    });
+  }
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "P2002"
+  );
 }
 
 async function requireFence(
@@ -533,22 +719,25 @@ async function requireFence(
     },
     data: { updatedAt: input.now },
   });
-  if (updated.count !== 1) throw new Error("hosted_codex_mutation_fence_invalid");
+  if (updated.count !== 1)
+    throw new Error("hosted_codex_mutation_fence_invalid");
 }
 
-function hashInventory(items: readonly {
-  readonly workspaceId: string;
-  readonly poolId: string;
-  readonly accountId: string;
-  readonly credentialVersionId: string;
-  readonly generation: bigint;
-  readonly revision: bigint;
-  readonly databaseResourceIdentity: string | null;
-  readonly databaseIncarnation: string;
-  readonly kmsKeyArn: string | null;
-  readonly aadHash: string;
-  readonly ciphertextHash: string;
-}[]): string {
+function hashInventory(
+  items: readonly {
+    readonly workspaceId: string;
+    readonly poolId: string;
+    readonly accountId: string;
+    readonly credentialVersionId: string;
+    readonly generation: bigint;
+    readonly revision: bigint;
+    readonly databaseResourceIdentity: string | null;
+    readonly databaseIncarnation: string;
+    readonly kmsKeyArn: string | null;
+    readonly aadHash: string;
+    readonly ciphertextHash: string;
+  }[],
+): string {
   return sha256(
     items
       .map((item) =>
@@ -580,7 +769,8 @@ function restoreEnvelope(value: {
   readonly encryptedCiphertext: string;
   readonly envelopeMetadata: unknown;
 }): EncryptedCredentialEnvelope {
-  const metadata = value.envelopeMetadata as Partial<EncryptedCredentialEnvelope>;
+  const metadata =
+    value.envelopeMetadata as Partial<EncryptedCredentialEnvelope>;
   if (
     value.envelopeVersion !== 1 ||
     value.encryptionAlgorithm !== "aes-256-gcm" ||
@@ -603,7 +793,9 @@ function restoreEnvelope(value: {
   };
 }
 
-function envelopeMetadata(envelope: EncryptedCredentialEnvelope): Prisma.InputJsonValue {
+function envelopeMetadata(
+  envelope: EncryptedCredentialEnvelope,
+): Prisma.InputJsonValue {
   return {
     nonce: envelope.nonce,
     authenticationTag: envelope.authenticationTag,

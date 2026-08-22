@@ -276,7 +276,11 @@ export class HostedCodexSessionRuntime {
         abortSignal: input.abortSignal,
       },
     } as const;
-    const waitDeadline = Date.now() + 15_000;
+    // A legitimate winning refresh can exceed 15 seconds under PostgreSQL/KMS
+    // pressure. Waiters remain abortable and fenced; allow enough time for the
+    // durable winner to publish its generation instead of misclassifying load
+    // as a permission failure.
+    const waitDeadline = Date.now() + 60_000;
     let refresh = await this.runtime.refreshSession(refreshInput);
     while (isConcurrentRefreshResult(refresh) && Date.now() < waitDeadline) {
       await abortableDelay(100, input.abortSignal);

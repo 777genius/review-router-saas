@@ -1,5 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { HostedCodexUpstreamEffectState, PrismaClient } from "@prisma/client";
+import type {
+  HostedCodexUpstreamEffectState,
+  Prisma,
+  PrismaClient,
+} from "@prisma/client";
 
 const terminalStates: readonly HostedCodexUpstreamEffectState[] = [
   "succeeded",
@@ -41,7 +45,11 @@ export class PrismaHostedCodexUpstreamEffectLedger {
   }): Promise<HostedCodexUpstreamEffectLease> {
     requireHash(input.requestHash);
     const leaseMs = input.leaseMs ?? 30_000;
-    if (!Number.isSafeInteger(leaseMs) || leaseMs < 5_000 || leaseMs > 300_000) {
+    if (
+      !Number.isSafeInteger(leaseMs) ||
+      leaseMs < 5_000 ||
+      leaseMs > 300_000
+    ) {
       throw new Error("hosted_codex_effect_lease_invalid");
     }
     return this.prisma.$transaction(
@@ -56,11 +64,12 @@ export class PrismaHostedCodexUpstreamEffectLedger {
           select: { id: true },
         });
         if (!request) throw new Error("hosted_codex_effect_request_invalid");
-        const prior = await transaction.hostedCodexUpstreamEffectAttempt.findMany({
-          where: { relayRequestId: input.relayRequestId },
-          orderBy: { attemptOrdinal: "desc" },
-          take: 1,
-        });
+        const prior =
+          await transaction.hostedCodexUpstreamEffectAttempt.findMany({
+            where: { relayRequestId: input.relayRequestId },
+            orderBy: { attemptOrdinal: "desc" },
+            take: 1,
+          });
         const latest = prior[0];
         if (latest && !terminalStates.includes(latest.state)) {
           throw new Error("hosted_codex_effect_attempt_in_progress");
@@ -87,7 +96,11 @@ export class PrismaHostedCodexUpstreamEffectLedger {
             attemptOrdinal,
             requestHash: input.requestHash,
             idempotencyKeyHash: sha256(
-              [input.relayRequestId, input.accountId, String(attemptOrdinal)].join("\u0000"),
+              [
+                input.relayRequestId,
+                input.accountId,
+                String(attemptOrdinal),
+              ].join("\u0000"),
             ),
             state: "prepared",
             ownerIdHash: sha256(ownerToken),
@@ -111,34 +124,38 @@ export class PrismaHostedCodexUpstreamEffectLedger {
 
   async markDispatching(lease: HostedCodexUpstreamEffectLease): Promise<void> {
     const now = this.now();
-    const updated = await this.prisma.hostedCodexUpstreamEffectAttempt.updateMany({
-      where: this.liveLeaseWhere(lease, "prepared", now),
-      data: {
-        state: "dispatching",
-        dispatchStartedAt: now,
-        heartbeatAt: now,
-        leaseExpiresAt: new Date(now.getTime() + 30_000),
-      },
-    });
-    if (updated.count !== 1) throw new Error("hosted_codex_effect_lease_invalid");
+    const updated =
+      await this.prisma.hostedCodexUpstreamEffectAttempt.updateMany({
+        where: this.liveLeaseWhere(lease, "prepared", now),
+        data: {
+          state: "dispatching",
+          dispatchStartedAt: now,
+          heartbeatAt: now,
+          leaseExpiresAt: new Date(now.getTime() + 30_000),
+        },
+      });
+    if (updated.count !== 1)
+      throw new Error("hosted_codex_effect_lease_invalid");
   }
 
   async heartbeat(lease: HostedCodexUpstreamEffectLease): Promise<void> {
     const now = this.now();
-    const updated = await this.prisma.hostedCodexUpstreamEffectAttempt.updateMany({
-      where: {
-        id: lease.attemptId,
-        ownerIdHash: sha256(lease.ownerToken),
-        fenceEpoch: lease.fenceEpoch,
-        state: { in: ["dispatching", "response_started"] },
-        leaseExpiresAt: { gt: now },
-      },
-      data: {
-        heartbeatAt: now,
-        leaseExpiresAt: new Date(now.getTime() + 30_000),
-      },
-    });
-    if (updated.count !== 1) throw new Error("hosted_codex_effect_lease_invalid");
+    const updated =
+      await this.prisma.hostedCodexUpstreamEffectAttempt.updateMany({
+        where: {
+          id: lease.attemptId,
+          ownerIdHash: sha256(lease.ownerToken),
+          fenceEpoch: lease.fenceEpoch,
+          state: { in: ["dispatching", "response_started"] },
+          leaseExpiresAt: { gt: now },
+        },
+        data: {
+          heartbeatAt: now,
+          leaseExpiresAt: new Date(now.getTime() + 30_000),
+        },
+      });
+    if (updated.count !== 1)
+      throw new Error("hosted_codex_effect_lease_invalid");
   }
 
   async markResponseStarted(
@@ -146,82 +163,125 @@ export class PrismaHostedCodexUpstreamEffectLedger {
     providerResponseId: string | null,
   ): Promise<void> {
     const now = this.now();
-    const updated = await this.prisma.hostedCodexUpstreamEffectAttempt.updateMany({
-      where: this.liveLeaseWhere(lease, "dispatching", now),
-      data: {
-        state: "response_started",
-        responseStartedAt: now,
-        heartbeatAt: now,
-        leaseExpiresAt: new Date(now.getTime() + 30_000),
-        providerResponseIdHash: providerResponseId ? sha256(providerResponseId) : null,
-      },
-    });
-    if (updated.count !== 1) throw new Error("hosted_codex_effect_lease_invalid");
+    const updated =
+      await this.prisma.hostedCodexUpstreamEffectAttempt.updateMany({
+        where: this.liveLeaseWhere(lease, "dispatching", now),
+        data: {
+          state: "response_started",
+          responseStartedAt: now,
+          heartbeatAt: now,
+          leaseExpiresAt: new Date(now.getTime() + 30_000),
+          providerResponseIdHash: providerResponseId
+            ? sha256(providerResponseId)
+            : null,
+        },
+      });
+    if (updated.count !== 1)
+      throw new Error("hosted_codex_effect_lease_invalid");
   }
 
   async finish(
     lease: HostedCodexUpstreamEffectLease,
     input: {
-      readonly state: "succeeded" | "failed_no_effect" | "failed_classified" | "terminal_unknown";
+      readonly state:
+        | "succeeded"
+        | "failed_no_effect"
+        | "failed_classified"
+        | "terminal_unknown";
       readonly errorCode?: string;
       readonly evidence: string;
     },
   ): Promise<void> {
     const now = this.now();
-    const updated = await this.prisma.hostedCodexUpstreamEffectAttempt.updateMany({
-      where: {
-        id: lease.attemptId,
-        ownerIdHash: sha256(lease.ownerToken),
-        fenceEpoch: lease.fenceEpoch,
-        state: { notIn: [...terminalStates] },
-      },
-      data: {
-        state: input.state,
-        completedAt: now,
-        heartbeatAt: now,
-        terminalEvidenceHash: sha256(input.evidence),
-        errorCode: input.errorCode?.slice(0, 120) ?? null,
-      },
+    await this.prisma.$transaction(async (transaction) => {
+      const updated =
+        await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+          where: {
+            id: lease.attemptId,
+            ownerIdHash: sha256(lease.ownerToken),
+            fenceEpoch: lease.fenceEpoch,
+            state: { notIn: [...terminalStates] },
+          },
+          data: {
+            state: input.state,
+            completedAt: now,
+            heartbeatAt: now,
+            terminalEvidenceHash: sha256(input.evidence),
+            errorCode: input.errorCode?.slice(0, 120) ?? null,
+          },
+        });
+      if (updated.count !== 1) {
+        throw new Error("hosted_codex_effect_completion_conflict");
+      }
+      if (input.state === "terminal_unknown") {
+        const effect =
+          await transaction.hostedCodexUpstreamEffectAttempt.findUniqueOrThrow({
+            where: { id: lease.attemptId },
+            select: { relayRequestId: true, grantId: true },
+          });
+        const request = await transaction.hostedCodexRelayRequest.updateMany({
+          where: {
+            id: effect.relayRequestId,
+            grantId: effect.grantId,
+            status: { in: ["received", "processing", "response_started"] },
+          },
+          data: {
+            status: "terminal_unknown",
+            responseBytes: null,
+            responseHash: null,
+            errorCode: input.errorCode ?? "upstream_dispatch_outcome_unknown",
+            completedAt: now,
+          },
+        });
+        if (request.count !== 1) {
+          throw new Error("relay_request_completion_conflict");
+        }
+        await poisonGrant(transaction, effect.grantId, now);
+      }
     });
-    if (updated.count !== 1) throw new Error("hosted_codex_effect_completion_conflict");
   }
 
   /** Crash recovery is conservative once dispatch could have reached upstream. */
   async sweepExpired(limit = 100): Promise<number> {
     const now = this.now();
-    const expired = await this.prisma.hostedCodexUpstreamEffectAttempt.findMany({
-      where: {
-        state: { in: ["prepared", "dispatching", "response_started"] },
-        leaseExpiresAt: { lte: now },
+    const expired = await this.prisma.hostedCodexUpstreamEffectAttempt.findMany(
+      {
+        where: {
+          state: { in: ["prepared", "dispatching", "response_started"] },
+          leaseExpiresAt: { lte: now },
+        },
+        orderBy: [{ leaseExpiresAt: "asc" }, { id: "asc" }],
+        take: limit,
       },
-      orderBy: [{ leaseExpiresAt: "asc" }, { id: "asc" }],
-      take: limit,
-    });
+    );
     let swept = 0;
     for (const attempt of expired) {
       const terminalState =
         attempt.state === "prepared" ? "failed_no_effect" : "terminal_unknown";
       await this.prisma.$transaction(async (transaction) => {
-        const changed = await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
-          where: {
-            id: attempt.id,
-            state: attempt.state,
-            fenceEpoch: attempt.fenceEpoch,
-            leaseExpiresAt: { lte: now },
-          },
-          data: {
-            state: terminalState,
-            completedAt: now,
-            terminalEvidenceHash: sha256(`expired\u0000${attempt.id}\u0000${attempt.state}`),
-            errorCode:
-              terminalState === "terminal_unknown"
-                ? "upstream_dispatch_outcome_unknown"
-                : "upstream_dispatch_not_started",
-          },
-        });
+        const changed =
+          await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+            where: {
+              id: attempt.id,
+              state: attempt.state,
+              fenceEpoch: attempt.fenceEpoch,
+              leaseExpiresAt: { lte: now },
+            },
+            data: {
+              state: terminalState,
+              completedAt: now,
+              terminalEvidenceHash: sha256(
+                `expired\u0000${attempt.id}\u0000${attempt.state}`,
+              ),
+              errorCode:
+                terminalState === "terminal_unknown"
+                  ? "upstream_dispatch_outcome_unknown"
+                  : "upstream_dispatch_not_started",
+            },
+          });
         if (changed.count !== 1) return;
         if (terminalState === "terminal_unknown") {
-          await transaction.hostedCodexRelayRequest.updateMany({
+          const request = await transaction.hostedCodexRelayRequest.updateMany({
             where: {
               id: attempt.relayRequestId,
               grantId: attempt.grantId,
@@ -233,8 +293,9 @@ export class PrismaHostedCodexUpstreamEffectLedger {
               completedAt: now,
             },
           });
-          // The database completion trigger owns the single inFlight decrement.
-          // Keeping accounting in one authority avoids a sweeper double-debit.
+          if (request.count === 1) {
+            await poisonGrant(transaction, attempt.grantId, now);
+          }
         }
         swept += 1;
       });
@@ -262,12 +323,17 @@ export class PrismaHostedCodexUpstreamEffectLedger {
           },
           data: {
             status:
-              attempt.state === "terminal_unknown" ? "terminal_unknown" : "failed",
+              attempt.state === "terminal_unknown"
+                ? "terminal_unknown"
+                : "failed",
             errorCode: attempt.errorCode ?? "classified_failover_interrupted",
             completedAt: now,
           },
         });
         if (request.count !== 1) return;
+        if (attempt.state === "terminal_unknown") {
+          await poisonGrant(transaction, attempt.grantId, now);
+        }
         swept += 1;
       });
     }
@@ -287,6 +353,26 @@ export class PrismaHostedCodexUpstreamEffectLedger {
       leaseExpiresAt: { gt: now },
     };
   }
+}
+
+async function poisonGrant(
+  transaction: Prisma.TransactionClient,
+  grantId: string,
+  now: Date,
+): Promise<void> {
+  await transaction.hostedCodexInvocationGrant.updateMany({
+    where: { id: grantId, status: "issued", revokedAt: null },
+    data: {
+      status: "revoked",
+      revokedAt: now,
+      inFlight: 0,
+      revision: { increment: 1 },
+    },
+  });
+  await transaction.hostedCodexCommentRefreshCapability.updateMany({
+    where: { grantId, revokedAt: null },
+    data: { revokedAt: now, revision: { increment: 1 } },
+  });
 }
 
 export function startHostedCodexEffectSweeper(

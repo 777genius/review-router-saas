@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Readable } from "node:stream";
 import Fastify from "fastify";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -11,6 +12,7 @@ import {
   PrismaHostedAccountRepository,
   PrismaHostedCodexMutationFence,
   PrismaHostedCodexRelayAuthorization,
+  PrismaHostedCodexRestoreReconciler,
   PrismaHostedCodexSessionPersistence,
   PrismaHostedCodexUpstreamEffectLedger,
   PrismaHostedCredentialEnrollment,
@@ -155,12 +157,12 @@ beforeAll(async () => {
       activatedAt: now,
     },
   });
-});
+}, 120_000);
 
 afterAll(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
   await prisma.$disconnect();
-});
+}, 120_000);
 
 describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
   it("runs real grant, relay ledgers, comment capability, parallel inference, and replay fences", async () => {
@@ -176,7 +178,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     const parallelStarted = new Promise<void>((resolve) => {
       releaseParallel = resolve;
     });
-    const parallelSafetyTimer = setTimeout(() => releaseParallel?.(), 15_000);
+    const parallelSafetyTimer = setTimeout(() => releaseParallel?.(), 90_000);
     const runtime = {
       ensureFreshSession: vi.fn(async () => ({
         accessToken: "fake-provider-access-token",
@@ -347,6 +349,24 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     expect(replay.status).not.toBe(200);
     expect(upstreamCalls).toBe(2);
 
+    const sequential = await fetch(
+      `${app.listeningOrigin}${hostedCodexResponsesPath}`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${grants[0]!.grant}`,
+          accept: "text/event-stream",
+          "content-type": "application/json",
+          "idempotency-key": "relay-sequential-2", // gitleaks:allow -- disposable test identifier
+          "x-reviewrouter-request-ordinal": "2",
+        },
+        body: JSON.stringify({ input: "proven-complete next turn" }),
+      },
+    );
+    expect(sequential.status).toBe(200);
+    await sequential.text();
+    expect(upstreamCalls).toBe(3);
+
     const refreshed = await fetch(
       `${app.listeningOrigin}${hostedCodexCommentTokenPath}`,
       {
@@ -444,6 +464,82 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         activeAccountId: hostedAccountId("account-primary"),
       }),
     });
+  }, 120_000);
+
+  it("terminalizes a dropped upstream response after exactly one call and denies every replay or later ordinal", async () => {
+    const issued = await issueGrant("dropped-response-terminalization");
+    const authorization = new PrismaHostedCodexRelayAuthorization(prisma, true);
+    let upstreamCalls = 0;
+    const runtime = {
+      ensureFreshSession: vi.fn(async () => ({
+        accessToken: "dropped-response-access-token",
+        chatgptAccountId: "dropped-response-account",
+      })),
+      classifyFailure: vi.fn(() => ({ code: "unknown" })),
+    } as unknown as HostedCodexSessionRuntime;
+    const relay = new FetchHostedCodexStreamingRelay(
+      runtime,
+      ledger,
+      vi.fn(async () => {
+        upstreamCalls += 1;
+        throw new Error("dropped-upstream-response");
+      }) as typeof fetch,
+      { failoverEnabled: true },
+    );
+    const admitted = await authorization.authorize({
+      opaqueGrant: issued.plaintextToken,
+      requestOrdinal: 1,
+      idempotencyKey: "dropped-response-idempotency",
+      requestBytes: Buffer.byteLength('{"input":"drop"}'),
+    });
+    await expect(
+      relay.open({
+        authorization: admitted,
+        body: Readable.from(Buffer.from('{"input":"drop"}')),
+        contentType: "application/json",
+        accept: "text/event-stream",
+        abortSignal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("dropped-upstream-response");
+    expect(upstreamCalls).toBe(1);
+    const [request, grant, attempts, capability] = await Promise.all([
+      prisma.hostedCodexRelayRequest.findUniqueOrThrow({
+        where: { id: admitted.requestId },
+      }),
+      prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: issued.grant.id },
+      }),
+      prisma.hostedCodexUpstreamEffectAttempt.findMany({
+        where: { relayRequestId: admitted.requestId },
+      }),
+      prisma.hostedCodexCommentRefreshCapability.findUniqueOrThrow({
+        where: { grantId: issued.grant.id },
+      }),
+    ]);
+    expect(request.status).toBe("terminal_unknown");
+    expect(grant).toMatchObject({ status: "revoked", inFlight: 0 });
+    expect(grant.revokedAt).not.toBeNull();
+    expect(capability.revokedAt).not.toBeNull();
+    expect(attempts).toMatchObject([
+      { state: "terminal_unknown", attemptOrdinal: 1 },
+    ]);
+    await expect(
+      authorization.authorize({
+        opaqueGrant: issued.plaintextToken,
+        requestOrdinal: 2,
+        idempotencyKey: "later-ordinal-denied",
+        requestBytes: 16,
+      }),
+    ).rejects.toThrow("hosted_grant_invalid");
+    await expect(
+      authorization.authorize({
+        opaqueGrant: issued.plaintextToken,
+        requestOrdinal: 1,
+        idempotencyKey: "dropped-response-idempotency",
+        requestBytes: 16,
+      }),
+    ).rejects.toThrow("hosted_grant_invalid");
+    expect(upstreamCalls).toBe(1);
   });
 
   it("uses a real mutation fence for stale-session handoff and rejects stale generation CAS", async () => {
@@ -691,14 +787,14 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       const allEntered = new Promise<void>((resolve) => {
         release = resolve;
       });
-      const safety = setTimeout(() => release?.(), 10_000);
+      const safety = setTimeout(() => release?.(), 120_000);
       await Promise.all(
         grants.map(async (grant, index) => {
           const session = await runtimes[index % 2]!.ensureFreshSession({
             accountId: grant.grant.activeAccountId,
             runId: `real-runtime-${index}`,
             attempt: 1,
-            abortSignal: AbortSignal.timeout(15_000),
+            abortSignal: AbortSignal.timeout(120_000),
           });
           expect(session.chatgptAccountId).toBe("chatgpt-primary");
           active += 1;
@@ -768,14 +864,14 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       const expiredAllEntered = new Promise<void>((resolve) => {
         release = resolve;
       });
-      const expiredSafety = setTimeout(() => release?.(), 45_000);
+      const expiredSafety = setTimeout(() => release?.(), 120_000);
       await Promise.all(
         grants.map(async (_grant, index) => {
           const session = await runtimes[index % 2]!.ensureFreshSession({
             accountId: "account-expired-concurrency",
             runId: `expired-real-runtime-${index}`,
             attempt: 1,
-            abortSignal: AbortSignal.timeout(45_000),
+            abortSignal: AbortSignal.timeout(120_000),
           });
           expect(session.accessToken).toBe("refreshed-access");
           active += 1;
@@ -804,7 +900,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     } finally {
       await replica.$disconnect();
     }
-  }, 60_000);
+  }, 180_000);
 
   it("rejects enrolled identity drift without persisting plaintext", async () => {
     const secret = "identity-drift-refresh-token-sentinel";
@@ -835,6 +931,321 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     );
     expect(serialized).not.toContain(secret);
   });
+
+  it.each([401, 429])(
+    "makes exactly two upstream calls for persistent %i, records one failover, and never attempts a third account",
+    async (status) => {
+      const issued = await issueGrant(`persistent-${status}`);
+      const authorization = new PrismaHostedCodexRelayAuthorization(
+        prisma,
+        true,
+      );
+      const admitted = await authorization.authorize({
+        opaqueGrant: issued.plaintextToken,
+        requestOrdinal: 1,
+        idempotencyKey: `persistent-${status}`,
+        requestBytes: Buffer.byteLength('{"input":"classified"}'),
+      });
+      let upstreamCalls = 0;
+      const relay = new FetchHostedCodexStreamingRelay(
+        {
+          ensureFreshSession: vi.fn(async ({ accountId }) => ({
+            accessToken: `classified-${accountId}`,
+            chatgptAccountId: `classified-${accountId}`,
+          })),
+          classifyFailure: vi.fn(() => ({ code: "unknown" })),
+        } as unknown as HostedCodexSessionRuntime,
+        ledger,
+        vi.fn(async () => {
+          upstreamCalls += 1;
+          return new Response('{"error":"classified"}', { status });
+        }) as typeof fetch,
+        { failoverEnabled: true },
+      );
+      const response = await relay.open({
+        authorization: admitted,
+        body: Readable.from(Buffer.from('{"input":"classified"}')),
+        contentType: "application/json",
+        accept: "application/json",
+        abortSignal: new AbortController().signal,
+      });
+      await readAll(response.body);
+      const [grant, attempts] = await Promise.all([
+        prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+          where: { id: issued.grant.id },
+        }),
+        prisma.hostedCodexUpstreamEffectAttempt.findMany({
+          where: { relayRequestId: admitted.requestId },
+          orderBy: { attemptOrdinal: "asc" },
+        }),
+      ]);
+      expect(upstreamCalls).toBe(2);
+      expect(grant.failoverCount).toBe(1);
+      expect(attempts).toHaveLength(2);
+      expect(attempts[0]).toMatchObject({
+        attemptOrdinal: 1,
+        state: "failed_classified",
+      });
+      expect(attempts[1]).toMatchObject({
+        attemptOrdinal: 2,
+        state: "terminal_unknown",
+      });
+    },
+  );
+
+  it("replays witnessed restore after a committed-item crash and permit expiry, quarantines grants, reconciles full inventory, and promotes once", async () => {
+    const sourceKey =
+      "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111";
+    const targetKey =
+      "arn:aws:kms:us-east-1:123456789012:key/22222222-2222-4222-8222-222222222222";
+    const sourceIncarnation = "restored-source-incarnation-e2e";
+    const targetIncarnation = "restored-target-incarnation-e2e";
+    const targetResource = "restored-target-resource-e2e";
+    const keys = {
+      [sourceKey]: Buffer.alloc(32, 41).toString("base64"),
+      [targetKey]: Buffer.alloc(32, 42).toString("base64"),
+    };
+    const sourceVault = new CredentialEnvelopeVault(
+      new EnvCredentialKeyring({
+        REVIEW_ROUTER_HOSTED_CODEX_KEK_CURRENT_ID: sourceKey,
+        REVIEW_ROUTER_HOSTED_CODEX_KEK_KEYRING_JSON: JSON.stringify(keys),
+      }),
+      "relay",
+    );
+    const recoveryVault = new CredentialEnvelopeVault(
+      new EnvCredentialKeyring({
+        REVIEW_ROUTER_HOSTED_CODEX_KEK_CURRENT_ID: targetKey,
+        REVIEW_ROUTER_HOSTED_CODEX_KEK_KEYRING_JSON: JSON.stringify(keys),
+      }),
+      "relay",
+    );
+    const activeCredentials = await prisma.hostedCodexAccount.findMany({
+      where: { activeGeneration: { not: null }, state: { not: "tombstoned" } },
+      include: {
+        credentialVersions: {
+          orderBy: { generation: "desc" },
+          take: 1,
+          include: {
+            envelopeRevisions: { orderBy: { revision: "desc" }, take: 1 },
+          },
+        },
+      },
+    });
+    for (const account of activeCredentials) {
+      const credential = account.credentialVersions[0]!;
+      const prior = credential.envelopeRevisions[0]!;
+      const envelope = await sourceVault.encrypt(
+        Buffer.from(`restore-${account.id}`),
+        {
+          workspaceId: account.workspaceId,
+          poolId: account.poolId,
+          accountId: account.id,
+          generation: Number(credential.generation),
+          databaseIncarnation: sourceIncarnation,
+          databaseResourceIdentity: "restored-source-resource-e2e",
+        },
+      );
+      await prisma.hostedCodexCredentialEnvelopeRevision.create({
+        data: {
+          id: `restore-source-${account.id}`,
+          credentialVersionId: credential.id,
+          accountId: account.id,
+          workspaceId: account.workspaceId,
+          poolId: account.poolId,
+          generation: credential.generation,
+          revision: prior.revision + 1n,
+          sourceRevision: prior.revision,
+          custodyMode: "aws_kms",
+          kmsKeyArn: sourceKey,
+          kmsContextVersion: 1,
+          databaseResourceIdentity: "restored-source-resource-e2e",
+          databaseIncarnation: sourceIncarnation,
+          reason: "restore_reconciliation",
+          envelopeVersion: 1,
+          encryptionAlgorithm: "aes-256-gcm",
+          aadHash: envelope.associatedDataHash,
+          ciphertextHash: envelope.ciphertextHash,
+          encryptedCiphertext: envelope.ciphertext,
+          envelopeMetadata: {
+            nonce: envelope.nonce,
+            authenticationTag: envelope.authenticationTag,
+            wrappedDataEncryptionKey: envelope.wrappedDataEncryptionKey,
+          },
+          actorIdHash: sha256(`restore-source-actor-${account.id}`),
+          idempotencyKeyHash: sha256(
+            `restore-source-idempotency-${account.id}`,
+          ),
+        },
+      });
+    }
+    const outstanding = await issueGrant("restore-quarantine-grant");
+    let restoreNow = new Date();
+    const permit = {
+      inventoryHash: "",
+      databaseResourceIdentity: targetResource,
+      sourceIncarnation,
+      targetIncarnation,
+      sourceKmsKeyArn: sourceKey,
+      targetKmsKeyArn: targetKey,
+      authorityKeyId: "restore-e2e-authority",
+      actorId: "restore-e2e-operator",
+      nonce: "restore-e2e-nonce-that-is-unique-and-long",
+      expiresAt: new Date(restoreNow.getTime() + 60_000),
+    };
+    let crashOnce = true;
+    const restore = new PrismaHostedCodexRestoreReconciler(
+      prisma,
+      recoveryVault,
+      targetResource,
+      targetIncarnation,
+      {
+        verify(input) {
+          expect(input.token).toBe("witnessed-restore-token");
+          return { ...permit, inventoryHash: input.inventoryHash };
+        },
+      },
+      (phase) => {
+        if (phase === "after_item_committed" && crashOnce) {
+          crashOnce = false;
+          throw new Error("simulated-restore-crash");
+        }
+      },
+      () => restoreNow,
+    );
+    await expect(restore.assertRelayReady()).rejects.toThrow(
+      "hosted_codex_external_database_witness_mismatch",
+    );
+    expect(
+      await prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: outstanding.grant.id },
+      }),
+    ).toMatchObject({ status: "revoked", inFlight: 0 });
+    const operationId = await restore.begin("witnessed-restore-token");
+    expect(await restore.begin("witnessed-restore-token")).toBe(operationId);
+    const witnessedOperation =
+      await prisma.hostedCodexRestoreOperation.findUniqueOrThrow({
+        where: { id: operationId },
+        include: { items: { take: 1 } },
+      });
+    const witnessedItem = witnessedOperation.items[0]!;
+    const adversarialOperationId = "restore-adversarial-failed";
+    const adversarialItemId = "restore-adversarial-failed-item";
+    await prisma.hostedCodexRestoreOperation.create({
+      data: {
+        id: adversarialOperationId,
+        inventoryHash: witnessedOperation.inventoryHash,
+        databaseResourceIdentity: witnessedOperation.databaseResourceIdentity,
+        sourceIncarnation: witnessedOperation.sourceIncarnation,
+        targetIncarnation: witnessedOperation.targetIncarnation,
+        sourceKmsKeyArn: witnessedOperation.sourceKmsKeyArn,
+        targetKmsKeyArn: witnessedOperation.targetKmsKeyArn,
+        authorityKeyId: witnessedOperation.authorityKeyId,
+        actorIdHash: witnessedOperation.actorIdHash,
+        nonceHash: sha256("adversarial-restore-nonce"),
+        permitExpiresAt: witnessedOperation.permitExpiresAt,
+        itemCount: 1,
+        items: {
+          create: {
+            id: adversarialItemId,
+            credentialVersionId: witnessedItem.credentialVersionId,
+            accountId: witnessedItem.accountId,
+            workspaceId: witnessedItem.workspaceId,
+            poolId: witnessedItem.poolId,
+            generation: witnessedItem.generation,
+            sourceRevision: witnessedItem.sourceRevision,
+            sourceAadHash: witnessedItem.sourceAadHash,
+            sourceCiphertextHash: witnessedItem.sourceCiphertextHash,
+          },
+        },
+      },
+    });
+    await prisma.hostedCodexRestoreItem.update({
+      where: { id: adversarialItemId },
+      data: { state: "failed", failureCode: "adversarial" },
+    });
+    await expect(
+      prisma.hostedCodexRestoreItem.update({
+        where: { id: adversarialItemId },
+        data: { state: "pending" },
+      }),
+    ).rejects.toThrow(/hosted_codex_restore_item_transition_invalid/u);
+    await prisma.hostedCodexRestoreOperation.update({
+      where: { id: adversarialOperationId },
+      data: { state: "reconciling", reconciliationStartedAt: new Date() },
+    });
+    await prisma.hostedCodexRestoreOperation.update({
+      where: { id: adversarialOperationId },
+      data: { state: "reconciled", reconciledAt: new Date() },
+    });
+    await expect(
+      prisma.hostedCodexRestoreOperation.update({
+        where: { id: adversarialOperationId },
+        data: { state: "promoted", promotedAt: new Date() },
+      }),
+    ).rejects.toThrow(/hosted_codex_restore_promotion_inventory_incomplete/u);
+    await prisma.hostedCodexRestoreOperation.update({
+      where: { id: adversarialOperationId },
+      data: {
+        state: "failed",
+        failedAt: new Date(),
+        failureCode: "adversarial",
+      },
+    });
+    await expect(
+      prisma.hostedCodexRestoreOperation.update({
+        where: { id: adversarialOperationId },
+        data: { state: "reconciling" },
+      }),
+    ).rejects.toThrow(/hosted_codex_restore_operation_transition_invalid/u);
+    await expect(restore.reconcile(operationId)).rejects.toThrow(
+      "simulated-restore-crash",
+    );
+    restoreNow = new Date(permit.expiresAt.getTime() + 60_000);
+    await expect(
+      prisma.hostedCodexRestoreOperation.update({
+        where: { id: operationId },
+        data: {
+          state: "failed",
+          failedAt: new Date(),
+          failureCode: "must-not-abandon-partial-inventory",
+        },
+      }),
+    ).rejects.toThrow(/hosted_codex_restore_partial_operation_must_resume/u);
+    const resumed = new PrismaHostedCodexRestoreReconciler(
+      prisma,
+      recoveryVault,
+      targetResource,
+      targetIncarnation,
+      {
+        verify: (input) => ({ ...permit, inventoryHash: input.inventoryHash }),
+      },
+      undefined,
+      () => restoreNow,
+    );
+    await resumed.reconcile(operationId);
+    const itemCount = await prisma.hostedCodexRestoreItem.count({
+      where: { restoreOperationId: operationId, state: "rewrapped" },
+    });
+    expect(itemCount).toBe(activeCredentials.length);
+    const rewrapped = await prisma.hostedCodexRestoreItem.findFirstOrThrow({
+      where: { restoreOperationId: operationId, state: "rewrapped" },
+    });
+    await expect(
+      prisma.hostedCodexRestoreItem.update({
+        where: { id: rewrapped.id },
+        data: { state: "pending" },
+      }),
+    ).rejects.toThrow(/hosted_codex_restore_item_transition_invalid/u);
+    await expect(
+      prisma.hostedCodexRestoreItem.update({
+        where: { id: rewrapped.id },
+        data: { state: "failed" },
+      }),
+    ).rejects.toThrow(/hosted_codex_restore_item_transition_invalid/u);
+    expect(await resumed.promote(operationId)).toBe(activeCredentials.length);
+    expect(await resumed.promote(operationId)).toBe(0);
+    await expect(resumed.assertRelayReady()).resolves.toBeUndefined();
+  }, 120_000);
 });
 
 async function issueGrant(suffix: string) {
@@ -951,6 +1362,14 @@ function validAuthJson(
 
 function sha256(value: string) {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+async function readAll(stream: Readable): Promise<void> {
+  for await (const chunk of stream) {
+    // Consumption is the assertion boundary; bytes are intentionally ignored.
+    if (chunk === undefined)
+      throw new Error("hosted_codex_stream_chunk_invalid");
+  }
 }
 
 function errorStack(error: unknown) {

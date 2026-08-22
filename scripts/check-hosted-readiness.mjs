@@ -47,6 +47,7 @@ forbidProviderSecretsInSaaS();
 requireHostedActionRef();
 requireHostedCodexRotatingActionRef();
 requireHostedPoolProductionContract();
+requireHostedCodexPoolRestoreReadiness();
 requireCodexRotatingInstallerDescriptor();
 
 if (errors.length > 0) {
@@ -441,6 +442,71 @@ function requireCodexRotatingInstallerDescriptor() {
       `Codex rotating installer descriptor is invalid: ${error instanceof Error ? error.message : String(error)}.`,
     );
   }
+}
+
+function requireHostedCodexPoolRestoreReadiness() {
+  const master = read("REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL");
+  if (!master || master === "0") return;
+  if (master !== "1") {
+    errors.push("REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL must be 0 or 1.");
+    return;
+  }
+  for (const name of [
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY",
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION",
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY",
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER",
+  ]) {
+    if (!["0", "1"].includes(read(name)))
+      errors.push(`${name} must be 0 or 1.`);
+  }
+  if (read("REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE") !== "external_kms") {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE must be external_kms.",
+    );
+  }
+  if (read("REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE") !== "relay") {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE must be relay on the API service.",
+    );
+  }
+  if (
+    !/^arn:(?:aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:\d{12}:key\/(?:[0-9a-f-]{36}|mrk-[0-9a-f]{32})$/iu.test(
+      read("REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN"),
+    )
+  ) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN must be an immutable KMS key ARN.",
+    );
+  }
+  if (
+    read("REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY").length < 16
+  ) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY is required.",
+    );
+  }
+  if (read("REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION").length < 16) {
+    errors.push("REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION is required.");
+  }
+  const publicKey = read(
+    "REVIEW_ROUTER_HOSTED_CODEX_RESTORE_AUTHORITY_PUBLIC_KEY",
+  ).replaceAll("\\n", "\n");
+  if (
+    !/BEGIN PUBLIC KEY/u.test(publicKey) ||
+    /replace-with|placeholder/iu.test(publicKey)
+  ) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_RESTORE_AUTHORITY_PUBLIC_KEY must be an Ed25519 public PEM.",
+    );
+  }
+  if (read("REVIEW_ROUTER_HOSTED_CODEX_RESTORE_AUTHORITY_KEY_ID").length < 3) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_RESTORE_AUTHORITY_KEY_ID is required.",
+    );
+  }
+  if (!read("AWS_REGION"))
+    errors.push("AWS_REGION is required for hosted Codex KMS.");
 }
 
 function requireDatabaseRecoveryWitness() {

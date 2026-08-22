@@ -314,23 +314,24 @@ export class PrismaInvocationGrantRepository
         assertImmutableGrantFields(current, next);
         const succeeded = input.errorCode === null;
         if (input.effect) {
-          const effect = await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
-            where: {
-              id: input.effect.attemptId,
-              relayRequestId: input.requestId,
-              grantId: input.grantId,
-              ownerIdHash: input.effect.ownerIdHash,
-              fenceEpoch: input.effect.fenceEpoch,
-              state: "response_started",
-            },
-            data: {
-              state: input.effect.terminalState,
-              completedAt: input.completedAt,
-              heartbeatAt: input.completedAt,
-              terminalEvidenceHash: input.effect.terminalEvidenceHash,
-              errorCode: input.errorCode,
-            },
-          });
+          const effect =
+            await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+              where: {
+                id: input.effect.attemptId,
+                relayRequestId: input.requestId,
+                grantId: input.grantId,
+                ownerIdHash: input.effect.ownerIdHash,
+                fenceEpoch: input.effect.fenceEpoch,
+                state: "response_started",
+              },
+              data: {
+                state: input.effect.terminalState,
+                completedAt: input.completedAt,
+                heartbeatAt: input.completedAt,
+                terminalEvidenceHash: input.effect.terminalEvidenceHash,
+                errorCode: input.errorCode,
+              },
+            });
           if (effect.count !== 1) {
             throw new Error("hosted_codex_effect_completion_conflict");
           }
@@ -375,6 +376,84 @@ export class PrismaInvocationGrantRepository
     );
   }
 
+  /**
+   * Atomically tombstones an upstream dispatch whose remote outcome cannot be
+   * proven. The capability and its comment capability are poisoned in the same
+   * transaction, so neither a later ordinal nor a semantic replay can cross the
+   * ambiguity boundary.
+   */
+  async terminalizeUnknown(input: {
+    readonly grantId: ReturnType<typeof invocationGrantId>;
+    readonly requestId: ReturnType<typeof relayRequestId>;
+    readonly completedAt: Date;
+    readonly errorCode: string;
+    readonly effect: {
+      readonly attemptId: string;
+      readonly ownerIdHash: string;
+      readonly fenceEpoch: bigint;
+      readonly terminalEvidenceHash: string;
+    };
+  }): Promise<void> {
+    await serializableTransaction(
+      this.prisma,
+      async (transaction) => {
+        const effect =
+          await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+            where: {
+              id: input.effect.attemptId,
+              relayRequestId: input.requestId,
+              grantId: input.grantId,
+              ownerIdHash: input.effect.ownerIdHash,
+              fenceEpoch: input.effect.fenceEpoch,
+              state: { in: ["dispatching", "response_started"] },
+            },
+            data: {
+              state: "terminal_unknown",
+              completedAt: input.completedAt,
+              heartbeatAt: input.completedAt,
+              terminalEvidenceHash: input.effect.terminalEvidenceHash,
+              errorCode: input.errorCode,
+            },
+          });
+        if (effect.count !== 1) {
+          throw new Error("hosted_codex_effect_completion_conflict");
+        }
+        const request = await transaction.hostedCodexRelayRequest.updateMany({
+          where: {
+            id: input.requestId,
+            grantId: input.grantId,
+            status: { in: ["received", "processing", "response_started"] },
+          },
+          data: {
+            status: "terminal_unknown",
+            responseBytes: null,
+            responseHash: null,
+            errorCode: input.errorCode,
+            completedAt: input.completedAt,
+          },
+        });
+        if (request.count !== 1) {
+          throw new Error("relay_request_completion_conflict");
+        }
+        const poisoned = await transaction.hostedCodexInvocationGrant.findFirst(
+          {
+            where: {
+              id: input.grantId,
+              status: "revoked",
+              revokedAt: { not: null },
+              inFlight: 0,
+            },
+            select: { id: true },
+          },
+        );
+        if (!poisoned) {
+          throw new Error("invocation_grant_terminalization_conflict");
+        }
+      },
+      { isolationLevel: "Serializable" },
+    );
+  }
+
   async markStarted(
     input: Parameters<RelayResponseStartedPort["markStarted"]>[0],
   ) {
@@ -389,23 +468,24 @@ export class PrismaInvocationGrantRepository
         const current = restoreGrant(stored);
         const next = input.transition(current);
         if (input.effect) {
-          const effect = await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
-            where: {
-              id: input.effect.attemptId,
-              relayRequestId: input.requestId,
-              grantId: input.grantId,
-              ownerIdHash: input.effect.ownerIdHash,
-              fenceEpoch: input.effect.fenceEpoch,
-              state: "dispatching",
-              leaseExpiresAt: { gt: input.startedAt },
-            },
-            data: {
-              state: "response_started",
-              responseStartedAt: input.startedAt,
-              heartbeatAt: input.startedAt,
-              providerResponseIdHash: input.effect.providerResponseIdHash,
-            },
-          });
+          const effect =
+            await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+              where: {
+                id: input.effect.attemptId,
+                relayRequestId: input.requestId,
+                grantId: input.grantId,
+                ownerIdHash: input.effect.ownerIdHash,
+                fenceEpoch: input.effect.fenceEpoch,
+                state: "dispatching",
+                leaseExpiresAt: { gt: input.startedAt },
+              },
+              data: {
+                state: "response_started",
+                responseStartedAt: input.startedAt,
+                heartbeatAt: input.startedAt,
+                providerResponseIdHash: input.effect.providerResponseIdHash,
+              },
+            });
           if (effect.count !== 1) {
             throw new Error("hosted_codex_effect_response_started_conflict");
           }

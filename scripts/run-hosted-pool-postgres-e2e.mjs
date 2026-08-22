@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import pg from "pg";
 
 const mode = process.argv[2];
@@ -68,6 +68,9 @@ try {
     addSecurityCertificationMigration(rehearsalDirectory);
     runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
     runMigrationTest(migrationDatabaseUrl, "verify-000075");
+    addTerminalizationMigration(rehearsalDirectory);
+    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
+    runMigrationTest(migrationDatabaseUrl, "verify-000076");
 
     const migrationCount = await countAppliedMigrations(migrationDatabaseUrl);
     runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
@@ -79,25 +82,51 @@ try {
   }
   if (runPostgresE2e) {
     runMigrationDeploy("packages/platform/db", databaseUrl);
-    run(
-      "pnpm",
-      [
-        "exec",
-        "vitest",
-        "run",
-        "scripts/hosted-pool-e2e/hosted-pool-postgres.e2e.test.ts",
-      ],
-      {
-        REVIEW_ROUTER_HOSTED_POOL_E2E_DATABASE_URL: databaseUrl,
-        REVIEW_ROUTER_RUN_HOSTED_POOL_POSTGRES_E2E: "1",
-      },
-    );
+    try {
+      run(
+        "pnpm",
+        [
+          "exec",
+          "vitest",
+          "run",
+          "scripts/hosted-pool-e2e/hosted-pool-postgres.e2e.test.ts",
+        ],
+        {
+          REVIEW_ROUTER_HOSTED_POOL_E2E_DATABASE_URL: databaseUrl,
+          REVIEW_ROUTER_RUN_HOSTED_POOL_POSTGRES_E2E: "1",
+        },
+      );
+    } finally {
+      const evidencePath =
+        process.env.REVIEW_ROUTER_HOSTED_CERTIFICATION_DB_EXPORT?.trim();
+      if (evidencePath) await exportRelayEffectRows(databaseUrl, evidencePath);
+    }
   }
 } finally {
   if (rehearsalDirectory)
     rmSync(rehearsalDirectory, { recursive: true, force: true });
   if (started) {
     spawnSync("docker", ["rm", "--force", container], { stdio: "ignore" });
+  }
+}
+
+async function exportRelayEffectRows(connectionString, outputPath) {
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    const result = await client.query(`
+      SELECT row_to_json(r)::text AS body FROM "HostedCodexRelayRequest" r
+      UNION ALL
+      SELECT row_to_json(e)::text AS body FROM "HostedCodexUpstreamEffectAttempt" e
+    `);
+    mkdirSync(dirname(outputPath), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      outputPath,
+      `${result.rows.map((row) => String(row.body)).join("\n")}\n`,
+      { mode: 0o600 },
+    );
+  } finally {
+    await client.end();
   }
 }
 
@@ -110,9 +139,23 @@ function prepareMigrationRehearsal() {
   cpSync("packages/platform/db/prisma", join(directory, "prisma"), {
     recursive: true,
     filter: (source) =>
-      basename(source) !== "000075_hosted_codex_security_certification",
+      ![
+        "000075_hosted_codex_security_certification",
+        "000076_hosted_codex_terminalization_restore_invariants",
+      ].includes(basename(source)),
   });
   return directory;
+}
+
+function addTerminalizationMigration(directory) {
+  cpSync(
+    "packages/platform/db/prisma/migrations/000076_hosted_codex_terminalization_restore_invariants",
+    join(
+      directory,
+      "prisma/migrations/000076_hosted_codex_terminalization_restore_invariants",
+    ),
+    { recursive: true },
+  );
 }
 
 function addSecurityCertificationMigration(directory) {

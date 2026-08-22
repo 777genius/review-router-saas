@@ -273,7 +273,7 @@ export async function createApiApp(
   const hostedCodexRelayDependencies =
     options.hostedCodexRelayDependencies ??
     (hostedCodexFeatureFlags.custody && hostedCodexFeatureFlags.relay
-      ? (() => {
+      ? await (async () => {
           if (!prisma) throw new Error("hosted_codex_prisma_unavailable");
           if (!publicApiUrl)
             throw new Error("hosted_codex_public_api_url_missing");
@@ -282,7 +282,7 @@ export async function createApiApp(
           if (!githubAppId || !githubAppPrivateKey) {
             throw new Error("hosted_codex_github_app_configuration_missing");
           }
-          return composeProductionHostedCodexRelayRoutes({
+          return await composeProductionHostedCodexRelayRoutes({
             prisma,
             env: reviewActionV2Env,
             publicApiUrl,

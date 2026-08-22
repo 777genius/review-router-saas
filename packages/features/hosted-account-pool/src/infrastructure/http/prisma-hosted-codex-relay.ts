@@ -143,7 +143,11 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
   private readonly now: () => Date;
   private readonly effects: Pick<
     PrismaHostedCodexUpstreamEffectLedger,
-    "prepare" | "markDispatching" | "heartbeat" | "markResponseStarted" | "authority"
+    | "prepare"
+    | "markDispatching"
+    | "heartbeat"
+    | "markResponseStarted"
+    | "authority"
   >;
 
   constructor(
@@ -155,17 +159,23 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
       readonly now?: () => Date;
       readonly effects?: Pick<
         PrismaHostedCodexUpstreamEffectLedger,
-        "prepare" | "markDispatching" | "heartbeat" | "markResponseStarted" | "authority"
+        | "prepare"
+        | "markDispatching"
+        | "heartbeat"
+        | "markResponseStarted"
+        | "authority"
       >;
     } = { failoverEnabled: false },
   ) {
     this.failoverEnabled = options.failoverEnabled;
     this.now = options.now ?? (() => new Date());
-    this.effects = options.effects ?? new PrismaHostedCodexUpstreamEffectLedger(
-      // The concrete ledger deliberately shares the same Prisma authority.
-      ledger.prismaClient,
-      this.now,
-    );
+    this.effects =
+      options.effects ??
+      new PrismaHostedCodexUpstreamEffectLedger(
+        // The concrete ledger deliberately shares the same Prisma authority.
+        ledger.prismaClient,
+        this.now,
+      );
   }
 
   async open(input: Parameters<HostedCodexStreamingRelayPort["open"]>[0]) {
@@ -243,33 +253,38 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
       try {
         upstream = await withEffectHeartbeat(
           this.fetchImpl(upstreamResponsesUrl, {
-          method: "POST",
-          redirect: "error",
-          headers: {
-            authorization: `Bearer ${session.accessToken}`,
-            "chatgpt-account-id": session.chatgptAccountId,
-            "content-type": "application/json",
-            accept: safeAccept(input.accept),
-          },
-          body: JSON.stringify({
-            ...requestBody,
-            model: input.authorization.model,
-            store: false,
-          }),
-          signal: AbortSignal.any([
-            input.abortSignal,
-            AbortSignal.timeout(Math.min(remainingMs, 120_000)),
-          ]),
+            method: "POST",
+            redirect: "error",
+            headers: {
+              authorization: `Bearer ${session.accessToken}`,
+              "chatgpt-account-id": session.chatgptAccountId,
+              "content-type": "application/json",
+              accept: safeAccept(input.accept),
+            },
+            body: JSON.stringify({
+              ...requestBody,
+              model: input.authorization.model,
+              store: false,
+            }),
+            signal: AbortSignal.any([
+              input.abortSignal,
+              AbortSignal.timeout(Math.min(remainingMs, 120_000)),
+            ]),
           }),
           this.effects,
           effectLease,
         );
       } catch (error) {
-        await completeFailedRequest(
+        await terminalizeUnknownRequest(
           input.authorization,
           this.ledger,
           "upstream_dispatch_outcome_unknown",
-          effectCompletion(this.effects, effectLease, "terminal_unknown", "transport-error"),
+          effectCompletion(
+            this.effects,
+            effectLease,
+            "terminal_unknown",
+            "transport-error",
+          ),
         );
         throw new UpstreamTerminalUnknownError(error);
       }
@@ -311,11 +326,16 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
       break;
     }
     if (!upstream.body) {
-      await completeFailedRequest(
+      await terminalizeUnknownRequest(
         input.authorization,
         this.ledger,
         "upstream_body_missing",
-        effectCompletion(this.effects, effectLease, "terminal_unknown", "body-missing"),
+        effectCompletion(
+          this.effects,
+          effectLease,
+          "terminal_unknown",
+          "body-missing",
+        ),
       );
       throw new UpstreamTerminalUnknownError(
         new Error("hosted_codex_upstream_body_missing"),
@@ -410,6 +430,28 @@ async function completeFailedRequest(
   });
 }
 
+async function terminalizeUnknownRequest(
+  authorization: AuthorizedHostedCodexRelay,
+  ledger: PrismaInvocationGrantRepository,
+  errorCode: string,
+  effect: ReturnType<typeof effectCompletion>,
+): Promise<void> {
+  try {
+    await ledger.terminalizeUnknown({
+      grantId: invocationGrantId(authorization.grantId),
+      requestId: relayRequestId(authorization.requestId),
+      completedAt: new Date(),
+      errorCode,
+      effect,
+    });
+  } catch (error) {
+    // Once dispatch began, even a local terminalization write failure must not
+    // fall back to the ordinary failed-request path and reopen the capability.
+    // The durable dispatching effect remains for the conservative sweeper.
+    throw new UpstreamTerminalUnknownError(error);
+  }
+}
+
 function mapRuntimeFailure(
   code: string,
 ): "rate_limited" | "credential_invalid" | "needs_reconnect" | null {
@@ -493,22 +535,17 @@ function completionTransform(
           },
           ledger,
         )
-      : ledger.complete({
-          ...common,
-          errorCode: errorCode ?? "upstream_stream_failed",
-          effect: effectCompletion(
+      : terminalizeUnknownRequest(
+          authorization,
+          ledger,
+          errorCode ?? "upstream_stream_failed",
+          effectCompletion(
             effects,
             effectLease,
             "terminal_unknown",
             errorCode ?? "upstream-stream-failed",
           ),
-          transition: (grant) => ({
-            ...grant,
-            inFlightRequestIds: grant.inFlightRequestIds.filter(
-              (id) => id !== common.requestId,
-            ),
-          }),
-        });
+        );
     completion.then(
       () => callback(propagatedError),
       (error) =>
