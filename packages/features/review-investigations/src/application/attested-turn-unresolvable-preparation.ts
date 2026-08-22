@@ -38,23 +38,28 @@ export class AttestedTurnUnresolvablePreparation {
     const obligations = new Map(
       input.investigation.obligations.map((item) => [item.obligationId, item]),
     );
-    const seen = new Set<string>();
+    const claimCounts = new Map<string, number>();
+    for (const claim of input.providerClaims) {
+      claimCounts.set(
+        claim.obligationId,
+        (claimCounts.get(claim.obligationId) ?? 0) + 1,
+      );
+    }
     return Object.freeze(
-      input.providerClaims.map((claim) => {
+      input.providerClaims.flatMap((claim) => {
         if (
-          seen.has(claim.obligationId) ||
+          claimCounts.get(claim.obligationId) !== 1 ||
           !assigned.has(claim.obligationId) ||
           claim.evidenceOperationReceiptIds.length === 0
         ) {
-          throw invalidClaim();
+          return [];
         }
-        seen.add(claim.obligationId);
         const obligation = obligations.get(claim.obligationId);
         if (
           !obligation ||
           obligation.state !== InvestigationObligationState.Open
         ) {
-          throw invalidClaim();
+          return [];
         }
         const requirement = parseInvestigationEvidenceRequirement(
           obligation.canonicalRequirement,
@@ -63,7 +68,7 @@ export class AttestedTurnUnresolvablePreparation {
           requirement.kind !==
           InvestigationEvidenceRequirementKind.BinaryArtifactBoundary
         ) {
-          throw invalidClaim();
+          return [];
         }
         const evidence = claim.evidenceOperationReceiptIds.map((receiptId) =>
           input.operationEvidence.get(receiptId),
@@ -72,13 +77,15 @@ export class AttestedTurnUnresolvablePreparation {
           evidence.some((item) => item === undefined) ||
           !evidence.some(isCanonicalInventoryEvidence)
         ) {
-          throw invalidClaim();
+          return [];
         }
-        return Object.freeze({
-          obligationId: obligation.obligationId,
-          reason: `${DeterministicUnresolvableReason.SpecializedArtifactDecoderUnavailable}:${requirement.contentKind}`,
-          deterministicPolicy: true as const,
-        });
+        return [
+          Object.freeze({
+            obligationId: obligation.obligationId,
+            reason: `${DeterministicUnresolvableReason.SpecializedArtifactDecoderUnavailable}:${requirement.contentKind}`,
+            deterministicPolicy: true as const,
+          }),
+        ];
       }),
     );
   }
