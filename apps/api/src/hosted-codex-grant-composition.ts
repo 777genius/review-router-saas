@@ -440,7 +440,7 @@ function assertExactWorkflowClaims(
   admission: HostedCodexGrantAdmission,
 ): void {
   if (
-    claims.event_name !== "pull_request_target" ||
+    claims.event_name !== "pull_request" ||
     claims.workflow_ref.toLowerCase() !==
       admission.workflowSource.toLowerCase() ||
     claims.job_workflow_ref?.toLowerCase() !==

@@ -7,6 +7,7 @@ import {
 } from "@reviewrouter/features-review-config";
 import {
   canonicalHostedPoolProviderInstanceId,
+  canonicalHostedPoolReusableWorkflowIdentity,
   type HostedPoolWorkflowSourceAttestation,
 } from "@reviewrouter/features-workflow-provisioning";
 import type {
@@ -174,7 +175,9 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
       workflowSourceSha256: attestation.workflowSourceSha256,
     };
     const workflowSource = `${repository.fullName}/${attestation.workflowPath}@refs/heads/${repository.defaultBranch}`;
-    const workflowJob = hostedJobWorkflowIdentity(binding.workflowActionRef!);
+    const workflowJob = canonicalHostedPoolReusableWorkflowIdentity(
+      binding.workflowActionRef!,
+    );
 
     return {
       workspaceId: repository.workspaceId,
@@ -250,18 +253,6 @@ function parseAttestation(
       binding.revision,
       "hosted_binding_revision_invalid",
     ),
-  };
-}
-
-function hostedJobWorkflowIdentity(actionRef: string): {
-  readonly ref: string;
-  readonly sha: string;
-} {
-  const match = /^([^/]+\/[^@]+)@([a-f0-9]{40})$/iu.exec(actionRef);
-  if (!match) throw new Error("hosted_workflow_action_ref_invalid");
-  return {
-    ref: `${match[1]}/.github/workflows/reviewrouter-execution-reusable.yml@${match[2]}`,
-    sha: match[2]!.toLowerCase(),
   };
 }
 

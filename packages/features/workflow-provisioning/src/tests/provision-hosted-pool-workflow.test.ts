@@ -15,7 +15,7 @@ const target = {
 };
 
 describe("provisionHostedPoolRepositoryWorkflow", () => {
-  it("opens an idempotent setup PR with exact v5 and safe legacy deletions", async () => {
+  it("opens an idempotent setup PR with exact App-first T0 v2 and safe legacy deletions", async () => {
     const createOrUpdateSetupPullRequest = vi.fn(
       async (input: WorkflowSetupGatewayInput) => ({
         url: "https://github.com/777genius/example/pull/7",
@@ -59,7 +59,12 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
     );
     if (!hosted || hosted.operation === "delete")
       throw new Error("hosted workflow missing");
-    expect(hosted.content).toContain("workflow_schema_version: 5");
+    expect(hosted.content).toContain("  pull_request:");
+    expect(hosted.content).not.toContain("pull_request_target");
+    expect(hosted.content).toContain(
+      `uses: 777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${"a".repeat(40)}`,
+    );
+    expect(hosted.content).toContain("workflow_schema_version: 2");
     expect(hosted.content).toContain('session_binding_id: "binding-1"');
     expect(hosted.content).toContain("session_binding_version: 4");
     expect(

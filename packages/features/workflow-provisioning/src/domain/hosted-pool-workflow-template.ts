@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { isLoopbackHostname } from "@reviewrouter/shared";
 
-export const hostedPoolWorkflowSchemaVersion = 5 as const;
+export const hostedPoolWorkflowSchemaVersion = 2 as const;
 export const hostedPoolSessionMode =
   "codex_subscription_oauth_hosted_pool" as const;
 
@@ -38,6 +38,11 @@ export type HostedPoolWorkflowSourceAttestation = Readonly<{
   bindingRevision: number;
 }>;
 
+export type HostedPoolReusableWorkflowIdentity = Readonly<{
+  ref: string;
+  sha: string;
+}>;
+
 const forbiddenHostedWorkflowReferences = [
   /CODEX_AUTH_JSON/iu,
   /auth-json/iu,
@@ -50,7 +55,7 @@ const forbiddenHostedWorkflowReferences = [
   /codex-refresh/iu,
 ] as const;
 
-export function renderCanonicalHostedPoolWorkflowV5(
+export function renderCanonicalHostedPoolWorkflowV2(
   input: HostedPoolWorkflowOptions,
 ): string {
   const release = parseImmutableActionRef(input.actionRef);
@@ -66,14 +71,16 @@ export function renderCanonicalHostedPoolWorkflowV5(
   ) {
     throw new Error("hosted_binding_revision_invalid");
   }
-  const reusableWorkflowRef = `${release.repository}/.github/workflows/reviewrouter-t0-reusable.yml@${release.commitSha}`;
+  const reusableWorkflowRef = canonicalHostedPoolReusableWorkflowIdentity(
+    input.actionRef,
+  ).ref;
 
   return `name: ReviewRouter Hosted Codex
 
 run-name: \${{ format('ReviewRouter hosted review PR {0} at {1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
 permissions: {}
@@ -81,7 +88,7 @@ permissions: {}
 jobs:
   codex-review:
     name: codex-review
-    if: \${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' && (github.event.pull_request.draft == false || vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true') }}
+    if: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' && (github.event.pull_request.draft == false || vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true') }}
     permissions:
       contents: read
       pull-requests: read
@@ -103,7 +110,17 @@ jobs:
 `;
 }
 
-export function scanCanonicalHostedPoolWorkflowV5(
+export function canonicalHostedPoolReusableWorkflowIdentity(
+  actionRef: string,
+): HostedPoolReusableWorkflowIdentity {
+  const release = parseImmutableActionRef(actionRef);
+  return Object.freeze({
+    ref: `${release.repository}/.github/workflows/reviewrouter-t0-reusable.yml@${release.commitSha}`,
+    sha: release.commitSha,
+  });
+}
+
+export function scanCanonicalHostedPoolWorkflowV2(
   workflow: string,
 ): HostedPoolWorkflowScanResult {
   const errors: string[] = [];
@@ -123,13 +140,13 @@ export function scanCanonicalHostedPoolWorkflowV5(
     errors.push("hosted_workflow_oidc_permissions_required");
   }
   if (
-    !workflow.includes("github.event_name == 'pull_request_target'") ||
+    !workflow.includes("github.event_name == 'pull_request'") ||
     !workflow.includes(
       "github.event.pull_request.head.repo.full_name == github.repository",
     ) ||
     !workflow.includes("github.event.pull_request.user.type != 'Bot'") ||
-    !/^ {2}pull_request_target:/mu.test(workflow) ||
-    /^ {2}(?:pull_request|workflow_dispatch):/mu.test(workflow)
+    !/^ {2}pull_request:/mu.test(workflow) ||
+    /^ {2}(?:pull_request_target|workflow_dispatch):/mu.test(workflow)
   ) {
     errors.push("hosted_workflow_trusted_ingress_required");
   }
@@ -146,7 +163,7 @@ export function scanCanonicalHostedPoolWorkflowV5(
 
   try {
     const metadata = readCanonicalHostedPoolWorkflowMetadata(workflow);
-    const canonical = renderCanonicalHostedPoolWorkflowV5(metadata);
+    const canonical = renderCanonicalHostedPoolWorkflowV2(metadata);
     if (normalizeWorkflow(canonical) !== normalizeWorkflow(workflow)) {
       errors.push("hosted_workflow_source_not_canonical");
     }
@@ -284,7 +301,7 @@ export function assertActiveHostedPoolWorkflowAttestation(input: {
   ) {
     throw new Error("hosted_workflow_attestation_digest_mismatch");
   }
-  const scan = scanCanonicalHostedPoolWorkflowV5(input.expectedWorkflow);
+  const scan = scanCanonicalHostedPoolWorkflowV2(input.expectedWorkflow);
   if (!scan.valid)
     throw new Error("hosted_workflow_attestation_source_invalid");
 }

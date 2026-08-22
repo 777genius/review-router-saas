@@ -158,8 +158,12 @@ limits must not be raised outside these ranges by bypassing validation.
 5. Set `POOL=1` and `CUSTODY=1` for controlled account onboarding. Keep
    `ADMISSION=0`, `RELAY=0`, and `FAILOVER=0`; no Action traffic may run yet.
 6. Provision and attest the disposable/private allowlisted workflow against the
-   companion Action SHA. Set `ADMISSION=1`, verify denial while relay remains
-   off, then set `RELAY=1` for the smallest allowlist and run the E2E matrix.
+   companion Action SHA. The hosted caller uses `pull_request` (never
+   `pull_request_target`), client-triggered T0 schema 2, and the immutable
+   `reviewrouter-t0-reusable.yml@<40-character-SHA>`; grant admission requires
+   that same path and SHA in `job_workflow_ref`/`job_workflow_sha`. Set
+   `ADMISSION=1`, verify denial while relay remains off, then set `RELAY=1` for
+   the smallest allowlist and run the E2E matrix.
 7. After sticky-account, quota/auth classification, and no-body-retention
    evidence passes, set `FAILOVER=1`. Expand only through explicit private
    repository bindings; legacy repository-owned mode remains unchanged.

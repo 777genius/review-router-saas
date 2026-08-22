@@ -6,7 +6,7 @@ import {
   defaultCodexRotatingWorkflowPath,
   hostedPoolWorkflowSemanticSha256,
   readCanonicalHostedPoolWorkflowMetadata,
-  renderCanonicalHostedPoolWorkflowV5,
+  renderCanonicalHostedPoolWorkflowV2,
 } from "@reviewrouter/features-workflow-provisioning";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import { resolveReviewRouterCodexRotatingTrustedActionRefs } from "@reviewrouter/platform-config";
@@ -103,7 +103,7 @@ export async function activateConfirmedHostedPoolBindingAfterWorkflowMerge(input
   ) {
     throw new Error("hosted_workflow_authority_mismatch");
   }
-  const expectedWorkflow = renderCanonicalHostedPoolWorkflowV5(metadata);
+  const expectedWorkflow = renderCanonicalHostedPoolWorkflowV2(metadata);
   const attestation = createHostedPoolWorkflowSourceAttestation({
     repositoryId: input.githubRepositoryId,
     workflowPath: defaultCodexRotatingWorkflowPath,
