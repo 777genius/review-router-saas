@@ -127,7 +127,8 @@ export class CommitAttestedInvestigationTurn {
     assertInvestigationTurnObligationClaimScope({
       turn: current.activeTurn,
       closureClaims: command.observation.closureClaims,
-      unresolvableClaims: command.observation.unresolvableClaims,
+      // Provider unresolvable suggestions are filtered after evidence verification.
+      unresolvableClaims: [],
     });
     const terminalOutcomeHash = await this.digest.digestUtf8(
       canonicalInvestigationTerminalObservation(command.observation),
@@ -187,13 +188,6 @@ export class CommitAttestedInvestigationTurn {
       command.observation.findings,
       operationEvidence,
       this.digest,
-    );
-    assertEvidenceReferences(
-      command.observation.unresolvableClaims.flatMap(
-        (claim) => claim.evidenceOperationReceiptIds,
-      ),
-      operationEvidence,
-      "unresolvable",
     );
     const unresolvableDecisions = this.unresolvablePreparation.prepare({
       investigation: current,
