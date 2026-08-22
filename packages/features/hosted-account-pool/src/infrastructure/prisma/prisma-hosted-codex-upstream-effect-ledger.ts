@@ -52,6 +52,7 @@ export class PrismaHostedCodexUpstreamEffectLedger {
     ) {
       throw new Error("hosted_codex_effect_lease_invalid");
     }
+    const now = this.now();
     return this.prisma.$transaction(
       async (transaction) => {
         const request = await transaction.hostedCodexRelayRequest.findFirst({
@@ -61,9 +62,12 @@ export class PrismaHostedCodexUpstreamEffectLedger {
             requestHash: input.requestHash,
             status: "processing",
           },
-          select: { id: true },
+          include: {
+            grant: { include: { account: true } },
+          },
         });
         if (!request) throw new Error("hosted_codex_effect_request_invalid");
+        assertCurrentDispatchAuthority(request.grant, input.accountId, now);
         const prior =
           await transaction.hostedCodexUpstreamEffectAttempt.findMany({
             where: { relayRequestId: input.relayRequestId },
@@ -84,7 +88,6 @@ export class PrismaHostedCodexUpstreamEffectLedger {
         const attemptOrdinal = (latest?.attemptOrdinal ?? 0) + 1;
         const ownerToken = randomBytes(32).toString("base64url");
         const attemptId = randomUUID();
-        const now = this.now();
         await transaction.hostedCodexUpstreamEffectAttempt.create({
           data: {
             id: attemptId,
@@ -124,18 +127,30 @@ export class PrismaHostedCodexUpstreamEffectLedger {
 
   async markDispatching(lease: HostedCodexUpstreamEffectLease): Promise<void> {
     const now = this.now();
-    const updated =
-      await this.prisma.hostedCodexUpstreamEffectAttempt.updateMany({
-        where: this.liveLeaseWhere(lease, "prepared", now),
-        data: {
-          state: "dispatching",
-          dispatchStartedAt: now,
-          heartbeatAt: now,
-          leaseExpiresAt: new Date(now.getTime() + 30_000),
-        },
-      });
-    if (updated.count !== 1)
-      throw new Error("hosted_codex_effect_lease_invalid");
+    await this.prisma.$transaction(
+      async (transaction) => {
+        const attempt =
+          await transaction.hostedCodexUpstreamEffectAttempt.findFirst({
+            where: this.liveLeaseWhere(lease, "prepared", now),
+            include: { grant: { include: { account: true } } },
+          });
+        if (!attempt) throw new Error("hosted_codex_effect_lease_invalid");
+        assertCurrentDispatchAuthority(attempt.grant, attempt.accountId, now);
+        const updated =
+          await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+            where: this.liveLeaseWhere(lease, "prepared", now),
+            data: {
+              state: "dispatching",
+              dispatchStartedAt: now,
+              heartbeatAt: now,
+              leaseExpiresAt: new Date(now.getTime() + 30_000),
+            },
+          });
+        if (updated.count !== 1)
+          throw new Error("hosted_codex_effect_lease_invalid");
+      },
+      { isolationLevel: "Serializable" },
+    );
   }
 
   async heartbeat(lease: HostedCodexUpstreamEffectLease): Promise<void> {
@@ -296,6 +311,24 @@ export class PrismaHostedCodexUpstreamEffectLedger {
           if (request.count === 1) {
             await poisonGrant(transaction, attempt.grantId, now);
           }
+        } else {
+          const request = await transaction.hostedCodexRelayRequest.updateMany({
+            where: {
+              id: attempt.relayRequestId,
+              grantId: attempt.grantId,
+              status: { in: ["received", "processing"] },
+            },
+            data: {
+              status: "failed",
+              responseBytes: 0,
+              responseHash: null,
+              errorCode: "upstream_dispatch_not_started",
+              completedAt: now,
+            },
+          });
+          if (request.count !== 1) {
+            throw new Error("relay_request_completion_conflict");
+          }
         }
         swept += 1;
       });
@@ -361,11 +394,14 @@ async function poisonGrant(
   now: Date,
 ): Promise<void> {
   await transaction.hostedCodexInvocationGrant.updateMany({
-    where: { id: grantId, status: "issued", revokedAt: null },
+    where: {
+      id: grantId,
+      status: { in: ["issued", "exhausted"] },
+      revokedAt: null,
+    },
     data: {
       status: "revoked",
       revokedAt: now,
-      inFlight: 0,
       revision: { increment: 1 },
     },
   });
@@ -373,6 +409,36 @@ async function poisonGrant(
     where: { grantId, revokedAt: null },
     data: { revokedAt: now, revision: { increment: 1 } },
   });
+}
+
+function assertCurrentDispatchAuthority(
+  grant: {
+    readonly status: string;
+    readonly revokedAt: Date | null;
+    readonly expiresAt: Date;
+    readonly activeAccountId: string;
+    readonly account: {
+      readonly state: string;
+      readonly cooldownUntil: Date | null;
+    };
+  },
+  accountId: string,
+  now: Date,
+): void {
+  const accountUsable =
+    grant.account.state === "healthy" ||
+    (grant.account.state === "cooldown" &&
+      grant.account.cooldownUntil !== null &&
+      grant.account.cooldownUntil <= now);
+  if (
+    !["issued", "exhausted"].includes(grant.status) ||
+    grant.revokedAt !== null ||
+    grant.expiresAt <= now ||
+    grant.activeAccountId !== accountId ||
+    !accountUsable
+  ) {
+    throw new Error("hosted_codex_effect_authority_revoked");
+  }
 }
 
 export function startHostedCodexEffectSweeper(

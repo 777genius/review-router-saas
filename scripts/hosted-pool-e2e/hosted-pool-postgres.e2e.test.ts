@@ -32,6 +32,7 @@ import {
   issueHostedPoolInvocationGrant,
   registerHostedCodexRelayRoutes,
   recordHostedPoolProviderResponseStarted,
+  recordHostedPoolSuccessfulProviderResponse,
   relayRequestId,
   repositoryId,
   workspaceId,
@@ -669,6 +670,13 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         issued,
         admitted,
         requestHash,
+        resume: () =>
+          authorization.authorize({
+            opaqueGrant: issued.plaintextToken,
+            requestOrdinal: 1,
+            idempotencyKey: `effect-${suffix}`,
+            requestBytes: 64,
+          }),
         prepare: () =>
           effects.prepare({
             relayRequestId: admitted.requestId,
@@ -691,6 +699,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         where: { id: firstPrepared.attemptId },
       }),
     ).toMatchObject({ state: "failed_no_effect", attemptOrdinal: 1 });
+    await beforeSend.resume();
     const retry = await beforeSend.prepare();
     expect(retry.fenceEpoch).toBe(2n);
     await effects.finish(retry, {
@@ -747,6 +756,342 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       { attemptOrdinal: 1, state: "failed_no_effect" },
       { attemptOrdinal: 2, state: "terminal_unknown" },
     ]);
+  });
+
+  it("terminalizes atomically when response-start persistence fails after the POST", async () => {
+    const issued = await issueGrant("response-start-persistence-race");
+    const authorization = new PrismaHostedCodexRelayAuthorization(prisma);
+    const admitted = await authorization.authorize({
+      opaqueGrant: issued.plaintextToken,
+      requestOrdinal: 1,
+      idempotencyKey: "response-start-persistence-race",
+      requestBytes: Buffer.byteLength('{"input":"race"}'),
+    });
+    const markStarted = vi
+      .spyOn(ledger, "markStarted")
+      .mockRejectedValueOnce(new Error("mark-response-started-write-failed"));
+    try {
+      const relay = new FetchHostedCodexStreamingRelay(
+        {
+          ensureFreshSession: vi.fn(async () => ({
+            accessToken: "response-start-access",
+            chatgptAccountId: "response-start-account",
+          })),
+          classifyFailure: vi.fn(() => ({ code: "unknown" })),
+        } as unknown as HostedCodexSessionRuntime,
+        ledger,
+        vi.fn(
+          async () =>
+            new Response("ok", {
+              status: 200,
+              headers: { "x-request-id": "response-start-provider-id" },
+            }),
+        ) as typeof fetch,
+      );
+      await expect(
+        relay.open({
+          authorization: admitted,
+          body: Readable.from(Buffer.from('{"input":"race"}')),
+          contentType: "application/json",
+          accept: "text/event-stream",
+          abortSignal: new AbortController().signal,
+        }),
+      ).rejects.toThrow("mark-response-started-write-failed");
+    } finally {
+      markStarted.mockRestore();
+    }
+    const [request, grant, capability, effect] = await Promise.all([
+      prisma.hostedCodexRelayRequest.findUniqueOrThrow({
+        where: { id: admitted.requestId },
+      }),
+      prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: issued.grant.id },
+      }),
+      prisma.hostedCodexCommentRefreshCapability.findUniqueOrThrow({
+        where: { grantId: issued.grant.id },
+      }),
+      prisma.hostedCodexUpstreamEffectAttempt.findFirstOrThrow({
+        where: { relayRequestId: admitted.requestId },
+      }),
+    ]);
+    expect(request.status).toBe("terminal_unknown");
+    expect(effect.state).toBe("terminal_unknown");
+    expect(grant.status).toBe("revoked");
+    expect(capability.revokedAt).not.toBeNull();
+  });
+
+  it("renews the effect lease throughout a logically longer-than-30-second response stream", async () => {
+    let clock = new Date();
+    const effects = new PrismaHostedCodexUpstreamEffectLedger(
+      prisma,
+      () => clock,
+    );
+    const issued = await issueGrant("long-response-heartbeat");
+    const authorization = new PrismaHostedCodexRelayAuthorization(prisma);
+    const admitted = await authorization.authorize({
+      opaqueGrant: issued.plaintextToken,
+      requestOrdinal: 1,
+      idempotencyKey: "long-response-heartbeat",
+      requestBytes: Buffer.byteLength('{"input":"long"}'),
+    });
+    let chunks = 0;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (chunks === 3) {
+          controller.close();
+          return;
+        }
+        clock = new Date(clock.getTime() + 20_000);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(await effects.sweepExpired()).toBe(0);
+        controller.enqueue(Buffer.from(`chunk-${chunks}`));
+        chunks += 1;
+      },
+    });
+    const relay = new FetchHostedCodexStreamingRelay(
+      {
+        ensureFreshSession: vi.fn(async () => ({
+          accessToken: "long-response-access",
+          chatgptAccountId: "long-response-account",
+        })),
+        classifyFailure: vi.fn(() => ({ code: "unknown" })),
+      } as unknown as HostedCodexSessionRuntime,
+      ledger,
+      vi.fn(async () => new Response(body, { status: 200 })) as typeof fetch,
+      {
+        failoverEnabled: false,
+        now: () => clock,
+        heartbeatIntervalMs: 5,
+        effects,
+      },
+    );
+    const response = await relay.open({
+      authorization: admitted,
+      body: Readable.from(Buffer.from('{"input":"long"}')),
+      contentType: "application/json",
+      accept: "text/event-stream",
+      abortSignal: new AbortController().signal,
+    });
+    await readAll(response.body);
+    expect(chunks).toBe(3);
+    expect(
+      await prisma.hostedCodexRelayRequest.findUniqueOrThrow({
+        where: { id: admitted.requestId },
+      }),
+    ).toMatchObject({ status: "succeeded" });
+  });
+
+  it("rechecks quarantine and revocation at both prepare and dispatch boundaries", async () => {
+    const authorization = new PrismaHostedCodexRelayAuthorization(prisma);
+    const effects = new PrismaHostedCodexUpstreamEffectLedger(prisma);
+    const first = await issueGrant("authority-recheck-quarantine");
+    const second = await issueGrant("authority-recheck-revocation");
+    const admit = async (
+      issued: Awaited<ReturnType<typeof issueGrant>>,
+      suffix: string,
+    ) => {
+      const admitted = await authorization.authorize({
+        opaqueGrant: issued.plaintextToken,
+        requestOrdinal: 1,
+        idempotencyKey: suffix,
+        requestBytes: 64,
+      });
+      const requestHash = sha256(`authority-recheck-${suffix}`);
+      await ledger.recordRequestHash({
+        grantId: issued.grant.id,
+        requestId: admitted.requestId,
+        requestHash,
+      });
+      return { admitted, requestHash };
+    };
+    const firstRequest = await admit(first, "quarantine");
+    const secondRequest = await admit(second, "revocation");
+    const preparedBeforeQuarantine = await effects.prepare({
+      relayRequestId: firstRequest.admitted.requestId,
+      grantId: first.grant.id,
+      workspaceId: workspace,
+      poolId: pool,
+      accountId: "account-primary",
+      requestHash: firstRequest.requestHash,
+    });
+    await prisma.hostedCodexAccount.update({
+      where: { id: "account-primary" },
+      data: {
+        state: "restore_quarantined",
+        healthVersion: { increment: 1 },
+      },
+    });
+    await expect(
+      effects.markDispatching(preparedBeforeQuarantine),
+    ).rejects.toThrow("hosted_codex_effect_authority_revoked");
+    await expect(
+      effects.prepare({
+        relayRequestId: secondRequest.admitted.requestId,
+        grantId: second.grant.id,
+        workspaceId: workspace,
+        poolId: pool,
+        accountId: "account-primary",
+        requestHash: secondRequest.requestHash,
+      }),
+    ).rejects.toThrow("hosted_codex_effect_authority_revoked");
+    await prisma.hostedCodexAccount.update({
+      where: { id: "account-primary" },
+      data: { state: "healthy", healthVersion: { increment: 1 } },
+    });
+    const preparedBeforeRevocation = await effects.prepare({
+      relayRequestId: secondRequest.admitted.requestId,
+      grantId: second.grant.id,
+      workspaceId: workspace,
+      poolId: pool,
+      accountId: "account-primary",
+      requestHash: secondRequest.requestHash,
+    });
+    await prisma.hostedCodexInvocationGrant.update({
+      where: { id: second.grant.id },
+      data: { status: "revoked", revokedAt: new Date() },
+    });
+    await expect(
+      effects.markDispatching(preparedBeforeRevocation),
+    ).rejects.toThrow("hosted_codex_effect_authority_revoked");
+  });
+
+  it("releases an expired prepared request and resumes the same exhausted idempotency identity", async () => {
+    let clock = new Date();
+    const effects = new PrismaHostedCodexUpstreamEffectLedger(
+      prisma,
+      () => clock,
+    );
+    const issued = await issueGrant("prepared-safe-retry", {
+      maxRequests: 1,
+      maxConcurrentRequests: 1,
+    });
+    const authorization = new PrismaHostedCodexRelayAuthorization(prisma);
+    const admitted = await authorization.authorize({
+      opaqueGrant: issued.plaintextToken,
+      requestOrdinal: 1,
+      idempotencyKey: "prepared-safe-retry",
+      requestBytes: 64,
+    });
+    const requestHash = sha256("prepared-safe-retry-body");
+    await ledger.recordRequestHash({
+      grantId: issued.grant.id,
+      requestId: admitted.requestId,
+      requestHash,
+    });
+    await effects.prepare({
+      relayRequestId: admitted.requestId,
+      grantId: issued.grant.id,
+      workspaceId: workspace,
+      poolId: pool,
+      accountId: "account-primary",
+      requestHash,
+      leaseMs: 5_000,
+    });
+    clock = new Date(clock.getTime() + 5_001);
+    expect(await effects.sweepExpired()).toBe(1);
+    expect(
+      await prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: issued.grant.id },
+      }),
+    ).toMatchObject({ status: "exhausted", requestCount: 1, inFlight: 0 });
+    const resumed = await authorization.authorize({
+      opaqueGrant: issued.plaintextToken,
+      requestOrdinal: 1,
+      idempotencyKey: "prepared-safe-retry",
+      requestBytes: 64,
+    });
+    expect(resumed.requestId).toBe(admitted.requestId);
+    expect(
+      await prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: issued.grant.id },
+      }),
+    ).toMatchObject({ status: "exhausted", requestCount: 1, inFlight: 1 });
+    const retry = await effects.prepare({
+      relayRequestId: resumed.requestId,
+      grantId: issued.grant.id,
+      workspaceId: workspace,
+      poolId: pool,
+      accountId: "account-primary",
+      requestHash,
+    });
+    expect(retry.fenceEpoch).toBe(2n);
+  });
+
+  it("poisons an exhausted grant without erasing a concurrent sibling completion", async () => {
+    const issued = await issueGrant("poison-concurrent-sibling", {
+      maxRequests: 2,
+      maxConcurrentRequests: 2,
+    });
+    const authorization = new PrismaHostedCodexRelayAuthorization(prisma);
+    const effects = new PrismaHostedCodexUpstreamEffectLedger(prisma);
+    const prepare = async (ordinal: number) => {
+      const admitted = await authorization.authorize({
+        opaqueGrant: issued.plaintextToken,
+        requestOrdinal: ordinal,
+        idempotencyKey: `poison-concurrent-${ordinal}`,
+        requestBytes: 64,
+      });
+      const requestHash = sha256(`poison-concurrent-${ordinal}`);
+      await ledger.recordRequestHash({
+        grantId: issued.grant.id,
+        requestId: admitted.requestId,
+        requestHash,
+      });
+      const effect = await effects.prepare({
+        relayRequestId: admitted.requestId,
+        grantId: issued.grant.id,
+        workspaceId: workspace,
+        poolId: pool,
+        accountId: "account-primary",
+        requestHash,
+      });
+      await effects.markDispatching(effect);
+      return { admitted, effect };
+    };
+    const first = await prepare(1);
+    const second = await prepare(2);
+    await effects.finish(first.effect, {
+      state: "terminal_unknown",
+      errorCode: "ambiguous-first-sibling",
+      evidence: "poison-concurrent-first",
+    });
+    expect(
+      await prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: issued.grant.id },
+      }),
+    ).toMatchObject({ status: "revoked", requestCount: 2, inFlight: 1 });
+    await recordHostedPoolProviderResponseStarted(
+      {
+        grantId: invocationGrantId(issued.grant.id),
+        requestId: relayRequestId(second.admitted.requestId),
+        startedAt: new Date(),
+        effect: {
+          ...effects.authority(second.effect),
+          providerResponseIdHash: null,
+        },
+      },
+      ledger,
+    );
+    await recordHostedPoolSuccessfulProviderResponse(
+      {
+        grantId: invocationGrantId(issued.grant.id),
+        requestId: relayRequestId(second.admitted.requestId),
+        responseBytes: 2,
+        responseHash: sha256("ok"),
+        completedAt: new Date(),
+        effect: {
+          ...effects.authority(second.effect),
+          terminalState: "succeeded",
+          terminalEvidenceHash: sha256("sibling-completed"),
+        },
+      },
+      ledger,
+    );
+    expect(
+      await prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: issued.grant.id },
+      }),
+    ).toMatchObject({ status: "revoked", requestCount: 2, inFlight: 0 });
   });
 
   it("runs 52 grants through two real session-runtime replicas without an invocation gate", async () => {
@@ -1120,8 +1465,41 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         where: { id: outstanding.grant.id },
       }),
     ).toMatchObject({ status: "revoked", inFlight: 0 });
-    const operationId = await restore.begin("witnessed-restore-token");
+    const competingRestore = new PrismaHostedCodexRestoreReconciler(
+      prisma,
+      recoveryVault,
+      targetResource,
+      targetIncarnation,
+      {
+        verify: (input) => ({
+          ...permit,
+          nonce: "restore-e2e-competing-nonce-that-is-unique",
+          inventoryHash: input.inventoryHash,
+        }),
+      },
+      undefined,
+      () => restoreNow,
+    );
+    const [operationId, competingOperationId] = await Promise.all([
+      restore.begin("witnessed-restore-token"),
+      competingRestore.begin("competing-witnessed-restore-token"),
+    ]);
+    expect(competingOperationId).toBe(operationId);
     expect(await restore.begin("witnessed-restore-token")).toBe(operationId);
+    expect(
+      await prisma.hostedCodexRestoreOperation.count({
+        where: {
+          inventoryHash: (
+            await prisma.hostedCodexRestoreOperation.findUniqueOrThrow({
+              where: { id: operationId },
+            })
+          ).inventoryHash,
+          databaseResourceIdentity: targetResource,
+          targetIncarnation,
+          state: { in: ["witnessed", "reconciling", "reconciled"] },
+        },
+      }),
+    ).toBe(1);
     const witnessedOperation =
       await prisma.hostedCodexRestoreOperation.findUniqueOrThrow({
         where: { id: operationId },
@@ -1133,7 +1511,9 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     await prisma.hostedCodexRestoreOperation.create({
       data: {
         id: adversarialOperationId,
-        inventoryHash: witnessedOperation.inventoryHash,
+        inventoryHash: sha256(
+          `${witnessedOperation.inventoryHash}\0adversarial-failed`,
+        ),
         databaseResourceIdentity: witnessedOperation.databaseResourceIdentity,
         sourceIncarnation: witnessedOperation.sourceIncarnation,
         targetIncarnation: witnessedOperation.targetIncarnation,
@@ -1248,7 +1628,14 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
   }, 120_000);
 });
 
-async function issueGrant(suffix: string) {
+async function issueGrant(
+  suffix: string,
+  budget: Partial<{
+    maxRequests: number;
+    maxConcurrentRequests: number;
+    maxRequestBytes: number;
+  }> = {},
+) {
   const expiresAt = new Date(Date.now() + 10 * 60_000);
   return issueHostedPoolInvocationGrant(
     {
@@ -1270,9 +1657,9 @@ async function issueGrant(suffix: string) {
       },
       budget: {
         expiresAt,
-        maxRequests: 4,
-        maxConcurrentRequests: 2,
-        maxRequestBytes: 16_384,
+        maxRequests: budget.maxRequests ?? 4,
+        maxConcurrentRequests: budget.maxConcurrentRequests ?? 2,
+        maxRequestBytes: budget.maxRequestBytes ?? 16_384,
       },
       commentRefreshBudget: {
         expiresAt,

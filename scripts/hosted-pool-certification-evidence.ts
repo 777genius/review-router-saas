@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import pg from "pg";
 
 const forbiddenPatterns = [
@@ -17,6 +17,32 @@ export type CertificationScanSource = Readonly<{
   name: string;
   value: string;
 }>;
+
+type HostedCertificationWorkspaceSnapshot = Readonly<{
+  schemaVersion: 1;
+  commitSha: string;
+  treeSha: string;
+  contentSha256: string;
+}>;
+
+export function captureHostedCertificationWorkspace(
+  workspace: string,
+): HostedCertificationWorkspaceSnapshot {
+  const status = git(workspace, [
+    "status",
+    "--porcelain=v2",
+    "--untracked-files=all",
+  ]);
+  if (status !== "") throw new Error("hosted_certification_workspace_dirty");
+  const commitSha = git(workspace, ["rev-parse", "HEAD"]);
+  const treeSha = git(workspace, ["rev-parse", "HEAD^{tree}"]);
+  return {
+    schemaVersion: 1,
+    commitSha,
+    treeSha,
+    contentSha256: sha256(`${commitSha}\0${treeSha}\0clean-tracked-untracked`),
+  };
+}
 
 export function assertHostedCertificationSecretFree(
   sources: readonly CertificationScanSource[],
@@ -50,7 +76,22 @@ export async function buildHostedCertificationEvidence(input: {
   readonly databaseUrl?: string;
   readonly sentinels?: readonly string[];
   readonly gateStatuses?: Readonly<Record<string, string>>;
+  readonly workspaceSnapshotPath?: string;
 }) {
+  const before = input.workspaceSnapshotPath
+    ? (JSON.parse(
+        await readFile(input.workspaceSnapshotPath, "utf8"),
+      ) as HostedCertificationWorkspaceSnapshot)
+    : captureHostedCertificationWorkspace(input.workspace);
+  const after = captureHostedCertificationWorkspace(input.workspace);
+  if (
+    before.schemaVersion !== 1 ||
+    before.commitSha !== after.commitSha ||
+    before.treeSha !== after.treeSha ||
+    before.contentSha256 !== after.contentSha256
+  ) {
+    throw new Error("hosted_certification_tested_content_changed");
+  }
   const commitSha = git(input.workspace, ["rev-parse", "HEAD"]);
   if (
     commitSha !== input.expectedCommitSha ||
@@ -64,6 +105,7 @@ export async function buildHostedCertificationEvidence(input: {
     "packages/platform/db/prisma/migrations/000074_hosted_codex_account_pool/migration.sql",
     "packages/platform/db/prisma/migrations/000075_hosted_codex_security_certification/migration.sql",
     "packages/platform/db/prisma/migrations/000076_hosted_codex_terminalization_restore_invariants/migration.sql",
+    "packages/platform/db/prisma/migrations/000077_hosted_codex_r57_security_race_remediation/migration.sql",
   ];
   const sources: CertificationScanSource[] = [];
   const logsDirectory = join(input.outputDirectory, "logs");
@@ -73,20 +115,33 @@ export async function buildHostedCertificationEvidence(input: {
   if (input.databaseUrl) {
     sources.push(...(await readRelayEffectRows(input.databaseUrl)));
   }
+  const gateNames = [
+    "hosted-pool:verify",
+    "hosted-pool:migration-rehearsal",
+    "hosted-pool:e2e:postgres",
+  ] as const;
+  const gates = gateNames.map((name) => ({
+    name,
+    status: input.gateStatuses?.[name] ?? "local",
+  }));
+  if (input.gateStatuses && gates.some((gate) => gate.status !== "success")) {
+    throw new Error("hosted_certification_gate_failed");
+  }
   const evidence = {
     schemaVersion: 1,
-    subject: { commitSha, parentSha, treeSha },
+    subject: {
+      commitSha,
+      parentSha,
+      treeSha,
+      testedContent: { before, after },
+    },
     migrations: await Promise.all(
       migrationPaths.map(async (path) => ({
         path,
         sha256: sha256(gitBytes(input.workspace, ["show", `HEAD:${path}`])),
       })),
     ),
-    gates: [
-      "hosted-pool:verify",
-      "hosted-pool:migration-rehearsal",
-      "hosted-pool:e2e:postgres",
-    ].map((name) => ({ name, status: input.gateStatuses?.[name] ?? "local" })),
+    gates,
     scan: {
       policyVersion: "hosted-certification-sensitive-scan-v1",
       sourceCount: sources.length + 1,
@@ -158,11 +213,17 @@ async function listFiles(directory: string): Promise<string[]> {
 }
 
 function git(workspace: string, args: readonly string[]): string {
-  return execFileSync("git", args, { cwd: workspace, encoding: "utf8" }).trim();
+  return execFileSync("/usr/bin/git", args, {
+    cwd: workspace,
+    encoding: "utf8",
+  }).trim();
 }
 
 function gitBytes(workspace: string, args: readonly string[]): Buffer {
-  return execFileSync("git", args, { cwd: workspace, encoding: "buffer" });
+  return execFileSync("/usr/bin/git", args, {
+    cwd: workspace,
+    encoding: "buffer",
+  });
 }
 
 function sha256(value: string | Uint8Array): string {
@@ -171,6 +232,22 @@ function sha256(value: string | Uint8Array): string {
 
 async function main() {
   const workspace = process.cwd();
+  if (process.argv.includes("--capture-workspace")) {
+    const snapshotPath = String(
+      process.env.REVIEW_ROUTER_HOSTED_CERTIFICATION_WORKSPACE_SNAPSHOT ?? "",
+    ).trim();
+    if (!snapshotPath)
+      throw new Error("hosted_certification_workspace_snapshot_required");
+    const snapshot = captureHostedCertificationWorkspace(workspace);
+    await mkdir(dirname(snapshotPath), { recursive: true, mode: 0o700 });
+    await writeFile(snapshotPath, `${JSON.stringify(snapshot)}\n`, {
+      mode: 0o600,
+    });
+    process.stdout.write(
+      `${JSON.stringify({ status: "captured", contentSha256: snapshot.contentSha256 })}\n`,
+    );
+    return;
+  }
   const result = await buildHostedCertificationEvidence({
     workspace,
     outputDirectory: resolve(
@@ -178,6 +255,8 @@ async function main() {
         ".artifacts/hosted-certification",
     ),
     expectedCommitSha: String(process.env.GITHUB_SHA ?? "").trim(),
+    workspaceSnapshotPath:
+      process.env.REVIEW_ROUTER_HOSTED_CERTIFICATION_WORKSPACE_SNAPSHOT,
     databaseUrl: process.env.DATABASE_URL,
     sentinels: JSON.parse(
       process.env.REVIEW_ROUTER_HOSTED_CERTIFICATION_SENTINELS_JSON ?? "[]",

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertHostedCertificationSecretFree,
   buildHostedCertificationEvidence,
+  captureHostedCertificationWorkspace,
 } from "./hosted-pool-certification-evidence";
 
 describe("hosted pool certification evidence", () => {
@@ -58,6 +59,7 @@ describe("hosted pool certification evidence", () => {
         "packages/platform/db/prisma/migrations/000074_hosted_codex_account_pool/migration.sql",
         "packages/platform/db/prisma/migrations/000075_hosted_codex_security_certification/migration.sql",
         "packages/platform/db/prisma/migrations/000076_hosted_codex_terminalization_restore_invariants/migration.sql",
+        "packages/platform/db/prisma/migrations/000077_hosted_codex_r57_security_race_remediation/migration.sql",
       ];
       for (const [index, path] of migrations.entries()) {
         await mkdir(dirname(join(workspace, path)), { recursive: true });
@@ -75,7 +77,7 @@ describe("hosted pool certification evidence", () => {
         subject: { commitSha: string; parentSha: string; treeSha: string };
         migrations: Array<{ path: string; sha256: string }>;
       };
-      expect(evidence.subject).toEqual({
+      expect(evidence.subject).toMatchObject({
         commitSha,
         parentSha: git(workspace, ["rev-parse", "HEAD^"]),
         treeSha: git(workspace, ["rev-parse", "HEAD^{tree}"]),
@@ -86,6 +88,27 @@ describe("hosted pool certification evidence", () => {
           /^[a-f0-9]{64}$/u.test(sha256),
         ),
       ).toBe(true);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects tracked changes and untracked bytes instead of certifying only HEAD", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rr-hosted-dirty-repo-"));
+    try {
+      git(workspace, ["init"]);
+      git(workspace, ["config", "user.email", "certification@example.invalid"]);
+      git(workspace, ["config", "user.name", "Certification Test"]);
+      await writeFile(join(workspace, "tracked.txt"), "clean\n");
+      git(workspace, ["add", "tracked.txt"]);
+      git(workspace, ["commit", "-m", "fixture"]);
+      expect(captureHostedCertificationWorkspace(workspace)).toMatchObject({
+        schemaVersion: 1,
+      });
+      await writeFile(join(workspace, "untracked.txt"), "not-tested\n");
+      expect(() => captureHostedCertificationWorkspace(workspace)).toThrow(
+        "hosted_certification_workspace_dirty",
+      );
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

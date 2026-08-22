@@ -11,7 +11,8 @@ const phase = process.env.REVIEW_ROUTER_HOSTED_POOL_MIGRATION_PHASE;
 if (
   phase !== "seed-000074" &&
   phase !== "verify-000075" &&
-  phase !== "verify-000076"
+  phase !== "verify-000076" &&
+  phase !== "verify-000077"
 ) {
   throw new Error("hosted_pool_migration_phase_required");
 }
@@ -101,6 +102,25 @@ describe("hosted pool populated 000074 to 000075 migration", () => {
         mutation_fences: 1,
         generation_receipts: 1,
       });
+    },
+  );
+
+  it.runIf(phase === "verify-000077")(
+    "applies the r57 accounting and active restore-scope remediation",
+    async () => {
+      const migration = await client.query(`
+        SELECT COUNT(*)::int AS count
+        FROM "_prisma_migrations"
+        WHERE migration_name = '000077_hosted_codex_r57_security_race_remediation'
+          AND finished_at IS NOT NULL AND rolled_back_at IS NULL
+      `);
+      expect(migration.rows[0]?.count).toBe(1);
+      const indexes = await client.query(`
+        SELECT COUNT(*)::int AS count FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = 'HostedCodexRestoreOperation_active_inventory_target_key'
+      `);
+      expect(indexes.rows[0]?.count).toBe(1);
     },
   );
 

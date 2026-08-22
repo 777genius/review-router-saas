@@ -15,6 +15,7 @@ export interface RelayRequestAdmissionPort {
     readonly ordinal: number;
     readonly idempotencyKeyHash: string;
     readonly requestBytes: number;
+    readonly now: Date;
     readonly transition: (current: InvocationGrant) => RelayAdmission;
   }): Promise<RelayAdmission>;
 }

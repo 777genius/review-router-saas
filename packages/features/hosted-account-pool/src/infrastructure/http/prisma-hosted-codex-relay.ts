@@ -55,9 +55,27 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
       },
     });
     const now = new Date();
+    const requestId = relayRequestId(
+      sha256(
+        `${stored?.id ?? "missing"}\0${input.requestOrdinal}\0${input.idempotencyKey}`,
+      ),
+    );
+    const resumableNoEffectRequest =
+      stored?.status === "exhausted"
+        ? await this.prisma.hostedCodexRelayRequest.findFirst({
+            where: {
+              id: requestId,
+              grantId: stored.id,
+              status: "failed",
+              errorCode: "upstream_dispatch_not_started",
+              upstreamAttempts: { some: { state: "failed_no_effect" } },
+            },
+            select: { id: true },
+          })
+        : null;
     if (
       !stored ||
-      stored.status !== "issued" ||
+      (stored.status !== "issued" && !resumableNoEffectRequest) ||
       stored.revokedAt !== null ||
       stored.expiresAt <= now
     )
@@ -96,9 +114,6 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
       bindingRevision: Number(stored.bindingRevision),
       authzEpoch: stored.authzEpoch,
     };
-    const requestId = relayRequestId(
-      sha256(`${stored.id}\0${input.requestOrdinal}\0${input.idempotencyKey}`),
-    );
     const admission = await admitHostedPoolRelayRequest(
       {
         grantId: invocationGrantId(stored.id),
@@ -117,9 +132,8 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
     ) {
       throw new Error(`hosted_relay_${admission.status}`);
     }
-    if (admission.status === "already_admitted") {
+    if (admission.status === "already_admitted")
       throw new Error("hosted_relay_replay_unsupported");
-    }
     return {
       grantId: stored.id,
       requestId,
@@ -141,6 +155,7 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
 export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelayPort {
   private readonly failoverEnabled: boolean;
   private readonly now: () => Date;
+  private readonly heartbeatIntervalMs: number;
   private readonly effects: Pick<
     PrismaHostedCodexUpstreamEffectLedger,
     | "prepare"
@@ -157,6 +172,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
     options: {
       readonly failoverEnabled: boolean;
       readonly now?: () => Date;
+      readonly heartbeatIntervalMs?: number;
       readonly effects?: Pick<
         PrismaHostedCodexUpstreamEffectLedger,
         | "prepare"
@@ -169,6 +185,14 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
   ) {
     this.failoverEnabled = options.failoverEnabled;
     this.now = options.now ?? (() => new Date());
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 10_000;
+    if (
+      !Number.isSafeInteger(this.heartbeatIntervalMs) ||
+      this.heartbeatIntervalMs < 5 ||
+      this.heartbeatIntervalMs > 10_000
+    ) {
+      throw new Error("hosted_codex_effect_heartbeat_interval_invalid");
+    }
     this.effects =
       options.effects ??
       new PrismaHostedCodexUpstreamEffectLedger(
@@ -216,6 +240,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
     let failedOver = false;
     let upstream: Response;
     let effectLease: HostedCodexUpstreamEffectLease;
+    let streamHeartbeat: EffectHeartbeat | undefined;
     while (true) {
       let session;
       try {
@@ -250,31 +275,81 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         requestHash,
       });
       await this.effects.markDispatching(effectLease);
+      let heartbeat = startEffectHeartbeat(
+        this.effects,
+        effectLease,
+        this.heartbeatIntervalMs,
+      );
       try {
-        upstream = await withEffectHeartbeat(
-          this.fetchImpl(upstreamResponsesUrl, {
-            method: "POST",
-            redirect: "error",
-            headers: {
-              authorization: `Bearer ${session.accessToken}`,
-              "chatgpt-account-id": session.chatgptAccountId,
-              "content-type": "application/json",
-              accept: safeAccept(input.accept),
-            },
-            body: JSON.stringify({
-              ...requestBody,
-              model: input.authorization.model,
-              store: false,
-            }),
-            signal: AbortSignal.any([
-              input.abortSignal,
-              AbortSignal.timeout(Math.min(remainingMs, 120_000)),
-            ]),
+        upstream = await this.fetchImpl(upstreamResponsesUrl, {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            authorization: `Bearer ${session.accessToken}`,
+            "chatgpt-account-id": session.chatgptAccountId,
+            "content-type": "application/json",
+            accept: safeAccept(input.accept),
+          },
+          body: JSON.stringify({
+            ...requestBody,
+            model: input.authorization.model,
+            store: false,
           }),
+          signal: AbortSignal.any([
+            input.abortSignal,
+            AbortSignal.timeout(Math.min(remainingMs, 120_000)),
+          ]),
+        });
+        heartbeat.assertHealthy();
+        await heartbeat.stop();
+        const providerResponseId = upstream.headers.get("x-request-id");
+        if (upstream.ok) {
+          await recordProviderResponseStarted(
+            {
+              grantId: invocationGrantId(input.authorization.grantId),
+              requestId: relayRequestId(input.authorization.requestId),
+              startedAt: this.now(),
+              effect: {
+                ...this.effects.authority(effectLease),
+                providerResponseIdHash: providerResponseId
+                  ? sha256(providerResponseId)
+                  : null,
+              },
+            },
+            this.ledger,
+          );
+        } else {
+          await this.effects.markResponseStarted(
+            effectLease,
+            providerResponseId,
+          );
+        }
+        heartbeat.assertHealthy();
+        if (
+          !failedOver &&
+          (upstream.status === 401 || upstream.status === 429)
+        ) {
+          await upstream.body?.cancel();
+          accountId = await this.switchToBackup(
+            input.authorization,
+            upstream.status === 429 ? "rate_limited" : "credential_invalid",
+            upstream.status === 429
+              ? new Date(this.now().getTime() + 15 * 60_000)
+              : null,
+            { lease: effectLease, status: upstream.status },
+          );
+          await heartbeat.stop();
+          failedOver = true;
+          continue;
+        }
+        heartbeat = startEffectHeartbeat(
           this.effects,
           effectLease,
+          this.heartbeatIntervalMs,
         );
+        streamHeartbeat = heartbeat;
       } catch (error) {
+        await heartbeat.stop();
         await terminalizeUnknownRequest(
           input.authorization,
           this.ledger,
@@ -283,49 +358,16 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
             this.effects,
             effectLease,
             "terminal_unknown",
-            "transport-error",
+            "post-dispatch-failure",
           ),
+          this.now(),
         );
         throw new UpstreamTerminalUnknownError(error);
-      }
-      const providerResponseId = upstream.headers.get("x-request-id");
-      if (upstream.ok) {
-        await recordProviderResponseStarted(
-          {
-            grantId: invocationGrantId(input.authorization.grantId),
-            requestId: relayRequestId(input.authorization.requestId),
-            startedAt: this.now(),
-            effect: {
-              ...this.effects.authority(effectLease),
-              providerResponseIdHash: providerResponseId
-                ? sha256(providerResponseId)
-                : null,
-            },
-          },
-          this.ledger,
-        );
-      } else {
-        await this.effects.markResponseStarted(effectLease, providerResponseId);
-      }
-      if (!failedOver && (upstream.status === 401 || upstream.status === 429)) {
-        await upstream.body?.cancel();
-        accountId = await this.switchToBackup(
-          input.authorization,
-          upstream.status === 429 ? "rate_limited" : "credential_invalid",
-          upstream.status === 429
-            ? new Date(this.now().getTime() + 15 * 60_000)
-            : null,
-          {
-            lease: effectLease,
-            status: upstream.status,
-          },
-        );
-        failedOver = true;
-        continue;
       }
       break;
     }
     if (!upstream.body) {
+      await streamHeartbeat?.stop();
       await terminalizeUnknownRequest(
         input.authorization,
         this.ledger,
@@ -336,25 +378,45 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
           "terminal_unknown",
           "body-missing",
         ),
+        this.now(),
       );
       throw new UpstreamTerminalUnknownError(
         new Error("hosted_codex_upstream_body_missing"),
       );
     }
-    const body = Readable.fromWeb(upstream.body as never).pipe(
-      completionTransform(
+    try {
+      const body = Readable.fromWeb(upstream.body as never).pipe(
+        completionTransform(
+          input.authorization,
+          this.ledger,
+          this.effects,
+          effectLease,
+          upstream.ok,
+          streamHeartbeat,
+          this.now,
+        ),
+      );
+      return {
+        statusCode: upstream.status,
+        headers: safeResponseHeaders(upstream.headers),
+        body,
+      };
+    } catch (error) {
+      await streamHeartbeat?.stop();
+      await terminalizeUnknownRequest(
         input.authorization,
         this.ledger,
-        this.effects,
-        effectLease,
-        upstream.ok,
-      ),
-    );
-    return {
-      statusCode: upstream.status,
-      headers: safeResponseHeaders(upstream.headers),
-      body,
-    };
+        "upstream_stream_setup_failed",
+        effectCompletion(
+          this.effects,
+          effectLease,
+          "terminal_unknown",
+          "stream-setup-failed",
+        ),
+        this.now(),
+      );
+      throw new UpstreamTerminalUnknownError(error);
+    }
   }
 
   private async switchToBackup(
@@ -435,12 +497,13 @@ async function terminalizeUnknownRequest(
   ledger: PrismaInvocationGrantRepository,
   errorCode: string,
   effect: ReturnType<typeof effectCompletion>,
+  completedAt = new Date(),
 ): Promise<void> {
   try {
     await ledger.terminalizeUnknown({
       grantId: invocationGrantId(authorization.grantId),
       requestId: relayRequestId(authorization.requestId),
-      completedAt: new Date(),
+      completedAt,
       errorCode,
       effect,
     });
@@ -502,6 +565,8 @@ function completionTransform(
   effects: Pick<PrismaHostedCodexUpstreamEffectLedger, "authority">,
   effectLease: HostedCodexUpstreamEffectLease,
   succeeded: boolean,
+  heartbeat: EffectHeartbeat | undefined,
+  now: () => Date,
 ): Transform {
   const hash = createHash("sha256");
   let bytes = 0;
@@ -520,41 +585,65 @@ function completionTransform(
       requestId: relayRequestId(authorization.requestId),
       responseBytes: bytes,
       responseHash,
-      completedAt: new Date(),
+      completedAt: now(),
     };
-    const completion = success
-      ? recordHostedPoolSuccessfulProviderResponse(
-          {
-            ...common,
-            effect: effectCompletion(
+    const completion = (async () => {
+      await heartbeat?.stop();
+      return success
+        ? recordHostedPoolSuccessfulProviderResponse(
+            {
+              ...common,
+              effect: effectCompletion(
+                effects,
+                effectLease,
+                "succeeded",
+                "stream-complete",
+              ),
+            },
+            ledger,
+          )
+        : terminalizeUnknownRequest(
+            authorization,
+            ledger,
+            errorCode ?? "upstream_stream_failed",
+            effectCompletion(
               effects,
               effectLease,
-              "succeeded",
-              "stream-complete",
+              "terminal_unknown",
+              errorCode ?? "upstream-stream-failed",
             ),
-          },
-          ledger,
-        )
-      : terminalizeUnknownRequest(
-          authorization,
-          ledger,
-          errorCode ?? "upstream_stream_failed",
-          effectCompletion(
-            effects,
-            effectLease,
-            "terminal_unknown",
-            errorCode ?? "upstream-stream-failed",
-          ),
-        );
+            now(),
+          );
+    })();
     completion.then(
       () => callback(propagatedError),
-      (error) =>
+      async (error) => {
+        if (success) {
+          try {
+            await terminalizeUnknownRequest(
+              authorization,
+              ledger,
+              "upstream_completion_persistence_failed",
+              effectCompletion(
+                effects,
+                effectLease,
+                "terminal_unknown",
+                "completion-persistence-failed",
+              ),
+              now(),
+            );
+          } catch (terminalError) {
+            callback(asError(terminalError));
+            return;
+          }
+        }
         callback(
           error instanceof Error ? error : new Error("relay_completion_failed"),
-        ),
+        );
+      },
     );
   };
-  return new Transform({
+  const transform = new Transform({
     transform(chunk, _encoding, callback) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       bytes += buffer.byteLength;
@@ -572,27 +661,60 @@ function completionTransform(
       finalize(false, code, callback, error);
     },
   });
+  heartbeat?.onFailure((error) => transform.destroy(asError(error)));
+  return transform;
 }
 
-async function withEffectHeartbeat<T>(
-  operation: Promise<T>,
+type EffectHeartbeat = {
+  readonly assertHealthy: () => void;
+  readonly onFailure: (handler: (error: unknown) => void) => void;
+  readonly stop: () => Promise<void>;
+};
+
+function startEffectHeartbeat(
   effects: Pick<PrismaHostedCodexUpstreamEffectLedger, "heartbeat">,
   lease: HostedCodexUpstreamEffectLease,
-): Promise<T> {
+  intervalMs: number,
+): EffectHeartbeat {
   let heartbeatFailure: unknown;
+  let failureHandler: ((error: unknown) => void) | undefined;
+  let stopped = false;
+  let pending = Promise.resolve();
   const timer = setInterval(() => {
-    void effects.heartbeat(lease).catch((error) => {
-      heartbeatFailure = error;
+    if (stopped) return;
+    pending = pending.then(async () => {
+      if (stopped) return;
+      try {
+        await effects.heartbeat(lease);
+      } catch (error) {
+        if (heartbeatFailure) return;
+        heartbeatFailure = error;
+        failureHandler?.(error);
+      }
     });
-  }, 10_000);
+  }, intervalMs);
   timer.unref();
-  try {
-    const result = await operation;
-    if (heartbeatFailure) throw heartbeatFailure;
-    return result;
-  } finally {
-    clearInterval(timer);
-  }
+  return {
+    assertHealthy: () => {
+      if (heartbeatFailure) throw heartbeatFailure;
+    },
+    onFailure: (handler) => {
+      failureHandler = handler;
+      if (heartbeatFailure) handler(heartbeatFailure);
+    },
+    stop: async () => {
+      if (stopped) return pending;
+      stopped = true;
+      clearInterval(timer);
+      await pending;
+    },
+  };
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error
+    ? error
+    : new Error("hosted_codex_effect_heartbeat_failed");
 }
 
 function effectCompletion(

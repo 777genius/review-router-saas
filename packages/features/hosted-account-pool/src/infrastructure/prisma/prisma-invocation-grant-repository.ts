@@ -275,6 +275,67 @@ export class PrismaInvocationGrantRepository
           ) {
             throw new Error("relay_request_replay_conflict");
           }
+          if (
+            existing.status === "failed" &&
+            existing.errorCode === "upstream_dispatch_not_started"
+          ) {
+            const latestEffect =
+              await transaction.hostedCodexUpstreamEffectAttempt.findFirst({
+                where: { relayRequestId: existing.id },
+                orderBy: { attemptOrdinal: "desc" },
+              });
+            if (latestEffect?.state !== "failed_no_effect") {
+              throw new Error("relay_request_no_effect_retry_invalid");
+            }
+            const grantResumed =
+              await transaction.hostedCodexInvocationGrant.updateMany({
+                where: {
+                  id: stored.id,
+                  revision: stored.revision,
+                  status: { in: ["issued", "exhausted"] },
+                  revokedAt: null,
+                  expiresAt: { gt: input.now },
+                  inFlight: { lt: stored.maxConcurrentRequests },
+                },
+                data: {
+                  inFlight: { increment: 1 },
+                  revision: { increment: 1 },
+                },
+              });
+            if (grantResumed.count !== 1) {
+              throw new Error("relay_request_no_effect_retry_denied");
+            }
+            const requestResumed =
+              await transaction.hostedCodexRelayRequest.updateMany({
+                where: {
+                  id: existing.id,
+                  grantId: stored.id,
+                  status: "failed",
+                  errorCode: "upstream_dispatch_not_started",
+                },
+                data: {
+                  status: "processing",
+                  responseBytes: null,
+                  responseHash: null,
+                  errorCode: null,
+                  completedAt: null,
+                  successfulResponseStartedAt: null,
+                },
+              });
+            if (requestResumed.count !== 1) {
+              throw new Error("relay_request_no_effect_retry_conflict");
+            }
+            const resumed =
+              await transaction.hostedCodexInvocationGrant.findUniqueOrThrow({
+                where: { id: input.grantId },
+                include: grantInclude,
+              });
+            return {
+              status: "admitted" as const,
+              grant: restoreGrant(resumed),
+              accountId: admission.accountId,
+            };
+          }
           return admission;
         }
         await transaction.hostedCodexRelayRequest.create({
@@ -405,7 +466,9 @@ export class PrismaInvocationGrantRepository
               grantId: input.grantId,
               ownerIdHash: input.effect.ownerIdHash,
               fenceEpoch: input.effect.fenceEpoch,
-              state: { in: ["dispatching", "response_started"] },
+              state: {
+                in: ["dispatching", "response_started", "failed_classified"],
+              },
             },
             data: {
               state: "terminal_unknown",
@@ -435,18 +498,21 @@ export class PrismaInvocationGrantRepository
         if (request.count !== 1) {
           throw new Error("relay_request_completion_conflict");
         }
-        const poisoned = await transaction.hostedCodexInvocationGrant.findFirst(
-          {
+        const [poisoned, commentCapability] = await Promise.all([
+          transaction.hostedCodexInvocationGrant.findFirst({
             where: {
               id: input.grantId,
               status: "revoked",
               revokedAt: { not: null },
-              inFlight: 0,
             },
             select: { id: true },
-          },
-        );
-        if (!poisoned) {
+          }),
+          transaction.hostedCodexCommentRefreshCapability.findFirst({
+            where: { grantId: input.grantId, revokedAt: { not: null } },
+            select: { id: true },
+          }),
+        ]);
+        if (!poisoned || !commentCapability) {
           throw new Error("invocation_grant_terminalization_conflict");
         }
       },
@@ -483,6 +549,7 @@ export class PrismaInvocationGrantRepository
                 state: "response_started",
                 responseStartedAt: input.startedAt,
                 heartbeatAt: input.startedAt,
+                leaseExpiresAt: new Date(input.startedAt.getTime() + 30_000),
                 providerResponseIdHash: input.effect.providerResponseIdHash,
               },
             });

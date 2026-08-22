@@ -336,6 +336,11 @@ jobs:
       - name: Apply test database migrations
         run: DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir packages/platform/db db:migrate:deploy
 
+      - name: Bind hosted certification input bytes
+        env:
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_WORKSPACE_SNAPSHOT: ${{ runner.temp }}/hosted-certification-workspace.json
+        run: pnpm hosted-pool:certification-evidence --capture-workspace
+
       - name: Hosted pool security certification
         id: hosted_verify
         continue-on-error: true
@@ -376,6 +381,7 @@ jobs:
           REVIEW_ROUTER_HOSTED_VERIFY_STATUS: ${{ steps.hosted_verify.outcome }}
           REVIEW_ROUTER_HOSTED_MIGRATION_STATUS: ${{ steps.hosted_migration.outcome }}
           REVIEW_ROUTER_HOSTED_POSTGRES_STATUS: ${{ steps.hosted_postgres.outcome }}
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_WORKSPACE_SNAPSHOT: ${{ runner.temp }}/hosted-certification-workspace.json
         run: pnpm hosted-pool:certification-evidence
 
       - name: Upload hosted certification evidence

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   HostedCodexRestorePermit,
   HostedCodexRestorePermitVerifierPort,
@@ -92,105 +92,116 @@ export class PrismaHostedCodexRestoreReconciler {
     if (replay) {
       return this.assertReplayBinding(replay, inventoryHash);
     }
-    const operationId = randomUUID();
-    try {
-      await this.prisma.$transaction(
-        async (transaction) => {
-          await transaction.hostedCodexAccount.updateMany({
-            where: {
-              id: { in: sourceItems.map((item) => item.accountId) },
-              state: { notIn: ["restore_quarantined", "tombstoned"] },
-            },
-            data: {
-              state: "restore_quarantined",
-              healthVersion: { increment: 1 },
-            },
-          });
-          const affectedGrantIds = (
-            await transaction.hostedCodexInvocationGrant.findMany({
-              where: {
-                status: "issued",
-                OR: [
-                  {
-                    activeAccountId: {
-                      in: sourceItems.map((item) => item.accountId),
-                    },
-                  },
-                  {
-                    primaryAccountId: {
-                      in: sourceItems.map((item) => item.accountId),
-                    },
-                  },
-                  {
-                    backupAccountId: {
-                      in: sourceItems.map((item) => item.accountId),
-                    },
-                  },
-                ],
-              },
-              select: { id: true },
-            })
-          ).map((grant) => grant.id);
-          await transaction.hostedCodexInvocationGrant.updateMany({
-            where: {
-              id: { in: affectedGrantIds },
-              status: "issued",
-            },
-            data: {
-              status: "revoked",
-              revokedAt: this.now(),
-              inFlight: 0,
-              revision: { increment: 1 },
-            },
-          });
-          await transaction.hostedCodexCommentRefreshCapability.updateMany({
-            where: { grantId: { in: affectedGrantIds }, revokedAt: null },
-            data: { revokedAt: this.now(), revision: { increment: 1 } },
-          });
-          await transaction.hostedCodexRestoreOperation.create({
-            data: {
-              id: operationId,
-              inventoryHash,
-              databaseResourceIdentity: permit.databaseResourceIdentity,
-              sourceIncarnation: permit.sourceIncarnation,
-              targetIncarnation: permit.targetIncarnation,
-              sourceKmsKeyArn: permit.sourceKmsKeyArn,
-              targetKmsKeyArn: permit.targetKmsKeyArn,
-              authorityKeyId: permit.authorityKeyId,
-              actorIdHash: sha256(permit.actorId),
-              nonceHash,
-              permitExpiresAt: permit.expiresAt,
-              itemCount: sourceItems.length,
-              createdAt: this.now(),
-            },
-          });
-          await transaction.hostedCodexRestoreItem.createMany({
-            data: sourceItems.map((item) => ({
-              id: randomUUID(),
-              restoreOperationId: operationId,
-              credentialVersionId: item.credentialVersionId,
-              accountId: item.accountId,
-              workspaceId: item.workspaceId,
-              poolId: item.poolId,
-              generation: item.generation,
-              sourceRevision: item.revision,
-              sourceAadHash: item.aadHash,
-              sourceCiphertextHash: item.ciphertextHash,
-              createdAt: this.now(),
-            })),
-          });
-        },
-        { isolationLevel: "Serializable" },
-      );
-    } catch (error) {
-      if (!isUniqueConstraintError(error)) throw error;
-      const racedReplay =
-        await this.prisma.hostedCodexRestoreOperation.findUnique({
-          where: { nonceHash },
+    const candidateOperationId = randomUUID();
+    const operationId = await this.prisma.$transaction(
+      async (transaction) => {
+        const scopeLock = [
+          inventoryHash,
+          permit.databaseResourceIdentity,
+          permit.targetIncarnation,
+        ].join("\u0000");
+        const scopeLockHash = sha256(scopeLock);
+        await transaction.$executeRaw(
+          Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${scopeLockHash}, 0))`,
+        );
+        const active = await transaction.hostedCodexRestoreOperation.findFirst({
+          where: {
+            inventoryHash,
+            databaseResourceIdentity: permit.databaseResourceIdentity,
+            targetIncarnation: permit.targetIncarnation,
+            state: { in: ["witnessed", "reconciling", "reconciled"] },
+          },
+          orderBy: { createdAt: "asc" },
         });
-      if (!racedReplay) throw error;
-      return this.assertReplayBinding(racedReplay, inventoryHash);
-    }
+        if (active) return active.id;
+        await transaction.hostedCodexAccount.updateMany({
+          where: {
+            id: { in: sourceItems.map((item) => item.accountId) },
+            state: { notIn: ["restore_quarantined", "tombstoned"] },
+          },
+          data: {
+            state: "restore_quarantined",
+            healthVersion: { increment: 1 },
+          },
+        });
+        const affectedGrantIds = (
+          await transaction.hostedCodexInvocationGrant.findMany({
+            where: {
+              status: { in: ["issued", "exhausted"] },
+              OR: [
+                {
+                  activeAccountId: {
+                    in: sourceItems.map((item) => item.accountId),
+                  },
+                },
+                {
+                  primaryAccountId: {
+                    in: sourceItems.map((item) => item.accountId),
+                  },
+                },
+                {
+                  backupAccountId: {
+                    in: sourceItems.map((item) => item.accountId),
+                  },
+                },
+              ],
+            },
+            select: { id: true },
+          })
+        ).map((grant) => grant.id);
+        await transaction.hostedCodexInvocationGrant.updateMany({
+          where: {
+            id: { in: affectedGrantIds },
+            status: { in: ["issued", "exhausted"] },
+          },
+          data: {
+            status: "revoked",
+            revokedAt: this.now(),
+            revision: { increment: 1 },
+          },
+        });
+        await transaction.hostedCodexCommentRefreshCapability.updateMany({
+          where: { grantId: { in: affectedGrantIds }, revokedAt: null },
+          data: { revokedAt: this.now(), revision: { increment: 1 } },
+        });
+        await transaction.hostedCodexRestoreOperation.create({
+          data: {
+            id: candidateOperationId,
+            inventoryHash,
+            databaseResourceIdentity: permit.databaseResourceIdentity,
+            sourceIncarnation: permit.sourceIncarnation,
+            targetIncarnation: permit.targetIncarnation,
+            sourceKmsKeyArn: permit.sourceKmsKeyArn,
+            targetKmsKeyArn: permit.targetKmsKeyArn,
+            authorityKeyId: permit.authorityKeyId,
+            actorIdHash: sha256(permit.actorId),
+            nonceHash,
+            permitExpiresAt: permit.expiresAt,
+            itemCount: sourceItems.length,
+            createdAt: this.now(),
+          },
+        });
+        await transaction.hostedCodexRestoreItem.createMany({
+          data: sourceItems.map((item) => ({
+            id: randomUUID(),
+            restoreOperationId: candidateOperationId,
+            credentialVersionId: item.credentialVersionId,
+            accountId: item.accountId,
+            workspaceId: item.workspaceId,
+            poolId: item.poolId,
+            generation: item.generation,
+            sourceRevision: item.revision,
+            sourceAadHash: item.aadHash,
+            sourceCiphertextHash: item.ciphertextHash,
+            createdAt: this.now(),
+          })),
+        });
+        return candidateOperationId;
+      },
+      // READ COMMITTED takes its operation lookup snapshot after the advisory
+      // lock wait, so a concurrent winner is visible and safely resumed.
+      { isolationLevel: "ReadCommitted" },
+    );
     this.fault?.("after_witness_persisted");
     return operationId;
   }
@@ -663,7 +674,7 @@ export class PrismaHostedCodexRestoreReconciler {
       });
       const grants = await transaction.hostedCodexInvocationGrant.findMany({
         where: {
-          status: "issued",
+          status: { in: ["issued", "exhausted"] },
           OR: [
             { activeAccountId: { in: uniqueAccountIds } },
             { primaryAccountId: { in: uniqueAccountIds } },
@@ -675,11 +686,13 @@ export class PrismaHostedCodexRestoreReconciler {
       if (grants.length === 0) return;
       const grantIds = grants.map((grant) => grant.id);
       await transaction.hostedCodexInvocationGrant.updateMany({
-        where: { id: { in: grantIds }, status: "issued" },
+        where: {
+          id: { in: grantIds },
+          status: { in: ["issued", "exhausted"] },
+        },
         data: {
           status: "revoked",
           revokedAt: now,
-          inFlight: 0,
           revision: { increment: 1 },
         },
       });
@@ -689,15 +702,6 @@ export class PrismaHostedCodexRestoreReconciler {
       });
     });
   }
-}
-
-function isUniqueConstraintError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "P2002"
-  );
 }
 
 async function requireFence(

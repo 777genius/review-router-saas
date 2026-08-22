@@ -207,7 +207,188 @@ describe("hosted Codex quota failover", () => {
       expect(ledger.failover).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("never falls back to ordinary failure when response-start persistence fails after dispatch", async () => {
+    const primary = account("post-dispatch", 0);
+    const grant = admittedGrant(primary, account("unused-backup", 1));
+    const ledger = {
+      recordRequestHash: vi.fn(async () => undefined),
+      markStarted: vi.fn(async () => {
+        throw new Error("response-start-persistence-failed");
+      }),
+      terminalizeUnknown: vi.fn(async () => undefined),
+      complete: vi.fn(async () => grant),
+    };
+    const effects = effectLedgerFixture();
+    const relay = new FetchHostedCodexStreamingRelay(
+      runtimeFixture() as never,
+      ledger as never,
+      vi.fn(
+        async () => new Response("accepted", { status: 200 }),
+      ) as typeof fetch,
+      { failoverEnabled: false, now: () => now, effects },
+    );
+    const body = Buffer.from('{"input":"review"}');
+    await expect(
+      relay.open({
+        authorization: authorization(grant, primary, body.byteLength),
+        body: Readable.from(body),
+        contentType: "application/json",
+        accept: "text/event-stream",
+        abortSignal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("response-start-persistence-failed");
+    expect(ledger.terminalizeUnknown).toHaveBeenCalledTimes(1);
+    expect(ledger.complete).not.toHaveBeenCalled();
+  });
+
+  it("keeps heartbeating after headers until the response body completes", async () => {
+    const primary = account("stream-heartbeat", 0);
+    const grant = admittedGrant(primary, account("stream-backup", 1));
+    let current = grant;
+    const ledger = {
+      recordRequestHash: vi.fn(async () => undefined),
+      markStarted: vi.fn(
+        async (input: {
+          transition: (grant: InvocationGrant) => InvocationGrant;
+        }) => (current = input.transition(current)),
+      ),
+      complete: vi.fn(
+        async (input: {
+          transition: (grant: InvocationGrant) => InvocationGrant;
+        }) => (current = input.transition(current)),
+      ),
+      terminalizeUnknown: vi.fn(async () => undefined),
+    };
+    const effects = effectLedgerFixture();
+    let emitted = false;
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (emitted) {
+          controller.close();
+          return;
+        }
+        emitted = true;
+        await new Promise((resolve) => setTimeout(resolve, 35));
+        controller.enqueue(Buffer.from("streamed"));
+      },
+    });
+    const relay = new FetchHostedCodexStreamingRelay(
+      runtimeFixture() as never,
+      ledger as never,
+      vi.fn(
+        async () => new Response(upstreamBody, { status: 200 }),
+      ) as typeof fetch,
+      {
+        failoverEnabled: false,
+        now: () => now,
+        heartbeatIntervalMs: 5,
+        effects,
+      },
+    );
+    const body = Buffer.from('{"input":"review"}');
+    const response = await relay.open({
+      authorization: authorization(grant, primary, body.byteLength),
+      body: Readable.from(body),
+      contentType: "application/json",
+      accept: "text/event-stream",
+      abortSignal: new AbortController().signal,
+    });
+    for await (const chunk of response.body) void chunk;
+    expect(effects.heartbeat.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(ledger.complete).toHaveBeenCalledTimes(1);
+    expect(ledger.terminalizeUnknown).not.toHaveBeenCalled();
+  });
+
+  it("terminalizes when successful stream completion cannot be persisted", async () => {
+    const primary = account("completion-persistence", 0);
+    const grant = admittedGrant(primary, account("completion-backup", 1));
+    const ledger = {
+      recordRequestHash: vi.fn(async () => undefined),
+      markStarted: vi.fn(async () => grant),
+      complete: vi.fn(async () => {
+        throw new Error("completion-persistence-failed");
+      }),
+      terminalizeUnknown: vi.fn(async () => undefined),
+    };
+    const effects = effectLedgerFixture();
+    const relay = new FetchHostedCodexStreamingRelay(
+      runtimeFixture() as never,
+      ledger as never,
+      vi.fn(
+        async () => new Response("complete", { status: 200 }),
+      ) as typeof fetch,
+      { failoverEnabled: false, now: () => now, effects },
+    );
+    const body = Buffer.from('{"input":"review"}');
+    const response = await relay.open({
+      authorization: authorization(grant, primary, body.byteLength),
+      body: Readable.from(body),
+      contentType: "application/json",
+      accept: "text/event-stream",
+      abortSignal: new AbortController().signal,
+    });
+    let streamError: unknown;
+    try {
+      for await (const chunk of response.body) void chunk;
+    } catch (error) {
+      streamError = error;
+    }
+    expect(streamError).toBeInstanceOf(Error);
+    expect(ledger.terminalizeUnknown).toHaveBeenCalledTimes(1);
+  });
 });
+
+function runtimeFixture() {
+  return {
+    ensureFreshSession: vi.fn(async () => ({
+      accessToken: "unit-access",
+      chatgptAccountId: "unit-account",
+    })),
+    classifyFailure: vi.fn(() => ({ code: "unknown" })),
+  };
+}
+
+function effectLedgerFixture() {
+  const lease = {
+    attemptId: "unit-effect-attempt",
+    ownerToken: "unit-effect-owner",
+    fenceEpoch: 1n,
+    accountId: "post-dispatch",
+  };
+  return {
+    prepare: vi.fn(async () => lease),
+    markDispatching: vi.fn(async () => undefined),
+    heartbeat: vi.fn(async () => undefined),
+    markResponseStarted: vi.fn(async () => undefined),
+    authority: vi.fn(() => ({
+      attemptId: lease.attemptId,
+      ownerIdHash: sha256(Buffer.from(lease.ownerToken)),
+      fenceEpoch: lease.fenceEpoch,
+    })),
+  };
+}
+
+function authorization(
+  grant: InvocationGrant,
+  primary: HostedPoolAccount,
+  requestBytes: number,
+) {
+  return {
+    grantId: grant.id,
+    requestId,
+    accountId: primary.id,
+    workspaceId: grant.workspaceId,
+    poolId: grant.poolId,
+    runId: grant.authority.runId,
+    runAttempt: grant.authority.runAttempt,
+    model: grant.authority.model,
+    accountUsable: true,
+    grantExpiresAtMs: grant.budget.expiresAt.getTime(),
+    declaredRequestBytes: requestBytes,
+    maxRequestBodyBytes: grant.budget.maxRequestBytes,
+  };
+}
 
 function admittedGrant(
   primary: HostedPoolAccount,
