@@ -4,11 +4,36 @@ import {
   CredentialEnvelopeVault,
   type CredentialKeyringPort,
 } from "./credential-envelope-vault.js";
-import { AwsKmsHostedCodexKeyring } from "./aws-kms-hosted-codex-keyring.js";
+import {
+  AwsKmsHostedCodexKeyring,
+  createProductionAwsKmsHostedCodexKeyring,
+} from "./aws-kms-hosted-codex-keyring.js";
 
 describe("AWS KMS hosted credential keyring", () => {
   const keyArn =
     "arn:aws:kms:eu-west-1:123456789012:key/11111111-2222-3333-4444-555555555555";
+
+  it("requires the selected immutable runtime role even with an injected KMS client", () => {
+    const env = {
+      REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE: "relay",
+      REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN: keyArn,
+      AWS_REGION: "eu-west-1",
+      REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN:
+        "arn:aws:iam::123456789012:role/reviewrouter-hosted-relay",
+    };
+    expect(() =>
+      createProductionAwsKmsHostedCodexKeyring({
+        env,
+        client: { send: vi.fn() },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      createProductionAwsKmsHostedCodexKeyring({
+        env: { ...env, REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN: "relay" },
+        client: { send: vi.fn() },
+      }),
+    ).toThrow("hosted_codex_aws_role_arn_invalid");
+  });
 
   it("binds wrapping to context, audits both operations, and restores", async () => {
     const dek = Buffer.alloc(32, 7);

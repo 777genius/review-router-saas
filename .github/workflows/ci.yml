@@ -52,6 +52,9 @@ env:
   REVIEW_ROUTER_DEFAULT_MODEL: gpt-5.5
   REVIEW_ROUTER_DEFAULT_EFFORT: xhigh
   REVIEW_ROUTER_PAIRED_ACTION_REF: b12b076e7e961ef1c717e805ef8aae2793f9fcd1
+  REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: v1.0.128
+  REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA: da20c20adf0f9ff637291c9947ff71bf00b30005
+  REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256: cbf15c968a9b731234d7ec3a2402f4a2f537f0c360881e0080e788939eeafe31
   REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS: "0"
   REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0"
   REVIEW_ROUTER_PG_DUMP: /usr/lib/postgresql/17/bin/pg_dump
@@ -336,6 +339,9 @@ jobs:
       - name: Hosted pool security certification
         run: pnpm hosted-pool:verify
 
+      - name: Hosted pool production and one-shot canary contracts
+        run: pnpm hosted-pool:production-contract
+
       - name: Hosted pool populated migration rehearsal
         run: pnpm hosted-pool:migration-rehearsal
 
@@ -374,6 +380,8 @@ jobs:
           ref: ${{ env.REVIEW_ROUTER_PAIRED_ACTION_REF }}
           path: .paired/review-router-action
           persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Verify paired Review Action checkout
         shell: bash
@@ -384,6 +392,12 @@ jobs:
             echo "::error::paired Action checkout resolved to $actual_sha, expected $REVIEW_ROUTER_PAIRED_ACTION_REF"
             exit 1
           fi
+
+      - name: Verify hosted pool Action tag, commit, and bundle tuple
+        env:
+          REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: 777genius/review-router@${{ env.REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA }}
+          REVIEW_ROUTER_HOSTED_POOL_ACTION_CHECKOUT: ${{ github.workspace }}/.paired/review-router-action
+        run: pnpm hosted-pool:action-release:verify
 
       - name: Install paired Review Action dependencies
         run: npm ci --ignore-scripts --prefix .paired/review-router-action

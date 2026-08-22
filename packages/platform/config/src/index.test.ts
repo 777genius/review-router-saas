@@ -24,6 +24,8 @@ import {
   requireGitHubAppPrivateKey,
   resolveReviewRouterActionRef,
   resolveReviewRouterCodexRotatingActionRef,
+  resolveHostedPoolActionRelease,
+  assertHostedCodexProductionReadiness,
   resolveReviewRouterCodexRotatingTrustedActionRefs,
   resolveReviewRouterPublicApiUrl,
   resolveReviewRouterTrustedActionRefs,
@@ -143,6 +145,110 @@ describe("platform config", () => {
         }),
       ).toThrow("invalid_env:REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF");
     }
+  });
+
+  it("binds hosted pool workflow consumption to an immutable tag, commit, and bundle digest", () => {
+    const sha = "a".repeat(40);
+    expect(
+      resolveHostedPoolActionRelease({
+        REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: `777genius/review-router@${sha}`,
+        REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: "v1.2.3",
+        REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA: sha.toUpperCase(),
+        REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256: "B".repeat(64),
+      }),
+    ).toEqual({
+      repository: "777genius/review-router",
+      tag: "v1.2.3",
+      commitSha: sha,
+      distSha256: "b".repeat(64),
+      actionRef: `777genius/review-router@${sha}`,
+    });
+    expect(() =>
+      resolveHostedPoolActionRelease({
+        REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: `777genius/review-router@${"b".repeat(40)}`,
+        REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: "v1.2.3",
+        REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA: sha,
+        REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256: "b".repeat(64),
+      }),
+    ).toThrow("hosted_pool_action_release_ref_mismatch");
+  });
+
+  it("fails closed on hosted flag order, role/KMS binding, and provider resource identity", () => {
+    const sha = "a".repeat(40);
+    const base = {
+      NODE_ENV: "production",
+      REVIEW_ROUTER_RUNTIME_ROLE: "api",
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "1",
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "1",
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0",
+      REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: `777genius/review-router@${sha}`,
+      REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: "v1.2.3",
+      REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA: sha,
+      REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256: "b".repeat(64),
+      REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE: "external_kms",
+      REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE: "relay",
+      REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN:
+        "arn:aws:iam::123456789012:role/reviewrouter-hosted-relay",
+      REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN:
+        "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789abc",
+      AWS_REGION: "us-east-1",
+      REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY:
+        "render:postgres:dpg-production-1234",
+      REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION:
+        "database-incarnation-proof",
+      REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER: Buffer.alloc(
+        32,
+        1,
+      ).toString("base64"),
+      REVIEW_ROUTER_HOSTED_CODEX_CAPABILITY_HMAC_KEY: Buffer.alloc(
+        32,
+        2,
+      ).toString("base64"),
+    };
+    expect(() => assertHostedCodexProductionReadiness(base)).not.toThrow();
+    expect(() =>
+      assertHostedCodexProductionReadiness({
+        ...base,
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0",
+      }),
+    ).toThrow(
+      "hosted_codex_flag_dependency:REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION",
+    );
+    expect(() =>
+      assertHostedCodexProductionReadiness({
+        ...base,
+        REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE: "enrollment",
+      }),
+    ).toThrow("hosted_codex_kms_role_mismatch");
+    expect(() =>
+      assertHostedCodexProductionReadiness({
+        ...base,
+        REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN:
+          "arn:aws:iam::123456789012:role/reviewrouter-hosted-enrollment",
+        REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE: "relay",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertHostedCodexProductionReadiness({
+        ...base,
+        REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN: "relay-role-name",
+      }),
+    ).toThrow("hosted_codex_aws_role_arn_invalid");
+    expect(() =>
+      assertHostedCodexProductionReadiness({
+        ...base,
+        AWS_REGION: "eu-west-1",
+      }),
+    ).toThrow("hosted_codex_aws_kms_region_mismatch");
+    expect(() =>
+      assertHostedCodexProductionReadiness({
+        ...base,
+        REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY:
+          "operator-string",
+      }),
+    ).toThrow("hosted_codex_database_resource_identity_invalid");
   });
 
   it("trusts the rotating primary plus an explicit same-repository SHA overlap", () => {

@@ -43,6 +43,35 @@ const installerTuple = Object.freeze({
   REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.2.3",
   REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "c".repeat(64),
 });
+const hostedPoolEnvForSha = (sha: string) => ({
+  REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: "v1.2.3",
+  REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA: sha,
+  REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256: "b".repeat(64),
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0",
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0",
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0",
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0",
+  REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN:
+    "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789abc",
+  AWS_REGION: "us-east-1",
+  REVIEW_ROUTER_HOSTED_CODEX_RELAY_AWS_ROLE_ARN:
+    "arn:aws:iam::123456789012:role/reviewrouter-hosted-relay",
+  REVIEW_ROUTER_HOSTED_CODEX_ENROLLMENT_AWS_ROLE_ARN:
+    "arn:aws:iam::123456789012:role/reviewrouter-hosted-enrollment",
+  REVIEW_ROUTER_HOSTED_CODEX_RECOVERY_AWS_ROLE_ARN:
+    "arn:aws:iam::123456789012:role/reviewrouter-hosted-recovery",
+  REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY:
+    "render:postgres:dpg-production-1234",
+  REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION: "database-incarnation-proof",
+  REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER: Buffer.alloc(32, 3).toString(
+    "base64",
+  ),
+  REVIEW_ROUTER_HOSTED_CODEX_CAPABILITY_HMAC_KEY: Buffer.alloc(32, 4).toString(
+    "base64",
+  ),
+});
+const hostedPoolEnv = Object.freeze(hostedPoolEnvForSha(actionSha));
 const dormantReviewV2Env = Object.freeze({
   REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED: "0",
   REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED: "0",
@@ -753,6 +782,12 @@ describe("Render hosted deploy hardening", () => {
           REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF:
             "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
           ...installerTuple,
+          ...hostedPoolEnv,
+          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
+          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
+          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "1",
+          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "1",
+          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "1",
           REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
           REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "1",
           REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED: "1",
@@ -776,6 +811,11 @@ describe("Render hosted deploy hardening", () => {
       "REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED",
       "REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED",
       "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED",
+      "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL",
+      "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY",
+      "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION",
+      "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY",
+      "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER",
     ]) {
       expect(result[key], key).toBe("0");
     }
@@ -804,6 +844,7 @@ describe("Render hosted deploy hardening", () => {
       REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
       REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
       ...installerTuple,
+      ...hostedPoolEnv,
       ...v2,
       REVIEW_ROUTER_UNKNOWN_RUNTIME_VALUE: "must-not-cross-put",
     };
@@ -855,6 +896,21 @@ describe("Render hosted deploy hardening", () => {
     expect(worker.REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256).toBe(
       undefined,
     );
+    expect(api.REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE).toBe("relay");
+    expect(api.REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN).toBe(
+      hostedPoolEnv.REVIEW_ROUTER_HOSTED_CODEX_RELAY_AWS_ROLE_ARN,
+    );
+    for (const key of [
+      "REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE",
+      "REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN",
+      "REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN",
+      "REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY",
+      "REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION",
+      "REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER",
+      "REVIEW_ROUTER_HOSTED_CODEX_CAPABILITY_HMAC_KEY",
+    ]) {
+      expect(worker[key], key).toBe(undefined);
+    }
     expect(api.REVIEW_ROUTER_UNKNOWN_RUNTIME_VALUE).toBe(undefined);
   });
 
@@ -901,6 +957,7 @@ describe("Render hosted deploy hardening", () => {
           REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
           REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
           ...installerTuple,
+          ...hostedPoolEnv,
           ...v2,
         },
       }),
@@ -928,6 +985,7 @@ describe("Render hosted deploy hardening", () => {
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: `https://raw.githubusercontent.com/777genius/review-router/${"a".repeat(40)}/scripts/seed-codex-rotating-auth.sh`,
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.2.3",
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "c".repeat(64),
+      ...hostedPoolEnvForSha("a".repeat(40)),
       REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: witness,
       ...dormantReviewV2Env,
       REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
@@ -1132,6 +1190,7 @@ describe("Render hosted deploy hardening", () => {
         REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
         REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
         ...installerTuple,
+        ...hostedPoolEnv,
         ...dormantReviewV2Env,
       },
     });
@@ -1186,6 +1245,7 @@ describe("Render hosted deploy hardening", () => {
         REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
         REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
         ...installerTuple,
+        ...hostedPoolEnv,
         ...activeReviewV2Env(),
       },
     });
@@ -1503,6 +1563,7 @@ describe("Render hosted deploy hardening", () => {
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: `https://raw.githubusercontent.com/777genius/review-router/${"a".repeat(40)}/scripts/seed-codex-rotating-auth.sh`,
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.2.3",
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "c".repeat(64),
+      ...hostedPoolEnvForSha("a".repeat(40)),
       ...dormantReviewV2Env,
     };
     vi.stubEnv("REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS", "");
@@ -1559,6 +1620,7 @@ describe("Render hosted deploy hardening", () => {
       REVIEW_ROUTER_API_URL: "https://api.reviewrouter.example",
       REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF:
         "777genius/review-router@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ...hostedPoolEnvForSha("a".repeat(40)),
       REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "",
       AUTH_SECRET: "a".repeat(32),
       REVIEW_ROUTER_ACTION_SESSION_SECRET: "s".repeat(32),

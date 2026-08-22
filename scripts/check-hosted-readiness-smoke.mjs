@@ -10,6 +10,17 @@ try {
   writeFileSync(validEnv, hostedEnv());
   expectStatus(validEnv, 0, "valid hosted env should pass");
 
+  const activeHostedPoolEnv = join(tempDir, "active-hosted-pool.env");
+  writeFileSync(activeHostedPoolEnv, hostedEnv(hostedPoolActiveEnv()));
+  expectStatus(activeHostedPoolEnv, 0, "valid active hosted pool should pass");
+
+  const mismatchedKmsRegionEnv = join(tempDir, "mismatched-kms-region.env");
+  writeFileSync(
+    mismatchedKmsRegionEnv,
+    hostedEnv({ ...hostedPoolActiveEnv(), AWS_REGION: "eu-west-1" }),
+  );
+  expectStatus(mismatchedKmsRegionEnv, 1, "mismatched KMS region should fail");
+
   const forbiddenProviderSecretEnv = join(tempDir, "forbidden-provider.env");
   writeFileSync(
     forbiddenProviderSecretEnv,
@@ -214,6 +225,10 @@ function hostedEnv(overrides = {}) {
     REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF:
       "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
     REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS: "",
+    REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: "v1.0.39",
+    REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA:
+      "0123456789abcdef0123456789abcdef01234567",
+    REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256: "b".repeat(64),
     REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL:
       "https://raw.githubusercontent.com/777genius/review-router/0123456789abcdef0123456789abcdef01234567/scripts/seed-codex-rotating-auth.sh",
     REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.0.39",
@@ -223,10 +238,46 @@ function hostedEnv(overrides = {}) {
     REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "0",
     REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED: "0",
     REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED: "0",
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0",
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0",
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0",
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0",
     ...overrides,
   };
 
   return Object.entries(values)
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
     .join("\n");
+}
+
+function hostedPoolActiveEnv() {
+  return {
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "1",
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0",
+    REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE: "external_kms",
+    REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN:
+      "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789abc",
+    AWS_REGION: "us-east-1",
+    REVIEW_ROUTER_HOSTED_CODEX_RELAY_AWS_ROLE_ARN:
+      "arn:aws:iam::123456789012:role/reviewrouter-hosted-relay",
+    REVIEW_ROUTER_HOSTED_CODEX_ENROLLMENT_AWS_ROLE_ARN:
+      "arn:aws:iam::123456789012:role/reviewrouter-hosted-enrollment",
+    REVIEW_ROUTER_HOSTED_CODEX_RECOVERY_AWS_ROLE_ARN:
+      "arn:aws:iam::123456789012:role/reviewrouter-hosted-recovery",
+    REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY:
+      "render:postgres:dpg-production-1234",
+    REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION:
+      "database-incarnation-proof",
+    REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER: Buffer.alloc(32, 1).toString(
+      "base64",
+    ),
+    REVIEW_ROUTER_HOSTED_CODEX_CAPABILITY_HMAC_KEY: Buffer.alloc(
+      32,
+      2,
+    ).toString("base64"),
+  };
 }

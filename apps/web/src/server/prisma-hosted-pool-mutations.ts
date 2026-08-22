@@ -24,6 +24,7 @@ import {
 } from "@reviewrouter/features-review-config";
 import type { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@reviewrouter/platform-db";
+import { assertHostedCodexProductionReadiness } from "@reviewrouter/platform-config";
 import type { HostedPoolDashboardMutationPort } from "./hosted-pool-dashboard";
 
 export function createPrismaHostedPoolDashboardMutationPort(input: {
@@ -31,6 +32,7 @@ export function createPrismaHostedPoolDashboardMutationPort(input: {
   readonly env: Readonly<Record<string, string | undefined>>;
 }): HostedPoolDashboardMutationPort {
   const createAdapters = () => {
+    assertHostedCodexProductionReadiness(input.env, "web");
     const databaseIncarnation =
       input.env.REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION?.trim();
     const encodedPepper =
@@ -51,7 +53,10 @@ export function createPrismaHostedPoolDashboardMutationPort(input: {
     ) {
       throw new Error("hosted_codex_fingerprint_pepper_invalid");
     }
-    const keyring = resolveHostedCodexKeyring({ env: input.env, purpose: "relay" });
+    const keyring = resolveHostedCodexKeyring({
+      env: input.env,
+      purpose: "enrollment",
+    });
     return createPrismaHostedAccountPoolAdapters({
       prisma: input.prisma,
       vault: new CredentialEnvelopeVault(keyring, "relay"),

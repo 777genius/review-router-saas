@@ -38,6 +38,12 @@ Rules:
 - Do not move `v1` for breaking workflow inputs, protocol breaks, or untested runtime changes.
 - Release both repositories with the same exact version when generated workflows can use that ref in both places.
 - Do not use the legacy local `pnpm release:sync-major` helper for normal releases.
+- Hosted-pool SaaS workflows are an exception to the mutable hosted-beta
+  channel: they consume the exact public Action commit recorded with its
+  immutable release tag and `dist/index.js` SHA-256. Before configuring SaaS,
+  run `pnpm hosted-pool:action-release:verify` against a clean checkout of that
+  Action commit. The verifier requires `HEAD`, the tag's peeled commit, the
+  SaaS-consumed action ref, and the bundle digest to be one exact tuple.
 
 ## Daily Git Flow
 

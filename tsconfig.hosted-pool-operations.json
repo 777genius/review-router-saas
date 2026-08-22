@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true
+  },
+  "include": [
+    "scripts/hosted-pool-production-control.ts",
+    "scripts/run-hosted-pool-production-canary.ts"
+  ]
+}

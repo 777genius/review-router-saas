@@ -64,9 +64,10 @@ REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER=0
 ```
 
 `POOL` is the master/dashboard gate. The API treats each narrower flag as false
-while `POOL=0`. Relay routes require `POOL`, `CUSTODY`, `ADMISSION`, and `RELAY`
-to all be `1`; `FAILOVER` enables only the one permitted pre-response backup and
-must be enabled last.
+while `POOL=0`. New grant issuance requires `POOL`, `CUSTODY`, and `ADMISSION`.
+Already-issued grants require `POOL`, `CUSTODY`, and `RELAY`, so admission can
+close while relay stays up long enough to drain. `FAILOVER` enables only the one
+permitted pre-response backup and must be enabled last.
 
 Required custody/relay configuration follows. Never place example or production
 values in documentation, logs, tickets, shell history, or committed env files:
@@ -78,6 +79,9 @@ REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER
 REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE=external_kms
 REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN
 REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE
+REVIEW_ROUTER_HOSTED_CODEX_RELAY_AWS_ROLE_ARN
+REVIEW_ROUTER_HOSTED_CODEX_ENROLLMENT_AWS_ROLE_ARN
+REVIEW_ROUTER_HOSTED_CODEX_RECOVERY_AWS_ROLE_ARN
 AWS_REGION
 REVIEW_ROUTER_HOSTED_CODEX_CAPABILITY_HMAC_KEY
 ```
@@ -104,7 +108,11 @@ Operational meaning:
   immutable AWS KMS key ARN; aliases, shorthand IDs, redirects, and a different
   ARN returned by Encrypt or Decrypt fail closed. `KMS_ROLE` is exactly `relay`
   in the normal serving process and exactly `recovery` in the restore process.
-  KMS policy must independently authorize those roles and the versioned
+  Web enrollment uses exactly `enrollment`, API relay uses exactly `relay`, and
+  the offline restore command uses exactly `recovery`. Their distinct immutable
+  IAM role ARNs are required in the deploy source; the deploy helper projects
+  only the selected role to each service and projects none to worker. KMS policy
+  must independently authorize those roles and the versioned
   encryption context, including purpose, workspace/pool/account/generation,
   external database resource, incarnation, schema, and AAD hash.
 - `CAPABILITY_HMAC_KEY` is canonical base64 secret material of at least 32 decoded
@@ -146,6 +154,9 @@ limits must not be raised outside these ranges by bypassing validation.
 2. Publish the companion public Action from its reviewed commit, including the
    rebuilt committed bundle. Record its immutable 40-character commit SHA; do
    not use `main`, a tag, or a shortened SHA for hosted workflows.
+   Record the immutable release tag and `dist/index.js` SHA-256 beside the
+   commit. The tag must resolve to the commit and CI must hash the bytes from
+   that same checkout before the tuple is accepted by SaaS.
 3. Configure API and web with the same exact
    `REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF=777genius/review-router@<40-character-SHA>`.
    Use `REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS` only for a bounded
@@ -174,18 +185,67 @@ must trust the same public Action SHA before any hosted binding is activated.
 
 ### Kill-switch Rollback
 
-For an upstream, privacy, credential, or compatibility incident, first set
-`RELAY=0` and `ADMISSION=0` on every API replica, revoke outstanding grants, and
-confirm relay traffic stops. Set `FAILOVER=0` to prevent backup selection. Then
-set `POOL=0` and `CUSTODY=0` to hide onboarding and freeze all hosted custody
-operations. Do not delete encrypted envelopes, revoke old KMS keys, export credentials
-to GitHub, or silently switch repositories to legacy mode during the incident.
+The production control is dry-run by default and writes mode `0600`, body-free
+JSON evidence. It requires the exact API and web Render service IDs plus the
+least-privilege operator database URL. Inspect without mutation first:
+
+```bash
+REVIEW_ROUTER_HOSTED_POOL_RENDER_SERVICE_IDS=srv-api,srv-web \
+REVIEW_ROUTER_HOSTED_POOL_OPERATOR_DATABASE_URL=postgresql://... \
+RENDER_API_KEY=... \
+pnpm hosted-pool:control status
+```
+
+For a privacy or credential incident, use `kill-switch`: it atomically requests
+`ADMISSION=0`, `FAILOVER=0`, and `RELAY=0` on both services and verifies provider
+readback. For controlled rollback, use `drain` or `rollback`. Rollback closes
+admission, observes database `inFlight`, issued-grant, and unresolved-request
+counts until all three are zero, then disables failover, relay, custody, and
+finally the pool. Each
+mutating command requires `--execute` and
+`REVIEW_ROUTER_HOSTED_POOL_CONTROL_CONFIRM="EXECUTE HOSTED POOL COMMAND"`, with
+`COMMAND` equal to the uppercase command name. Do not use drain when immediate
+containment is required.
+
+Do not delete encrypted envelopes, revoke old KMS keys, export credentials to
+GitHub, or silently switch repositories to legacy mode during an incident.
 
 Roll back API/web only to a commit compatible with the additive schema and the
 registered public Action SHA. If the public Action must be rolled back, pin a
 reviewed compatible 40-character SHA, retain only the necessary bounded overlap,
 regenerate/re-attest bound workflows, and keep admission disabled until complete.
 Legacy Actions continue operating throughout this hosted-mode shutdown.
+
+### One-shot Production Canary
+
+`pnpm hosted-pool:canary` is hard-coded to the disposable
+`777genius/rr-codex-rotating-e2e` repository. It refuses a different repository
+identity indirectly as well as directly: the numeric repository ID must equal
+the sole numeric allowlist entry; the exact App installation must contain that
+ID; the checked-in workflow and active database binding must both consume the
+recorded 40-character Action SHA. The associated public Action tuple must first
+be verified from its clean checkout:
+
+```bash
+REVIEW_ROUTER_HOSTED_POOL_ACTION_CHECKOUT=/trusted/review-router \
+pnpm hosted-pool:action-release:verify
+```
+
+The canary defaults to preflight-only dry-run. Execution additionally requires
+`--execute`, `REVIEW_ROUTER_HOSTED_POOL_CANARY_CONFIRM="EXECUTE ONE SHOT HOSTED POOL CANARY"`,
+and `REVIEW_ROUTER_HOSTED_POOL_CANARY_ROLLBACK_CONFIRM="ROLL BACK HOSTED POOL AFTER CANARY"`.
+Use a short-lived App JWT only for the App-owned installation lookup and a
+separate short-lived repository token for workflow reads/reruns; the harness
+does not accept one ambient token for both trust domains.
+Operators pin five distinct existing disposable workflow run IDs in
+`REVIEW_ROUTER_HOSTED_POOL_CANARY_RUN_IDS_JSON`: `simultaneous_a`,
+`simultaneous_b`, `unauthorized`, `rate_limited`, and `dropped_response`.
+The first two are dispatched concurrently and must prove one sticky primary
+account; 401 and 429 must each show exactly one classified backup attempt; the
+ambiguous dropped response must be `terminal_unknown` with exactly one upstream
+attempt. The harness performs no rerun retry. It collects database evidence and
+always runs the ordered rollback above. Tests use deterministic fake ports and
+never contact GitHub, Render, KMS, or a provider.
 
 ## Runtime Commands
 

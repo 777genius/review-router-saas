@@ -57,7 +57,10 @@ export function composeHostedCodexRelayRoutes(input: {
   const flags = readHostedCodexFeatureFlags(input.env);
   return {
     ...input.dependencies,
-    enabled: flags.custody && flags.admission && flags.relay,
+    enabled: flags.custody && flags.relay,
+    grants: flags.admission
+      ? input.dependencies.grants
+      : closedAdmissionGrantIssuer,
   };
 }
 
@@ -69,7 +72,7 @@ export function composeProductionHostedCodexRelayRoutes(input: {
   readonly githubAppPrivateKey: string;
 }): RegisterHostedCodexRelayRoutesDependencies {
   const flags = readHostedCodexFeatureFlags(input.env);
-  const enabled = flags.custody && flags.admission && flags.relay;
+  const enabled = flags.custody && flags.relay;
   if (!enabled) {
     // These dependencies are deliberately unreachable while the rollout gate is off.
     return { enabled: false } as RegisterHostedCodexRelayRoutesDependencies;
@@ -104,7 +107,10 @@ export function composeProductionHostedCodexRelayRoutes(input: {
   startHostedCodexEffectSweeper(
     new PrismaHostedCodexUpstreamEffectLedger(input.prisma),
   );
-  const keyring = resolveHostedCodexKeyring({ env: input.env, purpose: "relay" });
+  const keyring = resolveHostedCodexKeyring({
+    env: input.env,
+    purpose: "relay",
+  });
   const vault = new CredentialEnvelopeVault(keyring, "relay");
   const runtime = new HostedCodexSessionRuntime({
     sessionStore: new HostedCodexSessionStore(
@@ -124,14 +130,16 @@ export function composeProductionHostedCodexRelayRoutes(input: {
   const relayUrl = `${input.publicApiUrl.replace(/\/+$/u, "")}/api/action/v1/hosted-codex/responses`;
   return {
     enabled: true,
-    grants: createProductionHostedCodexGrantIssuer({
-      prisma: input.prisma,
-      env: input.env,
-      relayUrl,
-      workflowSources,
-      commentTokens: githubCommentTokens,
-      clock,
-    }),
+    grants: flags.admission
+      ? createProductionHostedCodexGrantIssuer({
+          prisma: input.prisma,
+          env: input.env,
+          relayUrl,
+          workflowSources,
+          commentTokens: githubCommentTokens,
+          clock,
+        })
+      : closedAdmissionGrantIssuer,
     commentTokens: new HostedCodexCommentTokenIssuer({
       prisma: input.prisma,
       commentTokens: githubCommentTokens,
@@ -147,3 +155,9 @@ export function composeProductionHostedCodexRelayRoutes(input: {
     }),
   };
 }
+
+const closedAdmissionGrantIssuer = Object.freeze({
+  async issue(): Promise<never> {
+    throw new Error("hosted_codex_admission_unavailable");
+  },
+});

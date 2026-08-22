@@ -27,6 +27,9 @@ export const runtimeEnvSchema = z.object({
   REVIEW_ROUTER_ALLOWED_ACTION_REFS: z.string().default(""),
   REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: z.string().optional(),
   REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS: z.string().default(""),
+  REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: z.string().optional(),
+  REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA: z.string().optional(),
+  REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256: z.string().optional(),
   REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: z.string().optional(),
   REVIEW_ROUTER_ACTION_VERSION: z
     .string()
@@ -65,6 +68,9 @@ type ReviewRouterActionRefEnv = {
   readonly REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS?:
     | string
     | undefined;
+  readonly REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG?: string | undefined;
+  readonly REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA?: string | undefined;
+  readonly REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256?: string | undefined;
   readonly REVIEW_ROUTER_ACTION_VERSION?: string | undefined;
   readonly [key: string]: string | undefined;
 };
@@ -120,6 +126,173 @@ export function resolveReviewRouterCodexRotatingActionRef(
     value,
     "REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF",
   );
+}
+
+export type HostedPoolActionRelease = Readonly<{
+  repository: typeof REVIEW_ROUTER_ACTION_REPOSITORY;
+  tag: string;
+  commitSha: string;
+  distSha256: string;
+  actionRef: string;
+}>;
+
+export type HostedCodexRuntimeRole = "api" | "web" | "worker";
+
+const hostedCodexRuntimeRoleArnName =
+  "REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN" as const;
+
+const hostedCodexFlagOrder = [
+  "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL",
+  "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY",
+  "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION",
+  "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY",
+  "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER",
+] as const;
+const hostedCodexFlagDependencies = Object.freeze({
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY:
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL",
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION:
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY",
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY:
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY",
+  REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER:
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY",
+} as const);
+
+/** Fail-closed, side-effect-free startup validation for each hosted role. */
+export function assertHostedCodexProductionReadiness(
+  input: ReviewRouterActionRefEnv,
+  runtimeRole?: HostedCodexRuntimeRole,
+): void {
+  const values = hostedCodexFlagOrder.map((name) => input[name]?.trim() ?? "0");
+  for (let index = 0; index < values.length; index += 1) {
+    if (!["0", "1"].includes(values[index]!)) {
+      throw new Error(`invalid_env:${hostedCodexFlagOrder[index]}`);
+    }
+    const name = hostedCodexFlagOrder[index]!;
+    const dependency =
+      hostedCodexFlagDependencies[
+        name as keyof typeof hostedCodexFlagDependencies
+      ];
+    if (
+      dependency &&
+      values[index] === "1" &&
+      input[dependency]?.trim() !== "1"
+    )
+      throw new Error(`hosted_codex_flag_dependency:${name}`);
+  }
+  if (!values.includes("1")) return;
+  if (input.NODE_ENV !== "production") return;
+  const role = runtimeRole ?? input.REVIEW_ROUTER_RUNTIME_ROLE?.trim();
+  if (!role || !["api", "web", "worker"].includes(role)) {
+    throw new Error("hosted_codex_runtime_role_invalid");
+  }
+  if (role === "worker") throw new Error("hosted_codex_worker_role_forbidden");
+  resolveHostedPoolActionRelease(input);
+  if (values[1] !== "1") return;
+  if (
+    input.REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE?.trim() !== "external_kms"
+  ) {
+    throw new Error("hosted_codex_external_kms_required");
+  }
+  const expectedKmsRole = role === "api" ? "relay" : "enrollment";
+  if (input.REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE?.trim() !== expectedKmsRole) {
+    throw new Error("hosted_codex_kms_role_mismatch");
+  }
+  const roleArn = input[hostedCodexRuntimeRoleArnName]?.trim() ?? "";
+  if (
+    !/^arn:(?:aws|aws-us-gov|aws-cn):iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]{1,512}$/u.test(
+      roleArn,
+    )
+  ) {
+    throw new Error("hosted_codex_aws_role_arn_invalid");
+  }
+  const keyArn = input.REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN?.trim() ?? "";
+  const keyArnMatch =
+    /^arn:(?:aws|aws-us-gov|aws-cn):kms:([a-z0-9-]+):\d{12}:key\/(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$/iu.exec(
+      keyArn,
+    );
+  if (!keyArnMatch) {
+    throw new Error("hosted_codex_aws_kms_key_id_invalid");
+  }
+  const region = input.AWS_REGION?.trim() ?? "";
+  if (!/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/u.test(region)) {
+    throw new Error("hosted_codex_aws_kms_region_invalid");
+  }
+  if (keyArnMatch[1]?.toLowerCase() !== region.toLowerCase()) {
+    throw new Error("hosted_codex_aws_kms_region_mismatch");
+  }
+  if (
+    !/^render:postgres:dpg-[a-z0-9-]{8,}$/u.test(
+      input.REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY?.trim() ?? "",
+    )
+  ) {
+    throw new Error("hosted_codex_database_resource_identity_invalid");
+  }
+  if (
+    !/^[A-Za-z0-9_-]{22,128}$/u.test(
+      input.REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION?.trim() ?? "",
+    )
+  ) {
+    throw new Error("hosted_codex_database_incarnation_invalid");
+  }
+  requireCanonicalBase64Secret(
+    input.REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER,
+    "hosted_codex_fingerprint_pepper_invalid",
+  );
+  if (role === "api" && values[2] === "1") {
+    requireCanonicalBase64Secret(
+      input.REVIEW_ROUTER_HOSTED_CODEX_CAPABILITY_HMAC_KEY,
+      "hosted_codex_capability_hmac_key_invalid",
+    );
+  }
+}
+
+function requireCanonicalBase64Secret(
+  value: string | undefined,
+  error: string,
+) {
+  const encoded = value?.trim() ?? "";
+  const decoded = Buffer.from(encoded, "base64");
+  if (decoded.byteLength < 32 || decoded.toString("base64") !== encoded) {
+    throw new Error(error);
+  }
+}
+
+/**
+ * Resolves the independently recorded public Action release consumed by the
+ * hosted pool. The mutable general Action channel and an unpaired rotating SHA
+ * are deliberately insufficient for hosted credential custody.
+ */
+export function resolveHostedPoolActionRelease(
+  input: ReviewRouterActionRefEnv = process.env,
+): HostedPoolActionRelease {
+  const tag = input.REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG?.trim() ?? "";
+  const commitSha =
+    input.REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA?.trim().toLowerCase() ?? "";
+  const distSha256 =
+    input.REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256?.trim().toLowerCase() ??
+    "";
+  if (!/^v[1-9][0-9]*\.[0-9]+\.[0-9]+$/u.test(tag)) {
+    throw new Error("invalid_env:REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG");
+  }
+  if (!/^[a-f0-9]{40}$/u.test(commitSha)) {
+    throw new Error("invalid_env:REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA");
+  }
+  if (!/^[a-f0-9]{64}$/u.test(distSha256)) {
+    throw new Error("invalid_env:REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256");
+  }
+  const actionRef = resolveReviewRouterCodexRotatingActionRef(input);
+  if (actionRef !== `${REVIEW_ROUTER_ACTION_REPOSITORY}@${commitSha}`) {
+    throw new Error("hosted_pool_action_release_ref_mismatch");
+  }
+  return Object.freeze({
+    repository: REVIEW_ROUTER_ACTION_REPOSITORY,
+    tag,
+    commitSha,
+    distSha256,
+    actionRef,
+  });
 }
 
 export function resolveReviewRouterCodexRotatingTrustedActionRefs(

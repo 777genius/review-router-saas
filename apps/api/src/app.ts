@@ -85,6 +85,7 @@ import {
 } from "@reviewrouter/features-memory";
 import { PrismaEntitlementRepository } from "@reviewrouter/features-entitlements";
 import {
+  assertHostedCodexProductionReadiness,
   isConflictReviewFallbackAllowedForRepository,
   isConflictReviewFallbackEnabled,
   isCodexRotatingOAuthAllowedForRepository,
@@ -218,6 +219,7 @@ export async function createApiApp(
     reviewActionV2Env.REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED === "1";
   const hostedCodexFeatureFlags =
     readHostedCodexFeatureFlags(reviewActionV2Env);
+  assertHostedCodexProductionReadiness(reviewActionV2Env, "api");
   const prisma =
     options.prisma ??
     (options.githubWebhookSecret ||
@@ -270,9 +272,7 @@ export async function createApiApp(
 
   const hostedCodexRelayDependencies =
     options.hostedCodexRelayDependencies ??
-    (hostedCodexFeatureFlags.custody &&
-    hostedCodexFeatureFlags.admission &&
-    hostedCodexFeatureFlags.relay
+    (hostedCodexFeatureFlags.custody && hostedCodexFeatureFlags.relay
       ? (() => {
           if (!prisma) throw new Error("hosted_codex_prisma_unavailable");
           if (!publicApiUrl)
