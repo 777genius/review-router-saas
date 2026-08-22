@@ -1519,7 +1519,7 @@ describe("CommitAttestedInvestigationTurn", () => {
     expect(evidence.verify).toHaveBeenCalledTimes(1);
   });
 
-  it("commits valid closures while leaving an evidence-mismatched search open without expansion", async () => {
+  it("commits valid closures while isolating an invalid advisory discovery claim", async () => {
     const store = new InMemoryInvestigationStore();
     const authority = new CurrentInvestigationExecutionAuthority();
     const clock = new FixedInvestigationClock(
@@ -1762,7 +1762,7 @@ describe("CommitAttestedInvestigationTurn", () => {
       ],
       operationBackedDiscoveryClaims: [
         {
-          sourceObligationId: search.obligationId,
+          sourceObligationId: changed.obligationId,
           query,
           operationReceiptIds: [hash("a")],
         },

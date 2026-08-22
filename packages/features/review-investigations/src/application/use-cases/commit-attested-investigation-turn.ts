@@ -1,4 +1,7 @@
-import { canonicalJson } from "../../domain/canonicalization";
+import {
+  canonicalJson,
+  ReviewInvestigationDomainError,
+} from "../../domain/canonicalization";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
 import {
   VersionedCoverageExpansionPolicy,
@@ -161,17 +164,18 @@ export class CommitAttestedInvestigationTurn {
       acceptedAttestationId: command.acceptedAttestationId,
       acceptedAttestationHash: command.acceptedAttestationHash,
     });
-    const discoveryClaims = await this.discoveryPreparation.prepare({
+    const preparedDiscovery = await this.discoveryPreparation.prepare({
       closureClaims: preparedClosures.acceptedProviderClaims,
       providerClaims: command.observation.operationBackedDiscoveryClaims,
       investigation: current,
       operationEvidence,
     });
-    const deterministicExpansions = this.expansionPolicy.expand({
-      contract: current.contract,
-      currentObligations: current.obligations,
-      discoveryClaims,
-    });
+    const { deterministicExpansions, acceptedDiscoveryClaims } =
+      this.prepareCoverageExpansions({
+        investigation: current,
+        requiredClaims: preparedDiscovery.requiredClaims,
+        advisoryClaims: preparedDiscovery.advisoryClaims,
+      });
     assertEvidenceReferences(
       command.observation.findings.flatMap(
         (finding) => finding.evidenceOperationReceiptIds,
@@ -287,9 +291,50 @@ export class CommitAttestedInvestigationTurn {
         this.prepareDeterministicExpansionQueries({
           investigation: current,
           deterministicExpansions,
-          discoveryClaims,
+          discoveryClaims: acceptedDiscoveryClaims,
           providerClaims: command.observation.operationBackedDiscoveryClaims,
         }),
+    });
+  }
+
+  private prepareCoverageExpansions(input: {
+    readonly investigation: ReviewInvestigation;
+    readonly requiredClaims: readonly PreparedOperationBackedDiscoveryClaim[];
+    readonly advisoryClaims: readonly PreparedOperationBackedDiscoveryClaim[];
+  }): Readonly<{
+    deterministicExpansions: readonly SeedInvestigationObligation[];
+    acceptedDiscoveryClaims: readonly PreparedOperationBackedDiscoveryClaim[];
+  }> {
+    const requiredExpansions = this.expansionPolicy.expand({
+      contract: input.investigation.contract,
+      currentObligations: input.investigation.obligations,
+      discoveryClaims: input.requiredClaims,
+    });
+    const acceptedAdvisoryClaims: PreparedOperationBackedDiscoveryClaim[] = [];
+    const advisoryExpansions: SeedInvestigationObligation[] = [];
+    for (const claim of input.advisoryClaims) {
+      try {
+        advisoryExpansions.push(
+          ...this.expansionPolicy.expand({
+            contract: input.investigation.contract,
+            currentObligations: input.investigation.obligations,
+            discoveryClaims: [claim],
+          }),
+        );
+        acceptedAdvisoryClaims.push(claim);
+      } catch (error) {
+        if (!isRejectedAdvisoryDiscoveryClaim(error)) throw error;
+      }
+    }
+    return Object.freeze({
+      deterministicExpansions: mergeDeterministicExpansions([
+        ...requiredExpansions,
+        ...advisoryExpansions,
+      ]),
+      acceptedDiscoveryClaims: Object.freeze([
+        ...input.requiredClaims,
+        ...acceptedAdvisoryClaims,
+      ]),
     });
   }
 
@@ -451,6 +496,36 @@ function assertObservationBinding(
   ) {
     throw new Error("investigation_turn_observation_binding_invalid");
   }
+}
+
+function isRejectedAdvisoryDiscoveryClaim(error: unknown): boolean {
+  return (
+    error instanceof ReviewInvestigationDomainError &&
+    (error.code === "investigation_operation_backed_discovery_invalid" ||
+      error.code === "investigation_operation_backed_discovery_limit_exceeded")
+  );
+}
+
+function mergeDeterministicExpansions(
+  expansions: readonly SeedInvestigationObligation[],
+): readonly SeedInvestigationObligation[] {
+  const merged = new Map<string, SeedInvestigationObligation>();
+  for (const expansion of expansions) {
+    const key = canonicalJson({
+      kind: expansion.kind,
+      canonicalSubject: expansion.canonicalSubject,
+      canonicalRequirement: expansion.canonicalRequirement,
+    });
+    const existing = merged.get(key);
+    if (!existing || expansion.riskPriority > existing.riskPriority) {
+      merged.set(key, expansion);
+    }
+  }
+  return Object.freeze(
+    [...merged.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([, expansion]) => expansion),
+  );
 }
 
 function discoveryQueryKey(input: {

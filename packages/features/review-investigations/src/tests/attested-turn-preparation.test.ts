@@ -272,21 +272,25 @@ describe("AttestedTurnDiscoveryPreparation", () => {
       operationEvidence,
     });
 
-    expect(serverOwned).toHaveLength(1);
+    expect(serverOwned.requiredClaims).toHaveLength(1);
+    expect(serverOwned.advisoryClaims).toHaveLength(0);
     expect(deduped).toEqual(serverOwned);
-    expect(serverOwned[0]).toMatchObject({
+    expect(serverOwned.requiredClaims[0]).toMatchObject({
       sourceObligationId: search.obligationId,
       queryHash,
       expectedInitialOperationInputHash: operationInputHash,
       operations: [{ operationReceiptId: hash("9") }],
     });
-    expect(serverOwned[0]).not.toHaveProperty("query");
+    expect(serverOwned.requiredClaims[0]).not.toHaveProperty("query");
     expect(Object.isFrozen(serverOwned)).toBe(true);
-    expect(Object.isFrozen(serverOwned[0])).toBe(true);
-    expect(Object.isFrozen(serverOwned[0]!.operations)).toBe(true);
+    expect(Object.isFrozen(serverOwned.requiredClaims)).toBe(true);
+    expect(Object.isFrozen(serverOwned.requiredClaims[0])).toBe(true);
+    expect(Object.isFrozen(serverOwned.requiredClaims[0]!.operations)).toBe(
+      true,
+    );
   });
 
-  it("preserves duplicate provider receipt rejection", async () => {
+  it("drops all advisory claims that reuse one receipt", async () => {
     const queryHash = await digest.digestUtf8("Service");
     const operationInputHash = await digest.digestUtf8(
       canonicalStandardTextSearchOperationInput(queryHash),
@@ -307,8 +311,8 @@ describe("AttestedTurnDiscoveryPreparation", () => {
       pathHashes: [],
     });
 
-    await expect(
-      new AttestedTurnDiscoveryPreparation(digest).prepare({
+    const prepared = await new AttestedTurnDiscoveryPreparation(digest).prepare(
+      {
         investigation,
         closureClaims: [],
         providerClaims: [
@@ -324,10 +328,10 @@ describe("AttestedTurnDiscoveryPreparation", () => {
           },
         ],
         operationEvidence: createVerifiedOperationEvidenceIndex([operation]),
-      }),
-    ).rejects.toThrow(
-      "investigation_operation_backed_discovery_receipt_reused",
+      },
     );
+
+    expect(prepared).toEqual({ requiredClaims: [], advisoryClaims: [] });
   });
 });
 
