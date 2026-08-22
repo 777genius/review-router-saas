@@ -367,6 +367,13 @@ describe("Review Action v2 route registrars", () => {
     "investigation_private_material_binding_invalid",
     "investigation_commit_snapshot_missing",
     "investigation_finding_evidence_binding_corrupt",
+    "investigation_command_snapshot_missing",
+    "investigation_coverage_profile_unsupported",
+    "investigation_immutable_identity_changed",
+    "investigation_obligation_identity_changed",
+    "investigation_obligation_receipt_missing",
+    "investigation_persisted_search_query_forbidden",
+    "investigation_unresolvable_claim_invalid",
   ])(
     "records allowlisted investigation failure %s without exposing it to the client",
     async (failureCode) => {
