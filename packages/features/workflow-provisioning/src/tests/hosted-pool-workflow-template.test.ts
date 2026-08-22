@@ -10,14 +10,13 @@ import {
   renderCanonicalHostedPoolWorkflowV2,
   scanCanonicalHostedPoolWorkflowV2,
 } from "../domain/hosted-pool-workflow-template";
+import {
+  hostedPoolWorkflowV2Golden,
+  hostedPoolWorkflowV2GoldenOptions,
+  hostedPoolWorkflowV2GoldenSha256,
+} from "./fixtures/hosted-pool-workflow-v2.golden";
 
-const options = {
-  actionRef: "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
-  apiUrl: "https://api.reviewrouter.site",
-  providerInstanceId: "hosted-pool:repository:123456",
-  bindingId: "hosted-binding-1",
-  bindingRevision: 7,
-} as const;
+const options = hostedPoolWorkflowV2GoldenOptions;
 
 describe("hosted pool workflow schema v2", () => {
   it("derives the exact T0 reusable workflow identity from the immutable Action ref", () => {
@@ -32,6 +31,10 @@ describe("hosted pool workflow schema v2", () => {
   it("renders the exact trusted OIDC workflow without credential ingress", () => {
     const workflow = renderCanonicalHostedPoolWorkflowV2(options);
 
+    expect(workflow).toBe(hostedPoolWorkflowV2Golden);
+    expect(createHash("sha256").update(workflow).digest("hex")).toBe(
+      hostedPoolWorkflowV2GoldenSha256,
+    );
     expect(workflow).toContain("  pull_request:");
     expect(workflow).not.toContain("pull_request_target");
     expect(workflow).toContain("permissions: {}");

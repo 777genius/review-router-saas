@@ -79,6 +79,7 @@ export async function provisionHostedPoolRepositoryWorkflow(
         repo: plan.name,
         baseBranch: plan.defaultBranch,
         setupBranch: plan.setupBranch,
+        setupMode: "hosted_pool",
         workflowFiles: [
           {
             path: defaultCodexRotatingWorkflowPath,

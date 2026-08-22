@@ -235,7 +235,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
           title: setupPullRequestTitle,
           head: input.setupBranch,
           base: input.baseBranch,
-          body: setupPullRequestBody,
+          body: resolveSetupPullRequestBody(input),
         },
       );
       return parsePullRequest(data);
@@ -273,7 +273,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
         pull_number: pullRequest.number,
         title: setupPullRequestTitle,
         base: input.baseBranch,
-        body: setupPullRequestBody,
+        body: resolveSetupPullRequestBody(input),
       },
     );
     return parsePullRequest(data);
@@ -290,7 +290,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
         repo: input.repo,
         pull_number: pullRequest.number,
         title: setupPullRequestTitle,
-        body: setupPullRequestBody,
+        body: resolveSetupPullRequestBody(input),
         base: input.baseBranch,
         state: "open",
       },
@@ -371,6 +371,27 @@ const setupPullRequestBody = [
   "- `.github/workflows/reviewrouter-interaction.yml` - `/rr` comment commands and discussion routing",
   "- `.github/workflows/reviewrouter-codex.yml` - production Codex OAuth rotating review workflow",
 ].join("\n");
+
+const hostedPoolSetupPullRequestBody = [
+  "This PR installs the hosted ReviewRouter GitHub Actions workflow.",
+  "",
+  "Security defaults:",
+  "- runs only from same-repository `pull_request` events and skips bot pull requests",
+  "- uses the App-first ReviewRouter publication path; `github.token` does not publish reviews",
+  "- grants OIDC `id-token: write` to the immutable ReviewRouter reusable workflow",
+  "- uses the repository-scoped hosted provider identity and admitted pull request revision",
+  "- requires no Codex OAuth or provider credential secret in this repository",
+  "- removes legacy ReviewRouter workflows only when they match trusted ReviewRouter markers",
+  "",
+  "Workflow files:",
+  "- `.github/workflows/reviewrouter-codex.yml` - hosted pull request review workflow",
+].join("\n");
+
+function resolveSetupPullRequestBody(input: WorkflowSetupGatewayInput): string {
+  return input.setupMode === "hosted_pool"
+    ? hostedPoolSetupPullRequestBody
+    : setupPullRequestBody;
+}
 
 function parseWorkflowFile(data: unknown): {
   readonly sha: string | null;

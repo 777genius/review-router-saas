@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { provisionHostedPoolRepositoryWorkflow } from "../application/use-cases/provision-hosted-pool-workflow";
 import type { WorkflowSetupGatewayInput } from "../application/ports/workflow-setup-gateway-port";
+import {
+  hostedPoolWorkflowV2Golden,
+  hostedPoolWorkflowV2GoldenOptions,
+} from "./fixtures/hosted-pool-workflow-v2.golden";
 
 const target = {
   workspaceId: "workspace-1",
@@ -51,6 +55,7 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
     expect(request).toMatchObject({
       baseBranch: "main",
       setupBranch: "reviewrouter/setup",
+      setupMode: "hosted_pool",
     });
     const hosted = request.workflowFiles.find(
       (file) =>
@@ -76,6 +81,44 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
       }),
     );
+  });
+
+  it("passes the independently golden-tested hosted workflow bytes to provisioning", async () => {
+    const createOrUpdateSetupPullRequest = vi.fn(
+      async (input: WorkflowSetupGatewayInput) => ({
+        url: "https://github.com/777genius/example/pull/8",
+        number: 8,
+        branch: input.setupBranch,
+        baseBranch: input.baseBranch,
+      }),
+    );
+
+    await provisionHostedPoolRepositoryWorkflow(
+      {
+        repositoryId: "repo-1",
+        ...hostedPoolWorkflowV2GoldenOptions,
+      },
+      {
+        targets: {
+          findWorkflowProvisioningTarget: vi.fn(async () => target),
+        },
+        setupGateway: { createOrUpdateSetupPullRequest },
+        provisioning: {
+          markSetupPullRequestOpen: vi.fn(async () => undefined),
+          markFailed: vi.fn(async () => undefined),
+        },
+      },
+    );
+
+    const request = createOrUpdateSetupPullRequest.mock.calls[0]?.[0];
+    const hosted = request?.workflowFiles.find(
+      (file) =>
+        file.path === ".github/workflows/reviewrouter-codex.yml" &&
+        file.operation !== "delete",
+    );
+    expect(
+      hosted && hosted.operation !== "delete" ? hosted.content : null,
+    ).toBe(hostedPoolWorkflowV2Golden);
   });
 
   it("persists a safe failure while the binding remains pending", async () => {

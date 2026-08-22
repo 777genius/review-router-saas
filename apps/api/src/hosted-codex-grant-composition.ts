@@ -60,6 +60,9 @@ export type HostedCodexGrantAdmission = {
   readonly workflowSource: string;
   readonly workflowJobSource: string;
   readonly workflowJobSha: string;
+  readonly pullRequestNumber: number;
+  readonly reviewHeadSha: string;
+  readonly reviewRevisionHash: string;
   readonly workflowAttestation: HostedPoolWorkflowSourceAttestation;
   readonly workflowPath: string;
   readonly workflowSourceCommitSha: string;
@@ -439,16 +442,19 @@ function assertExactWorkflowClaims(
   claims: GitHubActionsOidcClaims,
   admission: HostedCodexGrantAdmission,
 ): void {
+  const pullRequestRef = `refs/pull/${admission.pullRequestNumber}/merge`;
+  const subject = `repo:${admission.repository}:pull_request`;
   if (
     claims.event_name !== "pull_request" ||
+    claims.sub.toLowerCase() !== subject.toLowerCase() ||
+    claims.ref?.toLowerCase() !== pullRequestRef.toLowerCase() ||
     claims.workflow_ref.toLowerCase() !==
       admission.workflowSource.toLowerCase() ||
     claims.job_workflow_ref?.toLowerCase() !==
       admission.workflowJobSource.toLowerCase() ||
     claims.job_workflow_sha?.toLowerCase() !==
       admission.workflowJobSha.toLowerCase() ||
-    claims.workflow_sha?.toLowerCase() !==
-      admission.workflowSourceCommitSha.toLowerCase()
+    claims.workflow_sha?.toLowerCase() !== admission.reviewHeadSha.toLowerCase()
   ) {
     throw new Error("hosted_workflow_claims_mismatch");
   }

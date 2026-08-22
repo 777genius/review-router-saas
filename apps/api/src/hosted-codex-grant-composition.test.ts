@@ -22,7 +22,11 @@ import {
 const now = new Date("2026-08-15T10:00:00.000Z");
 const commitSha = "a".repeat(40);
 const workflowPath = ".github/workflows/reviewrouter-hosted.yml";
-const workflowSource = `acme/private-repo/${workflowPath}@refs/heads/main`;
+const pullRequestNumber = 42;
+const reviewHeadSha = "e".repeat(40);
+const reviewRevisionHash = "f".repeat(64);
+const pullRequestRef = `refs/pull/${pullRequestNumber}/merge`;
+const workflowSource = `acme/private-repo/${workflowPath}@${pullRequestRef}`;
 const workflowJobSource = `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${commitSha}`;
 const workflow = renderCanonicalHostedPoolWorkflowV2({
   actionRef: `777genius/review-router@${commitSha}`,
@@ -33,6 +37,16 @@ const workflow = renderCanonicalHostedPoolWorkflowV2({
 });
 
 describe("HostedCodexGrantIssuer", () => {
+  it("admits a realistic pull_request merge-ref caller bound to the admitted head", async () => {
+    const fixture = createFixture();
+
+    await expect(fixture.issuer.issue(request())).resolves.toMatchObject({
+      repository: "acme/private-repo",
+      runtimeConfigVersion: 19,
+    });
+    expect(fixture.replayNonces.tryConsumeNonce).toHaveBeenCalledOnce();
+  });
+
   it("issues from server-derived exact authority and persists separate capabilities", async () => {
     const fixture = createFixture();
 
@@ -95,6 +109,58 @@ describe("HostedCodexGrantIssuer", () => {
   });
 
   it.each([
+    ["mismatched PR ref", { ref: "refs/pull/41/merge" }],
+    ["missing PR ref", { ref: undefined }],
+    ["PR head ref", { ref: "refs/pull/42/head" }],
+    [
+      "mismatched caller workflow PR identity",
+      {
+        workflow_ref: `acme/private-repo/${workflowPath}@refs/pull/41/merge`,
+      },
+    ],
+    [
+      "default-branch caller fallback",
+      { workflow_ref: `acme/private-repo/${workflowPath}@refs/heads/main` },
+    ],
+    ["mismatched caller SHA", { workflow_sha: "b".repeat(40) }],
+    ["missing caller SHA", { workflow_sha: undefined }],
+    [
+      "mismatched caller repository",
+      {
+        workflow_ref: `evil/private-repo/${workflowPath}@${pullRequestRef}`,
+      },
+    ],
+    ["mismatched repository claim", { repository: "evil/private-repo" }],
+    ["mismatched repository id", { repository_id: "124" }],
+    ["mismatched repository owner", { repository_owner: "evil" }],
+    [
+      "mismatched subject repository",
+      { sub: "repo:evil/private-repo:pull_request" },
+    ],
+    [
+      "mismatched subject event",
+      { sub: "repo:acme/private-repo:environment:prod" },
+    ],
+  ] as const)("rejects %s before consuming OIDC", async (_name, override) => {
+    const fixture = createFixture({}, override);
+    await expect(fixture.issuer.issue(request())).rejects.toThrow();
+    expect(fixture.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+    expect(fixture.grantCapabilities.issue).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["admitted PR number", { pullRequestNumber: 41 }],
+    ["admitted head SHA", { reviewHeadSha: "b".repeat(40) }],
+  ] as const)("rejects a mismatched %s", async (_name, admissionOverride) => {
+    const fixture = createFixture(admissionOverride);
+    await expect(fixture.issuer.issue(request())).rejects.toThrow(
+      "hosted_workflow_claims_mismatch",
+    );
+    expect(fixture.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    undefined,
     `777genius/review-router/.github/workflows/reviewrouter-execution-reusable.yml@${commitSha}`,
     `evil/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${commitSha}`,
     "777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@refs/heads/main",
@@ -161,6 +227,9 @@ function createFixture(
     workflowSource,
     workflowJobSource,
     workflowJobSha: commitSha,
+    pullRequestNumber,
+    reviewHeadSha,
+    reviewRevisionHash,
     workflowAttestation: {
       repositoryId: "123",
       workflowPath,
@@ -322,10 +391,11 @@ function claims() {
     repository_owner: "acme",
     repository_visibility: "private",
     event_name: "pull_request" as const,
+    ref: pullRequestRef,
     run_id: "9001",
     run_attempt: "2",
     workflow_ref: workflowSource,
-    workflow_sha: commitSha,
+    workflow_sha: reviewHeadSha,
     job_workflow_ref: workflowJobSource,
     job_workflow_sha: commitSha,
     actor: "octocat",
