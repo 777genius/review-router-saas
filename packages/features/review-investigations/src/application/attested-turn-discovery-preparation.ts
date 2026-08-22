@@ -22,6 +22,11 @@ import type { InvestigationTurnObservation } from "../domain/investigation-turn-
 import type { InvestigationDigestPort } from "./ports/digest-port";
 import type { VerifiedOperationEvidenceIndex } from "./verified-operation-evidence-index";
 
+export type AttestedTurnDiscoveryPreparationResult = Readonly<{
+  requiredClaims: readonly PreparedOperationBackedDiscoveryClaim[];
+  advisoryClaims: readonly PreparedOperationBackedDiscoveryClaim[];
+}>;
+
 export class AttestedTurnDiscoveryPreparation {
   constructor(private readonly digest: InvestigationDigestPort) {}
 
@@ -30,21 +35,27 @@ export class AttestedTurnDiscoveryPreparation {
     readonly closureClaims: InvestigationTurnObservation["closureClaims"];
     readonly providerClaims: InvestigationTurnObservation["operationBackedDiscoveryClaims"];
     readonly operationEvidence: VerifiedOperationEvidenceIndex;
-  }): Promise<readonly PreparedOperationBackedDiscoveryClaim[]> {
-    const providerDiscoveryClaims = await this.prepareProviderClaims({
-      claims: input.providerClaims,
-      investigation: input.investigation,
-      operationEvidence: input.operationEvidence,
-    });
+  }): Promise<AttestedTurnDiscoveryPreparationResult> {
     const requiredDiscoveryClaims = await this.prepareClosedSearchClaims({
       closureClaims: input.closureClaims,
       investigation: input.investigation,
       operationEvidence: input.operationEvidence,
     });
-    return dedupePreparedDiscoveryClaims([
-      ...requiredDiscoveryClaims,
-      ...providerDiscoveryClaims,
-    ]);
+    const requiredClaims = dedupePreparedDiscoveryClaims(
+      requiredDiscoveryClaims,
+    );
+    const requiredKeys = new Set(requiredClaims.map(preparedDiscoveryClaimKey));
+    const advisoryClaims = dedupePreparedDiscoveryClaims(
+      await this.prepareProviderClaims({
+        claims: input.providerClaims,
+        investigation: input.investigation,
+        operationEvidence: input.operationEvidence,
+      }),
+    ).filter((claim) => !requiredKeys.has(preparedDiscoveryClaimKey(claim)));
+    return Object.freeze({
+      requiredClaims,
+      advisoryClaims: Object.freeze(advisoryClaims),
+    });
   }
 
   private async prepareProviderClaims(input: {
@@ -52,39 +63,55 @@ export class AttestedTurnDiscoveryPreparation {
     readonly investigation: ReviewInvestigation;
     readonly operationEvidence: VerifiedOperationEvidenceIndex;
   }): Promise<readonly PreparedOperationBackedDiscoveryClaim[]> {
-    const acceptedClaims = input.claims.filter((claim) =>
-      isProviderDiscoverySource(input.investigation, claim.sourceObligationId),
+    const distinctClaims = dedupeProviderClaims(
+      input.claims.filter((claim) =>
+        isProviderDiscoverySource(
+          input.investigation,
+          claim.sourceObligationId,
+        ),
+      ),
     );
-    const claimedReceiptIds = new Set<string>();
-    for (const claim of acceptedClaims) {
+    const receiptUseCounts = new Map<string, number>();
+    for (const claim of distinctClaims) {
       for (const receiptId of claim.operationReceiptIds) {
-        if (claimedReceiptIds.has(receiptId)) {
-          throw new Error(
-            "investigation_operation_backed_discovery_receipt_reused",
-          );
-        }
-        claimedReceiptIds.add(receiptId);
+        receiptUseCounts.set(
+          receiptId,
+          (receiptUseCounts.get(receiptId) ?? 0) + 1,
+        );
       }
     }
+    const prepared = await Promise.all(
+      distinctClaims.map(async (claim) => {
+        if (
+          new Set(claim.operationReceiptIds).size !==
+            claim.operationReceiptIds.length ||
+          claim.operationReceiptIds.some(
+            (receiptId) => receiptUseCounts.get(receiptId) !== 1,
+          )
+        ) {
+          return null;
+        }
+        const operations = tryTextSearchOperations(
+          claim.operationReceiptIds,
+          input.operationEvidence,
+        );
+        if (operations === null) return null;
+        const queryHash = await this.digest.digestUtf8(claim.query);
+        const expectedInitialOperationInputHash = await this.digest.digestUtf8(
+          canonicalStandardTextSearchOperationInput(queryHash),
+        );
+        return this.preparedClaim({
+          sourceObligationId: claim.sourceObligationId,
+          queryHash,
+          expectedInitialOperationInputHash,
+          operations,
+        });
+      }),
+    );
     return Object.freeze(
-      await Promise.all(
-        acceptedClaims.map(async (claim) => {
-          const operations = textSearchOperations(
-            claim.operationReceiptIds,
-            input.operationEvidence,
-          );
-          const queryHash = await this.digest.digestUtf8(claim.query);
-          const expectedInitialOperationInputHash =
-            await this.digest.digestUtf8(
-              canonicalStandardTextSearchOperationInput(queryHash),
-            );
-          return this.preparedClaim({
-            sourceObligationId: claim.sourceObligationId,
-            queryHash,
-            expectedInitialOperationInputHash,
-            operations,
-          });
-        }),
+      prepared.filter(
+        (claim): claim is PreparedOperationBackedDiscoveryClaim =>
+          claim !== null,
       ),
     );
   }
@@ -199,6 +226,26 @@ function textSearchOperations(
   );
 }
 
+function tryTextSearchOperations(
+  operationReceiptIds: readonly string[],
+  operationEvidence: VerifiedOperationEvidenceIndex,
+): readonly VerifiedInvestigationOperationEvidence[] | null {
+  const operations = operationReceiptIds.map((receiptId) =>
+    operationEvidence.get(receiptId),
+  );
+  if (
+    operations.some(
+      (operation) =>
+        operation?.operationKind !== InvestigationOperationKind.TextSearch,
+    )
+  ) {
+    return null;
+  }
+  return Object.freeze(
+    operations as readonly VerifiedInvestigationOperationEvidence[],
+  );
+}
+
 function uniqueAuthenticatedPathHashes(
   operations: readonly VerifiedInvestigationOperationEvidence[],
 ): readonly string[] {
@@ -218,15 +265,35 @@ function dedupePreparedDiscoveryClaims(
 ): readonly PreparedOperationBackedDiscoveryClaim[] {
   const result = new Map<string, PreparedOperationBackedDiscoveryClaim>();
   for (const claim of claims) {
+    const key = preparedDiscoveryClaimKey(claim);
+    if (!result.has(key)) result.set(key, claim);
+  }
+  return Object.freeze([...result.values()]);
+}
+
+function preparedDiscoveryClaimKey(
+  claim: PreparedOperationBackedDiscoveryClaim,
+): string {
+  return canonicalJson({
+    sourceObligationId: claim.sourceObligationId,
+    queryHash: claim.queryHash,
+    expectedInitialOperationInputHash: claim.expectedInitialOperationInputHash,
+    authenticatedPathSetHash: claim.authenticatedPathSetHash,
+    operationReceiptIds: claim.operations
+      .map((operation) => operation.operationReceiptId)
+      .sort(),
+  });
+}
+
+function dedupeProviderClaims(
+  claims: InvestigationTurnObservation["operationBackedDiscoveryClaims"],
+): InvestigationTurnObservation["operationBackedDiscoveryClaims"] {
+  const result = new Map<string, (typeof claims)[number]>();
+  for (const claim of claims) {
     const key = canonicalJson({
       sourceObligationId: claim.sourceObligationId,
-      queryHash: claim.queryHash,
-      expectedInitialOperationInputHash:
-        claim.expectedInitialOperationInputHash,
-      authenticatedPathSetHash: claim.authenticatedPathSetHash,
-      operationReceiptIds: claim.operations
-        .map((operation) => operation.operationReceiptId)
-        .sort(),
+      query: claim.query,
+      operationReceiptIds: [...claim.operationReceiptIds].sort(),
     });
     if (!result.has(key)) result.set(key, claim);
   }
