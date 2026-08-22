@@ -74,6 +74,12 @@ import {
   runHostedCodexRelayTransport,
 } from "./hosted-codex-relay";
 
+export {
+  requestHostedRelayGrantWithFreshGitHubOidc,
+  runHostedCodexRelayTransport,
+  startHostedCodexRelayProxy,
+} from "./hosted-codex-relay";
+
 declare const __dirname: string | undefined;
 
 const defaultOidcAudience = "reviewrouter";
@@ -114,7 +120,7 @@ const oidcRequestTimeoutMs = 20_000;
 const githubRequestTimeoutMs = 30_000;
 const networkRetryMaxAttempts = 3;
 const networkRetryBaseDelayMs = 750;
-const hostedPoolMaxLeaseAttempts = 3;
+const hostedPoolMaxLeaseAttempts = 2;
 const hostedPoolMinimumRetryBudgetMs = 90_000;
 const fullRuntimeProgressCommentMarker =
   "<!-- review-router-progress-tracker -->";
@@ -1118,7 +1124,9 @@ async function runHostedForkAgenticSandboxGitHubAction(input: {
         notice(
           input.io,
           `ReviewRouter released a ${
-            reason === "quota_exhausted" ? "quota-exhausted" : "failed"
+            reason === "quota_exhausted"
+              ? "quota-exhausted"
+              : "authentication-failed"
           } hosted account lease and will resume from the durable checkpoint with the next eligible account (${attempt + 1}/${maxAttempts}).`,
         );
       },
@@ -1245,7 +1253,10 @@ async function runHostedForkAgenticSandboxGitHubAction(input: {
   notice(input.io, "ReviewRouter hosted pool review completed.");
 }
 
-export type HostedPoolFailureReason = "quota_exhausted" | "failed" | undefined;
+export type HostedPoolFailureReason =
+  | "quota_exhausted"
+  | "authentication_failed"
+  | undefined;
 
 export type HostedPoolFailoverInput<T> = {
   readonly maxAttempts?: number | undefined;
@@ -1308,23 +1319,16 @@ export function hostedPoolAccountFailureReason(
     error instanceof Error ? error.message : error,
   ).toLowerCase();
   if (
-    normalized === "quota_limited" ||
-    /\b(?:account[_ -]?)?(?:quota|capacity)[_ -]?(?:exhausted|depleted|limited|unavailable)\b/.test(
-      normalized,
-    ) ||
-    /\b(?:insufficient_quota|quota_exceeded|usage[_ -]?limit(?:ed| reached| exceeded)?)\b/.test(
-      normalized,
-    )
+    normalized === "hosted_pool_quota_exhausted" ||
+    normalized === "hosted_relay_grant_failed:429"
   ) {
     return "quota_exhausted";
   }
   if (
-    normalized === "hosted_pool_account_failed" ||
-    /\b(?:hosted[_ -]?(?:relay|pool)[_ -]?|relay[_ -]?error:\s*)(?:provider[_ -]?)?account(?:[_ -]?status)?[_ -](?:failed|failure|unavailable)\b/.test(
-      normalized,
-    )
+    normalized === "hosted_pool_authentication_failed" ||
+    normalized === "hosted_relay_grant_failed:401"
   ) {
-    return "failed";
+    return "authentication_failed";
   }
   return undefined;
 }
@@ -4757,7 +4761,7 @@ function classifyPostWritebackCodexFailure(error: unknown): Error {
   if (hostedPoolFailure === "quota_exhausted") {
     return new Error("quota_limited");
   }
-  if (hostedPoolFailure === "failed") {
+  if (hostedPoolFailure === "authentication_failed") {
     return new Error("hosted_pool_account_failed");
   }
   const reviewFailure = extractReviewRouterRuntimeFailure(output);

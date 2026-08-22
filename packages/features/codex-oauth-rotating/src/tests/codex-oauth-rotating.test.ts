@@ -304,6 +304,9 @@ describe("Codex rotating auth domain", () => {
     expect(classifyCodexRuntimeFailure("invalid_grant refresh token")).toBe(
       "needs_reconnect",
     );
+    expect(classifyCodexRuntimeFailure("authentication_failed")).toBe(
+      "needs_reconnect",
+    );
   });
 
   it("builds and encodes a repo-bound setup manifest", () => {

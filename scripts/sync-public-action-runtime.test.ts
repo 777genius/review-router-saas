@@ -17,6 +17,7 @@ const syncedFiles = [
   "action-dist/codex/linux-x64/manifest.json",
   "scripts/seed-codex-rotating-auth.sh",
   "scripts/reseed-codex-rotating-auth.sh",
+  "__tests__/unit/codex-oauth/hosted-pool-failover.test.ts",
 ];
 
 describe("public Action runtime sync", () => {

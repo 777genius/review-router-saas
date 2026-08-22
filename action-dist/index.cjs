@@ -46,11 +46,13 @@ __export(github_action_exports, {
   postPullRequestComment: () => postPullRequestComment,
   readActionAuthJson: () => readActionAuthJson,
   readActionInputs: () => readActionInputs,
+  requestHostedRelayGrantWithFreshGitHubOidc: () => requestHostedRelayGrantWithFreshGitHubOidc,
   requireRemainingReviewExecutionBudgetMs: () => requireRemainingReviewExecutionBudgetMs,
   resolveCodexBinary: () => resolveCodexBinary,
   resolveCodexProxyUpstreamResponsesUrl: () => resolveCodexProxyUpstreamResponsesUrl,
   routeCodexLocalProviderRequest: () => routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction: () => runCodexRotatingGitHubAction,
+  runHostedCodexRelayTransport: () => runHostedCodexRelayTransport,
   runHostedPoolLeaseFailover: () => runHostedPoolLeaseFailover,
   runProcess: () => runProcess,
   runReviewRuntimeWithinExecutionBudget: () => runReviewRuntimeWithinExecutionBudget,
@@ -60,7 +62,8 @@ __export(github_action_exports, {
   shouldSuppressTopLevelActionError: () => shouldSuppressTopLevelActionError,
   shouldUseSubscriptionRuntimeCodex: () => shouldUseSubscriptionRuntimeCodex,
   signalProcessTree: () => signalProcessTree,
-  startCodexLocalProviderProxy: () => startCodexLocalProviderProxy
+  startCodexLocalProviderProxy: () => startCodexLocalProviderProxy,
+  startHostedCodexRelayProxy: () => startHostedCodexRelayProxy
 });
 module.exports = __toCommonJS(github_action_exports);
 var import_node_child_process2 = require("node:child_process");
@@ -68,7 +71,7 @@ var import_node_crypto7 = require("node:crypto");
 var import_node_fs2 = require("node:fs");
 var import_node_http2 = __toESM(require("node:http"), 1);
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/domain/errors.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/core/domain/errors.js
 var RuntimeConfigurationError = class extends Error {
   constructor(message) {
     super(message);
@@ -82,7 +85,7 @@ var BoundaryViolationError = class extends Error {
   }
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/application/policy.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/core/application/policy.js
 function negotiateCapabilities(input) {
   const policy = input.requested ?? input.policy;
   if (!policy) {
@@ -261,7 +264,7 @@ function rejected(code, safeMessage2, details) {
   };
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/application/redactor.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/core/application/redactor.js
 var textDecoder = new TextDecoder();
 var DefaultRedactor = class {
   secrets = /* @__PURE__ */ new Map();
@@ -326,7 +329,7 @@ var DeterministicIdGenerator = class {
   }
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/domain/generation-hash.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/core/domain/generation-hash.js
 var import_node_crypto = require("node:crypto");
 function computeSessionGenerationHash(input) {
   const hash2 = (0, import_node_crypto.createHash)("sha256");
@@ -346,7 +349,7 @@ function computeSessionGenerationHash(input) {
   return hash2.digest("base64url");
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/domain/types.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/core/domain/types.js
 var AgentRuntimeBudgetMetric;
 (function(AgentRuntimeBudgetMetric2) {
   AgentRuntimeBudgetMetric2["Usd"] = "usd";
@@ -467,7 +470,7 @@ var ProviderLogicalThreadOutcome;
   ProviderLogicalThreadOutcome2["RecoveredFresh"] = "recovered_fresh";
 })(ProviderLogicalThreadOutcome || (ProviderLogicalThreadOutcome = {}));
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime-results.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime-results.js
 function nextEnvelope(previous, artifact, writeback) {
   return {
     ...previous,
@@ -536,7 +539,7 @@ function unsupportedTaskFailure(input) {
   return null;
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime-health.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime-health.js
 async function runtimeHealthCheck(input) {
   if (input.executionPlan.kind === "no-session") {
     return {
@@ -589,7 +592,7 @@ function requireSessionDriver(deps) {
   return deps.sessionDriver;
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime-static-session.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime-static-session.js
 async function validateStaticRuntimeSession(input) {
   const sessionStore = requireSessionStore2(input.deps);
   const sessionDriver = requireSessionDriver2(input.deps);
@@ -638,7 +641,7 @@ function requireSessionDriver2(deps) {
   return deps.sessionDriver;
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime.js
 function createSubscriptionRuntime(deps) {
   const decision = negotiateCapabilities({
     requested: deps.policy,
@@ -1366,7 +1369,7 @@ var RuntimeKernel = class {
   }
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/domain/task-validation.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/core/domain/task-validation.js
 var providerTaskSystemPromptMaxBytes = 256 * 1024;
 function providerTaskSystemPromptValidationError(value, path = "systemPrompt") {
   if (value === void 0)
@@ -1385,7 +1388,7 @@ function assertProviderTaskSystemPrompt(value, path = "systemPrompt") {
     throw new Error(error51);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/capabilities.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/capabilities.js
 var codexProviderId = "codex";
 var codexAgentId = "codex-cli";
 var codexJsonAgentId = "codex-json";
@@ -1468,12 +1471,12 @@ var codexJsonAgentCapabilities = {
   agentId: codexJsonAgentId
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-domain.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-domain.js
 var import_node_fs = require("node:fs");
 var import_node_crypto2 = require("node:crypto");
 var import_node_path2 = require("node:path");
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-provider-egress-policy.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-provider-egress-policy.js
 var codexProviderEgressProfileEnvVar = "SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE";
 var codexProviderApiEgressProfileId = "codex-provider-api";
 var codexProviderApiDomains = ["api.openai.com"];
@@ -1515,7 +1518,7 @@ function tomlString(value) {
   return JSON.stringify(value);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/domain/app-server-types.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/domain/app-server-types.js
 var import_node_path = require("node:path");
 var defaultTimeoutMs = 10 * 60 * 1e3;
 var defaultStartupTimeoutMs = 2 * 60 * 1e3;
@@ -1541,7 +1544,7 @@ function codexAgentTempRootFromEnv(sourceEnv) {
   return resolvedAgentTempRoot;
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-domain.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-domain.js
 var codexAuthJsonMaxBytes = 32 * 1024;
 function validateCodexAuthJsonBytes(input) {
   const maxBytes = input.maxBytes ?? codexAuthJsonMaxBytes;
@@ -1842,7 +1845,7 @@ function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-auth-json-codec.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-auth-json-codec.js
 var textDecoder2 = new TextDecoder();
 var textEncoder = new TextEncoder();
 function sessionArtifactFromCodexAuthJson(authJsonBytes) {
@@ -1902,7 +1905,7 @@ function safeCauseCategory(message) {
   return /^[a-z0-9_:-]{1,80}$/i.test(message) ? message : "codex_validation";
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-temp-cleanup.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-temp-cleanup.js
 var import_promises = require("node:fs/promises");
 var import_node_path3 = require("node:path");
 var transientCleanupErrorCodes = /* @__PURE__ */ new Set([
@@ -1946,7 +1949,7 @@ async function scrubSensitiveCodexHomePaths(codexHome) {
   return results.every((result) => result.status === "fulfilled");
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-runtime-temp.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-runtime-temp.js
 var import_promises2 = require("node:fs/promises");
 var import_node_os = require("node:os");
 var import_node_path4 = require("node:path");
@@ -2023,7 +2026,7 @@ function uniqueNonEmpty(values) {
   return result;
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-prompt-composer.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-prompt-composer.js
 var import_node_crypto3 = require("node:crypto");
 function composeCodexPrompt(input) {
   const systemPrompt = input.systemPrompt?.trim();
@@ -2043,16 +2046,16 @@ function composeCodexPrompt(input) {
   ].join("\n");
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
 var import_promises3 = require("node:fs/promises");
 var import_node_path5 = require("node:path");
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/domain/app-server-record.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/domain/app-server-record.js
 function readRecord(value) {
   return value && typeof value === "object" ? value : null;
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/structured-output.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/structured-output.js
 function parseCodexStructuredOutput(outputText, errorCode) {
   const direct = parseJson(outputText);
   if (direct.ok)
@@ -2220,7 +2223,7 @@ function firstLineEnd(value, start) {
   return { index: carriageReturnIndex, end: lineFeed + 1 };
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/domain/app-server-errors.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/domain/app-server-errors.js
 var CodexAppServerErrorKind;
 (function(CodexAppServerErrorKind2) {
   CodexAppServerErrorKind2["SessionBudgetExceeded"] = "session_budget_exceeded";
@@ -2260,7 +2263,7 @@ function safeMessage(error51) {
   return "unknown";
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/application/app-server-thread-fork-error.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/application/app-server-thread-fork-error.js
 var CodexAppServerThreadForkError = class extends Error {
   sourceThreadUnavailable;
   constructor(message) {
@@ -2274,7 +2277,7 @@ function isSourceThreadUnavailableMessage(message) {
   return /\b(?:source|requested|specified) thread(?: (?:id )?(?:"[^"]+"|'[^']+'|[A-Za-z0-9._:-]+))? (?:was |is )?(?:not found|does not exist)\b/iu.test(normalized) || /\bthread (?:id )?(?:"[^"]+"|'[^']+'|[A-Za-z0-9][A-Za-z0-9._:-]*) (?:was |is )?(?:not found|does not exist)\b/iu.test(normalized);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/domain/model-catalog.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/domain/model-catalog.js
 var CodexModelUnavailableError = class extends Error {
   code = "codex_model_unavailable";
   requestedModel;
@@ -2328,7 +2331,7 @@ function safeRequestedModel(value) {
   return "invalid-model-id";
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/application/app-server-turn-failure.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/application/app-server-turn-failure.js
 var CodexAppServerTurnError = class extends Error {
   code = "codex_app_server_turn_error";
   failureDetails;
@@ -2366,7 +2369,7 @@ function boundedTurnMetric(value) {
   return Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.trunc(value)));
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/failure-classifier.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/failure-classifier.js
 function classifyCodexFailure(error51) {
   const budgetExceededError = codexAppServerBudgetExceededError(error51);
   if (budgetExceededError) {
@@ -2569,7 +2572,7 @@ function safeTail(value) {
   return compact.length > 1e3 ? compact.slice(-1e3) : compact;
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
 var defaultTimeoutMs2 = 10 * 60 * 1e3;
 var defaultMaxOutputBytes2 = 512 * 1024;
 var PackagedCodexJsonExecutionEngine = class {
@@ -2951,7 +2954,7 @@ function safeTail2(value) {
   return value.slice(-4096);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-execution-profile.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-execution-profile.js
 var statelessCompletionBaseInstructions = [
   "You are a stateless completion worker.",
   "Follow the developer and user instructions exactly.",
@@ -2959,7 +2962,7 @@ var statelessCompletionBaseInstructions = [
   "When an output schema is provided, satisfy it exactly."
 ].join(" ");
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-session-materializer.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-session-materializer.js
 var import_node_crypto4 = require("node:crypto");
 var import_promises4 = require("node:fs/promises");
 var import_node_path6 = require("node:path");
@@ -3085,7 +3088,7 @@ function once(fn) {
   };
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-agent-driver.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-agent-driver.js
 var CodexJsonAgentDriver = class {
   options;
   agentId = codexJsonAgentId;
@@ -3474,7 +3477,7 @@ function finishReasonForFailure(code) {
   return "provider_error";
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-session-driver.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-session-driver.js
 var import_promises5 = require("node:fs/promises");
 var import_node_path7 = require("node:path");
 var CodexCliSessionDriver = class {
@@ -3675,7 +3678,7 @@ async function writeCodexHomeSnapshot(input) {
   });
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/domain/github-action-runner-capabilities.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/domain/github-action-runner-capabilities.js
 var githubActionRunnerCapabilities = {
   runnerId: "github-action",
   supportsEnvAllowlist: true,
@@ -3688,7 +3691,7 @@ var githubActionRunnerCapabilities = {
   platform: "github-actions"
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/adapters/node-runner-process-spawner.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/adapters/node-runner-process-spawner.js
 var import_node_child_process = require("node:child_process");
 var NodeRunnerProcessSpawner = class {
   spawn(input) {
@@ -3730,7 +3733,7 @@ var NodeSpawnedRunnerProcess = class {
   }
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/domain/github-action-runner-policy.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/domain/github-action-runner-policy.js
 var defaultMaxCapturedOutputBytes = 256e3;
 var defaultKillGraceMs = 5e3;
 function assertSafeGitHubActionProcessInput(input) {
@@ -3762,7 +3765,7 @@ function safeGitHubActionFailureOutput(output) {
   return compact ? compact.slice(-1e3) : "empty_process_output";
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/application/run-github-action-process.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/application/run-github-action-process.js
 function runGitHubActionProcess(input) {
   try {
     assertSafeGitHubActionProcessInput(input);
@@ -3903,7 +3906,7 @@ function appendCapturedChunk(chunks, currentBytes, chunk, maxBytes) {
   return currentBytes + nextChunk.byteLength;
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/github-action-runner.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+6467c59a06_e19d0aeae5f15b703376ba6c7df2faa6/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/github-action-runner.js
 var GitHubActionRunner = class {
   runnerId = githubActionRunnerCapabilities.runnerId;
   capabilities = githubActionRunnerCapabilities;
@@ -3933,7 +3936,7 @@ var import_promises6 = require("node:fs/promises");
 var import_node_os2 = require("node:os");
 var import_node_path8 = require("node:path");
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/external.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/external.js
 var external_exports = {};
 __export(external_exports, {
   $brand: () => $brand,
@@ -4176,7 +4179,7 @@ __export(external_exports, {
   xor: () => xor
 });
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/index.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/index.js
 var core_exports2 = {};
 __export(core_exports2, {
   $ZodAny: () => $ZodAny,
@@ -4455,7 +4458,7 @@ __export(core_exports2, {
   version: () => version
 });
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/core.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/core.js
 var _a;
 var NEVER = /* @__PURE__ */ Object.freeze({
   status: "aborted"
@@ -4532,7 +4535,7 @@ function config(newConfig) {
   return globalConfig;
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/util.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES,
@@ -5228,7 +5231,7 @@ var Class = class {
   }
 };
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/errors.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/errors.js
 var initializer = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -5367,7 +5370,7 @@ function prettifyError(error51) {
   return lines.join("\n");
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/parse.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/parse.js
 var _parse = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? { ..._ctx, async: false } : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -5455,7 +5458,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
 };
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync($ZodRealError);
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/regexes.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base64,
@@ -5614,7 +5617,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/checks.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/checks.js
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a4;
   inst._zod ?? (inst._zod = {});
@@ -6162,7 +6165,7 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/doc.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/doc.js
 var Doc = class {
   constructor(args = []) {
     this.content = [];
@@ -6198,14 +6201,14 @@ var Doc = class {
   }
 };
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/versions.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/versions.js
 var version = {
   major: 4,
   minor: 4,
   patch: 2
 };
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/schemas.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/schemas.js
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a4;
   inst ?? (inst = {});
@@ -8294,7 +8297,7 @@ function handleRefineResult(result, payload, input, inst) {
   }
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/index.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/index.js
 var locales_exports = {};
 __export(locales_exports, {
   ar: () => ar_default,
@@ -8351,7 +8354,7 @@ __export(locales_exports, {
   zhTW: () => zh_TW_default
 });
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ar.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ar.js
 var error = () => {
   const Sizable = {
     string: { unit: "\u062D\u0631\u0641", verb: "\u0623\u0646 \u064A\u062D\u0648\u064A" },
@@ -8458,7 +8461,7 @@ function ar_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/az.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/az.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "simvol", verb: "olmal\u0131d\u0131r" },
@@ -8564,7 +8567,7 @@ function az_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/be.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/be.js
 function getBelarusianPlural(count, one, few, many) {
   const absCount = Math.abs(count);
   const lastDigit = absCount % 10;
@@ -8721,7 +8724,7 @@ function be_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/bg.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/bg.js
 var error4 = () => {
   const Sizable = {
     string: { unit: "\u0441\u0438\u043C\u0432\u043E\u043B\u0430", verb: "\u0434\u0430 \u0441\u044A\u0434\u044A\u0440\u0436\u0430" },
@@ -8842,7 +8845,7 @@ function bg_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ca.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ca.js
 var error5 = () => {
   const Sizable = {
     string: { unit: "car\xE0cters", verb: "contenir" },
@@ -8951,7 +8954,7 @@ function ca_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/cs.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/cs.js
 var error6 = () => {
   const Sizable = {
     string: { unit: "znak\u016F", verb: "m\xEDt" },
@@ -9063,7 +9066,7 @@ function cs_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/da.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/da.js
 var error7 = () => {
   const Sizable = {
     string: { unit: "tegn", verb: "havde" },
@@ -9179,7 +9182,7 @@ function da_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/de.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/de.js
 var error8 = () => {
   const Sizable = {
     string: { unit: "Zeichen", verb: "zu haben" },
@@ -9288,7 +9291,7 @@ function de_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/el.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/el.js
 var error9 = () => {
   const Sizable = {
     string: { unit: "\u03C7\u03B1\u03C1\u03B1\u03BA\u03C4\u03AE\u03C1\u03B5\u03C2", verb: "\u03BD\u03B1 \u03AD\u03C7\u03B5\u03B9" },
@@ -9398,7 +9401,7 @@ function el_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/en.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/en.js
 var error10 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -9511,7 +9514,7 @@ function en_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/eo.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/eo.js
 var error11 = () => {
   const Sizable = {
     string: { unit: "karaktrojn", verb: "havi" },
@@ -9621,7 +9624,7 @@ function eo_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/es.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/es.js
 var error12 = () => {
   const Sizable = {
     string: { unit: "caracteres", verb: "tener" },
@@ -9754,7 +9757,7 @@ function es_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/fa.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/fa.js
 var error13 = () => {
   const Sizable = {
     string: { unit: "\u06A9\u0627\u0631\u0627\u06A9\u062A\u0631", verb: "\u062F\u0627\u0634\u062A\u0647 \u0628\u0627\u0634\u062F" },
@@ -9869,7 +9872,7 @@ function fa_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/fi.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/fi.js
 var error14 = () => {
   const Sizable = {
     string: { unit: "merkki\xE4", subject: "merkkijonon" },
@@ -9982,7 +9985,7 @@ function fi_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/fr.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/fr.js
 var error15 = () => {
   const Sizable = {
     string: { unit: "caract\xE8res", verb: "avoir" },
@@ -10108,7 +10111,7 @@ function fr_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/fr-CA.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/fr-CA.js
 var error16 = () => {
   const Sizable = {
     string: { unit: "caract\xE8res", verb: "avoir" },
@@ -10216,7 +10219,7 @@ function fr_CA_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/he.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/he.js
 var error17 = () => {
   const TypeNames = {
     string: { label: "\u05DE\u05D7\u05E8\u05D5\u05D6\u05EA", gender: "f" },
@@ -10411,7 +10414,7 @@ function he_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/hr.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/hr.js
 var error18 = () => {
   const Sizable = {
     string: { unit: "znakova", verb: "imati" },
@@ -10534,7 +10537,7 @@ function hr_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/hu.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/hu.js
 var error19 = () => {
   const Sizable = {
     string: { unit: "karakter", verb: "legyen" },
@@ -10643,7 +10646,7 @@ function hu_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/hy.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/hy.js
 function getArmenianPlural(count, one, many) {
   return Math.abs(count) === 1 ? one : many;
 }
@@ -10791,7 +10794,7 @@ function hy_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/id.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/id.js
 var error21 = () => {
   const Sizable = {
     string: { unit: "karakter", verb: "memiliki" },
@@ -10898,7 +10901,7 @@ function id_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/is.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/is.js
 var error22 = () => {
   const Sizable = {
     string: { unit: "stafi", verb: "a\xF0 hafa" },
@@ -11008,7 +11011,7 @@ function is_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/it.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/it.js
 var error23 = () => {
   const Sizable = {
     string: { unit: "caratteri", verb: "avere" },
@@ -11117,7 +11120,7 @@ function it_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ja.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ja.js
 var error24 = () => {
   const Sizable = {
     string: { unit: "\u6587\u5B57", verb: "\u3067\u3042\u308B" },
@@ -11225,7 +11228,7 @@ function ja_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ka.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ka.js
 var error25 = () => {
   const Sizable = {
     string: { unit: "\u10E1\u10D8\u10DB\u10D1\u10DD\u10DA\u10DD", verb: "\u10E3\u10DC\u10D3\u10D0 \u10E8\u10D4\u10D8\u10EA\u10D0\u10D5\u10D3\u10D4\u10E1" },
@@ -11338,7 +11341,7 @@ function ka_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/km.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/km.js
 var error26 = () => {
   const Sizable = {
     string: { unit: "\u178F\u17BD\u17A2\u1780\u17D2\u179F\u179A", verb: "\u1782\u17BD\u179A\u1798\u17B6\u1793" },
@@ -11449,12 +11452,12 @@ function km_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/kh.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/kh.js
 function kh_default() {
   return km_default();
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ko.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ko.js
 var error27 = () => {
   const Sizable = {
     string: { unit: "\uBB38\uC790", verb: "to have" },
@@ -11566,7 +11569,7 @@ function ko_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/lt.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/lt.js
 var capitalizeFirstCharacter = (text) => {
   return text.charAt(0).toUpperCase() + text.slice(1);
 };
@@ -11770,7 +11773,7 @@ function lt_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/mk.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/mk.js
 var error29 = () => {
   const Sizable = {
     string: { unit: "\u0437\u043D\u0430\u0446\u0438", verb: "\u0434\u0430 \u0438\u043C\u0430\u0430\u0442" },
@@ -11880,7 +11883,7 @@ function mk_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ms.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ms.js
 var error30 = () => {
   const Sizable = {
     string: { unit: "aksara", verb: "mempunyai" },
@@ -11988,7 +11991,7 @@ function ms_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/nl.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/nl.js
 var error31 = () => {
   const Sizable = {
     string: { unit: "tekens", verb: "heeft" },
@@ -12099,7 +12102,7 @@ function nl_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/no.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/no.js
 var error32 = () => {
   const Sizable = {
     string: { unit: "tegn", verb: "\xE5 ha" },
@@ -12208,7 +12211,7 @@ function no_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ota.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ota.js
 var error33 = () => {
   const Sizable = {
     string: { unit: "harf", verb: "olmal\u0131d\u0131r" },
@@ -12318,7 +12321,7 @@ function ota_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ps.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ps.js
 var error34 = () => {
   const Sizable = {
     string: { unit: "\u062A\u0648\u06A9\u064A", verb: "\u0648\u0644\u0631\u064A" },
@@ -12433,7 +12436,7 @@ function ps_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/pl.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/pl.js
 var error35 = () => {
   const Sizable = {
     string: { unit: "znak\xF3w", verb: "mie\u0107" },
@@ -12543,7 +12546,7 @@ function pl_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/pt.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/pt.js
 var error36 = () => {
   const Sizable = {
     string: { unit: "caracteres", verb: "ter" },
@@ -12652,7 +12655,7 @@ function pt_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ro.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ro.js
 var error37 = () => {
   const Sizable = {
     string: { unit: "caractere", verb: "s\u0103 aib\u0103" },
@@ -12772,7 +12775,7 @@ function ro_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ru.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ru.js
 function getRussianPlural(count, one, few, many) {
   const absCount = Math.abs(count);
   const lastDigit = absCount % 10;
@@ -12929,7 +12932,7 @@ function ru_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/sl.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/sl.js
 var error39 = () => {
   const Sizable = {
     string: { unit: "znakov", verb: "imeti" },
@@ -13039,7 +13042,7 @@ function sl_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/sv.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/sv.js
 var error40 = () => {
   const Sizable = {
     string: { unit: "tecken", verb: "att ha" },
@@ -13150,7 +13153,7 @@ function sv_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ta.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ta.js
 var error41 = () => {
   const Sizable = {
     string: { unit: "\u0B8E\u0BB4\u0BC1\u0BA4\u0BCD\u0BA4\u0BC1\u0B95\u0BCD\u0B95\u0BB3\u0BCD", verb: "\u0B95\u0BCA\u0BA3\u0BCD\u0B9F\u0BBF\u0BB0\u0BC1\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD" },
@@ -13261,7 +13264,7 @@ function ta_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/th.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/th.js
 var error42 = () => {
   const Sizable = {
     string: { unit: "\u0E15\u0E31\u0E27\u0E2D\u0E31\u0E01\u0E29\u0E23", verb: "\u0E04\u0E27\u0E23\u0E21\u0E35" },
@@ -13372,7 +13375,7 @@ function th_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/tr.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/tr.js
 var error43 = () => {
   const Sizable = {
     string: { unit: "karakter", verb: "olmal\u0131" },
@@ -13478,7 +13481,7 @@ function tr_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/uk.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/uk.js
 var error44 = () => {
   const Sizable = {
     string: { unit: "\u0441\u0438\u043C\u0432\u043E\u043B\u0456\u0432", verb: "\u043C\u0430\u0442\u0438\u043C\u0435" },
@@ -13587,12 +13590,12 @@ function uk_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ua.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ua.js
 function ua_default() {
   return uk_default();
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ur.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/ur.js
 var error45 = () => {
   const Sizable = {
     string: { unit: "\u062D\u0631\u0648\u0641", verb: "\u06C1\u0648\u0646\u0627" },
@@ -13703,7 +13706,7 @@ function ur_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/uz.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/uz.js
 var error46 = () => {
   const Sizable = {
     string: { unit: "belgi", verb: "bo\u2018lishi kerak" },
@@ -13814,7 +13817,7 @@ function uz_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/vi.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/vi.js
 var error47 = () => {
   const Sizable = {
     string: { unit: "k\xFD t\u1EF1", verb: "c\xF3" },
@@ -13923,7 +13926,7 @@ function vi_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/zh-CN.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/zh-CN.js
 var error48 = () => {
   const Sizable = {
     string: { unit: "\u5B57\u7B26", verb: "\u5305\u542B" },
@@ -14033,7 +14036,7 @@ function zh_CN_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/zh-TW.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/zh-TW.js
 var error49 = () => {
   const Sizable = {
     string: { unit: "\u5B57\u5143", verb: "\u64C1\u6709" },
@@ -14141,7 +14144,7 @@ function zh_TW_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/yo.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/locales/yo.js
 var error50 = () => {
   const Sizable = {
     string: { unit: "\xE0mi", verb: "n\xED" },
@@ -14249,7 +14252,7 @@ function yo_default() {
   };
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/registries.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/registries.js
 var _a2;
 var $output = /* @__PURE__ */ Symbol("ZodOutput");
 var $input = /* @__PURE__ */ Symbol("ZodInput");
@@ -14299,7 +14302,7 @@ function registry() {
 (_a2 = globalThis).__zod_globalRegistry ?? (_a2.__zod_globalRegistry = registry());
 var globalRegistry = globalThis.__zod_globalRegistry;
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/api.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string(Class2, params) {
   return new Class2({
@@ -15338,7 +15341,7 @@ function _stringFormat(Class2, format, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/to-json-schema.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -15697,7 +15700,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/json-schema-processors.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -16241,7 +16244,7 @@ function toJSONSchema(input, params) {
   return finalize(ctx, input);
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/json-schema-generator.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/json-schema-generator.js
 var JSONSchemaGenerator = class {
   /** @deprecated Access via ctx instead */
   get metadataRegistry() {
@@ -16316,10 +16319,10 @@ var JSONSchemaGenerator = class {
   }
 };
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/json-schema.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/core/json-schema.js
 var json_schema_exports = {};
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/schemas.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny,
@@ -16490,7 +16493,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/checks.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith,
@@ -16524,7 +16527,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase
 });
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/iso.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate,
@@ -16565,7 +16568,7 @@ function duration2(params) {
   return _isoDuration(ZodISODuration, params);
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/errors.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/errors.js
 var initializer2 = (inst, issues) => {
   $ZodError.init(inst, issues);
   inst.name = "ZodError";
@@ -16605,7 +16608,7 @@ var ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, {
   Parent: Error
 });
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/parse.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/parse.js
 var parse2 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync2 = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse2 = /* @__PURE__ */ _safeParse(ZodRealError);
@@ -16619,7 +16622,7 @@ var safeDecode2 = /* @__PURE__ */ _safeDecode(ZodRealError);
 var safeEncodeAsync2 = /* @__PURE__ */ _safeEncodeAsync(ZodRealError);
 var safeDecodeAsync2 = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/schemas.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/schemas.js
 var _installedGroups = /* @__PURE__ */ new WeakMap();
 function _installLazyMethods(inst, group, methods) {
   const proto = Object.getPrototypeOf(inst);
@@ -17907,7 +17910,7 @@ function preprocess(fn, schema) {
   });
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/compat.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/compat.js
 var ZodIssueCode = {
   invalid_type: "invalid_type",
   too_big: "too_big",
@@ -17933,7 +17936,7 @@ var ZodFirstPartyTypeKind;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind2) {
 })(ZodFirstPartyTypeKind || (ZodFirstPartyTypeKind = {}));
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/from-json-schema.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
@@ -18413,7 +18416,7 @@ function fromJSONSchema(schema, params) {
   return convertSchema(normalized, ctx);
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/coerce.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/coerce.js
 var coerce_exports = {};
 __export(coerce_exports, {
   bigint: () => bigint3,
@@ -18438,13 +18441,13 @@ function date4(params) {
   return _coercedDate(ZodDate, params);
 }
 
-// node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/external.js
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/external.js
 config(en_default());
 
 // packages/features/codex-oauth-rotating/src/domain/codex-oauth-rotating.ts
 var import_node_crypto5 = require("node:crypto");
 
-// node_modules/.pnpm/libsodium@0.8.4/node_modules/libsodium/dist/modules-esm/libsodium.mjs
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/libsodium@0.8.4/node_modules/libsodium/dist/modules-esm/libsodium.mjs
 var import_meta = {};
 async function A(A3 = {}) {
   var I2, g2 = A3, C2 = !!globalThis.window, B2 = !!globalThis.WorkerGlobalScope, Q2 = (globalThis.process?.versions?.node && globalThis.process, import_meta.url);
@@ -18642,7 +18645,7 @@ async function A(A3 = {}) {
 }
 var libsodium_default = A;
 
-// node_modules/.pnpm/libsodium-wrappers@0.8.4/node_modules/libsodium-wrappers/dist/modules-esm/libsodium-wrappers.mjs
+// ../reviewrouter-saas-hosted-pool-r34/node_modules/.pnpm/libsodium-wrappers@0.8.4/node_modules/libsodium-wrappers/dist/modules-esm/libsodium-wrappers.mjs
 var r;
 var t = {};
 if (void 0 === globalThis.crypto || "function" != typeof globalThis.crypto.getRandomValues) throw new Error("globalThis.crypto.getRandomValues is not available. The ESM build of libsodium requires a secure random source (available in all browsers and Node.js 19+).");
@@ -22139,7 +22142,7 @@ function classifyCodexRuntimeFailure2(message) {
   if (isCodexQuotaOrRateLimitFailure2(normalized)) {
     return "quota_limited";
   }
-  if (normalized.includes("unauthorized") || normalized.includes("invalid_grant") || normalized.includes("refresh token") || normalized.includes("login required")) {
+  if (normalized.includes("unauthorized") || normalized.includes("authentication_failed") || normalized.includes("invalid_grant") || normalized.includes("refresh token") || normalized.includes("login required")) {
     return "needs_reconnect";
   }
   if (normalized.includes("permission") || normalized.includes("forbidden") || normalized.includes("resource not accessible")) {
@@ -22299,8 +22302,6 @@ var maxCommentTokenRefreshes = 8;
 var oidcRequestTimeoutMs = 2e4;
 var grantRequestTimeoutMs = 3e4;
 var grantExchangeTotalTimeoutMs = 75e3;
-var grantExchangeMaxAttempts = 3;
-var grantExchangeBackoffBaseMs = 250;
 var RetryableHostedRelayExchangeError = class extends Error {
 };
 var hostedRelayGrantSchema = external_exports.object({
@@ -22335,18 +22336,23 @@ async function runHostedCodexRelayTransport(input) {
     policy: relayGrant.policy
   });
   try {
-    await input.run({
-      baseUrl: proxy.baseUrl,
-      policy: relayGrant.policy,
-      grantExpiresAt: relayGrant.grantExpiresAt,
-      ...relayGrant.commentTokenExpiresAt ? { commentTokenExpiresAt: relayGrant.commentTokenExpiresAt } : {},
-      invocationLeaseId: relayGrant.invocationLeaseId,
-      runtimeConfigVersion: relayGrant.runtimeConfigVersion,
-      runtimeEnv: relayGrant.runtimeEnv,
-      repository: relayGrant.repository,
-      commentToken: relayGrant.commentToken,
-      commentTokenRefreshUrl: proxy.commentTokenRefreshUrl
-    });
+    try {
+      await input.run({
+        baseUrl: proxy.baseUrl,
+        policy: relayGrant.policy,
+        grantExpiresAt: relayGrant.grantExpiresAt,
+        ...relayGrant.commentTokenExpiresAt ? { commentTokenExpiresAt: relayGrant.commentTokenExpiresAt } : {},
+        invocationLeaseId: relayGrant.invocationLeaseId,
+        runtimeConfigVersion: relayGrant.runtimeConfigVersion,
+        runtimeEnv: relayGrant.runtimeEnv,
+        repository: relayGrant.repository,
+        commentToken: relayGrant.commentToken,
+        commentTokenRefreshUrl: proxy.commentTokenRefreshUrl
+      });
+    } catch (error51) {
+      throwHostedRelayFailover(proxy.failoverReason(), error51);
+    }
+    throwHostedRelayFailover(proxy.failoverReason());
   } finally {
     await proxy.close();
     clearHostedActionCredentialEnv(input.env);
@@ -22361,96 +22367,69 @@ async function requestHostedRelayGrantWithFreshGitHubOidc(input) {
     () => totalController.abort(new Error("hosted_relay_grant_deadline_exceeded")),
     grantExchangeTotalTimeoutMs
   );
-  let lastError;
   try {
-    for (let attempt = 1; attempt <= grantExchangeMaxAttempts; attempt += 1) {
+    const oidcToken = await requestGitHubActionsOidcToken({
+      env: input.env,
+      fetchImpl: input.fetchImpl,
+      audience: defaultOidcAudience,
+      totalSignal: totalController.signal
+    });
+    input.maskSecret(oidcToken);
+    let response;
+    try {
+      response = await fetchWithTimeout(
+        input.fetchImpl,
+        `${input.apiUrl.replace(/\/+$/, "")}/api/action/v1/hosted-relay/grant`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            oidcToken,
+            providerInstanceId: input.providerInstanceId,
+            workflowSchemaVersion: input.workflowSchemaVersion,
+            bindingId: input.bindingId,
+            bindingVersion: input.bindingVersion
+          })
+        },
+        grantRequestTimeoutMs,
+        totalController.signal
+      );
+    } catch (error51) {
       if (totalController.signal.aborted) {
-        throw new Error("hosted_relay_grant_deadline_exceeded");
-      }
-      try {
-        const oidcToken = await requestGitHubActionsOidcToken({
-          env: input.env,
-          fetchImpl: input.fetchImpl,
-          audience: defaultOidcAudience,
-          totalSignal: totalController.signal
+        throw new Error("hosted_relay_grant_deadline_exceeded", {
+          cause: error51
         });
-        input.maskSecret(oidcToken);
-        let response;
-        try {
-          response = await fetchWithTimeout(
-            input.fetchImpl,
-            `${input.apiUrl.replace(/\/+$/, "")}/api/action/v1/hosted-relay/grant`,
-            {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                oidcToken,
-                providerInstanceId: input.providerInstanceId,
-                workflowSchemaVersion: input.workflowSchemaVersion,
-                bindingId: input.bindingId,
-                bindingVersion: input.bindingVersion
-              })
-            },
-            grantRequestTimeoutMs,
-            totalController.signal
-          );
-        } catch (error51) {
-          if (totalController.signal.aborted) {
-            throw new Error("hosted_relay_grant_deadline_exceeded", {
-              cause: error51
-            });
-          }
-          throw new RetryableHostedRelayExchangeError(
-            "hosted_relay_grant_transport_failed",
-            { cause: error51 }
-          );
-        }
-        if (!response.ok) {
-          await response.body?.cancel().catch(() => void 0);
-          if (response.status === 429 || response.status >= 500) {
-            throw new RetryableHostedRelayExchangeError(
-              `hosted_relay_grant_retryable:${response.status}`
-            );
-          }
-          throw new Error(`hosted_relay_grant_failed:${response.status}`);
-        }
-        let rawGrant;
-        try {
-          rawGrant = await response.json();
-        } catch (error51) {
-          throw new RetryableHostedRelayExchangeError(
-            "hosted_relay_grant_response_failed",
-            { cause: error51 }
-          );
-        }
-        if (typeof rawGrant === "object" && rawGrant !== null) {
-          const rawGrantRecord = rawGrant;
-          for (const name of [
-            "grant",
-            "commentTokenRefreshCapability",
-            "commentToken"
-          ]) {
-            const secret = rawGrantRecord[name];
-            if (typeof secret === "string" && secret.length > 0) {
-              input.maskSecret(secret);
-            }
-          }
-        }
-        return hostedRelayGrantSchema.parse(rawGrant);
-      } catch (error51) {
-        lastError = error51;
-        if (!(error51 instanceof RetryableHostedRelayExchangeError) || attempt === grantExchangeMaxAttempts || totalController.signal.aborted) {
-          throw error51;
-        }
-        const backoffMs = grantExchangeBackoffBaseMs * 2 ** (attempt - 1);
-        if (input.retryDelay) {
-          await input.retryDelay(backoffMs);
-        } else {
-          await delayWithSignal(backoffMs, totalController.signal);
+      }
+      throw new Error("hosted_relay_grant_ambiguous", { cause: error51 });
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => void 0);
+      throw new Error(`hosted_relay_grant_failed:${response.status}`);
+    }
+    let rawGrant;
+    try {
+      rawGrant = await response.json();
+    } catch (error51) {
+      throw new Error("hosted_relay_grant_ambiguous", { cause: error51 });
+    }
+    if (typeof rawGrant === "object" && rawGrant !== null) {
+      const rawGrantRecord = rawGrant;
+      for (const name of [
+        "grant",
+        "commentTokenRefreshCapability",
+        "commentToken"
+      ]) {
+        const secret = rawGrantRecord[name];
+        if (typeof secret === "string" && secret.length > 0) {
+          input.maskSecret(secret);
         }
       }
     }
-    throw lastError;
+    try {
+      return hostedRelayGrantSchema.parse(rawGrant);
+    } catch (error51) {
+      throw new Error("hosted_relay_grant_ambiguous", { cause: error51 });
+    }
   } finally {
     clearTimeout(totalTimer);
     if (!input.deferOidcRequestEnvCleanup) {
@@ -22466,6 +22445,9 @@ async function startHostedCodexRelayProxy(input) {
   let requestCount = 0;
   let commentTokenRefreshCount = 0;
   let closing = false;
+  let failoverReason;
+  let replayFenced = false;
+  let successfulRelayRequests = 0;
   const activeUpstreamRequests = /* @__PURE__ */ new Set();
   const server = import_node_http.default.createServer((req, res) => {
     void (async () => {
@@ -22531,12 +22513,18 @@ async function startHostedCodexRelayProxy(input) {
           writeProxyError(res, 404, "proxy_route_denied");
           return;
         }
+        if (replayFenced) {
+          writeProxyError(res, 409, "proxy_replay_fenced");
+          return;
+        }
         requestCount += 1;
         if (requestCount > input.policy.maxRequests) {
           writeProxyError(res, 429, "proxy_request_budget_exceeded");
           return;
         }
         const ordinal = requestCount;
+        replayFenced = true;
+        failoverReason = "ambiguous";
         const body = await readRequestBody(req, maxBodyBytes);
         upstreamController = new AbortController();
         activeUpstreamRequests.add(upstreamController);
@@ -22553,7 +22541,15 @@ async function startHostedCodexRelayProxy(input) {
           signal: upstreamController.signal
         });
         if (!downstreamClosed) {
-          await writeUpstreamResponse(res, upstream);
+          const responseCompletion = await writeUpstreamResponse(res, upstream);
+          if ((upstream.status === 401 || upstream.status === 429) && successfulRelayRequests === 0 && ordinal === 1) {
+            failoverReason = upstream.status === 401 ? "authentication_failed" : "quota_exhausted";
+            replayFenced = false;
+          } else if (responseCompletion === "successful") {
+            successfulRelayRequests += 1;
+            failoverReason = void 0;
+            replayFenced = false;
+          }
         } else {
           await upstream.body?.cancel().catch(() => void 0);
         }
@@ -22594,6 +22590,7 @@ async function startHostedCodexRelayProxy(input) {
   return {
     baseUrl: `http://127.0.0.1:${address.port}/${nonce}/v1`,
     commentTokenRefreshUrl: `http://127.0.0.1:${address.port}/${nonce}/control/comment-token`,
+    failoverReason: () => failoverReason,
     close: async () => {
       if (closing) return;
       closing = true;
@@ -22701,23 +22698,6 @@ async function fetchWithTimeout(fetchImpl, url2, init, timeoutMs, totalSignal) {
     totalSignal?.removeEventListener("abort", abortFromTotal);
   }
 }
-function delayWithSignal(ms, signal) {
-  return new Promise((resolve3, reject) => {
-    if (signal.aborted) {
-      reject(new Error("hosted_relay_grant_deadline_exceeded"));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve3();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new Error("hosted_relay_grant_deadline_exceeded"));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
 function readRequestBody(req, maxBytes) {
   return new Promise((resolve3, reject) => {
     const chunks = [];
@@ -22748,19 +22728,65 @@ async function writeUpstreamResponse(res, upstream) {
   res.writeHead(upstream.status, headers);
   if (!upstream.body) {
     res.end();
-    return;
+    return isProvablySuccessfulRelayResponse(upstream, "");
   }
   const reader = upstream.body.getReader();
+  const mediaType = upstream.headers.get("content-type")?.toLowerCase().split(";", 1)[0]?.trim() ?? "";
+  let completionTail = "";
+  const jsonCompletionChunks = [];
   try {
     for (; ; ) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (!res.write(Buffer.from(value))) await waitForDrain(res);
+      const buffer = Buffer.from(value);
+      if (mediaType === "application/json") {
+        jsonCompletionChunks.push(buffer);
+      } else {
+        completionTail = `${completionTail}${buffer.toString("utf8")}`.slice(
+          -8192
+        );
+      }
+      if (!res.write(buffer)) await waitForDrain(res);
     }
     res.end();
+    return isProvablySuccessfulRelayResponse(
+      upstream,
+      mediaType === "application/json" ? Buffer.concat(jsonCompletionChunks).toString("utf8") : completionTail
+    );
   } finally {
     reader.releaseLock();
   }
+}
+function isProvablySuccessfulRelayResponse(upstream, completionTail) {
+  if (upstream.status < 200 || upstream.status >= 300) {
+    return "non_successful";
+  }
+  const contentType = upstream.headers.get("content-type")?.toLowerCase() ?? "";
+  const mediaType = contentType.split(";", 1)[0]?.trim();
+  if (mediaType === "text/event-stream") {
+    return completionTail.trimEnd().split(/\r?\n/u).at(-1)?.trim() === "data: [DONE]" ? "successful" : "non_successful";
+  }
+  if (mediaType === "application/json") {
+    try {
+      JSON.parse(completionTail);
+      return "successful";
+    } catch {
+      return "non_successful";
+    }
+  }
+  return "non_successful";
+}
+function throwHostedRelayFailover(reason, cause) {
+  if (reason === "authentication_failed") {
+    throw new Error("hosted_pool_authentication_failed", { cause });
+  }
+  if (reason === "quota_exhausted") {
+    throw new Error("hosted_pool_quota_exhausted", { cause });
+  }
+  if (reason === "ambiguous") {
+    throw new Error("hosted_pool_effect_ambiguous", { cause });
+  }
+  if (cause !== void 0) throw cause;
 }
 async function waitForDrain(res) {
   await new Promise((resolve3, reject) => {
@@ -22843,7 +22869,7 @@ var oidcRequestTimeoutMs2 = 2e4;
 var githubRequestTimeoutMs = 3e4;
 var networkRetryMaxAttempts = 3;
 var networkRetryBaseDelayMs = 750;
-var hostedPoolMaxLeaseAttempts = 3;
+var hostedPoolMaxLeaseAttempts = 2;
 var hostedPoolMinimumRetryBudgetMs = 9e4;
 var fullRuntimeProgressCommentMarker = "<!-- review-router-progress-tracker -->";
 var providerNeutralReviewFindingsArtifactFileName = "reviewrouter-findings.json";
@@ -23564,7 +23590,7 @@ async function runHostedForkAgenticSandboxGitHubAction(input) {
       onRetry: ({ attempt, maxAttempts, reason }) => {
         notice(
           input.io,
-          `ReviewRouter released a ${reason === "quota_exhausted" ? "quota-exhausted" : "failed"} hosted account lease and will resume from the durable checkpoint with the next eligible account (${attempt + 1}/${maxAttempts}).`
+          `ReviewRouter released a ${reason === "quota_exhausted" ? "quota-exhausted" : "authentication-failed"} hosted account lease and will resume from the durable checkpoint with the next eligible account (${attempt + 1}/${maxAttempts}).`
         );
       },
       runAttempt: async () => runHostedCodexRelayTransport({
@@ -23713,17 +23739,11 @@ function hostedPoolAccountFailureReason(error51) {
   const normalized = String(
     error51 instanceof Error ? error51.message : error51
   ).toLowerCase();
-  if (normalized === "quota_limited" || /\b(?:account[_ -]?)?(?:quota|capacity)[_ -]?(?:exhausted|depleted|limited|unavailable)\b/.test(
-    normalized
-  ) || /\b(?:insufficient_quota|quota_exceeded|usage[_ -]?limit(?:ed| reached| exceeded)?)\b/.test(
-    normalized
-  )) {
+  if (normalized === "hosted_pool_quota_exhausted" || normalized === "hosted_relay_grant_failed:429") {
     return "quota_exhausted";
   }
-  if (normalized === "hosted_pool_account_failed" || /\b(?:hosted[_ -]?(?:relay|pool)[_ -]?|relay[_ -]?error:\s*)(?:provider[_ -]?)?account(?:[_ -]?status)?[_ -](?:failed|failure|unavailable)\b/.test(
-    normalized
-  )) {
-    return "failed";
+  if (normalized === "hosted_pool_authentication_failed" || normalized === "hosted_relay_grant_failed:401") {
+    return "authentication_failed";
   }
   return void 0;
 }
@@ -26258,7 +26278,7 @@ function classifyPostWritebackCodexFailure(error51) {
   if (hostedPoolFailure === "quota_exhausted") {
     return new Error("quota_limited");
   }
-  if (hostedPoolFailure === "failed") {
+  if (hostedPoolFailure === "authentication_failed") {
     return new Error("hosted_pool_account_failed");
   }
   const reviewFailure = extractReviewRouterRuntimeFailure(output);
@@ -26472,11 +26492,13 @@ if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) 
   postPullRequestComment,
   readActionAuthJson,
   readActionInputs,
+  requestHostedRelayGrantWithFreshGitHubOidc,
   requireRemainingReviewExecutionBudgetMs,
   resolveCodexBinary,
   resolveCodexProxyUpstreamResponsesUrl,
   routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction,
+  runHostedCodexRelayTransport,
   runHostedPoolLeaseFailover,
   runProcess,
   runReviewRuntimeWithinExecutionBudget,
@@ -26486,5 +26508,6 @@ if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) 
   shouldSuppressTopLevelActionError,
   shouldUseSubscriptionRuntimeCodex,
   signalProcessTree,
-  startCodexLocalProviderProxy
+  startCodexLocalProviderProxy,
+  startHostedCodexRelayProxy
 });

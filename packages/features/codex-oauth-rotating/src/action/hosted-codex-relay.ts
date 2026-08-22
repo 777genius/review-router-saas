@@ -11,9 +11,6 @@ const maxCommentTokenRefreshes = 8;
 const oidcRequestTimeoutMs = 20_000;
 const grantRequestTimeoutMs = 30_000;
 const grantExchangeTotalTimeoutMs = 75_000;
-const grantExchangeMaxAttempts = 3;
-const grantExchangeBackoffBaseMs = 250;
-
 class RetryableHostedRelayExchangeError extends Error {}
 
 const hostedRelayGrantSchema = z
@@ -48,8 +45,15 @@ export type HostedRelayGrant = z.infer<typeof hostedRelayGrantSchema>;
 export type HostedRelayProxy = {
   readonly baseUrl: string;
   readonly commentTokenRefreshUrl: string;
+  readonly failoverReason: () => HostedRelayFailoverReason;
   readonly close: () => Promise<void>;
 };
+
+type HostedRelayFailoverReason =
+  | "authentication_failed"
+  | "quota_exhausted"
+  | "ambiguous"
+  | undefined;
 
 type FetchLike = typeof fetch;
 
@@ -101,20 +105,25 @@ export async function runHostedCodexRelayTransport(
     policy: relayGrant.policy,
   });
   try {
-    await input.run({
-      baseUrl: proxy.baseUrl,
-      policy: relayGrant.policy,
-      grantExpiresAt: relayGrant.grantExpiresAt,
-      ...(relayGrant.commentTokenExpiresAt
-        ? { commentTokenExpiresAt: relayGrant.commentTokenExpiresAt }
-        : {}),
-      invocationLeaseId: relayGrant.invocationLeaseId,
-      runtimeConfigVersion: relayGrant.runtimeConfigVersion,
-      runtimeEnv: relayGrant.runtimeEnv,
-      repository: relayGrant.repository,
-      commentToken: relayGrant.commentToken,
-      commentTokenRefreshUrl: proxy.commentTokenRefreshUrl,
-    });
+    try {
+      await input.run({
+        baseUrl: proxy.baseUrl,
+        policy: relayGrant.policy,
+        grantExpiresAt: relayGrant.grantExpiresAt,
+        ...(relayGrant.commentTokenExpiresAt
+          ? { commentTokenExpiresAt: relayGrant.commentTokenExpiresAt }
+          : {}),
+        invocationLeaseId: relayGrant.invocationLeaseId,
+        runtimeConfigVersion: relayGrant.runtimeConfigVersion,
+        runtimeEnv: relayGrant.runtimeEnv,
+        repository: relayGrant.repository,
+        commentToken: relayGrant.commentToken,
+        commentTokenRefreshUrl: proxy.commentTokenRefreshUrl,
+      });
+    } catch (error) {
+      throwHostedRelayFailover(proxy.failoverReason(), error);
+    }
+    throwHostedRelayFailover(proxy.failoverReason());
   } finally {
     await proxy.close();
     clearHostedActionCredentialEnv(input.env);
@@ -142,100 +151,69 @@ export async function requestHostedRelayGrantWithFreshGitHubOidc(input: {
       totalController.abort(new Error("hosted_relay_grant_deadline_exceeded")),
     grantExchangeTotalTimeoutMs,
   );
-  let lastError: unknown;
   try {
-    for (let attempt = 1; attempt <= grantExchangeMaxAttempts; attempt += 1) {
+    const oidcToken = await requestGitHubActionsOidcToken({
+      env: input.env,
+      fetchImpl: input.fetchImpl,
+      audience: defaultOidcAudience,
+      totalSignal: totalController.signal,
+    });
+    input.maskSecret(oidcToken);
+    let response: Response;
+    try {
+      response = await fetchWithTimeout(
+        input.fetchImpl,
+        `${input.apiUrl.replace(/\/+$/, "")}/api/action/v1/hosted-relay/grant`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            oidcToken,
+            providerInstanceId: input.providerInstanceId,
+            workflowSchemaVersion: input.workflowSchemaVersion,
+            bindingId: input.bindingId,
+            bindingVersion: input.bindingVersion,
+          }),
+        },
+        grantRequestTimeoutMs,
+        totalController.signal,
+      );
+    } catch (error) {
       if (totalController.signal.aborted) {
-        throw new Error("hosted_relay_grant_deadline_exceeded");
-      }
-      try {
-        const oidcToken = await requestGitHubActionsOidcToken({
-          env: input.env,
-          fetchImpl: input.fetchImpl,
-          audience: defaultOidcAudience,
-          totalSignal: totalController.signal,
+        throw new Error("hosted_relay_grant_deadline_exceeded", {
+          cause: error,
         });
-        input.maskSecret(oidcToken);
-        let response: Response;
-        try {
-          response = await fetchWithTimeout(
-            input.fetchImpl,
-            `${input.apiUrl.replace(/\/+$/, "")}/api/action/v1/hosted-relay/grant`,
-            {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                oidcToken,
-                providerInstanceId: input.providerInstanceId,
-                workflowSchemaVersion: input.workflowSchemaVersion,
-                bindingId: input.bindingId,
-                bindingVersion: input.bindingVersion,
-              }),
-            },
-            grantRequestTimeoutMs,
-            totalController.signal,
-          );
-        } catch (error) {
-          if (totalController.signal.aborted) {
-            throw new Error("hosted_relay_grant_deadline_exceeded", {
-              cause: error,
-            });
-          }
-          throw new RetryableHostedRelayExchangeError(
-            "hosted_relay_grant_transport_failed",
-            { cause: error },
-          );
-        }
-        if (!response.ok) {
-          await response.body?.cancel().catch(() => undefined);
-          if (response.status === 429 || response.status >= 500) {
-            throw new RetryableHostedRelayExchangeError(
-              `hosted_relay_grant_retryable:${response.status}`,
-            );
-          }
-          throw new Error(`hosted_relay_grant_failed:${response.status}`);
-        }
-        let rawGrant: unknown;
-        try {
-          rawGrant = await response.json();
-        } catch (error) {
-          throw new RetryableHostedRelayExchangeError(
-            "hosted_relay_grant_response_failed",
-            { cause: error },
-          );
-        }
-        if (typeof rawGrant === "object" && rawGrant !== null) {
-          const rawGrantRecord = rawGrant as Record<string, unknown>;
-          for (const name of [
-            "grant",
-            "commentTokenRefreshCapability",
-            "commentToken",
-          ] as const) {
-            const secret = rawGrantRecord[name];
-            if (typeof secret === "string" && secret.length > 0) {
-              input.maskSecret(secret);
-            }
-          }
-        }
-        return hostedRelayGrantSchema.parse(rawGrant);
-      } catch (error) {
-        lastError = error;
-        if (
-          !(error instanceof RetryableHostedRelayExchangeError) ||
-          attempt === grantExchangeMaxAttempts ||
-          totalController.signal.aborted
-        ) {
-          throw error;
-        }
-        const backoffMs = grantExchangeBackoffBaseMs * 2 ** (attempt - 1);
-        if (input.retryDelay) {
-          await input.retryDelay(backoffMs);
-        } else {
-          await delayWithSignal(backoffMs, totalController.signal);
+      }
+      throw new Error("hosted_relay_grant_ambiguous", { cause: error });
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`hosted_relay_grant_failed:${response.status}`);
+    }
+    let rawGrant: unknown;
+    try {
+      rawGrant = await response.json();
+    } catch (error) {
+      throw new Error("hosted_relay_grant_ambiguous", { cause: error });
+    }
+    if (typeof rawGrant === "object" && rawGrant !== null) {
+      const rawGrantRecord = rawGrant as Record<string, unknown>;
+      for (const name of [
+        "grant",
+        "commentTokenRefreshCapability",
+        "commentToken",
+      ] as const) {
+        const secret = rawGrantRecord[name];
+        if (typeof secret === "string" && secret.length > 0) {
+          input.maskSecret(secret);
         }
       }
     }
-    throw lastError;
+    try {
+      return hostedRelayGrantSchema.parse(rawGrant);
+    } catch (error) {
+      throw new Error("hosted_relay_grant_ambiguous", { cause: error });
+    }
   } finally {
     clearTimeout(totalTimer);
     if (!input.deferOidcRequestEnvCleanup) {
@@ -263,6 +241,9 @@ export async function startHostedCodexRelayProxy(input: {
   let requestCount = 0;
   let commentTokenRefreshCount = 0;
   let closing = false;
+  let failoverReason: HostedRelayFailoverReason;
+  let replayFenced = false;
+  let successfulRelayRequests = 0;
   const activeUpstreamRequests = new Set<AbortController>();
 
   const server = http.createServer((req, res) => {
@@ -329,12 +310,20 @@ export async function startHostedCodexRelayProxy(input: {
           writeProxyError(res, 404, "proxy_route_denied");
           return;
         }
+        if (replayFenced) {
+          writeProxyError(res, 409, "proxy_replay_fenced");
+          return;
+        }
         requestCount += 1;
         if (requestCount > input.policy.maxRequests) {
           writeProxyError(res, 429, "proxy_request_budget_exceeded");
           return;
         }
         const ordinal = requestCount;
+        // This must be synchronous and precede body reads. Two slow request
+        // bodies must never both cross the upstream mutation boundary.
+        replayFenced = true;
+        failoverReason = "ambiguous";
         const body = await readRequestBody(req, maxBodyBytes);
         upstreamController = new AbortController();
         activeUpstreamRequests.add(upstreamController);
@@ -351,7 +340,22 @@ export async function startHostedCodexRelayProxy(input: {
           signal: upstreamController.signal,
         });
         if (!downstreamClosed) {
-          await writeUpstreamResponse(res, upstream);
+          const responseCompletion = await writeUpstreamResponse(res, upstream);
+          if (
+            (upstream.status === 401 || upstream.status === 429) &&
+            successfulRelayRequests === 0 &&
+            ordinal === 1
+          ) {
+            failoverReason =
+              upstream.status === 401
+                ? "authentication_failed"
+                : "quota_exhausted";
+            replayFenced = false;
+          } else if (responseCompletion === "successful") {
+            successfulRelayRequests += 1;
+            failoverReason = undefined;
+            replayFenced = false;
+          }
         } else {
           await upstream.body?.cancel().catch(() => undefined);
         }
@@ -397,6 +401,7 @@ export async function startHostedCodexRelayProxy(input: {
   return {
     baseUrl: `http://127.0.0.1:${address.port}/${nonce}/v1`,
     commentTokenRefreshUrl: `http://127.0.0.1:${address.port}/${nonce}/control/comment-token`,
+    failoverReason: () => failoverReason,
     close: async () => {
       if (closing) return;
       closing = true;
@@ -538,24 +543,6 @@ async function fetchWithTimeout(
   }
 }
 
-function delayWithSignal(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new Error("hosted_relay_grant_deadline_exceeded"));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new Error("hosted_relay_grant_deadline_exceeded"));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
 function readRequestBody(
   req: http.IncomingMessage,
   maxBytes: number,
@@ -584,7 +571,7 @@ function readRequestBody(
 async function writeUpstreamResponse(
   res: http.ServerResponse,
   upstream: Response,
-): Promise<void> {
+): Promise<"successful" | "non_successful"> {
   const headers: Record<string, string> = {};
   for (const name of ["content-type", "cache-control", "x-request-id"]) {
     const value = upstream.headers.get(name);
@@ -593,19 +580,83 @@ async function writeUpstreamResponse(
   res.writeHead(upstream.status, headers);
   if (!upstream.body) {
     res.end();
-    return;
+    return isProvablySuccessfulRelayResponse(upstream, "");
   }
   const reader = upstream.body.getReader();
+  const mediaType =
+    upstream.headers
+      .get("content-type")
+      ?.toLowerCase()
+      .split(";", 1)[0]
+      ?.trim() ?? "";
+  let completionTail = "";
+  const jsonCompletionChunks: Buffer[] = [];
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (!res.write(Buffer.from(value))) await waitForDrain(res);
+      const buffer = Buffer.from(value);
+      if (mediaType === "application/json") {
+        jsonCompletionChunks.push(buffer);
+      } else {
+        completionTail = `${completionTail}${buffer.toString("utf8")}`.slice(
+          -8_192,
+        );
+      }
+      if (!res.write(buffer)) await waitForDrain(res);
     }
     res.end();
+    return isProvablySuccessfulRelayResponse(
+      upstream,
+      mediaType === "application/json"
+        ? Buffer.concat(jsonCompletionChunks).toString("utf8")
+        : completionTail,
+    );
   } finally {
     reader.releaseLock();
   }
+}
+
+function isProvablySuccessfulRelayResponse(
+  upstream: Response,
+  completionTail: string,
+): "successful" | "non_successful" {
+  if (upstream.status < 200 || upstream.status >= 300) {
+    return "non_successful";
+  }
+  const contentType = upstream.headers.get("content-type")?.toLowerCase() ?? "";
+  const mediaType = contentType.split(";", 1)[0]?.trim();
+  if (mediaType === "text/event-stream") {
+    return completionTail.trimEnd().split(/\r?\n/u).at(-1)?.trim() ===
+      "data: [DONE]"
+      ? "successful"
+      : "non_successful";
+  }
+  if (mediaType === "application/json") {
+    try {
+      JSON.parse(completionTail);
+      return "successful";
+    } catch {
+      return "non_successful";
+    }
+  }
+  return "non_successful";
+}
+
+function throwHostedRelayFailover(
+  reason: HostedRelayFailoverReason,
+  cause?: unknown,
+): void {
+  if (reason === "authentication_failed") {
+    throw new Error("hosted_pool_authentication_failed", { cause });
+  }
+  if (reason === "quota_exhausted") {
+    throw new Error("hosted_pool_quota_exhausted", { cause });
+  }
+  if (reason === "ambiguous") {
+    throw new Error("hosted_pool_effect_ambiguous", { cause });
+  }
+  if (cause !== undefined) throw cause;
 }
 
 async function waitForDrain(res: http.ServerResponse): Promise<void> {
