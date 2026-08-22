@@ -17,11 +17,11 @@ import type {
 } from "./hosted-codex-grant-composition.js";
 
 export interface HostedWorkflowSourceReaderPort {
-  readCurrentDefaultBranchWorkflow(input: {
+  readWorkflowAtRevision(input: {
     readonly githubInstallationId: string;
     readonly owner: string;
     readonly repository: string;
-    readonly defaultBranch: string;
+    readonly revisionSha: string;
     readonly workflowPath: string;
   }): Promise<{
     readonly commitSha: string;
@@ -33,7 +33,7 @@ export interface HostedWorkflowSourceReaderPort {
 /**
  * Prisma-backed authority resolver. The caller supplies only opaque identifiers;
  * repository, provider strategy, policy, request and workflow facts come from
- * current server state and the live default-branch source reader.
+ * current server state and the exact admitted caller-revision source reader.
  */
 export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissionPort {
   private readonly actionRepositories: PrismaActionControlPlaneRepository;
@@ -64,7 +64,6 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
         owner: true,
         name: true,
         fullName: true,
-        defaultBranch: true,
         visibility: true,
         selected: true,
         archived: true,
@@ -125,15 +124,6 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
       binding,
       repository.githubRepositoryId,
     );
-    const liveSource =
-      await this.workflowSources.readCurrentDefaultBranchWorkflow({
-        githubInstallationId:
-          repository.installation.githubInstallationId.toString(),
-        owner: repository.owner,
-        repository: repository.name,
-        defaultBranch: repository.defaultBranch,
-        workflowPath: attestation.workflowPath,
-      });
     const reviewRequest = await this.prisma.reviewRequestedIntent.findFirst({
       where: {
         workspaceId: repository.workspaceId,
@@ -166,6 +156,30 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
       reviewRevisionHash: reviewRequest.reviewRevisionHash,
     });
     const { headSha: reviewHeadSha, reviewRevisionHash } = reviewIdentity;
+    const callerRevisionSha = requireCommitSha(
+      input.claims.workflow_sha ?? "",
+      "hosted_workflow_caller_revision_invalid",
+    );
+    if (callerRevisionSha !== reviewHeadSha) {
+      throw new Error("hosted_workflow_caller_revision_mismatch");
+    }
+    const liveSource = await this.workflowSources.readWorkflowAtRevision({
+      githubInstallationId:
+        repository.installation.githubInstallationId.toString(),
+      owner: repository.owner,
+      repository: repository.name,
+      revisionSha: callerRevisionSha,
+      workflowPath: attestation.workflowPath,
+    });
+    if (
+      requireCommitSha(
+        liveSource.commitSha,
+        "hosted_workflow_source_revision_invalid",
+      ) !== callerRevisionSha ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(liveSource.blobSha)
+    ) {
+      throw new Error("hosted_workflow_source_revision_mismatch");
+    }
     const runtime =
       await this.actionRepositories.findRuntimeReviewConfiguration({
         workspaceId: repository.workspaceId,
@@ -241,8 +255,8 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
 }
 
 function requireCommitSha(value: string, code: string): string {
-  if (!/^[a-f0-9]{40}$/iu.test(value)) throw new Error(code);
-  return value.toLowerCase();
+  if (!/^[a-f0-9]{40}$/u.test(value)) throw new Error(code);
+  return value;
 }
 
 export function assertHostedReviewIdentity(input: {
@@ -293,8 +307,8 @@ export function assertHostedReviewIdentity(input: {
 }
 
 function requireSha256(value: string, code: string): string {
-  if (!/^[a-f0-9]{64}$/iu.test(value)) throw new Error(code);
-  return value.toLowerCase();
+  if (!/^[a-f0-9]{64}$/u.test(value)) throw new Error(code);
+  return value;
 }
 
 function parseAttestation(

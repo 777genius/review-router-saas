@@ -278,6 +278,48 @@ export function assertActiveHostedPoolWorkflowAttestation(input: {
     input.workflowSourceCommitSha.toLowerCase()
   )
     throw new Error("hosted_workflow_attestation_revision_mismatch");
+  assertHostedPoolWorkflowBytes(input);
+}
+
+export function assertExactHostedPoolCallerWorkflow(input: {
+  readonly attestation: HostedPoolWorkflowSourceAttestation;
+  readonly repositoryId: string;
+  readonly workflowPath: string;
+  readonly callerWorkflowSha: string;
+  readonly admittedHeadSha: string;
+  readonly expectedBindingId: string;
+  readonly expectedBindingRevision: number;
+  readonly expectedWorkflow: string;
+  readonly expectedWorkflowSourceBlobSha: string;
+}): void {
+  if (
+    !/^[a-f0-9]{40}$/u.test(input.callerWorkflowSha) ||
+    !/^[a-f0-9]{40}$/u.test(input.admittedHeadSha) ||
+    input.callerWorkflowSha !== input.admittedHeadSha
+  ) {
+    throw new Error("hosted_workflow_caller_revision_mismatch");
+  }
+  assertHostedPoolWorkflowBytes(input);
+}
+
+function assertHostedPoolWorkflowBytes(input: {
+  readonly attestation: HostedPoolWorkflowSourceAttestation;
+  readonly repositoryId: string;
+  readonly workflowPath: string;
+  readonly expectedBindingId: string;
+  readonly expectedBindingRevision: number;
+  readonly expectedWorkflow: string;
+  readonly expectedWorkflowSourceBlobSha: string;
+}): void {
+  const attestation = createHostedPoolWorkflowSourceAttestation(
+    input.attestation,
+  );
+  if (
+    attestation.repositoryId !== input.repositoryId ||
+    attestation.workflowPath !== input.workflowPath
+  ) {
+    throw new Error("hosted_workflow_attestation_scope_mismatch");
+  }
   if (
     attestation.bindingId !== input.expectedBindingId ||
     attestation.bindingRevision !== input.expectedBindingRevision

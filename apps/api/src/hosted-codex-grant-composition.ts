@@ -32,7 +32,7 @@ import {
   PrismaInvocationGrantRepository,
 } from "@reviewrouter/features-hosted-account-pool";
 import {
-  assertActiveHostedPoolWorkflowAttestation,
+  assertExactHostedPoolCallerWorkflow,
   type HostedPoolWorkflowSourceAttestation,
   hostedPoolWorkflowSchemaVersion,
 } from "@reviewrouter/features-workflow-provisioning";
@@ -159,11 +159,12 @@ export class HostedCodexGrantIssuer implements HostedCodexGrantIssuerPort {
     }
     assertExactClientBinding(input, admission);
     assertExactWorkflowClaims(claims, admission);
-    assertActiveHostedPoolWorkflowAttestation({
+    assertExactHostedPoolCallerWorkflow({
       attestation: admission.workflowAttestation,
       repositoryId: admission.githubRepositoryId,
       workflowPath: admission.workflowPath,
-      workflowSourceCommitSha: admission.workflowSourceCommitSha,
+      callerWorkflowSha: admission.workflowSourceCommitSha,
+      admittedHeadSha: admission.reviewHeadSha,
       expectedBindingId: admission.bindingId,
       expectedBindingRevision: admission.bindingRevision,
       expectedWorkflow: admission.workflowContents,
@@ -452,9 +453,8 @@ function assertExactWorkflowClaims(
       admission.workflowSource.toLowerCase() ||
     claims.job_workflow_ref?.toLowerCase() !==
       admission.workflowJobSource.toLowerCase() ||
-    claims.job_workflow_sha?.toLowerCase() !==
-      admission.workflowJobSha.toLowerCase() ||
-    claims.workflow_sha?.toLowerCase() !== admission.reviewHeadSha.toLowerCase()
+    claims.job_workflow_sha !== admission.workflowJobSha ||
+    claims.workflow_sha !== admission.reviewHeadSha
   ) {
     throw new Error("hosted_workflow_claims_mismatch");
   }

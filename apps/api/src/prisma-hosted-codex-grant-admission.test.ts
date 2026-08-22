@@ -41,4 +41,30 @@ describe("hosted Codex admitted review identity", () => {
       }),
     ).toThrow("hosted_review_revision_mismatch");
   });
+
+  it.each([
+    ["base SHA", { baseSha: "A".repeat(40) }, "hosted_review_base_sha_invalid"],
+    [
+      "merge-base SHA",
+      { mergeBaseSha: "B".repeat(40) },
+      "hosted_review_merge_base_sha_invalid",
+    ],
+    ["head SHA", { headSha: "C".repeat(40) }, "hosted_review_head_sha_invalid"],
+    [
+      "review-revision hash",
+      { reviewRevisionHash: reviewRevisionHash.toUpperCase() },
+      "hosted_review_revision_hash_invalid",
+    ],
+  ] as const)(
+    "rejects a noncanonical uppercase %s",
+    (_name, override, code) => {
+      expect(() =>
+        assertHostedReviewIdentity({
+          ...admittedRevision,
+          reviewRevisionHash,
+          ...override,
+        }),
+      ).toThrow(code);
+    },
+  );
 });

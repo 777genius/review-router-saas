@@ -32,6 +32,7 @@ describe("hosted pool workflow schema v2", () => {
     const workflow = renderCanonicalHostedPoolWorkflowV2(options);
 
     expect(workflow).toBe(hostedPoolWorkflowV2Golden);
+    expect(Buffer.byteLength(workflow, "utf8")).toBe(1486);
     expect(createHash("sha256").update(workflow).digest("hex")).toBe(
       hostedPoolWorkflowV2GoldenSha256,
     );
