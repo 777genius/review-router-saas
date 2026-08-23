@@ -25,6 +25,12 @@ describe("review investigation coverage profile", () => {
     ).not.toThrow();
     expect(() =>
       assertSupportedReviewInvestigationCoverageProfile({
+        ...reviewInvestigationCoverageProfileV7,
+        producerReleaseId: "release-draining-v7",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertSupportedReviewInvestigationCoverageProfile({
         ...reviewInvestigationCoverageProfileV8,
         producerReleaseId: "release-1",
       }),

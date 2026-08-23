@@ -21,6 +21,7 @@ import {
   obligationIdentity,
   relationSearchProofVersion,
   reviewInvestigationCoverageProfileV2,
+  reviewInvestigationCoverageProfileV7,
   reviewInvestigationCoverageProfileV8,
   type InvestigationPageEvidence,
   type ReviewInvestigationContract,
@@ -176,13 +177,16 @@ describe("versioned coverage policies", () => {
     ).toThrow("investigation_coverage_seed_invalid");
   });
 
-  it("derives a deterministic DirectCaller from an exploratory changed-content search", () => {
+  it.each([
+    ["V7 drain", drainingV7Contract()],
+    ["V8 current", contract()],
+  ])("derives a deterministic DirectCaller under %s", (_label, profile) => {
     const source = obligation(changedSeed(), hash("1"));
     const claim = discoveryClaim([searchEvidence({ pathHashes: [hash("e")] })]);
     const policy = new VersionedCoverageExpansionPolicy();
 
     const additions = policy.expand({
-      contract: contract(),
+      contract: profile,
       currentObligations: [source],
       discoveryClaims: [claim],
     });
@@ -203,7 +207,7 @@ describe("versioned coverage policies", () => {
       requiredPathSetHash: pathSetHash,
       searchProofVersion: relationSearchProofVersion,
       revision: InvestigationOperationRevision.Head,
-      searchPolicyVersion: contract().searchPolicyVersion,
+      searchPolicyVersion: profile.searchPolicyVersion,
       sourceObligationId: source.obligationId,
       sourcePathHash,
     });
@@ -211,7 +215,7 @@ describe("versioned coverage policies", () => {
     const existing = obligation(additions[0]!, hash("2"));
     expect(
       policy.expand({
-        contract: contract(),
+        contract: profile,
         currentObligations: [source, existing],
         discoveryClaims: [claim],
       }),
@@ -334,6 +338,13 @@ function legacyContract(): ReviewInvestigationContract {
   return {
     ...reviewInvestigationCoverageProfileV2,
     producerReleaseId: "release-legacy-v2",
+  };
+}
+
+function drainingV7Contract(): ReviewInvestigationContract {
+  return {
+    ...reviewInvestigationCoverageProfileV7,
+    producerReleaseId: "release-draining-v7",
   };
 }
 
