@@ -11,6 +11,7 @@ import {
   reviewInvestigationCoverageProfileV5,
   reviewInvestigationCoverageProfileV6,
   reviewInvestigationCoverageProfileV7,
+  reviewInvestigationCoverageProfileV8,
 } from "../domain/coverage-contract";
 import { canonicalJson } from "../domain/canonicalization";
 
@@ -25,14 +26,20 @@ describe("review investigation coverage profile", () => {
     expect(() =>
       assertSupportedReviewInvestigationCoverageProfile({
         ...reviewInvestigationCoverageProfileV7,
+        producerReleaseId: "release-draining-v7",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertSupportedReviewInvestigationCoverageProfile({
+        ...reviewInvestigationCoverageProfileV8,
         producerReleaseId: "release-1",
       }),
     ).not.toThrow();
 
-    for (const field of Object.keys(reviewInvestigationCoverageProfileV7)) {
+    for (const field of Object.keys(reviewInvestigationCoverageProfileV8)) {
       expect(() =>
         assertSupportedReviewInvestigationCoverageProfile({
-          ...reviewInvestigationCoverageProfileV7,
+          ...reviewInvestigationCoverageProfileV8,
           producerReleaseId: "release-1",
           [field]: `${field}.unsupported`,
         }),
@@ -96,6 +103,12 @@ describe("review investigation coverage profile", () => {
     ).toBe(ReviewInvestigationCoverageProfileGeneration.V7);
     expect(
       resolveReviewInvestigationCoverageProfileGeneration({
+        ...reviewInvestigationCoverageProfileV8,
+        producerReleaseId: "release-current-v8",
+      }),
+    ).toBe(ReviewInvestigationCoverageProfileGeneration.V8);
+    expect(
+      resolveReviewInvestigationCoverageProfileGeneration({
         ...reviewInvestigationCoverageProfileV2,
         coverageContractVersion: "legacy-coverage.v0",
         producerReleaseId: "release-legacy",
@@ -131,8 +144,8 @@ describe("review investigation coverage profile", () => {
   it("matches the current public Action capability golden vector", () => {
     expect(
       createHash("sha256")
-        .update(canonicalJson(reviewInvestigationCoverageProfileV7), "utf8")
+        .update(canonicalJson(reviewInvestigationCoverageProfileV8), "utf8")
         .digest("hex"),
-    ).toBe("064b245d9ac5b710a70ec2e3c1efdefa8f5b2de0efd73332a413f846c08783db");
+    ).toBe("28323b59ad09d33c483641ab92f4395771f4e51b05274ecdceb5fd7d83f5e575");
   });
 });
