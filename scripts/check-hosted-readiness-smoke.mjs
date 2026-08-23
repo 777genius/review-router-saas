@@ -259,6 +259,7 @@ function hostedPoolActiveEnv() {
     REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "1",
     REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0",
     REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE: "external_kms",
+    REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE: "relay",
     REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN:
       "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789abc",
     AWS_REGION: "us-east-1",
@@ -279,5 +280,9 @@ function hostedPoolActiveEnv() {
       32,
       2,
     ).toString("base64"),
+    REVIEW_ROUTER_HOSTED_CODEX_RESTORE_AUTHORITY_KEY_ID:
+      "hosted-readiness-smoke-ed25519",
+    REVIEW_ROUTER_HOSTED_CODEX_RESTORE_AUTHORITY_PUBLIC_KEY:
+      "-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAEz++EwIqjqNT0BoFOWEGKHxiD6Qja5px/XFzcjXXqK0=\\n-----END PUBLIC KEY-----",
   };
 }
