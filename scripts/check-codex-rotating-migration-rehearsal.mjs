@@ -198,7 +198,7 @@ try {
   const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000074 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000077 rehearsal passed.\n",
   );
 } finally {
   const databaseDrop = psql(
@@ -571,7 +571,10 @@ function applyCanonicalPreMigrationBaseline(url) {
       (number <= 59 ||
         directory === migration67Name ||
         directory === migration68Name ||
-        directory === migration74Name);
+        directory === migration74Name ||
+        directory === migration75Name ||
+        directory === migration76Name ||
+        directory === migration77Name);
     if (!isCanonicalPreMigration) continue;
     const source = join(migrationsDirectory, directory, "migration.sql");
     psql(url, ["-f", source]);
