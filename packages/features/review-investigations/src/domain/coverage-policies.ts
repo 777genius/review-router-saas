@@ -313,12 +313,7 @@ export class VersionedCoverageExpansionPolicy implements CoverageExpansionPolicy
         requiredPathCount: terminal.aggregatePathCount,
         requiredPathSetHash: terminal.aggregatePathSetHash,
         requiredPathHashes: Object.freeze([...chain.pathHashes]),
-        ...(profileGeneration ===
-          ReviewInvestigationCoverageProfileGeneration.V3 ||
-        profileGeneration === ReviewInvestigationCoverageProfileGeneration.V4 ||
-        profileGeneration === ReviewInvestigationCoverageProfileGeneration.V5 ||
-        profileGeneration === ReviewInvestigationCoverageProfileGeneration.V6 ||
-        profileGeneration === ReviewInvestigationCoverageProfileGeneration.V7
+        ...(profileGeneration >= ReviewInvestigationCoverageProfileGeneration.V3
           ? { searchProofVersion: relationSearchProofVersion }
           : { requiredQueryDigest: chain.pages[0]!.queryDigest }),
         sourcePathHash: sourceProfile.sourcePathHash,
