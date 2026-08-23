@@ -498,20 +498,20 @@ export class PrismaInvocationGrantRepository
         if (request.count !== 1) {
           throw new Error("relay_request_completion_conflict");
         }
-        const [poisoned, commentCapability] = await Promise.all([
-          transaction.hostedCodexInvocationGrant.findFirst({
+        const poisoned =
+          await transaction.hostedCodexInvocationGrant.findFirst({
             where: {
               id: input.grantId,
               status: "revoked",
               revokedAt: { not: null },
             },
             select: { id: true },
-          }),
-          transaction.hostedCodexCommentRefreshCapability.findFirst({
+          });
+        const commentCapability =
+          await transaction.hostedCodexCommentRefreshCapability.findFirst({
             where: { grantId: input.grantId, revokedAt: { not: null } },
             select: { id: true },
-          }),
-        ]);
+          });
         if (!poisoned || !commentCapability) {
           throw new Error("invocation_grant_terminalization_conflict");
         }
