@@ -42,7 +42,10 @@ describe("CredentialEnvelopeVault", () => {
       { ...context, workspaceId: "workspace-2" },
       { ...context, accountId: "account-2" },
       { ...context, databaseIncarnation: "database-2026-08-16" },
-      { ...context, databaseResourceIdentity: "database-resource-test-2026-08-16" },
+      {
+        ...context,
+        databaseResourceIdentity: "database-resource-test-2026-08-16",
+      },
     ]) {
       await expect(vault.decrypt(first, swapped)).rejects.toThrow(
         "credential_envelope_context_mismatch",

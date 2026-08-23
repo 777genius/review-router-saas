@@ -498,15 +498,16 @@ export class PrismaInvocationGrantRepository
         if (request.count !== 1) {
           throw new Error("relay_request_completion_conflict");
         }
-        const poisoned =
-          await transaction.hostedCodexInvocationGrant.findFirst({
+        const poisoned = await transaction.hostedCodexInvocationGrant.findFirst(
+          {
             where: {
               id: input.grantId,
               status: "revoked",
               revokedAt: { not: null },
             },
             select: { id: true },
-          });
+          },
+        );
         const commentCapability =
           await transaction.hostedCodexCommentRefreshCapability.findFirst({
             where: { grantId: input.grantId, revokedAt: { not: null } },

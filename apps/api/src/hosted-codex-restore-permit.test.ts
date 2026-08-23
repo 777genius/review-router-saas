@@ -37,8 +37,14 @@ describe("hosted Codex restore permit", () => {
 
   it.each([
     ["wrong inventory", { expectedInventoryHash: "b".repeat(64) }],
-    ["wrong clone", { expectedDatabaseResourceIdentity: `${databaseResourceIdentity}-clone` }],
-    ["wrong incarnation", { expectedTargetIncarnation: `${targetIncarnation}-other` }],
+    [
+      "wrong clone",
+      { expectedDatabaseResourceIdentity: `${databaseResourceIdentity}-clone` },
+    ],
+    [
+      "wrong incarnation",
+      { expectedTargetIncarnation: `${targetIncarnation}-other` },
+    ],
     ["wrong authority", { expectedAuthorityKeyId: `${authorityKeyId}-other` }],
   ])("rejects %s", (_label, override) => {
     const fixture = signed(claims);
@@ -79,11 +85,15 @@ describe("hosted Codex restore permit", () => {
 
 function signed(value: Record<string, unknown>) {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const payload = Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
-  const prefix = `rr-restore-v2.${payload}`;
-  const signature = sign(null, Buffer.from(prefix, "utf8"), privateKey).toString(
+  const payload = Buffer.from(JSON.stringify(value), "utf8").toString(
     "base64url",
   );
+  const prefix = `rr-restore-v2.${payload}`;
+  const signature = sign(
+    null,
+    Buffer.from(prefix, "utf8"),
+    privateKey,
+  ).toString("base64url");
   return {
     token: `${prefix}.${signature}`,
     publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString(),

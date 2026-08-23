@@ -18,7 +18,9 @@ export function failoverCurrentRelayRequestBeforeEffect(
     readonly effectFence: ProviderEffectFence;
     readonly cooldownUntil: Date | null;
     readonly now: Date;
-    readonly effect?: Parameters<CurrentRelayRequestFailoverPort["failover"]>[0]["effect"];
+    readonly effect?: Parameters<
+      CurrentRelayRequestFailoverPort["failover"]
+    >[0]["effect"];
   },
   failovers: CurrentRelayRequestFailoverPort,
 ): Promise<CurrentRelayRequestFailover> {

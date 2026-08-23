@@ -178,11 +178,13 @@ export class CredentialEnvelopeVault {
       throw new Error("credential_data_key_invalid");
     }
     try {
-      const wrappedDataEncryptionKey = await this.keyring.wrapDataEncryptionKey({
-        dataEncryptionKey,
-        associatedData,
-        context: this.keyringContext(context),
-      });
+      const wrappedDataEncryptionKey = await this.keyring.wrapDataEncryptionKey(
+        {
+          dataEncryptionKey,
+          associatedData,
+          context: this.keyringContext(context),
+        },
+      );
       if (wrappedDataEncryptionKey.keyId !== this.keyring.currentKeyId) {
         throw new Error("credential_keyring_current_key_mismatch");
       }
@@ -196,7 +198,9 @@ export class CredentialEnvelopeVault {
     }
   }
 
-  private keyringContext(context: CredentialEnvelopeContext): CredentialKeyringContext {
+  private keyringContext(
+    context: CredentialEnvelopeContext,
+  ): CredentialKeyringContext {
     return { ...context, purpose: this.purpose, schemaVersion };
   }
 }
