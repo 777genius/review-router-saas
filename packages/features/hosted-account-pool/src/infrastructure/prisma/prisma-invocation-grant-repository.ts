@@ -38,7 +38,11 @@ export class PrismaInvocationGrantRepository
     RelayResponseStartedPort,
     CurrentRelayRequestFailoverPort
 {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly prisma: PrismaClient;
+
+  constructor(readonly prismaClient: PrismaClient) {
+    this.prisma = prismaClient;
+  }
 
   async findByInvocationId(id: ReturnType<typeof invocationId>) {
     const stored = await this.prisma.hostedCodexInvocationGrant.findUnique({
@@ -271,6 +275,67 @@ export class PrismaInvocationGrantRepository
           ) {
             throw new Error("relay_request_replay_conflict");
           }
+          if (
+            existing.status === "failed" &&
+            existing.errorCode === "upstream_dispatch_not_started"
+          ) {
+            const latestEffect =
+              await transaction.hostedCodexUpstreamEffectAttempt.findFirst({
+                where: { relayRequestId: existing.id },
+                orderBy: { attemptOrdinal: "desc" },
+              });
+            if (latestEffect?.state !== "failed_no_effect") {
+              throw new Error("relay_request_no_effect_retry_invalid");
+            }
+            const grantResumed =
+              await transaction.hostedCodexInvocationGrant.updateMany({
+                where: {
+                  id: stored.id,
+                  revision: stored.revision,
+                  status: { in: ["issued", "exhausted"] },
+                  revokedAt: null,
+                  expiresAt: { gt: input.now },
+                  inFlight: { lt: stored.maxConcurrentRequests },
+                },
+                data: {
+                  inFlight: { increment: 1 },
+                  revision: { increment: 1 },
+                },
+              });
+            if (grantResumed.count !== 1) {
+              throw new Error("relay_request_no_effect_retry_denied");
+            }
+            const requestResumed =
+              await transaction.hostedCodexRelayRequest.updateMany({
+                where: {
+                  id: existing.id,
+                  grantId: stored.id,
+                  status: "failed",
+                  errorCode: "upstream_dispatch_not_started",
+                },
+                data: {
+                  status: "processing",
+                  responseBytes: null,
+                  responseHash: null,
+                  errorCode: null,
+                  completedAt: null,
+                  successfulResponseStartedAt: null,
+                },
+              });
+            if (requestResumed.count !== 1) {
+              throw new Error("relay_request_no_effect_retry_conflict");
+            }
+            const resumed =
+              await transaction.hostedCodexInvocationGrant.findUniqueOrThrow({
+                where: { id: input.grantId },
+                include: grantInclude,
+              });
+            return {
+              status: "admitted" as const,
+              grant: restoreGrant(resumed),
+              accountId: admission.accountId,
+            };
+          }
           return admission;
         }
         await transaction.hostedCodexRelayRequest.create({
@@ -309,6 +374,29 @@ export class PrismaInvocationGrantRepository
         const next = input.transition(current);
         assertImmutableGrantFields(current, next);
         const succeeded = input.errorCode === null;
+        if (input.effect) {
+          const effect =
+            await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+              where: {
+                id: input.effect.attemptId,
+                relayRequestId: input.requestId,
+                grantId: input.grantId,
+                ownerIdHash: input.effect.ownerIdHash,
+                fenceEpoch: input.effect.fenceEpoch,
+                state: "response_started",
+              },
+              data: {
+                state: input.effect.terminalState,
+                completedAt: input.completedAt,
+                heartbeatAt: input.completedAt,
+                terminalEvidenceHash: input.effect.terminalEvidenceHash,
+                errorCode: input.errorCode,
+              },
+            });
+          if (effect.count !== 1) {
+            throw new Error("hosted_codex_effect_completion_conflict");
+          }
+        }
         const updatedRequest =
           await transaction.hostedCodexRelayRequest.updateMany({
             where: {
@@ -349,6 +437,90 @@ export class PrismaInvocationGrantRepository
     );
   }
 
+  /**
+   * Atomically tombstones an upstream dispatch whose remote outcome cannot be
+   * proven. The capability and its comment capability are poisoned in the same
+   * transaction, so neither a later ordinal nor a semantic replay can cross the
+   * ambiguity boundary.
+   */
+  async terminalizeUnknown(input: {
+    readonly grantId: ReturnType<typeof invocationGrantId>;
+    readonly requestId: ReturnType<typeof relayRequestId>;
+    readonly completedAt: Date;
+    readonly errorCode: string;
+    readonly effect: {
+      readonly attemptId: string;
+      readonly ownerIdHash: string;
+      readonly fenceEpoch: bigint;
+      readonly terminalEvidenceHash: string;
+    };
+  }): Promise<void> {
+    await serializableTransaction(
+      this.prisma,
+      async (transaction) => {
+        const effect =
+          await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+            where: {
+              id: input.effect.attemptId,
+              relayRequestId: input.requestId,
+              grantId: input.grantId,
+              ownerIdHash: input.effect.ownerIdHash,
+              fenceEpoch: input.effect.fenceEpoch,
+              state: {
+                in: ["dispatching", "response_started", "failed_classified"],
+              },
+            },
+            data: {
+              state: "terminal_unknown",
+              completedAt: input.completedAt,
+              heartbeatAt: input.completedAt,
+              terminalEvidenceHash: input.effect.terminalEvidenceHash,
+              errorCode: input.errorCode,
+            },
+          });
+        if (effect.count !== 1) {
+          throw new Error("hosted_codex_effect_completion_conflict");
+        }
+        const request = await transaction.hostedCodexRelayRequest.updateMany({
+          where: {
+            id: input.requestId,
+            grantId: input.grantId,
+            status: { in: ["received", "processing", "response_started"] },
+          },
+          data: {
+            status: "terminal_unknown",
+            responseBytes: null,
+            responseHash: null,
+            errorCode: input.errorCode,
+            completedAt: input.completedAt,
+          },
+        });
+        if (request.count !== 1) {
+          throw new Error("relay_request_completion_conflict");
+        }
+        const poisoned = await transaction.hostedCodexInvocationGrant.findFirst(
+          {
+            where: {
+              id: input.grantId,
+              status: "revoked",
+              revokedAt: { not: null },
+            },
+            select: { id: true },
+          },
+        );
+        const commentCapability =
+          await transaction.hostedCodexCommentRefreshCapability.findFirst({
+            where: { grantId: input.grantId, revokedAt: { not: null } },
+            select: { id: true },
+          });
+        if (!poisoned || !commentCapability) {
+          throw new Error("invocation_grant_terminalization_conflict");
+        }
+      },
+      { isolationLevel: "Serializable" },
+    );
+  }
+
   async markStarted(
     input: Parameters<RelayResponseStartedPort["markStarted"]>[0],
   ) {
@@ -362,6 +534,30 @@ export class PrismaInvocationGrantRepository
         if (!stored) throw new Error("invocation_grant_not_found");
         const current = restoreGrant(stored);
         const next = input.transition(current);
+        if (input.effect) {
+          const effect =
+            await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+              where: {
+                id: input.effect.attemptId,
+                relayRequestId: input.requestId,
+                grantId: input.grantId,
+                ownerIdHash: input.effect.ownerIdHash,
+                fenceEpoch: input.effect.fenceEpoch,
+                state: "dispatching",
+                leaseExpiresAt: { gt: input.startedAt },
+              },
+              data: {
+                state: "response_started",
+                responseStartedAt: input.startedAt,
+                heartbeatAt: input.startedAt,
+                leaseExpiresAt: new Date(input.startedAt.getTime() + 30_000),
+                providerResponseIdHash: input.effect.providerResponseIdHash,
+              },
+            });
+          if (effect.count !== 1) {
+            throw new Error("hosted_codex_effect_response_started_conflict");
+          }
+        }
         const updated = await transaction.hostedCodexRelayRequest.updateMany({
           where: {
             id: input.requestId,
@@ -463,6 +659,46 @@ export class PrismaInvocationGrantRepository
           include: grantInclude,
         });
         if (!stored) throw new Error("invocation_grant_not_found");
+        let siblingEffectRecorded = false;
+        if (input.effect) {
+          const siblingEffect =
+            await transaction.hostedCodexUpstreamEffectAttempt.count({
+              where: {
+                grantId: input.grantId,
+                id: { not: input.effect.attemptId },
+                state: {
+                  in: [
+                    "dispatching",
+                    "response_started",
+                    "succeeded",
+                    "terminal_unknown",
+                  ],
+                },
+              },
+            });
+          siblingEffectRecorded = siblingEffect > 0;
+          const classified =
+            await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+              where: {
+                id: input.effect.attemptId,
+                relayRequestId: input.requestId,
+                grantId: input.grantId,
+                ownerIdHash: input.effect.ownerIdHash,
+                fenceEpoch: input.effect.fenceEpoch,
+                state: "response_started",
+              },
+              data: {
+                state: "failed_classified",
+                completedAt: input.now,
+                heartbeatAt: input.now,
+                terminalEvidenceHash: input.effect.terminalEvidenceHash,
+                errorCode: input.effect.errorCode,
+              },
+            });
+          if (classified.count !== 1) {
+            throw new Error("hosted_codex_effect_classification_conflict");
+          }
+        }
         const accountIds = [
           stored.activeAccountId,
           stored.backupAccountId,
@@ -481,6 +717,14 @@ export class PrismaInvocationGrantRepository
         );
         if (!failedStored) throw new Error("hosted_failover_primary_missing");
         const failedAccount = restorePoolAccount(failedStored);
+        if (siblingEffectRecorded) {
+          return {
+            status: "denied" as const,
+            reason: "sibling_effect_recorded" as const,
+            grant: restoreGrant(stored),
+            failedAccount,
+          };
+        }
         const backupStored = accounts.find(
           (account) => account.id === stored.backupAccountId,
         );

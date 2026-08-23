@@ -32,6 +32,7 @@ describe("Prisma hosted pool admin adapters", () => {
       prisma,
       testVault(),
       "database-incarnation-1",
+      "database-resource-test-1",
       Buffer.alloc(32, 7),
     );
 
@@ -87,6 +88,7 @@ describe("Prisma hosted pool admin adapters", () => {
       fakePrisma(transaction),
       testVault(),
       "database-incarnation-1",
+      "database-resource-test-1",
       Buffer.alloc(32, 9),
     );
 
@@ -112,6 +114,7 @@ describe("Prisma hosted pool admin adapters", () => {
       fakePrisma(transaction),
       testVault(),
       "database-incarnation-1",
+      "database-resource-test-1",
       Buffer.alloc(32, 3),
     );
 
@@ -331,6 +334,7 @@ describe("Prisma hosted pool admin adapters", () => {
       fakePrisma(enrollmentTransaction({})),
       testVault(),
       "database-incarnation-1",
+      "database-resource-test-1",
       Buffer.alloc(32, 3),
     );
 
@@ -385,6 +389,9 @@ function enrollmentTransaction(input: {
         capture(value);
         return { id: "credential-version-1" };
       }),
+    },
+    hostedCodexCredentialEnvelopeRevision: {
+      create: vi.fn(async (value) => capture(value)),
     },
     hostedCodexGenerationReceipt: {
       create: vi.fn(async (value) => capture(value)),

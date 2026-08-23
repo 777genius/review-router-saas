@@ -64,54 +64,79 @@ REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER=0
 ```
 
 `POOL` is the master/dashboard gate. The API treats each narrower flag as false
-while `POOL=0`. Relay routes require `POOL`, `CUSTODY`, `ADMISSION`, and `RELAY`
-to all be `1`; `FAILOVER` enables only the one permitted pre-response backup and
-must be enabled last.
+while `POOL=0`. New grant issuance requires `POOL`, `CUSTODY`, and `ADMISSION`.
+Already-issued grants require `POOL`, `CUSTODY`, and `RELAY`, so admission can
+close while relay stays up long enough to drain. `FAILOVER` enables only the one
+permitted pre-response backup and must be enabled last.
 
 Required custody/relay configuration follows. Never place example or production
 values in documentation, logs, tickets, shell history, or committed env files:
 
 ```text
 REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION
+REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY
 REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER
-REVIEW_ROUTER_HOSTED_CODEX_KEK_CURRENT_ID
-REVIEW_ROUTER_HOSTED_CODEX_KEK_KEYRING_JSON
+REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE=external_kms
+REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN
+REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE
+REVIEW_ROUTER_HOSTED_CODEX_RELAY_AWS_ROLE_ARN
+REVIEW_ROUTER_HOSTED_CODEX_ENROLLMENT_AWS_ROLE_ARN
+REVIEW_ROUTER_HOSTED_CODEX_RECOVERY_AWS_ROLE_ARN
+AWS_REGION
 REVIEW_ROUTER_HOSTED_CODEX_CAPABILITY_HMAC_KEY
 ```
 
-Secret placement follows least privilege. API relay replicas receive the full
-custody/relay set. Web receives only the master pool flag, database incarnation,
-fingerprint pepper, and trusted Action refs needed for dashboard binding and
-workflow provisioning. Do not copy `KEK_KEYRING_JSON` or
-`CAPABILITY_HMAC_KEY` into web/worker environments that do not compose the relay.
+Secret placement follows least privilege. API relay replicas receive the relay
+KMS role and relay/capability set. The enrollment process receives Encrypt only;
+relay receives Decrypt only. The separately deployed recovery command receives
+the recovery KMS role and recovery authority public key, never a signing key.
+Do not copy `CAPABILITY_HMAC_KEY` into web/worker environments that do not
+compose the relay.
+
+Production Render services use Render-managed AWS OIDC, never long-lived AWS
+access keys. Configure the workspace OIDC provider in AWS and bind each IAM role
+trust policy to the exact Render workspace, environment, and service subject.
+The deploy helper projects only `AWS_ROLE_ARN`; Render injects
+`AWS_WEB_IDENTITY_TOKEN_FILE` during deployment, and the runtime reads that
+short-lived token with the AWS SDK web-identity provider. Never set the token
+file path manually.
 
 Operational meaning:
 
 - `DATABASE_INCARNATION` is an externally recorded opaque identity for the live
   database lineage. Keep it stable across ordinary deploys; create a new value
   for a restore/cutover and quarantine old envelopes until audited rewrap.
+- `DATABASE_RESOURCE_IDENTITY` is the provider-issued immutable database
+  resource identifier. It is independent of the database contents and must be
+  obtained from the provider control plane, not restored from a backup.
 - `FINGERPRINT_PEPPER` is secret base64 material of at least 32 decoded bytes.
   It has no online overlap mechanism: changing it changes account fingerprints,
   so rotate only with an explicit fingerprint migration/reconciliation plan.
-- `KEK_CURRENT_ID` selects the wrapping key for new envelopes.
-- `KEK_KEYRING_JSON` is the current env-keyring adapter's JSON map of key IDs to
-  base64-encoded 32-byte keys. It supports decrypt overlap by retaining old key
-  IDs while `KEK_CURRENT_ID` advances.
+- `KEYRING_MODE` must be `external_kms` in production. `KMS_KEY_ARN` must be an
+  immutable AWS KMS key ARN; aliases, shorthand IDs, redirects, and a different
+  ARN returned by Encrypt or Decrypt fail closed. `KMS_ROLE` is exactly `relay`
+  in the normal serving process and exactly `recovery` in the restore process.
+  Web enrollment uses exactly `enrollment`, API relay uses exactly `relay`, and
+  the offline restore command uses exactly `recovery`. Their distinct immutable
+  IAM role ARNs are required in the deploy source; the deploy helper projects
+  only the selected role to each service and projects none to worker. KMS policy
+  must independently authorize those roles and the versioned
+  encryption context, including purpose, workspace/pool/account/generation,
+  external database resource, incarnation, schema, and AAD hash.
 - `CAPABILITY_HMAC_KEY` is canonical base64 secret material of at least 32 decoded
   bytes. The current issuer supports one active key and no verification overlap;
   rotation therefore invalidates outstanding grants.
 
-The env keyring is allowed only for disposable development, certification, and
-time-bounded bootstrap. Steady-state production requires an external KMS/keyring
-adapter with non-exportable KEKs, least-privilege unwrap permissions, key-use
-audit, rotation, and revocation. Keep all five flags at `0` if production is still
-composed with `EnvCredentialKeyring`; putting raw KEKs in a hosted service env is
-not the accepted production custody boundary.
+The env keyring is allowed only for disposable development and certification.
+Production composition rejects it even when injected by a caller. Keep all five
+flags at `0` until the immutable KMS ARN, separate relay/recovery roles, external
+database resource identity, key-use audit, rotation, and revocation policies are
+in place.
 
-KEK rotation order is add new key -> retain old decrypt keys -> change current
-key -> deploy -> rewrap every live envelope -> verify no live envelope references
-the old key -> remove it only after the backup/recovery retention decision. An
-env JSON overlap is not a substitute for production KMS policy. For capability
+KMS rotation order is authorize a new immutable key ARN -> retain old-key
+Decrypt for recovery -> deploy the new ARN -> rewrap every live envelope with a
+witnessed recovery operation -> verify no live envelope references the old key
+-> revoke it only after the backup/recovery retention decision. For capability
 HMAC rotation, set `ADMISSION=0` and `RELAY=0`, wait for or revoke outstanding
 grants, rotate the key on every API replica, then re-enable. Never accept both
 capability keys by an undocumented fallback.
@@ -137,6 +162,9 @@ limits must not be raised outside these ranges by bypassing validation.
 2. Publish the companion public Action from its reviewed commit, including the
    rebuilt committed bundle. Record its immutable 40-character commit SHA; do
    not use `main`, a tag, or a shortened SHA for hosted workflows.
+   Record the immutable release tag and `dist/index.js` SHA-256 beside the
+   commit. The tag must resolve to the commit and CI must hash the bytes from
+   that same checkout before the tuple is accepted by SaaS.
 3. Configure API and web with the same exact
    `REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF=777genius/review-router@<40-character-SHA>`.
    Use `REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS` only for a bounded
@@ -149,8 +177,12 @@ limits must not be raised outside these ranges by bypassing validation.
 5. Set `POOL=1` and `CUSTODY=1` for controlled account onboarding. Keep
    `ADMISSION=0`, `RELAY=0`, and `FAILOVER=0`; no Action traffic may run yet.
 6. Provision and attest the disposable/private allowlisted workflow against the
-   companion Action SHA. Set `ADMISSION=1`, verify denial while relay remains
-   off, then set `RELAY=1` for the smallest allowlist and run the E2E matrix.
+   companion Action SHA. The hosted caller uses `pull_request` (never
+   `pull_request_target`), client-triggered T0 schema 2, and the immutable
+   `reviewrouter-t0-reusable.yml@<40-character-SHA>`; grant admission requires
+   that same path and SHA in `job_workflow_ref`/`job_workflow_sha`. Set
+   `ADMISSION=1`, verify denial while relay remains off, then set `RELAY=1` for
+   the smallest allowlist and run the E2E matrix.
 7. After sticky-account, quota/auth classification, and no-body-retention
    evidence passes, set `FAILOVER=1`. Expand only through explicit private
    repository bindings; legacy repository-owned mode remains unchanged.
@@ -161,18 +193,67 @@ must trust the same public Action SHA before any hosted binding is activated.
 
 ### Kill-switch Rollback
 
-For an upstream, privacy, credential, or compatibility incident, first set
-`RELAY=0` and `ADMISSION=0` on every API replica, revoke outstanding grants, and
-confirm relay traffic stops. Set `FAILOVER=0` to prevent backup selection. Then
-set `POOL=0` and `CUSTODY=0` to hide onboarding and freeze all hosted custody
-operations. Do not delete encrypted envelopes, remove old KEKs, export credentials
-to GitHub, or silently switch repositories to legacy mode during the incident.
+The production control is dry-run by default and writes mode `0600`, body-free
+JSON evidence. It requires the exact API and web Render service IDs plus the
+least-privilege operator database URL. Inspect without mutation first:
+
+```bash
+REVIEW_ROUTER_HOSTED_POOL_RENDER_SERVICE_IDS=srv-api,srv-web \
+REVIEW_ROUTER_HOSTED_POOL_OPERATOR_DATABASE_URL=postgresql://... \
+RENDER_API_KEY=... \
+pnpm hosted-pool:control status
+```
+
+For a privacy or credential incident, use `kill-switch`: it atomically requests
+`ADMISSION=0`, `FAILOVER=0`, and `RELAY=0` on both services and verifies provider
+readback. For controlled rollback, use `drain` or `rollback`. Rollback closes
+admission, observes database `inFlight`, issued-grant, and unresolved-request
+counts until all three are zero, then disables failover, relay, custody, and
+finally the pool. Each
+mutating command requires `--execute` and
+`REVIEW_ROUTER_HOSTED_POOL_CONTROL_CONFIRM="EXECUTE HOSTED POOL COMMAND"`, with
+`COMMAND` equal to the uppercase command name. Do not use drain when immediate
+containment is required.
+
+Do not delete encrypted envelopes, revoke old KMS keys, export credentials to
+GitHub, or silently switch repositories to legacy mode during an incident.
 
 Roll back API/web only to a commit compatible with the additive schema and the
 registered public Action SHA. If the public Action must be rolled back, pin a
 reviewed compatible 40-character SHA, retain only the necessary bounded overlap,
 regenerate/re-attest bound workflows, and keep admission disabled until complete.
 Legacy Actions continue operating throughout this hosted-mode shutdown.
+
+### One-shot Production Canary
+
+`pnpm hosted-pool:canary` is hard-coded to the disposable
+`777genius/rr-codex-rotating-e2e` repository. It refuses a different repository
+identity indirectly as well as directly: the numeric repository ID must equal
+the sole numeric allowlist entry; the exact App installation must contain that
+ID; the checked-in workflow and active database binding must both consume the
+recorded 40-character Action SHA. The associated public Action tuple must first
+be verified from its clean checkout:
+
+```bash
+REVIEW_ROUTER_HOSTED_POOL_ACTION_CHECKOUT=/trusted/review-router \
+pnpm hosted-pool:action-release:verify
+```
+
+The canary defaults to preflight-only dry-run. Execution additionally requires
+`--execute`, `REVIEW_ROUTER_HOSTED_POOL_CANARY_CONFIRM="EXECUTE ONE SHOT HOSTED POOL CANARY"`,
+and `REVIEW_ROUTER_HOSTED_POOL_CANARY_ROLLBACK_CONFIRM="ROLL BACK HOSTED POOL AFTER CANARY"`.
+Use a short-lived App JWT only for the App-owned installation lookup and a
+separate short-lived repository token for workflow reads/reruns; the harness
+does not accept one ambient token for both trust domains.
+Operators pin five distinct existing disposable workflow run IDs in
+`REVIEW_ROUTER_HOSTED_POOL_CANARY_RUN_IDS_JSON`: `simultaneous_a`,
+`simultaneous_b`, `unauthorized`, `rate_limited`, and `dropped_response`.
+The first two are dispatched concurrently and must prove one sticky primary
+account; 401 and 429 must each show exactly one classified backup attempt; the
+ambiguous dropped response must be `terminal_unknown` with exactly one upstream
+attempt. The harness performs no rerun retry. It collects database evidence and
+always runs the ordered rollback above. Tests use deterministic fake ports and
+never contact GitHub, Render, KMS, or a provider.
 
 ## Runtime Commands
 

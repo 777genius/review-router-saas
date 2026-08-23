@@ -61,6 +61,8 @@ export type AuthorizedHostedCodexRelay = {
   readonly grantId: string;
   readonly requestId: string;
   readonly accountId: string;
+  readonly workspaceId: string;
+  readonly poolId: string;
   readonly runId: string;
   readonly runAttempt: number;
   readonly model: string;

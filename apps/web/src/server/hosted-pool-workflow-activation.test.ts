@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderCanonicalHostedPoolWorkflowV5 } from "@reviewrouter/features-workflow-provisioning";
+import { renderCanonicalHostedPoolWorkflowV2 } from "@reviewrouter/features-workflow-provisioning";
 
 const mocks = vi.hoisted(() => ({
   switchConfiguration: vi.fn(async () => true),
@@ -27,7 +27,7 @@ const binding = {
   stateVersion: 7n,
   tombstonedAt: null,
 };
-const workflow = renderCanonicalHostedPoolWorkflowV5({
+const workflow = renderCanonicalHostedPoolWorkflowV2({
   actionRef: `777genius/review-router@${"a".repeat(40)}`,
   apiUrl: "https://api.reviewrouter.test",
   providerInstanceId: "hosted-pool:repository:1228051727",

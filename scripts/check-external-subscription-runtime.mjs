@@ -24,7 +24,8 @@ if (!sourceMatch) {
 
 const pinnedCommit = sourceMatch[1];
 const expectedSpecifier = `git+ssh://git@github.com/777genius/ar.git#${pinnedCommit}`;
-const expectedPackageKey = `@vioxen/subscription-runtime@git+https://git@github.com:777genius/ar.git#${pinnedCommit}`;
+const expectedTarball = `https://codeload.github.com/777genius/ar/tar.gz/${pinnedCommit}`;
+const expectedPackageKey = `@vioxen/subscription-runtime@${expectedTarball}`;
 const lockfile = parse(await readFile(resolve(root, "pnpm-lock.yaml"), "utf8"));
 const importerDependency =
   lockfile?.importers?.["."]?.optionalDependencies?.[
@@ -33,7 +34,7 @@ const importerDependency =
 const linkedPackageKey =
   typeof importerDependency?.version === "string"
     ? importerDependency.version.match(
-        /^(@vioxen\/subscription-runtime@git\+https:\/\/git@github\.com:777genius\/ar\.git#[0-9a-f]{40})(?:\(|$)/u,
+        /^(@vioxen\/subscription-runtime@https:\/\/codeload\.github\.com\/777genius\/ar\/tar\.gz\/[0-9a-f]{40})(?:\(|$)/u,
       )?.[1]
     : undefined;
 const resolution =
@@ -44,12 +45,10 @@ const resolution =
 if (
   importerDependency?.specifier !== expectedSpecifier ||
   linkedPackageKey !== expectedPackageKey ||
-  resolution?.type !== "git" ||
-  resolution?.repo !== "git@github.com:777genius/ar.git" ||
-  resolution?.commit !== pinnedCommit
+  resolution?.tarball !== expectedTarball
 ) {
   throw new Error(
-    "subscription runtime package.json, importer, and resolved git package do not match",
+    "subscription runtime package.json, importer, and immutable codeload package do not match",
   );
 }
 

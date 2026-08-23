@@ -12,6 +12,7 @@ const context = {
   accountId: "account-1",
   generation: 1,
   databaseIncarnation: "database-2026-08-15",
+  databaseResourceIdentity: "database-resource-test-2026-08-15",
 };
 
 describe("CredentialEnvelopeVault", () => {
@@ -37,6 +38,19 @@ describe("CredentialEnvelopeVault", () => {
     await expect(
       vault.decrypt(first, { ...context, generation: 2 }),
     ).rejects.toThrow("credential_envelope_context_mismatch");
+    for (const swapped of [
+      { ...context, workspaceId: "workspace-2" },
+      { ...context, accountId: "account-2" },
+      { ...context, databaseIncarnation: "database-2026-08-16" },
+      {
+        ...context,
+        databaseResourceIdentity: "database-resource-test-2026-08-16",
+      },
+    ]) {
+      await expect(vault.decrypt(first, swapped)).rejects.toThrow(
+        "credential_envelope_context_mismatch",
+      );
+    }
   });
 
   it("fails closed without a configured current KEK", () => {

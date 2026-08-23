@@ -5,8 +5,10 @@ import {
   mapConfigToRuntimeEnv,
   safeDefaultReviewConfiguration,
 } from "@reviewrouter/features-review-config";
+import { canonicalJson } from "@reviewrouter/features-review-run-control";
 import {
   canonicalHostedPoolProviderInstanceId,
+  canonicalHostedPoolReusableWorkflowIdentity,
   type HostedPoolWorkflowSourceAttestation,
 } from "@reviewrouter/features-workflow-provisioning";
 import type {
@@ -15,11 +17,11 @@ import type {
 } from "./hosted-codex-grant-composition.js";
 
 export interface HostedWorkflowSourceReaderPort {
-  readCurrentDefaultBranchWorkflow(input: {
+  readWorkflowAtRevision(input: {
     readonly githubInstallationId: string;
     readonly owner: string;
     readonly repository: string;
-    readonly defaultBranch: string;
+    readonly revisionSha: string;
     readonly workflowPath: string;
   }): Promise<{
     readonly commitSha: string;
@@ -31,7 +33,7 @@ export interface HostedWorkflowSourceReaderPort {
 /**
  * Prisma-backed authority resolver. The caller supplies only opaque identifiers;
  * repository, provider strategy, policy, request and workflow facts come from
- * current server state and the live default-branch source reader.
+ * current server state and the exact admitted caller-revision source reader.
  */
 export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissionPort {
   private readonly actionRepositories: PrismaActionControlPlaneRepository;
@@ -62,7 +64,6 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
         owner: true,
         name: true,
         fullName: true,
-        defaultBranch: true,
         visibility: true,
         selected: true,
         archived: true,
@@ -123,15 +124,6 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
       binding,
       repository.githubRepositoryId,
     );
-    const liveSource =
-      await this.workflowSources.readCurrentDefaultBranchWorkflow({
-        githubInstallationId:
-          repository.installation.githubInstallationId.toString(),
-        owner: repository.owner,
-        repository: repository.name,
-        defaultBranch: repository.defaultBranch,
-        workflowPath: attestation.workflowPath,
-      });
     const reviewRequest = await this.prisma.reviewRequestedIntent.findFirst({
       where: {
         workspaceId: repository.workspaceId,
@@ -142,9 +134,52 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
         state: { in: ["awaiting_authorization", "dispatched"] },
       },
       orderBy: { updatedAt: "desc" },
-      select: { requestId: true, reviewRevisionHash: true },
+      select: {
+        requestId: true,
+        scmRepositoryIdentityId: true,
+        pullRequestNumber: true,
+        baseSha: true,
+        mergeBaseSha: true,
+        headSha: true,
+        reviewRevisionHash: true,
+      },
     });
     if (!reviewRequest) throw new Error("hosted_review_request_not_admitted");
+    const reviewIdentity = assertHostedReviewIdentity({
+      workspaceId: repository.workspaceId,
+      repositoryConnectionId: repository.id,
+      scmRepositoryIdentityId: reviewRequest.scmRepositoryIdentityId,
+      pullRequestNumber: reviewRequest.pullRequestNumber,
+      baseSha: reviewRequest.baseSha,
+      mergeBaseSha: reviewRequest.mergeBaseSha,
+      headSha: reviewRequest.headSha,
+      reviewRevisionHash: reviewRequest.reviewRevisionHash,
+    });
+    const { headSha: reviewHeadSha, reviewRevisionHash } = reviewIdentity;
+    const callerRevisionSha = requireCommitSha(
+      input.claims.workflow_sha ?? "",
+      "hosted_workflow_caller_revision_invalid",
+    );
+    if (callerRevisionSha !== reviewHeadSha) {
+      throw new Error("hosted_workflow_caller_revision_mismatch");
+    }
+    const liveSource = await this.workflowSources.readWorkflowAtRevision({
+      githubInstallationId:
+        repository.installation.githubInstallationId.toString(),
+      owner: repository.owner,
+      repository: repository.name,
+      revisionSha: callerRevisionSha,
+      workflowPath: attestation.workflowPath,
+    });
+    if (
+      requireCommitSha(
+        liveSource.commitSha,
+        "hosted_workflow_source_revision_invalid",
+      ) !== callerRevisionSha ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(liveSource.blobSha)
+    ) {
+      throw new Error("hosted_workflow_source_revision_mismatch");
+    }
     const runtime =
       await this.actionRepositories.findRuntimeReviewConfiguration({
         workspaceId: repository.workspaceId,
@@ -165,7 +200,9 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
       workspaceId: repository.workspaceId,
       repositoryId: repository.id,
       reviewRequestId: reviewRequest.requestId,
-      reviewRevisionHash: reviewRequest.reviewRevisionHash,
+      pullRequestNumber: reviewRequest.pullRequestNumber,
+      reviewHeadSha,
+      reviewRevisionHash,
       runtimeConfigVersion,
       provider,
       bindingId: binding.id,
@@ -173,8 +210,10 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
       authzEpoch: binding.pool.authzEpoch.toString(),
       workflowSourceSha256: attestation.workflowSourceSha256,
     };
-    const workflowSource = `${repository.fullName}/${attestation.workflowPath}@refs/heads/${repository.defaultBranch}`;
-    const workflowJob = hostedJobWorkflowIdentity(binding.workflowActionRef!);
+    const workflowSource = `${repository.fullName}/${attestation.workflowPath}@refs/pull/${reviewRequest.pullRequestNumber}/merge`;
+    const workflowJob = canonicalHostedPoolReusableWorkflowIdentity(
+      binding.workflowActionRef!,
+    );
 
     return {
       workspaceId: repository.workspaceId,
@@ -194,6 +233,9 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
       workflowSource,
       workflowJobSource: workflowJob.ref,
       workflowJobSha: workflowJob.sha,
+      pullRequestNumber: reviewRequest.pullRequestNumber,
+      reviewHeadSha,
+      reviewRevisionHash,
       workflowAttestation: attestation,
       workflowPath: attestation.workflowPath,
       workflowSourceCommitSha: liveSource.commitSha,
@@ -210,6 +252,63 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
       }),
     } satisfies HostedCodexGrantAdmission;
   }
+}
+
+function requireCommitSha(value: string, code: string): string {
+  if (!/^[a-f0-9]{40}$/u.test(value)) throw new Error(code);
+  return value;
+}
+
+export function assertHostedReviewIdentity(input: {
+  readonly workspaceId: string;
+  readonly repositoryConnectionId: string;
+  readonly scmRepositoryIdentityId: string;
+  readonly pullRequestNumber: number;
+  readonly baseSha: string;
+  readonly mergeBaseSha: string;
+  readonly headSha: string;
+  readonly reviewRevisionHash: string;
+}): { readonly headSha: string; readonly reviewRevisionHash: string } {
+  if (
+    !Number.isSafeInteger(input.pullRequestNumber) ||
+    input.pullRequestNumber < 1
+  ) {
+    throw new Error("hosted_pull_request_number_invalid");
+  }
+  const baseSha = requireCommitSha(
+    input.baseSha,
+    "hosted_review_base_sha_invalid",
+  );
+  const mergeBaseSha = requireCommitSha(
+    input.mergeBaseSha,
+    "hosted_review_merge_base_sha_invalid",
+  );
+  const headSha = requireCommitSha(
+    input.headSha,
+    "hosted_review_head_sha_invalid",
+  );
+  const reviewRevisionHash = requireSha256(
+    input.reviewRevisionHash,
+    "hosted_review_revision_hash_invalid",
+  );
+  const expectedReviewRevisionHash = digestCanonical({
+    workspaceId: input.workspaceId,
+    repositoryConnectionId: input.repositoryConnectionId,
+    scmRepositoryIdentityId: input.scmRepositoryIdentityId,
+    pullRequestNumber: input.pullRequestNumber,
+    baseSha,
+    mergeBaseSha,
+    headSha,
+  });
+  if (reviewRevisionHash !== expectedReviewRevisionHash) {
+    throw new Error("hosted_review_revision_mismatch");
+  }
+  return { headSha, reviewRevisionHash };
+}
+
+function requireSha256(value: string, code: string): string {
+  if (!/^[a-f0-9]{64}$/u.test(value)) throw new Error(code);
+  return value;
 }
 
 function parseAttestation(
@@ -253,18 +352,6 @@ function parseAttestation(
   };
 }
 
-function hostedJobWorkflowIdentity(actionRef: string): {
-  readonly ref: string;
-  readonly sha: string;
-} {
-  const match = /^([^/]+\/[^@]+)@([a-f0-9]{40})$/iu.exec(actionRef);
-  if (!match) throw new Error("hosted_workflow_action_ref_invalid");
-  return {
-    ref: `${match[1]}/.github/workflows/reviewrouter-execution-reusable.yml@${match[2]}`,
-    sha: match[2]!.toLowerCase(),
-  };
-}
-
 function parseEligibleVisibility(value: string): "private" | "internal" {
   if (value !== "private" && value !== "internal") {
     throw new Error("hosted_repository_visibility_ineligible");
@@ -281,5 +368,11 @@ function toPositiveSafeNumber(value: bigint, code: string): number {
 function digest(value: unknown): string {
   return createHash("sha256")
     .update(JSON.stringify(value), "utf8")
+    .digest("hex");
+}
+
+function digestCanonical(value: unknown): string {
+  return createHash("sha256")
+    .update(canonicalJson(value), "utf8")
     .digest("hex");
 }

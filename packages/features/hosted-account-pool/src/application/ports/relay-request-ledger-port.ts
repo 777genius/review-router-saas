@@ -15,6 +15,7 @@ export interface RelayRequestAdmissionPort {
     readonly ordinal: number;
     readonly idempotencyKeyHash: string;
     readonly requestBytes: number;
+    readonly now: Date;
     readonly transition: (current: InvocationGrant) => RelayAdmission;
   }): Promise<RelayAdmission>;
 }
@@ -29,6 +30,13 @@ export interface RelayRequestCompletionPort {
     readonly errorCode: string | null;
     readonly completedAt: Date;
     readonly transition: (current: InvocationGrant) => InvocationGrant;
+    readonly effect?: {
+      readonly attemptId: string;
+      readonly ownerIdHash: string;
+      readonly fenceEpoch: bigint;
+      readonly terminalState: "succeeded" | "terminal_unknown";
+      readonly terminalEvidenceHash: string;
+    };
   }): Promise<InvocationGrant>;
 }
 
@@ -39,5 +47,11 @@ export interface RelayResponseStartedPort {
     readonly requestId: RelayRequestId;
     readonly startedAt: Date;
     readonly transition: (current: InvocationGrant) => InvocationGrant;
+    readonly effect?: {
+      readonly attemptId: string;
+      readonly ownerIdHash: string;
+      readonly fenceEpoch: bigint;
+      readonly providerResponseIdHash: string | null;
+    };
   }): Promise<InvocationGrant>;
 }

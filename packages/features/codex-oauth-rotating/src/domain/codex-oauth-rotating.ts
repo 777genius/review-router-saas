@@ -2329,6 +2329,7 @@ export function classifyCodexRuntimeFailure(
   }
   if (
     normalized.includes("unauthorized") ||
+    normalized.includes("authentication_failed") ||
     normalized.includes("invalid_grant") ||
     normalized.includes("refresh token") ||
     normalized.includes("login required")

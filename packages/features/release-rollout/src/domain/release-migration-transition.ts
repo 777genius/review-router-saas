@@ -140,13 +140,13 @@ export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
     "sha256:bc7853ee946ab41b455e786dded6b34fb0f548a4591ca965d066e8efb1479cd5",
   preManifestIdentity:
-    "sha256:cff2b9ab89a067c6c3524b19e3aef8a7c4d51aba95aa079c6a025d36dce088f9",
+    "sha256:de19e22dd25df4ca166920df9e93a7db6d98a41aabbb03c7e6d4bb473e74e63b",
   orderedPendingEntriesSha256:
     "sha256:c2eae628ec1b20ab29f09ae56ea6111a7d97948c8e5fea370c6cf5e45cf330fa",
   migrationBundleSha256:
     "sha256:b98968fc30e81ab1af1d5e0c47004e158e281b1a690c41c4f2b74eec6400d73a",
   postManifestIdentity:
-    "sha256:fb3e60a451ece179a3f0c44748f8500ac51ea5dcf186b0732463db4098de94b8",
+    "sha256:e9fa4f6f1f04a867397db90e22e8861f974d3f593930ec75c160c2b1f5d3a4f6",
   // Captured digest of the canonical live V70-V73 catalog projection.
   postCatalogDigest:
     "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0",

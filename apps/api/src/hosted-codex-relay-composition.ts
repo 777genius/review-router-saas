@@ -1,14 +1,17 @@
 import {
   CredentialEnvelopeVault,
-  EnvCredentialKeyring,
   FetchHostedCodexStreamingRelay,
   HostedCodexMutationFenceLeaseStore,
   HostedCodexSessionRuntime,
   HostedCodexSessionStore,
   PrismaHostedCodexMutationFence,
   PrismaHostedCodexRelayAuthorization,
+  PrismaHostedCodexRestoreReconciler,
   PrismaHostedCodexSessionPersistence,
   PrismaInvocationGrantRepository,
+  resolveHostedCodexKeyring,
+  PrismaHostedCodexUpstreamEffectLedger,
+  startHostedCodexEffectSweeper,
   type RegisterHostedCodexRelayRoutesDependencies,
 } from "@reviewrouter/features-hosted-account-pool";
 import type { PrismaClient } from "@reviewrouter/platform-db";
@@ -24,6 +27,7 @@ import { OctokitGitHubAppCommentTokenIssuer } from "./github/octokit-github-app-
 import { OctokitHostedWorkflowSourceReader } from "./github/octokit-hosted-workflow-source-reader.js";
 import { HostedCodexCommentTokenIssuer } from "./hosted-codex-comment-token-composition.js";
 import { createProductionHostedCodexGrantIssuer } from "./hosted-codex-grant-composition.js";
+import { verifyHostedCodexRestorePermit } from "./hosted-codex-restore-permit.js";
 
 export type HostedCodexFeatureFlags = {
   readonly custody: boolean;
@@ -55,19 +59,22 @@ export function composeHostedCodexRelayRoutes(input: {
   const flags = readHostedCodexFeatureFlags(input.env);
   return {
     ...input.dependencies,
-    enabled: flags.custody && flags.admission && flags.relay,
+    enabled: flags.custody && flags.relay,
+    grants: flags.admission
+      ? input.dependencies.grants
+      : closedAdmissionGrantIssuer,
   };
 }
 
-export function composeProductionHostedCodexRelayRoutes(input: {
+export async function composeProductionHostedCodexRelayRoutes(input: {
   readonly prisma: PrismaClient;
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly publicApiUrl: string;
   readonly githubAppId: string;
   readonly githubAppPrivateKey: string;
-}): RegisterHostedCodexRelayRoutesDependencies {
+}): Promise<RegisterHostedCodexRelayRoutesDependencies> {
   const flags = readHostedCodexFeatureFlags(input.env);
-  const enabled = flags.custody && flags.admission && flags.relay;
+  const enabled = flags.custody && flags.relay;
   if (!enabled) {
     // These dependencies are deliberately unreachable while the rollout gate is off.
     return { enabled: false } as RegisterHostedCodexRelayRoutesDependencies;
@@ -76,6 +83,11 @@ export function composeProductionHostedCodexRelayRoutes(input: {
     input.env.REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION?.trim();
   if (!databaseIncarnation) {
     throw new Error("hosted_codex_database_incarnation_missing");
+  }
+  const databaseResourceIdentity =
+    input.env.REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY?.trim();
+  if (!databaseResourceIdentity || databaseResourceIdentity.length < 16) {
+    throw new Error("hosted_codex_database_resource_identity_invalid");
   }
   const fingerprintPepper = Buffer.from(
     input.env.REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER ?? "",
@@ -94,16 +106,29 @@ export function composeProductionHostedCodexRelayRoutes(input: {
     privateKey: input.githubAppPrivateKey,
   });
   const ledger = new PrismaInvocationGrantRepository(input.prisma);
-  const vault = new CredentialEnvelopeVault(
-    new EnvCredentialKeyring(input.env),
+  startHostedCodexEffectSweeper(
+    new PrismaHostedCodexUpstreamEffectLedger(input.prisma),
   );
+  const keyring = resolveHostedCodexKeyring({
+    env: input.env,
+    purpose: "relay",
+  });
+  const vault = new CredentialEnvelopeVault(keyring, "relay");
+  const restore = composeProductionHostedCodexRestoreReconciler({
+    prisma: input.prisma,
+    env: input.env,
+    purpose: "relay",
+  });
+  await restore.assertRelayReady();
   const runtime = new HostedCodexSessionRuntime({
     sessionStore: new HostedCodexSessionStore(
       new PrismaHostedCodexSessionPersistence(
         input.prisma,
         vault,
         databaseIncarnation,
+        databaseResourceIdentity,
         fingerprintPepper,
+        input.env.NODE_ENV === "production" ? keyring.currentKeyId : undefined,
       ),
     ),
     leaseStore: new HostedCodexMutationFenceLeaseStore(
@@ -111,28 +136,115 @@ export function composeProductionHostedCodexRelayRoutes(input: {
     ),
   });
   const relayUrl = `${input.publicApiUrl.replace(/\/+$/u, "")}/api/action/v1/hosted-codex/responses`;
+  const grants = flags.admission
+    ? createProductionHostedCodexGrantIssuer({
+        prisma: input.prisma,
+        env: input.env,
+        relayUrl,
+        workflowSources,
+        commentTokens: githubCommentTokens,
+        clock,
+      })
+    : undefined;
+  const relay = new FetchHostedCodexStreamingRelay(runtime, ledger, fetch, {
+    failoverEnabled: flags.failover,
+  });
   return {
     enabled: true,
-    grants: createProductionHostedCodexGrantIssuer({
-      prisma: input.prisma,
-      env: input.env,
-      relayUrl,
-      workflowSources,
-      commentTokens: githubCommentTokens,
-      clock,
-    }),
+    grants: flags.admission
+      ? {
+          async issue(request) {
+            await restore.assertRelayReady();
+            return grants!.issue(request);
+          },
+        }
+      : closedAdmissionGrantIssuer,
     commentTokens: new HostedCodexCommentTokenIssuer({
       prisma: input.prisma,
       commentTokens: githubCommentTokens,
       clock,
       grants: ledger,
     }),
-    authorization: new PrismaHostedCodexRelayAuthorization(
-      input.prisma,
-      flags.failover,
-    ),
-    relay: new FetchHostedCodexStreamingRelay(runtime, ledger, fetch, {
-      failoverEnabled: flags.failover,
-    }),
+    authorization: {
+      async authorize(request) {
+        await restore.assertRelayReady();
+        return new PrismaHostedCodexRelayAuthorization(
+          input.prisma,
+          flags.failover,
+        ).authorize(request);
+      },
+    },
+    relay: {
+      async open(request) {
+        await restore.assertRelayReady();
+        return relay.open(request);
+      },
+    },
   };
+}
+
+const closedAdmissionGrantIssuer = Object.freeze({
+  async issue(): Promise<never> {
+    throw new Error("hosted_codex_admission_unavailable");
+  },
+});
+
+export function composeProductionHostedCodexRestoreReconciler(input: {
+  readonly prisma: PrismaClient;
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly purpose?: "relay" | "recovery";
+}): PrismaHostedCodexRestoreReconciler {
+  const databaseIncarnation = requiredRestoreValue(
+    input.env.REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION,
+    "hosted_codex_database_incarnation_missing",
+  );
+  const databaseResourceIdentity = requiredRestoreValue(
+    input.env.REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY,
+    "hosted_codex_database_resource_identity_invalid",
+  );
+  const authorityKeyId = requiredRestoreValue(
+    input.env.REVIEW_ROUTER_HOSTED_CODEX_RESTORE_AUTHORITY_KEY_ID,
+    "hosted_codex_restore_authority_key_id_missing",
+  );
+  const authorityPublicKeyPem = requiredRestoreValue(
+    input.env.REVIEW_ROUTER_HOSTED_CODEX_RESTORE_AUTHORITY_PUBLIC_KEY,
+    "hosted_codex_restore_authority_public_key_missing",
+  ).replaceAll("\\n", "\n");
+  const recoveryVault = new CredentialEnvelopeVault(
+    resolveHostedCodexKeyring({
+      env: input.env,
+      purpose: input.purpose ?? "recovery",
+    }),
+    // KMS role selection and envelope cryptographic context are distinct. The
+    // recovery role must decrypt and re-encrypt the relay-owned envelopes with
+    // the same context that the relay will use after promotion.
+    "relay",
+  );
+  return new PrismaHostedCodexRestoreReconciler(
+    input.prisma,
+    recoveryVault,
+    databaseResourceIdentity,
+    databaseIncarnation,
+    {
+      verify(request) {
+        return verifyHostedCodexRestorePermit({
+          token: request.token,
+          authorityPublicKeyPem,
+          expectedAuthorityKeyId: authorityKeyId,
+          expectedDatabaseResourceIdentity: request.databaseResourceIdentity,
+          expectedTargetIncarnation: request.targetIncarnation,
+          expectedInventoryHash: request.inventoryHash,
+        });
+      },
+    },
+  );
+}
+
+function requiredRestoreValue(
+  value: string | undefined,
+  errorCode: string,
+): string {
+  const normalized = value?.trim();
+  if (!normalized) throw new Error(errorCode);
+  return normalized;
 }

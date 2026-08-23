@@ -183,6 +183,7 @@ export async function admitRelayRequest(
     ordinal,
     idempotencyKeyHash,
     requestBytes: input.requestBytes,
+    now: input.now,
     transition: (current) =>
       admitRelayRequestTransition({
         grant: current,
@@ -199,11 +200,17 @@ export function recordProviderResponseStarted(
     readonly grantId: InvocationGrantId;
     readonly requestId: RelayRequestId;
     readonly startedAt: Date;
+    readonly effect?: Parameters<
+      RelayResponseStartedPort["markStarted"]
+    >[0]["effect"];
   },
   responses: RelayResponseStartedPort,
 ): Promise<InvocationGrant> {
   return responses.markStarted({
-    ...input,
+    grantId: input.grantId,
+    requestId: input.requestId,
+    startedAt: input.startedAt,
+    ...(input.effect ? { effect: input.effect } : {}),
     transition: (grant) =>
       recordResponseStartedTransition({ grant, requestId: input.requestId }),
   });
@@ -216,6 +223,9 @@ export async function recordSuccessfulProviderResponse(
     readonly responseBytes: number;
     readonly responseHash: string;
     readonly completedAt: Date;
+    readonly effect?: Parameters<
+      RelayRequestCompletionPort["complete"]
+    >[0]["effect"];
   },
   completions: RelayRequestCompletionPort,
 ): Promise<InvocationGrant> {
@@ -226,6 +236,7 @@ export async function recordSuccessfulProviderResponse(
     responseHash: z.string().trim().min(16).max(512).parse(input.responseHash),
     errorCode: null,
     completedAt: input.completedAt,
+    ...(input.effect ? { effect: input.effect } : {}),
     transition: (grant) =>
       recordSuccessTransition({ grant, requestId: input.requestId }),
   });

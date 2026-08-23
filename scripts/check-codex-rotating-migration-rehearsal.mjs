@@ -55,6 +55,10 @@ const rehearsalPostManifestIdentitySha256 =
   canonicalReleaseMigrationArtifact.postManifestIdentity;
 const migration73Name = "000073_codex_oauth_active_namespace_refresh";
 const migration74Name = "000074_hosted_codex_account_pool";
+const migration75Name = "000075_hosted_codex_security_certification";
+const migration76Name =
+  "000076_hosted_codex_terminalization_restore_invariants";
+const migration77Name = "000077_hosted_codex_r57_security_race_remediation";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -84,6 +88,9 @@ assert(
       migration72CanaryName,
       migration73Name,
       migration74Name,
+      migration75Name,
+      migration76Name,
+      migration77Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -191,7 +198,7 @@ try {
   const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000074 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000077 rehearsal passed.\n",
   );
 } finally {
   const databaseDrop = psql(
@@ -564,7 +571,10 @@ function applyCanonicalPreMigrationBaseline(url) {
       (number <= 59 ||
         directory === migration67Name ||
         directory === migration68Name ||
-        directory === migration74Name);
+        directory === migration74Name ||
+        directory === migration75Name ||
+        directory === migration76Name ||
+        directory === migration77Name);
     if (!isCanonicalPreMigration) continue;
     const source = join(migrationsDirectory, directory, "migration.sql");
     psql(url, ["-f", source]);

@@ -18,6 +18,9 @@ export function failoverCurrentRelayRequestBeforeEffect(
     readonly effectFence: ProviderEffectFence;
     readonly cooldownUntil: Date | null;
     readonly now: Date;
+    readonly effect?: Parameters<
+      CurrentRelayRequestFailoverPort["failover"]
+    >[0]["effect"];
   },
   failovers: CurrentRelayRequestFailoverPort,
 ): Promise<CurrentRelayRequestFailover> {
@@ -25,6 +28,7 @@ export function failoverCurrentRelayRequestBeforeEffect(
     grantId: input.grantId,
     requestId: input.requestId,
     now: input.now,
+    ...(input.effect ? { effect: input.effect } : {}),
     transition: (grant, failedAccount, backupAccount) =>
       failoverCurrentRelayRequest({
         grant,

@@ -301,6 +301,29 @@ describe("OctokitWorkflowSetupGateway", () => {
     );
   });
 
+  it("uses hosted App-first setup copy without credential-secret guidance", async () => {
+    const requester = new FakeRequester(primaryWorkflow.content);
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await gateway.createOrUpdateSetupPullRequest({
+      ...setupInput,
+      setupMode: "hosted_pool",
+    });
+
+    const patchCall = requester.calls.find(
+      (call) =>
+        call.route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+    );
+    const body = String(patchCall?.parameters?.body);
+    expect(body).toContain("same-repository `pull_request` events");
+    expect(body).toContain("App-first ReviewRouter publication path");
+    expect(body).toContain(
+      "requires no Codex OAuth or provider credential secret",
+    );
+    expect(body).not.toContain("pull_request_target");
+    expect(body).not.toContain("keeps provider secrets");
+  });
+
   it("reopens a closed setup pull request before creating a new one", async () => {
     const requester = new FakeRequester(primaryWorkflow.content, {
       pullRequestResponses: [[]],

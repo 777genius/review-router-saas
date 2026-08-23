@@ -1478,6 +1478,8 @@ model HostedCodexAccount {
   primaryGrants      HostedCodexInvocationGrant[]   @relation("HostedCodexGrantPrimaryAccount")
   backupGrants       HostedCodexInvocationGrant[]   @relation("HostedCodexGrantBackupAccount")
   mutationFence      HostedCodexMutationFence?
+  restoreItems       HostedCodexRestoreItem[]
+  upstreamAttempts   HostedCodexUpstreamEffectAttempt[]
 
   @@unique([id, workspaceId, poolId])
   @@unique([workspaceId, accountFingerprint])
@@ -1506,6 +1508,8 @@ model HostedCodexCredentialVersion {
 
   account            HostedCodexAccount             @relation(fields: [accountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexCredentialVersion_account_tenant_fkey")
   generationReceipts HostedCodexGenerationReceipt[]
+  envelopeRevisions  HostedCodexCredentialEnvelopeRevision[]
+  restoreItems       HostedCodexRestoreItem[]
 
   @@unique([accountId, generation])
   @@unique([accountId, databaseIncarnation, generation], map: "HostedCodexCredentialVersion_account_incarnation_generation_key")
@@ -1513,6 +1517,93 @@ model HostedCodexCredentialVersion {
   @@index([workspaceId, poolId, accountId, generation], map: "HostedCodexCredentialVersion_tenant_generation_idx")
   @@index([databaseIncarnation, keyId, createdAt], map: "HostedCodexCredentialVersion_incarnation_key_created_idx")
   @@index([keyId, createdAt])
+}
+
+model HostedCodexCredentialEnvelopeRevision {
+  id                       String   @id @default(cuid())
+  credentialVersionId      String
+  accountId                String
+  workspaceId              String
+  poolId                   String
+  generation               BigInt
+  revision                 BigInt
+  sourceRevision           BigInt?
+  custodyMode              String
+  kmsKeyArn                String?
+  kmsContextVersion        Int
+  databaseResourceIdentity String?
+  databaseIncarnation      String
+  reason                   String
+  envelopeVersion          Int
+  encryptionAlgorithm      String
+  aadHash                  String
+  ciphertextHash           String
+  encryptedCiphertext      String   @db.Text
+  envelopeMetadata         Json
+  fenceOwnerIdHash         String?
+  fenceEpoch               BigInt?
+  actorIdHash              String
+  idempotencyKeyHash       String   @unique
+  createdAt                DateTime @default(now())
+
+  credentialVersion HostedCodexCredentialVersion @relation(fields: [credentialVersionId, accountId, workspaceId, poolId, generation], references: [id, accountId, workspaceId, poolId, generation], onDelete: Restrict, map: "HostedCodexCredentialEnvelopeRevision_credential_tenant_fkey")
+
+  @@unique([credentialVersionId, revision], map: "HostedCodexCredentialEnvelopeRevision_credential_revision_key")
+  @@index([workspaceId, poolId, accountId, generation, revision], map: "HostedCodexCredentialEnvelopeRevision_account_generation_idx")
+}
+
+model HostedCodexRestoreOperation {
+  id                       String                           @id @default(cuid())
+  inventoryHash            String
+  databaseResourceIdentity String
+  sourceIncarnation        String
+  targetIncarnation        String
+  sourceKmsKeyArn          String
+  targetKmsKeyArn          String
+  authorityKeyId           String
+  actorIdHash              String
+  nonceHash                String                           @unique
+  permitExpiresAt          DateTime
+  state                    HostedCodexRestoreOperationState @default(witnessed)
+  itemCount                Int
+  createdAt                DateTime                         @default(now())
+  reconciliationStartedAt  DateTime?
+  reconciledAt             DateTime?
+  promotedAt               DateTime?
+  failedAt                 DateTime?
+  failureCode              String?
+
+  items HostedCodexRestoreItem[]
+
+  @@index([inventoryHash, databaseResourceIdentity, targetIncarnation], map: "HostedCodexRestoreOperation_inventory_target_idx")
+}
+
+model HostedCodexRestoreItem {
+  id                   String                      @id @default(cuid())
+  restoreOperationId   String
+  credentialVersionId  String
+  accountId            String
+  workspaceId          String
+  poolId               String
+  generation           BigInt
+  sourceRevision       BigInt
+  sourceAadHash        String
+  sourceCiphertextHash String
+  state                HostedCodexRestoreItemState @default(pending)
+  targetRevision       BigInt?
+  attemptCount         Int                         @default(0)
+  lastAttemptAt        DateTime?
+  rewrappedAt          DateTime?
+  promotedAt           DateTime?
+  failureCode          String?
+  createdAt            DateTime                    @default(now())
+
+  restoreOperation  HostedCodexRestoreOperation  @relation(fields: [restoreOperationId], references: [id], onDelete: Restrict)
+  credentialVersion HostedCodexCredentialVersion @relation(fields: [credentialVersionId, accountId, workspaceId, poolId, generation], references: [id, accountId, workspaceId, poolId, generation], onDelete: Restrict, map: "HostedCodexRestoreItem_credential_tenant_fkey")
+  account           HostedCodexAccount           @relation(fields: [accountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexRestoreItem_account_tenant_fkey")
+
+  @@unique([restoreOperationId, credentialVersionId], map: "HostedCodexRestoreItem_operation_credential_key")
+  @@index([workspaceId, poolId, accountId, state], map: "HostedCodexRestoreItem_account_state_idx")
 }
 
 model HostedCodexRepositoryBinding {
@@ -1590,6 +1681,7 @@ model HostedCodexInvocationGrant {
   primaryAccount HostedCodexAccount           @relation("HostedCodexGrantPrimaryAccount", fields: [primaryAccountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexInvocationGrant_primary_account_tenant_fkey")
   backupAccount  HostedCodexAccount?          @relation("HostedCodexGrantBackupAccount", fields: [backupAccountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexInvocationGrant_backup_account_tenant_fkey")
   relayRequests  HostedCodexRelayRequest[]
+  upstreamAttempts HostedCodexUpstreamEffectAttempt[]
   commentRefreshCapability HostedCodexCommentRefreshCapability?
 
   @@unique([id, workspaceId, poolId])
@@ -1619,12 +1711,47 @@ model HostedCodexRelayRequest {
   updatedAt                   DateTime                      @updatedAt
 
   grant HostedCodexInvocationGrant @relation(fields: [grantId], references: [id], onDelete: Restrict)
+  upstreamAttempts HostedCodexUpstreamEffectAttempt[]
 
   @@unique([grantId, ordinal])
   @@unique([grantId, idempotencyKeyHash])
+  @@unique([id, grantId], map: "HostedCodexRelayRequest_id_grantId_key")
   @@index([grantId, requestHash])
   @@index([status, receivedAt])
   @@index([grantId, status, ordinal], map: "HostedCodexRelayRequest_grant_status_ordinal_idx")
+}
+
+model HostedCodexUpstreamEffectAttempt {
+  id                     String                         @id @default(cuid())
+  relayRequestId         String
+  grantId                String
+  workspaceId            String
+  poolId                 String
+  accountId              String
+  attemptOrdinal         Int
+  requestHash            String
+  idempotencyKeyHash     String                         @unique
+  state                  HostedCodexUpstreamEffectState @default(prepared)
+  ownerIdHash            String
+  fenceEpoch             BigInt
+  heartbeatAt            DateTime
+  leaseExpiresAt         DateTime
+  dispatchStartedAt      DateTime?
+  responseStartedAt      DateTime?
+  completedAt            DateTime?
+  providerResponseIdHash String?
+  terminalEvidenceHash   String?
+  errorCode              String?
+  createdAt              DateTime                       @default(now())
+  updatedAt              DateTime                       @updatedAt
+
+  relayRequest HostedCodexRelayRequest     @relation(fields: [relayRequestId, grantId], references: [id, grantId], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_request_fkey")
+  grant        HostedCodexInvocationGrant  @relation(fields: [grantId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_grant_tenant_fkey")
+  account      HostedCodexAccount          @relation(fields: [accountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_account_tenant_fkey")
+
+  @@unique([relayRequestId, attemptOrdinal], map: "HostedCodexUpstreamEffectAttempt_request_attempt_key")
+  @@index([state, leaseExpiresAt, id], map: "HostedCodexUpstreamEffectAttempt_sweep_idx")
+  @@index([workspaceId, poolId, accountId, state], map: "HostedCodexUpstreamEffectAttempt_account_idx")
 }
 
 model HostedCodexCommentRefreshCapability {
@@ -1682,9 +1809,11 @@ model HostedCodexMutationFence {
   workspaceId        String
   poolId             String
   fenceEpoch         BigInt
-  ownerIdHash        String
-  expectedGeneration BigInt
-  expiresAt          DateTime
+  ownerIdHash        String?
+  expectedGeneration BigInt?
+  expiresAt          DateTime?
+  releasedAt         DateTime?
+  releaseReason      String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -3033,6 +3162,33 @@ enum HostedCodexRelayRequestStatus {
   processing
   response_started
   succeeded
+  failed
+  terminal_unknown
+}
+
+enum HostedCodexUpstreamEffectState {
+  prepared
+  dispatching
+  response_started
+  succeeded
+  failed_no_effect
+  failed_classified
+  terminal_unknown
+}
+
+enum HostedCodexRestoreOperationState {
+  witnessed
+  reconciling
+  reconciled
+  promoted
+  failed
+}
+
+enum HostedCodexRestoreItemState {
+  pending
+  busy
+  rewrapped
+  promoted
   failed
 }
 

@@ -51,6 +51,7 @@ import {
   isWorkflowProvisioningEnabled,
   isHostedCodexPoolEnabled,
   requireReviewRouterDatabaseRecoveryWitness,
+  resolveHostedPoolActionRelease,
   resolveReviewRouterActionRef,
   resolveReviewRouterCodexRotatingActionRef,
   resolveReviewRouterCodexRotatingTrustedActionRefs,
@@ -361,7 +362,7 @@ async function provisionPendingHostedPoolWorkflow(input: {
       provisionHostedPoolRepositoryWorkflow(
         {
           repositoryId: input.repositoryId,
-          actionRef: resolveReviewRouterCodexRotatingActionRef(),
+          actionRef: resolveHostedPoolActionRelease().actionRef,
           apiUrl: resolveWorkflowPublicApiUrl(),
           providerInstanceId: canonicalHostedPoolProviderInstanceId(
             githubRepository.githubRepositoryId.toString(),

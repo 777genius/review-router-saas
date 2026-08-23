@@ -46,6 +46,8 @@ requireGitHubAppPrivateKey();
 forbidProviderSecretsInSaaS();
 requireHostedActionRef();
 requireHostedCodexRotatingActionRef();
+requireHostedPoolProductionContract();
+requireHostedCodexPoolRestoreReadiness();
 requireCodexRotatingInstallerDescriptor();
 
 if (errors.length > 0) {
@@ -304,6 +306,134 @@ function requireHostedCodexRotatingActionRef() {
   }
 }
 
+function requireHostedPoolProductionContract() {
+  const flags = [
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL",
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY",
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION",
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY",
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER",
+  ];
+  const values = flags.map((name) => read(name) || "0");
+  const dependencies = {
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY:
+      "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL",
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION:
+      "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY",
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY:
+      "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY",
+    REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER:
+      "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY",
+  };
+  for (let index = 0; index < values.length; index += 1) {
+    if (!["0", "1"].includes(values[index])) {
+      errors.push(`${flags[index]} must be 0 or 1.`);
+    }
+    const dependency = dependencies[flags[index]];
+    if (dependency && values[index] === "1" && read(dependency) !== "1") {
+      errors.push(`${flags[index]} requires ${dependency}=1.`);
+    }
+  }
+  const tag = read("REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG");
+  const sha = read("REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA").toLowerCase();
+  const digest = read(
+    "REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256",
+  ).toLowerCase();
+  if (!/^v[1-9][0-9]*\.[0-9]+\.[0-9]+$/u.test(tag)) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG must be an immutable vN.N.N tag.",
+    );
+  }
+  if (!/^[a-f0-9]{40}$/u.test(sha)) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA must be a lowercase 40-character commit SHA.",
+    );
+  }
+  if (!/^[a-f0-9]{64}$/u.test(digest)) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256 must be a lowercase 64-character SHA-256.",
+    );
+  }
+  if (
+    read("REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF") !==
+    `777genius/review-router@${sha}`
+  ) {
+    errors.push(
+      "The hosted-pool Action SHA must equal REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF.",
+    );
+  }
+  if (!values.includes("1")) return;
+  if (read("REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE") !== "external_kms") {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE must be external_kms when hosted pool is enabled.",
+    );
+  }
+  const kmsKeyArn = read("REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN");
+  const kmsRegion =
+    /^arn:(?:aws|aws-us-gov|aws-cn):kms:([a-z0-9-]+):\d{12}:key\/(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$/iu.exec(
+      kmsKeyArn,
+    )?.[1];
+  if (!kmsRegion) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN must be an immutable KMS key ARN.",
+    );
+  }
+  if (kmsRegion?.toLowerCase() !== read("AWS_REGION").toLowerCase()) {
+    errors.push(
+      "AWS_REGION must exactly match the immutable KMS key ARN region.",
+    );
+  }
+  const roleNames = [
+    "REVIEW_ROUTER_HOSTED_CODEX_RELAY_AWS_ROLE_ARN",
+    "REVIEW_ROUTER_HOSTED_CODEX_ENROLLMENT_AWS_ROLE_ARN",
+    "REVIEW_ROUTER_HOSTED_CODEX_RECOVERY_AWS_ROLE_ARN",
+  ];
+  for (const name of roleNames) {
+    if (
+      !/^arn:(?:aws|aws-us-gov|aws-cn):iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]{1,512}$/u.test(
+        read(name),
+      )
+    ) {
+      errors.push(`${name} must be an immutable IAM role ARN.`);
+    }
+  }
+  if (new Set(roleNames.map(read)).size !== roleNames.length) {
+    errors.push(
+      "Hosted pool relay, enrollment, and recovery IAM roles must be distinct.",
+    );
+  }
+  if (
+    !/^render:postgres:dpg-[a-z0-9-]{8,}$/u.test(
+      read("REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY"),
+    )
+  ) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY must bind the exact Render dpg resource ID.",
+    );
+  }
+  if (
+    !/^[A-Za-z0-9_-]{22,128}$/u.test(
+      read("REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION"),
+    )
+  ) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION must be a pinned opaque identity.",
+    );
+  }
+  for (const name of [
+    "REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER",
+    "REVIEW_ROUTER_HOSTED_CODEX_CAPABILITY_HMAC_KEY",
+  ]) {
+    const encoded = read(name);
+    const decoded = Buffer.from(encoded, "base64");
+    if (decoded.byteLength < 32 || decoded.toString("base64") !== encoded) {
+      errors.push(
+        `${name} must be canonical base64 with at least 32 decoded bytes.`,
+      );
+    }
+  }
+}
+
 function requireCodexRotatingInstallerDescriptor() {
   try {
     resolveCodexRotatingInstallerDescriptor(env);
@@ -312,6 +442,71 @@ function requireCodexRotatingInstallerDescriptor() {
       `Codex rotating installer descriptor is invalid: ${error instanceof Error ? error.message : String(error)}.`,
     );
   }
+}
+
+function requireHostedCodexPoolRestoreReadiness() {
+  const master = read("REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL");
+  if (!master || master === "0") return;
+  if (master !== "1") {
+    errors.push("REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL must be 0 or 1.");
+    return;
+  }
+  for (const name of [
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY",
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION",
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY",
+    "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER",
+  ]) {
+    if (!["0", "1"].includes(read(name)))
+      errors.push(`${name} must be 0 or 1.`);
+  }
+  if (read("REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE") !== "external_kms") {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE must be external_kms.",
+    );
+  }
+  if (read("REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE") !== "relay") {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE must be relay on the API service.",
+    );
+  }
+  if (
+    !/^arn:(?:aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:\d{12}:key\/(?:[0-9a-f-]{36}|mrk-[0-9a-f]{32})$/iu.test(
+      read("REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN"),
+    )
+  ) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN must be an immutable KMS key ARN.",
+    );
+  }
+  if (
+    read("REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY").length < 16
+  ) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY is required.",
+    );
+  }
+  if (read("REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION").length < 16) {
+    errors.push("REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION is required.");
+  }
+  const publicKey = read(
+    "REVIEW_ROUTER_HOSTED_CODEX_RESTORE_AUTHORITY_PUBLIC_KEY",
+  ).replaceAll("\\n", "\n");
+  if (
+    !/BEGIN PUBLIC KEY/u.test(publicKey) ||
+    /replace-with|placeholder/iu.test(publicKey)
+  ) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_RESTORE_AUTHORITY_PUBLIC_KEY must be an Ed25519 public PEM.",
+    );
+  }
+  if (read("REVIEW_ROUTER_HOSTED_CODEX_RESTORE_AUTHORITY_KEY_ID").length < 3) {
+    errors.push(
+      "REVIEW_ROUTER_HOSTED_CODEX_RESTORE_AUTHORITY_KEY_ID is required.",
+    );
+  }
+  if (!read("AWS_REGION"))
+    errors.push("AWS_REGION is required for hosted Codex KMS.");
 }
 
 function requireDatabaseRecoveryWitness() {

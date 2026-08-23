@@ -276,14 +276,13 @@ export class HostedCodexSessionRuntime {
         abortSignal: input.abortSignal,
       },
     } as const;
-    const waitDeadline = Date.now() + 15_000;
+    // A legitimate winning refresh can exceed 15 seconds under PostgreSQL/KMS
+    // pressure. Waiters remain abortable and fenced; allow enough time for the
+    // durable winner to publish its generation instead of misclassifying load
+    // as a permission failure.
+    const waitDeadline = Date.now() + 60_000;
     let refresh = await this.runtime.refreshSession(refreshInput);
-    while (
-      refresh.status === "blocked" &&
-      refresh.reason === "permission_required" &&
-      refresh.safeMessage === "Account is refreshing." &&
-      Date.now() < waitDeadline
-    ) {
+    while (isConcurrentRefreshResult(refresh) && Date.now() < waitDeadline) {
       await abortableDelay(100, input.abortSignal);
       refresh = await this.runtime.refreshSession(refreshInput);
     }
@@ -311,6 +310,19 @@ export class HostedCodexSessionRuntime {
       chatgptAccountId: extractChatgptAccountId(idToken),
     };
   }
+}
+
+function isConcurrentRefreshResult(result: {
+  readonly status: string;
+  readonly reason?: string;
+  readonly safeMessage?: string;
+}): boolean {
+  return (
+    (result.status === "blocked" &&
+      result.reason === "permission_required" &&
+      result.safeMessage === "Account is refreshing.") ||
+    (result.status === "skipped" && result.reason === "stale_generation")
+  );
 }
 
 function abortableDelay(

@@ -576,6 +576,129 @@ function readOptionalEnvVars(env, keys) {
   return values;
 }
 
+const hostedPoolFlags = Object.freeze([
+  "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL",
+  "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY",
+  "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION",
+  "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY",
+  "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER",
+]);
+
+export function hostedPoolRuntimeEnvForRole(env, role) {
+  const release = {
+    REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: requiredEnv(
+      "REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG",
+      env,
+    ),
+    REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA: requiredEnv(
+      "REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA",
+      env,
+    ).toLowerCase(),
+    REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256: requiredEnv(
+      "REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256",
+      env,
+    ).toLowerCase(),
+  };
+  if (
+    !/^v[1-9][0-9]*\.[0-9]+\.[0-9]+$/u.test(
+      release.REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG,
+    )
+  )
+    throw new Error("hosted pool Action tag must be immutable semver");
+  if (!/^[a-f0-9]{40}$/u.test(release.REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA))
+    throw new Error("hosted pool Action SHA must be a full commit");
+  if (
+    !/^[a-f0-9]{64}$/u.test(
+      release.REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256,
+    )
+  )
+    throw new Error("hosted pool Action dist digest must be SHA-256");
+  if (
+    resolveHostedCodexRotatingActionRef(env) !==
+    `777genius/review-router@${release.REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA}`
+  ) {
+    throw new Error(
+      "hosted pool Action release does not match the consumed ref",
+    );
+  }
+
+  // Runtime deploy convergence is always dormant. Hosted-pool activation is a
+  // separate observed operation through hosted-pool:control.
+  for (const name of hostedPoolFlags) exactBinaryFlag(env, name);
+  const flags = Object.fromEntries(hostedPoolFlags.map((name) => [name, "0"]));
+  if (role === "worker") return { ...release, ...flags };
+  const roleArns = ["RELAY", "ENROLLMENT", "RECOVERY"].map((purpose) =>
+    requiredEnv(`REVIEW_ROUTER_HOSTED_CODEX_${purpose}_AWS_ROLE_ARN`, env),
+  );
+  if (
+    roleArns.some(
+      (arn) =>
+        !/^arn:(?:aws|aws-us-gov|aws-cn):iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]{1,512}$/u.test(
+          arn,
+        ),
+    ) ||
+    new Set(roleArns).size !== roleArns.length
+  ) {
+    throw new Error(
+      "hosted pool relay, enrollment, and recovery roles must be distinct immutable ARNs",
+    );
+  }
+  const purpose = role === "api" ? "RELAY" : "ENROLLMENT";
+  const roleArn = requiredEnv(
+    `REVIEW_ROUTER_HOSTED_CODEX_${purpose}_AWS_ROLE_ARN`,
+    env,
+  );
+  if (Object.hasOwn(env, "REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN")) {
+    throw new Error(
+      "runtime-only hosted pool role ARN must not be supplied by deploy source",
+    );
+  }
+  if (Object.hasOwn(env, "AWS_WEB_IDENTITY_TOKEN_FILE")) {
+    throw new Error(
+      "Render-managed AWS web identity token path must not be supplied by deploy source",
+    );
+  }
+  const kmsKeyArn = requiredEnv("REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN", env);
+  const awsRegion = requiredEnv("AWS_REGION", env);
+  const kmsRegion =
+    /^arn:(?:aws|aws-us-gov|aws-cn):kms:([a-z0-9-]+):\d{12}:key\/(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$/iu.exec(
+      kmsKeyArn,
+    )?.[1];
+  if (!kmsRegion || kmsRegion.toLowerCase() !== awsRegion.toLowerCase()) {
+    throw new Error("hosted pool KMS key ARN and AWS region must match");
+  }
+  return {
+    ...release,
+    ...flags,
+    REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE: "external_kms",
+    REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE: purpose.toLowerCase(),
+    REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN: roleArn,
+    AWS_ROLE_ARN: roleArn,
+    REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN: kmsKeyArn,
+    AWS_REGION: awsRegion,
+    REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY: requiredEnv(
+      "REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY",
+      env,
+    ),
+    REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION: requiredEnv(
+      "REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION",
+      env,
+    ),
+    REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER: requiredEnv(
+      "REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER",
+      env,
+    ),
+    ...(role === "api"
+      ? {
+          REVIEW_ROUTER_HOSTED_CODEX_CAPABILITY_HMAC_KEY: requiredEnv(
+            "REVIEW_ROUTER_HOSTED_CODEX_CAPABILITY_HMAC_KEY",
+            env,
+          ),
+        }
+      : {}),
+  };
+}
+
 export const reviewV2ActivationFlagNames = Object.freeze([
   "REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED",
   "REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED",
@@ -884,6 +1007,7 @@ export function buildServiceEnv({
   }
   Object.assign(values, reviewV2RuntimeEnvForRole(env, role));
   Object.assign(values, reviewV2ContextEnvForRole(env, role));
+  Object.assign(values, hostedPoolRuntimeEnvForRole(env, role));
   if (
     values.REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED === "1" ||
     values.REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED === "1" ||

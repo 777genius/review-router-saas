@@ -284,6 +284,9 @@ const preReleaseMigrationBoundary = Object.freeze({
     "000067_review_live_progress",
     "000068_validate_review_assignment_manifest",
     "000074_hosted_codex_account_pool",
+    "000075_hosted_codex_security_certification",
+    "000076_hosted_codex_terminalization_restore_invariants",
+    "000077_hosted_codex_r57_security_race_remediation",
   ]),
 });
 

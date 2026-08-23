@@ -51,7 +51,10 @@ env:
   REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: ci_database_recovery_witness_not_for_production_000000000000
   REVIEW_ROUTER_DEFAULT_MODEL: gpt-5.5
   REVIEW_ROUTER_DEFAULT_EFFORT: xhigh
-  REVIEW_ROUTER_PAIRED_ACTION_REF: 8b6db5bab48dae15d350e6ff0fb8a488410e65fb
+  REVIEW_ROUTER_PAIRED_ACTION_REF: 719e1a9a14a2c7bae182f71df1f218d83d54bf7e
+  REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: v1.0.130
+  REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA: 719e1a9a14a2c7bae182f71df1f218d83d54bf7e
+  REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256: 61cfb0aaa2e57cf4611a7f652292466a81f9ee73798942cd9bfb4c62712a99ec
   REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS: "0"
   REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0"
   REVIEW_ROUTER_PG_DUMP: /usr/lib/postgresql/17/bin/pg_dump
@@ -278,6 +281,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -333,6 +338,80 @@ jobs:
       - name: Apply test database migrations
         run: DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir packages/platform/db db:migrate:deploy
 
+      - name: Bind hosted certification input bytes
+        env:
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_WORKSPACE_SNAPSHOT: ${{ runner.temp }}/hosted-certification-workspace.json
+        run: pnpm hosted-pool:certification-evidence --capture-workspace
+
+      - name: Hosted pool security certification
+        id: hosted_verify
+        continue-on-error: true
+        env:
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT: ${{ runner.temp }}/hosted-certification
+        run: |
+          mkdir -p "$REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT/logs"
+          if ! pnpm hosted-pool:verify >"$REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT/logs/verify.log" 2>&1; then
+            echo "::error::Hosted pool verification failed; retained log is withheld pending sensitive-data scan"
+            exit 1
+          fi
+
+      - name: Hosted pool production and one-shot canary contracts
+        run: pnpm hosted-pool:production-contract
+
+      - name: Hosted pool populated migration rehearsal
+        id: hosted_migration
+        continue-on-error: true
+        env:
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT: ${{ runner.temp }}/hosted-certification
+        run: |
+          if ! pnpm hosted-pool:migration-rehearsal >"$REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT/logs/migration.log" 2>&1; then
+            echo "::error::Hosted pool migration rehearsal failed; retained log is withheld pending sensitive-data scan"
+            exit 1
+          fi
+
+      - name: Hosted pool PostgreSQL 17 E2E
+        id: hosted_postgres
+        continue-on-error: true
+        env:
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT: ${{ runner.temp }}/hosted-certification
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_DB_EXPORT: ${{ runner.temp }}/hosted-certification/logs/relay-effect-rows.jsonl
+        run: |
+          if ! pnpm hosted-pool:e2e:postgres >"$REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT/logs/postgres-e2e.log" 2>&1; then
+            echo "::error::Hosted pool PostgreSQL E2E failed; retained log is withheld pending sensitive-data scan"
+            exit 1
+          fi
+
+      - name: Seal SHA-bound hosted certification evidence
+        if: always()
+        env:
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_SENTINELS_JSON: '["rr-hosted-certification-sentinel","rr-hosted-auth-body-sentinel"]'
+          REVIEW_ROUTER_HOSTED_VERIFY_STATUS: ${{ steps.hosted_verify.outcome }}
+          REVIEW_ROUTER_HOSTED_MIGRATION_STATUS: ${{ steps.hosted_migration.outcome }}
+          REVIEW_ROUTER_HOSTED_POSTGRES_STATUS: ${{ steps.hosted_postgres.outcome }}
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_WORKSPACE_SNAPSHOT: ${{ runner.temp }}/hosted-certification-workspace.json
+          REVIEW_ROUTER_HOSTED_CERTIFICATION_OUTPUT: ${{ runner.temp }}/hosted-certification
+        run: pnpm hosted-pool:certification-evidence
+
+      - name: Upload hosted certification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hosted-security-certification-${{ github.sha }}
+          path: ${{ runner.temp }}/hosted-certification/hosted-certification-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce hosted certification gates
+        if: always()
+        env:
+          HOSTED_VERIFY_STATUS: ${{ steps.hosted_verify.outcome }}
+          HOSTED_MIGRATION_STATUS: ${{ steps.hosted_migration.outcome }}
+          HOSTED_POSTGRES_STATUS: ${{ steps.hosted_postgres.outcome }}
+        run: |
+          test "$HOSTED_VERIFY_STATUS" = success
+          test "$HOSTED_MIGRATION_STATUS" = success
+          test "$HOSTED_POSTGRES_STATUS" = success
+
       - name: Rotating Codex dropped-response loopback proof
         run: pnpm codex-rotating:loopback-proof
 
@@ -365,6 +444,8 @@ jobs:
           ref: ${{ env.REVIEW_ROUTER_PAIRED_ACTION_REF }}
           path: .paired/review-router-action
           persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Verify paired Review Action checkout
         shell: bash
@@ -375,6 +456,12 @@ jobs:
             echo "::error::paired Action checkout resolved to $actual_sha, expected $REVIEW_ROUTER_PAIRED_ACTION_REF"
             exit 1
           fi
+
+      - name: Verify hosted pool Action tag, commit, and bundle tuple
+        env:
+          REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: 777genius/review-router@${{ env.REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA }}
+          REVIEW_ROUTER_HOSTED_POOL_ACTION_CHECKOUT: ${{ github.workspace }}/.paired/review-router-action
+        run: pnpm hosted-pool:action-release:verify
 
       - name: Install paired Review Action dependencies
         run: npm ci --ignore-scripts --prefix .paired/review-router-action

@@ -129,7 +129,7 @@ describe("hosted Codex relay transport", () => {
     },
   );
 
-  it("retries a lost persisted-grant response with a fresh OIDC token", async () => {
+  it("never re-POSTs after a lost persisted-grant response", async () => {
     const env: NodeJS.ProcessEnv = {
       ACTIONS_ID_TOKEN_REQUEST_URL:
         "https://vstoken.actions.githubusercontent.com/oidc/token",
@@ -141,70 +141,43 @@ describe("hosted Codex relay transport", () => {
     const delays: number[] = [];
     let oidcCalls = 0;
     let grantCalls = 0;
-    const grant = {
-      protocolVersion: 1,
-      grant: "same-outcome-safe-grant",
-      relayUrl:
-        "https://reviewrouter.test/api/action/v1/hosted-codex/responses",
-      invocationLeaseId: "same-invocation-lease",
-      runtimeConfigVersion: 12,
-      runtimeEnv: { REVIEW_PROVIDERS: "codex/gpt-5.5" },
-      repository: "octo/repo",
-      commentToken: "same-comment-token",
-      commentTokenRefreshCapability: "same-refresh-capability",
-      grantExpiresAt: "2026-08-15T19:00:00.000Z",
-      policy: { maxRequests: 3 },
-    };
-
-    const result = await requestHostedRelayGrantWithFreshGitHubOidc({
-      env,
-      apiUrl: "https://reviewrouter.test",
-      providerInstanceId: "provider-1",
-      workflowSchemaVersion: 5,
-      bindingId: "binding-1",
-      bindingVersion: 7,
-      maskSecret: (secret) => masks.push(secret),
-      retryDelay: async (ms) => {
-        delays.push(ms);
-      },
-      fetchImpl: vi.fn(async (url: string | URL, init?: RequestInit) => {
-        if (
-          String(url).startsWith(
-            "https://vstoken.actions.githubusercontent.com/oidc/token",
-          )
-        ) {
-          const value = oidcTokens[oidcCalls++];
-          return Response.json({ value });
-        }
-        grantCalls += 1;
-        grantBodies.push(JSON.parse(String(init?.body)));
-        if (grantCalls === 1) {
+    await expect(
+      requestHostedRelayGrantWithFreshGitHubOidc({
+        env,
+        apiUrl: "https://reviewrouter.test",
+        providerInstanceId: "provider-1",
+        workflowSchemaVersion: 5,
+        bindingId: "binding-1",
+        bindingVersion: 7,
+        maskSecret: (secret) => masks.push(secret),
+        retryDelay: async (ms) => {
+          delays.push(ms);
+        },
+        fetchImpl: vi.fn(async (url: string | URL, init?: RequestInit) => {
+          if (
+            String(url).startsWith(
+              "https://vstoken.actions.githubusercontent.com/oidc/token",
+            )
+          ) {
+            const value = oidcTokens[oidcCalls++];
+            return Response.json({ value });
+          }
+          grantCalls += 1;
+          grantBodies.push(JSON.parse(String(init?.body)));
           throw new TypeError("response_lost_after_persist");
-        }
-        return Response.json(grant);
-      }) as unknown as typeof fetch,
-    });
+        }) as unknown as typeof fetch,
+      }),
+    ).rejects.toThrow("hosted_relay_grant_ambiguous");
 
-    expect(result).toEqual(grant);
-    expect(oidcCalls).toBe(2);
-    expect(grantCalls).toBe(2);
-    expect(grantBodies.map((body) => body.oidcToken)).toEqual(oidcTokens);
+    expect(oidcCalls).toBe(1);
+    expect(grantCalls).toBe(1);
+    expect(grantBodies.map((body) => body.oidcToken)).toEqual(["fresh-oidc-1"]);
     expect(grantBodies[0]).toMatchObject({
       bindingId: "binding-1",
       bindingVersion: 7,
     });
-    expect(grantBodies[1]).toMatchObject({
-      bindingId: "binding-1",
-      bindingVersion: 7,
-    });
-    expect(delays).toEqual([250]);
-    expect(masks).toEqual([
-      "fresh-oidc-1",
-      "fresh-oidc-2",
-      "same-outcome-safe-grant",
-      "same-refresh-capability",
-      "same-comment-token",
-    ]);
+    expect(delays).toEqual([]);
+    expect(masks).toEqual(["fresh-oidc-1"]);
     expect(env).not.toHaveProperty("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
   });
 
@@ -419,6 +392,122 @@ describe("hosted Codex relay transport", () => {
     expect(observedSignal?.aborted).toBe(true);
   });
 
+  it("sets the replay fence before reading a slow request body", async () => {
+    let upstreamCalls = 0;
+    const proxy = await startHostedCodexRelayProxy({
+      grant: "opaque-relay-grant",
+      commentTokenRefreshCapability: "comment-refresh-capability",
+      invocationLeaseId: "invocation-lease-1",
+      bindingId: "binding-1",
+      bindingVersion: 7,
+      relayUrl: "https://relay.reviewrouter.test/v1/responses",
+      upstreamCommentTokenRefreshUrl:
+        "https://relay.reviewrouter.test/v1/comment-token",
+      policy: { maxRequests: 2 },
+      fetchImpl: vi.fn(async () => {
+        upstreamCalls += 1;
+        return new Response("data: [DONE]\n\n", {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }) as unknown as typeof fetch,
+    });
+    try {
+      const slow = httpRequest(`${proxy.baseUrl}/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+      });
+      slow.write('{"input":"');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      const concurrent = await fetch(`${proxy.baseUrl}/responses`, {
+        method: "POST",
+        body: "{}",
+      });
+      expect(concurrent.status).toBe(409);
+      await expect(concurrent.json()).resolves.toEqual({
+        error: "proxy_replay_fenced",
+      });
+      expect(upstreamCalls).toBe(0);
+
+      const completed = new Promise<{ status: number; body: string }>(
+        (resolve, reject) => {
+          slow.once("response", (response) => {
+            const chunks: Buffer[] = [];
+            response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+            response.once("end", () =>
+              resolve({
+                status: response.statusCode ?? 0,
+                body: Buffer.concat(chunks).toString("utf8"),
+              }),
+            );
+          });
+          slow.once("error", reject);
+        },
+      );
+      slow.end('review"}');
+      await expect(completed).resolves.toEqual({
+        status: 200,
+        body: "data: [DONE]\n\n",
+      });
+      expect(upstreamCalls).toBe(1);
+      expect(proxy.failoverReason()).toBeUndefined();
+    } finally {
+      await proxy.close();
+    }
+  });
+
+  it.each([
+    ["completed 5xx", new Response("failed", { status: 500 })],
+    [
+      "truncated 200",
+      new Response('data: {"type":"response.completed"}\n\n', {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
+    ],
+    [
+      "truncated JSON 200",
+      new Response('{"incomplete":', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ],
+  ])("keeps the replay fence after a %s response", async (_label, response) => {
+    let upstreamCalls = 0;
+    const proxy = await startHostedCodexRelayProxy({
+      grant: "opaque-relay-grant",
+      commentTokenRefreshCapability: "comment-refresh-capability",
+      invocationLeaseId: "invocation-lease-1",
+      bindingId: "binding-1",
+      bindingVersion: 7,
+      relayUrl: "https://relay.reviewrouter.test/v1/responses",
+      upstreamCommentTokenRefreshUrl:
+        "https://relay.reviewrouter.test/v1/comment-token",
+      policy: { maxRequests: 2 },
+      fetchImpl: vi.fn(async () => {
+        upstreamCalls += 1;
+        return response;
+      }) as unknown as typeof fetch,
+    });
+    try {
+      const first = await fetch(`${proxy.baseUrl}/responses`, {
+        method: "POST",
+        body: "{}",
+      });
+      await first.text();
+      const replay = await fetch(`${proxy.baseUrl}/responses`, {
+        method: "POST",
+        body: "{}",
+      });
+      expect(replay.status).toBe(409);
+      expect(upstreamCalls).toBe(1);
+      expect(proxy.failoverReason()).toBe("ambiguous");
+    } finally {
+      await proxy.close();
+    }
+  });
+
   it("terminates the downstream response when upstream streaming fails after headers", async () => {
     const proxy = await startHostedCodexRelayProxy({
       grant: "opaque-relay-grant",
@@ -450,6 +539,12 @@ describe("hosted Codex relay transport", () => {
           body: "{}",
         }).then((response) => response.text()),
       ).rejects.toThrow();
+      const replay = await fetch(`${proxy.baseUrl}/responses`, {
+        method: "POST",
+        body: "{}",
+      });
+      expect(replay.status).toBe(409);
+      expect(proxy.failoverReason()).toBe("ambiguous");
     } finally {
       await proxy.close();
     }

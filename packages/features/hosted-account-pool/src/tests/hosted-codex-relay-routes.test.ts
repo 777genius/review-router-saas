@@ -53,6 +53,8 @@ describe("hosted Codex relay routes", () => {
           grantId: "grant-id",
           requestId: "request-id",
           accountId: "account-id",
+          workspaceId: "workspace-test",
+          poolId: "pool-test",
           runId: "run-id",
           runAttempt: 1,
           model: "gpt-5.1-codex-mini",

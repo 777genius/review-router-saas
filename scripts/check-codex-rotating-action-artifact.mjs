@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildCodexRotatingAction } from "./lib/codex-rotating-action-build.mjs";
 
 const root = process.cwd();
 const actionYmlPath = join(root, "action.yml");
@@ -49,7 +50,35 @@ const requireBinary =
 const actionYml = readFileSync(actionYmlPath, "utf8");
 const bundle = readFileSync(bundlePath, "utf8");
 
-assertBundleMatchesSource(bundle);
+await assertBundleMatchesSource(bundle);
+
+for (const forbiddenPath of ["/var/data", "/tmp", "node_modules/.pnpm", root]) {
+  assertNotIncludes(
+    bundle,
+    forbiddenPath,
+    `action bundle must not contain build path ${forbiddenPath}`,
+  );
+}
+assertIncludes(
+  bundle,
+  "ReviewRouter Action third-party notices",
+  "action bundle must preserve deterministic third-party license notices",
+);
+assertIncludes(
+  bundle,
+  "Copyright (c) 2025 Colin McDonnell",
+  "action bundle must preserve the bundled zod license",
+);
+assertIncludes(
+  bundle,
+  "Frank Denis <j at pureftpd dot org>",
+  "action bundle must preserve the bundled libsodium license",
+);
+assertDoesNotMatch(
+  bundle,
+  /^\/\/ .*node_modules\//mu,
+  "action bundle must not contain dependency-location comments",
+);
 
 assertIncludes(actionYml, "using: node24", "action.yml must use node24");
 assertIncludes(
@@ -156,9 +185,9 @@ assertIncludes(
   "invalid_review_execution_budget:jobTimeoutMinutes",
   "action bundle must enforce the review execution budget",
 );
-assertIncludes(
+assertMatches(
   bundle,
-  'readInput(env, "control-plane-url")',
+  /readInput\(env,\s*"control-plane-url"\)/u,
   "action bundle must prefer the control-plane-url input when present",
 );
 assertIncludes(
@@ -226,34 +255,11 @@ console.log(
     : "Codex rotating action artifact smoke passed.",
 );
 
-function assertBundleMatchesSource(committedBundle) {
+async function assertBundleMatchesSource(committedBundle) {
   const buildDir = mkdtempSync(join(tmpdir(), "reviewrouter-action-parity-"));
   const rebuiltBundlePath = join(buildDir, "index.cjs");
   try {
-    const result = spawnSync(
-      "pnpm",
-      [
-        "exec",
-        "esbuild",
-        "packages/features/codex-oauth-rotating/src/action/github-action.ts",
-        "--bundle",
-        "--platform=node",
-        "--target=node20",
-        "--format=cjs",
-        "--legal-comments=none",
-        `--outfile=${rebuiltBundlePath}`,
-      ],
-      {
-        cwd: root,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
-    if (result.status !== 0) {
-      fail(
-        `Action source-parity rebuild failed: ${result.stderr.trim() || result.stdout.trim()}`,
-      );
-    }
+    await buildCodexRotatingAction({ root, outfile: rebuiltBundlePath });
     const rebuiltBundle = readFileSync(rebuiltBundlePath, "utf8").replace(
       /[ \t]+$/gm,
       "",
@@ -292,6 +298,18 @@ function assertIncludes(haystack, needle, message) {
 
 function assertNotIncludes(haystack, needle, message) {
   if (haystack.includes(needle)) {
+    fail(message);
+  }
+}
+
+function assertMatches(haystack, pattern, message) {
+  if (!pattern.test(haystack)) {
+    fail(message);
+  }
+}
+
+function assertDoesNotMatch(haystack, pattern, message) {
+  if (pattern.test(haystack)) {
     fail(message);
   }
 }

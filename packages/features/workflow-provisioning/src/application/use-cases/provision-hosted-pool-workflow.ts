@@ -3,7 +3,7 @@ import {
   type AuditLogRepositoryPort,
 } from "@reviewrouter/features-audit-log";
 import { createProvisionWorkflowPlan } from "../../domain/workflow-provisioning";
-import { renderCanonicalHostedPoolWorkflowV5 } from "../../domain/hosted-pool-workflow-template";
+import { renderCanonicalHostedPoolWorkflowV2 } from "../../domain/hosted-pool-workflow-template";
 import {
   defaultCodexRotatingWorkflowPath,
   defaultInteractionWorkflowPath,
@@ -79,10 +79,11 @@ export async function provisionHostedPoolRepositoryWorkflow(
         repo: plan.name,
         baseBranch: plan.defaultBranch,
         setupBranch: plan.setupBranch,
+        setupMode: "hosted_pool",
         workflowFiles: [
           {
             path: defaultCodexRotatingWorkflowPath,
-            content: renderCanonicalHostedPoolWorkflowV5(input),
+            content: renderCanonicalHostedPoolWorkflowV2(input),
           },
           {
             path: defaultWorkflowPath,

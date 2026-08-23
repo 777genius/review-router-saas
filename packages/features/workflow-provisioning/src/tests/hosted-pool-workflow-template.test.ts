@@ -2,27 +2,42 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   assertActiveHostedPoolWorkflowAttestation,
+  canonicalHostedPoolReusableWorkflowIdentity,
   createHostedPoolWorkflowSourceAttestation,
   hostedPoolSessionMode,
   hostedPoolWorkflowSchemaVersion,
   hostedPoolWorkflowSemanticSha256,
-  renderCanonicalHostedPoolWorkflowV5,
-  scanCanonicalHostedPoolWorkflowV5,
+  renderCanonicalHostedPoolWorkflowV2,
+  scanCanonicalHostedPoolWorkflowV2,
 } from "../domain/hosted-pool-workflow-template";
+import {
+  hostedPoolWorkflowV2Golden,
+  hostedPoolWorkflowV2GoldenOptions,
+  hostedPoolWorkflowV2GoldenSha256,
+} from "./fixtures/hosted-pool-workflow-v2.golden";
 
-const options = {
-  actionRef: "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
-  apiUrl: "https://api.reviewrouter.site",
-  providerInstanceId: "hosted-pool:repository:123456",
-  bindingId: "hosted-binding-1",
-  bindingRevision: 7,
-} as const;
+const options = hostedPoolWorkflowV2GoldenOptions;
 
-describe("hosted pool workflow schema v5", () => {
+describe("hosted pool workflow schema v2", () => {
+  it("derives the exact T0 reusable workflow identity from the immutable Action ref", () => {
+    expect(
+      canonicalHostedPoolReusableWorkflowIdentity(options.actionRef),
+    ).toEqual({
+      ref: "777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@0123456789abcdef0123456789abcdef01234567",
+      sha: "0123456789abcdef0123456789abcdef01234567",
+    });
+  });
+
   it("renders the exact trusted OIDC workflow without credential ingress", () => {
-    const workflow = renderCanonicalHostedPoolWorkflowV5(options);
+    const workflow = renderCanonicalHostedPoolWorkflowV2(options);
 
-    expect(workflow).toContain("  pull_request_target:");
+    expect(workflow).toBe(hostedPoolWorkflowV2Golden);
+    expect(Buffer.byteLength(workflow, "utf8")).toBe(1486);
+    expect(createHash("sha256").update(workflow).digest("hex")).toBe(
+      hostedPoolWorkflowV2GoldenSha256,
+    );
+    expect(workflow).toContain("  pull_request:");
+    expect(workflow).not.toContain("pull_request_target");
     expect(workflow).toContain("permissions: {}");
     expect(workflow).toContain("      id-token: write");
     expect(workflow).toContain(
@@ -44,7 +59,7 @@ describe("hosted pool workflow schema v5", () => {
     expect(workflow).not.toMatch(/^\s*schedule\s*:/imu);
     expect(workflow).not.toContain("codex-refresh");
     expect(workflow).not.toContain("concurrency:");
-    expect(scanCanonicalHostedPoolWorkflowV5(workflow)).toEqual({
+    expect(scanCanonicalHostedPoolWorkflowV2(workflow)).toEqual({
       valid: true,
       errors: [],
     });
@@ -57,14 +72,27 @@ describe("hosted pool workflow schema v5", () => {
     "      unsafe: ${{ toJSON(secrets) }}",
     "  schedule:\n    - cron: '17 */6 * * *'",
   ])("fails closed when credential or refresh ingress is added: %s", (line) => {
-    const workflow = `${renderCanonicalHostedPoolWorkflowV5(options)}${line}\n`;
-    expect(scanCanonicalHostedPoolWorkflowV5(workflow)).toMatchObject({
+    const workflow = `${renderCanonicalHostedPoolWorkflowV2(options)}${line}\n`;
+    expect(scanCanonicalHostedPoolWorkflowV2(workflow)).toMatchObject({
       valid: false,
     });
   });
 
+  it("rejects the prohibited pull_request_target event policy", () => {
+    const workflow = renderCanonicalHostedPoolWorkflowV2(options).replaceAll(
+      "pull_request",
+      "pull_request_target",
+    );
+    expect(scanCanonicalHostedPoolWorkflowV2(workflow)).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([
+        "hosted_workflow_trusted_ingress_required",
+      ]),
+    });
+  });
+
   it("rejects stale binding attestations even when workflow bytes are exact", () => {
-    const workflow = renderCanonicalHostedPoolWorkflowV5(options);
+    const workflow = renderCanonicalHostedPoolWorkflowV2(options);
     const attestation = createHostedPoolWorkflowSourceAttestation({
       repositoryId: "123456",
       workflowPath: ".github/workflows/reviewrouter-codex.yml",
@@ -92,7 +120,7 @@ describe("hosted pool workflow schema v5", () => {
   });
 
   it("accepts exact trusted source evidence for the current binding revision", () => {
-    const workflow = renderCanonicalHostedPoolWorkflowV5(options);
+    const workflow = renderCanonicalHostedPoolWorkflowV2(options);
     const attestation = createHostedPoolWorkflowSourceAttestation({
       repositoryId: "123456",
       workflowPath: ".github/workflows/reviewrouter-codex.yml",

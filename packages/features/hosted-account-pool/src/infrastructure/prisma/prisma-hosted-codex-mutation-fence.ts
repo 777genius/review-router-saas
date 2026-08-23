@@ -15,52 +15,89 @@ export class PrismaHostedCodexMutationFence implements HostedCodexMutationFenceP
     if (!Number.isSafeInteger(input.ttlMs) || input.ttlMs < 1_000) {
       return { status: "denied" as const, safeMessage: "Invalid fence TTL." };
     }
-    const account = await this.prisma.hostedCodexAccount.findUnique({
-      where: { id: input.accountId },
-    });
-    if (!account?.activeGeneration) {
-      return { status: "denied" as const, safeMessage: "Account unavailable." };
-    }
-    const leaseId = `${input.accountId}.${randomBytes(32).toString("base64url")}`;
     const now = new Date();
     const expiresAt = new Date(now.getTime() + input.ttlMs);
+    let leaseId: string | undefined;
     try {
       await this.prisma.$transaction(
         async (transaction) => {
+          const account = await transaction.hostedCodexAccount.findUnique({
+            where: { id: input.accountId },
+          });
+          if (!account?.activeGeneration) {
+            throw new Error("hosted_codex_mutation_account_unavailable");
+          }
           const current = await transaction.hostedCodexMutationFence.findUnique(
             {
               where: { accountId: input.accountId },
             },
           );
-          if (current && current.expiresAt > now) {
+          if (
+            current?.ownerIdHash &&
+            current.expiresAt &&
+            current.expiresAt > now
+          ) {
             throw new Error("hosted_codex_mutation_fence_busy");
           }
-          await transaction.hostedCodexMutationFence.upsert({
-            where: { accountId: input.accountId },
-            create: {
-              accountId: input.accountId,
-              workspaceId: account.workspaceId,
-              poolId: account.poolId,
-              fenceEpoch: 1n,
-              ownerIdHash: sha256(leaseId),
-              expectedGeneration: account.activeGeneration!,
-              expiresAt,
-            },
-            update: {
-              fenceEpoch: { increment: 1 },
-              ownerIdHash: sha256(leaseId),
-              expectedGeneration: account.activeGeneration!,
-              expiresAt,
-            },
-          });
+          const nextEpoch = (current?.fenceEpoch ?? 0n) + 1n;
+          leaseId = encodeLeaseId(input.accountId, nextEpoch);
+          const ownerIdHash = sha256(leaseId);
+          if (!current) {
+            await transaction.hostedCodexMutationFence.create({
+              data: {
+                accountId: input.accountId,
+                workspaceId: account.workspaceId,
+                poolId: account.poolId,
+                fenceEpoch: nextEpoch,
+                ownerIdHash,
+                expectedGeneration: account.activeGeneration,
+                expiresAt,
+                releasedAt: null,
+                releaseReason: null,
+              },
+            });
+            return;
+          }
+          const takeover =
+            await transaction.hostedCodexMutationFence.updateMany({
+              where: {
+                accountId: input.accountId,
+                fenceEpoch: current.fenceEpoch,
+                OR: [
+                  { ownerIdHash: null, expiresAt: null },
+                  { expiresAt: { lte: now } },
+                ],
+              },
+              data: {
+                fenceEpoch: nextEpoch,
+                ownerIdHash,
+                expectedGeneration: account.activeGeneration,
+                expiresAt,
+                releasedAt: null,
+                releaseReason: null,
+              },
+            });
+          if (takeover.count !== 1) {
+            throw new Error("hosted_codex_mutation_fence_busy");
+          }
         },
-        { isolationLevel: "Serializable" },
+        { maxWait: 15_000, timeout: 15_000 },
       );
     } catch (error) {
       if (
         error instanceof Error &&
-        error.message === "hosted_codex_mutation_fence_busy"
+        (error.message === "hosted_codex_mutation_fence_busy" ||
+          error.message === "hosted_codex_mutation_account_unavailable")
       ) {
+        return {
+          status: "denied" as const,
+          safeMessage:
+            error.message === "hosted_codex_mutation_fence_busy"
+              ? "Account is refreshing."
+              : "Account unavailable.",
+        };
+      }
+      if (isPrismaErrorCode(error, "P2002")) {
         return {
           status: "denied" as const,
           safeMessage: "Account is refreshing.",
@@ -68,6 +105,7 @@ export class PrismaHostedCodexMutationFence implements HostedCodexMutationFenceP
       }
       throw error;
     }
+    if (!leaseId) throw new Error("hosted_codex_mutation_fence_unavailable");
     return { status: "granted" as const, leaseId, expiresAt };
   }
 
@@ -88,34 +126,59 @@ export class PrismaHostedCodexMutationFence implements HostedCodexMutationFenceP
     readonly nextGenerationHash: string;
     readonly idempotencyKey: string;
   }) {
-    const accountId = accountIdFromLease(input.leaseId);
-    const deleted = await this.prisma.hostedCodexMutationFence.deleteMany({
+    const authority = hostedCodexMutationLeaseAuthority(input.leaseId);
+    const released = await this.prisma.hostedCodexMutationFence.updateMany({
       where: {
-        accountId,
-        ownerIdHash: sha256(input.leaseId),
+        accountId: authority.accountId,
+        ownerIdHash: authority.ownerIdHash,
+        fenceEpoch: authority.fenceEpoch,
         expiresAt: { gt: new Date() },
       },
+      data: {
+        ownerIdHash: null,
+        expectedGeneration: null,
+        expiresAt: null,
+        releasedAt: new Date(),
+        releaseReason: "writeback_committed",
+      },
     });
-    if (deleted.count !== 1) {
+    if (released.count !== 1) {
       throw new Error("hosted_codex_mutation_fence_invalid");
     }
     return { status: "committed" as const };
   }
 
   async release(input: { readonly leaseId: string; readonly reason: string }) {
-    const accountId = accountIdFromLease(input.leaseId);
-    await this.prisma.hostedCodexMutationFence.deleteMany({
-      where: { accountId, ownerIdHash: sha256(input.leaseId) },
+    const authority = hostedCodexMutationLeaseAuthority(input.leaseId);
+    const released = await this.prisma.hostedCodexMutationFence.updateMany({
+      where: {
+        accountId: authority.accountId,
+        ownerIdHash: authority.ownerIdHash,
+        fenceEpoch: authority.fenceEpoch,
+      },
+      data: {
+        ownerIdHash: null,
+        expectedGeneration: null,
+        expiresAt: null,
+        releasedAt: new Date(),
+        releaseReason: input.reason.slice(0, 120),
+      },
     });
+    if (released.count !== 1) {
+      throw new Error("hosted_codex_mutation_fence_invalid");
+    }
   }
 
   private async requireLiveFence(leaseId: string) {
+    const authority = hostedCodexMutationLeaseAuthority(leaseId);
     const fence = await this.prisma.hostedCodexMutationFence.findUnique({
-      where: { accountId: accountIdFromLease(leaseId) },
+      where: { accountId: authority.accountId },
     });
     if (
       !fence ||
-      fence.ownerIdHash !== sha256(leaseId) ||
+      fence.ownerIdHash !== authority.ownerIdHash ||
+      fence.fenceEpoch !== authority.fenceEpoch ||
+      !fence.expiresAt ||
       fence.expiresAt <= new Date()
     ) {
       throw new Error("hosted_codex_mutation_fence_invalid");
@@ -124,14 +187,62 @@ export class PrismaHostedCodexMutationFence implements HostedCodexMutationFenceP
   }
 }
 
-function accountIdFromLease(leaseId: string): string {
-  const separator = leaseId.indexOf(".");
-  if (separator < 1 || separator > 160) {
+function encodeLeaseId(accountId: string, fenceEpoch: bigint): string {
+  if (!accountId || accountId.length > 160 || fenceEpoch < 1n) {
     throw new Error("hosted_codex_mutation_lease_invalid");
   }
-  return leaseId.slice(0, separator);
+  return [
+    "hcmf1",
+    Buffer.from(accountId, "utf8").toString("base64url"),
+    fenceEpoch.toString(10),
+    randomBytes(32).toString("base64url"),
+  ].join(".");
+}
+
+function decodeLeaseId(leaseId: string): {
+  readonly accountId: string;
+  readonly fenceEpoch: bigint;
+} {
+  const parts = leaseId.split(".");
+  if (
+    parts.length !== 4 ||
+    parts[0] !== "hcmf1" ||
+    !parts[1] ||
+    !/^[1-9][0-9]*$/u.test(parts[2] ?? "") ||
+    !/^[A-Za-z0-9_-]{43}$/u.test(parts[3] ?? "")
+  ) {
+    throw new Error("hosted_codex_mutation_lease_invalid");
+  }
+  const accountId = Buffer.from(parts[1], "base64url").toString("utf8");
+  const fenceEpoch = BigInt(parts[2]!);
+  if (
+    !accountId ||
+    accountId.length > 160 ||
+    Buffer.from(accountId, "utf8").toString("base64url") !== parts[1]
+  ) {
+    throw new Error("hosted_codex_mutation_lease_invalid");
+  }
+  return { accountId, fenceEpoch };
+}
+
+/** Returns the caller-held owner and monotonic terms without exposing its nonce. */
+export function hostedCodexMutationLeaseAuthority(leaseId: string): {
+  readonly accountId: string;
+  readonly fenceEpoch: bigint;
+  readonly ownerIdHash: string;
+} {
+  return { ...decodeLeaseId(leaseId), ownerIdHash: sha256(leaseId) };
 }
 
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function isPrismaErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { readonly code?: unknown }).code === code
+  );
 }
