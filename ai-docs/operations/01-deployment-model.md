@@ -93,6 +93,14 @@ the recovery KMS role and recovery authority public key, never a signing key.
 Do not copy `CAPABILITY_HMAC_KEY` into web/worker environments that do not
 compose the relay.
 
+Production Render services use Render-managed AWS OIDC, never long-lived AWS
+access keys. Configure the workspace OIDC provider in AWS and bind each IAM role
+trust policy to the exact Render workspace, environment, and service subject.
+The deploy helper projects only `AWS_ROLE_ARN`; Render injects
+`AWS_WEB_IDENTITY_TOKEN_FILE` during deployment, and the runtime reads that
+short-lived token with the AWS SDK web-identity provider. Never set the token
+file path manually.
+
 Operational meaning:
 
 - `DATABASE_INCARNATION` is an externally recorded opaque identity for the live

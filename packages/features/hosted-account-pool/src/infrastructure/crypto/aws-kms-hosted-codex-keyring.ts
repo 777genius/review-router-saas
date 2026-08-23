@@ -6,7 +6,7 @@ import {
   type DecryptCommandOutput,
   type EncryptCommandOutput,
 } from "@aws-sdk/client-kms";
-import { fromTemporaryCredentials } from "@aws-sdk/credential-providers";
+import { fromTokenFile } from "@aws-sdk/credential-providers";
 import type {
   CredentialKeyringPort,
   WrappedDataEncryptionKey,
@@ -215,6 +215,8 @@ export function createProductionAwsKmsHostedCodexKeyring(input: {
   const keyId = input.env.REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN?.trim();
   const region = input.env.AWS_REGION?.trim();
   const roleArn = input.env.REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN?.trim();
+  const workloadRoleArn = input.env.AWS_ROLE_ARN?.trim();
+  const webIdentityTokenFile = input.env.AWS_WEB_IDENTITY_TOKEN_FILE?.trim();
   if (!keyId) throw new Error("hosted_codex_aws_kms_key_id_missing");
   if (!region) throw new Error("hosted_codex_aws_kms_region_missing");
   if (
@@ -225,16 +227,25 @@ export function createProductionAwsKmsHostedCodexKeyring(input: {
   ) {
     throw new Error("hosted_codex_aws_role_arn_invalid");
   }
+  if (workloadRoleArn !== roleArn) {
+    throw new Error("hosted_codex_aws_workload_role_mismatch");
+  }
+  if (
+    !webIdentityTokenFile ||
+    !webIdentityTokenFile.startsWith("/") ||
+    webIdentityTokenFile.includes("\0")
+  ) {
+    throw new Error("hosted_codex_aws_web_identity_token_file_invalid");
+  }
   const client =
     input.client ??
     new KMSClient({
       region,
-      credentials: fromTemporaryCredentials({
+      credentials: fromTokenFile({
         clientConfig: { region },
-        params: {
-          RoleArn: roleArn,
-          RoleSessionName: `reviewrouter-hosted-codex-${purpose}`,
-        },
+        roleArn,
+        roleSessionName: `reviewrouter-hosted-codex-${purpose}`,
+        webIdentityTokenFile,
       }),
     });
   return new AwsKmsHostedCodexKeyring(

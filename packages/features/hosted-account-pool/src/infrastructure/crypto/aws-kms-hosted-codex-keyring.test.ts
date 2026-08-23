@@ -20,6 +20,9 @@ describe("AWS KMS hosted credential keyring", () => {
       AWS_REGION: "eu-west-1",
       REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN:
         "arn:aws:iam::123456789012:role/reviewrouter-hosted-relay",
+      AWS_ROLE_ARN:
+        "arn:aws:iam::123456789012:role/reviewrouter-hosted-relay",
+      AWS_WEB_IDENTITY_TOKEN_FILE: "/var/run/secrets/render-oidc/token",
     };
     expect(() =>
       createProductionAwsKmsHostedCodexKeyring({
@@ -33,6 +36,22 @@ describe("AWS KMS hosted credential keyring", () => {
         client: { send: vi.fn() },
       }),
     ).toThrow("hosted_codex_aws_role_arn_invalid");
+    expect(() =>
+      createProductionAwsKmsHostedCodexKeyring({
+        env: {
+          ...env,
+          AWS_ROLE_ARN:
+            "arn:aws:iam::123456789012:role/reviewrouter-hosted-other",
+        },
+        client: { send: vi.fn() },
+      }),
+    ).toThrow("hosted_codex_aws_workload_role_mismatch");
+    expect(() =>
+      createProductionAwsKmsHostedCodexKeyring({
+        env: { ...env, AWS_WEB_IDENTITY_TOKEN_FILE: "relative/token" },
+        client: { send: vi.fn() },
+      }),
+    ).toThrow("hosted_codex_aws_web_identity_token_file_invalid");
   });
 
   it("binds wrapping to context, audits both operations, and restores", async () => {

@@ -653,6 +653,11 @@ export function hostedPoolRuntimeEnvForRole(env, role) {
       "runtime-only hosted pool role ARN must not be supplied by deploy source",
     );
   }
+  if (Object.hasOwn(env, "AWS_WEB_IDENTITY_TOKEN_FILE")) {
+    throw new Error(
+      "Render-managed AWS web identity token path must not be supplied by deploy source",
+    );
+  }
   const kmsKeyArn = requiredEnv("REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN", env);
   const awsRegion = requiredEnv("AWS_REGION", env);
   const kmsRegion =
@@ -668,6 +673,7 @@ export function hostedPoolRuntimeEnvForRole(env, role) {
     REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE: "external_kms",
     REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE: purpose.toLowerCase(),
     REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN: roleArn,
+    AWS_ROLE_ARN: roleArn,
     REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN: kmsKeyArn,
     AWS_REGION: awsRegion,
     REVIEW_ROUTER_HOSTED_CODEX_DATABASE_RESOURCE_IDENTITY: requiredEnv(

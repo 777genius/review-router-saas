@@ -81,7 +81,13 @@ describe("Codex rotating Action bundle reproducibility", () => {
 function copyBuildInputs(sourceRoot: string, checkoutRoot: string) {
   const trackedFiles = execFileSync(
     "git",
-    ["ls-files", "-z", "--", "packages"],
+    [
+      "ls-files",
+      "-z",
+      "--",
+      "packages/features/codex-oauth-rotating",
+      "packages/shared",
+    ],
     { cwd: sourceRoot },
   )
     .toString("utf8")

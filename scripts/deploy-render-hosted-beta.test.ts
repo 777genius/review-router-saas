@@ -858,6 +858,16 @@ describe("Render hosted deploy hardening", () => {
         env: common,
       }).map(({ key, value }) => [key, value]),
     );
+    const web = Object.fromEntries(
+      buildServiceEnv({
+        databaseUrl: "postgres://internal/db",
+        privateKey: "private-key-not-logged",
+        role: "web",
+        webUrl: "https://reviewrouter.example",
+        apiUrl: "https://api.reviewrouter.example",
+        env: common,
+      }).map(({ key, value }) => [key, value]),
+    );
     const worker = Object.fromEntries(
       buildServiceEnv({
         databaseUrl: "postgres://internal/db",
@@ -900,6 +910,29 @@ describe("Render hosted deploy hardening", () => {
     expect(api.REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN).toBe(
       hostedPoolEnv.REVIEW_ROUTER_HOSTED_CODEX_RELAY_AWS_ROLE_ARN,
     );
+    expect(api.AWS_ROLE_ARN).toBe(
+      hostedPoolEnv.REVIEW_ROUTER_HOSTED_CODEX_RELAY_AWS_ROLE_ARN,
+    );
+    expect(web.AWS_ROLE_ARN).toBe(
+      hostedPoolEnv.REVIEW_ROUTER_HOSTED_CODEX_ENROLLMENT_AWS_ROLE_ARN,
+    );
+    expect(api.AWS_WEB_IDENTITY_TOKEN_FILE).toBeUndefined();
+    expect(web.AWS_WEB_IDENTITY_TOKEN_FILE).toBeUndefined();
+    expect(() =>
+      buildServiceEnv({
+        databaseUrl: "postgres://internal/db",
+        privateKey: "private-key-not-logged",
+        role: "api",
+        webUrl: "https://reviewrouter.example",
+        apiUrl: "https://api.reviewrouter.example",
+        env: {
+          ...common,
+          AWS_WEB_IDENTITY_TOKEN_FILE: "/tmp/operator-supplied-token",
+        },
+      }),
+    ).toThrow(
+      "Render-managed AWS web identity token path must not be supplied by deploy source",
+    );
     for (const key of [
       "REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE",
       "REVIEW_ROUTER_HOSTED_CODEX_AWS_ROLE_ARN",
@@ -908,6 +941,7 @@ describe("Render hosted deploy hardening", () => {
       "REVIEW_ROUTER_HOSTED_CODEX_DATABASE_INCARNATION",
       "REVIEW_ROUTER_HOSTED_CODEX_FINGERPRINT_PEPPER",
       "REVIEW_ROUTER_HOSTED_CODEX_CAPABILITY_HMAC_KEY",
+      "AWS_ROLE_ARN",
     ]) {
       expect(worker[key], key).toBe(undefined);
     }
