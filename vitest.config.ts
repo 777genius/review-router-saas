@@ -15,6 +15,11 @@ export default defineConfig({
       ...(process.env.REVIEW_ROUTER_RUN_HOSTED_POOL_POSTGRES_E2E === "1"
         ? []
         : ["scripts/hosted-pool-e2e/hosted-pool-postgres.e2e.test.ts"]),
+      ...(process.env.REVIEW_ROUTER_HOSTED_POOL_MIGRATION_DATABASE_URL
+        ? []
+        : [
+            "scripts/hosted-pool-e2e/hosted-pool-migration-rehearsal.test.ts",
+          ]),
     ],
     environment: "node",
     globals: false,

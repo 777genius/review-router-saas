@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  cpSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
@@ -42,6 +43,7 @@ describe("Codex rotating Action bundle reproducibility", () => {
           ],
           { cwd: checkout.root, stdio: "pipe" },
         );
+        copyInstalledSubscriptionRuntime(sourceRoot, checkout.root);
         execFileSync(
           process.execPath,
           ["scripts/build-codex-rotating-action.mjs"],
@@ -89,6 +91,7 @@ function copyBuildInputs(sourceRoot: string, checkoutRoot: string) {
     "package.json",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
+    "tsconfig.base.json",
     "scripts/build-codex-rotating-action.mjs",
     "scripts/codex-rotating-action-third-party-licenses.txt",
     "scripts/lib/codex-rotating-action-build.mjs",
@@ -99,4 +102,20 @@ function copyBuildInputs(sourceRoot: string, checkoutRoot: string) {
     mkdirSync(dirname(target), { recursive: true });
     copyFileSync(join(sourceRoot, file), target);
   }
+}
+
+function copyInstalledSubscriptionRuntime(
+  sourceRoot: string,
+  checkoutRoot: string,
+) {
+  const source = join(
+    sourceRoot,
+    "node_modules/@777genius/subscription-runtime",
+  );
+  const target = join(
+    checkoutRoot,
+    "node_modules/@777genius/subscription-runtime",
+  );
+  mkdirSync(dirname(target), { recursive: true });
+  cpSync(source, target, { dereference: true, recursive: true });
 }
