@@ -22,7 +22,7 @@ import {
   relationSearchProofVersion,
   reviewInvestigationCoverageProfileV2,
   reviewInvestigationCoverageProfileV7,
-  reviewInvestigationCoverageProfileV8,
+  reviewInvestigationCoverageProfileV9,
   type InvestigationPageEvidence,
   type ReviewInvestigationContract,
   type SeedInvestigationObligation,
@@ -329,7 +329,7 @@ describe("versioned coverage policies", () => {
 
 function contract(): ReviewInvestigationContract {
   return {
-    ...reviewInvestigationCoverageProfileV8,
+    ...reviewInvestigationCoverageProfileV9,
     producerReleaseId: "release-1",
   };
 }

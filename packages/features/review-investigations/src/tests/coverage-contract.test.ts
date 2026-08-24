@@ -12,6 +12,7 @@ import {
   reviewInvestigationCoverageProfileV6,
   reviewInvestigationCoverageProfileV7,
   reviewInvestigationCoverageProfileV8,
+  reviewInvestigationCoverageProfileV9,
 } from "../domain/coverage-contract";
 import { canonicalJson } from "../domain/canonicalization";
 
@@ -31,15 +32,15 @@ describe("review investigation coverage profile", () => {
     ).not.toThrow();
     expect(() =>
       assertSupportedReviewInvestigationCoverageProfile({
-        ...reviewInvestigationCoverageProfileV8,
+        ...reviewInvestigationCoverageProfileV9,
         producerReleaseId: "release-1",
       }),
     ).not.toThrow();
 
-    for (const field of Object.keys(reviewInvestigationCoverageProfileV8)) {
+    for (const field of Object.keys(reviewInvestigationCoverageProfileV9)) {
       expect(() =>
         assertSupportedReviewInvestigationCoverageProfile({
-          ...reviewInvestigationCoverageProfileV8,
+          ...reviewInvestigationCoverageProfileV9,
           producerReleaseId: "release-1",
           [field]: `${field}.unsupported`,
         }),
@@ -109,6 +110,12 @@ describe("review investigation coverage profile", () => {
     ).toBe(ReviewInvestigationCoverageProfileGeneration.V8);
     expect(
       resolveReviewInvestigationCoverageProfileGeneration({
+        ...reviewInvestigationCoverageProfileV9,
+        producerReleaseId: "release-current-v9",
+      }),
+    ).toBe(ReviewInvestigationCoverageProfileGeneration.V9);
+    expect(
+      resolveReviewInvestigationCoverageProfileGeneration({
         ...reviewInvestigationCoverageProfileV2,
         coverageContractVersion: "legacy-coverage.v0",
         producerReleaseId: "release-legacy",
@@ -144,8 +151,8 @@ describe("review investigation coverage profile", () => {
   it("matches the current public Action capability golden vector", () => {
     expect(
       createHash("sha256")
-        .update(canonicalJson(reviewInvestigationCoverageProfileV8), "utf8")
+        .update(canonicalJson(reviewInvestigationCoverageProfileV9), "utf8")
         .digest("hex"),
-    ).toBe("28323b59ad09d33c483641ab92f4395771f4e51b05274ecdceb5fd7d83f5e575");
+    ).toBe("4841db451fdebc1366979c6295b27450c23e96c8f635cab416d72cc1ad0f7adc");
   });
 });
