@@ -41,6 +41,8 @@ export const reviewInvestigationProbePolicyV1 =
   "review-investigation-probe-policy.v1" as const;
 export const reviewInvestigationProbePolicyV2 =
   "review-investigation-probe-policy.v2" as const;
+export const reviewInvestigationProbePolicyV3 =
+  "review-investigation-probe-policy.v3" as const;
 export const reviewInvestigationSearchPolicyV1 =
   "review-investigation-fixed-string-search.v1" as const;
 
@@ -54,6 +56,7 @@ export enum ReviewInvestigationCoverageProfileGeneration {
   V7 = 7,
   V8 = 8,
   V9 = 9,
+  V10 = 10,
 }
 
 export const reviewInvestigationCoverageProfileV1 = Object.freeze({
@@ -115,6 +118,11 @@ export const reviewInvestigationCoverageProfileV9 = Object.freeze({
     "a185e50ee887e3351d1c1eccb135a2d48030fe56ef5ec2e1411002d4c1a76ef6",
 } as const);
 
+export const reviewInvestigationCoverageProfileV10 = Object.freeze({
+  ...reviewInvestigationCoverageProfileV9,
+  probePolicyVersion: reviewInvestigationProbePolicyV3,
+} as const);
+
 export function resolveReviewInvestigationCoverageProfileGeneration(
   contract: ReviewInvestigationContract,
 ): ReviewInvestigationCoverageProfileGeneration | null {
@@ -161,6 +169,10 @@ export function resolveReviewInvestigationCoverageProfileGeneration(
     [
       ReviewInvestigationCoverageProfileGeneration.V9,
       reviewInvestigationCoverageProfileV9,
+    ],
+    [
+      ReviewInvestigationCoverageProfileGeneration.V10,
+      reviewInvestigationCoverageProfileV10,
     ],
   ] as const) {
     const expectedKeys = [...Object.keys(profile), "producerReleaseId"].sort();

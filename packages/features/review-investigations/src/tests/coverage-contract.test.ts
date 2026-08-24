@@ -13,6 +13,7 @@ import {
   reviewInvestigationCoverageProfileV7,
   reviewInvestigationCoverageProfileV8,
   reviewInvestigationCoverageProfileV9,
+  reviewInvestigationCoverageProfileV10,
 } from "../domain/coverage-contract";
 import { canonicalJson } from "../domain/canonicalization";
 
@@ -32,15 +33,15 @@ describe("review investigation coverage profile", () => {
     ).not.toThrow();
     expect(() =>
       assertSupportedReviewInvestigationCoverageProfile({
-        ...reviewInvestigationCoverageProfileV9,
+        ...reviewInvestigationCoverageProfileV10,
         producerReleaseId: "release-1",
       }),
     ).not.toThrow();
 
-    for (const field of Object.keys(reviewInvestigationCoverageProfileV9)) {
+    for (const field of Object.keys(reviewInvestigationCoverageProfileV10)) {
       expect(() =>
         assertSupportedReviewInvestigationCoverageProfile({
-          ...reviewInvestigationCoverageProfileV9,
+          ...reviewInvestigationCoverageProfileV10,
           producerReleaseId: "release-1",
           [field]: `${field}.unsupported`,
         }),
@@ -116,6 +117,12 @@ describe("review investigation coverage profile", () => {
     ).toBe(ReviewInvestigationCoverageProfileGeneration.V9);
     expect(
       resolveReviewInvestigationCoverageProfileGeneration({
+        ...reviewInvestigationCoverageProfileV10,
+        producerReleaseId: "release-current-v10",
+      }),
+    ).toBe(ReviewInvestigationCoverageProfileGeneration.V10);
+    expect(
+      resolveReviewInvestigationCoverageProfileGeneration({
         ...reviewInvestigationCoverageProfileV2,
         coverageContractVersion: "legacy-coverage.v0",
         producerReleaseId: "release-legacy",
@@ -151,8 +158,8 @@ describe("review investigation coverage profile", () => {
   it("matches the current public Action capability golden vector", () => {
     expect(
       createHash("sha256")
-        .update(canonicalJson(reviewInvestigationCoverageProfileV9), "utf8")
+        .update(canonicalJson(reviewInvestigationCoverageProfileV10), "utf8")
         .digest("hex"),
-    ).toBe("4841db451fdebc1366979c6295b27450c23e96c8f635cab416d72cc1ad0f7adc");
+    ).toBe("86a68eda454aff14d596da321ad635c7e67b3d6f18b990c2c1e02dfb3f9298b8");
   });
 });
