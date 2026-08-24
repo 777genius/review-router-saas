@@ -425,6 +425,7 @@ describe("hosted Codex quota failover", () => {
     let grant = admittedGrant(primary, backup);
     const ledger = {
       recordRequestHash: vi.fn(async () => undefined),
+      ensureRequestHash: vi.fn(async () => undefined),
       failover: vi.fn(async (input: any) => {
         const result = input.transition(grant, primary, backup);
         if (result.status === "switched") grant = result.grant;
