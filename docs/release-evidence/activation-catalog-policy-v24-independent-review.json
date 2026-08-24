@@ -1,0 +1,215 @@
+{
+  "verdict": "GO",
+  "exactHead": "4615aa7c94a384530dffa46c597e48f43b1d6714",
+  "sourceProductCommit": "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
+  "reviewedAt": "2026-08-24T07:10:00.000Z",
+  "reviewerRunId": "coderabbit:a4cdf814-33fb-4e77-9f07-bcb351d20a75:pr221-remediation",
+  "candidateSha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630",
+  "candidateBytes": 2477044,
+  "candidateCaptures": [
+    {
+      "label": "github-actions:32660787417:artifact:9498696525",
+      "sha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630"
+    },
+    {
+      "label": "github-actions:32661227800:artifact:9498808251",
+      "sha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630"
+    }
+  ],
+  "postgresImages": {
+    "sourcePg16": "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+    "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
+  },
+  "canonicalDigests": {
+    "preactivation": "sha256:fe9c71391557f194d84070689100ba55e31fe9e89a768b39879ff43619726c37",
+    "activated": "sha256:b5b56feebf9be6e17e6d4aaf17d7f5409b7a3df0f6fe5692ea588043d5a7e4c1",
+    "artifact": "sha256:5f4dc73eff4574cea5d6953173b0d35d4332fdc1d2e8b74190dce69569b3292d"
+  },
+  "normalizedDelta": {
+    "roles": {
+      "before": 10,
+      "after": 10,
+      "added": 0,
+      "removed": 0,
+      "beforeSha256": "27db1ca36419ddf503992d9a4c5794924e79d11f2759f9e14990f63fb6ce619f",
+      "afterSha256": "27db1ca36419ddf503992d9a4c5794924e79d11f2759f9e14990f63fb6ce619f"
+    },
+    "memberships": {
+      "before": 5,
+      "after": 5,
+      "added": 0,
+      "removed": 0,
+      "beforeSha256": "9326b80616874f230e11a1ef8d497a97eab39f25c2692032ea0207dc8394389f",
+      "afterSha256": "9326b80616874f230e11a1ef8d497a97eab39f25c2692032ea0207dc8394389f"
+    },
+    "roleReachability": {
+      "before": 8,
+      "after": 8,
+      "added": 0,
+      "removed": 0,
+      "beforeSha256": "725971def5899065c58571d8be7df0a63ef7f58fd8c32ecd652749dcde253694",
+      "afterSha256": "725971def5899065c58571d8be7df0a63ef7f58fd8c32ecd652749dcde253694"
+    },
+    "preactivation": {
+      "grantsBefore": 2806,
+      "grantsAfter": 2906,
+      "grantsAdded": 100,
+      "grantsRemoved": 0,
+      "rowSecurityBefore": 116,
+      "rowSecurityAfter": 120,
+      "rowSecurityAdded": 4,
+      "rowSecurityRemoved": 0
+    },
+    "activated": {
+      "grantsBefore": 3752,
+      "grantsAfter": 3888,
+      "grantsAdded": 136,
+      "grantsRemoved": 0,
+      "rowSecurityBefore": 116,
+      "rowSecurityAfter": 120,
+      "rowSecurityAdded": 4,
+      "rowSecurityRemoved": 0
+    },
+    "effectivePermissionAdditions": {
+      "preactivation": {
+        "reviewrouter_activation_permit_installer": 7,
+        "reviewrouter_activation_receipt_guard": 7,
+        "reviewrouter_activation_receipt_reader": 7,
+        "reviewrouter_api": 11,
+        "reviewrouter_codex_effect_authority": 7,
+        "reviewrouter_release_migration": 7,
+        "reviewrouter_schema_owner": 81,
+        "reviewrouter_target_role_bootstrap": 7,
+        "reviewrouter_web": 11,
+        "reviewrouter_worker": 11
+      },
+      "activated": {
+        "reviewrouter_activation_permit_installer": 7,
+        "reviewrouter_activation_receipt_guard": 7,
+        "reviewrouter_activation_receipt_reader": 7,
+        "reviewrouter_api": 23,
+        "reviewrouter_codex_effect_authority": 7,
+        "reviewrouter_release_migration": 7,
+        "reviewrouter_schema_owner": 81,
+        "reviewrouter_target_role_bootstrap": 7,
+        "reviewrouter_web": 23,
+        "reviewrouter_worker": 23
+      },
+      "removedForEveryPrincipal": 0
+    },
+    "newRowSecurityResources": [
+      "HostedCodexCredentialEnvelopeRevision",
+      "HostedCodexRestoreItem",
+      "HostedCodexRestoreOperation",
+      "HostedCodexUpstreamEffectAttempt"
+    ],
+    "newRowSecurityState": {
+      "enabled": false,
+      "forced": false,
+      "policies": [],
+      "owner": "reviewrouter_schema_owner"
+    },
+    "newResourceCount": 35,
+    "newResourceGroups": {
+      "tables": [
+        "HostedCodexCredentialEnvelopeRevision",
+        "HostedCodexRestoreItem",
+        "HostedCodexRestoreOperation",
+        "HostedCodexUpstreamEffectAttempt"
+      ],
+      "routines": [
+        "hosted_codex_effect_attempt_monotonic",
+        "hosted_codex_envelope_revision_immutable",
+        "hosted_codex_evidence_no_delete",
+        "hosted_codex_fence_monotonic",
+        "hosted_codex_restore_item_monotonic",
+        "hosted_codex_restore_operation_monotonic",
+        "hosted_codex_terminal_unknown_poison_grant"
+      ],
+      "types": [
+        "HostedCodexCredentialEnvelopeRevision",
+        "HostedCodexRestoreItem",
+        "HostedCodexRestoreItemState",
+        "HostedCodexRestoreOperation",
+        "HostedCodexRestoreOperationState",
+        "HostedCodexUpstreamEffectAttempt",
+        "HostedCodexUpstreamEffectState"
+      ]
+    }
+  },
+  "migrationSecurityReview": {
+    "migrations": [
+      "000075_hosted_codex_security_certification",
+      "000076_hosted_codex_terminalization_restore_invariants",
+      "000077_hosted_codex_r57_security_race_remediation"
+    ],
+    "directRoleStatements": 0,
+    "directMembershipStatements": 0,
+    "directGrantStatements": 0,
+    "directRevokeStatements": 0,
+    "directRlsPolicyStatements": 0,
+    "disposition": "The observed additions are the normal schema-owner and activation/runtime ACL projection for the new hosted Codex restore and upstream-effect schema objects."
+  },
+  "findings": [
+    {
+      "severity": "blocking",
+      "subject": "Candidate integrity was not committed outside the candidate itself",
+      "disposition": "Fixed by pinning the whole-file size, SHA-256, phase digests and canonical artifact digest in the promotion script, provenance and focused tests."
+    },
+    {
+      "severity": "blocking",
+      "subject": "The complete normalized v23 to v24 delta was not previously recorded",
+      "disposition": "Fixed by the exhaustive additive-only role, membership, reachability, grant, RLS and effective-permission delta recorded in this immutable review artifact."
+    },
+    {
+      "severity": "critical",
+      "subject": "The temporary pull-request capture workflow exposed a deploy key to pull-request-controlled installation code",
+      "disposition": "The temporary workflow is deleted by the promotion change and is not part of the final tree."
+    },
+    {
+      "severity": "major",
+      "subject": "The temporary workflow labeled output with the merge SHA",
+      "disposition": "The temporary workflow and staged candidate are deleted after promotion; immutable capture run and artifact IDs remain in provenance."
+    }
+  ],
+  "evidenceChecked": [
+    {
+      "subject": "Independent candidate captures",
+      "result": "GitHub Actions runs 32660787417 and 32661227800 used disposable production-shaped PostgreSQL 16 to 17 capture-only flows and produced byte-identical 2477044-byte candidates."
+    },
+    {
+      "subject": "Candidate physical and canonical integrity",
+      "result": "Whole-file SHA-256, both canonical phase digests and the canonical artifact digest were recomputed from the staged bytes."
+    },
+    {
+      "subject": "Normalized policy delta",
+      "result": "The active v23 generated artifact and staged v24 candidate were compared by canonical row identity for both phases, including per-principal effective permissions; every removal set is empty."
+    },
+    {
+      "subject": "Exact-head external review",
+      "result": "CodeRabbit run a4cdf814-33fb-4e77-9f07-bcb351d20a75 reviewed 012e8bec through exact head 4615aa7 and identified the integrity, delta and temporary-workflow blockers remediated by this publication."
+    }
+  ],
+  "residualRisks": [
+    {
+      "risk": "The two GitHub Actions artifacts are retention-limited.",
+      "disposition": "Provenance binds their immutable run/artifact IDs and exact byte digest; the generated source, this review artifact and exact-head CI retain durable evidence."
+    },
+    {
+      "risk": "Any later migration, normalization, candidate or digest change invalidates this authorization.",
+      "disposition": "The promotion command and module-load trust root fail closed and require a new candidate, independent review and provenance record."
+    }
+  ],
+  "promotionProvenanceRecommendation": {
+    "status": "publication-authorized",
+    "authorization": "GO only for mechanical activation catalog policy v24 publication from candidate SHA-256 8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630.",
+    "auditedHead": "4615aa7c94a384530dffa46c597e48f43b1d6714",
+    "captureBaseCommit": "4615aa7c94a384530dffa46c597e48f43b1d6714",
+    "requiredActions": [
+      "Bind this review artifact byte SHA-256 in provenance v3.",
+      "Generate the checked-in artifact mechanically from the exact candidate.",
+      "Delete the temporary capture workflow and staged candidate.",
+      "Pass focused promotion tests and exact-head CI including both PostgreSQL 17 gates before merge."
+    ]
+  }
+}

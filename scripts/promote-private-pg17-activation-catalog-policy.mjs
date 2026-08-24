@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   canonicalJson,
   sha256Canonical,
-} from "../packages/features/release-rollout/src/domain/release-rollout.ts";
+} from "../packages/features/release-rollout/src/domain/canonical-json.ts";
 import {
   assertActivationCatalogPolicyNormalizationForProfile,
   productionActivationCatalogPolicyNormalizationProfile,
@@ -13,16 +13,16 @@ import {
 import { assertActivationCatalogPolicyPromotionProvenance } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
 
 export const activationCatalogPromotionOptIn =
-  "promote-reviewed-activation-catalog-v23";
+  "promote-reviewed-activation-catalog-v24";
 export const reviewedActivationCatalogCandidate = Object.freeze({
-  sha256: "8f089eb7a9d1a8ed2388102d25ed8dcf1266d1ebc74e35a821b2552a54ff648b",
-  bytes: 2_391_094,
+  sha256: "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630",
+  bytes: 2_477_044,
   preactivationCatalogPolicySha256:
-    "sha256:3ae78c7e2d4a76e7ff8f7b7852a1c7ab195c70ea563278a1c77a69242e7e9217",
+    "sha256:fe9c71391557f194d84070689100ba55e31fe9e89a768b39879ff43619726c37",
   activatedCatalogPolicySha256:
-    "sha256:f8fe1748dc02bfe87d4f487c2d74cc42e10efe66030215117d30565c21a47459",
+    "sha256:b5b56feebf9be6e17e6d4aaf17d7f5409b7a3df0f6fe5692ea588043d5a7e4c1",
   artifactCanonicalSha256:
-    "sha256:3eca5cf4475edab7156757d4f99fe995dbc4551e403c40efac46592141dffc50",
+    "sha256:5f4dc73eff4574cea5d6953173b0d35d4332fdc1d2e8b74190dce69569b3292d",
 });
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -37,11 +37,11 @@ export const activationCatalogPromotionProvenancePath = resolve(
 
 export const reviewedActivationCatalogPromotionExpectation = Object.freeze({
   readinessReason:
-    "reviewed-v23-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
-  captureBaseCommit: "3240f6971bc0992ecfcc73d5a822ff255d873ac7",
-  auditedHead: "3240f6971bc0992ecfcc73d5a822ff255d873ac7",
+    "reviewed-v24-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
+  captureBaseCommit: "4615aa7c94a384530dffa46c597e48f43b1d6714",
+  auditedHead: "4615aa7c94a384530dffa46c597e48f43b1d6714",
   reviewArtifactSha256:
-    "324a7dc2763680740a6ba2a2019da4c62b936eac1b3a06a74c3fe4fc42a7b997",
+    "43c9840c26f0ea72e766915d60a3148bdda457ee024178bb32c39e0fceffe02f",
   candidateBytes: reviewedActivationCatalogCandidate.bytes,
   candidateSha256: reviewedActivationCatalogCandidate.sha256,
   sourcePg16Image:
