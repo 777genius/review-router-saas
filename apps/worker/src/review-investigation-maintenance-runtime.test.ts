@@ -253,6 +253,7 @@ describe("review investigation maintenance runtime", () => {
     await expect(runtime.runMaintenance()).resolves.toEqual({
       status: ReviewInvestigationMaintenanceStatus.Failed,
       failureCode: ReviewInvestigationPruneFailureCode.Investigations,
+      failureCauseCode: null,
       recoveredActiveTurnCount: 2,
       expiredPrivateMaterialCount: 4,
       prunedInvestigationCount: 0,
@@ -263,6 +264,7 @@ describe("review investigation maintenance runtime", () => {
     expect(logger.warnEvents[0]?.context).toEqual({
       status: ReviewInvestigationMaintenanceStatus.Failed,
       failureCode: ReviewInvestigationPruneFailureCode.Investigations,
+      failureCauseCode: null,
       recoveredActiveTurnCount: 2,
       expiredPrivateMaterialCount: 4,
       prunedInvestigationCount: 0,

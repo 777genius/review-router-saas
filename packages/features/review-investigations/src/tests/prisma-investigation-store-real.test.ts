@@ -18,6 +18,8 @@ import {
   InvestigationFindingSeverity,
   InvestigationTurnProviderKind,
   InvestigationPrivateMaterialExpiryReason,
+  InvestigationPrivateMaterialPruneBatchError,
+  InvestigationPrivateMaterialPruneFailureCause,
   InvestigationObligationState,
   ReviewInvestigationConclusion,
   ReviewInvestigationState,
@@ -1057,6 +1059,149 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
       ).resolves.toBe(2);
     } finally {
       await harness.dispose();
+    }
+  });
+
+  it("prunes terminal legacy ciphertext without aggregate rehydration", async () => {
+    const suffix = `terminal-legacy-material-${randomUUID()}`;
+    const seed = createInvestigationStoreContractSeed(suffix);
+    const harness = await createHarness(seed);
+    const store = harness.store as PrismaInvestigationStore;
+    const cipher = new AesGcmInvestigationPrivateMaterialCipher(
+      "terminal-legacy-key",
+      new Map([["terminal-legacy-key", Buffer.alloc(32, 21)]]),
+    );
+    const material = await cipher.encrypt({
+      privateMaterialId: `private-${suffix}`,
+      investigationId: seed.investigationId,
+      obligationId: seed.obligations[0]!.obligationId,
+      plaintextCanonicalJson: '{"query":"terminal legacy material"}',
+      associatedDataCanonicalJson: `{"investigationId":"${seed.investigationId}"}`,
+      createdAt: "2026-08-02T10:00:00.000Z",
+      expiresAt: "2026-08-02T10:01:00.000Z",
+    });
+    try {
+      await open(store, seed, `terminal-legacy-open-${suffix}`);
+      await expect(store.savePrivateMaterial(material)).resolves.toBe(
+        InvestigationPrivateMaterialPersistenceStatus.Created,
+      );
+      await harness.prisma.reviewInvestigation.update({
+        where: { investigationId: seed.investigationId },
+        data: {
+          state: "superseded",
+          authorizationScopeHash: null,
+        },
+      });
+
+      await expect(
+        store.reconcileExpiredPrivateMaterial({
+          expiresAtOrBefore: material.expiresAt,
+          limit: 10,
+        }),
+      ).resolves.toBe(1);
+      await expect(
+        harness.prisma.reviewInvestigationPrivateMaterial.count({
+          where: { investigationId: seed.investigationId },
+        }),
+      ).resolves.toBe(0);
+      await expect(
+        harness.prisma.reviewInvestigation.findUnique({
+          where: { investigationId: seed.investigationId },
+          select: { state: true, version: true },
+        }),
+      ).resolves.toEqual({
+        state: "superseded",
+        version: BigInt(seed.version),
+      });
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("isolates an incompatible aggregate while pruning healthy ciphertext", async () => {
+    const poisonSeed = await withValidTestDossierDigest(
+      createInvestigationStoreContractSeed(`poison-material-${randomUUID()}`),
+    );
+    const healthySeed = await withValidTestDossierDigest(
+      createInvestigationStoreContractSeed(`healthy-material-${randomUUID()}`),
+    );
+    const poisonHarness = await createHarness(poisonSeed);
+    const healthyHarness = await createHarness(healthySeed);
+    const poisonStore = poisonHarness.store as PrismaInvestigationStore;
+    const healthyStore = healthyHarness.store as PrismaInvestigationStore;
+    const cipher = new AesGcmInvestigationPrivateMaterialCipher(
+      "isolated-prune-key",
+      new Map([["isolated-prune-key", Buffer.alloc(32, 22)]]),
+    );
+    const poisonMaterial = await cipher.encrypt({
+      privateMaterialId: `private-${poisonSeed.investigationId}`,
+      investigationId: poisonSeed.investigationId,
+      obligationId: poisonSeed.obligations[0]!.obligationId,
+      plaintextCanonicalJson: '{"query":"poison material"}',
+      associatedDataCanonicalJson: `{"investigationId":"${poisonSeed.investigationId}"}`,
+      createdAt: "2026-08-02T10:00:00.000Z",
+      expiresAt: "2026-08-02T10:01:00.000Z",
+    });
+    const healthyMaterial = await cipher.encrypt({
+      privateMaterialId: `private-${healthySeed.investigationId}`,
+      investigationId: healthySeed.investigationId,
+      obligationId: healthySeed.obligations[0]!.obligationId,
+      plaintextCanonicalJson: '{"query":"healthy material"}',
+      associatedDataCanonicalJson: `{"investigationId":"${healthySeed.investigationId}"}`,
+      createdAt: "2026-08-02T10:00:30.000Z",
+      expiresAt: "2026-08-02T10:01:30.000Z",
+    });
+    try {
+      await open(
+        poisonStore,
+        poisonSeed,
+        `poison-material-open-${poisonSeed.investigationId}`,
+      );
+      await open(
+        healthyStore,
+        healthySeed,
+        `healthy-material-open-${healthySeed.investigationId}`,
+      );
+      await expect(
+        poisonStore.savePrivateMaterial(poisonMaterial),
+      ).resolves.toBe(InvestigationPrivateMaterialPersistenceStatus.Created);
+      await expect(
+        healthyStore.savePrivateMaterial(healthyMaterial),
+      ).resolves.toBe(InvestigationPrivateMaterialPersistenceStatus.Created);
+      await poisonHarness.prisma.reviewInvestigation.update({
+        where: { investigationId: poisonSeed.investigationId },
+        data: { authorizationScopeHash: null },
+      });
+
+      await expect(
+        poisonStore.reconcileExpiredPrivateMaterial({
+          expiresAtOrBefore: healthyMaterial.expiresAt,
+          limit: 10,
+        }),
+      ).rejects.toMatchObject({
+        removedCount: 1,
+        failedInvestigationCount: 1,
+        causeCode:
+          InvestigationPrivateMaterialPruneFailureCause.AggregateIncompatible,
+      } satisfies Partial<InvestigationPrivateMaterialPruneBatchError>);
+      await expect(
+        poisonHarness.prisma.reviewInvestigationPrivateMaterial.count({
+          where: { investigationId: poisonSeed.investigationId },
+        }),
+      ).resolves.toBe(1);
+      await expect(
+        healthyHarness.prisma.reviewInvestigationPrivateMaterial.count({
+          where: { investigationId: healthySeed.investigationId },
+        }),
+      ).resolves.toBe(0);
+      await expect(
+        healthyStore.findById(healthySeed.investigationId),
+      ).resolves.toMatchObject({
+        state: ReviewInvestigationState.Inconclusive,
+      });
+    } finally {
+      await poisonHarness.dispose();
+      await healthyHarness.dispose();
     }
   });
 

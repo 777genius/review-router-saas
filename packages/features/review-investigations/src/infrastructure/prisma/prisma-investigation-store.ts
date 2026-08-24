@@ -26,6 +26,8 @@ import {
   assertNonNegativeInteger,
 } from "../../domain/canonicalization";
 import {
+  InvestigationPrivateMaterialPruneBatchError,
+  InvestigationPrivateMaterialPruneFailureCause,
   InvestigationPrivateMaterialPersistenceStatus,
   type InvestigationPrivateMaterialStorePort,
   type InvestigationPrunerPort,
@@ -124,7 +126,25 @@ type ExpiredPrivateMaterialCandidate = Readonly<{
   privateMaterialId: string;
   investigationId: string;
   obligationId: string | null;
+  investigationState: PrismaInvestigationState;
 }>;
+
+type ExpiredPrivateMaterialGroup = Readonly<{
+  investigationId: string;
+  investigationState: PrismaInvestigationState;
+  privateMaterialIds: readonly string[];
+  obligationIds: readonly string[];
+}>;
+
+class PrivateMaterialGroupPruneError extends Error {
+  readonly name = "PrivateMaterialGroupPruneError";
+
+  constructor(
+    readonly causeCode: InvestigationPrivateMaterialPruneFailureCause,
+  ) {
+    super("investigation_private_material_group_prune_failed");
+  }
+}
 
 export type PrismaInvestigationStoreOptions = Readonly<{
   operationalRetentionMs: number;
@@ -661,7 +681,7 @@ export class PrismaInvestigationStore
       input.expiresAtOrBefore,
       "investigation_private_material_expiry_cutoff_invalid",
     );
-    return this.prisma.$transaction(
+    const { candidates, effectiveCutoff } = await this.prisma.$transaction(
       async (transaction) => {
         const databaseNow = await investigationDatabaseNow(transaction);
         const effectiveCutoff = cutoff < databaseNow ? cutoff : databaseNow;
@@ -671,7 +691,8 @@ export class PrismaInvestigationStore
           SELECT
             material."privateMaterialId",
             material."investigationId",
-            material."obligationId"
+            material."obligationId",
+            investigation."state" AS "investigationState"
           FROM "ReviewInvestigationPrivateMaterial" AS material
           INNER JOIN "ReviewInvestigation" AS investigation
             ON investigation."investigationId" = material."investigationId"
@@ -679,105 +700,178 @@ export class PrismaInvestigationStore
             AND investigation."activeTurnId" IS NULL
           ORDER BY material."expiresAt" ASC, material."privateMaterialId" ASC
           LIMIT ${input.limit}
-          FOR UPDATE OF investigation, material SKIP LOCKED
         `);
-        if (candidates.length === 0) return 0;
-
-        let removedCount = 0;
-        for (const group of groupPrivateMaterialCandidates(candidates)) {
-          const current = await loadAggregate(
-            transaction,
-            group.investigationId,
-          );
-          if (current === null) {
-            throw new Error("investigation_private_material_parent_missing");
-          }
-          const reconciled = await this.privateMaterialExpiry.execute({
-            investigation: current,
-            privateMaterialIds: group.privateMaterialIds,
-            obligationIds: group.obligationIds,
-            expiredAt: effectiveCutoff.toISOString(),
-          });
-          if (
-            reconciled.disposition ===
-            InvestigationPrivateMaterialExpiryDisposition.DeferredActiveTurn
-          ) {
-            continue;
-          }
-          if (
-            reconciled.disposition ===
-            InvestigationPrivateMaterialExpiryDisposition.Inconclusive
-          ) {
-            if (reconciled.command === null) {
-              throw new Error(
-                "investigation_private_material_expiry_command_missing",
-              );
-            }
-            const next = reconciled.investigation;
-            const transition: InvestigationStoreTransition = {
-              kind: InvestigationStoreTransitionKind.PrivateMaterialExpired,
-              affectedObligationIds: reconciled.affectedObligationIds,
-              expiredTurnId: reconciled.expiredTurnId,
-            };
-            assertUpdate(current, next, transition);
-            const retainUntil = aggregateRetainUntil(
-              next,
-              this.options.operationalRetentionMs,
-            );
-            await persistTransition(
-              transaction,
-              current,
-              next,
-              transition,
-              retainUntil,
-            );
-            await persistObligations(
-              transaction,
-              current,
-              next,
-              transition,
-              retainUntil,
-            );
-            const updated = await transaction.reviewInvestigation.updateMany({
-              where: {
-                investigationId: next.investigationId,
-                version: BigInt(current.version),
-              },
-              data: toMainUpdate(next, retainUntil),
-            });
-            if (updated.count !== 1) throw new InvestigationWriteRaceError();
-            await revokeStaleInvestigationLeases(transaction, next);
-            await transaction.reviewInvestigationCommandReceipt.create({
-              data: {
-                commandId: reconciled.command.commandId,
-                investigationId: next.investigationId,
-                commandHash: reconciled.command.commandHash,
-                resultingVersion: BigInt(next.version),
-                createdAt: new Date(next.updatedAt),
-                retainUntil,
-              },
-            });
-          }
-
-          const deleted =
-            await transaction.reviewInvestigationPrivateMaterial.deleteMany({
-              where: {
-                privateMaterialId: { in: [...group.privateMaterialIds] },
-                investigationId: group.investigationId,
-                expiresAt: { lte: effectiveCutoff },
-              },
-            });
-          if (deleted.count !== group.privateMaterialIds.length) {
-            throw new Error(
-              "investigation_private_material_expiry_fence_changed",
-            );
-          }
-          removedCount += deleted.count;
-        }
-        return removedCount;
+        return { candidates, effectiveCutoff };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
     );
+    if (candidates.length === 0) return 0;
+
+    let removedCount = 0;
+    let failedInvestigationCount = 0;
+    let firstFailureCause: InvestigationPrivateMaterialPruneFailureCause | null =
+      null;
+    for (const group of groupPrivateMaterialCandidates(candidates)) {
+      try {
+        removedCount += await this.prisma.$transaction(
+          async (transaction) => {
+            const lockedCandidates = await transaction.$queryRaw<
+              ExpiredPrivateMaterialCandidate[]
+            >(Prisma.sql`
+              SELECT
+                material."privateMaterialId",
+                material."investigationId",
+                material."obligationId",
+                investigation."state" AS "investigationState"
+              FROM "ReviewInvestigationPrivateMaterial" AS material
+              INNER JOIN "ReviewInvestigation" AS investigation
+                ON investigation."investigationId" = material."investigationId"
+              WHERE material."privateMaterialId" IN (${Prisma.join(
+                group.privateMaterialIds,
+              )})
+                AND material."investigationId" = ${group.investigationId}
+                AND material."expiresAt" <= ${effectiveCutoff}
+                AND investigation."activeTurnId" IS NULL
+              ORDER BY material."privateMaterialId" ASC
+              FOR UPDATE OF investigation, material SKIP LOCKED
+            `);
+            if (lockedCandidates.length === 0) return 0;
+
+            const lockedGroup =
+              groupPrivateMaterialCandidates(lockedCandidates)[0];
+            if (!lockedGroup) return 0;
+            if (
+              isTerminalPrismaInvestigationState(lockedGroup.investigationState)
+            ) {
+              return deleteExpiredPrivateMaterialGroup(
+                transaction,
+                lockedGroup,
+                effectiveCutoff,
+              );
+            }
+
+            let current: ReviewInvestigation | null;
+            try {
+              current = await loadAggregate(
+                transaction,
+                lockedGroup.investigationId,
+              );
+            } catch {
+              throw new PrivateMaterialGroupPruneError(
+                InvestigationPrivateMaterialPruneFailureCause.AggregateIncompatible,
+              );
+            }
+            if (current === null) {
+              throw new PrivateMaterialGroupPruneError(
+                InvestigationPrivateMaterialPruneFailureCause.ParentMissing,
+              );
+            }
+            let reconciled: Awaited<
+              ReturnType<
+                ReconcileExpiredInvestigationPrivateMaterial["execute"]
+              >
+            >;
+            try {
+              reconciled = await this.privateMaterialExpiry.execute({
+                investigation: current,
+                privateMaterialIds: lockedGroup.privateMaterialIds,
+                obligationIds: lockedGroup.obligationIds,
+                expiredAt: effectiveCutoff.toISOString(),
+              });
+            } catch {
+              throw new PrivateMaterialGroupPruneError(
+                InvestigationPrivateMaterialPruneFailureCause.AggregateIncompatible,
+              );
+            }
+            if (
+              reconciled.disposition ===
+              InvestigationPrivateMaterialExpiryDisposition.DeferredActiveTurn
+            ) {
+              return 0;
+            }
+            if (
+              reconciled.disposition ===
+              InvestigationPrivateMaterialExpiryDisposition.Inconclusive
+            ) {
+              if (reconciled.command === null) {
+                throw new PrivateMaterialGroupPruneError(
+                  InvestigationPrivateMaterialPruneFailureCause.AggregateIncompatible,
+                );
+              }
+              const next = reconciled.investigation;
+              const transition: InvestigationStoreTransition = {
+                kind: InvestigationStoreTransitionKind.PrivateMaterialExpired,
+                affectedObligationIds: reconciled.affectedObligationIds,
+                expiredTurnId: reconciled.expiredTurnId,
+              };
+              assertUpdate(current, next, transition);
+              const retainUntil = aggregateRetainUntil(
+                next,
+                this.options.operationalRetentionMs,
+              );
+              await persistTransition(
+                transaction,
+                current,
+                next,
+                transition,
+                retainUntil,
+              );
+              await persistObligations(
+                transaction,
+                current,
+                next,
+                transition,
+                retainUntil,
+              );
+              const updated = await transaction.reviewInvestigation.updateMany({
+                where: {
+                  investigationId: next.investigationId,
+                  version: BigInt(current.version),
+                },
+                data: toMainUpdate(next, retainUntil),
+              });
+              if (updated.count !== 1) {
+                throw new PrivateMaterialGroupPruneError(
+                  InvestigationPrivateMaterialPruneFailureCause.PersistenceRace,
+                );
+              }
+              await revokeStaleInvestigationLeases(transaction, next);
+              await transaction.reviewInvestigationCommandReceipt.create({
+                data: {
+                  commandId: reconciled.command.commandId,
+                  investigationId: next.investigationId,
+                  commandHash: reconciled.command.commandHash,
+                  resultingVersion: BigInt(next.version),
+                  createdAt: new Date(next.updatedAt),
+                  retainUntil,
+                },
+              });
+            }
+
+            return deleteExpiredPrivateMaterialGroup(
+              transaction,
+              lockedGroup,
+              effectiveCutoff,
+            );
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+        );
+      } catch (error: unknown) {
+        failedInvestigationCount += 1;
+        firstFailureCause ??=
+          error instanceof PrivateMaterialGroupPruneError
+            ? error.causeCode
+            : InvestigationPrivateMaterialPruneFailureCause.Unknown;
+      }
+    }
+    if (firstFailureCause !== null) {
+      throw new InvestigationPrivateMaterialPruneBatchError(
+        removedCount,
+        failedInvestigationCount,
+        firstFailureCause,
+      );
+    }
+    return removedCount;
   }
 
   async pruneRetainedInvestigations(input: {
@@ -2291,17 +2385,18 @@ function parseCanonicalCutoff(value: string, code: string): Date {
 
 function groupPrivateMaterialCandidates(
   candidates: readonly ExpiredPrivateMaterialCandidate[],
-): readonly Readonly<{
-  investigationId: string;
-  privateMaterialIds: readonly string[];
-  obligationIds: readonly string[];
-}>[] {
+): readonly ExpiredPrivateMaterialGroup[] {
   const groups = new Map<
     string,
-    { privateMaterialIds: string[]; obligationIds: string[] }
+    {
+      investigationState: PrismaInvestigationState;
+      privateMaterialIds: string[];
+      obligationIds: string[];
+    }
   >();
   for (const candidate of candidates) {
     const group = groups.get(candidate.investigationId) ?? {
+      investigationState: candidate.investigationState,
       privateMaterialIds: [],
       obligationIds: [],
     };
@@ -2313,9 +2408,45 @@ function groupPrivateMaterialCandidates(
   }
   return [...groups.entries()].map(([investigationId, group]) => ({
     investigationId,
+    investigationState: group.investigationState,
     privateMaterialIds: Object.freeze([...group.privateMaterialIds].sort()),
     obligationIds: Object.freeze([...new Set(group.obligationIds)].sort()),
   }));
+}
+
+function isTerminalPrismaInvestigationState(
+  state: PrismaInvestigationState,
+): boolean {
+  switch (state) {
+    case PrismaInvestigationState.concluded:
+    case PrismaInvestigationState.inconclusive:
+    case PrismaInvestigationState.superseded:
+    case PrismaInvestigationState.expired:
+      return true;
+    default:
+      return false;
+  }
+}
+
+async function deleteExpiredPrivateMaterialGroup(
+  transaction: Prisma.TransactionClient,
+  group: ExpiredPrivateMaterialGroup,
+  effectiveCutoff: Date,
+): Promise<number> {
+  const deleted =
+    await transaction.reviewInvestigationPrivateMaterial.deleteMany({
+      where: {
+        privateMaterialId: { in: [...group.privateMaterialIds] },
+        investigationId: group.investigationId,
+        expiresAt: { lte: effectiveCutoff },
+      },
+    });
+  if (deleted.count !== group.privateMaterialIds.length) {
+    throw new PrivateMaterialGroupPruneError(
+      InvestigationPrivateMaterialPruneFailureCause.ExpiryFenceChanged,
+    );
+  }
+  return deleted.count;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

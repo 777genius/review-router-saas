@@ -2,6 +2,10 @@ import type {
   InvestigationPrunerPort,
   ReconcileExpiredActiveTurn,
 } from "@reviewrouter/features-review-investigations";
+import {
+  InvestigationPrivateMaterialPruneBatchError,
+  type InvestigationPrivateMaterialPruneFailureCause,
+} from "@reviewrouter/features-review-investigations";
 import type { InvestigationShadowEvidencePrunerPort } from "@reviewrouter/features-review-evidence";
 
 export const reviewInvestigationMaxPruneBatchSize = 1_000;
@@ -35,6 +39,7 @@ export class ReviewInvestigationPruneError extends Error {
   constructor(
     readonly code: ReviewInvestigationPruneFailureCode,
     readonly outcome: ReviewInvestigationPruneOutcome,
+    readonly causeCode: InvestigationPrivateMaterialPruneFailureCause | null,
   ) {
     super(code);
   }
@@ -68,20 +73,27 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
     assertPruneLimit(input.shadowEvidenceLimit);
     const cutoff = input.asOf.toISOString();
 
-    let recoveredActiveTurnCount: number;
+    let recoveredActiveTurnCount = 0;
+    let expiredPrivateMaterialCount = 0;
+    let prunedInvestigationCount = 0;
+    let prunedShadowEvidenceCount = 0;
+    let firstFailure: Readonly<{
+      code: ReviewInvestigationPruneFailureCode;
+      causeCode: InvestigationPrivateMaterialPruneFailureCause | null;
+    }> | null = null;
+
     try {
       recoveredActiveTurnCount = await this.dependencies.expiredTurns.sweep({
         expiresAtOrBefore: cutoff,
         limit: input.investigationLimit,
       });
     } catch {
-      throw new ReviewInvestigationPruneError(
-        ReviewInvestigationPruneFailureCode.ActiveTurns,
-        emptyOutcome(),
-      );
+      firstFailure = {
+        code: ReviewInvestigationPruneFailureCode.ActiveTurns,
+        causeCode: null,
+      };
     }
 
-    let expiredPrivateMaterialCount: number;
     try {
       expiredPrivateMaterialCount =
         await this.dependencies.privateMaterial.reconcileExpiredPrivateMaterial(
@@ -90,14 +102,19 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
             limit: input.privateMaterialLimit,
           },
         );
-    } catch {
-      throw new ReviewInvestigationPruneError(
-        ReviewInvestigationPruneFailureCode.PrivateMaterial,
-        { ...emptyOutcome(), recoveredActiveTurnCount },
-      );
+    } catch (error: unknown) {
+      if (error instanceof InvestigationPrivateMaterialPruneBatchError) {
+        expiredPrivateMaterialCount = error.removedCount;
+      }
+      firstFailure ??= {
+        code: ReviewInvestigationPruneFailureCode.PrivateMaterial,
+        causeCode:
+          error instanceof InvestigationPrivateMaterialPruneBatchError
+            ? error.causeCode
+            : null,
+      };
     }
 
-    let prunedInvestigationCount: number;
     try {
       prunedInvestigationCount =
         await this.dependencies.investigations.pruneRetainedInvestigations({
@@ -105,40 +122,38 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
           limit: input.investigationLimit,
         });
     } catch {
-      throw new ReviewInvestigationPruneError(
-        ReviewInvestigationPruneFailureCode.Investigations,
-        {
-          recoveredActiveTurnCount,
-          expiredPrivateMaterialCount,
-          prunedInvestigationCount: 0,
-          prunedShadowEvidenceCount: 0,
-        },
-      );
+      firstFailure ??= {
+        code: ReviewInvestigationPruneFailureCode.Investigations,
+        causeCode: null,
+      };
     }
 
     try {
-      const prunedShadowEvidenceCount =
-        await this.dependencies.shadowEvidence.prune({
-          retainUntilOrBeforeMs: input.asOf.getTime(),
-          limit: input.shadowEvidenceLimit,
-        });
-      return {
-        recoveredActiveTurnCount,
-        expiredPrivateMaterialCount,
-        prunedInvestigationCount,
-        prunedShadowEvidenceCount,
-      };
+      prunedShadowEvidenceCount = await this.dependencies.shadowEvidence.prune({
+        retainUntilOrBeforeMs: input.asOf.getTime(),
+        limit: input.shadowEvidenceLimit,
+      });
     } catch {
+      firstFailure ??= {
+        code: ReviewInvestigationPruneFailureCode.ShadowEvidence,
+        causeCode: null,
+      };
+    }
+
+    const outcome = {
+      recoveredActiveTurnCount,
+      expiredPrivateMaterialCount,
+      prunedInvestigationCount,
+      prunedShadowEvidenceCount,
+    };
+    if (firstFailure !== null) {
       throw new ReviewInvestigationPruneError(
-        ReviewInvestigationPruneFailureCode.ShadowEvidence,
-        {
-          recoveredActiveTurnCount,
-          expiredPrivateMaterialCount,
-          prunedInvestigationCount,
-          prunedShadowEvidenceCount: 0,
-        },
+        firstFailure.code,
+        outcome,
+        firstFailure.causeCode,
       );
     }
+    return outcome;
   }
 }
 

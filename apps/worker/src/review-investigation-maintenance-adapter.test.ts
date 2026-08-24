@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { InvestigationPrunerPort } from "@reviewrouter/features-review-investigations";
+import {
+  InvestigationPrivateMaterialPruneBatchError,
+  InvestigationPrivateMaterialPruneFailureCause,
+  type InvestigationPrunerPort,
+} from "@reviewrouter/features-review-investigations";
 import type { InvestigationShadowEvidencePrunerPort } from "@reviewrouter/features-review-evidence";
 import {
   InvestigationPrunerMaintenanceAdapter,
@@ -183,16 +187,19 @@ describe("review investigation maintenance adapter", () => {
       }),
     ).rejects.toMatchObject({
       code: ReviewInvestigationPruneFailureCode.PrivateMaterial,
+      causeCode: null,
       outcome: {
         recoveredActiveTurnCount: 1,
         expiredPrivateMaterialCount: 0,
-        prunedInvestigationCount: 0,
-        prunedShadowEvidenceCount: 0,
+        prunedInvestigationCount: 1,
+        prunedShadowEvidenceCount: 3,
       },
     } satisfies Partial<ReviewInvestigationPruneError>);
     expect(privateMaterialFailure.calls).toEqual([
       "active_turns",
       "private_material",
+      "investigations",
+      "shadow_evidence",
     ]);
 
     const investigationFailure = new CapturingPruner();
@@ -209,11 +216,12 @@ describe("review investigation maintenance adapter", () => {
       }),
     ).rejects.toMatchObject({
       code: ReviewInvestigationPruneFailureCode.Investigations,
+      causeCode: null,
       outcome: {
         recoveredActiveTurnCount: 1,
         expiredPrivateMaterialCount: 3,
         prunedInvestigationCount: 0,
-        prunedShadowEvidenceCount: 0,
+        prunedShadowEvidenceCount: 3,
       },
     } satisfies Partial<ReviewInvestigationPruneError>);
 
@@ -232,6 +240,7 @@ describe("review investigation maintenance adapter", () => {
       }),
     ).rejects.toMatchObject({
       code: ReviewInvestigationPruneFailureCode.ShadowEvidence,
+      causeCode: null,
       outcome: {
         recoveredActiveTurnCount: 1,
         expiredPrivateMaterialCount: 4,
@@ -239,6 +248,41 @@ describe("review investigation maintenance adapter", () => {
         prunedShadowEvidenceCount: 0,
       },
     } satisfies Partial<ReviewInvestigationPruneError>);
+  });
+
+  it("preserves partial private-material progress and an allowlisted cause", async () => {
+    const pruner = new CapturingPruner();
+    pruner.privateMaterialError =
+      new InvestigationPrivateMaterialPruneBatchError(
+        7,
+        1,
+        InvestigationPrivateMaterialPruneFailureCause.AggregateIncompatible,
+      );
+
+    await expect(
+      createAdapter(pruner).execute({
+        asOf,
+        privateMaterialLimit: 10,
+        investigationLimit: 10,
+        shadowEvidenceLimit: 10,
+      }),
+    ).rejects.toMatchObject({
+      code: ReviewInvestigationPruneFailureCode.PrivateMaterial,
+      causeCode:
+        InvestigationPrivateMaterialPruneFailureCause.AggregateIncompatible,
+      outcome: {
+        recoveredActiveTurnCount: 1,
+        expiredPrivateMaterialCount: 7,
+        prunedInvestigationCount: 1,
+        prunedShadowEvidenceCount: 3,
+      },
+    } satisfies Partial<ReviewInvestigationPruneError>);
+    expect(pruner.calls).toEqual([
+      "active_turns",
+      "private_material",
+      "investigations",
+      "shadow_evidence",
+    ]);
   });
 });
 

@@ -2,6 +2,7 @@ import type { DistributedLock } from "@reviewrouter/platform-locks";
 import type { Logger } from "@reviewrouter/platform-logger";
 import type { Clock } from "@reviewrouter/shared";
 import { investigationRetentionMaintenanceEnabledEnvironmentVariable } from "@reviewrouter/features-review-investigations/composition";
+import { type InvestigationPrivateMaterialPruneFailureCause } from "@reviewrouter/features-review-investigations";
 import {
   ReviewInvestigationPruneError,
   ReviewInvestigationPruneFailureCode,
@@ -37,6 +38,7 @@ export type ReviewInvestigationMaintenanceResult =
     Readonly<{
       status: ReviewInvestigationMaintenanceStatus;
       failureCode: ReviewInvestigationMaintenanceFailureCode | null;
+      failureCauseCode: InvestigationPrivateMaterialPruneFailureCause | null;
     }>;
 
 export type ReviewInvestigationMaintenanceRuntime = Readonly<{
@@ -162,6 +164,7 @@ export function createReviewInvestigationMaintenanceRuntime(
                 ReviewInvestigationMaintenanceStatus.Failed,
                 error.code,
                 error.outcome,
+                error.causeCode,
               )
             : maintenanceResult(
                 ReviewInvestigationMaintenanceStatus.Failed,
@@ -193,8 +196,9 @@ function maintenanceResult(
     prunedInvestigationCount: 0,
     prunedShadowEvidenceCount: 0,
   },
+  failureCauseCode: InvestigationPrivateMaterialPruneFailureCause | null = null,
 ): ReviewInvestigationMaintenanceResult {
-  return { status, failureCode, ...outcome };
+  return { status, failureCode, failureCauseCode, ...outcome };
 }
 
 function safeLogContext(
@@ -203,6 +207,7 @@ function safeLogContext(
   return {
     status: result.status,
     failureCode: result.failureCode,
+    failureCauseCode: result.failureCauseCode,
     recoveredActiveTurnCount: result.recoveredActiveTurnCount,
     expiredPrivateMaterialCount: result.expiredPrivateMaterialCount,
     prunedInvestigationCount: result.prunedInvestigationCount,
