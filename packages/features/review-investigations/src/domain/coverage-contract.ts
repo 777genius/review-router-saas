@@ -53,6 +53,7 @@ export enum ReviewInvestigationCoverageProfileGeneration {
   V6 = 6,
   V7 = 7,
   V8 = 8,
+  V9 = 9,
 }
 
 export const reviewInvestigationCoverageProfileV1 = Object.freeze({
@@ -108,6 +109,12 @@ export const reviewInvestigationCoverageProfileV8 = Object.freeze({
     "0e22e292499206ff51a93a52ace638e902cca8f89fb1b3d7b32bd2a317b7ac2e",
 } as const);
 
+export const reviewInvestigationCoverageProfileV9 = Object.freeze({
+  ...reviewInvestigationCoverageProfileV8,
+  turnPromptContractHash:
+    "a185e50ee887e3351d1c1eccb135a2d48030fe56ef5ec2e1411002d4c1a76ef6",
+} as const);
+
 export function resolveReviewInvestigationCoverageProfileGeneration(
   contract: ReviewInvestigationContract,
 ): ReviewInvestigationCoverageProfileGeneration | null {
@@ -150,6 +157,10 @@ export function resolveReviewInvestigationCoverageProfileGeneration(
     [
       ReviewInvestigationCoverageProfileGeneration.V8,
       reviewInvestigationCoverageProfileV8,
+    ],
+    [
+      ReviewInvestigationCoverageProfileGeneration.V9,
+      reviewInvestigationCoverageProfileV9,
     ],
   ] as const) {
     const expectedKeys = [...Object.keys(profile), "producerReleaseId"].sort();
