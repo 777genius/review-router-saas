@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  cancelOpenStagedFaultPlans,
   executeHostedPoolControl,
   type HostedPoolControlPort,
 } from "./hosted-pool-production-control";
@@ -38,6 +39,55 @@ function fixture(
 }
 
 describe("hosted pool production controls", () => {
+  it("bounds staged-plan cleanup and reads closed targets in one query", async () => {
+    const staged = [
+      { workspaceId: "workspace-a", targetId: "open" },
+      { workspaceId: "workspace-a", targetId: "closed" },
+      { workspaceId: "workspace-a", targetId: "open" },
+    ];
+    const findMany = vi
+      .fn()
+      .mockResolvedValueOnce(staged)
+      .mockResolvedValueOnce([{ targetId: "closed" }]);
+    const create = vi.fn(async () => undefined);
+    const prisma = {
+      $transaction: vi.fn(
+        async (operation: (transaction: unknown) => unknown) =>
+          operation({ auditEvent: { findMany, create } }),
+      ),
+    };
+
+    await cancelOpenStagedFaultPlans(
+      prisma as never,
+      new Date("2026-08-24T12:00:00.000Z"),
+    );
+
+    expect(findMany).toHaveBeenCalledTimes(2);
+    expect(findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          createdAt: { gte: new Date("2026-08-24T11:00:00.000Z") },
+        }),
+        take: 101,
+      }),
+    );
+    expect(findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          targetId: { in: ["open", "closed"] },
+        }),
+      }),
+    );
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ targetId: "open" }),
+      }),
+    );
+  });
+
   it("activates runtime dependencies together and admission last", async () => {
     const { port, calls } = fixture();
     await executeHostedPoolControl({

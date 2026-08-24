@@ -290,6 +290,16 @@ describe("hosted pool one-shot production canary", () => {
     expect(setFlags).toHaveBeenCalledWith({
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "1",
     });
+    expect(control.setFaultPlan).toHaveBeenCalledTimes(7);
+    expect(vi.mocked(control.setFaultPlan!).mock.calls).toEqual([
+      [config.faultPlans.unauthorized],
+      [null],
+      [config.faultPlans.rate_limited],
+      [null],
+      [config.faultPlans.dropped_response],
+      [null],
+      [null],
+    ]);
     expect(result.result).toBe("passed");
   });
 

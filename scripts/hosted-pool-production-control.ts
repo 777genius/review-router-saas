@@ -3,7 +3,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPrismaClient } from "../packages/platform/db/src/index.js";
-import { hostedCodexCanaryFaultPlanTokenMaxBytes } from "../packages/features/hosted-account-pool/src/application/ports/hosted-codex-canary-fault-plan-port.js";
+import {
+  hostedCodexCanaryFaultPlanMaxLifetimeMs,
+  hostedCodexCanaryFaultPlanTokenMaxBytes,
+} from "../packages/features/hosted-account-pool/src/application/ports/hosted-codex-canary-fault-plan-port.js";
 
 export const hostedPoolFlagNames = Object.freeze([
   "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL",
@@ -447,8 +450,9 @@ export function createRenderHostedPoolControlPort(input: {
   };
 }
 
-async function cancelOpenStagedFaultPlans(
+export async function cancelOpenStagedFaultPlans(
   prisma: ReturnType<typeof createPrismaClient>,
+  now = new Date(),
 ) {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
@@ -458,25 +462,40 @@ async function cancelOpenStagedFaultPlans(
             where: {
               action: "hosted_codex_canary_fault_plan_staged",
               targetType: "hosted_codex_canary_fault_plan",
+              createdAt: {
+                gte: new Date(
+                  now.getTime() - hostedCodexCanaryFaultPlanMaxLifetimeMs,
+                ),
+              },
             },
             orderBy: { createdAt: "desc" },
+            take: 101,
             select: { workspaceId: true, targetId: true },
           });
+          if (staged.length > 100)
+            throw new Error(
+              "hosted_pool_canary_fault_plan_cleanup_scan_limit_exceeded",
+            );
+          const targetIds = [...new Set(staged.map((plan) => plan.targetId))];
+          const closed =
+            targetIds.length === 0
+              ? []
+              : await transaction.auditEvent.findMany({
+                  where: {
+                    action: {
+                      in: [
+                        "hosted_codex_canary_fault_plan_consumed",
+                        "hosted_codex_canary_fault_plan_canceled",
+                      ],
+                    },
+                    targetType: "hosted_codex_canary_fault_plan",
+                    targetId: { in: targetIds },
+                  },
+                  select: { targetId: true },
+                });
+          const closedTargetIds = new Set(closed.map((plan) => plan.targetId));
           for (const plan of staged) {
-            const closed = await transaction.auditEvent.findFirst({
-              where: {
-                action: {
-                  in: [
-                    "hosted_codex_canary_fault_plan_consumed",
-                    "hosted_codex_canary_fault_plan_canceled",
-                  ],
-                },
-                targetType: "hosted_codex_canary_fault_plan",
-                targetId: plan.targetId,
-              },
-              select: { id: true },
-            });
-            if (closed) continue;
+            if (closedTargetIds.has(plan.targetId)) continue;
             await transaction.auditEvent.create({
               data: {
                 workspaceId: plan.workspaceId,
@@ -487,6 +506,7 @@ async function cancelOpenStagedFaultPlans(
                 metadata: { reason: "operator_scope_closed" },
               },
             });
+            closedTargetIds.add(plan.targetId);
           }
         },
         { isolationLevel: "Serializable" },

@@ -376,9 +376,7 @@ describe("hosted Codex quota failover", () => {
         }),
       };
       const faultPlans = {
-        consume: vi.fn(async (scope: { injectionPoint: string }) =>
-          scope.injectionPoint === "before_provider_fetch" ? fault : null,
-        ),
+        consume: vi.fn().mockResolvedValueOnce(fault).mockResolvedValue(null),
       };
       const fetchImpl = vi.fn(
         async () => new Response("complete", { status: 200 }),
@@ -417,9 +415,62 @@ describe("hosted Codex quota failover", () => {
       expect(effects.prepare).not.toHaveBeenCalledWith(
         expect.objectContaining({ accountId: primary.id }),
       );
-      expect(faultPlans.consume).toHaveBeenCalledTimes(2);
+      expect(faultPlans.consume).toHaveBeenCalledTimes(3);
     },
   );
+
+  it("fails closed before backup fetch when a consumed fault remains non-null", async () => {
+    const primary = account("replayed-fault-primary", 0);
+    const backup = account("replayed-fault-backup", 1);
+    let grant = admittedGrant(primary, backup);
+    const ledger = {
+      recordRequestHash: vi.fn(async () => undefined),
+      failover: vi.fn(async (input: any) => {
+        const result = input.transition(grant, primary, backup);
+        if (result.status === "switched") grant = result.grant;
+        return result;
+      }),
+      complete: vi.fn(async (input: any) => {
+        grant = input.transition(grant);
+        return grant;
+      }),
+    };
+    const faultPlans = {
+      consume: vi.fn(async () => "synthetic_unauthorized" as const),
+    };
+    const fetchImpl = vi.fn(
+      async () => new Response("complete", { status: 200 }),
+    ) as unknown as typeof fetch;
+    const body = Buffer.from('{"input":"review"}');
+    const effects = effectLedgerFixture();
+    const relay = new FetchHostedCodexStreamingRelay(
+      runtimeFixture() as never,
+      ledger as never,
+      fetchImpl,
+      {
+        failoverEnabled: true,
+        now: () => now,
+        effects,
+        faultPlans,
+      },
+    );
+
+    await expect(
+      relay.open({
+        authorization: {
+          ...authorization(grant, primary, body.byteLength),
+          faultPlanScope: faultScope(),
+        },
+        body: Readable.from(body),
+        contentType: "application/json",
+        accept: "text/event-stream",
+        abortSignal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("hosted_codex_canary_fault_plan_not_one_shot");
+    expect(faultPlans.consume).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(effects.prepare).not.toHaveBeenCalled();
+  });
 
   it("drops only after one real dispatch and response-start evidence", async () => {
     const primary = account("drop-primary", 0);

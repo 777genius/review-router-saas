@@ -72,8 +72,60 @@ describe("hosted pool GitHub rerun dispatch", () => {
         },
       ),
     ).resolves.toEqual({
-      appBotPublicationCount: 1,
+      appBotPublicationCount: 0,
       nonAppBotPublicationCount: 1,
     });
+  });
+
+  it("uses an in-window creation time when a matching bot comment is updated later", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          body: "reviewrouter:summary:v2:abc",
+          user: { login: "rr-app[bot]" },
+          created_at: "2026-08-24T00:00:10Z",
+          updated_at: "2026-08-24T01:00:10Z",
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    await expect(
+      collectAppBotPublicationEvidence(
+        { request },
+        {
+          repository: "owner/repo",
+          pullRequestNumber: 7,
+          expectedAppBot: "rr-app[bot]",
+          startedAt: new Date("2026-08-24T00:00:00Z"),
+          finishedAt: new Date("2026-08-24T00:01:00Z"),
+        },
+      ),
+    ).resolves.toEqual({
+      appBotPublicationCount: 1,
+      nonAppBotPublicationCount: 0,
+    });
+  });
+
+  it("rejects an exact-100 response instead of accepting truncated evidence", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(Array.from({ length: 100 }, () => ({})))
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    await expect(
+      collectAppBotPublicationEvidence(
+        { request },
+        {
+          repository: "owner/repo",
+          pullRequestNumber: 7,
+          expectedAppBot: "rr-app[bot]",
+          startedAt: new Date("2026-08-24T00:00:00Z"),
+          finishedAt: new Date("2026-08-24T00:01:00Z"),
+        },
+      ),
+    ).rejects.toThrow("hosted_pool_canary_publication_pagination_unsupported");
   });
 });

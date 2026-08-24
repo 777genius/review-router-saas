@@ -67,7 +67,7 @@ export async function collectAppBotPublicationEvidence(
     return items;
   });
   const publications = objects.filter((item: any) => {
-    const publicationAt = latestPublicationTimestamp(item);
+    const publicationAt = initialPublicationTimestamp(item);
     return (
       publicationAt !== null &&
       publicationAt >= input.startedAt &&
@@ -88,10 +88,14 @@ export async function collectAppBotPublicationEvidence(
   };
 }
 
-function latestPublicationTimestamp(item: any): Date | null {
-  const timestamps = [item?.created_at, item?.submitted_at, item?.updated_at]
-    .map((value) => new Date(String(value ?? "")))
-    .filter((value) => Number.isFinite(value.getTime()));
-  if (timestamps.length === 0) return null;
-  return new Date(Math.max(...timestamps.map((value) => value.getTime())));
+function initialPublicationTimestamp(item: any): Date | null {
+  for (const value of [
+    item?.created_at,
+    item?.submitted_at,
+    item?.updated_at,
+  ]) {
+    const timestamp = new Date(String(value ?? ""));
+    if (Number.isFinite(timestamp.getTime())) return timestamp;
+  }
+  return null;
 }

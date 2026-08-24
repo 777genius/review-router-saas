@@ -282,13 +282,13 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
       const remainingMs =
         input.authorization.grantExpiresAtMs - this.now().getTime();
       if (remainingMs <= 0) throw new Error("hosted_grant_expired");
-      const syntheticFault = failedOver
-        ? null
-        : await this.consumeFault(
-            input.authorization,
-            "before_provider_fetch",
-            1,
-          );
+      const syntheticFault = await this.consumeFault(
+        input.authorization,
+        "before_provider_fetch",
+        1,
+      );
+      if (failedOver && syntheticFault !== null)
+        throw new Error("hosted_codex_canary_fault_plan_not_one_shot");
       if (
         !failedOver &&
         (syntheticFault === "synthetic_unauthorized" ||
