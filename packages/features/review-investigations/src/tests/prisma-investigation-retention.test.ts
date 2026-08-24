@@ -10,6 +10,7 @@ describe("PrismaInvestigationStore retention pruning", () => {
       $queryRaw: vi
         .fn()
         .mockResolvedValueOnce([{ epochMs: BigInt(cutoff.getTime() + 1_000) }])
+        .mockResolvedValueOnce([{ count: 1n }])
         .mockResolvedValueOnce([
           {
             privateMaterialId: "private-inv-1",

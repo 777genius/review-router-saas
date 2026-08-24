@@ -127,12 +127,6 @@ type ExpiredPrivateMaterialCandidate = Readonly<{
   investigationId: string;
   obligationId: string | null;
   investigationState: PrismaInvestigationState;
-  expiresAt: Date;
-}>;
-
-type ExpiredPrivateMaterialCursor = Readonly<{
-  privateMaterialId: string;
-  expiresAt: Date;
 }>;
 
 type ExpiredPrivateMaterialGroup = Readonly<{
@@ -180,8 +174,6 @@ export class PrismaInvestigationStore
     new ReconcileExpiredInvestigationPrivateMaterial(
       new NodeSha256InvestigationDigest(),
     );
-  private privateMaterialPruneCursor: ExpiredPrivateMaterialCursor | null =
-    null;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -701,35 +693,38 @@ export class PrismaInvestigationStore
       async (transaction) => {
         const databaseNow = await investigationDatabaseNow(transaction);
         const effectiveCutoff = cutoff < databaseNow ? cutoff : databaseNow;
-        let candidates = await findExpiredPrivateMaterialCandidates(
+        const candidateCount = await countExpiredPrivateMaterialCandidates(
+          transaction,
+          effectiveCutoff,
+        );
+        const offset = rotatingPrivateMaterialCandidateOffset(
+          effectiveCutoff,
+          input.limit,
+          candidateCount,
+        );
+        const firstPage = await findExpiredPrivateMaterialCandidates(
           transaction,
           effectiveCutoff,
           input.limit,
-          this.privateMaterialPruneCursor,
+          offset,
         );
-        if (
-          candidates.length === 0 &&
-          this.privateMaterialPruneCursor !== null
-        ) {
-          candidates = await findExpiredPrivateMaterialCandidates(
-            transaction,
-            effectiveCutoff,
-            input.limit,
-            null,
-          );
-        }
+        const candidates =
+          firstPage.length < input.limit && offset > 0
+            ? [
+                ...firstPage,
+                ...(await findExpiredPrivateMaterialCandidates(
+                  transaction,
+                  effectiveCutoff,
+                  input.limit - firstPage.length,
+                  0,
+                )),
+              ]
+            : firstPage;
         return { candidates, effectiveCutoff };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
     );
-    const lastCandidate = candidates.at(-1);
-    this.privateMaterialPruneCursor = lastCandidate
-      ? {
-          expiresAt: lastCandidate.expiresAt,
-          privateMaterialId: lastCandidate.privateMaterialId,
-        }
-      : null;
-    if (!lastCandidate) return 0;
+    if (candidates.length === 0) return 0;
 
     let removedCount = 0;
     let failedInvestigationCount = 0;
@@ -793,23 +788,16 @@ export class PrismaInvestigationStore
                 InvestigationPrivateMaterialPruneFailureCause.ParentMissing,
               );
             }
-            let reconciled: Awaited<
+            const reconciled: Awaited<
               ReturnType<
                 ReconcileExpiredInvestigationPrivateMaterial["execute"]
               >
-            >;
-            try {
-              reconciled = await this.privateMaterialExpiry.execute({
-                investigation: current,
-                privateMaterialIds: lockedGroup.privateMaterialIds,
-                obligationIds: lockedGroup.obligationIds,
-                expiredAt: effectiveCutoff.toISOString(),
-              });
-            } catch {
-              throw new PrivateMaterialGroupPruneError(
-                InvestigationPrivateMaterialPruneFailureCause.AggregateIncompatible,
-              );
-            }
+            > = await this.privateMaterialExpiry.execute({
+              investigation: current,
+              privateMaterialIds: lockedGroup.privateMaterialIds,
+              obligationIds: lockedGroup.obligationIds,
+              expiredAt: effectiveCutoff.toISOString(),
+            });
             if (
               reconciled.disposition ===
               InvestigationPrivateMaterialExpiryDisposition.DeferredActiveTurn
@@ -2416,30 +2404,56 @@ async function findExpiredPrivateMaterialCandidates(
   transaction: Prisma.TransactionClient,
   effectiveCutoff: Date,
   limit: number,
-  cursor: ExpiredPrivateMaterialCursor | null,
+  offset: number,
 ): Promise<readonly ExpiredPrivateMaterialCandidate[]> {
-  const cursorPredicate = cursor
-    ? Prisma.sql`
-        AND (material."expiresAt", material."privateMaterialId") >
-          (${cursor.expiresAt}, ${cursor.privateMaterialId})
-      `
-    : Prisma.sql``;
   return transaction.$queryRaw<ExpiredPrivateMaterialCandidate[]>(Prisma.sql`
     SELECT
       material."privateMaterialId",
       material."investigationId",
       material."obligationId",
-      material."expiresAt",
       investigation."state" AS "investigationState"
     FROM "ReviewInvestigationPrivateMaterial" AS material
     INNER JOIN "ReviewInvestigation" AS investigation
       ON investigation."investigationId" = material."investigationId"
     WHERE material."expiresAt" <= ${effectiveCutoff}
       AND investigation."activeTurnId" IS NULL
-      ${cursorPredicate}
     ORDER BY material."expiresAt" ASC, material."privateMaterialId" ASC
     LIMIT ${limit}
+    OFFSET ${offset}
   `);
+}
+
+async function countExpiredPrivateMaterialCandidates(
+  transaction: Prisma.TransactionClient,
+  effectiveCutoff: Date,
+): Promise<number> {
+  const [row] = await transaction.$queryRaw<Array<{ count: bigint }>>(
+    Prisma.sql`
+      SELECT count(*)::bigint AS count
+      FROM "ReviewInvestigationPrivateMaterial" AS material
+      INNER JOIN "ReviewInvestigation" AS investigation
+        ON investigation."investigationId" = material."investigationId"
+      WHERE material."expiresAt" <= ${effectiveCutoff}
+        AND investigation."activeTurnId" IS NULL
+    `,
+  );
+  const count = Number(row?.count ?? 0n);
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new Error("investigation_private_material_candidate_count_invalid");
+  }
+  return count;
+}
+
+function rotatingPrivateMaterialCandidateOffset(
+  effectiveCutoff: Date,
+  limit: number,
+  candidateCount: number,
+): number {
+  if (candidateCount === 0) return 0;
+  const hourlyBucket = BigInt(
+    Math.floor(effectiveCutoff.getTime() / (60 * 60 * 1_000)),
+  );
+  return Number((hourlyBucket * BigInt(limit)) % BigInt(candidateCount));
 }
 
 function groupPrivateMaterialCandidates(

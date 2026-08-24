@@ -1196,7 +1196,9 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
       ).resolves.toBe(1);
       await expect(
         poisonStore.reconcileExpiredPrivateMaterial({
-          expiresAtOrBefore: healthyMaterial.expiresAt,
+          expiresAtOrBefore: new Date(
+            Date.parse(healthyMaterial.expiresAt) + 60 * 60 * 1_000,
+          ).toISOString(),
           limit: 1,
         }),
       ).resolves.toBe(1);
