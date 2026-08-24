@@ -158,15 +158,15 @@ const evaluationSigningKeyPolicyVersion =
 
 export const productionInvestigationPolicy: ReviewInvestigationPolicy =
   Object.freeze({
-    policyId: "production-shaped-disposable-e2e.v1",
-    maxObligations: 64,
-    maxExpansionDepth: 4,
-    maxSemanticTurns: 8,
-    maxOperationalAttempts: 8,
-    maxCriticCycles: 2,
-    maxFindings: 32,
-    maxProposalsPerTurn: 16,
-    maxReceiptsPerTurn: 64,
+    policyId: "review-investigation-shadow.v1",
+    maxObligations: 1024,
+    maxExpansionDepth: 8,
+    maxSemanticTurns: 12,
+    maxOperationalAttempts: 24,
+    maxCriticCycles: 3,
+    maxFindings: 256,
+    maxProposalsPerTurn: 128,
+    maxReceiptsPerTurn: 256,
     maxSeedProbesPerFile: 48,
     maxSeedProbesOverall: 384,
   });
