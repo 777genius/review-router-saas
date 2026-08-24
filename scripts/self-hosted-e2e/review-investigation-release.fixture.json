@@ -6,20 +6,20 @@
   },
   "reviewInvestigation": {
     "capability": "review_investigation_v1",
-    "coverageProfileHash": "d3bcd60414edeaac73973fc9c8ffa18612b1baec1755f2071192e28c3bc15714",
+    "coverageProfileHash": "86a68eda454aff14d596da321ad635c7e67b3d6f18b990c2c1e02dfb3f9298b8",
     "policy": {
-      "maxCriticCycles": 2,
-      "maxExpansionDepth": 4,
-      "maxFindings": 32,
-      "maxObligations": 64,
-      "maxOperationalAttempts": 8,
-      "maxProposalsPerTurn": 16,
-      "maxReceiptsPerTurn": 64,
+      "maxCriticCycles": 3,
+      "maxExpansionDepth": 8,
+      "maxFindings": 256,
+      "maxObligations": 1024,
+      "maxOperationalAttempts": 24,
+      "maxProposalsPerTurn": 128,
+      "maxReceiptsPerTurn": 256,
       "maxSeedProbesOverall": 384,
       "maxSeedProbesPerFile": 48,
-      "maxSemanticTurns": 8,
-      "policyId": "production-shaped-disposable-e2e.v1"
+      "maxSemanticTurns": 12,
+      "policyId": "review-investigation-shadow.v1"
     },
-    "policyHash": "c96e460e5a7473cba3f67cf5aee4fd4ea2e7da43f60b513975ffaf9930d94689"
+    "policyHash": "6af1a3ecea3cb01f8a0e1cea614c8578c6bc7e4010db13603c114757291af698"
   }
 }
