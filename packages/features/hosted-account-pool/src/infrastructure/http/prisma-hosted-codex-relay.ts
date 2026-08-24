@@ -24,6 +24,10 @@ import {
   type HostedCodexUpstreamEffectLease,
 } from "../prisma/prisma-hosted-codex-upstream-effect-ledger.js";
 import type { HostedCodexSessionRuntime } from "../runtime/hosted-codex-session-runtime.js";
+import {
+  noHostedCodexCanaryFaultPlan,
+  type HostedCodexCanaryFaultPlanPort,
+} from "../../application/ports/hosted-codex-canary-fault-plan-port.js";
 
 const upstreamResponsesUrl = "https://chatgpt.com/backend-api/codex/responses";
 
@@ -147,6 +151,14 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
       grantExpiresAtMs: stored.expiresAt.getTime(),
       declaredRequestBytes: input.requestBytes,
       maxRequestBodyBytes: stored.maxRequestBytes,
+      faultPlanScope: {
+        workspaceId: stored.workspaceId,
+        githubRepositoryId: binding.repository.githubRepositoryId,
+        actionRef: binding.workflowActionRef ?? "",
+        repositoryBindingId: binding.id,
+        bindingRevision: stored.bindingRevision,
+        requestOrdinal: input.requestOrdinal,
+      },
     };
   }
 }
@@ -181,6 +193,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         | "markResponseStarted"
         | "authority"
       >;
+      readonly faultPlans?: HostedCodexCanaryFaultPlanPort;
     } = { failoverEnabled: false },
   ) {
     this.failoverEnabled = options.failoverEnabled;
@@ -200,7 +213,10 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         ledger.prismaClient,
         this.now,
       );
+    this.faultPlans = options.faultPlans ?? noHostedCodexCanaryFaultPlan;
   }
+
+  private readonly faultPlans: HostedCodexCanaryFaultPlanPort;
 
   async open(input: Parameters<HostedCodexStreamingRelayPort["open"]>[0]) {
     try {
@@ -266,6 +282,30 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
       const remainingMs =
         input.authorization.grantExpiresAtMs - this.now().getTime();
       if (remainingMs <= 0) throw new Error("hosted_grant_expired");
+      const syntheticFault = failedOver
+        ? null
+        : await this.consumeFault(
+            input.authorization,
+            "before_provider_fetch",
+            1,
+          );
+      if (
+        !failedOver &&
+        (syntheticFault === "synthetic_unauthorized" ||
+          syntheticFault === "synthetic_rate_limited")
+      ) {
+        accountId = await this.switchToBackup(
+          input.authorization,
+          syntheticFault === "synthetic_rate_limited"
+            ? "rate_limited"
+            : "credential_invalid",
+          syntheticFault === "synthetic_rate_limited"
+            ? new Date(this.now().getTime() + 15 * 60_000)
+            : null,
+        );
+        failedOver = true;
+        continue;
+      }
       effectLease = await this.effects.prepare({
         relayRequestId: input.authorization.requestId,
         grantId: input.authorization.grantId,
@@ -318,6 +358,29 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
             },
             this.ledger,
           );
+          const droppedFault = await this.consumeFault(
+            input.authorization,
+            "after_response_started",
+            Number(effectLease.fenceEpoch),
+          );
+          if (droppedFault === "drop_after_response_started") {
+            await upstream.body?.cancel();
+            await terminalizeUnknownRequest(
+              input.authorization,
+              this.ledger,
+              "ambiguous_dropped_response",
+              effectCompletion(
+                this.effects,
+                effectLease,
+                "terminal_unknown",
+                "operator-canary-dropped-response",
+              ),
+              this.now(),
+            );
+            throw new UpstreamTerminalUnknownError(
+              new Error("hosted_codex_canary_dropped_response"),
+            );
+          }
         } else {
           await this.effects.markResponseStarted(
             effectLease,
@@ -350,6 +413,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         streamHeartbeat = heartbeat;
       } catch (error) {
         await heartbeat.stop();
+        if (error instanceof UpstreamTerminalUnknownError) throw error;
         await terminalizeUnknownRequest(
           input.authorization,
           this.ledger,
@@ -417,6 +481,27 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
       );
       throw new UpstreamTerminalUnknownError(error);
     }
+  }
+
+  private async consumeFault(
+    authorization: AuthorizedHostedCodexRelay,
+    injectionPoint: "before_provider_fetch" | "after_response_started",
+    attemptOrdinal: number,
+  ) {
+    const scope = authorization.faultPlanScope;
+    if (!scope) return null;
+    return this.faultPlans.consume({
+      workspaceId: scope.workspaceId,
+      githubRepositoryId: scope.githubRepositoryId,
+      runId: authorization.runId,
+      runAttempt: authorization.runAttempt,
+      actionRef: scope.actionRef,
+      repositoryBindingId: scope.repositoryBindingId,
+      bindingRevision: scope.bindingRevision,
+      requestOrdinal: scope.requestOrdinal,
+      attemptOrdinal,
+      injectionPoint,
+    });
   }
 
   private async switchToBackup(

@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPrismaClient } from "../packages/platform/db/src/index.js";
+import { hostedCodexCanaryFaultPlanTokenMaxBytes } from "../packages/features/hosted-account-pool/src/application/ports/hosted-codex-canary-fault-plan-port.js";
 
 export const hostedPoolFlagNames = Object.freeze([
   "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL",
@@ -26,10 +27,25 @@ export type HostedPoolControlPort = Readonly<{
   readFlags(): Promise<Record<string, Record<HostedPoolFlagName, string>>>;
   setFlags(patch: HostedPoolFlagPatch): Promise<void>;
   counts(): Promise<HostedPoolCounts>;
+  setFaultPlan?(token: string | null): Promise<void>;
 }>;
 
+export class HostedPoolRollbackError extends AggregateError {
+  constructor(
+    failures: readonly unknown[],
+    readonly rollbackEvidence: ReturnType<typeof evidence>,
+  ) {
+    super(failures, "hosted_pool_rollback_aggregate_failure");
+  }
+}
+
 export async function executeHostedPoolControl(input: {
-  readonly command: "status" | "kill-switch" | "drain" | "rollback";
+  readonly command:
+    | "status"
+    | "activate"
+    | "kill-switch"
+    | "drain"
+    | "rollback";
   readonly execute: boolean;
   readonly confirmation?: string;
   readonly port: HostedPoolControlPort;
@@ -44,7 +60,11 @@ export async function executeHostedPoolControl(input: {
       input.port.readFlags(),
       input.port.counts(),
     ]);
-    validateObservedFlags(flags, input.execute && input.command !== "status");
+    validateObservedFlags(
+      flags,
+      input.execute && input.command !== "status",
+      input.execute && input.command === "rollback",
+    );
     const event = { phase, at: now().toISOString(), flags, counts };
     events.push(event);
     return event;
@@ -62,7 +82,26 @@ export async function executeHostedPoolControl(input: {
   )
     throw new Error("hosted_pool_control_confirmation_required");
 
-  if (input.command === "kill-switch") {
+  if (input.command === "activate") {
+    await input.port.setFlags({
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "1",
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "1",
+    });
+    assertObservedPatch(await observe("runtime_activated"), {
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "1",
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "1",
+    });
+    await input.port.setFlags({
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "1",
+    });
+    assertObservedPatch(await observe("admission_activated_last"), {
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "1",
+    });
+  } else if (input.command === "kill-switch") {
     await input.port.setFlags({
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0",
@@ -74,17 +113,41 @@ export async function executeHostedPoolControl(input: {
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0",
     });
   } else {
-    await input.port.setFlags({
-      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
-    });
-    assertObservedPatch(await observe("admission_closed"), {
-      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
-    });
-    await waitForDrain(input.port, events, {
-      now,
-      ...(input.sleep ? { sleep: input.sleep } : {}),
-      ...(input.maxDrainPolls ? { maxPolls: input.maxDrainPolls } : {}),
-    });
+    const rollbackFailures: unknown[] = [];
+    if (input.command === "rollback" && input.port.setFaultPlan) {
+      try {
+        await input.port.setFaultPlan(null);
+        events.push({ phase: "fault_plan_closed", at: now().toISOString() });
+      } catch (error) {
+        rollbackFailures.push(error);
+      }
+    }
+    try {
+      await input.port.setFlags({
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
+      });
+    } catch (error) {
+      if (input.command !== "rollback") throw error;
+      rollbackFailures.push(error);
+    }
+    try {
+      assertObservedPatch(await observe("admission_closed"), {
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
+      });
+    } catch (error) {
+      if (input.command !== "rollback") throw error;
+      rollbackFailures.push(error);
+    }
+    try {
+      await waitForDrain(input.port, events, {
+        now,
+        ...(input.sleep ? { sleep: input.sleep } : {}),
+        ...(input.maxDrainPolls ? { maxPolls: input.maxDrainPolls } : {}),
+      });
+    } catch (error) {
+      if (input.command !== "rollback") throw error;
+      rollbackFailures.push(error);
+    }
     if (input.command === "rollback") {
       for (const [phase, patch] of [
         [
@@ -95,9 +158,40 @@ export async function executeHostedPoolControl(input: {
         ["custody_closed", { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0" }],
         ["pool_closed", { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0" }],
       ] as const) {
-        await input.port.setFlags(patch);
-        assertObservedPatch(await observe(phase), patch);
+        try {
+          await input.port.setFlags(patch);
+        } catch (error) {
+          rollbackFailures.push(error);
+        }
+        try {
+          assertObservedPatch(await observe(phase), patch);
+        } catch (error) {
+          rollbackFailures.push(error);
+        }
       }
+      try {
+        const final = await observe("rollback_final_reread");
+        assertObservedPatch(final, {
+          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
+          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0",
+          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0",
+          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0",
+          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0",
+        });
+        if (
+          final.counts.inFlight !== 0 ||
+          final.counts.issuedGrants !== 0 ||
+          final.counts.unresolvedRequests !== 0
+        )
+          throw new Error("hosted_pool_rollback_final_drain_incomplete");
+      } catch (error) {
+        rollbackFailures.push(error);
+      }
+      if (rollbackFailures.length > 0)
+        throw new HostedPoolRollbackError(
+          rollbackFailures,
+          evidence(input.command, "failed", events),
+        );
     }
   }
   return evidence(input.command, "executed", events);
@@ -118,6 +212,7 @@ function assertObservedPatch(
 function validateObservedFlags(
   services: Record<string, Record<HostedPoolFlagName, string>>,
   allowServiceDrift = false,
+  allowDependencyDrift = false,
 ) {
   const dependencies: Partial<Record<HostedPoolFlagName, HostedPoolFlagName>> =
     {
@@ -138,7 +233,12 @@ function validateObservedFlags(
       if (flags[name] !== "0" && flags[name] !== "1")
         throw new Error(`hosted_pool_control_flag_invalid:${name}`);
       const dependency = dependencies[name];
-      if (flags[name] === "1" && dependency && flags[dependency] !== "1")
+      if (
+        !allowDependencyDrift &&
+        flags[name] === "1" &&
+        dependency &&
+        flags[dependency] !== "1"
+      )
         throw new Error(`hosted_pool_control_flag_dependency:${name}`);
     }
   }
@@ -186,7 +286,7 @@ function evidence(
   result: string,
   events: Array<Record<string, unknown>>,
 ) {
-  const payload = { schemaVersion: 1, command, result, events };
+  const payload = { schemaVersion: 2, command, result, events };
   return Object.freeze({
     ...payload,
     evidenceSha256: createHash("sha256")
@@ -257,26 +357,67 @@ export function createRenderHostedPoolControlPort(input: {
       ) as Record<string, Record<HostedPoolFlagName, string>>;
     },
     async setFlags(patch) {
+      const failures: unknown[] = [];
       for (const id of input.serviceIds) {
-        const current = await readService(id);
-        const changed = Object.entries(patch).some(
-          ([key, value]) => current[key] !== value,
-        );
-        if (!changed) continue;
-        const priorDeployId = await latestDeployId(request, id);
-        for (const [key, value] of Object.entries(patch)) current[key] = value;
-        await request(
-          "PUT",
-          `/services/${id}/env-vars`,
-          Object.entries(current).map(([key, value]) => ({ key, value })),
-        );
-        await waitForNewLiveDeploy(request, id, priorDeployId);
-        const observed = await readService(id);
-        for (const [key, value] of Object.entries(patch)) {
-          if (observed[key] !== value)
-            throw new Error(`hosted_pool_render_env_drift:${id}:${key}`);
+        try {
+          const current = await readService(id);
+          const changed = Object.entries(patch).some(
+            ([key, value]) => current[key] !== value,
+          );
+          if (!changed) continue;
+          const priorDeployId = await latestDeployId(request, id);
+          for (const [key, value] of Object.entries(patch))
+            current[key] = value;
+          await request(
+            "PUT",
+            `/services/${id}/env-vars`,
+            Object.entries(current).map(([key, value]) => ({ key, value })),
+          );
+          await waitForNewLiveDeploy(request, id, priorDeployId);
+          const observed = await readService(id);
+          for (const [key, value] of Object.entries(patch)) {
+            if (observed[key] !== value)
+              throw new Error(`hosted_pool_render_env_drift:${id}:${key}`);
+          }
+        } catch (error) {
+          failures.push(error);
         }
       }
+      if (failures.length > 0)
+        throw new AggregateError(
+          failures,
+          "hosted_pool_render_mutation_failed",
+        );
+    },
+    async setFaultPlan(token) {
+      if (token === null) {
+        await cancelOpenStagedFaultPlans(prisma);
+        return;
+      }
+      const repositoryId = readUnsignedFaultPlanRepositoryId(token);
+      const bindings = await prisma.hostedCodexRepositoryBinding.findMany({
+        where: {
+          status: "active",
+          attestedGithubRepositoryId: repositoryId,
+        },
+        select: { workspaceId: true },
+      });
+      if (bindings.length !== 1)
+        throw new Error("hosted_pool_canary_fault_plan_binding_scope_invalid");
+      await cancelOpenStagedFaultPlans(prisma);
+      const planIdHash = createHash("sha256")
+        .update(token, "utf8")
+        .digest("hex");
+      await prisma.auditEvent.create({
+        data: {
+          workspaceId: bindings[0]!.workspaceId,
+          actor: "operator:production-canary",
+          action: "hosted_codex_canary_fault_plan_staged",
+          targetType: "hosted_codex_canary_fault_plan",
+          targetId: planIdHash,
+          metadata: { token },
+        },
+      });
     },
     async counts() {
       const [grants, unresolvedRequests, terminalUnknownRequests] =
@@ -304,6 +445,90 @@ export function createRenderHostedPoolControlPort(input: {
     },
     disconnect: () => prisma.$disconnect(),
   };
+}
+
+async function cancelOpenStagedFaultPlans(
+  prisma: ReturnType<typeof createPrismaClient>,
+) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await prisma.$transaction(
+        async (transaction) => {
+          const staged = await transaction.auditEvent.findMany({
+            where: {
+              action: "hosted_codex_canary_fault_plan_staged",
+              targetType: "hosted_codex_canary_fault_plan",
+            },
+            orderBy: { createdAt: "desc" },
+            select: { workspaceId: true, targetId: true },
+          });
+          for (const plan of staged) {
+            const closed = await transaction.auditEvent.findFirst({
+              where: {
+                action: {
+                  in: [
+                    "hosted_codex_canary_fault_plan_consumed",
+                    "hosted_codex_canary_fault_plan_canceled",
+                  ],
+                },
+                targetType: "hosted_codex_canary_fault_plan",
+                targetId: plan.targetId,
+              },
+              select: { id: true },
+            });
+            if (closed) continue;
+            await transaction.auditEvent.create({
+              data: {
+                workspaceId: plan.workspaceId,
+                actor: "operator:production-canary",
+                action: "hosted_codex_canary_fault_plan_canceled",
+                targetType: "hosted_codex_canary_fault_plan",
+                targetId: plan.targetId,
+                metadata: { reason: "operator_scope_closed" },
+              },
+            });
+          }
+        },
+        { isolationLevel: "Serializable" },
+      );
+      return;
+    } catch (error) {
+      if (attempt < 3 && isPrismaWriteConflict(error)) continue;
+      throw error;
+    }
+  }
+}
+
+function isPrismaWriteConflict(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2034"
+  );
+}
+
+function readUnsignedFaultPlanRepositoryId(token: string): bigint {
+  if (
+    Buffer.byteLength(token, "utf8") > hostedCodexCanaryFaultPlanTokenMaxBytes
+  )
+    throw new Error("hosted_pool_canary_fault_plan_envelope_invalid");
+  const parts = token.split(".");
+  if (parts.length !== 3 || parts[0] !== "rr-canary-fault-v2")
+    throw new Error("hosted_pool_canary_fault_plan_envelope_invalid");
+  let value: unknown;
+  try {
+    const payload = Buffer.from(parts[1]!, "base64url");
+    if (payload.toString("base64url") !== parts[1])
+      throw new Error("non_canonical");
+    value = JSON.parse(payload.toString("utf8"));
+  } catch {
+    throw new Error("hosted_pool_canary_fault_plan_envelope_invalid");
+  }
+  const repositoryId = (value as { repository_id?: unknown })?.repository_id;
+  if (typeof repositoryId !== "string" || !/^[1-9]\d*$/u.test(repositoryId))
+    throw new Error("hosted_pool_canary_fault_plan_envelope_invalid");
+  return BigInt(repositoryId);
 }
 
 async function latestDeployId(
@@ -346,14 +571,17 @@ async function waitForNewLiveDeploy(
 async function main() {
   const command = process.argv[2] as
     | "status"
+    | "activate"
     | "kill-switch"
     | "drain"
     | "rollback";
   if (
-    !(["status", "kill-switch", "drain", "rollback"] as const).includes(command)
+    !(
+      ["status", "activate", "kill-switch", "drain", "rollback"] as const
+    ).includes(command)
   )
     throw new Error(
-      "usage: hosted-pool:control <status|kill-switch|drain|rollback> [--execute]",
+      "usage: hosted-pool:control <status|activate|kill-switch|drain|rollback> [--execute]",
     );
   const serviceIds = required(
     process.env.REVIEW_ROUTER_HOSTED_POOL_RENDER_SERVICE_IDS,

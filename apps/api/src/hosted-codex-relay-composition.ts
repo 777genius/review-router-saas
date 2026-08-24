@@ -28,6 +28,7 @@ import { OctokitHostedWorkflowSourceReader } from "./github/octokit-hosted-workf
 import { HostedCodexCommentTokenIssuer } from "./hosted-codex-comment-token-composition.js";
 import { createProductionHostedCodexGrantIssuer } from "./hosted-codex-grant-composition.js";
 import { verifyHostedCodexRestorePermit } from "./hosted-codex-restore-permit.js";
+import { composeHostedCodexCanaryFaultPlans } from "./hosted-codex-canary-fault-composition.js";
 
 export type HostedCodexFeatureFlags = {
   readonly custody: boolean;
@@ -148,6 +149,7 @@ export async function composeProductionHostedCodexRelayRoutes(input: {
     : undefined;
   const relay = new FetchHostedCodexStreamingRelay(runtime, ledger, fetch, {
     failoverEnabled: flags.failover,
+    faultPlans: composeHostedCodexCanaryFaultPlans(input),
   });
   return {
     enabled: true,

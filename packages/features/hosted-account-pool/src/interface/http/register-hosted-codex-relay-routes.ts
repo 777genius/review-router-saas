@@ -70,6 +70,14 @@ export type AuthorizedHostedCodexRelay = {
   readonly grantExpiresAtMs: number;
   readonly declaredRequestBytes: number;
   readonly maxRequestBodyBytes: number;
+  readonly faultPlanScope?: Readonly<{
+    readonly workspaceId: string;
+    readonly githubRepositoryId: bigint;
+    readonly actionRef: string;
+    readonly repositoryBindingId: string;
+    readonly bindingRevision: bigint;
+    readonly requestOrdinal: number;
+  }>;
 };
 
 export interface HostedCodexRelayAuthorizationPort {

@@ -2,21 +2,27 @@ import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
-  admitRelayRequest,
-  enrollHostedPoolAccount,
   hostedAccountId,
   hostedBindingId,
   hostedPoolId,
   invocationGrantId,
   invocationId,
-  issueInvocationGrant,
   relayRequestId,
   repositoryId,
   workspaceId,
-  type CurrentRelayRequestFailover,
+} from "../domain/identifiers";
+import {
+  enrollHostedPoolAccount,
   type HostedPoolAccount,
-  type InvocationGrant,
-} from "../index";
+} from "../domain/account-pool";
+import type {
+  CurrentRelayRequestFailover,
+  InvocationGrant,
+} from "../domain/invocation-grant";
+import {
+  admitRelayRequest,
+  issueInvocationGrant,
+} from "../domain/invocation-grant";
 import { FetchHostedCodexStreamingRelay } from "../infrastructure/http/prisma-hosted-codex-relay";
 
 const now = new Date("2026-08-16T12:00:00.000Z");
@@ -337,6 +343,145 @@ describe("hosted Codex quota failover", () => {
     expect(streamError).toBeInstanceOf(Error);
     expect(ledger.terminalizeUnknown).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    {
+      status: 401,
+      fault: "synthetic_unauthorized" as const,
+    },
+    {
+      status: 429,
+      fault: "synthetic_rate_limited" as const,
+    },
+  ])(
+    "injects a synthetic $status before fetch with zero primary and one backup effect",
+    async ({ fault }) => {
+      const primary = account("fault-primary", 0);
+      const backup = account("fault-backup", 1);
+      let grant = admittedGrant(primary, backup);
+      const ledger = {
+        recordRequestHash: vi.fn(async () => undefined),
+        failover: vi.fn(async (input: any) => {
+          const result = input.transition(grant, primary, backup);
+          if (result.status === "switched") grant = result.grant;
+          return result;
+        }),
+        markStarted: vi.fn(async (input: any) => {
+          grant = input.transition(grant);
+          return grant;
+        }),
+        complete: vi.fn(async (input: any) => {
+          grant = input.transition(grant);
+          return grant;
+        }),
+      };
+      const faultPlans = {
+        consume: vi.fn(async (scope: { injectionPoint: string }) =>
+          scope.injectionPoint === "before_provider_fetch" ? fault : null,
+        ),
+      };
+      const fetchImpl = vi.fn(
+        async () => new Response("complete", { status: 200 }),
+      ) as unknown as typeof fetch;
+      const body = Buffer.from('{"input":"review"}');
+      const effects = effectLedgerFixture();
+      const relay = new FetchHostedCodexStreamingRelay(
+        runtimeFixture() as never,
+        ledger as never,
+        fetchImpl,
+        {
+          failoverEnabled: true,
+          now: () => now,
+          effects,
+          faultPlans,
+        },
+      );
+      const response = await relay.open({
+        authorization: {
+          ...authorization(grant, primary, body.byteLength),
+          faultPlanScope: faultScope(),
+        },
+        body: Readable.from(body),
+        contentType: "application/json",
+        accept: "text/event-stream",
+        abortSignal: new AbortController().signal,
+      });
+      for await (const chunk of response.body) void chunk;
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(ledger.failover).toHaveBeenCalledTimes(1);
+      expect(grant.activeAccountId).toBe(backup.id);
+      expect(effects.prepare).toHaveBeenCalledTimes(1);
+      expect(effects.prepare).toHaveBeenCalledWith(
+        expect.objectContaining({ accountId: backup.id }),
+      );
+      expect(effects.prepare).not.toHaveBeenCalledWith(
+        expect.objectContaining({ accountId: primary.id }),
+      );
+      expect(faultPlans.consume).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("drops only after one real dispatch and response-start evidence", async () => {
+    const primary = account("drop-primary", 0);
+    const grant = admittedGrant(primary, account("drop-backup", 1));
+    const checkpoints: string[] = [];
+    const ledger = {
+      recordRequestHash: vi.fn(async () => undefined),
+      markStarted: vi.fn(async () => checkpoints.push("response_started")),
+      terminalizeUnknown: vi.fn(async () =>
+        checkpoints.push("terminal_unknown"),
+      ),
+      complete: vi.fn(),
+    };
+    const faultPlans = {
+      consume: vi.fn(async (scope: { injectionPoint: string }) =>
+        scope.injectionPoint === "after_response_started"
+          ? ("drop_after_response_started" as const)
+          : null,
+      ),
+    };
+    const fetchImpl = vi.fn(async () => {
+      checkpoints.push("provider_dispatched");
+      return new Response("must-not-stream", { status: 200 });
+    }) as unknown as typeof fetch;
+    const body = Buffer.from('{"input":"review"}');
+    const relay = new FetchHostedCodexStreamingRelay(
+      runtimeFixture() as never,
+      ledger as never,
+      fetchImpl,
+      {
+        failoverEnabled: true,
+        now: () => now,
+        effects: effectLedgerFixture(),
+        faultPlans,
+      },
+    );
+    await expect(
+      relay.open({
+        authorization: {
+          ...authorization(grant, primary, body.byteLength),
+          faultPlanScope: faultScope(),
+        },
+        body: Readable.from(body),
+        contentType: "application/json",
+        accept: "text/event-stream",
+        abortSignal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("hosted_codex_canary_dropped_response");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(checkpoints).toEqual([
+      "provider_dispatched",
+      "response_started",
+      "terminal_unknown",
+    ]);
+    expect(ledger.terminalizeUnknown).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorCode: "ambiguous_dropped_response",
+        effect: expect.objectContaining({ terminalState: "terminal_unknown" }),
+      }),
+    );
+    expect(ledger.complete).not.toHaveBeenCalled();
+  });
 });
 
 function runtimeFixture() {
@@ -387,6 +532,17 @@ function authorization(
     grantExpiresAtMs: grant.budget.expiresAt.getTime(),
     declaredRequestBytes: requestBytes,
     maxRequestBodyBytes: grant.budget.maxRequestBytes,
+  };
+}
+
+function faultScope() {
+  return {
+    workspaceId: "workspace-1",
+    githubRepositoryId: 123456789n,
+    actionRef: `777genius/review-router@${"a".repeat(40)}`,
+    repositoryBindingId: "binding-1",
+    bindingRevision: 1n,
+    requestOrdinal: 1,
   };
 }
 

@@ -1,0 +1,103 @@
+export type HostedPoolCanaryPhase =
+  | "simultaneous_a"
+  | "simultaneous_b"
+  | "unauthorized"
+  | "rate_limited"
+  | "dropped_response";
+
+export type CanaryRunEvidence = Readonly<{
+  runId: number;
+  grantId: string;
+  invocationId: string;
+  workspaceId: string;
+  githubRepositoryId: string;
+  actionRef: string;
+  activeAccountId: string;
+  primaryAccountId: string;
+  backupAccountId: string | null;
+  failoverCount: number;
+  grantStatus: string;
+  grantRevokedAt: string | null;
+  commentRefreshRevokedAt: string | null;
+  repositoryBindingId: string;
+  bindingRevision: string;
+  issuedAt: string;
+  completedAt: string | null;
+  requestId: string;
+  requestOrdinal: number;
+  requestErrorCode: string | null;
+  requestReceivedAt: string;
+  requestStartedAt: string | null;
+  successfulResponseStartedAt: string | null;
+  appBotPublicationCount: number;
+  nonAppBotPublicationCount: number;
+  faultPlanConsumptionCount: number;
+  faultPlanConsumptions: readonly Readonly<{
+    planIdHash: string;
+    phase:
+      | "synthetic_unauthorized"
+      | "synthetic_rate_limited"
+      | "drop_after_response_started";
+    repositoryId: string;
+    runAttempt: number;
+    actionRef: string;
+    bindingId: string;
+    bindingRevision: string;
+    requestOrdinal: number;
+    attemptOrdinal: number;
+    injectionPoint: "before_provider_fetch" | "after_response_started";
+    consumedAt: string;
+  }>[];
+  requestStatuses: readonly string[];
+  attempts: readonly Readonly<{
+    attemptId: string;
+    relayRequestId: string;
+    grantId: string;
+    ordinal: number;
+    state: string;
+    errorCode: string | null;
+    accountId: string;
+    dispatchStartedAt: string | null;
+    responseStartedAt: string | null;
+    completedAt: string | null;
+    createdAt: string;
+  }>[];
+}>;
+
+export type HostedPoolCanaryConfig = Readonly<{
+  repositoryId: number;
+  installationId: number;
+  allowlistedRepositoryId: number;
+  appSlug: string;
+  actionSha: string;
+  poolId: string;
+  accountIds: readonly [string, string];
+  faultPlans: Readonly<
+    Record<"unauthorized" | "rate_limited" | "dropped_response", string>
+  >;
+  runs: Readonly<Record<HostedPoolCanaryPhase, number>>;
+}>;
+
+/** GitHub dispatch and observation boundary; it has no service-control authority. */
+export type HostedPoolCanaryPort = Readonly<{
+  preflight(config: HostedPoolCanaryConfig): Promise<Record<string, unknown>>;
+  rerun(runId: number): Promise<void>;
+  waitForCompletion(
+    runId: number,
+    expectedConclusion: "success" | "failure",
+  ): Promise<void>;
+  evidence(runId: number): Promise<CanaryRunEvidence>;
+}>;
+
+export type HostedPoolGitHubRequestPort = Readonly<{
+  request(
+    method: "GET" | "POST",
+    path: string,
+    body?: unknown,
+  ): Promise<unknown>;
+}>;
+
+export type HostedPoolPublicationEvidence = Readonly<{
+  appBotPublicationCount: number;
+  nonAppBotPublicationCount: number;
+}>;

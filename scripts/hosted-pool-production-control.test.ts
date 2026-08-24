@@ -38,6 +38,25 @@ function fixture(
 }
 
 describe("hosted pool production controls", () => {
+  it("activates runtime dependencies together and admission last", async () => {
+    const { port, calls } = fixture();
+    await executeHostedPoolControl({
+      command: "activate",
+      execute: true,
+      confirmation: "EXECUTE HOSTED POOL ACTIVATE",
+      port,
+    });
+    expect(calls).toEqual([
+      {
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "1",
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "1",
+      },
+      { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "1" },
+    ]);
+    expect(port.readFlags).toHaveBeenCalledTimes(3);
+  });
   it("is dry-run by default and does not mutate", async () => {
     const { port } = fixture();
     const result = await executeHostedPoolControl({
@@ -177,5 +196,73 @@ describe("hosted pool production controls", () => {
         sleep: async () => undefined,
       }),
     ).resolves.toMatchObject({ result: "executed" });
+  });
+
+  it("allows rollback to converge an initially dependency-invalid partial closure", async () => {
+    const { port } = fixture();
+    let firstRead = true;
+    const partialClosurePort: HostedPoolControlPort = {
+      ...port,
+      async readFlags() {
+        if (!firstRead) return port.readFlags();
+        firstRead = false;
+        return {
+          "srv-api": {
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "1",
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0",
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "1",
+          },
+          "srv-web": {
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0",
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "1",
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "1",
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "1",
+          },
+        };
+      },
+    };
+    await expect(
+      executeHostedPoolControl({
+        command: "rollback",
+        execute: true,
+        confirmation: "EXECUTE HOSTED POOL ROLLBACK",
+        port: partialClosurePort,
+        sleep: async () => undefined,
+      }),
+    ).resolves.toMatchObject({ result: "executed" });
+  });
+
+  it("attempts every rollback closure and final reread after failures", async () => {
+    const { port } = fixture();
+    const patches: unknown[] = [];
+    const failing: HostedPoolControlPort = {
+      ...port,
+      async setFlags(patch) {
+        patches.push(patch);
+        if ("REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER" in patch)
+          throw new Error("fixture_failover_close_failed");
+        await port.setFlags(patch);
+      },
+    };
+    await expect(
+      executeHostedPoolControl({
+        command: "rollback",
+        execute: true,
+        confirmation: "EXECUTE HOSTED POOL ROLLBACK",
+        port: failing,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toThrow("hosted_pool_rollback_aggregate_failure");
+    expect(patches).toEqual([
+      { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0" },
+      { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0" },
+      { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0" },
+      { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0" },
+      { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0" },
+    ]);
+    expect(port.readFlags).toHaveBeenCalledTimes(7);
   });
 });
