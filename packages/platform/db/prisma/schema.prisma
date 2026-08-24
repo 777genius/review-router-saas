@@ -2076,6 +2076,13 @@ model ReviewInvestigationPrivateMaterial {
   @@index([expiresAt, privateMaterialId], map: "ReviewInvestigationPrivateMaterial_expiry_idx")
 }
 
+model ReviewInvestigationMaintenanceCheckpoint {
+  checkpointKey           String   @id
+  cursorExpiresAt         DateTime?
+  cursorPrivateMaterialId String?
+  updatedAt               DateTime
+}
+
 model ReviewInvestigationCertificate {
   certificateId                    String                               @id
   certificateHash                  String                               @unique(map: "ReviewInvestigationCertificate_hash_key")

@@ -59,6 +59,7 @@ const migration75Name = "000075_hosted_codex_security_certification";
 const migration76Name =
   "000076_hosted_codex_terminalization_restore_invariants";
 const migration77Name = "000077_hosted_codex_r57_security_race_remediation";
+const migration78Name = "000078_review_investigation_maintenance_checkpoint";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -91,6 +92,7 @@ assert(
       migration75Name,
       migration76Name,
       migration77Name,
+      migration78Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -179,6 +181,7 @@ try {
   proveDatabasePrivileges(providerAdmin);
   proveRuntimeParentCascadesDenied(providerAdmin, runtimeClients);
   proveStaleAclProviderIdentityEscalationDenied(providerAdmin, runtimeClients);
+  proveMaintenanceCheckpointColumnAclConvergence(providerAdmin);
   proveTerminalInsertGuards(providerAdmin);
   proveSequentialFabricationDeniedForEveryRuntimeRole(runtimeClients);
   proveRuntimeVersionedWriteback(providerAdmin, runtimeClients);
@@ -198,7 +201,7 @@ try {
   const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000077 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000078 rehearsal passed.\n",
   );
 } finally {
   const databaseDrop = psql(
@@ -574,7 +577,8 @@ function applyCanonicalPreMigrationBaseline(url) {
         directory === migration74Name ||
         directory === migration75Name ||
         directory === migration76Name ||
-        directory === migration77Name);
+        directory === migration77Name ||
+        directory === migration78Name);
     if (!isCanonicalPreMigration) continue;
     const source = join(migrationsDirectory, directory, "migration.sql");
     psql(url, ["-f", source]);
@@ -2123,6 +2127,7 @@ function proveDatabasePrivileges(url) {
                    'RuntimeCanaryChallenge',
                    'RuntimeCanaryChallengeProof',
                    'RuntimeGenerationWitnessProof',
+                   'ReviewInvestigationMaintenanceCheckpoint',
                    'CodexOAuthDatabaseAuthorityKey',
                    'CodexOAuthDatabaseAuthorityReceipt',
                    'CodexOAuthChildIdentityQuarantine',
@@ -2140,6 +2145,31 @@ function proveDatabasePrivileges(url) {
                    role_name, relation.oid, 'SELECT,INSERT,UPDATE,DELETE'
                  )
              )
+             OR has_table_privilege(
+               role_name,
+               'public."ReviewInvestigationMaintenanceCheckpoint"',
+               'SELECT'
+             ) IS DISTINCT FROM (role_name = 'reviewrouter_worker')
+             OR has_table_privilege(
+               role_name,
+               'public."ReviewInvestigationMaintenanceCheckpoint"',
+               'INSERT'
+             ) IS DISTINCT FROM (role_name = 'reviewrouter_worker')
+             OR has_table_privilege(
+               role_name,
+               'public."ReviewInvestigationMaintenanceCheckpoint"',
+               'UPDATE'
+             ) IS DISTINCT FROM (role_name = 'reviewrouter_worker')
+             OR has_table_privilege(
+               role_name,
+               'public."ReviewInvestigationMaintenanceCheckpoint"',
+               'DELETE,TRUNCATE,REFERENCES,TRIGGER'
+             )
+             OR has_any_column_privilege(
+               role_name,
+               'public."ReviewInvestigationMaintenanceCheckpoint"',
+               'SELECT,INSERT,UPDATE,REFERENCES'
+             ) IS DISTINCT FROM (role_name = 'reviewrouter_worker')
              OR EXISTS (
                SELECT 1
                FROM pg_class relation
@@ -3447,6 +3477,45 @@ function proveStaleAclProviderIdentityEscalationDenied(adminUrl, clients) {
     }
   }
   proveDatabasePrivileges(adminUrl);
+}
+
+function proveMaintenanceCheckpointColumnAclConvergence(adminUrl) {
+  for (const role of ["reviewrouter_api", "reviewrouter_web"]) {
+    psql(adminUrl, [
+      "-c",
+      `GRANT SELECT ("cursorExpiresAt"), INSERT ("updatedAt"),
+         UPDATE ("cursorPrivateMaterialId"), REFERENCES ("checkpointKey")
+       ON TABLE "ReviewInvestigationMaintenanceCheckpoint"
+       TO ${quoteIdentifier(role)}`,
+    ]);
+  }
+  convergeRuntimePrivileges(adminUrl);
+  for (const [role, expected] of [
+    ["reviewrouter_api", [false, false, false, false]],
+    ["reviewrouter_web", [false, false, false, false]],
+    ["reviewrouter_worker", [true, true, true, false]],
+    ["reviewrouter_codex_effect_authority", [false, false, false, false]],
+  ]) {
+    const observed = JSON.parse(
+      psql(adminUrl, [
+        "-Atc",
+        `SELECT json_build_array(
+           has_column_privilege(${quoteLiteral(role)},
+             '"ReviewInvestigationMaintenanceCheckpoint"','cursorExpiresAt','SELECT'),
+           has_column_privilege(${quoteLiteral(role)},
+             '"ReviewInvestigationMaintenanceCheckpoint"','updatedAt','INSERT'),
+           has_column_privilege(${quoteLiteral(role)},
+             '"ReviewInvestigationMaintenanceCheckpoint"','cursorPrivateMaterialId','UPDATE'),
+           has_column_privilege(${quoteLiteral(role)},
+             '"ReviewInvestigationMaintenanceCheckpoint"','checkpointKey','REFERENCES')
+         )`,
+      ]).stdout.trim(),
+    );
+    assert(
+      JSON.stringify(observed) === JSON.stringify(expected),
+      `${role} maintenance checkpoint column ACL did not converge canonically`,
+    );
+  }
 }
 
 function proveRuntimeParentCascadesDenied(adminUrl, clients) {

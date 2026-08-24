@@ -2,6 +2,7 @@ import type { DistributedLock } from "@reviewrouter/platform-locks";
 import type { Logger } from "@reviewrouter/platform-logger";
 import type { Clock } from "@reviewrouter/shared";
 import { investigationRetentionMaintenanceEnabledEnvironmentVariable } from "@reviewrouter/features-review-investigations/composition";
+import { type InvestigationPrivateMaterialPruneFailureCause } from "@reviewrouter/features-review-investigations";
 import {
   ReviewInvestigationPruneError,
   ReviewInvestigationPruneFailureCode,
@@ -37,6 +38,9 @@ export type ReviewInvestigationMaintenanceResult =
     Readonly<{
       status: ReviewInvestigationMaintenanceStatus;
       failureCode: ReviewInvestigationMaintenanceFailureCode | null;
+      failureCodes: readonly ReviewInvestigationMaintenanceFailureCode[];
+      failureCauseCode: InvestigationPrivateMaterialPruneFailureCause | null;
+      failedInvestigationCount: number;
     }>;
 
 export type ReviewInvestigationMaintenanceRuntime = Readonly<{
@@ -162,6 +166,9 @@ export function createReviewInvestigationMaintenanceRuntime(
                 ReviewInvestigationMaintenanceStatus.Failed,
                 error.code,
                 error.outcome,
+                error.causeCode,
+                error.failureCodes,
+                error.failedInvestigationCount,
               )
             : maintenanceResult(
                 ReviewInvestigationMaintenanceStatus.Failed,
@@ -193,8 +200,21 @@ function maintenanceResult(
     prunedInvestigationCount: 0,
     prunedShadowEvidenceCount: 0,
   },
+  failureCauseCode: InvestigationPrivateMaterialPruneFailureCause | null = null,
+  failureCodes: readonly ReviewInvestigationMaintenanceFailureCode[] = failureCode ===
+  null
+    ? []
+    : [failureCode],
+  failedInvestigationCount = 0,
 ): ReviewInvestigationMaintenanceResult {
-  return { status, failureCode, ...outcome };
+  return {
+    status,
+    failureCode,
+    failureCodes,
+    failureCauseCode,
+    failedInvestigationCount,
+    ...outcome,
+  };
 }
 
 function safeLogContext(
@@ -203,6 +223,9 @@ function safeLogContext(
   return {
     status: result.status,
     failureCode: result.failureCode,
+    failureCodes: result.failureCodes,
+    failureCauseCode: result.failureCauseCode,
+    failedInvestigationCount: result.failedInvestigationCount,
     recoveredActiveTurnCount: result.recoveredActiveTurnCount,
     expiredPrivateMaterialCount: result.expiredPrivateMaterialCount,
     prunedInvestigationCount: result.prunedInvestigationCount,

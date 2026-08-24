@@ -597,6 +597,9 @@ describe("disposable dual-version rehearsal", () => {
       "000068_validate_review_assignment_manifest",
     );
     expect(exclusions).not.toContain("000074_hosted_codex_account_pool");
+    expect(exclusions).not.toContain(
+      "000078_review_investigation_maintenance_checkpoint",
+    );
     expect(
       migrationManifestIdentity(
         migrationNames.filter(

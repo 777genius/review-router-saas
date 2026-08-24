@@ -2,6 +2,10 @@ import type {
   InvestigationPrunerPort,
   ReconcileExpiredActiveTurn,
 } from "@reviewrouter/features-review-investigations";
+import {
+  InvestigationPrivateMaterialPruneBatchError,
+  type InvestigationPrivateMaterialPruneFailureCause,
+} from "@reviewrouter/features-review-investigations";
 import type { InvestigationShadowEvidencePrunerPort } from "@reviewrouter/features-review-evidence";
 
 export const reviewInvestigationMaxPruneBatchSize = 1_000;
@@ -35,6 +39,11 @@ export class ReviewInvestigationPruneError extends Error {
   constructor(
     readonly code: ReviewInvestigationPruneFailureCode,
     readonly outcome: ReviewInvestigationPruneOutcome,
+    readonly causeCode: InvestigationPrivateMaterialPruneFailureCause | null,
+    readonly failureCodes: readonly ReviewInvestigationPruneFailureCode[] = [
+      code,
+    ],
+    readonly failedInvestigationCount: number = 0,
   ) {
     super(code);
   }
@@ -68,20 +77,30 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
     assertPruneLimit(input.shadowEvidenceLimit);
     const cutoff = input.asOf.toISOString();
 
-    let recoveredActiveTurnCount: number;
+    let recoveredActiveTurnCount = 0;
+    let expiredPrivateMaterialCount = 0;
+    let prunedInvestigationCount = 0;
+    let prunedShadowEvidenceCount = 0;
+    let failedPrivateMaterialInvestigationCount = 0;
+    const failures: Array<
+      Readonly<{
+        code: ReviewInvestigationPruneFailureCode;
+        causeCode: InvestigationPrivateMaterialPruneFailureCause | null;
+      }>
+    > = [];
+
     try {
       recoveredActiveTurnCount = await this.dependencies.expiredTurns.sweep({
         expiresAtOrBefore: cutoff,
         limit: input.investigationLimit,
       });
     } catch {
-      throw new ReviewInvestigationPruneError(
-        ReviewInvestigationPruneFailureCode.ActiveTurns,
-        emptyOutcome(),
-      );
+      failures.push({
+        code: ReviewInvestigationPruneFailureCode.ActiveTurns,
+        causeCode: null,
+      });
     }
 
-    let expiredPrivateMaterialCount: number;
     try {
       expiredPrivateMaterialCount =
         await this.dependencies.privateMaterial.reconcileExpiredPrivateMaterial(
@@ -90,14 +109,21 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
             limit: input.privateMaterialLimit,
           },
         );
-    } catch {
-      throw new ReviewInvestigationPruneError(
-        ReviewInvestigationPruneFailureCode.PrivateMaterial,
-        { ...emptyOutcome(), recoveredActiveTurnCount },
-      );
+    } catch (error: unknown) {
+      if (error instanceof InvestigationPrivateMaterialPruneBatchError) {
+        expiredPrivateMaterialCount = error.removedCount;
+        failedPrivateMaterialInvestigationCount =
+          error.failedInvestigationCount;
+      }
+      failures.push({
+        code: ReviewInvestigationPruneFailureCode.PrivateMaterial,
+        causeCode:
+          error instanceof InvestigationPrivateMaterialPruneBatchError
+            ? error.causeCode
+            : null,
+      });
     }
 
-    let prunedInvestigationCount: number;
     try {
       prunedInvestigationCount =
         await this.dependencies.investigations.pruneRetainedInvestigations({
@@ -105,40 +131,41 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
           limit: input.investigationLimit,
         });
     } catch {
-      throw new ReviewInvestigationPruneError(
-        ReviewInvestigationPruneFailureCode.Investigations,
-        {
-          recoveredActiveTurnCount,
-          expiredPrivateMaterialCount,
-          prunedInvestigationCount: 0,
-          prunedShadowEvidenceCount: 0,
-        },
-      );
+      failures.push({
+        code: ReviewInvestigationPruneFailureCode.Investigations,
+        causeCode: null,
+      });
     }
 
     try {
-      const prunedShadowEvidenceCount =
-        await this.dependencies.shadowEvidence.prune({
-          retainUntilOrBeforeMs: input.asOf.getTime(),
-          limit: input.shadowEvidenceLimit,
-        });
-      return {
-        recoveredActiveTurnCount,
-        expiredPrivateMaterialCount,
-        prunedInvestigationCount,
-        prunedShadowEvidenceCount,
-      };
+      prunedShadowEvidenceCount = await this.dependencies.shadowEvidence.prune({
+        retainUntilOrBeforeMs: input.asOf.getTime(),
+        limit: input.shadowEvidenceLimit,
+      });
     } catch {
+      failures.push({
+        code: ReviewInvestigationPruneFailureCode.ShadowEvidence,
+        causeCode: null,
+      });
+    }
+
+    const outcome = {
+      recoveredActiveTurnCount,
+      expiredPrivateMaterialCount,
+      prunedInvestigationCount,
+      prunedShadowEvidenceCount,
+    };
+    const firstFailure = failures[0];
+    if (firstFailure !== undefined) {
       throw new ReviewInvestigationPruneError(
-        ReviewInvestigationPruneFailureCode.ShadowEvidence,
-        {
-          recoveredActiveTurnCount,
-          expiredPrivateMaterialCount,
-          prunedInvestigationCount,
-          prunedShadowEvidenceCount: 0,
-        },
+        firstFailure.code,
+        outcome,
+        firstFailure.causeCode,
+        Object.freeze(failures.map((failure) => failure.code)),
+        failedPrivateMaterialInvestigationCount,
       );
     }
+    return outcome;
   }
 }
 
@@ -156,13 +183,4 @@ function assertPruneLimit(value: number): void {
   ) {
     throw new Error("review_investigation_prune_limit_invalid");
   }
-}
-
-function emptyOutcome(): ReviewInvestigationPruneOutcome {
-  return {
-    recoveredActiveTurnCount: 0,
-    expiredPrivateMaterialCount: 0,
-    prunedInvestigationCount: 0,
-    prunedShadowEvidenceCount: 0,
-  };
 }

@@ -28,6 +28,7 @@ import {
   runReleaseMigrationSubprocess,
   runtimeGrantSql,
   stripAtomicMigrationEnvelope,
+  workerOwnedMaintenanceCheckpointTable,
 } from "./run-codex-rotating-release-migration.mjs";
 
 const legacyEvidenceUnsigned = {
@@ -808,6 +809,13 @@ describe("canonical exclusive release migration caller", () => {
       "pg_inherits",
     ])
       expect(liveV70V72CatalogDigestSql).toContain(catalogSemantic);
+    for (const privilege of ["SELECT", "INSERT", "UPDATE", "REFERENCES"])
+      expect(activationAuthority).toContain(
+        `has_column_privilege(role_name,relation.oid,attribute.attnum,'${privilege}')`,
+      );
+    expect(activationAuthority).toContain(
+      "JOIN table_facts USING (role_name,role_kind,relname)",
+    );
     expect(liveV70V72CatalogDigestSha256).toBe(
       fencedLiveV70V72CatalogDigestSha256,
     );
@@ -1321,6 +1329,15 @@ describe("canonical exclusive release migration caller", () => {
       expect(grants).toContain(
         `GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO ${role}`,
       );
+      expect(grants).toContain(
+        `REVOKE ALL ON TABLE public."${workerOwnedMaintenanceCheckpointTable}" FROM ${role}`,
+      );
+      const maintenanceGrant = `GRANT SELECT, INSERT, UPDATE ON TABLE public."${workerOwnedMaintenanceCheckpointTable}" TO ${role}`;
+      if (role === "reviewrouter_worker") {
+        expect(grants).toContain(maintenanceGrant);
+      } else {
+        expect(grants).not.toContain(maintenanceGrant);
+      }
       for (const table of rotatingEvidenceTables) {
         expect(grants).toContain(`'${table}'`);
       }

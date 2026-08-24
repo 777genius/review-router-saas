@@ -22,6 +22,26 @@ export enum InvestigationPrivateMaterialPersistenceStatus {
   Conflict = "conflict",
 }
 
+export enum InvestigationPrivateMaterialPruneFailureCause {
+  AggregateIncompatible = "aggregate_incompatible",
+  ParentMissing = "parent_missing",
+  PersistenceRace = "persistence_race",
+  ExpiryFenceChanged = "expiry_fence_changed",
+  Unknown = "unknown",
+}
+
+export class InvestigationPrivateMaterialPruneBatchError extends Error {
+  readonly name = "InvestigationPrivateMaterialPruneBatchError";
+
+  constructor(
+    readonly removedCount: number,
+    readonly failedInvestigationCount: number,
+    readonly causeCode: InvestigationPrivateMaterialPruneFailureCause,
+  ) {
+    super("investigation_private_material_prune_batch_partial_failure");
+  }
+}
+
 export interface InvestigationPrivateMaterialStorePort {
   savePrivateMaterial(
     material: EncryptedInvestigationPrivateMaterial,
