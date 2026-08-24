@@ -1657,14 +1657,48 @@ ${renderCodexRotatingInteractionWorkflow({
           full_name: "777genius/example",
           default_branch: "main",
         },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          name: "dev",
+          commit: { sha: "abcdefabcdefabcdefabcdefabcdefabcdefabcd" },
+        },
       });
     await expect(
       gateway.verifyWorkflowSource({
         ...input,
         workflowRef:
-          "777genius/example/.github/workflows/reviewrouter-codex.yml@refs/heads/pr-controlled",
+          "777genius/example/.github/workflows/reviewrouter-codex.yml@refs/heads/dev",
       }),
-    ).rejects.toThrow("codex_rotating_workflow_source_not_default_branch");
+    ).resolves.toMatchObject({
+      attestation: {
+        sourceTrust: "trusted_canonical_branch_mirror_revision",
+      },
+    });
+
+    mocks.request
+      .mockResolvedValueOnce({
+        data: {
+          type: "file",
+          encoding: "base64",
+          sha: gitBlobSha(workflow),
+          content: Buffer.from(workflow, "utf8").toString("base64"),
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          id: 123456,
+          full_name: "777genius/example",
+          default_branch: "main",
+        },
+      });
+    await expect(
+      gateway.verifyWorkflowSource({
+        ...input,
+        workflowRef:
+          "777genius/example/.github/workflows/reviewrouter-codex.yml@refs/tags/dev",
+      }),
+    ).rejects.toThrow("codex_rotating_workflow_source_not_branch_revision");
 
     mocks.request
       .mockResolvedValueOnce({
@@ -1742,7 +1776,7 @@ ${renderCodexRotatingInteractionWorkflow({
       })
       .mockResolvedValueOnce({ data: { status: "diverged" } });
     await expect(gateway.verifyWorkflowSource(input)).rejects.toThrow(
-      "codex_rotating_workflow_source_not_current_default_head",
+      "codex_rotating_workflow_source_not_current_branch_head",
     );
 
     for (const repositoryIdentity of [

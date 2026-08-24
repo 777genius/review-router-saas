@@ -81,6 +81,39 @@ describe("exact active workflow attestation", () => {
     ).not.toThrow();
   });
 
+  it("accepts an exact canonical branch mirror anchored to the active default workflow", () => {
+    expect(() =>
+      assertActiveVersionedSecretWorkflowAttestation({
+        attestation: createVersionedSecretWorkflowSourceAttestation({
+          ...evidence,
+          workflowSourceCommitSha: "e".repeat(40),
+          sourceTrust: WorkflowSourceTrust.TrustedCanonicalBranchMirrorRevision,
+        }),
+        repositoryId: evidence.repositoryId,
+        workflowPath: evidence.workflowPath,
+        workflowSourceCommitSha: "e".repeat(40),
+        activeSecretNamespace: namespace,
+        expectedWorkflowSource: evidence,
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertActiveVersionedSecretWorkflowAttestation({
+        attestation: createVersionedSecretWorkflowSourceAttestation({
+          ...evidence,
+          workflowSourceCommitSha: "e".repeat(40),
+          workflowSourceSha256: "f".repeat(64),
+          sourceTrust: WorkflowSourceTrust.TrustedCanonicalBranchMirrorRevision,
+        }),
+        repositoryId: evidence.repositoryId,
+        workflowPath: evidence.workflowPath,
+        workflowSourceCommitSha: "e".repeat(40),
+        activeSecretNamespace: namespace,
+        expectedWorkflowSource: evidence,
+      }),
+    ).toThrow("workflow_source_attestation_content_digest_mismatch");
+  });
+
   it("trusts only configured repository, full-SHA action, API and canonical V4 namespace", () => {
     const actionRef =
       "777genius/review-router@0123456789abcdef0123456789abcdef01234567";

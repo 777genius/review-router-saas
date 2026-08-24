@@ -17,6 +17,7 @@ import {
 
 export enum WorkflowSourceTrust {
   TrustedDefaultBranchRevision = "trusted_default_branch_revision",
+  TrustedCanonicalBranchMirrorRevision = "trusted_canonical_branch_mirror_revision",
   MutableOrUntrusted = "mutable_or_untrusted",
 }
 
@@ -88,7 +89,10 @@ export function assertActiveVersionedSecretWorkflowAttestation(input: {
     input.attestation,
   );
   if (
-    attestation.sourceTrust !== WorkflowSourceTrust.TrustedDefaultBranchRevision
+    attestation.sourceTrust !==
+      WorkflowSourceTrust.TrustedDefaultBranchRevision &&
+    attestation.sourceTrust !==
+      WorkflowSourceTrust.TrustedCanonicalBranchMirrorRevision
   )
     throw new Error("workflow_source_attestation_untrusted");
   if (attestation.repositoryId !== input.repositoryId)
@@ -119,7 +123,8 @@ export function assertActiveVersionedSecretWorkflowAttestation(input: {
   )
     throw new Error("workflow_source_attestation_content_digest_mismatch");
   if (
-    attestation.sourceTrust !== input.expectedWorkflowSource.sourceTrust ||
+    input.expectedWorkflowSource.sourceTrust !==
+      WorkflowSourceTrust.TrustedDefaultBranchRevision ||
     attestation.repositoryId !== input.expectedWorkflowSource.repositoryId
   )
     throw new Error("workflow_source_attestation_evidence_mismatch");
