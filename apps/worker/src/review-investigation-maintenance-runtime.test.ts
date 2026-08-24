@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { InvestigationShadowEvidencePrunerPort } from "@reviewrouter/features-review-evidence";
-import type { InvestigationPrunerPort } from "@reviewrouter/features-review-investigations";
+import {
+  InvestigationPrivateMaterialPruneBatchError,
+  InvestigationPrivateMaterialPruneFailureCause,
+  type InvestigationPrunerPort,
+} from "@reviewrouter/features-review-investigations";
 import type { DistributedLock } from "@reviewrouter/platform-locks";
 import type { Logger } from "@reviewrouter/platform-logger";
 import type { Clock } from "@reviewrouter/shared";
@@ -226,7 +230,11 @@ describe("review investigation maintenance runtime", () => {
     const secretToken = "gh" + "p_privateMaintenanceToken";
     const pruner: InvestigationPrunerPort = {
       async reconcileExpiredPrivateMaterial() {
-        return 4;
+        throw new InvestigationPrivateMaterialPruneBatchError(
+          4,
+          2,
+          InvestigationPrivateMaterialPruneFailureCause.AggregateIncompatible,
+        );
       },
       async pruneRetainedInvestigations() {
         throw new Error(`${secretQuery}:${secretToken}`);
@@ -252,8 +260,14 @@ describe("review investigation maintenance runtime", () => {
 
     await expect(runtime.runMaintenance()).resolves.toEqual({
       status: ReviewInvestigationMaintenanceStatus.Failed,
-      failureCode: ReviewInvestigationPruneFailureCode.Investigations,
-      failureCauseCode: null,
+      failureCode: ReviewInvestigationPruneFailureCode.PrivateMaterial,
+      failureCodes: [
+        ReviewInvestigationPruneFailureCode.PrivateMaterial,
+        ReviewInvestigationPruneFailureCode.Investigations,
+      ],
+      failureCauseCode:
+        InvestigationPrivateMaterialPruneFailureCause.AggregateIncompatible,
+      failedInvestigationCount: 2,
       recoveredActiveTurnCount: 2,
       expiredPrivateMaterialCount: 4,
       prunedInvestigationCount: 0,
@@ -263,8 +277,14 @@ describe("review investigation maintenance runtime", () => {
     expect(logger.warnEvents).toHaveLength(1);
     expect(logger.warnEvents[0]?.context).toEqual({
       status: ReviewInvestigationMaintenanceStatus.Failed,
-      failureCode: ReviewInvestigationPruneFailureCode.Investigations,
-      failureCauseCode: null,
+      failureCode: ReviewInvestigationPruneFailureCode.PrivateMaterial,
+      failureCodes: [
+        ReviewInvestigationPruneFailureCode.PrivateMaterial,
+        ReviewInvestigationPruneFailureCode.Investigations,
+      ],
+      failureCauseCode:
+        InvestigationPrivateMaterialPruneFailureCause.AggregateIncompatible,
+      failedInvestigationCount: 2,
       recoveredActiveTurnCount: 2,
       expiredPrivateMaterialCount: 4,
       prunedInvestigationCount: 0,

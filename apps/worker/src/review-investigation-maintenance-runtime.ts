@@ -38,7 +38,9 @@ export type ReviewInvestigationMaintenanceResult =
     Readonly<{
       status: ReviewInvestigationMaintenanceStatus;
       failureCode: ReviewInvestigationMaintenanceFailureCode | null;
+      failureCodes: readonly ReviewInvestigationMaintenanceFailureCode[];
       failureCauseCode: InvestigationPrivateMaterialPruneFailureCause | null;
+      failedInvestigationCount: number;
     }>;
 
 export type ReviewInvestigationMaintenanceRuntime = Readonly<{
@@ -165,6 +167,8 @@ export function createReviewInvestigationMaintenanceRuntime(
                 error.code,
                 error.outcome,
                 error.causeCode,
+                error.failureCodes,
+                error.failedInvestigationCount,
               )
             : maintenanceResult(
                 ReviewInvestigationMaintenanceStatus.Failed,
@@ -197,8 +201,20 @@ function maintenanceResult(
     prunedShadowEvidenceCount: 0,
   },
   failureCauseCode: InvestigationPrivateMaterialPruneFailureCause | null = null,
+  failureCodes: readonly ReviewInvestigationMaintenanceFailureCode[] = failureCode ===
+  null
+    ? []
+    : [failureCode],
+  failedInvestigationCount = 0,
 ): ReviewInvestigationMaintenanceResult {
-  return { status, failureCode, failureCauseCode, ...outcome };
+  return {
+    status,
+    failureCode,
+    failureCodes,
+    failureCauseCode,
+    failedInvestigationCount,
+    ...outcome,
+  };
 }
 
 function safeLogContext(
@@ -207,7 +223,9 @@ function safeLogContext(
   return {
     status: result.status,
     failureCode: result.failureCode,
+    failureCodes: result.failureCodes,
     failureCauseCode: result.failureCauseCode,
+    failedInvestigationCount: result.failedInvestigationCount,
     recoveredActiveTurnCount: result.recoveredActiveTurnCount,
     expiredPrivateMaterialCount: result.expiredPrivateMaterialCount,
     prunedInvestigationCount: result.prunedInvestigationCount,

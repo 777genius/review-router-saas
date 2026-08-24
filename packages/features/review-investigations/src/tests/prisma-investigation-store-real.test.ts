@@ -1176,10 +1176,10 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
       await expect(
         poisonStore.reconcileExpiredPrivateMaterial({
           expiresAtOrBefore: healthyMaterial.expiresAt,
-          limit: 10,
+          limit: 1,
         }),
       ).rejects.toMatchObject({
-        removedCount: 1,
+        removedCount: 0,
         failedInvestigationCount: 1,
         causeCode:
           InvestigationPrivateMaterialPruneFailureCause.AggregateIncompatible,
@@ -1187,6 +1187,17 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
       await expect(
         poisonHarness.prisma.reviewInvestigationPrivateMaterial.count({
           where: { investigationId: poisonSeed.investigationId },
+        }),
+      ).resolves.toBe(1);
+      await expect(
+        healthyHarness.prisma.reviewInvestigationPrivateMaterial.count({
+          where: { investigationId: healthySeed.investigationId },
+        }),
+      ).resolves.toBe(1);
+      await expect(
+        poisonStore.reconcileExpiredPrivateMaterial({
+          expiresAtOrBefore: healthyMaterial.expiresAt,
+          limit: 1,
         }),
       ).resolves.toBe(1);
       await expect(

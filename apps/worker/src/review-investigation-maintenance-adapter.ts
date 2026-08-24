@@ -40,6 +40,10 @@ export class ReviewInvestigationPruneError extends Error {
     readonly code: ReviewInvestigationPruneFailureCode,
     readonly outcome: ReviewInvestigationPruneOutcome,
     readonly causeCode: InvestigationPrivateMaterialPruneFailureCause | null,
+    readonly failureCodes: readonly ReviewInvestigationPruneFailureCode[] = [
+      code,
+    ],
+    readonly failedInvestigationCount: number = 0,
   ) {
     super(code);
   }
@@ -77,10 +81,13 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
     let expiredPrivateMaterialCount = 0;
     let prunedInvestigationCount = 0;
     let prunedShadowEvidenceCount = 0;
-    let firstFailure: Readonly<{
-      code: ReviewInvestigationPruneFailureCode;
-      causeCode: InvestigationPrivateMaterialPruneFailureCause | null;
-    }> | null = null;
+    let failedPrivateMaterialInvestigationCount = 0;
+    const failures: Array<
+      Readonly<{
+        code: ReviewInvestigationPruneFailureCode;
+        causeCode: InvestigationPrivateMaterialPruneFailureCause | null;
+      }>
+    > = [];
 
     try {
       recoveredActiveTurnCount = await this.dependencies.expiredTurns.sweep({
@@ -88,10 +95,10 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
         limit: input.investigationLimit,
       });
     } catch {
-      firstFailure = {
+      failures.push({
         code: ReviewInvestigationPruneFailureCode.ActiveTurns,
         causeCode: null,
-      };
+      });
     }
 
     try {
@@ -105,14 +112,16 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
     } catch (error: unknown) {
       if (error instanceof InvestigationPrivateMaterialPruneBatchError) {
         expiredPrivateMaterialCount = error.removedCount;
+        failedPrivateMaterialInvestigationCount =
+          error.failedInvestigationCount;
       }
-      firstFailure ??= {
+      failures.push({
         code: ReviewInvestigationPruneFailureCode.PrivateMaterial,
         causeCode:
           error instanceof InvestigationPrivateMaterialPruneBatchError
             ? error.causeCode
             : null,
-      };
+      });
     }
 
     try {
@@ -122,10 +131,10 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
           limit: input.investigationLimit,
         });
     } catch {
-      firstFailure ??= {
+      failures.push({
         code: ReviewInvestigationPruneFailureCode.Investigations,
         causeCode: null,
-      };
+      });
     }
 
     try {
@@ -134,10 +143,10 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
         limit: input.shadowEvidenceLimit,
       });
     } catch {
-      firstFailure ??= {
+      failures.push({
         code: ReviewInvestigationPruneFailureCode.ShadowEvidence,
         causeCode: null,
-      };
+      });
     }
 
     const outcome = {
@@ -146,11 +155,14 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
       prunedInvestigationCount,
       prunedShadowEvidenceCount,
     };
-    if (firstFailure !== null) {
+    const firstFailure = failures[0];
+    if (firstFailure !== undefined) {
       throw new ReviewInvestigationPruneError(
         firstFailure.code,
         outcome,
         firstFailure.causeCode,
+        Object.freeze(failures.map((failure) => failure.code)),
+        failedPrivateMaterialInvestigationCount,
       );
     }
     return outcome;

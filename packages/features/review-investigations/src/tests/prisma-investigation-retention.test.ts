@@ -4,6 +4,42 @@ import { PrismaInvestigationStore } from "../infrastructure/prisma/prisma-invest
 const cutoff = new Date("2026-08-03T12:00:00.000Z");
 
 describe("PrismaInvestigationStore retention pruning", () => {
+  it("fails the private-material batch on an infrastructure transaction error", async () => {
+    const infrastructureError = new Error("database_connection_lost");
+    const selectionTransaction = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([{ epochMs: BigInt(cutoff.getTime() + 1_000) }])
+        .mockResolvedValueOnce([
+          {
+            privateMaterialId: "private-inv-1",
+            investigationId: "inv-1",
+            obligationId: null,
+            expiresAt: cutoff,
+            investigationState: "open",
+          },
+        ]),
+    };
+    const prisma = {
+      $transaction: vi
+        .fn()
+        .mockImplementationOnce(
+          async (callback: (value: typeof selectionTransaction) => unknown) =>
+            callback(selectionTransaction),
+        )
+        .mockRejectedValueOnce(infrastructureError),
+    };
+    const store = new PrismaInvestigationStore(prisma as never);
+
+    await expect(
+      store.reconcileExpiredPrivateMaterial({
+        expiresAtOrBefore: cutoff.toISOString(),
+        limit: 1,
+      }),
+    ).rejects.toBe(infrastructureError);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+  });
+
   it("selects a bounded multi-row expired-turn batch with skip locked", async () => {
     const transaction = {
       $queryRaw: vi

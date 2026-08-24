@@ -268,8 +268,10 @@ describe("review investigation maintenance adapter", () => {
       }),
     ).rejects.toMatchObject({
       code: ReviewInvestigationPruneFailureCode.PrivateMaterial,
+      failureCodes: [ReviewInvestigationPruneFailureCode.PrivateMaterial],
       causeCode:
         InvestigationPrivateMaterialPruneFailureCause.AggregateIncompatible,
+      failedInvestigationCount: 1,
       outcome: {
         recoveredActiveTurnCount: 1,
         expiredPrivateMaterialCount: 7,
