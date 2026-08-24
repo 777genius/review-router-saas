@@ -2,7 +2,14 @@ export type ActivationCatalogPolicyPromotionExpectation = Readonly<{
   readinessReason: string;
   captureBaseCommit: string;
   auditedHead: string;
+  captureArtifactBytes: number;
+  captureArtifactSha256: string;
+  capturePayloadOffsetBytes: number;
+  capturePrefixSha256: string;
   reviewArtifactSha256: string;
+  reviewerEvidenceSha256: string;
+  reviewerRunId: string;
+  reviewDecisionId: string;
   candidateBytes: number;
   candidateSha256: string;
   sourcePg16Image: string;
@@ -38,6 +45,11 @@ const exactRecord = (
 const blocked = (reason: string): ActivationCatalogPolicyTrustRootReadiness =>
   Object.freeze({ status: "blocked", reason });
 
+const validTimestamp = (value: unknown): value is string =>
+  typeof value === "string" &&
+  timestamp.test(value) &&
+  Number.isFinite(Date.parse(value));
+
 export function activationCatalogPolicyTrustRootReadinessFromProvenance(
   value: unknown,
   expected: ActivationCatalogPolicyPromotionExpectation,
@@ -61,8 +73,7 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
       value.version !== 3 ||
       value.status !== "ready" ||
       value.readinessReason !== expected.readinessReason ||
-      typeof value.promotedAt !== "string" ||
-      !timestamp.test(value.promotedAt) ||
+      !validTimestamp(value.promotedAt) ||
       value.captureBaseCommit !== expected.captureBaseCommit ||
       typeof value.captureBaseCommit !== "string" ||
       !commitSha.test(value.captureBaseCommit)
@@ -101,10 +112,29 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
     const captureLabels = new Set<string>();
     for (const capture of candidate.captures) {
       if (
-        !exactRecord(capture, ["label", "sha256"]) ||
+        !exactRecord(capture, [
+          "label",
+          "artifactBytes",
+          "artifactSha256",
+          "payloadOffsetBytes",
+          "prefixSha256",
+          "payloadBytes",
+          "payloadSha256",
+        ]) ||
         typeof capture.label !== "string" ||
         !label.test(capture.label) ||
-        capture.sha256 !== candidate.sha256 ||
+        capture.artifactBytes !== expected.captureArtifactBytes ||
+        capture.artifactBytes !==
+          expected.capturePayloadOffsetBytes + expected.candidateBytes ||
+        capture.artifactSha256 !== expected.captureArtifactSha256 ||
+        typeof capture.artifactSha256 !== "string" ||
+        !sha256.test(capture.artifactSha256) ||
+        capture.payloadOffsetBytes !== expected.capturePayloadOffsetBytes ||
+        capture.prefixSha256 !== expected.capturePrefixSha256 ||
+        typeof capture.prefixSha256 !== "string" ||
+        !sha256.test(capture.prefixSha256) ||
+        capture.payloadBytes !== candidate.bytes ||
+        capture.payloadSha256 !== candidate.sha256 ||
         captureLabels.has(capture.label)
       )
         return blocked("activation-catalog-policy-capture-evidence-invalid");
@@ -115,20 +145,22 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
       !exactRecord(review, [
         "result",
         "reviewerRunId",
+        "reviewDecisionId",
         "reviewedAt",
         "baseCommit",
         "auditedHead",
         "reviewArtifactSha256",
+        "reviewerEvidenceSha256",
         "candidateBytes",
         "candidateSha256",
         "postgresImages",
         "canonicalDigests",
       ]) ||
       review.result !== "GO" ||
-      typeof review.reviewerRunId !== "string" ||
-      !label.test(review.reviewerRunId) ||
-      typeof review.reviewedAt !== "string" ||
-      !timestamp.test(review.reviewedAt) ||
+      review.reviewerRunId !== expected.reviewerRunId ||
+      review.reviewDecisionId !== expected.reviewDecisionId ||
+      !validTimestamp(review.reviewedAt) ||
+      Date.parse(review.reviewedAt) >= Date.parse(value.promotedAt) ||
       review.baseCommit !== value.captureBaseCommit ||
       review.auditedHead !== expected.auditedHead ||
       typeof review.auditedHead !== "string" ||
@@ -136,6 +168,9 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
       review.reviewArtifactSha256 !== expected.reviewArtifactSha256 ||
       typeof review.reviewArtifactSha256 !== "string" ||
       !sha256.test(review.reviewArtifactSha256) ||
+      review.reviewerEvidenceSha256 !== expected.reviewerEvidenceSha256 ||
+      typeof review.reviewerEvidenceSha256 !== "string" ||
+      !sha256.test(review.reviewerEvidenceSha256) ||
       review.candidateBytes !== candidate.bytes ||
       review.candidateSha256 !== candidate.sha256 ||
       !exactRecord(review.postgresImages, ["sourcePg16", "targetPg17"]) ||

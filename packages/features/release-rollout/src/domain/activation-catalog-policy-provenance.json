@@ -11,11 +11,21 @@
     "captures": [
       {
         "label": "github-actions:32660787417:artifact:9498696525",
-        "sha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630"
+        "artifactBytes": 2477207,
+        "artifactSha256": "3bce2a00d3cf1230f31fac391e1cb50de40ff76195fbbc880e3f5282fccf1b1d",
+        "payloadOffsetBytes": 163,
+        "prefixSha256": "8a904502926643c979ec68f5a4b7a0dc91affba2cb200bc73a96136ca012a4ca",
+        "payloadBytes": 2477044,
+        "payloadSha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630"
       },
       {
         "label": "github-actions:32661227800:artifact:9498808251",
-        "sha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630"
+        "artifactBytes": 2477207,
+        "artifactSha256": "3bce2a00d3cf1230f31fac391e1cb50de40ff76195fbbc880e3f5282fccf1b1d",
+        "payloadOffsetBytes": 163,
+        "prefixSha256": "8a904502926643c979ec68f5a4b7a0dc91affba2cb200bc73a96136ca012a4ca",
+        "payloadBytes": 2477044,
+        "payloadSha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630"
       }
     ]
   },
@@ -30,11 +40,13 @@
   },
   "independentReview": {
     "result": "GO",
-    "reviewerRunId": "codex:activation-policy-v24:012e8bec2f8e:8f4f5d60707c:go",
+    "reviewerRunId": "rr-activation-policy-v24-review",
+    "reviewDecisionId": "codex:activation-policy-v24:012e8bec2f8e:8f4f5d60707c:go",
     "reviewedAt": "2026-08-24T07:14:21.403Z",
     "baseCommit": "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
     "auditedHead": "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
-    "reviewArtifactSha256": "617fca74495a9d20a15de714bfd8c469209fa49a82bbd38b46bb78a9dac8e66c",
+    "reviewArtifactSha256": "b2b57ec757ea2ffd0f052ab9675f243a98e245841d54d275593160b6c87e49d1",
+    "reviewerEvidenceSha256": "b64b5a6d8031dd7be3742bf556c0be262303387772faab3f3b024489ed42626f",
     "candidateBytes": 2477044,
     "candidateSha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630",
     "postgresImages": {

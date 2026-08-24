@@ -3,17 +3,29 @@
   "exactHead": "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
   "sourceProductCommit": "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
   "reviewedAt": "2026-08-24T07:14:21.403Z",
-  "reviewerRunId": "codex:activation-policy-v24:012e8bec2f8e:8f4f5d60707c:go",
+  "reviewerRunId": "rr-activation-policy-v24-review",
+  "reviewDecisionId": "codex:activation-policy-v24:012e8bec2f8e:8f4f5d60707c:go",
+  "reviewerEvidenceSha256": "b64b5a6d8031dd7be3742bf556c0be262303387772faab3f3b024489ed42626f",
   "candidateSha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630",
   "candidateBytes": 2477044,
   "candidateCaptures": [
     {
       "label": "github-actions:32660787417:artifact:9498696525",
-      "sha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630"
+      "artifactBytes": 2477207,
+      "artifactSha256": "3bce2a00d3cf1230f31fac391e1cb50de40ff76195fbbc880e3f5282fccf1b1d",
+      "payloadOffsetBytes": 163,
+      "prefixSha256": "8a904502926643c979ec68f5a4b7a0dc91affba2cb200bc73a96136ca012a4ca",
+      "payloadBytes": 2477044,
+      "payloadSha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630"
     },
     {
       "label": "github-actions:32661227800:artifact:9498808251",
-      "sha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630"
+      "artifactBytes": 2477207,
+      "artifactSha256": "3bce2a00d3cf1230f31fac391e1cb50de40ff76195fbbc880e3f5282fccf1b1d",
+      "payloadOffsetBytes": 163,
+      "prefixSha256": "8a904502926643c979ec68f5a4b7a0dc91affba2cb200bc73a96136ca012a4ca",
+      "payloadBytes": 2477044,
+      "payloadSha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630"
     }
   ],
   "postgresImages": {
@@ -78,7 +90,7 @@
         "reviewrouter_api": 11,
         "reviewrouter_codex_effect_authority": 7,
         "reviewrouter_release_migration": 7,
-        "reviewrouter_schema_owner": 81,
+        "reviewrouter_release_schema_owner": 81,
         "reviewrouter_target_role_bootstrap": 7,
         "reviewrouter_web": 11,
         "reviewrouter_worker": 11
@@ -90,7 +102,7 @@
         "reviewrouter_api": 23,
         "reviewrouter_codex_effect_authority": 7,
         "reviewrouter_release_migration": 7,
-        "reviewrouter_schema_owner": 81,
+        "reviewrouter_release_schema_owner": 81,
         "reviewrouter_target_role_bootstrap": 7,
         "reviewrouter_web": 23,
         "reviewrouter_worker": 23
@@ -107,7 +119,7 @@
       "enabled": false,
       "forced": false,
       "policies": [],
-      "owner": "reviewrouter_schema_owner"
+      "owner": "reviewrouter_release_schema_owner"
     },
     "newResourceCount": 35,
     "newResourceGroups": {
@@ -164,7 +176,7 @@
     {
       "severity": "critical",
       "subject": "The temporary pull-request capture workflow exposed a deploy key to pull-request-controlled installation code",
-      "disposition": "The temporary workflow is deleted by the promotion change and is not part of the final tree."
+      "disposition": "The temporary workflow is absent from the final tree and workflow 340732354 is disabled. Read-only deploy key 157494177 was revoked, replacement 161131912 was verified against the pinned AR commit, and the repository secret was replaced on 2026-08-24T08:06:32Z."
     },
     {
       "severity": "major",
@@ -185,7 +197,7 @@
   "evidenceChecked": [
     {
       "subject": "Independent candidate captures",
-      "result": "GitHub Actions runs 32660787417 and 32661227800 used disposable production-shaped PostgreSQL 16 to 17 capture-only flows and produced byte-identical 2477044-byte candidates."
+      "result": "GitHub Actions runs 32660787417 and 32661227800 used disposable production-shaped PostgreSQL 16 to 17 capture-only flows. Their downloaded 2477207-byte files are byte-identical with SHA-256 3bce2a00; each has an identical 163-byte pnpm prefix with SHA-256 8a904502, followed by the exact 2477044-byte candidate payload with SHA-256 8f4f5d60."
     },
     {
       "subject": "Candidate physical and canonical integrity",
@@ -197,7 +209,7 @@
     },
     {
       "subject": "Independent semantic catalog review",
-      "result": "Hosted Codex run rr-activation-policy-v24-review independently reproduced every digest and normalized delta from source product commit 012e8bec and issued GO only for mechanical publication of the exact candidate bytes."
+      "result": "Hosted Codex run rr-activation-policy-v24-review independently reproduced every digest and normalized delta from source product commit 012e8bec and issued GO only for mechanical publication of the exact candidate bytes. Its immutable structured output is stored as activation-catalog-policy-v24-reviewer-runtime.json with SHA-256 b64b5a6d."
     },
     {
       "subject": "Temporary workflow security review",
@@ -224,7 +236,7 @@
     "auditedHead": "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
     "captureBaseCommit": "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
     "requiredActions": [
-      "Bind this review artifact byte SHA-256 in provenance v3.",
+      "Bind this review artifact and the independent reviewer runtime artifact byte SHA-256 values in provenance v3.",
       "Generate the checked-in artifact mechanically from the exact candidate.",
       "Delete the temporary capture workflow and staged candidate.",
       "Pass focused promotion tests and exact-head CI including both PostgreSQL 17 gates before merge."

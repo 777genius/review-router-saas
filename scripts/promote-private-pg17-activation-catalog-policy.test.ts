@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
 import {
   activationCatalogPromotionOptIn,
+  activationCatalogPromotionProvenancePath,
+  assertActivationCatalogPolicyIndependentReviewEvidence,
   assertReviewedActivationCatalogPromotionProvenance,
   promotePrivatePg17ActivationCatalogPolicy,
   reviewedActivationCatalogCandidate,
@@ -66,5 +69,14 @@ describe("activation catalog policy promotion", () => {
         independentReview: { result: "NO-GO" },
       }),
     ).toThrow("activation_catalog_policy_promotion_provenance_invalid");
+  });
+
+  it("verifies the immutable independent review and runtime evidence", async () => {
+    const provenance = JSON.parse(
+      await readFile(activationCatalogPromotionProvenancePath, "utf8"),
+    );
+    await expect(
+      assertActivationCatalogPolicyIndependentReviewEvidence(provenance),
+    ).resolves.toBeUndefined();
   });
 });

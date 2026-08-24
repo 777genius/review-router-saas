@@ -1,10 +1,13 @@
 import { sha256Canonical } from "./canonical-json";
 import generatedActivationCatalogPolicyArtifact from "./activation-catalog-policy-artifact.generated.js";
+import activationCatalogPolicyPromotionProvenance from "./activation-catalog-policy-provenance.json" with { type: "json" };
 import { type ActivationCatalogPolicy } from "./effective-principal-inventory";
 import {
   assertActivationCatalogPolicyNormalizationForProfile,
   productionActivationCatalogPolicyNormalizationProfile,
 } from "./activation-catalog-policy-normalization";
+import { reviewedActivationCatalogPromotionExpectation } from "./activation-catalog-policy-promotion-expectation";
+import { activationCatalogPolicyTrustRootReadinessFromProvenance } from "./activation-catalog-policy-provenance-contract";
 
 export type ActivationCatalogPolicyPhase = "preactivation" | "activated";
 
@@ -21,11 +24,10 @@ export type ActivationCatalogPolicyDigests = Readonly<{
 export const canonicalActivationCatalogPolicyTrustRootReadiness: Readonly<{
   status: "blocked" | "ready";
   reason: string;
-}> = Object.freeze({
-  status: "ready",
-  reason:
-    "reviewed-v24-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
-});
+}> = activationCatalogPolicyTrustRootReadinessFromProvenance(
+  activationCatalogPolicyPromotionProvenance,
+  reviewedActivationCatalogPromotionExpectation,
+);
 
 export function assertCanonicalActivationCatalogPolicyTrustRootReady(): void {
   if (canonicalActivationCatalogPolicyTrustRootReadiness.status !== "ready")
