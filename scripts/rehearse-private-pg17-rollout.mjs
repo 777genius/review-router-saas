@@ -189,9 +189,9 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA release_authority FROM PUBLIC;`,
 
 export const rehearsalActivationCatalogPolicyAuthorization = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:3ae78c7e2d4a76e7ff8f7b7852a1c7ab195c70ea563278a1c77a69242e7e9217",
+    "sha256:fe9c71391557f194d84070689100ba55e31fe9e89a768b39879ff43619726c37",
   activatedCatalogPolicySha256:
-    "sha256:f8fe1748dc02bfe87d4f487c2d74cc42e10efe66030215117d30565c21a47459",
+    "sha256:b5b56feebf9be6e17e6d4aaf17d7f5409b7a3df0f6fe5692ea588043d5a7e4c1",
 });
 export const rehearsalReadinessPolicy = Object.freeze({
   poolWaitMilliseconds: 5_000,

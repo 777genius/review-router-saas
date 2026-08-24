@@ -5,25 +5,23 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   canonicalJson,
   sha256Canonical,
-} from "../packages/features/release-rollout/src/domain/release-rollout.ts";
+} from "../packages/features/release-rollout/src/domain/canonical-json.ts";
 import {
   assertActivationCatalogPolicyNormalizationForProfile,
   productionActivationCatalogPolicyNormalizationProfile,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts";
+import {
+  activationCatalogPromotionOptIn,
+  reviewedActivationCatalogCandidate,
+  reviewedActivationCatalogPromotionExpectation,
+} from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation.ts";
 import { assertActivationCatalogPolicyPromotionProvenance } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
 
-export const activationCatalogPromotionOptIn =
-  "promote-reviewed-activation-catalog-v23";
-export const reviewedActivationCatalogCandidate = Object.freeze({
-  sha256: "8f089eb7a9d1a8ed2388102d25ed8dcf1266d1ebc74e35a821b2552a54ff648b",
-  bytes: 2_391_094,
-  preactivationCatalogPolicySha256:
-    "sha256:3ae78c7e2d4a76e7ff8f7b7852a1c7ab195c70ea563278a1c77a69242e7e9217",
-  activatedCatalogPolicySha256:
-    "sha256:f8fe1748dc02bfe87d4f487c2d74cc42e10efe66030215117d30565c21a47459",
-  artifactCanonicalSha256:
-    "sha256:3eca5cf4475edab7156757d4f99fe995dbc4551e403c40efac46592141dffc50",
-});
+export {
+  activationCatalogPromotionOptIn,
+  reviewedActivationCatalogCandidate,
+  reviewedActivationCatalogPromotionExpectation,
+};
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 export const activationCatalogArtifactPath = resolve(
@@ -34,27 +32,14 @@ export const activationCatalogPromotionProvenancePath = resolve(
   repositoryRoot,
   "packages/features/release-rollout/src/domain/activation-catalog-policy-provenance.json",
 );
-
-export const reviewedActivationCatalogPromotionExpectation = Object.freeze({
-  readinessReason:
-    "reviewed-v23-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
-  captureBaseCommit: "3240f6971bc0992ecfcc73d5a822ff255d873ac7",
-  auditedHead: "3240f6971bc0992ecfcc73d5a822ff255d873ac7",
-  reviewArtifactSha256:
-    "324a7dc2763680740a6ba2a2019da4c62b936eac1b3a06a74c3fe4fc42a7b997",
-  candidateBytes: reviewedActivationCatalogCandidate.bytes,
-  candidateSha256: reviewedActivationCatalogCandidate.sha256,
-  sourcePg16Image:
-    "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
-  targetPg17Image:
-    "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4",
-  preactivationCatalogPolicySha256:
-    reviewedActivationCatalogCandidate.preactivationCatalogPolicySha256,
-  activatedCatalogPolicySha256:
-    reviewedActivationCatalogCandidate.activatedCatalogPolicySha256,
-  artifactCanonicalSha256:
-    reviewedActivationCatalogCandidate.artifactCanonicalSha256,
-});
+export const activationCatalogIndependentReviewPath = resolve(
+  repositoryRoot,
+  "docs/release-evidence/activation-catalog-policy-v24-independent-review.json",
+);
+export const activationCatalogReviewerEvidencePath = resolve(
+  repositoryRoot,
+  "docs/release-evidence/activation-catalog-policy-v24-reviewer-runtime.json",
+);
 
 export function assertReviewedActivationCatalogPromotionProvenance(value) {
   assertActivationCatalogPolicyPromotionProvenance(
@@ -71,6 +56,68 @@ async function readPromotionProvenance() {
   } catch {
     throw new Error("activation_catalog_policy_promotion_provenance_invalid");
   }
+}
+
+async function readJsonEvidence(path, hash, errorCode) {
+  try {
+    const bytes = await readFile(path);
+    if (sha256(bytes) !== hash) throw new Error(errorCode);
+    return JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error(errorCode);
+  }
+}
+
+export async function assertActivationCatalogPolicyIndependentReviewEvidence(
+  provenance,
+) {
+  const expectation = reviewedActivationCatalogPromotionExpectation;
+  const report = await readJsonEvidence(
+    activationCatalogIndependentReviewPath,
+    expectation.reviewArtifactSha256,
+    "activation_catalog_policy_independent_review_artifact_invalid",
+  );
+  const reviewer = await readJsonEvidence(
+    activationCatalogReviewerEvidencePath,
+    expectation.reviewerEvidenceSha256,
+    "activation_catalog_policy_reviewer_runtime_evidence_invalid",
+  );
+  const outputSummary = Array.isArray(reviewer.evidence)
+    ? reviewer.evidence.find(
+        (entry) =>
+          typeof entry === "string" && entry.startsWith("output_summary:"),
+      )
+    : undefined;
+  if (
+    report?.verdict !== "GO" ||
+    report?.exactHead !== expectation.auditedHead ||
+    report?.sourceProductCommit !== expectation.captureBaseCommit ||
+    report?.reviewerRunId !== expectation.reviewerRunId ||
+    report?.reviewDecisionId !== expectation.reviewDecisionId ||
+    report?.reviewerEvidenceSha256 !== expectation.reviewerEvidenceSha256 ||
+    report?.candidateBytes !== expectation.candidateBytes ||
+    report?.candidateSha256 !== expectation.candidateSha256 ||
+    canonicalJson(report?.candidateCaptures) !==
+      canonicalJson(provenance?.candidate?.captures) ||
+    reviewer?.status !== "done" ||
+    reviewer?.provider !== "codex" ||
+    reviewer?.runId !== expectation.reviewerRunId ||
+    reviewer?.taskId !== expectation.reviewerRunId ||
+    reviewer?.updatedAt !== report.reviewedAt ||
+    !Array.isArray(reviewer.blockers) ||
+    reviewer.blockers.length !== 0 ||
+    !Array.isArray(reviewer.changedFiles) ||
+    reviewer.changedFiles.length !== 0 ||
+    !reviewer.evidence.includes("safe_execution_status:completed") ||
+    typeof outputSummary !== "string" ||
+    !outputSummary.includes("# Verdict: GO") ||
+    !outputSummary.includes(expectation.reviewDecisionId) ||
+    !outputSummary.includes(expectation.candidateSha256) ||
+    !outputSummary.includes(expectation.captureBaseCommit)
+  )
+    throw new Error(
+      "activation_catalog_policy_independent_review_evidence_invalid",
+    );
 }
 
 async function writeArtifactAtomically(generated) {
@@ -203,9 +250,9 @@ export async function promotePrivatePg17ActivationCatalogPolicy({
   const generated = canonicalActivationCatalogArtifactSource(
     await readFile(candidatePath),
   );
-  assertReviewedActivationCatalogPromotionProvenance(
-    await readPromotionProvenance(),
-  );
+  const provenance = await readPromotionProvenance();
+  assertReviewedActivationCatalogPromotionProvenance(provenance);
+  await assertActivationCatalogPolicyIndependentReviewEvidence(provenance);
   if (write) await writeArtifactAtomically(generated);
   else {
     let existing;

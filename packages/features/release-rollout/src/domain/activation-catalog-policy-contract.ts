@@ -1,10 +1,13 @@
 import { sha256Canonical } from "./canonical-json";
 import generatedActivationCatalogPolicyArtifact from "./activation-catalog-policy-artifact.generated.js";
+import activationCatalogPolicyPromotionProvenance from "./activation-catalog-policy-provenance.json" with { type: "json" };
 import { type ActivationCatalogPolicy } from "./effective-principal-inventory";
 import {
   assertActivationCatalogPolicyNormalizationForProfile,
   productionActivationCatalogPolicyNormalizationProfile,
 } from "./activation-catalog-policy-normalization";
+import { reviewedActivationCatalogPromotionExpectation } from "./activation-catalog-policy-promotion-expectation";
+import { activationCatalogPolicyTrustRootReadinessFromProvenance } from "./activation-catalog-policy-provenance-contract";
 
 export type ActivationCatalogPolicyPhase = "preactivation" | "activated";
 
@@ -21,11 +24,10 @@ export type ActivationCatalogPolicyDigests = Readonly<{
 export const canonicalActivationCatalogPolicyTrustRootReadiness: Readonly<{
   status: "blocked" | "ready";
   reason: string;
-}> = Object.freeze({
-  status: "ready",
-  reason:
-    "reviewed-v23-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
-});
+}> = activationCatalogPolicyTrustRootReadinessFromProvenance(
+  activationCatalogPolicyPromotionProvenance,
+  reviewedActivationCatalogPromotionExpectation,
+);
 
 export function assertCanonicalActivationCatalogPolicyTrustRootReady(): void {
   if (canonicalActivationCatalogPolicyTrustRootReadiness.status !== "ready")
@@ -106,9 +108,9 @@ export const canonicalActivationCatalogPolicyDigests = Object.freeze({
 
 export const reviewedActivationCatalogPolicyDigests = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:3ae78c7e2d4a76e7ff8f7b7852a1c7ab195c70ea563278a1c77a69242e7e9217",
+    "sha256:fe9c71391557f194d84070689100ba55e31fe9e89a768b39879ff43619726c37",
   activatedCatalogPolicySha256:
-    "sha256:f8fe1748dc02bfe87d4f487c2d74cc42e10efe66030215117d30565c21a47459",
+    "sha256:b5b56feebf9be6e17e6d4aaf17d7f5409b7a3df0f6fe5692ea588043d5a7e4c1",
 });
 
 if (

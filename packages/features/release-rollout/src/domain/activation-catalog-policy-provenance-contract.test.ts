@@ -9,7 +9,14 @@ const expected: ActivationCatalogPolicyPromotionExpectation = {
   readinessReason: "reviewed-v21",
   captureBaseCommit: "a".repeat(40),
   auditedHead: "2".repeat(40),
+  captureArtifactBytes: 47,
+  captureArtifactSha256: "4".repeat(64),
+  capturePayloadOffsetBytes: 5,
+  capturePrefixSha256: "5".repeat(64),
   reviewArtifactSha256: "3".repeat(64),
+  reviewerEvidenceSha256: "6".repeat(64),
+  reviewerRunId: "rr-policy-review-v21",
+  reviewDecisionId: "rr-policy-review-v21:go",
   candidateBytes: 42,
   candidateSha256: "b".repeat(64),
   sourcePg16Image: `postgres:16.13-bookworm@sha256:${"c".repeat(64)}`,
@@ -30,8 +37,24 @@ const ready = () => ({
     bytes: expected.candidateBytes,
     sha256: expected.candidateSha256,
     captures: [
-      { label: "capture-a", sha256: expected.candidateSha256 },
-      { label: "capture-b", sha256: expected.candidateSha256 },
+      {
+        label: "capture-a",
+        artifactBytes: expected.captureArtifactBytes,
+        artifactSha256: expected.captureArtifactSha256,
+        payloadOffsetBytes: expected.capturePayloadOffsetBytes,
+        prefixSha256: expected.capturePrefixSha256,
+        payloadBytes: expected.candidateBytes,
+        payloadSha256: expected.candidateSha256,
+      },
+      {
+        label: "capture-b",
+        artifactBytes: expected.captureArtifactBytes,
+        artifactSha256: expected.captureArtifactSha256,
+        payloadOffsetBytes: expected.capturePayloadOffsetBytes,
+        prefixSha256: expected.capturePrefixSha256,
+        payloadBytes: expected.candidateBytes,
+        payloadSha256: expected.candidateSha256,
+      },
     ],
   },
   postgresImages: {
@@ -45,11 +68,13 @@ const ready = () => ({
   },
   independentReview: {
     result: "GO",
-    reviewerRunId: "rr-policy-review-v21",
+    reviewerRunId: expected.reviewerRunId,
+    reviewDecisionId: expected.reviewDecisionId,
     reviewedAt: "2026-08-15T10:30:00.000Z",
     baseCommit: expected.captureBaseCommit,
     auditedHead: expected.auditedHead,
     reviewArtifactSha256: expected.reviewArtifactSha256,
+    reviewerEvidenceSha256: expected.reviewerEvidenceSha256,
     candidateBytes: expected.candidateBytes,
     candidateSha256: expected.candidateSha256,
     postgresImages: {
@@ -91,6 +116,18 @@ describe("activation catalog policy promotion provenance", () => {
       },
     ],
     [
+      "reviewer runtime evidence digest drift",
+      (value: ReturnType<typeof ready>) => {
+        value.independentReview.reviewerEvidenceSha256 = "0".repeat(64);
+      },
+    ],
+    [
+      "review decision identity drift",
+      (value: ReturnType<typeof ready>) => {
+        value.independentReview.reviewDecisionId = "rr-policy-review-v21:no-go";
+      },
+    ],
+    [
       "NO-GO review",
       (value: ReturnType<typeof ready>) => {
         value.independentReview.result = "NO-GO";
@@ -115,9 +152,33 @@ describe("activation catalog policy promotion provenance", () => {
       },
     ],
     [
+      "raw capture artifact digest drift",
+      (value: ReturnType<typeof ready>) => {
+        value.candidate.captures[0]!.artifactSha256 = "0".repeat(64);
+      },
+    ],
+    [
+      "capture payload boundary drift",
+      (value: ReturnType<typeof ready>) => {
+        value.candidate.captures[0]!.payloadOffsetBytes += 1;
+      },
+    ],
+    [
+      "review after promotion",
+      (value: ReturnType<typeof ready>) => {
+        value.independentReview.reviewedAt = "2026-08-15T10:32:00.000Z";
+      },
+    ],
+    [
       "promotion timestamp without time",
       (value: ReturnType<typeof ready>) => {
         value.promotedAt = "2026-08-15";
+      },
+    ],
+    [
+      "invalid calendar timestamp",
+      (value: ReturnType<typeof ready>) => {
+        value.promotedAt = "2026-99-99T10:31:00.000Z";
       },
     ],
   ])("blocks %s", (_name, mutate) => {
