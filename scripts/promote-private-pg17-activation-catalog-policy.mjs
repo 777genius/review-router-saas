@@ -38,10 +38,10 @@ export const activationCatalogPromotionProvenancePath = resolve(
 export const reviewedActivationCatalogPromotionExpectation = Object.freeze({
   readinessReason:
     "reviewed-v24-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
-  captureBaseCommit: "4615aa7c94a384530dffa46c597e48f43b1d6714",
-  auditedHead: "4615aa7c94a384530dffa46c597e48f43b1d6714",
+  captureBaseCommit: "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
+  auditedHead: "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
   reviewArtifactSha256:
-    "43c9840c26f0ea72e766915d60a3148bdda457ee024178bb32c39e0fceffe02f",
+    "617fca74495a9d20a15de714bfd8c469209fa49a82bbd38b46bb78a9dac8e66c",
   candidateBytes: reviewedActivationCatalogCandidate.bytes,
   candidateSha256: reviewedActivationCatalogCandidate.sha256,
   sourcePg16Image:

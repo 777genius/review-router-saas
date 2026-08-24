@@ -3,8 +3,8 @@
   "version": 3,
   "status": "ready",
   "readinessReason": "reviewed-v24-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
-  "promotedAt": "2026-08-24T07:10:00.000Z",
-  "captureBaseCommit": "4615aa7c94a384530dffa46c597e48f43b1d6714",
+  "promotedAt": "2026-08-24T07:19:11.000Z",
+  "captureBaseCommit": "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
   "candidate": {
     "bytes": 2477044,
     "sha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630",
@@ -30,11 +30,11 @@
   },
   "independentReview": {
     "result": "GO",
-    "reviewerRunId": "coderabbit:a4cdf814-33fb-4e77-9f07-bcb351d20a75:pr221-remediation",
-    "reviewedAt": "2026-08-24T07:10:00.000Z",
-    "baseCommit": "4615aa7c94a384530dffa46c597e48f43b1d6714",
-    "auditedHead": "4615aa7c94a384530dffa46c597e48f43b1d6714",
-    "reviewArtifactSha256": "43c9840c26f0ea72e766915d60a3148bdda457ee024178bb32c39e0fceffe02f",
+    "reviewerRunId": "codex:activation-policy-v24:012e8bec2f8e:8f4f5d60707c:go",
+    "reviewedAt": "2026-08-24T07:14:21.403Z",
+    "baseCommit": "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
+    "auditedHead": "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
+    "reviewArtifactSha256": "617fca74495a9d20a15de714bfd8c469209fa49a82bbd38b46bb78a9dac8e66c",
     "candidateBytes": 2477044,
     "candidateSha256": "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630",
     "postgresImages": {
