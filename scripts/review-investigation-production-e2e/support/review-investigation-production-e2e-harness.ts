@@ -53,7 +53,7 @@ import {
   obligationEvidenceRequirementVersionV2,
   parseSuppliedInvestigationEvidenceRequirement,
   relationSearchProofVersion,
-  reviewInvestigationCoverageProfileV4,
+  reviewInvestigationCoverageProfileV10,
   type InvestigationTurnObservation,
   type ReviewInvestigationPolicy,
   type SeedInvestigationObligation,
@@ -158,15 +158,15 @@ const evaluationSigningKeyPolicyVersion =
 
 export const productionInvestigationPolicy: ReviewInvestigationPolicy =
   Object.freeze({
-    policyId: "production-shaped-disposable-e2e.v1",
-    maxObligations: 64,
-    maxExpansionDepth: 4,
-    maxSemanticTurns: 8,
-    maxOperationalAttempts: 8,
-    maxCriticCycles: 2,
-    maxFindings: 32,
-    maxProposalsPerTurn: 16,
-    maxReceiptsPerTurn: 64,
+    policyId: "review-investigation-shadow.v1",
+    maxObligations: 1024,
+    maxExpansionDepth: 8,
+    maxSemanticTurns: 12,
+    maxOperationalAttempts: 24,
+    maxCriticCycles: 3,
+    maxFindings: 256,
+    maxProposalsPerTurn: 128,
+    maxReceiptsPerTurn: 256,
     maxSeedProbesPerFile: 48,
     maxSeedProbesOverall: 384,
   });
@@ -277,7 +277,7 @@ export class ReviewInvestigationProductionE2EHarness {
   ): Promise<ReviewInvestigationProductionE2EHarness> {
     const policyHash = sha256(canonicalJson(productionInvestigationPolicy));
     const coverageProfileHash = sha256(
-      canonicalJson(reviewInvestigationCoverageProfileV4),
+      canonicalJson(reviewInvestigationCoverageProfileV10),
     );
     const base = await createReviewActionV2E2EHarness(databaseUrl, {
       investigationProfile: {
@@ -847,7 +847,7 @@ export class ReviewInvestigationProductionE2EHarness {
     label: string,
   ) {
     const contract = Object.freeze({
-      ...reviewInvestigationCoverageProfileV4,
+      ...reviewInvestigationCoverageProfileV10,
       producerReleaseId: this.base.producerReleaseId,
     });
     const seedEnvelope = investigationSeedEnvelope(
@@ -1354,7 +1354,7 @@ function seeds(
         revision: InvestigationOperationRevision.Head,
         sourcePathHash,
         searchPolicyVersion:
-          reviewInvestigationCoverageProfileV4.searchPolicyVersion,
+          reviewInvestigationCoverageProfileV10.searchPolicyVersion,
       }),
       riskPriority: 90,
     }),
