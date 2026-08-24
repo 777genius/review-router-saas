@@ -127,7 +127,21 @@ type ExpiredPrivateMaterialCandidate = Readonly<{
   investigationId: string;
   obligationId: string | null;
   investigationState: PrismaInvestigationState;
+  expiresAt: Date;
 }>;
+
+type ExpiredPrivateMaterialCursor = Readonly<{
+  privateMaterialId: string;
+  expiresAt: Date;
+}>;
+
+enum ExpiredPrivateMaterialCursorRange {
+  All = "all",
+  After = "after",
+  Through = "through",
+}
+
+const privateMaterialPruneCheckpointKey = "private_material_prune.v1";
 
 type ExpiredPrivateMaterialGroup = Readonly<{
   investigationId: string;
@@ -693,33 +707,34 @@ export class PrismaInvestigationStore
       async (transaction) => {
         const databaseNow = await investigationDatabaseNow(transaction);
         const effectiveCutoff = cutoff < databaseNow ? cutoff : databaseNow;
-        const candidateCount = await countExpiredPrivateMaterialCandidates(
-          transaction,
-          effectiveCutoff,
-        );
-        const offset = rotatingPrivateMaterialCandidateOffset(
-          effectiveCutoff,
-          input.limit,
-          candidateCount,
-        );
+        const cursor = await lockPrivateMaterialPruneCheckpoint(transaction);
         const firstPage = await findExpiredPrivateMaterialCandidates(
           transaction,
           effectiveCutoff,
           input.limit,
-          offset,
+          cursor,
+          cursor === null
+            ? ExpiredPrivateMaterialCursorRange.All
+            : ExpiredPrivateMaterialCursorRange.After,
         );
         const candidates =
-          firstPage.length < input.limit && offset > 0
+          firstPage.length < input.limit && cursor !== null
             ? [
                 ...firstPage,
                 ...(await findExpiredPrivateMaterialCandidates(
                   transaction,
                   effectiveCutoff,
                   input.limit - firstPage.length,
-                  0,
+                  cursor,
+                  ExpiredPrivateMaterialCursorRange.Through,
                 )),
               ]
             : firstPage;
+        await updatePrivateMaterialPruneCheckpoint(
+          transaction,
+          candidates.at(-1) ?? null,
+          databaseNow,
+        );
         return { candidates, effectiveCutoff };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
@@ -2404,56 +2419,100 @@ async function findExpiredPrivateMaterialCandidates(
   transaction: Prisma.TransactionClient,
   effectiveCutoff: Date,
   limit: number,
-  offset: number,
+  cursor: ExpiredPrivateMaterialCursor | null,
+  range: ExpiredPrivateMaterialCursorRange,
 ): Promise<readonly ExpiredPrivateMaterialCandidate[]> {
+  let cursorPredicate = Prisma.sql``;
+  if (range === ExpiredPrivateMaterialCursorRange.After) {
+    if (cursor === null) {
+      throw new Error("investigation_private_material_cursor_missing");
+    }
+    cursorPredicate = Prisma.sql`
+      AND (material."expiresAt", material."privateMaterialId") >
+        (${cursor.expiresAt}, ${cursor.privateMaterialId})
+    `;
+  } else if (range === ExpiredPrivateMaterialCursorRange.Through) {
+    if (cursor === null) {
+      throw new Error("investigation_private_material_cursor_missing");
+    }
+    cursorPredicate = Prisma.sql`
+      AND (material."expiresAt", material."privateMaterialId") <=
+        (${cursor.expiresAt}, ${cursor.privateMaterialId})
+    `;
+  }
   return transaction.$queryRaw<ExpiredPrivateMaterialCandidate[]>(Prisma.sql`
     SELECT
       material."privateMaterialId",
       material."investigationId",
       material."obligationId",
+      material."expiresAt",
       investigation."state" AS "investigationState"
     FROM "ReviewInvestigationPrivateMaterial" AS material
     INNER JOIN "ReviewInvestigation" AS investigation
       ON investigation."investigationId" = material."investigationId"
     WHERE material."expiresAt" <= ${effectiveCutoff}
       AND investigation."activeTurnId" IS NULL
+      ${cursorPredicate}
     ORDER BY material."expiresAt" ASC, material."privateMaterialId" ASC
     LIMIT ${limit}
-    OFFSET ${offset}
   `);
 }
 
-async function countExpiredPrivateMaterialCandidates(
+async function lockPrivateMaterialPruneCheckpoint(
   transaction: Prisma.TransactionClient,
-  effectiveCutoff: Date,
-): Promise<number> {
-  const [row] = await transaction.$queryRaw<Array<{ count: bigint }>>(
+): Promise<ExpiredPrivateMaterialCursor | null> {
+  await transaction.$executeRaw(Prisma.sql`
+    INSERT INTO "ReviewInvestigationMaintenanceCheckpoint" (
+      "checkpointKey", "cursorExpiresAt", "cursorPrivateMaterialId", "updatedAt"
+    ) VALUES (${privateMaterialPruneCheckpointKey}, NULL, NULL, clock_timestamp())
+    ON CONFLICT ("checkpointKey") DO NOTHING
+  `);
+  const [row] = await transaction.$queryRaw<
+    Array<{
+      cursorExpiresAt: Date | null;
+      cursorPrivateMaterialId: string | null;
+    }>
+  >(
     Prisma.sql`
-      SELECT count(*)::bigint AS count
-      FROM "ReviewInvestigationPrivateMaterial" AS material
-      INNER JOIN "ReviewInvestigation" AS investigation
-        ON investigation."investigationId" = material."investigationId"
-      WHERE material."expiresAt" <= ${effectiveCutoff}
-        AND investigation."activeTurnId" IS NULL
+      SELECT "cursorExpiresAt", "cursorPrivateMaterialId"
+      FROM "ReviewInvestigationMaintenanceCheckpoint"
+      WHERE "checkpointKey" = ${privateMaterialPruneCheckpointKey}
+      FOR UPDATE
     `,
   );
-  const count = Number(row?.count ?? 0n);
-  if (!Number.isSafeInteger(count) || count < 0) {
-    throw new Error("investigation_private_material_candidate_count_invalid");
+  if (!row) {
+    throw new Error("investigation_private_material_checkpoint_missing");
   }
-  return count;
+  if (
+    (row.cursorExpiresAt === null) !==
+    (row.cursorPrivateMaterialId === null)
+  ) {
+    throw new Error("investigation_private_material_checkpoint_corrupt");
+  }
+  if (row.cursorExpiresAt === null || row.cursorPrivateMaterialId === null) {
+    return null;
+  }
+  return {
+    expiresAt: row.cursorExpiresAt,
+    privateMaterialId: row.cursorPrivateMaterialId,
+  };
 }
 
-function rotatingPrivateMaterialCandidateOffset(
-  effectiveCutoff: Date,
-  limit: number,
-  candidateCount: number,
-): number {
-  if (candidateCount === 0) return 0;
-  const hourlyBucket = BigInt(
-    Math.floor(effectiveCutoff.getTime() / (60 * 60 * 1_000)),
-  );
-  return Number((hourlyBucket * BigInt(limit)) % BigInt(candidateCount));
+async function updatePrivateMaterialPruneCheckpoint(
+  transaction: Prisma.TransactionClient,
+  cursor: ExpiredPrivateMaterialCursor | null,
+  updatedAt: Date,
+): Promise<void> {
+  const updated = await transaction.$executeRaw(Prisma.sql`
+    UPDATE "ReviewInvestigationMaintenanceCheckpoint"
+    SET "cursorExpiresAt" = ${cursor?.expiresAt ?? null},
+        "cursorPrivateMaterialId" = ${cursor?.privateMaterialId ?? null},
+        "updatedAt" = ${updatedAt}
+    WHERE "checkpointKey" = ${privateMaterialPruneCheckpointKey}
+  `);
+  if (updated !== 1) {
+    throw new Error("investigation_private_material_checkpoint_update_failed");
+  }
 }
 
 function groupPrivateMaterialCandidates(

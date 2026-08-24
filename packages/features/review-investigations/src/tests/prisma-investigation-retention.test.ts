@@ -7,10 +7,13 @@ describe("PrismaInvestigationStore retention pruning", () => {
   it("fails the private-material batch on an infrastructure transaction error", async () => {
     const infrastructureError = new Error("database_connection_lost");
     const selectionTransaction = {
+      $executeRaw: vi.fn().mockResolvedValue(1),
       $queryRaw: vi
         .fn()
         .mockResolvedValueOnce([{ epochMs: BigInt(cutoff.getTime() + 1_000) }])
-        .mockResolvedValueOnce([{ count: 1n }])
+        .mockResolvedValueOnce([
+          { cursorExpiresAt: null, cursorPrivateMaterialId: null },
+        ])
         .mockResolvedValueOnce([
           {
             privateMaterialId: "private-inv-1",

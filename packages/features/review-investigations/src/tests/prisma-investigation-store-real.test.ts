@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  Prisma,
   ReviewProviderKindV2,
   ReviewTaskKindV2,
   type PrismaClient,
@@ -1172,6 +1173,15 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
         where: { investigationId: poisonSeed.investigationId },
         data: { authorizationScopeHash: null },
       });
+      await poisonHarness.prisma.$executeRaw(Prisma.sql`
+        INSERT INTO "ReviewInvestigationMaintenanceCheckpoint" (
+          "checkpointKey", "cursorExpiresAt", "cursorPrivateMaterialId", "updatedAt"
+        ) VALUES ('private_material_prune.v1', NULL, NULL, clock_timestamp())
+        ON CONFLICT ("checkpointKey") DO UPDATE
+        SET "cursorExpiresAt" = NULL,
+            "cursorPrivateMaterialId" = NULL,
+            "updatedAt" = clock_timestamp()
+      `);
 
       await expect(
         poisonStore.reconcileExpiredPrivateMaterial({
@@ -1195,10 +1205,8 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
         }),
       ).resolves.toBe(1);
       await expect(
-        poisonStore.reconcileExpiredPrivateMaterial({
-          expiresAtOrBefore: new Date(
-            Date.parse(healthyMaterial.expiresAt) + 60 * 60 * 1_000,
-          ).toISOString(),
+        healthyStore.reconcileExpiredPrivateMaterial({
+          expiresAtOrBefore: healthyMaterial.expiresAt,
           limit: 1,
         }),
       ).resolves.toBe(1);
