@@ -172,12 +172,3 @@ function assertPruneLimit(value: number): void {
     throw new Error("review_investigation_prune_limit_invalid");
   }
 }
-
-function emptyOutcome(): ReviewInvestigationPruneOutcome {
-  return {
-    recoveredActiveTurnCount: 0,
-    expiredPrivateMaterialCount: 0,
-    prunedInvestigationCount: 0,
-    prunedShadowEvidenceCount: 0,
-  };
-}
