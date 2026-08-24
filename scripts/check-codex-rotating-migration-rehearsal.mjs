@@ -2127,6 +2127,7 @@ function proveDatabasePrivileges(url) {
                    'RuntimeCanaryChallenge',
                    'RuntimeCanaryChallengeProof',
                    'RuntimeGenerationWitnessProof',
+                   'ReviewInvestigationMaintenanceCheckpoint',
                    'CodexOAuthDatabaseAuthorityKey',
                    'CodexOAuthDatabaseAuthorityReceipt',
                    'CodexOAuthChildIdentityQuarantine',
@@ -2144,6 +2145,31 @@ function proveDatabasePrivileges(url) {
                    role_name, relation.oid, 'SELECT,INSERT,UPDATE,DELETE'
                  )
              )
+             OR has_table_privilege(
+               role_name,
+               'public."ReviewInvestigationMaintenanceCheckpoint"',
+               'SELECT'
+             ) IS DISTINCT FROM (role_name = 'reviewrouter_worker')
+             OR has_table_privilege(
+               role_name,
+               'public."ReviewInvestigationMaintenanceCheckpoint"',
+               'INSERT'
+             ) IS DISTINCT FROM (role_name = 'reviewrouter_worker')
+             OR has_table_privilege(
+               role_name,
+               'public."ReviewInvestigationMaintenanceCheckpoint"',
+               'UPDATE'
+             ) IS DISTINCT FROM (role_name = 'reviewrouter_worker')
+             OR has_table_privilege(
+               role_name,
+               'public."ReviewInvestigationMaintenanceCheckpoint"',
+               'DELETE,TRUNCATE,REFERENCES,TRIGGER'
+             )
+             OR has_any_column_privilege(
+               role_name,
+               'public."ReviewInvestigationMaintenanceCheckpoint"',
+               'SELECT,INSERT,UPDATE,REFERENCES'
+             ) IS DISTINCT FROM (role_name = 'reviewrouter_worker')
              OR EXISTS (
                SELECT 1
                FROM pg_class relation

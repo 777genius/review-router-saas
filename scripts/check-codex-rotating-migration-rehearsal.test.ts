@@ -294,6 +294,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(privilegeProof).toContain('public."_prisma_migrations"');
     expect(privilegeProof).toContain("attribute.attname IN ('id','status')");
     expect(privilegeProof).toContain("is_grantable = 'YES'");
+    expect(privilegeProof).toContain(
+      "'public.\"ReviewInvestigationMaintenanceCheckpoint\"'",
+    );
+    expect(privilegeProof).toContain(
+      "IS DISTINCT FROM (role_name = 'reviewrouter_worker')",
+    );
+    expect(privilegeProof).toContain(
+      "'DELETE,TRUNCATE,REFERENCES,TRIGGER'",
+    );
     expect(privilegeProof).not.toContain(
       "owner-equivalent data privileges must remain complete",
     );
