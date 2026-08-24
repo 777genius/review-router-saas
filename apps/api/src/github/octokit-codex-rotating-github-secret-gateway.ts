@@ -474,24 +474,23 @@ export class OctokitCodexRotatingGitHubSecretGateway
       input.repository.githubRepositoryId,
       input.repository.fullName,
     );
-    if (
-      input.workflowRef !==
-      `${input.repository.fullName}/${input.workflowPath}@refs/heads/${defaultBranch}`
-    ) {
-      throw new Error("codex_rotating_workflow_source_not_default_branch");
-    }
-    const defaultBranchHead = await this.readBranchHead({
+    const workflowBranch = readWorkflowBranchRef({
+      workflowRef: input.workflowRef,
+      repositoryFullName: input.repository.fullName,
+      workflowPath: input.workflowPath,
+    });
+    const workflowBranchHead = await this.readBranchHead({
       token: token.token,
       owner: input.repository.owner,
       repo: repoNameFromFullName(input.repository.fullName),
-      branch: defaultBranch,
+      branch: workflowBranch,
     });
-    await this.assertWorkflowRevisionOnDefaultBranchHistory({
+    await this.assertWorkflowRevisionOnBranchHistory({
       token: token.token,
       owner: input.repository.owner,
       repo: repoNameFromFullName(input.repository.fullName),
       workflowSha: input.workflowSha,
-      defaultBranchHead,
+      branchHead: workflowBranchHead,
     });
     const workflowSourceSha256 = createHash("sha256")
       .update(workflow, "utf8")
@@ -513,7 +512,10 @@ export class OctokitCodexRotatingGitHubSecretGateway
       workflowSourceBlobSha,
       workflowSourceSha256,
       workflowSemanticSha256: workflowDocumentSemanticSha256(workflow),
-      sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+      sourceTrust:
+        workflowBranch === defaultBranch
+          ? WorkflowSourceTrust.TrustedDefaultBranchRevision
+          : WorkflowSourceTrust.TrustedCanonicalBranchMirrorRevision,
       secretNamespace: metadata.secretNamespace,
     });
 
@@ -1144,16 +1146,16 @@ export class OctokitCodexRotatingGitHubSecretGateway
     return decodeBranchHead(response.data, input.branch);
   }
 
-  private async assertWorkflowRevisionOnDefaultBranchHistory(input: {
+  private async assertWorkflowRevisionOnBranchHistory(input: {
     readonly token: string;
     readonly owner: string;
     readonly repo: string;
     readonly workflowSha: string;
-    readonly defaultBranchHead: string;
+    readonly branchHead: string;
   }): Promise<void> {
     const workflowSha = requireCommitSha(input.workflowSha);
-    const defaultBranchHead = requireCommitSha(input.defaultBranchHead);
-    if (workflowSha === defaultBranchHead) {
+    const branchHead = requireCommitSha(input.branchHead);
+    if (workflowSha === branchHead) {
       return;
     }
 
@@ -1162,14 +1164,12 @@ export class OctokitCodexRotatingGitHubSecretGateway
       {
         owner: input.owner,
         repo: input.repo,
-        basehead: `${workflowSha}...${defaultBranchHead}`,
+        basehead: `${workflowSha}...${branchHead}`,
         headers: { authorization: `Bearer ${input.token}` },
       },
     )) as CompareResponse;
     if (decodeCompareStatus(response.data) !== "ahead") {
-      throw new Error(
-        "codex_rotating_workflow_source_not_current_default_head",
-      );
+      throw new Error("codex_rotating_workflow_source_not_current_branch_head");
     }
   }
 
@@ -1598,6 +1598,44 @@ function repoNameFromFullName(fullName: string): string {
     throw new Error("codex_rotating_invalid_repository_full_name");
   }
   return repo;
+}
+
+function readWorkflowBranchRef(input: {
+  readonly workflowRef: string;
+  readonly repositoryFullName: string;
+  readonly workflowPath: string;
+}): string {
+  const prefix = `${input.repositoryFullName}/${input.workflowPath}@refs/heads/`;
+  if (!input.workflowRef.startsWith(prefix)) {
+    throw new Error("codex_rotating_workflow_source_not_branch_revision");
+  }
+  const branch = input.workflowRef.slice(prefix.length);
+  const branchComponents = branch.split("/");
+  if (
+    branch.length === 0 ||
+    branch.length > 255 ||
+    branch === "@" ||
+    branch.startsWith("/") ||
+    branch.endsWith("/") ||
+    branch.endsWith(".") ||
+    branchComponents.some(
+      (component) => component.startsWith(".") || component.endsWith(".lock"),
+    ) ||
+    branch.includes("..") ||
+    branch.includes("@{") ||
+    branch.includes("//") ||
+    Array.from(branch).some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return (
+        codePoint <= 0x20 ||
+        codePoint === 0x7f ||
+        "~^:?*[]\\".includes(character)
+      );
+    })
+  ) {
+    throw new Error("codex_rotating_workflow_branch_ref_invalid");
+  }
+  return branch;
 }
 
 function decodeWorkflowContent(data: unknown): string {

@@ -1446,5 +1446,8 @@ function isRetryableActionError(code: string): boolean {
 }
 
 function isCodexRotatingWorkflowSourceError(message: string): boolean {
-  return message.includes("codex_rotating_workflow_");
+  return (
+    message.includes("codex_rotating_workflow_") ||
+    message.includes("workflow_source_attestation_")
+  );
 }
