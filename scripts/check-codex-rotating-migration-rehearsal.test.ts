@@ -300,9 +300,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(privilegeProof).toContain(
       "IS DISTINCT FROM (role_name = 'reviewrouter_worker')",
     );
-    expect(privilegeProof).toContain(
-      "'DELETE,TRUNCATE,REFERENCES,TRIGGER'",
-    );
+    expect(privilegeProof).toContain("'DELETE,TRUNCATE,REFERENCES,TRIGGER'");
     expect(privilegeProof).not.toContain(
       "owner-equivalent data privileges must remain complete",
     );
