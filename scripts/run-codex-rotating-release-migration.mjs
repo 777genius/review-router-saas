@@ -2727,7 +2727,10 @@ BEGIN
       FROM runtime_roles CROSS JOIN tables
     ), column_facts AS (
       SELECT role_name, role_kind, relation.relname, attribute.attname,
-        has_column_privilege(role_name,relation.oid,attribute.attnum,'UPDATE') AS can_update
+        has_column_privilege(role_name,relation.oid,attribute.attnum,'SELECT') AS can_select,
+        has_column_privilege(role_name,relation.oid,attribute.attnum,'INSERT') AS can_insert,
+        has_column_privilege(role_name,relation.oid,attribute.attnum,'UPDATE') AS can_update,
+        has_column_privilege(role_name,relation.oid,attribute.attnum,'REFERENCES') AS can_reference
       FROM runtime_roles
       CROSS JOIN pg_class relation
       JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
@@ -2802,19 +2805,20 @@ BEGIN
            'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof',
            '${workerOwnedMaintenanceCheckpointTable}'))
          OR can_truncate OR can_reference OR can_trigger)
-       OR EXISTS (SELECT 1 FROM column_facts WHERE can_update IS DISTINCT FROM (
-         role_kind <> 'effect-authority' AND (
-           (relname='CodexOAuthProviderInstance'
-             AND attname=ANY(ARRAY[${providerRuntimeUpdateColumns.map((column) => `'${column}'`).join(",")}]))
-           OR relname NOT IN (
-             'RepositoryConnection','CodexOAuthChildIdentityQuarantine',
-             'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance',
-             'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-             '${workerOwnedMaintenanceCheckpointTable}'
-           )
-           OR (relname='${workerOwnedMaintenanceCheckpointTable}' AND role_kind='worker')
-         )
-       ))
+       OR EXISTS (
+         SELECT 1 FROM column_facts
+         JOIN table_facts USING (role_name,role_kind,relname)
+         WHERE column_facts.can_select IS DISTINCT FROM table_facts.can_select
+           OR column_facts.can_insert IS DISTINCT FROM table_facts.can_insert
+           OR column_facts.can_reference IS DISTINCT FROM table_facts.can_reference
+           OR column_facts.can_update IS DISTINCT FROM CASE
+             WHEN column_facts.role_kind <> 'effect-authority'
+               AND column_facts.relname='CodexOAuthProviderInstance'
+               AND column_facts.attname=ANY(ARRAY[${providerRuntimeUpdateColumns.map((column) => `'${column}'`).join(",")}])
+             THEN true
+             ELSE table_facts.can_update
+           END
+       )
        OR EXISTS (SELECT 1 FROM sequence_facts WHERE
          can_usage IS DISTINCT FROM (role_kind <> 'effect-authority')
          OR can_select OR can_update)

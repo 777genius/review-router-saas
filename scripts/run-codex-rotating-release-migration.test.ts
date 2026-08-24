@@ -809,6 +809,13 @@ describe("canonical exclusive release migration caller", () => {
       "pg_inherits",
     ])
       expect(liveV70V72CatalogDigestSql).toContain(catalogSemantic);
+    for (const privilege of ["SELECT", "INSERT", "UPDATE", "REFERENCES"])
+      expect(activationAuthority).toContain(
+        `has_column_privilege(role_name,relation.oid,attribute.attnum,'${privilege}')`,
+      );
+    expect(activationAuthority).toContain(
+      "JOIN table_facts USING (role_name,role_kind,relname)",
+    );
     expect(liveV70V72CatalogDigestSha256).toBe(
       fencedLiveV70V72CatalogDigestSha256,
     );

@@ -131,7 +131,7 @@ WITH selected_relations AS (
       FROM pg_catalog.pg_default_acl d LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace
       WHERE n.nspname='public'),'[]'::jsonb),
     'history',CASE WHEN reviewrouter_activation.read_activation_migration_manifest_identity()
-      = 'sha256:e9fa4f6f1f04a867397db90e22e8861f974d3f593930ec75c160c2b1f5d3a4f6'
+      = 'sha256:c1aac79ec028ae4e40dd0437d86967b0bec416f2cec189caec624fd3bb7b3728'
       THEN jsonb_build_array(
         jsonb_build_object('name','000070_runtime_generation_witness_proof',
           'checksum','cb9c42171f9bd924d21093852a1053cb947100acef1321ec8cf62e8fd5928c6f',
