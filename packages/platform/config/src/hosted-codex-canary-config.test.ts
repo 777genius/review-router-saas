@@ -20,8 +20,7 @@ function createHostedPoolReleaseConfig() {
     NODE_ENV: "production",
     REVIEW_ROUTER_RUNTIME_ROLE: "api",
     REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
-    REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF:
-      `777genius/review-router@${commitSha}`,
+    REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: `777genius/review-router@${commitSha}`,
     REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: "v1.2.3",
     REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA: commitSha,
     REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256:

@@ -1,4 +1,4 @@
-import { noHostedCodexCanaryFaultPlan } from "../../../packages/features/hosted-account-pool/src/application/ports/hosted-codex-canary-fault-plan-port.js";
+import { noHostedCodexCanaryFaultPlan } from "@reviewrouter/features-hosted-account-pool";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import { createPrismaHostedCodexCanaryFaultPlanPort } from "./hosted-codex-canary-fault-plan.js";
 

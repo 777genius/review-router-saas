@@ -5,7 +5,7 @@ import {
   type HostedCodexCanaryFault,
   type HostedCodexCanaryFaultPlanPort,
   type HostedCodexCanaryFaultScope,
-} from "../../../packages/features/hosted-account-pool/src/application/ports/hosted-codex-canary-fault-plan-port.js";
+} from "@reviewrouter/features-hosted-account-pool";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 
 type FaultPlanClaims = Readonly<{
