@@ -23,10 +23,6 @@ REVOKE ALL ON TABLE "ReviewInvestigationMaintenanceCheckpoint" FROM PUBLIC;
 
 DO $$
 BEGIN
-  IF to_regrole('reviewrouter_release_migration') IS NOT NULL THEN
-    ALTER TABLE "ReviewInvestigationMaintenanceCheckpoint"
-      OWNER TO reviewrouter_release_migration;
-  END IF;
   IF to_regrole('reviewrouter_worker') IS NOT NULL THEN
     GRANT SELECT, INSERT, UPDATE
       ON TABLE "ReviewInvestigationMaintenanceCheckpoint"
