@@ -466,6 +466,9 @@ const fullyProtectedRuntimeTables = Object.freeze([
   "RuntimeGenerationWitnessProof",
 ]);
 
+export const workerOwnedMaintenanceCheckpointTable =
+  "ReviewInvestigationMaintenanceCheckpoint";
+
 export const providerRuntimeUpdateColumns = Object.freeze([
   "state",
   "latestGeneration",
@@ -2734,7 +2737,8 @@ BEGIN
         'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
         'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
         'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
-        'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt'
+        'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
+        '${workerOwnedMaintenanceCheckpointTable}'
       ) AND attribute.attnum>0 AND NOT attribute.attisdropped
     ), sequence_facts AS (
       SELECT role_name, role_kind, relname,
@@ -2775,24 +2779,28 @@ BEGIN
        OR EXISTS (SELECT 1 FROM table_facts WHERE
          can_select IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname <> '_prisma_migrations'
            AND relname NOT IN ('CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-             'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'))
+             'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+           AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker'))
          OR can_insert IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthDatabaseAuthorityKey',
            'CodexOAuthDatabaseAuthorityReceipt','RuntimeGenerationWitnessProof',
-           'RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'))
+           'RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+           AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker'))
          OR can_update IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance',
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-           'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'))
+           'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+           AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker'))
          OR can_delete IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine','CodexOAuthLease',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
            'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
            'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-           'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof'))
+           'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof',
+           '${workerOwnedMaintenanceCheckpointTable}'))
          OR can_truncate OR can_reference OR can_trigger)
        OR EXISTS (SELECT 1 FROM column_facts WHERE can_update IS DISTINCT FROM (
          role_kind <> 'effect-authority' AND (
@@ -2801,8 +2809,10 @@ BEGIN
            OR relname NOT IN (
              'RepositoryConnection','CodexOAuthChildIdentityQuarantine',
              'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance',
-             'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt'
+             'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
+             '${workerOwnedMaintenanceCheckpointTable}'
            )
+           OR (relname='${workerOwnedMaintenanceCheckpointTable}' AND role_kind='worker')
          )
        ))
        OR EXISTS (SELECT 1 FROM sequence_facts WHERE
@@ -4739,6 +4749,7 @@ export function runtimeGrantStatements(
     "RepositoryConnection",
     ...rotatingEvidenceTables,
     ...fullyProtectedRuntimeTables,
+    workerOwnedMaintenanceCheckpointTable,
   ]
     .map((table) => `'${table}'`)
     .join(",");
@@ -4823,6 +4834,12 @@ REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityReceipt" FROM ${username}
 REVOKE ALL ON TABLE public."RuntimeGenerationWitnessProof" FROM ${username};
 REVOKE ALL ON TABLE public."RuntimeCanaryChallenge" FROM ${username};
 REVOKE ALL ON TABLE public."RuntimeCanaryChallengeProof" FROM ${username};
+REVOKE ALL ON TABLE public."${workerOwnedMaintenanceCheckpointTable}" FROM ${username};
+${
+  role === "worker"
+    ? `GRANT SELECT, INSERT, UPDATE ON TABLE public."${workerOwnedMaintenanceCheckpointTable}" TO ${username};`
+    : ""
+}
 REVOKE TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public FROM ${username};
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO ${username};
 ALTER DEFAULT PRIVILEGES FOR ROLE ${releaseSchemaOwnerRoleName} IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${username};

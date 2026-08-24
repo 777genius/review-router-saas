@@ -2441,20 +2441,28 @@ async function findExpiredPrivateMaterialCandidates(
     `;
   }
   return transaction.$queryRaw<ExpiredPrivateMaterialCandidate[]>(Prisma.sql`
+    WITH bounded_material AS (
+      SELECT
+        material."privateMaterialId",
+        material."investigationId",
+        material."obligationId",
+        material."expiresAt"
+      FROM "ReviewInvestigationPrivateMaterial" AS material
+      WHERE material."expiresAt" <= ${effectiveCutoff}
+        ${cursorPredicate}
+      ORDER BY material."expiresAt" ASC, material."privateMaterialId" ASC
+      LIMIT ${limit}
+    )
     SELECT
       material."privateMaterialId",
       material."investigationId",
       material."obligationId",
       material."expiresAt",
       investigation."state" AS "investigationState"
-    FROM "ReviewInvestigationPrivateMaterial" AS material
+    FROM bounded_material AS material
     INNER JOIN "ReviewInvestigation" AS investigation
       ON investigation."investigationId" = material."investigationId"
-    WHERE material."expiresAt" <= ${effectiveCutoff}
-      AND investigation."activeTurnId" IS NULL
-      ${cursorPredicate}
     ORDER BY material."expiresAt" ASC, material."privateMaterialId" ASC
-    LIMIT ${limit}
   `);
 }
 

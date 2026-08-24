@@ -42,6 +42,14 @@ describe("PrismaInvestigationStore retention pruning", () => {
       }),
     ).rejects.toBe(infrastructureError);
     expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(selectionTransaction.$executeRaw).toHaveBeenCalledTimes(2);
+    const candidateQuery = selectionTransaction.$queryRaw.mock.calls[2]![0] as {
+      readonly sql: string;
+    };
+    expect(candidateQuery.sql).toContain("WITH bounded_material AS");
+    expect(candidateQuery.sql.indexOf("LIMIT")).toBeLessThan(
+      candidateQuery.sql.indexOf("INNER JOIN"),
+    );
   });
 
   it("selects a bounded multi-row expired-turn batch with skip locked", async () => {
