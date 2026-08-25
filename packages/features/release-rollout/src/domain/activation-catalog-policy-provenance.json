@@ -2,30 +2,30 @@
   "kind": "reviewrouter-activation-catalog-policy-promotion-provenance",
   "version": 3,
   "status": "ready",
-  "readinessReason": "reviewed-v26-output-budget-guard-promoted-with-exact-go-evidence",
-  "promotedAt": "2026-08-25T12:50:00.000Z",
-  "captureBaseCommit": "83e55ce8772e54757b97e0214721af56af18ae0b",
+  "readinessReason": "reviewed-v28-runtime-authority-gate-promoted-with-exact-go-evidence",
+  "promotedAt": "2026-08-25T15:50:17.953Z",
+  "captureBaseCommit": "14774ef58ad81ac72890f96590102ac6d3dba328",
   "candidate": {
-    "bytes": 2490382,
-    "sha256": "f2eeaf4ed03dbb72c7b551a483201aa6086788c3ee3d3b8118ded067ae5f3d1f",
+    "bytes": 2506590,
+    "sha256": "ba51051d9407b4ca7b6b9c6ce74210f9ef70556e5df23512c4364024ef0800a9",
     "captures": [
       {
-        "label": "github-actions:32848269242:artifact:9563246346:capture-a",
-        "artifactBytes": 2490382,
-        "artifactSha256": "f2eeaf4ed03dbb72c7b551a483201aa6086788c3ee3d3b8118ded067ae5f3d1f",
+        "label": "github-actions:32864736733:attempt:1:artifact:9569674329:capture-a",
+        "artifactBytes": 2506590,
+        "artifactSha256": "ba51051d9407b4ca7b6b9c6ce74210f9ef70556e5df23512c4364024ef0800a9",
         "payloadOffsetBytes": 0,
         "prefixSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "payloadBytes": 2490382,
-        "payloadSha256": "f2eeaf4ed03dbb72c7b551a483201aa6086788c3ee3d3b8118ded067ae5f3d1f"
+        "payloadBytes": 2506590,
+        "payloadSha256": "ba51051d9407b4ca7b6b9c6ce74210f9ef70556e5df23512c4364024ef0800a9"
       },
       {
-        "label": "github-actions:32848269242:artifact:9563246346:capture-b",
-        "artifactBytes": 2490382,
-        "artifactSha256": "f2eeaf4ed03dbb72c7b551a483201aa6086788c3ee3d3b8118ded067ae5f3d1f",
+        "label": "github-actions:32864736733:attempt:1:artifact:9569674329:capture-b",
+        "artifactBytes": 2506590,
+        "artifactSha256": "ba51051d9407b4ca7b6b9c6ce74210f9ef70556e5df23512c4364024ef0800a9",
         "payloadOffsetBytes": 0,
         "prefixSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "payloadBytes": 2490382,
-        "payloadSha256": "f2eeaf4ed03dbb72c7b551a483201aa6086788c3ee3d3b8118ded067ae5f3d1f"
+        "payloadBytes": 2506590,
+        "payloadSha256": "ba51051d9407b4ca7b6b9c6ce74210f9ef70556e5df23512c4364024ef0800a9"
       }
     ]
   },
@@ -34,29 +34,29 @@
     "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
   },
   "canonicalDigests": {
-    "preactivation": "sha256:b95cc2c1fdd94b64056f6d8cd9316d361dce87a8a6a8064c8db51db65a886e68",
-    "activated": "sha256:118834866426337911d13e47f2752f2f982c1393792668036e359b0062117c6f",
-    "artifact": "sha256:95a5b1adcb36e6917fa9113a17e7392772d344e4c9dfbef3d206e57e959f01d3"
+    "preactivation": "sha256:95591a9df4dd88afe9a9a10118bf11b7e5ec4694748f8262de124d5f7ba7fd59",
+    "activated": "sha256:6c8f40abc68b063b835289d3d42f7ee07d9769baf269c5b05fb85db72c8cb3a0",
+    "artifact": "sha256:bb528f22b531f212641ecebdb5ea8d0b851f0291a8c830d5bb41c88b348ccb57"
   },
   "independentReview": {
     "result": "GO",
-    "reviewerRunId": "rr-activation-policy-v26-review-r1",
-    "reviewDecisionId": "codex:activation-policy-v26:83e55ce8772:f2eeaf4ed03d:go",
-    "reviewedAt": "2026-08-25T12:47:04.000Z",
-    "baseCommit": "83e55ce8772e54757b97e0214721af56af18ae0b",
-    "auditedHead": "83e55ce8772e54757b97e0214721af56af18ae0b",
-    "reviewArtifactSha256": "245b68e5869802816acbf06278648a5b85ea1089cc2967ac2f61208c78eb6c02",
-    "reviewerEvidenceSha256": "45cfc438e5c3ceef5be281bee7d007a0849921d50dac20e0f62dbea03e8b5a7c",
-    "candidateBytes": 2490382,
-    "candidateSha256": "f2eeaf4ed03dbb72c7b551a483201aa6086788c3ee3d3b8118ded067ae5f3d1f",
+    "reviewerRunId": "rrpr227v27-review-v28-r1",
+    "reviewDecisionId": "codex:activation-policy-v28:14774ef58ad8:ba51051d9407:go",
+    "reviewedAt": "2026-08-25T15:27:32.950Z",
+    "baseCommit": "14774ef58ad81ac72890f96590102ac6d3dba328",
+    "auditedHead": "14774ef58ad81ac72890f96590102ac6d3dba328",
+    "reviewArtifactSha256": "050b952c3566c8b8792de874a4d2223e5d35ef01d28d0db74d01bfe4e0a6ac56",
+    "reviewerEvidenceSha256": "0057254b74da940ca9394d9449700d603cd6eee79090be34b8df2261f5179604",
+    "candidateBytes": 2506590,
+    "candidateSha256": "ba51051d9407b4ca7b6b9c6ce74210f9ef70556e5df23512c4364024ef0800a9",
     "postgresImages": {
       "sourcePg16": "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
       "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
     },
     "canonicalDigests": {
-      "preactivation": "sha256:b95cc2c1fdd94b64056f6d8cd9316d361dce87a8a6a8064c8db51db65a886e68",
-      "activated": "sha256:118834866426337911d13e47f2752f2f982c1393792668036e359b0062117c6f",
-      "artifact": "sha256:95a5b1adcb36e6917fa9113a17e7392772d344e4c9dfbef3d206e57e959f01d3"
+      "preactivation": "sha256:95591a9df4dd88afe9a9a10118bf11b7e5ec4694748f8262de124d5f7ba7fd59",
+      "activated": "sha256:6c8f40abc68b063b835289d3d42f7ee07d9769baf269c5b05fb85db72c8cb3a0",
+      "artifact": "sha256:bb528f22b531f212641ecebdb5ea8d0b851f0291a8c830d5bb41c88b348ccb57"
     }
   }
 }

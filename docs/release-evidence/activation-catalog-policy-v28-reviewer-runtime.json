@@ -1,0 +1,44 @@
+{
+  "status": "done",
+  "changedFiles": [
+    "REVIEW_V28.md"
+  ],
+  "evidence": [
+    "safe_execution_status:completed",
+    "output_summary:Verdict: **GO**\n\nCreated [REVIEW_V28.md](/var/data/rrpr227v27-review-v28-r1/REVIEW_V28.md) with decision ID `codex:activation-policy-v28:14774ef58ad8:ba51051d9407:go`.\n\nThe report verifies exact capture equality, canonical digests, trusted-v26 and v27 deltas, gate remediation, workflow/image lineage, and exact-byte mechanical-promotion-only authorization. `REVIEW_V28.md` is the sole workspace change; no deployment or source mutation occurred.\n\nReview completed in approximately 7m 16s.",
+    "attempt_count:1",
+    "patch_preserved:/root/.cache/subscription-runtime/rrpr227v27-review-v28-r1/rrpr227v27-review-v28-r1.7ca2c02259f01602be6df5686f78f5f41cabf890862d40b1f058126f1a51b7fb.handoff.patch",
+    "patch_preserved:/root/.cache/subscription-runtime/rrpr227v27-review-v28-r1/rrpr227v27-review-v28-r1.7ca2c02259f01602be6df5686f78f5f41cabf890862d40b1f058126f1a51b7fb.handoff.summary.json",
+    "patch_preserved:/root/.cache/subscription-runtime/rrpr227v27-review-v28-r1/rrpr227v27-review-v28-r1.7ca2c02259f01602be6df5686f78f5f41cabf890862d40b1f058126f1a51b7fb.handoff.manifest.json"
+  ],
+  "blockers": [],
+  "nextAction": "review_completed",
+  "schemaVersion": 1,
+  "provider": "codex",
+  "runId": "rrpr227v27-review-v28-r1",
+  "taskId": "rrpr227v27-review-v28-r1",
+  "details": {
+    "baseCommit": "14774ef58ad81ac72890f96590102ac6d3dba328"
+  },
+  "artifacts": [
+    {
+      "kind": "patch",
+      "path": "/root/.cache/subscription-runtime/rrpr227v27-review-v28-r1/rrpr227v27-review-v28-r1.7ca2c02259f01602be6df5686f78f5f41cabf890862d40b1f058126f1a51b7fb.handoff.patch",
+      "byteLength": 10195,
+      "sha256": "7ca2c02259f01602be6df5686f78f5f41cabf890862d40b1f058126f1a51b7fb"
+    },
+    {
+      "kind": "summary",
+      "path": "/root/.cache/subscription-runtime/rrpr227v27-review-v28-r1/rrpr227v27-review-v28-r1.7ca2c02259f01602be6df5686f78f5f41cabf890862d40b1f058126f1a51b7fb.handoff.summary.json",
+      "byteLength": 682,
+      "sha256": "e12ccde47112860011885c8f6b137188c2996c5d5982c1e6d54266acf449eb72"
+    },
+    {
+      "kind": "manifest",
+      "path": "/root/.cache/subscription-runtime/rrpr227v27-review-v28-r1/rrpr227v27-review-v28-r1.7ca2c02259f01602be6df5686f78f5f41cabf890862d40b1f058126f1a51b7fb.handoff.manifest.json",
+      "byteLength": 1219,
+      "sha256": "81af00b31ea9029efee4972bf8c6b0466472c0d98817d89940785e985c324d86"
+    }
+  ],
+  "updatedAt": "2026-08-25T15:27:32.950Z"
+}

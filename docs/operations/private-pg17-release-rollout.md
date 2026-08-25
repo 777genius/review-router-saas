@@ -140,7 +140,7 @@ kinds make projection fail closed. The built-in languages and tablespaces are
 accepted only in their immutable default shape. No catalog-local OID is admitted
 to the artifact.
 
-The promoted trust root is generated from the independently reviewed v26
+The promoted trust root is generated from the independently reviewed v28
 candidate. Immutable capture, image, phase-digest, audited-HEAD, and final-review
 evidence is recorded in the adjacent
 `activation-catalog-policy-provenance.json`. The immutable review report is
@@ -160,9 +160,9 @@ for the other. Review the complete diff, verify that no provider identity is
 present, then promote only the reviewed bytes with the exact operator opt-in:
 
 ```bash
-REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v26 \
+REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v28 \
   pnpm release-rollout:promote-activation-catalog-policy \
-  --candidate /secure/evidence/rr-activation-catalog-candidate-v26.json --write
+  --candidate /secure/evidence/rr-activation-catalog-candidate-v28.json --write
 ```
 
 Omit `--write` to verify that the checked-in generated module is byte-exact.

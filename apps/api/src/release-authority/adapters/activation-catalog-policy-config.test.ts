@@ -60,7 +60,7 @@ describe("activation catalog policy deployment authorization", () => {
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
       status: "ready",
       reason:
-        "reviewed-v26-output-budget-guard-promoted-with-exact-go-evidence",
+        "reviewed-v28-runtime-authority-gate-promoted-with-exact-go-evidence",
     });
     expect(trustedActivationCatalogPoliciesFromEnvironment(configured)).toBe(
       canonicalActivationCatalogPolicies,
