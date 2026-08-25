@@ -121,6 +121,7 @@ function evidence(
           state: "terminal_unknown",
           errorCode: "ambiguous_dropped_response",
           accountId: "account-a",
+          credentialGeneration: "1",
           dispatchStartedAt: "2026-08-22T00:00:01.000Z",
           responseStartedAt: "2026-08-22T00:00:02.000Z",
           providerResponseIdHash: null,
@@ -184,6 +185,7 @@ function evidence(
             state: "failed_no_effect",
             errorCode: mode === "401" ? "credential_invalid" : "quota_limited",
             accountId: "account-a",
+            credentialGeneration: "1",
             dispatchStartedAt: null,
             responseStartedAt: null,
             providerResponseIdHash: null,
@@ -198,6 +200,7 @@ function evidence(
             state: "succeeded",
             errorCode: null,
             accountId: "account-b",
+            credentialGeneration: "1",
             dispatchStartedAt: "2026-08-22T00:00:01.250Z",
             responseStartedAt: "2026-08-22T00:00:02.000Z",
             providerResponseIdHash: "e".repeat(64),
@@ -214,6 +217,7 @@ function evidence(
             state: "succeeded",
             errorCode: null,
             accountId: "account-a",
+            credentialGeneration: "1",
             dispatchStartedAt: "2026-08-22T00:00:01.000Z",
             responseStartedAt: "2026-08-22T00:00:02.000Z",
             providerResponseIdHash: "e".repeat(64),
@@ -432,14 +436,9 @@ describe("hosted pool one-shot production canary", () => {
       [null],
       [null],
     ]);
-    expect(result.result).toBe("blocked");
-    expect(result.records).toContainEqual(
-      expect.objectContaining({
-        phase: "certification_blocked",
-        blocker: expect.objectContaining({
-          code: "hosted_pool_effect_generation_binding_missing",
-        }),
-      }),
+    expect(result.result).toBe("passed");
+    expect(result.records).not.toContainEqual(
+      expect.objectContaining({ phase: "certification_blocked" }),
     );
   });
 
@@ -498,6 +497,7 @@ describe("hosted pool one-shot production canary", () => {
               state: "succeeded",
               errorCode: null,
               accountId: "account-b",
+              credentialGeneration: "1",
               dispatchStartedAt: "2026-08-22T00:00:04.000Z",
               responseStartedAt: "2026-08-22T00:00:05.000Z",
               providerResponseIdHash: "e".repeat(64),

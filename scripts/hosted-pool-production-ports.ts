@@ -64,6 +64,7 @@ export type CanaryRunEvidence = Readonly<{
     state: string;
     errorCode: string | null;
     accountId: string;
+    credentialGeneration: string;
     dispatchStartedAt: string | null;
     responseStartedAt: string | null;
     providerResponseIdHash: string | null;

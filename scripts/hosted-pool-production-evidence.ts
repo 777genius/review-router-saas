@@ -67,7 +67,9 @@ export async function readExactHostedPoolRunEvidence(input: {
       (attempt, index) =>
         attempt.attemptOrdinal !== index + 1 ||
         attempt.grantId !== grant.id ||
-        attempt.relayRequestId !== grant.relayRequests[0]!.id,
+        attempt.relayRequestId !== grant.relayRequests[0]!.id ||
+        attempt.credentialGeneration === null ||
+        attempt.credentialGeneration < 1n,
     )
   )
     throw new Error(`hosted_pool_canary_evidence_graph_invalid:${input.runId}`);
@@ -156,6 +158,7 @@ export async function readExactHostedPoolRunEvidence(input: {
       state: attempt.state,
       errorCode: attempt.errorCode,
       accountId: attempt.accountId,
+      credentialGeneration: attempt.credentialGeneration!.toString(),
       dispatchStartedAt: attempt.dispatchStartedAt?.toISOString() ?? null,
       responseStartedAt: attempt.responseStartedAt?.toISOString() ?? null,
       providerResponseIdHash: attempt.providerResponseIdHash,

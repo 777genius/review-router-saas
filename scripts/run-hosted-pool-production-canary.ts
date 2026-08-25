@@ -382,19 +382,6 @@ export async function runHostedPoolProductionCanary(input: {
       });
     }
   }
-  if (outcome === "passed") {
-    outcome = "blocked";
-    records.push({
-      phase: "certification_blocked",
-      at: now().toISOString(),
-      blocker: {
-        code: "hosted_pool_effect_generation_binding_missing",
-        scope: "generation_health_after_provider_io",
-        requiredContract:
-          "persist immutable credential generation on each upstream effect attempt",
-      },
-    });
-  }
   return seal({
     schemaVersion: 3,
     target: hostedPoolCanaryTarget.fullName,

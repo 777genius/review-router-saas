@@ -12,6 +12,7 @@ const attempt = {
   state: "succeeded",
   errorCode: null,
   accountId: "account-a",
+  credentialGeneration: 1n,
   dispatchStartedAt: new Date("2026-08-24T00:00:02Z"),
   responseStartedAt: new Date("2026-08-24T00:00:03Z"),
   providerResponseIdHash: "d".repeat(64),
@@ -196,7 +197,7 @@ describe("hosted pool exact production evidence graph", () => {
       runId: 42,
       repositoryBindingId: "binding-1",
       requestStatuses: ["succeeded"],
-      attempts: [{ ordinal: 1, state: "succeeded" }],
+      attempts: [{ ordinal: 1, state: "succeeded", credentialGeneration: "1" }],
     });
   });
 
@@ -208,6 +209,31 @@ describe("hosted pool exact production evidence graph", () => {
           {
             ...grant.relayRequests[0],
             upstreamAttempts: [attempt, { ...attempt, attemptOrdinal: 3 }],
+          },
+        ],
+      },
+    ]);
+    await expect(
+      readExactHostedPoolRunEvidence({
+        prisma: prisma as never,
+        runId: 42,
+        runAttempt: 2,
+        repositoryBindingId: "binding-1",
+        bindingRevision: 7n,
+        sourceHeadSha,
+        publication,
+      }),
+    ).rejects.toThrow("hosted_pool_canary_evidence_graph_invalid:42");
+  });
+
+  it("rejects provider evidence without an immutable credential generation", async () => {
+    const prisma = prismaFor([
+      {
+        ...grant,
+        relayRequests: [
+          {
+            ...grant.relayRequests[0],
+            upstreamAttempts: [{ ...attempt, credentialGeneration: null }],
           },
         ],
       },
