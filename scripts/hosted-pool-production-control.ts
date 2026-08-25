@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,9 +28,25 @@ export type HostedPoolCounts = Readonly<{
   unresolvedRequests: number;
   terminalUnknownRequests: number;
 }>;
+export type HostedPoolRuntimeGate = Readonly<{
+  status: "closed" | "active";
+  authzEpoch: string;
+  revision: string;
+  reasonCode: string;
+  changedAt: string;
+  changedByHash: string;
+}>;
 export type HostedPoolControlPort = Readonly<{
   readFlags(): Promise<Record<string, Record<HostedPoolFlagName, string>>>;
   setFlags(patch: HostedPoolFlagPatch): Promise<void>;
+  readRuntimeGate(): Promise<HostedPoolRuntimeGate>;
+  transitionRuntimeGate(input: {
+    readonly expectedRevision: string;
+    readonly status: "closed" | "active";
+    readonly reasonCode: string;
+    readonly changedAt: Date;
+    readonly changedByHash: string;
+  }): Promise<HostedPoolRuntimeGate>;
   reconcileExpiredGrants(): Promise<
     Readonly<{ expiredCount: number; batches: number }>
   >;
@@ -60,12 +76,16 @@ export async function executeHostedPoolControl(input: {
   readonly now?: () => Date;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly maxDrainPolls?: number;
+  readonly operationId?: string;
 }) {
   const now = input.now ?? (() => new Date());
+  const operationId = input.operationId ?? randomUUID();
+  const operatorHash = createHash("sha256").update(operationId).digest("hex");
   const events: Array<Record<string, unknown>> = [];
   const observe = async (phase: string) => {
-    const [flags, counts] = await Promise.all([
+    const [flags, runtimeGate, counts] = await Promise.all([
       input.port.readFlags(),
+      input.port.readRuntimeGate(),
       input.port.counts(),
     ]);
     validateObservedFlags(
@@ -73,7 +93,15 @@ export async function executeHostedPoolControl(input: {
       input.execute && input.command !== "status",
       input.execute && input.command === "rollback",
     );
-    const event = { phase, at: now().toISOString(), flags, counts };
+    assertRuntimeGate(runtimeGate);
+    const event = {
+      phase,
+      at: now().toISOString(),
+      operationId,
+      flags,
+      runtimeGate,
+      counts,
+    };
     events.push(event);
     return event;
   };
@@ -91,25 +119,62 @@ export async function executeHostedPoolControl(input: {
     throw new Error("hosted_pool_control_confirmation_required");
 
   if (input.command === "activate") {
+    const closed = await input.port.readRuntimeGate();
+    assertRuntimeGate(closed);
+    if (closed.status !== "closed")
+      throw new Error(
+        "hosted_pool_runtime_gate_must_be_closed_before_activation",
+      );
     await input.port.setFlags({
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "1",
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "1",
     });
-    assertObservedPatch(await observe("runtime_activated"), {
+    const runtimeActivated = await observe("runtime_activated");
+    assertObservedPatch(runtimeActivated, {
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "1",
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "1",
     });
+    assertObservedRuntimeGate(runtimeActivated, "closed");
     await input.port.setFlags({
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "1",
     });
-    assertObservedPatch(await observe("admission_activated_last"), {
+    const admissionActivated = await observe("admission_activated_while_gated");
+    assertObservedPatch(admissionActivated, {
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "1",
     });
+    assertObservedRuntimeGate(admissionActivated, "closed");
+    await input.port.transitionRuntimeGate({
+      expectedRevision: closed.revision,
+      status: "active",
+      reasonCode: "operator_activation",
+      changedAt: now(),
+      changedByHash: operatorHash,
+    });
+    assertGateTransition(
+      closed,
+      (await observe("runtime_gate_activated_last")).runtimeGate,
+      "active",
+      operatorHash,
+    );
   } else if (input.command === "kill-switch") {
+    const before = await input.port.readRuntimeGate();
+    const closed = await closeRuntimeGate(
+      input.port,
+      before,
+      "operator_kill_switch",
+      operatorHash,
+      now(),
+    );
+    assertGateTransitionOrClosed(
+      before,
+      (await observe("runtime_gate_closed_first")).runtimeGate,
+      closed,
+      operatorHash,
+    );
     await input.port.setFlags({
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0",
@@ -122,6 +187,26 @@ export async function executeHostedPoolControl(input: {
     });
   } else {
     const rollbackFailures: unknown[] = [];
+    if (input.command === "rollback") {
+      try {
+        const before = await input.port.readRuntimeGate();
+        const closed = await closeRuntimeGate(
+          input.port,
+          before,
+          "operator_rollback",
+          operatorHash,
+          now(),
+        );
+        assertGateTransitionOrClosed(
+          before,
+          (await observe("runtime_gate_closed_first")).runtimeGate,
+          closed,
+          operatorHash,
+        );
+      } catch (error) {
+        rollbackFailures.push(error);
+      }
+    }
     if (input.command === "rollback" && input.port.setFaultPlan) {
       try {
         await input.port.setFaultPlan(null);
@@ -203,6 +288,76 @@ export async function executeHostedPoolControl(input: {
     }
   }
   return evidence(input.command, "executed", events);
+}
+
+function assertRuntimeGate(gate: HostedPoolRuntimeGate): void {
+  if (
+    (gate.status !== "closed" && gate.status !== "active") ||
+    !/^[1-9][0-9]*$/u.test(gate.authzEpoch) ||
+    !/^[1-9][0-9]*$/u.test(gate.revision) ||
+    !/^[a-f0-9]{64}$/u.test(gate.changedByHash) ||
+    !Number.isFinite(Date.parse(gate.changedAt)) ||
+    gate.reasonCode.length < 1 ||
+    gate.reasonCode.length > 160
+  ) {
+    throw new Error("hosted_pool_runtime_gate_invalid");
+  }
+}
+
+function assertObservedRuntimeGate(
+  event: { runtimeGate: HostedPoolRuntimeGate },
+  status: "closed" | "active",
+): void {
+  if (event.runtimeGate.status !== status)
+    throw new Error(`hosted_pool_runtime_gate_not_${status}`);
+}
+
+function assertGateTransition(
+  before: HostedPoolRuntimeGate,
+  after: HostedPoolRuntimeGate,
+  status: "closed" | "active",
+  changedByHash: string,
+): void {
+  assertRuntimeGate(before);
+  assertRuntimeGate(after);
+  if (
+    after.status !== status ||
+    BigInt(after.authzEpoch) !== BigInt(before.authzEpoch) + 1n ||
+    BigInt(after.revision) !== BigInt(before.revision) + 1n ||
+    after.changedByHash !== changedByHash
+  ) {
+    throw new Error("hosted_pool_runtime_gate_transition_invalid");
+  }
+}
+
+function assertGateTransitionOrClosed(
+  before: HostedPoolRuntimeGate,
+  observed: HostedPoolRuntimeGate,
+  closed: HostedPoolRuntimeGate,
+  changedByHash: string,
+): void {
+  if (observed.status !== "closed" || observed.revision !== closed.revision)
+    throw new Error("hosted_pool_runtime_gate_close_not_observed");
+  if (before.status === "active")
+    assertGateTransition(before, observed, "closed", changedByHash);
+}
+
+async function closeRuntimeGate(
+  port: HostedPoolControlPort,
+  before: HostedPoolRuntimeGate,
+  reasonCode: string,
+  changedByHash: string,
+  changedAt: Date,
+): Promise<HostedPoolRuntimeGate> {
+  assertRuntimeGate(before);
+  if (before.status === "closed") return before;
+  return port.transitionRuntimeGate({
+    expectedRevision: before.revision,
+    status: "closed",
+    reasonCode,
+    changedAt,
+    changedByHash,
+  });
 }
 
 function assertObservedPatch(
@@ -352,7 +507,97 @@ export function createRenderHostedPoolControlPort(input: {
       }),
     );
   };
+  const readRuntimeGate = async (): Promise<HostedPoolRuntimeGate> => {
+    const rows = await prisma.$queryRaw<
+      Array<{
+        status: string;
+        authzEpoch: bigint;
+        revision: bigint;
+        reasonCode: string;
+        changedAt: Date;
+        changedByHash: string;
+      }>
+    >`
+      SELECT "status"::text AS "status", "authzEpoch", "revision",
+             "reasonCode", "changedAt", "changedByHash"
+      FROM "HostedCodexRuntimeGate"
+      WHERE "id" = 'global'
+    `;
+    if (rows.length !== 1) throw new Error("hosted_pool_runtime_gate_missing");
+    const row = rows[0]!;
+    const gate: HostedPoolRuntimeGate = {
+      status:
+        row.status === "active"
+          ? "active"
+          : row.status === "closed"
+            ? "closed"
+            : (() => {
+                throw new Error("hosted_pool_runtime_gate_status_invalid");
+              })(),
+      authzEpoch: row.authzEpoch.toString(),
+      revision: row.revision.toString(),
+      reasonCode: row.reasonCode,
+      changedAt: row.changedAt.toISOString(),
+      changedByHash: row.changedByHash,
+    };
+    assertRuntimeGate(gate);
+    return gate;
+  };
   return {
+    readRuntimeGate,
+    async transitionRuntimeGate(transition) {
+      if (!/^[1-9][0-9]*$/u.test(transition.expectedRevision))
+        throw new Error("hosted_pool_runtime_gate_revision_invalid");
+      if (!/^[a-f0-9]{64}$/u.test(transition.changedByHash))
+        throw new Error("hosted_pool_runtime_gate_actor_invalid");
+      const rows = await prisma.$queryRaw<
+        Array<{
+          status: string;
+          authzEpoch: bigint;
+          revision: bigint;
+          reasonCode: string;
+          changedAt: Date;
+          changedByHash: string;
+        }>
+      >`
+        UPDATE "HostedCodexRuntimeGate"
+        SET "status" = CAST(${transition.status} AS "HostedCodexRuntimeGateStatus"),
+            "authzEpoch" = "authzEpoch" + 1,
+            "revision" = "revision" + 1,
+            "reasonCode" = ${transition.reasonCode},
+            "changedAt" = ${transition.changedAt},
+            "changedByHash" = ${transition.changedByHash}
+        WHERE "id" = 'global'
+          AND "revision" = ${BigInt(transition.expectedRevision)}
+        RETURNING "status"::text AS "status", "authzEpoch", "revision",
+                  "reasonCode", "changedAt", "changedByHash"
+      `;
+      if (rows.length === 0) {
+        const observed = await readRuntimeGate();
+        if (
+          observed.status === transition.status &&
+          BigInt(observed.revision) ===
+            BigInt(transition.expectedRevision) + 1n &&
+          observed.changedByHash === transition.changedByHash
+        ) {
+          return observed;
+        }
+        throw new Error("hosted_pool_runtime_gate_revision_conflict");
+      }
+      if (rows.length !== 1)
+        throw new Error("hosted_pool_runtime_gate_cardinality_invalid");
+      const row = rows[0]!;
+      const changed: HostedPoolRuntimeGate = {
+        status: row.status === "active" ? "active" : "closed",
+        authzEpoch: row.authzEpoch.toString(),
+        revision: row.revision.toString(),
+        reasonCode: row.reasonCode,
+        changedAt: row.changedAt.toISOString(),
+        changedByHash: row.changedByHash,
+      };
+      assertRuntimeGate(changed);
+      return changed;
+    },
     async readFlags() {
       const pairs = await Promise.all(
         input.serviceIds.map(

@@ -74,6 +74,21 @@ const apps: Array<ReturnType<typeof Fastify>> = [];
 
 beforeAll(async () => {
   await prisma.$connect();
+  const closedRuntimeGate =
+    await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+      where: { id: "global" },
+    });
+  await prisma.hostedCodexRuntimeGate.update({
+    where: { id: "global" },
+    data: {
+      status: "active",
+      authzEpoch: { increment: 1 },
+      revision: { increment: 1 },
+      reasonCode: "postgres_e2e_activation",
+      changedAt: new Date(closedRuntimeGate.changedAt.getTime() + 1),
+      changedByHash: sha256("postgres-e2e-operator"),
+    },
+  });
   await prisma.workspace.create({
     data: { id: workspace, slug: "hosted-pool-e2e", name: "Hosted pool E2E" },
   });
@@ -1630,6 +1645,79 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     ).rejects.toThrow("hosted_codex_effect_authority_revoked");
   });
 
+  it("closes live dispatch and keeps stale grants revoked across gate reopen", async () => {
+    const authorization = new PrismaHostedCodexRelayAuthorization(prisma);
+    const effects = new PrismaHostedCodexUpstreamEffectLedger(prisma);
+    const streaming = await issueGrant("runtime-gate-stream");
+    const stale = await issueGrant("runtime-gate-stale");
+    const admitted = await authorization.authorize({
+      opaqueGrant: streaming.plaintextToken,
+      requestOrdinal: 1,
+      idempotencyKey: "runtime-gate-stream",
+      requestBytes: 64,
+    });
+    const requestHash = sha256("runtime-gate-stream");
+    await ledger.recordRequestHash({
+      grantId: streaming.grant.id,
+      requestId: admitted.requestId,
+      requestHash,
+    });
+    const effect = await effects.prepare({
+      relayRequestId: admitted.requestId,
+      grantId: streaming.grant.id,
+      workspaceId: workspace,
+      poolId: pool,
+      accountId: "account-primary",
+      credentialGeneration: await activeCredentialGeneration("account-primary"),
+      requestHash,
+    });
+    await effects.markDispatching(effect);
+
+    const closed = await transitionRuntimeGate("closed", "postgres_e2e_kill");
+    await expect(effects.heartbeat(effect)).rejects.toThrow(
+      "hosted_codex_effect_authority_revoked",
+    );
+    await expect(
+      effects.markResponseStarted(effect, "provider-after-kill"),
+    ).rejects.toThrow("hosted_codex_effect_authority_revoked");
+    await expect(
+      authorization.authorize({
+        opaqueGrant: stale.plaintextToken,
+        requestOrdinal: 1,
+        idempotencyKey: "runtime-gate-closed",
+        requestBytes: 64,
+      }),
+    ).rejects.toThrow("hosted_grant_authority_mismatch");
+    await effects.finish(effect, {
+      state: "terminal_unknown",
+      errorCode: "runtime_gate_closed",
+      evidence: "postgres-e2e-runtime-gate-close",
+    });
+
+    const reopened = await transitionRuntimeGate(
+      "active",
+      "postgres_e2e_reopen",
+    );
+    expect(reopened.authzEpoch).toBe(closed.authzEpoch + 1n);
+    await expect(
+      authorization.authorize({
+        opaqueGrant: stale.plaintextToken,
+        requestOrdinal: 1,
+        idempotencyKey: "runtime-gate-aba",
+        requestBytes: 64,
+      }),
+    ).rejects.toThrow("hosted_grant_authority_mismatch");
+    const fresh = await issueGrant("runtime-gate-fresh");
+    expect(fresh.grant.runtimeAuthzEpoch).toBe(reopened.authzEpoch);
+    await prisma.hostedCodexInvocationGrant.updateMany({
+      where: {
+        id: { in: [stale.grant.id, fresh.grant.id] },
+        status: { in: ["issued", "exhausted"] },
+      },
+      data: { status: "revoked", revokedAt: new Date() },
+    });
+  });
+
   it("releases an expired prepared request and resumes the same exhausted idempotency identity", async () => {
     let clock = new Date();
     const effects = new PrismaHostedCodexUpstreamEffectLedger(
@@ -2382,6 +2470,34 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
   });
 });
 
+async function transitionRuntimeGate(
+  status: "closed" | "active",
+  reasonCode: string,
+) {
+  const current = await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+    where: { id: "global" },
+  });
+  const changedAt = new Date(
+    Math.max(Date.now(), current.changedAt.getTime() + 1),
+  );
+  const updated = await prisma.hostedCodexRuntimeGate.updateMany({
+    where: { id: "global", revision: current.revision },
+    data: {
+      status,
+      authzEpoch: { increment: 1 },
+      revision: { increment: 1 },
+      reasonCode,
+      changedAt,
+      changedByHash: sha256(reasonCode),
+    },
+  });
+  if (updated.count !== 1)
+    throw new Error("postgres_e2e_runtime_gate_transition_conflict");
+  return prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+    where: { id: "global" },
+  });
+}
+
 async function issueGrant(
   suffix: string,
   budget: Partial<{
@@ -2393,6 +2509,12 @@ async function issueGrant(
   }> = {},
 ) {
   const expiresAt = new Date(Date.now() + 10 * 60_000);
+  const runtimeGate = await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+    where: { id: "global" },
+    select: { status: true, authzEpoch: true },
+  });
+  if (runtimeGate.status !== "active")
+    throw new Error("postgres_e2e_runtime_gate_not_active");
   return issueHostedPoolInvocationGrant(
     {
       id: invocationGrantId(`grant-${suffix}`),
@@ -2411,6 +2533,7 @@ async function issueGrant(
         bindingRevision: 1,
         authzEpoch: 1n,
       },
+      runtimeAuthzEpoch: runtimeGate.authzEpoch,
       budget: {
         expiresAt,
         maxRequests: budget.maxRequests ?? 4,
@@ -2441,6 +2564,12 @@ async function insertIssuedGrantFixtures(
   count: number,
   dates: Readonly<{ issuedAt: Date; expiresAt: Date }>,
 ) {
+  const runtimeGate = await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+    where: { id: "global" },
+    select: { status: true, authzEpoch: true },
+  });
+  if (runtimeGate.status !== "active")
+    throw new Error("postgres_e2e_runtime_gate_not_active");
   await prisma.hostedCodexInvocationGrant.createMany({
     data: Array.from({ length: count }, (_, index) => ({
       id: `grant-${prefix}-${index}`,
@@ -2462,6 +2591,7 @@ async function insertIssuedGrantFixtures(
       runtimeConfigVersion: 1,
       bindingRevision: 1n,
       authzEpoch: 1n,
+      runtimeAuthzEpoch: runtimeGate.authzEpoch,
       capabilityTokenHash: sha256(`capability-${prefix}-${index}`),
       issuedAt: dates.issuedAt,
       expiresAt: dates.expiresAt,

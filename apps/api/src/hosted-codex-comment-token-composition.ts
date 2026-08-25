@@ -29,8 +29,8 @@ export class HostedCodexCommentTokenIssuer implements HostedCodexCommentTokenIss
     input: Parameters<HostedCodexCommentTokenIssuerPort["issue"]>[0],
   ) {
     const now = this.dependencies.clock.now();
-    const stored =
-      await this.dependencies.prisma.hostedCodexInvocationGrant.findUnique({
+    const [stored, runtimeGate] = await Promise.all([
+      this.dependencies.prisma.hostedCodexInvocationGrant.findUnique({
         where: { id: input.invocationLeaseId },
         include: {
           binding: {
@@ -40,7 +40,12 @@ export class HostedCodexCommentTokenIssuer implements HostedCodexCommentTokenIss
             },
           },
         },
-      });
+      }),
+      this.dependencies.prisma.hostedCodexRuntimeGate.findUnique({
+        where: { id: "global" },
+        select: { status: true, authzEpoch: true },
+      }),
+    ]);
     if (!stored) throw new Error("hosted_comment_refresh_grant_not_found");
     const repository = stored.binding.repository;
     if (
@@ -52,6 +57,10 @@ export class HostedCodexCommentTokenIssuer implements HostedCodexCommentTokenIss
       stored.binding.status !== "active" ||
       stored.binding.pool.status !== "active" ||
       stored.binding.pool.authzEpoch !== stored.authzEpoch ||
+      stored.runtimeAuthzEpoch === null ||
+      !runtimeGate ||
+      runtimeGate.status !== "active" ||
+      runtimeGate.authzEpoch !== stored.runtimeAuthzEpoch ||
       repository.provider !== "github" ||
       !repository.selected ||
       repository.archived ||

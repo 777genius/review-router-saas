@@ -56,6 +56,7 @@ export type HostedCodexGrantAdmission = {
   readonly bindingId: string;
   readonly bindingRevision: number;
   readonly authzEpoch: bigint;
+  readonly runtimeAuthzEpoch: bigint;
   readonly workflowSchemaVersion: number;
   readonly workflowSource: string;
   readonly workflowJobSource: string;
@@ -261,6 +262,7 @@ export class HostedCodexGrantIssuer implements HostedCodexGrantIssuerPort {
           maxUses: this.dependencies.policy.maxCommentTokenRefreshes,
         },
         authority,
+        runtimeAuthzEpoch: admission.runtimeAuthzEpoch,
         now,
       },
       {
@@ -328,7 +330,8 @@ function assertRetryMatches(
     existing.repositoryId !== repositoryId(admission.repositoryId) ||
     existing.workspaceId !== workspaceId(admission.workspaceId) ||
     existing.repositoryBindingId !== hostedBindingId(admission.bindingId) ||
-    existing.budget.expiresAt <= now
+    existing.budget.expiresAt <= now ||
+    existing.runtimeAuthzEpoch !== admission.runtimeAuthzEpoch
   ) {
     throw new Error("hosted_grant_retry_authority_mismatch");
   }

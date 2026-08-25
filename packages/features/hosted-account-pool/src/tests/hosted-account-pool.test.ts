@@ -310,6 +310,7 @@ describe("invocation-bounded relay grant", () => {
         repositoryId: repository,
         workspaceId: workspace,
         authority,
+        runtimeAuthzEpoch: 1n,
         budget: {
           expiresAt: new Date("2026-08-15T11:00:00.000Z"),
           maxRequests: 10,
@@ -718,6 +719,7 @@ describe("invocation-bounded relay grant", () => {
         poolId,
         accounts: [accountFixture("scope", 0)],
         authority: grantAuthorityFixture(91),
+        runtimeAuthzEpoch: 1n,
         capabilityTokenHash: "sha256:scope-relay-capability",
         commentTokenRefreshCapability: {
           tokenHash: "sha256:scope-comment-capability",
@@ -1052,6 +1054,7 @@ function grantFixture(
     poolId,
     accounts,
     authority: grantAuthorityFixture(suffix),
+    runtimeAuthzEpoch: 1n,
     capabilityTokenHash: "sha256:fixture-capability-token-hash",
     commentTokenRefreshCapability: {
       tokenHash: "sha256:fixture-comment-refresh-hash",

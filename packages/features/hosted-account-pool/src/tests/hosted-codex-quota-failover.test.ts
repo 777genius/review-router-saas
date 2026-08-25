@@ -122,6 +122,7 @@ describe("hosted Codex quota failover", () => {
         );
       let effectOrdinal = 0;
       const effects = {
+        assertLiveAuthority: vi.fn(async () => undefined),
         prepare: vi.fn(async ({ accountId }: { accountId: string }) => {
           effectOrdinal += 1;
           return {
@@ -874,6 +875,42 @@ describe("hosted Codex quota failover", () => {
       expect.objectContaining({ authorization: "Bearer generation-two-token" }),
     );
   });
+
+  it("does not refresh or dispatch after the live runtime gate closes", async () => {
+    const primary = account("gate-primary", 0);
+    const grant = admittedGrant(primary, account("gate-backup", 1));
+    const ledger = {
+      recordRequestHash: vi.fn(async () => undefined),
+      ensureRequestHash: vi.fn(async () => undefined),
+      complete: vi.fn(async () => grant),
+    };
+    const runtime = runtimeFixture();
+    const effects = effectLedgerFixture();
+    effects.assertLiveAuthority.mockRejectedValueOnce(
+      new Error("hosted_codex_effect_authority_revoked"),
+    );
+    const fetchMock = vi.fn<typeof fetch>();
+    const body = Buffer.from('{"input":"review"}');
+    const relay = new FetchHostedCodexStreamingRelay(
+      runtime as never,
+      ledger as never,
+      fetchMock as unknown as typeof fetch,
+      { failoverEnabled: true, now: () => now, effects },
+    );
+
+    await expect(
+      relay.open({
+        authorization: authorization(grant, primary, body.byteLength),
+        body: Readable.from(body),
+        contentType: "application/json",
+        accept: "text/event-stream",
+        abortSignal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("hosted_codex_effect_authority_revoked");
+    expect(runtime.ensureFreshSession).not.toHaveBeenCalled();
+    expect(effects.prepare).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 function runtimeFixture() {
@@ -890,6 +927,7 @@ function runtimeFixture() {
 function effectLedgerFixture() {
   let attemptOrdinal = 0;
   return {
+    assertLiveAuthority: vi.fn(async () => undefined),
     prepare: vi.fn(
       async ({
         accountId,
@@ -977,6 +1015,7 @@ function admittedGrant(
       bindingRevision: 1,
       authzEpoch: 1n,
     },
+    runtimeAuthzEpoch: 1n,
     capabilityTokenHash: "sha256:fixture-capability-token-hash",
     commentTokenRefreshCapability: {
       tokenHash: "sha256:fixture-comment-refresh-hash",

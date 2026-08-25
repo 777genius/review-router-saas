@@ -56,55 +56,70 @@ export class PrismaInvocationGrantRepository
   }
 
   async findByInvocationId(id: ReturnType<typeof invocationId>) {
-    const stored = await this.prisma.hostedCodexInvocationGrant.findUnique({
-      where: { invocationId: id },
-      include: grantInclude,
-    });
-    return stored ? restoreGrant(stored) : null;
+    const [stored, runtimeGate] = await Promise.all([
+      this.prisma.hostedCodexInvocationGrant.findUnique({
+        where: { invocationId: id },
+        include: grantInclude,
+      }),
+      this.prisma.hostedCodexRuntimeGate.findUnique({
+        where: { id: "global" },
+        select: { status: true, authzEpoch: true },
+      }),
+    ]);
+    if (!stored) return null;
+    assertRuntimeGateAuthority(stored.runtimeAuthzEpoch, runtimeGate);
+    return restoreGrant(stored);
   }
 
   async insert(grant: InvocationGrant): Promise<void> {
+    const runtimeGate = await this.prisma.hostedCodexRuntimeGate.findUnique({
+      where: { id: "global" },
+      select: { status: true, authzEpoch: true },
+    });
+    assertRuntimeGateAuthority(grant.runtimeAuthzEpoch, runtimeGate);
     await this.prisma.hostedCodexInvocationGrant.create({
       data: {
-        id: grant.id,
-        invocationId: grant.invocationId,
-        workspaceId: grant.workspaceId,
-        poolId: grant.poolId,
-        repositoryConnectionId: grant.repositoryId,
-        repositoryBindingId: grant.repositoryBindingId,
-        activeAccountId: grant.activeAccountId,
-        primaryAccountId: grant.primaryAccountId,
-        backupAccountId: grant.backupAccountId,
-        reviewRequestId: grant.authority.reviewRequestId,
-        providerInvocationKey: grant.authority.providerInvocationKey,
-        runId: grant.authority.runId,
-        runAttempt: grant.authority.runAttempt,
-        model: grant.authority.model,
-        policyVersion: "hosted-codex-v1",
-        policyFingerprint: grant.authority.policyFingerprint,
-        runtimeConfigVersion: grant.authority.runtimeConfigVersion,
-        bindingRevision: BigInt(grant.authority.bindingRevision),
-        authzEpoch: grant.authority.authzEpoch,
-        capabilityTokenHash: grant.capabilityTokenHash,
-        issuedAt: grant.createdAt,
-        expiresAt: grant.budget.expiresAt,
-        maxRequests: grant.budget.maxRequests,
-        maxConcurrentRequests: grant.budget.maxConcurrentRequests,
-        maxRequestBytes: grant.budget.maxRequestBytes,
-        maxResponseBytes: grant.budget.maxResponseBytes,
-        maxOutputTokens: grant.budget.maxOutputTokens,
-        requestCount: 0,
-        inFlight: 0,
-        commentRefreshCapability: {
-          create: {
-            capabilityTokenHash: grant.commentTokenRefreshCapability.tokenHash,
+            id: grant.id,
+            invocationId: grant.invocationId,
+            workspaceId: grant.workspaceId,
+            poolId: grant.poolId,
+            repositoryConnectionId: grant.repositoryId,
+            repositoryBindingId: grant.repositoryBindingId,
+            activeAccountId: grant.activeAccountId,
+            primaryAccountId: grant.primaryAccountId,
+            backupAccountId: grant.backupAccountId,
+            reviewRequestId: grant.authority.reviewRequestId,
+            providerInvocationKey: grant.authority.providerInvocationKey,
+            runId: grant.authority.runId,
+            runAttempt: grant.authority.runAttempt,
+            model: grant.authority.model,
+            policyVersion: "hosted-codex-v1",
+            policyFingerprint: grant.authority.policyFingerprint,
+            runtimeConfigVersion: grant.authority.runtimeConfigVersion,
+            bindingRevision: BigInt(grant.authority.bindingRevision),
+            authzEpoch: grant.authority.authzEpoch,
+            runtimeAuthzEpoch: grant.runtimeAuthzEpoch,
+            capabilityTokenHash: grant.capabilityTokenHash,
             issuedAt: grant.createdAt,
-            expiresAt: grant.commentTokenRefreshCapability.expiresAt,
-            maxUses: grant.commentTokenRefreshCapability.maxUses,
-            useCount: grant.commentTokenRefreshCapability.useCount,
-            revokedAt: grant.commentTokenRefreshCapability.revokedAt,
-          },
-        },
+            expiresAt: grant.budget.expiresAt,
+            maxRequests: grant.budget.maxRequests,
+            maxConcurrentRequests: grant.budget.maxConcurrentRequests,
+            maxRequestBytes: grant.budget.maxRequestBytes,
+            maxResponseBytes: grant.budget.maxResponseBytes,
+            maxOutputTokens: grant.budget.maxOutputTokens,
+            requestCount: 0,
+            inFlight: 0,
+            commentRefreshCapability: {
+              create: {
+                capabilityTokenHash:
+                  grant.commentTokenRefreshCapability.tokenHash,
+                issuedAt: grant.createdAt,
+                expiresAt: grant.commentTokenRefreshCapability.expiresAt,
+                maxUses: grant.commentTokenRefreshCapability.maxUses,
+                useCount: grant.commentTokenRefreshCapability.useCount,
+                revokedAt: grant.commentTokenRefreshCapability.revokedAt,
+              },
+            },
       },
     });
   }
@@ -157,6 +172,13 @@ export class PrismaInvocationGrantRepository
           include: grantInclude,
         });
         if (!stored) throw new Error("invocation_grant_not_found");
+        const runtimeGate = await transaction.hostedCodexRuntimeGate.findUnique(
+          {
+            where: { id: "global" },
+            select: { status: true, authzEpoch: true },
+          },
+        );
+        assertRuntimeGateAuthority(stored.runtimeAuthzEpoch, runtimeGate);
         const current = restoreGrant(stored);
         if (
           current.commentTokenRefreshCapability.tokenHash !==
@@ -963,6 +985,7 @@ function restoreGrant(stored: StoredGrant): InvocationGrant {
       bindingRevision: toSafeNumber(stored.bindingRevision),
       authzEpoch: stored.authzEpoch,
     },
+    runtimeAuthzEpoch: requireRuntimeAuthzEpoch(stored.runtimeAuthzEpoch),
     budget: {
       expiresAt: stored.expiresAt,
       maxRequests: stored.maxRequests,
@@ -1007,7 +1030,8 @@ function assertImmutableGrantFields(
     current.repositoryBindingId !== next.repositoryBindingId ||
     current.primaryAccountId !== next.primaryAccountId ||
     current.backupAccountId !== next.backupAccountId ||
-    current.capabilityTokenHash !== next.capabilityTokenHash
+    current.capabilityTokenHash !== next.capabilityTokenHash ||
+    current.runtimeAuthzEpoch !== next.runtimeAuthzEpoch
   ) {
     throw new Error("invocation_grant_immutable_field_changed");
   }
@@ -1019,6 +1043,23 @@ function toSafeNumber(value: bigint): number {
     throw new Error("hosted_codex_revision_out_of_range");
   }
   return number;
+}
+
+function requireRuntimeAuthzEpoch(value: bigint | null): bigint {
+  if (value === null || value < 1n) {
+    throw new Error("hosted_codex_runtime_gate_authority_missing");
+  }
+  return value;
+}
+
+function assertRuntimeGateAuthority(
+  expectedEpoch: bigint | null,
+  gate: { readonly status: string; readonly authzEpoch: bigint } | null,
+): void {
+  const epoch = requireRuntimeAuthzEpoch(expectedEpoch);
+  if (!gate || gate.status !== "active" || gate.authzEpoch !== epoch) {
+    throw new Error("hosted_codex_runtime_gate_authority_mismatch");
+  }
 }
 
 function sha256(value: string): string {

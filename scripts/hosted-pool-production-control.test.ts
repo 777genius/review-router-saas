@@ -3,6 +3,7 @@ import {
   cancelOpenStagedFaultPlans,
   executeHostedPoolControl,
   type HostedPoolControlPort,
+  type HostedPoolRuntimeGate,
 } from "./hosted-pool-production-control";
 
 function fixture(
@@ -14,9 +15,19 @@ function fixture(
       terminalUnknownRequests: 0,
     },
   ],
+  initialGateStatus: "closed" | "active" = "active",
 ) {
   const calls: unknown[] = [];
+  const gateCalls: unknown[] = [];
   let index = 0;
+  let runtimeGate: HostedPoolRuntimeGate = {
+    status: initialGateStatus,
+    authzEpoch: "1",
+    revision: "1",
+    reasonCode: "fixture",
+    changedAt: "2026-08-22T00:00:00.000Z",
+    changedByHash: "0".repeat(64),
+  };
   const flags = {
     REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
     REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
@@ -25,6 +36,21 @@ function fixture(
     REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "1",
   } as Record<string, "0" | "1">;
   const port: HostedPoolControlPort = {
+    readRuntimeGate: vi.fn(async () => runtimeGate),
+    transitionRuntimeGate: vi.fn(async (transition) => {
+      gateCalls.push(transition);
+      if (transition.expectedRevision !== runtimeGate.revision)
+        throw new Error("fixture_gate_revision_conflict");
+      runtimeGate = {
+        status: transition.status,
+        authzEpoch: (BigInt(runtimeGate.authzEpoch) + 1n).toString(),
+        revision: (BigInt(runtimeGate.revision) + 1n).toString(),
+        reasonCode: transition.reasonCode,
+        changedAt: transition.changedAt.toISOString(),
+        changedByHash: transition.changedByHash,
+      };
+      return runtimeGate;
+    }),
     readFlags: vi.fn(async () => ({
       "srv-api": { ...flags } as never,
       "srv-web": { ...flags } as never,
@@ -39,7 +65,7 @@ function fixture(
     })),
     counts: vi.fn(async () => counts[Math.min(index++, counts.length - 1)]!),
   };
-  return { port, calls };
+  return { port, calls, gateCalls };
 }
 
 describe("hosted pool production controls", () => {
@@ -181,7 +207,7 @@ describe("hosted pool production controls", () => {
   });
 
   it("activates runtime dependencies together and admission last", async () => {
-    const { port, calls } = fixture();
+    const { port, calls, gateCalls } = fixture(undefined, "closed");
     await executeHostedPoolControl({
       command: "activate",
       execute: true,
@@ -197,7 +223,36 @@ describe("hosted pool production controls", () => {
       },
       { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "1" },
     ]);
-    expect(port.readFlags).toHaveBeenCalledTimes(3);
+    expect(gateCalls).toEqual([
+      expect.objectContaining({
+        expectedRevision: "1",
+        status: "active",
+        reasonCode: "operator_activation",
+      }),
+    ]);
+    expect(
+      vi.mocked(port.transitionRuntimeGate).mock.invocationCallOrder[0],
+    ).toBeGreaterThan(vi.mocked(port.setFlags).mock.invocationCallOrder[1]!);
+    expect(port.readFlags).toHaveBeenCalledTimes(4);
+  });
+
+  it("closes the database gate before mutating Render kill flags", async () => {
+    const { port } = fixture();
+    await executeHostedPoolControl({
+      command: "kill-switch",
+      execute: true,
+      confirmation: "EXECUTE HOSTED POOL KILL-SWITCH",
+      port,
+    });
+    expect(
+      vi.mocked(port.transitionRuntimeGate).mock.invocationCallOrder[0],
+    ).toBeLessThan(vi.mocked(port.setFlags).mock.invocationCallOrder[0]!);
+    await expect(port.readRuntimeGate()).resolves.toMatchObject({
+      status: "closed",
+      authzEpoch: "2",
+      revision: "2",
+      reasonCode: "operator_kill_switch",
+    });
   });
   it("is dry-run by default and does not mutate", async () => {
     const { port } = fixture();
@@ -405,6 +460,6 @@ describe("hosted pool production controls", () => {
       { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0" },
       { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0" },
     ]);
-    expect(port.readFlags).toHaveBeenCalledTimes(7);
+    expect(port.readFlags).toHaveBeenCalledTimes(8);
   });
 });

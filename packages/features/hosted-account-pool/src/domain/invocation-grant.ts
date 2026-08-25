@@ -67,6 +67,7 @@ export type InvocationGrant = {
   readonly commentTokenRefreshCapability: CommentTokenRefreshCapability;
   /** Immutable trust-domain binding copied into the signed relay grant. */
   readonly authority: InvocationGrantAuthority;
+  readonly runtimeAuthzEpoch: bigint;
   readonly budget: InvocationGrantBudget;
   readonly admittedRequestIds: readonly RelayRequestId[];
   readonly inFlightRequestIds: readonly RelayRequestId[];
@@ -157,6 +158,7 @@ export function issueInvocationGrant(input: {
   readonly poolId: HostedPoolId;
   readonly accounts: readonly HostedPoolAccount[];
   readonly authority: InvocationGrantAuthority;
+  readonly runtimeAuthzEpoch: bigint;
   readonly capabilityTokenHash: string;
   readonly commentTokenRefreshCapability: CommentTokenRefreshCapability;
   readonly budget: InvocationGrantBudget;
@@ -166,6 +168,10 @@ export function issueInvocationGrant(input: {
   const authority = authoritySchema.parse(
     input.authority,
   ) as InvocationGrantAuthority;
+  const runtimeAuthzEpoch = z
+    .bigint()
+    .positive()
+    .parse(input.runtimeAuthzEpoch);
   const capabilityTokenHash = z
     .string()
     .trim()
@@ -217,6 +223,7 @@ export function issueInvocationGrant(input: {
     capabilityTokenHash,
     commentTokenRefreshCapability,
     authority,
+    runtimeAuthzEpoch,
     budget,
     admittedRequestIds: [],
     inFlightRequestIds: [],

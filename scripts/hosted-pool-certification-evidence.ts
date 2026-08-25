@@ -117,6 +117,7 @@ export async function buildHostedCertificationEvidence(input: {
     "packages/platform/db/prisma/migrations/000078_review_investigation_maintenance_checkpoint/migration.sql",
     "packages/platform/db/prisma/migrations/000079_hosted_codex_output_limits/migration.sql",
     "packages/platform/db/prisma/migrations/000080_hosted_codex_attempt_generation/migration.sql",
+    "packages/platform/db/prisma/migrations/000081_hosted_codex_runtime_gate/migration.sql",
   ];
   const sources: CertificationScanSource[] = [];
   const logsDirectory = join(input.outputDirectory, "logs");

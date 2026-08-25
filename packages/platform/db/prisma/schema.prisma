@@ -1433,6 +1433,18 @@ model ReviewInvocationLeaseTombstoneV2 {
   @@index([compactedAt, leaseId])
 }
 
+model HostedCodexRuntimeGate {
+  id            String                       @id
+  status        HostedCodexRuntimeGateStatus @default(closed)
+  authzEpoch    BigInt                       @default(1)
+  revision      BigInt                       @default(1)
+  reasonCode    String
+  changedAt     DateTime
+  changedByHash String
+
+  @@index([status, authzEpoch, revision], map: "HostedCodexRuntimeGate_authority_idx")
+}
+
 model HostedCodexPool {
   id           String                @id @default(cuid())
   workspaceId  String
@@ -1661,6 +1673,7 @@ model HostedCodexInvocationGrant {
   runtimeConfigVersion      Int
   bindingRevision           BigInt
   authzEpoch                BigInt
+  runtimeAuthzEpoch         BigInt?
   capabilityTokenHash       String                           @unique
   status                    HostedCodexInvocationGrantStatus @default(issued)
   issuedAt                  DateTime                         @default(now())
@@ -3139,6 +3152,11 @@ enum HostedCodexPoolStatus {
   draining
   paused
   tombstoned
+}
+
+enum HostedCodexRuntimeGateStatus {
+  closed
+  active
 }
 
 enum HostedCodexAccountState {

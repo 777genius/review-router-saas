@@ -271,7 +271,27 @@ function kit() {
       "1",
     ]),
   ) as Record<string, "0" | "1">;
+  let runtimeGate = {
+    status: "closed" as "closed" | "active",
+    authzEpoch: "1",
+    revision: "1",
+    reasonCode: "fixture",
+    changedAt: "2026-08-22T00:00:00.000Z",
+    changedByHash: "0".repeat(64),
+  };
   const control: HostedPoolControlPort = {
+    readRuntimeGate: vi.fn(async () => runtimeGate),
+    transitionRuntimeGate: vi.fn(async (transition) => {
+      runtimeGate = {
+        status: transition.status,
+        authzEpoch: (BigInt(runtimeGate.authzEpoch) + 1n).toString(),
+        revision: (BigInt(runtimeGate.revision) + 1n).toString(),
+        reasonCode: transition.reasonCode,
+        changedAt: transition.changedAt.toISOString(),
+        changedByHash: transition.changedByHash,
+      };
+      return runtimeGate;
+    }),
     readFlags: vi.fn(async () => ({
       api: { ...flags } as never,
       web: { ...flags } as never,

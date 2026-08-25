@@ -80,6 +80,9 @@ try {
     addAttemptGenerationMigration(rehearsalDirectory);
     runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
     runMigrationTest(migrationDatabaseUrl, "verify-000080");
+    addRuntimeGateMigration(rehearsalDirectory);
+    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
+    runMigrationTest(migrationDatabaseUrl, "verify-000081");
 
     const migrationCount = await countAppliedMigrations(migrationDatabaseUrl);
     runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
@@ -154,6 +157,7 @@ function prepareMigrationRehearsal() {
         "000077_hosted_codex_r57_security_race_remediation",
         "000079_hosted_codex_output_limits",
         "000080_hosted_codex_attempt_generation",
+        "000081_hosted_codex_runtime_gate",
       ].includes(basename(source)),
   });
   return directory;
@@ -171,6 +175,14 @@ function addAttemptGenerationMigration(directory) {
   cpSync(
     "packages/platform/db/prisma/migrations/000080_hosted_codex_attempt_generation",
     join(directory, "prisma/migrations/000080_hosted_codex_attempt_generation"),
+    { recursive: true },
+  );
+}
+
+function addRuntimeGateMigration(directory) {
+  cpSync(
+    "packages/platform/db/prisma/migrations/000081_hosted_codex_runtime_gate",
+    join(directory, "prisma/migrations/000081_hosted_codex_runtime_gate"),
     { recursive: true },
   );
 }

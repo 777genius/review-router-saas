@@ -12,6 +12,21 @@ const terminalStates: readonly HostedCodexUpstreamEffectState[] = [
   "terminal_unknown",
 ];
 
+const dispatchAuthorityInclude =
+  Prisma.validator<Prisma.HostedCodexInvocationGrantInclude>()({
+    account: true,
+    binding: { include: { pool: true } },
+  });
+
+type DispatchAuthorityGrant = Prisma.HostedCodexInvocationGrantGetPayload<{
+  include: typeof dispatchAuthorityInclude;
+}>;
+
+type RuntimeGateAuthority = Readonly<{
+  status: string;
+  authzEpoch: bigint;
+}>;
+
 export type HostedCodexUpstreamEffectLease = {
   readonly attemptId: string;
   readonly attemptOrdinal: number;
@@ -52,6 +67,31 @@ export class PrismaHostedCodexUpstreamEffectLedger {
       ownerIdHash: sha256(lease.ownerToken),
       fenceEpoch: lease.fenceEpoch,
     };
+  }
+
+  async assertLiveAuthority(input: {
+    readonly grantId: string;
+    readonly accountId: string;
+  }): Promise<void> {
+    const now = this.now();
+    await serializableTransaction(
+      this.prisma,
+      async (transaction) => {
+        const grant = await transaction.hostedCodexInvocationGrant.findUnique({
+          where: { id: input.grantId },
+          include: dispatchAuthorityInclude,
+        });
+        if (!grant) throw new Error("hosted_codex_effect_authority_revoked");
+        const runtimeGate = await lockRuntimeGateAuthority(transaction);
+        assertCurrentDispatchAuthority(
+          grant,
+          runtimeGate,
+          input.accountId,
+          now,
+        );
+      },
+      { isolationLevel: "Serializable" },
+    );
   }
 
   async prepare(input: {
@@ -99,7 +139,7 @@ export class PrismaHostedCodexUpstreamEffectLedger {
             status: "processing",
           },
           include: {
-            grant: { include: { account: true } },
+            grant: { include: dispatchAuthorityInclude },
           },
         });
         if (!request) throw new Error("hosted_codex_effect_request_invalid");
@@ -111,7 +151,13 @@ export class PrismaHostedCodexUpstreamEffectLedger {
         if (latest && !terminalStates.includes(latest.state)) {
           throw new HostedCodexEffectReservationDeferredError();
         }
-        assertCurrentDispatchAuthority(request.grant, input.accountId, now);
+        const runtimeGate = await lockRuntimeGateAuthority(transaction);
+        assertCurrentDispatchAuthority(
+          request.grant,
+          runtimeGate,
+          input.accountId,
+          now,
+        );
         if (
           request.grant.account.activeGeneration !==
           BigInt(input.credentialGeneration)
@@ -212,10 +258,16 @@ export class PrismaHostedCodexUpstreamEffectLedger {
         const attempt =
           await transaction.hostedCodexUpstreamEffectAttempt.findFirst({
             where: this.liveLeaseWhere(lease, "prepared", now),
-            include: { grant: { include: { account: true } } },
+            include: { grant: { include: dispatchAuthorityInclude } },
           });
         if (!attempt) throw new Error("hosted_codex_effect_lease_invalid");
-        assertCurrentDispatchAuthority(attempt.grant, attempt.accountId, now);
+        const runtimeGate = await lockRuntimeGateAuthority(transaction);
+        assertCurrentDispatchAuthority(
+          attempt.grant,
+          runtimeGate,
+          attempt.accountId,
+          now,
+        );
         const updated =
           await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
             where: this.liveLeaseWhere(lease, "prepared", now),
@@ -235,22 +287,47 @@ export class PrismaHostedCodexUpstreamEffectLedger {
 
   async heartbeat(lease: HostedCodexUpstreamEffectLease): Promise<void> {
     const now = this.now();
-    const updated =
-      await this.prisma.hostedCodexUpstreamEffectAttempt.updateMany({
-        where: {
-          id: lease.attemptId,
-          ownerIdHash: sha256(lease.ownerToken),
-          fenceEpoch: lease.fenceEpoch,
-          state: { in: ["dispatching", "response_started"] },
-          leaseExpiresAt: { gt: now },
-        },
-        data: {
-          heartbeatAt: now,
-          leaseExpiresAt: new Date(now.getTime() + 30_000),
-        },
-      });
-    if (updated.count !== 1)
-      throw new Error("hosted_codex_effect_lease_invalid");
+    await serializableTransaction(
+      this.prisma,
+      async (transaction) => {
+        const attempt =
+          await transaction.hostedCodexUpstreamEffectAttempt.findFirst({
+            where: {
+              id: lease.attemptId,
+              ownerIdHash: sha256(lease.ownerToken),
+              fenceEpoch: lease.fenceEpoch,
+              state: { in: ["dispatching", "response_started"] },
+              leaseExpiresAt: { gt: now },
+            },
+            include: { grant: { include: dispatchAuthorityInclude } },
+          });
+        if (!attempt) throw new Error("hosted_codex_effect_lease_invalid");
+        const runtimeGate = await lockRuntimeGateAuthority(transaction);
+        assertCurrentDispatchAuthority(
+          attempt.grant,
+          runtimeGate,
+          attempt.accountId,
+          now,
+        );
+        const updated =
+          await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+            where: {
+              id: lease.attemptId,
+              ownerIdHash: sha256(lease.ownerToken),
+              fenceEpoch: lease.fenceEpoch,
+              state: { in: ["dispatching", "response_started"] },
+              leaseExpiresAt: { gt: now },
+            },
+            data: {
+              heartbeatAt: now,
+              leaseExpiresAt: new Date(now.getTime() + 30_000),
+            },
+          });
+        if (updated.count !== 1)
+          throw new Error("hosted_codex_effect_lease_invalid");
+      },
+      { isolationLevel: "Serializable" },
+    );
   }
 
   async markResponseStarted(
@@ -258,21 +335,40 @@ export class PrismaHostedCodexUpstreamEffectLedger {
     providerResponseId: string | null,
   ): Promise<void> {
     const now = this.now();
-    const updated =
-      await this.prisma.hostedCodexUpstreamEffectAttempt.updateMany({
-        where: this.liveLeaseWhere(lease, "dispatching", now),
-        data: {
-          state: "response_started",
-          responseStartedAt: now,
-          heartbeatAt: now,
-          leaseExpiresAt: new Date(now.getTime() + 30_000),
-          providerResponseIdHash: providerResponseId
-            ? sha256(providerResponseId)
-            : null,
-        },
-      });
-    if (updated.count !== 1)
-      throw new Error("hosted_codex_effect_lease_invalid");
+    await serializableTransaction(
+      this.prisma,
+      async (transaction) => {
+        const attempt =
+          await transaction.hostedCodexUpstreamEffectAttempt.findFirst({
+            where: this.liveLeaseWhere(lease, "dispatching", now),
+            include: { grant: { include: dispatchAuthorityInclude } },
+          });
+        if (!attempt) throw new Error("hosted_codex_effect_lease_invalid");
+        const runtimeGate = await lockRuntimeGateAuthority(transaction);
+        assertCurrentDispatchAuthority(
+          attempt.grant,
+          runtimeGate,
+          attempt.accountId,
+          now,
+        );
+        const updated =
+          await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+            where: this.liveLeaseWhere(lease, "dispatching", now),
+            data: {
+              state: "response_started",
+              responseStartedAt: now,
+              heartbeatAt: now,
+              leaseExpiresAt: new Date(now.getTime() + 30_000),
+              providerResponseIdHash: providerResponseId
+                ? sha256(providerResponseId)
+                : null,
+            },
+          });
+        if (updated.count !== 1)
+          throw new Error("hosted_codex_effect_lease_invalid");
+      },
+      { isolationLevel: "Serializable" },
+    );
   }
 
   async finish(
@@ -567,16 +663,8 @@ async function poisonGrant(
 }
 
 function assertCurrentDispatchAuthority(
-  grant: {
-    readonly status: string;
-    readonly revokedAt: Date | null;
-    readonly expiresAt: Date;
-    readonly activeAccountId: string;
-    readonly account: {
-      readonly state: string;
-      readonly cooldownUntil: Date | null;
-    };
-  },
+  grant: DispatchAuthorityGrant,
+  runtimeGate: RuntimeGateAuthority,
   accountId: string,
   now: Date,
 ): void {
@@ -590,10 +678,33 @@ function assertCurrentDispatchAuthority(
     grant.revokedAt !== null ||
     grant.expiresAt <= now ||
     grant.activeAccountId !== accountId ||
+    grant.runtimeAuthzEpoch === null ||
+    runtimeGate.status !== "active" ||
+    runtimeGate.authzEpoch !== grant.runtimeAuthzEpoch ||
+    grant.binding.status !== "active" ||
+    grant.binding.revision !== grant.bindingRevision ||
+    grant.binding.pool.status !== "active" ||
+    grant.binding.pool.authzEpoch !== grant.authzEpoch ||
     !accountUsable
   ) {
     throw new Error("hosted_codex_effect_authority_revoked");
   }
+}
+
+async function lockRuntimeGateAuthority(
+  transaction: Prisma.TransactionClient,
+): Promise<RuntimeGateAuthority> {
+  const rows = await transaction.$queryRaw<
+    Array<{ status: string; authzEpoch: bigint }>
+  >`
+    SELECT "status"::text AS "status", "authzEpoch"
+    FROM "HostedCodexRuntimeGate"
+    WHERE "id" = 'global'
+    FOR SHARE
+  `;
+  if (rows.length !== 1)
+    throw new Error("hosted_codex_effect_authority_revoked");
+  return rows[0]!;
 }
 
 export function startHostedCodexEffectSweeper(

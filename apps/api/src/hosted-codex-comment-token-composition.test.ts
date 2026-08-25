@@ -21,6 +21,9 @@ describe("HostedCodexCommentTokenIssuer", () => {
         hostedCodexInvocationGrant: {
           findUnique: vi.fn().mockResolvedValue(grantRecord()),
         },
+        hostedCodexRuntimeGate: {
+          findUnique: vi.fn().mockResolvedValue(runtimeGateRecord()),
+        },
       } as never,
       grants: { consume } as never,
       commentTokens: {
@@ -68,6 +71,9 @@ describe("HostedCodexCommentTokenIssuer", () => {
         hostedCodexInvocationGrant: {
           findUnique: vi.fn().mockResolvedValue(grantRecord()),
         },
+        hostedCodexRuntimeGate: {
+          findUnique: vi.fn().mockResolvedValue(runtimeGateRecord()),
+        },
       } as never,
       grants: { consume } as never,
       commentTokens: { issueCommentToken: vi.fn() },
@@ -94,6 +100,7 @@ function grantRecord() {
     repositoryBindingId: "binding-1",
     bindingRevision: 7n,
     authzEpoch: 3n,
+    runtimeAuthzEpoch: 5n,
     binding: {
       revision: 7n,
       status: "active",
@@ -112,4 +119,8 @@ function grantRecord() {
       },
     },
   };
+}
+
+function runtimeGateRecord() {
+  return { status: "active", authzEpoch: 5n };
 }

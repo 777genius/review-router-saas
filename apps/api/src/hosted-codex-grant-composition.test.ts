@@ -254,6 +254,7 @@ function createFixture(
     bindingId: "binding-1",
     bindingRevision: 7,
     authzEpoch: 3n,
+    runtimeAuthzEpoch: 5n,
     workflowSchemaVersion: hostedPoolWorkflowSchemaVersion,
     workflowSource,
     workflowJobSource,

@@ -14,7 +14,8 @@ if (
   phase !== "verify-000076" &&
   phase !== "verify-000077" &&
   phase !== "verify-000079" &&
-  phase !== "verify-000080"
+  phase !== "verify-000080" &&
+  phase !== "verify-000081"
 ) {
   throw new Error("hosted_pool_migration_phase_required");
 }
@@ -203,6 +204,58 @@ describe("hosted pool populated 000074 to 000075 migration", () => {
     },
   );
 
+  it.runIf(phase === "verify-000081")(
+    "preserves legacy grants while requiring the live singleton epoch for new grants",
+    async () => {
+      const legacy = await client.query(`
+        SELECT "status", "runtimeAuthzEpoch", "revokedAt" IS NOT NULL AS revoked
+        FROM "HostedCodexInvocationGrant" WHERE "id" = 'grant-legacy'
+      `);
+      expect(legacy.rows[0]).toEqual({
+        status: "revoked",
+        runtimeAuthzEpoch: null,
+        revoked: true,
+      });
+      const legacyCapability = await client.query(`
+        SELECT "revokedAt" IS NOT NULL AS revoked
+        FROM "HostedCodexCommentRefreshCapability"
+        WHERE "id" = 'comment-capability-legacy'
+      `);
+      expect(legacyCapability.rows[0]?.revoked).toBe(true);
+
+      const gate = await client.query(`
+        SELECT "id", "status", "authzEpoch"::text, "revision"::text
+        FROM "HostedCodexRuntimeGate"
+      `);
+      expect(gate.rows).toEqual([
+        { id: "global", status: "closed", authzEpoch: "1", revision: "1" },
+      ]);
+
+      await expect(
+        cloneLegacyGrant("grant-gate-closed", "invocation-gate-closed", 1),
+      ).rejects.toThrow("hosted_codex_runtime_gate_authority_mismatch");
+      await client.query(`
+        UPDATE "HostedCodexRuntimeGate"
+        SET "status" = 'active', "authzEpoch" = 2, "revision" = 2,
+            "reasonCode" = 'migration_rehearsal_activation',
+            "changedAt" = "changedAt" + INTERVAL '1 second',
+            "changedByHash" = '${h64.replaceAll("a", "7")}'
+        WHERE "id" = 'global' AND "revision" = 1
+      `);
+      await expect(
+        cloneLegacyGrant("grant-gate-missing", "invocation-gate-missing", null),
+      ).rejects.toThrow("hosted_codex_runtime_gate_epoch_required");
+      await cloneLegacyGrant("grant-gate-active", "invocation-gate-active", 2);
+      await expect(
+        client.query(`
+          UPDATE "HostedCodexInvocationGrant"
+          SET "runtimeAuthzEpoch" = 3
+          WHERE "id" = 'grant-gate-active'
+        `),
+      ).rejects.toThrow("hosted_codex_grant_identity_immutable");
+    },
+  );
+
   it("keeps 000074 byte-identical", () => {
     expect(
       hash("sha256").update(readFileSync(migration74Path)).digest("hex"),
@@ -318,6 +371,34 @@ describe("hosted pool populated 000074 to 000075 migration", () => {
     },
   );
 });
+
+async function cloneLegacyGrant(
+  id: string,
+  invocation: string,
+  runtimeAuthzEpoch: number | null,
+) {
+  return client.query(`
+    INSERT INTO "HostedCodexInvocationGrant" (
+      "id", "invocationId", "workspaceId", "poolId", "repositoryConnectionId",
+      "repositoryBindingId", "activeAccountId", "primaryAccountId",
+      "reviewRequestId", "providerInvocationKey", "runId", "runAttempt", "model",
+      "policyVersion", "policyFingerprint", "runtimeConfigVersion", "bindingRevision",
+      "authzEpoch", "runtimeAuthzEpoch", "capabilityTokenHash", "expiresAt",
+      "maxRequests", "maxConcurrentRequests", "maxRequestBytes",
+      "maxResponseBytes", "maxOutputTokens", "requestCount", "inFlight", "updatedAt"
+    )
+    SELECT
+      '${id}', '${invocation}', "workspaceId", "poolId", "repositoryConnectionId",
+      "repositoryBindingId", "activeAccountId", "primaryAccountId",
+      '${id}-review', '${id}-provider', '${id}-run', "runAttempt", "model",
+      "policyVersion", "policyFingerprint", "runtimeConfigVersion", "bindingRevision",
+      "authzEpoch", ${runtimeAuthzEpoch === null ? "NULL" : runtimeAuthzEpoch},
+      '${hash("sha256").update(id).digest("hex")}', CURRENT_TIMESTAMP + INTERVAL '1 hour',
+      "maxRequests", "maxConcurrentRequests", "maxRequestBytes",
+      "maxResponseBytes", "maxOutputTokens", 0, 0, CURRENT_TIMESTAMP
+    FROM "HostedCodexInvocationGrant" WHERE "id" = 'grant-legacy'
+  `);
+}
 
 const h64 = "a".repeat(64);
 const seedLegacyRows = `

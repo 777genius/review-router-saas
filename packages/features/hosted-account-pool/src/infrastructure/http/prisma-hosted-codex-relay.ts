@@ -53,18 +53,24 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
     input: Parameters<HostedCodexRelayAuthorizationPort["authorize"]>[0],
   ): Promise<AuthorizedHostedCodexRelay> {
     const tokenHash = sha256(input.opaqueGrant);
-    const stored = await this.prisma.hostedCodexInvocationGrant.findUnique({
-      where: { capabilityTokenHash: tokenHash },
-      include: {
-        binding: {
-          include: {
-            pool: true,
-            repository: { include: { installation: true } },
+    const [stored, runtimeGate] = await Promise.all([
+      this.prisma.hostedCodexInvocationGrant.findUnique({
+        where: { capabilityTokenHash: tokenHash },
+        include: {
+          binding: {
+            include: {
+              pool: true,
+              repository: { include: { installation: true } },
+            },
           },
+          account: true,
         },
-        account: true,
-      },
-    });
+      }),
+      this.prisma.hostedCodexRuntimeGate.findUnique({
+        where: { id: "global" },
+        select: { status: true, authzEpoch: true },
+      }),
+    ]);
     const now = new Date();
     const requestId = relayRequestId(
       sha256(
@@ -111,6 +117,10 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
       binding.revision !== stored.bindingRevision ||
       binding.pool.status !== "active" ||
       binding.pool.authzEpoch !== stored.authzEpoch ||
+      stored.runtimeAuthzEpoch === null ||
+      !runtimeGate ||
+      runtimeGate.status !== "active" ||
+      runtimeGate.authzEpoch !== stored.runtimeAuthzEpoch ||
       binding.repository.archived ||
       !binding.repository.selected ||
       binding.repository.provider !== "github" ||
@@ -193,6 +203,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
     | "heartbeat"
     | "markResponseStarted"
     | "authority"
+    | "assertLiveAuthority"
   >;
 
   constructor(
@@ -210,17 +221,18 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         | "heartbeat"
         | "markResponseStarted"
         | "authority"
+        | "assertLiveAuthority"
       >;
       readonly faultPlans?: HostedCodexCanaryFaultPlanPort;
     } = { failoverEnabled: false },
   ) {
     this.failoverEnabled = options.failoverEnabled;
     this.now = options.now ?? (() => new Date());
-    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 10_000;
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 2_000;
     if (
       !Number.isSafeInteger(this.heartbeatIntervalMs) ||
       this.heartbeatIntervalMs < 5 ||
-      this.heartbeatIntervalMs > 10_000
+      this.heartbeatIntervalMs > 5_000
     ) {
       throw new Error("hosted_codex_effect_heartbeat_interval_invalid");
     }
@@ -315,6 +327,10 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
     let streamHeartbeat: EffectHeartbeat | undefined;
     let generationRetryCount = 0;
     while (true) {
+      await this.effects.assertLiveAuthority({
+        grantId: input.authorization.grantId,
+        accountId,
+      });
       let session;
       try {
         session = await this.runtime.ensureFreshSession({
