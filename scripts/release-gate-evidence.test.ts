@@ -310,11 +310,9 @@ describe("release workflow contract", () => {
   const release = readFileSync(".github/workflows/release.yml", "utf8");
 
   it("runs the authority contract with an exact event-specific baseline", () => {
-    expect(
-      ci.match(
-        /if: \$\{\{ github\.event_name == 'push' \|\| \(github\.event_name == 'workflow_dispatch' && inputs\.[^)]+\) \}\}/gu,
-      ),
-    ).toHaveLength(1);
+    expect(ci).toContain(
+      "if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.private_pg16_to_pg17_rehearsal) || (github.event_name == 'workflow_dispatch' && inputs.activation_catalog_policy_capture) }}",
+    );
     expect(ci).toContain(
       "github.event_name == 'push' || github.event_name == 'pull_request'",
     );

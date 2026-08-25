@@ -13,6 +13,11 @@ on:
         required: false
         type: boolean
         default: false
+      activation_catalog_policy_capture:
+        description: Capture two byte-identical policies from disposable PG16 to PG17 rehearsals
+        required: false
+        type: boolean
+        default: false
       release_authority_contract_baseline_sha:
         description: Previous protected main SHA used as the immutable migration baseline
         required: false
@@ -130,7 +135,7 @@ jobs:
 
   private-pg16-to-pg17-rehearsal:
     name: Full private PG16 to PG17 rehearsal
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.private_pg16_to_pg17_rehearsal) }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.private_pg16_to_pg17_rehearsal) || (github.event_name == 'workflow_dispatch' && inputs.activation_catalog_policy_capture) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -151,15 +156,40 @@ jobs:
       - name: Generate Prisma client
         run: pnpm db:generate
       - name: Run full disposable cutover rehearsal with pinned images
+        if: ${{ !inputs.activation_catalog_policy_capture }}
         env:
           REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1"
           REVIEW_ROUTER_REHEARSAL_PG16_IMAGE: postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60
           REVIEW_ROUTER_REHEARSAL_PG17_IMAGE: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
         run: pnpm release-rollout:rehearsal
+      - name: Capture two reproducible activation catalog policies
+        if: ${{ inputs.activation_catalog_policy_capture }}
+        env:
+          REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1"
+          REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1"
+          REVIEW_ROUTER_REHEARSAL_PG16_IMAGE: postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60
+          REVIEW_ROUTER_REHEARSAL_PG17_IMAGE: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
+        run: |
+          export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-a"
+          node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-policy-candidate-1.json
+          export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b"
+          node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-policy-candidate-2.json
+          cmp activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json
+          sha256sum activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json
+      - name: Upload activation catalog policy captures
+        if: ${{ inputs.activation_catalog_policy_capture }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: activation-catalog-policy-${{ github.sha }}-${{ github.run_attempt }}
+          path: activation-catalog-policy-candidate-*.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Create exact release-gate evidence
+        if: ${{ !inputs.activation_catalog_policy_capture }}
         id: evidence
         run: node scripts/release-gate-evidence.mjs write private-pg16-to-pg17-rehearsal >> "$GITHUB_OUTPUT"
       - name: Upload exact release-gate evidence
+        if: ${{ !inputs.activation_catalog_policy_capture }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ steps.evidence.outputs.artifact_name }}
