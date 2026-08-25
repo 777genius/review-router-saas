@@ -1,8 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type {
+import {
   HostedCodexUpstreamEffectState,
   Prisma,
-  PrismaClient,
+  type PrismaClient,
 } from "@prisma/client";
 
 const terminalStates: readonly HostedCodexUpstreamEffectState[] = [
@@ -19,6 +19,12 @@ export type HostedCodexUpstreamEffectLease = {
   readonly fenceEpoch: bigint;
   readonly accountId: string;
 };
+
+export class HostedCodexEffectReservationOutcomeUnknownError extends Error {
+  constructor(readonly cause: unknown) {
+    super("hosted_codex_effect_reservation_outcome_unknown");
+  }
+}
 
 /** Durable, per-request/account upstream POST authority. It never gates peers. */
 export class PrismaHostedCodexUpstreamEffectLedger {
@@ -54,9 +60,17 @@ export class PrismaHostedCodexUpstreamEffectLedger {
       throw new Error("hosted_codex_effect_lease_invalid");
     }
     const now = this.now();
+    const ownerToken = randomBytes(32).toString("base64url");
+    const ownerIdHash = sha256(ownerToken);
+    const attemptId = randomUUID();
     return serializableTransaction(
       this.prisma,
       async (transaction) => {
+        await lockRelayRequest(
+          transaction,
+          input.relayRequestId,
+          input.grantId,
+        );
         const request = await transaction.hostedCodexRelayRequest.findFirst({
           where: {
             id: input.relayRequestId,
@@ -86,8 +100,6 @@ export class PrismaHostedCodexUpstreamEffectLedger {
           throw new Error("hosted_codex_effect_resend_forbidden");
         }
         const attemptOrdinal = (latest?.attemptOrdinal ?? 0) + 1;
-        const ownerToken = randomBytes(32).toString("base64url");
-        const attemptId = randomUUID();
         await transaction.hostedCodexUpstreamEffectAttempt.create({
           data: {
             id: attemptId,
@@ -106,7 +118,7 @@ export class PrismaHostedCodexUpstreamEffectLedger {
               ].join("\u0000"),
             ),
             state: "prepared",
-            ownerIdHash: sha256(ownerToken),
+            ownerIdHash,
             fenceEpoch: BigInt(attemptOrdinal),
             heartbeatAt: now,
             leaseExpiresAt: new Date(now.getTime() + leaseMs),
@@ -123,7 +135,43 @@ export class PrismaHostedCodexUpstreamEffectLedger {
         };
       },
       { isolationLevel: "Serializable" },
-    );
+    ).catch(async (error: unknown) => {
+      let recovered;
+      try {
+        recovered =
+          await this.prisma.hostedCodexUpstreamEffectAttempt.findFirst({
+            where: {
+              id: attemptId,
+              relayRequestId: input.relayRequestId,
+              grantId: input.grantId,
+              workspaceId: input.workspaceId,
+              poolId: input.poolId,
+              accountId: input.accountId,
+              requestHash: input.requestHash,
+              ownerIdHash,
+            },
+          });
+      } catch (reconciliationError) {
+        throw new HostedCodexEffectReservationOutcomeUnknownError(
+          reconciliationError,
+        );
+      }
+      if (!recovered) throw error;
+      if (
+        recovered.state !== "prepared" ||
+        recovered.leaseExpiresAt <= this.now() ||
+        recovered.fenceEpoch !== BigInt(recovered.attemptOrdinal)
+      ) {
+        throw new HostedCodexEffectReservationOutcomeUnknownError(error);
+      }
+      return {
+        attemptId: recovered.id,
+        attemptOrdinal: recovered.attemptOrdinal,
+        ownerToken,
+        fenceEpoch: recovered.fenceEpoch,
+        accountId: recovered.accountId,
+      };
+    });
   }
 
   async markDispatching(lease: HostedCodexUpstreamEffectLease): Promise<void> {
@@ -339,7 +387,9 @@ export class PrismaHostedCodexUpstreamEffectLedger {
     const terminalOrphans =
       await this.prisma.hostedCodexUpstreamEffectAttempt.findMany({
         where: {
-          state: { in: ["failed_classified", "terminal_unknown"] },
+          state: {
+            in: ["failed_no_effect", "failed_classified", "terminal_unknown"],
+          },
           completedAt: { lte: orphanCutoff },
           relayRequest: {
             status: { in: ["received", "processing", "response_started"] },
@@ -361,7 +411,12 @@ export class PrismaHostedCodexUpstreamEffectLedger {
               attempt.state === "terminal_unknown"
                 ? "terminal_unknown"
                 : "failed",
-            errorCode: attempt.errorCode ?? "classified_failover_interrupted",
+            responseBytes: attempt.state === "failed_no_effect" ? 0 : null,
+            responseHash: null,
+            errorCode:
+              attempt.state === "failed_no_effect"
+                ? "upstream_dispatch_not_started"
+                : (attempt.errorCode ?? "classified_failover_interrupted"),
             completedAt: now,
           },
         });
@@ -388,6 +443,22 @@ export class PrismaHostedCodexUpstreamEffectLedger {
       leaseExpiresAt: { gt: now },
     };
   }
+}
+
+async function lockRelayRequest(
+  transaction: Prisma.TransactionClient,
+  relayRequestId: string,
+  grantId: string,
+): Promise<void> {
+  await transaction.$queryRaw(
+    Prisma.sql`
+      SELECT "id"
+      FROM "HostedCodexRelayRequest"
+      WHERE "id" = ${relayRequestId}
+        AND "grantId" = ${grantId}
+      FOR UPDATE
+    `,
+  );
 }
 
 async function poisonGrant(

@@ -544,6 +544,104 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     expect(upstreamCalls).toBe(1);
   });
 
+  it("recovers exact prepared-effect failover after commit acknowledgement is lost", async () => {
+    const issued = await issueGrant("failover-commit-ambiguity");
+    const authorization = new PrismaHostedCodexRelayAuthorization(prisma, true);
+    const admitted = await authorization.authorize({
+      opaqueGrant: issued.plaintextToken,
+      requestOrdinal: 1,
+      idempotencyKey: "failover-commit-ambiguity",
+      requestBytes: 64,
+    });
+    const requestHash = sha256("failover-commit-ambiguity-body");
+    await ledger.recordRequestHash({
+      grantId: issued.grant.id,
+      requestId: admitted.requestId,
+      requestHash,
+    });
+    const effects = new PrismaHostedCodexUpstreamEffectLedger(prisma);
+    const effect = await effects.prepare({
+      relayRequestId: admitted.requestId,
+      grantId: issued.grant.id,
+      workspaceId: workspace,
+      poolId: pool,
+      accountId: "account-primary",
+      requestHash,
+    });
+    const terminalEvidenceHash = sha256("failover-commit-ambiguity-evidence");
+    const originalTransaction = prisma.$transaction.bind(prisma);
+    const transactionSpy = vi.spyOn(prisma as never, "$transaction" as never);
+    transactionSpy.mockImplementationOnce(async (...args: unknown[]) => {
+      await (originalTransaction as (...args: unknown[]) => Promise<unknown>)(
+        ...args,
+      );
+      throw new Error("failover-commit-acknowledgement-lost");
+    });
+    try {
+      await expect(
+        failoverCurrentRelayRequestBeforeEffect(
+          {
+            grantId: issued.grant.id,
+            requestId: relayRequestId(admitted.requestId),
+            failure: "credential_invalid",
+            effectFence: "before_refresh_or_upstream_effect",
+            cooldownUntil: null,
+            now: new Date(),
+            effect: {
+              ...effects.authority(effect),
+              sourceState: "prepared",
+              terminalState: "failed_no_effect",
+              terminalEvidenceHash,
+              errorCode: "credential_invalid",
+            },
+          },
+          ledger,
+        ),
+      ).resolves.toMatchObject({
+        status: "switched",
+        grant: { activeAccountId: hostedAccountId("account-backup") },
+      });
+    } finally {
+      transactionSpy.mockRestore();
+    }
+    await expect(
+      prisma.hostedCodexUpstreamEffectAttempt.findUniqueOrThrow({
+        where: { id: effect.attemptId },
+      }),
+    ).resolves.toMatchObject({
+      state: "failed_no_effect",
+      terminalEvidenceHash,
+    });
+    const recoveryClock = new Date(Date.now() + 30_001);
+    expect(
+      await new PrismaHostedCodexUpstreamEffectLedger(
+        prisma,
+        () => recoveryClock,
+      ).sweepExpired(),
+    ).toBeGreaterThanOrEqual(1);
+    await expect(
+      prisma.hostedCodexRelayRequest.findUniqueOrThrow({
+        where: { id: admitted.requestId },
+      }),
+    ).resolves.toMatchObject({
+      status: "failed",
+      errorCode: "upstream_dispatch_not_started",
+    });
+    await expect(
+      prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: issued.grant.id },
+      }),
+    ).resolves.toMatchObject({ inFlight: 0 });
+    await prisma.hostedCodexAccount.update({
+      where: { id: "account-primary" },
+      data: {
+        state: "healthy",
+        cooldownUntil: null,
+        healthVersion: { increment: 1 },
+      },
+    });
+  });
+
   it("uses a real mutation fence for stale-session handoff and rejects stale generation CAS", async () => {
     const fences = new PrismaHostedCodexMutationFence(prisma);
     const persistence = new PrismaHostedCodexSessionPersistence(
@@ -716,10 +814,41 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         where: { relayRequestId: duplicate.admitted.requestId },
       }),
     ).toBe(1);
+    clock = new Date();
     await effects.finish(duplicateWinners[0]!.value, {
       state: "terminal_unknown",
       errorCode: "duplicate-reservation-test-complete",
       evidence: "only-one-provider-attempt-reserved",
+    });
+
+    const ambiguousReservation = await prepareRequest(
+      "reservation-commit-ambiguity",
+    );
+    const originalTransaction = prisma.$transaction.bind(prisma);
+    const transactionSpy = vi.spyOn(prisma as never, "$transaction" as never);
+    transactionSpy.mockImplementationOnce(async (...args: unknown[]) => {
+      await (originalTransaction as (...args: unknown[]) => Promise<unknown>)(
+        ...args,
+      );
+      throw new Error("reservation-commit-acknowledgement-lost");
+    });
+    let recoveredReservation: HostedCodexUpstreamEffectLease;
+    try {
+      recoveredReservation = await ambiguousReservation.prepare();
+    } finally {
+      transactionSpy.mockRestore();
+    }
+    expect(recoveredReservation!.attemptOrdinal).toBe(1);
+    expect(
+      await prisma.hostedCodexUpstreamEffectAttempt.count({
+        where: { relayRequestId: ambiguousReservation.admitted.requestId },
+      }),
+    ).toBe(1);
+    clock = new Date();
+    await effects.finish(recoveredReservation!, {
+      state: "terminal_unknown",
+      errorCode: "reservation-commit-ambiguity-test-complete",
+      evidence: "reservation-recovered-by-deterministic-identity",
     });
 
     const beforeSend = await prepareRequest("before-send");

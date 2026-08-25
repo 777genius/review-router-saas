@@ -8,7 +8,10 @@ import type {
   RelayRequestCompletionPort,
   RelayResponseStartedPort,
 } from "../../application/ports/relay-request-ledger-port";
-import type { InvocationGrant } from "../../domain/invocation-grant";
+import type {
+  CurrentRelayRequestFailover,
+  InvocationGrant,
+} from "../../domain/invocation-grant";
 import {
   hostedAccountId,
   hostedBindingId,
@@ -28,6 +31,12 @@ const grantInclude = {
   relayRequests: { orderBy: { ordinal: "asc" as const } },
   commentRefreshCapability: true,
 } as const;
+
+export class HostedCodexFailoverOutcomeUnknownError extends Error {
+  constructor(readonly cause: unknown) {
+    super("hosted_codex_failover_outcome_unknown");
+  }
+}
 
 export class PrismaInvocationGrantRepository
   implements
@@ -773,7 +782,88 @@ export class PrismaInvocationGrantRepository
         return result;
       },
       { isolationLevel: "Serializable" },
-    );
+    ).catch(async (error: unknown) => {
+      const effect = input.effect;
+      if (!effect) throw error;
+      let recovered: CurrentRelayRequestFailover | null;
+      try {
+        recovered = await this.readCommittedFailover({ ...input, effect });
+      } catch (reconciliationError) {
+        throw new HostedCodexFailoverOutcomeUnknownError(reconciliationError);
+      }
+      if (recovered) return recovered;
+      throw error;
+    });
+  }
+
+  private async readCommittedFailover(
+    input: Parameters<CurrentRelayRequestFailoverPort["failover"]>[0] & {
+      readonly effect: NonNullable<
+        Parameters<CurrentRelayRequestFailoverPort["failover"]>[0]["effect"]
+      >;
+    },
+  ): Promise<CurrentRelayRequestFailover | null> {
+    const [stored, effect] = await Promise.all([
+      this.prisma.hostedCodexInvocationGrant.findUnique({
+        where: { id: input.grantId },
+        include: grantInclude,
+      }),
+      this.prisma.hostedCodexUpstreamEffectAttempt.findFirst({
+        where: {
+          id: input.effect.attemptId,
+          relayRequestId: input.requestId,
+          grantId: input.grantId,
+          ownerIdHash: input.effect.ownerIdHash,
+          fenceEpoch: input.effect.fenceEpoch,
+        },
+      }),
+    ]);
+    if (!stored || !effect) return null;
+    if (effect.state === input.effect.sourceState) return null;
+    if (
+      effect.state !== input.effect.terminalState ||
+      effect.terminalEvidenceHash !== input.effect.terminalEvidenceHash ||
+      effect.errorCode !== input.effect.errorCode ||
+      effect.completedAt === null ||
+      stored.failoverCount !== 1 ||
+      stored.backupAccountId === null ||
+      stored.activeAccountId !== stored.backupAccountId ||
+      effect.accountId !== stored.primaryAccountId
+    ) {
+      throw new Error("hosted_codex_failover_reconciliation_conflict");
+    }
+    const failedStored = await this.prisma.hostedCodexAccount.findFirst({
+      where: {
+        id: stored.primaryAccountId,
+        workspaceId: stored.workspaceId,
+        poolId: stored.poolId,
+      },
+      include: {
+        credentialVersions: {
+          orderBy: { generation: "desc" },
+          take: 1,
+        },
+      },
+    });
+    if (!failedStored)
+      throw new Error("hosted_failover_primary_missing_after_commit");
+    const failedAccount = restorePoolAccount(failedStored);
+    const expectedDisposition =
+      input.effect.errorCode === "quota_limited" ? "cooldown" : "quarantine";
+    if (
+      (expectedDisposition === "cooldown" &&
+        failedAccount.availability.status !== "cooldown") ||
+      (expectedDisposition === "quarantine" &&
+        failedAccount.availability.status !== "quarantined")
+    ) {
+      throw new Error("hosted_codex_failover_account_reconciliation_conflict");
+    }
+    return {
+      status: "switched",
+      grant: restoreGrant(stored),
+      failedAccount,
+      disposition: expectedDisposition,
+    };
   }
 }
 

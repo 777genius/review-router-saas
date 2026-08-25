@@ -18,8 +18,12 @@ import type {
   HostedCodexRelayAuthorizationPort,
   HostedCodexStreamingRelayPort,
 } from "../../interface/http/register-hosted-codex-relay-routes.js";
-import { PrismaInvocationGrantRepository } from "../prisma/prisma-invocation-grant-repository.js";
 import {
+  HostedCodexFailoverOutcomeUnknownError,
+  PrismaInvocationGrantRepository,
+} from "../prisma/prisma-invocation-grant-repository.js";
+import {
+  HostedCodexEffectReservationOutcomeUnknownError,
   PrismaHostedCodexUpstreamEffectLedger,
   type HostedCodexUpstreamEffectLease,
 } from "../prisma/prisma-hosted-codex-upstream-effect-ledger.js";
@@ -224,7 +228,8 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
     } catch (error) {
       if (
         error instanceof UpstreamTerminalUnknownError ||
-        error instanceof UpstreamNoEffectError
+        error instanceof UpstreamNoEffectError ||
+        error instanceof HostedCodexEffectReservationOutcomeUnknownError
       )
         throw error.cause;
       await completeFailedRequest(
@@ -326,6 +331,9 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         }
         await this.effects.markDispatching(effectLease);
       } catch (error) {
+        if (error instanceof HostedCodexFailoverOutcomeUnknownError) {
+          throw new UpstreamNoEffectError(error);
+        }
         try {
           await completeFailedRequest(
             input.authorization,
