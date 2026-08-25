@@ -390,20 +390,11 @@ export class PrismaHostedCodexUpstreamEffectLedger {
       });
     }
     const orphanCutoff = new Date(now.getTime() - 30_000);
-    const terminalOrphans =
-      await this.prisma.hostedCodexUpstreamEffectAttempt.findMany({
-        where: {
-          state: {
-            in: ["failed_no_effect", "failed_classified", "terminal_unknown"],
-          },
-          completedAt: { lte: orphanCutoff },
-          relayRequest: {
-            status: { in: ["received", "processing", "response_started"] },
-          },
-        },
-        orderBy: [{ completedAt: "asc" }, { id: "asc" }],
-        take: Math.max(0, limit - swept),
-      });
+    const terminalOrphans = await findLatestTerminalOrphans(
+      this.prisma,
+      orphanCutoff,
+      Math.max(0, limit - swept),
+    );
     for (const attempt of terminalOrphans) {
       await this.prisma.$transaction(async (transaction) => {
         await lockRelayRequest(
@@ -461,6 +452,55 @@ export class PrismaHostedCodexUpstreamEffectLedger {
       leaseExpiresAt: { gt: now },
     };
   }
+}
+
+type LatestTerminalOrphan = {
+  readonly id: string;
+  readonly relayRequestId: string;
+  readonly grantId: string;
+  readonly state: HostedCodexUpstreamEffectState;
+  readonly errorCode: string | null;
+};
+
+async function findLatestTerminalOrphans(
+  prisma: PrismaClient,
+  completedBefore: Date,
+  limit: number,
+): Promise<readonly LatestTerminalOrphan[]> {
+  if (limit === 0) return [];
+  return prisma.$queryRaw<LatestTerminalOrphan[]>(
+    Prisma.sql`
+      SELECT
+        candidate."id",
+        candidate."relayRequestId",
+        candidate."grantId",
+        candidate."state",
+        candidate."errorCode"
+      FROM "HostedCodexUpstreamEffectAttempt" AS candidate
+      INNER JOIN "HostedCodexRelayRequest" AS request
+        ON request."id" = candidate."relayRequestId"
+        AND request."grantId" = candidate."grantId"
+      WHERE candidate."state" IN (
+        'failed_no_effect',
+        'failed_classified',
+        'terminal_unknown'
+      )
+        AND candidate."completedAt" <= ${completedBefore}
+        AND request."status" IN (
+          'received',
+          'processing',
+          'response_started'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "HostedCodexUpstreamEffectAttempt" AS newer
+          WHERE newer."relayRequestId" = candidate."relayRequestId"
+            AND newer."attemptOrdinal" > candidate."attemptOrdinal"
+        )
+      ORDER BY candidate."completedAt" ASC, candidate."id" ASC
+      LIMIT ${limit}
+    `,
+  );
 }
 
 async function lockRelayRequest(

@@ -987,6 +987,108 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     ]);
   });
 
+  it("does not let a full page of superseded terminal attempts starve a latest orphan", async () => {
+    const issued = await issueGrant("terminal-orphan-page-starvation", {
+      maxRequests: 101,
+      maxConcurrentRequests: 101,
+    });
+    let clock = new Date();
+    const requestIds = Array.from(
+      { length: 101 },
+      (_, index) => `starvation-request-${String(index).padStart(3, "0")}`,
+    );
+    await prisma.hostedCodexRelayRequest.createMany({
+      data: requestIds.map((id, index) => ({
+        id,
+        grantId: issued.grant.id,
+        ordinal: index + 1,
+        idempotencyKeyHash: sha256(`starvation-request-key-${index}`),
+        requestHash: sha256(`starvation-request-body-${index}`),
+        status: "processing",
+        requestBytes: 64,
+        startedAt: clock,
+        updatedAt: clock,
+      })),
+    });
+    await prisma.hostedCodexUpstreamEffectAttempt.createMany({
+      data: requestIds.flatMap((relayRequestId, index) => {
+        const requestHash = sha256(`starvation-request-body-${index}`);
+        const predecessor = {
+          id:
+            index === 100
+              ? "zz-starvation-latest-orphan"
+              : `starvation-predecessor-${String(index).padStart(3, "0")}`,
+          relayRequestId,
+          grantId: issued.grant.id,
+          workspaceId: workspace,
+          poolId: pool,
+          accountId: "account-primary",
+          attemptOrdinal: 1,
+          requestHash,
+          idempotencyKeyHash: sha256(
+            `${relayRequestId}\u0000account-primary\u00001`,
+          ),
+          state: "failed_no_effect" as const,
+          ownerIdHash: sha256(`starvation-owner-${index}-1`),
+          fenceEpoch: 1n,
+          heartbeatAt: clock,
+          leaseExpiresAt: new Date(clock.getTime() + 5_000),
+          completedAt: clock,
+          terminalEvidenceHash: sha256(`starvation-evidence-${index}`),
+          errorCode: "starvation-predecessor",
+          createdAt: clock,
+          updatedAt: clock,
+        };
+        if (index === 100) return [predecessor];
+        return [
+          predecessor,
+          {
+            ...predecessor,
+            id: `starvation-successor-${String(index).padStart(3, "0")}`,
+            attemptOrdinal: 2,
+            idempotencyKeyHash: sha256(
+              `${relayRequestId}\u0000account-primary\u00002`,
+            ),
+            state: "prepared" as const,
+            ownerIdHash: sha256(`starvation-owner-${index}-2`),
+            fenceEpoch: 2n,
+            leaseExpiresAt: new Date(clock.getTime() + 120_000),
+            completedAt: null,
+            terminalEvidenceHash: null,
+            errorCode: null,
+          },
+        ];
+      }),
+    });
+    const effects = new PrismaHostedCodexUpstreamEffectLedger(
+      prisma,
+      () => clock,
+    );
+    clock = new Date(clock.getTime() + 30_001);
+    expect(await effects.sweepExpired(100)).toBe(1);
+    await expect(
+      prisma.hostedCodexRelayRequest.findUniqueOrThrow({
+        where: { id: requestIds[100]! },
+      }),
+    ).resolves.toMatchObject({
+      status: "failed",
+      errorCode: "upstream_dispatch_not_started",
+    });
+    await expect(
+      prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: issued.grant.id },
+      }),
+    ).resolves.toMatchObject({ inFlight: 100 });
+
+    clock = new Date(clock.getTime() + 90_000);
+    expect(await effects.sweepExpired(100)).toBe(100);
+    await expect(
+      prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: issued.grant.id },
+      }),
+    ).resolves.toMatchObject({ inFlight: 0 });
+  });
+
   it("terminalizes atomically when response-start persistence fails after the POST", async () => {
     const issued = await issueGrant("response-start-persistence-race");
     const authorization = new PrismaHostedCodexRelayAuthorization(prisma);
