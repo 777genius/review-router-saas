@@ -281,9 +281,9 @@ describe("disposable dual-version rehearsal", () => {
   it("uses the exact reviewed compact digest authorization in normal rehearsal", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual({
       preactivationCatalogPolicySha256:
-        "sha256:36e6e4875c530beba1cb6bfc580a358d031895334e6af6a6bad193148e1beebe",
+        "sha256:b95cc2c1fdd94b64056f6d8cd9316d361dce87a8a6a8064c8db51db65a886e68",
       activatedCatalogPolicySha256:
-        "sha256:d0ccc9a760f69c467d3c9df56502704abb1f03116a2be156eb206100b35f5866",
+        "sha256:118834866426337911d13e47f2752f2f982c1393792668036e359b0062117c6f",
     });
   });
   it("allows loaded disposable catalog observations without changing production timing", () => {

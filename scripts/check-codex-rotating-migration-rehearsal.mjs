@@ -203,7 +203,7 @@ try {
   const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000078 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000079 rehearsal passed.\n",
   );
 } finally {
   const databaseDrop = psql(

@@ -34,11 +34,11 @@ export const activationCatalogPromotionProvenancePath = resolve(
 );
 export const activationCatalogIndependentReviewPath = resolve(
   repositoryRoot,
-  "docs/release-evidence/activation-catalog-policy-v25-independent-review.json",
+  "docs/release-evidence/activation-catalog-policy-v26-independent-review.json",
 );
 export const activationCatalogReviewerEvidencePath = resolve(
   repositoryRoot,
-  "docs/release-evidence/activation-catalog-policy-v25-reviewer-runtime.json",
+  "docs/release-evidence/activation-catalog-policy-v26-reviewer-runtime.json",
 );
 
 export function assertReviewedActivationCatalogPromotionProvenance(value) {

@@ -11,7 +11,8 @@ import {
 
 describe("hosted Codex relay transport", () => {
   it("zeroizes oversized request chunks while safely draining a socket error", async () => {
-    const request = new PassThrough() as unknown as IncomingMessage;
+    const stream = new PassThrough();
+    const request = stream as unknown as IncomingMessage;
     const oversized = Buffer.from("credential-material");
     const trailing = Buffer.from("trailing-secret");
     const closed = new Promise<void>((resolve) => {
@@ -19,10 +20,10 @@ describe("hosted Codex relay transport", () => {
     });
 
     const body = readRequestBody(request, 4);
-    request.write(oversized);
+    stream.write(oversized);
     await expect(body).rejects.toThrow("proxy_request_body_too_large");
-    request.write(trailing);
-    request.destroy(
+    stream.write(trailing);
+    stream.destroy(
       Object.assign(new Error("socket reset"), { code: "ECONNRESET" }),
     );
     await closed;
