@@ -654,7 +654,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     });
   });
 
-  it("uses a real mutation fence for stale-session handoff and rejects stale generation CAS", async () => {
+  it("takes over an expired mutation fence and rejects racing late-owner mutations", async () => {
     const fences = new PrismaHostedCodexMutationFence(prisma);
     const persistence = new PrismaHostedCodexSessionPersistence(
       prisma,
@@ -672,7 +672,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       accountId: "account-primary",
       runId: "refresh-a",
       attempt: 1,
-      ttlMs: 30_000,
+      ttlMs: 1_000,
       restoredGenerationHash: restored!.generationHash,
     });
     expect(acquired.status).toBe("granted");
@@ -680,71 +680,124 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       accountId: "account-primary",
       runId: "refresh-b",
       attempt: 1,
-      ttlMs: 30_000,
+      ttlMs: 1_000,
       restoredGenerationHash: restored!.generationHash,
     });
     expect(blocked.status).toBe("denied");
     if (acquired.status !== "granted") throw new Error("fence_not_granted");
+    const originalFence =
+      await prisma.hostedCodexMutationFence.findUniqueOrThrow({
+        where: { accountId: "account-primary" },
+      });
+    expect(originalFence.ownerIdHash).toBe(sha256(acquired.leaseId));
 
-    const accepted = await store.write({
-      providerInstanceId: "account-primary",
-      expectedGeneration: 1,
-      nextArtifact: restored!.artifact,
-      idempotencyKey: "refresh-write-a",
-      leaseId: acquired.leaseId,
-    });
-    expect(accepted.status).toBe("accepted");
-    const stale = await store.write({
-      providerInstanceId: "account-primary",
-      expectedGeneration: 1,
-      nextArtifact: restored!.artifact,
-      idempotencyKey: "refresh-write-stale",
-      leaseId: acquired.leaseId,
-    });
-    expect(stale.status).toBe("stale_generation");
-    await fences.release({ leaseId: acquired.leaseId, reason: "e2e-complete" });
-    const released = await prisma.hostedCodexMutationFence.findUniqueOrThrow({
-      where: { accountId: "account-primary" },
-    });
-    expect(released.ownerIdHash).toBeNull();
-    expect(released.fenceEpoch).toBeGreaterThanOrEqual(1n);
-    const current = await store.read({ providerInstanceId: "account-primary" });
+    await new Promise((resolve) =>
+      setTimeout(
+        resolve,
+        Math.max(0, acquired.expiresAt.getTime() - Date.now() + 100),
+      ),
+    );
     const successor = await fences.acquire({
       accountId: "account-primary",
-      runId: "refresh-successor-after-process-restart",
+      runId: "refresh-successor-after-ttl",
       attempt: 1,
       ttlMs: 30_000,
-      restoredGenerationHash: current!.generationHash,
+      restoredGenerationHash: restored!.generationHash,
     });
     expect(successor.status).toBe("granted");
     if (successor.status !== "granted")
       throw new Error("successor_fence_denied");
-    expect(
-      (
-        await prisma.hostedCodexMutationFence.findUniqueOrThrow({
-          where: { accountId: "account-primary" },
-        })
-      ).fenceEpoch,
-    ).toBe(released.fenceEpoch + 1n);
+
+    const successorFence =
+      await prisma.hostedCodexMutationFence.findUniqueOrThrow({
+        where: { accountId: "account-primary" },
+      });
+    expect(successorFence.fenceEpoch).toBe(originalFence.fenceEpoch + 1n);
+    expect(successorFence.ownerIdHash).toBe(sha256(successor.leaseId));
+    expect(successorFence.expiresAt).toEqual(successor.expiresAt);
+
+    const captureFenceRejection = async (operation: Promise<unknown>) => {
+      try {
+        await operation;
+      } catch (error) {
+        return error;
+      }
+      throw new Error("expected_stale_fence_rejection");
+    };
+    const [
+      lateWriteError,
+      lateFinalizeError,
+      lateReleaseError,
+      successorFinalize,
+    ] = await Promise.all([
+      captureFenceRejection(
+        store.write({
+          providerInstanceId: "account-primary",
+          expectedGeneration: restored!.generation,
+          nextArtifact: restored!.artifact,
+          idempotencyKey: "expired-owner-late-write",
+          leaseId: acquired.leaseId,
+        }),
+      ),
+      captureFenceRejection(
+        fences.finalize({
+          leaseId: acquired.leaseId,
+          restoredGenerationHash: restored!.generationHash,
+        }),
+      ),
+      captureFenceRejection(
+        fences.release({
+          leaseId: acquired.leaseId,
+          reason: "expired-owner-late-release",
+        }),
+      ),
+      fences.finalize({
+        leaseId: successor.leaseId,
+        restoredGenerationHash: restored!.generationHash,
+      }),
+    ]);
+    for (const error of [lateWriteError, lateFinalizeError, lateReleaseError]) {
+      expect(error).toMatchObject({
+        message: "hosted_codex_mutation_fence_invalid",
+      });
+    }
+    expect(successorFinalize).toMatchObject({ leaseId: successor.leaseId });
+    const successorWrite = await store.write({
+      providerInstanceId: "account-primary",
+      expectedGeneration: restored!.generation,
+      nextArtifact: restored!.artifact,
+      idempotencyKey: "successor-authoritative-write",
+      leaseId: successor.leaseId,
+    });
+    expect(successorWrite).toMatchObject({
+      status: "accepted",
+      generation: restored!.generation + 1,
+    });
+
+    const current = await store.read({ providerInstanceId: "account-primary" });
+    expect(current?.generation).toBe(restored!.generation + 1);
+    const authoritativeFence =
+      await prisma.hostedCodexMutationFence.findUniqueOrThrow({
+        where: { accountId: "account-primary" },
+      });
+    expect(authoritativeFence).toMatchObject({
+      fenceEpoch: successorFence.fenceEpoch,
+      ownerIdHash: successorFence.ownerIdHash,
+      expectedGeneration: successorFence.expectedGeneration,
+      expiresAt: successorFence.expiresAt,
+      releasedAt: null,
+      releaseReason: null,
+    });
     await expect(
       store.write({
         providerInstanceId: "account-primary",
         expectedGeneration: current!.generation,
         nextArtifact: current!.artifact,
-        idempotencyKey: "stale-owner-after-successor",
+        idempotencyKey: "expired-owner-after-successor-commit",
         leaseId: acquired.leaseId,
       }),
     ).rejects.toThrow("hosted_codex_mutation_fence_invalid");
-    await expect(
-      fences.release({ leaseId: acquired.leaseId, reason: "stale-release" }),
-    ).rejects.toThrow("hosted_codex_mutation_fence_invalid");
-    expect(
-      (
-        await prisma.hostedCodexMutationFence.findUniqueOrThrow({
-          where: { accountId: "account-primary" },
-        })
-      ).ownerIdHash,
-    ).not.toBeNull();
+
     await fences.release({
       leaseId: successor.leaseId,
       reason: "successor-complete",
@@ -753,7 +806,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       where: { accountId: "account-primary" },
     });
     expect(finalFence.ownerIdHash).toBeNull();
-    expect(finalFence.fenceEpoch).toBe(released.fenceEpoch + 1n);
+    expect(finalFence.fenceEpoch).toBe(successorFence.fenceEpoch);
   });
 
   it("recovers upstream crash phases conservatively with renewable leases and exact counters", async () => {
