@@ -1,0 +1,85 @@
+{
+  "verdict": "GO",
+  "exactHead": "09183587fc304628f41a8a6ee271eb82ad3544d4",
+  "sourceProductCommit": "09183587fc304628f41a8a6ee271eb82ad3544d4",
+  "reviewerRunId": "rr-activation-policy-v25-review-r1",
+  "reviewDecisionId": "codex:activation-policy-v25:09183587fc30:3f20cac0f845:go",
+  "reviewedAt": "2026-08-25T00:58:26.011Z",
+  "reviewerEvidenceSha256": "bf50f0ed18914f048f67bf042b49e35ccf69c2f9db08a8515f62f8e48c2c314c",
+  "candidateBytes": 2489008,
+  "candidateSha256": "3f20cac0f84591e99f2f4f4a555faac4e2900fc5e6271238d20c71b67a6538bb",
+  "candidateCaptures": [
+    {
+      "label": "github-actions:32793022227:artifact:9543834778",
+      "artifactBytes": 2489008,
+      "artifactSha256": "3f20cac0f84591e99f2f4f4a555faac4e2900fc5e6271238d20c71b67a6538bb",
+      "payloadOffsetBytes": 0,
+      "prefixSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payloadBytes": 2489008,
+      "payloadSha256": "3f20cac0f84591e99f2f4f4a555faac4e2900fc5e6271238d20c71b67a6538bb"
+    },
+    {
+      "label": "github-actions:32794590546:artifact:9544390404",
+      "artifactBytes": 2489008,
+      "artifactSha256": "3f20cac0f84591e99f2f4f4a555faac4e2900fc5e6271238d20c71b67a6538bb",
+      "payloadOffsetBytes": 0,
+      "prefixSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payloadBytes": 2489008,
+      "payloadSha256": "3f20cac0f84591e99f2f4f4a555faac4e2900fc5e6271238d20c71b67a6538bb"
+    }
+  ],
+  "captureLineage": [
+    {
+      "runId": 32793022227,
+      "artifactId": 9543834778,
+      "event": "workflow_dispatch",
+      "actor": "777genius",
+      "headBranch": "fix/retention-activation-policy",
+      "headSha": "09183587fc304628f41a8a6ee271eb82ad3544d4"
+    },
+    {
+      "runId": 32794590546,
+      "artifactId": 9544390404,
+      "event": "workflow_dispatch",
+      "actor": "777genius",
+      "headBranch": "test/activation-policy-v25-repeat",
+      "headSha": "09183587fc304628f41a8a6ee271eb82ad3544d4"
+    }
+  ],
+  "postgresImages": {
+    "sourcePg16": "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+    "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
+  },
+  "canonicalDigests": {
+    "preactivation": "sha256:36e6e4875c530beba1cb6bfc580a358d031895334e6af6a6bad193148e1beebe",
+    "activated": "sha256:d0ccc9a760f69c467d3c9df56502704abb1f03116a2be156eb206100b35f5866",
+    "artifact": "sha256:539eead0f59e75f283d217be840280c61a3813d928e24a48ed9b34687ef5111d"
+  },
+  "normalizedDelta": {
+    "roles": { "before": 10, "after": 10, "removed": 0 },
+    "memberships": { "before": 5, "after": 5, "removed": 0 },
+    "preactivation": {
+      "rlsInventory": { "before": 120, "after": 121 },
+      "grants": { "before": 2906, "after": 2920 },
+      "effectivePermissions": { "before": 4554, "after": 4576 }
+    },
+    "activated": {
+      "rlsInventory": { "before": 120, "after": 121 },
+      "grants": { "before": 3888, "after": 3904 },
+      "effectivePermissions": { "before": 5536, "after": 5560 }
+    }
+  },
+  "securityConclusions": [
+    "The only new relation is ReviewInvestigationMaintenanceCheckpoint and its primary key and composite type.",
+    "Preactivation grants the worker SELECT only; activated grants the worker SELECT, INSERT, and UPDATE.",
+    "API and Web receive no checkpoint table permission, and no runtime principal receives DELETE, TRUNCATE, REFERENCES, TRIGGER, or MAINTAIN.",
+    "No role, membership, persistent routine, provider identity, or existing privilege is removed or broadened outside the reviewed checkpoint delta.",
+    "Migration 000078 and capture workflow were reviewed at the exact audited head; the capture was reproduced in two disposable PostgreSQL 16 to 17 runs."
+  ],
+  "residualRisks": [
+    "GitHub artifacts expire, so this checked-in report and immutable reviewer output preserve the verified lineage and byte hashes.",
+    "Any change to candidate bytes, migration 000078, normalization code, capture workflow, image digests, or audited head invalidates this GO.",
+    "This GO authorizes mechanical trust-root publication only and does not authorize production deployment."
+  ],
+  "promotionAuthorization": "GO only for mechanical activation catalog policy v25 publication from candidate SHA-256 3f20cac0f84591e99f2f4f4a555faac4e2900fc5e6271238d20c71b67a6538bb."
+}

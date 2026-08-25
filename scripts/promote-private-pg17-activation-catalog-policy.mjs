@@ -34,11 +34,11 @@ export const activationCatalogPromotionProvenancePath = resolve(
 );
 export const activationCatalogIndependentReviewPath = resolve(
   repositoryRoot,
-  "docs/release-evidence/activation-catalog-policy-v24-independent-review.json",
+  "docs/release-evidence/activation-catalog-policy-v25-independent-review.json",
 );
 export const activationCatalogReviewerEvidencePath = resolve(
   repositoryRoot,
-  "docs/release-evidence/activation-catalog-policy-v24-reviewer-runtime.json",
+  "docs/release-evidence/activation-catalog-policy-v25-reviewer-runtime.json",
 );
 
 export function assertReviewedActivationCatalogPromotionProvenance(value) {
@@ -110,7 +110,8 @@ export async function assertActivationCatalogPolicyIndependentReviewEvidence(
     reviewer.changedFiles.length !== 0 ||
     !reviewer.evidence.includes("safe_execution_status:completed") ||
     typeof outputSummary !== "string" ||
-    !outputSummary.includes("# Verdict: GO") ||
+    (!outputSummary.includes("# Verdict: GO") &&
+      !outputSummary.includes("**Verdict: GO**")) ||
     !outputSummary.includes(expectation.reviewDecisionId) ||
     !outputSummary.includes(expectation.candidateSha256) ||
     !outputSummary.includes(expectation.captureBaseCommit)

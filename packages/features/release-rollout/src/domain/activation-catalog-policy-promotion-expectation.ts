@@ -1,36 +1,36 @@
 import { type ActivationCatalogPolicyPromotionExpectation } from "./activation-catalog-policy-provenance-contract";
 
 export const activationCatalogPromotionOptIn =
-  "promote-reviewed-activation-catalog-v24";
+  "promote-reviewed-activation-catalog-v25";
 
 export const reviewedActivationCatalogCandidate = Object.freeze({
-  sha256: "8f4f5d60707cd57eff560218f3cdeeaf4a56f1934dab9939ba4eeb1630947630",
-  bytes: 2_477_044,
+  sha256: "3f20cac0f84591e99f2f4f4a555faac4e2900fc5e6271238d20c71b67a6538bb",
+  bytes: 2_489_008,
   preactivationCatalogPolicySha256:
-    "sha256:fe9c71391557f194d84070689100ba55e31fe9e89a768b39879ff43619726c37",
+    "sha256:36e6e4875c530beba1cb6bfc580a358d031895334e6af6a6bad193148e1beebe",
   activatedCatalogPolicySha256:
-    "sha256:b5b56feebf9be6e17e6d4aaf17d7f5409b7a3df0f6fe5692ea588043d5a7e4c1",
+    "sha256:d0ccc9a760f69c467d3c9df56502704abb1f03116a2be156eb206100b35f5866",
   artifactCanonicalSha256:
-    "sha256:5f4dc73eff4574cea5d6953173b0d35d4332fdc1d2e8b74190dce69569b3292d",
+    "sha256:539eead0f59e75f283d217be840280c61a3813d928e24a48ed9b34687ef5111d",
 });
 
 export const reviewedActivationCatalogPromotionExpectation = Object.freeze({
   readinessReason:
-    "reviewed-v24-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
-  captureBaseCommit: "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
-  auditedHead: "012e8bec2f8ee3d7bb36a9daa394d2fe1a024b8e",
-  captureArtifactBytes: 2_477_207,
+    "reviewed-v25-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
+  captureBaseCommit: "09183587fc304628f41a8a6ee271eb82ad3544d4",
+  auditedHead: "09183587fc304628f41a8a6ee271eb82ad3544d4",
+  captureArtifactBytes: 2_489_008,
   captureArtifactSha256:
-    "3bce2a00d3cf1230f31fac391e1cb50de40ff76195fbbc880e3f5282fccf1b1d",
-  capturePayloadOffsetBytes: 163,
+    "3f20cac0f84591e99f2f4f4a555faac4e2900fc5e6271238d20c71b67a6538bb",
+  capturePayloadOffsetBytes: 0,
   capturePrefixSha256:
-    "8a904502926643c979ec68f5a4b7a0dc91affba2cb200bc73a96136ca012a4ca",
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   reviewArtifactSha256:
-    "b2b57ec757ea2ffd0f052ab9675f243a98e245841d54d275593160b6c87e49d1",
+    "45fc64145269314a76790e0b6be032522a22f373b05daa4c26cf94af2132f8af",
   reviewerEvidenceSha256:
-    "b64b5a6d8031dd7be3742bf556c0be262303387772faab3f3b024489ed42626f",
-  reviewerRunId: "rr-activation-policy-v24-review",
-  reviewDecisionId: "codex:activation-policy-v24:012e8bec2f8e:8f4f5d60707c:go",
+    "bf50f0ed18914f048f67bf042b49e35ccf69c2f9db08a8515f62f8e48c2c314c",
+  reviewerRunId: "rr-activation-policy-v25-review-r1",
+  reviewDecisionId: "codex:activation-policy-v25:09183587fc30:3f20cac0f845:go",
   candidateBytes: reviewedActivationCatalogCandidate.bytes,
   candidateSha256: reviewedActivationCatalogCandidate.sha256,
   sourcePg16Image:
