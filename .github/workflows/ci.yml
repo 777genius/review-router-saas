@@ -135,7 +135,7 @@ jobs:
 
   private-pg16-to-pg17-rehearsal:
     name: Full private PG16 to PG17 rehearsal
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.private_pg16_to_pg17_rehearsal || inputs.activation_catalog_policy_capture)) }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.private_pg16_to_pg17_rehearsal) || (github.event_name == 'workflow_dispatch' && inputs.activation_catalog_policy_capture) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
