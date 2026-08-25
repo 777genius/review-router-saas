@@ -7,6 +7,8 @@ import {
   hostedCodexCanaryFaultPlanMaxLifetimeMs,
   hostedCodexCanaryFaultPlanTokenMaxBytes,
 } from "../packages/features/hosted-account-pool/src/application/ports/hosted-codex-canary-fault-plan-port.js";
+import { reconcileExpiredInvocationGrants } from "../packages/features/hosted-account-pool/src/application/use-cases/reconcile-expired-invocation-grants.js";
+import { PrismaInvocationGrantRepository } from "../packages/features/hosted-account-pool/src/infrastructure/prisma/prisma-invocation-grant-repository.js";
 
 export const hostedPoolFlagNames = Object.freeze([
   "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL",
@@ -29,6 +31,9 @@ export type HostedPoolCounts = Readonly<{
 export type HostedPoolControlPort = Readonly<{
   readFlags(): Promise<Record<string, Record<HostedPoolFlagName, string>>>;
   setFlags(patch: HostedPoolFlagPatch): Promise<void>;
+  reconcileExpiredGrants(): Promise<
+    Readonly<{ expiredCount: number; batches: number }>
+  >;
   counts(): Promise<HostedPoolCounts>;
   setFaultPlan?(token: string | null): Promise<void>;
 }>;
@@ -266,11 +271,14 @@ async function waitForDrain(
     ((milliseconds) => new Promise((done) => setTimeout(done, milliseconds)));
   const maxPolls = options.maxPolls ?? 60;
   for (let poll = 1; poll <= maxPolls; poll += 1) {
+    const reconciliation = await port.reconcileExpiredGrants();
     const counts = await port.counts();
     events.push({
       phase: "drain_poll",
       poll,
       at: options.now().toISOString(),
+      expiredGrantsReconciled: reconciliation.expiredCount,
+      expiryReconciliationBatches: reconciliation.batches,
       counts,
     });
     if (
@@ -307,6 +315,7 @@ export function createRenderHostedPoolControlPort(input: {
     databaseUrl: input.databaseUrl,
     poolMax: 1,
   });
+  const invocationGrants = new PrismaInvocationGrantRepository(prisma);
   const request = async (method: string, path: string, body?: unknown) => {
     const response = await fetch(`https://api.render.com/v1${path}`, {
       method,
@@ -446,6 +455,8 @@ export function createRenderHostedPoolControlPort(input: {
         terminalUnknownRequests,
       };
     },
+    reconcileExpiredGrants: () =>
+      reconcileExpiredInvocationGrants({ now: new Date() }, invocationGrants),
     disconnect: () => prisma.$disconnect(),
   };
 }

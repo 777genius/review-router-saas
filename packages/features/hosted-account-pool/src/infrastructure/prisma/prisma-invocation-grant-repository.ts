@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { InvocationGrantRepositoryPort } from "../../application/ports/invocation-grant-repository-port";
+import type { InvocationGrantExpiryPort } from "../../application/ports/invocation-grant-expiry-port";
 import type { CommentTokenRefreshCapabilityPort } from "../../application/ports/comment-token-refresh-capability-port";
 import type { CurrentRelayRequestFailoverPort } from "../../application/ports/current-relay-request-failover-port";
 import type {
@@ -41,6 +42,7 @@ export class HostedCodexFailoverOutcomeUnknownError extends Error {
 export class PrismaInvocationGrantRepository
   implements
     InvocationGrantRepositoryPort,
+    InvocationGrantExpiryPort,
     CommentTokenRefreshCapabilityPort,
     RelayRequestAdmissionPort,
     RelayRequestCompletionPort,
@@ -105,6 +107,38 @@ export class PrismaInvocationGrantRepository
         },
       },
     });
+  }
+
+  async expireIssuedBatch(
+    input: Parameters<InvocationGrantExpiryPort["expireIssuedBatch"]>[0],
+  ): Promise<number> {
+    const rows = await this.prisma.$queryRaw<Array<{ count: number }>>`
+      WITH candidates AS (
+        SELECT "id"
+        FROM "HostedCodexInvocationGrant"
+        WHERE "status" = 'issued'
+          AND "expiresAt" <= ${input.now}
+        ORDER BY "expiresAt" ASC, "id" ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT ${input.limit}
+      ), expired AS (
+        UPDATE "HostedCodexInvocationGrant" AS target
+        SET "status" = 'expired',
+            "revision" = target."revision" + 1,
+            "updatedAt" = ${input.now}
+        FROM candidates
+        WHERE target."id" = candidates."id"
+          AND target."status" = 'issued'
+          AND target."expiresAt" <= ${input.now}
+        RETURNING target."id"
+      )
+      SELECT COUNT(*)::int AS "count" FROM expired
+    `;
+    const count = rows[0]?.count;
+    if (typeof count !== "number" || !Number.isInteger(count)) {
+      throw new Error("invocation_grant_expiry_result_invalid");
+    }
+    return count;
   }
 
   async issue() {

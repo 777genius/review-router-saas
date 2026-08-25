@@ -33,6 +33,7 @@ import {
   registerHostedCodexRelayRoutes,
   recordHostedPoolProviderResponseStarted,
   recordHostedPoolSuccessfulProviderResponse,
+  reconcileExpiredInvocationGrants,
   relayRequestId,
   repositoryId,
   workspaceId,
@@ -2105,6 +2106,80 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     expect(await resumed.promote(operationId)).toBe(0);
     await expect(resumed.assertRelayReady()).resolves.toBeUndefined();
   }, 120_000);
+
+  it("reconciles more than one expiry batch without starving later grants", async () => {
+    const cutoff = new Date("2026-08-25T12:00:00.000Z");
+    await insertIssuedGrantFixtures("expiry-many", 7, {
+      issuedAt: new Date(cutoff.getTime() - 60_000),
+      expiresAt: new Date(cutoff.getTime() - 1),
+    });
+
+    await expect(
+      reconcileExpiredInvocationGrants(
+        { now: cutoff, batchSize: 3, maxBatches: 4 },
+        ledger,
+      ),
+    ).resolves.toEqual({ expiredCount: 7, batches: 3 });
+    expect(
+      await prisma.hostedCodexInvocationGrant.count({
+        where: { id: { startsWith: "grant-expiry-many-" }, status: "expired" },
+      }),
+    ).toBe(7);
+  });
+
+  it("is idempotent and concurrency-safe across reconcilers", async () => {
+    const cutoff = new Date("2026-08-25T12:05:00.000Z");
+    await insertIssuedGrantFixtures("expiry-concurrent", 11, {
+      issuedAt: new Date(cutoff.getTime() - 60_000),
+      expiresAt: new Date(cutoff.getTime() - 1),
+    });
+
+    const results = await Promise.all([
+      reconcileExpiredInvocationGrants(
+        { now: cutoff, batchSize: 2, maxBatches: 10 },
+        ledger,
+      ),
+      reconcileExpiredInvocationGrants(
+        { now: cutoff, batchSize: 2, maxBatches: 10 },
+        new PrismaInvocationGrantRepository(prisma),
+      ),
+    ]);
+
+    expect(results.reduce((sum, result) => sum + result.expiredCount, 0)).toBe(
+      11,
+    );
+    expect(
+      await prisma.hostedCodexInvocationGrant.count({
+        where: {
+          id: { startsWith: "grant-expiry-concurrent-" },
+          status: "expired",
+        },
+      }),
+    ).toBe(11);
+    await expect(
+      reconcileExpiredInvocationGrants({ now: cutoff, batchSize: 2 }, ledger),
+    ).resolves.toMatchObject({ expiredCount: 0 });
+  });
+
+  it("retains issued grants whose expiry is still active", async () => {
+    const cutoff = new Date("2026-08-25T12:10:00.000Z");
+    await insertIssuedGrantFixtures("expiry-active", 1, {
+      issuedAt: new Date(cutoff.getTime() - 60_000),
+      expiresAt: new Date(cutoff.getTime() + 1),
+    });
+
+    await reconcileExpiredInvocationGrants(
+      { now: cutoff, batchSize: 1 },
+      ledger,
+    );
+
+    await expect(
+      prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: "grant-expiry-active-0" },
+        select: { status: true, revision: true },
+      }),
+    ).resolves.toEqual({ status: "issued", revision: 1n });
+  });
 });
 
 async function issueGrant(
@@ -2159,6 +2234,44 @@ async function issueGrant(
       commentRefreshCapabilities: ledger,
     },
   );
+}
+
+async function insertIssuedGrantFixtures(
+  prefix: string,
+  count: number,
+  dates: Readonly<{ issuedAt: Date; expiresAt: Date }>,
+) {
+  await prisma.hostedCodexInvocationGrant.createMany({
+    data: Array.from({ length: count }, (_, index) => ({
+      id: `grant-${prefix}-${index}`,
+      invocationId: `invocation-${prefix}-${index}`,
+      workspaceId: workspace,
+      poolId: pool,
+      repositoryConnectionId: repository,
+      repositoryBindingId: binding,
+      activeAccountId: "account-primary",
+      primaryAccountId: "account-primary",
+      backupAccountId: "account-backup",
+      reviewRequestId: `review-${prefix}-${index}`,
+      providerInvocationKey: `provider-${prefix}-${index}`,
+      runId: `run-${prefix}-${index}`,
+      runAttempt: 1,
+      model: "gpt-5.5",
+      policyVersion: "hosted-codex-v1",
+      policyFingerprint: sha256(`policy-${prefix}-${index}`),
+      runtimeConfigVersion: 1,
+      bindingRevision: 1n,
+      authzEpoch: 1n,
+      capabilityTokenHash: sha256(`capability-${prefix}-${index}`),
+      issuedAt: dates.issuedAt,
+      expiresAt: dates.expiresAt,
+      maxRequests: 1,
+      maxConcurrentRequests: 1,
+      maxRequestBytes: 1_024,
+      maxResponseBytes: 1_024,
+      maxOutputTokens: 256,
+    })),
+  });
 }
 
 async function requestGrant(

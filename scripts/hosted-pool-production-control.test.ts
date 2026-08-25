@@ -33,12 +33,104 @@ function fixture(
       calls.push(patch);
       Object.assign(flags, patch);
     }),
+    reconcileExpiredGrants: vi.fn(async () => ({
+      expiredCount: 0,
+      batches: 1,
+    })),
     counts: vi.fn(async () => counts[Math.min(index++, counts.length - 1)]!),
   };
   return { port, calls };
 }
 
 describe("hosted pool production controls", () => {
+  it("reconciles expired grants before each drain count", async () => {
+    const calls: string[] = [];
+    const { port } = fixture();
+    const drainPort: HostedPoolControlPort = {
+      ...port,
+      async reconcileExpiredGrants() {
+        calls.push("reconcile");
+        return { expiredCount: 3, batches: 2 };
+      },
+      async counts() {
+        calls.push("count");
+        return {
+          inFlight: 0,
+          issuedGrants: 0,
+          unresolvedRequests: 0,
+          terminalUnknownRequests: 0,
+        };
+      },
+    };
+
+    const result = await executeHostedPoolControl({
+      command: "drain",
+      execute: true,
+      confirmation: "EXECUTE HOSTED POOL DRAIN",
+      port: drainPort,
+      now: () => new Date("2026-08-25T12:00:00.000Z"),
+    });
+
+    expect(calls).toEqual(["count", "count", "reconcile", "count"]);
+    expect(result.events).toContainEqual(
+      expect.objectContaining({
+        phase: "drain_poll",
+        expiredGrantsReconciled: 3,
+        expiryReconciliationBatches: 2,
+      }),
+    );
+  });
+
+  it("keeps status observation read-only", async () => {
+    const { port } = fixture();
+    await executeHostedPoolControl({
+      command: "status",
+      execute: true,
+      port,
+    });
+    expect(port.reconcileExpiredGrants).not.toHaveBeenCalled();
+  });
+
+  it("keeps dry-run drain observation read-only", async () => {
+    const { port } = fixture();
+    await executeHostedPoolControl({
+      command: "drain",
+      execute: false,
+      port,
+    });
+    expect(port.reconcileExpiredGrants).not.toHaveBeenCalled();
+  });
+
+  it("does not count before an in-progress drain reconciliation finishes", async () => {
+    const calls: string[] = [];
+    const { port } = fixture();
+    let drainPhase = false;
+    const guardedPort: HostedPoolControlPort = {
+      ...port,
+      async reconcileExpiredGrants() {
+        drainPhase = true;
+        calls.push("reconcile");
+        return { expiredCount: 0, batches: 1 };
+      },
+      async counts() {
+        calls.push(drainPhase ? "drain_count" : "observation_count");
+        return {
+          inFlight: 0,
+          issuedGrants: 0,
+          unresolvedRequests: 0,
+          terminalUnknownRequests: 0,
+        };
+      },
+    };
+    await executeHostedPoolControl({
+      command: "drain",
+      execute: true,
+      confirmation: "EXECUTE HOSTED POOL DRAIN",
+      port: guardedPort,
+    });
+    expect(calls.slice(-2)).toEqual(["reconcile", "drain_count"]);
+  });
+
   it("bounds staged-plan cleanup and reads closed targets in one query", async () => {
     const staged = [
       { workspaceId: "workspace-a", targetId: "open" },

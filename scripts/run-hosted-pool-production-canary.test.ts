@@ -225,6 +225,10 @@ function kit() {
       setFlags(patch);
       Object.assign(flags, patch);
     }),
+    reconcileExpiredGrants: vi.fn(async () => ({
+      expiredCount: 0,
+      batches: 1,
+    })),
     counts: vi.fn(async () => ({
       inFlight: 0,
       issuedGrants: 0,
