@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sessionArtifactFromCodexAuthJson } from "@777genius/subscription-runtime/provider-codex";
 import {
   CryptoSubscriptionRuntimeIdGenerator,
   extractChatgptAccountId,
@@ -68,6 +69,34 @@ describe("HostedCodexSessionStore plaintext hygiene", () => {
       store.read({ providerInstanceId: "account-1" }),
     ).rejects.toThrow();
     expect(bytes.every((byte) => byte === 0)).toBe(true);
+  });
+
+  it("zeros writeback plaintext when persistence rejects", async () => {
+    let persistedBytes: Uint8Array | undefined;
+    const store = new HostedCodexSessionStore({
+      read: async () => null,
+      compareAndSwap: async (input) => {
+        persistedBytes = input.nextAuthJsonBytes;
+        throw new Error("persistence_unavailable");
+      },
+    });
+    const nextArtifact = sessionArtifactFromCodexAuthJson(
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: { refresh_token: "writeback-secret" },
+      }),
+    );
+    await expect(
+      store.write({
+        providerInstanceId: "account-1",
+        expectedGeneration: 1,
+        nextArtifact,
+        idempotencyKey: "writeback-1",
+        leaseId: "lease-1",
+      }),
+    ).rejects.toThrow("persistence_unavailable");
+    expect(persistedBytes).toBeDefined();
+    expect(persistedBytes!.every((byte) => byte === 0)).toBe(true);
   });
 });
 

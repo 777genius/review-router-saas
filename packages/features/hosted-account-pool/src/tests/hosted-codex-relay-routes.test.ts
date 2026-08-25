@@ -39,7 +39,12 @@ describe("hosted Codex relay routes", () => {
           commentTokenRefreshCapability: "opaque-comment-refresh",
           grantExpiresAt: "2026-08-15T12:00:00.000Z",
           commentTokenExpiresAt: "2026-08-15T11:00:00.000Z",
-          policy: { maxRequests: 4, maxRequestBodyBytes: 1_024 },
+          policy: {
+            maxRequests: 4,
+            maxRequestBodyBytes: 1_024,
+            maxResponseBytes: 4_096,
+            maxOutputTokens: 1_024,
+          },
         }),
       },
       commentTokens: {
@@ -62,6 +67,8 @@ describe("hosted Codex relay routes", () => {
           grantExpiresAtMs: Date.now() + 60_000,
           declaredRequestBytes: 2,
           maxRequestBodyBytes: 1_024,
+          maxResponseBytes: 4_096,
+          maxOutputTokens: 1_024,
         }),
       },
       relay: { open: relayOpen },

@@ -156,6 +156,8 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
       grantExpiresAtMs: stored.expiresAt.getTime(),
       declaredRequestBytes: input.requestBytes,
       maxRequestBodyBytes: stored.maxRequestBytes,
+      maxResponseBytes: stored.maxResponseBytes,
+      maxOutputTokens: stored.maxOutputTokens,
       faultPlanScope: {
         workspaceId: stored.workspaceId,
         githubRepositoryId: binding.repository.githubRepositoryId,
@@ -253,18 +255,48 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
       input.authorization.maxRequestBodyBytes,
       input.abortSignal,
     );
-    if (
-      rawRequestBody.byteLength !== input.authorization.declaredRequestBytes
-    ) {
-      throw new Error("hosted_relay_content_length_mismatch");
+    let providerRequestBody: Uint8Array<ArrayBuffer> | undefined;
+    try {
+      if (
+        rawRequestBody.byteLength !== input.authorization.declaredRequestBytes
+      ) {
+        throw new Error("hosted_relay_content_length_mismatch");
+      }
+      const requestHash = sha256Bytes(rawRequestBody);
+      await this.ledger.recordRequestHash({
+        grantId: input.authorization.grantId,
+        requestId: input.authorization.requestId,
+        requestHash,
+      });
+      const requestBody = parseRequestJson(rawRequestBody);
+      const maxOutputTokens = clampMaxOutputTokens(
+        requestBody.max_output_tokens,
+        input.authorization.maxOutputTokens,
+      );
+      providerRequestBody = new TextEncoder().encode(
+        JSON.stringify({
+          ...requestBody,
+          model: input.authorization.model,
+          store: false,
+          max_output_tokens: maxOutputTokens,
+        }),
+      );
+      return await this.dispatchAuthorized(
+        input,
+        requestHash,
+        providerRequestBody,
+      );
+    } finally {
+      rawRequestBody.fill(0);
+      providerRequestBody?.fill(0);
     }
-    await this.ledger.recordRequestHash({
-      grantId: input.authorization.grantId,
-      requestId: input.authorization.requestId,
-      requestHash: sha256Bytes(rawRequestBody),
-    });
-    const requestBody = parseRequestJson(rawRequestBody);
-    const requestHash = sha256Bytes(rawRequestBody);
+  }
+
+  private async dispatchAuthorized(
+    input: Parameters<HostedCodexStreamingRelayPort["open"]>[0],
+    requestHash: string,
+    providerRequestBody: Uint8Array<ArrayBuffer>,
+  ) {
     let accountId = input.authorization.accountId;
     let failedOver = false;
     let upstream: Response;
@@ -370,11 +402,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
             "content-type": "application/json",
             accept: safeAccept(input.accept),
           },
-          body: JSON.stringify({
-            ...requestBody,
-            model: input.authorization.model,
-            store: false,
-          }),
+          body: providerRequestBody,
           signal: AbortSignal.any([
             input.abortSignal,
             AbortSignal.timeout(Math.min(remainingMs, 120_000)),
@@ -493,17 +521,20 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
       );
     }
     try {
-      const body = Readable.fromWeb(upstream.body as never).pipe(
-        completionTransform(
-          input.authorization,
-          this.ledger,
-          this.effects,
-          effectLease,
-          upstream.ok,
-          streamHeartbeat,
-          this.now,
-        ),
+      const source = Readable.fromWeb(upstream.body as never);
+      const completion = completionTransform(
+        input.authorization,
+        this.ledger,
+        this.effects,
+        effectLease,
+        upstream.ok,
+        input.authorization.maxResponseBytes,
+        streamHeartbeat,
+        this.now,
+        () => source.destroy(),
       );
+      completion.once("error", () => source.destroy());
+      const body = source.pipe(completion);
       return {
         statusCode: upstream.status,
         headers: safeResponseHeaders(upstream.headers),
@@ -688,15 +719,21 @@ async function readBoundedBody(
 ): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let bytes = 0;
-  for await (const chunk of body) {
-    if (signal.aborted) throw signal.reason;
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    bytes += buffer.byteLength;
-    if (bytes > maxBytes)
-      throw new Error("hosted_relay_request_bytes_exceeded");
-    chunks.push(buffer);
+  try {
+    for await (const chunk of body) {
+      if (signal.aborted) throw signal.reason;
+      const buffer = Buffer.from(chunk);
+      bytes += buffer.byteLength;
+      if (bytes > maxBytes) {
+        buffer.fill(0);
+        throw new Error("hosted_relay_request_bytes_exceeded");
+      }
+      chunks.push(buffer);
+    }
+    return Buffer.concat(chunks);
+  } finally {
+    for (const chunk of chunks) chunk.fill(0);
   }
-  return Buffer.concat(chunks);
 }
 
 function parseRequestJson(body: Buffer): Record<string, unknown> {
@@ -707,14 +744,24 @@ function parseRequestJson(body: Buffer): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+function clampMaxOutputTokens(value: unknown, grantCap: number): number {
+  if (value === undefined) return grantCap;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("hosted_relay_max_output_tokens_invalid");
+  }
+  return Math.min(value, grantCap);
+}
+
 function completionTransform(
   authorization: AuthorizedHostedCodexRelay,
   ledger: PrismaInvocationGrantRepository,
   effects: Pick<PrismaHostedCodexUpstreamEffectLedger, "authority">,
   effectLease: HostedCodexUpstreamEffectLease,
   succeeded: boolean,
+  maxResponseBytes: number,
   heartbeat: EffectHeartbeat | undefined,
   now: () => Date,
+  abortUpstream: () => void,
 ): Transform {
   const hash = createHash("sha256");
   let bytes = 0;
@@ -794,7 +841,14 @@ function completionTransform(
   const transform = new Transform({
     transform(chunk, _encoding, callback) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      bytes += buffer.byteLength;
+      const nextBytes = bytes + buffer.byteLength;
+      if (nextBytes > maxResponseBytes) {
+        abortUpstream();
+        buffer.fill(0);
+        callback(new ProviderResponseLimitError());
+        return;
+      }
+      bytes = nextBytes;
       hash.update(buffer);
       callback(null, buffer);
     },
@@ -805,7 +859,9 @@ function completionTransform(
       if (!error || finalized) return callback(error);
       const code = error.message.includes("client_disconnected")
         ? "client_disconnected"
-        : "upstream_stream_failed";
+        : error instanceof ProviderResponseLimitError
+          ? "provider_response_bytes_exceeded"
+          : "upstream_stream_failed";
       finalize(false, code, callback, error);
     },
   });
@@ -889,6 +945,12 @@ class UpstreamTerminalUnknownError extends Error {
 class UpstreamNoEffectError extends Error {
   constructor(readonly cause: unknown) {
     super("hosted_codex_upstream_no_effect");
+  }
+}
+
+class ProviderResponseLimitError extends Error {
+  constructor() {
+    super("hosted_codex_provider_response_bytes_exceeded");
   }
 }
 

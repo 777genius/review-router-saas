@@ -21,6 +21,8 @@ export type InvocationGrantBudget = {
   readonly maxRequests: number;
   readonly maxConcurrentRequests: number;
   readonly maxRequestBytes: number;
+  readonly maxResponseBytes: number;
+  readonly maxOutputTokens: number;
 };
 
 export type InvocationGrantAuthority = {
@@ -123,6 +125,12 @@ const budgetSchema = z
       .int()
       .min(1)
       .max(100 * 1024 * 1024),
+    maxResponseBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(100 * 1024 * 1024),
+    maxOutputTokens: z.number().int().min(1).max(100_000),
   })
   .strict();
 

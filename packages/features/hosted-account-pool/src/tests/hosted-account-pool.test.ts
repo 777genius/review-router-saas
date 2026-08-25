@@ -289,6 +289,8 @@ describe("invocation-bounded relay grant", () => {
           maxRequests: 10,
           maxConcurrentRequests: 3,
           maxRequestBytes: 1024,
+          maxResponseBytes: 4096,
+          maxOutputTokens: 1024,
         },
         commentRefreshBudget: {
           expiresAt: new Date("2026-08-15T10:30:00.000Z"),
@@ -706,6 +708,8 @@ describe("invocation-bounded relay grant", () => {
           maxRequests: 10,
           maxConcurrentRequests: 2,
           maxRequestBytes: 1024,
+          maxResponseBytes: 4096,
+          maxOutputTokens: 1024,
         },
         now,
       }),
@@ -1036,6 +1040,8 @@ function grantFixture(
     budget: {
       expiresAt: new Date("2026-08-15T11:00:00.000Z"),
       maxRequestBytes: 1024,
+      maxResponseBytes: 4096,
+      maxOutputTokens: 1024,
       ...budget,
     },
     now,

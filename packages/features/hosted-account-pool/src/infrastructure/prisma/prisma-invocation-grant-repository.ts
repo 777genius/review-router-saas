@@ -89,6 +89,8 @@ export class PrismaInvocationGrantRepository
         maxRequests: grant.budget.maxRequests,
         maxConcurrentRequests: grant.budget.maxConcurrentRequests,
         maxRequestBytes: grant.budget.maxRequestBytes,
+        maxResponseBytes: grant.budget.maxResponseBytes,
+        maxOutputTokens: grant.budget.maxOutputTokens,
         requestCount: 0,
         inFlight: 0,
         commentRefreshCapability: {
@@ -932,6 +934,8 @@ function restoreGrant(stored: StoredGrant): InvocationGrant {
       maxRequests: stored.maxRequests,
       maxConcurrentRequests: stored.maxConcurrentRequests,
       maxRequestBytes: stored.maxRequestBytes,
+      maxResponseBytes: stored.maxResponseBytes,
+      maxOutputTokens: stored.maxOutputTokens,
     },
     admittedRequestIds: admitted,
     inFlightRequestIds: inFlight,

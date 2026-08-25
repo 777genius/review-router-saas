@@ -389,6 +389,8 @@ function createFixture(
       maxRequests: 12,
       maxConcurrentRequests: 2,
       maxRequestBodyBytes: 2048,
+      maxResponseBytes: 8192,
+      maxOutputTokens: 4096,
       maxCommentTokenRefreshes: 4,
     },
   });

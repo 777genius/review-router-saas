@@ -1,13 +1,36 @@
-import { request as httpRequest } from "node:http";
+import { request as httpRequest, type IncomingMessage } from "node:http";
+import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildHostedRelayHeaders,
+  readRequestBody,
   requestHostedRelayGrantWithFreshGitHubOidc,
   runHostedCodexRelayTransport,
   startHostedCodexRelayProxy,
 } from "../action/hosted-codex-relay";
 
 describe("hosted Codex relay transport", () => {
+  it("zeroizes oversized request chunks while safely draining a socket error", async () => {
+    const request = new PassThrough() as unknown as IncomingMessage;
+    const oversized = Buffer.from("credential-material");
+    const trailing = Buffer.from("trailing-secret");
+    const closed = new Promise<void>((resolve) => {
+      request.once("close", () => resolve());
+    });
+
+    const body = readRequestBody(request, 4);
+    request.write(oversized);
+    await expect(body).rejects.toThrow("proxy_request_body_too_large");
+    request.write(trailing);
+    request.destroy(
+      Object.assign(new Error("socket reset"), { code: "ECONNRESET" }),
+    );
+    await closed;
+
+    expect([...oversized]).toEqual(Array(oversized.byteLength).fill(0));
+    expect([...trailing]).toEqual(Array(trailing.byteLength).fill(0));
+  });
+
   it("exchanges fresh OIDC without requiring auth JSON and masks both bearer values", async () => {
     const env: NodeJS.ProcessEnv = {
       ACTIONS_ID_TOKEN_REQUEST_URL:

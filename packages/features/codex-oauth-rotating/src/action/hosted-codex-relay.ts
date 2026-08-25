@@ -272,7 +272,8 @@ export async function startHostedCodexRelayProxy(input: {
             writeProxyError(res, 429, "comment_token_refresh_budget_exceeded");
             return;
           }
-          await readRequestBody(req, 16_384);
+          const controlRequestBody = await readRequestBody(req, 16_384);
+          controlRequestBody.fill(0);
           const refreshOrdinal = commentTokenRefreshCount;
           const refreshBody = Buffer.from(
             JSON.stringify({
@@ -283,7 +284,8 @@ export async function startHostedCodexRelayProxy(input: {
           );
           upstreamController = new AbortController();
           activeUpstreamRequests.add(upstreamController);
-          const refreshed = await input.fetchImpl(
+          const refreshed = await fetchWithZeroizedBody(
+            input.fetchImpl,
             input.upstreamCommentTokenRefreshUrl,
             {
               method: "POST",
@@ -295,9 +297,9 @@ export async function startHostedCodexRelayProxy(input: {
                 "idempotency-key": `${commentRefreshNamespace}:${refreshOrdinal}`,
                 "x-reviewrouter-request-ordinal": String(refreshOrdinal),
               },
-              body: new Uint8Array(refreshBody),
               signal: upstreamController.signal,
             },
+            refreshBody,
           );
           if (!downstreamClosed) {
             await writeUpstreamResponse(res, refreshed);
@@ -327,18 +329,22 @@ export async function startHostedCodexRelayProxy(input: {
         const body = await readRequestBody(req, maxBodyBytes);
         upstreamController = new AbortController();
         activeUpstreamRequests.add(upstreamController);
-        const upstream = await input.fetchImpl(input.relayUrl, {
-          method: "POST",
-          headers: buildHostedRelayHeaders({
-            requestHeaders: req.headers,
-            grant: input.grant,
-            requestOrdinal: ordinal,
-            idempotencyKey: `${proxyRequestNamespace}:${ordinal}`,
-            requestBytes: body.byteLength,
-          }),
-          body: new Uint8Array(body),
-          signal: upstreamController.signal,
-        });
+        const upstream = await fetchWithZeroizedBody(
+          input.fetchImpl,
+          input.relayUrl,
+          {
+            method: "POST",
+            headers: buildHostedRelayHeaders({
+              requestHeaders: req.headers,
+              grant: input.grant,
+              requestOrdinal: ordinal,
+              idempotencyKey: `${proxyRequestNamespace}:${ordinal}`,
+              requestBytes: body.byteLength,
+            }),
+            signal: upstreamController.signal,
+          },
+          body,
+        );
         if (!downstreamClosed) {
           const responseCompletion = await writeUpstreamResponse(res, upstream);
           if (
@@ -543,29 +549,90 @@ async function fetchWithTimeout(
   }
 }
 
-function readRequestBody(
+export function readRequestBody(
   req: http.IncomingMessage,
   maxBytes: number,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let bytes = 0;
-    let tooLarge = false;
-    req.on("data", (chunk) => {
-      if (tooLarge) return;
-      const buffer = Buffer.from(chunk);
+    let settled = false;
+    const zeroChunks = () => {
+      for (const chunk of chunks) chunk.fill(0);
+    };
+    const cleanup = () => {
+      req.off("data", onData);
+      req.off("error", onError);
+      req.off("end", onEnd);
+      req.off("close", onClose);
+    };
+    const fail = (error: Error, drain = false) => {
+      if (settled) return;
+      settled = true;
+      zeroChunks();
+      reject(error);
+      if (drain) req.resume();
+      else cleanup();
+    };
+    const onData = (chunk: Buffer | Uint8Array) => {
+      const source = Buffer.isBuffer(chunk)
+        ? chunk
+        : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      const buffer = Buffer.from(source);
+      source.fill(0);
+      if (settled) {
+        buffer.fill(0);
+        return;
+      }
       bytes += buffer.byteLength;
       if (bytes > maxBytes) {
-        tooLarge = true;
-        reject(new Error("proxy_request_body_too_large"));
-        req.resume();
+        buffer.fill(0);
+        fail(new Error("proxy_request_body_too_large"), true);
         return;
       }
       chunks.push(buffer);
-    });
-    req.once("error", reject);
-    req.once("end", () => resolve(Buffer.concat(chunks)));
+    };
+    const onError = (error: Error) => {
+      if (!settled) fail(error);
+      cleanup();
+    };
+    const onEnd = () => {
+      if (settled) {
+        cleanup();
+        return;
+      }
+      settled = true;
+      cleanup();
+      try {
+        resolve(Buffer.concat(chunks));
+      } finally {
+        zeroChunks();
+      }
+    };
+    const onClose = () => {
+      if (!settled) fail(new Error("proxy_request_body_closed"));
+      cleanup();
+    };
+    req.on("data", onData);
+    req.on("error", onError);
+    req.once("end", onEnd);
+    req.once("close", onClose);
   });
+}
+
+async function fetchWithZeroizedBody(
+  fetchImpl: FetchLike,
+  url: string,
+  init: RequestInit,
+  plaintextBody: Buffer,
+): Promise<Response> {
+  const fetchBody = Uint8Array.from(plaintextBody);
+  try {
+    return await fetchImpl(url, { ...init, body: fetchBody });
+  } finally {
+    plaintextBody.fill(0);
+    fetchBody.fill(0);
+  }
 }
 
 async function writeUpstreamResponse(
@@ -591,29 +658,45 @@ async function writeUpstreamResponse(
       ?.trim() ?? "";
   let completionTail = "";
   const jsonCompletionChunks: Buffer[] = [];
+  let readerDone = false;
+  let combinedJson: Buffer | undefined;
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
-      const buffer = Buffer.from(value);
-      if (mediaType === "application/json") {
-        jsonCompletionChunks.push(buffer);
-      } else {
-        completionTail = `${completionTail}${buffer.toString("utf8")}`.slice(
-          -8_192,
-        );
+      if (done) {
+        readerDone = true;
+        break;
       }
-      if (!res.write(buffer)) await waitForDrain(res);
+      let buffer: Buffer | undefined;
+      try {
+        buffer = Buffer.from(value);
+      } finally {
+        value.fill(0);
+      }
+      try {
+        if (mediaType === "application/json") {
+          jsonCompletionChunks.push(buffer);
+        } else {
+          completionTail = `${completionTail}${buffer.toString("utf8")}`.slice(
+            -8_192,
+          );
+        }
+        await writeResponseBuffer(res, buffer);
+      } finally {
+        if (mediaType !== "application/json") buffer.fill(0);
+      }
     }
     res.end();
-    return isProvablySuccessfulRelayResponse(
-      upstream,
-      mediaType === "application/json"
-        ? Buffer.concat(jsonCompletionChunks).toString("utf8")
-        : completionTail,
-    );
+    if (mediaType === "application/json") {
+      combinedJson = Buffer.concat(jsonCompletionChunks);
+      completionTail = combinedJson.toString("utf8");
+    }
+    return isProvablySuccessfulRelayResponse(upstream, completionTail);
   } finally {
+    if (!readerDone) await reader.cancel().catch(() => undefined);
     reader.releaseLock();
+    combinedJson?.fill(0);
+    for (const chunk of jsonCompletionChunks) chunk.fill(0);
   }
 }
 
@@ -659,16 +742,14 @@ function throwHostedRelayFailover(
   if (cause !== undefined) throw cause;
 }
 
-async function waitForDrain(res: http.ServerResponse): Promise<void> {
+async function writeResponseBuffer(
+  res: http.ServerResponse,
+  buffer: Buffer,
+): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const cleanup = () => {
-      res.off("drain", onDrain);
       res.off("close", onClose);
       res.off("error", onError);
-    };
-    const onDrain = () => {
-      cleanup();
-      resolve();
     };
     const onClose = () => {
       cleanup();
@@ -678,9 +759,18 @@ async function waitForDrain(res: http.ServerResponse): Promise<void> {
       cleanup();
       reject(error);
     };
-    res.once("drain", onDrain);
     res.once("close", onClose);
     res.once("error", onError);
+    try {
+      res.write(buffer, (error) => {
+        cleanup();
+        if (error) reject(error);
+        else resolve();
+      });
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
   });
 }
 

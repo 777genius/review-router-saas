@@ -151,17 +151,18 @@ export class HostedCodexSessionStore implements SessionStorePort {
     const authJson = codexAuthJsonFromArtifact(input.nextArtifact);
     validatedArtifact(authJson);
     const bytes = Buffer.from(authJson, "utf8");
-    const result = await this.persistence.compareAndSwap({
-      accountId: input.providerInstanceId,
-      expectedGeneration: input.expectedGeneration,
-      nextAuthJsonBytes: bytes,
-      nextGenerationHash: sha256(bytes),
-      idempotencyKey: input.idempotencyKey,
-      leaseId: input.leaseId,
-    });
-    bytes.fill(0);
-    if (result.status === "stale_generation") return result;
-    return result;
+    try {
+      return await this.persistence.compareAndSwap({
+        accountId: input.providerInstanceId,
+        expectedGeneration: input.expectedGeneration,
+        nextAuthJsonBytes: bytes,
+        nextGenerationHash: sha256(bytes),
+        idempotencyKey: input.idempotencyKey,
+        leaseId: input.leaseId,
+      });
+    } finally {
+      bytes.fill(0);
+    }
   }
 }
 

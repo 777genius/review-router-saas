@@ -93,6 +93,8 @@ export type HostedCodexGrantPolicy = {
   readonly maxRequests: number;
   readonly maxConcurrentRequests: number;
   readonly maxRequestBodyBytes: number;
+  readonly maxResponseBytes: number;
+  readonly maxOutputTokens: number;
   readonly maxCommentTokenRefreshes: number;
 };
 
@@ -251,6 +253,8 @@ export class HostedCodexGrantIssuer implements HostedCodexGrantIssuerPort {
           maxRequests: this.dependencies.policy.maxRequests,
           maxConcurrentRequests: this.dependencies.policy.maxConcurrentRequests,
           maxRequestBytes: this.dependencies.policy.maxRequestBodyBytes,
+          maxResponseBytes: this.dependencies.policy.maxResponseBytes,
+          maxOutputTokens: this.dependencies.policy.maxOutputTokens,
         },
         commentRefreshBudget: {
           expiresAt,
@@ -404,6 +408,20 @@ export function createProductionHostedCodexGrantIssuer(input: {
         1_024,
         2_000_000,
         "hosted_grant_max_request_bytes_invalid",
+      ),
+      maxResponseBytes: readBoundedInteger(
+        input.env.REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_RESPONSE_BYTES,
+        8_000_000,
+        64 * 1024,
+        32_000_000,
+        "hosted_grant_max_response_bytes_invalid",
+      ),
+      maxOutputTokens: readBoundedInteger(
+        input.env.REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_OUTPUT_TOKENS,
+        32_768,
+        256,
+        100_000,
+        "hosted_grant_max_output_tokens_invalid",
       ),
       maxCommentTokenRefreshes: readBoundedInteger(
         input.env.REVIEW_ROUTER_HOSTED_CODEX_COMMENT_REFRESH_MAX_USES,

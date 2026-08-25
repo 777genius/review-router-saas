@@ -68,6 +68,7 @@ describe("hosted pool certification evidence", () => {
         "packages/platform/db/prisma/migrations/000076_hosted_codex_terminalization_restore_invariants/migration.sql",
         "packages/platform/db/prisma/migrations/000077_hosted_codex_r57_security_race_remediation/migration.sql",
         "packages/platform/db/prisma/migrations/000078_review_investigation_maintenance_checkpoint/migration.sql",
+        "packages/platform/db/prisma/migrations/000079_hosted_codex_output_limits/migration.sql",
       ];
       for (const [index, path] of migrations.entries()) {
         await mkdir(dirname(join(workspace, path)), { recursive: true });

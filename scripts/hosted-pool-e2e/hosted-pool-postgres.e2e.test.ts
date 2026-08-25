@@ -1151,6 +1151,101 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     expect(capability.revokedAt).not.toBeNull();
   });
 
+  it("enforces output budgets before forwarding and never fails over on overflow", async () => {
+    const issued = await issueGrant("output-budget", {
+      maxResponseBytes: 4,
+      maxOutputTokens: 128,
+    });
+    const authorization = new PrismaHostedCodexRelayAuthorization(prisma, true);
+    const admitted = await authorization.authorize({
+      opaqueGrant: issued.plaintextToken,
+      requestOrdinal: 1,
+      idempotencyKey: "output-budget",
+      requestBytes: Buffer.byteLength(
+        '{"input":"bounded","max_output_tokens":64}',
+      ),
+    });
+    let pull = 0;
+    let cancelled = false;
+    let providerRequest: Record<string, unknown> | undefined;
+    let providerRequestBytes: Uint8Array | undefined;
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(
+          pull++ === 0 ? Buffer.from("1234") : Buffer.from("overflow"),
+        );
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const relay = new FetchHostedCodexStreamingRelay(
+      {
+        ensureFreshSession: vi.fn(async () => ({
+          accessToken: "output-budget-access",
+          chatgptAccountId: "output-budget-account",
+        })),
+        classifyFailure: vi.fn(() => ({ code: "unknown" })),
+      } as unknown as HostedCodexSessionRuntime,
+      ledger,
+      vi.fn(async (_url: string | URL, init?: RequestInit) => {
+        providerRequestBytes = init?.body as Uint8Array;
+        providerRequest = JSON.parse(
+          Buffer.from(providerRequestBytes).toString("utf8"),
+        ) as Record<string, unknown>;
+        return new Response(upstreamBody, { status: 200 });
+      }) as unknown as typeof fetch,
+      { failoverEnabled: true },
+    );
+    const requestBody = Buffer.from(
+      '{"input":"bounded","max_output_tokens":64}',
+    );
+    const response = await relay.open({
+      authorization: admitted,
+      body: Readable.from(requestBody),
+      contentType: "application/json",
+      accept: "text/event-stream",
+      abortSignal: new AbortController().signal,
+    });
+    expect(providerRequest).toMatchObject({
+      model: admitted.model,
+      store: false,
+      max_output_tokens: 64,
+    });
+    expect(providerRequestBytes!.every((byte) => byte === 0)).toBe(true);
+    let observed = "";
+    await expect(async () => {
+      for await (const chunk of response.body) observed += chunk.toString();
+    }).rejects.toThrow("hosted_codex_provider_response_bytes_exceeded");
+    expect(observed).toBe("1234");
+    await vi.waitFor(() => expect(cancelled).toBe(true));
+    const [request, effect, grant] = await Promise.all([
+      prisma.hostedCodexRelayRequest.findUniqueOrThrow({
+        where: { id: admitted.requestId },
+      }),
+      prisma.hostedCodexUpstreamEffectAttempt.findFirstOrThrow({
+        where: { relayRequestId: admitted.requestId },
+      }),
+      prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: issued.grant.id },
+      }),
+    ]);
+    expect(request).toMatchObject({
+      status: "terminal_unknown",
+      errorCode: "provider_response_bytes_exceeded",
+    });
+    expect(effect).toMatchObject({
+      state: "terminal_unknown",
+      errorCode: "provider_response_bytes_exceeded",
+    });
+    expect(grant).toMatchObject({
+      activeAccountId: "account-primary",
+      failoverCount: 0,
+      status: "revoked",
+      inFlight: 0,
+    });
+  });
+
   it("renews the effect lease throughout a logically longer-than-30-second response stream", async () => {
     let clock = new Date();
     const effects = new PrismaHostedCodexUpstreamEffectLedger(
@@ -1965,6 +2060,8 @@ async function issueGrant(
     maxRequests: number;
     maxConcurrentRequests: number;
     maxRequestBytes: number;
+    maxResponseBytes: number;
+    maxOutputTokens: number;
   }> = {},
 ) {
   const expiresAt = new Date(Date.now() + 10 * 60_000);
@@ -1991,6 +2088,8 @@ async function issueGrant(
         maxRequests: budget.maxRequests ?? 4,
         maxConcurrentRequests: budget.maxConcurrentRequests ?? 2,
         maxRequestBytes: budget.maxRequestBytes ?? 16_384,
+        maxResponseBytes: budget.maxResponseBytes ?? 65_536,
+        maxOutputTokens: budget.maxOutputTokens ?? 4_096,
       },
       commentRefreshBudget: {
         expiresAt,

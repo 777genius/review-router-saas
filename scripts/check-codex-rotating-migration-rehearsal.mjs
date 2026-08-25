@@ -60,6 +60,7 @@ const migration76Name =
   "000076_hosted_codex_terminalization_restore_invariants";
 const migration77Name = "000077_hosted_codex_r57_security_race_remediation";
 const migration78Name = "000078_review_investigation_maintenance_checkpoint";
+const migration79Name = "000079_hosted_codex_output_limits";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -93,6 +94,7 @@ assert(
       migration76Name,
       migration77Name,
       migration78Name,
+      migration79Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -578,7 +580,8 @@ function applyCanonicalPreMigrationBaseline(url) {
         directory === migration75Name ||
         directory === migration76Name ||
         directory === migration77Name ||
-        directory === migration78Name);
+        directory === migration78Name ||
+        directory === migration79Name);
     if (!isCanonicalPreMigration) continue;
     const source = join(migrationsDirectory, directory, "migration.sql");
     psql(url, ["-f", source]);

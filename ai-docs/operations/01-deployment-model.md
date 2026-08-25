@@ -149,6 +149,8 @@ Optional grant limits use bounded integer parsing and the following defaults:
 | `REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_REQUESTS`            |      32 |           1-64 |
 | `REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_CONCURRENT_REQUESTS` |       2 |            1-8 |
 | `REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_REQUEST_BYTES`       | 2000000 |   1024-2000000 |
+| `REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_RESPONSE_BYTES`      | 8000000 | 65536-32000000 |
+| `REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_OUTPUT_TOKENS`       |   32768 |     256-100000 |
 | `REVIEW_ROUTER_HOSTED_CODEX_COMMENT_REFRESH_MAX_USES`      |       8 |           1-32 |
 
 Omitting these variables uses the defaults. Invalid values fail composition;

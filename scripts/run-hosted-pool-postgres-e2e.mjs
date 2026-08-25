@@ -74,6 +74,9 @@ try {
     addR57RemediationMigration(rehearsalDirectory);
     runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
     runMigrationTest(migrationDatabaseUrl, "verify-000077");
+    addOutputLimitsMigration(rehearsalDirectory);
+    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
+    runMigrationTest(migrationDatabaseUrl, "verify-000079");
 
     const migrationCount = await countAppliedMigrations(migrationDatabaseUrl);
     runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
@@ -146,9 +149,18 @@ function prepareMigrationRehearsal() {
         "000075_hosted_codex_security_certification",
         "000076_hosted_codex_terminalization_restore_invariants",
         "000077_hosted_codex_r57_security_race_remediation",
+        "000079_hosted_codex_output_limits",
       ].includes(basename(source)),
   });
   return directory;
+}
+
+function addOutputLimitsMigration(directory) {
+  cpSync(
+    "packages/platform/db/prisma/migrations/000079_hosted_codex_output_limits",
+    join(directory, "prisma/migrations/000079_hosted_codex_output_limits"),
+    { recursive: true },
+  );
 }
 
 function addR57RemediationMigration(directory) {

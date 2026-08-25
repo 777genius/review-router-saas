@@ -600,6 +600,7 @@ describe("disposable dual-version rehearsal", () => {
     expect(exclusions).not.toContain(
       "000078_review_investigation_maintenance_checkpoint",
     );
+    expect(exclusions).not.toContain("000079_hosted_codex_output_limits");
     expect(
       migrationManifestIdentity(
         migrationNames.filter(

@@ -43,7 +43,7 @@ const trustedDatabaseIdentity = {
   installerRoutineBodySha256: "a".repeat(64),
   readerRoutineBodySha256: "b".repeat(64),
   targetMigrationManifestIdentity:
-    "sha256:bb102d7d6013f7373f177ea5f266a5427a877fc54b95af8876d30ec2b17ab478",
+    "sha256:b7795385d31bb7778efe5f0d85a5304b72ff65a9a89c7d9ad2148bf001f92d1d",
   activationNamespaceFingerprint: `sha256:${"d".repeat(64)}`,
 } as const;
 const trustedActivationCatalogPolicies = canonicalActivationCatalogPolicies;

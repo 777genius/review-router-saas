@@ -1667,6 +1667,8 @@ model HostedCodexInvocationGrant {
   maxRequests               Int
   maxConcurrentRequests     Int
   maxRequestBytes           Int
+  maxResponseBytes          Int                              @default(8000000)
+  maxOutputTokens           Int                              @default(32768)
   requestCount              Int                              @default(0)
   inFlight                  Int                              @default(0)
   firstSuccessfulResponseAt DateTime?

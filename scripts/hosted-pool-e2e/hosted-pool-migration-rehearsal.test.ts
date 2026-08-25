@@ -12,7 +12,8 @@ if (
   phase !== "seed-000074" &&
   phase !== "verify-000075" &&
   phase !== "verify-000076" &&
-  phase !== "verify-000077"
+  phase !== "verify-000077" &&
+  phase !== "verify-000079"
 ) {
   throw new Error("hosted_pool_migration_phase_required");
 }
@@ -45,6 +46,28 @@ describe("hosted pool populated 000074 to 000075 migration", () => {
         `SELECT COUNT(*)::int AS count FROM "HostedCodexInvocationGrant" WHERE "id" = 'grant-legacy'`,
       );
       expect(seeded.rows[0]?.count).toBe(1);
+    },
+  );
+
+  it.runIf(phase === "verify-000079")(
+    "backfills immutable server-side output budgets",
+    async () => {
+      const budget = await client.query(`
+        SELECT "maxResponseBytes", "maxOutputTokens"
+        FROM "HostedCodexInvocationGrant"
+        WHERE "id" = 'grant-legacy'
+      `);
+      expect(budget.rows[0]).toEqual({
+        maxResponseBytes: 8_000_000,
+        maxOutputTokens: 32_768,
+      });
+      await expect(
+        client.query(`
+          UPDATE "HostedCodexInvocationGrant"
+          SET "maxOutputTokens" = 32767
+          WHERE "id" = 'grant-legacy'
+        `),
+      ).rejects.toThrow("hosted_codex_grant_output_budget_immutable");
     },
   );
 

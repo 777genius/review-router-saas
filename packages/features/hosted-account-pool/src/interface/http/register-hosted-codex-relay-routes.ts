@@ -70,6 +70,8 @@ export type AuthorizedHostedCodexRelay = {
   readonly grantExpiresAtMs: number;
   readonly declaredRequestBytes: number;
   readonly maxRequestBodyBytes: number;
+  readonly maxResponseBytes: number;
+  readonly maxOutputTokens: number;
   readonly faultPlanScope?: Readonly<{
     readonly workspaceId: string;
     readonly githubRepositoryId: bigint;
