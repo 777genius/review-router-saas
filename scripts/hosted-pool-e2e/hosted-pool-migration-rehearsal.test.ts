@@ -13,7 +13,8 @@ if (
   phase !== "verify-000075" &&
   phase !== "verify-000076" &&
   phase !== "verify-000077" &&
-  phase !== "verify-000079"
+  phase !== "verify-000079" &&
+  phase !== "verify-000080"
 ) {
   throw new Error("hosted_pool_migration_phase_required");
 }
@@ -68,6 +69,137 @@ describe("hosted pool populated 000074 to 000075 migration", () => {
           WHERE "id" = 'grant-legacy'
         `),
       ).rejects.toThrow("hosted_codex_grant_output_budget_immutable");
+    },
+  );
+
+  it.runIf(phase === "verify-000079")(
+    "seeds historical effect evidence before credential generation binding",
+    async () => {
+      await client.query(`
+        INSERT INTO "HostedCodexUpstreamEffectAttempt" (
+          "id", "relayRequestId", "grantId", "workspaceId", "poolId",
+          "accountId", "attemptOrdinal", "requestHash", "idempotencyKeyHash",
+          "state", "ownerIdHash", "fenceEpoch", "heartbeatAt",
+          "leaseExpiresAt", "updatedAt"
+        ) VALUES (
+          'attempt-legacy', 'request-legacy', 'grant-legacy',
+          'workspace-legacy', 'pool-legacy', 'account-legacy', 1,
+          '${h64}', '${h64.replaceAll("a", "1")}', 'prepared',
+          '${h64.replaceAll("a", "2")}', 1, CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP + INTERVAL '1 hour', CURRENT_TIMESTAMP
+        )
+      `);
+      const seeded = await client.query(`
+        SELECT COUNT(*)::int AS count
+        FROM "HostedCodexUpstreamEffectAttempt"
+        WHERE "id" = 'attempt-legacy'
+      `);
+      expect(seeded.rows[0]?.count).toBe(1);
+    },
+  );
+
+  it.runIf(phase === "verify-000080")(
+    "requires and preserves exact credential generation on new attempts",
+    async () => {
+      const migration = await client.query(`
+        SELECT COUNT(*)::int AS count
+        FROM "_prisma_migrations"
+        WHERE migration_name = '000080_hosted_codex_attempt_generation'
+          AND finished_at IS NOT NULL AND rolled_back_at IS NULL
+      `);
+      expect(migration.rows[0]?.count).toBe(1);
+      const contract = await client.query(`
+        SELECT
+          (SELECT is_nullable FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND table_name = 'HostedCodexUpstreamEffectAttempt'
+             AND column_name = 'credentialGeneration') AS nullable,
+          pg_get_triggerdef(t.oid) AS trigger_definition,
+          pg_get_functiondef(t.tgfoid) AS guard_definition
+        FROM pg_trigger t
+        WHERE t.tgrelid = '"HostedCodexUpstreamEffectAttempt"'::regclass
+          AND t.tgname = 'HostedCodexUpstreamEffectAttempt_monotonic'
+      `);
+      expect(contract.rows[0]?.nullable).toBe("YES");
+      expect(contract.rows[0]?.trigger_definition).toContain(
+        "BEFORE INSERT OR UPDATE",
+      );
+      expect(contract.rows[0]?.guard_definition).toContain(
+        "hosted_codex_effect_attempt_generation_required",
+      );
+
+      const legacy = await client.query(`
+        SELECT "credentialGeneration", "state"
+        FROM "HostedCodexUpstreamEffectAttempt"
+        WHERE "id" = 'attempt-legacy'
+      `);
+      expect(legacy.rows[0]).toEqual({
+        credentialGeneration: null,
+        state: "prepared",
+      });
+      await client.query(`
+        UPDATE "HostedCodexUpstreamEffectAttempt"
+        SET "heartbeatAt" = "heartbeatAt" + INTERVAL '1 second',
+            "leaseExpiresAt" = "leaseExpiresAt" + INTERVAL '1 second',
+            "updatedAt" = CURRENT_TIMESTAMP
+        WHERE "id" = 'attempt-legacy'
+      `);
+      await expect(
+        client.query(`
+          UPDATE "HostedCodexUpstreamEffectAttempt"
+          SET "credentialGeneration" = 1
+          WHERE "id" = 'attempt-legacy'
+        `),
+      ).rejects.toThrow("hosted_codex_effect_attempt_generation_immutable");
+
+      await client.query(`
+        INSERT INTO "HostedCodexUpstreamEffectAttempt" (
+          "id", "relayRequestId", "grantId", "workspaceId", "poolId",
+          "accountId", "credentialGeneration", "attemptOrdinal",
+          "requestHash", "idempotencyKeyHash", "state", "ownerIdHash",
+          "fenceEpoch", "heartbeatAt", "leaseExpiresAt", "updatedAt"
+        ) VALUES (
+          'attempt-generation-valid', 'request-legacy', 'grant-legacy',
+          'workspace-legacy', 'pool-legacy', 'account-legacy', 1, 2,
+          '${h64}', '${h64.replaceAll("a", "3")}', 'prepared',
+          '${h64.replaceAll("a", "4")}', 1, CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP + INTERVAL '1 hour', CURRENT_TIMESTAMP
+        )
+      `);
+      await expect(
+        client.query(`
+          INSERT INTO "HostedCodexUpstreamEffectAttempt" (
+            "id", "relayRequestId", "grantId", "workspaceId", "poolId",
+            "accountId", "attemptOrdinal", "requestHash",
+            "idempotencyKeyHash", "state", "ownerIdHash", "fenceEpoch",
+            "heartbeatAt", "leaseExpiresAt", "updatedAt"
+          ) VALUES (
+            'attempt-generation-missing', 'request-legacy', 'grant-legacy',
+            'workspace-legacy', 'pool-legacy', 'account-legacy', 3,
+            '${h64}', '${h64.replaceAll("a", "5")}', 'prepared',
+            '${h64.replaceAll("a", "6")}', 1, CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP + INTERVAL '1 hour', CURRENT_TIMESTAMP
+          )
+        `),
+      ).rejects.toThrow("hosted_codex_effect_attempt_generation_required");
+      await expect(
+        client.query(`
+          INSERT INTO "HostedCodexUpstreamEffectAttempt" (
+            "id", "relayRequestId", "grantId", "workspaceId", "poolId",
+            "accountId", "credentialGeneration", "attemptOrdinal",
+            "requestHash", "idempotencyKeyHash", "state", "ownerIdHash",
+            "fenceEpoch", "heartbeatAt", "leaseExpiresAt", "updatedAt"
+          ) VALUES (
+            'attempt-generation-unknown', 'request-legacy', 'grant-legacy',
+            'workspace-legacy', 'pool-legacy', 'account-legacy', 999, 4,
+            '${h64}', '${h64.replaceAll("a", "7")}', 'prepared',
+            '${h64.replaceAll("a", "8")}', 1, CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP + INTERVAL '1 hour', CURRENT_TIMESTAMP
+          )
+        `),
+      ).rejects.toThrow(
+        "HostedCodexUpstreamEffectAttempt_credential_generation_fkey",
+      );
     },
   );
 

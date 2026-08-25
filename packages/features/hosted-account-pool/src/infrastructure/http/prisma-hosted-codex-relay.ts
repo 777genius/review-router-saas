@@ -23,6 +23,7 @@ import {
   PrismaInvocationGrantRepository,
 } from "../prisma/prisma-invocation-grant-repository.js";
 import {
+  HostedCodexCredentialGenerationChangedError,
   HostedCodexEffectReservationDeferredError,
   HostedCodexEffectReservationOutcomeUnknownError,
   PrismaHostedCodexUpstreamEffectLedger,
@@ -302,6 +303,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
     let upstream: Response;
     let effectLease: HostedCodexUpstreamEffectLease;
     let streamHeartbeat: EffectHeartbeat | undefined;
+    let generationRetryCount = 0;
     while (true) {
       let session;
       try {
@@ -327,14 +329,26 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
       const remainingMs =
         input.authorization.grantExpiresAtMs - this.now().getTime();
       if (remainingMs <= 0) throw new Error("hosted_grant_expired");
-      effectLease = await this.effects.prepare({
-        relayRequestId: input.authorization.requestId,
-        grantId: input.authorization.grantId,
-        workspaceId: input.authorization.workspaceId,
-        poolId: input.authorization.poolId,
-        accountId,
-        requestHash,
-      });
+      try {
+        effectLease = await this.effects.prepare({
+          relayRequestId: input.authorization.requestId,
+          grantId: input.authorization.grantId,
+          workspaceId: input.authorization.workspaceId,
+          poolId: input.authorization.poolId,
+          accountId,
+          credentialGeneration: session.credentialGeneration,
+          requestHash,
+        });
+      } catch (error) {
+        if (
+          error instanceof HostedCodexCredentialGenerationChangedError &&
+          generationRetryCount < 2
+        ) {
+          generationRetryCount += 1;
+          continue;
+        }
+        throw error;
+      }
       try {
         const syntheticFault = await this.consumeFault(
           input.authorization,

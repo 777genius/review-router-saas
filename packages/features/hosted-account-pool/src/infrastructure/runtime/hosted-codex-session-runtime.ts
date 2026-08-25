@@ -268,6 +268,7 @@ export class HostedCodexSessionRuntime {
   }): Promise<{
     readonly accessToken: string;
     readonly chatgptAccountId: string;
+    readonly credentialGeneration: number;
   }> {
     const refreshInput = {
       providerInstanceId: input.accountId,
@@ -298,6 +299,13 @@ export class HostedCodexSessionRuntime {
         ? refresh.session.artifact
         : refresh.session?.artifact;
     if (!artifact) throw new Error("hosted_codex_refreshed_session_missing");
+    const credentialGeneration =
+      refresh.status === "ready"
+        ? refresh.session.generation
+        : refresh.session?.generation;
+    if (!credentialGeneration || !Number.isSafeInteger(credentialGeneration)) {
+      throw new Error("hosted_codex_credential_generation_missing");
+    }
     const authJson = codexAuthJsonFromArtifact(artifact);
     const parsed = validateCodexAuthJsonBytes({
       authJsonBytes: authJson,
@@ -309,6 +317,7 @@ export class HostedCodexSessionRuntime {
     return {
       accessToken,
       chatgptAccountId: extractChatgptAccountId(idToken),
+      credentialGeneration,
     };
   }
 }

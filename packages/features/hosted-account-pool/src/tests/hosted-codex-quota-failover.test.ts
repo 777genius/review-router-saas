@@ -25,6 +25,7 @@ import {
 } from "../domain/invocation-grant";
 import { FetchHostedCodexStreamingRelay } from "../infrastructure/http/prisma-hosted-codex-relay";
 import {
+  HostedCodexCredentialGenerationChangedError,
   HostedCodexEffectReservationDeferredError,
   type HostedCodexUpstreamEffectLease,
 } from "../infrastructure/prisma/prisma-hosted-codex-upstream-effect-ledger";
@@ -103,6 +104,7 @@ describe("hosted Codex quota failover", () => {
           async ({ accountId }: { accountId: string }) => ({
             accessToken: `access-${accountId}`,
             chatgptAccountId: `chatgpt-${accountId}`,
+            credentialGeneration: 1,
           }),
         ),
         classifyFailure: vi.fn(() => ({ code: "unknown" })),
@@ -128,6 +130,7 @@ describe("hosted Codex quota failover", () => {
             ownerToken: `owner-${effectOrdinal}`,
             fenceEpoch: BigInt(effectOrdinal),
             accountId,
+            credentialGeneration: 1,
           };
         }),
         markDispatching: vi.fn(async () => undefined),
@@ -800,6 +803,77 @@ describe("hosted Codex quota failover", () => {
     );
     expect(ledger.complete).not.toHaveBeenCalled();
   });
+
+  it("re-resolves the session when credential generation changes before reservation", async () => {
+    const primary = account("generation-race-primary", 0);
+    let grant = admittedGrant(primary, account("generation-race-backup", 1));
+    const ledger = {
+      recordRequestHash: vi.fn(async () => undefined),
+      markStarted: vi.fn(async (input: any) => {
+        grant = input.transition(grant);
+        return grant;
+      }),
+      complete: vi.fn(async (input: any) => {
+        grant = input.transition(grant);
+        return grant;
+      }),
+    };
+    const runtime = runtimeFixture();
+    runtime.ensureFreshSession
+      .mockResolvedValueOnce({
+        accessToken: "generation-one-token",
+        chatgptAccountId: "unit-account",
+        credentialGeneration: 1,
+      })
+      .mockResolvedValueOnce({
+        accessToken: "generation-two-token",
+        chatgptAccountId: "unit-account",
+        credentialGeneration: 2,
+      });
+    const effects = effectLedgerFixture();
+    effects.prepare
+      .mockRejectedValueOnce(new HostedCodexCredentialGenerationChangedError())
+      .mockResolvedValueOnce({
+        attemptId: "generation-two-attempt",
+        attemptOrdinal: 1,
+        ownerToken: "generation-two-owner",
+        fenceEpoch: 1n,
+        accountId: primary.id,
+        credentialGeneration: 2,
+      });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('data: {"type":"response.completed"}\n\n', {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+    const fetchImpl = fetchMock as unknown as typeof fetch;
+    const body = Buffer.from('{"input":"review"}');
+    const relay = new FetchHostedCodexStreamingRelay(
+      runtime as never,
+      ledger as never,
+      fetchImpl,
+      { failoverEnabled: true, now: () => now, effects },
+    );
+
+    const response = await relay.open({
+      authorization: authorization(grant, primary, body.byteLength),
+      body: Readable.from(body),
+      contentType: "application/json",
+      accept: "text/event-stream",
+      abortSignal: new AbortController().signal,
+    });
+    for await (const chunk of response.body) void chunk;
+
+    expect(runtime.ensureFreshSession).toHaveBeenCalledTimes(2);
+    expect(
+      effects.prepare.mock.calls.map(([input]) => input.credentialGeneration),
+    ).toEqual([1, 2]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toEqual(
+      expect.objectContaining({ authorization: "Bearer generation-two-token" }),
+    );
+  });
 });
 
 function runtimeFixture() {
@@ -807,6 +881,7 @@ function runtimeFixture() {
     ensureFreshSession: vi.fn(async () => ({
       accessToken: "unit-access",
       chatgptAccountId: "unit-account",
+      credentialGeneration: 1,
     })),
     classifyFailure: vi.fn(() => ({ code: "unknown" })),
   };
@@ -815,16 +890,25 @@ function runtimeFixture() {
 function effectLedgerFixture() {
   let attemptOrdinal = 0;
   return {
-    prepare: vi.fn(async ({ accountId }: { accountId?: string }) => {
-      attemptOrdinal += 1;
-      return {
-        attemptId: `unit-effect-attempt-${attemptOrdinal}`,
-        attemptOrdinal,
-        ownerToken: `unit-effect-owner-${attemptOrdinal}`,
-        fenceEpoch: BigInt(attemptOrdinal),
-        accountId: accountId ?? "post-dispatch",
-      };
-    }),
+    prepare: vi.fn(
+      async ({
+        accountId,
+        credentialGeneration,
+      }: {
+        accountId?: string;
+        credentialGeneration: number;
+      }) => {
+        attemptOrdinal += 1;
+        return {
+          attemptId: `unit-effect-attempt-${attemptOrdinal}`,
+          attemptOrdinal,
+          ownerToken: `unit-effect-owner-${attemptOrdinal}`,
+          fenceEpoch: BigInt(attemptOrdinal),
+          accountId: accountId ?? "post-dispatch",
+          credentialGeneration,
+        };
+      },
+    ),
     markDispatching: vi.fn(async () => undefined),
     heartbeat: vi.fn(async () => undefined),
     markResponseStarted: vi.fn(async () => undefined),

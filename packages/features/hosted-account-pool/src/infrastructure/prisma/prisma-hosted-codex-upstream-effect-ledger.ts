@@ -18,7 +18,14 @@ export type HostedCodexUpstreamEffectLease = {
   readonly ownerToken: string;
   readonly fenceEpoch: bigint;
   readonly accountId: string;
+  readonly credentialGeneration: number;
 };
+
+export class HostedCodexCredentialGenerationChangedError extends Error {
+  constructor() {
+    super("hosted_codex_credential_generation_changed");
+  }
+}
 
 export class HostedCodexEffectReservationOutcomeUnknownError extends Error {
   constructor(readonly cause: unknown) {
@@ -53,10 +60,17 @@ export class PrismaHostedCodexUpstreamEffectLedger {
     readonly workspaceId: string;
     readonly poolId: string;
     readonly accountId: string;
+    readonly credentialGeneration: number;
     readonly requestHash: string;
     readonly leaseMs?: number;
   }): Promise<HostedCodexUpstreamEffectLease> {
     requireHash(input.requestHash);
+    if (
+      !Number.isSafeInteger(input.credentialGeneration) ||
+      input.credentialGeneration < 1
+    ) {
+      throw new Error("hosted_codex_credential_generation_invalid");
+    }
     const leaseMs = input.leaseMs ?? 30_000;
     if (
       !Number.isSafeInteger(leaseMs) ||
@@ -99,6 +113,12 @@ export class PrismaHostedCodexUpstreamEffectLedger {
         }
         assertCurrentDispatchAuthority(request.grant, input.accountId, now);
         if (
+          request.grant.account.activeGeneration !==
+          BigInt(input.credentialGeneration)
+        ) {
+          throw new HostedCodexCredentialGenerationChangedError();
+        }
+        if (
           latest &&
           latest.accountId === input.accountId &&
           latest.state !== "failed_no_effect"
@@ -114,6 +134,7 @@ export class PrismaHostedCodexUpstreamEffectLedger {
             workspaceId: input.workspaceId,
             poolId: input.poolId,
             accountId: input.accountId,
+            credentialGeneration: BigInt(input.credentialGeneration),
             attemptOrdinal,
             requestHash: input.requestHash,
             idempotencyKeyHash: sha256(
@@ -138,6 +159,7 @@ export class PrismaHostedCodexUpstreamEffectLedger {
           ownerToken,
           fenceEpoch: BigInt(attemptOrdinal),
           accountId: input.accountId,
+          credentialGeneration: input.credentialGeneration,
         };
       },
       { isolationLevel: "Serializable" },
@@ -153,6 +175,7 @@ export class PrismaHostedCodexUpstreamEffectLedger {
               workspaceId: input.workspaceId,
               poolId: input.poolId,
               accountId: input.accountId,
+              credentialGeneration: BigInt(input.credentialGeneration),
               requestHash: input.requestHash,
               ownerIdHash,
             },
@@ -176,6 +199,7 @@ export class PrismaHostedCodexUpstreamEffectLedger {
         ownerToken,
         fenceEpoch: recovered.fenceEpoch,
         accountId: recovered.accountId,
+        credentialGeneration: input.credentialGeneration,
       };
     });
   }

@@ -1510,6 +1510,7 @@ model HostedCodexCredentialVersion {
   generationReceipts HostedCodexGenerationReceipt[]
   envelopeRevisions  HostedCodexCredentialEnvelopeRevision[]
   restoreItems       HostedCodexRestoreItem[]
+  upstreamAttempts   HostedCodexUpstreamEffectAttempt[]
 
   @@unique([accountId, generation])
   @@unique([accountId, databaseIncarnation, generation], map: "HostedCodexCredentialVersion_account_incarnation_generation_key")
@@ -1730,6 +1731,7 @@ model HostedCodexUpstreamEffectAttempt {
   workspaceId            String
   poolId                 String
   accountId              String
+  credentialGeneration   BigInt?
   attemptOrdinal         Int
   requestHash            String
   idempotencyKeyHash     String                         @unique
@@ -1750,6 +1752,7 @@ model HostedCodexUpstreamEffectAttempt {
   relayRequest HostedCodexRelayRequest     @relation(fields: [relayRequestId, grantId], references: [id, grantId], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_request_fkey")
   grant        HostedCodexInvocationGrant  @relation(fields: [grantId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_grant_tenant_fkey")
   account      HostedCodexAccount          @relation(fields: [accountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_account_tenant_fkey")
+  credentialVersion HostedCodexCredentialVersion? @relation(fields: [accountId, credentialGeneration], references: [accountId, generation], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_credential_generation_fkey")
 
   @@unique([relayRequestId, attemptOrdinal], map: "HostedCodexUpstreamEffectAttempt_request_attempt_key")
   @@index([state, leaseExpiresAt, id], map: "HostedCodexUpstreamEffectAttempt_sweep_idx")

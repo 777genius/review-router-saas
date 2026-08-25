@@ -61,6 +61,7 @@ const migration76Name =
 const migration77Name = "000077_hosted_codex_r57_security_race_remediation";
 const migration78Name = "000078_review_investigation_maintenance_checkpoint";
 const migration79Name = "000079_hosted_codex_output_limits";
+const migration80Name = "000080_hosted_codex_attempt_generation";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -95,6 +96,7 @@ assert(
       migration77Name,
       migration78Name,
       migration79Name,
+      migration80Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -203,7 +205,7 @@ try {
   const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000079 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000080 rehearsal passed.\n",
   );
 } finally {
   const databaseDrop = psql(
@@ -581,7 +583,8 @@ function applyCanonicalPreMigrationBaseline(url) {
         directory === migration76Name ||
         directory === migration77Name ||
         directory === migration78Name ||
-        directory === migration79Name);
+        directory === migration79Name ||
+        directory === migration80Name);
     if (!isCanonicalPreMigration) continue;
     const source = join(migrationsDirectory, directory, "migration.sql");
     psql(url, ["-f", source]);

@@ -289,6 +289,7 @@ const preReleaseMigrationBoundary = Object.freeze({
     "000077_hosted_codex_r57_security_race_remediation",
     "000078_review_investigation_maintenance_checkpoint",
     "000079_hosted_codex_output_limits",
+    "000080_hosted_codex_attempt_generation",
   ]),
 });
 

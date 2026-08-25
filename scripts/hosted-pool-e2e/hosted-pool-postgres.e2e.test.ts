@@ -186,6 +186,8 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       ensureFreshSession: vi.fn(async () => ({
         accessToken: "fake-provider-access-token",
         chatgptAccountId: "fake-chatgpt-account",
+        credentialGeneration:
+          await activeCredentialGeneration("account-primary"),
       })),
       classifyFailure: vi.fn(() => ({ code: "unknown" })),
     } as unknown as HostedCodexSessionRuntime;
@@ -477,6 +479,8 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       ensureFreshSession: vi.fn(async () => ({
         accessToken: "dropped-response-access-token",
         chatgptAccountId: "dropped-response-account",
+        credentialGeneration:
+          await activeCredentialGeneration("account-primary"),
       })),
       classifyFailure: vi.fn(() => ({ code: "unknown" })),
     } as unknown as HostedCodexSessionRuntime;
@@ -567,6 +571,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       workspaceId: workspace,
       poolId: pool,
       accountId: "account-primary",
+      credentialGeneration: await activeCredentialGeneration("account-primary"),
       requestHash,
     });
     const terminalEvidenceHash = sha256("failover-commit-ambiguity-evidence");
@@ -619,6 +624,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       workspaceId: workspace,
       poolId: pool,
       accountId: "account-backup",
+      credentialGeneration: await activeCredentialGeneration("account-backup"),
       requestHash,
     });
     await effects.markDispatching(successor);
@@ -651,6 +657,75 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         state: "healthy",
         cooldownUntil: null,
         healthVersion: { increment: 1 },
+      },
+    });
+  });
+
+  it("binds each upstream attempt to the exact active credential generation", async () => {
+    const issued = await issueGrant("effect-generation-binding");
+    const authorization = new PrismaHostedCodexRelayAuthorization(prisma);
+    const admitted = await authorization.authorize({
+      opaqueGrant: issued.plaintextToken,
+      requestOrdinal: 1,
+      idempotencyKey: "effect-generation-binding",
+      requestBytes: 64,
+    });
+    const requestHash = sha256("effect-generation-binding-body");
+    await ledger.recordRequestHash({
+      grantId: issued.grant.id,
+      requestId: admitted.requestId,
+      requestHash,
+    });
+    const effects = new PrismaHostedCodexUpstreamEffectLedger(prisma);
+    const activeGeneration =
+      await activeCredentialGeneration("account-primary");
+
+    await expect(
+      effects.prepare({
+        relayRequestId: admitted.requestId,
+        grantId: issued.grant.id,
+        workspaceId: workspace,
+        poolId: pool,
+        accountId: "account-primary",
+        credentialGeneration: activeGeneration + 1,
+        requestHash,
+      }),
+    ).rejects.toThrow("hosted_codex_credential_generation_changed");
+
+    const effect = await effects.prepare({
+      relayRequestId: admitted.requestId,
+      grantId: issued.grant.id,
+      workspaceId: workspace,
+      poolId: pool,
+      accountId: "account-primary",
+      credentialGeneration: activeGeneration,
+      requestHash,
+    });
+    await expect(
+      prisma.hostedCodexUpstreamEffectAttempt.findUniqueOrThrow({
+        where: { id: effect.attemptId },
+      }),
+    ).resolves.toMatchObject({
+      credentialGeneration: BigInt(activeGeneration),
+    });
+    await expect(
+      prisma.hostedCodexUpstreamEffectAttempt.update({
+        where: { id: effect.attemptId },
+        data: { credentialGeneration: null },
+      }),
+    ).rejects.toThrow("hosted_codex_effect_attempt_generation_immutable");
+    await effects.finish(effect, {
+      state: "failed_no_effect",
+      errorCode: "generation-binding-test-complete",
+      evidence: "generation-binding-test-complete",
+    });
+    await prisma.hostedCodexRelayRequest.update({
+      where: { id: admitted.requestId },
+      data: {
+        status: "failed",
+        responseBytes: 0,
+        errorCode: "generation-binding-test-complete",
+        completedAt: new Date(),
       },
     });
   });
@@ -842,13 +917,15 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
             idempotencyKey: `effect-${suffix}`,
             requestBytes: 64,
           }),
-        prepare: () =>
+        prepare: async () =>
           effects.prepare({
             relayRequestId: admitted.requestId,
             grantId: issued.grant.id,
             workspaceId: workspace,
             poolId: pool,
             accountId: "account-primary",
+            credentialGeneration:
+              await activeCredentialGeneration("account-primary"),
             requestHash,
             leaseMs: 5_000,
           }),
@@ -1064,6 +1141,9 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         updatedAt: clock,
       })),
     });
+    const credentialGeneration = BigInt(
+      await activeCredentialGeneration("account-primary"),
+    );
     await prisma.hostedCodexUpstreamEffectAttempt.createMany({
       data: requestIds.flatMap((relayRequestId, index) => {
         const requestHash = sha256(`starvation-request-body-${index}`);
@@ -1077,6 +1157,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
           workspaceId: workspace,
           poolId: pool,
           accountId: "account-primary",
+          credentialGeneration,
           attemptOrdinal: 1,
           requestHash,
           idempotencyKeyHash: sha256(
@@ -1161,6 +1242,8 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
           ensureFreshSession: vi.fn(async () => ({
             accessToken: "response-start-access",
             chatgptAccountId: "response-start-account",
+            credentialGeneration:
+              await activeCredentialGeneration("account-primary"),
           })),
           classifyFailure: vi.fn(() => ({ code: "unknown" })),
         } as unknown as HostedCodexSessionRuntime,
@@ -1238,6 +1321,8 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         ensureFreshSession: vi.fn(async () => ({
           accessToken: "output-budget-access",
           chatgptAccountId: "output-budget-account",
+          credentialGeneration:
+            await activeCredentialGeneration("account-primary"),
         })),
         classifyFailure: vi.fn(() => ({ code: "unknown" })),
       } as unknown as HostedCodexSessionRuntime,
@@ -1333,6 +1418,8 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         ensureFreshSession: vi.fn(async () => ({
           accessToken: "long-response-access",
           chatgptAccountId: "long-response-account",
+          credentialGeneration:
+            await activeCredentialGeneration("account-primary"),
         })),
         classifyFailure: vi.fn(() => ({ code: "unknown" })),
       } as unknown as HostedCodexSessionRuntime,
@@ -1392,6 +1479,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       workspaceId: workspace,
       poolId: pool,
       accountId: "account-primary",
+      credentialGeneration: await activeCredentialGeneration("account-primary"),
       requestHash: firstRequest.requestHash,
     });
     await prisma.hostedCodexAccount.update({
@@ -1411,6 +1499,8 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         workspaceId: workspace,
         poolId: pool,
         accountId: "account-primary",
+        credentialGeneration:
+          await activeCredentialGeneration("account-primary"),
         requestHash: secondRequest.requestHash,
       }),
     ).rejects.toThrow("hosted_codex_effect_authority_revoked");
@@ -1424,6 +1514,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       workspaceId: workspace,
       poolId: pool,
       accountId: "account-primary",
+      credentialGeneration: await activeCredentialGeneration("account-primary"),
       requestHash: secondRequest.requestHash,
     });
     await prisma.hostedCodexInvocationGrant.update({
@@ -1464,6 +1555,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       workspaceId: workspace,
       poolId: pool,
       accountId: "account-primary",
+      credentialGeneration: await activeCredentialGeneration("account-primary"),
       requestHash,
       leaseMs: 5_000,
     });
@@ -1492,6 +1584,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       workspaceId: workspace,
       poolId: pool,
       accountId: "account-primary",
+      credentialGeneration: await activeCredentialGeneration("account-primary"),
       requestHash,
     });
     expect(retry.fenceEpoch).toBe(2n);
@@ -1523,6 +1616,8 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         workspaceId: workspace,
         poolId: pool,
         accountId: "account-primary",
+        credentialGeneration:
+          await activeCredentialGeneration("account-primary"),
         requestHash,
       });
       await effects.markDispatching(effect);
@@ -1777,6 +1872,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
           ensureFreshSession: vi.fn(async ({ accountId }) => ({
             accessToken: `classified-${accountId}`,
             chatgptAccountId: `classified-${accountId}`,
+            credentialGeneration: await activeCredentialGeneration(accountId),
           })),
           classifyFailure: vi.fn(() => ({ code: "unknown" })),
         } as unknown as HostedCodexSessionRuntime,
@@ -2345,6 +2441,21 @@ function validAuthJson(
 
 function sha256(value: string) {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+async function activeCredentialGeneration(accountId: string): Promise<number> {
+  const account = await prisma.hostedCodexAccount.findUniqueOrThrow({
+    where: { id: accountId },
+    select: { activeGeneration: true },
+  });
+  if (account.activeGeneration === null) {
+    throw new Error("hosted_codex_active_generation_missing");
+  }
+  const generation = Number(account.activeGeneration);
+  if (!Number.isSafeInteger(generation) || generation < 1) {
+    throw new Error("hosted_codex_active_generation_invalid");
+  }
+  return generation;
 }
 
 async function readAll(stream: Readable): Promise<void> {
