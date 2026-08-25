@@ -113,7 +113,7 @@ describe("hosted pool exact production evidence graph", () => {
         findMany: async () => [
           {
             targetId: planIdHash,
-            createdAt: new Date("2026-08-24T00:00:01Z"),
+            createdAt: new Date("2026-08-24T00:00:01.750Z"),
             metadata: {
               planIdHash,
               repositoryId: "123456789",
@@ -152,7 +152,7 @@ describe("hosted pool exact production evidence graph", () => {
     prisma.auditEvent.findMany = async () => [
       {
         targetId: planIdHash,
-        createdAt: new Date("2026-08-24T00:00:01Z"),
+        createdAt: new Date("2026-08-24T00:00:01.750Z"),
         metadata: {
           planIdHash,
           repositoryId: "123456789",
@@ -185,7 +185,7 @@ describe("hosted pool exact production evidence graph", () => {
     prisma.auditEvent.findMany = async () => [
       {
         targetId: planIdHash,
-        createdAt: new Date("2026-08-24T00:00:01.750Z"),
+        createdAt: new Date("2026-08-24T00:00:01Z"),
         metadata: {
           planIdHash,
           repositoryId: "123456789",

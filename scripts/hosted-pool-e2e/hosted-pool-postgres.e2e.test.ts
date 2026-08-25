@@ -36,6 +36,7 @@ import {
   relayRequestId,
   repositoryId,
   workspaceId,
+  type HostedCodexUpstreamEffectLease,
   type InvocationGrantCapabilityPort,
 } from "../../packages/features/hosted-account-pool/src/index";
 import { createPrismaClient } from "../../packages/platform/db/src/index";
@@ -689,6 +690,37 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
           }),
       };
     };
+
+    const duplicate = await prepareRequest("duplicate-reservation");
+    const duplicateRace = await Promise.allSettled([
+      duplicate.prepare(),
+      duplicate.prepare(),
+    ]);
+    const duplicateWinners = duplicateRace.filter(
+      (
+        result,
+      ): result is PromiseFulfilledResult<HostedCodexUpstreamEffectLease> =>
+        result.status === "fulfilled",
+    );
+    const duplicateLosers = duplicateRace.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    expect(duplicateWinners).toHaveLength(1);
+    expect(duplicateWinners[0]!.value.attemptOrdinal).toBe(1);
+    expect(duplicateLosers).toHaveLength(1);
+    expect(String(duplicateLosers[0]!.reason)).toContain(
+      "hosted_codex_effect_attempt_in_progress",
+    );
+    expect(
+      await prisma.hostedCodexUpstreamEffectAttempt.count({
+        where: { relayRequestId: duplicate.admitted.requestId },
+      }),
+    ).toBe(1);
+    await effects.finish(duplicateWinners[0]!.value, {
+      state: "terminal_unknown",
+      errorCode: "duplicate-reservation-test-complete",
+      evidence: "only-one-provider-attempt-reserved",
+    });
 
     const beforeSend = await prepareRequest("before-send");
     const firstPrepared = await beforeSend.prepare();

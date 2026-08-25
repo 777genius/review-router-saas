@@ -383,7 +383,10 @@ export class PrismaInvocationGrantRepository
                 grantId: input.grantId,
                 ownerIdHash: input.effect.ownerIdHash,
                 fenceEpoch: input.effect.fenceEpoch,
-                state: "response_started",
+                state:
+                  input.effect.terminalState === "failed_no_effect"
+                    ? "prepared"
+                    : "response_started",
               },
               data: {
                 state: input.effect.terminalState,
@@ -677,27 +680,6 @@ export class PrismaInvocationGrantRepository
               },
             });
           siblingEffectRecorded = siblingEffect > 0;
-          const classified =
-            await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
-              where: {
-                id: input.effect.attemptId,
-                relayRequestId: input.requestId,
-                grantId: input.grantId,
-                ownerIdHash: input.effect.ownerIdHash,
-                fenceEpoch: input.effect.fenceEpoch,
-                state: "response_started",
-              },
-              data: {
-                state: "failed_classified",
-                completedAt: input.now,
-                heartbeatAt: input.now,
-                terminalEvidenceHash: input.effect.terminalEvidenceHash,
-                errorCode: input.effect.errorCode,
-              },
-            });
-          if (classified.count !== 1) {
-            throw new Error("hosted_codex_effect_classification_conflict");
-          }
         }
         const accountIds = [
           stored.activeAccountId,
@@ -734,6 +716,29 @@ export class PrismaInvocationGrantRepository
           backupStored ? restorePoolAccount(backupStored) : null,
         );
         if (result.status === "denied") return result;
+        if (input.effect) {
+          const classified =
+            await transaction.hostedCodexUpstreamEffectAttempt.updateMany({
+              where: {
+                id: input.effect.attemptId,
+                relayRequestId: input.requestId,
+                grantId: input.grantId,
+                ownerIdHash: input.effect.ownerIdHash,
+                fenceEpoch: input.effect.fenceEpoch,
+                state: input.effect.sourceState,
+              },
+              data: {
+                state: input.effect.terminalState,
+                completedAt: input.now,
+                heartbeatAt: input.now,
+                terminalEvidenceHash: input.effect.terminalEvidenceHash,
+                errorCode: input.effect.errorCode,
+              },
+            });
+          if (classified.count !== 1) {
+            throw new Error("hosted_codex_effect_classification_conflict");
+          }
+        }
         const grantUpdated =
           await transaction.hostedCodexInvocationGrant.updateMany({
             where: {

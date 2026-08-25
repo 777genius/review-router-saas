@@ -133,6 +133,7 @@ function assertFaultConsumptionTimestamps(
     completedAt: Date | null;
     upstreamAttempts: readonly {
       createdAt: Date;
+      dispatchStartedAt: Date | null;
       responseStartedAt: Date | null;
       completedAt: Date | null;
     }[];
@@ -145,7 +146,14 @@ function assertFaultConsumptionTimestamps(
     if (!Number.isFinite(consumedAt.getTime()) || !attempt)
       throw new Error("hosted_pool_canary_fault_evidence_timestamps_invalid");
     if (consumption.injectionPoint === "before_provider_fetch") {
-      if (consumedAt < requestStartedAt || consumedAt > attempt.createdAt)
+      const reservationBoundary = attempt.createdAt;
+      const dispatchBoundary = attempt.dispatchStartedAt ?? attempt.completedAt;
+      if (
+        !dispatchBoundary ||
+        consumedAt < requestStartedAt ||
+        consumedAt < reservationBoundary ||
+        consumedAt > dispatchBoundary
+      )
         throw new Error("hosted_pool_canary_fault_evidence_timestamps_invalid");
       continue;
     }

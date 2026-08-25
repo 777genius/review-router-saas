@@ -34,7 +34,10 @@ export interface RelayRequestCompletionPort {
       readonly attemptId: string;
       readonly ownerIdHash: string;
       readonly fenceEpoch: bigint;
-      readonly terminalState: "succeeded" | "terminal_unknown";
+      readonly terminalState:
+        | "succeeded"
+        | "failed_no_effect"
+        | "terminal_unknown";
       readonly terminalEvidenceHash: string;
     };
   }): Promise<InvocationGrant>;

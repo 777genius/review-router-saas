@@ -24,6 +24,7 @@ import {
   issueInvocationGrant,
 } from "../domain/invocation-grant";
 import { FetchHostedCodexStreamingRelay } from "../infrastructure/http/prisma-hosted-codex-relay";
+import type { HostedCodexUpstreamEffectLease } from "../infrastructure/prisma/prisma-hosted-codex-upstream-effect-ledger";
 
 const now = new Date("2026-08-16T12:00:00.000Z");
 const requestId = relayRequestId("request-capacity-1");
@@ -49,6 +50,10 @@ describe("hosted Codex quota failover", () => {
         }),
         failover: vi.fn(
           async (input: {
+            effect?: {
+              sourceState: string;
+              terminalState: string;
+            };
             transition: (
               grant: InvocationGrant,
               failedAccount: HostedPoolAccount,
@@ -56,6 +61,10 @@ describe("hosted Codex quota failover", () => {
             ) => CurrentRelayRequestFailover;
           }) => {
             checkpoints.push("capacity_failover");
+            expect(input.effect).toMatchObject({
+              sourceState: "response_started",
+              terminalState: "failed_classified",
+            });
             expect(grant.inFlightRequestIds).toEqual([requestId]);
             const result = input.transition(grant, primary, backup);
             if (result.status === "switched") {
@@ -108,30 +117,38 @@ describe("hosted Codex quota failover", () => {
         );
       let effectOrdinal = 0;
       const effects = {
-        prepare: vi.fn(async ({ accountId }: { accountId: string }) => ({
-          attemptId: `attempt-${++effectOrdinal}`,
-          ownerToken: `owner-${effectOrdinal}`,
-          fenceEpoch: BigInt(effectOrdinal),
-          accountId,
-        })),
+        prepare: vi.fn(async ({ accountId }: { accountId: string }) => {
+          effectOrdinal += 1;
+          return {
+            attemptId: `attempt-${effectOrdinal}`,
+            attemptOrdinal: effectOrdinal,
+            ownerToken: `owner-${effectOrdinal}`,
+            fenceEpoch: BigInt(effectOrdinal),
+            accountId,
+          };
+        }),
         markDispatching: vi.fn(async () => undefined),
         heartbeat: vi.fn(async () => undefined),
         markResponseStarted: vi.fn(async () => undefined),
-        authority: vi.fn(
-          (lease: { attemptId: string; fenceEpoch: bigint }) => ({
-            attemptId: lease.attemptId,
-            ownerIdHash: createHash("sha256")
-              .update(lease.attemptId)
-              .digest("hex"),
-            fenceEpoch: lease.fenceEpoch,
-          }),
+        authority: vi.fn((lease: HostedCodexUpstreamEffectLease) => ({
+          attemptId: lease.attemptId,
+          ownerIdHash: createHash("sha256")
+            .update(lease.attemptId)
+            .digest("hex"),
+          fenceEpoch: lease.fenceEpoch,
+        })),
+      };
+      const faultPlans = {
+        consume: vi.fn(
+          async (_scope: { attemptOrdinal: number; injectionPoint: string }) =>
+            null,
         ),
       };
       const relay = new FetchHostedCodexStreamingRelay(
         runtime as never,
         ledger as never,
         fetchImpl,
-        { failoverEnabled: true, now: () => now, effects },
+        { failoverEnabled: true, now: () => now, effects, faultPlans },
       );
       const body = Buffer.from('{"input":"review"}');
 
@@ -149,6 +166,7 @@ describe("hosted Codex quota failover", () => {
           grantExpiresAtMs: grant.budget.expiresAt.getTime(),
           declaredRequestBytes: body.byteLength,
           maxRequestBodyBytes: grant.budget.maxRequestBytes,
+          faultPlanScope: faultScope(),
         },
         body: Readable.from([body]),
         contentType: "application/json",
@@ -177,6 +195,16 @@ describe("hosted Codex quota failover", () => {
             attempt: grant.authority.runAttempt,
           }),
         ],
+      ]);
+      expect(
+        faultPlans.consume.mock.calls.map(([scope]) => ({
+          attemptOrdinal: scope.attemptOrdinal,
+          injectionPoint: scope.injectionPoint,
+        })),
+      ).toEqual([
+        { attemptOrdinal: 1, injectionPoint: "before_provider_fetch" },
+        { attemptOrdinal: 2, injectionPoint: "before_provider_fetch" },
+        { attemptOrdinal: 2, injectionPoint: "after_response_started" },
       ]);
       expect(fetchImpl.mock.calls.map((call) => call[1]?.headers)).toEqual([
         expect.objectContaining({
@@ -354,7 +382,7 @@ describe("hosted Codex quota failover", () => {
       fault: "synthetic_rate_limited" as const,
     },
   ])(
-    "injects a synthetic $status before fetch with zero primary and one backup effect",
+    "reserves and closes a synthetic $status attempt before one backup effect",
     async ({ fault }) => {
       const primary = account("fault-primary", 0);
       const backup = account("fault-backup", 1);
@@ -362,6 +390,10 @@ describe("hosted Codex quota failover", () => {
       const ledger = {
         recordRequestHash: vi.fn(async () => undefined),
         failover: vi.fn(async (input: any) => {
+          expect(input.effect).toMatchObject({
+            sourceState: "prepared",
+            terminalState: "failed_no_effect",
+          });
           const result = input.transition(grant, primary, backup);
           if (result.status === "switched") grant = result.grant;
           return result;
@@ -408,14 +440,20 @@ describe("hosted Codex quota failover", () => {
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       expect(ledger.failover).toHaveBeenCalledTimes(1);
       expect(grant.activeAccountId).toBe(backup.id);
-      expect(effects.prepare).toHaveBeenCalledTimes(1);
+      expect(effects.prepare).toHaveBeenCalledTimes(2);
       expect(effects.prepare).toHaveBeenCalledWith(
         expect.objectContaining({ accountId: backup.id }),
       );
-      expect(effects.prepare).not.toHaveBeenCalledWith(
+      expect(effects.prepare).toHaveBeenCalledWith(
         expect.objectContaining({ accountId: primary.id }),
       );
       expect(faultPlans.consume).toHaveBeenCalledTimes(3);
+      expect(effects.prepare.mock.invocationCallOrder[0]).toBeLessThan(
+        faultPlans.consume.mock.invocationCallOrder[0]!,
+      );
+      expect(
+        faultPlans.consume.mock.calls.map(([scope]) => scope.attemptOrdinal),
+      ).toEqual([1, 2, 2]);
     },
   );
 
@@ -470,7 +508,8 @@ describe("hosted Codex quota failover", () => {
     ).rejects.toThrow("hosted_codex_canary_fault_plan_not_one_shot");
     expect(faultPlans.consume).toHaveBeenCalledTimes(2);
     expect(fetchImpl).not.toHaveBeenCalled();
-    expect(effects.prepare).not.toHaveBeenCalled();
+    expect(effects.prepare).toHaveBeenCalledTimes(2);
+    expect(ledger.complete).toHaveBeenCalledTimes(1);
   });
 
   it("drops only after one real dispatch and response-start evidence", async () => {
@@ -547,18 +586,22 @@ function runtimeFixture() {
 }
 
 function effectLedgerFixture() {
-  const lease = {
-    attemptId: "unit-effect-attempt",
-    ownerToken: "unit-effect-owner",
-    fenceEpoch: 1n,
-    accountId: "post-dispatch",
-  };
+  let attemptOrdinal = 0;
   return {
-    prepare: vi.fn(async () => lease),
+    prepare: vi.fn(async ({ accountId }: { accountId?: string }) => {
+      attemptOrdinal += 1;
+      return {
+        attemptId: `unit-effect-attempt-${attemptOrdinal}`,
+        attemptOrdinal,
+        ownerToken: `unit-effect-owner-${attemptOrdinal}`,
+        fenceEpoch: BigInt(attemptOrdinal),
+        accountId: accountId ?? "post-dispatch",
+      };
+    }),
     markDispatching: vi.fn(async () => undefined),
     heartbeat: vi.fn(async () => undefined),
     markResponseStarted: vi.fn(async () => undefined),
-    authority: vi.fn(() => ({
+    authority: vi.fn((lease: HostedCodexUpstreamEffectLease) => ({
       attemptId: lease.attemptId,
       ownerIdHash: sha256(Buffer.from(lease.ownerToken)),
       fenceEpoch: lease.fenceEpoch,

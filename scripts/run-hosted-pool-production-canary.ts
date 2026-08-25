@@ -376,24 +376,35 @@ export function assertClassifiedOutcome(
       throw new Error("hosted_pool_canary_dropped_response_replayed");
     return;
   }
+  const syntheticAttempt = item.attempts[0];
+  const successfulAttempt = item.attempts[1];
   if (
     item.failoverCount !== 1 ||
     !item.backupAccountId ||
     item.primaryAccountId === item.backupAccountId ||
     item.activeAccountId !== item.backupAccountId ||
-    item.attempts.length !== 1 ||
+    item.attempts.length !== 2 ||
     item.requestStatuses.length !== 1 ||
     item.requestStatuses[0] !== "succeeded" ||
     item.requestErrorCode !== null ||
     item.requestStartedAt === null ||
     item.successfulResponseStartedAt === null ||
     item.completedAt === null ||
-    item.attempts[0]!.state !== "succeeded" ||
-    item.attempts[0]!.errorCode !== null ||
-    item.attempts[0]!.accountId !== item.backupAccountId ||
-    item.attempts[0]!.dispatchStartedAt === null ||
-    item.attempts[0]!.responseStartedAt === null ||
-    item.attempts[0]!.completedAt === null ||
+    syntheticAttempt?.ordinal !== 1 ||
+    syntheticAttempt.state !== "failed_no_effect" ||
+    syntheticAttempt.errorCode !==
+      (expected === "401" ? "credential_invalid" : "quota_limited") ||
+    syntheticAttempt.accountId !== item.primaryAccountId ||
+    syntheticAttempt.dispatchStartedAt !== null ||
+    syntheticAttempt.responseStartedAt !== null ||
+    syntheticAttempt.completedAt === null ||
+    successfulAttempt?.ordinal !== 2 ||
+    successfulAttempt.state !== "succeeded" ||
+    successfulAttempt.errorCode !== null ||
+    successfulAttempt.accountId !== item.backupAccountId ||
+    successfulAttempt.dispatchStartedAt === null ||
+    successfulAttempt.responseStartedAt === null ||
+    successfulAttempt.completedAt === null ||
     !hasExactFaultConsumption(
       item,
       expected === "401" ? "synthetic_unauthorized" : "synthetic_rate_limited",

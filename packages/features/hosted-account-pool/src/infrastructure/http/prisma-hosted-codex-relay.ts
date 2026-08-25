@@ -222,7 +222,11 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
     try {
       return await this.openAuthorized(input);
     } catch (error) {
-      if (error instanceof UpstreamTerminalUnknownError) throw error.cause;
+      if (
+        error instanceof UpstreamTerminalUnknownError ||
+        error instanceof UpstreamNoEffectError
+      )
+        throw error.cause;
       await completeFailedRequest(
         input.authorization,
         this.ledger,
@@ -282,30 +286,6 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
       const remainingMs =
         input.authorization.grantExpiresAtMs - this.now().getTime();
       if (remainingMs <= 0) throw new Error("hosted_grant_expired");
-      const syntheticFault = await this.consumeFault(
-        input.authorization,
-        "before_provider_fetch",
-        1,
-      );
-      if (failedOver && syntheticFault !== null)
-        throw new Error("hosted_codex_canary_fault_plan_not_one_shot");
-      if (
-        !failedOver &&
-        (syntheticFault === "synthetic_unauthorized" ||
-          syntheticFault === "synthetic_rate_limited")
-      ) {
-        accountId = await this.switchToBackup(
-          input.authorization,
-          syntheticFault === "synthetic_rate_limited"
-            ? "rate_limited"
-            : "credential_invalid",
-          syntheticFault === "synthetic_rate_limited"
-            ? new Date(this.now().getTime() + 15 * 60_000)
-            : null,
-        );
-        failedOver = true;
-        continue;
-      }
       effectLease = await this.effects.prepare({
         relayRequestId: input.authorization.requestId,
         grantId: input.authorization.grantId,
@@ -314,7 +294,55 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         accountId,
         requestHash,
       });
-      await this.effects.markDispatching(effectLease);
+      try {
+        const syntheticFault = await this.consumeFault(
+          input.authorization,
+          "before_provider_fetch",
+          effectLease.attemptOrdinal,
+        );
+        if (failedOver && syntheticFault !== null)
+          throw new Error("hosted_codex_canary_fault_plan_not_one_shot");
+        if (
+          !failedOver &&
+          (syntheticFault === "synthetic_unauthorized" ||
+            syntheticFault === "synthetic_rate_limited")
+        ) {
+          const syntheticStatus =
+            syntheticFault === "synthetic_rate_limited" ? 429 : 401;
+          accountId = await this.switchToBackup(
+            input.authorization,
+            syntheticStatus === 429 ? "rate_limited" : "credential_invalid",
+            syntheticStatus === 429
+              ? new Date(this.now().getTime() + 15 * 60_000)
+              : null,
+            {
+              lease: effectLease,
+              status: syntheticStatus,
+              sourceState: "prepared",
+            },
+          );
+          failedOver = true;
+          continue;
+        }
+        await this.effects.markDispatching(effectLease);
+      } catch (error) {
+        try {
+          await completeFailedRequest(
+            input.authorization,
+            this.ledger,
+            "relay_open_failed",
+            effectCompletion(
+              this.effects,
+              effectLease,
+              "failed_no_effect",
+              "pre-dispatch-failure",
+            ),
+          );
+        } catch (completionError) {
+          throw new UpstreamNoEffectError(completionError);
+        }
+        throw new UpstreamNoEffectError(error);
+      }
       let heartbeat = startEffectHeartbeat(
         this.effects,
         effectLease,
@@ -361,7 +389,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
           const droppedFault = await this.consumeFault(
             input.authorization,
             "after_response_started",
-            Number(effectLease.fenceEpoch),
+            effectLease.attemptOrdinal,
           );
           if (droppedFault === "drop_after_response_started") {
             await upstream.body?.cancel();
@@ -399,7 +427,11 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
             upstream.status === 429
               ? new Date(this.now().getTime() + 15 * 60_000)
               : null,
-            { lease: effectLease, status: upstream.status },
+            {
+              lease: effectLease,
+              status: upstream.status,
+              sourceState: "response_started",
+            },
           );
           await heartbeat.stop();
           failedOver = true;
@@ -511,6 +543,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
     classifiedEffect?: {
       readonly lease: HostedCodexUpstreamEffectLease;
       readonly status: number;
+      readonly sourceState: "prepared" | "response_started";
     },
   ): Promise<string> {
     if (!this.failoverEnabled)
@@ -521,22 +554,40 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         requestId: relayRequestId(authorization.requestId),
         failure,
         effectFence: classifiedEffect
-          ? "classified_response_before_success"
+          ? classifiedEffect.sourceState === "response_started"
+            ? "classified_response_before_success"
+            : "before_refresh_or_upstream_effect"
           : "before_refresh_or_upstream_effect",
         cooldownUntil,
         now: this.now(),
         ...(classifiedEffect
           ? {
-              effect: {
-                ...this.effects.authority(classifiedEffect.lease),
-                terminalEvidenceHash: sha256(
-                  `classified-response\u0000${classifiedEffect.status}\u0000${classifiedEffect.lease.attemptId}`,
-                ),
-                errorCode:
-                  classifiedEffect.status === 429
-                    ? "quota_limited"
-                    : "credential_invalid",
-              },
+              effect:
+                classifiedEffect.sourceState === "prepared"
+                  ? {
+                      ...this.effects.authority(classifiedEffect.lease),
+                      sourceState: "prepared" as const,
+                      terminalState: "failed_no_effect" as const,
+                      terminalEvidenceHash: sha256(
+                        `prepared\u0000${classifiedEffect.status}\u0000${classifiedEffect.lease.attemptId}`,
+                      ),
+                      errorCode:
+                        classifiedEffect.status === 429
+                          ? "quota_limited"
+                          : "credential_invalid",
+                    }
+                  : {
+                      ...this.effects.authority(classifiedEffect.lease),
+                      sourceState: "response_started" as const,
+                      terminalState: "failed_classified" as const,
+                      terminalEvidenceHash: sha256(
+                        `response_started\u0000${classifiedEffect.status}\u0000${classifiedEffect.lease.attemptId}`,
+                      ),
+                      errorCode:
+                        classifiedEffect.status === 429
+                          ? "quota_limited"
+                          : "credential_invalid",
+                    },
             }
           : {}),
       },
@@ -805,7 +856,7 @@ function asError(error: unknown): Error {
 function effectCompletion(
   effects: Pick<PrismaHostedCodexUpstreamEffectLedger, "authority">,
   lease: HostedCodexUpstreamEffectLease,
-  terminalState: "succeeded" | "terminal_unknown",
+  terminalState: "succeeded" | "failed_no_effect" | "terminal_unknown",
   evidence: string,
 ) {
   return {
@@ -820,6 +871,12 @@ function effectCompletion(
 class UpstreamTerminalUnknownError extends Error {
   constructor(readonly cause: unknown) {
     super("hosted_codex_upstream_terminal_unknown");
+  }
+}
+
+class UpstreamNoEffectError extends Error {
+  constructor(readonly cause: unknown) {
+    super("hosted_codex_upstream_no_effect");
   }
 }
 

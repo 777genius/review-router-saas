@@ -14,6 +14,7 @@ const terminalStates: readonly HostedCodexUpstreamEffectState[] = [
 
 export type HostedCodexUpstreamEffectLease = {
   readonly attemptId: string;
+  readonly attemptOrdinal: number;
   readonly ownerToken: string;
   readonly fenceEpoch: bigint;
   readonly accountId: string;
@@ -69,13 +70,11 @@ export class PrismaHostedCodexUpstreamEffectLedger {
         });
         if (!request) throw new Error("hosted_codex_effect_request_invalid");
         assertCurrentDispatchAuthority(request.grant, input.accountId, now);
-        const prior =
-          await transaction.hostedCodexUpstreamEffectAttempt.findMany({
+        const latest =
+          await transaction.hostedCodexUpstreamEffectAttempt.findFirst({
             where: { relayRequestId: input.relayRequestId },
             orderBy: { attemptOrdinal: "desc" },
-            take: 1,
           });
-        const latest = prior[0];
         if (latest && !terminalStates.includes(latest.state)) {
           throw new Error("hosted_codex_effect_attempt_in_progress");
         }
@@ -117,6 +116,7 @@ export class PrismaHostedCodexUpstreamEffectLedger {
         });
         return {
           attemptId,
+          attemptOrdinal,
           ownerToken,
           fenceEpoch: BigInt(attemptOrdinal),
           accountId: input.accountId,
