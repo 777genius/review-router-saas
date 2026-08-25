@@ -79,47 +79,46 @@ export class PrismaInvocationGrantRepository
     assertRuntimeGateAuthority(grant.runtimeAuthzEpoch, runtimeGate);
     await this.prisma.hostedCodexInvocationGrant.create({
       data: {
-            id: grant.id,
-            invocationId: grant.invocationId,
-            workspaceId: grant.workspaceId,
-            poolId: grant.poolId,
-            repositoryConnectionId: grant.repositoryId,
-            repositoryBindingId: grant.repositoryBindingId,
-            activeAccountId: grant.activeAccountId,
-            primaryAccountId: grant.primaryAccountId,
-            backupAccountId: grant.backupAccountId,
-            reviewRequestId: grant.authority.reviewRequestId,
-            providerInvocationKey: grant.authority.providerInvocationKey,
-            runId: grant.authority.runId,
-            runAttempt: grant.authority.runAttempt,
-            model: grant.authority.model,
-            policyVersion: "hosted-codex-v1",
-            policyFingerprint: grant.authority.policyFingerprint,
-            runtimeConfigVersion: grant.authority.runtimeConfigVersion,
-            bindingRevision: BigInt(grant.authority.bindingRevision),
-            authzEpoch: grant.authority.authzEpoch,
-            runtimeAuthzEpoch: grant.runtimeAuthzEpoch,
-            capabilityTokenHash: grant.capabilityTokenHash,
+        id: grant.id,
+        invocationId: grant.invocationId,
+        workspaceId: grant.workspaceId,
+        poolId: grant.poolId,
+        repositoryConnectionId: grant.repositoryId,
+        repositoryBindingId: grant.repositoryBindingId,
+        activeAccountId: grant.activeAccountId,
+        primaryAccountId: grant.primaryAccountId,
+        backupAccountId: grant.backupAccountId,
+        reviewRequestId: grant.authority.reviewRequestId,
+        providerInvocationKey: grant.authority.providerInvocationKey,
+        runId: grant.authority.runId,
+        runAttempt: grant.authority.runAttempt,
+        model: grant.authority.model,
+        policyVersion: "hosted-codex-v1",
+        policyFingerprint: grant.authority.policyFingerprint,
+        runtimeConfigVersion: grant.authority.runtimeConfigVersion,
+        bindingRevision: BigInt(grant.authority.bindingRevision),
+        authzEpoch: grant.authority.authzEpoch,
+        runtimeAuthzEpoch: grant.runtimeAuthzEpoch,
+        capabilityTokenHash: grant.capabilityTokenHash,
+        issuedAt: grant.createdAt,
+        expiresAt: grant.budget.expiresAt,
+        maxRequests: grant.budget.maxRequests,
+        maxConcurrentRequests: grant.budget.maxConcurrentRequests,
+        maxRequestBytes: grant.budget.maxRequestBytes,
+        maxResponseBytes: grant.budget.maxResponseBytes,
+        maxOutputTokens: grant.budget.maxOutputTokens,
+        requestCount: 0,
+        inFlight: 0,
+        commentRefreshCapability: {
+          create: {
+            capabilityTokenHash: grant.commentTokenRefreshCapability.tokenHash,
             issuedAt: grant.createdAt,
-            expiresAt: grant.budget.expiresAt,
-            maxRequests: grant.budget.maxRequests,
-            maxConcurrentRequests: grant.budget.maxConcurrentRequests,
-            maxRequestBytes: grant.budget.maxRequestBytes,
-            maxResponseBytes: grant.budget.maxResponseBytes,
-            maxOutputTokens: grant.budget.maxOutputTokens,
-            requestCount: 0,
-            inFlight: 0,
-            commentRefreshCapability: {
-              create: {
-                capabilityTokenHash:
-                  grant.commentTokenRefreshCapability.tokenHash,
-                issuedAt: grant.createdAt,
-                expiresAt: grant.commentTokenRefreshCapability.expiresAt,
-                maxUses: grant.commentTokenRefreshCapability.maxUses,
-                useCount: grant.commentTokenRefreshCapability.useCount,
-                revokedAt: grant.commentTokenRefreshCapability.revokedAt,
-              },
-            },
+            expiresAt: grant.commentTokenRefreshCapability.expiresAt,
+            maxUses: grant.commentTokenRefreshCapability.maxUses,
+            useCount: grant.commentTokenRefreshCapability.useCount,
+            revokedAt: grant.commentTokenRefreshCapability.revokedAt,
+          },
+        },
       },
     });
   }
@@ -154,6 +153,26 @@ export class PrismaInvocationGrantRepository
       throw new Error("invocation_grant_expiry_result_invalid");
     }
     return count;
+  }
+
+  async hasIssuedExpiringAtOrBefore(
+    input: Parameters<
+      InvocationGrantExpiryPort["hasIssuedExpiringAtOrBefore"]
+    >[0],
+  ): Promise<boolean> {
+    const rows = await this.prisma.$queryRaw<Array<{ exists: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM "HostedCodexInvocationGrant"
+        WHERE "status" = 'issued'
+          AND "expiresAt" <= ${input.now}
+      ) AS "exists"
+    `;
+    const exists = rows[0]?.exists;
+    if (typeof exists !== "boolean") {
+      throw new Error("invocation_grant_expiry_probe_result_invalid");
+    }
+    return exists;
   }
 
   async issue() {

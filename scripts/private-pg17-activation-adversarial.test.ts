@@ -1545,6 +1545,40 @@ describePg17(
           ).toBe("t");
 
           context.psqlAs(adminUsername, runtimeGrantSql(configuration));
+          expect(
+            context.psqlAs(
+              adminUsername,
+              `SELECT bool_and(
+                 has_table_privilege(role_name,
+                   'public."HostedCodexRuntimeGate"','SELECT')
+                 AND NOT has_table_privilege(role_name,
+                   'public."HostedCodexRuntimeGate"','INSERT')
+                 AND NOT has_table_privilege(role_name,
+                   'public."HostedCodexRuntimeGate"','UPDATE')
+                 AND NOT has_table_privilege(role_name,
+                   'public."HostedCodexRuntimeGate"','DELETE'))
+               FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
+                 'reviewrouter_worker']) AS roles(role_name);`,
+            ),
+          ).toBe("t");
+          const runtimeGateMutation = context.psqlResultAs(
+            "reviewrouter_web",
+            `UPDATE public."HostedCodexRuntimeGate"
+             SET "status"='active',"authzEpoch"="authzEpoch"+1,
+                 "revision"="revision"+1,
+                 "reasonCode"='runtime_reopen_attempt',
+                 "changedAt"="changedAt"+interval '1 second'
+             WHERE "id"='global';`,
+          );
+          expect(runtimeGateMutation.status).not.toBe(0);
+          expect(runtimeGateMutation.stderr).toContain("permission denied");
+          expect(
+            context.psqlAs(
+              adminUsername,
+              `SELECT "status"::text FROM public."HostedCodexRuntimeGate"
+               WHERE "id"='global';`,
+            ),
+          ).toBe("closed");
           const openCatalogDigest = context
             .psqlAs(installerUsername, fencedLiveV70V72CatalogDigestSql)
             .split("\n")

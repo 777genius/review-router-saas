@@ -146,10 +146,12 @@ describe("hosted Codex quota failover", () => {
         })),
       };
       const faultPlans = {
-        consume: vi.fn(
-          async (_scope: { attemptOrdinal: number; injectionPoint: string }) =>
-            null,
-        ),
+        consume: vi.fn<
+          (scope: {
+            attemptOrdinal: number;
+            injectionPoint: string;
+          }) => Promise<null>
+        >(async () => null),
       };
       const relay = new FetchHostedCodexStreamingRelay(
         runtime as never,

@@ -466,6 +466,12 @@ const fullyProtectedRuntimeTables = Object.freeze([
   "RuntimeGenerationWitnessProof",
 ]);
 
+// Release/operator authority may be observed by application runtimes, but it
+// must never inherit the blanket application-table write grant.
+export const runtimeAuthorityReadOnlyTables = Object.freeze([
+  "HostedCodexRuntimeGate",
+]);
+
 export const workerOwnedMaintenanceCheckpointTable =
   "ReviewInvestigationMaintenanceCheckpoint";
 
@@ -2741,7 +2747,7 @@ BEGIN
         'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
         'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
         'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-        '${workerOwnedMaintenanceCheckpointTable}'
+        '${workerOwnedMaintenanceCheckpointTable}','HostedCodexRuntimeGate'
       ) AND attribute.attnum>0 AND NOT attribute.attisdropped
     ), sequence_facts AS (
       SELECT role_name, role_kind, relname,
@@ -2789,12 +2795,14 @@ BEGIN
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthDatabaseAuthorityKey',
            'CodexOAuthDatabaseAuthorityReceipt','RuntimeGenerationWitnessProof',
            'RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+           AND relname <> 'HostedCodexRuntimeGate'
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker'))
          OR can_update IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance',
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
            'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+           AND relname <> 'HostedCodexRuntimeGate'
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker'))
          OR can_delete IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine','CodexOAuthLease',
@@ -2803,7 +2811,7 @@ BEGIN
            'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
            'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof',
-           '${workerOwnedMaintenanceCheckpointTable}'))
+           '${workerOwnedMaintenanceCheckpointTable}','HostedCodexRuntimeGate'))
          OR can_truncate OR can_reference OR can_trigger)
        OR EXISTS (
          SELECT 1 FROM column_facts
@@ -4749,6 +4757,9 @@ export function runtimeGrantStatements(
   const quarantineLiterals = quarantineTables
     .map((table) => `'${table}'`)
     .join(",");
+  const runtimeAuthorityReadOnlyLiterals = runtimeAuthorityReadOnlyTables
+    .map((table) => `'${table}'`)
+    .join(",");
   const staleColumnAclLiterals = [
     "RepositoryConnection",
     ...rotatingEvidenceTables,
@@ -4812,6 +4823,25 @@ END
 $runtime_acl$;
 REVOKE INSERT, UPDATE, DELETE ON TABLE public."RepositoryConnection" FROM ${username};
 GRANT SELECT ON TABLE public."RepositoryConnection" TO ${username};
+DO $runtime_authority_acl$
+DECLARE authority_table text;
+BEGIN
+  FOREACH authority_table IN ARRAY ARRAY[${runtimeAuthorityReadOnlyLiterals}] LOOP
+    IF to_regclass(format('public.%I', authority_table)) IS NOT NULL THEN
+      EXECUTE format(
+        'REVOKE INSERT, UPDATE, DELETE ON TABLE public.%I FROM %I',
+        authority_table,
+        '${username}'
+      );
+      EXECUTE format(
+        'GRANT SELECT ON TABLE public.%I TO %I',
+        authority_table,
+        '${username}'
+      );
+    END IF;
+  END LOOP;
+END
+$runtime_authority_acl$;
 DO $runtime_evidence_acl$
 DECLARE protected_table text;
 BEGIN

@@ -2468,6 +2468,33 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       }),
     ).resolves.toEqual({ status: "issued", revision: 1n });
   });
+
+  it("expires a grant at the exact expiresAt boundary", async () => {
+    // Keep this before the still-issued +1ms fixture from the preceding probe
+    // so the assertion isolates equality at this grant's own boundary.
+    const cutoff = new Date("2026-08-25T12:09:00.000Z");
+    await insertIssuedGrantFixtures("expiry-exact-boundary", 1, {
+      issuedAt: new Date(cutoff.getTime() - 60_000),
+      expiresAt: cutoff,
+    });
+
+    await expect(
+      reconcileExpiredInvocationGrants(
+        { now: cutoff, batchSize: 1, maxBatches: 2 },
+        ledger,
+      ),
+    ).resolves.toEqual({ expiredCount: 1, batches: 2 });
+    await expect(
+      prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: "grant-expiry-exact-boundary-0" },
+        select: { status: true, revision: true, updatedAt: true },
+      }),
+    ).resolves.toEqual({
+      status: "expired",
+      revision: 2n,
+      updatedAt: cutoff,
+    });
+  });
 });
 
 async function transitionRuntimeGate(

@@ -35,5 +35,9 @@ export async function reconcileExpiredInvocationGrants(
     expiredCount += expired;
     if (expired < batchSize) return { expiredCount, batches };
   }
+
+  const residual = await expiry.hasIssuedExpiringAtOrBefore({ now });
+  if (!residual) return { expiredCount, batches: maxBatches };
+
   throw new Error("invocation_grant_expiry_reconciliation_limit_exceeded");
 }

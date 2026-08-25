@@ -26,6 +26,7 @@ import {
   providerRuntimeUpdateColumns,
   rotatingEvidenceTables,
   runReleaseMigrationSubprocess,
+  runtimeAuthorityReadOnlyTables,
   runtimeGrantSql,
   stripAtomicMigrationEnvelope,
   workerOwnedMaintenanceCheckpointTable,
@@ -1310,6 +1311,13 @@ describe("canonical exclusive release migration caller", () => {
       expect(grants).toContain(
         `GRANT SELECT ON TABLE public."RepositoryConnection" TO ${role}`,
       );
+      for (const table of runtimeAuthorityReadOnlyTables) {
+        expect(grants).toContain(`'${table}'`);
+      }
+      expect(grants).toContain(
+        "'REVOKE INSERT, UPDATE, DELETE ON TABLE public.%I FROM %I'",
+      );
+      expect(grants).toContain("'GRANT SELECT ON TABLE public.%I TO %I'");
       const genericGrant = grants.indexOf(
         `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
       );
