@@ -612,26 +612,38 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       state: "failed_no_effect",
       terminalEvidenceHash,
     });
-    const recoveryClock = new Date(Date.now() + 30_001);
-    expect(
-      await new PrismaHostedCodexUpstreamEffectLedger(
-        prisma,
-        () => recoveryClock,
-      ).sweepExpired(),
-    ).toBeGreaterThanOrEqual(1);
+    const successor = await effects.prepare({
+      relayRequestId: admitted.requestId,
+      grantId: issued.grant.id,
+      workspaceId: workspace,
+      poolId: pool,
+      accountId: "account-backup",
+      requestHash,
+    });
+    await effects.markDispatching(successor);
+    let recoveryClock = new Date(Date.now() + 29_000);
+    const recoveryEffects = new PrismaHostedCodexUpstreamEffectLedger(
+      prisma,
+      () => recoveryClock,
+    );
+    await recoveryEffects.heartbeat(successor);
+    recoveryClock = new Date(recoveryClock.getTime() + 2_000);
+    expect(await recoveryEffects.sweepExpired()).toBe(0);
     await expect(
       prisma.hostedCodexRelayRequest.findUniqueOrThrow({
         where: { id: admitted.requestId },
       }),
-    ).resolves.toMatchObject({
-      status: "failed",
-      errorCode: "upstream_dispatch_not_started",
+    ).resolves.toMatchObject({ status: "processing" });
+    await recoveryEffects.finish(successor, {
+      state: "terminal_unknown",
+      errorCode: "live-successor-test-complete",
+      evidence: "older-no-effect-attempt-cannot-terminalize-live-successor",
     });
     await expect(
       prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
         where: { id: issued.grant.id },
       }),
-    ).resolves.toMatchObject({ inFlight: 0 });
+    ).resolves.toMatchObject({ inFlight: 0, status: "revoked" });
     await prisma.hostedCodexAccount.update({
       where: { id: "account-primary" },
       data: {
@@ -807,7 +819,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     expect(duplicateWinners[0]!.value.attemptOrdinal).toBe(1);
     expect(duplicateLosers).toHaveLength(1);
     expect(String(duplicateLosers[0]!.reason)).toContain(
-      "hosted_codex_effect_attempt_in_progress",
+      "hosted_codex_effect_reservation_deferred",
     );
     expect(
       await prisma.hostedCodexUpstreamEffectAttempt.count({
@@ -850,6 +862,62 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       errorCode: "reservation-commit-ambiguity-test-complete",
       evidence: "reservation-recovered-by-deterministic-identity",
     });
+
+    const unreadableReservation = await prepareRequest(
+      "reservation-reconciliation-read-failure",
+    );
+    clock = new Date();
+    const unreadableTransaction = prisma.$transaction.bind(prisma);
+    const unreadableTransactionSpy = vi.spyOn(
+      prisma as never,
+      "$transaction" as never,
+    );
+    const reconciliationReadSpy = vi.spyOn(
+      prisma.hostedCodexUpstreamEffectAttempt,
+      "findFirst",
+    );
+    unreadableTransactionSpy.mockImplementationOnce(
+      async (...args: unknown[]) => {
+        await (
+          unreadableTransaction as (...args: unknown[]) => Promise<unknown>
+        )(...args);
+        throw new Error("reservation-commit-acknowledgement-lost");
+      },
+    );
+    reconciliationReadSpy.mockRejectedValueOnce(
+      new Error("reservation-reconciliation-read-unavailable"),
+    );
+    try {
+      await expect(unreadableReservation.prepare()).rejects.toThrow(
+        "hosted_codex_effect_reservation_outcome_unknown",
+      );
+    } finally {
+      unreadableTransactionSpy.mockRestore();
+      reconciliationReadSpy.mockRestore();
+    }
+    await expect(unreadableReservation.prepare()).rejects.toThrow(
+      "hosted_codex_effect_reservation_deferred",
+    );
+    await expect(
+      prisma.hostedCodexRelayRequest.findUniqueOrThrow({
+        where: { id: unreadableReservation.admitted.requestId },
+      }),
+    ).resolves.toMatchObject({ status: "processing" });
+    clock = new Date(clock.getTime() + 5_001);
+    expect(await effects.sweepExpired()).toBe(1);
+    await expect(
+      prisma.hostedCodexRelayRequest.findUniqueOrThrow({
+        where: { id: unreadableReservation.admitted.requestId },
+      }),
+    ).resolves.toMatchObject({
+      status: "failed",
+      errorCode: "upstream_dispatch_not_started",
+    });
+    await expect(
+      prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+        where: { id: unreadableReservation.issued.grant.id },
+      }),
+    ).resolves.toMatchObject({ inFlight: 0 });
 
     const beforeSend = await prepareRequest("before-send");
     const firstPrepared = await beforeSend.prepare();

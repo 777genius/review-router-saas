@@ -26,6 +26,12 @@ export class HostedCodexEffectReservationOutcomeUnknownError extends Error {
   }
 }
 
+export class HostedCodexEffectReservationDeferredError extends Error {
+  constructor() {
+    super("hosted_codex_effect_reservation_deferred");
+  }
+}
+
 /** Durable, per-request/account upstream POST authority. It never gates peers. */
 export class PrismaHostedCodexUpstreamEffectLedger {
   constructor(
@@ -83,15 +89,15 @@ export class PrismaHostedCodexUpstreamEffectLedger {
           },
         });
         if (!request) throw new Error("hosted_codex_effect_request_invalid");
-        assertCurrentDispatchAuthority(request.grant, input.accountId, now);
         const latest =
           await transaction.hostedCodexUpstreamEffectAttempt.findFirst({
             where: { relayRequestId: input.relayRequestId },
             orderBy: { attemptOrdinal: "desc" },
           });
         if (latest && !terminalStates.includes(latest.state)) {
-          throw new Error("hosted_codex_effect_attempt_in_progress");
+          throw new HostedCodexEffectReservationDeferredError();
         }
+        assertCurrentDispatchAuthority(request.grant, input.accountId, now);
         if (
           latest &&
           latest.accountId === input.accountId &&
@@ -400,6 +406,18 @@ export class PrismaHostedCodexUpstreamEffectLedger {
       });
     for (const attempt of terminalOrphans) {
       await this.prisma.$transaction(async (transaction) => {
+        await lockRelayRequest(
+          transaction,
+          attempt.relayRequestId,
+          attempt.grantId,
+        );
+        const latest =
+          await transaction.hostedCodexUpstreamEffectAttempt.findFirst({
+            where: { relayRequestId: attempt.relayRequestId },
+            orderBy: { attemptOrdinal: "desc" },
+            select: { id: true },
+          });
+        if (latest?.id !== attempt.id) return;
         const request = await transaction.hostedCodexRelayRequest.updateMany({
           where: {
             id: attempt.relayRequestId,

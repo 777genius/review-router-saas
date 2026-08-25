@@ -23,6 +23,7 @@ import {
   PrismaInvocationGrantRepository,
 } from "../prisma/prisma-invocation-grant-repository.js";
 import {
+  HostedCodexEffectReservationDeferredError,
   HostedCodexEffectReservationOutcomeUnknownError,
   PrismaHostedCodexUpstreamEffectLedger,
   type HostedCodexUpstreamEffectLease,
@@ -226,6 +227,9 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
     try {
       return await this.openAuthorized(input);
     } catch (error) {
+      if (error instanceof HostedCodexEffectReservationDeferredError) {
+        throw error;
+      }
       if (
         error instanceof UpstreamTerminalUnknownError ||
         error instanceof UpstreamNoEffectError ||

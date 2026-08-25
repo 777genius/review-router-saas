@@ -24,7 +24,10 @@ import {
   issueInvocationGrant,
 } from "../domain/invocation-grant";
 import { FetchHostedCodexStreamingRelay } from "../infrastructure/http/prisma-hosted-codex-relay";
-import type { HostedCodexUpstreamEffectLease } from "../infrastructure/prisma/prisma-hosted-codex-upstream-effect-ledger";
+import {
+  HostedCodexEffectReservationDeferredError,
+  type HostedCodexUpstreamEffectLease,
+} from "../infrastructure/prisma/prisma-hosted-codex-upstream-effect-ledger";
 
 const now = new Date("2026-08-16T12:00:00.000Z");
 const requestId = relayRequestId("request-capacity-1");
@@ -274,6 +277,39 @@ describe("hosted Codex quota failover", () => {
     ).rejects.toThrow("response-start-persistence-failed");
     expect(ledger.terminalizeUnknown).toHaveBeenCalledTimes(1);
     expect(ledger.complete).not.toHaveBeenCalled();
+  });
+
+  it("never generic-completes while an earlier reservation remains unresolved", async () => {
+    const primary = account("reservation-deferred", 0);
+    const grant = admittedGrant(primary, account("reservation-backup", 1));
+    const ledger = {
+      recordRequestHash: vi.fn(async () => undefined),
+      ensureRequestHash: vi.fn(async () => undefined),
+      complete: vi.fn(async () => grant),
+    };
+    const effects = effectLedgerFixture();
+    effects.prepare.mockRejectedValueOnce(
+      new HostedCodexEffectReservationDeferredError(),
+    );
+    const fetchImpl = vi.fn<typeof fetch>();
+    const relay = new FetchHostedCodexStreamingRelay(
+      runtimeFixture() as never,
+      ledger as never,
+      fetchImpl,
+      { failoverEnabled: false, now: () => now, effects },
+    );
+    const body = Buffer.from('{"input":"review"}');
+    await expect(
+      relay.open({
+        authorization: authorization(grant, primary, body.byteLength),
+        body: Readable.from(body),
+        contentType: "application/json",
+        accept: "text/event-stream",
+        abortSignal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("hosted_codex_effect_reservation_deferred");
+    expect(ledger.complete).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("keeps heartbeating after headers until the response body completes", async () => {
