@@ -52,7 +52,12 @@ export async function collectAppBotPublicationEvidence(
     startedAt: Date;
     finishedAt: Date;
   },
-): Promise<HostedPoolPublicationEvidence> {
+): Promise<
+  Pick<
+    HostedPoolPublicationEvidence,
+    "appBotPublicationCount" | "nonAppBotPublicationCount"
+  >
+> {
   const objects = (
     await Promise.all(
       [

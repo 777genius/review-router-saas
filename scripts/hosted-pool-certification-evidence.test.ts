@@ -10,6 +10,47 @@ import {
 } from "./hosted-pool-certification-evidence";
 
 describe("hosted pool certification evidence", () => {
+  const gateStatuses = {
+    "hosted-pool:verify": "success",
+    "hosted-pool:migration-rehearsal": "success",
+    "hosted-pool:e2e:postgres": "success",
+  };
+
+  it("rejects a vacuous secret-sentinel scan", () => {
+    expect(() => assertHostedCertificationSecretFree([], [])).toThrow(
+      "hosted_certification_secret_sentinels_required",
+    );
+  });
+
+  it("rejects incomplete compliance gate evidence", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rr-hosted-gates-repo-"));
+    const outputDirectory = await mkdtemp(
+      join(tmpdir(), "rr-hosted-gates-output-"),
+    );
+    try {
+      git(workspace, ["init"]);
+      git(workspace, ["config", "user.email", "certification@example.invalid"]);
+      git(workspace, ["config", "user.name", "Certification Test"]);
+      await writeFile(join(workspace, "README.md"), "fixture\n");
+      git(workspace, ["add", "README.md"]);
+      git(workspace, ["commit", "-m", "fixture parent"]);
+      await writeFile(join(workspace, "SECOND.md"), "fixture\n");
+      git(workspace, ["add", "SECOND.md"]);
+      git(workspace, ["commit", "-m", "fixture"]);
+      await expect(
+        buildHostedCertificationEvidence({
+          workspace,
+          outputDirectory,
+          expectedCommitSha: git(workspace, ["rev-parse", "HEAD"]),
+          sentinels: ["certification-sentinel"],
+        }),
+      ).rejects.toThrow("hosted_certification_gate_failed");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("accepts bounded hashed relay evidence", () => {
     expect(() =>
       assertHostedCertificationSecretFree(
@@ -89,6 +130,8 @@ describe("hosted pool certification evidence", () => {
         outputDirectory,
         expectedCommitSha: commitSha,
         workspaceSnapshotPath,
+        sentinels: ["certification-sentinel"],
+        gateStatuses,
       });
       const evidence = JSON.parse(await readFile(result.path, "utf8")) as {
         subject: { commitSha: string; parentSha: string; treeSha: string };
@@ -148,6 +191,8 @@ describe("hosted pool certification evidence", () => {
             outputDirectory: join(runnerTemp, "hosted-certification"),
             expectedCommitSha: git(workspace, ["rev-parse", "HEAD"]),
             workspaceSnapshotPath: snapshotPath,
+            sentinels: ["certification-sentinel"],
+            gateStatuses,
           }),
         ).rejects.toThrow("hosted_certification_workspace_dirty");
       } finally {

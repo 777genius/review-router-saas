@@ -7,6 +7,9 @@ export type HostedPoolCanaryPhase =
 
 export type CanaryRunEvidence = Readonly<{
   runId: number;
+  sourceRunAttempt: 2;
+  sourceHeadSha: string;
+  sourceExecutionId: string;
   grantId: string;
   invocationId: string;
   workspaceId: string;
@@ -29,8 +32,12 @@ export type CanaryRunEvidence = Readonly<{
   requestReceivedAt: string;
   requestStartedAt: string | null;
   successfulResponseStartedAt: string | null;
+  providerInvocationKey: string;
+  providerResponseIdHash: string | null;
+  publicationAttemptId: string | null;
   appBotPublicationCount: number;
   nonAppBotPublicationCount: number;
+  publicationObjects: readonly HostedPoolPublicationObjectEvidence[];
   faultPlanConsumptionCount: number;
   faultPlanConsumptions: readonly Readonly<{
     planIdHash: string;
@@ -59,6 +66,7 @@ export type CanaryRunEvidence = Readonly<{
     accountId: string;
     dispatchStartedAt: string | null;
     responseStartedAt: string | null;
+    providerResponseIdHash: string | null;
     completedAt: string | null;
     createdAt: string;
   }>[];
@@ -70,6 +78,8 @@ export type HostedPoolCanaryConfig = Readonly<{
   allowlistedRepositoryId: number;
   appSlug: string;
   actionSha: string;
+  releasePullRequestNumber: number;
+  releaseHeadSha: string;
   poolId: string;
   accountIds: readonly [string, string];
   faultPlans: Readonly<
@@ -89,6 +99,22 @@ export type HostedPoolCanaryPort = Readonly<{
   evidence(runId: number): Promise<CanaryRunEvidence>;
 }>;
 
+export type HostedPoolDeploymentEvidence = Readonly<{
+  serviceId: string;
+  serviceName: "reviewrouter-api" | "reviewrouter-web";
+  deployId: string;
+  commitSha: string;
+  status: "live";
+  observedAt: string;
+}>;
+
+/** Read-only Render evidence boundary; it has no deployment authority. */
+export type HostedPoolDeploymentEvidencePort = Readonly<{
+  readExactRevision(
+    expectedCommitSha: string,
+  ): Promise<readonly HostedPoolDeploymentEvidence[]>;
+}>;
+
 export type HostedPoolGitHubRequestPort = Readonly<{
   request(
     method: "GET" | "POST",
@@ -100,4 +126,13 @@ export type HostedPoolGitHubRequestPort = Readonly<{
 export type HostedPoolPublicationEvidence = Readonly<{
   appBotPublicationCount: number;
   nonAppBotPublicationCount: number;
+  publicationObjects: readonly HostedPoolPublicationObjectEvidence[];
+}>;
+
+export type HostedPoolPublicationObjectEvidence = Readonly<{
+  kind: "issue_comment" | "review_comment" | "review";
+  externalObjectId: string;
+  bodyHash: string;
+  authorLogin: string;
+  publishedAt: string;
 }>;

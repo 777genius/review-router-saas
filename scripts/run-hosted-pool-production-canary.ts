@@ -21,12 +21,14 @@ import type {
   HostedPoolCanaryConfig,
   HostedPoolCanaryPhase,
   HostedPoolCanaryPort,
+  HostedPoolDeploymentEvidencePort,
 } from "./hosted-pool-production-ports";
+import { assertCanonicalAttemptOnePullRequestRun } from "./hosted-pool-production-github-dispatch";
 import {
-  assertCanonicalAttemptOnePullRequestRun,
-  collectAppBotPublicationEvidence,
-} from "./hosted-pool-production-github-dispatch";
-import { readExactHostedPoolRunEvidence } from "./hosted-pool-production-evidence";
+  collectExactHostedPoolPublicationEvidence,
+  createRenderHostedPoolDeploymentEvidencePort,
+  readExactHostedPoolRunEvidence,
+} from "./hosted-pool-production-evidence";
 import { verifyHostedPoolRollbackEvidence } from "./hosted-pool-production-rollback-verification";
 export type {
   CanaryRunEvidence,
@@ -40,6 +42,63 @@ export const hostedPoolCanaryTarget = Object.freeze({
   fullName: "777genius/rr-codex-rotating-e2e",
   workflowPath: ".github/workflows/reviewrouter-codex.yml",
 });
+
+export function assertExactPullRequestHead(
+  value: unknown,
+  input: {
+    pullRequestNumber: number;
+    headSha: string;
+    errorCode: string;
+    repositoryId?: number;
+    repositoryFullName?: string;
+  },
+) {
+  const pullRequest = value as any;
+  if (
+    pullRequest?.number !== input.pullRequestNumber ||
+    pullRequest?.state !== "open" ||
+    String(pullRequest?.head?.sha ?? "").toLowerCase() !== input.headSha ||
+    String(pullRequest?.merge_commit_sha ?? "").toLowerCase() ===
+      input.headSha ||
+    (input.repositoryId !== undefined &&
+      (pullRequest?.base?.repo?.id !== input.repositoryId ||
+        pullRequest?.head?.repo?.id !== input.repositoryId)) ||
+    (input.repositoryFullName !== undefined &&
+      String(pullRequest?.base?.repo?.full_name ?? "").toLowerCase() !==
+        input.repositoryFullName.toLowerCase())
+  )
+    throw new Error(input.errorCode);
+}
+
+export function assertFreshAttemptTwoRun(
+  value: unknown,
+  input: {
+    runId: number;
+    expectedConclusion: "success" | "failure";
+    sourceHeadSha: string;
+    rerunRequestedAt: Date;
+  },
+) {
+  const run = value as any;
+  if (run?.run_attempt > 2)
+    throw new Error(`hosted_pool_canary_run_replayed:${input.runId}`);
+  if (run?.run_attempt !== 2 || run?.status !== "completed") return null;
+  if (run.conclusion !== input.expectedConclusion)
+    throw new Error(
+      `hosted_pool_canary_run_failed:${input.runId}:${run.conclusion}`,
+    );
+  const startedAt = new Date(run.run_started_at);
+  const finishedAt = new Date(run.updated_at);
+  if (
+    String(run.head_sha ?? "").toLowerCase() !== input.sourceHeadSha ||
+    !Number.isFinite(startedAt.getTime()) ||
+    !Number.isFinite(finishedAt.getTime()) ||
+    startedAt.getTime() < input.rerunRequestedAt.getTime() - 5_000 ||
+    finishedAt < startedAt
+  )
+    throw new Error(`hosted_pool_canary_run_timestamps_invalid:${input.runId}`);
+  return { startedAt, finishedAt };
+}
 
 export function parseHostedPoolCanaryConfig(
   env: Readonly<Record<string, string | undefined>>,
@@ -69,6 +128,14 @@ export function parseHostedPoolCanaryConfig(
       `777genius/review-router@${actionSha}`
   )
     throw new Error("hosted_pool_canary_action_release_mismatch");
+  const releasePullRequestNumber = positive(
+    env.REVIEW_ROUTER_HOSTED_POOL_CANARY_RELEASE_PR_NUMBER,
+  );
+  const releaseHeadSha = required(
+    env.REVIEW_ROUTER_HOSTED_POOL_CANARY_RELEASE_HEAD_SHA,
+  ).toLowerCase();
+  if (!/^[a-f0-9]{40}$/u.test(releaseHeadSha))
+    throw new Error("hosted_pool_canary_release_head_sha_invalid");
   const appSlug = required(
     env.REVIEW_ROUTER_HOSTED_POOL_CANARY_APP_SLUG,
   ).toLowerCase();
@@ -132,6 +199,8 @@ export function parseHostedPoolCanaryConfig(
     allowlistedRepositoryId: repositoryId,
     appSlug,
     actionSha,
+    releasePullRequestNumber,
+    releaseHeadSha,
     poolId,
     accountIds,
     faultPlans,
@@ -145,19 +214,28 @@ export async function runHostedPoolProductionCanary(input: {
   readonly executeConfirmation?: string;
   readonly rollbackConfirmation?: string;
   readonly canary: HostedPoolCanaryPort;
+  readonly deployment: HostedPoolDeploymentEvidencePort;
   readonly control: HostedPoolControlPort;
   readonly now?: () => Date;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly quiescenceMs?: number;
 }) {
   const now = input.now ?? (() => new Date());
-  const preflight = await input.canary.preflight(input.config);
+  const [preflight, preflightDeployments] = await Promise.all([
+    input.canary.preflight(input.config),
+    input.deployment.readExactRevision(input.config.releaseHeadSha),
+  ]);
   const records: Array<Record<string, unknown>> = [
-    { phase: "preflight", at: now().toISOString(), ...preflight },
+    {
+      phase: "preflight",
+      at: now().toISOString(),
+      ...preflight,
+      deployments: preflightDeployments,
+    },
   ];
   if (!input.execute)
     return seal({
-      schemaVersion: 2,
+      schemaVersion: 3,
       target: hostedPoolCanaryTarget.fullName,
       result: "dry_run",
       records,
@@ -191,11 +269,15 @@ export async function runHostedPoolProductionCanary(input: {
       port: input.control,
       now,
     });
+    const activationDeployments = await input.deployment.readExactRevision(
+      input.config.releaseHeadSha,
+    );
     records.push({
       phase: "ordered_activation",
       at: now().toISOString(),
       evidenceSha256: activation.evidenceSha256,
       events: activation.events,
+      deployments: activationDeployments,
     });
     await Promise.all([
       input.canary.rerun(input.config.runs.simultaneous_a),
@@ -277,12 +359,16 @@ export async function runHostedPoolProductionCanary(input: {
         now,
       });
       verifyHostedPoolRollbackEvidence(rollback.events);
+      const rollbackDeployments = await input.deployment.readExactRevision(
+        input.config.releaseHeadSha,
+      );
       records.push({
         phase: "ordered_rollback",
         at: now().toISOString(),
         outcome,
         evidenceSha256: rollback.evidenceSha256,
         events: rollback.events,
+        deployments: rollbackDeployments,
       });
     } catch (error) {
       outcome = "failed";
@@ -296,8 +382,21 @@ export async function runHostedPoolProductionCanary(input: {
       });
     }
   }
+  if (outcome === "passed") {
+    outcome = "blocked";
+    records.push({
+      phase: "certification_blocked",
+      at: now().toISOString(),
+      blocker: {
+        code: "hosted_pool_effect_generation_binding_missing",
+        scope: "generation_health_after_provider_io",
+        requiredContract:
+          "persist immutable credential generation on each upstream effect attempt",
+      },
+    });
+  }
   return seal({
-    schemaVersion: 2,
+    schemaVersion: 3,
     target: hostedPoolCanaryTarget.fullName,
     result: outcome,
     records,
@@ -337,6 +436,7 @@ export function assertSimultaneousOneAccount(
         item.attempts[0]!.state !== "succeeded" ||
         item.attempts[0]!.errorCode !== null ||
         item.attempts[0]!.accountId !== item.primaryAccountId ||
+        !hasBoundProviderPublication(item) ||
         item.appBotPublicationCount < 1 ||
         item.nonAppBotPublicationCount !== 0 ||
         item.faultPlanConsumptionCount !== 0 ||
@@ -371,6 +471,9 @@ export function assertClassifiedOutcome(
       item.attempts[0]!.responseStartedAt === null ||
       item.attempts[0]!.completedAt === null ||
       !hasExactFaultConsumption(item, "drop_after_response_started") ||
+      item.providerResponseIdHash !== null ||
+      item.publicationAttemptId !== null ||
+      item.publicationObjects.length !== 0 ||
       item.nonAppBotPublicationCount !== 0
     )
       throw new Error("hosted_pool_canary_dropped_response_replayed");
@@ -409,10 +512,23 @@ export function assertClassifiedOutcome(
       item,
       expected === "401" ? "synthetic_unauthorized" : "synthetic_rate_limited",
     ) ||
+    !hasBoundProviderPublication(item) ||
     item.appBotPublicationCount < 1 ||
     item.nonAppBotPublicationCount !== 0
   )
     throw new Error(`hosted_pool_canary_${expected}_backup_contract_failed`);
+}
+
+function hasBoundProviderPublication(item: CanaryRunEvidence) {
+  return (
+    item.sourceRunAttempt === 2 &&
+    /^[a-f0-9]{40}$/u.test(item.sourceHeadSha) &&
+    item.sourceExecutionId.length > 0 &&
+    /^[a-f0-9]{64}$/u.test(item.providerInvocationKey) &&
+    /^[a-f0-9]{64}$/u.test(item.providerResponseIdHash ?? "") &&
+    Boolean(item.publicationAttemptId) &&
+    item.publicationObjects.length > 0
+  );
 }
 
 function assertStableDroppedEvidence(
@@ -420,6 +536,9 @@ function assertStableDroppedEvidence(
   after: CanaryRunEvidence,
 ) {
   const stable = (item: CanaryRunEvidence) => ({
+    sourceRunAttempt: item.sourceRunAttempt,
+    sourceHeadSha: item.sourceHeadSha,
+    sourceExecutionId: item.sourceExecutionId,
     grantId: item.grantId,
     invocationId: item.invocationId,
     workspaceId: item.workspaceId,
@@ -442,8 +561,12 @@ function assertStableDroppedEvidence(
     requestReceivedAt: item.requestReceivedAt,
     requestStartedAt: item.requestStartedAt,
     successfulResponseStartedAt: item.successfulResponseStartedAt,
+    providerInvocationKey: item.providerInvocationKey,
+    providerResponseIdHash: item.providerResponseIdHash,
+    publicationAttemptId: item.publicationAttemptId,
     appBotPublicationCount: item.appBotPublicationCount,
     nonAppBotPublicationCount: item.nonAppBotPublicationCount,
+    publicationObjects: item.publicationObjects,
     requestStatuses: item.requestStatuses,
     attempts: item.attempts,
     faultPlanConsumptionCount: item.faultPlanConsumptionCount,
@@ -528,12 +651,15 @@ export function createGitHubHostedPoolCanaryPort(input: {
   appJwt: string;
   repositoryToken: string;
   databaseUrl: string;
+  now?: () => Date;
 }): HostedPoolCanaryPort & { disconnect(): Promise<void> } {
   const prisma = createPrismaClient({
     databaseUrl: input.databaseUrl,
     poolMax: 1,
   });
   const pullRequests = new Map<number, number>();
+  const sourceHeads = new Map<number, string>();
+  const rerunRequestedAt = new Map<number, Date>();
   const attemptWindows = new Map<
     number,
     { readonly startedAt: Date; readonly finishedAt: Date }
@@ -614,6 +740,17 @@ export function createGitHubHostedPoolCanaryPort(input: {
       )
         throw new Error("hosted_pool_canary_workflow_tuple_mismatch");
       expectedAppBot = `${config.appSlug}[bot]`.toLowerCase();
+      const releasePullRequest: any = await request(
+        input.repositoryToken,
+        "GET",
+        `/repos/777genius/review-router-saas/pulls/${config.releasePullRequestNumber}`,
+      );
+      assertExactPullRequestHead(releasePullRequest, {
+        pullRequestNumber: config.releasePullRequestNumber,
+        headSha: config.releaseHeadSha,
+        repositoryFullName: "777genius/review-router-saas",
+        errorCode: "hosted_pool_canary_release_pr_head_mismatch",
+      });
       for (const runId of Object.values(config.runs)) {
         const run: any = await request(
           input.repositoryToken,
@@ -625,7 +762,19 @@ export function createGitHubHostedPoolCanaryPort(input: {
           repositoryId: config.repositoryId,
           workflowPath: hostedPoolCanaryTarget.workflowPath,
         });
+        const pullRequest: any = await request(
+          input.repositoryToken,
+          "GET",
+          `/repos/${hostedPoolCanaryTarget.fullName}/pulls/${sourceRun.pullRequestNumber}`,
+        );
+        assertExactPullRequestHead(pullRequest, {
+          pullRequestNumber: sourceRun.pullRequestNumber,
+          headSha: sourceRun.headSha,
+          repositoryId: config.repositoryId,
+          errorCode: `hosted_pool_canary_source_pr_head_mismatch:${runId}`,
+        });
         pullRequests.set(runId, sourceRun.pullRequestNumber);
+        sourceHeads.set(runId, sourceRun.headSha);
         const runWorkflow: any = await request(
           input.repositoryToken,
           "GET",
@@ -774,6 +923,7 @@ export function createGitHubHostedPoolCanaryPort(input: {
       };
     },
     async rerun(runId) {
+      rerunRequestedAt.set(runId, (input.now ?? (() => new Date()))());
       await request(
         input.repositoryToken,
         "POST",
@@ -788,24 +938,18 @@ export function createGitHubHostedPoolCanaryPort(input: {
           "GET",
           `/repos/${hostedPoolCanaryTarget.fullName}/actions/runs/${runId}`,
         );
-        if (run.run_attempt > 2)
-          throw new Error(`hosted_pool_canary_run_replayed:${runId}`);
-        if (run.run_attempt === 2 && run.status === "completed") {
-          if (run.conclusion !== expectedConclusion)
-            throw new Error(
-              `hosted_pool_canary_run_failed:${runId}:${run.conclusion}`,
-            );
-          const startedAt = new Date(run.run_started_at);
-          const finishedAt = new Date(run.updated_at);
-          if (
-            !Number.isFinite(startedAt.getTime()) ||
-            !Number.isFinite(finishedAt.getTime()) ||
-            finishedAt < startedAt
-          )
-            throw new Error(
-              `hosted_pool_canary_run_timestamps_invalid:${runId}`,
-            );
-          attemptWindows.set(runId, { startedAt, finishedAt });
+        const requestedAt = rerunRequestedAt.get(runId);
+        const sourceHeadSha = sourceHeads.get(runId);
+        if (!requestedAt || !sourceHeadSha)
+          throw new Error(`hosted_pool_canary_run_scope_missing:${runId}`);
+        const window = assertFreshAttemptTwoRun(run, {
+          runId,
+          expectedConclusion,
+          sourceHeadSha,
+          rerunRequestedAt: requestedAt,
+        });
+        if (window) {
+          attemptWindows.set(runId, window);
           return;
         }
         await new Promise((done) => setTimeout(done, 5_000));
@@ -814,31 +958,38 @@ export function createGitHubHostedPoolCanaryPort(input: {
     },
     async evidence(runId) {
       const prNumber = pullRequests.get(runId);
+      const sourceHeadSha = sourceHeads.get(runId);
       const attemptWindow = attemptWindows.get(runId);
-      if (!prNumber || !expectedAppBot || !expectedBinding || !attemptWindow)
+      if (
+        !prNumber ||
+        !sourceHeadSha ||
+        !expectedAppBot ||
+        !expectedBinding ||
+        !attemptWindow
+      )
         throw new Error(
           `hosted_pool_canary_publication_scope_missing:${runId}`,
         );
-      const { appBotPublicationCount, nonAppBotPublicationCount } =
-        await collectAppBotPublicationEvidence(
-          {
-            request: (method, path, body) =>
-              request(input.repositoryToken, method, path, body),
-          },
-          {
-            repository: hostedPoolCanaryTarget.fullName,
-            pullRequestNumber: prNumber,
-            expectedAppBot,
-            ...attemptWindow,
-          },
-        );
+      const publication = await collectExactHostedPoolPublicationEvidence(
+        {
+          request: (method, path, body) =>
+            request(input.repositoryToken, method, path, body),
+        },
+        {
+          repository: hostedPoolCanaryTarget.fullName,
+          pullRequestNumber: prNumber,
+          expectedAppBot,
+          ...attemptWindow,
+        },
+      );
       return readExactHostedPoolRunEvidence({
         prisma,
         runId,
         runAttempt: 2,
         repositoryBindingId: expectedBinding.id,
         bindingRevision: expectedBinding.revision,
-        publication: { appBotPublicationCount, nonAppBotPublicationCount },
+        sourceHeadSha,
+        publication,
       });
     },
     disconnect: () => prisma.$disconnect(),
@@ -867,6 +1018,10 @@ async function main() {
     serviceIds: ids as [string, string],
     databaseUrl,
   });
+  const deployment = createRenderHostedPoolDeploymentEvidencePort({
+    apiKey: required(process.env.RENDER_API_KEY),
+    serviceIds: ids as [string, string],
+  });
   try {
     const result = await runHostedPoolProductionCanary({
       config,
@@ -884,6 +1039,7 @@ async function main() {
           }
         : {}),
       canary,
+      deployment,
       control,
     });
     const output = resolve(

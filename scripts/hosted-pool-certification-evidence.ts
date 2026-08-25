@@ -48,7 +48,15 @@ export function assertHostedCertificationSecretFree(
   sources: readonly CertificationScanSource[],
   sentinels: readonly string[],
 ): void {
-  const usableSentinels = sentinels.filter((value) => value.length >= 4);
+  const usableSentinels = sentinels.filter(
+    (value) => value.length >= 16 && value.trim() === value,
+  );
+  if (
+    usableSentinels.length !== sentinels.length ||
+    usableSentinels.length < 1 ||
+    new Set(usableSentinels).size !== usableSentinels.length
+  )
+    throw new Error("hosted_certification_secret_sentinels_required");
   for (const source of sources) {
     const candidates = [
       source.value,
@@ -125,13 +133,13 @@ export async function buildHostedCertificationEvidence(input: {
   ] as const;
   const gates = gateNames.map((name) => ({
     name,
-    status: input.gateStatuses?.[name] ?? "local",
+    status: input.gateStatuses?.[name] ?? "missing",
   }));
-  if (input.gateStatuses && gates.some((gate) => gate.status !== "success")) {
+  if (gates.some((gate) => gate.status !== "success")) {
     throw new Error("hosted_certification_gate_failed");
   }
   const evidence = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     subject: {
       commitSha,
       parentSha,
@@ -146,7 +154,7 @@ export async function buildHostedCertificationEvidence(input: {
     ),
     gates,
     scan: {
-      policyVersion: "hosted-certification-sensitive-scan-v1",
+      policyVersion: "hosted-certification-sensitive-scan-v2",
       sourceCount: sources.length + 1,
       relayEffectRowsIncluded:
         Boolean(input.databaseUrl) ||

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   assertClassifiedOutcome,
+  assertExactPullRequestHead,
+  assertFreshAttemptTwoRun,
   assertSimultaneousOneAccount,
   parseHostedPoolCanaryConfig,
   runHostedPoolProductionCanary,
@@ -10,6 +12,7 @@ import {
 import type { HostedPoolControlPort } from "./hosted-pool-production-control";
 
 const sha = "a".repeat(40);
+const releaseSha = "b".repeat(40);
 const env = {
   REVIEW_ROUTER_HOSTED_POOL_CANARY_REPOSITORY_ID: "123456789",
   REVIEW_ROUTER_HOSTED_POOL_CANARY_DISPOSABLE_REPOSITORY_ID: "123456789",
@@ -18,6 +21,8 @@ const env = {
   REVIEW_ROUTER_HOSTED_POOL_CANARY_ACTION_SHA: sha,
   REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA: sha,
   REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: `777genius/review-router@${sha}`,
+  REVIEW_ROUTER_HOSTED_POOL_CANARY_RELEASE_PR_NUMBER: "227",
+  REVIEW_ROUTER_HOSTED_POOL_CANARY_RELEASE_HEAD_SHA: releaseSha,
   REVIEW_ROUTER_HOSTED_POOL_CANARY_APP_SLUG: "reviewrouter-app",
   REVIEW_ROUTER_HOSTED_POOL_CANARY_POOL_ID: "pool-canary",
   REVIEW_ROUTER_HOSTED_POOL_CANARY_ACCOUNT_IDS_JSON: JSON.stringify([
@@ -73,6 +78,9 @@ function evidence(
   if (mode === "dropped")
     return {
       runId,
+      sourceRunAttempt: 2,
+      sourceHeadSha: "c".repeat(40),
+      sourceExecutionId: `execution-${runId}`,
       grantId: `grant-${runId}`,
       invocationId: `inv-${runId}`,
       workspaceId: "workspace-canary",
@@ -95,8 +103,12 @@ function evidence(
       requestReceivedAt: "2026-08-22T00:00:00.000Z",
       requestStartedAt: "2026-08-22T00:00:00.500Z",
       successfulResponseStartedAt: "2026-08-22T00:00:02.000Z",
+      providerInvocationKey: "d".repeat(64),
+      providerResponseIdHash: null,
+      publicationAttemptId: null,
       appBotPublicationCount: 0,
       nonAppBotPublicationCount: 0,
+      publicationObjects: [],
       faultPlanConsumptionCount: 1,
       faultPlanConsumptions,
       requestStatuses: ["terminal_unknown"],
@@ -111,6 +123,7 @@ function evidence(
           accountId: "account-a",
           dispatchStartedAt: "2026-08-22T00:00:01.000Z",
           responseStartedAt: "2026-08-22T00:00:02.000Z",
+          providerResponseIdHash: null,
           completedAt: "2026-08-22T00:00:03.000Z",
           createdAt: "2026-08-22T00:00:00.750Z",
         },
@@ -119,6 +132,9 @@ function evidence(
   const failed = mode === "401" || mode === "429";
   return {
     runId,
+    sourceRunAttempt: 2,
+    sourceHeadSha: "c".repeat(40),
+    sourceExecutionId: `execution-${runId}`,
     grantId: `grant-${runId}`,
     invocationId: `inv-${runId}`,
     workspaceId: "workspace-canary",
@@ -141,8 +157,20 @@ function evidence(
     requestReceivedAt: "2026-08-22T00:00:00.000Z",
     requestStartedAt: "2026-08-22T00:00:00.500Z",
     successfulResponseStartedAt: "2026-08-22T00:00:02.000Z",
+    providerInvocationKey: "d".repeat(64),
+    providerResponseIdHash: "e".repeat(64),
+    publicationAttemptId: `publication-${runId}`,
     appBotPublicationCount: 1,
     nonAppBotPublicationCount: 0,
+    publicationObjects: [
+      {
+        kind: "issue_comment",
+        externalObjectId: `comment-${runId}`,
+        bodyHash: "f".repeat(64),
+        authorLogin: "reviewrouter-app[bot]",
+        publishedAt: "2026-08-22T00:00:02.500Z",
+      },
+    ],
     faultPlanConsumptionCount: failed ? 1 : 0,
     faultPlanConsumptions,
     requestStatuses: ["succeeded"],
@@ -158,6 +186,7 @@ function evidence(
             accountId: "account-a",
             dispatchStartedAt: null,
             responseStartedAt: null,
+            providerResponseIdHash: null,
             completedAt: "2026-08-22T00:00:01.000Z",
             createdAt: "2026-08-22T00:00:00.750Z",
           },
@@ -171,6 +200,7 @@ function evidence(
             accountId: "account-b",
             dispatchStartedAt: "2026-08-22T00:00:01.250Z",
             responseStartedAt: "2026-08-22T00:00:02.000Z",
+            providerResponseIdHash: "e".repeat(64),
             completedAt: "2026-08-22T00:00:03.000Z",
             createdAt: "2026-08-22T00:00:01.125Z",
           },
@@ -186,6 +216,7 @@ function evidence(
             accountId: "account-a",
             dispatchStartedAt: "2026-08-22T00:00:01.000Z",
             responseStartedAt: "2026-08-22T00:00:02.000Z",
+            providerResponseIdHash: "e".repeat(64),
             completedAt: "2026-08-22T00:00:03.000Z",
             createdAt: "2026-08-22T00:00:00.750Z",
           },
@@ -208,6 +239,26 @@ function kit() {
     rerun,
     waitForCompletion: vi.fn(async () => undefined),
     evidence: vi.fn(async (runId) => values.get(runId)!),
+  };
+  const deployment = {
+    readExactRevision: vi.fn(async () => [
+      {
+        serviceId: "srv-api",
+        serviceName: "reviewrouter-api" as const,
+        deployId: "dep-api",
+        commitSha: releaseSha,
+        status: "live" as const,
+        observedAt: "2026-08-22T00:00:00.000Z",
+      },
+      {
+        serviceId: "srv-web",
+        serviceName: "reviewrouter-web" as const,
+        deployId: "dep-web",
+        commitSha: releaseSha,
+        status: "live" as const,
+        observedAt: "2026-08-22T00:00:00.000Z",
+      },
+    ]),
   };
   const setFlags = vi.fn(async () => undefined);
   const flags = Object.fromEntries(
@@ -237,10 +288,70 @@ function kit() {
     })),
     setFaultPlan: vi.fn(async () => undefined),
   };
-  return { config, canary, control, rerun, setFlags };
+  return { config, canary, deployment, control, rerun, setFlags };
 }
 
 describe("hosted pool one-shot production canary", () => {
+  it("binds release evidence to the exact PR head and rejects merge SHA", () => {
+    const pullRequest = {
+      number: 227,
+      state: "open",
+      head: { sha: releaseSha },
+      base: { repo: { full_name: "777genius/review-router-saas" } },
+      merge_commit_sha: "c".repeat(40),
+    };
+    expect(() =>
+      assertExactPullRequestHead(pullRequest, {
+        pullRequestNumber: 227,
+        headSha: releaseSha,
+        repositoryFullName: "777genius/review-router-saas",
+        errorCode: "mismatch",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertExactPullRequestHead(
+        { ...pullRequest, head: { sha: "c".repeat(40) } },
+        {
+          pullRequestNumber: 227,
+          headSha: releaseSha,
+          repositoryFullName: "777genius/review-router-saas",
+          errorCode: "mismatch",
+        },
+      ),
+    ).toThrow("mismatch");
+  });
+
+  it("accepts only a fresh attempt-2 run on the exact source head", () => {
+    const rerunRequestedAt = new Date("2026-08-22T00:00:00.000Z");
+    const run = {
+      run_attempt: 2,
+      status: "completed",
+      conclusion: "success",
+      head_sha: "c".repeat(40),
+      run_started_at: "2026-08-22T00:00:01.000Z",
+      updated_at: "2026-08-22T00:00:02.000Z",
+    };
+    expect(
+      assertFreshAttemptTwoRun(run, {
+        runId: 11,
+        expectedConclusion: "success",
+        sourceHeadSha: "c".repeat(40),
+        rerunRequestedAt,
+      }),
+    ).toMatchObject({ startedAt: new Date(run.run_started_at) });
+    expect(() =>
+      assertFreshAttemptTwoRun(
+        { ...run, head_sha: "d".repeat(40) },
+        {
+          runId: 11,
+          expectedConclusion: "success",
+          sourceHeadSha: "c".repeat(40),
+          rerunRequestedAt,
+        },
+      ),
+    ).toThrow("hosted_pool_canary_run_timestamps_invalid:11");
+  });
+
   it("rejects every repository except the exact numeric disposable target", () => {
     expect(() =>
       parseHostedPoolCanaryConfig({
@@ -257,11 +368,12 @@ describe("hosted pool one-shot production canary", () => {
   });
 
   it("defaults to preflight-only dry run with no provider run or rollback", async () => {
-    const { config, canary, control, rerun, setFlags } = kit();
+    const { config, canary, deployment, control, rerun, setFlags } = kit();
     const result = await runHostedPoolProductionCanary({
       config,
       execute: false,
       canary,
+      deployment,
       control,
     });
     expect(result.result).toBe("dry_run");
@@ -270,7 +382,7 @@ describe("hosted pool one-shot production canary", () => {
   });
 
   it("requires independent execution and rollback confirmations", async () => {
-    const { config, canary, control } = kit();
+    const { config, canary, deployment, control } = kit();
     await expect(
       runHostedPoolProductionCanary({
         config,
@@ -278,19 +390,21 @@ describe("hosted pool one-shot production canary", () => {
         executeConfirmation: "yes",
         rollbackConfirmation: "yes",
         canary,
+        deployment,
         control,
       }),
     ).rejects.toThrow("hosted_pool_canary_confirmations_required");
   });
 
   it("runs simultaneous reviews, classified faults, and always ordered rollback", async () => {
-    const { config, canary, control, rerun, setFlags } = kit();
+    const { config, canary, deployment, control, rerun, setFlags } = kit();
     const result = await runHostedPoolProductionCanary({
       config,
       execute: true,
       executeConfirmation: "EXECUTE ONE SHOT HOSTED POOL CANARY",
       rollbackConfirmation: "ROLL BACK HOSTED POOL AFTER CANARY",
       canary,
+      deployment,
       control,
       now: () => new Date("2026-08-22T00:00:00.000Z"),
       sleep: async () => undefined,
@@ -318,7 +432,15 @@ describe("hosted pool one-shot production canary", () => {
       [null],
       [null],
     ]);
-    expect(result.result).toBe("passed");
+    expect(result.result).toBe("blocked");
+    expect(result.records).toContainEqual(
+      expect.objectContaining({
+        phase: "certification_blocked",
+        blocker: expect.objectContaining({
+          code: "hosted_pool_effect_generation_binding_missing",
+        }),
+      }),
+    );
   });
 
   it("requires strict overlap between the two upstream effect intervals", () => {
@@ -334,6 +456,7 @@ describe("hosted pool one-shot production canary", () => {
               ...second.attempts[0]!,
               dispatchStartedAt: "2026-08-22T00:00:04.000Z",
               responseStartedAt: "2026-08-22T00:00:05.000Z",
+              providerResponseIdHash: "e".repeat(64),
               completedAt: "2026-08-22T00:00:06.000Z",
             },
           ],
@@ -377,6 +500,7 @@ describe("hosted pool one-shot production canary", () => {
               accountId: "account-b",
               dispatchStartedAt: "2026-08-22T00:00:04.000Z",
               responseStartedAt: "2026-08-22T00:00:05.000Z",
+              providerResponseIdHash: "e".repeat(64),
               completedAt: "2026-08-22T00:00:06.000Z",
               createdAt: "2026-08-22T00:00:03.500Z",
             },
@@ -388,7 +512,7 @@ describe("hosted pool one-shot production canary", () => {
   });
 
   it("stops after the first failed phase and still performs ordered rollback", async () => {
-    const { config, canary, control, rerun, setFlags } = kit();
+    const { config, canary, deployment, control, rerun, setFlags } = kit();
     vi.mocked(canary.waitForCompletion).mockRejectedValueOnce(
       new Error("fixture_run_failed"),
     );
@@ -398,6 +522,7 @@ describe("hosted pool one-shot production canary", () => {
       executeConfirmation: "EXECUTE ONE SHOT HOSTED POOL CANARY",
       rollbackConfirmation: "ROLL BACK HOSTED POOL AFTER CANARY",
       canary,
+      deployment,
       control,
       now: () => new Date("2026-08-22T00:00:00.000Z"),
       sleep: async () => undefined,
