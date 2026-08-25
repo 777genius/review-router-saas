@@ -18,6 +18,7 @@ import {
   importAndEnrollHostedCodexAccount,
   issueInvocationGrant,
   issueHostedPoolInvocationGrant,
+  normalizeExpiredHostedAccountCooldown,
   pauseHostedAccount,
   quarantineHostedAccount,
   recordProviderRequestFailure,
@@ -220,6 +221,31 @@ describe("hosted account pool domain", () => {
       until: new Date("2026-08-15T10:01:00.000Z"),
     });
     expect(cooled.availability.status).toBe("cooldown");
+  });
+
+  it("normalizes only an expired cooldown and advances healthVersion once", () => {
+    const account = accountFixture("account-1", 1);
+    const cooled = coolDownHostedAccount(account, {
+      reason: "rate_limited",
+      now,
+      until: new Date(now.getTime() + 1_000),
+    });
+
+    expect(
+      normalizeExpiredHostedAccountCooldown(
+        cooled,
+        new Date(now.getTime() + 999),
+      ),
+    ).toBe(cooled);
+    expect(
+      normalizeExpiredHostedAccountCooldown(
+        cooled,
+        new Date(now.getTime() + 1_000),
+      ),
+    ).toMatchObject({
+      availability: { status: "healthy" },
+      healthVersion: cooled.healthVersion + 1,
+    });
   });
 });
 

@@ -278,6 +278,19 @@ export function resumeHostedAccount(
   return changeAvailability(account, { status: "healthy" }, now);
 }
 
+export function normalizeExpiredHostedAccountCooldown(
+  account: HostedPoolAccount,
+  now: Date,
+): HostedPoolAccount {
+  if (
+    account.availability.status !== "cooldown" ||
+    account.availability.until > now
+  ) {
+    return account;
+  }
+  return changeAvailability(account, { status: "healthy" }, now);
+}
+
 function changeAvailability(
   account: HostedPoolAccount,
   availability: HostedAccountAvailability,

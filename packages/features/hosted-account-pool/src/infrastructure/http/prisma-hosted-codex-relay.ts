@@ -29,6 +29,7 @@ import {
   PrismaHostedCodexUpstreamEffectLedger,
   type HostedCodexUpstreamEffectLease,
 } from "../prisma/prisma-hosted-codex-upstream-effect-ledger.js";
+import { normalizeExpiredHostedAccountCooldownWithCas } from "../prisma/prisma-hosted-account-cooldown.js";
 import type { HostedCodexSessionRuntime } from "../runtime/hosted-codex-session-runtime.js";
 import {
   noHostedCodexCanaryFaultPlan,
@@ -95,7 +96,16 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
       account.state === "healthy" ||
       (account.state === "cooldown" &&
         account.cooldownUntil !== null &&
-        account.cooldownUntil <= now);
+        account.cooldownUntil <= now &&
+        (await normalizeExpiredHostedAccountCooldownWithCas(this.prisma, {
+          accountId: account.id,
+          now,
+          snapshot: {
+            state: account.state,
+            cooldownUntil: account.cooldownUntil,
+            healthVersion: account.healthVersion,
+          },
+        })));
     if (
       binding.status !== "active" ||
       binding.revision !== stored.bindingRevision ||

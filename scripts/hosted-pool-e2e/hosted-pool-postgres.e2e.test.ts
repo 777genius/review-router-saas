@@ -471,6 +471,110 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     });
   }, 120_000);
 
+  it("atomically normalizes one expired cooldown across authorization and session readers", async () => {
+    const authorization = new PrismaHostedCodexRelayAuthorization(prisma);
+    const persistence = new PrismaHostedCodexSessionPersistence(
+      prisma,
+      vault,
+      databaseIncarnation,
+      databaseResourceIdentity,
+      Buffer.alloc(32, 29),
+    );
+    const expired = await prisma.hostedCodexAccount.update({
+      where: { id: "account-primary" },
+      data: {
+        state: "cooldown",
+        cooldownUntil: new Date(Date.now() - 60_000),
+        healthVersion: { increment: 1 },
+      },
+    });
+    const issued = await issueGrant("expired-cooldown-normalization");
+    expect(issued.grant).toMatchObject({
+      primaryAccountId: hostedAccountId("account-primary"),
+      backupAccountId: hostedAccountId("account-backup"),
+    });
+
+    const authorizationReads = [
+      authorization.authorize({
+        opaqueGrant: issued.plaintextToken,
+        requestOrdinal: 1,
+        idempotencyKey: "expired-cooldown-authorization",
+        requestBytes: 64,
+      }),
+    ];
+    const sessionReads = Array.from({ length: 12 }, () =>
+      persistence.read("account-primary"),
+    );
+    const raced = await Promise.allSettled([
+      ...authorizationReads,
+      ...sessionReads,
+    ]);
+    const failureIndex = raced.findIndex(
+      (result) => result.status === "rejected",
+    );
+    if (failureIndex !== -1) {
+      const failure = raced[failureIndex] as PromiseRejectedResult;
+      throw new Error(
+        `expired cooldown ${failureIndex < authorizationReads.length ? "authorization" : "session"} race failed`,
+        { cause: failure.reason },
+      );
+    }
+    const authorized = raced.slice(0, authorizationReads.length);
+    const sessions = raced.slice(authorizationReads.length);
+    expect(authorized).toHaveLength(1);
+    expect(
+      sessions.every(
+        (result) => result.status === "fulfilled" && result.value !== null,
+      ),
+    ).toBe(true);
+
+    const normalized = await prisma.hostedCodexAccount.findUniqueOrThrow({
+      where: { id: "account-primary" },
+    });
+    expect(normalized).toMatchObject({
+      state: "healthy",
+      cooldownUntil: null,
+      healthVersion: expired.healthVersion + 1n,
+    });
+
+    const freshGrant = await issueGrant("fresh-cooldown-rejection");
+    const fresh = await prisma.hostedCodexAccount.update({
+      where: { id: "account-primary" },
+      data: {
+        state: "cooldown",
+        cooldownUntil: new Date(Date.now() + 60_000),
+        healthVersion: { increment: 1 },
+      },
+    });
+    await expect(
+      authorization.authorize({
+        opaqueGrant: freshGrant.plaintextToken,
+        requestOrdinal: 1,
+        idempotencyKey: "fresh-cooldown-authorization",
+        requestBytes: 64,
+      }),
+    ).rejects.toThrow("hosted_grant_authority_mismatch");
+    await expect(persistence.read("account-primary")).rejects.toThrow(
+      "hosted_codex_account_not_servable",
+    );
+    expect(
+      await prisma.hostedCodexAccount.findUniqueOrThrow({
+        where: { id: "account-primary" },
+      }),
+    ).toMatchObject({
+      state: "cooldown",
+      healthVersion: fresh.healthVersion,
+    });
+    await prisma.hostedCodexAccount.update({
+      where: { id: "account-primary" },
+      data: {
+        state: "healthy",
+        cooldownUntil: null,
+        healthVersion: { increment: 1 },
+      },
+    });
+  }, 120_000);
+
   it("terminalizes a dropped upstream response after exactly one call and denies every replay or later ordinal", async () => {
     const issued = await issueGrant("dropped-response-terminalization");
     const authorization = new PrismaHostedCodexRelayAuthorization(prisma, true);
