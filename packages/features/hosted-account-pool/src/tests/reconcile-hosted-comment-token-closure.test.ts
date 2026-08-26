@@ -630,9 +630,7 @@ describe("HostedCommentTokenClosureReconciler", () => {
         status: "degraded",
         reason: "initial_reconcile_pending",
       });
-      await vi.waitFor(() =>
-        expect(handle.health().metrics.successes).toBe(1),
-      );
+      await vi.waitFor(() => expect(handle.health().metrics.successes).toBe(1));
       expect(handle.health()).toMatchObject({
         ready: true,
         status: "ok",

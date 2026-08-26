@@ -2006,7 +2006,11 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     do {
       orphanedCandidates = await effects.sweepExpired();
     } while (orphanedCandidates !== 0);
-    const issued = await issueGrant("long-response-heartbeat");
+    const issued = await issueGrant(
+      "long-response-heartbeat",
+      {},
+      { now: clock },
+    );
     const authorization = new PrismaHostedCodexRelayAuthorization(prisma);
     const admitted = await authorization.authorize({
       opaqueGrant: issued.plaintextToken,
@@ -5699,9 +5703,14 @@ async function issueGrant(
     commentRefreshMaxUses?: number;
     repositoryId?: ReturnType<typeof repositoryId>;
     bindingId?: ReturnType<typeof hostedBindingId>;
+    now?: Date;
   }> = {},
 ) {
-  const expiresAt = new Date(Date.now() + 10 * 60_000);
+  // Derive every temporal field in a grant fixture from one instant. Tests
+  // with a logical clock must not mix wall-clock expiry with their simulated
+  // issue time: the nested refresh capability enforces expiresAt > issuedAt.
+  const issuedAt = new Date(options.now?.getTime() ?? Date.now());
+  const expiresAt = new Date(issuedAt.getTime() + 10 * 60_000);
   const runtimeGate = await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
     where: { id: "global" },
     select: { status: true, authzEpoch: true },
@@ -5739,7 +5748,7 @@ async function issueGrant(
         expiresAt,
         maxUses: options.commentRefreshMaxUses ?? 2,
       },
-      now: new Date(),
+      now: issuedAt,
     },
     {
       pools: new PrismaHostedPoolRepository(prisma),
