@@ -149,7 +149,7 @@ export const canonicalReleaseMigrationArtifact = Object.freeze({
     "sha256:b56f0960fc107f9f1f7dbfb40be8d982107574e47962a076d71bdb5ac764495c",
   // Last captured digest; V86 projection changes remain HOLD pending PG17 capture.
   postCatalogDigest:
-    "sha256:e8d0377f3b4bd607f23af9c180a35550bcfda93f680da41120a0ccb8aa5297ba",
+    "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
 });
 
 export const canonicalReleaseMigrationResumeManifestIdentities = Object.freeze([

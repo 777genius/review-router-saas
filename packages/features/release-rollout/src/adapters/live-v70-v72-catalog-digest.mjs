@@ -203,7 +203,7 @@ export const liveV70V86CatalogDigestCaptureHold = Object.freeze({
   reason: "pg17_exact_catalog_capture_required_after_v86_projection_change",
 });
 export const liveV70V73CatalogDigestSha256 =
-  "sha256:e8d0377f3b4bd607f23af9c180a35550bcfda93f680da41120a0ccb8aa5297ba";
+  "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d";
 
 // Compatibility aliases for existing external consumers during the V73 rollout.
 export const fencedLiveV70V72CatalogDigestSql =

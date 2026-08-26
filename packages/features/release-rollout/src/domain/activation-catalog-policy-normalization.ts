@@ -3,8 +3,6 @@ import {
   PrincipalCapability,
   canonicalActivationPrincipalNames,
   canonicalBootstrapMembershipRoleNames,
-  pendingActivationCatalogBootstrapMembershipRoleNames,
-  pendingActivationCatalogPrincipalNames,
   type ActivationCatalogPolicy,
 } from "./effective-principal-inventory";
 
@@ -91,19 +89,50 @@ export const productionActivationCatalogPolicyNormalizationProfile =
     createRolePrincipalNames: Object.freeze([]),
   });
 
-/** Capture-only profile for the next independently reviewed trust root. */
-export const pendingActivationCatalogPolicyNormalizationProfile = Object.freeze(
-  {
-    principalNames: pendingActivationCatalogPrincipalNames,
-    bootstrapMembershipRoleNames:
-      pendingActivationCatalogBootstrapMembershipRoleNames,
-    noLoginPrincipalNames: Object.freeze([
-      "reviewrouter_activation_receipt_guard",
-      "reviewrouter_release_schema_owner",
-    ]),
-    createRolePrincipalNames: Object.freeze([]),
-  },
-);
+/**
+ * Candidate topology is deliberately private to this normalization module.
+ * Only the explicitly capture-scoped assertion below can consume it; package
+ * exports and production activation paths retain the reviewed canonical root.
+ */
+const pendingActivationCatalogPolicyNormalizationProfile = Object.freeze({
+  principalNames: Object.freeze([
+    "reviewrouter_activation_permit_installer",
+    "reviewrouter_activation_receipt_guard",
+    "reviewrouter_activation_receipt_reader",
+    "reviewrouter_api",
+    "reviewrouter_comment_token_custody",
+    "reviewrouter_codex_effect_authority",
+    "reviewrouter_release_migration",
+    "reviewrouter_release_schema_owner",
+    "reviewrouter_role_bootstrap",
+    "reviewrouter_web",
+    "reviewrouter_worker",
+  ]),
+  bootstrapMembershipRoleNames: Object.freeze([
+    "reviewrouter_api",
+    "reviewrouter_comment_token_custody",
+    "reviewrouter_codex_effect_authority",
+    "reviewrouter_release_migration",
+    "reviewrouter_web",
+    "reviewrouter_worker",
+  ]),
+  noLoginPrincipalNames: Object.freeze([
+    "reviewrouter_activation_receipt_guard",
+    "reviewrouter_release_schema_owner",
+  ]),
+  createRolePrincipalNames: Object.freeze([]),
+});
+
+export function assertPendingActivationCatalogPolicyCaptureNormalization(
+  value: unknown,
+  phase: ActivationCatalogPolicyPhase,
+): asserts value is ActivationCatalogPolicy {
+  assertActivationCatalogPolicyNormalizationForProfile(
+    value,
+    phase,
+    pendingActivationCatalogPolicyNormalizationProfile,
+  );
+}
 
 export function assertActivationCatalogPolicyNormalizationForProfile(
   value: unknown,
