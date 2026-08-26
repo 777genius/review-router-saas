@@ -501,6 +501,7 @@ describe("disposable dual-version rehearsal", () => {
     expect(calls).toEqual([
       "stage:run_release_migration",
       "rollout-use-case-cas",
+      "stage:capture_activation_catalog_policy",
       "capture-candidate",
     ]);
     expect(runReleaseMigration).toHaveBeenCalledOnce();

@@ -4,8 +4,14 @@ const assertCandidate = (value, phase) => {
   try {
     assertPendingActivationCatalogPolicyCaptureNormalization(value, phase);
     return value;
-  } catch {
-    throw new Error(`activation_catalog_policy_candidate_invalid:${phase}`);
+  } catch (error) {
+    const reason =
+      error instanceof Error && /^[a-z-]+$/u.test(error.message)
+        ? error.message
+        : "unknown";
+    throw new Error(
+      `activation_catalog_policy_candidate_invalid:${phase}:${reason}`,
+    );
   }
 };
 

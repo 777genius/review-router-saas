@@ -400,6 +400,16 @@ describe("release workflow contract", () => {
     expect(adversarial).not.toContain('"postgres:17",');
   });
 
+  it("runs catalog-sensitive quality gates on the production PG17 image", () => {
+    const pinnedImage =
+      "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4";
+    const qualityStart = ci.indexOf("  quality:");
+    const quality = ci.slice(qualityStart);
+
+    expect(quality).toContain(`image: ${pinnedImage}`);
+    expect(quality).not.toContain("postgres:17-alpine");
+  });
+
   it("verifies exact evidence before any production image can be published", () => {
     const gate = release.indexOf(
       "node scripts/release-gate-evidence.mjs verify",

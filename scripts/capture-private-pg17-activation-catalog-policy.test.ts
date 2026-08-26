@@ -9,8 +9,8 @@ const pendingActivationCatalogPrincipalNames = [
   "reviewrouter_activation_receipt_guard",
   "reviewrouter_activation_receipt_reader",
   "reviewrouter_api",
-  "reviewrouter_comment_token_custody",
   "reviewrouter_codex_effect_authority",
+  "reviewrouter_comment_token_custody",
   "reviewrouter_release_migration",
   "reviewrouter_release_schema_owner",
   "reviewrouter_role_bootstrap",
@@ -20,8 +20,8 @@ const pendingActivationCatalogPrincipalNames = [
 
 const pendingActivationCatalogBootstrapMembershipRoleNames = [
   "reviewrouter_api",
-  "reviewrouter_comment_token_custody",
   "reviewrouter_codex_effect_authority",
+  "reviewrouter_comment_token_custody",
   "reviewrouter_release_migration",
   "reviewrouter_web",
   "reviewrouter_worker",

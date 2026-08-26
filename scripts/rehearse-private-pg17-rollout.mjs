@@ -462,8 +462,16 @@ export async function runRehearsalReleaseMigration({
       migratedRollout.migrationTransition.postCatalogDigest
   )
     throw new Error("private_pg17_rehearsal_phase_transition_unproven");
+  if (captureOnly)
+    return Object.freeze({
+      mode: "capture-only",
+      candidate: await runStage(
+        "capture_activation_catalog_policy",
+        captureCandidate,
+      ),
+    });
   return routeRehearsalAfterReleaseMigration({
-    captureOnly,
+    captureOnly: undefined,
     captureCandidate,
     stageTargetServices: () => stageTargetServices(migratedRollout),
   });
@@ -552,7 +560,7 @@ function redactedErrorChain(error) {
 
 export function safeRehearsalStageErrorCode(error) {
   const message = error instanceof Error ? error.message : "";
-  return /^(?:private_pg17_rehearsal|release_rollout|runner_ledger|trusted_rollout)_[a-z0-9_]{2,160}$/u.test(
+  return /^(?:(?:private_pg17_rehearsal|release_rollout|runner_ledger|trusted_rollout)_[a-z0-9_]{2,160}|activation_catalog_policy_candidate_invalid:(?:preactivation|activated):(?:policy|roles|role-(?:shape|name|login|inherit|superuser|bypass-rls|replication|create-database|create-role|connection-limit|valid-until)|memberships|membership|reachability|row-security|row-security-policy|row-security-policy-order|row-security-order|extension|extension-order|grant|grant-order|effective-permissions|permission|permission-order|rehearsal-resource|unknown))$/u.test(
     message,
   )
     ? message
@@ -3436,9 +3444,12 @@ COMMIT;
       const attestationNonce = rawSha256(
         `${identity}:${facts.targetSystemIdentifier}:${facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256}`,
       );
+      process.stderr.write("rehearsal_capture_substep_started:cleanup\n");
       cleanupCaptureOnlyRehearsalFixtures({
         executeSql: (statement) => facts.sql(facts.targetContainer, statement),
       });
+      process.stderr.write("rehearsal_capture_substep_completed:cleanup\n");
+      process.stderr.write("rehearsal_capture_substep_started:attestation\n");
       canonicalRun(
         "mark_disposable_activation_catalog_database",
         "psql",
@@ -3479,6 +3490,8 @@ END
 $attest_disposable_capture_database$;\n`,
         },
       );
+      process.stderr.write("rehearsal_capture_substep_completed:attestation\n");
+      process.stderr.write("rehearsal_capture_substep_started:projection\n");
       const stdout = canonicalRun(
         "capture_activation_catalog_policy_candidate",
         "psql",
@@ -3499,7 +3512,12 @@ $attest_disposable_capture_database$;\n`,
           ),
         },
       );
-      return parsePrivatePg17ActivationCatalogPolicyCandidate(stdout);
+      process.stderr.write("rehearsal_capture_substep_completed:projection\n");
+      process.stderr.write("rehearsal_capture_substep_started:validation\n");
+      const candidate =
+        parsePrivatePg17ActivationCatalogPolicyCandidate(stdout);
+      process.stderr.write("rehearsal_capture_substep_completed:validation\n");
+      return candidate;
     },
     stageTargetServices: (migratedRollout) =>
       runStage("stage_target_services", () =>
