@@ -3,6 +3,8 @@ import {
   PrincipalCapability,
   canonicalActivationPrincipalNames,
   canonicalBootstrapMembershipRoleNames,
+  pendingActivationCatalogBootstrapMembershipRoleNames,
+  pendingActivationCatalogPrincipalNames,
   type ActivationCatalogPolicy,
 } from "./effective-principal-inventory";
 
@@ -88,6 +90,20 @@ export const productionActivationCatalogPolicyNormalizationProfile =
     ]),
     createRolePrincipalNames: Object.freeze([]),
   });
+
+/** Capture-only profile for the next independently reviewed trust root. */
+export const pendingActivationCatalogPolicyNormalizationProfile = Object.freeze(
+  {
+    principalNames: pendingActivationCatalogPrincipalNames,
+    bootstrapMembershipRoleNames:
+      pendingActivationCatalogBootstrapMembershipRoleNames,
+    noLoginPrincipalNames: Object.freeze([
+      "reviewrouter_activation_receipt_guard",
+      "reviewrouter_release_schema_owner",
+    ]),
+    createRolePrincipalNames: Object.freeze([]),
+  },
+);
 
 export function assertActivationCatalogPolicyNormalizationForProfile(
   value: unknown,

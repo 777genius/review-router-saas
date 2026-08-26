@@ -177,7 +177,6 @@ export const canonicalActivationPrincipalNames = Object.freeze([
   "reviewrouter_activation_receipt_guard",
   "reviewrouter_activation_receipt_reader",
   "reviewrouter_api",
-  "reviewrouter_comment_token_custody",
   "reviewrouter_codex_effect_authority",
   "reviewrouter_release_migration",
   "reviewrouter_release_schema_owner",
@@ -189,12 +188,39 @@ export const canonicalActivationPrincipalNames = Object.freeze([
 /** Exact final provider-issued topology after the schema-owner handoff is revoked. */
 export const canonicalBootstrapMembershipRoleNames = Object.freeze([
   "reviewrouter_api",
-  "reviewrouter_comment_token_custody",
   "reviewrouter_codex_effect_authority",
   "reviewrouter_release_migration",
   "reviewrouter_web",
   "reviewrouter_worker",
 ] as const);
+
+/**
+ * Candidate topology captured for independent review before it can replace the
+ * production trust root. Capture may advance this boundary; activation may not.
+ */
+export const pendingActivationCatalogPrincipalNames = Object.freeze([
+  "reviewrouter_activation_permit_installer",
+  "reviewrouter_activation_receipt_guard",
+  "reviewrouter_activation_receipt_reader",
+  "reviewrouter_api",
+  "reviewrouter_comment_token_custody",
+  "reviewrouter_codex_effect_authority",
+  "reviewrouter_release_migration",
+  "reviewrouter_release_schema_owner",
+  "reviewrouter_role_bootstrap",
+  "reviewrouter_web",
+  "reviewrouter_worker",
+] as const);
+
+export const pendingActivationCatalogBootstrapMembershipRoleNames =
+  Object.freeze([
+    "reviewrouter_api",
+    "reviewrouter_comment_token_custody",
+    "reviewrouter_codex_effect_authority",
+    "reviewrouter_release_migration",
+    "reviewrouter_web",
+    "reviewrouter_worker",
+  ] as const);
 /**
  * Reviewed, phase-specific exact catalog contract consumed by target-local
  * activation. Array ordering is canonical and is part of the digest.

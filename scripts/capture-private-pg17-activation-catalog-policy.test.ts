@@ -2,15 +2,16 @@ import { describe, expect, it } from "vitest";
 import { parsePrivatePg17ActivationCatalogPolicyCandidate } from "./capture-private-pg17-activation-catalog-policy.mjs";
 import {
   canonicalActivationPrincipalNames,
-  canonicalBootstrapMembershipRoleNames,
-} from "../packages/features/release-rollout/src/index.ts";
+  pendingActivationCatalogBootstrapMembershipRoleNames,
+  pendingActivationCatalogPrincipalNames,
+} from "../packages/features/release-rollout/src/domain/effective-principal-inventory.ts";
 
 const policy = (phase: "preactivation" | "activated") => ({
   kind: "reviewrouter-activation-catalog-policy",
   version: 1,
   phase,
   database: "review_router",
-  roles: canonicalActivationPrincipalNames.map((name) => ({
+  roles: pendingActivationCatalogPrincipalNames.map((name) => ({
     name,
     canLogin: ![
       "reviewrouter_activation_receipt_guard",
@@ -25,15 +26,17 @@ const policy = (phase: "preactivation" | "activated") => ({
     connectionLimit: -1,
     validUntil: null,
   })),
-  memberships: canonicalBootstrapMembershipRoleNames.map((role) => ({
-    member: "reviewrouter_role_bootstrap",
-    role,
-    setOption: false,
-    inheritOption: false,
-    adminOption: true,
-    grantor: { kind: "external-bootstrap-authority" },
-  })),
-  roleReachability: canonicalActivationPrincipalNames
+  memberships: pendingActivationCatalogBootstrapMembershipRoleNames.map(
+    (role) => ({
+      member: "reviewrouter_role_bootstrap",
+      role,
+      setOption: false,
+      inheritOption: false,
+      adminOption: true,
+      grantor: { kind: "external-bootstrap-authority" },
+    }),
+  ),
+  roleReachability: pendingActivationCatalogPrincipalNames
     .filter(
       (name) =>
         ![
@@ -50,16 +53,27 @@ const policy = (phase: "preactivation" | "activated") => ({
   rowSecurity: [] as Array<Record<string, unknown>>,
   extensions: [],
   grants: [],
-  effectivePermissions: canonicalActivationPrincipalNames.map((principal) => ({
-    principal,
-    permissions: [] as Array<Record<string, unknown>>,
-  })),
+  effectivePermissions: pendingActivationCatalogPrincipalNames.map(
+    (principal) => ({
+      principal,
+      permissions: [] as Array<Record<string, unknown>>,
+    }),
+  ),
 });
 
 const envelope = (preactivation: unknown, activated: unknown) =>
   `${JSON.stringify({ preactivation, activated })}\n`;
 
 describe("activation catalog policy candidate capture", () => {
+  it("keeps the pending custody principal outside the production trust root", () => {
+    expect(pendingActivationCatalogPrincipalNames).toContain(
+      "reviewrouter_comment_token_custody",
+    );
+    expect(canonicalActivationPrincipalNames).not.toContain(
+      "reviewrouter_comment_token_custody",
+    );
+  });
+
   it("rejects phase substitution", () => {
     expect(() =>
       parsePrivatePg17ActivationCatalogPolicyCandidate(
