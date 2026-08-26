@@ -1921,6 +1921,10 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       prisma,
       () => clock,
     );
+    let orphanedCandidates: number;
+    do {
+      orphanedCandidates = await effects.sweepExpired();
+    } while (orphanedCandidates !== 0);
     const issued = await issueGrant("long-response-heartbeat");
     const authorization = new PrismaHostedCodexRelayAuthorization(prisma);
     const admitted = await authorization.authorize({
@@ -1930,15 +1934,16 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       requestBytes: Buffer.byteLength('{"input":"long"}'),
     });
     let chunks = 0;
+    const chunkGates = Array.from({ length: 3 }, () =>
+      Promise.withResolvers<void>(),
+    );
     const body = new ReadableStream<Uint8Array>({
       async pull(controller) {
         if (chunks === 3) {
           controller.close();
           return;
         }
-        clock = new Date(clock.getTime() + 20_000);
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        expect(await effects.sweepExpired()).toBe(0);
+        await chunkGates[chunks]!.promise;
         controller.enqueue(Buffer.from(`chunk-${chunks}`));
         chunks += 1;
       },
@@ -1969,13 +1974,48 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       accept: "text/event-stream",
       abortSignal: new AbortController().signal,
     });
-    await readAll(response.body);
+    const read = readAll(response.body);
+    for (const gate of chunkGates) {
+      const before =
+        await prisma.hostedCodexUpstreamEffectAttempt.findFirstOrThrow({
+          where: { relayRequestId: admitted.requestId },
+          select: { id: true, leaseExpiresAt: true, state: true },
+        });
+      expect(before.state).toBe("response_started");
+      clock = new Date(before.leaseExpiresAt.getTime() - 1);
+      await vi.waitFor(
+        async () => {
+          const renewed =
+            await prisma.hostedCodexUpstreamEffectAttempt.findUniqueOrThrow({
+              where: { id: before.id },
+              select: { leaseExpiresAt: true, state: true },
+            });
+          expect(renewed.state).toBe("response_started");
+          expect(renewed.leaseExpiresAt.getTime()).toBeGreaterThan(
+            before.leaseExpiresAt.getTime(),
+          );
+        },
+        { interval: 5, timeout: 2_000 },
+      );
+      // Cross the lease boundary captured before renewal. The exact live
+      // attempt must remain unsweepable after its heartbeat extends the lease.
+      clock = new Date(before.leaseExpiresAt.getTime() + 1);
+      expect(await effects.sweepExpired()).toBe(0);
+      gate.resolve();
+    }
+    await read;
     expect(chunks).toBe(3);
-    expect(
-      await prisma.hostedCodexRelayRequest.findUniqueOrThrow({
+    const [request, attempts] = await Promise.all([
+      prisma.hostedCodexRelayRequest.findUniqueOrThrow({
         where: { id: admitted.requestId },
       }),
-    ).toMatchObject({ status: "succeeded" });
+      prisma.hostedCodexUpstreamEffectAttempt.findMany({
+        where: { relayRequestId: admitted.requestId },
+      }),
+    ]);
+    expect(request).toMatchObject({ status: "succeeded" });
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({ state: "succeeded" });
   });
 
   it("rechecks quarantine and revocation at both prepare and dispatch boundaries", async () => {
@@ -2604,9 +2644,11 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       }),
     ).rejects.toThrow("hosted_codex_comment_token_mint_transition_invalid");
     // Test-only cleanup cannot wait for the provider upper bound in wall time.
-    await prisma.$executeRawUnsafe(`SET session_replication_role = 'replica'`);
-    try {
-      await prisma.hostedCodexCommentTokenMint.update({
+    await prisma.$transaction(async (transaction) => {
+      await transaction.$executeRawUnsafe(
+        `SET LOCAL session_replication_role = 'replica'`,
+      );
+      await transaction.hostedCodexCommentTokenMint.update({
         where: { id: mintId },
         data: {
           state: "expired",
@@ -2615,9 +2657,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
           revision: { increment: 1 },
         },
       });
-    } finally {
-      await prisma.$executeRawUnsafe(`SET session_replication_role = 'origin'`);
-    }
+    });
     await prisma.hostedCodexRuntimeClosure.update({
       where: { id: closure.id },
       data: {
@@ -2729,30 +2769,30 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         revision: { increment: 1 },
       },
     });
-    await prisma.$executeRawUnsafe(`SET session_replication_role = 'replica'`);
-    try {
-      await prisma.hostedCodexRuntimeClosure.update({
+    await prisma.$transaction(async (transaction) => {
+      await transaction.$executeRawUnsafe(
+        `SET LOCAL session_replication_role = 'replica'`,
+      );
+      await transaction.hostedCodexRuntimeClosure.update({
         where: { id: closure.id },
         data: {
           legacyBarrier: true,
           legacyUnsafeUntil: new Date(Date.now() + 61 * 60_000),
         },
       });
-    } finally {
-      await prisma.$executeRawUnsafe(`SET session_replication_role = 'origin'`);
-    }
+    });
     await expect(
       transitionRuntimeGate("active", "unsafe_state_complete_activation"),
     ).rejects.toThrow("hosted_codex_runtime_closure_incomplete");
-    await prisma.$executeRawUnsafe(`SET session_replication_role = 'replica'`);
-    try {
-      await prisma.hostedCodexRuntimeClosure.update({
+    await prisma.$transaction(async (transaction) => {
+      await transaction.$executeRawUnsafe(
+        `SET LOCAL session_replication_role = 'replica'`,
+      );
+      await transaction.hostedCodexRuntimeClosure.update({
         where: { id: closure.id },
         data: { legacyBarrier: false, legacyUnsafeUntil: new Date(0) },
       });
-    } finally {
-      await prisma.$executeRawUnsafe(`SET session_replication_role = 'origin'`);
-    }
+    });
     await transitionRuntimeGate("active", "safe_activation_after_recheck");
   });
 
@@ -3546,6 +3586,13 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       prisma,
       () => clock,
     );
+    // sweepExpired is intentionally a global bounded worker operation. Drain
+    // orphaned candidates from earlier crash fixtures before asserting the
+    // exact cardinality created by this fixture.
+    let orphanedCandidates: number;
+    do {
+      orphanedCandidates = await effects.sweepExpired();
+    } while (orphanedCandidates !== 0);
     const issued = await issueGrant("prepared-safe-retry", {
       maxRequests: 1,
       maxConcurrentRequests: 1,
@@ -3563,7 +3610,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       requestId: admitted.requestId,
       requestHash,
     });
-    await effects.prepare({
+    const expired = await effects.prepare({
       relayRequestId: admitted.requestId,
       grantId: issued.grant.id,
       workspaceId: workspace,
@@ -3573,8 +3620,48 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       requestHash,
       leaseMs: 5_000,
     });
+    const liveIssued = await issueGrant("prepared-safe-retry-live-sibling");
+    const liveAdmitted = await authorization.authorize({
+      opaqueGrant: liveIssued.plaintextToken,
+      requestOrdinal: 1,
+      idempotencyKey: "prepared-safe-retry-live-sibling",
+      requestBytes: 64,
+    });
+    const liveRequestHash = sha256("prepared-safe-retry-live-sibling-body");
+    await ledger.recordRequestHash({
+      grantId: liveIssued.grant.id,
+      requestId: liveAdmitted.requestId,
+      requestHash: liveRequestHash,
+    });
+    const live = await effects.prepare({
+      relayRequestId: liveAdmitted.requestId,
+      grantId: liveIssued.grant.id,
+      workspaceId: workspace,
+      poolId: pool,
+      accountId: "account-primary",
+      credentialGeneration: await activeCredentialGeneration("account-primary"),
+      requestHash: liveRequestHash,
+    });
     clock = new Date(clock.getTime() + 5_001);
     expect(await effects.sweepExpired()).toBe(1);
+    await expect(
+      prisma.hostedCodexUpstreamEffectAttempt.findUniqueOrThrow({
+        where: { id: expired.attemptId },
+        select: { state: true },
+      }),
+    ).resolves.toEqual({ state: "failed_no_effect" });
+    await expect(
+      prisma.hostedCodexUpstreamEffectAttempt.findUniqueOrThrow({
+        where: { id: live.attemptId },
+        select: { state: true },
+      }),
+    ).resolves.toEqual({ state: "prepared" });
+    await expect(
+      prisma.hostedCodexRelayRequest.findUniqueOrThrow({
+        where: { id: liveAdmitted.requestId },
+        select: { status: true },
+      }),
+    ).resolves.toEqual({ status: "processing" });
     expect(
       await prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
         where: { id: issued.grant.id },
@@ -4052,6 +4139,129 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       mutationFirst.tokenHash,
       "trusted-mutation-first-proof",
     );
+  });
+
+  it("recovers a crashed delivery claimant only after the database lease expires", async () => {
+    const issued = await createIssuedMint("delivery-claim-crash-recovery");
+    const crashedClaim = sha256("delivery-claim-crashed-process");
+    const restartedClaim = sha256("delivery-claim-restarted-process");
+    await issued.ledger.confirmReplayDelivery({
+      mintId: issued.mintId,
+      tokenHash: issued.tokenHash,
+      deliveryClaimIdHash: crashedClaim,
+    });
+
+    const restartedLedger = new PrismaHostedCommentTokenMintLedger(prisma);
+    await expect(
+      restartedLedger.confirmReplayDelivery({
+        mintId: issued.mintId,
+        tokenHash: issued.tokenHash,
+        deliveryClaimIdHash: restartedClaim,
+      }),
+    ).rejects.toThrow("hosted_comment_mint_replay_not_authorized");
+
+    await prisma.$transaction(async (transaction) => {
+      await transaction.$executeRawUnsafe(
+        `SET LOCAL session_replication_role = 'replica'`,
+      );
+      await transaction.hostedCodexCommentTokenMint.update({
+        where: { id: issued.mintId },
+        data: { deliveryClaimExpiresAt: new Date(0) },
+      });
+    });
+    await expect(
+      restartedLedger.confirmReplayDelivery({
+        mintId: issued.mintId,
+        tokenHash: issued.tokenHash,
+        deliveryClaimIdHash: restartedClaim,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      issued.ledger.confirmReplayDelivery({
+        mintId: issued.mintId,
+        tokenHash: issued.tokenHash,
+        deliveryClaimIdHash: crashedClaim,
+      }),
+    ).rejects.toThrow("hosted_comment_mint_replay_not_authorized");
+    await expect(
+      prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+        where: { id: issued.mintId },
+        select: { deliveryClaimIdHash: true },
+      }),
+    ).resolves.toEqual({ deliveryClaimIdHash: restartedClaim });
+  });
+
+  it("keeps a failed release exactly once and permits retry only after expiry", async () => {
+    const issued = await createIssuedMint("delivery-release-write-failure");
+    const originalClaim = sha256("delivery-release-original-owner");
+    const retryClaim = sha256("delivery-release-retry-owner");
+    await issued.ledger.confirmReplayDelivery({
+      mintId: issued.mintId,
+      tokenHash: issued.tokenHash,
+      deliveryClaimIdHash: originalClaim,
+    });
+    await expect(
+      issued.ledger.releaseDelivery({
+        mintId: issued.mintId,
+        tokenHash: issued.tokenHash,
+        deliveryClaimIdHash: sha256("delivery-release-wrong-owner"),
+      }),
+    ).rejects.toThrow("hosted_comment_mint_delivery_release_conflict");
+    await expect(
+      issued.ledger.confirmReplayDelivery({
+        mintId: issued.mintId,
+        tokenHash: issued.tokenHash,
+        deliveryClaimIdHash: retryClaim,
+      }),
+    ).rejects.toThrow("hosted_comment_mint_replay_not_authorized");
+
+    await prisma.$transaction(async (transaction) => {
+      await transaction.$executeRawUnsafe(
+        `SET LOCAL session_replication_role = 'replica'`,
+      );
+      await transaction.hostedCodexCommentTokenMint.update({
+        where: { id: issued.mintId },
+        data: { deliveryClaimExpiresAt: new Date(0) },
+      });
+    });
+    await expect(
+      issued.ledger.confirmReplayDelivery({
+        mintId: issued.mintId,
+        tokenHash: issued.tokenHash,
+        deliveryClaimIdHash: retryClaim,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      issued.ledger.releaseDelivery({
+        mintId: issued.mintId,
+        tokenHash: issued.tokenHash,
+        deliveryClaimIdHash: originalClaim,
+      }),
+    ).rejects.toThrow("hosted_comment_mint_delivery_release_conflict");
+  });
+
+  it("never exposes transaction-local replica mode to another pooled connection", async () => {
+    const sibling = createPrismaClient({ databaseUrl, poolMax: 1 });
+    await sibling.$connect();
+    try {
+      await prisma.$transaction(async (transaction) => {
+        await transaction.$executeRawUnsafe(
+          `SET LOCAL session_replication_role = 'replica'`,
+        );
+        await expect(
+          sibling.$queryRaw<Array<{ mode: string }>>`
+            SELECT current_setting('session_replication_role') AS mode
+          `,
+        ).resolves.toEqual([{ mode: "origin" }]);
+      });
+      await expect(
+        prisma.$queryRaw<Array<{ mode: string }>>`
+          SELECT current_setting('session_replication_role') AS mode
+        `,
+      ).resolves.toEqual([{ mode: "origin" }]);
+    } finally {
+      await sibling.$disconnect();
+    }
   });
 
   it.each(["grant", "capability"] as const)(

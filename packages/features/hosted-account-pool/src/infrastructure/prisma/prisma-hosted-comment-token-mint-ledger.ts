@@ -369,8 +369,7 @@ export class PrismaHostedCommentTokenMintLedger implements HostedCommentTokenMin
         mint.state !== "issued" ||
         mint.tokenHash !== input.tokenHash ||
         !(mint.tokenExpiresAt instanceof Date) ||
-        mint.tokenExpiresAt <= databaseNow ||
-        mint.deliveryClaimIdHash !== null
+        mint.tokenExpiresAt <= databaseNow
       )
         throw new Error("hosted_comment_mint_replay_not_authorized");
       const changed = await mutateMint(transaction, "claim_delivery", {

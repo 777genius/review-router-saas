@@ -140,13 +140,13 @@ export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
     "sha256:bc7853ee946ab41b455e786dded6b34fb0f548a4591ca965d066e8efb1479cd5",
   preManifestIdentity:
-    "sha256:0453b6054655b33d57d3ac846c1242dd70b025f2cf3ab0820edfec0396cdb95c",
+    "sha256:cd3519d621a6427507cfd428bdecb00fb52ef6f1820cee24e0dd109cb1193918",
   orderedPendingEntriesSha256:
     "sha256:c2eae628ec1b20ab29f09ae56ea6111a7d97948c8e5fea370c6cf5e45cf330fa",
   migrationBundleSha256:
     "sha256:b98968fc30e81ab1af1d5e0c47004e158e281b1a690c41c4f2b74eec6400d73a",
   postManifestIdentity:
-    "sha256:3691d8b69b1e5df81089eda77ed67fdfdb46b0fac161c53405487f3e5db527c2",
+    "sha256:e57dc1099a3145679568dfa6d5e483b286b732160188180bbbd85da090630658",
   // Last captured digest; V86 projection changes remain HOLD pending PG17 capture.
   postCatalogDigest:
     "sha256:e8d0377f3b4bd607f23af9c180a35550bcfda93f680da41120a0ccb8aa5297ba",

@@ -100,7 +100,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.release_commit_sha }}
 
       - name: Install and validate recovery tooling
         shell: bash
@@ -111,9 +111,14 @@ jobs:
           [[ "$RENDER_OWNER_ID" =~ ^tea-[a-z0-9-]+$ ]]
           [[ "$RENDER_ENVIRONMENT_ID" =~ ^evm-[a-z0-9-]+$ ]]
           [[ "$RELEASE_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          observed_source_sha="$(git rev-parse HEAD)"
+          [[ "$observed_source_sha" == "$RELEASE_COMMIT_SHA" ]]
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
             [[ "$service_id" =~ ^srv-[a-z0-9-]+$ ]]
           done
+          [[ "$API_SERVICE_ID" != "$WORKER_SERVICE_ID" ]]
+          [[ "$API_SERVICE_ID" != "$WEB_SERVICE_ID" ]]
+          [[ "$WORKER_SERVICE_ID" != "$WEB_SERVICE_ID" ]]
           corepack enable
           node scripts/install-private-dependencies.mjs --frozen-lockfile
           pnpm db:generate
@@ -149,6 +154,99 @@ jobs:
             rm -f "$work"/*secret* "$work"/*url* "$work"/*env.json "$work/connection-info.json"
           }
           trap cleanup EXIT
+
+          # Converge both an initially live set and a partially suspended set
+          # to the same fail-closed barrier. No database or credential mutation
+          # is permitted above the proof that all three exact IDs are stopped.
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            state="$(render_api "https://api.render.com/v1/services/$service_id" | jq -er '.suspended')"
+            if [[ "$state" != "suspended" ]]; then
+              render_api -X POST \
+                "https://api.render.com/v1/services/$service_id/suspend" \
+                -o /dev/null
+            fi
+          done
+          suspension_deadline=$((SECONDS + 600))
+          while (( SECONDS < suspension_deadline )); do
+            suspension_observations='[]'
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              service="$(render_api "https://api.render.com/v1/services/$service_id")"
+              suspension_observations="$(
+                jq -c \
+                  --arg serviceId "$service_id" \
+                  --arg suspended "$(jq -er '.suspended' <<<"$service")" \
+                  '. + [{serviceId: $serviceId, suspended: $suspended}]' \
+                  <<<"$suspension_observations"
+              )"
+            done
+            if jq -e 'length == 3 and all(.suspended == "suspended")' \
+              <<<"$suspension_observations" >/dev/null; then
+              break
+            fi
+            sleep 10
+          done
+          jq -e 'length == 3 and all(.suspended == "suspended")' \
+            <<<"$suspension_observations" >/dev/null
+          recovery_phase_key="REVIEW_ROUTER_PG17_RECOVERY_PHASE"
+          read_recovery_phase() {
+            local service_id="$1"
+            render_api "https://api.render.com/v1/services/$service_id/env-vars" \
+              | jq -er --arg key "$recovery_phase_key" '
+                  map(.envVar // .)
+                  | (map(select(.key == $key))[0].value // "{}")
+                  | try fromjson catch {}
+                  | if type == "object" then . else {} end
+                '
+          }
+          prior_recovery_phases='[]'
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            prior_recovery_phases="$(
+              jq -c --arg serviceId "$service_id" \
+                --argjson state "$(read_recovery_phase "$service_id")" \
+                '. + [{serviceId: $serviceId, state: $state}]' \
+                <<<"$prior_recovery_phases"
+            )"
+          done
+          printf '%s\n' "$prior_recovery_phases" > "$work/recovery-resume-state.json"
+          persist_recovery_phase() {
+            local phase="$1"
+            jq -n \
+              --arg phase "$phase" \
+              --arg targetDbId "$TARGET_DB_ID" \
+              --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
+                {value: ({
+                  schemaVersion: 1,
+                  phase: $phase,
+                  targetDbId: $targetDbId,
+                  releaseCommitSha: $releaseCommitSha
+                } | tojson)}
+              ' \
+              > "$work/recovery-phase-env.json"
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              render_api -X PUT -H "Content-Type: application/json" \
+                --data-binary @"$work/recovery-phase-env.json" \
+                "https://api.render.com/v1/services/$service_id/env-vars/$recovery_phase_key" \
+                -o /dev/null
+            done
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              read_recovery_phase "$service_id" | jq -e \
+                --arg phase "$phase" \
+                --arg targetDbId "$TARGET_DB_ID" \
+                --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
+                  .schemaVersion == 1
+                  and .phase == $phase
+                  and .targetDbId == $targetDbId
+                  and .releaseCommitSha == $releaseCommitSha
+                ' >/dev/null
+            done
+          }
+          persist_recovery_phase "services_suspended"
+          jq -n \
+            --arg phase "services_suspended" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --argjson services "$suspension_observations" \
+            '{phase: $phase, runId: $runId, services: $services}' \
+            > "$work/recovery-phase.json"
 
           render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" > "$work/target.json"
           jq -e \
@@ -283,6 +381,10 @@ jobs:
             sh -ceu 'psql "$DATABASE_URL" --no-psqlrc --quiet --file=/work/create-runtime-roles.sql'
           unset RR_API_PASSWORD RR_WEB_PASSWORD RR_WORKER_PASSWORD RR_EFFECT_PASSWORD RR_CUSTODY_PASSWORD
 
+          persist_recovery_phase "credentials_rotated"
+          jq -n --arg phase "credentials_rotated" --arg runId "$GITHUB_RUN_ID" \
+            '{phase: $phase, runId: $runId}' > "$work/recovery-phase.json"
+
           DATABASE_URL="$external_url" pnpm db:migrate:deploy
           node --import tsx --input-type=module <<'NODE' > "$work/runtime-grants.sql"
           import { runtimeGrantSql } from "./scripts/run-codex-rotating-release-migration.mjs";
@@ -333,6 +435,10 @@ jobs:
             and .custodyFunction == true
           ' "$work/target-stats.json" >/dev/null
 
+          persist_recovery_phase "migration_complete"
+          jq -n --arg phase "migration_complete" --arg runId "$GITHUB_RUN_ID" \
+            '{phase: $phase, runId: $runId}' > "$work/recovery-phase.json"
+
           jq -n --arg value "$(jq -er '.roles.api.internal' "$work/runtime-role-urls.json")" \
             '{value: $value}' > "$work/api-env.json"
           jq -n --arg value "$(jq -er '.roles.web.internal' "$work/runtime-role-urls.json")" \
@@ -355,26 +461,68 @@ jobs:
           done
           render_api -X PUT -H "Content-Type: application/json" --data-binary @"$work/custody-env.json" \
             "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars/REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL" -o /dev/null
+          persist_recovery_phase "service_credentials_staged"
+          jq -n --arg phase "service_credentials_staged" --arg runId "$GITHUB_RUN_ID" \
+            '{phase: $phase, runId: $runId}' > "$work/recovery-phase.json"
 
           close_firewall
           firewall_open=0
+
+          service_revision_observations='[]'
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-            state="$(render_api "https://api.render.com/v1/services/$service_id" | jq -r '.suspended')"
-            if [[ "$state" == "suspended" ]]; then
-              render_api -X POST "https://api.render.com/v1/services/$service_id/resume" -o /dev/null
-            fi
+            deploys="$(render_api "https://api.render.com/v1/services/$service_id/deploys?limit=1")"
+            observation="$(
+              jq -ce --arg serviceId "$service_id" '
+                (if type == "array" then .[0] else (.deploys[0] // .[0]) end)
+                | (.deploy // .) as $deploy
+                | {
+                    serviceId: $serviceId,
+                    deployId: ($deploy.id | select(type == "string" and length > 0)),
+                    observedStatus: ($deploy.status | select(type == "string")),
+                    observedCommitSha: (
+                      ($deploy.commit.id // $deploy.commit.sha // $deploy.commitId)
+                      | select(type == "string" and test("^[a-f0-9]{40}$"))
+                    ),
+                    observedImageDigest: (
+                      ($deploy.image.sha // $deploy.image.digest // $deploy.imageDigest)
+                      | select(type == "string" and test("^sha256:[a-f0-9]{64}$"))
+                    )
+                  }
+              ' <<<"$deploys"
+            )"
+            service_revision_observations="$(
+              jq -c --argjson observation "$observation" '. + [$observation]' \
+                <<<"$service_revision_observations"
+            )"
+          done
+          jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
+            length == 3
+            and all(.observedCommitSha == $releaseCommitSha)
+            and all(.observedStatus == "live")
+            and ([.[].serviceId] | unique | length == 3)
+            and all(.observedImageDigest | test("^sha256:[a-f0-9]{64}$"))
+          ' <<<"$service_revision_observations" >/dev/null
+          printf '%s\n' "$service_revision_observations" \
+            > "$work/service-revision-observations.json"
+          persist_recovery_phase "ready_to_resume"
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            render_api -X POST \
+              "https://api.render.com/v1/services/$service_id/resume" -o /dev/null
           done
 
           jq -n \
             --arg targetDbId "$TARGET_DB_ID" \
             --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
             --arg recoveryRunId "$GITHUB_RUN_ID" \
+            --arg observedSourceCommitSha "$(git rev-parse HEAD)" \
+            --slurpfile serviceRevisions "$work/service-revision-observations.json" \
             --slurpfile targetStats "$work/target-stats.json" \
             '{
               targetDbId: $targetDbId,
               targetVersion: 17,
-              releaseCommitSha: $releaseCommitSha,
+              releaseCommitSha: $observedSourceCommitSha,
               recoveryRunId: $recoveryRunId,
+              serviceRevisions: $serviceRevisions[0],
               targetStats: $targetStats[0]
             }' > "$work/recovery-manifest.json"
           unset DATABASE_URL external_url

@@ -232,6 +232,51 @@ describe("HostedCommentTokenClosureReconciler", () => {
     expect(findUnique).toHaveBeenCalledTimes(2);
   });
 
+  it("delegates replacement of an existing delivery claim to database time", async () => {
+    const tokenHash = sha256(token);
+    const replacementClaim = sha256("replacement-delivery-claim");
+    const findUnique = vi
+      .fn()
+      .mockResolvedValueOnce({
+        grantId: "grant-1",
+        purpose: "initial",
+        capabilityId: null,
+      })
+      .mockResolvedValueOnce({
+        id: "mint-claimed",
+        purpose: "initial",
+        state: "issued",
+        grantId: "grant-1",
+        tokenHash,
+        tokenExpiresAt: new Date(now.getTime() + 60_000),
+        deliveryClaimIdHash: sha256("crashed-delivery-claim"),
+      });
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValueOnce([{ locked: true }])
+      .mockResolvedValueOnce([{}])
+      .mockResolvedValueOnce([{ locked: true }])
+      .mockResolvedValueOnce([{ now }])
+      .mockResolvedValueOnce([{ valid: true }])
+      .mockResolvedValueOnce([{ id: "mint-claimed" }]);
+    const ledger = new PrismaHostedCommentTokenMintLedger({
+      $transaction: async (operation: (transaction: unknown) => unknown) =>
+        operation({
+          $queryRaw: queryRaw,
+          hostedCodexCommentTokenMint: { findUnique },
+        }),
+    } as never);
+
+    await expect(
+      ledger.confirmReplayDelivery({
+        mintId: "mint-claimed",
+        tokenHash,
+        deliveryClaimIdHash: replacementClaim,
+      }),
+    ).resolves.toBeUndefined();
+    expect(queryRaw).toHaveBeenCalledTimes(6);
+  });
+
   it("decrypts, revokes, and durably records trusted revocation evidence outside the claim transaction", async () => {
     const calls: string[] = [];
     const ledger = ledgerFixture(calls);

@@ -528,6 +528,18 @@ describe("hosted Codex quota failover", () => {
       terminalizeUnknown: vi.fn(async () => undefined),
     };
     const effects = effectLedgerFixture();
+    let observeHeartbeatAfterHeaders!: () => void;
+    const heartbeatAfterHeaders = new Promise<void>((resolve) => {
+      observeHeartbeatAfterHeaders = resolve;
+    });
+    let headersReturned = false;
+    effects.heartbeat.mockImplementation(async () => {
+      if (headersReturned) observeHeartbeatAfterHeaders();
+    });
+    let releaseResponseBody!: () => void;
+    const responseBodyReleased = new Promise<void>((resolve) => {
+      releaseResponseBody = resolve;
+    });
     let emitted = false;
     const upstreamBody = new ReadableStream<Uint8Array>({
       async pull(controller) {
@@ -536,7 +548,7 @@ describe("hosted Codex quota failover", () => {
           return;
         }
         emitted = true;
-        await new Promise((resolve) => setTimeout(resolve, 35));
+        await responseBodyReleased;
         controller.enqueue(Buffer.from("streamed"));
       },
     });
@@ -561,7 +573,13 @@ describe("hosted Codex quota failover", () => {
       accept: "text/event-stream",
       abortSignal: new AbortController().signal,
     });
-    for await (const chunk of response.body) void chunk;
+    headersReturned = true;
+    const read = (async () => {
+      for await (const chunk of response.body) void chunk;
+    })();
+    await heartbeatAfterHeaders;
+    releaseResponseBody();
+    await read;
     expect(effects.heartbeat.mock.calls.length).toBeGreaterThanOrEqual(1);
     expect(ledger.complete).toHaveBeenCalledTimes(1);
     expect(ledger.terminalizeUnknown).not.toHaveBeenCalled();

@@ -7,6 +7,57 @@ const workflow = readFileSync(
 );
 
 describe("Codex rotating release migration workflow", () => {
+  it("checks out and verifies the requested immutable migration source", () => {
+    expect(workflow).toContain("ref: ${{ inputs.release_commit_sha }}");
+    expect(workflow).toContain('observed_source_sha="$(git rev-parse HEAD)"');
+    expect(workflow).toContain(
+      '[[ "$observed_source_sha" == "$RELEASE_COMMIT_SHA" ]]',
+    );
+  });
+
+  it("fails closed until every exact runtime service is suspended", () => {
+    const suspensionBarrier = workflow.indexOf(
+      'all(.suspended == "suspended")',
+    );
+    const credentialRotation = workflow.indexOf("create-runtime-roles.sql");
+    const migration = workflow.indexOf("pnpm db:migrate:deploy");
+    expect(suspensionBarrier).toBeGreaterThan(-1);
+    expect(credentialRotation).toBeGreaterThan(suspensionBarrier);
+    expect(migration).toBeGreaterThan(suspensionBarrier);
+    expect(workflow).toContain("recovery-phase.json");
+    expect(workflow).toContain('persist_recovery_phase "services_suspended"');
+    expect(workflow).toContain('persist_recovery_phase "credentials_rotated"');
+    expect(workflow).toContain('persist_recovery_phase "migration_complete"');
+    expect(workflow).toContain(
+      'persist_recovery_phase "service_credentials_staged"',
+    );
+    expect(workflow).toContain('persist_recovery_phase "ready_to_resume"');
+    expect(workflow).toContain("recovery-resume-state.json");
+  });
+
+  it("converges live and partially suspended service sets before mutation", () => {
+    expect(workflow).toContain('if [[ "$state" != "suspended" ]]');
+    expect(workflow).toContain(
+      '"https://api.render.com/v1/services/$service_id/suspend"',
+    );
+    expect(workflow).toContain("suspension_deadline=$((SECONDS + 600))");
+  });
+
+  it("records observed revisions and image digests before resuming", () => {
+    const revisionProof = workflow.indexOf(
+      "service-revision-observations.json",
+    );
+    const resume = workflow.indexOf(
+      '"https://api.render.com/v1/services/$service_id/resume"',
+    );
+    expect(revisionProof).toBeGreaterThan(-1);
+    expect(resume).toBeGreaterThan(revisionProof);
+    expect(workflow).toContain("observedCommitSha");
+    expect(workflow).toContain("observedImageDigest");
+    expect(workflow).toContain('all(.observedStatus == "live")');
+    expect(workflow).toContain("all(.observedCommitSha == $releaseCommitSha)");
+  });
+
   it("keeps recovery and Action release identities separate", () => {
     expect(workflow).toContain("release_commit_sha:");
     expect(workflow).toContain("action_commit_sha:");
