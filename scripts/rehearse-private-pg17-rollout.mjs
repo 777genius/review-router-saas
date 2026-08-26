@@ -778,6 +778,11 @@ export const disposableSqlConfiguration = () => ({
       password: "disposable-worker",
     },
     {
+      role: "comment-token-custody",
+      username: "reviewrouter_comment_token_custody",
+      password: "disposable-custody",
+    },
+    {
       role: "effect-authority",
       username: "reviewrouter_codex_effect_authority",
       password: "disposable-effect",
@@ -796,6 +801,7 @@ export function disposablePg17TargetRoleFoundationSql({
 CREATE ROLE reviewrouter_api LOGIN PASSWORD 'disposable-api';
 CREATE ROLE reviewrouter_web LOGIN PASSWORD 'disposable-web';
 CREATE ROLE reviewrouter_worker LOGIN PASSWORD 'disposable-worker';
+CREATE ROLE reviewrouter_comment_token_custody LOGIN PASSWORD 'disposable-custody';
 CREATE ROLE reviewrouter_codex_effect_authority LOGIN PASSWORD 'disposable-effect';
 CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release';
 CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN;
@@ -824,6 +830,7 @@ ALTER SCHEMA public OWNER TO reviewrouter_role_bootstrap;
 GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 GRANT reviewrouter_web TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 GRANT reviewrouter_worker TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+GRANT reviewrouter_comment_token_custody TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 GRANT reviewrouter_codex_effect_authority TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 SET ROLE reviewrouter_role_bootstrap;
@@ -1614,9 +1621,13 @@ ROLLBACK;`,
         "reviewrouter_worker",
         configuration.roles[2].password,
       ),
+      REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL: url(
+        "reviewrouter_comment_token_custody",
+        configuration.roles[3].password,
+      ),
       REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: url(
         "reviewrouter_codex_effect_authority",
-        configuration.roles[3].password,
+        configuration.roles[4].password,
       ),
       REVIEW_ROUTER_RELEASE_COMMIT_SHA: "d".repeat(40),
       REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: sha256(sourceSnapshot),
@@ -2876,6 +2887,7 @@ COMMIT;
             "reviewrouter_api",
             "reviewrouter_web",
             "reviewrouter_worker",
+            "reviewrouter_comment_token_custody",
             "reviewrouter_codex_effect_authority",
           ],
           fence: {
@@ -3231,6 +3243,7 @@ COMMIT;
                 "reviewrouter_api",
                 "reviewrouter_web",
                 "reviewrouter_worker",
+                "reviewrouter_comment_token_custody",
                 "reviewrouter_codex_effect_authority",
               ],
               fence: {

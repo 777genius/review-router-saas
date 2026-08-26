@@ -38,6 +38,13 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ),
     "utf8",
   );
+  const migration84Source = readFileSync(
+    resolve(
+      import.meta.dirname,
+      "../packages/platform/db/prisma/migrations/000084_harden_comment_token_custody/migration.sql",
+    ),
+    "utf8",
+  );
   const setupAdapterSource = readFileSync(
     resolve(
       import.meta.dirname,
@@ -152,6 +159,18 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "proveMigrationRunnerHistory(url, migrationName, true)",
     );
     expect(source).not.toContain("000067_release_rollout_ledger");
+  });
+
+  it("keeps migration 000084 installable before the custody role is provisioned", () => {
+    expect(migration84Source).toContain(
+      "IF to_regrole('reviewrouter_comment_token_custody') IS NOT NULL THEN",
+    );
+    expect(migration84Source).toContain(
+      "FROM reviewrouter_comment_token_custody;",
+    );
+    expect(migration84Source).not.toContain(
+      "FROM PUBLIC, reviewrouter_comment_token_custody;",
+    );
   });
 
   it("keeps custody evidence and closure uniqueness represented in Prisma drift checks", () => {

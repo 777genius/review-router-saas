@@ -108,7 +108,7 @@ END
 $mutate$;
 REVOKE ALL ON FUNCTION hosted_codex_mutate_comment_token_mint(text,jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION hosted_codex_mutate_comment_token_mint_v83(text,jsonb)
-  FROM PUBLIC, reviewrouter_comment_token_custody;
+  FROM PUBLIC;
 
 DO $acl$
 DECLARE runtime_role text;
@@ -119,6 +119,8 @@ BEGIN
     END IF;
   END LOOP;
   IF to_regrole('reviewrouter_comment_token_custody') IS NOT NULL THEN
+    REVOKE ALL ON FUNCTION hosted_codex_mutate_comment_token_mint_v83(text,jsonb)
+      FROM reviewrouter_comment_token_custody;
     GRANT EXECUTE ON FUNCTION hosted_codex_claim_comment_token_delivery(text,text,text)
       TO reviewrouter_comment_token_custody;
     GRANT EXECUTE ON FUNCTION hosted_codex_mutate_comment_token_mint(text,jsonb)

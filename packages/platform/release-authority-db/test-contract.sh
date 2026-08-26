@@ -732,23 +732,22 @@ for atomic_lock_objid in 1381258071 1129271120; do
        IF (SELECT value FROM public.atomic_attestation_catalog) <> 'canonical'
        THEN RAISE EXCEPTION 'stale catalog evidence'; END IF;
      END \$attest\$;
-     SELECT pg_sleep(0.5);
+     SELECT pg_sleep(2);
      INSERT INTO public.atomic_attestation_events(event) VALUES ('runtime_mutation');
      COMMIT;" >/dev/null &
   atomic_runtime_pid=$!
+  atomic_shared_lock_observed=false
   for _ in $(seq 1 40); do
     if test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
         "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory'
          AND classid=1381126735 AND objid=$atomic_lock_objid
          AND mode='ShareLock' AND granted)")" = t; then
+      atomic_shared_lock_observed=true
       break
     fi
     sleep 0.05
   done
-  test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
-    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory'
-     AND classid=1381126735 AND objid=$atomic_lock_objid
-     AND mode='ShareLock' AND granted)")" = t
+  test "$atomic_shared_lock_observed" = true
   docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
     "BEGIN;
      SET LOCAL lock_timeout='2000ms';
@@ -768,21 +767,20 @@ for atomic_lock_objid in 1381258071 1129271120; do
   # the exclusive side of the protocol; its mutation statement never executes.
   docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
     "BEGIN; SELECT pg_advisory_xact_lock(1381126735,$atomic_lock_objid);
-     SELECT pg_sleep(1); COMMIT;" >/dev/null &
+     SELECT pg_sleep(5); COMMIT;" >/dev/null &
   atomic_exclusive_pid=$!
+  atomic_exclusive_lock_observed=false
   for _ in $(seq 1 40); do
     if test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
         "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory'
          AND classid=1381126735 AND objid=$atomic_lock_objid
          AND mode='ExclusiveLock' AND granted)")" = t; then
+      atomic_exclusive_lock_observed=true
       break
     fi
     sleep 0.05
   done
-  test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
-    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory'
-     AND classid=1381126735 AND objid=$atomic_lock_objid
-     AND mode='ExclusiveLock' AND granted)")" = t
+  test "$atomic_exclusive_lock_observed" = true
   if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
     "BEGIN; SET LOCAL lock_timeout='100ms'; SET LOCAL statement_timeout='500ms';
      SELECT pg_advisory_xact_lock_shared(1381126735,$atomic_lock_objid);
@@ -1417,12 +1415,14 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c 
    CREATE ROLE reviewrouter_api LOGIN PASSWORD 'api';
    CREATE ROLE reviewrouter_web LOGIN PASSWORD 'web';
    CREATE ROLE reviewrouter_worker LOGIN PASSWORD 'worker';
+   CREATE ROLE reviewrouter_comment_token_custody LOGIN PASSWORD 'custody';
    CREATE ROLE reviewrouter_codex_effect_authority LOGIN PASSWORD 'effect';
    CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'migration';
    CREATE ROLE reviewrouter_role_bootstrap LOGIN PASSWORD 'bootstrap' NOCREATEDB CREATEROLE;
    GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
    GRANT reviewrouter_web TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
    GRANT reviewrouter_worker TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+   GRANT reviewrouter_comment_token_custody TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
    GRANT reviewrouter_codex_effect_authority TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
    GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \

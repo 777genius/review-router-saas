@@ -177,6 +177,7 @@ export const canonicalActivationPrincipalNames = Object.freeze([
   "reviewrouter_activation_receipt_guard",
   "reviewrouter_activation_receipt_reader",
   "reviewrouter_api",
+  "reviewrouter_comment_token_custody",
   "reviewrouter_codex_effect_authority",
   "reviewrouter_release_migration",
   "reviewrouter_release_schema_owner",
@@ -188,6 +189,7 @@ export const canonicalActivationPrincipalNames = Object.freeze([
 /** Exact final provider-issued topology after the schema-owner handoff is revoked. */
 export const canonicalBootstrapMembershipRoleNames = Object.freeze([
   "reviewrouter_api",
+  "reviewrouter_comment_token_custody",
   "reviewrouter_codex_effect_authority",
   "reviewrouter_release_migration",
   "reviewrouter_web",

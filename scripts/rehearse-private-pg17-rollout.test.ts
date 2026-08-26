@@ -10,6 +10,8 @@ import {
   cleanupDisposableRehearsalResources,
   captureOnlyRehearsalFixtureCleanupSql,
   disposablePg17CanonicalRoleBootstrapSetupSql,
+  disposablePg17TargetRoleFoundationSql,
+  disposableSqlConfiguration,
   disposableTargetPublicTableAclCanonicalizationSql,
   normalizeRehearsalDockerInvocation,
   resolveRehearsalCaptureOnlyConfiguration,
@@ -305,6 +307,21 @@ describe("disposable dual-version rehearsal", () => {
       "activationAuthorityProvisioning",
     ]);
     expect(setup).not.toHaveProperty("bootstrapDemotion");
+  });
+  it("keeps comment-token custody in the disposable runtime role contract", () => {
+    expect(disposableSqlConfiguration().roles).toContainEqual({
+      role: "comment-token-custody",
+      username: "reviewrouter_comment_token_custody",
+      password: "disposable-custody",
+    });
+
+    const foundation = disposablePg17TargetRoleFoundationSql();
+    expect(foundation).toContain(
+      "CREATE ROLE reviewrouter_comment_token_custody LOGIN PASSWORD 'disposable-custody'",
+    );
+    expect(foundation).toContain(
+      "GRANT reviewrouter_comment_token_custody TO reviewrouter_role_bootstrap WITH ADMIN TRUE",
+    );
   });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
     const identity = "rr-disposable-production-shaped-capture";

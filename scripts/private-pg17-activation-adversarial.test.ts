@@ -417,6 +417,7 @@ const initializeSeed = () => {
            'reviewrouter_api',
            'reviewrouter_web',
            'reviewrouter_worker',
+           'reviewrouter_comment_token_custody',
            'reviewrouter_codex_effect_authority'
          );`,
       ),
@@ -425,6 +426,7 @@ const initializeSeed = () => {
     reviewrouter_activation_permit_installer: true,
     reviewrouter_activation_receipt_reader: true,
     reviewrouter_api: false,
+    reviewrouter_comment_token_custody: false,
     reviewrouter_codex_effect_authority: false,
     reviewrouter_release_migration: true,
     reviewrouter_release_schema_owner: false,
@@ -938,6 +940,7 @@ describePg17(
             `SELECT bool_and(NOT has_function_privilege(principal,routine,'EXECUTE'))
              FROM unnest(ARRAY['${releaseUsername}','reviewrouter_api',
                'reviewrouter_web','reviewrouter_worker',
+               'reviewrouter_comment_token_custody',
                'reviewrouter_codex_effect_authority']) principal
              CROSS JOIN unnest(ARRAY[
                'reviewrouter_activation.apply_runtime_database_acl(text)'::regprocedure,
@@ -1498,7 +1501,8 @@ describePg17(
               `SELECT bool_and(NOT has_database_privilege(
                role_name,current_database(),'CONNECT'))
              FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
-               'reviewrouter_worker','reviewrouter_codex_effect_authority'])
+               'reviewrouter_worker','reviewrouter_comment_token_custody',
+               'reviewrouter_codex_effect_authority'])
                AS roles(role_name);`,
             ),
           ).toBe("t");
@@ -1508,7 +1512,8 @@ describePg17(
               `SELECT NOT EXISTS (
                SELECT 1
                FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
-                 'reviewrouter_worker','reviewrouter_codex_effect_authority'])
+                 'reviewrouter_worker','reviewrouter_comment_token_custody',
+                 'reviewrouter_codex_effect_authority'])
                  AS roles(role_name)
                CROSS JOIN pg_class relation
                JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
@@ -1617,7 +1622,8 @@ describePg17(
               `SELECT bool_and(NOT has_database_privilege(
                role_name,current_database(),'CONNECT'))
              FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
-               'reviewrouter_worker','reviewrouter_codex_effect_authority'])
+               'reviewrouter_worker','reviewrouter_comment_token_custody',
+               'reviewrouter_codex_effect_authority'])
                AS roles(role_name);`,
             ),
           ).toBe("t");
@@ -1918,7 +1924,8 @@ printf 'hostile_mutator_excluded\n'`,
             adminUsername,
             `SELECT bool_and(has_database_privilege(role_name,current_database(),'CONNECT'))
              FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
-               'reviewrouter_worker','reviewrouter_codex_effect_authority']) role_name;`,
+               'reviewrouter_worker','reviewrouter_comment_token_custody',
+               'reviewrouter_codex_effect_authority']) role_name;`,
           ),
         ).toBe("t");
       }),

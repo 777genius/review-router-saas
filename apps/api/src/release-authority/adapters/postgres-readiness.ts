@@ -526,11 +526,12 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
       coalesce((SELECT bootstrap.rolcanlogin AND NOT bootstrap.rolsuper
           AND NOT bootstrap.rolcreatedb AND NOT bootstrap.rolcreaterole
           AND NOT bootstrap.rolreplication AND NOT bootstrap.rolbypassrls
-          AND (SELECT count(*)=5
-              AND count(DISTINCT granted.oid)=5
+          AND (SELECT count(*)=6
+              AND count(DISTINCT granted.oid)=6
               AND count(DISTINCT grantor.oid)=1
               AND bool_and(granted.rolname=ANY(ARRAY['reviewrouter_api',
                     'reviewrouter_web','reviewrouter_worker',
+                    'reviewrouter_comment_token_custody',
                     'reviewrouter_codex_effect_authority',
                     'reviewrouter_release_migration'])
                 AND member.oid=bootstrap.oid
@@ -538,6 +539,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 AND grantor.rolname<>'reviewrouter_release_schema_owner'
                 AND grantor.rolname<>ALL(ARRAY['reviewrouter_api',
                     'reviewrouter_web','reviewrouter_worker',
+                    'reviewrouter_comment_token_custody',
                     'reviewrouter_codex_effect_authority',
                     'reviewrouter_release_migration'])
                 AND edge.admin_option AND NOT edge.inherit_option
@@ -729,19 +731,21 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               ->>'recoveryWitnessSha256' ~ '^[a-f0-9]{64}$'
           ELSE false END,false)
         AS "activationRecoveryWitnessExact",
-      (SELECT count(*)=8 AND bool_and(role.rolcanlogin IS NOT DISTINCT FROM
+      (SELECT count(*)=9 AND bool_and(role.rolcanlogin IS NOT DISTINCT FROM
           (role.rolname NOT IN ('reviewrouter_activation_receipt_guard',
             'reviewrouter_release_schema_owner')))
         FROM pg_roles role WHERE role.rolname=ANY(ARRAY[
           'reviewrouter_activation_receipt_guard','reviewrouter_activation_permit_installer',
           'reviewrouter_activation_receipt_reader','reviewrouter_api','reviewrouter_web',
-          'reviewrouter_worker','reviewrouter_codex_effect_authority',
+          'reviewrouter_worker','reviewrouter_comment_token_custody',
+          'reviewrouter_codex_effect_authority',
           'reviewrouter_release_schema_owner']))
         AND NOT EXISTS (SELECT 1 FROM pg_roles role
         WHERE role.rolname=ANY(ARRAY['reviewrouter_activation_receipt_guard',
           'reviewrouter_activation_permit_installer',
           'reviewrouter_activation_receipt_reader','reviewrouter_api','reviewrouter_web',
-          'reviewrouter_worker','reviewrouter_codex_effect_authority',
+          'reviewrouter_worker','reviewrouter_comment_token_custody',
+          'reviewrouter_codex_effect_authority',
           'reviewrouter_release_schema_owner'])
           AND (role.rolsuper OR role.rolcreatedb OR role.rolcreaterole
             OR role.rolreplication OR role.rolbypassrls))
@@ -785,7 +789,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 ))))
         AND NOT EXISTS (SELECT 1 FROM pg_roles role
           WHERE role.rolname=ANY(ARRAY['reviewrouter_api','reviewrouter_web',
-              'reviewrouter_worker','reviewrouter_codex_effect_authority'])
+              'reviewrouter_worker','reviewrouter_comment_token_custody',
+              'reviewrouter_codex_effect_authority'])
             AND (has_database_privilege(role.oid,current_database(),'CREATE')
               OR has_database_privilege(role.oid,current_database(),'TEMP')
               OR coalesce(has_schema_privilege(role.oid,
