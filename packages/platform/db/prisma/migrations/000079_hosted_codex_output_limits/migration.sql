@@ -10,7 +10,7 @@ ALTER TABLE "HostedCodexInvocationGrant"
     CHECK (
       "maxResponseBytes" BETWEEN 1 AND 104857600
       AND "maxOutputTokens" BETWEEN 1 AND 100000
-    );
+    ) NOT VALID;
 
 CREATE FUNCTION hosted_codex_invocation_output_budget_guard()
 RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, public AS $guard$
