@@ -62,7 +62,7 @@ describe("HostedCodexGrantIssuer", () => {
     );
     expect(fixture.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
     expect(fixture.grantCapabilities.issue).not.toHaveBeenCalled();
-    expect(fixture.commentTokens.issueCommentToken).not.toHaveBeenCalled();
+    expect(fixture.commentTokens.issueInitial).not.toHaveBeenCalled();
   });
 
   it("rejects any caller byte mismatch even if blob evidence repeats the attested blob", async () => {
@@ -74,7 +74,7 @@ describe("HostedCodexGrantIssuer", () => {
       "hosted_workflow_attestation_digest_mismatch",
     );
     expect(fixture.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
-    expect(fixture.commentTokens.issueCommentToken).not.toHaveBeenCalled();
+    expect(fixture.commentTokens.issueInitial).not.toHaveBeenCalled();
   });
 
   it("issues from server-derived exact authority and persists separate capabilities", async () => {
@@ -213,7 +213,7 @@ describe("HostedCodexGrantIssuer", () => {
     },
   );
 
-  it("recovers a response-loss retry without storing or rotating plaintext capabilities", async () => {
+  it("recovers a response-loss retry only after consuming a fresh OIDC jti", async () => {
     const fixture = createFixture();
     const first = await fixture.issuer.issue(request());
     const retry = await fixture.issuer.issue(request());
@@ -224,7 +224,21 @@ describe("HostedCodexGrantIssuer", () => {
     );
     expect(retry.invocationLeaseId).toBe(first.invocationLeaseId);
     expect(fixture.insert).toHaveBeenCalledOnce();
-    expect(fixture.commentTokens.issueCommentToken).toHaveBeenCalledTimes(2);
+    expect(fixture.commentTokens.issueInitial).toHaveBeenCalledTimes(2);
+    expect(fixture.replayNonces.tryConsumeNonce).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let existing-grant recovery bypass one-time OIDC consumption", async () => {
+    const fixture = createFixture();
+    fixture.replayNonces.tryConsumeNonce
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    await fixture.issuer.issue(request());
+
+    await expect(fixture.issuer.issue(request())).rejects.toThrow(
+      "oidc_replay_detected",
+    );
+    expect(fixture.commentTokens.issueInitial).toHaveBeenCalledOnce();
   });
 });
 
@@ -327,7 +341,7 @@ function createFixture(
     revoke: vi.fn(),
   };
   const commentTokens = {
-    issueCommentToken: vi.fn().mockResolvedValue({
+    issueInitial: vi.fn().mockResolvedValue({
       token: "github-comment-token",
       expiresAt: new Date("2026-08-15T10:45:00.000Z"),
       repository: "acme/private-repo",

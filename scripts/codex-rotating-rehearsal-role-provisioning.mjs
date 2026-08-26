@@ -2,6 +2,7 @@ export const rehearsalRoleLoginContract = new Map([
   ["reviewrouter_api", true],
   ["reviewrouter_web", true],
   ["reviewrouter_worker", true],
+  ["reviewrouter_comment_token_custody", true],
   ["reviewrouter_codex_effect_authority", true],
   ["reviewrouter_release_migration", true],
   ["reviewrouter_release_schema_owner", false],

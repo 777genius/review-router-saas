@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   CredentialEnvelopeVault,
   FetchHostedCodexStreamingRelay,
@@ -9,6 +10,9 @@ import {
   PrismaHostedCodexRestoreReconciler,
   PrismaHostedCodexSessionPersistence,
   PrismaInvocationGrantRepository,
+  PrismaHostedCommentTokenMintLedger,
+  HostedCommentTokenClosureReconciler,
+  startHostedCommentTokenClosureReconciler,
   resolveHostedCodexKeyring,
   PrismaHostedCodexUpstreamEffectLedger,
   startHostedCodexEffectSweeper,
@@ -25,7 +29,10 @@ import {
 import { SystemClock } from "@reviewrouter/shared";
 import { OctokitGitHubAppCommentTokenIssuer } from "./github/octokit-github-app-comment-token-issuer.js";
 import { OctokitHostedWorkflowSourceReader } from "./github/octokit-hosted-workflow-source-reader.js";
-import { HostedCodexCommentTokenIssuer } from "./hosted-codex-comment-token-composition.js";
+import {
+  HostedCodexCommentTokenIssuer,
+  HostedCommentTokenEnvelopeVault,
+} from "./hosted-codex-comment-token-composition.js";
 import { createProductionHostedCodexGrantIssuer } from "./hosted-codex-grant-composition.js";
 import { verifyHostedCodexRestorePermit } from "./hosted-codex-restore-permit.js";
 import { composeHostedCodexCanaryFaultPlans } from "./hosted-codex-canary-fault-composition.js";
@@ -69,14 +76,15 @@ export function composeHostedCodexRelayRoutes(input: {
 
 export async function composeProductionHostedCodexRelayRoutes(input: {
   readonly prisma: PrismaClient;
+  readonly custodyPrisma: PrismaClient;
   readonly env: Readonly<Record<string, string | undefined>>;
-  readonly publicApiUrl: string;
+  readonly publicApiUrl?: string;
   readonly githubAppId: string;
   readonly githubAppPrivateKey: string;
 }): Promise<RegisterHostedCodexRelayRoutesDependencies> {
   const flags = readHostedCodexFeatureFlags(input.env);
   const enabled = flags.custody && flags.relay;
-  if (!enabled) {
+  if (!flags.custody) {
     // These dependencies are deliberately unreachable while the rollout gate is off.
     return { enabled: false } as RegisterHostedCodexRelayRoutesDependencies;
   }
@@ -107,7 +115,7 @@ export async function composeProductionHostedCodexRelayRoutes(input: {
     privateKey: input.githubAppPrivateKey,
   });
   const ledger = new PrismaInvocationGrantRepository(input.prisma);
-  startHostedCodexEffectSweeper(
+  const stopEffectSweeper = startHostedCodexEffectSweeper(
     new PrismaHostedCodexUpstreamEffectLedger(input.prisma),
   );
   const keyring = resolveHostedCodexKeyring({
@@ -115,6 +123,61 @@ export async function composeProductionHostedCodexRelayRoutes(input: {
     purpose: "relay",
   });
   const vault = new CredentialEnvelopeVault(keyring, "relay");
+  const commentTokenVault = new HostedCommentTokenEnvelopeVault(
+    vault,
+    databaseIncarnation,
+    databaseResourceIdentity,
+  );
+  const commentTokenMintLedger = new PrismaHostedCommentTokenMintLedger(
+    input.custodyPrisma,
+  );
+  const custodyReconciler = startHostedCommentTokenClosureReconciler(
+    new HostedCommentTokenClosureReconciler({
+      ledger: commentTokenMintLedger,
+      vault: commentTokenVault,
+      now: () => clock.now(),
+      provider: {
+        async revoke({ token, signal }) {
+          const result = await githubCommentTokens.revokeCommentToken({
+            token,
+            signal,
+          });
+          return {
+            evidenceHash: createHash("sha256")
+              .update(`github-installation-token:${result.proof}`, "utf8")
+              .digest("hex"),
+            receipt: {
+              authority: "github_token_delete" as const,
+              result: result.proof,
+            },
+          };
+        },
+      },
+    }),
+  );
+  const custodyLifecycle = {
+    shutdown: async () => {
+      stopEffectSweeper();
+      await custodyReconciler();
+    },
+    custodyHealth: custodyReconciler.health,
+  };
+  if (!enabled) {
+    // Custody remains alive to reconcile closure even when relay is disabled.
+    return {
+      enabled: false,
+      ...custodyLifecycle,
+    } as unknown as RegisterHostedCodexRelayRoutesDependencies;
+  }
+  if (!input.publicApiUrl)
+    throw new Error("hosted_codex_public_api_url_missing");
+  const durableCommentTokens = new HostedCodexCommentTokenIssuer({
+    prisma: input.prisma,
+    commentTokens: githubCommentTokens,
+    clock,
+    secretVault: commentTokenVault,
+    mintLedger: commentTokenMintLedger,
+  });
   const restore = composeProductionHostedCodexRestoreReconciler({
     prisma: input.prisma,
     env: input.env,
@@ -143,7 +206,7 @@ export async function composeProductionHostedCodexRelayRoutes(input: {
         env: input.env,
         relayUrl,
         workflowSources,
-        commentTokens: githubCommentTokens,
+        commentTokens: durableCommentTokens,
         clock,
       })
     : undefined;
@@ -153,6 +216,7 @@ export async function composeProductionHostedCodexRelayRoutes(input: {
   });
   return {
     enabled: true,
+    ...custodyLifecycle,
     grants: flags.admission
       ? {
           async issue(request) {
@@ -161,12 +225,7 @@ export async function composeProductionHostedCodexRelayRoutes(input: {
           },
         }
       : closedAdmissionGrantIssuer,
-    commentTokens: new HostedCodexCommentTokenIssuer({
-      prisma: input.prisma,
-      commentTokens: githubCommentTokens,
-      clock,
-      grants: ledger,
-    }),
+    commentTokens: durableCommentTokens,
     authorization: {
       async authorize(request) {
         await restore.assertRelayReady();

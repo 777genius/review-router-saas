@@ -31,6 +31,13 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     resolve(import.meta.dirname, "prove-codex-rotating-evidence-prisma.ts"),
     "utf8",
   );
+  const prismaSchemaSource = readFileSync(
+    resolve(
+      import.meta.dirname,
+      "../packages/platform/db/prisma/schema.prisma",
+    ),
+    "utf8",
+  );
   const setupAdapterSource = readFileSync(
     resolve(
       import.meta.dirname,
@@ -46,7 +53,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
-  it("rehearses every canonical migration from 000060 through 000081 in order", () => {
+  it("rehearses the canonical sequence through 000086 in order", () => {
     const inventory =
       /JSON\.stringify\(\[([\s\S]+?)\]\),\n\s+"rehearsal migration inventory/u.exec(
         source,
@@ -81,6 +88,11 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "migration79Name",
       "migration80Name",
       "migration81Name",
+      "migration82Name",
+      "migration83Name",
+      "migration84Name",
+      "migration85Name",
+      "migration86Name",
     ]);
     expect(source).toContain(
       'const migration67Name = "000067_review_live_progress"',
@@ -107,6 +119,21 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       'const migration81Name = "000081_hosted_codex_runtime_gate"',
     );
     expect(source).toContain(
+      'const migration82Name = "000082_validate_hosted_codex_output_limits"',
+    );
+    expect(source).toContain(
+      'const migration83Name = "000083_hosted_codex_comment_token_mint_protocol"',
+    );
+    expect(source).toContain(
+      'const migration84Name = "000084_harden_comment_token_custody"',
+    );
+    expect(source).toContain(
+      'const migration85Name = "000085_comment_token_gate_lock_result"',
+    );
+    expect(source).toContain(
+      'const migration86Name = "000086_comment_token_custody_r18_remediation"',
+    );
+    expect(source).toContain(
       'const migration72RetireName = "000072_retire_superseded_codex_setup_claims"',
     );
     expect(source).toContain(
@@ -127,12 +154,29 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).not.toContain("000067_release_rollout_ledger");
   });
 
+  it("keeps custody evidence and closure uniqueness represented in Prisma drift checks", () => {
+    const proofModel =
+      /model HostedCodexCommentTokenRevocationProof \{([\s\S]+?)\n\}/u.exec(
+        prismaSchemaSource,
+      )?.[1];
+    expect(proofModel).toBeDefined();
+    expect(proofModel).toContain("mintId           String   @id");
+    expect(proofModel).toContain("ownerIdHash");
+    expect(proofModel).toContain("fenceEpoch");
+    expect(proofModel).toContain("receiptAuthority");
+    expect(proofModel).toContain("receiptResult");
+    expect(proofModel).toContain("@@ignore");
+    expect(prismaSchemaSource).toContain(
+      '@unique(map: "HostedCodexRuntimeClosure_gate_revision_key")',
+    );
+  });
+
   it("retains ordinary migration 000074 in the pre-release source manifest", () => {
     expect(source).toContain("directory === migration74Name");
     expect(source).not.toContain("applyOrdinaryPostReleaseMigrations");
     expect(source).not.toContain("assertMigrationAbsentFromHistory");
     expect(source).toContain("proveMigrateDeployNoOp(providerAdmin)");
-    expect(source).toContain("combined 000060 through 000081 rehearsal passed");
+    expect(source).toContain("combined 000060 through 000086 rehearsal passed");
   });
 
   it("reproduces the trusted production pre-migration manifest", () => {
@@ -703,6 +747,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         api: client("api"),
         web: client("web"),
         worker: client("worker"),
+        custody: client("custody"),
         effectAuthority: client("effect-authority"),
       },
     });
@@ -727,6 +772,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         runtime: {
           api: client("api"),
           web: client("web"),
+          custody: client("custody"),
           effectAuthority: client("effect-authority"),
         },
       }),

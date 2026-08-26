@@ -18,6 +18,7 @@ import {
   PrismaHostedCredentialEnrollment,
   PrismaHostedPoolBindingRepository,
   PrismaHostedPoolRepository,
+  PrismaHostedCommentTokenMintLedger as BasePrismaHostedCommentTokenMintLedger,
   PrismaInvocationGrantRepository,
   createDefaultHostedAccountPool,
   failoverCurrentRelayRequestBeforeEffect,
@@ -42,9 +43,22 @@ import {
 } from "../../packages/features/hosted-account-pool/src/index";
 import { createPrismaClient } from "../../packages/platform/db/src/index";
 import { HostedCodexCommentTokenIssuer } from "../../apps/api/src/hosted-codex-comment-token-composition";
+import { createRenderHostedPoolControlPort } from "../hosted-pool-production-control";
+import {
+  checkedMintTemporalFixture,
+  runHostedPoolFixtureTeardown,
+} from "./hosted-pool-postgres-fixture-contract";
 
 const databaseUrl = process.env.REVIEW_ROUTER_HOSTED_POOL_E2E_DATABASE_URL;
+const custodyDatabaseUrl =
+  process.env.REVIEW_ROUTER_HOSTED_POOL_E2E_CUSTODY_DATABASE_URL;
+const apiDatabaseUrl =
+  process.env.REVIEW_ROUTER_HOSTED_POOL_E2E_API_DATABASE_URL;
 if (!databaseUrl) throw new Error("hosted_pool_e2e_database_url_required");
+if (!custodyDatabaseUrl)
+  throw new Error("hosted_pool_e2e_custody_database_url_required");
+if (!apiDatabaseUrl)
+  throw new Error("hosted_pool_e2e_api_database_url_required");
 const parsedDatabaseUrl = new URL(databaseUrl);
 if (
   !["127.0.0.1", "localhost"].includes(parsedDatabaseUrl.hostname) ||
@@ -54,10 +68,31 @@ if (
 }
 
 const prisma = createPrismaClient({ databaseUrl, poolMax: 12 });
+const custodyPrisma = createPrismaClient({
+  databaseUrl: custodyDatabaseUrl,
+  poolMax: 8,
+});
+const apiPrisma = createPrismaClient({
+  databaseUrl: apiDatabaseUrl,
+  poolMax: 2,
+});
+class PrismaHostedCommentTokenMintLedger extends BasePrismaHostedCommentTokenMintLedger {
+  constructor(
+    _prisma: Parameters<typeof createPrismaClient>[0] extends never
+      ? never
+      : unknown,
+    testHooks?: ConstructorParameters<
+      typeof BasePrismaHostedCommentTokenMintLedger
+    >[1],
+  ) {
+    super(custodyPrisma, testHooks);
+  }
+}
 const now = new Date();
 const workspace = workspaceId("workspace-e2e");
 const pool = hostedPoolId("pool-e2e");
 const repository = repositoryId("repository-e2e");
+const installation = "installation-e2e";
 const binding = hostedBindingId("binding-e2e");
 const databaseIncarnation = "disposable-postgres-e2e-incarnation";
 const databaseResourceIdentity = "disposable-postgres-e2e-resource";
@@ -74,27 +109,15 @@ const apps: Array<ReturnType<typeof Fastify>> = [];
 
 beforeAll(async () => {
   await prisma.$connect();
-  const closedRuntimeGate =
-    await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
-      where: { id: "global" },
-    });
-  await prisma.hostedCodexRuntimeGate.update({
-    where: { id: "global" },
-    data: {
-      status: "active",
-      authzEpoch: { increment: 1 },
-      revision: { increment: 1 },
-      reasonCode: "postgres_e2e_activation",
-      changedAt: new Date(closedRuntimeGate.changedAt.getTime() + 1),
-      changedByHash: sha256("postgres-e2e-operator"),
-    },
-  });
+  await custodyPrisma.$connect();
+  await apiPrisma.$connect();
+  await transitionRuntimeGate("active", "postgres_e2e_activation");
   await prisma.workspace.create({
     data: { id: workspace, slug: "hosted-pool-e2e", name: "Hosted pool E2E" },
   });
   await prisma.gitHubInstallation.create({
     data: {
-      id: "installation-e2e",
+      id: installation,
       workspaceId: workspace,
       githubInstallationId: 900001n,
       accountLogin: "disposable-e2e",
@@ -109,7 +132,7 @@ beforeAll(async () => {
       workspaceId: workspace,
       provider: "github",
       externalRepositoryId: "900002",
-      installationId: "installation-e2e",
+      installationId: installation,
       githubRepositoryId: 900002n,
       owner: "disposable-e2e",
       name: "private-fixture",
@@ -180,9 +203,348 @@ beforeAll(async () => {
 afterAll(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
   await prisma.$disconnect();
+  await custodyPrisma.$disconnect();
+  await apiPrisma.$disconnect();
 }, 120_000);
 
 describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
+  it("preserves mint-lock execute authority only for custody after runtime ACL convergence", async () => {
+    const privileges = await prisma.$queryRawUnsafe<
+      Array<{ principal: string; canExecute: boolean }>
+    >(`
+      SELECT principal,
+        has_function_privilege(
+          principal,
+          'public.hosted_codex_lock_comment_token_mint(text)',
+          'EXECUTE'
+        ) AS "canExecute"
+      FROM unnest(ARRAY[
+        'public',
+        'reviewrouter_api',
+        'reviewrouter_web',
+        'reviewrouter_worker',
+        'reviewrouter_codex_effect_authority',
+        'reviewrouter_comment_token_custody'
+      ]) principal
+      ORDER BY principal
+    `);
+    expect(privileges).toEqual([
+      { principal: "public", canExecute: false },
+      { principal: "reviewrouter_api", canExecute: false },
+      { principal: "reviewrouter_codex_effect_authority", canExecute: false },
+      { principal: "reviewrouter_comment_token_custody", canExecute: true },
+      { principal: "reviewrouter_web", canExecute: false },
+      { principal: "reviewrouter_worker", canExecute: false },
+    ]);
+    await expect(
+      custodyPrisma.$queryRawUnsafe<Array<{ locked: boolean }>>(
+        `SELECT public.hosted_codex_lock_comment_token_mint('acl-convergence-probe-missing') AS locked`,
+      ),
+    ).resolves.toEqual([{ locked: false }]);
+    await expect(
+      apiPrisma.$queryRawUnsafe(
+        `SELECT public.hosted_codex_lock_comment_token_mint('acl-convergence-probe-missing')`,
+      ),
+    ).rejects.toThrow(/permission denied/iu);
+  });
+
+  it("recovers stale mint states globally oldest-first in one bounded starvation-free batch", async () => {
+    const mintLedger = new PrismaHostedCommentTokenMintLedger(prisma);
+    const mintIds = {
+      prepared: "comment-mint-startup-recovery-prepared",
+      dispatching: "comment-mint-startup-recovery-dispatching",
+      outcomeUnknown: "comment-mint-startup-recovery-outcome-unknown",
+    } as const;
+    const grantIds = (Object.keys(mintIds) as Array<keyof typeof mintIds>).map(
+      (label) => invocationGrantId(`grant-startup-recovery-${label}`),
+    );
+    const createMint = async (
+      label: keyof typeof mintIds,
+      state: "prepared" | "dispatching" | "outcome_unknown",
+    ) => {
+      const issued = await issueGrant(`startup-recovery-${label}`);
+      const ownerIdHash = sha256(`startup-recovery-owner:${label}`);
+      const callerNow = new Date();
+      const prepared = await mintLedger.prepare({
+        mintId: mintIds[label],
+        purpose: "initial",
+        ownerIdHash,
+        logicalKeyHash: sha256(`startup-recovery-logical:${label}`),
+        requestFingerprintHash: sha256(`startup-recovery-fingerprint:${label}`),
+        grantId: issued.grant.id,
+        bindingId: binding,
+        bindingVersion: 1,
+        now: callerNow,
+        leaseExpiresAt: new Date(callerNow.getTime() + 30_000),
+      });
+      if (prepared.state !== "prepared")
+        throw new Error("postgres_e2e_startup_recovery_prepare_failed");
+      if (state !== "prepared") {
+        const dispatchNow = new Date();
+        await mintLedger.authorizeDispatch({
+          mintId: prepared.mintId,
+          ownerIdHash,
+          now: dispatchNow,
+          dispatchAuthorizedUntil: new Date(dispatchNow.getTime() + 15_000),
+          unsafeUntil: new Date(dispatchNow.getTime() + 61 * 60_000),
+        });
+        if (state === "outcome_unknown")
+          await mintLedger.finalizeOutcomeUnknown({
+            mintId: prepared.mintId,
+            ownerIdHash,
+            now: new Date(),
+            errorCode: "postgres_e2e_simulated_ambiguous_outcome",
+          });
+      }
+    };
+
+    try {
+      await createMint("prepared", "prepared");
+      await createMint("dispatching", "dispatching");
+      await createMint("outcomeUnknown", "outcome_unknown");
+
+      await expect(
+        custodyPrisma.$queryRawUnsafe(
+          `SELECT * FROM public.hosted_codex_mutate_comment_token_mint('recover_stale','{}'::jsonb)`,
+        ),
+      ).rejects.toThrow(/hosted_codex_comment_token_recovery_batch_invalid/iu);
+      await expect(mintLedger.recoverStale({ limit: 3 })).resolves.toBe(0);
+
+      const newerPreparedEligibility = new Date(Date.now() - 10 * 60_000);
+      const olderDispatchLease = new Date(Date.now() - 40 * 60_000);
+      const olderDispatchAuthorization = new Date(Date.now() - 30 * 60_000);
+      const olderDispatchEligibility = new Date(Date.now() - 20 * 60_000);
+      const oldestOutcomeEligibility = new Date(Date.now() - 30 * 60_000);
+      const outcomeUnknownTemporalShape = checkedMintTemporalFixture({
+        dispatchAuthorizedUntil: new Date(Date.now() - 40 * 60_000),
+        unsafeUntil: oldestOutcomeEligibility,
+      });
+      await prisma.$transaction(async (transaction) => {
+        await transaction.$executeRawUnsafe(
+          `SET LOCAL session_replication_role = 'replica'`,
+        );
+        await transaction.hostedCodexCommentTokenMint.update({
+          where: { id: mintIds.prepared },
+          data: { leaseExpiresAt: newerPreparedEligibility },
+        });
+        await transaction.hostedCodexCommentTokenMint.update({
+          where: { id: mintIds.dispatching },
+          data: {
+            leaseExpiresAt: olderDispatchLease,
+            dispatchAuthorizedUntil: olderDispatchAuthorization,
+            unsafeUntil: olderDispatchEligibility,
+          },
+        });
+        await transaction.hostedCodexCommentTokenMint.update({
+          where: { id: mintIds.outcomeUnknown },
+          data: outcomeUnknownTemporalShape,
+        });
+      });
+
+      const states = () =>
+        prisma.hostedCodexCommentTokenMint.findMany({
+          where: { id: { in: Object.values(mintIds) } },
+          orderBy: { id: "asc" },
+          select: {
+            id: true,
+            state: true,
+            providerAttempt: true,
+            terminalEvidenceHash: true,
+          },
+        });
+
+      await expect(mintLedger.recoverStale({ limit: 1 })).resolves.toBe(1);
+      await expect(states()).resolves.toEqual([
+        expect.objectContaining({
+          id: mintIds.dispatching,
+          state: "dispatching",
+        }),
+        expect.objectContaining({
+          id: mintIds.outcomeUnknown,
+          state: "expired",
+          providerAttempt: 1,
+          terminalEvidenceHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        }),
+        expect.objectContaining({ id: mintIds.prepared, state: "prepared" }),
+      ]);
+
+      await expect(mintLedger.recoverStale({ limit: 1 })).resolves.toBe(1);
+      await expect(states()).resolves.toEqual([
+        expect.objectContaining({
+          id: mintIds.dispatching,
+          state: "outcome_unknown",
+          providerAttempt: 1,
+          terminalEvidenceHash: null,
+        }),
+        expect.objectContaining({
+          id: mintIds.outcomeUnknown,
+          state: "expired",
+        }),
+        expect.objectContaining({ id: mintIds.prepared, state: "prepared" }),
+      ]);
+
+      await expect(mintLedger.recoverStale({ limit: 1 })).resolves.toBe(1);
+      await expect(mintLedger.recoverStale({ limit: 1 })).resolves.toBe(1);
+      await expect(mintLedger.recoverStale({ limit: 1 })).resolves.toBe(0);
+      await expect(states()).resolves.toEqual([
+        expect.objectContaining({
+          id: mintIds.dispatching,
+          state: "expired",
+          providerAttempt: 1,
+          terminalEvidenceHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        }),
+        expect.objectContaining({
+          id: mintIds.outcomeUnknown,
+          state: "expired",
+          providerAttempt: 1,
+          terminalEvidenceHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        }),
+        expect.objectContaining({
+          id: mintIds.prepared,
+          state: "failed_no_token",
+          providerAttempt: 0,
+          terminalEvidenceHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        }),
+      ]);
+      await expect(
+        prisma.hostedCodexCommentTokenMint.count({
+          where: { id: { in: Object.values(mintIds) }, state: "expired" },
+        }),
+      ).resolves.toBe(2);
+    } finally {
+      await runHostedPoolFixtureTeardown(
+        () =>
+          cleanupCommentTokenMintFixtures({
+            mintIds: Object.values(mintIds),
+            grantIds,
+          }),
+        () =>
+          restoreRuntimeGateActive(
+            "postgres_e2e_startup_recovery_fixture_restore",
+          ),
+      );
+    }
+  });
+
+  it("expires elapsed revoke-pending custody and unblocks closure reactivation", async () => {
+    const issuedMintId = "comment-mint-security-elapsed-revoke-pending";
+    const stalePreparedId = "comment-mint-mixed-stale-prepared";
+    const grantIds = [
+      invocationGrantId("grant-security-elapsed-revoke-pending"),
+      invocationGrantId("grant-elapsed-revoke-pending-mixed-prepared"),
+    ];
+    try {
+      const issued = await createIssuedMint("elapsed-revoke-pending");
+      const stalePreparedGrant = await issueGrant(
+        "elapsed-revoke-pending-mixed-prepared",
+      );
+      await issued.ledger.prepare({
+        mintId: stalePreparedId,
+        purpose: "initial",
+        ownerIdHash: sha256("mixed-stale-prepared-owner"),
+        logicalKeyHash: sha256(stalePreparedId),
+        requestFingerprintHash: sha256(`fingerprint:${stalePreparedId}`),
+        grantId: stalePreparedGrant.grant.id,
+        bindingId: binding,
+        bindingVersion: 1,
+        now: new Date(),
+        leaseExpiresAt: new Date(Date.now() + 30_000),
+      });
+      await issued.ledger.stageRevocation({
+        mintId: issued.mintId,
+        tokenHash: issued.tokenHash,
+        tokenExpiresAt: issued.tokenExpiresAt,
+        now: new Date(),
+        errorCode: "postgres_e2e_elapsed_revoke_pending",
+      });
+      const closed = await transitionRuntimeGate(
+        "closed",
+        "postgres_e2e_elapsed_revoke_pending_close",
+      );
+      await createElapsedTestRuntimeClosure({
+        id: `runtime-closure-${closed.revision}`,
+        gateRevision: closed.revision,
+        closedAuthzEpoch: closed.authzEpoch,
+        actorHash: sha256("postgres-e2e-elapsed-revoke-pending"),
+        reasonHash: sha256("postgres-e2e-elapsed-revoke-pending"),
+        legacyBarrier: true,
+        legacyUnsafeUntil: new Date(Date.now() + 61 * 60_000),
+      });
+      const elapsedTemporalShape = checkedMintTemporalFixture({
+        dispatchAuthorizedUntil: new Date(Date.now() - 90_000),
+        tokenExpiresAt: new Date(Date.now() - 120_000),
+        unsafeUntil: new Date(Date.now() - 60_000),
+      });
+      await prisma.$transaction(async (transaction) => {
+        await transaction.$executeRawUnsafe(
+          `SET LOCAL session_replication_role = 'replica'`,
+        );
+        await transaction.hostedCodexCommentTokenMint.update({
+          where: { id: issued.mintId },
+          data: {
+            ...elapsedTemporalShape,
+            leaseExpiresAt: new Date(0),
+          },
+        });
+        await transaction.hostedCodexCommentTokenMint.update({
+          where: { id: stalePreparedId },
+          data: { leaseExpiresAt: new Date(Date.now() - 30_000) },
+        });
+      });
+
+      await expect(
+        transitionRuntimeGate(
+          "active",
+          "postgres_e2e_elapsed_revoke_pending_too_early",
+        ),
+      ).rejects.toThrow("hosted_codex_runtime_closure_unsafe");
+      await expect(issued.ledger.recoverStale({ limit: 1 })).resolves.toBe(1);
+      await expect(
+        prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+          where: { id: stalePreparedId },
+          select: { state: true },
+        }),
+      ).resolves.toEqual({ state: "prepared" });
+      await expect(
+        prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+          where: { id: issued.mintId },
+          select: {
+            state: true,
+            terminalEvidenceHash: true,
+            revocationEvidenceHash: true,
+            secretCiphertext: true,
+            secretEncryptedDataKey: true,
+          },
+        }),
+      ).resolves.toEqual({
+        state: "expired",
+        terminalEvidenceHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        revocationEvidenceHash: null,
+        secretCiphertext: null,
+        secretEncryptedDataKey: null,
+      });
+      await expect(issued.ledger.recoverStale({ limit: 1 })).resolves.toBe(1);
+      await expect(
+        transitionRuntimeGate(
+          "active",
+          "postgres_e2e_elapsed_revoke_pending_reactivate",
+        ),
+      ).resolves.toMatchObject({ status: "active" });
+    } finally {
+      await runHostedPoolFixtureTeardown(
+        () =>
+          cleanupCommentTokenMintFixtures({
+            mintIds: [issuedMintId, stalePreparedId],
+            grantIds,
+          }),
+        () =>
+          restoreRuntimeGateActive(
+            "postgres_e2e_elapsed_revoke_pending_fixture_restore",
+          ),
+      );
+    }
+  });
+
   it("runs real grant, relay ledgers, comment capability, parallel inference, and replay fences", async () => {
     let grantIssueError: unknown;
     let activeUpstreams = 0;
@@ -247,6 +609,10 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         statuses: "write" as const,
       },
     }));
+    const prepareCommentToken = vi.fn(async (input) => ({
+      send: async ({ signal }: { readonly signal?: AbortSignal }) =>
+        commentTokenCalls({ ...input, signal }),
+    }));
     const app = Fastify({ logger: false });
     apps.push(app);
     const realAuthorization = new PrismaHostedCodexRelayAuthorization(prisma);
@@ -257,9 +623,33 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     );
     const realCommentTokens = new HostedCodexCommentTokenIssuer({
       prisma,
-      commentTokens: { issueCommentToken: commentTokenCalls },
+      mintLedger: new PrismaHostedCommentTokenMintLedger(prisma),
+      commentTokens: {
+        issueCommentToken: commentTokenCalls,
+        prepareCommentToken,
+      },
       clock: { now: () => new Date() },
-      grants: ledger,
+      secretVault: {
+        async prepareSeal() {
+          return {
+            capture: (token: string) => testSecretEnvelope(token),
+            destroy() {},
+          };
+        },
+        async seal({ token }) {
+          return {
+            ciphertext: Buffer.from(token),
+            encryptedDataKey: Buffer.from("test-key"),
+            iv: Buffer.from("test-iv"),
+            authTag: Buffer.from("test-tag"),
+            keyId: "test-key",
+            aadHash: "a".repeat(64),
+          };
+        },
+        async open({ envelope }) {
+          return Buffer.from(envelope.ciphertext);
+        },
+      },
     });
     await registerHostedCodexRelayRoutes(app, {
       enabled: true,
@@ -410,6 +800,7 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
           .join(" | ")}`,
       );
     }
+    const refreshedBody = await refreshed.json();
     const commentReplay = await fetch(
       `${app.listeningOrigin}${hostedCodexCommentTokenPath}`,
       {
@@ -426,7 +817,8 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         }),
       },
     );
-    expect(commentReplay.status).not.toBe(200);
+    expect(commentReplay.status).toBe(200);
+    await expect(commentReplay.json()).resolves.toEqual(refreshedBody);
     expect(commentTokenCalls).toHaveBeenCalledTimes(1);
 
     const persisted = await prisma.hostedCodexInvocationGrant.findMany({
@@ -484,6 +876,25 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
         activeAccountId: hostedAccountId("account-primary"),
       }),
     });
+    const liveCommentMint =
+      await prisma.hostedCodexCommentTokenMint.findFirstOrThrow({
+        where: { grantId: grants[0]!.invocationLeaseId, state: "issued" },
+        select: { id: true, tokenHash: true, tokenExpiresAt: true },
+      });
+    const cleanupMintLedger = new PrismaHostedCommentTokenMintLedger(prisma);
+    await cleanupMintLedger.stageRevocation({
+      mintId: liveCommentMint.id,
+      tokenHash: liveCommentMint.tokenHash!,
+      tokenExpiresAt: liveCommentMint.tokenExpiresAt!,
+      now: new Date(),
+      errorCode: "postgres_e2e_fixture_cleanup",
+    });
+    await finalizeTrustedRevocation(
+      cleanupMintLedger,
+      liveCommentMint.id,
+      liveCommentMint.tokenHash!,
+      "postgres-e2e-fixture-revocation",
+    );
   }, 120_000);
 
   it("atomically normalizes one expired cooldown across authorization and session readers", async () => {
@@ -1718,6 +2129,1417 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     });
   });
 
+  it("uses a monotonic database timestamp for concurrent and emergency gate transitions", async () => {
+    const initial = await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+      where: { id: "global" },
+    });
+    const equal = initial.changedAt;
+    const regressed = new Date(initial.changedAt.getTime() - 60_000);
+    const close = (reasonCode: string, changedAt: Date) =>
+      prisma.hostedCodexRuntimeGate.updateMany({
+        where: { id: "global", revision: initial.revision },
+        data: {
+          status: "closed",
+          authzEpoch: { increment: 1 },
+          revision: { increment: 1 },
+          reasonCode,
+          changedAt,
+          changedByHash: sha256(reasonCode),
+        },
+      });
+
+    const competing = await Promise.all([
+      close("postgres_e2e_equal_close", equal),
+      close("postgres_e2e_regressed_close", regressed),
+    ]);
+    expect(competing.map(({ count }) => count).sort()).toEqual([0, 1]);
+    const closed = await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+      where: { id: "global" },
+    });
+    expect(closed.changedAt.getTime()).toBeGreaterThan(
+      initial.changedAt.getTime(),
+    );
+
+    const reopened = await transitionRuntimeGate(
+      "active",
+      "postgres_e2e_regressed_reopen",
+      regressed,
+    );
+    expect(reopened.changedAt.getTime()).toBeGreaterThan(
+      closed.changedAt.getTime(),
+    );
+    const emergency = await transitionRuntimeGate(
+      "closed",
+      "postgres_e2e_emergency_close",
+      reopened.changedAt,
+    );
+    expect(emergency.changedAt.getTime()).toBeGreaterThan(
+      reopened.changedAt.getTime(),
+    );
+    await transitionRuntimeGate("active", "postgres_e2e_test_restore");
+  });
+
+  it("proves prepare consumption and attempt creation contend before emergency close", async () => {
+    const issued = await issueGrant("mint-race-prepare-first");
+    let prepared!: () => void;
+    let release!: () => void;
+    const preparedInsideTransaction = new Promise<void>((resolve) => {
+      prepared = resolve;
+    });
+    const releasePrepare = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const gate = new PrismaHostedCommentTokenMintLedger(prisma, {
+      afterPrepare: async () => {
+        prepared();
+        await releasePrepare;
+      },
+    });
+    const ownerIdHash = sha256("mint-race-owner-1");
+    const attemptId = "comment-mint-race-prepare-first";
+    const requestIdHash = sha256("mint-race-request-1");
+    const prepare = gate.prepare({
+      mintId: attemptId,
+      purpose: "refresh",
+      logicalKeyHash: sha256(attemptId),
+      requestFingerprintHash: sha256(`fingerprint:${attemptId}`),
+      ownerIdHash,
+      grantId: issued.grant.id,
+      bindingId: binding,
+      bindingVersion: 1,
+      presentedTokenHash: sha256(issued.commentRefreshPlaintextToken),
+      requestIdHash,
+      now: new Date(),
+      leaseExpiresAt: new Date(Date.now() + 30_000),
+    });
+    await preparedInsideTransaction;
+    let closeSettled = false;
+    const close = transitionRuntimeGate(
+      "closed",
+      "postgres_e2e_mint_prepare_first_close",
+    ).then((value) => {
+      closeSettled = true;
+      return value;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(closeSettled).toBe(false);
+    release();
+    await expect(prepare).resolves.toMatchObject({
+      mintId: attemptId,
+      state: "prepared",
+    });
+    await close;
+    expect(
+      await prisma.hostedCodexCommentRefreshUse.count({
+        where: { grantId: issued.grant.id },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.hostedCodexCommentTokenMint.count({
+        where: { id: attemptId },
+      }),
+    ).toBe(1);
+    await expect(
+      gate.authorizeDispatch({
+        mintId: attemptId,
+        ownerIdHash,
+        now: new Date(),
+        dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+        unsafeUntil: new Date(Date.now() + 61 * 60_000),
+      }),
+    ).rejects.toThrow("hosted_comment_mint_dispatch_conflict");
+    await prisma.hostedCodexCommentTokenMint.update({
+      where: { id: attemptId },
+      data: {
+        state: "failed_no_token",
+        completedAt: new Date(),
+        terminalEvidenceHash: sha256("closed-before-dispatch"),
+        revision: { increment: 1 },
+      },
+    });
+    await transitionRuntimeGate(
+      "active",
+      "postgres_e2e_mint_prepare_first_restore",
+    );
+  });
+
+  it("proves a committed emergency close defeats a contending mint prepare", async () => {
+    const issued = await issueGrant("mint-race-close-first");
+    const current = await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+      where: { id: "global" },
+    });
+    let closedInside!: () => void;
+    let release!: () => void;
+    const closedInsideTransaction = new Promise<void>((resolve) => {
+      closedInside = resolve;
+    });
+    const releaseClose = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const close = prisma.$transaction(async (transaction) => {
+      await transaction.hostedCodexRuntimeGate.update({
+        where: { id: "global" },
+        data: {
+          status: "closed",
+          authzEpoch: { increment: 1 },
+          revision: { increment: 1 },
+          reasonCode: "postgres_e2e_mint_close_first",
+          changedAt: new Date(),
+          changedByHash: sha256("postgres-e2e-close-first"),
+        },
+      });
+      closedInside();
+      await releaseClose;
+    });
+    await closedInsideTransaction;
+    const gate = new PrismaHostedCommentTokenMintLedger(prisma);
+    let prepareSettled = false;
+    const prepare = gate
+      .prepare({
+        mintId: "comment-mint-race-close-first",
+        purpose: "refresh",
+        logicalKeyHash: sha256("comment-mint-race-close-first"),
+        requestFingerprintHash: sha256(
+          "fingerprint:comment-mint-race-close-first",
+        ),
+        ownerIdHash: sha256("mint-race-owner-2"),
+        grantId: issued.grant.id,
+        bindingId: binding,
+        bindingVersion: 1,
+        presentedTokenHash: sha256(issued.commentRefreshPlaintextToken),
+        requestIdHash: sha256("mint-race-request-2"),
+        now: new Date(),
+        leaseExpiresAt: new Date(Date.now() + 30_000),
+      })
+      .finally(() => {
+        prepareSettled = true;
+      });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(prepareSettled).toBe(false);
+    release();
+    await close;
+    await expect(prepare).rejects.toThrow(
+      "hosted_comment_mint_authority_mismatch",
+    );
+    expect(
+      await prisma.hostedCodexCommentRefreshUse.count({
+        where: { grantId: issued.grant.id },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.hostedCodexCommentTokenMint.count({
+        where: { grantId: issued.grant.id },
+      }),
+    ).toBe(0);
+    const closed = await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+      where: { id: "global" },
+    });
+    expect(closed.authzEpoch).toBe(current.authzEpoch + 1n);
+    await transitionRuntimeGate(
+      "active",
+      "postgres_e2e_mint_close_first_restore",
+    );
+  });
+
+  it("proves dispatch releases the gate before network and close fences finalize", async () => {
+    const issued = await issueGrant("mint-race-dispatch-first");
+    const ledger = new PrismaHostedCommentTokenMintLedger(prisma);
+    const mintId = "comment-mint-race-dispatch-first";
+    const ownerIdHash = sha256("mint-race-dispatch-owner");
+    const prepared = await ledger.prepare({
+      mintId,
+      purpose: "refresh",
+      logicalKeyHash: sha256(mintId),
+      requestFingerprintHash: sha256(`fingerprint:${mintId}`),
+      ownerIdHash,
+      grantId: issued.grant.id,
+      bindingId: binding,
+      bindingVersion: 1,
+      presentedTokenHash: sha256(issued.commentRefreshPlaintextToken),
+      requestIdHash: sha256("mint-race-dispatch-request"),
+      now: new Date(),
+      leaseExpiresAt: new Date(Date.now() + 30_000),
+    });
+    if (prepared.state !== "prepared")
+      throw new Error("postgres_e2e_prepare_failed");
+    await ledger.authorizeDispatch({
+      mintId,
+      ownerIdHash,
+      now: new Date(),
+      dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+      unsafeUntil: new Date(Date.now() + 61 * 60_000),
+    });
+    // Represents a hanging provider call: close must not wait on any ledger transaction.
+    const closed = await transitionRuntimeGate(
+      "closed",
+      "postgres_e2e_dispatch_first_close",
+    );
+    const closure = await createElapsedTestRuntimeClosure({
+      id: `runtime-closure-${closed.revision}`,
+      gateRevision: closed.revision,
+      closedAuthzEpoch: closed.authzEpoch,
+      actorHash: sha256("postgres-e2e-dispatch-first"),
+      reasonHash: sha256("postgres_e2e_dispatch_first_close"),
+      legacyBarrier: true,
+      legacyUnsafeUntil: new Date(0),
+    });
+    await expect(
+      prisma.hostedCodexRuntimeClosure.update({
+        where: { id: closure.id },
+        data: {
+          state: "complete",
+          completedAt: new Date(),
+          revision: { increment: 1 },
+        },
+      }),
+    ).rejects.toThrow("hosted_codex_runtime_closure_unsafe");
+    const tokenHash = sha256("dispatch-first-token");
+    await expect(
+      ledger.finalizeKnownToken({
+        mintId,
+        ownerIdHash,
+        fenceEpoch: prepared.fenceEpoch,
+        tokenHash,
+        tokenExpiresAt: new Date(Date.now() + 60_000),
+        secretEnvelope: testSecretEnvelope("dispatch-first-token"),
+        now: new Date(),
+      }),
+    ).resolves.toBe("revoke_pending");
+    await expect(
+      prisma.hostedCodexRuntimeClosure.update({
+        where: { id: closure.id },
+        data: {
+          state: "complete",
+          completedAt: new Date(),
+          revision: { increment: 1 },
+        },
+      }),
+    ).rejects.toThrow("hosted_codex_runtime_closure_unsafe");
+    await finalizeTrustedRevocation(ledger, mintId, tokenHash, "trusted-204");
+    await prisma.hostedCodexRuntimeClosure.update({
+      where: { id: closure.id },
+      data: {
+        state: "complete",
+        completedAt: new Date(),
+        revision: { increment: 1 },
+      },
+    });
+    await transitionRuntimeGate(
+      "active",
+      "postgres_e2e_dispatch_first_restore",
+    );
+  });
+
+  it("makes a finalize-first token block closure until trusted revocation", async () => {
+    const issued = await issueGrant("mint-race-finalize-first");
+    const mintLedger = new PrismaHostedCommentTokenMintLedger(prisma);
+    const mintId = "comment-mint-race-finalize-first";
+    const ownerIdHash = sha256("mint-race-finalize-first-owner");
+    const prepared = await mintLedger.prepare({
+      mintId,
+      purpose: "initial",
+      logicalKeyHash: sha256(mintId),
+      requestFingerprintHash: sha256(`fingerprint:${mintId}`),
+      ownerIdHash,
+      grantId: issued.grant.id,
+      bindingId: binding,
+      bindingVersion: 1,
+      now: new Date(),
+      leaseExpiresAt: new Date(Date.now() + 30_000),
+    });
+    if (prepared.state !== "prepared")
+      throw new Error("postgres_e2e_prepare_failed");
+    await mintLedger.authorizeDispatch({
+      mintId,
+      ownerIdHash,
+      now: new Date(),
+      dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+      unsafeUntil: new Date(Date.now() + 61 * 60_000),
+    });
+    const tokenHash = sha256("finalize-first-token");
+    await expect(
+      mintLedger.finalizeKnownToken({
+        mintId,
+        ownerIdHash,
+        fenceEpoch: prepared.fenceEpoch,
+        tokenHash,
+        tokenExpiresAt: new Date(Date.now() + 60_000),
+        secretEnvelope: testSecretEnvelope("finalize-first-token"),
+        now: new Date(),
+      }),
+    ).resolves.toBe("issued");
+    const closed = await transitionRuntimeGate(
+      "closed",
+      "postgres_e2e_finalize_first_close",
+    );
+    const closure = await createElapsedTestRuntimeClosure({
+      id: `runtime-closure-${closed.revision}`,
+      gateRevision: closed.revision,
+      closedAuthzEpoch: closed.authzEpoch,
+      actorHash: sha256("postgres-e2e-finalize-first"),
+      reasonHash: sha256("postgres_e2e_finalize_first_close"),
+      legacyBarrier: true,
+      legacyUnsafeUntil: new Date(0),
+    });
+    await expect(
+      prisma.hostedCodexRuntimeClosure.update({
+        where: { id: closure.id },
+        data: {
+          state: "complete",
+          completedAt: new Date(),
+          revision: { increment: 1 },
+        },
+      }),
+    ).rejects.toThrow("hosted_codex_runtime_closure_unsafe");
+    const claims = await mintLedger.claimRevocations({
+      ownerIdHash: sha256("finalize-first-revoker"),
+      now: new Date(Date.now() + 1),
+      leaseExpiresAt: new Date(Date.now() + 30_001),
+      limit: 1,
+    });
+    expect(claims).toHaveLength(1);
+    await mintLedger.finalizeRevoked({
+      mintId,
+      tokenHash,
+      ownerIdHash: claims[0]!.ownerIdHash,
+      fenceEpoch: claims[0]!.fenceEpoch,
+      now: new Date(),
+      evidenceHash: sha256("trusted-finalize-first-revocation"),
+      receipt: trustedRevocationReceipt,
+    });
+    await expect(
+      prisma.hostedCodexRuntimeClosure.update({
+        where: { id: closure.id },
+        data: {
+          state: "complete",
+          completedAt: new Date(),
+          revision: { increment: 1 },
+        },
+      }),
+    ).resolves.toMatchObject({ state: "complete" });
+    await transitionRuntimeGate(
+      "active",
+      "postgres_e2e_finalize_first_restore",
+    );
+  });
+
+  it("keeps remote-success-local-unknown retry and closure blocked through the provider bound", async () => {
+    const issued = await issueGrant("mint-outcome-unknown");
+    const mintLedger = new PrismaHostedCommentTokenMintLedger(prisma);
+    const mintId = "comment-mint-outcome-unknown";
+    const ownerIdHash = sha256("mint-outcome-unknown-owner");
+    const requestIdHash = sha256("mint-outcome-unknown-request");
+    const prepareInput = {
+      mintId,
+      purpose: "refresh" as const,
+      logicalKeyHash: sha256(mintId),
+      requestFingerprintHash: sha256(`fingerprint:${mintId}`),
+      ownerIdHash,
+      grantId: issued.grant.id,
+      bindingId: binding,
+      bindingVersion: 1,
+      presentedTokenHash: sha256(issued.commentRefreshPlaintextToken),
+      requestIdHash,
+      now: new Date(),
+      leaseExpiresAt: new Date(Date.now() + 30_000),
+    };
+    const prepared = await mintLedger.prepare(prepareInput);
+    if (prepared.state !== "prepared")
+      throw new Error("postgres_e2e_prepare_failed");
+    await mintLedger.authorizeDispatch({
+      mintId,
+      ownerIdHash,
+      now: new Date(),
+      dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+      unsafeUntil: new Date(Date.now() + 61 * 60_000),
+    });
+    await mintLedger.finalizeOutcomeUnknown({
+      mintId,
+      ownerIdHash,
+      now: new Date(),
+      errorCode: "provider_response_lost",
+    });
+    await expect(mintLedger.prepare(prepareInput)).resolves.toEqual({
+      mintId,
+      state: "outcome_unknown",
+    });
+    await expect(
+      prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+        where: { id: mintId },
+        select: { providerAttempt: true },
+      }),
+    ).resolves.toEqual({ providerAttempt: 1 });
+    const closed = await transitionRuntimeGate(
+      "closed",
+      "postgres_e2e_outcome_unknown_close",
+    );
+    const closure = await createElapsedTestRuntimeClosure({
+      id: `runtime-closure-${closed.revision}`,
+      gateRevision: closed.revision,
+      closedAuthzEpoch: closed.authzEpoch,
+      actorHash: sha256("postgres-e2e-outcome-unknown"),
+      reasonHash: sha256("postgres_e2e_outcome_unknown_close"),
+      legacyBarrier: true,
+      legacyUnsafeUntil: new Date(0),
+    });
+    await expect(
+      prisma.hostedCodexRuntimeClosure.update({
+        where: { id: closure.id },
+        data: {
+          state: "complete",
+          completedAt: new Date(),
+          revision: { increment: 1 },
+        },
+      }),
+    ).rejects.toThrow("hosted_codex_runtime_closure_unsafe");
+    await expect(
+      prisma.hostedCodexCommentTokenMint.update({
+        where: { id: mintId },
+        data: {
+          state: "expired",
+          completedAt: new Date(),
+          terminalEvidenceHash: sha256("premature-expiry"),
+          revision: { increment: 1 },
+        },
+      }),
+    ).rejects.toThrow("hosted_codex_comment_token_mint_transition_invalid");
+    // Test-only cleanup cannot wait for the provider upper bound in wall time.
+    await prisma.$executeRawUnsafe(`SET session_replication_role = 'replica'`);
+    try {
+      await prisma.hostedCodexCommentTokenMint.update({
+        where: { id: mintId },
+        data: {
+          state: "expired",
+          completedAt: new Date(),
+          terminalEvidenceHash: sha256("provider-bound-simulated"),
+          revision: { increment: 1 },
+        },
+      });
+    } finally {
+      await prisma.$executeRawUnsafe(`SET session_replication_role = 'origin'`);
+    }
+    await prisma.hostedCodexRuntimeClosure.update({
+      where: { id: closure.id },
+      data: {
+        state: "complete",
+        completedAt: new Date(),
+        revision: { increment: 1 },
+      },
+    });
+    await transitionRuntimeGate(
+      "active",
+      "postgres_e2e_outcome_unknown_restore",
+    );
+  });
+
+  it("resumes one durable closure after a control-process crash without advancing the gate twice", async () => {
+    const closed = await transitionRuntimeGate(
+      "closed",
+      "postgres_e2e_closure_crash",
+    );
+    await createElapsedTestRuntimeClosure({
+      id: `runtime-closure-${closed.revision}`,
+      gateRevision: closed.revision,
+      closedAuthzEpoch: closed.authzEpoch,
+      actorHash: sha256("postgres-e2e-closure-crash"),
+      reasonHash: sha256("postgres_e2e_closure_crash"),
+      legacyBarrier: true,
+      legacyUnsafeUntil: new Date(0),
+    });
+    const control = createRenderHostedPoolControlPort({
+      apiKey: "unused-postgres-e2e-key",
+      serviceIds: ["unused-api", "unused-web"],
+      databaseUrl,
+      fetchImpl: vi.fn(),
+    });
+    try {
+      const observed = await control.readRuntimeGate();
+      await control.ensureRuntimeClosure?.(
+        observed,
+        "postgres_e2e_closure_resume",
+        sha256("postgres-e2e-closure-resumer"),
+      );
+      // Represents a new control process repeating the same resume after crash.
+      await control.ensureRuntimeClosure?.(
+        observed,
+        "postgres_e2e_closure_resume",
+        sha256("postgres-e2e-closure-resumer"),
+      );
+      await expect(control.readRuntimeGate()).resolves.toEqual(observed);
+      await expect(
+        prisma.hostedCodexRuntimeClosure.findMany({
+          where: { gateRevision: closed.revision },
+          select: { state: true, revision: true },
+        }),
+      ).resolves.toEqual([{ state: "draining", revision: 1n }]);
+      await control.completeRuntimeClosure?.(observed);
+    } finally {
+      await control.disconnect();
+    }
+    await transitionRuntimeGate("active", "postgres_e2e_closure_crash_restore");
+  });
+
+  it("rejects forged future closures and rechecks closure safety during activation", async () => {
+    const closed = await transitionRuntimeGate(
+      "closed",
+      "postgres_e2e_closure_insert_guard",
+    );
+    await expect(
+      prisma.hostedCodexRuntimeClosure.create({
+        data: {
+          id: `forged-future-closure-${closed.revision}`,
+          gateRevision: closed.revision + 1n,
+          closedAuthzEpoch: closed.authzEpoch,
+          actorHash: sha256("forged-future-closure"),
+          reasonHash: sha256("forged-future-closure"),
+          legacyBarrier: false,
+          legacyUnsafeUntil: new Date(0),
+        },
+      }),
+    ).rejects.toThrow("hosted_codex_runtime_closure_insert_invalid");
+    await expect(
+      prisma.hostedCodexRuntimeClosure.create({
+        data: {
+          id: `forged-drained-closure-${closed.revision}`,
+          gateRevision: closed.revision,
+          closedAuthzEpoch: closed.authzEpoch,
+          actorHash: sha256("forged-drained-closure"),
+          reasonHash: sha256("forged-drained-closure"),
+          state: "complete",
+          completedAt: new Date(),
+          legacyBarrier: false,
+          legacyUnsafeUntil: new Date(0),
+        },
+      }),
+    ).rejects.toThrow("hosted_codex_runtime_closure_insert_invalid");
+    const closure = await createElapsedTestRuntimeClosure({
+      id: `runtime-closure-${closed.revision}`,
+      gateRevision: closed.revision,
+      closedAuthzEpoch: closed.authzEpoch,
+      actorHash: sha256("activation-safety"),
+      reasonHash: sha256("activation-safety"),
+      legacyBarrier: true,
+      legacyUnsafeUntil: new Date(0),
+    });
+    await prisma.hostedCodexRuntimeClosure.update({
+      where: { id: closure.id },
+      data: {
+        state: "complete",
+        completedAt: new Date(),
+        revision: { increment: 1 },
+      },
+    });
+    await prisma.$executeRawUnsafe(`SET session_replication_role = 'replica'`);
+    try {
+      await prisma.hostedCodexRuntimeClosure.update({
+        where: { id: closure.id },
+        data: {
+          legacyBarrier: true,
+          legacyUnsafeUntil: new Date(Date.now() + 61 * 60_000),
+        },
+      });
+    } finally {
+      await prisma.$executeRawUnsafe(`SET session_replication_role = 'origin'`);
+    }
+    await expect(
+      transitionRuntimeGate("active", "unsafe_state_complete_activation"),
+    ).rejects.toThrow("hosted_codex_runtime_closure_incomplete");
+    await prisma.$executeRawUnsafe(`SET session_replication_role = 'replica'`);
+    try {
+      await prisma.hostedCodexRuntimeClosure.update({
+        where: { id: closure.id },
+        data: { legacyBarrier: false, legacyUnsafeUntil: new Date(0) },
+      });
+    } finally {
+      await prisma.$executeRawUnsafe(`SET session_replication_role = 'origin'`);
+    }
+    await transitionRuntimeGate("active", "safe_activation_after_recheck");
+  });
+
+  it("keeps dispatch barriers immutable and rejects revoked state without evidence", async () => {
+    const issued = await issueGrant("mint-guard-adversarial");
+    const mintLedger = new PrismaHostedCommentTokenMintLedger(prisma);
+    const mintId = "comment-mint-guard-adversarial";
+    const ownerIdHash = sha256("mint-guard-adversarial-owner");
+    const prepared = await mintLedger.prepare({
+      mintId,
+      purpose: "initial",
+      logicalKeyHash: sha256(mintId),
+      requestFingerprintHash: sha256(`fingerprint:${mintId}`),
+      ownerIdHash,
+      grantId: issued.grant.id,
+      bindingId: binding,
+      bindingVersion: 1,
+      now: new Date(),
+      leaseExpiresAt: new Date(Date.now() + 30_000),
+    });
+    if (prepared.state !== "prepared")
+      throw new Error("postgres_e2e_prepare_failed");
+    await mintLedger.authorizeDispatch({
+      mintId,
+      ownerIdHash,
+      now: new Date(),
+      dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+      unsafeUntil: new Date(Date.now() + 61 * 60_000),
+    });
+    const dispatching =
+      await prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+        where: { id: mintId },
+      });
+    await expect(
+      prisma.hostedCodexCommentTokenMint.update({
+        where: { id: mintId },
+        data: {
+          unsafeUntil: new Date(dispatching.unsafeUntil!.getTime() - 1),
+          revision: { increment: 1 },
+        },
+      }),
+    ).rejects.toThrow(
+      "hosted_codex_comment_token_mint_identity_or_revision_invalid",
+    );
+    const tokenHash = sha256("mint-guard-adversarial-token");
+    await mintLedger.stageRevocation({
+      mintId,
+      tokenHash,
+      tokenExpiresAt: new Date(Date.now() + 60_000),
+      secretEnvelope: testSecretEnvelope("mint-guard-adversarial-token"),
+      now: new Date(),
+      errorCode: "adversarial-revocation-stage",
+    });
+    await expect(
+      prisma.hostedCodexCommentTokenMint.update({
+        where: { id: mintId },
+        data: {
+          state: "revoked",
+          completedAt: new Date(),
+          revision: { increment: 1 },
+        },
+      }),
+    ).rejects.toThrow();
+    await finalizeTrustedRevocation(
+      mintLedger,
+      mintId,
+      tokenHash,
+      "trusted-revocation-evidence",
+    );
+  });
+
+  it("detects same-timestamp installation selection and repository rebinding races", async () => {
+    const secondInstallation = "installation-e2e-rebind";
+    await prisma.gitHubInstallation.create({
+      data: {
+        id: secondInstallation,
+        workspaceId: workspace,
+        githubInstallationId: 900099n,
+        accountLogin: "disposable-e2e-rebind",
+        accountType: "Organization",
+        repositorySelection: "selected",
+        status: "active",
+      },
+    });
+    const cases = ["selection", "repository-rebind"] as const;
+    try {
+      for (const authorityCase of cases) {
+        const issued = await issueGrant(`same-timestamp-${authorityCase}`);
+        const mintLedger = new PrismaHostedCommentTokenMintLedger(prisma);
+        const mintId = `comment-mint-same-timestamp-${authorityCase}`;
+        const ownerIdHash = sha256(`owner-${authorityCase}`);
+        const prepared = await mintLedger.prepare({
+          mintId,
+          purpose: "initial",
+          logicalKeyHash: sha256(mintId),
+          requestFingerprintHash: sha256(`fingerprint:${mintId}`),
+          ownerIdHash,
+          grantId: issued.grant.id,
+          bindingId: binding,
+          bindingVersion: 1,
+          now: new Date(),
+          leaseExpiresAt: new Date(Date.now() + 30_000),
+        });
+        if (prepared.state !== "prepared")
+          throw new Error("postgres_e2e_prepare_failed");
+        await mintLedger.authorizeDispatch({
+          mintId,
+          ownerIdHash,
+          now: new Date(),
+          dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+          unsafeUntil: new Date(Date.now() + 61 * 60_000),
+        });
+        if (authorityCase === "selection") {
+          const timestamp = await prisma.gitHubInstallation.findUniqueOrThrow({
+            where: { id: installation },
+            select: { updatedAt: true },
+          });
+          await prisma.$executeRaw`
+            UPDATE "GitHubInstallation"
+            SET "repositorySelection" = 'all', "updatedAt" = ${timestamp.updatedAt}
+            WHERE "id" = ${installation}
+          `;
+        } else {
+          const timestamp = await prisma.repositoryConnection.findUniqueOrThrow(
+            { where: { id: repository }, select: { updatedAt: true } },
+          );
+          await prisma.$executeRaw`
+            UPDATE "RepositoryConnection"
+            SET "installationId" = ${secondInstallation}, "updatedAt" = ${timestamp.updatedAt}
+            WHERE "id" = ${repository}
+          `;
+        }
+        const tokenHash = sha256(`token-${authorityCase}`);
+        await expect(
+          mintLedger.finalizeKnownToken({
+            mintId,
+            ownerIdHash,
+            fenceEpoch: prepared.fenceEpoch,
+            tokenHash,
+            tokenExpiresAt: new Date(Date.now() + 60_000),
+            secretEnvelope: testSecretEnvelope(`token-${authorityCase}`),
+            now: new Date(),
+          }),
+        ).resolves.toBe("revoke_pending");
+        if (authorityCase === "selection") {
+          await prisma.$executeRaw`
+            UPDATE "GitHubInstallation" SET "repositorySelection" = 'selected'
+            WHERE "id" = ${installation}
+          `;
+        } else {
+          await prisma.$executeRaw`
+            UPDATE "RepositoryConnection" SET "installationId" = ${installation}
+            WHERE "id" = ${repository}
+          `;
+        }
+        await finalizeTrustedRevocation(
+          mintLedger,
+          mintId,
+          tokenHash,
+          `rebound-token-revoked-${authorityCase}`,
+        );
+      }
+    } finally {
+      await prisma.repositoryConnection.update({
+        where: { id: repository },
+        data: { installationId: installation },
+      });
+      await prisma.gitHubInstallation.delete({
+        where: { id: secondInstallation },
+      });
+    }
+  });
+
+  it("rejects stale repository authority and gives parallel revokers one fenced claim", async () => {
+    const issued = await issueGrant("mint-authority-revocation-race");
+    const mintLedger = new PrismaHostedCommentTokenMintLedger(prisma);
+    const staleMintId = "comment-mint-stale-repository-authority";
+    const staleOwner = sha256("stale-repository-owner");
+    await mintLedger.prepare({
+      mintId: staleMintId,
+      purpose: "initial",
+      logicalKeyHash: sha256(staleMintId),
+      requestFingerprintHash: sha256(`fingerprint:${staleMintId}`),
+      ownerIdHash: staleOwner,
+      grantId: issued.grant.id,
+      bindingId: binding,
+      bindingVersion: 1,
+      now: new Date(),
+      leaseExpiresAt: new Date(Date.now() + 30_000),
+    });
+    await prisma.repositoryConnection.update({
+      where: { id: repository },
+      data: { selected: false },
+    });
+    await expect(
+      mintLedger.authorizeDispatch({
+        mintId: staleMintId,
+        ownerIdHash: staleOwner,
+        now: new Date(),
+        dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+        unsafeUntil: new Date(Date.now() + 61 * 60_000),
+      }),
+    ).rejects.toThrow("hosted_comment_mint_dispatch_conflict");
+    await prisma.hostedCodexCommentTokenMint.update({
+      where: { id: staleMintId },
+      data: {
+        state: "failed_no_token",
+        completedAt: new Date(),
+        terminalEvidenceHash: sha256("stale-authority-before-dispatch"),
+        revision: { increment: 1 },
+      },
+    });
+    await prisma.repositoryConnection.update({
+      where: { id: repository },
+      data: { selected: true },
+    });
+
+    const liveIssued = await issueGrant("mint-authority-revocation-live");
+    const liveMintId = "comment-mint-authority-revocation-live";
+    const liveOwner = sha256("authority-revocation-live-owner");
+    const prepared = await mintLedger.prepare({
+      mintId: liveMintId,
+      purpose: "initial",
+      logicalKeyHash: sha256(liveMintId),
+      requestFingerprintHash: sha256(`fingerprint:${liveMintId}`),
+      ownerIdHash: liveOwner,
+      grantId: liveIssued.grant.id,
+      bindingId: binding,
+      bindingVersion: 1,
+      now: new Date(),
+      leaseExpiresAt: new Date(Date.now() + 30_000),
+    });
+    if (prepared.state !== "prepared")
+      throw new Error("postgres_e2e_prepare_failed");
+    await mintLedger.authorizeDispatch({
+      mintId: liveMintId,
+      ownerIdHash: liveOwner,
+      now: new Date(),
+      dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+      unsafeUntil: new Date(Date.now() + 61 * 60_000),
+    });
+    const tokenHash = sha256("authority-revocation-live-token");
+    await expect(
+      mintLedger.finalizeKnownToken({
+        mintId: liveMintId,
+        ownerIdHash: liveOwner,
+        fenceEpoch: prepared.fenceEpoch,
+        tokenHash,
+        tokenExpiresAt: new Date(Date.now() + 60_000),
+        secretEnvelope: testSecretEnvelope("authority-revocation-live-token"),
+        now: new Date(),
+      }),
+    ).resolves.toBe("issued");
+
+    // Ordinary request accounting is not an authorization mutation.
+    await prisma.hostedCodexInvocationGrant.update({
+      where: { id: liveIssued.grant.id },
+      data: { requestCount: { increment: 1 }, revision: { increment: 1 } },
+    });
+    await expect(
+      prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+        where: { id: liveMintId },
+        select: { state: true },
+      }),
+    ).resolves.toEqual({ state: "issued" });
+
+    await prisma.repositoryConnection.update({
+      where: { id: repository },
+      data: { archived: true },
+    });
+    const claimNow = new Date(Date.now() + 1);
+    const claims = await Promise.all([
+      mintLedger.claimRevocations({
+        ownerIdHash: sha256("revoker-a"),
+        now: claimNow,
+        leaseExpiresAt: new Date(claimNow.getTime() + 30_000),
+        limit: 1,
+      }),
+      new PrismaHostedCommentTokenMintLedger(prisma).claimRevocations({
+        ownerIdHash: sha256("revoker-b"),
+        now: claimNow,
+        leaseExpiresAt: new Date(claimNow.getTime() + 30_000),
+        limit: 1,
+      }),
+    ]);
+    const claimed = claims.flat();
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]).toMatchObject({ mintId: liveMintId, tokenHash });
+    await mintLedger.finalizeRevoked({
+      mintId: liveMintId,
+      tokenHash,
+      ownerIdHash: claimed[0]!.ownerIdHash,
+      fenceEpoch: claimed[0]!.fenceEpoch,
+      now: new Date(),
+      evidenceHash: sha256("trusted-provider-revocation"),
+      receipt: trustedRevocationReceipt,
+    });
+    await prisma.repositoryConnection.update({
+      where: { id: repository },
+      data: { archived: false },
+    });
+  });
+
+  it("persists fair revocation backoff across restart and reclaims an expired lease", async () => {
+    const ledger = new PrismaHostedCommentTokenMintLedger(prisma);
+    const fixtures = ["revocation-fairness-a", "revocation-fairness-b"].map(
+      (label) => ({
+        mintId: `comment-mint-security-${label}`,
+        grantId: invocationGrantId(`grant-security-${label}`),
+      }),
+    );
+    const repositoryState = await prisma.repositoryConnection.findUniqueOrThrow(
+      {
+        where: { id: repository },
+        select: { archived: true, selected: true, updatedAt: true },
+      },
+    );
+    try {
+      const first = await createIssuedMint("revocation-fairness-a");
+      const second = await createIssuedMint("revocation-fairness-b");
+      await prisma.repositoryConnection.update({
+        where: { id: repository },
+        data: { archived: true },
+      });
+      const firstOwner = sha256("revocation-fairness-first-worker");
+      const firstClaim = await ledger.claimRevocations({
+        ownerIdHash: firstOwner,
+        now: new Date(),
+        leaseExpiresAt: new Date(Date.now() + 2_000),
+        limit: 1,
+      });
+      expect(firstClaim).toHaveLength(1);
+      expect(firstClaim[0]!.mintId).toBe(first.mintId);
+      await ledger.releaseRevocation({
+        mintId: first.mintId,
+        ownerIdHash: firstOwner,
+        fenceEpoch: firstClaim[0]!.fenceEpoch,
+        now: new Date(),
+        errorCode: "provider_revoke_ambiguous",
+      });
+      zeroTestEnvelope(firstClaim[0]!.secretEnvelope);
+
+      const deferred =
+        await prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+          where: { id: first.mintId },
+          select: { nextRevocationAt: true, revocationFailureCount: true },
+        });
+      expect(deferred.revocationFailureCount).toBe(1);
+      expect(deferred.nextRevocationAt.getTime()).toBeGreaterThan(Date.now());
+
+      // A new process sees the persisted delay and reaches the healthy row
+      // immediately instead of allowing the first failure to monopolize work.
+      const restarted = new PrismaHostedCommentTokenMintLedger(prisma);
+      const secondOwner = sha256("revocation-fairness-restarted-worker");
+      const secondClaim = await restarted.claimRevocations({
+        ownerIdHash: secondOwner,
+        now: new Date(),
+        leaseExpiresAt: new Date(Date.now() + 2_000),
+        limit: 2,
+      });
+      expect(secondClaim.map((claim) => claim.mintId)).toEqual([second.mintId]);
+      await restarted.finalizeRevoked({
+        mintId: second.mintId,
+        tokenHash: second.tokenHash,
+        ownerIdHash: secondOwner,
+        fenceEpoch: secondClaim[0]!.fenceEpoch,
+        now: new Date(),
+        evidenceHash: sha256("revocation-fairness-second-revoked"),
+        receipt: trustedRevocationReceipt,
+      });
+      zeroTestEnvelope(secondClaim[0]!.secretEnvelope);
+
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(0, deferred.nextRevocationAt.getTime() - Date.now()) + 50,
+        ),
+      );
+      const leaseOwner = sha256("revocation-fairness-crashed-worker");
+      const leased = await restarted.claimRevocations({
+        ownerIdHash: leaseOwner,
+        now: new Date(),
+        leaseExpiresAt: new Date(Date.now() + 750),
+        limit: 1,
+      });
+      expect(leased.map((claim) => claim.mintId)).toEqual([first.mintId]);
+      zeroTestEnvelope(leased[0]!.secretEnvelope);
+      await expect(
+        new PrismaHostedCommentTokenMintLedger(prisma).claimRevocations({
+          ownerIdHash: sha256("revocation-fairness-early-restart"),
+          now: new Date(),
+          leaseExpiresAt: new Date(Date.now() + 2_000),
+          limit: 1,
+        }),
+      ).resolves.toEqual([]);
+
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      const finalOwner = sha256("revocation-fairness-post-expiry-worker");
+      const reclaimed = await new PrismaHostedCommentTokenMintLedger(
+        prisma,
+      ).claimRevocations({
+        ownerIdHash: finalOwner,
+        now: new Date(),
+        leaseExpiresAt: new Date(Date.now() + 2_000),
+        limit: 1,
+      });
+      expect(reclaimed.map((claim) => claim.mintId)).toEqual([first.mintId]);
+      expect(reclaimed[0]!.fenceEpoch).toBeGreaterThan(leased[0]!.fenceEpoch);
+      await ledger.finalizeRevoked({
+        mintId: first.mintId,
+        tokenHash: first.tokenHash,
+        ownerIdHash: finalOwner,
+        fenceEpoch: reclaimed[0]!.fenceEpoch,
+        now: new Date(),
+        evidenceHash: sha256("revocation-fairness-first-revoked"),
+        receipt: trustedRevocationReceipt,
+      });
+      zeroTestEnvelope(reclaimed[0]!.secretEnvelope);
+    } finally {
+      await cleanupCommentTokenMintFixtures({
+        mintIds: fixtures.map((fixture) => fixture.mintId),
+        grantIds: fixtures.map((fixture) => fixture.grantId),
+        restoreRepository: repositoryState,
+      });
+    }
+  });
+
+  it("never finalizes stale binding, pool, repository, or installation authority as issued", async () => {
+    const cases = [
+      {
+        name: "binding",
+        invalidate: () =>
+          prisma.hostedCodexRepositoryBinding.update({
+            where: { id: binding },
+            data: { status: "paused", stateVersion: { increment: 1 } },
+          }),
+        restore: () =>
+          prisma.hostedCodexRepositoryBinding.update({
+            where: { id: binding },
+            data: { status: "active", stateVersion: { increment: 1 } },
+          }),
+      },
+      {
+        name: "pool",
+        invalidate: () =>
+          prisma.hostedCodexPool.update({
+            where: { id: pool },
+            data: { status: "paused" },
+          }),
+        restore: () =>
+          prisma.hostedCodexPool.update({
+            where: { id: pool },
+            data: { status: "active" },
+          }),
+      },
+      {
+        name: "repository",
+        invalidate: () =>
+          prisma.repositoryConnection.update({
+            where: { id: repository },
+            data: { selected: false },
+          }),
+        restore: () =>
+          prisma.repositoryConnection.update({
+            where: { id: repository },
+            data: { selected: true },
+          }),
+      },
+      {
+        name: "installation",
+        invalidate: () =>
+          prisma.gitHubInstallation.update({
+            where: { id: installation },
+            data: { status: "suspended" },
+          }),
+        restore: () =>
+          prisma.gitHubInstallation.update({
+            where: { id: installation },
+            data: { status: "active" },
+          }),
+      },
+    ] as const;
+    for (const authorityCase of cases) {
+      const issued = await issueGrant(
+        `mint-stale-finalize-${authorityCase.name}`,
+      );
+      const mintLedger = new PrismaHostedCommentTokenMintLedger(prisma);
+      const mintId = `comment-mint-stale-finalize-${authorityCase.name}`;
+      const ownerIdHash = sha256(`owner-${authorityCase.name}`);
+      const prepared = await mintLedger.prepare({
+        mintId,
+        purpose: "initial",
+        logicalKeyHash: sha256(mintId),
+        requestFingerprintHash: sha256(`fingerprint:${mintId}`),
+        ownerIdHash,
+        grantId: issued.grant.id,
+        bindingId: binding,
+        bindingVersion: 1,
+        now: new Date(),
+        leaseExpiresAt: new Date(Date.now() + 30_000),
+      });
+      if (prepared.state !== "prepared")
+        throw new Error("postgres_e2e_prepare_failed");
+      await mintLedger.authorizeDispatch({
+        mintId,
+        ownerIdHash,
+        now: new Date(),
+        dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+        unsafeUntil: new Date(Date.now() + 61 * 60_000),
+      });
+      await authorityCase.invalidate();
+      const tokenHash = sha256(`token-${authorityCase.name}`);
+      try {
+        await expect(
+          mintLedger.finalizeKnownToken({
+            mintId,
+            ownerIdHash,
+            fenceEpoch: prepared.fenceEpoch,
+            tokenHash,
+            tokenExpiresAt: new Date(Date.now() + 60_000),
+            secretEnvelope: testSecretEnvelope(`token-${authorityCase.name}`),
+            now: new Date(),
+          }),
+        ).resolves.toBe("revoke_pending");
+        await finalizeTrustedRevocation(
+          mintLedger,
+          mintId,
+          tokenHash,
+          `revoked-${authorityCase.name}`,
+        );
+      } finally {
+        await authorityCase.restore();
+      }
+    }
+  });
+
+  it("linearizes a same-idempotency-key prepare race to one mint, use, and provider attempt", async () => {
+    const issued = await issueGrant("mint-same-key-race");
+    const mintLedger = new PrismaHostedCommentTokenMintLedger(prisma);
+    const mintId = "comment-mint-same-key-race";
+    const requestIdHash = sha256("same-key-request");
+    const owners = [sha256("same-key-owner-a"), sha256("same-key-owner-b")];
+    const base = {
+      mintId,
+      purpose: "refresh" as const,
+      logicalKeyHash: sha256(mintId),
+      requestFingerprintHash: sha256(`fingerprint:${mintId}`),
+      grantId: issued.grant.id,
+      bindingId: binding,
+      bindingVersion: 1,
+      presentedTokenHash: sha256(issued.commentRefreshPlaintextToken),
+      requestIdHash,
+      now: new Date(),
+      leaseExpiresAt: new Date(Date.now() + 30_000),
+    };
+    const results = await Promise.allSettled([
+      mintLedger.prepare({ ...base, ownerIdHash: owners[0]! }),
+      new PrismaHostedCommentTokenMintLedger(prisma).prepare({
+        ...base,
+        ownerIdHash: owners[1]!,
+      }),
+    ]);
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    const winner = results.findIndex((result) => result.status === "fulfilled");
+    const loser = results[1 - winner]!;
+    expect(loser.status).toBe("rejected");
+    if (loser.status !== "rejected")
+      throw new Error("postgres_e2e_same_key_loser_missing");
+    expect(String(loser.reason)).toContain("hosted_comment_mint_busy");
+    expect(
+      await prisma.hostedCodexCommentTokenMint.count({ where: { id: mintId } }),
+    ).toBe(1);
+    expect(
+      await prisma.hostedCodexCommentRefreshUse.count({
+        where: { grantId: issued.grant.id, requestIdHash },
+      }),
+    ).toBe(1);
+    await mintLedger.authorizeDispatch({
+      mintId,
+      ownerIdHash: owners[winner]!,
+      now: new Date(),
+      dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+      unsafeUntil: new Date(Date.now() + 61 * 60_000),
+    });
+    await mintLedger.finalizeOutcomeUnknown({
+      mintId,
+      ownerIdHash: owners[winner]!,
+      now: new Date(),
+      errorCode: "postgres_e2e_proven_no_effect",
+    });
+    await expect(
+      prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+        where: { id: mintId },
+        select: { providerAttempt: true, state: true },
+      }),
+    ).resolves.toEqual({ providerAttempt: 1, state: "outcome_unknown" });
+    await expect(
+      prisma.hostedCodexCommentTokenMint.delete({ where: { id: mintId } }),
+    ).rejects.toThrow("hosted_codex_comment_token_mint_delete_forbidden");
+    await expect(
+      prisma.hostedCodexCommentTokenMint.update({
+        where: { id: mintId },
+        data: { state: "prepared", revision: { increment: 1 } },
+      }),
+    ).rejects.toThrow("hosted_codex_comment_token_mint_transition_invalid");
+  });
+
+  it("allows exactly one different key to consume the final refresh budget", async () => {
+    const issued = await issueGrant(
+      "mint-final-refresh-budget",
+      {},
+      { commentRefreshMaxUses: 1 },
+    );
+    const mintLedger = new PrismaHostedCommentTokenMintLedger(prisma);
+    const owners = [
+      sha256("final-budget-owner-a"),
+      sha256("final-budget-owner-b"),
+    ];
+    const requests = ["final-budget-request-a", "final-budget-request-b"].map(
+      (request, index) => ({
+        mintId: `comment-mint-${request}`,
+        purpose: "refresh" as const,
+        logicalKeyHash: sha256(`comment-mint-${request}`),
+        requestFingerprintHash: sha256(`fingerprint:${request}`),
+        ownerIdHash: owners[index]!,
+        grantId: issued.grant.id,
+        bindingId: binding,
+        bindingVersion: 1,
+        presentedTokenHash: sha256(issued.commentRefreshPlaintextToken),
+        requestIdHash: sha256(request),
+        now: new Date(),
+        leaseExpiresAt: new Date(Date.now() + 30_000),
+      }),
+    );
+    const results = await Promise.allSettled(
+      requests.map((request) => mintLedger.prepare(request)),
+    );
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    const winner = results.findIndex((result) => result.status === "fulfilled");
+    expect(
+      await prisma.hostedCodexCommentTokenMint.count({
+        where: { grantId: issued.grant.id },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.hostedCodexCommentRefreshUse.count({
+        where: { grantId: issued.grant.id },
+      }),
+    ).toBe(1);
+    await expect(
+      prisma.hostedCodexCommentRefreshCapability.findUniqueOrThrow({
+        where: { grantId: issued.grant.id },
+        select: { useCount: true, maxUses: true },
+      }),
+    ).resolves.toEqual({ useCount: 1, maxUses: 1 });
+    await mintLedger.authorizeDispatch({
+      mintId: requests[winner]!.mintId,
+      ownerIdHash: owners[winner]!,
+      now: new Date(),
+      dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+      unsafeUntil: new Date(Date.now() + 61 * 60_000),
+    });
+    await mintLedger.finalizeOutcomeUnknown({
+      mintId: requests[winner]!.mintId,
+      ownerIdHash: owners[winner]!,
+      now: new Date(),
+      errorCode: "postgres_e2e_proven_no_effect",
+    });
+  });
+
+  it("lets a second repository under one installation dispatch while the first provider call hangs", async () => {
+    const repositoryB = repositoryId("repository-parallel-mint-b");
+    const bindingB = hostedBindingId("binding-parallel-mint-b");
+    await prisma.repositoryConnection.create({
+      data: {
+        id: repositoryB,
+        workspaceId: workspace,
+        provider: "github",
+        externalRepositoryId: "900003",
+        installationId: "installation-e2e",
+        githubRepositoryId: 900003n,
+        owner: "disposable-e2e",
+        name: "private-fixture-b",
+        fullName: "disposable-e2e/private-fixture-b",
+        defaultBranch: "main",
+        visibility: "private",
+        selected: true,
+        archived: false,
+      },
+    });
+    await prisma.hostedCodexRepositoryBinding.create({
+      data: {
+        id: bindingB,
+        workspaceId: workspace,
+        poolId: pool,
+        repositoryConnectionId: repositoryB,
+        status: "active",
+        revision: 1n,
+        stateVersion: 1n,
+        attestedGithubRepositoryId: 900003n,
+        attestedBindingRevision: 1n,
+        activatedAt: new Date(),
+      },
+    });
+    const issuedA = await issueGrant("parallel-mint-a");
+    const issuedB = await issueGrant(
+      "parallel-mint-b",
+      {},
+      {
+        repositoryId: repositoryB,
+        bindingId: bindingB,
+      },
+    );
+    const mintLedger = new PrismaHostedCommentTokenMintLedger(prisma);
+    const ownerA = sha256("parallel-mint-owner-a");
+    const ownerB = sha256("parallel-mint-owner-b");
+    const preparedA = await mintLedger.prepare({
+      mintId: "comment-mint-parallel-a",
+      purpose: "initial",
+      logicalKeyHash: sha256("comment-mint-parallel-a"),
+      requestFingerprintHash: sha256("fingerprint:comment-mint-parallel-a"),
+      ownerIdHash: ownerA,
+      grantId: issuedA.grant.id,
+      bindingId: binding,
+      bindingVersion: 1,
+      now: new Date(),
+      leaseExpiresAt: new Date(Date.now() + 30_000),
+    });
+    if (preparedA.state !== "prepared")
+      throw new Error("postgres_e2e_prepare_failed");
+    await mintLedger.authorizeDispatch({
+      mintId: preparedA.mintId,
+      ownerIdHash: ownerA,
+      now: new Date(),
+      dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+      unsafeUntil: new Date(Date.now() + 61 * 60_000),
+    });
+    // No ledger call remains open while repository A's provider POST hangs.
+    const preparedB = await Promise.race([
+      mintLedger.prepare({
+        mintId: "comment-mint-parallel-b",
+        purpose: "initial",
+        logicalKeyHash: sha256("comment-mint-parallel-b"),
+        requestFingerprintHash: sha256("fingerprint:comment-mint-parallel-b"),
+        ownerIdHash: ownerB,
+        grantId: issuedB.grant.id,
+        bindingId: bindingB,
+        bindingVersion: 1,
+        now: new Date(),
+        leaseExpiresAt: new Date(Date.now() + 30_000),
+      }),
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(
+          () => reject(new Error("postgres_e2e_parallel_mint_blocked")),
+          2_000,
+        ),
+      ),
+    ]);
+    if (preparedB.state !== "prepared")
+      throw new Error("postgres_e2e_prepare_failed");
+    await mintLedger.authorizeDispatch({
+      mintId: preparedB.mintId,
+      ownerIdHash: ownerB,
+      now: new Date(),
+      dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+      unsafeUntil: new Date(Date.now() + 61 * 60_000),
+    });
+    await Promise.all([
+      mintLedger.finalizeOutcomeUnknown({
+        mintId: preparedA.mintId,
+        ownerIdHash: ownerA,
+        now: new Date(),
+        errorCode: "postgres_e2e_proven_no_effect",
+      }),
+      mintLedger.finalizeOutcomeUnknown({
+        mintId: preparedB.mintId,
+        ownerIdHash: ownerB,
+        now: new Date(),
+        errorCode: "postgres_e2e_proven_no_effect",
+      }),
+    ]);
+  });
+
   it("releases an expired prepared request and resumes the same exhausted idempotency identity", async () => {
     let clock = new Date();
     const effects = new PrismaHostedCodexUpstreamEffectLedger(
@@ -1860,6 +3682,554 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       }),
     ).toMatchObject({ status: "revoked", requestCount: 2, inFlight: 0 });
   });
+
+  it("rejects forged terminal INSERTs and enforces the absolute dispatch deadline", async () => {
+    const issuedMint = await createIssuedMint("insert-guard");
+    const forgedId = "comment-mint-forged-terminal-insert";
+    await expect(
+      prisma.$executeRawUnsafe(`
+        INSERT INTO "HostedCodexCommentTokenMint"
+        SELECT (jsonb_populate_record(
+          NULL::"HostedCodexCommentTokenMint",
+          to_jsonb(mint) || jsonb_build_object(
+            'id', '${forgedId}',
+            'logicalKeyHash', '${sha256(forgedId)}'
+          )
+        )).* FROM "HostedCodexCommentTokenMint" mint
+        WHERE mint."id" = '${issuedMint.mintId}'
+      `),
+    ).rejects.toThrow("hosted_codex_comment_token_mint_insert_shape_invalid");
+
+    const delayed = await createDispatchingMint("dispatch-deadline");
+    await prisma.$transaction(async (transaction) => {
+      await transaction.$executeRawUnsafe(
+        `SET LOCAL session_replication_role = 'replica'`,
+      );
+      await transaction.hostedCodexCommentTokenMint.update({
+        where: { id: delayed.mintId },
+        data: { dispatchAuthorizedUntil: new Date(0) },
+      });
+    });
+    await expect(
+      delayed.ledger.confirmDispatch({
+        mintId: delayed.mintId,
+        ownerIdHash: delayed.ownerIdHash,
+      }),
+    ).rejects.toThrow("hosted_comment_mint_dispatch_authorization_expired");
+    await forceTerminalNoToken(delayed.mintId);
+    await issuedMint.ledger.stageRevocation({
+      mintId: issuedMint.mintId,
+      tokenHash: issuedMint.tokenHash,
+      tokenExpiresAt: issuedMint.tokenExpiresAt,
+      now: new Date(),
+      errorCode: "insert_guard_cleanup",
+    });
+    await finalizeTrustedRevocation(
+      issuedMint.ledger,
+      issuedMint.mintId,
+      issuedMint.tokenHash,
+      "insert-guard-cleanup",
+    );
+  });
+
+  it("rejects caller-forged custody prepare authority snapshots", async () => {
+    const issued = await issueGrant("prepare-authority-forgery");
+    const ledger = new PrismaHostedCommentTokenMintLedger(prisma);
+    const sourceId = "comment-mint-prepare-authority-source";
+    const ownerIdHash = sha256("prepare-authority-source-owner");
+    await ledger.prepare({
+      mintId: sourceId,
+      purpose: "initial",
+      ownerIdHash,
+      logicalKeyHash: sha256(sourceId),
+      requestFingerprintHash: sha256(`fingerprint:${sourceId}`),
+      grantId: issued.grant.id,
+      bindingId: binding,
+      bindingVersion: 1,
+      now: new Date(),
+      leaseExpiresAt: new Date(Date.now() + 30_000),
+    });
+    const source = await prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+      where: { id: sourceId },
+    });
+    const base = {
+      mintId: "comment-mint-forged-authority-copy",
+      purpose: source.purpose,
+      ownerIdHash: source.ownerIdHash,
+      logicalKeyHash: sha256("comment-mint-forged-authority-copy"),
+      requestFingerprintHash: sha256("forged-authority-fingerprint"),
+      grantId: source.grantId,
+      capabilityId: "",
+      requestIdHash: "",
+      presentedTokenHash: "",
+      runtimeAuthzEpoch: source.runtimeAuthzEpoch.toString(),
+      runtimeGateRevision: source.runtimeGateRevision.toString(),
+      workspaceId: source.workspaceId,
+      repositoryBindingId: source.repositoryBindingId,
+      bindingRevision: source.bindingRevision.toString(),
+      bindingStateVersion: source.bindingStateVersion.toString(),
+      poolId: source.poolId,
+      poolRevision: source.poolRevision.toString(),
+      poolAuthzEpoch: source.poolAuthzEpoch.toString(),
+      repositoryConnectionId: source.repositoryConnectionId,
+      repositoryUpdatedAt: source.repositoryUpdatedAt.toISOString(),
+      githubInstallationRowId: source.githubInstallationRowId,
+      installationUpdatedAt: source.installationUpdatedAt.toISOString(),
+      installationStatus: source.installationStatus,
+      installationSelection: source.installationSelection,
+      installationWorkspaceId: source.installationWorkspaceId,
+      githubInstallationId: source.githubInstallationId.toString(),
+      githubRepositoryId: source.githubRepositoryId.toString(),
+      repositoryFullName: source.repositoryFullName,
+      leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+    };
+    const directPrepare = (arguments_: Record<string, string>) =>
+      custodyPrisma.$queryRawUnsafe(
+        `SELECT * FROM public.hosted_codex_mutate_comment_token_mint('prepare',$1::jsonb)`,
+        JSON.stringify(arguments_),
+      );
+
+    await expect(
+      directPrepare({ ...base, installationSelection: "caller-forged" }),
+    ).rejects.toThrow(
+      "hosted_codex_comment_token_mint_insert_authority_invalid",
+    );
+
+    await prisma.$executeRawUnsafe(
+      `UPDATE "RepositoryConnection" SET "visibility"='public' WHERE "id"='${repository}'`,
+    );
+    try {
+      await expect(
+        directPrepare({ ...base, mintId: `${base.mintId}-public` }),
+      ).rejects.toThrow(
+        "hosted_codex_comment_token_mint_insert_authority_invalid",
+      );
+    } finally {
+      await prisma.$executeRawUnsafe(
+        `UPDATE "RepositoryConnection" SET "visibility"='private' WHERE "id"='${repository}'`,
+      );
+    }
+
+    await adjustInvocationGrantFixture(issued.grant.id, "authzEpoch", 1);
+    try {
+      await expect(
+        directPrepare({ ...base, mintId: `${base.mintId}-grant-epoch` }),
+      ).rejects.toThrow(
+        "hosted_codex_comment_token_mint_insert_authority_invalid",
+      );
+    } finally {
+      await adjustInvocationGrantFixture(issued.grant.id, "authzEpoch", -1);
+    }
+
+    await adjustInvocationGrantFixture(issued.grant.id, "bindingRevision", 1);
+    try {
+      await expect(
+        directPrepare({ ...base, mintId: `${base.mintId}-binding-revision` }),
+      ).rejects.toThrow(
+        "hosted_codex_comment_token_mint_insert_authority_invalid",
+      );
+    } finally {
+      await adjustInvocationGrantFixture(
+        issued.grant.id,
+        "bindingRevision",
+        -1,
+      );
+    }
+    await forceTerminalNoToken(sourceId);
+  });
+
+  it("bounds provider expiry by fresh database time and unsafeUntil", async () => {
+    for (const [label, tokenExpiresAt] of [
+      ["past", new Date(0)],
+      ["too-long", new Date(Date.now() + 62 * 60_000)],
+    ] as const) {
+      const dispatched = await createDispatchingMint(`expiry-${label}`);
+      await expect(
+        dispatched.ledger.finalizeKnownToken({
+          mintId: dispatched.mintId,
+          ownerIdHash: dispatched.ownerIdHash,
+          fenceEpoch: dispatched.fenceEpoch,
+          tokenHash: sha256(`expiry-${label}-token`),
+          tokenExpiresAt,
+          secretEnvelope: testSecretEnvelope(`expiry-${label}-token`),
+          now: new Date(),
+        }),
+      ).rejects.toThrow("hosted_comment_mint_provider_expiry_invalid");
+      await forceTerminalNoToken(dispatched.mintId);
+    }
+  });
+
+  it("revokes issued tokens on active epoch and installation workspace mutations and rejects forged proof", async () => {
+    const gateMint = await createIssuedMint("active-epoch-revoke");
+    await prisma.hostedCodexRuntimeGate.update({
+      where: { id: "global" },
+      data: {
+        authzEpoch: { increment: 1 },
+        revision: { increment: 1 },
+        reasonCode: "postgres_e2e_active_epoch_revoke",
+        changedAt: new Date(),
+        changedByHash: sha256("postgres_e2e_active_epoch_revoke"),
+      },
+    });
+    await expect(
+      prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+        where: { id: gateMint.mintId },
+        select: { state: true },
+      }),
+    ).resolves.toEqual({ state: "revoke_pending" });
+    await expect(
+      prisma.hostedCodexCommentTokenMint.update({
+        where: { id: gateMint.mintId },
+        data: {
+          state: "revoked",
+          completedAt: new Date(),
+          revocationEvidenceHash: sha256("forged-proof"),
+          secretCiphertext: null,
+          secretEncryptedDataKey: null,
+          secretIv: null,
+          secretAuthTag: null,
+          secretKeyId: null,
+          secretAadHash: null,
+          revision: { increment: 1 },
+        },
+      }),
+    ).rejects.toThrow("hosted_codex_comment_token_revocation_proof_invalid");
+    await finalizeTrustedRevocation(
+      gateMint.ledger,
+      gateMint.mintId,
+      gateMint.tokenHash,
+      "trusted-active-epoch-proof",
+    );
+    await expect(
+      prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+        where: { id: gateMint.mintId },
+        select: { state: true, secretCiphertext: true },
+      }),
+    ).resolves.toEqual({ state: "revoked", secretCiphertext: null });
+
+    const workspaceMint = await createIssuedMint("workspace-revoke");
+    const alternateWorkspace = workspaceId("workspace-e2e-alternate");
+    await prisma.workspace.create({
+      data: {
+        id: alternateWorkspace,
+        slug: "hosted-pool-e2e-alternate",
+        name: "Hosted pool E2E alternate",
+      },
+    });
+    await prisma.gitHubInstallation.update({
+      where: { id: installation },
+      data: { workspaceId: alternateWorkspace },
+    });
+    await expect(
+      prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+        where: { id: workspaceMint.mintId },
+        select: { state: true },
+      }),
+    ).resolves.toEqual({ state: "revoke_pending" });
+    await prisma.gitHubInstallation.update({
+      where: { id: installation },
+      data: { workspaceId: workspace },
+    });
+    await finalizeTrustedRevocation(
+      workspaceMint.ledger,
+      workspaceMint.mintId,
+      workspaceMint.tokenHash,
+      "trusted-workspace-proof",
+    );
+    await prisma.workspace.delete({ where: { id: alternateWorkspace } });
+  });
+
+  it("denies revocation forgery and fake-token terminalization from every runtime role", async () => {
+    const pending = await createIssuedMint("runtime-role-proof-attack");
+    await prisma.repositoryConnection.update({
+      where: { id: repository },
+      data: { archived: true },
+    });
+    await prisma.repositoryConnection.update({
+      where: { id: repository },
+      data: { archived: false },
+    });
+    const unknown = await createDispatchingMint("runtime-role-token-attack");
+    await unknown.ledger.finalizeOutcomeUnknown({
+      mintId: unknown.mintId,
+      ownerIdHash: unknown.ownerIdHash,
+      now: new Date(),
+      errorCode: "ambiguous",
+    });
+
+    for (const role of [
+      "reviewrouter_api",
+      "reviewrouter_web",
+      "reviewrouter_worker",
+    ]) {
+      const runAsRole = async (
+        operation: (transaction: typeof prisma) => Promise<unknown>,
+      ) =>
+        role === "reviewrouter_api"
+          ? apiPrisma.$transaction((transaction) =>
+              operation(transaction as never),
+            )
+          : prisma.$transaction(async (transaction) => {
+              await transaction.$executeRawUnsafe(`SET LOCAL ROLE ${role}`);
+              return operation(transaction as never);
+            });
+      await expect(
+        runAsRole(async (transaction) => {
+          await transaction.$executeRawUnsafe(
+            `UPDATE "HostedCodexCommentTokenMint" SET "state"='revoke_pending', "tokenHash"='${sha256(`fake:${role}`)}', "tokenExpiresAt"=clock_timestamp()+interval '1 hour', "revision"="revision"+1 WHERE "id"='${unknown.mintId}'`,
+          );
+        }),
+      ).rejects.toThrow(/permission denied/iu);
+      await expect(
+        runAsRole(async (transaction) => {
+          await transaction.$queryRawUnsafe(
+            `SELECT hosted_codex_finalize_comment_token_revocation('${pending.mintId}','${pending.tokenHash}','${sha256(`forged:${role}`)}','${sha256("owner")}',1,'github_token_delete','revoked')`,
+          );
+        }),
+      ).rejects.toThrow(/permission denied|proof_shape_invalid/iu);
+    }
+
+    await finalizeTrustedRevocation(
+      pending.ledger,
+      pending.mintId,
+      pending.tokenHash,
+      "runtime-role-attack-cleanup",
+    );
+  });
+
+  it("linearizes replay with authority mutation in both commit orders", async () => {
+    const replayFirst = await createIssuedMint("replay-first");
+    let authorityLocked!: () => void;
+    let releaseReplay!: () => void;
+    const locked = new Promise<void>((resolve) => (authorityLocked = resolve));
+    const release = new Promise<void>((resolve) => (releaseReplay = resolve));
+    const replayLedger = new PrismaHostedCommentTokenMintLedger(prisma, {
+      afterReplayAuthority: async () => {
+        authorityLocked();
+        await release;
+      },
+    });
+    const replay = replayLedger.replayAuthorized({
+      mintId: replayFirst.mintId,
+    });
+    await locked;
+    let mutationSettled = false;
+    const mutation = prisma.repositoryConnection
+      .update({ where: { id: repository }, data: { selected: false } })
+      .finally(() => (mutationSettled = true));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mutationSettled).toBe(false);
+    releaseReplay();
+    const delivered = await replay;
+    zeroTestEnvelope(delivered.secretEnvelope);
+    await mutation;
+    await prisma.repositoryConnection.update({
+      where: { id: repository },
+      data: { selected: true },
+    });
+    await finalizeTrustedRevocation(
+      replayFirst.ledger,
+      replayFirst.mintId,
+      replayFirst.tokenHash,
+      "trusted-replay-first-proof",
+    );
+
+    const mutationFirst = await createIssuedMint("mutation-first");
+    await prisma.repositoryConnection.update({
+      where: { id: repository },
+      data: { archived: true },
+    });
+    await expect(
+      mutationFirst.ledger.replayAuthorized({ mintId: mutationFirst.mintId }),
+    ).rejects.toThrow("hosted_comment_mint_replay_not_authorized");
+    await prisma.repositoryConnection.update({
+      where: { id: repository },
+      data: { archived: false },
+    });
+    await finalizeTrustedRevocation(
+      mutationFirst.ledger,
+      mutationFirst.mintId,
+      mutationFirst.tokenHash,
+      "trusted-mutation-first-proof",
+    );
+  });
+
+  it.each(["grant", "capability"] as const)(
+    "rechecks every mint boundary after a mint-row wait crosses %s expiry",
+    async (expiryKind) => {
+      const names = [
+        "authorize",
+        "confirm",
+        "replay",
+        "delivery",
+        "finalize",
+      ] as const;
+      const issued = await Promise.all(
+        names.map((name) =>
+          issueGrant(`mint-lock-expiry-${expiryKind}-${name}`),
+        ),
+      );
+      const fixtures = [] as Array<{
+        name: (typeof names)[number];
+        ledger: PrismaHostedCommentTokenMintLedger;
+        mintId: string;
+        ownerIdHash: string;
+        fenceEpoch: bigint;
+        tokenHash: string;
+      }>;
+      for (const [index, name] of names.entries()) {
+        const grant = issued[index]!;
+        const mintId = `comment-mint-lock-expiry-${expiryKind}-${name}`;
+        const ownerIdHash = sha256(`owner:${mintId}`);
+        const mintLedger = new PrismaHostedCommentTokenMintLedger(prisma);
+        const prepared = await mintLedger.prepare({
+          mintId,
+          purpose: expiryKind === "capability" ? "refresh" : "initial",
+          logicalKeyHash: sha256(mintId),
+          requestFingerprintHash: sha256(`fingerprint:${mintId}`),
+          ownerIdHash,
+          grantId: grant.grant.id,
+          bindingId: binding,
+          bindingVersion: 1,
+          ...(expiryKind === "capability"
+            ? {
+                presentedTokenHash: sha256(grant.commentRefreshPlaintextToken),
+                requestIdHash: sha256(`request:${mintId}`),
+              }
+            : {}),
+          now: new Date(),
+          leaseExpiresAt: new Date(Date.now() + 30_000),
+        });
+        if (prepared.state !== "prepared")
+          throw new Error("postgres_e2e_prepare_failed");
+        if (name !== "authorize") {
+          await mintLedger.authorizeDispatch({
+            mintId,
+            ownerIdHash,
+            now: new Date(),
+            dispatchAuthorizedUntil: new Date(Date.now() + 30_000),
+            unsafeUntil: new Date(Date.now() + 61 * 60_000),
+          });
+        }
+        const tokenHash = sha256(`token:${mintId}`);
+        if (name === "replay" || name === "delivery") {
+          await expect(
+            mintLedger.finalizeKnownToken({
+              mintId,
+              ownerIdHash,
+              fenceEpoch: prepared.fenceEpoch,
+              tokenHash,
+              tokenExpiresAt: new Date(Date.now() + 60_000),
+              secretEnvelope: testSecretEnvelope(`token:${mintId}`),
+              now: new Date(),
+            }),
+          ).resolves.toBe("issued");
+        }
+        fixtures.push({
+          name,
+          ledger: mintLedger,
+          mintId,
+          ownerIdHash,
+          fenceEpoch: prepared.fenceEpoch,
+          tokenHash,
+        });
+      }
+
+      // Model natural deadline passage without firing the update-triggered
+      // revocation path merely because the future deadline is shortened.
+      const authorityExpiresAt = new Date(Date.now() + 3_000);
+      await prisma.$transaction(async (transaction) => {
+        await transaction.$executeRawUnsafe(
+          `SET LOCAL session_replication_role = 'replica'`,
+        );
+        if (expiryKind === "grant") {
+          await transaction.hostedCodexInvocationGrant.updateMany({
+            where: { id: { in: issued.map((item) => item.grant.id) } },
+            data: { expiresAt: authorityExpiresAt },
+          });
+        } else {
+          await transaction.hostedCodexCommentRefreshCapability.updateMany({
+            where: { grantId: { in: issued.map((item) => item.grant.id) } },
+            data: { expiresAt: authorityExpiresAt },
+          });
+        }
+      });
+
+      let locksReady!: () => void;
+      let releaseLocks!: () => void;
+      const ready = new Promise<void>((resolve) => (locksReady = resolve));
+      const release = new Promise<void>((resolve) => (releaseLocks = resolve));
+      const holder = prisma.$transaction(
+        async (transaction) => {
+          for (const fixture of [...fixtures].sort((a, b) =>
+            a.mintId.localeCompare(b.mintId),
+          )) {
+            await transaction.$queryRaw`
+              SELECT "id" FROM "HostedCodexCommentTokenMint"
+              WHERE "id" = ${fixture.mintId} FOR UPDATE
+            `;
+          }
+          locksReady();
+          await release;
+        },
+        { timeout: 20_000 },
+      );
+      await ready;
+
+      const pending = fixtures.map((fixture) => {
+        switch (fixture.name) {
+          case "authorize":
+            return fixture.ledger.authorizeDispatch({
+              mintId: fixture.mintId,
+              ownerIdHash: fixture.ownerIdHash,
+              now: new Date(),
+              dispatchAuthorizedUntil: new Date(Date.now() + 15_000),
+              unsafeUntil: new Date(Date.now() + 61 * 60_000),
+            });
+          case "confirm":
+            return fixture.ledger.confirmDispatch({
+              mintId: fixture.mintId,
+              ownerIdHash: fixture.ownerIdHash,
+            });
+          case "replay":
+            return fixture.ledger.replayAuthorized({ mintId: fixture.mintId });
+          case "delivery":
+            return fixture.ledger.confirmReplayDelivery({
+              mintId: fixture.mintId,
+              tokenHash: fixture.tokenHash,
+              deliveryClaimIdHash: sha256(`delivery:${fixture.mintId}`),
+            });
+          case "finalize":
+            return fixture.ledger.finalizeKnownToken({
+              mintId: fixture.mintId,
+              ownerIdHash: fixture.ownerIdHash,
+              fenceEpoch: fixture.fenceEpoch,
+              tokenHash: fixture.tokenHash,
+              tokenExpiresAt: new Date(Date.now() + 60_000),
+              secretEnvelope: testSecretEnvelope(`token:${fixture.mintId}`),
+              now: new Date(),
+            });
+        }
+      });
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(0, authorityExpiresAt.getTime() - Date.now() + 100),
+        ),
+      );
+      releaseLocks();
+      await holder;
+      const results = await Promise.allSettled(pending);
+      expect(
+        results.slice(0, 4).every((result) => result.status === "rejected"),
+      ).toBe(true);
+      expect(results[4]).toEqual({
+        status: "fulfilled",
+        value: "revoke_pending",
+      });
+    },
+    30_000,
+  );
 
   it("runs 52 grants through two real session-runtime replicas without an invocation gate", async () => {
     const replica = createPrismaClient({
@@ -2497,16 +4867,85 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
   });
 });
 
+async function createElapsedTestRuntimeClosure(input: {
+  id: string;
+  gateRevision: bigint;
+  closedAuthzEpoch: bigint;
+  actorHash: string;
+  reasonHash: string;
+  legacyBarrier: true;
+  legacyUnsafeUntil: Date;
+}) {
+  const closure = await prisma.hostedCodexRuntimeClosure.create({
+    data: input,
+  });
+  return prisma.$transaction(async (transaction) => {
+    await transaction.$executeRawUnsafe(
+      `SET LOCAL session_replication_role = 'replica'`,
+    );
+    return transaction.hostedCodexRuntimeClosure.update({
+      where: { id: closure.id },
+      data: { legacyBarrier: false, legacyUnsafeUntil: new Date(0) },
+    });
+  });
+}
+
 async function transitionRuntimeGate(
   status: "closed" | "active",
   reasonCode: string,
+  callerChangedAt?: Date,
 ) {
   const current = await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
     where: { id: "global" },
   });
-  const changedAt = new Date(
-    Math.max(Date.now(), current.changedAt.getTime() + 1),
-  );
+  if (status === "active" && current.status === "closed") {
+    const closure = await prisma.hostedCodexRuntimeClosure.upsert({
+      where: { gateRevision: current.revision },
+      create: {
+        id: `runtime-closure-${current.revision}`,
+        gateRevision: current.revision,
+        closedAuthzEpoch: current.authzEpoch,
+        actorHash: sha256("postgres-e2e"),
+        reasonHash: sha256(reasonCode),
+        legacyBarrier: true,
+        legacyUnsafeUntil: new Date(0),
+      },
+      update: {},
+    });
+    if (closure.state !== "complete") {
+      if (closure.legacyBarrier || closure.legacyUnsafeUntil > new Date()) {
+        // Test-only bootstrap of the migration quarantine. Runtime code cannot bypass this barrier.
+        await prisma.$transaction(async (transaction) => {
+          await transaction.$executeRawUnsafe(
+            `SET LOCAL session_replication_role = 'replica'`,
+          );
+          await transaction.hostedCodexRuntimeClosure.update({
+            where: { id: closure.id },
+            data: {
+              state: "complete",
+              completedAt: new Date(),
+              legacyBarrier: false,
+              legacyUnsafeUntil: new Date(0),
+              revision: { increment: 1 },
+            },
+          });
+        });
+      } else {
+        await prisma.hostedCodexRuntimeClosure.update({
+          where: { id: closure.id },
+          data: {
+            state: "complete",
+            completedAt: new Date(),
+            legacyBarrier: false,
+            revision: { increment: 1 },
+          },
+        });
+      }
+    }
+  }
+  const changedAt =
+    callerChangedAt ??
+    new Date(Math.max(Date.now(), current.changedAt.getTime() + 1));
   const updated = await prisma.hostedCodexRuntimeGate.updateMany({
     where: { id: "global", revision: current.revision },
     data: {
@@ -2525,6 +4964,200 @@ async function transitionRuntimeGate(
   });
 }
 
+async function restoreRuntimeGateActive(reasonCode: string) {
+  const current = await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+    where: { id: "global" },
+  });
+  if (current.status !== "active")
+    await transitionRuntimeGate("active", reasonCode);
+  const restored = await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+    where: { id: "global" },
+    select: { status: true },
+  });
+  if (restored.status !== "active")
+    throw new Error("postgres_e2e_runtime_gate_restore_failed");
+}
+
+async function createDispatchingMint(label: string) {
+  const issued = await issueGrant(`security-${label}`);
+  const ledger = new PrismaHostedCommentTokenMintLedger(prisma);
+  const mintId = `comment-mint-security-${label}`;
+  const ownerIdHash = sha256(`owner:${label}`);
+  const prepared = await ledger.prepare({
+    mintId,
+    purpose: "initial",
+    logicalKeyHash: sha256(mintId),
+    requestFingerprintHash: sha256(`fingerprint:${mintId}`),
+    ownerIdHash,
+    grantId: issued.grant.id,
+    bindingId: binding,
+    bindingVersion: 1,
+    now: new Date(),
+    leaseExpiresAt: new Date(Date.now() + 30_000),
+  });
+  if (prepared.state !== "prepared")
+    throw new Error("postgres_e2e_security_prepare_failed");
+  const dispatchNow = new Date();
+  await ledger.authorizeDispatch({
+    mintId,
+    ownerIdHash,
+    now: dispatchNow,
+    dispatchAuthorizedUntil: new Date(dispatchNow.getTime() + 15_000),
+    unsafeUntil: new Date(dispatchNow.getTime() + 61 * 60_000),
+  });
+  return {
+    ledger,
+    mintId,
+    grantId: issued.grant.id,
+    ownerIdHash,
+    fenceEpoch: prepared.fenceEpoch,
+  };
+}
+
+async function createIssuedMint(label: string) {
+  const dispatched = await createDispatchingMint(label);
+  const token = `security-token-${label}`;
+  const tokenHash = sha256(token);
+  const tokenExpiresAt = new Date(Date.now() + 30 * 60_000);
+  await expect(
+    dispatched.ledger.finalizeKnownToken({
+      mintId: dispatched.mintId,
+      ownerIdHash: dispatched.ownerIdHash,
+      fenceEpoch: dispatched.fenceEpoch,
+      tokenHash,
+      tokenExpiresAt,
+      secretEnvelope: testSecretEnvelope(token),
+      now: new Date(),
+    }),
+  ).resolves.toBe("issued");
+  return { ...dispatched, tokenHash, tokenExpiresAt };
+}
+
+const trustedRevocationReceipt = Object.freeze({
+  authority: "github_token_delete" as const,
+  result: "revoked" as const,
+});
+
+async function cleanupCommentTokenMintFixtures(input: {
+  mintIds: readonly string[];
+  grantIds: readonly string[];
+  restoreRepository?: Readonly<{
+    archived: boolean;
+    selected: boolean;
+    updatedAt: Date;
+  }>;
+}) {
+  await prisma.$transaction(async (transaction) => {
+    await transaction.$executeRawUnsafe(
+      `SET LOCAL session_replication_role = 'replica'`,
+    );
+    if (input.mintIds.length > 0) {
+      await transaction.$executeRawUnsafe(
+        `DELETE FROM public."HostedCodexCommentTokenRevocationProof"
+         WHERE "mintId" = ANY($1::text[])`,
+        [...input.mintIds],
+      );
+      await transaction.hostedCodexCommentRefreshUse.deleteMany({
+        where: { mintId: { in: [...input.mintIds] } },
+      });
+      await transaction.hostedCodexCommentTokenMint.deleteMany({
+        where: { id: { in: [...input.mintIds] } },
+      });
+    }
+    if (input.grantIds.length > 0) {
+      await transaction.hostedCodexCommentRefreshUse.deleteMany({
+        where: { grantId: { in: [...input.grantIds] } },
+      });
+      await transaction.hostedCodexCommentRefreshCapability.deleteMany({
+        where: { grantId: { in: [...input.grantIds] } },
+      });
+      await transaction.hostedCodexInvocationGrant.deleteMany({
+        where: { id: { in: [...input.grantIds] } },
+      });
+    }
+    if (input.restoreRepository) {
+      await transaction.repositoryConnection.update({
+        where: { id: repository },
+        data: input.restoreRepository,
+      });
+    }
+  });
+}
+
+async function adjustInvocationGrantFixture(
+  grantId: string,
+  field: "authzEpoch" | "bindingRevision",
+  delta: 1 | -1,
+) {
+  await prisma.$transaction(async (transaction) => {
+    await transaction.$executeRawUnsafe(
+      `SET LOCAL session_replication_role = 'replica'`,
+    );
+    await transaction.hostedCodexInvocationGrant.update({
+      where: { id: grantId },
+      data:
+        field === "authzEpoch"
+          ? { authzEpoch: { increment: delta } }
+          : { bindingRevision: { increment: delta } },
+    });
+  });
+}
+
+async function finalizeTrustedRevocation(
+  ledger: PrismaHostedCommentTokenMintLedger,
+  mintId: string,
+  tokenHash: string,
+  evidence: string,
+) {
+  const claimNow = new Date(Date.now() + 1);
+  const claims = await ledger.claimRevocations({
+    ownerIdHash: sha256(`trusted-revoker:${mintId}:${evidence}`),
+    now: claimNow,
+    leaseExpiresAt: new Date(claimNow.getTime() + 30_000),
+    limit: 1,
+  });
+  const claim = claims.find((candidate) => candidate.mintId === mintId);
+  if (!claim) throw new Error("trusted_revocation_claim_missing");
+  await ledger.finalizeRevoked({
+    mintId,
+    tokenHash,
+    ownerIdHash: claim.ownerIdHash,
+    fenceEpoch: claim.fenceEpoch,
+    now: new Date(),
+    evidenceHash: sha256(evidence),
+    receipt: trustedRevocationReceipt,
+  });
+}
+
+async function forceTerminalNoToken(mintId: string) {
+  await prisma.$transaction(async (transaction) => {
+    await transaction.$executeRawUnsafe(
+      `SET LOCAL session_replication_role = 'replica'`,
+    );
+    await transaction.hostedCodexCommentTokenMint.update({
+      where: { id: mintId },
+      data: {
+        state: "failed_no_token",
+        completedAt: new Date(),
+        terminalEvidenceHash: sha256(`forced-terminal:${mintId}`),
+        revision: { increment: 1 },
+      },
+    });
+  });
+}
+
+function zeroTestEnvelope(envelope: {
+  ciphertext: Uint8Array;
+  encryptedDataKey: Uint8Array;
+  iv: Uint8Array;
+  authTag: Uint8Array;
+}) {
+  envelope.ciphertext.fill(0);
+  envelope.encryptedDataKey.fill(0);
+  envelope.iv.fill(0);
+  envelope.authTag.fill(0);
+}
+
 async function issueGrant(
   suffix: string,
   budget: Partial<{
@@ -2533,6 +5166,11 @@ async function issueGrant(
     maxRequestBytes: number;
     maxResponseBytes: number;
     maxOutputTokens: number;
+  }> = {},
+  options: Readonly<{
+    commentRefreshMaxUses?: number;
+    repositoryId?: ReturnType<typeof repositoryId>;
+    bindingId?: ReturnType<typeof hostedBindingId>;
   }> = {},
 ) {
   const expiresAt = new Date(Date.now() + 10 * 60_000);
@@ -2546,10 +5184,10 @@ async function issueGrant(
     {
       id: invocationGrantId(`grant-${suffix}`),
       invocationId: invocationId(`invocation-${suffix}`),
-      repositoryId: repository,
+      repositoryId: options.repositoryId ?? repository,
       workspaceId: workspace,
       authority: {
-        repositoryBindingId: binding,
+        repositoryBindingId: options.bindingId ?? binding,
         reviewRequestId: `review-${suffix}`,
         providerInvocationKey: `provider-${suffix}`,
         runId: `run-${suffix}`,
@@ -2571,7 +5209,7 @@ async function issueGrant(
       },
       commentRefreshBudget: {
         expiresAt,
-        maxUses: 2,
+        maxUses: options.commentRefreshMaxUses ?? 2,
       },
       now: new Date(),
     },
@@ -2702,6 +5340,17 @@ function validAuthJson(
 
 function sha256(value: string) {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function testSecretEnvelope(token: string) {
+  return {
+    ciphertext: Buffer.from(token),
+    encryptedDataKey: Buffer.from("test-key"),
+    iv: Buffer.from("test-iv"),
+    authTag: Buffer.from("test-tag"),
+    keyId: "test-key",
+    aadHash: "a".repeat(64),
+  };
 }
 
 async function activeCredentialGeneration(accountId: string): Promise<number> {

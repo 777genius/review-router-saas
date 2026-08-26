@@ -27,6 +27,26 @@ describe("Codex rotating release migration workflow", () => {
     expect(workflow).toContain("deployment-result.json");
   });
 
+  it("provisions custody through migration 000086 without exposing credentials", () => {
+    expect(workflow).toContain(
+      'username: "reviewrouter_comment_token_custody"',
+    );
+    expect(workflow).toContain("RR_CUSTODY_PASSWORD");
+    expect(workflow).toContain(
+      '{ role: "comment-token-custody", username: "reviewrouter_comment_token_custody" }',
+    );
+    expect(workflow).toContain(
+      "REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL",
+    );
+    expect(workflow).toContain(
+      '.latestMigration == "000086_comment_token_custody_r18_remediation"',
+    );
+    expect(workflow).toContain(".appliedMigrationCount == 81");
+    expect(workflow).toContain(".runtimeRoleCount == 5");
+    expect(workflow).toContain(".custodyFunction == true");
+    expect(workflow).not.toMatch(/echo .*RR_CUSTODY_PASSWORD/u);
+  });
+
   it("opens the global kill switch only after explicit confirmation", () => {
     expect(workflow).toContain("open_global_emergency:");
     expect(workflow).toContain("default: false");

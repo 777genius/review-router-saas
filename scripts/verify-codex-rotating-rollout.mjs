@@ -1384,6 +1384,11 @@ function exactTriggerBinding(entry) {
       "codex_oauth_repository_identity_guard",
       17,
     ],
+    RepositoryConnection_comment_token_revoke: [
+      "RepositoryConnection",
+      "hosted_codex_comment_token_authority_revoke_enqueue",
+      17,
+    ],
     RepositoryConnection_runtime_referential_action_guard: [
       "RepositoryConnection",
       "codex_oauth_runtime_referential_action_guard",
@@ -1434,6 +1439,7 @@ function exactFunctionDefinition(entry) {
           ? "void"
           : "trigger";
   const securityDefinerFunction =
+    entry?.name === "hosted_codex_comment_token_authority_revoke_enqueue" ||
     entry?.name?.startsWith("codex_oauth_authorize_") ||
     entry?.name === "codex_oauth_consume_database_authority" ||
     entry?.name === "codex_oauth_sign_database_authority" ||
@@ -1447,6 +1453,12 @@ function exactFunctionDefinition(entry) {
     entry?.name === "codex_oauth_database_authority_receipt_guard" ||
     entry?.name === "codex_oauth_provider_identity_transition" ||
     entry?.name === "codex_oauth_provider_identity_repair_challenge";
+  const expectedConfig =
+    entry?.name === "hosted_codex_comment_token_authority_revoke_enqueue"
+      ? ["search_path=pg_catalog, pg_temp"]
+      : fixedSearchPathFunction
+        ? ["search_path=pg_catalog, public"]
+        : null;
   return (
     typeof bodySha256 === "string" &&
     hasExactKeys(entry, [
@@ -1475,10 +1487,7 @@ function exactFunctionDefinition(entry) {
     entry.prosupport === null &&
     entry.procost === 100 &&
     entry.prorows === 0 &&
-    JSON.stringify(entry?.config) ===
-      JSON.stringify(
-        fixedSearchPathFunction ? ["search_path=pg_catalog, public"] : null,
-      ) &&
+    JSON.stringify(entry?.config) === JSON.stringify(expectedConfig) &&
     entry.language === "plpgsql" &&
     entry.volatility === "v" &&
     entry.parallel === "u" &&

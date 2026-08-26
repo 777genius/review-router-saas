@@ -603,6 +603,17 @@ describe("disposable dual-version rehearsal", () => {
     expect(exclusions).not.toContain("000079_hosted_codex_output_limits");
     expect(exclusions).not.toContain("000080_hosted_codex_attempt_generation");
     expect(exclusions).not.toContain("000081_hosted_codex_runtime_gate");
+    expect(exclusions).not.toContain(
+      "000082_validate_hosted_codex_output_limits",
+    );
+    expect(exclusions).not.toContain(
+      "000083_hosted_codex_comment_token_mint_protocol",
+    );
+    expect(exclusions).not.toContain("000084_harden_comment_token_custody");
+    expect(exclusions).not.toContain("000085_comment_token_gate_lock_result");
+    expect(exclusions).not.toContain(
+      "000086_comment_token_custody_r18_remediation",
+    );
     expect(
       migrationManifestIdentity(
         migrationNames.filter(

@@ -68,6 +68,7 @@ import {
 } from "@reviewrouter/features-hosted-account-pool";
 import {
   createPrismaClient,
+  resolveCommentTokenCustodyDatabaseAuthorityUrl,
   resolveCodexOAuthDatabaseEffectAuthorityUrl,
   type PrismaClient,
 } from "@reviewrouter/platform-db";
@@ -188,6 +189,7 @@ export type CreateApiAppOptions = {
   readonly healthDependencies?: readonly HealthDependencyPort[];
   readonly hostedCodexRelayDependencies?: RegisterHostedCodexRelayRoutesDependencies;
   readonly prisma?: PrismaClient;
+  readonly commentTokenCustodyPrisma?: PrismaClient;
 };
 
 export async function createApiApp(
@@ -245,6 +247,22 @@ export async function createApiApp(
         poolMax: 2,
       })
     : undefined;
+  const commentTokenCustodyDatabaseUrl = hostedCodexFeatureFlags.custody
+    ? resolveCommentTokenCustodyDatabaseAuthorityUrl({
+        env: reviewActionV2Env,
+        runtimeDatabaseUrl:
+          reviewActionV2Env.DATABASE_URL ?? process.env.DATABASE_URL,
+      })
+    : undefined;
+  const commentTokenCustodyPrisma =
+    options.commentTokenCustodyPrisma ??
+    (commentTokenCustodyDatabaseUrl
+      ? createPrismaClient({
+          databaseUrl: commentTokenCustodyDatabaseUrl,
+          poolMax: 4,
+          poolMaxLifetimeSeconds: 60,
+        })
+      : undefined);
   const clock = new SystemClock();
 
   app.addHook("onSend", async (request, reply, payload) => {
@@ -272,11 +290,13 @@ export async function createApiApp(
 
   const hostedCodexRelayDependencies =
     options.hostedCodexRelayDependencies ??
-    (hostedCodexFeatureFlags.custody && hostedCodexFeatureFlags.relay
+    (hostedCodexFeatureFlags.custody
       ? await (async () => {
           if (!prisma) throw new Error("hosted_codex_prisma_unavailable");
-          if (!publicApiUrl)
-            throw new Error("hosted_codex_public_api_url_missing");
+          if (!commentTokenCustodyPrisma)
+            throw new Error(
+              "hosted_codex_comment_token_custody_authority_unavailable",
+            );
           const githubAppId = reviewActionV2Env.GITHUB_APP_ID?.trim();
           const githubAppPrivateKey = readGitHubAppPrivateKey();
           if (!githubAppId || !githubAppPrivateKey) {
@@ -284,8 +304,9 @@ export async function createApiApp(
           }
           return await composeProductionHostedCodexRelayRoutes({
             prisma,
+            custodyPrisma: commentTokenCustodyPrisma,
             env: reviewActionV2Env,
-            publicApiUrl,
+            ...(publicApiUrl ? { publicApiUrl } : {}),
             githubAppId,
             githubAppPrivateKey,
           });
@@ -298,8 +319,23 @@ export async function createApiApp(
   registerSystemHealthRoutes(
     app,
     clock,
-    options.healthDependencies ??
-      (prisma ? [new PrismaHealthDependency(prisma)] : []),
+    options.healthDependencies ?? [
+      ...(prisma ? [new PrismaHealthDependency(prisma)] : []),
+      ...(hostedCodexRelayDependencies?.custodyHealth
+        ? [
+            {
+              async check() {
+                const health = hostedCodexRelayDependencies.custodyHealth!();
+                return {
+                  name: "hosted-comment-token-custody",
+                  status: health.status,
+                  metrics: health.metrics,
+                } as const;
+              },
+            },
+          ]
+        : []),
+    ],
   );
 
   const runtimeCanaryTokenSha256 =
@@ -895,6 +931,15 @@ export async function createApiApp(
   if (codexEffectAuthorityPrisma && codexEffectAuthorityPrisma !== prisma) {
     app.addHook("onClose", async () => {
       await codexEffectAuthorityPrisma.$disconnect();
+    });
+  }
+  if (
+    options.commentTokenCustodyPrisma === undefined &&
+    commentTokenCustodyPrisma &&
+    commentTokenCustodyPrisma !== prisma
+  ) {
+    app.addHook("onClose", async () => {
+      await commentTokenCustodyPrisma.$disconnect();
     });
   }
 

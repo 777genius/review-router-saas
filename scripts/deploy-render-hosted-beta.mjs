@@ -336,6 +336,7 @@ const databaseUrlEnvironmentByRole = Object.freeze({
   api: "REVIEW_ROUTER_API_DATABASE_URL",
   web: "REVIEW_ROUTER_WEB_DATABASE_URL",
   worker: "REVIEW_ROUTER_WORKER_DATABASE_URL",
+  commentTokenCustody: "REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL",
   codexEffectAuthority: "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
   releaseMigration: "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL",
 });
@@ -345,6 +346,7 @@ export function resolveDistinctDatabaseRoleUrls(source) {
     api: "reviewrouter_api",
     web: "reviewrouter_web",
     worker: "reviewrouter_worker",
+    commentTokenCustody: "reviewrouter_comment_token_custody",
     codexEffectAuthority: "reviewrouter_codex_effect_authority",
     releaseMigration: "reviewrouter_release_migration",
   };
@@ -373,10 +375,14 @@ export function resolveDistinctDatabaseRoleUrls(source) {
   if (new Set(identities).size !== 1) {
     throw new Error("all database roles must target one database generation");
   }
-  if (
-    new Set(Object.values(urls).map((value) => new URL(value).username))
-      .size !== 5
-  ) {
+  const credentials = Object.values(urls).map((value) => {
+    const parsed = new URL(value);
+    return `${decodeURIComponent(parsed.username)}\0${decodeURIComponent(parsed.password)}`;
+  });
+  const passwords = Object.values(urls).map((value) =>
+    decodeURIComponent(new URL(value).password),
+  );
+  if (new Set(credentials).size !== 6 || new Set(passwords).size !== 6) {
     throw new Error("database role credentials must be distinct");
   }
   return urls;
@@ -1001,6 +1007,19 @@ export function buildServiceEnv({
       values.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL =
         authorityDatabaseUrl;
     }
+  }
+  // Provision custody authority while the runtime is deliberately dormant so
+  // the later control-plane-only activation does not depend on another deploy.
+  if (role === "api") {
+    const custodyDatabaseUrl =
+      databaseUrls?.commentTokenCustody ??
+      env.REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL;
+    if (!custodyDatabaseUrl)
+      throw new Error(
+        "Missing required value: REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL",
+      );
+    values.REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL =
+      custodyDatabaseUrl;
   }
   if (role === "api") {
     Object.assign(values, readOptionalEnvVars(env, apiOnlyGitLabEnvKeys));

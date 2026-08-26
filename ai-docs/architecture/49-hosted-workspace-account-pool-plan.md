@@ -137,6 +137,20 @@ plaintext envelopes or relay bodies.
 | Unstable upstream delegation contract         | Compliance gate, pinned compatibility probes, account-type allowlist, global kill switch                                                                          |
 | Malicious workflow/tool floods relay          | Trusted/private repos first, protected workflow policy, per-grant byte/request/token/time limits and backpressure                                                 |
 
+### Comment-token crash boundary
+
+The custody protocol deliberately has no local plaintext or token WAL. After a
+GitHub POST can have taken effect, the database first persists
+`dispatching`/`outcome_unknown` with `unsafeUntil`. If a bearer is parsed but
+the process crashes while both durable encrypted staging and authenticated
+DELETE proof are unavailable, no token is returned and no second POST is
+allowed. The account and runtime closure remain fail-closed until the
+server-checked conservative provider lifetime has elapsed. Recovery then
+records server-derived expiry evidence, clears encrypted secret columns, and
+terminalizes the row as `expired`; it never describes expiry as DELETE proof.
+This bounded availability loss is the accepted residual risk in preference to
+creating another durable bearer-secret store.
+
 ## Implementation and Migration
 
 The exact environment contract, public Action SHA sequencing, and kill-switch

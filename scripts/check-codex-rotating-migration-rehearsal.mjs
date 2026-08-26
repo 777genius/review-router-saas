@@ -63,6 +63,11 @@ const migration78Name = "000078_review_investigation_maintenance_checkpoint";
 const migration79Name = "000079_hosted_codex_output_limits";
 const migration80Name = "000080_hosted_codex_attempt_generation";
 const migration81Name = "000081_hosted_codex_runtime_gate";
+const migration82Name = "000082_validate_hosted_codex_output_limits";
+const migration83Name = "000083_hosted_codex_comment_token_mint_protocol";
+const migration84Name = "000084_harden_comment_token_custody";
+const migration85Name = "000085_comment_token_gate_lock_result";
+const migration86Name = "000086_comment_token_custody_r18_remediation";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -99,6 +104,11 @@ assert(
       migration79Name,
       migration80Name,
       migration81Name,
+      migration82Name,
+      migration83Name,
+      migration84Name,
+      migration85Name,
+      migration86Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -207,7 +217,7 @@ try {
   const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000081 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000086 rehearsal passed.\n",
   );
 } finally {
   const databaseDrop = psql(
@@ -587,7 +597,12 @@ function applyCanonicalPreMigrationBaseline(url) {
         directory === migration78Name ||
         directory === migration79Name ||
         directory === migration80Name ||
-        directory === migration81Name);
+        directory === migration81Name ||
+        directory === migration82Name ||
+        directory === migration83Name ||
+        directory === migration84Name ||
+        directory === migration85Name ||
+        directory === migration86Name);
     if (!isCanonicalPreMigration) continue;
     const source = join(migrationsDirectory, directory, "migration.sql");
     psql(url, ["-f", source]);
@@ -1134,7 +1149,11 @@ function proveSuccessfulCombinedRelease(url) {
 
       SELECT array_agg(tgname ORDER BY tgname) INTO actual FROM pg_trigger
       WHERE NOT tgisinternal
-        AND (tgname LIKE 'CodexOAuth%guard' OR tgname LIKE 'RepositoryConnection%guard');
+        AND (
+          tgname LIKE 'CodexOAuth%guard'
+          OR tgname LIKE 'RepositoryConnection%guard'
+          OR tgname = 'RepositoryConnection_comment_token_revoke'
+        );
       expected := ARRAY[${[...codexRotatingTriggers]
         .sort()
         .map((name) => quoteLiteral(name))
@@ -1154,7 +1173,8 @@ function proveSuccessfulCombinedRelease(url) {
           ('CodexOAuthSetupDispatchAttempt_evidence_guard','CodexOAuthSetupDispatchAttempt','codex_oauth_setup_attempt_evidence_guard',31::smallint),
           ('CodexOAuthSetupPayloadClaim_evidence_guard','CodexOAuthSetupPayloadClaim','codex_oauth_setup_claim_evidence_guard',31::smallint),
           ('CodexOAuthSetupRecoveryRequest_evidence_guard','CodexOAuthSetupRecoveryRequest','codex_oauth_setup_recovery_evidence_guard',31::smallint),
-          ('RepositoryConnection_codex_oauth_identity_guard','RepositoryConnection','codex_oauth_repository_identity_guard',17::smallint)
+          ('RepositoryConnection_codex_oauth_identity_guard','RepositoryConnection','codex_oauth_repository_identity_guard',17::smallint),
+          ('RepositoryConnection_comment_token_revoke','RepositoryConnection','hosted_codex_comment_token_authority_revoke_enqueue',17::smallint)
         ) wanted(trigger_name, table_name, function_name, trigger_type)
         WHERE NOT EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid
           WHERE t.tgname=wanted.trigger_name AND c.relname=wanted.table_name AND p.proname=wanted.function_name AND t.tgtype=wanted.trigger_type)
@@ -2137,6 +2157,9 @@ function proveDatabasePrivileges(url) {
                    'RuntimeCanaryChallengeProof',
                    'RuntimeGenerationWitnessProof',
                    'ReviewInvestigationMaintenanceCheckpoint',
+                   'HostedCodexCommentTokenMint',
+                   'HostedCodexCommentTokenRevocationProof',
+                   'HostedCodexRuntimeClosure',
                    'CodexOAuthDatabaseAuthorityKey',
                    'CodexOAuthDatabaseAuthorityReceipt',
                    'CodexOAuthChildIdentityQuarantine',
@@ -2353,15 +2376,15 @@ function proveDatabasePrivileges(url) {
 
         SELECT count(*),
                count(*) FILTER (
-                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
                    AND member.rolname = 'reviewrouter_role_bootstrap'
-                   AND grantor.rolname NOT IN ('reviewrouter_role_bootstrap','reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+                   AND grantor.rolname NOT IN ('reviewrouter_role_bootstrap','reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
                    AND membership.admin_option
                    AND NOT membership.inherit_option
                    AND NOT membership.set_option
                ),
                count(DISTINCT granted.oid) FILTER (
-                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
                    AND member.rolname = 'reviewrouter_role_bootstrap'
                ),
                count(DISTINCT grantor.oid)
@@ -2371,16 +2394,16 @@ function proveDatabasePrivileges(url) {
         JOIN pg_roles member ON member.oid = membership.member
         JOIN pg_roles grantor ON grantor.oid = membership.grantor
         WHERE (
-               granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
-            OR member.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+               granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+            OR member.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
             OR granted.rolname = 'reviewrouter_role_bootstrap'
             OR member.rolname = 'reviewrouter_role_bootstrap'
         )
           AND granted.rolname <> 'reviewrouter_activation_receipt_guard'
           AND member.rolname <> 'reviewrouter_activation_receipt_guard';
-        IF membership_count <> 5
-           OR canonical_membership_count <> 5
-           OR membership_role_count <> 5
+        IF membership_count <> 6
+           OR canonical_membership_count <> 6
+           OR membership_role_count <> 6
            OR membership_grantor_count <> 1 THEN
           RAISE EXCEPTION
             'Codex OAuth role membership authority mismatch: total %, canonical %, roles %, grantors %',
@@ -2403,6 +2426,7 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     ["reviewrouter_api", "rr-rehearsal-api"],
     ["reviewrouter_web", "rr-rehearsal-web"],
     ["reviewrouter_worker", "rr-rehearsal-worker"],
+    ["reviewrouter_comment_token_custody", "rr-rehearsal-custody"],
     ["reviewrouter_codex_effect_authority", "rr-rehearsal-effect-authority"],
     ["reviewrouter_release_migration", "rr-rehearsal-release"],
   ];
@@ -2448,6 +2472,8 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     COMMENT ON ROLE reviewrouter_web IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_worker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_worker"))};
     COMMENT ON ROLE reviewrouter_worker IS ${quoteLiteral(rehearsalRoleMarker)};
+    CREATE ROLE reviewrouter_comment_token_custody LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_comment_token_custody"))};
+    COMMENT ON ROLE reviewrouter_comment_token_custody IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_codex_effect_authority LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_codex_effect_authority"))};
     COMMENT ON ROLE reviewrouter_codex_effect_authority IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_release_migration LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_release_migration"))};
@@ -2455,6 +2481,7 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_web TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_worker TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+    GRANT reviewrouter_comment_token_custody TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_codex_effect_authority TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
@@ -2567,6 +2594,10 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     api: clientUrl("reviewrouter_api", "rr-rehearsal-api"),
     web: clientUrl("reviewrouter_web", "rr-rehearsal-web"),
     worker: clientUrl("reviewrouter_worker", "rr-rehearsal-worker"),
+    custody: clientUrl(
+      "reviewrouter_comment_token_custody",
+      "rr-rehearsal-custody",
+    ),
     effectAuthority: clientUrl(
       "reviewrouter_codex_effect_authority",
       "rr-rehearsal-effect-authority",
@@ -2579,6 +2610,8 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     REVIEW_ROUTER_API_DATABASE_URL: runtime.api.toString(),
     REVIEW_ROUTER_WEB_DATABASE_URL: runtime.web.toString(),
     REVIEW_ROUTER_WORKER_DATABASE_URL: runtime.worker.toString(),
+    REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+      runtime.custody.toString(),
     REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
       runtime.effectAuthority.toString(),
     REVIEW_ROUTER_RELEASE_COMMIT_SHA: "a".repeat(40),
@@ -2607,6 +2640,11 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
         role: "worker",
         username: "reviewrouter_worker",
         password: passwords.get("reviewrouter_worker"),
+      },
+      {
+        role: "comment-token-custody",
+        username: "reviewrouter_comment_token_custody",
+        password: passwords.get("reviewrouter_comment_token_custody"),
       },
       {
         role: "effect-authority",
@@ -3030,6 +3068,7 @@ function markCanonicalRehearsalRoles(url) {
       "reviewrouter_api",
       "reviewrouter_web",
       "reviewrouter_worker",
+      "reviewrouter_comment_token_custody",
       "reviewrouter_codex_effect_authority",
       "reviewrouter_release_migration",
       "reviewrouter_release_schema_owner",
@@ -3047,6 +3086,7 @@ function cleanupRuntimeRoles(url) {
     "reviewrouter_api",
     "reviewrouter_web",
     "reviewrouter_worker",
+    "reviewrouter_comment_token_custody",
     "reviewrouter_codex_effect_authority",
     "reviewrouter_release_migration",
     "reviewrouter_release_schema_owner",
