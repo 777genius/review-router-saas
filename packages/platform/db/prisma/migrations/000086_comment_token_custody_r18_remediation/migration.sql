@@ -10,6 +10,72 @@ ALTER TABLE "HostedCodexCommentTokenMint"
 CREATE INDEX "HostedCodexCommentTokenMint_revocation_queue_idx"
   ON "HostedCodexCommentTokenMint" ("state", "nextRevocationAt", "id");
 
+-- Eligibility is server-derived at the first transition into the retry queue.
+-- Backfill only the legacy sentinel so an already deferred retry keeps its
+-- deliberate schedule.
+UPDATE "HostedCodexCommentTokenMint"
+SET "nextRevocationAt"=clock_timestamp(),"revision"="revision"+1
+WHERE "state"='revoke_pending'
+  AND "nextRevocationAt"='1970-01-01 00:00:00+00'::timestamptz;
+
+CREATE FUNCTION hosted_codex_comment_token_revocation_eligibility()
+RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $queue$
+BEGIN
+  IF NEW."state"='revoke_pending' AND OLD."state"<>'revoke_pending' THEN
+    NEW."nextRevocationAt" := clock_timestamp();
+  END IF;
+  RETURN NEW;
+END
+$queue$;
+REVOKE ALL ON FUNCTION hosted_codex_comment_token_revocation_eligibility()
+  FROM PUBLIC;
+CREATE TRIGGER "HostedCodexCommentTokenMint_00_revocation_eligibility"
+BEFORE UPDATE ON "HostedCodexCommentTokenMint"
+FOR EACH ROW EXECUTE FUNCTION hosted_codex_comment_token_revocation_eligibility();
+
+-- Authority-triggered issued -> revoke_pending transitions participate in the
+-- same closure/activation barrier as custody callers. The trigger may already
+-- hold its scoped authority row, but it must acquire the global gate before it
+-- takes any mint row lock.
+CREATE OR REPLACE FUNCTION hosted_codex_comment_token_authority_revoke_enqueue()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp AS $guard$
+BEGIN
+  PERFORM 1 FROM public."HostedCodexRuntimeGate" gate
+    WHERE gate."id"='global' FOR SHARE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'hosted_codex_comment_token_runtime_gate_missing';
+  END IF;
+  IF TG_TABLE_NAME = 'HostedCodexRepositoryBinding' THEN
+    UPDATE public."HostedCodexCommentTokenMint" SET "state"='revoke_pending',"revision"="revision"+1
+      WHERE "repositoryBindingId"=OLD."id" AND "state"='issued';
+  ELSIF TG_TABLE_NAME = 'HostedCodexPool' THEN
+    UPDATE public."HostedCodexCommentTokenMint" SET "state"='revoke_pending',"revision"="revision"+1
+      WHERE "poolId"=OLD."id" AND "state"='issued';
+  ELSIF TG_TABLE_NAME = 'RepositoryConnection' THEN
+    UPDATE public."HostedCodexCommentTokenMint" SET "state"='revoke_pending',"revision"="revision"+1
+      WHERE "repositoryConnectionId"=OLD."id" AND "state"='issued';
+  ELSIF TG_TABLE_NAME = 'GitHubInstallation' THEN
+    UPDATE public."HostedCodexCommentTokenMint" SET "state"='revoke_pending',"revision"="revision"+1
+      WHERE "githubInstallationRowId"=OLD."id" AND "state"='issued';
+  ELSIF TG_TABLE_NAME = 'HostedCodexInvocationGrant' THEN
+    UPDATE public."HostedCodexCommentTokenMint" SET "state"='revoke_pending',"revision"="revision"+1
+      WHERE "grantId"=OLD."id" AND "state"='issued';
+  ELSIF TG_TABLE_NAME = 'HostedCodexCommentRefreshCapability' THEN
+    UPDATE public."HostedCodexCommentTokenMint" SET "state"='revoke_pending',"revision"="revision"+1
+      WHERE "capabilityId"=OLD."id" AND "state"='issued';
+  ELSIF TG_TABLE_NAME = 'HostedCodexRuntimeGate'
+      AND (NEW."authzEpoch" IS DISTINCT FROM OLD."authzEpoch"
+        OR NEW."revision" IS DISTINCT FROM OLD."revision") THEN
+    UPDATE public."HostedCodexCommentTokenMint" SET "state"='revoke_pending',"revision"="revision"+1
+      WHERE "state"='issued';
+  END IF;
+  RETURN NEW;
+END
+$guard$;
+REVOKE ALL ON FUNCTION hosted_codex_comment_token_authority_revoke_enqueue()
+  FROM PUBLIC;
+
 -- Complete the custody prepare guard with facts that must never be accepted as
 -- caller-supplied snapshots. The original guard has already acquired locks in
 -- gate -> installation/repository/pool/binding/grant order; this final check
@@ -105,7 +171,7 @@ BEGIN
           AND mint."dispatchAuthorizedUntil"<=database_now
           AND mint."unsafeUntil"<=database_now)
          OR (mint."state"='outcome_unknown' AND mint."unsafeUntil"<=database_now)
-         OR (mint."state"='revoke_pending'
+         OR (mint."state" IN ('issued','revoke_pending')
           AND greatest(mint."tokenExpiresAt"+interval '1 minute',mint."unsafeUntil")<=database_now)
       ORDER BY CASE mint."state"
           WHEN 'prepared' THEN mint."leaseExpiresAt"
@@ -113,6 +179,9 @@ BEGIN
             mint."leaseExpiresAt",mint."dispatchAuthorizedUntil",mint."unsafeUntil"
           )
           WHEN 'outcome_unknown' THEN mint."unsafeUntil"
+          WHEN 'issued' THEN greatest(
+            mint."tokenExpiresAt"+interval '1 minute',mint."unsafeUntil"
+          )
           WHEN 'revoke_pending' THEN greatest(
             mint."tokenExpiresAt"+interval '1 minute',mint."unsafeUntil"
           )
@@ -121,7 +190,8 @@ BEGIN
           WHEN 'prepared' THEN 0
           WHEN 'dispatching' THEN 1
           WHEN 'outcome_unknown' THEN 2
-          WHEN 'revoke_pending' THEN 3
+          WHEN 'issued' THEN 3
+          WHEN 'revoke_pending' THEN 4
         END,
         mint."id"
       FOR UPDATE OF mint SKIP LOCKED
@@ -131,6 +201,7 @@ BEGIN
         WHEN 'prepared' THEN 'failed_no_token'
         WHEN 'dispatching' THEN 'outcome_unknown'
         WHEN 'outcome_unknown' THEN 'expired'
+        WHEN 'issued' THEN 'expired'
         WHEN 'revoke_pending' THEN 'expired'
       END::public."HostedCodexCommentTokenMintState",
       "completedAt"=database_now,
@@ -139,6 +210,10 @@ BEGIN
           'startup_recovery:prepared:'||mint."id",'UTF8')),'hex')
         WHEN 'outcome_unknown' THEN encode(pg_catalog.sha256(convert_to(
           'startup_recovery:outcome_unknown:'||mint."id",'UTF8')),'hex')
+        WHEN 'issued' THEN encode(pg_catalog.sha256(convert_to(
+          'startup_recovery:issued_expired:'||mint."id"||':'||
+          greatest(mint."tokenExpiresAt"+interval '1 minute',mint."unsafeUntil")::text,
+          'UTF8')),'hex')
         WHEN 'revoke_pending' THEN encode(pg_catalog.sha256(convert_to(
           'startup_recovery:revoke_pending_expired:'||mint."id"||':'||
           greatest(mint."tokenExpiresAt"+interval '1 minute',mint."unsafeUntil")::text,
@@ -149,14 +224,17 @@ BEGIN
         WHEN 'prepared' THEN 'startup_recovery_prepared_lease_expired'
         WHEN 'dispatching' THEN 'startup_recovery_dispatch_ambiguity_elapsed'
         WHEN 'outcome_unknown' THEN 'startup_recovery_ambiguity_lifetime_elapsed'
+        WHEN 'issued' THEN 'startup_recovery_issued_safe_horizon_elapsed'
         WHEN 'revoke_pending' THEN 'startup_recovery_revocation_safe_horizon_elapsed'
       END,
-      "secretCiphertext"=CASE WHEN candidates.original_state='revoke_pending' THEN NULL ELSE mint."secretCiphertext" END,
-      "secretEncryptedDataKey"=CASE WHEN candidates.original_state='revoke_pending' THEN NULL ELSE mint."secretEncryptedDataKey" END,
-      "secretIv"=CASE WHEN candidates.original_state='revoke_pending' THEN NULL ELSE mint."secretIv" END,
-      "secretAuthTag"=CASE WHEN candidates.original_state='revoke_pending' THEN NULL ELSE mint."secretAuthTag" END,
-      "secretKeyId"=CASE WHEN candidates.original_state='revoke_pending' THEN NULL ELSE mint."secretKeyId" END,
-      "secretAadHash"=CASE WHEN candidates.original_state='revoke_pending' THEN NULL ELSE mint."secretAadHash" END,
+      "secretCiphertext"=CASE WHEN candidates.original_state IN ('issued','revoke_pending') THEN NULL ELSE mint."secretCiphertext" END,
+      "secretEncryptedDataKey"=CASE WHEN candidates.original_state IN ('issued','revoke_pending') THEN NULL ELSE mint."secretEncryptedDataKey" END,
+      "secretIv"=CASE WHEN candidates.original_state IN ('issued','revoke_pending') THEN NULL ELSE mint."secretIv" END,
+      "secretAuthTag"=CASE WHEN candidates.original_state IN ('issued','revoke_pending') THEN NULL ELSE mint."secretAuthTag" END,
+      "secretKeyId"=CASE WHEN candidates.original_state IN ('issued','revoke_pending') THEN NULL ELSE mint."secretKeyId" END,
+      "secretAadHash"=CASE WHEN candidates.original_state IN ('issued','revoke_pending') THEN NULL ELSE mint."secretAadHash" END,
+      "deliveryClaimIdHash"=CASE WHEN candidates.original_state IN ('issued','revoke_pending') THEN NULL ELSE mint."deliveryClaimIdHash" END,
+      "deliveryClaimExpiresAt"=CASE WHEN candidates.original_state IN ('issued','revoke_pending') THEN NULL ELSE mint."deliveryClaimExpiresAt" END,
       "leaseExpiresAt"=database_now,"revision"=mint."revision"+1
     FROM candidates WHERE mint."id"=candidates."id" RETURNING mint.*;
     RETURN;
@@ -196,6 +274,14 @@ BEGIN
       AND mint."fenceEpoch"=(p_arguments->>'fenceEpoch')::bigint
     RETURNING mint.*;
     RETURN;
+  END IF;
+  IF p_operation='stage_revocation' THEN
+    -- Direct SQL callers must obey the same gate -> mint order as the adapter.
+    PERFORM 1 FROM public."HostedCodexRuntimeGate" gate
+      WHERE gate."id"='global' FOR SHARE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'hosted_codex_comment_mint_runtime_gate_invalid';
+    END IF;
   END IF;
   RETURN QUERY SELECT * FROM public.hosted_codex_mutate_comment_token_mint_v85(
     p_operation,p_arguments

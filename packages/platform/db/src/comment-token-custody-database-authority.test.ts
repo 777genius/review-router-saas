@@ -6,6 +6,24 @@ describe("comment-token custody database authority URL", () => {
   const runtimeDatabaseUrl =
     "postgresql://reviewrouter_api:runtime@db.internal/review_router";
 
+  it("installs output budget metadata without scanning until 000082", () => {
+    const metadataMigration = readFileSync(
+      "packages/platform/db/prisma/migrations/000079_hosted_codex_output_limits/migration.sql",
+      "utf8",
+    );
+    const validationMigration = readFileSync(
+      "packages/platform/db/prisma/migrations/000082_validate_hosted_codex_output_limits/migration.sql",
+      "utf8",
+    );
+    expect(metadataMigration).toMatch(
+      /ADD CONSTRAINT "HostedCodexInvocationGrant_output_budget_check"[\s\S]*?\) NOT VALID;/u,
+    );
+    expect(metadataMigration).not.toContain("VALIDATE CONSTRAINT");
+    expect(validationMigration).toContain(
+      'VALIDATE CONSTRAINT "HostedCodexInvocationGrant_output_budget_check"',
+    );
+  });
+
   it("keeps startup recovery bounded behind every durable safety barrier", () => {
     const migration = readFileSync(
       "packages/platform/db/prisma/migrations/000086_comment_token_custody_r18_remediation/migration.sql",
@@ -24,7 +42,7 @@ describe("comment-token custody database authority URL", () => {
     expect(recovery).toContain('mint."dispatchAuthorizedUntil"<=database_now');
     expect(recovery).toContain('mint."unsafeUntil"<=database_now');
     expect(recovery).toContain("mint.\"state\"='outcome_unknown'");
-    expect(recovery).toContain("mint.\"state\"='revoke_pending'");
+    expect(recovery).toContain("mint.\"state\" IN ('issued','revoke_pending')");
     expect(recovery).toContain(
       'greatest(mint."tokenExpiresAt"+interval \'1 minute\',mint."unsafeUntil")<=database_now',
     );
@@ -50,10 +68,48 @@ describe("comment-token custody database authority URL", () => {
     expect(recovery).toContain(
       "startup_recovery_revocation_safe_horizon_elapsed",
     );
+    expect(recovery).toContain("startup_recovery_issued_safe_horizon_elapsed");
     expect(recovery).toContain(
-      "\"secretCiphertext\"=CASE WHEN candidates.original_state='revoke_pending' THEN NULL",
+      "\"secretCiphertext\"=CASE WHEN candidates.original_state IN ('issued','revoke_pending') THEN NULL",
+    );
+    expect(recovery).toContain(
+      "\"deliveryClaimIdHash\"=CASE WHEN candidates.original_state IN ('issued','revoke_pending') THEN NULL",
     );
     expect(recovery).not.toMatch(/POST|http|provider\s*\(/iu);
+  });
+
+  it("serializes staged custody and stamps first retry eligibility in database time", () => {
+    const migration = readFileSync(
+      "packages/platform/db/prisma/migrations/000086_comment_token_custody_r18_remediation/migration.sql",
+      "utf8",
+    );
+    const stageBranch = migration.slice(
+      migration.indexOf("IF p_operation='stage_revocation'"),
+      migration.indexOf(
+        "RETURN QUERY SELECT * FROM public.hosted_codex_mutate_comment_token_mint_v85",
+      ),
+    );
+    expect(stageBranch).toContain('FROM public."HostedCodexRuntimeGate" gate');
+    expect(stageBranch).toContain("WHERE gate.\"id\"='global' FOR SHARE");
+    const authorityBranch = migration.slice(
+      migration.indexOf(
+        "CREATE OR REPLACE FUNCTION hosted_codex_comment_token_authority_revoke_enqueue()",
+      ),
+      migration.indexOf(
+        "-- Complete the custody prepare guard with facts that must never be accepted",
+      ),
+    );
+    expect(authorityBranch.indexOf("FOR SHARE")).toBeGreaterThan(-1);
+    expect(authorityBranch.indexOf("FOR SHARE")).toBeLessThan(
+      authorityBranch.indexOf('UPDATE public."HostedCodexCommentTokenMint"'),
+    );
+    expect(migration).toContain(
+      "NEW.\"state\"='revoke_pending' AND OLD.\"state\"<>'revoke_pending'",
+    );
+    expect(migration).toContain('NEW."nextRevocationAt" := clock_timestamp()');
+    expect(migration).toContain(
+      'ORDER BY mint."nextRevocationAt", mint."revocationFailureCount", mint."id"',
+    );
   });
 
   it("validates every custody prepare snapshot against locked live authority", () => {

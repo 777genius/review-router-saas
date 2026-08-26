@@ -63,6 +63,7 @@ export class PrismaHostedCommentTokenMintLedger implements HostedCommentTokenMin
     private readonly testHooks?: Readonly<{
       afterPrepare?: () => Promise<void>;
       afterReplayAuthority?: () => Promise<void>;
+      afterStageRevocationGate?: () => Promise<void>;
     }>,
   ) {}
 
@@ -478,8 +479,13 @@ export class PrismaHostedCommentTokenMintLedger implements HostedCommentTokenMin
       : undefined;
     try {
       await this.prisma.$transaction(async (transaction) => {
-        const databaseNow = await readDatabaseNow(transaction);
+        // Closure completion and activation both serialize through the runtime
+        // gate. Keep the global gate -> mint order used by every custody path
+        // so a staged bearer cannot appear behind either barrier unnoticed.
+        await lockRuntimeGate(transaction);
+        await this.testHooks?.afterStageRevocationGate?.();
         const current = await lockMint(transaction, input.mintId);
+        const databaseNow = await readDatabaseNow(transaction);
         assertCustodyExpiry(databaseNow, input.tokenExpiresAt);
         const extendedUnsafeUntil = new Date(
           Math.max(

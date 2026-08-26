@@ -545,6 +545,87 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     }
   });
 
+  it("expires issued custody behind an active gate after its safe horizon", async () => {
+    const mintId = "comment-mint-security-active-issued-expiry";
+    const grantId = invocationGrantId("grant-security-active-issued-expiry");
+    try {
+      const issued = await createIssuedMint("active-issued-expiry");
+      const deliveryClaimIdHash = sha256("active-issued-expiry-delivery");
+      await issued.ledger.confirmReplayDelivery({
+        mintId: issued.mintId,
+        tokenHash: issued.tokenHash,
+        deliveryClaimIdHash,
+      });
+      const gate = await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+        where: { id: "global" },
+        select: { status: true },
+      });
+      expect(gate.status).toBe("active");
+      const elapsedTemporalShape = checkedMintTemporalFixture({
+        dispatchAuthorizedUntil: new Date(Date.now() - 180_000),
+        tokenExpiresAt: new Date(Date.now() - 120_000),
+        unsafeUntil: new Date(Date.now() - 90_000),
+      });
+      await prisma.$transaction(async (transaction) => {
+        await transaction.$executeRawUnsafe(
+          `SET LOCAL session_replication_role = 'replica'`,
+        );
+        await transaction.hostedCodexCommentTokenMint.update({
+          where: { id: issued.mintId },
+          data: {
+            ...elapsedTemporalShape,
+            deliveryClaimExpiresAt: new Date(Date.now() - 120_000),
+          },
+        });
+      });
+
+      await expect(issued.ledger.recoverStale({ limit: 1 })).resolves.toBe(1);
+      await expect(
+        prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+          where: { id: issued.mintId },
+          select: {
+            state: true,
+            errorCode: true,
+            terminalEvidenceHash: true,
+            completedAt: true,
+            secretCiphertext: true,
+            secretEncryptedDataKey: true,
+            secretIv: true,
+            secretAuthTag: true,
+            secretKeyId: true,
+            secretAadHash: true,
+            deliveryClaimIdHash: true,
+            deliveryClaimExpiresAt: true,
+          },
+        }),
+      ).resolves.toEqual({
+        state: "expired",
+        errorCode: "startup_recovery_issued_safe_horizon_elapsed",
+        terminalEvidenceHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        completedAt: expect.any(Date),
+        secretCiphertext: null,
+        secretEncryptedDataKey: null,
+        secretIv: null,
+        secretAuthTag: null,
+        secretKeyId: null,
+        secretAadHash: null,
+        deliveryClaimIdHash: null,
+        deliveryClaimExpiresAt: null,
+      });
+      await expect(
+        prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+          where: { id: "global" },
+          select: { status: true },
+        }),
+      ).resolves.toEqual({ status: "active" });
+    } finally {
+      await cleanupCommentTokenMintFixtures({
+        mintIds: [mintId],
+        grantIds: [grantId],
+      });
+    }
+  });
+
   it("runs real grant, relay ledgers, comment capability, parallel inference, and replay fences", async () => {
     let grantIssueError: unknown;
     let activeUpstreams = 0;
@@ -2381,6 +2462,187 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     );
   });
 
+  it.each(["closure", "activation"] as const)(
+    "serializes staged revocation with %s in both commit orders",
+    async (barrierKind) => {
+      for (const firstCommit of ["stage", "barrier"] as const) {
+        const label = `stage-${barrierKind}-${firstCommit}-first`;
+        const mintId = `comment-mint-security-${label}`;
+        const grantId = invocationGrantId(`grant-security-${label}`);
+        let closedRevision: bigint | undefined;
+        try {
+          const dispatched = await createDispatchingMint(label);
+          await prisma.$transaction(async (transaction) => {
+            await transaction.$executeRawUnsafe(
+              `SET LOCAL session_replication_role = 'replica'`,
+            );
+            await transaction.hostedCodexCommentTokenMint.update({
+              where: { id: dispatched.mintId },
+              data: {
+                state: "expired",
+                completedAt: new Date(),
+                terminalEvidenceHash: sha256(`expired:${label}`),
+                revision: { increment: 1 },
+              },
+            });
+          });
+          const closed = await transitionRuntimeGate(
+            "closed",
+            `postgres_e2e_${label}_close`,
+          );
+          closedRevision = closed.revision;
+          const closure = await createElapsedTestRuntimeClosure({
+            id: `runtime-closure-${closed.revision}`,
+            gateRevision: closed.revision,
+            closedAuthzEpoch: closed.authzEpoch,
+            actorHash: sha256(label),
+            reasonHash: sha256(`reason:${label}`),
+            legacyBarrier: true,
+            legacyUnsafeUntil: new Date(0),
+          });
+          if (barrierKind === "activation") {
+            await prisma.hostedCodexRuntimeClosure.update({
+              where: { id: closure.id },
+              data: {
+                state: "complete",
+                completedAt: new Date(),
+                revision: { increment: 1 },
+              },
+            });
+          }
+
+          let stageLocked!: () => void;
+          let releaseStage!: () => void;
+          const stageHasGate = new Promise<void>((resolve) => {
+            stageLocked = resolve;
+          });
+          const stagePause = new Promise<void>((resolve) => {
+            releaseStage = resolve;
+          });
+          const ledger = new PrismaHostedCommentTokenMintLedger(prisma, {
+            afterStageRevocationGate: async () => {
+              stageLocked();
+              if (firstCommit === "stage") await stagePause;
+            },
+          });
+          let barrierLocked!: () => void;
+          let releaseBarrier!: () => void;
+          const barrierHasGate = new Promise<void>((resolve) => {
+            barrierLocked = resolve;
+          });
+          const barrierPause = new Promise<void>((resolve) => {
+            releaseBarrier = resolve;
+          });
+          const runBarrier = () =>
+            prisma.$transaction(async (transaction) => {
+              await transaction.$queryRaw`
+                SELECT "id" FROM "HostedCodexRuntimeGate"
+                WHERE "id"='global' FOR UPDATE
+              `;
+              if (barrierKind === "closure") {
+                await transaction.hostedCodexRuntimeClosure.update({
+                  where: { id: closure.id },
+                  data: {
+                    state: "complete",
+                    completedAt: new Date(),
+                    revision: { increment: 1 },
+                  },
+                });
+              } else {
+                await transaction.hostedCodexRuntimeGate.update({
+                  where: { id: "global" },
+                  data: {
+                    status: "active",
+                    authzEpoch: { increment: 1 },
+                    revision: { increment: 1 },
+                    reasonCode: `postgres_e2e_${label}_activate`,
+                    changedAt: new Date(),
+                    changedByHash: sha256(label),
+                  },
+                });
+              }
+              barrierLocked();
+              if (firstCommit === "barrier") await barrierPause;
+            });
+          const tokenHash = sha256(`token:${label}`);
+          const stage = () =>
+            ledger.stageRevocation({
+              mintId: dispatched.mintId,
+              tokenHash,
+              tokenExpiresAt: new Date(Date.now() + 60_000),
+              secretEnvelope: testSecretEnvelope(`token:${label}`),
+              now: new Date(),
+              errorCode: `postgres_e2e_${label}`,
+            });
+
+          if (firstCommit === "stage") {
+            const staging = stage();
+            await stageHasGate;
+            let barrierSettled = false;
+            const barrier = runBarrier().finally(() => {
+              barrierSettled = true;
+            });
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            expect(barrierSettled).toBe(false);
+            releaseStage();
+            await expect(staging).resolves.toBeUndefined();
+            await expect(barrier).rejects.toThrow(
+              barrierKind === "closure"
+                ? "hosted_codex_runtime_closure_unsafe"
+                : "hosted_codex_runtime_closure_incomplete",
+            );
+          } else {
+            const barrier = runBarrier();
+            await barrierHasGate;
+            let stageSettled = false;
+            const staging = stage().finally(() => {
+              stageSettled = true;
+            });
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            expect(stageSettled).toBe(false);
+            releaseBarrier();
+            await expect(barrier).resolves.toBeUndefined();
+            await expect(staging).resolves.toBeUndefined();
+          }
+          await expect(
+            prisma.hostedCodexCommentTokenMint.findUniqueOrThrow({
+              where: { id: dispatched.mintId },
+              select: { state: true, tokenHash: true },
+            }),
+          ).resolves.toEqual({ state: "revoke_pending", tokenHash });
+        } finally {
+          await cleanupCommentTokenMintFixtures({
+            mintIds: [mintId],
+            grantIds: [grantId],
+          });
+          const gate = await prisma.hostedCodexRuntimeGate.findUniqueOrThrow({
+            where: { id: "global" },
+          });
+          if (gate.status === "closed" && closedRevision !== undefined) {
+            const closure =
+              await prisma.hostedCodexRuntimeClosure.findUniqueOrThrow({
+                where: { gateRevision: closedRevision },
+              });
+            if (closure.state === "draining") {
+              await prisma.hostedCodexRuntimeClosure.update({
+                where: { id: closure.id },
+                data: {
+                  state: "complete",
+                  completedAt: new Date(),
+                  revision: { increment: 1 },
+                },
+              });
+            }
+            await transitionRuntimeGate(
+              "active",
+              `postgres_e2e_${label}_restore`,
+            );
+          }
+        }
+      }
+    },
+  );
+
   it("proves dispatch releases the gate before network and close fences finalize", async () => {
     const issued = await issueGrant("mint-race-dispatch-first");
     const ledger = new PrismaHostedCommentTokenMintLedger(prisma);
@@ -3165,12 +3427,40 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       });
       zeroTestEnvelope(secondClaim[0]!.secretEnvelope);
 
-      await new Promise((resolve) =>
-        setTimeout(
-          resolve,
-          Math.max(0, deferred.nextRevocationAt.getTime() - Date.now()) + 50,
-        ),
-      );
+      // Make the deferred retry eligible, then keep admitting fresh queue
+      // entries. Their server-stamped eligibility must not starve the older
+      // retry, regardless of their lexicographic mint ids.
+      await prisma.$transaction(async (transaction) => {
+        await transaction.$executeRawUnsafe(
+          `SET LOCAL session_replication_role = 'replica'`,
+        );
+        await transaction.hostedCodexCommentTokenMint.update({
+          where: { id: first.mintId },
+          data: {
+            nextRevocationAt: new Date(Date.now() - 60_000),
+            leaseExpiresAt: new Date(0),
+          },
+        });
+      });
+      await prisma.repositoryConnection.update({
+        where: { id: repository },
+        data: { archived: false },
+      });
+      const arrivals: Array<Awaited<ReturnType<typeof createIssuedMint>>> = [];
+      for (let ordinal = 0; ordinal < 5; ordinal += 1) {
+        const label = `00-new-revocation-arrival-${ordinal}`;
+        const arrival = await createIssuedMint(label);
+        arrivals.push(arrival);
+        fixtures.push({ mintId: arrival.mintId, grantId: arrival.grantId });
+        await prisma.hostedCodexInvocationGrant.update({
+          where: { id: arrival.grantId },
+          data: {
+            status: "revoked",
+            revokedAt: new Date(),
+            revision: { increment: 1 },
+          },
+        });
+      }
       const leaseOwner = sha256("revocation-fairness-crashed-worker");
       const leased = await restarted.claimRevocations({
         ownerIdHash: leaseOwner,
@@ -3180,6 +3470,34 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
       });
       expect(leased.map((claim) => claim.mintId)).toEqual([first.mintId]);
       zeroTestEnvelope(leased[0]!.secretEnvelope);
+
+      const arrivalOwner = sha256("revocation-fairness-arrival-worker");
+      const arrivalClaims = await restarted.claimRevocations({
+        ownerIdHash: arrivalOwner,
+        now: new Date(),
+        leaseExpiresAt: new Date(Date.now() + 2_000),
+        limit: 10,
+      });
+      expect(arrivalClaims.map((claim) => claim.mintId).sort()).toEqual(
+        arrivals.map((arrival) => arrival.mintId).sort(),
+      );
+      for (const claim of arrivalClaims) {
+        const arrival = arrivals.find(
+          (candidate) => candidate.mintId === claim.mintId,
+        );
+        if (!arrival)
+          throw new Error("revocation_fairness_arrival_claim_unknown");
+        await restarted.finalizeRevoked({
+          mintId: claim.mintId,
+          tokenHash: arrival.tokenHash,
+          ownerIdHash: arrivalOwner,
+          fenceEpoch: claim.fenceEpoch,
+          now: new Date(),
+          evidenceHash: sha256(`revocation-fairness-${claim.mintId}-revoked`),
+          receipt: trustedRevocationReceipt,
+        });
+        zeroTestEnvelope(claim.secretEnvelope);
+      }
       await expect(
         new PrismaHostedCommentTokenMintLedger(prisma).claimRevocations({
           ownerIdHash: sha256("revocation-fairness-early-restart"),
