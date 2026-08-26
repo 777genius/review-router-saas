@@ -9,6 +9,7 @@ import {
 } from "../packages/features/hosted-account-pool/src/application/ports/hosted-codex-canary-fault-plan-port.js";
 import { reconcileExpiredInvocationGrants } from "../packages/features/hosted-account-pool/src/application/use-cases/reconcile-expired-invocation-grants.js";
 import { PrismaInvocationGrantRepository } from "../packages/features/hosted-account-pool/src/infrastructure/prisma/prisma-invocation-grant-repository.js";
+import { fetchBoundedJson } from "./lib/bounded-json-response.js";
 
 export const hostedPoolFlagNames = Object.freeze([
   "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL",
@@ -555,6 +556,7 @@ export function createRenderHostedPoolControlPort(input: {
   readonly databaseUrl: string;
   readonly fetchImpl?: typeof fetch;
   readonly renderTimeoutMs?: number;
+  readonly renderMaxResponseBytes?: number;
 }): HostedPoolControlPort & { disconnect(): Promise<void> } {
   const prisma = createPrismaClient({
     databaseUrl: input.databaseUrl,
@@ -563,51 +565,52 @@ export function createRenderHostedPoolControlPort(input: {
   const invocationGrants = new PrismaInvocationGrantRepository(prisma);
   const fetchImpl = input.fetchImpl ?? fetch;
   const renderTimeoutMs = input.renderTimeoutMs ?? 10_000;
+  const renderMaxResponseBytes = input.renderMaxResponseBytes ?? 256 * 1024;
   if (!Number.isSafeInteger(renderTimeoutMs) || renderTimeoutMs < 1)
     throw new Error("hosted_pool_render_timeout_invalid");
+  if (
+    !Number.isSafeInteger(renderMaxResponseBytes) ||
+    renderMaxResponseBytes < 1
+  )
+    throw new Error("hosted_pool_render_response_limit_invalid");
   const request = async (method: string, path: string, body?: unknown) => {
-    const controller = new AbortController();
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, renderTimeoutMs);
     try {
-      const response = await fetchImpl(`https://api.render.com/v1${path}`, {
-        method,
-        headers: {
-          Accept: "application/json",
-          Authorization: `Bearer ${input.apiKey}`,
-          "Content-Type": "application/json",
+      return await fetchBoundedJson({
+        fetchImpl,
+        url: `https://api.render.com/v1${path}`,
+        init: {
+          method,
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${input.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          redirect: "error",
         },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        redirect: "error",
-        signal: controller.signal,
+        timeoutMs: renderTimeoutMs,
+        maxResponseBytes: renderMaxResponseBytes,
+        errors: {
+          timeout: "hosted_pool_render_timeout",
+          requestFailed: "hosted_pool_render_request_failed",
+          responseRejected: (status) =>
+            `hosted_pool_render_response_rejected:${status}`,
+          contentLengthInvalid:
+            "hosted_pool_render_response_content_length_invalid",
+          responseTooLarge: "hosted_pool_render_response_too_large",
+          responseInvalid: "hosted_pool_render_response_invalid",
+        },
       });
-      if (!response.ok)
-        throw new Error(
-          `hosted_pool_render_response_rejected:${response.status}`,
-        );
-      try {
-        return await response.json();
-      } catch {
-        throw new Error("hosted_pool_render_response_invalid");
-      }
     } catch (error) {
-      if (timedOut)
-        // Provider errors may contain URLs, headers, or response bodies.
-        // eslint-disable-next-line preserve-caught-error
-        throw new Error("hosted_pool_render_timeout");
       if (
         error instanceof Error &&
-        error.message.startsWith("hosted_pool_render_response_")
+        (error.message === "hosted_pool_render_timeout" ||
+          error.message.startsWith("hosted_pool_render_response_"))
       )
         throw error;
       // Provider errors may contain URLs, headers, or response bodies.
       // eslint-disable-next-line preserve-caught-error
       throw new Error("hosted_pool_render_request_failed");
-    } finally {
-      clearTimeout(timer);
     }
   };
   const readService = async (id: string) => {
