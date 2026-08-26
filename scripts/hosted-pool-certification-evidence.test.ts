@@ -9,6 +9,20 @@ import {
   captureHostedCertificationWorkspace,
 } from "./hosted-pool-certification-evidence";
 
+const sensitiveEvidenceFixtures = [
+  ["Bear", "er credential-", "material-that-must-not-escape"].join(""),
+  ['{"access_', 'token":"credential-', 'material"}'].join(""),
+  ['{"tokens":{"account_', 'id":"auth-body-material"}}'].join(""),
+  ['{"client_', 'secret":"credential-', 'material"}'].join(""),
+  ['{"nested":"{\\"refresh_', 'token\\":\\"credential-', 'material\\"}"}'].join(
+    "",
+  ),
+  ["x-api-", "key: credential-", "material-that-must-not-escape"].join(""),
+  ["gh", "o_credential", "materialthatmustnotescape"].join(""),
+  ["-----BEGIN PRIVATE", " KEY-----"].join(""),
+  "certification-sentinel",
+];
+
 describe("hosted pool certification evidence", () => {
   const gateStatuses = {
     "hosted-pool:verify": "success",
@@ -65,26 +79,19 @@ describe("hosted pool certification evidence", () => {
     ).not.toThrow();
   });
 
-  it.each([
-    "Bearer credential-material-that-must-not-escape",
-    '{"access_token":"credential-material"}',
-    '{"tokens":{"account_id":"auth-body-material"}}',
-    '{"client_secret":"credential-material"}',
-    '{"nested":"{\\"refresh_token\\":\\"credential-material\\"}"}',
-    "x-api-key: credential-material-that-must-not-escape",
-    "gho_credentialmaterialthatmustnotescape",
-    "-----BEGIN PRIVATE KEY-----",
-    "certification-sentinel",
-  ])("rejects sensitive evidence without echoing it", (secret) => {
-    expect(() =>
-      assertHostedCertificationSecretFree(
-        [{ name: "opaque-source", value: secret }],
-        ["certification-sentinel"],
-      ),
-    ).toThrow(
-      /^hosted_certification_sensitive_material_detected:[a-f0-9]{16}$/u,
-    );
-  });
+  it.each(sensitiveEvidenceFixtures)(
+    "rejects sensitive evidence without echoing it",
+    (secret) => {
+      expect(() =>
+        assertHostedCertificationSecretFree(
+          [{ name: "opaque-source", value: secret }],
+          ["certification-sentinel"],
+        ),
+      ).toThrow(
+        /^hosted_certification_sensitive_material_detected:[a-f0-9]{16}$/u,
+      );
+    },
+  );
 
   it("binds evidence to the exact commit, parent, tree, and migration hashes", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "rr-hosted-evidence-repo-"));
@@ -112,6 +119,11 @@ describe("hosted pool certification evidence", () => {
         "packages/platform/db/prisma/migrations/000079_hosted_codex_output_limits/migration.sql",
         "packages/platform/db/prisma/migrations/000080_hosted_codex_attempt_generation/migration.sql",
         "packages/platform/db/prisma/migrations/000081_hosted_codex_runtime_gate/migration.sql",
+        "packages/platform/db/prisma/migrations/000082_validate_hosted_codex_output_limits/migration.sql",
+        "packages/platform/db/prisma/migrations/000083_hosted_codex_comment_token_mint_protocol/migration.sql",
+        "packages/platform/db/prisma/migrations/000084_harden_comment_token_custody/migration.sql",
+        "packages/platform/db/prisma/migrations/000085_comment_token_gate_lock_result/migration.sql",
+        "packages/platform/db/prisma/migrations/000086_comment_token_custody_r18_remediation/migration.sql",
       ];
       for (const [index, path] of migrations.entries()) {
         await mkdir(dirname(join(workspace, path)), { recursive: true });

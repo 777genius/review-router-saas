@@ -3,10 +3,7 @@ import type {
   InvocationGrantId,
   InvocationId,
 } from "../../domain/identifiers";
-import type {
-  CommentTokenRefreshConsumption,
-  InvocationGrant,
-} from "../../domain/invocation-grant";
+import type { InvocationGrant } from "../../domain/invocation-grant";
 
 export interface CommentTokenRefreshCapabilityPort {
   issue(input: {
@@ -19,18 +16,6 @@ export interface CommentTokenRefreshCapabilityPort {
     readonly plaintextToken: string;
     readonly tokenHash: string;
   }>;
-
-  /** Atomically validates the presented hash, transitions, and persists useCount. */
-  consume(input: {
-    readonly grantId: InvocationGrantId;
-    readonly presentedTokenHash: string;
-    /** SHA-256 of the caller idempotency key; unique per logical refresh. */
-    readonly requestIdHash: string;
-    readonly now: Date;
-    readonly transition: (
-      grant: InvocationGrant,
-    ) => CommentTokenRefreshConsumption;
-  }): Promise<CommentTokenRefreshConsumption>;
 
   /** Atomically marks the capability revoked. */
   revoke(input: {

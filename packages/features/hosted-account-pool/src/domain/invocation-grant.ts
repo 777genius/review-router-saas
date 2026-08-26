@@ -298,20 +298,29 @@ export type CommentTokenRefreshConsumption =
       readonly grant: InvocationGrant;
     };
 
+export function commentTokenRefreshCapabilityStatus(input: {
+  readonly expiresAt: Date;
+  readonly maxUses: number;
+  readonly useCount: number;
+  readonly revokedAt: Date | null;
+  readonly now: Date;
+}): "available" | "expired" | "revoked" | "budget_exhausted" {
+  if (input.revokedAt !== null) return "revoked";
+  if (input.now >= input.expiresAt) return "expired";
+  if (input.useCount >= input.maxUses) return "budget_exhausted";
+  return "available";
+}
+
 export function consumeCommentTokenRefreshCapability(input: {
   readonly grant: InvocationGrant;
   readonly now: Date;
 }): CommentTokenRefreshConsumption {
   const capability = input.grant.commentTokenRefreshCapability;
-  if (capability.revokedAt !== null) {
-    return { status: "revoked", grant: input.grant };
-  }
-  if (input.now >= capability.expiresAt) {
-    return { status: "expired", grant: input.grant };
-  }
-  if (capability.useCount >= capability.maxUses) {
-    return { status: "budget_exhausted", grant: input.grant };
-  }
+  const status = commentTokenRefreshCapabilityStatus({
+    ...capability,
+    now: input.now,
+  });
+  if (status !== "available") return { status, grant: input.grant };
   return {
     status: "consumed",
     grant: {

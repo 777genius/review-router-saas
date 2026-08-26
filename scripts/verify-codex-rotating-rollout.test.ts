@@ -97,7 +97,32 @@ describe("observation-backed Codex rotating rollout verifier", () => {
           ),
         }))
         .sort((left, right) => left.name.localeCompare(right.name)),
-    ).toEqual([...codexRotatingFunctionBodyDigests]);
+    ).toEqual(
+      codexRotatingFunctionBodyDigests.filter(({ name }) =>
+        name.startsWith("codex_oauth_"),
+      ),
+    );
+
+    const custodySql = readFileSync(
+      join(
+        process.cwd(),
+        "packages/platform/db/prisma/migrations/000084_harden_comment_token_custody/migration.sql",
+      ),
+      "utf8",
+    );
+    const custodyBody =
+      /CREATE OR REPLACE FUNCTION hosted_codex_comment_token_authority_revoke_enqueue\(\)[\s\S]*?AS \$guard\$([\s\S]*?)\$guard\$;/u.exec(
+        custodySql,
+      )?.[1];
+    expect(custodyBody).toBeDefined();
+    expect(
+      codexRotatingFunctionBodyDigests.find(
+        ({ name }) =>
+          name === "hosted_codex_comment_token_authority_revoke_enqueue",
+      )?.bodySha256,
+    ).toBe(
+      digest(Buffer.from(custodyBody!.replace(/\r\n?/gu, "\n").trim(), "utf8")),
+    );
   });
 
   it("accepts digested executable/database observations", () => {
@@ -1725,6 +1750,12 @@ function observedFixture(): any {
             17,
           ],
           [
+            "RepositoryConnection_comment_token_revoke",
+            "RepositoryConnection",
+            "hosted_codex_comment_token_authority_revoke_enqueue",
+            17,
+          ],
+          [
             "RepositoryConnection_runtime_referential_action_guard",
             "RepositoryConnection",
             "codex_oauth_runtime_referential_action_guard",
@@ -1748,6 +1779,7 @@ function observedFixture(): any {
             procost: 100,
             prorows: 0,
             securityDefiner:
+              name === "hosted_codex_comment_token_authority_revoke_enqueue" ||
               name.startsWith("codex_oauth_authorize_") ||
               name === "codex_oauth_consume_database_authority" ||
               name === "codex_oauth_provider_identity_repair_challenge" ||
@@ -1756,18 +1788,20 @@ function observedFixture(): any {
               name === "codex_oauth_repair_quarantined_provider" ||
               name === "codex_oauth_sign_database_authority",
             config:
-              name.startsWith("codex_oauth_authorize_") ||
-              name === "codex_oauth_consume_database_authority" ||
-              name === "codex_oauth_database_authority_challenge" ||
-              name === "codex_oauth_database_authority_receipt_guard" ||
-              name === "codex_oauth_provider_identity_guard" ||
-              name === "codex_oauth_runtime_referential_action_guard" ||
-              name === "codex_oauth_provider_identity_transition" ||
-              name === "codex_oauth_provider_identity_repair_challenge" ||
-              name === "codex_oauth_repair_quarantined_provider" ||
-              name === "codex_oauth_sign_database_authority"
-                ? ["search_path=pg_catalog, public"]
-                : null,
+              name === "hosted_codex_comment_token_authority_revoke_enqueue"
+                ? ["search_path=pg_catalog, pg_temp"]
+                : name.startsWith("codex_oauth_authorize_") ||
+                    name === "codex_oauth_consume_database_authority" ||
+                    name === "codex_oauth_database_authority_challenge" ||
+                    name === "codex_oauth_database_authority_receipt_guard" ||
+                    name === "codex_oauth_provider_identity_guard" ||
+                    name === "codex_oauth_runtime_referential_action_guard" ||
+                    name === "codex_oauth_provider_identity_transition" ||
+                    name === "codex_oauth_provider_identity_repair_challenge" ||
+                    name === "codex_oauth_repair_quarantined_provider" ||
+                    name === "codex_oauth_sign_database_authority"
+                  ? ["search_path=pg_catalog, public"]
+                  : null,
             language: "plpgsql",
             volatility: "v",
             parallel: "u",

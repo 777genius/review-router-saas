@@ -2,6 +2,8 @@
  * Canonical PostgreSQL projection of the live V70-V73 application catalog.
  * Keep this in the Postgres adapter layer: the domain receives only its digest.
  */
+import { canonicalReleaseMigrationArtifact } from "../domain/release-migration-transition.ts";
+
 const dynamicWriteAclPrincipals = Object.freeze([
   "reviewrouter_api",
   "reviewrouter_web",
@@ -20,7 +22,11 @@ WITH selected_relations AS (
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
   WHERE n.nspname='public' AND c.relname IN
-    ('CodexOAuthWritebackIntent','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+    ('CodexOAuthWritebackIntent','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof',
+     'HostedCodexCommentTokenMint','HostedCodexCommentTokenRevocationProof','HostedCodexRuntimeClosure',
+     'HostedCodexCommentRefreshUse','HostedCodexRuntimeGate','HostedCodexRepositoryBinding',
+     'HostedCodexPool','RepositoryConnection','GitHubInstallation','HostedCodexInvocationGrant',
+     'HostedCodexCommentRefreshCapability')
 ), facts AS (
   SELECT jsonb_build_object(
     'columns',coalesce((SELECT jsonb_agg(jsonb_build_object(
@@ -110,6 +116,17 @@ WITH selected_relations AS (
       FROM selected_relations child JOIN pg_catalog.pg_inherits inherit ON inherit.inhrelid=child.oid
       JOIN pg_catalog.pg_class parent ON parent.oid=inherit.inhparent
       JOIN pg_catalog.pg_namespace parent_namespace ON parent_namespace.oid=parent.relnamespace),'[]'::jsonb),
+    'enums',coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'name',t.typname,'owner',pg_catalog.pg_get_userbyid(t.typowner),
+      'acl',coalesce((SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
+        FROM unnest(t.typacl) v),'[]'::jsonb),
+      'labels',(SELECT jsonb_agg(e.enumlabel ORDER BY e.enumsortorder)
+        FROM pg_catalog.pg_enum e WHERE e.enumtypid=t.oid))
+      ORDER BY t.typname COLLATE "C")
+      FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid=t.typnamespace
+      WHERE n.nspname='public' AND t.typname IN (
+        'HostedCodexCommentTokenMintPurpose','HostedCodexCommentTokenMintState',
+        'HostedCodexRuntimeClosureState')),'[]'::jsonb),
     'functions',coalesce((SELECT jsonb_agg(jsonb_build_object(
       'identity',p.oid::regprocedure::text,'owner',pg_catalog.pg_get_userbyid(p.proowner),
       'securityDefiner',p.prosecdef,'searchPath',coalesce(to_jsonb(p.proconfig),'null'::jsonb),
@@ -123,7 +140,22 @@ WITH selected_relations AS (
         'reviewrouter_runtime_generation_write_read_canary',
         'reviewrouter_request_runtime_canary_challenge',
         'reviewrouter_answer_runtime_canary_challenge',
-        'reviewrouter_read_runtime_canary_challenge_proofs')),'[]'::jsonb),
+        'reviewrouter_read_runtime_canary_challenge_proofs',
+        'hosted_codex_comment_refresh_use_mint_guard',
+        'hosted_codex_comment_token_mint_guard',
+        'hosted_codex_comment_token_prepare_authority_complete',
+        'hosted_codex_lock_comment_token_runtime_gate',
+        'hosted_codex_comment_token_authority_snapshot',
+        'hosted_codex_lock_comment_token_mint',
+        'hosted_codex_mutate_comment_token_mint',
+        'hosted_codex_mutate_comment_token_mint_v83',
+        'hosted_codex_mutate_comment_token_mint_v85',
+        'hosted_codex_claim_comment_token_delivery',
+        'hosted_codex_finalize_comment_token_revocation',
+        'hosted_codex_runtime_closure_guard',
+        'hosted_codex_runtime_gate_guard',
+        'hosted_codex_runtime_gate_activation_barrier',
+        'hosted_codex_comment_token_authority_revoke_enqueue')),'[]'::jsonb),
     'defaultAcl',coalesce((SELECT jsonb_agg(jsonb_build_object(
       'owner',pg_catalog.pg_get_userbyid(d.defaclrole),'namespace',n.nspname,
       'kind',d.defaclobjtype,'acl',(SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
@@ -131,7 +163,7 @@ WITH selected_relations AS (
       FROM pg_catalog.pg_default_acl d LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace
       WHERE n.nspname='public'),'[]'::jsonb),
     'history',CASE WHEN reviewrouter_activation.read_activation_migration_manifest_identity()
-      = 'sha256:0fcf03dd6b9b01e519e2203e98b1900d8b8460bd6de7307440ae97b4deaa1d7d'
+      = '${canonicalReleaseMigrationArtifact.postManifestIdentity}'
       THEN jsonb_build_array(
         jsonb_build_object('name','000070_runtime_generation_witness_proof',
           'checksum','cb9c42171f9bd924d21093852a1053cb947100acef1321ec8cf62e8fd5928c6f',
@@ -162,8 +194,16 @@ WITH selected_relations AS (
 SELECT 'sha256:'||encode(pg_catalog.sha256(convert_to(value::text,'UTF8')),'hex')
 FROM facts`;
 
+// This remains the last independently captured value. The projection now
+// includes the V86 custody routines, so release promotion stays on HOLD until
+// the trusted PG17 capture path replaces this value and the transition receipt
+// in one reviewed evidence batch. Do not derive a catalog digest from SQL text.
+export const liveV70V86CatalogDigestCaptureHold = Object.freeze({
+  decision: "HOLD",
+  reason: "pg17_exact_catalog_capture_required_after_v86_projection_change",
+});
 export const liveV70V73CatalogDigestSha256 =
-  "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0";
+  "sha256:e8d0377f3b4bd607f23af9c180a35550bcfda93f680da41120a0ccb8aa5297ba";
 
 // Compatibility aliases for existing external consumers during the V73 rollout.
 export const fencedLiveV70V72CatalogDigestSql =

@@ -481,6 +481,12 @@ class RejectingConflictPostingGateway extends InMemoryConflictPostingGateway {
 class InMemoryCommentTokenIssuer implements GitHubAppCommentTokenIssuerPort {
   public readonly calls: IssueGitHubAppCommentTokenInput[] = [];
 
+  async prepareCommentToken(
+    input: Omit<IssueGitHubAppCommentTokenInput, "signal">,
+  ) {
+    return { send: async () => this.issueCommentToken(input) };
+  }
+
   async issueCommentToken(input: IssueGitHubAppCommentTokenInput) {
     this.calls.push(input);
     return {
@@ -493,6 +499,7 @@ class InMemoryCommentTokenIssuer implements GitHubAppCommentTokenIssuerPort {
         issues: "write" as const,
         statuses: "write" as const,
       },
+      custody: "acceptable" as const,
     };
   }
 }

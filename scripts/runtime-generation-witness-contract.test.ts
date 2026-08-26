@@ -3,6 +3,43 @@ import { describe, expect, it } from "vitest";
 import { runtimeGrantStatements } from "./run-codex-rotating-release-migration.mjs";
 
 describe("runtime generation witness database contract", () => {
+  it("converges the mint lock to custody alone", () => {
+    const sql = runtimeGrantStatements({
+      roles: [
+        { username: "reviewrouter_web", role: "web" },
+        { username: "reviewrouter_api", role: "api" },
+        { username: "reviewrouter_worker", role: "worker" },
+        {
+          username: "reviewrouter_comment_token_custody",
+          role: "comment-token-custody",
+        },
+        {
+          username: "reviewrouter_codex_effect_authority",
+          role: "effect-authority",
+        },
+      ],
+    });
+    expect(sql).toContain(
+      "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM reviewrouter_comment_token_custody",
+    );
+    expect(sql).toContain("public.hosted_codex_lock_comment_token_mint(text),");
+    const grant = sql.slice(
+      sql.indexOf(
+        "GRANT EXECUTE ON FUNCTION public.hosted_codex_mutate_comment_token_mint",
+      ),
+      sql.indexOf("REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC"),
+    );
+    expect(grant).toContain("TO reviewrouter_comment_token_custody");
+    for (const excluded of [
+      "reviewrouter_api",
+      "reviewrouter_web",
+      "reviewrouter_worker",
+      "reviewrouter_codex_effect_authority",
+      "PUBLIC",
+    ])
+      expect(grant).not.toContain(`TO ${excluded}`);
+  });
+
   it("keeps fresh migrations role-optional and canonical bootstrap grants exact functions", () => {
     const migration = readFileSync(
       "packages/platform/db/prisma/migrations/000070_runtime_generation_witness_proof/migration.sql",

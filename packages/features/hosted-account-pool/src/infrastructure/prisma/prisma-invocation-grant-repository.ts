@@ -10,6 +10,7 @@ import type {
   RelayResponseStartedPort,
 } from "../../application/ports/relay-request-ledger-port";
 import type {
+  CommentTokenRefreshConsumption,
   CurrentRelayRequestFailover,
   InvocationGrant,
 } from "../../domain/invocation-grant";
@@ -23,6 +24,7 @@ import {
   repositoryId,
   workspaceId,
 } from "../../domain/identifiers";
+import type { InvocationGrantId } from "../../domain/identifiers";
 
 type StoredGrant = Prisma.HostedCodexInvocationGrantGetPayload<{
   include: { relayRequests: true; commentRefreshCapability: true };
@@ -72,55 +74,63 @@ export class PrismaInvocationGrantRepository
   }
 
   async insert(grant: InvocationGrant): Promise<void> {
-    const runtimeGate = await this.prisma.hostedCodexRuntimeGate.findUnique({
-      where: { id: "global" },
-      select: { status: true, authzEpoch: true },
-    });
-    assertRuntimeGateAuthority(grant.runtimeAuthzEpoch, runtimeGate);
-    await this.prisma.hostedCodexInvocationGrant.create({
-      data: {
-        id: grant.id,
-        invocationId: grant.invocationId,
-        workspaceId: grant.workspaceId,
-        poolId: grant.poolId,
-        repositoryConnectionId: grant.repositoryId,
-        repositoryBindingId: grant.repositoryBindingId,
-        activeAccountId: grant.activeAccountId,
-        primaryAccountId: grant.primaryAccountId,
-        backupAccountId: grant.backupAccountId,
-        reviewRequestId: grant.authority.reviewRequestId,
-        providerInvocationKey: grant.authority.providerInvocationKey,
-        runId: grant.authority.runId,
-        runAttempt: grant.authority.runAttempt,
-        model: grant.authority.model,
-        policyVersion: "hosted-codex-v1",
-        policyFingerprint: grant.authority.policyFingerprint,
-        runtimeConfigVersion: grant.authority.runtimeConfigVersion,
-        bindingRevision: BigInt(grant.authority.bindingRevision),
-        authzEpoch: grant.authority.authzEpoch,
-        runtimeAuthzEpoch: grant.runtimeAuthzEpoch,
-        capabilityTokenHash: grant.capabilityTokenHash,
-        issuedAt: grant.createdAt,
-        expiresAt: grant.budget.expiresAt,
-        maxRequests: grant.budget.maxRequests,
-        maxConcurrentRequests: grant.budget.maxConcurrentRequests,
-        maxRequestBytes: grant.budget.maxRequestBytes,
-        maxResponseBytes: grant.budget.maxResponseBytes,
-        maxOutputTokens: grant.budget.maxOutputTokens,
-        requestCount: 0,
-        inFlight: 0,
-        commentRefreshCapability: {
-          create: {
-            capabilityTokenHash: grant.commentTokenRefreshCapability.tokenHash,
+    await this.prisma.$transaction(
+      async (transaction) => {
+        const rows = await transaction.$queryRaw<
+          Array<{ status: string; authzEpoch: bigint }>
+        >`
+        SELECT "status"::text AS "status", "authzEpoch"
+        FROM "HostedCodexRuntimeGate" WHERE "id" = 'global' FOR SHARE
+      `;
+        assertRuntimeGateAuthority(grant.runtimeAuthzEpoch, rows[0] ?? null);
+        await transaction.hostedCodexInvocationGrant.create({
+          data: {
+            id: grant.id,
+            invocationId: grant.invocationId,
+            workspaceId: grant.workspaceId,
+            poolId: grant.poolId,
+            repositoryConnectionId: grant.repositoryId,
+            repositoryBindingId: grant.repositoryBindingId,
+            activeAccountId: grant.activeAccountId,
+            primaryAccountId: grant.primaryAccountId,
+            backupAccountId: grant.backupAccountId,
+            reviewRequestId: grant.authority.reviewRequestId,
+            providerInvocationKey: grant.authority.providerInvocationKey,
+            runId: grant.authority.runId,
+            runAttempt: grant.authority.runAttempt,
+            model: grant.authority.model,
+            policyVersion: "hosted-codex-v1",
+            policyFingerprint: grant.authority.policyFingerprint,
+            runtimeConfigVersion: grant.authority.runtimeConfigVersion,
+            bindingRevision: BigInt(grant.authority.bindingRevision),
+            authzEpoch: grant.authority.authzEpoch,
+            runtimeAuthzEpoch: grant.runtimeAuthzEpoch,
+            capabilityTokenHash: grant.capabilityTokenHash,
             issuedAt: grant.createdAt,
-            expiresAt: grant.commentTokenRefreshCapability.expiresAt,
-            maxUses: grant.commentTokenRefreshCapability.maxUses,
-            useCount: grant.commentTokenRefreshCapability.useCount,
-            revokedAt: grant.commentTokenRefreshCapability.revokedAt,
+            expiresAt: grant.budget.expiresAt,
+            maxRequests: grant.budget.maxRequests,
+            maxConcurrentRequests: grant.budget.maxConcurrentRequests,
+            maxRequestBytes: grant.budget.maxRequestBytes,
+            maxResponseBytes: grant.budget.maxResponseBytes,
+            maxOutputTokens: grant.budget.maxOutputTokens,
+            requestCount: 0,
+            inFlight: 0,
+            commentRefreshCapability: {
+              create: {
+                capabilityTokenHash:
+                  grant.commentTokenRefreshCapability.tokenHash,
+                issuedAt: grant.createdAt,
+                expiresAt: grant.commentTokenRefreshCapability.expiresAt,
+                maxUses: grant.commentTokenRefreshCapability.maxUses,
+                useCount: grant.commentTokenRefreshCapability.useCount,
+                revokedAt: grant.commentTokenRefreshCapability.revokedAt,
+              },
+            },
           },
-        },
+        });
       },
-    });
+      { isolationLevel: "ReadCommitted", maxWait: 5_000, timeout: 10_000 },
+    );
   }
 
   async expireIssuedBatch(
@@ -178,90 +188,6 @@ export class PrismaInvocationGrantRepository
   async issue() {
     const plaintextToken = randomBytes(32).toString("base64url");
     return { plaintextToken, tokenHash: sha256(plaintextToken) };
-  }
-
-  async consume(
-    input: Parameters<CommentTokenRefreshCapabilityPort["consume"]>[0],
-  ) {
-    return serializableTransaction(
-      this.prisma,
-      async (transaction) => {
-        const stored = await transaction.hostedCodexInvocationGrant.findUnique({
-          where: { id: input.grantId },
-          include: grantInclude,
-        });
-        if (!stored) throw new Error("invocation_grant_not_found");
-        const runtimeGate = await transaction.hostedCodexRuntimeGate.findUnique(
-          {
-            where: { id: "global" },
-            select: { status: true, authzEpoch: true },
-          },
-        );
-        assertRuntimeGateAuthority(stored.runtimeAuthzEpoch, runtimeGate);
-        const current = restoreGrant(stored);
-        if (
-          current.commentTokenRefreshCapability.tokenHash !==
-          input.presentedTokenHash
-        ) {
-          throw new Error("comment_refresh_capability_invalid");
-        }
-        const capability = stored.commentRefreshCapability!;
-        const replay =
-          await transaction.hostedCodexCommentRefreshUse.findUnique({
-            where: {
-              capabilityId_requestIdHash: {
-                capabilityId: capability.id,
-                requestIdHash: input.requestIdHash,
-              },
-            },
-          });
-        if (replay) return { status: "replayed" as const, grant: current };
-        const consumption = input.transition(current);
-        if (consumption.status !== "consumed") return consumption;
-        // The DB BEFORE INSERT trigger is the sole atomic consumption
-        // authority: it checks token/scope/TTL/budget and increments useCount.
-        await transaction.hostedCodexCommentRefreshUse.create({
-          data: {
-            capabilityId: capability.id,
-            grantId: stored.id,
-            invocationId: stored.invocationId,
-            repositoryBindingId: stored.repositoryBindingId,
-            workspaceId: stored.workspaceId,
-            poolId: stored.poolId,
-            repositoryConnectionId: stored.repositoryConnectionId,
-            ordinal: capability.useCount + 1,
-            requestIdHash: input.requestIdHash,
-            presentedTokenHash: input.presentedTokenHash,
-            usedAt: input.now,
-          },
-        });
-        return consumption;
-      },
-      { isolationLevel: "Serializable" },
-    ).catch(async (error: unknown) => {
-      if (!isPrismaErrorCode(error, "P2002")) throw error;
-      const stored = await this.prisma.hostedCodexInvocationGrant.findUnique({
-        where: { id: input.grantId },
-        include: grantInclude,
-      });
-      const capability = stored?.commentRefreshCapability;
-      if (!stored || !capability) throw error;
-      const replay = await this.prisma.hostedCodexCommentRefreshUse.findUnique({
-        where: {
-          capabilityId_requestIdHash: {
-            capabilityId: capability.id,
-            requestIdHash: input.requestIdHash,
-          },
-        },
-      });
-      if (
-        !replay ||
-        capability.capabilityTokenHash !== input.presentedTokenHash
-      ) {
-        throw error;
-      }
-      return { status: "replayed" as const, grant: restoreGrant(stored) };
-    });
   }
 
   async revoke(
@@ -1071,6 +997,68 @@ function requireRuntimeAuthzEpoch(value: bigint | null): bigint {
   return value;
 }
 
+/** Transaction-bound consumption used when an outer authority lock is held. */
+export async function consumeCommentTokenRefreshCapabilityInTransaction(
+  transaction: Prisma.TransactionClient,
+  input: {
+    readonly grantId: InvocationGrantId;
+    readonly presentedTokenHash: string;
+    readonly requestIdHash: string;
+    readonly now: Date;
+    readonly transition: (
+      grant: InvocationGrant,
+    ) => CommentTokenRefreshConsumption;
+  },
+  mintId: string,
+) {
+  const stored = await transaction.hostedCodexInvocationGrant.findUnique({
+    where: { id: input.grantId },
+    include: grantInclude,
+  });
+  if (!stored) throw new Error("invocation_grant_not_found");
+  const runtimeGate = await transaction.hostedCodexRuntimeGate.findUnique({
+    where: { id: "global" },
+    select: { status: true, authzEpoch: true },
+  });
+  assertRuntimeGateAuthority(stored.runtimeAuthzEpoch, runtimeGate);
+  const current = restoreGrant(stored);
+  if (
+    current.commentTokenRefreshCapability.tokenHash !== input.presentedTokenHash
+  ) {
+    throw new Error("comment_refresh_capability_invalid");
+  }
+  const capability = stored.commentRefreshCapability!;
+  const replay = await transaction.hostedCodexCommentRefreshUse.findUnique({
+    where: {
+      capabilityId_requestIdHash: {
+        capabilityId: capability.id,
+        requestIdHash: input.requestIdHash,
+      },
+    },
+  });
+  if (replay) return { status: "replayed" as const, grant: current };
+  const consumption = input.transition(current);
+  if (consumption.status !== "consumed") return consumption;
+  // The DB BEFORE INSERT trigger is the sole atomic consumption authority.
+  await transaction.hostedCodexCommentRefreshUse.create({
+    data: {
+      capabilityId: capability.id,
+      grantId: stored.id,
+      invocationId: stored.invocationId,
+      repositoryBindingId: stored.repositoryBindingId,
+      workspaceId: stored.workspaceId,
+      poolId: stored.poolId,
+      repositoryConnectionId: stored.repositoryConnectionId,
+      ordinal: capability.useCount + 1,
+      requestIdHash: input.requestIdHash,
+      presentedTokenHash: input.presentedTokenHash,
+      mintId,
+      usedAt: input.now,
+    },
+  });
+  return consumption;
+}
+
 function assertRuntimeGateAuthority(
   expectedEpoch: bigint | null,
   gate: { readonly status: string; readonly authzEpoch: bigint } | null,
@@ -1164,14 +1152,5 @@ function isSerializableWriteConflict(error: unknown): boolean {
     message.includes("TransactionWriteConflict") ||
     message.includes("write conflict") ||
     message.includes("could not serialize access")
-  );
-}
-
-function isPrismaErrorCode(error: unknown, expected: string): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { readonly code?: unknown }).code === expected
   );
 }

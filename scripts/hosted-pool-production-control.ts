@@ -27,6 +27,7 @@ export type HostedPoolCounts = Readonly<{
   issuedGrants: number;
   unresolvedRequests: number;
   terminalUnknownRequests: number;
+  unresolvedMintAttempts?: number;
 }>;
 export type HostedPoolRuntimeGate = Readonly<{
   status: "closed" | "active";
@@ -47,6 +48,19 @@ export type HostedPoolControlPort = Readonly<{
     readonly changedAt: Date;
     readonly changedByHash: string;
   }): Promise<HostedPoolRuntimeGate>;
+  ensureRuntimeClosure?(
+    gate: HostedPoolRuntimeGate,
+    reasonCode: string,
+    changedByHash: string,
+  ): Promise<void>;
+  acknowledgeLegacyIssuerDrain?(gate: HostedPoolRuntimeGate): Promise<void>;
+  assertRuntimeClosureComplete?(gate: HostedPoolRuntimeGate): Promise<void>;
+  completeRuntimeClosure?(gate: HostedPoolRuntimeGate): Promise<void>;
+  readRuntimeClosure?(gate: HostedPoolRuntimeGate): Promise<Readonly<{
+    state: "draining" | "complete";
+    legacyBarrier: boolean;
+    legacyUnsafeUntil: Date;
+  }> | null>;
   reconcileExpiredGrants(): Promise<
     Readonly<{ expiredCount: number; batches: number }>
   >;
@@ -125,6 +139,7 @@ export async function executeHostedPoolControl(input: {
       throw new Error(
         "hosted_pool_runtime_gate_must_be_closed_before_activation",
       );
+    await input.port.assertRuntimeClosureComplete?.(closed);
     await input.port.setFlags({
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
@@ -187,25 +202,24 @@ export async function executeHostedPoolControl(input: {
     });
   } else {
     const rollbackFailures: unknown[] = [];
-    if (input.command === "rollback") {
-      try {
-        const before = await input.port.readRuntimeGate();
-        const closed = await closeRuntimeGate(
-          input.port,
-          before,
-          "operator_rollback",
-          operatorHash,
-          now(),
-        );
-        assertGateTransitionOrClosed(
-          before,
-          (await observe("runtime_gate_closed_first")).runtimeGate,
-          closed,
-          operatorHash,
-        );
-      } catch (error) {
-        rollbackFailures.push(error);
-      }
+    try {
+      const before = await input.port.readRuntimeGate();
+      const closed = await closeRuntimeGate(
+        input.port,
+        before,
+        input.command === "rollback" ? "operator_rollback" : "operator_drain",
+        operatorHash,
+        now(),
+      );
+      assertGateTransitionOrClosed(
+        before,
+        (await observe("runtime_gate_closed_first")).runtimeGate,
+        closed,
+        operatorHash,
+      );
+    } catch (error) {
+      if (input.command !== "rollback") throw error;
+      rollbackFailures.push(error);
     }
     if (input.command === "rollback" && input.port.setFaultPlan) {
       try {
@@ -231,12 +245,32 @@ export async function executeHostedPoolControl(input: {
       if (input.command !== "rollback") throw error;
       rollbackFailures.push(error);
     }
+    let drainComplete = false;
     try {
-      await waitForDrain(input.port, events, {
+      let drain = await waitForDrain(input.port, events, {
         now,
         ...(input.sleep ? { sleep: input.sleep } : {}),
         ...(input.maxDrainPolls ? { maxPolls: input.maxDrainPolls } : {}),
       });
+      if (drain === "legacy_ready") {
+        const closed = await input.port.readRuntimeGate();
+        await input.port.acknowledgeLegacyIssuerDrain?.(closed);
+        events.push({
+          phase: "legacy_issuer_drain_acknowledged",
+          at: now().toISOString(),
+          runtimeGate: closed,
+        });
+        // Re-read the durable closure after acknowledgment. This returns a
+        // resumable quarantine deadline instead of spending the five-minute
+        // grant-drain poll budget waiting for the 61-minute provider TTL.
+        drain = await waitForDrain(input.port, events, {
+          now,
+          maxPolls: 1,
+        });
+      }
+      if (drain === "waiting")
+        return evidence(input.command, "waiting", events);
+      drainComplete = true;
     } catch (error) {
       if (input.command !== "rollback") throw error;
       rollbackFailures.push(error);
@@ -248,8 +282,6 @@ export async function executeHostedPoolControl(input: {
           { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0" },
         ],
         ["relay_closed", { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0" }],
-        ["custody_closed", { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0" }],
-        ["pool_closed", { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0" }],
       ] as const) {
         try {
           await input.port.setFlags(patch);
@@ -262,24 +294,54 @@ export async function executeHostedPoolControl(input: {
           rollbackFailures.push(error);
         }
       }
-      try {
-        const final = await observe("rollback_final_reread");
-        assertObservedPatch(final, {
-          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
-          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0",
-          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0",
-          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0",
-          REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0",
-        });
-        if (
-          final.counts.inFlight !== 0 ||
-          final.counts.issuedGrants !== 0 ||
-          final.counts.unresolvedRequests !== 0
-        )
-          throw new Error("hosted_pool_rollback_final_drain_incomplete");
-      } catch (error) {
-        rollbackFailures.push(error);
+      // Custody is the only recovery path for durable token work. Disable it
+      // and the pool only after the gate/admission/drain and the reversible
+      // relay/failover closures all completed without error. A later operator
+      // invocation resumes from the already-safe partial closure.
+      const custodyDisableAuthorized =
+        drainComplete && rollbackFailures.length === 0;
+      if (custodyDisableAuthorized) {
+        for (const [phase, patch] of [
+          [
+            "custody_closed",
+            { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0" },
+          ],
+          ["pool_closed", { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0" }],
+        ] as const) {
+          const failuresBeforePhase = rollbackFailures.length;
+          try {
+            await input.port.setFlags(patch);
+          } catch (error) {
+            rollbackFailures.push(error);
+          }
+          try {
+            assertObservedPatch(await observe(phase), patch);
+          } catch (error) {
+            rollbackFailures.push(error);
+          }
+          if (rollbackFailures.length > failuresBeforePhase) break;
+        }
       }
+      if (custodyDisableAuthorized)
+        try {
+          const final = await observe("rollback_final_reread");
+          assertObservedPatch(final, {
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0",
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0",
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0",
+            REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0",
+          });
+          if (
+            final.counts.inFlight !== 0 ||
+            final.counts.issuedGrants !== 0 ||
+            final.counts.unresolvedRequests !== 0 ||
+            (final.counts.unresolvedMintAttempts ?? 0) !== 0
+          )
+            throw new Error("hosted_pool_rollback_final_drain_incomplete");
+        } catch (error) {
+          rollbackFailures.push(error);
+        }
       if (rollbackFailures.length > 0)
         throw new HostedPoolRollbackError(
           rollbackFailures,
@@ -350,7 +412,10 @@ async function closeRuntimeGate(
   changedAt: Date,
 ): Promise<HostedPoolRuntimeGate> {
   assertRuntimeGate(before);
-  if (before.status === "closed") return before;
+  if (before.status === "closed") {
+    await port.ensureRuntimeClosure?.(before, reasonCode, changedByHash);
+    return before;
+  }
   return port.transitionRuntimeGate({
     expectedRevision: before.revision,
     status: "closed",
@@ -420,7 +485,7 @@ async function waitForDrain(
     sleep?: (milliseconds: number) => Promise<void>;
     maxPolls?: number;
   },
-) {
+): Promise<"complete" | "waiting" | "legacy_ready"> {
   const sleep =
     options.sleep ??
     ((milliseconds) => new Promise((done) => setTimeout(done, milliseconds)));
@@ -439,9 +504,32 @@ async function waitForDrain(
     if (
       counts.inFlight === 0 &&
       counts.issuedGrants === 0 &&
-      counts.unresolvedRequests === 0
-    )
-      return;
+      counts.unresolvedRequests === 0 &&
+      (counts.unresolvedMintAttempts ?? 0) === 0
+    ) {
+      const gate = await port.readRuntimeGate();
+      const closure = await port.readRuntimeClosure?.(gate);
+      if (closure?.state === "draining" && closure.legacyBarrier) {
+        return "legacy_ready";
+      }
+      if (
+        closure?.state === "draining" &&
+        !closure.legacyBarrier &&
+        closure.legacyUnsafeUntil > options.now()
+      ) {
+        events.push({
+          phase: "runtime_closure_quarantine_waiting",
+          at: options.now().toISOString(),
+          resumable: true,
+          retryAt: closure.legacyUnsafeUntil.toISOString(),
+          remainingMs:
+            closure.legacyUnsafeUntil.getTime() - options.now().getTime(),
+        });
+        return "waiting";
+      }
+      await port.completeRuntimeClosure?.(gate);
+      return "complete";
+    }
     if (poll < maxPolls) await sleep(5_000);
   }
   throw new Error("hosted_pool_admission_drain_timeout");
@@ -465,25 +553,62 @@ export function createRenderHostedPoolControlPort(input: {
   readonly apiKey: string;
   readonly serviceIds: readonly [string, string];
   readonly databaseUrl: string;
+  readonly fetchImpl?: typeof fetch;
+  readonly renderTimeoutMs?: number;
 }): HostedPoolControlPort & { disconnect(): Promise<void> } {
   const prisma = createPrismaClient({
     databaseUrl: input.databaseUrl,
     poolMax: 1,
   });
   const invocationGrants = new PrismaInvocationGrantRepository(prisma);
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const renderTimeoutMs = input.renderTimeoutMs ?? 10_000;
+  if (!Number.isSafeInteger(renderTimeoutMs) || renderTimeoutMs < 1)
+    throw new Error("hosted_pool_render_timeout_invalid");
   const request = async (method: string, path: string, body?: unknown) => {
-    const response = await fetch(`https://api.render.com/v1${path}`, {
-      method,
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${input.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      redirect: "error",
-    });
-    if (!response.ok) throw new Error(`hosted_pool_render_${response.status}`);
-    return response.json();
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, renderTimeoutMs);
+    try {
+      const response = await fetchImpl(`https://api.render.com/v1${path}`, {
+        method,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${input.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        redirect: "error",
+        signal: controller.signal,
+      });
+      if (!response.ok)
+        throw new Error(
+          `hosted_pool_render_response_rejected:${response.status}`,
+        );
+      try {
+        return await response.json();
+      } catch {
+        throw new Error("hosted_pool_render_response_invalid");
+      }
+    } catch (error) {
+      if (timedOut)
+        // Provider errors may contain URLs, headers, or response bodies.
+        // eslint-disable-next-line preserve-caught-error
+        throw new Error("hosted_pool_render_timeout");
+      if (
+        error instanceof Error &&
+        error.message.startsWith("hosted_pool_render_response_")
+      )
+        throw error;
+      // Provider errors may contain URLs, headers, or response bodies.
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("hosted_pool_render_request_failed");
+    } finally {
+      clearTimeout(timer);
+    }
   };
   const readService = async (id: string) => {
     const index = input.serviceIds.indexOf(id);
@@ -545,11 +670,158 @@ export function createRenderHostedPoolControlPort(input: {
   };
   return {
     readRuntimeGate,
+    async ensureRuntimeClosure(gate, reasonCode, changedByHash) {
+      const reasonHash = createHash("sha256")
+        .update(reasonCode, "utf8")
+        .digest("hex");
+      await prisma.$transaction(async (transaction) => {
+        const lockedGate = await transaction.$queryRaw<
+          Array<{ status: string; revision: bigint; authzEpoch: bigint }>
+        >`
+          SELECT "status"::text AS "status", "revision", "authzEpoch"
+          FROM "HostedCodexRuntimeGate"
+          WHERE "id" = 'global'
+          FOR UPDATE
+        `;
+        if (
+          lockedGate.length !== 1 ||
+          lockedGate[0]!.status !== "closed" ||
+          lockedGate[0]!.revision !== BigInt(gate.revision) ||
+          lockedGate[0]!.authzEpoch !== BigInt(gate.authzEpoch)
+        )
+          throw new Error("hosted_pool_runtime_closure_gate_mismatch");
+        await transaction.hostedCodexRuntimeClosure.upsert({
+          where: { gateRevision: BigInt(gate.revision) },
+          create: {
+            id: `runtime-closure-${gate.revision}`,
+            gateRevision: BigInt(gate.revision),
+            closedAuthzEpoch: BigInt(gate.authzEpoch),
+            actorHash: changedByHash,
+            reasonHash,
+            legacyBarrier: true,
+            legacyUnsafeUntil: new Date(0),
+          },
+          update: {},
+        });
+      });
+    },
+    async acknowledgeLegacyIssuerDrain(gate) {
+      await prisma.$transaction(async (transaction) => {
+        const lockedGate = await transaction.$queryRaw<
+          Array<{ status: string; revision: bigint; authzEpoch: bigint }>
+        >`
+          SELECT "status"::text AS "status", "revision", "authzEpoch"
+          FROM "HostedCodexRuntimeGate"
+          WHERE "id" = 'global'
+          FOR UPDATE
+        `;
+        if (
+          lockedGate.length !== 1 ||
+          lockedGate[0]!.status !== "closed" ||
+          lockedGate[0]!.revision !== BigInt(gate.revision) ||
+          lockedGate[0]!.authzEpoch !== BigInt(gate.authzEpoch)
+        )
+          throw new Error("hosted_pool_runtime_closure_gate_mismatch");
+        // This one-way acknowledgment starts the quarantine only after both
+        // admission-off service deployments have been observed by the drain.
+        const changed = await transaction.$executeRaw`
+          UPDATE "HostedCodexRuntimeClosure"
+          SET "legacyBarrier" = FALSE,
+              "legacyUnsafeUntil" = clock_timestamp() + INTERVAL '61 minutes 1 second',
+              "revision" = "revision" + 1
+          WHERE "gateRevision" = ${BigInt(gate.revision)}
+            AND "state" = 'draining'
+            AND "legacyBarrier"
+        `;
+        if (changed !== 1) {
+          const closure =
+            await transaction.hostedCodexRuntimeClosure.findUnique({
+              where: { gateRevision: BigInt(gate.revision) },
+              select: { state: true, legacyBarrier: true },
+            });
+          if (closure?.state !== "draining" || closure.legacyBarrier)
+            throw new Error("hosted_pool_runtime_closure_legacy_ack_conflict");
+        }
+      });
+    },
+    async assertRuntimeClosureComplete(gate) {
+      const closure = await prisma.hostedCodexRuntimeClosure.findUnique({
+        where: { gateRevision: BigInt(gate.revision) },
+        select: { state: true },
+      });
+      if (closure?.state !== "complete")
+        throw new Error("hosted_pool_runtime_closure_incomplete");
+    },
+    async readRuntimeClosure(gate) {
+      const closure = await prisma.hostedCodexRuntimeClosure.findUnique({
+        where: { gateRevision: BigInt(gate.revision) },
+        select: {
+          state: true,
+          legacyBarrier: true,
+          legacyUnsafeUntil: true,
+        },
+      });
+      return closure
+        ? {
+            state: closure.state,
+            legacyBarrier: closure.legacyBarrier,
+            legacyUnsafeUntil: closure.legacyUnsafeUntil,
+          }
+        : null;
+    },
+    async completeRuntimeClosure(gate) {
+      await prisma.$transaction(async (transaction) => {
+        const lockedGate = await transaction.$queryRaw<
+          Array<{
+            status: string;
+            revision: bigint;
+            authzEpoch: bigint;
+            now: Date;
+          }>
+        >`
+          SELECT "status"::text AS "status", "revision", "authzEpoch",
+                 clock_timestamp() AS "now"
+          FROM "HostedCodexRuntimeGate"
+          WHERE "id" = 'global'
+          FOR UPDATE
+        `;
+        if (
+          lockedGate.length !== 1 ||
+          lockedGate[0]!.status !== "closed" ||
+          lockedGate[0]!.revision !== BigInt(gate.revision) ||
+          lockedGate[0]!.authzEpoch !== BigInt(gate.authzEpoch)
+        )
+          throw new Error("hosted_pool_runtime_closure_gate_mismatch");
+        const changed = await transaction.hostedCodexRuntimeClosure.updateMany({
+          where: {
+            gateRevision: BigInt(gate.revision),
+            state: "draining",
+          },
+          data: {
+            state: "complete",
+            completedAt: lockedGate[0]!.now,
+            revision: { increment: 1 },
+          },
+        });
+        if (changed.count !== 1) {
+          const closure =
+            await transaction.hostedCodexRuntimeClosure.findUnique({
+              where: { gateRevision: BigInt(gate.revision) },
+              select: { state: true },
+            });
+          if (closure?.state !== "complete")
+            throw new Error("hosted_pool_runtime_closure_completion_conflict");
+        }
+      });
+    },
     async transitionRuntimeGate(transition) {
       if (!/^[1-9][0-9]*$/u.test(transition.expectedRevision))
         throw new Error("hosted_pool_runtime_gate_revision_invalid");
       if (!/^[a-f0-9]{64}$/u.test(transition.changedByHash))
         throw new Error("hosted_pool_runtime_gate_actor_invalid");
+      const reasonHash = createHash("sha256")
+        .update(transition.reasonCode, "utf8")
+        .digest("hex");
       const rows = await prisma.$queryRaw<
         Array<{
           status: string;
@@ -560,17 +832,30 @@ export function createRenderHostedPoolControlPort(input: {
           changedByHash: string;
         }>
       >`
+        WITH changed AS (
         UPDATE "HostedCodexRuntimeGate"
         SET "status" = CAST(${transition.status} AS "HostedCodexRuntimeGateStatus"),
             "authzEpoch" = "authzEpoch" + 1,
             "revision" = "revision" + 1,
             "reasonCode" = ${transition.reasonCode},
-            "changedAt" = ${transition.changedAt},
+            "changedAt" = GREATEST(
+              clock_timestamp(),
+              "changedAt" + INTERVAL '1 millisecond'
+            ),
             "changedByHash" = ${transition.changedByHash}
         WHERE "id" = 'global'
           AND "revision" = ${BigInt(transition.expectedRevision)}
-        RETURNING "status"::text AS "status", "authzEpoch", "revision",
-                  "reasonCode", "changedAt", "changedByHash"
+        RETURNING "status", "authzEpoch", "revision", "reasonCode", "changedAt", "changedByHash"
+        ), closure AS (
+          INSERT INTO "HostedCodexRuntimeClosure" (
+            "id", "gateRevision", "closedAuthzEpoch", "actorHash", "reasonHash", "legacyBarrier", "legacyUnsafeUntil"
+          )
+          SELECT 'runtime-closure-' || "revision", "revision", "authzEpoch", ${transition.changedByHash}, ${reasonHash}, TRUE, TIMESTAMP 'epoch'
+          FROM changed WHERE "status" = 'closed'
+          ON CONFLICT ("gateRevision") DO NOTHING
+          RETURNING "id"
+        )
+        SELECT "status"::text AS "status", "authzEpoch", "revision", "reasonCode", "changedAt", "changedByHash" FROM changed
       `;
       if (rows.length === 0) {
         const observed = await readRuntimeGate();
@@ -677,31 +962,100 @@ export function createRenderHostedPoolControlPort(input: {
       });
     },
     async counts() {
-      const [grants, unresolvedRequests, terminalUnknownRequests] =
-        await Promise.all([
-          prisma.hostedCodexInvocationGrant.aggregate({
-            where: { status: "issued" },
-            _sum: { inFlight: true },
-            _count: true,
-          }),
-          prisma.hostedCodexRelayRequest.count({
-            where: {
-              status: { in: ["received", "processing", "response_started"] },
-            },
-          }),
-          prisma.hostedCodexRelayRequest.count({
-            where: { status: "terminal_unknown" },
-          }),
-        ]);
+      const [
+        grants,
+        unresolvedRequests,
+        unresolvedMintAttempts,
+        terminalUnknownRequests,
+      ] = await Promise.all([
+        prisma.hostedCodexInvocationGrant.aggregate({
+          where: { status: "issued" },
+          _sum: { inFlight: true },
+          _count: true,
+        }),
+        prisma.hostedCodexRelayRequest.count({
+          where: {
+            status: { in: ["received", "processing", "response_started"] },
+          },
+        }),
+        prisma.hostedCodexCommentTokenMint.count({
+          where: {
+            OR: [
+              { state: "prepared" },
+              { state: "dispatching" },
+              { state: "outcome_unknown" },
+              { state: "issued" },
+              { state: "revoke_pending" },
+            ],
+          },
+        }),
+        prisma.hostedCodexRelayRequest.count({
+          where: { status: "terminal_unknown" },
+        }),
+      ]);
       return {
         inFlight: grants._sum.inFlight ?? 0,
         issuedGrants: grants._count,
         unresolvedRequests,
         terminalUnknownRequests,
+        unresolvedMintAttempts,
       };
     },
-    reconcileExpiredGrants: () =>
-      reconcileExpiredInvocationGrants({ now: new Date() }, invocationGrants),
+    async reconcileExpiredGrants() {
+      const now = new Date();
+      const ambiguityExpiryEvidence = createHash("sha256")
+        .update("provider_token_max_lifetime_elapsed", "utf8")
+        .digest("hex");
+      await prisma.$transaction([
+        prisma.$executeRaw`
+          UPDATE "HostedCodexCommentTokenMint" mint
+          SET "state" = 'failed_no_token',
+              "completedAt" = clock_timestamp(),
+              "terminalEvidenceHash" = ${ambiguityExpiryEvidence},
+              "errorCode" = 'prepare_lease_expired',
+              "revision" = mint."revision" + 1
+          WHERE mint."state" = 'prepared'
+            AND (mint."leaseExpiresAt" <= clock_timestamp() OR EXISTS (
+              SELECT 1 FROM "HostedCodexRuntimeGate" gate
+              WHERE gate."id" = 'global' AND gate."status" = 'closed'
+            ))
+        `,
+        prisma.$executeRaw`
+          UPDATE "HostedCodexCommentTokenMint" mint
+          SET "state" = 'outcome_unknown',
+              "errorCode" = 'dispatch_recovery_ambiguous',
+              "revision" = mint."revision" + 1
+          WHERE mint."state" = 'dispatching'
+            AND mint."unsafeUntil" <= clock_timestamp()
+        `,
+        prisma.$executeRaw`
+          UPDATE "HostedCodexCommentTokenMint" mint
+          SET "state" = 'expired',
+              "completedAt" = clock_timestamp(),
+              "terminalEvidenceHash" = ${ambiguityExpiryEvidence},
+              "errorCode" = 'provider_token_max_lifetime_elapsed',
+              "revision" = mint."revision" + 1
+          WHERE mint."state" = 'outcome_unknown'
+            AND mint."unsafeUntil" <= clock_timestamp()
+        `,
+        prisma.$executeRaw`
+          UPDATE "HostedCodexCommentTokenMint" mint
+          SET "state" = 'expired',
+              "completedAt" = clock_timestamp(),
+              "terminalEvidenceHash" = ${ambiguityExpiryEvidence},
+              "secretCiphertext" = NULL,
+              "secretEncryptedDataKey" = NULL,
+              "secretIv" = NULL,
+              "secretAuthTag" = NULL,
+              "secretKeyId" = NULL,
+              "secretAadHash" = NULL,
+              "revision" = mint."revision" + 1
+          WHERE mint."state" IN ('issued', 'revoke_pending')
+            AND GREATEST(mint."tokenExpiresAt" + INTERVAL '1 minute', mint."unsafeUntil") <= clock_timestamp()
+        `,
+      ]);
+      return reconcileExpiredInvocationGrants({ now }, invocationGrants);
+    },
     disconnect: () => prisma.$disconnect(),
   };
 }

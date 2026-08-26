@@ -29,8 +29,14 @@ export interface HostedCodexKmsAuditPort {
 }
 
 export interface AwsKmsClientPort {
-  send(command: EncryptCommand): Promise<EncryptCommandOutput>;
-  send(command: DecryptCommand): Promise<DecryptCommandOutput>;
+  send(
+    command: EncryptCommand,
+    options?: { abortSignal?: AbortSignal },
+  ): Promise<EncryptCommandOutput>;
+  send(
+    command: DecryptCommand,
+    options?: { abortSignal?: AbortSignal },
+  ): Promise<DecryptCommandOutput>;
 }
 
 /** AWS KMS envelope-key adapter. Provider plaintext is never sent to KMS. */
@@ -85,15 +91,20 @@ export class AwsKmsHostedCodexKeyring implements CredentialKeyringPort {
         input.context,
         "succeeded",
       );
-      return {
-        // Persist the canonical identity returned by KMS, never the request
-        // spelling. This prevents an alias repoint from silently changing the
-        // wrapping authority represented by an envelope.
-        keyId: canonicalKeyArn,
-        nonce: "",
-        ciphertext: Buffer.from(result.CiphertextBlob).toString("base64"),
-        authenticationTag: "",
-      };
+      const wrappedCiphertext = Buffer.from(result.CiphertextBlob);
+      try {
+        return {
+          // Persist the canonical identity returned by KMS, never the request
+          // spelling. This prevents an alias repoint from silently changing the
+          // wrapping authority represented by an envelope.
+          keyId: canonicalKeyArn,
+          nonce: "",
+          ciphertext: wrappedCiphertext.toString("base64"),
+          authenticationTag: "",
+        };
+      } finally {
+        wrappedCiphertext.fill(0);
+      }
     } catch (error) {
       await this.record(
         "wrap",
@@ -114,6 +125,7 @@ export class AwsKmsHostedCodexKeyring implements CredentialKeyringPort {
     readonly context: Parameters<
       CredentialKeyringPort["unwrapDataEncryptionKey"]
     >[0]["context"];
+    readonly signal?: AbortSignal;
   }): Promise<Uint8Array> {
     const keyId = requireKeyId(input.wrappedKey.keyId);
     const associatedDataHash = sha256(input.associatedData);
@@ -141,6 +153,7 @@ export class AwsKmsHostedCodexKeyring implements CredentialKeyringPort {
             associatedDataHash,
           ),
         }),
+        input.signal ? { abortSignal: input.signal } : undefined,
       );
       const kmsPlaintext = result.Plaintext;
       const canonicalKeyArn = requireKeyArn(result.KeyId ?? "");
@@ -301,6 +314,7 @@ export function requireKeyArn(value: string): string {
 function decodeBase64(value: string): Buffer {
   const decoded = Buffer.from(value, "base64");
   if (!value || decoded.toString("base64") !== value) {
+    decoded.fill(0);
     throw new Error("hosted_codex_kms_ciphertext_invalid");
   }
   return decoded;

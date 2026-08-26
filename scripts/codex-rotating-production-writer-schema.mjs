@@ -1,4 +1,6 @@
-// Exact PostgreSQL objects owned by migrations 000060 through 000064.
+// Exact PostgreSQL objects in the rotating-writer catalog. This includes
+// trigger functions installed by later migrations when they bind to a table
+// observed by the rotating-writer production capture.
 // Production capture and verification import this manifest independently of
 // migration execution so an omitted or unexpected catalog object fails closed.
 
@@ -1287,6 +1289,10 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
     "codex_oauth_sign_database_authority",
     "2ece5dafc439c426f32d929d9580fe9fbb7cd65a24ac8733f11a1cf64c3b018f",
   ),
+  functionBody(
+    "hosted_codex_comment_token_authority_revoke_enqueue",
+    "0013c1f97330dd16fe222cb1e58233f90c5459721725c919a0eab7f13353d2de",
+  ),
 ]);
 
 export const codexRotatingFunctions = Object.freeze(
@@ -1317,6 +1323,7 @@ export const codexRotatingTriggers = Object.freeze([
   "CodexOAuthWritebackIntent_identity_fence_guard",
   "CodexOAuthWritebackIntent_runtime_evidence_guard",
   "RepositoryConnection_codex_oauth_identity_guard",
+  "RepositoryConnection_comment_token_revoke",
   "RepositoryConnection_runtime_referential_action_guard",
 ]);
 

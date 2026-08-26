@@ -291,6 +291,11 @@ const preReleaseMigrationBoundary = Object.freeze({
     "000079_hosted_codex_output_limits",
     "000080_hosted_codex_attempt_generation",
     "000081_hosted_codex_runtime_gate",
+    "000082_validate_hosted_codex_output_limits",
+    "000083_hosted_codex_comment_token_mint_protocol",
+    "000084_harden_comment_token_custody",
+    "000085_comment_token_gate_lock_result",
+    "000086_comment_token_custody_r18_remediation",
   ]),
 });
 

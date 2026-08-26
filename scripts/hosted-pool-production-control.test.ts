@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   cancelOpenStagedFaultPlans,
+  createRenderHostedPoolControlPort,
   executeHostedPoolControl,
   type HostedPoolControlPort,
   type HostedPoolRuntimeGate,
@@ -69,6 +70,41 @@ function fixture(
 }
 
 describe("hosted pool production controls", () => {
+  it("aborts a hanging Render request and does not leak request secrets", async () => {
+    const apiKey = "render-secret-timeout-canary";
+    const aborts: AbortSignal[] = [];
+    const fetchImpl = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) =>
+        await new Promise<Response>((_resolve, reject) => {
+          if (!init?.signal) return;
+          aborts.push(init.signal);
+          init.signal.addEventListener(
+            "abort",
+            () => reject(new Error(`aborted:${apiKey}`)),
+            { once: true },
+          );
+        }),
+    );
+    const port = createRenderHostedPoolControlPort({
+      apiKey,
+      serviceIds: ["srv-api", "srv-web"],
+      databaseUrl: "postgresql://unused:unused@127.0.0.1:1/unused",
+      fetchImpl,
+      renderTimeoutMs: 5,
+    });
+    try {
+      const error = await port.readFlags().catch((value: unknown) => value);
+      expect(String(error)).toBe("Error: hosted_pool_render_timeout");
+      expect(String(error)).not.toContain(apiKey);
+      expect(aborts.length).toBeGreaterThan(0);
+      await vi.waitFor(() => {
+        expect(aborts.every((signal) => signal.aborted)).toBe(true);
+      });
+    } finally {
+      await port.disconnect();
+    }
+  });
+
   it("reconciles expired grants before each drain count", async () => {
     const calls: string[] = [];
     const { port } = fixture();
@@ -97,7 +133,17 @@ describe("hosted pool production controls", () => {
       now: () => new Date("2026-08-25T12:00:00.000Z"),
     });
 
-    expect(calls).toEqual(["count", "count", "reconcile", "count"]);
+    expect(calls).toEqual(["count", "count", "count", "reconcile", "count"]);
+    expect(result.events.map((event) => event.phase)).toEqual(
+      expect.arrayContaining(["runtime_gate_closed_first", "drain_poll"]),
+    );
+    expect(
+      result.events.findIndex(
+        (event) => event.phase === "runtime_gate_closed_first",
+      ),
+    ).toBeLessThan(
+      result.events.findIndex((event) => event.phase === "drain_poll"),
+    );
     expect(result.events).toContainEqual(
       expect.objectContaining({
         phase: "drain_poll",
@@ -105,6 +151,55 @@ describe("hosted pool production controls", () => {
         expiryReconciliationBatches: 2,
       }),
     );
+  });
+
+  it("resumes an existing closed-gate closure into durable quarantine after drain", async () => {
+    const { port } = fixture(undefined, "closed");
+    const ensureRuntimeClosure = vi.fn(async () => undefined);
+    const acknowledgeLegacyIssuerDrain = vi.fn(async () => undefined);
+    const completeRuntimeClosure = vi.fn(async () => undefined);
+    let legacyBarrier = true;
+    acknowledgeLegacyIssuerDrain.mockImplementationOnce(async () => {
+      legacyBarrier = false;
+    });
+    const result = await executeHostedPoolControl({
+      command: "drain",
+      execute: true,
+      confirmation: "EXECUTE HOSTED POOL DRAIN",
+      port: {
+        ...port,
+        ensureRuntimeClosure,
+        acknowledgeLegacyIssuerDrain,
+        completeRuntimeClosure,
+        readRuntimeClosure: vi.fn(async () => ({
+          state: "draining" as const,
+          legacyBarrier,
+          legacyUnsafeUntil: new Date("2099-01-01T00:00:00.000Z"),
+        })),
+      },
+    });
+    expect(port.transitionRuntimeGate).not.toHaveBeenCalled();
+    expect(ensureRuntimeClosure).toHaveBeenCalledOnce();
+    expect(acknowledgeLegacyIssuerDrain).toHaveBeenCalledOnce();
+    expect(completeRuntimeClosure).not.toHaveBeenCalled();
+    expect(result.result).toBe("waiting");
+    expect(ensureRuntimeClosure.mock.invocationCallOrder[0]).toBeLessThan(
+      acknowledgeLegacyIssuerDrain.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("does not start the legacy quarantine clock during an already-closed kill switch", async () => {
+    const { port } = fixture(undefined, "closed");
+    const ensureRuntimeClosure = vi.fn(async () => undefined);
+    const acknowledgeLegacyIssuerDrain = vi.fn(async () => undefined);
+    await executeHostedPoolControl({
+      command: "kill-switch",
+      execute: true,
+      confirmation: "EXECUTE HOSTED POOL KILL-SWITCH",
+      port: { ...port, ensureRuntimeClosure, acknowledgeLegacyIssuerDrain },
+    });
+    expect(ensureRuntimeClosure).toHaveBeenCalledOnce();
+    expect(acknowledgeLegacyIssuerDrain).not.toHaveBeenCalled();
   });
 
   it("keeps status observation read-only", async () => {
@@ -338,6 +433,69 @@ describe("hosted pool production controls", () => {
     ).rejects.toThrow("hosted_pool_admission_drain_timeout");
   });
 
+  it("keeps custody and recovery enabled when rollback drain fails", async () => {
+    const busy = {
+      inFlight: 1,
+      issuedGrants: 1,
+      unresolvedRequests: 1,
+      terminalUnknownRequests: 0,
+      unresolvedMintAttempts: 1,
+    };
+    const { port, calls } = fixture([busy]);
+    const failure = await executeHostedPoolControl({
+      command: "rollback",
+      execute: true,
+      confirmation: "EXECUTE HOSTED POOL ROLLBACK",
+      port,
+      sleep: async () => undefined,
+      maxDrainPolls: 1,
+    }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      message: "hosted_pool_rollback_aggregate_failure",
+      rollbackEvidence: expect.objectContaining({ result: "failed" }),
+    });
+    expect(calls).toContainEqual({
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
+    });
+    expect(calls).toContainEqual({
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0",
+    });
+    expect(calls).toContainEqual({
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0",
+    });
+    expect(calls).not.toContainEqual({
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0",
+    });
+    expect(calls).not.toContainEqual({
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0",
+    });
+
+    vi.mocked(port.counts).mockResolvedValue({
+      inFlight: 0,
+      issuedGrants: 0,
+      unresolvedRequests: 0,
+      terminalUnknownRequests: 0,
+      unresolvedMintAttempts: 0,
+    });
+    calls.length = 0;
+    await expect(
+      executeHostedPoolControl({
+        command: "rollback",
+        execute: true,
+        confirmation: "EXECUTE HOSTED POOL ROLLBACK",
+        port,
+        sleep: async () => undefined,
+        maxDrainPolls: 1,
+      }),
+    ).resolves.toMatchObject({ result: "executed" });
+    expect(calls).toContainEqual({
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0",
+    });
+    expect(calls).toContainEqual({
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0",
+    });
+  });
+
   it("does not declare a drain while an unused issued grant remains", async () => {
     const issued = {
       inFlight: 0,
@@ -457,9 +615,7 @@ describe("hosted pool production controls", () => {
       { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0" },
       { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0" },
       { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0" },
-      { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "0" },
-      { REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0" },
     ]);
-    expect(port.readFlags).toHaveBeenCalledTimes(8);
+    expect(port.readFlags).toHaveBeenCalledTimes(5);
   });
 });

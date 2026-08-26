@@ -2,6 +2,10 @@ import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
+import {
+  hostedCommentTokenDelivery,
+  type HostedCommentTokenDeliveryCarrier,
+} from "../../application/ports/hosted-comment-token-mint-ledger-port.js";
 
 export const hostedCodexGrantPath = "/api/action/v1/hosted-relay/grant";
 export const hostedCodexResponsesPath = "/api/action/v1/hosted-codex/responses";
@@ -20,7 +24,7 @@ const grantRequestSchema = z
 
 export type HostedCodexGrantRequest = z.infer<typeof grantRequestSchema>;
 
-export type HostedCodexGrantResponse = {
+export type HostedCodexGrantResponse = HostedCommentTokenDeliveryCarrier & {
   readonly protocolVersion: 1;
   readonly grant: string;
   readonly relayUrl: string;
@@ -50,11 +54,13 @@ export interface HostedCodexCommentTokenIssuerPort {
     readonly bindingId: string;
     readonly bindingVersion: number;
     readonly idempotencyKey: string;
-  }): Promise<{
-    readonly token: string;
-    readonly repository: string;
-    readonly expiresAt?: string;
-  }>;
+  }): Promise<
+    HostedCommentTokenDeliveryCarrier & {
+      readonly token: string;
+      readonly repository: string;
+      readonly expiresAt?: string;
+    }
+  >;
 }
 
 export type AuthorizedHostedCodexRelay = {
@@ -117,12 +123,23 @@ export type RegisterHostedCodexRelayRoutesDependencies = {
   readonly commentTokens: HostedCodexCommentTokenIssuerPort;
   readonly authorization: HostedCodexRelayAuthorizationPort;
   readonly relay: HostedCodexStreamingRelayPort;
+  /** Process-lifetime custody workers owned by this route composition. */
+  readonly shutdown?: () => void | Promise<void>;
+  readonly custodyHealth?: () => Readonly<{
+    status: "ok" | "degraded";
+    metrics: Readonly<Record<string, number | boolean | string | null>>;
+  }>;
 };
 
 export async function registerHostedCodexRelayRoutes(
   app: FastifyInstance,
   dependencies: RegisterHostedCodexRelayRoutesDependencies,
 ): Promise<void> {
+  if (dependencies.shutdown) {
+    app.addHook("onClose", async () => {
+      await dependencies.shutdown?.();
+    });
+  }
   if (!dependencies.enabled) return;
 
   app.post(hostedCodexGrantPath, async (request, reply) => {
@@ -130,7 +147,7 @@ export async function registerHostedCodexRelayRoutes(
       const response = await dependencies.grants.issue(
         grantRequestSchema.parse(request.body),
       );
-      return reply.header("cache-control", "no-store").send(response);
+      return sendCustodyResponse(reply, response);
     } catch (error) {
       return sendSafeError(reply, error, "grant");
     }
@@ -146,7 +163,8 @@ export async function registerHostedCodexRelayRoutes(
         })
         .strict()
         .parse(request.body);
-      return reply.header("cache-control", "no-store").send(
+      return sendCustodyResponse(
+        reply,
         await dependencies.commentTokens.issue({
           ...body,
           opaqueRefreshCapability: readBearerToken(request),
@@ -214,6 +232,25 @@ export async function registerHostedCodexRelayRoutes(
       }
     });
   });
+}
+
+function sendCustodyResponse<T extends HostedCommentTokenDeliveryCarrier>(
+  reply: FastifyReply,
+  response: T,
+) {
+  const release = response[hostedCommentTokenDelivery];
+  if (release) {
+    let released = false;
+    const releaseOnce = () => {
+      if (released) return;
+      released = true;
+      void release().catch(() => undefined);
+    };
+    // finish is the successful delivery boundary; close covers disconnects.
+    reply.raw.once("finish", releaseOnce);
+    reply.raw.once("close", releaseOnce);
+  }
+  return reply.header("cache-control", "no-store").send(response);
 }
 
 function readBearerToken(request: FastifyRequest): string {

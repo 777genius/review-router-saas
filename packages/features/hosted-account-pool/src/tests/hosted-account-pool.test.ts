@@ -5,7 +5,6 @@ import {
   bindRepositoryToHostedPool,
   classifyFailoverEligibility,
   consumeCommentTokenRefreshCapability,
-  consumeHostedCommentTokenRefreshCapability,
   coolDownHostedAccount,
   createDefaultHostedAccountPool,
   enrollHostedPoolAccount,
@@ -417,9 +416,6 @@ describe("invocation-bounded relay grant", () => {
               tokenHash: "sha256:comment-refresh-token-hash",
             };
           },
-          async consume() {
-            throw new Error("not used");
-          },
           async revoke() {
             throw new Error("not used");
           },
@@ -621,47 +617,6 @@ describe("invocation-bounded relay grant", () => {
         now: new Date("2026-08-15T10:06:00.000Z"),
       }).status,
     ).toBe("revoked");
-  });
-
-  it("replays a comment refresh idempotency key without consuming another use", async () => {
-    let stored = grantFixture([accountFixture("replay", 0)]);
-    const seen = new Set<string>();
-    const capabilities = {
-      async issue() {
-        throw new Error("not used");
-      },
-      async consume(
-        input: Parameters<
-          import("../index").CommentTokenRefreshCapabilityPort["consume"]
-        >[0],
-      ) {
-        if (seen.has(input.requestIdHash)) {
-          return { status: "replayed" as const, grant: stored };
-        }
-        seen.add(input.requestIdHash);
-        const result = input.transition(stored);
-        stored = result.grant;
-        return result;
-      },
-      async revoke() {
-        throw new Error("not used");
-      },
-    };
-    const input = {
-      grantId: stored.id,
-      presentedTokenHash: "a".repeat(64),
-      requestIdHash: "b".repeat(64),
-      now: new Date("2026-08-15T10:10:00.000Z"),
-    };
-    expect(
-      (await consumeHostedCommentTokenRefreshCapability(input, capabilities))
-        .status,
-    ).toBe("consumed");
-    expect(
-      (await consumeHostedCommentTokenRefreshCapability(input, capabilities))
-        .status,
-    ).toBe("replayed");
-    expect(stored.commentTokenRefreshCapability.useCount).toBe(1);
   });
 
   it("makes repeated request admission idempotent", () => {
