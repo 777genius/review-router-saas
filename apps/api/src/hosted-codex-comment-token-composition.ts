@@ -42,7 +42,10 @@ export class HostedCommentTokenEnvelopeVault implements HostedCommentTokenPrepar
       HostedCommentTokenPreparedSecretVaultPort["prepareSeal"]
     >[0],
   ) {
-    const prepared = await this.vault.prepareEncrypt(this.context(input));
+    const prepared = await this.vault.prepareEncrypt(
+      this.context(input),
+      input.signal,
+    );
     return {
       capture: (token: string) => {
         const plaintext = Buffer.from(token, "utf8");

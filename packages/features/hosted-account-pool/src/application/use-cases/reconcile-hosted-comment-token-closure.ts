@@ -4,6 +4,8 @@ import type {
   HostedCommentTokenRevocationProviderPort,
   HostedCommentTokenSecretVaultPort,
 } from "../ports/hosted-comment-token-mint-ledger-port";
+import { createCustodyDeadline } from "../custody-operation-deadline.js";
+import type { HostedCustodyReadiness } from "../ports/hosted-custody-readiness-port.js";
 
 export type HostedCommentTokenClosureReconcileResult = Readonly<{
   claimed: number;
@@ -64,38 +66,44 @@ export class HostedCommentTokenClosureReconciler {
       for (const claim of claims) {
         let plaintext: Uint8Array | undefined;
         try {
-          const vaultController = new AbortController();
-          const vaultTimer = setTimeout(
-            () => vaultController.abort(),
+          const vaultDeadline = createCustodyDeadline(
+            undefined,
             providerTimeoutMs,
           );
           try {
-            plaintext = await this.dependencies.vault.open({
-              mintId: claim.mintId,
-              workspaceId: claim.workspaceId,
-              poolId: claim.poolId,
-              envelope: claim.secretEnvelope,
-              signal: vaultController.signal,
-            });
+            plaintext = await vaultDeadline.run(
+              this.dependencies.vault.open({
+                mintId: claim.mintId,
+                workspaceId: claim.workspaceId,
+                poolId: claim.poolId,
+                envelope: claim.secretEnvelope,
+                signal: vaultDeadline.signal,
+              }),
+              (latePlaintext) => latePlaintext.fill(0),
+            );
           } finally {
-            clearTimeout(vaultTimer);
+            vaultDeadline.dispose();
           }
           if (sha256Bytes(plaintext) !== claim.tokenHash)
             throw new Error(
               "hosted_comment_token_revocation_secret_hash_mismatch",
             );
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), providerTimeoutMs);
+          const providerDeadline = createCustodyDeadline(
+            undefined,
+            providerTimeoutMs,
+          );
           let evidence: Awaited<
             ReturnType<HostedCommentTokenRevocationProviderPort["revoke"]>
           >;
           try {
-            evidence = await this.dependencies.provider.revoke({
-              token: new TextDecoder().decode(plaintext),
-              signal: controller.signal,
-            });
+            evidence = await providerDeadline.run(
+              this.dependencies.provider.revoke({
+                token: new TextDecoder().decode(plaintext),
+                signal: providerDeadline.signal,
+              }),
+            );
           } finally {
-            clearTimeout(timer);
+            providerDeadline.dispose();
           }
           await this.dependencies.ledger.finalizeRevoked({
             mintId: claim.mintId,
@@ -176,6 +184,7 @@ export function startHostedCommentTokenClosureReconciler(
   let attempts = 0;
   let successes = 0;
   let lastFailureAt: Date | null = null;
+  let lastSuccessAt: Date | null = null;
   let runStartedAt: Date | null = null;
   const overdueRunMs = Math.max(reconciler.maximumRunMs(), intervalMs * 12);
   const schedule = () => {
@@ -191,8 +200,12 @@ export function startHostedCommentTokenClosureReconciler(
       attempts += 1;
       runStartedAt = new Date();
       try {
-        await reconciler.reconcile();
+        const result = await reconciler.reconcile();
+        if (result.deferred > 0) {
+          throw new Error("hosted_comment_token_reconcile_deferred");
+        }
         successes += 1;
+        lastSuccessAt = new Date();
         consecutiveFailures = 0;
       } catch {
         consecutiveFailures = Math.min(consecutiveFailures + 1, 8);
@@ -213,18 +226,33 @@ export function startHostedCommentTokenClosureReconciler(
     await activeRun;
   }) as HostedCommentTokenClosureReconcilerHandle;
   stop.health = () => {
-    const overdue =
+    const activeRunOverdue =
       running &&
       runStartedAt !== null &&
       Date.now() - runStartedAt.getTime() >= overdueRunMs;
+    const successfulPassOverdue =
+      lastSuccessAt !== null &&
+      Date.now() - lastSuccessAt.getTime() >= overdueRunMs;
+    const overdue = activeRunOverdue || successfulPassOverdue;
+    const ready = successes > 0 && consecutiveFailures === 0 && !overdue;
+    const reason = overdue
+      ? "reconcile_overdue"
+      : consecutiveFailures > 0
+        ? "reconcile_failed"
+        : successes === 0
+          ? "initial_reconcile_pending"
+          : "ready";
     return {
-      status: consecutiveFailures >= 3 || overdue ? "degraded" : "ok",
+      ready,
+      status: ready ? "ok" : "degraded",
+      reason,
       metrics: {
         attempts,
         successes,
         consecutiveFailures,
         running,
         lastFailureAt: lastFailureAt?.toISOString() ?? null,
+        lastSuccessAt: lastSuccessAt?.toISOString() ?? null,
         overdue,
       },
     };
@@ -234,17 +262,18 @@ export function startHostedCommentTokenClosureReconciler(
 
 export type HostedCommentTokenClosureReconcilerHandle =
   (() => Promise<void>) & {
-    health(): Readonly<{
-      status: "ok" | "degraded";
-      metrics: Readonly<{
-        attempts: number;
-        successes: number;
-        consecutiveFailures: number;
-        running: boolean;
-        lastFailureAt: string | null;
-        overdue: boolean;
+    health(): HostedCustodyReadiness &
+      Readonly<{
+        metrics: Readonly<{
+          attempts: number;
+          successes: number;
+          consecutiveFailures: number;
+          running: boolean;
+          lastFailureAt: string | null;
+          lastSuccessAt: string | null;
+          overdue: boolean;
+        }>;
       }>;
-    }>;
   };
 
 function classifyRevocationFailure(error: unknown): string {

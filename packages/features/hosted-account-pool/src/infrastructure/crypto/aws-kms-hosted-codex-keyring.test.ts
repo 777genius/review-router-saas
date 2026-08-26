@@ -6,6 +6,7 @@ import {
 } from "./credential-envelope-vault.js";
 import {
   AwsKmsHostedCodexKeyring,
+  boundedCredentialProvider,
   createProductionAwsKmsHostedCodexKeyring,
 } from "./aws-kms-hosted-codex-keyring.js";
 
@@ -56,6 +57,7 @@ describe("AWS KMS hosted credential keyring", () => {
   it("binds wrapping to context, audits both operations, and restores", async () => {
     const dek = Buffer.alloc(32, 7);
     const encrypted = Buffer.from("opaque-kms-ciphertext");
+    const encryptedBase64 = encrypted.toString("base64");
     let kmsEncryptPlaintext: Uint8Array | undefined;
     let kmsDecryptPlaintext: Uint8Array | undefined;
     const send = vi.fn(async (command: EncryptCommand | DecryptCommand) => {
@@ -86,7 +88,7 @@ describe("AWS KMS hosted credential keyring", () => {
     });
     expect(wrapped).toMatchObject({
       keyId: keyArn,
-      ciphertext: encrypted.toString("base64"),
+      ciphertext: encryptedBase64,
     });
     expect(
       Buffer.from(
@@ -139,6 +141,101 @@ describe("AWS KMS hosted credential keyring", () => {
         context: kmsContext,
       }),
     ).rejects.toThrow("hosted_codex_kms_wrap_failed");
+  });
+
+  it("settles a hung KMS wrap, aborts transport, and zeroes the command DEK", async () => {
+    vi.useFakeTimers();
+    let commandPlaintext: Uint8Array | undefined;
+    let transportSignal: AbortSignal | undefined;
+    const send = vi.fn(
+      (command: EncryptCommand, options?: { abortSignal?: AbortSignal }) => {
+        commandPlaintext = command.input.Plaintext;
+        transportSignal = options?.abortSignal;
+        return new Promise<never>(() => undefined);
+      },
+    );
+    const keyring = new AwsKmsHostedCodexKeyring(
+      { send } as never,
+      keyArn,
+      { record: vi.fn() },
+      undefined,
+      10,
+    );
+    try {
+      const wrapping = keyring.wrapDataEncryptionKey({
+        dataEncryptionKey: Buffer.alloc(32, 9),
+        associatedData: Buffer.from("aad"),
+        context: kmsContext,
+      });
+      const rejection = expect(wrapping).rejects.toThrow(
+        "hosted_codex_kms_wrap_failed",
+      );
+      await vi.advanceTimersByTimeAsync(11);
+      await rejection;
+      expect(transportSignal?.aborted).toBe(true);
+      expect(commandPlaintext).toEqual(new Uint8Array(32));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds hung web-identity credential resolution", async () => {
+    vi.useFakeTimers();
+    const bounded = boundedCredentialProvider(
+      (() => new Promise<never>(() => undefined)) as never,
+      10,
+    );
+    try {
+      const resolving = bounded();
+      const rejection = expect(resolving).rejects.toThrow(
+        "hosted_codex_custody_timeout",
+      );
+      await vi.advanceTimersByTimeAsync(11);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("zeroes a late KMS decrypt plaintext after the caller timed out", async () => {
+    vi.useFakeTimers();
+    let resolveSend!: (value: { Plaintext: Uint8Array; KeyId: string }) => void;
+    const send = vi.fn(
+      () =>
+        new Promise<{ Plaintext: Uint8Array; KeyId: string }>((resolve) => {
+          resolveSend = resolve;
+        }),
+    );
+    const keyring = new AwsKmsHostedCodexKeyring(
+      { send } as never,
+      keyArn,
+      { record: vi.fn() },
+      undefined,
+      10,
+    );
+    const latePlaintext = Buffer.alloc(32, 17);
+    try {
+      const unwrapping = keyring.unwrapDataEncryptionKey({
+        wrappedKey: {
+          keyId: keyArn,
+          nonce: "",
+          ciphertext: Buffer.from("ciphertext").toString("base64"),
+          authenticationTag: "",
+        },
+        associatedData: Buffer.from("aad"),
+        context: kmsContext,
+      });
+      const rejection = expect(unwrapping).rejects.toThrow(
+        "hosted_codex_kms_unwrap_failed",
+      );
+      await vi.advanceTimersByTimeAsync(11);
+      await rejection;
+      resolveSend({ Plaintext: latePlaintext, KeyId: keyArn });
+      await Promise.resolve();
+      expect(latePlaintext).toEqual(Buffer.alloc(32));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects a mismatched immutable ARN returned by Decrypt", async () => {

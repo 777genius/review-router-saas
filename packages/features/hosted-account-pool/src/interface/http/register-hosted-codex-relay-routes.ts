@@ -6,6 +6,7 @@ import {
   hostedCommentTokenDelivery,
   type HostedCommentTokenDeliveryCarrier,
 } from "../../application/ports/hosted-comment-token-mint-ledger-port.js";
+import type { HostedCustodyReadiness } from "../../application/ports/hosted-custody-readiness-port.js";
 
 export const hostedCodexGrantPath = "/api/action/v1/hosted-relay/grant";
 export const hostedCodexResponsesPath = "/api/action/v1/hosted-codex/responses";
@@ -125,10 +126,7 @@ export type RegisterHostedCodexRelayRoutesDependencies = {
   readonly relay: HostedCodexStreamingRelayPort;
   /** Process-lifetime custody workers owned by this route composition. */
   readonly shutdown?: () => void | Promise<void>;
-  readonly custodyHealth?: () => Readonly<{
-    status: "ok" | "degraded";
-    metrics: Readonly<Record<string, number | boolean | string | null>>;
-  }>;
+  readonly custodyHealth?: () => HostedCustodyReadiness;
 };
 
 export async function registerHostedCodexRelayRoutes(

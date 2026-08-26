@@ -73,6 +73,43 @@ describe("HostedCodexCommentTokenIssuer durable protocol", () => {
     expect(provider.issueCommentToken).not.toHaveBeenCalled();
   });
 
+  it("bounds a replay vault that ignores abort and zeroes the loaded envelope", async () => {
+    vi.useFakeTimers();
+    const gate = gateFixture([]);
+    gate.prepare = vi
+      .fn()
+      .mockResolvedValue({ mintId: "same", state: "issued" });
+    const envelope = testEnvelope("github-token");
+    gate.replayAuthorized = vi.fn().mockResolvedValue({
+      tokenHash: createHash("sha256").update("github-token").digest("hex"),
+      tokenExpiresAt: new Date("2026-08-25T13:00:00.000Z"),
+      repositoryFullName: "acme/repo",
+      workspaceId: "workspace-1",
+      poolId: "pool-1",
+      secretEnvelope: envelope,
+    });
+    let replaySignal: AbortSignal | undefined;
+    const vault = {
+      prepareSeal: vi.fn(),
+      seal: vi.fn(),
+      open: vi.fn(({ signal }: { signal?: AbortSignal }) => {
+        replaySignal = signal;
+        return new Promise<never>(() => undefined);
+      }),
+    };
+
+    const pending = issuer(gate, providerFixture([]), vault).issue(request);
+    const rejected = expect(pending).rejects.toThrow(
+      "hosted_codex_custody_timeout",
+    );
+    await vi.waitFor(() => expect(vault.open).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(15_001);
+
+    await rejected;
+    expect(replaySignal?.aborted).toBe(true);
+    expectZeroEnvelope(envelope);
+  });
+
   it("rejects replay when the opened envelope does not match durable token evidence", async () => {
     const gate = gateFixture([]);
     gate.prepare = vi

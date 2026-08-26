@@ -5,6 +5,10 @@ import {
   createHmac,
   randomBytes,
 } from "node:crypto";
+import {
+  createCustodyDeadline,
+  defaultCustodyOperationTimeoutMs,
+} from "../../application/custody-operation-deadline.js";
 
 const algorithm = "aes-256-gcm" as const;
 const schemaVersion = 1 as const;
@@ -38,6 +42,7 @@ export interface CredentialKeyringPort {
     readonly dataEncryptionKey: Uint8Array;
     readonly associatedData: Uint8Array;
     readonly context: CredentialKeyringContext;
+    readonly signal?: AbortSignal;
   }): Promise<WrappedDataEncryptionKey>;
   unwrapDataEncryptionKey(input: {
     readonly wrappedKey: WrappedDataEncryptionKey;
@@ -69,6 +74,7 @@ export class CredentialEnvelopeVault {
   constructor(
     private readonly keyring: CredentialKeyringPort,
     private readonly purpose: CredentialKeyringContext["purpose"] = "relay",
+    private readonly operationTimeoutMs = defaultCustodyOperationTimeoutMs,
   ) {}
 
   get currentKeyId(): string {
@@ -78,8 +84,9 @@ export class CredentialEnvelopeVault {
   async encrypt(
     plaintext: Uint8Array,
     context: CredentialEnvelopeContext,
+    signal?: AbortSignal,
   ): Promise<EncryptedCredentialEnvelope> {
-    const prepared = await this.prepareEncrypt(context);
+    const prepared = await this.prepareEncrypt(context, signal);
     try {
       return prepared.capture(plaintext);
     } finally {
@@ -94,16 +101,20 @@ export class CredentialEnvelopeVault {
    */
   async prepareEncrypt(
     context: CredentialEnvelopeContext,
+    signal?: AbortSignal,
   ): Promise<PreparedCredentialEnvelopeCapture> {
     const associatedData = encodeAssociatedData(context);
     const dataEncryptionKey = randomBytes(32);
+    const deadline = createCustodyDeadline(signal, this.operationTimeoutMs);
     try {
-      const wrappedDataEncryptionKey = await this.keyring.wrapDataEncryptionKey(
-        {
+      deadline.signal.throwIfAborted();
+      const wrappedDataEncryptionKey = await deadline.run(
+        this.keyring.wrapDataEncryptionKey({
           dataEncryptionKey,
           associatedData,
           context: this.keyringContext(context),
-        },
+          signal: deadline.signal,
+        }),
       );
       if (wrappedDataEncryptionKey.keyId !== this.keyring.currentKeyId) {
         throw new Error("credential_keyring_current_key_mismatch");
@@ -155,6 +166,8 @@ export class CredentialEnvelopeVault {
       dataEncryptionKey.fill(0);
       associatedData.fill(0);
       throw error;
+    } finally {
+      deadline.dispose();
     }
   }
 
@@ -171,12 +184,14 @@ export class CredentialEnvelopeVault {
       throw new Error("credential_envelope_unsupported");
     }
     const associatedData = encodeAssociatedData(context);
+    const deadline = createCustodyDeadline(signal, this.operationTimeoutMs);
     let ciphertext: Buffer | undefined;
     let nonce: Buffer | undefined;
     let authenticationTag: Buffer | undefined;
     let unwrappedDataEncryptionKey: Uint8Array | undefined;
     let dataEncryptionKey: Buffer | undefined;
     try {
+      deadline.signal.throwIfAborted();
       if (sha256(associatedData) !== envelope.associatedDataHash)
         throw new Error("credential_envelope_context_mismatch");
       ciphertext = decodeBase64(envelope.ciphertext);
@@ -184,12 +199,15 @@ export class CredentialEnvelopeVault {
         throw new Error("credential_envelope_ciphertext_corrupt");
       nonce = decodeBase64(envelope.nonce);
       authenticationTag = decodeBase64(envelope.authenticationTag);
-      unwrappedDataEncryptionKey = await this.keyring.unwrapDataEncryptionKey({
-        wrappedKey: envelope.wrappedDataEncryptionKey,
-        associatedData,
-        context: this.keyringContext(context),
-        ...(signal ? { signal } : {}),
-      });
+      unwrappedDataEncryptionKey = await deadline.run(
+        this.keyring.unwrapDataEncryptionKey({
+          wrappedKey: envelope.wrappedDataEncryptionKey,
+          associatedData,
+          context: this.keyringContext(context),
+          signal: deadline.signal,
+        }),
+        (lateKey) => lateKey.fill(0),
+      );
       dataEncryptionKey = Buffer.from(unwrappedDataEncryptionKey);
       if (dataEncryptionKey.byteLength !== 32)
         throw new Error("credential_data_key_invalid");
@@ -212,6 +230,7 @@ export class CredentialEnvelopeVault {
         cause: error,
       });
     } finally {
+      deadline.dispose();
       dataEncryptionKey?.fill(0);
       unwrappedDataEncryptionKey?.fill(0);
       authenticationTag?.fill(0);
@@ -225,27 +244,35 @@ export class CredentialEnvelopeVault {
   async rewrap(
     envelope: EncryptedCredentialEnvelope,
     context: CredentialEnvelopeContext,
+    signal?: AbortSignal,
   ): Promise<EncryptedCredentialEnvelope> {
     const associatedData = encodeAssociatedData(context);
+    const deadline = createCustodyDeadline(signal, this.operationTimeoutMs);
     let unwrappedDataEncryptionKey: Uint8Array | undefined;
     let dataEncryptionKey: Buffer | undefined;
     try {
+      deadline.signal.throwIfAborted();
       if (sha256(associatedData) !== envelope.associatedDataHash)
         throw new Error("credential_envelope_context_mismatch");
-      unwrappedDataEncryptionKey = await this.keyring.unwrapDataEncryptionKey({
-        wrappedKey: envelope.wrappedDataEncryptionKey,
-        associatedData,
-        context: this.keyringContext(context),
-      });
+      unwrappedDataEncryptionKey = await deadline.run(
+        this.keyring.unwrapDataEncryptionKey({
+          wrappedKey: envelope.wrappedDataEncryptionKey,
+          associatedData,
+          context: this.keyringContext(context),
+          signal: deadline.signal,
+        }),
+        (lateKey) => lateKey.fill(0),
+      );
       dataEncryptionKey = Buffer.from(unwrappedDataEncryptionKey);
       if (dataEncryptionKey.byteLength !== 32)
         throw new Error("credential_data_key_invalid");
-      const wrappedDataEncryptionKey = await this.keyring.wrapDataEncryptionKey(
-        {
+      const wrappedDataEncryptionKey = await deadline.run(
+        this.keyring.wrapDataEncryptionKey({
           dataEncryptionKey,
           associatedData,
           context: this.keyringContext(context),
-        },
+          signal: deadline.signal,
+        }),
       );
       if (wrappedDataEncryptionKey.keyId !== this.keyring.currentKeyId) {
         throw new Error("credential_keyring_current_key_mismatch");
@@ -256,6 +283,7 @@ export class CredentialEnvelopeVault {
         wrappedDataEncryptionKey,
       };
     } finally {
+      deadline.dispose();
       dataEncryptionKey?.fill(0);
       unwrappedDataEncryptionKey?.fill(0);
       associatedData.fill(0);

@@ -17,6 +17,7 @@ import {
   PrismaHostedCodexUpstreamEffectLedger,
   startHostedCodexEffectSweeper,
   type RegisterHostedCodexRelayRoutesDependencies,
+  assertHostedCustodyReady,
 } from "@reviewrouter/features-hosted-account-pool";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
@@ -69,8 +70,25 @@ export function composeHostedCodexRelayRoutes(input: {
     ...input.dependencies,
     enabled: flags.custody && flags.relay,
     grants: flags.admission
-      ? input.dependencies.grants
+      ? input.dependencies.custodyHealth
+        ? {
+            async issue(request) {
+              assertHostedCustodyReady(input.dependencies.custodyHealth!());
+              return input.dependencies.grants.issue(request);
+            },
+          }
+        : closedCustodyReadinessGrantIssuer
       : closedAdmissionGrantIssuer,
+    commentTokens: flags.admission
+      ? input.dependencies.custodyHealth
+        ? {
+            async issue(request) {
+              assertHostedCustodyReady(input.dependencies.custodyHealth!());
+              return input.dependencies.commentTokens.issue(request);
+            },
+          }
+        : closedCustodyReadinessCommentTokenIssuer
+      : closedAdmissionCommentTokenIssuer,
   };
 }
 
@@ -220,12 +238,20 @@ export async function composeProductionHostedCodexRelayRoutes(input: {
     grants: flags.admission
       ? {
           async issue(request) {
+            assertHostedCustodyReady(custodyReconciler.health());
             await restore.assertRelayReady();
             return grants!.issue(request);
           },
         }
       : closedAdmissionGrantIssuer,
-    commentTokens: durableCommentTokens,
+    commentTokens: flags.admission
+      ? {
+          async issue(request) {
+            assertHostedCustodyReady(custodyReconciler.health());
+            return durableCommentTokens.issue(request);
+          },
+        }
+      : closedAdmissionCommentTokenIssuer,
     authorization: {
       async authorize(request) {
         await restore.assertRelayReady();
@@ -249,6 +275,21 @@ const closedAdmissionGrantIssuer = Object.freeze({
     throw new Error("hosted_codex_admission_unavailable");
   },
 });
+
+const closedAdmissionCommentTokenIssuer = Object.freeze({
+  async issue(): Promise<never> {
+    throw new Error("hosted_codex_admission_unavailable");
+  },
+});
+
+const closedCustodyReadinessGrantIssuer = Object.freeze({
+  async issue(): Promise<never> {
+    throw new Error("hosted_codex_custody_readiness_unavailable");
+  },
+});
+
+const closedCustodyReadinessCommentTokenIssuer =
+  closedCustodyReadinessGrantIssuer;
 
 export function composeProductionHostedCodexRestoreReconciler(input: {
   readonly prisma: PrismaClient;

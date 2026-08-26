@@ -62,6 +62,39 @@ describe("hosted Codex relay feature flags", () => {
     expect(composed.relay).toBe(dependencies.relay);
   });
 
+  it("rejects grant and token admission through the shared custody readiness contract", async () => {
+    const grant = vi.fn();
+    const token = vi.fn();
+    const composed = composeHostedCodexRelayRoutes({
+      env: {
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "1",
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "1",
+      },
+      dependencies: {
+        grants: { issue: grant },
+        commentTokens: { issue: token },
+        authorization: {} as never,
+        relay: {} as never,
+        custodyHealth: () => ({
+          ready: false,
+          status: "degraded",
+          reason: "initial_reconcile_pending",
+          metrics: {},
+        }),
+      },
+    });
+    await expect(composed.grants.issue({} as never)).rejects.toThrow(
+      "hosted_codex_custody_not_ready:initial_reconcile_pending",
+    );
+    await expect(composed.commentTokens.issue({} as never)).rejects.toThrow(
+      "hosted_codex_custody_not_ready:initial_reconcile_pending",
+    );
+    expect(grant).not.toHaveBeenCalled();
+    expect(token).not.toHaveBeenCalled();
+  });
+
   it("starts custody recovery even while relay serving is disabled", async () => {
     const transaction = vi.fn(async () => {
       throw new Error("expected-disposable-database-unavailable");
