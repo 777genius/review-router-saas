@@ -200,9 +200,9 @@ describe("disposable dual-version rehearsal", () => {
     ).toBe("release migration executor runtime connect gate mismatch");
     expect(
       safePostgresErrorClassification(
-        "psql: ERROR:  P0001: release migration V70-V73 live catalog digest mismatch: internal context redacted\nDETAIL: token=secret",
+        "psql: ERROR:  P0001: release migration V70-V86 live catalog digest mismatch: internal context redacted\nDETAIL: token=secret",
       ),
-    ).toBe("release migration v70-v73 live catalog digest mismatch");
+    ).toBe("release migration v70-v86 live catalog digest mismatch");
     expect(
       safePostgresErrorClassification(
         `psql: ERROR:  P0001: release migration target live completion mismatch:catalog_digest_observed\nDETAIL: expected=sha256:${"1".repeat(64)} observed=sha256:${"2".repeat(64)}\nCONTEXT: token=secret`,

@@ -612,7 +612,7 @@ const safeReleaseMigrationInvariantMessages = Object.freeze([
   "release migration unresolved history",
   "release migration V72 catalog postcondition missing",
   "release migration V72 routine security invalid",
-  "release migration V70-V73 live catalog digest mismatch",
+  "release migration V70-V86 live catalog digest mismatch",
 ]);
 
 const safeReleaseAuthorityInvariantMessages = Object.freeze([

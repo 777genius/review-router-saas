@@ -10,20 +10,20 @@ import {
 } from "./promote-private-pg17-activation-catalog-policy.mjs";
 
 describe("activation catalog policy promotion", () => {
-  it("pins the exact reviewed v28 candidate and operator opt-in", () => {
+  it("pins the exact reviewed v29 candidate and operator opt-in", () => {
     expect(activationCatalogPromotionOptIn).toBe(
-      "promote-reviewed-activation-catalog-v28",
+      "promote-reviewed-activation-catalog-v29",
     );
     expect(reviewedActivationCatalogCandidate).toEqual({
       sha256:
-        "ba51051d9407b4ca7b6b9c6ce74210f9ef70556e5df23512c4364024ef0800a9",
-      bytes: 2_506_590,
+        "bd6aba2349266bb8165c64d309ba537c0d63846c58c425b040ed408f857ebe62",
+      bytes: 2_627_574,
       preactivationCatalogPolicySha256:
-        "sha256:95591a9df4dd88afe9a9a10118bf11b7e5ec4694748f8262de124d5f7ba7fd59",
+        "sha256:7d511ef69e73cb040ce164de5914f8129f956ff9a351840391b0c1937958c787",
       activatedCatalogPolicySha256:
-        "sha256:6c8f40abc68b063b835289d3d42f7ee07d9769baf269c5b05fb85db72c8cb3a0",
+        "sha256:c2981e22c9095572a396c81acbab316ae643a5d4305a113cfeff2327f7e57c47",
       artifactCanonicalSha256:
-        "sha256:bb528f22b531f212641ecebdb5ea8d0b851f0291a8c830d5bb41c88b348ccb57",
+        "sha256:ac627f7d9bb37e15ba790082586ce3b84e8c4d19361f517ba59e0d46441d3b0c",
     });
   });
 

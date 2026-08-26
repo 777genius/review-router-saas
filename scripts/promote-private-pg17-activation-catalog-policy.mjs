@@ -34,11 +34,11 @@ export const activationCatalogPromotionProvenancePath = resolve(
 );
 export const activationCatalogIndependentReviewPath = resolve(
   repositoryRoot,
-  "docs/release-evidence/activation-catalog-policy-v28-independent-review.md",
+  "docs/release-evidence/activation-catalog-policy-v29-independent-review.md",
 );
 export const activationCatalogReviewerEvidencePath = resolve(
   repositoryRoot,
-  "docs/release-evidence/activation-catalog-policy-v28-reviewer-runtime.json",
+  "docs/release-evidence/activation-catalog-policy-v29-reviewer-runtime.json",
 );
 
 export function assertReviewedActivationCatalogPromotionProvenance(value) {
@@ -102,12 +102,14 @@ export async function assertActivationCatalogPolicyIndependentReviewEvidence(
     !report.includes("## Verdict: GO") ||
     !report.includes(expectation.auditedHead) ||
     !report.includes(expectation.reviewDecisionId) ||
-    !report.includes(`2,506,590`) ||
+    !report.includes(`2,627,574`) ||
     !report.includes(expectation.candidateSha256) ||
     !report.includes(expectation.preactivationCatalogPolicySha256) ||
     !report.includes(expectation.activatedCatalogPolicySha256) ||
     !report.includes(expectation.artifactCanonicalSha256) ||
-    !report.includes("run `32864736733`, attempt `1`, artifact `9569674329`") ||
+    !report.includes(
+      "run `33020660492`, attempt `1`, artifact ID `9626432342`",
+    ) ||
     reviewer?.status !== "done" ||
     reviewer?.provider !== "codex" ||
     reviewer?.runId !== expectation.reviewerRunId ||
@@ -116,14 +118,26 @@ export async function assertActivationCatalogPolicyIndependentReviewEvidence(
     !Array.isArray(reviewer.blockers) ||
     reviewer.blockers.length !== 0 ||
     !Array.isArray(reviewer.changedFiles) ||
-    canonicalJson(reviewer.changedFiles) !== canonicalJson(["REVIEW_V28.md"]) ||
+    canonicalJson(reviewer.changedFiles) !== canonicalJson(["REVIEW_V29.md"]) ||
     !reviewer.evidence.includes("safe_execution_status:completed") ||
     typeof outputSummary !== "string" ||
     (!outputSummary.includes("# Verdict: GO") &&
       !outputSummary.includes("**Verdict: GO**") &&
       !outputSummary.includes("Verdict: **GO**")) ||
     !outputSummary.includes(expectation.reviewDecisionId) ||
-    reviewer?.details?.baseCommit !== expectation.captureBaseCommit
+    reviewer?.details?.baseCommit !== expectation.captureBaseCommit ||
+    reviewer?.details?.model !== "gpt-5.6-sol" ||
+    reviewer?.details?.reasoningEffort !== "xhigh" ||
+    reviewer?.details?.serviceTier !== "fast" ||
+    reviewer?.details?.sandbox !== "read-only" ||
+    reviewer?.details?.networkAccess !== "disabled" ||
+    reviewer?.details?.auditedHead !== expectation.auditedHead ||
+    reviewer?.details?.captureRunId !== "33020660492" ||
+    reviewer?.details?.captureRunAttempt !== 1 ||
+    reviewer?.details?.captureArtifactId !== "9626432342" ||
+    reviewer?.details?.candidateBytes !== expectation.candidateBytes ||
+    reviewer?.details?.candidateSha256 !== expectation.candidateSha256 ||
+    reviewer?.details?.reviewDecisionId !== expectation.reviewDecisionId
   )
     throw new Error(
       "activation_catalog_policy_independent_review_evidence_invalid",

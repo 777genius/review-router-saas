@@ -140,7 +140,7 @@ kinds make projection fail closed. The built-in languages and tablespaces are
 accepted only in their immutable default shape. No catalog-local OID is admitted
 to the artifact.
 
-The promoted trust root is generated from the independently reviewed v28
+The promoted trust root is generated from the independently reviewed v29
 candidate. Immutable capture, image, phase-digest, audited-HEAD, and final-review
 evidence is recorded in the adjacent
 `activation-catalog-policy-provenance.json`. The immutable review report is
@@ -160,9 +160,9 @@ for the other. Review the complete diff, verify that no provider identity is
 present, then promote only the reviewed bytes with the exact operator opt-in:
 
 ```bash
-REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v28 \
+REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v29 \
   pnpm release-rollout:promote-activation-catalog-policy \
-  --candidate /secure/evidence/rr-activation-catalog-candidate-v28.json --write
+  --candidate /secure/evidence/rr-activation-catalog-candidate-v29.json --write
 ```
 
 Omit `--write` to verify that the checked-in generated module is byte-exact.
@@ -721,7 +721,7 @@ REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY="$REPOSITORY" \
 The release artifact fixes one `ReleaseMigrationTransitionV1` to the exact
 release commit, immutable image digest, ordered migration SQL checksums,
 migration bundle digest, exact pre-manifest, every exact crash-resume root,
-the exact 73-migration post-manifest, and the V72 catalog postcondition. The
+the exact post-manifest, and the V70-V86 catalog postcondition. The
 control plane derives this transition from its trusted release identity; a
 runner cannot submit or override an expected manifest.
 
@@ -730,7 +730,7 @@ generation and returns one idempotent permit while the target is exactly at the
 pre-manifest. After a crash, `begin` reads the durable `migrating` phase without
 requiring the target to still be pre-migration, and the migration adapter
 verifies the permit, bundle, exact transition-owned resume root,
-post-manifest, and V72 objects while holding the migration lock; `complete`
+post-manifest, and V70-V86 objects while holding the migration lock; `complete`
 freshly attests the exact post-manifest and atomically stores the canonical
 `run_release_migration` receipt. A retry returns the same permit or canonical
 receipt. A SQL failure quarantines the target forward-only. Never edit the

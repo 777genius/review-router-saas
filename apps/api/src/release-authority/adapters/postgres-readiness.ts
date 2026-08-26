@@ -10,7 +10,7 @@ import {
   releaseAuthorityProviderTerminalTopologyExactExpression,
   releaseAuthorityRuntimeAclExactExpression,
 } from "./acl-policy-postgres.mjs";
-import { fencedLiveV70V73CatalogDigestSql } from "@reviewrouter/features-release-rollout/adapters/live-v70-v72-catalog-digest";
+import { fencedLiveV70V86CatalogDigestSql } from "@reviewrouter/features-release-rollout/adapters/live-v70-v72-catalog-digest";
 
 export type ReleaseAuthorityReadinessConnection = Pick<
   Prisma.TransactionClient,
@@ -865,7 +865,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
     >(Prisma.sql`
       SELECT reviewrouter_activation.read_activation_migration_manifest_identity()
         AS "applicationMigrationManifestIdentity",
-        (${Prisma.raw(fencedLiveV70V73CatalogDigestSql)})
+        (${Prisma.raw(fencedLiveV70V86CatalogDigestSql)})
         AS "applicationPostCatalogDigest"
     `);
     signal?.throwIfAborted();

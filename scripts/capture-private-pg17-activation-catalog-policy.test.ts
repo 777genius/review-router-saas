@@ -1,38 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { parsePrivatePg17ActivationCatalogPolicyCandidate } from "./capture-private-pg17-activation-catalog-policy.mjs";
-import { canonicalActivationPrincipalNames } from "../packages/features/release-rollout/src/domain/effective-principal-inventory.ts";
+import {
+  canonicalActivationPrincipalNames,
+  canonicalBootstrapMembershipRoleNames,
+} from "../packages/features/release-rollout/src/domain/effective-principal-inventory.ts";
 import { assertActivationCatalogPolicyNormalization } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-contract.ts";
 import { canonicalActivationCatalogArtifactSource } from "./promote-private-pg17-activation-catalog-policy.mjs";
-
-const pendingActivationCatalogPrincipalNames = [
-  "reviewrouter_activation_permit_installer",
-  "reviewrouter_activation_receipt_guard",
-  "reviewrouter_activation_receipt_reader",
-  "reviewrouter_api",
-  "reviewrouter_codex_effect_authority",
-  "reviewrouter_comment_token_custody",
-  "reviewrouter_release_migration",
-  "reviewrouter_release_schema_owner",
-  "reviewrouter_role_bootstrap",
-  "reviewrouter_web",
-  "reviewrouter_worker",
-] as const;
-
-const pendingActivationCatalogBootstrapMembershipRoleNames = [
-  "reviewrouter_api",
-  "reviewrouter_codex_effect_authority",
-  "reviewrouter_comment_token_custody",
-  "reviewrouter_release_migration",
-  "reviewrouter_web",
-  "reviewrouter_worker",
-] as const;
 
 const policy = (phase: "preactivation" | "activated") => ({
   kind: "reviewrouter-activation-catalog-policy",
   version: 1,
   phase,
   database: "review_router",
-  roles: pendingActivationCatalogPrincipalNames.map((name) => ({
+  roles: canonicalActivationPrincipalNames.map((name) => ({
     name,
     canLogin: ![
       "reviewrouter_activation_receipt_guard",
@@ -47,17 +27,15 @@ const policy = (phase: "preactivation" | "activated") => ({
     connectionLimit: -1,
     validUntil: null,
   })),
-  memberships: pendingActivationCatalogBootstrapMembershipRoleNames.map(
-    (role) => ({
-      member: "reviewrouter_role_bootstrap",
-      role,
-      setOption: false,
-      inheritOption: false,
-      adminOption: true,
-      grantor: { kind: "external-bootstrap-authority" },
-    }),
-  ),
-  roleReachability: pendingActivationCatalogPrincipalNames
+  memberships: canonicalBootstrapMembershipRoleNames.map((role) => ({
+    member: "reviewrouter_role_bootstrap",
+    role,
+    setOption: false,
+    inheritOption: false,
+    adminOption: true,
+    grantor: { kind: "external-bootstrap-authority" },
+  })),
+  roleReachability: canonicalActivationPrincipalNames
     .filter(
       (name) =>
         ![
@@ -74,23 +52,18 @@ const policy = (phase: "preactivation" | "activated") => ({
   rowSecurity: [] as Array<Record<string, unknown>>,
   extensions: [],
   grants: [],
-  effectivePermissions: pendingActivationCatalogPrincipalNames.map(
-    (principal) => ({
-      principal,
-      permissions: [] as Array<Record<string, unknown>>,
-    }),
-  ),
+  effectivePermissions: canonicalActivationPrincipalNames.map((principal) => ({
+    principal,
+    permissions: [] as Array<Record<string, unknown>>,
+  })),
 });
 
 const envelope = (preactivation: unknown, activated: unknown) =>
   `${JSON.stringify({ preactivation, activated })}\n`;
 
 describe("activation catalog policy candidate capture", () => {
-  it("accepts the exact pending topology while production rejects it", () => {
-    expect(pendingActivationCatalogPrincipalNames).toContain(
-      "reviewrouter_comment_token_custody",
-    );
-    expect(canonicalActivationPrincipalNames).not.toContain(
+  it("accepts the exact promoted production topology", () => {
+    expect(canonicalActivationPrincipalNames).toContain(
       "reviewrouter_comment_token_custody",
     );
     const candidate = parsePrivatePg17ActivationCatalogPolicyCandidate(
@@ -98,13 +71,13 @@ describe("activation catalog policy candidate capture", () => {
     );
     expect(
       candidate.policies.preactivation.roles.map(({ name }) => name),
-    ).toEqual(pendingActivationCatalogPrincipalNames);
+    ).toEqual(canonicalActivationPrincipalNames);
     expect(() =>
       assertActivationCatalogPolicyNormalization(
         candidate.policies.preactivation,
         "preactivation",
       ),
-    ).toThrow("activation_catalog_policy_normalization_invalid:preactivation");
+    ).not.toThrow();
   });
 
   it("cannot route captured candidate bytes directly into promotion", () => {

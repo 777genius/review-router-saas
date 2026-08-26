@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   liveV70V72CatalogDigestSha256 as fencedLiveV70V72CatalogDigestSha256,
   fencedLiveV70V72CatalogDigestSql,
+  liveV70V86CatalogDigestSha256 as fencedLiveV70V86CatalogDigestSha256,
+  fencedLiveV70V86CatalogDigestSql,
   liveV70V86CatalogDigestCaptureHold,
 } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
@@ -20,6 +22,8 @@ import {
   executeCanonicalRoleBootstrap,
   liveV70V72CatalogDigestSha256,
   liveV70V72CatalogDigestSql,
+  liveV70V86CatalogDigestSha256,
+  liveV70V86CatalogDigestSql,
   isActivationPrincipalRoleCapabilityPermitted,
   resolveReleaseMigrationConfiguration,
   resolveRoleBootstrapConfiguration,
@@ -826,6 +830,16 @@ describe("canonical exclusive release migration caller", () => {
     expect(liveV70V72CatalogDigestSha256).toBe(
       fencedLiveV70V72CatalogDigestSha256,
     );
+    expect(liveV70V86CatalogDigestSha256).toBe(
+      "sha256:1263f5c7c12179382cecf46ee434d530ede3763bbb0b9e43e658a352029f8961",
+    );
+    expect(liveV70V86CatalogDigestSha256).toBe(
+      fencedLiveV70V86CatalogDigestSha256,
+    );
+    expect(liveV70V86CatalogDigestSha256).toBe(
+      canonicalReleaseMigrationArtifact.postCatalogDigest,
+    );
+    expect(liveV70V86CatalogDigestSql).toBe(fencedLiveV70V86CatalogDigestSql);
     expect(fencedLiveV70V72CatalogDigestSql).toContain(
       "read_activation_migration_manifest_identity()",
     );
@@ -857,7 +871,7 @@ describe("canonical exclusive release migration caller", () => {
       expect(liveV70V72CatalogDigestSql).toContain(`'${custodyRoutine}'`);
     expect(liveV70V86CatalogDigestCaptureHold).toEqual({
       decision: "HOLD",
-      reason: "pg17_exact_catalog_capture_required_after_v86_projection_change",
+      reason: "v29_evidence_is_not_production_deployment_authorization",
     });
     expect(liveV70V72CatalogDigestSql).toContain(
       "relname='CodexOAuthWritebackIntent'",
@@ -872,7 +886,7 @@ describe("canonical exclusive release migration caller", () => {
       "pg_catalog.regexp_replace(\n              split_part(split_part(v::text,'/',1),'=',2),'[awdD]','','g'",
     );
     expect(atomicMigration).toContain(
-      "release migration V70-V73 live catalog digest mismatch",
+      "release migration V70-V86 live catalog digest mismatch",
     );
     const observationSql = canonicalRoleTopologyObservationSql();
     const createdRoleIdentities = [

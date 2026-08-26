@@ -1,0 +1,31 @@
+{
+  "status": "done",
+  "changedFiles": [
+    "REVIEW_V29.md"
+  ],
+  "evidence": [
+    "safe_execution_status:completed",
+    "output_summary:Verdict: **GO** Decision codex:activation-policy-v29:da0d56a73f36:bd6aba234926:go authorizes exact-byte mechanical promotion only."
+  ],
+  "blockers": [],
+  "schemaVersion": 1,
+  "provider": "codex",
+  "runId": "rr-pr227-v29-review-r44",
+  "taskId": "rr-pr227-v29-review-r44",
+  "details": {
+    "baseCommit": "da0d56a73f366d3372cf3c2ebacfe431c6d21ed1",
+    "model": "gpt-5.6-sol",
+    "reasoningEffort": "xhigh",
+    "serviceTier": "fast",
+    "sandbox": "read-only",
+    "networkAccess": "disabled",
+    "auditedHead": "da0d56a73f366d3372cf3c2ebacfe431c6d21ed1",
+    "captureRunId": "33020660492",
+    "captureRunAttempt": 1,
+    "captureArtifactId": "9626432342",
+    "candidateBytes": 2627574,
+    "candidateSha256": "bd6aba2349266bb8165c64d309ba537c0d63846c58c425b040ed408f857ebe62",
+    "reviewDecisionId": "codex:activation-policy-v29:da0d56a73f36:bd6aba234926:go"
+  },
+  "updatedAt": "2026-08-26T22:57:14.237Z"
+}

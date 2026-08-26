@@ -14,7 +14,7 @@ import {
 import {
   activationAuthorityProvisioningSql,
   executeCanonicalReleaseMigration,
-  liveV70V73CatalogDigestSha256,
+  liveV70V86CatalogDigestSha256,
   roleProvisioningSql,
   runtimeGrantStatements,
 } from "./run-codex-rotating-release-migration.mjs";
@@ -2925,7 +2925,7 @@ function installRehearsalMigrationPermit(
         ${quoteLiteral(permit.transitionSha256)},
         ${quoteLiteral(permit.previousReceiptSha256)},
         ${quoteLiteral(rehearsalPostManifestIdentitySha256)},
-        ${quoteLiteral(liveV70V73CatalogDigestSha256)},
+        ${quoteLiteral(liveV70V86CatalogDigestSha256)},
         ${quoteLiteral(JSON.stringify(sourceLegacyAmbiguity))}::jsonb,
         ${quoteLiteral(eligibilityCutoff)}::timestamptz,
         ${permit.epoch}::bigint,

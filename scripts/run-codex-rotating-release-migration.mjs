@@ -23,8 +23,8 @@ import {
 import { normalizeSecretSafePostgresArguments } from "./lib/secret-safe-command-boundary.mjs";
 import { effectivePrincipalInventorySql } from "../packages/features/release-rollout/src/adapters/effective-principal-postgres.mjs";
 import {
-  liveV70V73CatalogDigestSha256 as fencedLiveV70V73CatalogDigestSha256,
-  fencedLiveV70V73CatalogDigestSql,
+  liveV70V86CatalogDigestSha256 as fencedLiveV70V86CatalogDigestSha256,
+  fencedLiveV70V86CatalogDigestSql,
 } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 import {
   prepareLegacyAmbiguityReconciliation,
@@ -1571,7 +1571,7 @@ BEGIN
   INTO STRICT observed_manifest_identity FROM public._prisma_migrations
   WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL;
   SELECT digest INTO STRICT observed_catalog_digest
-  FROM (${fencedLiveV70V73CatalogDigestSql}) live(digest);
+  FROM (${fencedLiveV70V86CatalogDigestSql}) live(digest);
   IF observed_manifest_identity IS DISTINCT FROM
        current_permit.expected_post_manifest_identity THEN
     RAISE EXCEPTION
@@ -5041,15 +5041,17 @@ COMMIT;
 `;
 }
 
-/** Canonical projection of the live V70-V73 security catalog. */
-export const liveV70V73CatalogDigestSha256 =
-  fencedLiveV70V73CatalogDigestSha256;
-export const liveV70V73CatalogDigestSql = fencedLiveV70V73CatalogDigestSql;
+/** Canonical projection of the live V70-V86 security catalog. */
+export const liveV70V86CatalogDigestSha256 =
+  fencedLiveV70V86CatalogDigestSha256;
+export const liveV70V86CatalogDigestSql = fencedLiveV70V86CatalogDigestSql;
 
-export const liveV70V72CatalogDigestSha256 = liveV70V73CatalogDigestSha256;
-export const liveV70V72CatalogDigestSql = liveV70V73CatalogDigestSql;
+export const liveV70V73CatalogDigestSha256 = liveV70V86CatalogDigestSha256;
+export const liveV70V73CatalogDigestSql = liveV70V86CatalogDigestSql;
+export const liveV70V72CatalogDigestSha256 = liveV70V86CatalogDigestSha256;
+export const liveV70V72CatalogDigestSql = liveV70V86CatalogDigestSql;
 
-if (liveV70V73CatalogDigestSha256 !== fencedLiveV70V73CatalogDigestSha256)
+if (liveV70V86CatalogDigestSha256 !== fencedLiveV70V86CatalogDigestSha256)
   throw new Error("release_migration_fenced_catalog_projection_drift");
 
 export function releaseMigrationPermitFromEnv(env) {
@@ -5172,13 +5174,13 @@ BEGIN
       'public.reviewrouter_answer_runtime_canary_challenge(text,text,text,text,text,text)'::regprocedure
     ) AND NOT prosecdef
   ) THEN RAISE EXCEPTION 'release migration V72 routine security invalid'; END IF;
-  SELECT digest INTO STRICT catalog_digest FROM (${liveV70V73CatalogDigestSql}) live(digest);
+  SELECT digest INTO STRICT catalog_digest FROM (${liveV70V86CatalogDigestSql}) live(digest);
   SELECT reviewrouter_activation.read_migration_receipt(
     ${quoted(migrationPermit.rolloutId)},${migrationPermit.epoch}::bigint,
     ${quoted(migrationPermit.nonce)}
   )->>'postCatalogDigest' INTO STRICT receipt_catalog_digest;
   IF catalog_digest IS DISTINCT FROM receipt_catalog_digest
-    THEN RAISE EXCEPTION 'release migration V70-V73 live catalog digest mismatch'; END IF;
+    THEN RAISE EXCEPTION 'release migration V70-V86 live catalog digest mismatch'; END IF;
 END
 $phase_aware_manifest_postcondition$;
 COMMIT;

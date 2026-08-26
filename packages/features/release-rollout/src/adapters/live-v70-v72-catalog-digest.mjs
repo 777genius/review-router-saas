@@ -1,5 +1,5 @@
 /**
- * Canonical PostgreSQL projection of the live V70-V73 application catalog.
+ * Canonical PostgreSQL projection of the live V70-V86 application catalog.
  * Keep this in the Postgres adapter layer: the domain receives only its digest.
  */
 import { canonicalReleaseMigrationArtifact } from "../domain/release-migration-transition.ts";
@@ -14,7 +14,7 @@ const dynamicWriteAclPrincipalSql = dynamicWriteAclPrincipals
   .map((principal) => `'${principal}'`)
   .join(",");
 
-export const fencedLiveV70V73CatalogDigestSql = `
+export const fencedLiveV70V86CatalogDigestSql = `
 WITH selected_relations AS (
   SELECT c.oid, n.oid AS namespace_oid, n.nspname, c.relname, c.relkind,
     c.relowner, c.relacl, c.relrowsecurity, c.relforcerowsecurity,
@@ -194,18 +194,19 @@ WITH selected_relations AS (
 SELECT 'sha256:'||encode(pg_catalog.sha256(convert_to(value::text,'UTF8')),'hex')
 FROM facts`;
 
-// This remains the last independently captured value. The projection now
-// includes the V86 custody routines, so release promotion stays on HOLD until
-// the trusted PG17 capture path replaces this value and the transition receipt
-// in one reviewed evidence batch. Do not derive a catalog digest from SQL text.
+// This exact pinned-PG17 rehearsal observation does not authorize production.
+// Do not derive a catalog digest from SQL text or accept a fallback digest.
 export const liveV70V86CatalogDigestCaptureHold = Object.freeze({
   decision: "HOLD",
-  reason: "pg17_exact_catalog_capture_required_after_v86_projection_change",
+  reason: "v29_evidence_is_not_production_deployment_authorization",
 });
-export const liveV70V73CatalogDigestSha256 =
-  "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d";
+export const liveV70V86CatalogDigestSha256 =
+  canonicalReleaseMigrationArtifact.postCatalogDigest;
 
-// Compatibility aliases for existing external consumers during the V73 rollout.
+// Compatibility aliases expose the same single V70-V86 trust root.
+export const fencedLiveV70V73CatalogDigestSql =
+  fencedLiveV70V86CatalogDigestSql;
+export const liveV70V73CatalogDigestSha256 = liveV70V86CatalogDigestSha256;
 export const fencedLiveV70V72CatalogDigestSql =
-  fencedLiveV70V73CatalogDigestSql;
-export const liveV70V72CatalogDigestSha256 = liveV70V73CatalogDigestSha256;
+  fencedLiveV70V86CatalogDigestSql;
+export const liveV70V72CatalogDigestSha256 = liveV70V86CatalogDigestSha256;
