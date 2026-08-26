@@ -181,6 +181,95 @@ describe("hosted pool exact production evidence graph", () => {
     }
   });
 
+  it("times out Render deploy evidence and aborts every in-flight request", async () => {
+    const signals: AbortSignal[] = [];
+    const fetchImpl = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) =>
+        await new Promise<Response>((_resolve, reject) => {
+          if (!init?.signal) return;
+          signals.push(init.signal);
+          init.signal.addEventListener(
+            "abort",
+            () => reject(new Error("secret")),
+            {
+              once: true,
+            },
+          );
+        }),
+    );
+    const port = createRenderHostedPoolDeploymentEvidencePort({
+      apiKey: "render-token",
+      serviceIds: ["srv-api", "srv-web"],
+      fetchImpl,
+      renderTimeoutMs: 5,
+    });
+    await expect(port.readExactRevision("a".repeat(40))).rejects.toThrow(
+      "hosted_pool_render_evidence_timeout",
+    );
+    await vi.waitFor(() => {
+      expect(signals).toHaveLength(2);
+      expect(signals.every((signal) => signal.aborted)).toBe(true);
+    });
+  });
+
+  it("caps Render deploy evidence bodies and cancels overflow", async () => {
+    const cancellations: string[] = [];
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(1025));
+            },
+            cancel() {
+              cancellations.push("cancelled");
+            },
+          }),
+        ),
+    );
+    const port = createRenderHostedPoolDeploymentEvidencePort({
+      apiKey: "render-token",
+      serviceIds: ["srv-api", "srv-web"],
+      fetchImpl,
+      renderMaxResponseBytes: 1024,
+    });
+    await expect(port.readExactRevision("a".repeat(40))).rejects.toThrow(
+      "hosted_pool_render_evidence_response_too_large",
+    );
+    await vi.waitFor(() => expect(cancellations).toHaveLength(2));
+  });
+
+  it("clears Render evidence deadlines after successful bounded reads", async () => {
+    const releaseSha = "a".repeat(40);
+    const signals: AbortSignal[] = [];
+    const fetchImpl = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        if (init?.signal) signals.push(init.signal);
+        return new Response(
+          JSON.stringify([
+            {
+              deploy: {
+                id: "dep-live",
+                status: "live",
+                commit: { id: releaseSha },
+              },
+            },
+          ]),
+        );
+      },
+    );
+    const port = createRenderHostedPoolDeploymentEvidencePort({
+      apiKey: "render-token",
+      serviceIds: ["srv-api", "srv-web"],
+      fetchImpl,
+      renderTimeoutMs: 5,
+    });
+    await expect(port.readExactRevision(releaseSha)).resolves.toHaveLength(2);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(signals).toHaveLength(2);
+    expect(signals.every((signal) => !signal.aborted)).toBe(true);
+  });
+
   it("requires one grant, one request, and contiguous effects", async () => {
     const prisma = prismaFor([grant]);
     await expect(

@@ -1353,13 +1353,31 @@ describe("canonical exclusive release migration caller", () => {
       expect(grants).toContain(
         `GRANT SELECT ON TABLE public."RepositoryConnection" TO ${role}`,
       );
+      const runtimeAuthorityAclStart = grants.indexOf(
+        "DO $runtime_authority_acl$",
+        grants.indexOf(
+          `GRANT SELECT ON TABLE public."RepositoryConnection" TO ${role}`,
+        ),
+      );
+      const runtimeAuthorityAclEnd = grants.indexOf(
+        "$runtime_authority_acl$;",
+        runtimeAuthorityAclStart,
+      );
+      const runtimeAuthorityAcl = grants.slice(
+        runtimeAuthorityAclStart,
+        runtimeAuthorityAclEnd + "$runtime_authority_acl$;".length,
+      );
+      expect(runtimeAuthorityAclStart).toBeGreaterThan(-1);
+      expect(runtimeAuthorityAclEnd).toBeGreaterThan(runtimeAuthorityAclStart);
       for (const table of runtimeAuthorityReadOnlyTables) {
-        expect(grants).toContain(`'${table}'`);
+        expect(runtimeAuthorityAcl).toContain(`'${table}'`);
       }
-      expect(grants).toContain(
+      expect(runtimeAuthorityAcl).toContain(
         "'REVOKE INSERT, UPDATE, DELETE ON TABLE public.%I FROM %I'",
       );
-      expect(grants).toContain("'GRANT SELECT ON TABLE public.%I TO %I'");
+      expect(runtimeAuthorityAcl).toContain(
+        "'GRANT SELECT ON TABLE public.%I TO %I'",
+      );
       const genericGrant = grants.indexOf(
         `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
       );
