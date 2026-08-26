@@ -329,7 +329,11 @@ export async function createApiApp(
                 return {
                   name: "hosted-comment-token-custody",
                   status: health.status,
-                  metrics: health.metrics,
+                  metrics: {
+                    ...health.metrics,
+                    ready: health.ready,
+                    reason: health.reason,
+                  },
                 } as const;
               },
             },

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   HostedCommentTokenMintLedgerPort,
   HostedCommentTokenRevocationClaim,
+  HostedCommentTokenSecretVaultPort,
 } from "../application/ports/hosted-comment-token-mint-ledger-port";
 import {
   HostedCommentTokenClosureReconciler,
@@ -609,6 +610,50 @@ describe("HostedCommentTokenClosureReconciler", () => {
     }
   });
 
+  it("fails readiness closed before the first successful pass and after one degraded pass", async () => {
+    vi.useFakeTimers();
+    const ledger = ledgerFixture([]);
+    ledger.claimRevocations = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockRejectedValue(new Error("db down"));
+    const reconciler = new HostedCommentTokenClosureReconciler({
+      ledger,
+      provider: { revoke: vi.fn() },
+      now: () => now,
+      vault: { open: vi.fn(), seal: vi.fn() },
+    });
+    const handle = startHostedCommentTokenClosureReconciler(reconciler, 10);
+    try {
+      expect(handle.health()).toMatchObject({
+        ready: false,
+        status: "degraded",
+        reason: "initial_reconcile_pending",
+      });
+      await vi.waitFor(() =>
+        expect(handle.health().metrics.successes).toBe(1),
+      );
+      expect(handle.health()).toMatchObject({
+        ready: true,
+        status: "ok",
+        reason: "ready",
+      });
+
+      await vi.advanceTimersByTimeAsync(10);
+      await vi.waitFor(() =>
+        expect(handle.health().metrics.consecutiveFailures).toBe(1),
+      );
+      expect(handle.health()).toMatchObject({
+        ready: false,
+        status: "degraded",
+        reason: "reconcile_failed",
+      });
+    } finally {
+      await handle();
+      vi.useRealTimers();
+    }
+  });
+
   it("marks an overdue active run unhealthy instead of reporting false OK", async () => {
     vi.useFakeTimers();
     let release!: () => void;
@@ -638,6 +683,44 @@ describe("HostedCommentTokenClosureReconciler", () => {
       expect(handle.health().metrics.running).toBe(false);
     } finally {
       release();
+      await handle();
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets shutdown settle when a vault ignores abort and zeroes its envelope", async () => {
+    vi.useFakeTimers();
+    const ledger = ledgerFixture([]);
+    const vaultOpen = vi.fn(
+      (input: Parameters<HostedCommentTokenSecretVaultPort["open"]>[0]) => {
+        void input;
+        return new Promise<never>(() => undefined);
+      },
+    );
+    const reconciler = new HostedCommentTokenClosureReconciler({
+      ledger,
+      provider: { revoke: vi.fn() },
+      now: () => now,
+      providerTimeoutMs: 10,
+      vault: { open: vaultOpen, seal: vi.fn() },
+    });
+    const handle = startHostedCommentTokenClosureReconciler(reconciler, 10);
+    try {
+      await vi.waitFor(() => expect(vaultOpen).toHaveBeenCalledTimes(1));
+      const openedEnvelope = vaultOpen.mock.calls[0]![0].envelope;
+      const shutdown = handle();
+      await vi.advanceTimersByTimeAsync(11);
+      await expect(shutdown).resolves.toBeUndefined();
+      expect(openedEnvelope.ciphertext).toEqual(
+        Buffer.alloc(openedEnvelope.ciphertext.byteLength),
+      );
+      expect(handle.health()).toMatchObject({
+        ready: false,
+        status: "degraded",
+        reason: "reconcile_failed",
+        metrics: { successes: 0, running: false },
+      });
+    } finally {
       await handle();
       vi.useRealTimers();
     }

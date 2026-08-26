@@ -14,6 +14,7 @@ export * from "./application/ports/hosted-pool-query-port";
 export * from "./application/ports/hosted-credential-custody-port";
 export * from "./application/ports/hosted-codex-restore-permit-port";
 export * from "./application/ports/hosted-codex-canary-fault-plan-port";
+export * from "./application/ports/hosted-custody-readiness-port";
 export * from "./application/ports/repository-auth-mode-switch-port";
 export * from "./application/hosted-account-pool-dtos";
 export * from "./application/use-cases/manage-hosted-account-pool";

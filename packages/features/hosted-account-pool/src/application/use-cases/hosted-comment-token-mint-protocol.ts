@@ -5,6 +5,7 @@ import type {
   HostedCommentTokenPreparedSecretVaultPort,
 } from "../ports/hosted-comment-token-mint-ledger-port";
 import { hostedCommentTokenDelivery } from "../ports/hosted-comment-token-mint-ledger-port";
+import { createCustodyDeadline } from "../custody-operation-deadline.js";
 
 export interface HostedCommentTokenProviderPort {
   prepareCommentToken(input: {
@@ -157,13 +158,18 @@ export class HostedCommentTokenMintProtocol {
           mintId: prepared.mintId,
         });
         let plaintext: Uint8Array | undefined;
+        const replayDeadline = createCustodyDeadline(undefined, mintTimeoutMs);
         try {
-          plaintext = await this.dependencies.secretVault.open({
-            mintId: prepared.mintId,
-            workspaceId: replay.workspaceId,
-            poolId: replay.poolId,
-            envelope: replay.secretEnvelope,
-          });
+          plaintext = await replayDeadline.run(
+            this.dependencies.secretVault.open({
+              mintId: prepared.mintId,
+              workspaceId: replay.workspaceId,
+              poolId: replay.poolId,
+              envelope: replay.secretEnvelope,
+              signal: replayDeadline.signal,
+            }),
+            (latePlaintext) => latePlaintext.fill(0),
+          );
           if (sha256Bytes(plaintext) !== replay.tokenHash)
             throw new Error("hosted_comment_mint_replay_secret_hash_mismatch");
           // Vault I/O is deliberately before the final fence. No awaited work
@@ -194,6 +200,7 @@ export class HostedCommentTokenMintProtocol {
               }),
           };
         } finally {
+          replayDeadline.dispose();
           plaintext?.fill(0);
           zeroEnvelope(replay.secretEnvelope);
         }
@@ -231,12 +238,17 @@ export class HostedCommentTokenMintProtocol {
     let preparedCapture: Awaited<
       ReturnType<HostedCommentTokenPreparedSecretVaultPort["prepareSeal"]>
     >;
+    const captureDeadline = createCustodyDeadline(undefined, mintTimeoutMs);
     try {
-      preparedCapture = await this.dependencies.secretVault.prepareSeal({
-        mintId: executionAttemptId,
-        workspaceId: prepared.workspaceId,
-        poolId: prepared.poolId,
-      });
+      preparedCapture = await captureDeadline.run(
+        this.dependencies.secretVault.prepareSeal({
+          mintId: executionAttemptId,
+          workspaceId: prepared.workspaceId,
+          poolId: prepared.poolId,
+          signal: captureDeadline.signal,
+        }),
+        (lateCapture) => lateCapture.destroy(),
+      );
     } catch (error) {
       await this.mintLedger.releasePrepared({
         mintId: executionAttemptId,
@@ -246,6 +258,8 @@ export class HostedCommentTokenMintProtocol {
       throw new Error("hosted_comment_mint_capture_preflight_failed", {
         cause: error,
       });
+    } finally {
+      captureDeadline.dispose();
     }
 
     const dispatchStartedAt = this.dependencies.clock.now();

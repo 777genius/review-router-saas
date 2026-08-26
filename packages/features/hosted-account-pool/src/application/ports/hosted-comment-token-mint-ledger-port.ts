@@ -53,6 +53,7 @@ export interface HostedCommentTokenPreparedSecretVaultPort extends HostedComment
     readonly mintId: string;
     readonly workspaceId: string;
     readonly poolId: string;
+    readonly signal?: AbortSignal;
   }): Promise<
     Readonly<{
       capture(token: string): HostedCommentTokenSecretEnvelope;

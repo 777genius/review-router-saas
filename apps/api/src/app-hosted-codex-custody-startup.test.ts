@@ -55,4 +55,50 @@ describe("hosted Codex custody startup", () => {
       await app.close();
     }
   });
+
+  it("keeps liveness up while custody readiness fails closed before its first pass", async () => {
+    mocks.compose.mockResolvedValueOnce({
+      enabled: false,
+      custodyHealth: () => ({
+        ready: false,
+        status: "degraded",
+        reason: "initial_reconcile_pending",
+        metrics: { attempts: 1, successes: 0 },
+      }),
+    });
+    const app = await createApiApp({
+      prisma: {} as never,
+      commentTokenCustodyPrisma: {} as never,
+      reviewActionV2Env: {
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "1",
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: "1",
+        REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0",
+        GITHUB_APP_ID: "123",
+      },
+    });
+    try {
+      const [liveness, readiness] = await Promise.all([
+        app.inject({ method: "GET", url: "/health" }),
+        app.inject({ method: "GET", url: "/ready" }),
+      ]);
+      expect(liveness.statusCode).toBe(200);
+      expect(readiness.statusCode).toBe(503);
+      const body = readiness.json();
+      expect(body.status).toBe("degraded");
+      expect(
+        body.dependencies.find(
+          (dependency: { name: string }) =>
+            dependency.name === "hosted-comment-token-custody",
+        ),
+      ).toMatchObject({
+        status: "degraded",
+        metrics: {
+          ready: false,
+          reason: "initial_reconcile_pending",
+        },
+      });
+    } finally {
+      await app.close();
+    }
+  });
 });
