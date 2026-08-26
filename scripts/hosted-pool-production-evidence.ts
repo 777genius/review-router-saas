@@ -6,6 +6,7 @@ import type {
   HostedPoolGitHubRequestPort,
   HostedPoolPublicationEvidence,
 } from "./hosted-pool-production-ports";
+import { fetchBoundedJson } from "./lib/bounded-json-response.js";
 
 /** Reads the exact repository-binding-revision -> grant -> request -> effect graph. */
 export async function readExactHostedPoolRunEvidence(input: {
@@ -393,26 +394,41 @@ export function createRenderHostedPoolDeploymentEvidencePort(input: {
   apiKey: string;
   serviceIds: readonly [string, string];
   now?: () => Date;
+  fetchImpl?: typeof fetch;
+  renderTimeoutMs?: number;
+  renderMaxResponseBytes?: number;
 }): HostedPoolDeploymentEvidencePort {
+  const renderTimeoutMs = input.renderTimeoutMs ?? 10_000;
+  const renderMaxResponseBytes = input.renderMaxResponseBytes ?? 64 * 1024;
   return {
     async readExactRevision(expectedCommitSha) {
       if (!/^[a-f0-9]{40}$/u.test(expectedCommitSha))
         throw new Error("hosted_pool_render_expected_revision_invalid");
       return Promise.all(
         input.serviceIds.map(async (serviceId, index) => {
-          const response = await fetch(
-            `https://api.render.com/v1/services/${serviceId}/deploys?limit=1`,
-            {
+          const value: any = await fetchBoundedJson({
+            fetchImpl: input.fetchImpl ?? fetch,
+            url: `https://api.render.com/v1/services/${serviceId}/deploys?limit=1`,
+            init: {
               headers: {
                 Accept: "application/json",
                 Authorization: `Bearer ${input.apiKey}`,
               },
               redirect: "error",
             },
-          );
-          if (!response.ok)
-            throw new Error(`hosted_pool_render_${response.status}`);
-          const value: any = await response.json();
+            timeoutMs: renderTimeoutMs,
+            maxResponseBytes: renderMaxResponseBytes,
+            errors: {
+              timeout: "hosted_pool_render_evidence_timeout",
+              requestFailed: "hosted_pool_render_evidence_request_failed",
+              responseRejected: (status) => `hosted_pool_render_${status}`,
+              contentLengthInvalid:
+                "hosted_pool_render_evidence_content_length_invalid",
+              responseTooLarge:
+                "hosted_pool_render_evidence_response_too_large",
+              responseInvalid: "hosted_pool_render_evidence_response_invalid",
+            },
+          });
           const item = Array.isArray(value) ? value[0] : value?.deploys?.[0];
           const deploy = item?.deploy ?? item;
           const commitSha = String(deploy?.commit?.id ?? "").toLowerCase();

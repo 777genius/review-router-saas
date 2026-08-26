@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { canonicalPrismaMigrationCatalog } from "./lib/canonical-prisma-migration-catalog.mjs";
 
 const workflow = readFileSync(
   ".github/workflows/codex-rotating-release-migration.yml",
@@ -90,12 +91,45 @@ describe("Codex rotating release migration workflow", () => {
       "REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL",
     );
     expect(workflow).toContain(
-      '.latestMigration == "000086_comment_token_custody_r18_remediation"',
+      ".latestMigration == $canonical[0].latestMigration",
     );
-    expect(workflow).toContain(".appliedMigrationCount == 81");
+    expect(workflow).toContain(
+      ".appliedMigrationCount == $canonical[0].appliedMigrationCount",
+    );
+    expect(workflow).toContain("canonicalPrismaMigrationCatalog");
+    expect(canonicalPrismaMigrationCatalog).toEqual({
+      appliedMigrationCount: 88,
+      latestMigration: "000086_comment_token_custody_r18_remediation",
+    });
     expect(workflow).toContain(".runtimeRoleCount == 5");
     expect(workflow).toContain(".custodyFunction == true");
     expect(workflow).not.toMatch(/echo .*RR_CUSTODY_PASSWORD/u);
+  });
+
+  it("fences and drains custody sessions before installing the new password", () => {
+    const noLogin = workflow.indexOf(
+      "ALTER ROLE reviewrouter_comment_token_custody NOLOGIN;",
+    );
+    const commit = workflow.indexOf("COMMIT;", noLogin);
+    const terminate = workflow.indexOf(
+      "SELECT pg_terminate_backend(pid)",
+      commit,
+    );
+    const proveEmpty = workflow.indexOf(
+      "custody credential rotation retained an old backend",
+      terminate,
+    );
+    const begin = workflow.indexOf("BEGIN;", proveEmpty);
+    const rotate = workflow.indexOf(
+      "ALTER ROLE reviewrouter_comment_token_custody LOGIN NOCREATEROLE PASSWORD",
+      begin,
+    );
+    expect(noLogin).toBeGreaterThan(0);
+    expect(commit).toBeGreaterThan(noLogin);
+    expect(terminate).toBeGreaterThan(commit);
+    expect(proveEmpty).toBeGreaterThan(terminate);
+    expect(begin).toBeGreaterThan(proveEmpty);
+    expect(rotate).toBeGreaterThan(begin);
   });
 
   it("opens the global kill switch only after explicit confirmation", () => {

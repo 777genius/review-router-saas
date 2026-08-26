@@ -70,6 +70,127 @@ function fixture(
 }
 
 describe("hosted pool production controls", () => {
+  it("rejects oversized Render JSON from content-length and cancels the body", async () => {
+    const cancellations: string[] = [];
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream({
+            cancel() {
+              cancellations.push("cancelled");
+            },
+          }),
+          { status: 200, headers: { "content-length": "1025" } },
+        ),
+    );
+    const port = createRenderHostedPoolControlPort({
+      apiKey: "render-secret",
+      serviceIds: ["srv-api", "srv-web"],
+      databaseUrl: "postgresql://unused:unused@127.0.0.1:1/unused",
+      fetchImpl,
+      renderMaxResponseBytes: 1024,
+    });
+    try {
+      await expect(port.readFlags()).rejects.toThrow(
+        "hosted_pool_render_response_too_large",
+      );
+      await vi.waitFor(() => expect(cancellations.length).toBeGreaterThan(0));
+    } finally {
+      await port.disconnect();
+    }
+  });
+
+  it("rejects malformed Render content-length deterministically", async () => {
+    const cancellations: string[] = [];
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream({
+            cancel() {
+              cancellations.push("cancelled");
+            },
+          }),
+          { status: 200, headers: { "content-length": "unknown" } },
+        ),
+    );
+    const port = createRenderHostedPoolControlPort({
+      apiKey: "render-secret",
+      serviceIds: ["srv-api", "srv-web"],
+      databaseUrl: "postgresql://unused:unused@127.0.0.1:1/unused",
+      fetchImpl,
+    });
+    try {
+      await expect(port.readFlags()).rejects.toThrow(
+        "hosted_pool_render_response_content_length_invalid",
+      );
+      await vi.waitFor(() => expect(cancellations.length).toBeGreaterThan(0));
+    } finally {
+      await port.disconnect();
+    }
+  });
+
+  it("caps streamed Render JSON and cancels on overflow", async () => {
+    const cancellations: string[] = [];
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(1025));
+            },
+            cancel() {
+              cancellations.push("cancelled");
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    const port = createRenderHostedPoolControlPort({
+      apiKey: "render-secret",
+      serviceIds: ["srv-api", "srv-web"],
+      databaseUrl: "postgresql://unused:unused@127.0.0.1:1/unused",
+      fetchImpl,
+      renderMaxResponseBytes: 1024,
+    });
+    try {
+      await expect(port.readFlags()).rejects.toThrow(
+        "hosted_pool_render_response_too_large",
+      );
+      await vi.waitFor(() => expect(cancellations.length).toBeGreaterThan(0));
+    } finally {
+      await port.disconnect();
+    }
+  });
+
+  it("cancels rejected Render response bodies without reading them", async () => {
+    const cancellations: string[] = [];
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream({
+            cancel() {
+              cancellations.push("cancelled");
+            },
+          }),
+          { status: 503 },
+        ),
+    );
+    const port = createRenderHostedPoolControlPort({
+      apiKey: "render-secret",
+      serviceIds: ["srv-api", "srv-web"],
+      databaseUrl: "postgresql://unused:unused@127.0.0.1:1/unused",
+      fetchImpl,
+    });
+    try {
+      await expect(port.readFlags()).rejects.toThrow(
+        "hosted_pool_render_response_rejected:503",
+      );
+      await vi.waitFor(() => expect(cancellations.length).toBeGreaterThan(0));
+    } finally {
+      await port.disconnect();
+    }
+  });
+
   it("aborts a hanging Render request and does not leak request secrets", async () => {
     const apiKey = "render-secret-timeout-canary";
     const aborts: AbortSignal[] = [];

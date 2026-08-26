@@ -357,6 +357,24 @@ jobs:
           ALTER ROLE reviewrouter_web LOGIN NOCREATEROLE PASSWORD :'web_password';
           ALTER ROLE reviewrouter_worker LOGIN NOCREATEROLE PASSWORD :'worker_password';
           ALTER ROLE reviewrouter_codex_effect_authority LOGIN NOCREATEROLE PASSWORD :'effect_password';
+          ALTER ROLE reviewrouter_comment_token_custody NOLOGIN;
+          -- Commit the login fence before terminating existing sessions so an
+          -- old credential cannot race a reconnect during password rotation.
+          COMMIT;
+          SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+            WHERE usename = 'reviewrouter_comment_token_custody'
+              AND pid <> pg_backend_pid();
+          DO $custody_sessions$
+          BEGIN
+            IF EXISTS (
+              SELECT 1 FROM pg_stat_activity
+              WHERE usename = 'reviewrouter_comment_token_custody'
+            ) THEN
+              RAISE EXCEPTION 'custody credential rotation retained an old backend';
+            END IF;
+          END
+          $custody_sessions$;
+          BEGIN;
           ALTER ROLE reviewrouter_comment_token_custody LOGIN NOCREATEROLE PASSWORD :'custody_password';
           DO $membership$
           BEGIN
@@ -409,6 +427,11 @@ jobs:
           docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
             sh -ceu 'psql "$DATABASE_URL" --no-psqlrc --quiet --file=/work/runtime-grants.sql'
 
+          node --input-type=module <<'NODE' > "$work/canonical-migration-catalog.json"
+          import { canonicalPrismaMigrationCatalog } from "./scripts/lib/canonical-prisma-migration-catalog.mjs";
+          process.stdout.write(`${JSON.stringify(canonicalPrismaMigrationCatalog)}\n`);
+          NODE
+
           docker run --rm -e DATABASE_URL postgres:17-alpine \
             sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "
               SELECT json_build_object(
@@ -423,12 +446,12 @@ jobs:
                 '\''custodyFunction'\'', has_function_privilege('\''reviewrouter_comment_token_custody'\'', '\''public.hosted_codex_mutate_comment_token_mint(text,jsonb)'\'', '\''EXECUTE'\'')
               );
             "' > "$work/target-stats.json"
-          jq -e '
+          jq -e --slurpfile canonical "$work/canonical-migration-catalog.json" '
             .serverMajor == 17
             and .publicTableCount >= 110
-            and .appliedMigrationCount == 81
+            and .appliedMigrationCount == $canonical[0].appliedMigrationCount
             and .runtimeRoleCount == 5
-            and .latestMigration == "000086_comment_token_custody_r18_remediation"
+            and .latestMigration == $canonical[0].latestMigration
             and .publicConnect == false
             and .apiConnect == true
             and .effectFunction == true
