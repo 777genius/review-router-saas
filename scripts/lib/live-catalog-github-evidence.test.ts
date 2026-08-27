@@ -1,9 +1,14 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import canonicalArtifact from "../../packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js";
-import { gitBlobSha } from "./github-actions-trusted-evidence.mjs";
+import {
+  boundedGithubJson,
+  boundedGithubRequest,
+  gitBlobSha,
+} from "./github-actions-trusted-evidence.mjs";
 import {
   assertFreshProtectedMain,
+  buildLiveCatalogSourceClosure,
   collectLiveCatalogClaim,
 } from "./live-catalog-github-evidence.mjs";
 import {
@@ -103,6 +108,7 @@ function sourceFiles() {
     ["pnpm-lock.yaml", Buffer.from("lockfileVersion: '9.0'\n")],
     ["pnpm-workspace.yaml", Buffer.from("packages: []\n")],
     ["scripts/install-private-dependencies.mjs", empty],
+    ["scripts/run-with-env.mjs", empty],
     ["scripts/rehearse-private-pg17-rollout.mjs", empty],
     ["scripts/package-live-catalog-capture-evidence.mjs", empty],
     ["scripts/capture-private-pg17-activation-catalog-policy.mjs", empty],
@@ -113,6 +119,7 @@ function sourceFiles() {
     ["scripts/install-release-authority-db.mjs", empty],
     [LIVE_CATALOG_CONTRACT_PATH, readFileSync(LIVE_CATALOG_CONTRACT_PATH)],
     [LIVE_CATALOG_PROJECTION_PATH, projection],
+    ["packages/platform/db/prisma.config.ts", empty],
     [
       "packages/platform/db/prisma/schema.prisma",
       Buffer.from("generator client {}\n"),
@@ -121,6 +128,15 @@ function sourceFiles() {
       "packages/platform/db/prisma/migrations/000001_init/migration.sql",
       Buffer.from("SELECT 1;\n"),
     ],
+    [
+      "packages/platform/release-authority-db/legacy-catalog/000001_release_authority/migration.sql",
+      Buffer.from("SELECT 2;\n"),
+    ],
+    [
+      "packages/platform/release-authority-db/legacy-catalog/000002_external_effect_protocol/migration.sql",
+      Buffer.from("SELECT 3;\n"),
+    ],
+    ["docs/unrelated.txt", Buffer.from("unrelated\n")],
   ]);
 }
 
@@ -282,6 +298,51 @@ describe("authenticated producer evidence", () => {
     );
   });
 
+  it("binds dynamic execution inputs but excludes unrelated workspace bytes", async () => {
+    const getClosure = async (mutate?: (value: any) => void) => {
+      const fetchImpl = fixture(mutate) as any;
+      return buildLiveCatalogSourceClosure({
+        fetchImpl,
+        prefix,
+        token: "token",
+        commit,
+        treeSha,
+      });
+    };
+    const baseline = await getClosure();
+    const digest = (files: any[]) =>
+      files.map(({ path, sha256 }) => `${path}:${sha256}`).join("\n");
+    for (const relevant of [
+      "scripts/run-with-env.mjs",
+      "packages/platform/db/prisma.config.ts",
+      "packages/platform/release-authority-db/legacy-catalog/000001_release_authority/migration.sql",
+      "packages/platform/release-authority-db/legacy-catalog/000002_external_effect_protocol/migration.sql",
+    ]) {
+      const changed = await getClosure((value) => {
+        const bytes = Buffer.concat([
+          value.sources.get(relevant),
+          Buffer.from("x"),
+        ]);
+        value.sources.set(relevant, bytes);
+        const entry = value.tree.tree.find(
+          (item: any) => item.path === relevant,
+        );
+        entry.sha = gitBlobSha(bytes);
+        entry.size = bytes.length;
+      });
+      expect(digest(changed)).not.toBe(digest(baseline));
+    }
+    const unrelated = await getClosure((value) => {
+      const path = "docs/unrelated.txt";
+      const bytes = Buffer.from("changed unrelated\n");
+      value.sources.set(path, bytes);
+      const entry = value.tree.tree.find((item: any) => item.path === path);
+      entry.sha = gitBlobSha(bytes);
+      entry.size = bytes.length;
+    });
+    expect(digest(unrelated)).toBe(digest(baseline));
+  });
+
   it.each([
     [
       "malicious ancestor A then B",
@@ -356,5 +417,135 @@ describe("authenticated producer evidence", () => {
         throw new Error("live_catalog_gh_attestation_invalid");
       }),
     ).rejects.toThrow("live_catalog_gh_attestation_invalid");
+  });
+});
+
+describe("bounded GitHub transport adversarial contract", () => {
+  it("streams bounded JSON and rejects JSON redirects", async () => {
+    const ok = vi.fn(
+      async () =>
+        new Response('{"ok":true}', {
+          headers: { "content-length": "11" },
+        }),
+    );
+    await expect(
+      boundedGithubJson("/repos/owner/repo", "token", ok as any),
+    ).resolves.toEqual({ ok: true });
+    expect(ok.mock.calls[0]![1]).toMatchObject({ redirect: "manual" });
+    await expect(
+      boundedGithubJson(
+        "/repos/owner/repo",
+        "token",
+        async () =>
+          new Response(null, {
+            status: 302,
+            headers: { location: "https://api.github.com/other" },
+          }),
+      ),
+    ).rejects.toThrow("live_catalog_github_redirect_invalid");
+  });
+
+  it("strips authorization on the allowlisted cross-origin storage redirect", async () => {
+    const seen: Array<{ url: string; authorization?: string }> = [];
+    const fetchImpl = async (url: string, init: any) => {
+      seen.push({ url, authorization: init.headers.Authorization });
+      if (url.startsWith("https://api.github.com/"))
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: "https://objects.githubusercontent.com/evidence",
+          },
+        });
+      return new Response("archive", {
+        headers: { "content-length": "7" },
+      });
+    };
+    await expect(
+      boundedGithubRequest(
+        {
+          path: "/download",
+          token: "secret",
+          kind: "download",
+          maximumBytes: 16,
+        },
+        fetchImpl,
+      ),
+    ).resolves.toEqual(Buffer.from("archive"));
+    expect(seen).toEqual([
+      {
+        url: "https://api.github.com/download",
+        authorization: "Bearer secret",
+      },
+      {
+        url: "https://objects.githubusercontent.com/evidence",
+        authorization: undefined,
+      },
+    ]);
+  });
+
+  it.each([
+    ["HTTP", "http://objects.githubusercontent.com/evidence"],
+    ["lookalike", "https://objects.githubusercontent.com.evil.test/evidence"],
+    ["arbitrary", "https://example.com/evidence"],
+  ])("rejects %s redirects", async (_name, location) => {
+    await expect(
+      boundedGithubRequest(
+        {
+          path: "/download",
+          token: "token",
+          kind: "download",
+          maximumBytes: 16,
+        },
+        async () => new Response(null, { status: 302, headers: { location } }),
+      ),
+    ).rejects.toThrow(/live_catalog_github_/u);
+  });
+
+  it.each([
+    [
+      "oversized declared",
+      new Response("x", { headers: { "content-length": "17" } }),
+    ],
+    ["oversized streamed", new Response("0123456789abcdefg")],
+    [
+      "truncated",
+      new Response("short", { headers: { "content-length": "9" } }),
+    ],
+  ])("rejects %s bodies", async (_name, response) => {
+    await expect(
+      boundedGithubRequest(
+        {
+          path: "/download",
+          token: "token",
+          kind: "download",
+          maximumBytes: 16,
+        },
+        async () => response,
+      ),
+    ).rejects.toThrow(/live_catalog_github_/u);
+  });
+
+  it("aborts once at timeout without retrying", async () => {
+    const fetchImpl = vi.fn(
+      async (_url: string, init: any) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init.signal.addEventListener("abort", () =>
+            reject(new Error("aborted")),
+          );
+        }),
+    );
+    await expect(
+      boundedGithubRequest(
+        {
+          path: "/download",
+          token: "token",
+          kind: "download",
+          maximumBytes: 16,
+          timeoutMs: 5,
+        },
+        fetchImpl as any,
+      ),
+    ).rejects.toThrow("live_catalog_github_transport_timeout");
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 });

@@ -82,7 +82,7 @@ export function verifyLiveCatalogAttestation(
   const claimFile = parseCanonical(input.claimPath, "claim", 4 * 1024 * 1024);
   const subjectFile = parseCanonical(input.subjectPath, "subject", 64 * 1024);
   const claim = validateLiveCatalogClaim(claimFile.value);
-  assertLiveCatalogClaimAtProtectedMain(claim, input.attestorCommit);
+  assertLiveCatalogClaimAtProtectedMain(claim, input.trustedCurrentMainCommit);
   const subject = subjectFile.value;
   if (
     !subject ||
@@ -98,8 +98,8 @@ export function verifyLiveCatalogAttestation(
     subject.sha256 !== sha256Hex(claimFile.bytes) ||
     subject.fingerprint !== claimFingerprint(claim) ||
     claim.repository.name !== input.repository.toLowerCase() ||
-    claim.attestor.commit !== input.attestorCommit ||
-    claim.source.commit !== input.attestorCommit
+    claim.attestor.commit !== input.trustedCurrentMainCommit ||
+    claim.source.commit !== input.trustedCurrentMainCommit
   )
     throw new Error("live_catalog_subject_tuple_mismatch");
 
@@ -211,9 +211,9 @@ export function verifyLiveCatalogAttestation(
     subjectName: basename(input.claimPath),
     bundleBytes: finalBundleBytes,
     signerWorkflowPath: LIVE_CATALOG_WORKFLOW,
-    signerDigest: input.attestorCommit,
+    signerDigest: claim.attestor.commit,
     sourceRef: "refs/heads/main",
-    sourceDigest: input.attestorCommit,
+    sourceDigest: claim.attestor.commit,
     runId: claim.attestor.runId,
     token: input.token,
   });
@@ -227,7 +227,10 @@ export function parseVerifyArguments(argv) {
     "subject",
     "bundle",
     "evidence",
-    "attestor-digest",
+  ]);
+  const trustArguments = new Set([
+    "trusted-current-main",
+    "trusted-current-main-file",
   ]);
   const values = {};
   for (let index = 0; index < argv.length; index += 2) {
@@ -237,15 +240,34 @@ export function parseVerifyArguments(argv) {
     if (
       !key?.startsWith("--") ||
       !value ||
-      !expected.has(name) ||
+      (!expected.has(name) && !trustArguments.has(name)) ||
       Object.hasOwn(values, name)
     )
       throw new Error("live_catalog_verify_usage");
     values[name] = value;
   }
-  if (Object.keys(values).length !== expected.size)
+  if (
+    ![...expected].every((name) => Object.hasOwn(values, name)) ||
+    [...trustArguments].filter((name) => Object.hasOwn(values, name)).length !==
+      1 ||
+    Object.keys(values).length !== expected.size + 1
+  )
     throw new Error("live_catalog_verify_usage");
   return values;
+}
+
+export function trustedCurrentMainFromArguments(args) {
+  const direct = args["trusted-current-main"];
+  const fromFile = args["trusted-current-main-file"];
+  const value = fromFile
+    ? readBoundedRegularFile(fromFile, 128, "trusted_current_main").toString(
+        "utf8",
+      )
+    : direct;
+  const normalized = value?.endsWith("\n") ? value.slice(0, -1) : value;
+  if (!/^[a-f0-9]{40}$/u.test(normalized ?? ""))
+    throw new Error("live_catalog_trusted_current_main_invalid");
+  return normalized;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
@@ -256,7 +278,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     subjectPath: args.subject,
     bundlePath: args.bundle,
     evidencePath: args.evidence,
-    attestorCommit: args["attestor-digest"],
+    trustedCurrentMainCommit: trustedCurrentMainFromArguments(args),
     token: process.env.GH_TOKEN,
   });
   process.stdout.write(

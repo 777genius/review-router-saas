@@ -22,6 +22,37 @@
     "sourceRepositoryDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "sourceRepositoryRef": "refs/heads/main",
     "runnerEnvironment": "github-hosted",
-    "runInvocationURI": "https://github.com/owner/repo/actions/runs/1001/attempts/1"
+    "runInvocationURI": "https://github.com/owner/repo/actions/runs/1001/attempts/1",
+    "signature": {
+      "certificate": {
+        "issuer": "https://token.actions.githubusercontent.com",
+        "subjectAlternativeName": "https://github.com/owner/repo/.github/workflows/capture-live-catalog.yml@refs/heads/main",
+        "extensions": {
+          "githubWorkflowTrigger": "workflow_dispatch",
+          "githubWorkflowSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "githubWorkflowName": "Capture live catalog",
+          "githubWorkflowRepository": "owner/repo",
+          "githubWorkflowRef": "refs/heads/main",
+          "githubWorkflowRepositoryID": "17",
+          "githubWorkflowRepositoryOwnerID": "11",
+          "buildSignerURI": "https://github.com/owner/repo/.github/workflows/capture-live-catalog.yml@refs/heads/main",
+          "buildSignerDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runnerEnvironment": "github-hosted",
+          "sourceRepositoryURI": "https://github.com/owner/repo",
+          "sourceRepositoryDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sourceRepositoryRef": "refs/heads/main",
+          "sourceRepositoryIdentifier": "17",
+          "sourceRepositoryOwnerURI": "https://github.com/owner",
+          "sourceRepositoryOwnerIdentifier": "11"
+        }
+      }
+    },
+    "verifiedTimestamps": [
+      {
+        "timestamp": "2026-08-27T12:00:00Z",
+        "type": "Tlog",
+        "uri": "https://rekor.sigstore.dev"
+      }
+    ]
   }
 }

@@ -1,4 +1,13 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parse, stringify } from "yaml";
 import { describe, expect, it } from "vitest";
 import canonicalArtifact from "../../packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js";
@@ -227,6 +236,48 @@ describe("capture contract and source closure", () => {
     ).toThrow("live_catalog_contract_semantics_invalid");
   });
 
+  it.each([
+    [
+      "comment decoy",
+      `${contract.toString()}\n// runProjection(migrationReceipt)\n`,
+    ],
+    [
+      "dead branch",
+      contract
+        .toString()
+        .replace(
+          "const observedCatalogDigest = String(",
+          "if (false) runProjection('decoy');\n  const observedCatalogDigest = String(",
+        ),
+    ],
+    [
+      "unused expression",
+      contract
+        .toString()
+        .replace(
+          "const observedCatalogDigest = String(",
+          "migrationReceipt.postCatalogDigest;\n  const observedCatalogDigest = String(",
+        ),
+    ],
+    [
+      "fabricated return",
+      contract
+        .toString()
+        .replace(
+          "observedCatalogDigest,",
+          "observedCatalogDigest: liveV70V73CatalogDigestSha256,",
+        ),
+    ],
+    [
+      "duplicate export",
+      `${contract.toString()}\nexport { captureSuccessfulLiveCatalogContract };\n`,
+    ],
+  ])("rejects %s in the structural capture proof", (_name, source) => {
+    expect(() => assertLiveCatalogCaptureContract(Buffer.from(source))).toThrow(
+      "live_catalog_contract_semantics_invalid",
+    );
+  });
+
   it("binds path, git blob, bytes, size and aggregate digest", () => {
     const facts = sourceClosureFacts(closureFiles);
     expect(facts.entries).toHaveLength(4);
@@ -329,6 +380,54 @@ describe("schema v3 convergence", () => {
     );
   });
 
+  it.each([
+    ["repository", (claim: any) => (claim.repository.name = "owner/other")],
+    ["source ref", (claim: any) => (claim.source.ref = "refs/heads/main")],
+    ["source tree", (claim: any) => (claim.source.tree = "c".repeat(40))],
+    ["run attempt", (claim: any) => (claim.execution.runAttempt = 2)],
+    ["producer job", (claim: any) => (claim.execution.producerJob.id = "0")],
+    ["artifact id", (claim: any) => (claim.artifact.id = "0")],
+    ["candidate size", (claim: any) => claim.artifact.candidates[0].size++],
+    [
+      "capture projection",
+      (claim: any) =>
+        (claim.artifact.captureEvidence.projectionSqlSha256 = "e".repeat(64)),
+    ],
+    [
+      "producer signer",
+      (claim: any) =>
+        (claim.producerAttestation.certificate.signerDigest = "c".repeat(40)),
+    ],
+    [
+      "closure digest",
+      (claim: any) => (claim.sourceClosure.digest = `sha256:${"e".repeat(64)}`),
+    ],
+    [
+      "projection export",
+      (claim: any) => (claim.sources.projection.export = "decoy"),
+    ],
+    [
+      "configured digest",
+      (claim: any) =>
+        (claim.sources.projection.configuredDigest = `sha256:${"e".repeat(64)}`),
+    ],
+    [
+      "observed digest",
+      (claim: any) =>
+        (claim.observedCatalogDigest = `sha256:${"e".repeat(64)}`),
+    ],
+    ["attestor run", (claim: any) => (claim.attestor.runId = "0")],
+  ])(
+    "rejects representative claim/projection mutation: %s",
+    (_name, mutate) => {
+      const claim: any = JSON.parse(
+        canonicalJson(assembleLiveCatalogClaim(input() as any)),
+      );
+      mutate(claim);
+      expect(() => validateLiveCatalogClaim(claim)).toThrow(/live_catalog_/u);
+    },
+  );
+
   it("rejects a previously valid claim when protected main advances before consumption", () => {
     const claim = assembleLiveCatalogClaim(input() as any);
     expect(() =>
@@ -371,6 +470,57 @@ describe("deterministic gh JSON normalization", () => {
       runInvocationURI:
         "https://github.com/owner/repo/actions/runs/1001/attempts/1",
     });
+  });
+
+  it("accepts the documented current gh signature and verified timestamps", () => {
+    expect(() => normalizeGhAttestationResult(fixture(), policy)).not.toThrow();
+  });
+
+  it.each([
+    [
+      "signature array",
+      (value: any) => (value.verificationResult.signature = []),
+    ],
+    [
+      "signature extra field",
+      (value: any) => (value.verificationResult.signature.keyId = "decoy"),
+    ],
+    [
+      "certificate extra field",
+      (value: any) =>
+        (value.verificationResult.signature.certificate.serialNumber = "1"),
+    ],
+    [
+      "certificate extension wrong type",
+      (value: any) =>
+        (value.verificationResult.signature.certificate.extensions.githubWorkflowSha = 1),
+    ],
+    [
+      "timestamp wrong type",
+      (value: any) =>
+        (value.verificationResult.verifiedTimestamps[0].timestamp = 1),
+    ],
+    [
+      "timestamp extra field",
+      (value: any) =>
+        (value.verificationResult.verifiedTimestamps[0].authority = "decoy"),
+    ],
+    [
+      "timestamp URI wrong scheme",
+      (value: any) =>
+        (value.verificationResult.verifiedTimestamps[0].uri =
+          "file:///tmp/rekor"),
+    ],
+    [
+      "unknown result field",
+      (value: any) => (value.verificationResult.futureAuthority = true),
+    ],
+  ])("rejects malformed or unknown current gh field: %s", (_name, mutate) => {
+    const value = fixture();
+    mutate(value);
+    expect(() => normalizeGhAttestationResult(value, policy)).toThrow(
+      "live_catalog_gh_result_shape_invalid",
+    );
   });
 
   it("passes the complete repository/signer/source/runner policy to gh", () => {
@@ -451,5 +601,57 @@ describe("deterministic gh JSON normalization", () => {
     expect(() => normalizeGhAttestationResult(value, policy)).toThrow(
       "live_catalog_gh_authenticated_subject_mismatch",
     );
+  });
+
+  it("executes a deterministic fake gh for valid, tampered, private-path, and cleanup cases", () => {
+    const directory = mkdtempSync(join(tmpdir(), "rr-live-catalog-fake-gh-"));
+    const executable = join(directory, "gh");
+    writeFileSync(
+      executable,
+      `#!${process.execPath}\n` +
+        `import fs from "node:fs";import crypto from "node:crypto";\n` +
+        `const a=process.argv.slice(2),at=(f)=>a[a.indexOf(f)+1],one=(f)=>a.filter(v=>v===f).length===1;\n` +
+        `if(a[0]!=="attestation"||a[1]!=="verify"||!one("--bundle")||!one("--repo")||!one("--deny-self-hosted-runners")||!one("--signer-workflow")||!one("--signer-digest")||!one("--source-ref")||!one("--source-digest")||!one("--format"))process.exit(2);\n` +
+        `if(at("--repo")!=="owner/repo"||at("--signer-workflow")!=="owner/repo/${LIVE_CATALOG_SOURCE_WORKFLOW}"||at("--signer-digest")!=="${commit}"||at("--source-ref")!=="refs/heads/main"||at("--source-digest")!=="${commit}"||at("--format")!=="json")process.exit(3);\n` +
+        `const subject=a[2],bundle=JSON.parse(fs.readFileSync(at("--bundle"),"utf8"));if(bundle.valid!==true)process.exit(4);\n` +
+        `if(!subject.includes("rr-live-catalog-gh-")||!at("--bundle").includes("rr-live-catalog-gh-"))process.exit(5);\n` +
+        `const digest=crypto.createHash("sha256").update(fs.readFileSync(subject)).digest("hex");\n` +
+        `const statement={_type:"https://in-toto.io/Statement/v1",predicateType:"https://slsa.dev/provenance/v1",subject:[{name:"activation-catalog-policy-${commit}-1",digest:{sha256:digest}}],predicate:{}};\n` +
+        `const verificationResult=JSON.parse(fs.readFileSync("scripts/fixtures/live-catalog-attestation/gh-verification-result.json","utf8")).verificationResult;verificationResult.statement=statement;\n` +
+        `process.stdout.write(JSON.stringify([{attestation:bundle,verificationResult}]));\n`,
+      { mode: 0o700 },
+    );
+    chmodSync(executable, 0o700);
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${directory}:${originalPath ?? ""}`;
+    let temporarySubject = "";
+    try {
+      expect(() =>
+        verifyWithGhAttestation({
+          ...policy,
+          bundleBytes: Buffer.from('{"valid":true}'),
+        }),
+      ).not.toThrow();
+      expect(() =>
+        verifyWithGhAttestation({
+          ...policy,
+          bundleBytes: Buffer.from('{"valid":false}'),
+        }),
+      ).toThrow("live_catalog_gh_attestation_invalid");
+      expect(() =>
+        verifyWithGhAttestation(
+          { ...policy, bundleBytes: Buffer.from('{"valid":true}') },
+          (command, args, options) => {
+            temporarySubject = args[2] as string;
+            writeFileSync(temporarySubject, "tampered");
+            return spawnSync(command, args, options);
+          },
+        ),
+      ).toThrow(/live_catalog_gh_/u);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+    expect(temporarySubject).not.toBe("");
+    expect(existsSync(temporarySubject)).toBe(false);
   });
 });

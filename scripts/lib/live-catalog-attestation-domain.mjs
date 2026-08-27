@@ -171,26 +171,50 @@ export function assertLiveCatalogCaptureContract(sourceBytes) {
   );
   if (source.parseDiagnostics.length)
     throw new Error("live_catalog_contract_source_syntax_invalid");
-  const exports = source.statements.filter(
-    (statement) =>
-      ts.isExportDeclaration(statement) ||
-      ts.isExportAssignment(statement) ||
-      (statement.modifiers ?? []).some(
-        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-      ),
-  );
-  if (
-    exports.length !== 1 ||
-    !ts.isFunctionDeclaration(exports[0]) ||
-    exports[0].name?.text !== "captureSuccessfulLiveCatalogContract" ||
-    !text.includes(`"${LIVE_CATALOG_PROJECTION_PATH}"`) ||
-    !text.includes(`"${LIVE_CATALOG_PROJECTION_EXPORT}"`) ||
-    !text.includes("migrationReceipt?.postCatalogDigest") ||
-    !text.includes("runProjection(") ||
-    !text.includes(
-      "observedCatalogDigest !== migrationReceipt.postCatalogDigest",
+  let containsComment = false;
+  const inspectComments = (node) => {
+    if (
+      ts.getLeadingCommentRanges(text, node.getFullStart())?.length ||
+      ts.getTrailingCommentRanges(text, node.end)?.length
     )
-  )
+      containsComment = true;
+    node.forEachChild(inspectComments);
+  };
+  inspectComments(source);
+  if (containsComment)
+    throw new Error("live_catalog_contract_semantics_invalid");
+  const expected = ts.createSourceFile(
+    "expected-live-catalog-contract.mjs",
+    `import { createHash } from "node:crypto";
+import { fencedLiveV70V73CatalogDigestSql, liveV70V73CatalogDigestSha256 } from "../../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
+const projectionPath = "${LIVE_CATALOG_PROJECTION_PATH}";
+const projectionExport = "${LIVE_CATALOG_PROJECTION_EXPORT}";
+export function captureSuccessfulLiveCatalogContract({ candidate, disposableDatabaseIdentity, migrationReceipt, runProjection }) {
+  if (!/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(disposableDatabaseIdentity ?? "") || migrationReceipt?.postCatalogDigest !== liveV70V73CatalogDigestSha256 || typeof runProjection !== "function") throw new Error("private_pg17_capture_catalog_digest_unproven");
+  const observedCatalogDigest = String(runProjection(\`\\\\set ON_ERROR_STOP on\\nSELECT digest FROM (\${fencedLiveV70V73CatalogDigestSql}) live(digest);\\n\`)).trim();
+  if (observedCatalogDigest !== liveV70V73CatalogDigestSha256 || observedCatalogDigest !== migrationReceipt.postCatalogDigest) throw new Error("private_pg17_capture_catalog_digest_unproven");
+  return Object.freeze({ candidate, observation: Object.freeze({ kind: "reviewrouter-live-catalog-successful-capture", version: 1, disposableDatabaseIdentity, observedCatalogDigest, receiptCatalogDigest: migrationReceipt.postCatalogDigest, projectionPath, projectionExport, projectionSqlSha256: createHash("sha256").update(fencedLiveV70V73CatalogDigestSql).digest("hex") }) });
+}`,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  const structuralForm = (node) => {
+    const children = [];
+    node.forEachChild((child) => {
+      children.push(structuralForm(child));
+    });
+    const value =
+      ts.isIdentifier(node) ||
+      ts.isStringLiteral(node) ||
+      ts.isNumericLiteral(node) ||
+      ts.isNoSubstitutionTemplateLiteral(node) ||
+      ts.isRegularExpressionLiteral(node)
+        ? node.text
+        : undefined;
+    return [node.kind, value, children];
+  };
+  if (!isDeepStrictEqual(structuralForm(source), structuralForm(expected)))
     throw new Error("live_catalog_contract_semantics_invalid");
 }
 

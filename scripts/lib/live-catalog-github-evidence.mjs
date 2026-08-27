@@ -23,6 +23,7 @@ const closureRoots = Object.freeze([
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
   "scripts/install-private-dependencies.mjs",
+  "scripts/run-with-env.mjs",
   "scripts/rehearse-private-pg17-rollout.mjs",
   "scripts/package-live-catalog-capture-evidence.mjs",
   "scripts/capture-private-pg17-activation-catalog-policy.mjs",
@@ -33,8 +34,12 @@ const closureRoots = Object.freeze([
   "scripts/install-release-authority-db.mjs",
   LIVE_CATALOG_CONTRACT_PATH,
   LIVE_CATALOG_PROJECTION_PATH,
+  "packages/platform/db/prisma.config.ts",
   "packages/platform/db/prisma/schema.prisma",
 ]);
+
+const maximumClosureFiles = 512;
+const maximumClosureBytes = 24 * 1024 * 1024;
 
 function repositoryParts(repository) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository ?? ""))
@@ -117,9 +122,14 @@ export async function buildLiveCatalogSourceClosure({
       ) ||
       /^packages\/platform\/release-authority-db\/migrations\/[^/]+\/migration\.sql$/u.test(
         path,
+      ) ||
+      /^packages\/platform\/release-authority-db\/legacy-catalog\/[^/]+\/migration\.sql$/u.test(
+        path,
       )
     )
       selected.add(path);
+  if (selected.size > maximumClosureFiles)
+    throw new Error("live_catalog_source_closure_limit_exceeded");
   for (const root of selected)
     if (!blobs.has(root))
       throw new Error("live_catalog_source_closure_root_missing");
@@ -154,6 +164,12 @@ export async function buildLiveCatalogSourceClosure({
     for (const [path, fileBytes] of results)
       for (const specifier of localImportSpecifiers(path, fileBytes))
         selected.add(resolveLocalImport(path, specifier, blobs));
+    if (
+      selected.size > maximumClosureFiles ||
+      [...loaded.values()].reduce((total, value) => total + value.length, 0) >
+        maximumClosureBytes
+    )
+      throw new Error("live_catalog_source_closure_limit_exceeded");
   }
   // Package metadata affects resolution and dependency installation. Include every
   // package manifest governing a selected source file.
@@ -169,9 +185,16 @@ export async function buildLiveCatalogSourceClosure({
         : "";
     }
   }
+  if (selected.size > maximumClosureFiles)
+    throw new Error("live_catalog_source_closure_limit_exceeded");
   const metadataPending = [...selected].filter((path) => !loaded.has(path));
   const metadata = await fetchPaths(metadataPending);
   for (const [path, fileBytes] of metadata) loaded.set(path, fileBytes);
+  if (
+    [...loaded.values()].reduce((total, value) => total + value.length, 0) >
+    maximumClosureBytes
+  )
+    throw new Error("live_catalog_source_closure_limit_exceeded");
   return [...loaded.entries()]
     .map(([path, fileBytes]) => ({
       path,

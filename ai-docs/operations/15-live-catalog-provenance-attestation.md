@@ -57,7 +57,7 @@ The workflow summary also records `live-catalog-claim-fingerprint=sha256:<hex>`.
 
 ## Offline verification
 
-Use the exact repository and attestor main digest printed by the successful run:
+Obtain the current protected-main SHA separately from an authenticated operator or deployment context at verification time. Never copy this trust input from the claim, subject, attestation bundle, retained evidence, or an old attestor run. If protected `main` has advanced from A to B, a correctly signed claim from A must be rejected.
 
 ```sh
 node --import tsx scripts/verify-live-catalog-attestation.mjs \
@@ -66,8 +66,10 @@ node --import tsx scripts/verify-live-catalog-attestation.mjs \
   --subject live-catalog-provenance.subject.json \
   --bundle live-catalog-provenance.bundle.json \
   --evidence live-catalog-provenance.evidence \
-  --attestor-digest <40-hex-protected-main-sha>
+  --trusted-current-main <40-hex-current-protected-main-sha>
 ```
+
+Alternatively, pass `--trusted-current-main-file <operator-controlled-file>` containing exactly the 40-hex SHA and an optional final newline. The file must come from the same separately authenticated current-main lookup, not from the attestation artifact.
 
 The verifier first authenticates the retained producer bundle against the exact archive bytes and normalized producer certificate. It then reconstructs the REST/producer/archive/claim digest convergence, the three exact archive entries, capture facts, contract/projection facts, complete retained source closure, and canonical schema-v3 claim. Only after that reconstruction does it verify the final bundle against the exact claim bytes, repository, signer workflow/digest, main source ref/digest, selected attestor run, and GitHub-hosted runner policy. Bundle replay, artifact replay, missing certificate fields, and coordinated local edits fail closed.
 

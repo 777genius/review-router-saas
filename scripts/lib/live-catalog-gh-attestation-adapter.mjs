@@ -14,21 +14,98 @@ const exactKeys = (value, keys) =>
   !Array.isArray(value) &&
   isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort());
 
+const certificateExtensionKeys = Object.freeze([
+  "githubWorkflowTrigger",
+  "githubWorkflowSha",
+  "githubWorkflowName",
+  "githubWorkflowRepository",
+  "githubWorkflowRef",
+  "githubWorkflowRepositoryID",
+  "githubWorkflowRepositoryOwnerID",
+  "buildSignerURI",
+  "buildSignerDigest",
+  "runnerEnvironment",
+  "sourceRepositoryURI",
+  "sourceRepositoryDigest",
+  "sourceRepositoryRef",
+  "sourceRepositoryIdentifier",
+  "sourceRepositoryOwnerURI",
+  "sourceRepositoryOwnerIdentifier",
+]);
+
+function validSignature(value, result) {
+  const certificate = value?.certificate;
+  const extensions = certificate?.extensions;
+  return (
+    exactKeys(value, ["certificate"]) &&
+    exactKeys(certificate, [
+      "issuer",
+      "subjectAlternativeName",
+      "extensions",
+    ]) &&
+    exactKeys(extensions, certificateExtensionKeys) &&
+    certificate.issuer === "https://token.actions.githubusercontent.com" &&
+    certificate.subjectAlternativeName === result.buildSignerURI &&
+    certificateExtensionKeys.every(
+      (key) =>
+        typeof extensions[key] === "string" && extensions[key].length > 0,
+    ) &&
+    extensions.githubWorkflowSha === result.buildSignerDigest &&
+    extensions.buildSignerURI === result.buildSignerURI &&
+    extensions.buildSignerDigest === result.buildSignerDigest &&
+    extensions.runnerEnvironment === result.runnerEnvironment &&
+    extensions.sourceRepositoryURI === result.sourceRepositoryURI &&
+    extensions.sourceRepositoryDigest === result.sourceRepositoryDigest &&
+    extensions.sourceRepositoryRef === result.sourceRepositoryRef
+  );
+}
+
+function validVerifiedTimestamps(value) {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (timestamp) =>
+        exactKeys(timestamp, ["timestamp", "type", "uri"]) &&
+        typeof timestamp.timestamp === "string" &&
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(
+          timestamp.timestamp,
+        ) &&
+        !Number.isNaN(Date.parse(timestamp.timestamp)) &&
+        ["Tlog", "TSA"].includes(timestamp.type) &&
+        typeof timestamp.uri === "string" &&
+        /^https:\/\/[^\s]+$/u.test(timestamp.uri),
+    )
+  );
+}
+
 export function normalizeGhAttestationResult(entry, policy) {
   if (!exactKeys(entry, ["attestation", "verificationResult"]))
     throw new Error("live_catalog_gh_result_shape_invalid");
   const result = entry.verificationResult;
+  const requiredResultKeys = [
+    "statement",
+    "buildSignerURI",
+    "buildSignerDigest",
+    "sourceRepositoryURI",
+    "sourceRepositoryDigest",
+    "sourceRepositoryRef",
+    "runnerEnvironment",
+    "runInvocationURI",
+  ];
+  const resultKeys = Object.keys(result ?? {});
+  const allowedResultKeys = new Set([
+    ...requiredResultKeys,
+    "signature",
+    "verifiedTimestamps",
+  ]);
   if (
-    !exactKeys(result, [
-      "statement",
-      "buildSignerURI",
-      "buildSignerDigest",
-      "sourceRepositoryURI",
-      "sourceRepositoryDigest",
-      "sourceRepositoryRef",
-      "runnerEnvironment",
-      "runInvocationURI",
-    ]) ||
+    !requiredResultKeys.every((key) => Object.hasOwn(result ?? {}, key)) ||
+    resultKeys.some((key) => !allowedResultKeys.has(key)) ||
+    (Object.hasOwn(result ?? {}, "signature") &&
+      !validSignature(result.signature, result)) ||
+    (Object.hasOwn(result ?? {}, "verifiedTimestamps") &&
+      !validVerifiedTimestamps(result.verifiedTimestamps)) ||
     !exactKeys(result.statement, [
       "_type",
       "predicateType",
