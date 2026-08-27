@@ -8,6 +8,7 @@ build
 coverage
 pnpm-lock.yaml
 packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js
+packages/features/release-rollout/src/domain/live-v70-v86-catalog-digest-provenance.json
 docs/release-evidence/activation-catalog-policy-v28-independent-review.md
 docs/release-evidence/activation-catalog-policy-v28-reviewer-runtime.json
 docs/release-evidence/activation-catalog-policy-v29-independent-review.md

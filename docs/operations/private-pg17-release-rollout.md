@@ -125,7 +125,7 @@ canonical activation principal; this check occurs before normalization, so a
 disconnected role with application authority rejects capture instead of being
 omitted. A factually disconnected inert provider role with no application
 authority is omitted without consulting its name. The one external inert
-grantor of the exact five bootstrap membership edges is represented as
+grantor of the exact six bootstrap membership edges is represented as
 `{"kind":"external-bootstrap-authority"}`; its catalog name is never pinned.
 Any second grantor, different edge/options, or other authority rejects capture.
 Extension entries pin the provider-neutral extension name and normalized owner.

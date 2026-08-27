@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+
+import { validateLiveCatalogDigestProvenance } from "./live-catalog-digest-provenance";
+import { liveV70V86CatalogDigestProvenanceCanonicalSha256 } from "./live-catalog-digest-provenance-trust";
+import liveV70V86CatalogDigestProvenanceJson from "./live-v70-v86-catalog-digest-provenance.json" with { type: "json" };
 import type { LegacyAmbiguityEvidence } from "./trusted-rollout-evidence";
 
 export const TargetManifestPhase = Object.freeze({
@@ -136,6 +140,12 @@ export const canonicalReleaseMigrationEntries = Object.freeze([
   Object.freeze({ migrationName: name, migrationSqlSha256: checksum }),
 );
 
+export const liveV70V86CatalogDigestProvenance =
+  validateLiveCatalogDigestProvenance(
+    liveV70V86CatalogDigestProvenanceJson,
+    liveV70V86CatalogDigestProvenanceCanonicalSha256,
+  );
+
 export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
     "sha256:bc7853ee946ab41b455e786dded6b34fb0f548a4591ca965d066e8efb1479cd5",
@@ -147,9 +157,9 @@ export const canonicalReleaseMigrationArtifact = Object.freeze({
     "sha256:b98968fc30e81ab1af1d5e0c47004e158e281b1a690c41c4f2b74eec6400d73a",
   postManifestIdentity:
     "sha256:b56f0960fc107f9f1f7dbfb40be8d982107574e47962a076d71bdb5ac764495c",
-  // Exact pinned-PG17 V70-V86 rehearsal observation; production remains HOLD.
+  // Accepted only after fail-closed canonical provenance validation above.
   postCatalogDigest:
-    "sha256:1263f5c7c12179382cecf46ee434d530ede3763bbb0b9e43e658a352029f8961",
+    liveV70V86CatalogDigestProvenance.observation.catalogDigestSha256,
 });
 
 export const canonicalReleaseMigrationResumeManifestIdentities = Object.freeze([
