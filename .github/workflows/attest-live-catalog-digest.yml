@@ -56,7 +56,10 @@ jobs:
         run: corepack enable pnpm
 
       - name: Install frozen attestor dependencies
-        run: pnpm install --filter review-router --frozen-lockfile --ignore-scripts --no-optional --prod=false
+        run: pnpm install --filter review-router --frozen-lockfile --ignore-scripts --prod=false
+
+      - name: Prove the canonical TypeScript normalizer is executable
+        run: node --import tsx --input-type=module --eval 'await import("./packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts")'
 
       - name: Assemble authenticated canonical claim
         id: claim

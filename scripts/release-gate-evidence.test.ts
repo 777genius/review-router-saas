@@ -34,6 +34,7 @@ function zip(name: string, value: Buffer) {
   central.writeUInt32LE(value.length, 20);
   central.writeUInt32LE(value.length, 24);
   central.writeUInt16LE(nameBytes.length, 28);
+  central.writeUInt32LE(0x80000000, 38);
   central.writeUInt32LE(0, 42);
   const end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50, 0);

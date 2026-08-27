@@ -9,7 +9,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { deflateRawSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -106,6 +106,7 @@ function zip(entries: Record<string, Buffer>) {
     central.writeUInt32LE(value.length, 20);
     central.writeUInt32LE(value.length, 24);
     central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(0x80000000, 38);
     central.writeUInt32LE(offset, 42);
     centrals.push(central, nameBytes);
     offset += local.length + nameBytes.length + value.length;
@@ -140,6 +141,7 @@ function zipWithFalseSmallInflatedSize(value: Buffer) {
   central.writeUInt32LE(compressed.length, 20);
   central.writeUInt32LE(4, 24);
   central.writeUInt16LE(name.length, 28);
+  central.writeUInt32LE(0x80000000, 38);
   const directoryOffset = local.length + name.length + compressed.length;
   const end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50, 0);
@@ -150,12 +152,52 @@ function zipWithFalseSmallInflatedSize(value: Buffer) {
   return Buffer.concat([local, name, compressed, central, name, end]);
 }
 
-function unixSpecialZip(mode: number) {
+function unixSpecialZip(mode: number, host = 3) {
   const archive = zip({ special: Buffer.from("value") });
   const central = archive.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
-  archive.writeUInt16LE((3 << 8) | 20, central + 4);
+  archive.writeUInt16LE((host << 8) | 20, central + 4);
   archive.writeUInt32LE((mode << 16) >>> 0, central + 38);
   return archive;
+}
+
+function dosSpecialZip(attribute: number) {
+  const archive = zip({ special: Buffer.from("value") });
+  const central = archive.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  archive.writeUInt32LE(attribute, central + 38);
+  return archive;
+}
+
+function zipWithExtraField(identifier: number, location: "central" | "local") {
+  const archive = zip({ entry: Buffer.from("value") });
+  const extra = Buffer.alloc(5);
+  extra.writeUInt16LE(identifier, 0);
+  extra.writeUInt16LE(1, 2);
+  extra[4] = 1;
+  const central = archive.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  const end = archive.indexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (location === "local") {
+    const insertion = 30 + archive.readUInt16LE(26);
+    const result = Buffer.concat([
+      archive.subarray(0, insertion),
+      extra,
+      archive.subarray(insertion),
+    ]);
+    result.writeUInt16LE(extra.length, 28);
+    result.writeUInt32LE(central + extra.length, end + extra.length + 16);
+    return result;
+  }
+  const insertion = central + 46 + archive.readUInt16LE(central + 28);
+  const result = Buffer.concat([
+    archive.subarray(0, insertion),
+    extra,
+    archive.subarray(insertion),
+  ]);
+  result.writeUInt16LE(extra.length, central + 30);
+  result.writeUInt32LE(
+    archive.readUInt32LE(end + 12) + extra.length,
+    end + extra.length + 12,
+  );
+  return result;
 }
 
 function writeEvidence(directory: string) {
@@ -444,7 +486,7 @@ describe("live catalog attestation domain", () => {
           `jobs:\n  release-authority-pg17-contract:\n    # REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE: ${LIVE_CATALOG_PG17_IMAGE}\n  quality:\n    # image: ${LIVE_CATALOG_PG17_IMAGE}\n`,
         ),
       ),
-    ).toThrow("live_catalog_source_workflow_producer_invalid");
+    ).toThrow(/live_catalog_source_workflow_/u);
   });
 
   it.each([
@@ -467,6 +509,47 @@ describe("live catalog attestation domain", () => {
     [
       "export alias",
       `${projectionSource}\nconst decoy = 1; export { decoy as fencedLiveV70V73CatalogDigestSql };`,
+    ],
+    [
+      "exported function",
+      `${projectionSource}\nexport function fencedLiveV70V73CatalogDigestSql() {}`,
+    ],
+    [
+      "exported class",
+      `${projectionSource}\nexport class fencedLiveV70V73CatalogDigestSql {}`,
+    ],
+    [
+      "exported namespace",
+      `${projectionSource}\nexport namespace fencedLiveV70V73CatalogDigestSql {}`,
+    ],
+    [
+      "exported enum",
+      `${projectionSource}\nexport enum fencedLiveV70V73CatalogDigestSql { decoy }`,
+    ],
+    [
+      "mutable variable",
+      `${projectionSource}\nexport let fencedLiveV70V73CatalogDigestSql;`,
+    ],
+    [
+      "default export",
+      `${projectionSource}\nexport default fencedLiveV70V73CatalogDigestSql;`,
+    ],
+    [
+      "default alias",
+      `${projectionSource}\nexport { fencedLiveV70V73CatalogDigestSql as default };`,
+    ],
+    [
+      "re-export",
+      `${projectionSource}\nexport { decoy as fencedLiveV70V73CatalogDigestSql } from "./decoy.mjs";`,
+    ],
+    [
+      "namespace re-export",
+      `${projectionSource}\nexport * as fencedLiveV70V73CatalogDigestSql from "./decoy.mjs";`,
+    ],
+    ["star re-export", `${projectionSource}\nexport * from "./decoy.mjs";`],
+    [
+      "default function export",
+      `${projectionSource}\nexport default function fencedLiveV70V73CatalogDigestSql() {}`,
     ],
   ])("rejects %s JavaScript export decoys", (_name, source) => {
     expect(() => extractProjectionBytes(Buffer.from(source))).toThrow(
@@ -554,6 +637,112 @@ describe("live catalog attestation domain", () => {
         "runs-on: ${{ matrix.runner }}",
       ),
     ],
+    [
+      "workflow defaults",
+      workflowSource.replace(
+        "permissions:\n",
+        "defaults:\n  run:\n    shell: bash\n\npermissions:\n",
+      ),
+    ],
+    [
+      "workflow permission wrapper",
+      workflowSource.replace(
+        "permissions:\n  contents: read",
+        "permissions:\n  contents: write",
+      ),
+    ],
+    [
+      "workflow BASH_ENV",
+      workflowSource.replace("env:\n", "env:\n  BASH_ENV: ./decoy.sh\n"),
+    ],
+    [
+      "workflow NODE_OPTIONS",
+      workflowSource.replace(
+        "env:\n",
+        "env:\n  NODE_OPTIONS: --import=./decoy.mjs\n",
+      ),
+    ],
+    [
+      "workflow PATH",
+      workflowSource.replace("env:\n", "env:\n  PATH: ./decoy-bin\n"),
+    ],
+    [
+      "job defaults",
+      workflowSource.replace(
+        "    timeout-minutes: 30\n    steps:",
+        "    timeout-minutes: 30\n    defaults:\n      run:\n        shell: bash\n    steps:",
+      ),
+    ],
+    [
+      "job container",
+      workflowSource.replace(
+        "    timeout-minutes: 30\n    steps:",
+        "    timeout-minutes: 30\n    container: node:24\n    steps:",
+      ),
+    ],
+    [
+      "job permissions",
+      workflowSource.replace(
+        "    timeout-minutes: 30\n    steps:",
+        "    timeout-minutes: 30\n    permissions:\n      contents: write\n    steps:",
+      ),
+    ],
+    [
+      "capture shell wrapper",
+      workflowSource.replace(
+        "        run: |\n          export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY=",
+        "        shell: ./decoy-shell\n        run: |\n          export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY=",
+      ),
+    ],
+    [
+      "capture BASH_ENV",
+      workflowSource.replace(
+        '          REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1"\n          REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:',
+        '          BASH_ENV: ./decoy.sh\n          REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1"\n          REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:',
+      ),
+    ],
+    [
+      "upload environment wrapper",
+      workflowSource.replace(
+        "      - name: Upload activation catalog policy captures\n        if:",
+        "      - name: Upload activation catalog policy captures\n        env:\n          NODE_OPTIONS: --import=./decoy.mjs\n        if:",
+      ),
+    ],
+    [
+      "folded capture scalar",
+      workflowSource.replace(
+        "        run: |\n          export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY=",
+        "        run: >\n          export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY=",
+      ),
+    ],
+    [
+      "producer env wrapper",
+      workflowSource.replace(
+        "    timeout-minutes: 30\n    steps:",
+        "    timeout-minutes: 30\n    env:\n      BASH_ENV: ./wrapper.sh\n    steps:",
+      ),
+    ],
+    [
+      "capture shell",
+      workflowSource.replace(
+        "      - name: Capture two reproducible activation catalog policies\n        if:",
+        "      - name: Capture two reproducible activation catalog policies\n        shell: python\n        if:",
+      ),
+    ],
+    [
+      "capture PATH",
+      workflowSource.replace(
+        '          REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1"\n          REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:',
+        '          REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1"\n          PATH: ./bin\n          REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:',
+      ),
+    ],
+    [
+      "quoted capture condition",
+      workflowSource.replace(
+        "        if: ${{ inputs.activation_catalog_policy_capture }}",
+        '        if: "${{ inputs.activation_catalog_policy_capture }}"',
+      ),
+    ],
   ])("rejects %s YAML semantic decoys", (_name, source) => {
     expect(() => assertSourceWorkflowPg17Image(Buffer.from(source))).toThrow(
       /live_catalog_/u,
@@ -594,6 +783,11 @@ describe("bounded offline files", () => {
 
   it("enforces per-entry zlib output and aggregate ZIP limits", () => {
     expect(() =>
+      readExactZipEntries(zip({ one: Buffer.alloc(4) }), {
+        maximumArchiveBytes: 8,
+      }),
+    ).toThrow("trusted evidence ZIP archive is too large");
+    expect(() =>
       readExactZipEntries(zipWithFalseSmallInflatedSize(Buffer.alloc(64)), {
         maximumEntryBytes: 16,
         maximumTotalBytes: 32,
@@ -628,6 +822,45 @@ describe("bounded offline files", () => {
     expect(() => readExactZipEntries(unixSpecialZip(mode))).toThrow(
       "trusted evidence ZIP entry is unsafe or unsupported",
     );
+  });
+
+  it.each([
+    ["missing regular-file type", 0, 0],
+    ["DOS-host symlink", 0xa000, 0],
+    ["NTFS-host socket", 0xc000, 10],
+  ])("rejects a %s entry regardless of host marker", (_name, mode, host) => {
+    expect(() => readExactZipEntries(unixSpecialZip(mode, host))).toThrow(
+      "trusted evidence ZIP entry is unsafe or unsupported",
+    );
+  });
+
+  it.each([
+    ["volume", 0x08],
+    ["directory", 0x10],
+    ["device", 0x40],
+  ])("rejects a DOS %s attribute", (_name, attribute) => {
+    expect(() => readExactZipEntries(dosSpecialZip(attribute))).toThrow(
+      "trusted evidence ZIP entry is unsafe or unsupported",
+    );
+  });
+
+  it.each([
+    ["central PKWARE Unix", 0x000d, "central"],
+    ["local PKWARE Unix", 0x000d, "local"],
+    ["central ASi Unix", 0x756e, "central"],
+    ["local ASi Unix", 0x756e, "local"],
+  ] as const)("rejects %s link metadata", (_name, identifier, location) => {
+    expect(() =>
+      readExactZipEntries(zipWithExtraField(identifier, location)),
+    ).toThrow("trusted evidence ZIP entry is unsafe or unsupported");
+  });
+
+  it("enforces the archive cap before parsing or copying input bytes", () => {
+    expect(() =>
+      readExactZipEntries(zip({ entry: Buffer.alloc(8) }), {
+        maximumArchiveBytes: 16,
+      }),
+    ).toThrow("trusted evidence ZIP archive is too large");
   });
 });
 
@@ -720,17 +953,19 @@ describe("offline gh attestation boundary", () => {
     ).toThrow("live_catalog_gh_authenticated_subject_mismatch");
   });
 
-  it("uses the real adapter with a deterministic fake gh for valid, tampered, and temp-path attacks", () => {
+  it("enforces the complete policy tuple through a deterministic real fake-gh process", () => {
     const directory = mkdtempSync(join(tmpdir(), "rr-fake-gh-"));
     const executable = join(directory, "gh");
     writeFileSync(
       executable,
       `#!${process.execPath}\n` +
         `const fs=require("node:fs"),crypto=require("node:crypto");\n` +
-        `const claim=process.argv[4],bundle=process.argv[process.argv.indexOf("--bundle")+1];\n` +
+        `const a=process.argv.slice(2),one=(f)=>a.filter((v)=>v===f).length===1,at=(f)=>a[a.indexOf(f)+1];\n` +
+        `if(a[0]!=="attestation"||a[1]!=="verify"||!one("--bundle")||!one("--repo")||!one("--deny-self-hosted-runners")||!one("--signer-workflow")||!one("--source-ref")||!one("--source-digest")||!one("--format"))process.exit(2);\n` +
+        `if(at("--repo")!=="owner/repo"||at("--signer-workflow")!=="owner/repo/.github/workflows/attest-live-catalog-digest.yml"||at("--source-ref")!=="refs/heads/main"||at("--source-digest")!=="${attestorCommit}"||at("--format")!=="json")process.exit(3);\n` +
+        `const claim=a[2],bundle=at("--bundle");\n` +
         `let b;try{b=JSON.parse(fs.readFileSync(bundle,"utf8"))}catch{process.exit(3)}\n` +
         `if(b.valid!==true)process.exit(4);\n` +
-        `if(b.attack===true)fs.writeFileSync(claim,"claim-b");\n` +
         `const digest=crypto.createHash("sha256").update(fs.readFileSync(claim)).digest("hex");\n` +
         `process.stdout.write(JSON.stringify([{attestation:b,verificationResult:{statement:{subject:[{digest:{sha256:digest}}]}}}]));\n`,
       { mode: 0o700 },
@@ -755,55 +990,70 @@ describe("offline gh attestation boundary", () => {
           attestorCommit,
         }),
       ).toThrow("live_catalog_gh_attestation_invalid");
-      expect(() =>
-        verifyWithGhAttestation({
-          repository: "owner/repo",
-          claimBytes: Buffer.from("claim-a"),
-          bundleBytes: Buffer.from('{"valid":true,"attack":true}'),
-          attestorCommit,
-        }),
-      ).toThrow("live_catalog_gh_authenticated_subject_mismatch");
+      for (const input of [
+        { repository: "owner/other", attestorCommit },
+        { repository: "owner/repo", attestorCommit: "c".repeat(40) },
+      ])
+        expect(() =>
+          verifyWithGhAttestation({
+            ...input,
+            claimBytes: Buffer.from("claim-a"),
+            bundleBytes: Buffer.from('{"valid":true}'),
+          }),
+        ).toThrow("live_catalog_gh_attestation_invalid");
+
+      const replaceValue =
+        (flag: string, value: string) => (args: string[]) => {
+          const result = [...args];
+          result[result.indexOf(flag) + 1] = value;
+          return result;
+        };
+      const removePair = (flag: string) => (args: string[]) => {
+        const result = [...args];
+        result.splice(result.indexOf(flag), 2);
+        return result;
+      };
+      const mutations = [
+        replaceValue("--repo", "owner/other"),
+        removePair("--repo"),
+        replaceValue(
+          "--signer-workflow",
+          "owner/repo/.github/workflows/evil.yml",
+        ),
+        removePair("--signer-workflow"),
+        replaceValue("--source-ref", "refs/pull/227/merge"),
+        removePair("--source-ref"),
+        replaceValue("--source-digest", "c".repeat(40)),
+        removePair("--source-digest"),
+        (args: string[]) =>
+          args.map((value) =>
+            value === "--deny-self-hosted-runners"
+              ? "--allow-self-hosted-runners"
+              : value,
+          ),
+        (args: string[]) =>
+          args.filter((value) => value !== "--deny-self-hosted-runners"),
+      ];
+      for (const mutate of mutations) {
+        const spawnThroughRealProcess = (
+          command: string,
+          args: string[],
+          options: Parameters<typeof spawnSync>[2],
+        ) => spawnSync(command, mutate(args), options);
+        expect(() =>
+          verifyWithGhAttestation(
+            {
+              repository: "owner/repo",
+              claimBytes: Buffer.from("claim-a"),
+              bundleBytes: Buffer.from('{"valid":true}'),
+              attestorCommit,
+            },
+            spawnThroughRealProcess as never,
+          ),
+        ).toThrow("live_catalog_gh_attestation_invalid");
+      }
     } finally {
       process.env.PATH = originalPath;
-    }
-  });
-
-  it("exercises the real adapter process boundary with successful and tampered bundles", () => {
-    const directory = mkdtempSync(join(tmpdir(), "rr-fake-gh-"));
-    const executable = join(directory, "gh");
-    writeFileSync(
-      executable,
-      `#!/bin/sh
-set -eu
-claim="$3"
-bundle="$5"
-test "$(cat "$bundle")" = '{"trusted":true}'
-digest="$(sha256sum "$claim" | cut -d ' ' -f 1)"
-printf '[{"attestation":{"trusted":true},"verificationResult":{"statement":{"subject":[{"digest":{"sha256":"%s"}}]}}}]' "$digest"
-`,
-    );
-    chmodSync(executable, 0o700);
-    const previousPath = process.env.PATH;
-    process.env.PATH = `${directory}:/usr/bin:/bin`;
-    try {
-      expect(() =>
-        verifyWithGhAttestation({
-          repository: "owner/repo",
-          claimBytes: Buffer.from("claim"),
-          bundleBytes: Buffer.from('{"trusted":true}'),
-          attestorCommit,
-        }),
-      ).not.toThrow();
-      expect(() =>
-        verifyWithGhAttestation({
-          repository: "owner/repo",
-          claimBytes: Buffer.from("claim"),
-          bundleBytes: Buffer.from('{"trusted":false}'),
-          attestorCommit,
-        }),
-      ).toThrow("live_catalog_gh_attestation_invalid");
-    } finally {
-      process.env.PATH = previousPath;
     }
   });
 

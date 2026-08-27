@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import ts from "typescript";
 import { parseDocument } from "yaml";
 import { parsePrivatePg17ActivationCatalogPolicyArtifactBytes } from "../capture-private-pg17-activation-catalog-policy.mjs";
@@ -103,36 +104,125 @@ function exportedLiteral(sourceBytes, exportName) {
   if (source.parseDiagnostics.length > 0)
     throw new Error("live_catalog_projection_source_syntax_invalid");
   const matches = [];
+  const declaresProtectedName = (name) => {
+    if (ts.isIdentifier(name)) return name.text === exportName;
+    if (ts.isObjectBindingPattern(name))
+      return name.elements.some((element) =>
+        declaresProtectedName(element.name),
+      );
+    if (ts.isArrayBindingPattern(name))
+      return name.elements.some(
+        (element) =>
+          ts.isBindingElement(element) && declaresProtectedName(element.name),
+      );
+    return false;
+  };
   for (const statement of source.statements) {
-    if (
-      ts.isExportDeclaration(statement) &&
-      statement.exportClause &&
-      ts.isNamedExports(statement.exportClause) &&
-      statement.exportClause.elements.some(
-        (element) => element.name.text === exportName,
-      )
-    )
+    if (ts.isExportAssignment(statement)) {
       matches.push(undefined);
-    if (
-      !ts.isVariableStatement(statement) ||
-      !(statement.modifiers ?? []).some(
-        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-      ) ||
-      (statement.declarationList.flags & ts.NodeFlags.Const) === 0
-    )
       continue;
-    for (const declaration of statement.declarationList.declarations) {
+    }
+    if (ts.isExportDeclaration(statement)) {
+      if (!statement.exportClause) matches.push(undefined);
       if (
-        ts.isIdentifier(declaration.name) &&
-        declaration.name.text === exportName &&
-        declaration.initializer
+        statement.exportClause &&
+        ts.isNamespaceExport(statement.exportClause) &&
+        statement.exportClause.name.text === exportName
       )
-        matches.push(declaration.initializer);
+        matches.push(undefined);
+      if (
+        statement.exportClause &&
+        ts.isNamedExports(statement.exportClause) &&
+        statement.exportClause.elements.some(
+          (element) =>
+            element.name.text === exportName ||
+            element.propertyName?.text === exportName,
+        )
+      )
+        matches.push(undefined);
+      continue;
+    }
+    const exported = (statement.modifiers ?? []).some(
+      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+    );
+    if (
+      exported &&
+      (statement.modifiers ?? []).some(
+        (modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword,
+      )
+    ) {
+      matches.push(undefined);
+      continue;
+    }
+    if (
+      exported &&
+      (ts.isFunctionDeclaration(statement) ||
+        ts.isClassDeclaration(statement)) &&
+      statement.name?.text === exportName
+    ) {
+      matches.push(undefined);
+      continue;
+    }
+    if (
+      exported &&
+      (ts.isModuleDeclaration(statement) || ts.isEnumDeclaration(statement)) &&
+      statement.name.text === exportName
+    ) {
+      matches.push(undefined);
+      continue;
+    }
+    if (!ts.isVariableStatement(statement) || !exported) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!declaresProtectedName(declaration.name)) continue;
+      matches.push(
+        (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+          ? declaration.initializer
+          : undefined,
+      );
     }
   }
   if (matches.length !== 1)
     throw new Error("live_catalog_projection_export_missing_or_ambiguous");
   return matches[0];
+}
+
+function exactObject(value, expected) {
+  return isDeepStrictEqual(value, expected);
+}
+
+function assertScalarStyles(document, value, path, blockPaths, quotedPaths) {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) =>
+      assertScalarStyles(
+        document,
+        entry,
+        [...path, index],
+        blockPaths,
+        quotedPaths,
+      ),
+    );
+    return;
+  }
+  if (value && typeof value === "object") {
+    Object.entries(value).forEach(([key, entry]) =>
+      assertScalarStyles(
+        document,
+        entry,
+        [...path, key],
+        blockPaths,
+        quotedPaths,
+      ),
+    );
+    return;
+  }
+  const joined = path.join(".");
+  const expected = blockPaths.has(joined)
+    ? "BLOCK_LITERAL"
+    : quotedPaths.has(joined)
+      ? "QUOTE_DOUBLE"
+      : "PLAIN";
+  if (document.getIn(path, true)?.type !== expected)
+    throw new Error("live_catalog_source_workflow_scalar_style_invalid");
 }
 
 export function assertSourceWorkflowPg17Image(sourceBytes) {
@@ -191,11 +281,230 @@ node --import tsx scripts/package-live-catalog-capture-evidence.mjs activation-c
 cmp activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json
 sha256sum activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json live-catalog-successful-capture-evidence.json
 `;
+  const expectedWorkflowEnv = {
+    NODE_VERSION: "24",
+    DATABASE_URL:
+      "postgresql://postgres:postgres@127.0.0.1:5432/review_router_ci?schema=public",
+    TEST_DATABASE_URL:
+      "postgresql://postgres:postgres@127.0.0.1:5432/review_router_ci_test?schema=public",
+    REVIEW_ROUTER_TEST_DATABASE_URL:
+      "postgresql://postgres:postgres@127.0.0.1:5432/review_router_ci_test?schema=public",
+    AUTH_SECRET: "ci-auth-secret-not-used-for-production",
+    AUTH_TRUST_HOST: "true",
+    GITHUB_WEBHOOK_SECRET: "ci-webhook-secret-not-used-for-production",
+    REVIEW_ROUTER_WEB_URL: "http://localhost:3000",
+    REVIEW_ROUTER_PUBLIC_WEB_URL: "https://web.reviewrouter.test",
+    REVIEW_ROUTER_API_URL: "http://localhost:4000",
+    REVIEW_ROUTER_PUBLIC_API_URL: "https://api.reviewrouter.test",
+    REVIEW_ROUTER_ACTION_REF: "777genius/review-router@main",
+    REVIEW_ROUTER_ACTION_VERSION: "main",
+    REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF:
+      "777genius/review-router@08f6bc1481fd284fa82adfa47cda05c76b161b00",
+    REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS: "",
+    REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS:
+      "ci_database_recovery_witness_not_for_production_000000000000",
+    REVIEW_ROUTER_DEFAULT_MODEL: "gpt-5.5",
+    REVIEW_ROUTER_DEFAULT_EFFORT: "xhigh",
+    REVIEW_ROUTER_PAIRED_ACTION_REF: "7af79cbcbdf4f522b2410fadc7361f75149a63fd",
+    REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: "v1.0.137",
+    REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA:
+      "7af79cbcbdf4f522b2410fadc7361f75149a63fd",
+    REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256:
+      "6b9e3abadc631bcdf5ec094eef31df32108a92f8864a4964f096dab75bac4aed",
+    REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS: "0",
+    REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+    REVIEW_ROUTER_PG_DUMP: "/usr/lib/postgresql/17/bin/pg_dump",
+    REVIEW_ROUTER_PG_RESTORE: "/usr/lib/postgresql/17/bin/pg_restore",
+  };
+  const expectedTriggers = {
+    workflow_dispatch: {
+      inputs: {
+        release_authority_pg17_contract: {
+          description: "Run the dedicated Release Authority PG17 contract",
+          required: false,
+          type: "boolean",
+          default: false,
+        },
+        private_pg16_to_pg17_rehearsal: {
+          description: "Run the full disposable private PG16 to PG17 rehearsal",
+          required: false,
+          type: "boolean",
+          default: false,
+        },
+        activation_catalog_policy_capture: {
+          description:
+            "Capture two byte-identical policies from disposable PG16 to PG17 rehearsals",
+          required: false,
+          type: "boolean",
+          default: false,
+        },
+        release_authority_contract_baseline_sha: {
+          description:
+            "Previous protected main SHA used as the immutable migration baseline",
+          required: false,
+          type: "string",
+          default: "",
+        },
+      },
+    },
+    pull_request: null,
+    push: { branches: ["main"] },
+  };
+  const expectedSteps = [
+    {
+      name: "Checkout",
+      uses: "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+      with: { "persist-credentials": false },
+    },
+    {
+      name: "Setup Node",
+      uses: "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+      with: { "node-version": "${{ env.NODE_VERSION }}" },
+    },
+    { name: "Enable pnpm", run: "corepack enable" },
+    {
+      name: "Install dependencies",
+      env: {
+        SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64:
+          "${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}",
+      },
+      run: "node scripts/install-private-dependencies.mjs --frozen-lockfile",
+    },
+    { name: "Generate Prisma client", run: "pnpm db:generate" },
+    {
+      name: "Run full disposable cutover rehearsal with pinned images",
+      if: "${{ !inputs.activation_catalog_policy_capture }}",
+      env: {
+        REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1",
+        REVIEW_ROUTER_REHEARSAL_PG16_IMAGE:
+          "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+        REVIEW_ROUTER_REHEARSAL_PG17_IMAGE: LIVE_CATALOG_PG17_IMAGE,
+      },
+      run: "pnpm release-rollout:rehearsal",
+    },
+    {
+      name: "Capture two reproducible activation catalog policies",
+      if: "${{ inputs.activation_catalog_policy_capture }}",
+      env: {
+        REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1",
+        REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1",
+        REVIEW_ROUTER_REHEARSAL_PG16_IMAGE:
+          "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+        REVIEW_ROUTER_REHEARSAL_PG17_IMAGE: LIVE_CATALOG_PG17_IMAGE,
+      },
+      run: expectedCaptureRun,
+    },
+    {
+      name: "Upload activation catalog policy captures",
+      if: "${{ inputs.activation_catalog_policy_capture }}",
+      uses: "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+      with: {
+        name: "activation-catalog-policy-${{ github.sha }}-${{ github.run_attempt }}",
+        path: "activation-catalog-policy-candidate-1.json\nactivation-catalog-policy-candidate-2.json\nlive-catalog-successful-capture-evidence.json\n",
+        "if-no-files-found": "error",
+        "retention-days": 14,
+      },
+    },
+    {
+      name: "Create exact release-gate evidence",
+      if: "${{ !inputs.activation_catalog_policy_capture }}",
+      id: "evidence",
+      run: 'node scripts/release-gate-evidence.mjs write private-pg16-to-pg17-rehearsal >> "$GITHUB_OUTPUT"',
+    },
+    {
+      name: "Upload exact release-gate evidence",
+      if: "${{ !inputs.activation_catalog_policy_capture }}",
+      uses: "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+      with: {
+        name: "${{ steps.evidence.outputs.artifact_name }}",
+        path: "release-gate-evidence.json",
+        "if-no-files-found": "error",
+        "retention-days": 14,
+      },
+    },
+  ];
+  const expectedProducer = {
+    name: "Full private PG16 to PG17 rehearsal",
+    if: "${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.private_pg16_to_pg17_rehearsal) || (github.event_name == 'workflow_dispatch' && inputs.activation_catalog_policy_capture) }}",
+    "runs-on": "ubuntu-24.04",
+    "timeout-minutes": 30,
+    steps: expectedSteps,
+  };
+  const rootKeys = ["name", "on", "permissions", "concurrency", "env", "jobs"];
+  const producerRoot = ["jobs", "private-pg16-to-pg17-rehearsal"];
+  const blockPaths = new Set([
+    [...producerRoot, "steps", 6, "run"].join("."),
+    [...producerRoot, "steps", 7, "with", "path"].join("."),
+  ]);
+  const quotedPaths = new Set([
+    "on.workflow_dispatch.inputs.release_authority_contract_baseline_sha.default",
+    "env.NODE_VERSION",
+    "env.AUTH_TRUST_HOST",
+    "env.REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS",
+    "env.REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS",
+    "env.REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING",
+    [
+      ...producerRoot,
+      "steps",
+      5,
+      "env",
+      "REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL",
+    ].join("."),
+    [
+      ...producerRoot,
+      "steps",
+      6,
+      "env",
+      "REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL",
+    ].join("."),
+    [
+      ...producerRoot,
+      "steps",
+      6,
+      "env",
+      "REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY",
+    ].join("."),
+  ]);
+  assertScalarStyles(
+    document,
+    workflow.name,
+    ["name"],
+    blockPaths,
+    quotedPaths,
+  );
+  assertScalarStyles(document, workflow.on, ["on"], blockPaths, quotedPaths);
+  assertScalarStyles(
+    document,
+    workflow.permissions,
+    ["permissions"],
+    blockPaths,
+    quotedPaths,
+  );
+  assertScalarStyles(
+    document,
+    workflow.concurrency,
+    ["concurrency"],
+    blockPaths,
+    quotedPaths,
+  );
+  assertScalarStyles(document, workflow.env, ["env"], blockPaths, quotedPaths);
+  assertScalarStyles(document, producer, producerRoot, blockPaths, quotedPaths);
   if (
+    JSON.stringify(Object.keys(workflow ?? {}).sort()) !==
+      JSON.stringify(rootKeys.sort()) ||
+    workflow.name !== "CI" ||
+    !exactObject(workflow.on, expectedTriggers) ||
+    !exactObject(workflow.permissions, { contents: "read" }) ||
+    !exactObject(workflow.concurrency, {
+      group: "ci-${{ github.workflow }}-${{ github.ref }}",
+      "cancel-in-progress": true,
+    }) ||
+    !exactObject(workflow.env, expectedWorkflowEnv) ||
     !jobs ||
     typeof jobs !== "object" ||
     Array.isArray(jobs) ||
     !producer ||
+    !exactObject(producer, expectedProducer) ||
     producerDeclarations.length !== 1 ||
     producerDeclarations[0][0] !== "private-pg16-to-pg17-rehearsal" ||
     producer.name !== "Full private PG16 to PG17 rehearsal" ||

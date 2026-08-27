@@ -50,6 +50,7 @@ function zip(entries: Record<string, Buffer>) {
     central.writeUInt32LE(value.length, 20);
     central.writeUInt32LE(value.length, 24);
     central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(0x80000000, 38);
     central.writeUInt32LE(offset, 42);
     centrals.push(central, nameBytes);
     offset += local.length + nameBytes.length + value.length;

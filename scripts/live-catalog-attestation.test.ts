@@ -142,13 +142,37 @@ describe("live catalog attestor workflow", () => {
       (step: { name?: string }) =>
         step.name === "Assemble authenticated canonical claim",
     );
+    const proveNormalizer = job.steps.find(
+      (step: { name?: string }) =>
+        step.name === "Prove the canonical TypeScript normalizer is executable",
+    );
     expect(install?.run).toBe(
-      "pnpm install --filter review-router --frozen-lockfile --ignore-scripts --no-optional --prod=false",
+      "pnpm install --filter review-router --frozen-lockfile --ignore-scripts --prod=false",
+    );
+    expect(install?.run).not.toContain("--no-optional");
+    expect(proveNormalizer?.run).toBe(
+      "node --import tsx --input-type=module --eval 'await import(\"./packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts\")'",
     );
     expect(enable?.run).toBe("corepack enable pnpm");
+    const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+    expect(packageJson.packageManager).toBe("pnpm@10.33.0");
+    for (const dependencyKind of [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+    ])
+      expect(
+        packageJson[dependencyKind]?.["@esbuild/linux-x64"],
+      ).toBeUndefined();
+    const lockfile = parse(readFileSync("pnpm-lock.yaml", "utf8"));
+    expect(lockfile.importers["."].devDependencies).toMatchObject({
+      tsx: { version: "4.23.1" },
+      typescript: { version: "6.0.3" },
+      yaml: { version: "2.9.0" },
+    });
     expect(
-      JSON.parse(readFileSync("package.json", "utf8")).packageManager,
-    ).toBe("pnpm@10.33.0");
+      lockfile.snapshots["esbuild@0.28.1"].optionalDependencies,
+    ).toHaveProperty("@esbuild/linux-x64", "0.28.1");
     expect(raw.indexOf("Enable pinned pnpm")).toBeLessThan(
       raw.indexOf("Install frozen attestor dependencies"),
     );
@@ -156,8 +180,11 @@ describe("live catalog attestor workflow", () => {
       "node --import tsx scripts/attest-live-catalog-digest.mjs assemble",
     );
     expect(raw.indexOf("Install frozen attestor dependencies")).toBeLessThan(
-      raw.indexOf("Assemble authenticated canonical claim"),
+      raw.indexOf("Prove the canonical TypeScript normalizer is executable"),
     );
+    expect(
+      raw.indexOf("Prove the canonical TypeScript normalizer is executable"),
+    ).toBeLessThan(raw.indexOf("Assemble authenticated canonical claim"));
   });
 
   it("semantically parses the checked-in source workflow and literal projection exports", () => {
