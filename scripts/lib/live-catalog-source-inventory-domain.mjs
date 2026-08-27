@@ -75,7 +75,7 @@ export function createLiveCatalogSourceFetchBudget() {
 
 const sha1Pattern = /^[a-f0-9]{40}$/u;
 const forbiddenDosName = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
-const textSourcePattern = /\.(?:[cm]?[jt]s|tsx?)$/u;
+const textSourcePattern = /\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const executableSourcePattern = /\.(?:[cm]?[jt]s|[cm]?tsx?|jsx|prisma)$/u;
 const testSourcePattern =
   /(?:^|\/)(?:tests?|fixtures?)\/|\.(?:test|spec|e2e)\.[cm]?[jt]sx?$/u;
@@ -349,6 +349,7 @@ export const LIVE_CATALOG_SELECTOR_ROOTS = Object.freeze([
   "package.json",
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
+  "tsconfig.json",
   "scripts/attest-live-catalog-digest.mjs",
   "scripts/install-private-dependencies.mjs",
   "scripts/run-with-env.mjs",
@@ -381,20 +382,22 @@ function parseModuleSpecifiers(path, bytes) {
   const requireAliases = new Set(["require"]);
   const requireResolveAliases = new Set();
   const createRequireAliases = new Set();
+  const moduleRegisterAliases = new Set();
   const moduleNamespaceAliases = new Set();
-  const importMetaResolve = (node) =>
-    ts.isPropertyAccessExpression(node) &&
-    node.name.text === "resolve" &&
+  const moduleConstructorAliases = new Set();
+  const evaluatorAliases = new Set(["eval", "Function"]);
+  const globalAliases = new Set(["global", "globalThis"]);
+  const metaProperty = (node, name) =>
+    (ts.isPropertyAccessExpression(node) ||
+      ts.isElementAccessExpression(node)) &&
+    staticPropertyName(node) === name &&
     ts.isMetaProperty(node.expression) &&
     node.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
     node.expression.name.text === "meta";
-  const importMetaUrl = (node) =>
-    ts.isPropertyAccessExpression(node) &&
-    node.name.text === "url" &&
-    ts.isMetaProperty(node.expression) &&
-    node.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
-    node.expression.name.text === "meta";
+  const importMetaResolve = (node) => metaProperty(node, "resolve");
+  const importMetaUrl = (node) => metaProperty(node, "url");
   const staticString = (node) => {
+    if (!node) return;
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
       return node.text;
     if (
@@ -409,6 +412,7 @@ function parseModuleSpecifiers(path, bytes) {
     }
   };
   const staticPropertyName = (node) => {
+    if (!node) return;
     if (ts.isPropertyAccessExpression(node)) return node.name.text;
     if (ts.isElementAccessExpression(node))
       return staticString(node.argumentExpression);
@@ -421,10 +425,30 @@ function parseModuleSpecifiers(path, bytes) {
   };
   const createRequireExpression = (node) =>
     (ts.isIdentifier(node) && createRequireAliases.has(node.text)) ||
-    (ts.isPropertyAccessExpression(node) &&
-      node.name.text === "createRequire" &&
-      ts.isIdentifier(node.expression) &&
-      moduleNamespaceAliases.has(node.expression.text));
+    ((ts.isPropertyAccessExpression(node) ||
+      ts.isElementAccessExpression(node)) &&
+      staticPropertyName(node) === "createRequire" &&
+      ((ts.isIdentifier(node.expression) &&
+        (moduleNamespaceAliases.has(node.expression.text) ||
+          moduleConstructorAliases.has(node.expression.text))) ||
+        requiredModuleNamespace(node.expression)));
+  const requiredModuleNamespace = (node) =>
+    ts.isCallExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    requireAliases.has(node.expression.text) &&
+    node.arguments.length === 1 &&
+    ["module", "node:module"].includes(staticString(node.arguments[0]));
+  const addModuleBinding = (name, property) => {
+    if (property === "createRequire") createRequireAliases.add(name);
+    else if (property === "register") moduleRegisterAliases.add(name);
+    else if (property === "Module") moduleConstructorAliases.add(name);
+    else if (["_load", "registerHooks"].includes(property))
+      throw new Error("live_catalog_source_selector_module_load_denied");
+  };
+  const bindingPropertyName = (node) => {
+    if (ts.isIdentifier(node) || ts.isStringLiteral(node)) return node.text;
+    if (ts.isComputedPropertyName(node)) return staticString(node.expression);
+  };
 
   // Establish only simple, immutable aliases whose meaning is statically
   // reliable. Shadowing or reassignment is denied below.
@@ -435,33 +459,91 @@ function parseModuleSpecifiers(path, bytes) {
       (node.moduleSpecifier.text === "node:module" ||
         node.moduleSpecifier.text === "module")
     ) {
-      if (ts.isNamespaceImport(node.importClause?.namedBindings))
+      if (
+        node.importClause?.namedBindings &&
+        ts.isNamespaceImport(node.importClause.namedBindings)
+      )
         moduleNamespaceAliases.add(node.importClause.namedBindings.name.text);
+      if (node.importClause?.name)
+        moduleConstructorAliases.add(node.importClause.name.text);
       for (const element of node.importClause?.namedBindings?.elements ?? [])
-        if (
-          element.propertyName?.text === "createRequire" ||
-          (!element.propertyName && element.name.text === "createRequire")
-        )
-          createRequireAliases.add(element.name.text);
+        addModuleBinding(
+          element.name.text,
+          element.propertyName?.text ?? element.name.text,
+        );
     }
     if (ts.isVariableStatement(node)) {
       for (const declaration of node.declarationList.declarations) {
-        if (!ts.isIdentifier(declaration.name) || !declaration.initializer)
-          continue;
-        const name = declaration.name.text;
+        if (!declaration.initializer) continue;
         const initializer = declaration.initializer;
+        if (ts.isObjectBindingPattern(declaration.name)) {
+          const moduleSource =
+            (ts.isIdentifier(initializer) &&
+              moduleNamespaceAliases.has(initializer.text)) ||
+            requiredModuleNamespace(initializer);
+          const globalSource =
+            ts.isIdentifier(initializer) && globalAliases.has(initializer.text);
+          if (!moduleSource && !globalSource) continue;
+          if (!(node.declarationList.flags & ts.NodeFlags.Const))
+            throw new Error(
+              "live_catalog_source_selector_mutable_resolution_alias",
+            );
+          for (const element of declaration.name.elements) {
+            if (
+              element.dotDotDotToken ||
+              element.initializer ||
+              !ts.isIdentifier(element.name)
+            )
+              throw new Error(
+                "live_catalog_source_selector_unsupported_resolution",
+              );
+            const property = element.propertyName
+              ? bindingPropertyName(element.propertyName)
+              : element.name.text;
+            if (property === undefined)
+              throw new Error(
+                "live_catalog_source_selector_unsupported_resolution",
+              );
+            if (globalSource) {
+              if (["eval", "Function"].includes(property))
+                evaluatorAliases.add(element.name.text);
+            } else addModuleBinding(element.name.text, property);
+          }
+          continue;
+        }
+        if (!ts.isIdentifier(declaration.name)) continue;
+        const name = declaration.name.text;
         const resolverAlias =
           (ts.isIdentifier(initializer) &&
             (requireAliases.has(initializer.text) ||
               requireResolveAliases.has(initializer.text) ||
-              createRequireAliases.has(initializer.text))) ||
+              createRequireAliases.has(initializer.text) ||
+              moduleRegisterAliases.has(initializer.text) ||
+              moduleNamespaceAliases.has(initializer.text) ||
+              moduleConstructorAliases.has(initializer.text) ||
+              evaluatorAliases.has(initializer.text) ||
+              globalAliases.has(initializer.text))) ||
           ((ts.isPropertyAccessExpression(initializer) ||
             ts.isElementAccessExpression(initializer)) &&
             staticPropertyName(initializer) === "resolve" &&
             ts.isIdentifier(initializer.expression) &&
             requireAliases.has(initializer.expression.text)) ||
           (ts.isCallExpression(initializer) &&
-            createRequireExpression(initializer.expression));
+            createRequireExpression(initializer.expression)) ||
+          requiredModuleNamespace(initializer) ||
+          ((ts.isPropertyAccessExpression(initializer) ||
+            ts.isElementAccessExpression(initializer)) &&
+            ((ts.isIdentifier(initializer.expression) &&
+              moduleNamespaceAliases.has(initializer.expression.text)) ||
+              requiredModuleNamespace(initializer.expression)) &&
+            ["createRequire", "register", "Module"].includes(
+              staticPropertyName(initializer),
+            )) ||
+          ((ts.isPropertyAccessExpression(initializer) ||
+            ts.isElementAccessExpression(initializer)) &&
+            ts.isIdentifier(initializer.expression) &&
+            globalAliases.has(initializer.expression.text) &&
+            ["eval", "Function"].includes(staticPropertyName(initializer)));
         if (resolverAlias && !(node.declarationList.flags & ts.NodeFlags.Const))
           throw new Error(
             "live_catalog_source_selector_mutable_resolution_alias",
@@ -469,7 +551,12 @@ function parseModuleSpecifiers(path, bytes) {
         if (
           (requireAliases.has(name) ||
             requireResolveAliases.has(name) ||
-            createRequireAliases.has(name)) &&
+            createRequireAliases.has(name) ||
+            moduleRegisterAliases.has(name) ||
+            moduleNamespaceAliases.has(name) ||
+            moduleConstructorAliases.has(name) ||
+            evaluatorAliases.has(name) ||
+            globalAliases.has(name)) &&
           !resolverAlias
         )
           throw new Error("live_catalog_source_selector_resolution_shadowed");
@@ -489,6 +576,31 @@ function parseModuleSpecifiers(path, bytes) {
         )
           createRequireAliases.add(name);
         else if (
+          ts.isIdentifier(initializer) &&
+          moduleRegisterAliases.has(initializer.text)
+        )
+          moduleRegisterAliases.add(name);
+        else if (
+          ts.isIdentifier(initializer) &&
+          moduleNamespaceAliases.has(initializer.text)
+        )
+          moduleNamespaceAliases.add(name);
+        else if (
+          ts.isIdentifier(initializer) &&
+          moduleConstructorAliases.has(initializer.text)
+        )
+          moduleConstructorAliases.add(name);
+        else if (
+          ts.isIdentifier(initializer) &&
+          evaluatorAliases.has(initializer.text)
+        )
+          evaluatorAliases.add(name);
+        else if (
+          ts.isIdentifier(initializer) &&
+          globalAliases.has(initializer.text)
+        )
+          globalAliases.add(name);
+        else if (
           (ts.isPropertyAccessExpression(initializer) ||
             ts.isElementAccessExpression(initializer)) &&
           staticPropertyName(initializer) === "resolve" &&
@@ -506,6 +618,24 @@ function parseModuleSpecifiers(path, bytes) {
           )
             throw new Error("live_catalog_source_selector_dynamic_resolution");
           requireAliases.add(name);
+        } else if (requiredModuleNamespace(initializer)) {
+          moduleNamespaceAliases.add(name);
+        } else if (
+          (ts.isPropertyAccessExpression(initializer) ||
+            ts.isElementAccessExpression(initializer)) &&
+          ((ts.isIdentifier(initializer.expression) &&
+            moduleNamespaceAliases.has(initializer.expression.text)) ||
+            requiredModuleNamespace(initializer.expression))
+        ) {
+          addModuleBinding(name, staticPropertyName(initializer));
+        } else if (
+          (ts.isPropertyAccessExpression(initializer) ||
+            ts.isElementAccessExpression(initializer)) &&
+          ts.isIdentifier(initializer.expression) &&
+          globalAliases.has(initializer.expression.text) &&
+          ["eval", "Function"].includes(staticPropertyName(initializer))
+        ) {
+          evaluatorAliases.add(name);
         }
       }
     }
@@ -515,7 +645,11 @@ function parseModuleSpecifiers(path, bytes) {
       (requireAliases.has(node.name.text) ||
         requireResolveAliases.has(node.name.text) ||
         createRequireAliases.has(node.name.text) ||
-        moduleNamespaceAliases.has(node.name.text))
+        moduleRegisterAliases.has(node.name.text) ||
+        moduleNamespaceAliases.has(node.name.text) ||
+        moduleConstructorAliases.has(node.name.text) ||
+        evaluatorAliases.has(node.name.text) ||
+        globalAliases.has(node.name.text))
     )
       throw new Error("live_catalog_source_selector_resolution_shadowed");
     ts.forEachChild(node, collectAliases);
@@ -523,14 +657,46 @@ function parseModuleSpecifiers(path, bytes) {
   collectAliases(source);
   const declarationIdentifier = (node) =>
     (ts.isVariableDeclaration(node.parent) && node.parent.name === node) ||
+    (ts.isBindingElement(node.parent) &&
+      (node.parent.name === node || node.parent.propertyName === node)) ||
+    (ts.isImportClause(node.parent) && node.parent.name === node) ||
     (ts.isImportSpecifier(node.parent) &&
       (node.parent.name === node || node.parent.propertyName === node)) ||
-    (ts.isNamespaceImport(node.parent) && node.parent.name === node);
+    (ts.isNamespaceImport(node.parent) && node.parent.name === node) ||
+    (ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) ||
+    ((ts.isMethodDeclaration(node.parent) ||
+      ts.isPropertyDeclaration(node.parent) ||
+      ts.isPropertyAssignment(node.parent)) &&
+      node.parent.name === node);
   const aliasedInitializer = (node) =>
     ts.isVariableDeclaration(node.parent) &&
-    ts.isIdentifier(node.parent.name) &&
-    node.parent.initializer === node;
+    node.parent.initializer === node &&
+    (ts.isIdentifier(node.parent.name) ||
+      (ts.isObjectBindingPattern(node.parent.name) &&
+        ts.isIdentifier(node) &&
+        (moduleNamespaceAliases.has(node.text) ||
+          globalAliases.has(node.text))));
   const visit = (node) => {
+    if (
+      ts.isNewExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      evaluatorAliases.has(node.expression.text)
+    )
+      throw new Error("live_catalog_source_selector_evaluator_denied");
+    if (
+      (ts.isPropertyAccessExpression(node) ||
+        ts.isElementAccessExpression(node)) &&
+      ["_load", "registerHooks"].includes(staticPropertyName(node))
+    )
+      throw new Error("live_catalog_source_selector_module_load_denied");
+    if (
+      (ts.isPropertyAccessExpression(node) ||
+        ts.isElementAccessExpression(node)) &&
+      ts.isIdentifier(node.expression) &&
+      globalAliases.has(node.expression.text) &&
+      ["eval", "Function"].includes(staticPropertyName(node))
+    )
+      throw new Error("live_catalog_source_selector_evaluator_denied");
     if (
       (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
       node.moduleSpecifier
@@ -552,9 +718,21 @@ function parseModuleSpecifiers(path, bytes) {
       ts.isCallExpression(node) &&
       node.expression.kind === ts.SyntaxKind.ImportKeyword
     ) {
+      if (["module", "node:module"].includes(staticString(node.arguments[0])))
+        throw new Error("live_catalog_source_selector_unsupported_resolution");
       staticSpecifier(node);
     } else if (ts.isCallExpression(node)) {
       const expression = node.expression;
+      if (
+        (ts.isIdentifier(expression) &&
+          evaluatorAliases.has(expression.text)) ||
+        ((ts.isPropertyAccessExpression(expression) ||
+          ts.isElementAccessExpression(expression)) &&
+          ts.isIdentifier(expression.expression) &&
+          globalAliases.has(expression.expression.text) &&
+          ["eval", "Function"].includes(staticPropertyName(expression)))
+      )
+        throw new Error("live_catalog_source_selector_evaluator_denied");
       if (
         (ts.isIdentifier(expression) &&
           (requireAliases.has(expression.text) ||
@@ -565,6 +743,11 @@ function parseModuleSpecifiers(path, bytes) {
           ts.isIdentifier(expression.expression) &&
           requireAliases.has(expression.expression.text)) ||
         importMetaResolve(expression)
+      )
+        staticSpecifier(node);
+      else if (
+        ts.isIdentifier(expression) &&
+        moduleRegisterAliases.has(expression.text)
       )
         staticSpecifier(node);
       else if (createRequireExpression(expression)) {
@@ -583,8 +766,10 @@ function parseModuleSpecifiers(path, bytes) {
         (ts.isPropertyAccessExpression(expression) ||
           ts.isElementAccessExpression(expression)) &&
         staticPropertyName(expression) === "register" &&
-        ts.isIdentifier(expression.expression) &&
-        moduleNamespaceAliases.has(expression.expression.text)
+        ((ts.isIdentifier(expression.expression) &&
+          (moduleNamespaceAliases.has(expression.expression.text) ||
+            moduleConstructorAliases.has(expression.expression.text))) ||
+          requiredModuleNamespace(expression.expression))
       ) {
         if (!node.arguments.length)
           throw new Error("live_catalog_source_selector_dynamic_resolution");
@@ -601,7 +786,28 @@ function parseModuleSpecifiers(path, bytes) {
       ts.isIdentifier(node.left) &&
       (requireAliases.has(node.left.text) ||
         requireResolveAliases.has(node.left.text) ||
-        createRequireAliases.has(node.left.text))
+        createRequireAliases.has(node.left.text) ||
+        moduleRegisterAliases.has(node.left.text) ||
+        moduleNamespaceAliases.has(node.left.text) ||
+        moduleConstructorAliases.has(node.left.text) ||
+        evaluatorAliases.has(node.left.text) ||
+        globalAliases.has(node.left.text))
+    )
+      throw new Error("live_catalog_source_selector_mutable_resolution_alias");
+    if (
+      ts.isBinaryExpression(node) &&
+      (ts.isPropertyAccessExpression(node.left) ||
+        ts.isElementAccessExpression(node.left)) &&
+      ts.isIdentifier(node.left.expression) &&
+      (moduleNamespaceAliases.has(node.left.expression.text) ||
+        moduleConstructorAliases.has(node.left.expression.text)) &&
+      [
+        "createRequire",
+        "register",
+        "registerHooks",
+        "Module",
+        "_load",
+      ].includes(staticPropertyName(node.left))
     )
       throw new Error("live_catalog_source_selector_mutable_resolution_alias");
     if (
@@ -625,8 +831,13 @@ function parseModuleSpecifiers(path, bytes) {
       const resolver =
         requireAliases.has(node.text) ||
         requireResolveAliases.has(node.text) ||
-        createRequireAliases.has(node.text);
-      const namespace = moduleNamespaceAliases.has(node.text);
+        createRequireAliases.has(node.text) ||
+        moduleRegisterAliases.has(node.text) ||
+        evaluatorAliases.has(node.text) ||
+        globalAliases.has(node.text);
+      const namespace =
+        moduleNamespaceAliases.has(node.text) ||
+        moduleConstructorAliases.has(node.text);
       const recognizedResolverUse =
         declarationIdentifier(node) ||
         aliasedInitializer(node) ||
@@ -637,11 +848,15 @@ function parseModuleSpecifiers(path, bytes) {
           ((requireAliases.has(node.text) &&
             staticPropertyName(node.parent) === "resolve") ||
             (namespace &&
-              ["createRequire", "register"].includes(
+              ["createRequire", "register", "Module", "_load"].includes(
                 staticPropertyName(node.parent),
-              ))));
+              )) ||
+            (globalAliases.has(node.text) &&
+              staticPropertyName(node.parent) !== undefined)));
       if ((resolver || namespace) && !recognizedResolverUse)
-        throw new Error("live_catalog_source_selector_unsupported_resolution");
+        throw new Error(
+          `live_catalog_source_selector_unsupported_resolution:${path}:${node.getText(source)}`,
+        );
     }
     ts.forEachChild(node, visit);
   };
@@ -675,25 +890,72 @@ function resolveRelative(importer, specifier, blobs) {
   const base = posix.normalize(posix.join(posix.dirname(importer), specifier));
   if (!safePath(base))
     throw new Error("live_catalog_source_selector_unresolved_import");
-  const mapped = base.endsWith(".js")
-    ? [`${base.slice(0, -3)}.ts`, `${base.slice(0, -3)}.tsx`]
-    : [];
+  const mapped = base.endsWith(".mjs")
+    ? [`${base.slice(0, -4)}.mts`]
+    : base.endsWith(".cjs")
+      ? [`${base.slice(0, -4)}.cts`]
+      : base.endsWith(".jsx")
+        ? [`${base.slice(0, -4)}.tsx`]
+        : base.endsWith(".js")
+          ? [
+              `${base.slice(0, -3)}.ts`,
+              `${base.slice(0, -3)}.tsx`,
+              `${base.slice(0, -3)}.jsx`,
+            ]
+          : [];
+  const extensions = [
+    "mjs",
+    "cjs",
+    "js",
+    "jsx",
+    "mts",
+    "cts",
+    "ts",
+    "tsx",
+    "json",
+  ];
   const candidates = [
     base,
     ...mapped,
-    `${base}.mjs`,
-    `${base}.js`,
-    `${base}.ts`,
-    `${base}.tsx`,
-    `${base}.json`,
-    posix.join(base, "index.mjs"),
-    posix.join(base, "index.js"),
-    posix.join(base, "index.ts"),
+    ...extensions.map((extension) => `${base}.${extension}`),
+    ...extensions.map((extension) => posix.join(base, `index.${extension}`)),
   ];
   const matches = candidates.filter((candidate) => blobs.has(candidate));
   if (matches.length !== 1)
-    throw new Error("live_catalog_source_selector_unresolved_import");
+    throw new Error(
+      `live_catalog_source_selector_unresolved_import:${importer}:${specifier}`,
+    );
   return matches[0];
+}
+
+function tsconfigDependencies(path, bytes, blobs) {
+  if (!/^tsconfig(?:\.[A-Za-z0-9_-]+)?\.json$/u.test(posix.basename(path)))
+    return [];
+  const parsed = ts.parseConfigFileTextToJson(
+    path,
+    Buffer.from(bytes).toString("utf8"),
+  );
+  if (parsed.error || !parsed.config || typeof parsed.config !== "object")
+    throw new Error("live_catalog_source_selector_tsconfig_invalid");
+  if (parsed.config.extends === undefined) return [];
+  if (typeof parsed.config.extends !== "string")
+    throw new Error("live_catalog_source_selector_tsconfig_invalid");
+  const specifier = parsed.config.extends;
+  if (!specifier.startsWith("."))
+    throw new Error(
+      "live_catalog_source_selector_tsconfig_extends_unsupported",
+    );
+  const base = posix.normalize(posix.join(posix.dirname(path), specifier));
+  if (!safePath(base))
+    throw new Error(
+      "live_catalog_source_selector_tsconfig_extends_unsupported",
+    );
+  const candidates = [base, `${base}.json`].filter((candidate) =>
+    blobs.has(candidate),
+  );
+  if (candidates.length !== 1)
+    throw new Error("live_catalog_source_selector_tsconfig_extends_unresolved");
+  return candidates;
 }
 
 function parseManifest(bytes, label) {
@@ -876,7 +1138,7 @@ function assertSafeManifest(path, bytes) {
   return path;
 }
 
-export function liveCatalogSourceDependencies(
+export function liveCatalogSourceDependencySelection(
   inventoryValue,
   path,
   bytes,
@@ -895,18 +1157,37 @@ export function liveCatalogSourceDependencies(
           getBytesInput instanceof Map
             ? getBytesInput.get(dependencyPath)
             : getBytesInput?.[dependencyPath];
-  const additions = [...governingManifests(path, blobs)];
+  const traversal = [
+    ...governingManifests(path, blobs),
+    ...tsconfigDependencies(path, bytes, blobs),
+  ];
+  const retained = [...traversal];
   for (const specifier of parseModuleSpecifiers(path, bytes)) {
     assertSupportedSpecifier(specifier);
-    if (specifier.startsWith("."))
-      additions.push(resolveRelative(path, specifier, blobs));
-    else if (!builtinSpecifiers.has(specifier)) {
+    if (specifier.startsWith(".")) {
+      const resolved = resolveRelative(path, specifier, blobs);
+      retained.push(resolved);
+      traversal.push(resolved);
+      const importerOwner = owningSourceRoot(path, blobs);
+      const resolvedOwner = owningSourceRoot(resolved, blobs);
+      if (resolvedOwner && resolvedOwner !== importerOwner)
+        retained.push(...safeFilesUnderRoot(resolvedOwner, blobs));
+    } else if (!builtinSpecifiers.has(specifier)) {
       const workspace = resolveWorkspacePackage(specifier, blobs, getBytes);
-      if (workspace.length) additions.push(...workspace);
-      else assertDeclaredExternal(path, specifier, blobs, getBytes);
+      if (workspace.length) {
+        retained.push(...workspace);
+        traversal.push(...workspace);
+      } else assertDeclaredExternal(path, specifier, blobs, getBytes);
     }
   }
-  return [...new Set(additions)].sort(byteCompare);
+  return Object.freeze({
+    retained: Object.freeze([...new Set(retained)].sort(byteCompare)),
+    traversal: Object.freeze([...new Set(traversal)].sort(byteCompare)),
+  });
+}
+
+export function liveCatalogSourceDependencies(...arguments_) {
+  return liveCatalogSourceDependencySelection(...arguments_).retained;
 }
 
 function assertSourceSelectionBounds(selected, blobs) {
@@ -1007,14 +1288,14 @@ export function deriveLiveCatalogSourceClosure(inventoryValue, getBytesInput) {
     )
       throw new Error("live_catalog_source_selector_blob_invalid");
     if (path.endsWith("package.json")) assertSafeManifest(path, bytes);
-    const additions = liveCatalogSourceDependencies(
+    const additions = liveCatalogSourceDependencySelection(
       inventory,
       path,
       bytes,
       getBytes,
     );
-    for (const addition of additions.sort(byteCompare)) {
-      selected.add(addition);
+    for (const addition of additions.retained) selected.add(addition);
+    for (const addition of additions.traversal) {
       if (!processed.has(addition) && !queued.has(addition)) {
         queue.push(addition);
         queued.add(addition);
