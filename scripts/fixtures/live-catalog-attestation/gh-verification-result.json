@@ -1,0 +1,27 @@
+{
+  "attestation": {
+    "bundle": "deterministic-test-fixture"
+  },
+  "verificationResult": {
+    "statement": {
+      "_type": "https://in-toto.io/Statement/v1",
+      "predicateType": "https://slsa.dev/provenance/v1",
+      "subject": [
+        {
+          "name": "activation-catalog-policy-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-1",
+          "digest": {
+            "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          }
+        }
+      ],
+      "predicate": {}
+    },
+    "buildSignerURI": "https://github.com/owner/repo/.github/workflows/capture-live-catalog.yml@refs/heads/main",
+    "buildSignerDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceRepositoryURI": "https://github.com/owner/repo",
+    "sourceRepositoryDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceRepositoryRef": "refs/heads/main",
+    "runnerEnvironment": "github-hosted",
+    "runInvocationURI": "https://github.com/owner/repo/actions/runs/1001/attempts/1"
+  }
+}

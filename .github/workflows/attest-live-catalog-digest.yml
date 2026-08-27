@@ -71,6 +71,11 @@ jobs:
           SOURCE_ARTIFACT_ID: ${{ inputs.artifact_id }}
         run: node --import tsx scripts/attest-live-catalog-digest.mjs assemble
 
+      - name: Recheck exact protected main immediately before signing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node --import tsx scripts/attest-live-catalog-digest.mjs assert-fresh-main
+
       - name: Attest canonical claim subject
         id: attest
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be

@@ -188,7 +188,9 @@ describe("live catalog attestor workflow", () => {
   });
 
   it("semantically parses the checked-in source workflow and literal projection exports", () => {
-    const sourceWorkflow = readFileSync(".github/workflows/ci.yml");
+    const sourceWorkflow = readFileSync(
+      ".github/workflows/capture-live-catalog.yml",
+    );
     const projection = readFileSync(
       "packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs",
     );

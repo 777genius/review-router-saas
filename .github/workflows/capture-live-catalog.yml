@@ -1,0 +1,70 @@
+name: Capture live catalog
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  producer:
+    name: Capture live catalog producer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout exact producer commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24"
+      - name: Enable pinned pnpm
+        run: corepack enable pnpm
+      - name: Install frozen dependencies
+        env:
+          SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
+        run: node scripts/install-private-dependencies.mjs --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm db:generate
+      - name: Migrate and capture twice
+        env:
+          REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1"
+          REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1"
+          REVIEW_ROUTER_REHEARSAL_PG16_IMAGE: postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60
+          REVIEW_ROUTER_REHEARSAL_PG17_IMAGE: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
+        run: |
+          export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-a"
+          node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-capture-result-1.json
+          export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b"
+          node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-capture-result-2.json
+      - name: Package immutable capture
+        run: |
+          node --import tsx scripts/package-live-catalog-capture-evidence.mjs activation-catalog-capture-result-1.json activation-catalog-capture-result-2.json
+          cmp activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json
+          sha256sum activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json live-catalog-successful-capture-evidence.json
+      - name: Upload immutable capture
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: activation-catalog-policy-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            activation-catalog-policy-candidate-1.json
+            activation-catalog-policy-candidate-2.json
+            live-catalog-successful-capture-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
+      - name: Attest uploaded capture digest
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-name: activation-catalog-policy-${{ github.sha }}-${{ github.run_attempt }}
+          subject-digest: sha256:${{ steps.upload.outputs.artifact-digest }}

@@ -2,7 +2,10 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
-import { collectLiveCatalogClaim } from "./lib/live-catalog-github-evidence.mjs";
+import {
+  assertFreshProtectedMain,
+  collectLiveCatalogClaim,
+} from "./lib/live-catalog-github-evidence.mjs";
 import {
   canonicalJson,
   claimFingerprint,
@@ -42,11 +45,23 @@ export async function writeLiveCatalogAttestationSubject(configuration) {
   const evidencePath =
     configuration.evidencePath ?? "live-catalog-provenance.evidence";
   mkdirSync(evidencePath, { mode: 0o700 });
+  const closureEvidence = Buffer.from(
+    canonicalJson({
+      schemaVersion: "reviewrouter.live-catalog.source-closure-evidence.v1",
+      files: evidence.sourceClosureFiles.map((file) => ({
+        path: file.path,
+        gitBlobSha: file.gitBlobSha,
+        size: file.size,
+        sha256: file.sha256,
+        contentBase64: file.bytes.toString("base64"),
+      })),
+    }),
+  );
   for (const [name, bytes] of [
     ["artifact.zip", evidence.archiveBytes],
     ["successful-capture.json", evidence.captureEvidenceBytes],
-    ["source-ci.yml", evidence.workflowSourceBytes],
-    ["source-live-catalog-projection.mjs", evidence.projectionSourceBytes],
+    ["producer.bundle.json", evidence.producerBundleBytes],
+    ["source-closure.json", closureEvidence],
   ])
     writeFileSync(`${evidencePath}/${name}`, bytes, {
       mode: 0o600,
@@ -85,6 +100,14 @@ async function main() {
     );
     return;
   }
+  if (command === "assert-fresh-main") {
+    await assertFreshProtectedMain({
+      repository: required("GITHUB_REPOSITORY"),
+      token: required("GH_TOKEN"),
+      expectedCommit: required("GITHUB_SHA"),
+    });
+    return;
+  }
   if (command === "finalize-bundle") {
     const source = required("ATTESTATION_BUNDLE_PATH");
     const bytes = readBoundedRegularFile(source, 8 * 1024 * 1024, "bundle");
@@ -96,7 +119,7 @@ async function main() {
     return;
   }
   throw new Error(
-    "usage: attest-live-catalog-digest.mjs <assemble|finalize-bundle>",
+    "usage: attest-live-catalog-digest.mjs <assemble|assert-fresh-main|finalize-bundle>",
   );
 }
 

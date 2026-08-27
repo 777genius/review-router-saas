@@ -70,10 +70,7 @@ import {
   runtimeGrantSql,
 } from "./run-codex-rotating-release-migration.mjs";
 import { parsePrivatePg17ActivationCatalogPolicyCandidate } from "./capture-private-pg17-activation-catalog-policy.mjs";
-import {
-  fencedLiveV70V73CatalogDigestSql,
-  liveV70V73CatalogDigestSha256,
-} from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
+import { captureSuccessfulLiveCatalogContract } from "./lib/live-catalog-capture-contract.mjs";
 
 function rehearsalLegacyAmbiguityReceipt({
   rollout,
@@ -421,29 +418,11 @@ export function successfulLiveCatalogCaptureObservation({
   observedCatalogDigest,
   receiptCatalogDigest,
 }) {
-  if (
-    !/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(
-      disposableDatabaseIdentity ?? "",
-    ) ||
-    observedCatalogDigest !== liveV70V73CatalogDigestSha256 ||
-    receiptCatalogDigest !== observedCatalogDigest
-  )
-    throw new Error("private_pg17_capture_catalog_digest_unproven");
-  return Object.freeze({
+  return captureSuccessfulLiveCatalogContract({
     candidate,
-    observation: Object.freeze({
-      kind: "reviewrouter-live-catalog-successful-capture",
-      version: 1,
-      disposableDatabaseIdentity,
-      observedCatalogDigest,
-      receiptCatalogDigest,
-      projectionPath:
-        "packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs",
-      projectionExport: "fencedLiveV70V73CatalogDigestSql",
-      projectionSqlSha256: createHash("sha256")
-        .update(fencedLiveV70V73CatalogDigestSql)
-        .digest("hex"),
-    }),
+    disposableDatabaseIdentity,
+    migrationReceipt: { postCatalogDigest: receiptCatalogDigest },
+    runProjection: () => observedCatalogDigest,
   });
 }
 
@@ -3518,29 +3497,30 @@ $attest_disposable_capture_database$;\n`,
       );
       const candidate =
         parsePrivatePg17ActivationCatalogPolicyCandidate(stdout);
-      const observedCatalogDigest = canonicalRun(
-        "capture_live_catalog_digest_evidence",
-        "psql",
-        [
-          facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
-          "--no-psqlrc",
-          "--tuples-only",
-          "--no-align",
-        ],
-        {
-          env: {
-            DATABASE_URL:
-              facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
-          },
-          input: `\\set ON_ERROR_STOP on\nSELECT digest FROM (${fencedLiveV70V73CatalogDigestSql}) live(digest);\n`,
-        },
-      ).trim();
       const receipt = migratedRollout.receipts.at(-1);
-      return successfulLiveCatalogCaptureObservation({
+      return captureSuccessfulLiveCatalogContract({
         candidate,
         disposableDatabaseIdentity: identity,
-        observedCatalogDigest,
-        receiptCatalogDigest: receipt?.postCatalogDigest,
+        migrationReceipt: receipt,
+        runProjection: (input) =>
+          canonicalRun(
+            "capture_live_catalog_digest_evidence",
+            "psql",
+            [
+              facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
+              "--no-psqlrc",
+              "--tuples-only",
+              "--no-align",
+            ],
+            {
+              env: {
+                DATABASE_URL:
+                  facts.canonicalEnv
+                    .REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
+              },
+              input,
+            },
+          ),
       });
     },
     stageTargetServices: (migratedRollout) =>
