@@ -493,7 +493,56 @@ describe("deterministic gh JSON normalization", () => {
     [
       "certificate extension wrong type",
       (value: any) =>
-        (value.verificationResult.signature.certificate.extensions.githubWorkflowSha = 1),
+        (value.verificationResult.signature.certificate.githubWorkflowSHA = 1),
+    ],
+    [
+      "nested legacy extensions",
+      (value: any) => {
+        const certificate = value.verificationResult.signature.certificate;
+        certificate.extensions = { issuer: certificate.issuer };
+      },
+    ],
+    [
+      "missing media type",
+      (value: any) => delete value.verificationResult.mediaType,
+    ],
+    [
+      "wrong media type",
+      (value: any) => (value.verificationResult.mediaType = "text/plain"),
+    ],
+    [
+      "missing signature",
+      (value: any) => delete value.verificationResult.signature,
+    ],
+    [
+      "missing certificate",
+      (value: any) => delete value.verificationResult.signature.certificate,
+    ],
+    [
+      "missing OIDC issuer trust field",
+      (value: any) =>
+        delete value.verificationResult.signature.certificate.issuer,
+    ],
+    [
+      "missing certificate issuer trust field",
+      (value: any) =>
+        delete value.verificationResult.signature.certificate.certificateIssuer,
+    ],
+    [
+      "unknown certificate field",
+      (value: any) =>
+        (value.verificationResult.signature.certificate.futureIdentity =
+          "decoy"),
+    ],
+    [
+      "optional certificate field wrong type",
+      (value: any) =>
+        (value.verificationResult.signature.certificate.buildConfigURI = 1),
+    ],
+    [
+      "verified identity wrong shape",
+      (value: any) =>
+        (value.verificationResult.verifiedIdentity = { arbitrary: true }),
     ],
     [
       "timestamp wrong type",
@@ -512,12 +561,85 @@ describe("deterministic gh JSON normalization", () => {
           "file:///tmp/rekor"),
     ],
     [
+      "invalid calendar timestamp",
+      (value: any) =>
+        (value.verificationResult.verifiedTimestamps[0].timestamp =
+          "2026-02-30T12:00:00Z"),
+    ],
+    [
+      "empty timestamps",
+      (value: any) => (value.verificationResult.verifiedTimestamps = []),
+    ],
+    [
       "unknown result field",
       (value: any) => (value.verificationResult.futureAuthority = true),
     ],
   ])("rejects malformed or unknown current gh field: %s", (_name, mutate) => {
     const value = fixture();
     mutate(value);
+    expect(() => normalizeGhAttestationResult(value, policy)).toThrow(
+      "live_catalog_gh_result_shape_invalid",
+    );
+  });
+
+  it.each([
+    "buildSignerURI",
+    "buildSignerDigest",
+    "sourceRepositoryURI",
+    "sourceRepositoryDigest",
+    "sourceRepositoryRef",
+    "runnerEnvironment",
+    "runInvocationURI",
+  ])("rejects duplicated legacy top-level derived field %s", (key) => {
+    const value = fixture();
+    value.verificationResult[key] =
+      value.verificationResult.signature.certificate[key];
+    expect(() => normalizeGhAttestationResult(value, policy)).toThrow(
+      "live_catalog_gh_result_shape_invalid",
+    );
+  });
+
+  it("accepts and binds sigstore-go's documented verified identity", () => {
+    const value = fixture();
+    const certificate = value.verificationResult.signature.certificate;
+    value.verificationResult.verifiedIdentity = {
+      subjectAlternativeName: certificate.subjectAlternativeName,
+      issuer: certificate.issuer,
+    };
+    expect(() => normalizeGhAttestationResult(value, policy)).not.toThrow();
+    value.verificationResult.verifiedIdentity.issuer = "https://issuer.invalid";
+    expect(() => normalizeGhAttestationResult(value, policy)).toThrow(
+      "live_catalog_gh_result_shape_invalid",
+    );
+  });
+
+  it("accepts documented optional result and certificate fields when omitted", () => {
+    const value = fixture();
+    delete value.verificationResult.verifiedIdentity;
+    delete value.verificationResult.signature.certificate
+      .sourceRepositoryVisibilityAtSigning;
+    expect(() => normalizeGhAttestationResult(value, policy)).not.toThrow();
+  });
+
+  it("accepts every documented optional certificate extension as a string", () => {
+    const value = fixture();
+    Object.assign(value.verificationResult.signature.certificate, {
+      buildConfigURI:
+        "https://github.com/owner/repo/.github/workflows/capture-live-catalog.yml@refs/heads/main",
+      buildConfigDigest: commit,
+      buildTrigger: "workflow_dispatch",
+    });
+    expect(() => normalizeGhAttestationResult(value, policy)).not.toThrow();
+  });
+
+  it.each([
+    "buildConfigURI",
+    "buildConfigDigest",
+    "buildTrigger",
+    "sourceRepositoryVisibilityAtSigning",
+  ])("rejects wrong type for optional certificate extension %s", (key) => {
+    const value = fixture();
+    value.verificationResult.signature.certificate[key] = 1;
     expect(() => normalizeGhAttestationResult(value, policy)).toThrow(
       "live_catalog_gh_result_shape_invalid",
     );
@@ -553,38 +675,98 @@ describe("deterministic gh JSON normalization", () => {
     expect(result.subject.digest).toBe(`sha256:${sha256Hex(bytes)}`);
   });
 
+  it("rejects a different authenticated bundle returned by gh", () => {
+    const value = fixture();
+    expect(() =>
+      verifyWithGhAttestation(
+        { ...policy, bundleBytes: Buffer.from('{"expected":true}') } as any,
+        () =>
+          ({
+            status: 0,
+            stdout: JSON.stringify([value]),
+            stderr: "",
+          }) as any,
+      ),
+    ).toThrow("live_catalog_gh_authenticated_bundle_mismatch");
+  });
+
   it.each([
     [
       "missing field",
-      (value: any) => delete value.verificationResult.runInvocationURI,
+      (value: any) =>
+        delete value.verificationResult.signature.certificate.runInvocationURI,
     ],
     [
       "wrong signer",
       (value: any) =>
-        (value.verificationResult.buildSignerURI =
+        (value.verificationResult.signature.certificate.buildSignerURI =
           "https://github.com/owner/repo/.github/workflows/other.yml@refs/heads/main"),
     ],
     [
       "wrong digest",
       (value: any) =>
-        (value.verificationResult.buildSignerDigest = "b".repeat(40)),
+        (value.verificationResult.signature.certificate.buildSignerDigest =
+          "b".repeat(40)),
     ],
     [
       "wrong run",
       (value: any) =>
-        (value.verificationResult.runInvocationURI =
+        (value.verificationResult.signature.certificate.runInvocationURI =
           "https://github.com/owner/repo/actions/runs/2/attempts/1"),
     ],
     [
       "wrong attempt",
       (value: any) =>
-        (value.verificationResult.runInvocationURI =
+        (value.verificationResult.signature.certificate.runInvocationURI =
           "https://github.com/owner/repo/actions/runs/1001/attempts/2"),
     ],
     [
       "self hosted",
       (value: any) =>
-        (value.verificationResult.runnerEnvironment = "self-hosted"),
+        (value.verificationResult.signature.certificate.runnerEnvironment =
+          "self-hosted"),
+    ],
+    [
+      "workflow tuple mismatch",
+      (value: any) =>
+        (value.verificationResult.signature.certificate.githubWorkflowSHA =
+          "b".repeat(40)),
+    ],
+    [
+      "workflow repository tuple mismatch",
+      (value: any) =>
+        (value.verificationResult.signature.certificate.githubWorkflowRepository =
+          "owner/other"),
+    ],
+    [
+      "workflow ref tuple mismatch",
+      (value: any) =>
+        (value.verificationResult.signature.certificate.githubWorkflowRef =
+          "refs/heads/other"),
+    ],
+    [
+      "certificate subject tuple mismatch",
+      (value: any) =>
+        (value.verificationResult.signature.certificate.subjectAlternativeName =
+          "https://github.com/owner/repo/.github/workflows/other.yml@refs/heads/main"),
+    ],
+    [
+      "source tuple mismatch",
+      (value: any) =>
+        (value.verificationResult.signature.certificate.sourceRepositoryDigest =
+          "b".repeat(40)),
+    ],
+    [
+      "source repository tuple mismatch",
+      (value: any) =>
+        (value.verificationResult.signature.certificate.sourceRepositoryURI =
+          "https://github.com/owner/other"),
+    ],
+    [
+      "source ref tuple mismatch",
+      (value: any) =>
+        (value.verificationResult.signature.certificate.sourceRepositoryRef =
+          "refs/heads/other"),
     ],
   ])("rejects %s", (_name, mutate) => {
     const value = fixture();
@@ -596,10 +778,10 @@ describe("deterministic gh JSON normalization", () => {
 
   it("rejects a validly shaped producer bundle replay from another run", () => {
     const value = fixture();
-    value.verificationResult.runInvocationURI =
+    value.verificationResult.signature.certificate.runInvocationURI =
       "https://github.com/owner/repo/actions/runs/9999/attempts/1";
     expect(() => normalizeGhAttestationResult(value, policy)).toThrow(
-      "live_catalog_gh_authenticated_subject_mismatch",
+      "live_catalog_gh_result_shape_invalid",
     );
   });
 

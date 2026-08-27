@@ -14,14 +14,18 @@ const exactKeys = (value, keys) =>
   !Array.isArray(value) &&
   isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort());
 
-const certificateExtensionKeys = Object.freeze([
+const VERIFICATION_RESULT_MEDIA_TYPE =
+  "application/vnd.dev.sigstore.verificationresult+json;version=0.1";
+
+const requiredCertificateKeys = Object.freeze([
+  "certificateIssuer",
+  "subjectAlternativeName",
+  "issuer",
   "githubWorkflowTrigger",
-  "githubWorkflowSha",
+  "githubWorkflowSHA",
   "githubWorkflowName",
   "githubWorkflowRepository",
   "githubWorkflowRef",
-  "githubWorkflowRepositoryID",
-  "githubWorkflowRepositoryOwnerID",
   "buildSignerURI",
   "buildSignerDigest",
   "runnerEnvironment",
@@ -31,32 +35,78 @@ const certificateExtensionKeys = Object.freeze([
   "sourceRepositoryIdentifier",
   "sourceRepositoryOwnerURI",
   "sourceRepositoryOwnerIdentifier",
+  "runInvocationURI",
 ]);
 
-function validSignature(value, result) {
+const optionalCertificateKeys = Object.freeze([
+  "buildConfigURI",
+  "buildConfigDigest",
+  "buildTrigger",
+  "sourceRepositoryVisibilityAtSigning",
+]);
+
+const nonemptyString = (value) => typeof value === "string" && value.length > 0;
+
+function validSignature(value, policy) {
   const certificate = value?.certificate;
-  const extensions = certificate?.extensions;
+  const certificateKeys = Object.keys(certificate ?? {});
+  const allowedCertificateKeys = new Set([
+    ...requiredCertificateKeys,
+    ...optionalCertificateKeys,
+  ]);
+  const repository = policy.repository.toLowerCase();
+  const owner = repository.split("/", 1)[0];
+  const signerURI =
+    `https://github.com/${repository}/${policy.signerWorkflowPath}` +
+    `@${policy.sourceRef}`;
+  const sourceRepositoryURI = `https://github.com/${repository}`;
+  const runInvocationURI = `https://github.com/${repository}/actions/runs/${policy.runId}/attempts/1`;
   return (
     exactKeys(value, ["certificate"]) &&
-    exactKeys(certificate, [
-      "issuer",
-      "subjectAlternativeName",
-      "extensions",
-    ]) &&
-    exactKeys(extensions, certificateExtensionKeys) &&
-    certificate.issuer === "https://token.actions.githubusercontent.com" &&
-    certificate.subjectAlternativeName === result.buildSignerURI &&
-    certificateExtensionKeys.every(
-      (key) =>
-        typeof extensions[key] === "string" && extensions[key].length > 0,
+    requiredCertificateKeys.every((key) =>
+      Object.hasOwn(certificate ?? {}, key),
     ) &&
-    extensions.githubWorkflowSha === result.buildSignerDigest &&
-    extensions.buildSignerURI === result.buildSignerURI &&
-    extensions.buildSignerDigest === result.buildSignerDigest &&
-    extensions.runnerEnvironment === result.runnerEnvironment &&
-    extensions.sourceRepositoryURI === result.sourceRepositoryURI &&
-    extensions.sourceRepositoryDigest === result.sourceRepositoryDigest &&
-    extensions.sourceRepositoryRef === result.sourceRepositoryRef
+    certificateKeys.every((key) => allowedCertificateKeys.has(key)) &&
+    certificateKeys.every((key) => nonemptyString(certificate[key])) &&
+    certificate.issuer === "https://token.actions.githubusercontent.com" &&
+    certificate.subjectAlternativeName === signerURI &&
+    certificate.githubWorkflowTrigger === "workflow_dispatch" &&
+    certificate.githubWorkflowSHA === policy.sourceDigest &&
+    certificate.githubWorkflowRepository.toLowerCase() === repository &&
+    certificate.githubWorkflowRef === policy.sourceRef &&
+    certificate.buildSignerURI === signerURI &&
+    certificate.buildSignerDigest === policy.signerDigest &&
+    certificate.runnerEnvironment === "github-hosted" &&
+    certificate.sourceRepositoryURI === sourceRepositoryURI &&
+    certificate.sourceRepositoryDigest === policy.sourceDigest &&
+    certificate.sourceRepositoryRef === policy.sourceRef &&
+    /^[1-9]\d*$/u.test(certificate.sourceRepositoryIdentifier) &&
+    certificate.sourceRepositoryOwnerURI.toLowerCase() ===
+      `https://github.com/${owner}` &&
+    /^[1-9]\d*$/u.test(certificate.sourceRepositoryOwnerIdentifier) &&
+    certificate.runInvocationURI === runInvocationURI &&
+    (!Object.hasOwn(certificate, "sourceRepositoryVisibilityAtSigning") ||
+      ["public", "private", "internal"].includes(
+        certificate.sourceRepositoryVisibilityAtSigning,
+      ))
+  );
+}
+
+function validRfc3339Timestamp(value) {
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?Z$/u.exec(
+      value,
+    );
+  if (!match) return false;
+  const [, year, month, day, hour, minute, second] = match.map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day &&
+    parsed.getUTCHours() === hour &&
+    parsed.getUTCMinutes() === minute &&
+    parsed.getUTCSeconds() === second
   );
 }
 
@@ -68,14 +118,19 @@ function validVerifiedTimestamps(value) {
       (timestamp) =>
         exactKeys(timestamp, ["timestamp", "type", "uri"]) &&
         typeof timestamp.timestamp === "string" &&
-        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(
-          timestamp.timestamp,
-        ) &&
-        !Number.isNaN(Date.parse(timestamp.timestamp)) &&
+        validRfc3339Timestamp(timestamp.timestamp) &&
         ["Tlog", "TSA"].includes(timestamp.type) &&
         typeof timestamp.uri === "string" &&
         /^https:\/\/[^\s]+$/u.test(timestamp.uri),
     )
+  );
+}
+
+function validVerifiedIdentity(value, certificate) {
+  return (
+    exactKeys(value, ["issuer", "subjectAlternativeName"]) &&
+    value.issuer === certificate.issuer &&
+    value.subjectAlternativeName === certificate.subjectAlternativeName
   );
 }
 
@@ -84,28 +139,27 @@ export function normalizeGhAttestationResult(entry, policy) {
     throw new Error("live_catalog_gh_result_shape_invalid");
   const result = entry.verificationResult;
   const requiredResultKeys = [
+    "mediaType",
     "statement",
-    "buildSignerURI",
-    "buildSignerDigest",
-    "sourceRepositoryURI",
-    "sourceRepositoryDigest",
-    "sourceRepositoryRef",
-    "runnerEnvironment",
-    "runInvocationURI",
+    "signature",
+    "verifiedTimestamps",
   ];
   const resultKeys = Object.keys(result ?? {});
   const allowedResultKeys = new Set([
     ...requiredResultKeys,
-    "signature",
-    "verifiedTimestamps",
+    "verifiedIdentity",
   ]);
   if (
     !requiredResultKeys.every((key) => Object.hasOwn(result ?? {}, key)) ||
     resultKeys.some((key) => !allowedResultKeys.has(key)) ||
-    (Object.hasOwn(result ?? {}, "signature") &&
-      !validSignature(result.signature, result)) ||
-    (Object.hasOwn(result ?? {}, "verifiedTimestamps") &&
-      !validVerifiedTimestamps(result.verifiedTimestamps)) ||
+    result.mediaType !== VERIFICATION_RESULT_MEDIA_TYPE ||
+    !validSignature(result.signature, policy) ||
+    !validVerifiedTimestamps(result.verifiedTimestamps) ||
+    (Object.hasOwn(result ?? {}, "verifiedIdentity") &&
+      !validVerifiedIdentity(
+        result.verifiedIdentity,
+        result.signature?.certificate,
+      )) ||
     !exactKeys(result.statement, [
       "_type",
       "predicateType",
@@ -120,28 +174,22 @@ export function normalizeGhAttestationResult(entry, policy) {
   if (
     !exactKeys(subject, ["name", "digest"]) ||
     !exactKeys(subject.digest, ["sha256"]) ||
+    result.statement._type !== "https://in-toto.io/Statement/v1" ||
+    result.statement.predicateType !== "https://slsa.dev/provenance/v1" ||
     subject.name !== policy.subjectName ||
-    subject.digest.sha256 !== sha256Hex(policy.subjectBytes) ||
-    result.buildSignerURI !==
-      `https://github.com/${policy.repository}/${policy.signerWorkflowPath}@${policy.sourceRef}` ||
-    result.buildSignerDigest !== policy.signerDigest ||
-    result.sourceRepositoryURI !== `https://github.com/${policy.repository}` ||
-    result.sourceRepositoryDigest !== policy.sourceDigest ||
-    result.sourceRepositoryRef !== policy.sourceRef ||
-    result.runnerEnvironment !== "github-hosted" ||
-    result.runInvocationURI !==
-      `https://github.com/${policy.repository}/actions/runs/${policy.runId}/attempts/1`
+    subject.digest.sha256 !== sha256Hex(policy.subjectBytes)
   )
     throw new Error("live_catalog_gh_authenticated_subject_mismatch");
+  const certificate = result.signature.certificate;
   return Object.freeze({
     certificate: Object.freeze({
       repository: policy.repository.toLowerCase(),
       signerWorkflow: `${policy.repository.toLowerCase()}/${policy.signerWorkflowPath}`,
-      signerDigest: result.buildSignerDigest,
-      sourceRef: result.sourceRepositoryRef,
-      sourceDigest: result.sourceRepositoryDigest,
-      runnerEnvironment: result.runnerEnvironment,
-      runInvocationURI: result.runInvocationURI,
+      signerDigest: certificate.buildSignerDigest,
+      sourceRef: certificate.sourceRepositoryRef,
+      sourceDigest: certificate.sourceRepositoryDigest,
+      runnerEnvironment: certificate.runnerEnvironment,
+      runInvocationURI: certificate.runInvocationURI,
     }),
     subject: Object.freeze({
       name: subject.name,
