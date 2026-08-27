@@ -17,6 +17,7 @@ import {
   safePostgresErrorClassification,
   safeRehearsalStageErrorCode,
   safeReleaseAuthorityErrorClassification,
+  successfulLiveCatalogCaptureObservation,
   summarizeErrorShape,
   summarizeAuthorityReadinessMismatch,
   rehearsalActivationCatalogPolicyAuthorization,
@@ -27,6 +28,7 @@ import {
   waitForRehearsalControlReady,
   waitForFinalPostgresServer,
 } from "./rehearse-private-pg17-rollout.mjs";
+import { liveV70V73CatalogDigestSha256 } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 
 const digest = "d".repeat(64);
 
@@ -364,16 +366,49 @@ describe("disposable dual-version rehearsal", () => {
     const candidate = Object.freeze({ kind: "candidate", version: 1 });
     const captureCandidate = vi.fn(async () => candidate);
     const stageTargetServices = vi.fn();
+    const migratedRollout = Object.freeze({ phase: "post-migration" });
 
     await expect(
       routeRehearsalAfterReleaseMigration({
         captureOnly: { disposableDatabaseIdentity: "rr-disposable-test" },
         captureCandidate,
+        migratedRollout,
         stageTargetServices,
       }),
-    ).resolves.toEqual({ mode: "capture-only", candidate });
-    expect(captureCandidate).toHaveBeenCalledOnce();
+    ).resolves.toEqual({ mode: "capture-only", capture: candidate });
+    expect(captureCandidate).toHaveBeenCalledWith(migratedRollout);
     expect(stageTargetServices).not.toHaveBeenCalled();
+  });
+  it("emits successful capture evidence only for the observed migration receipt digest", () => {
+    const candidate = Object.freeze({ kind: "candidate", version: 1 });
+    const result = successfulLiveCatalogCaptureObservation({
+      candidate,
+      disposableDatabaseIdentity: "rr-disposable-1001-1-a",
+      observedCatalogDigest: liveV70V73CatalogDigestSha256,
+      receiptCatalogDigest: liveV70V73CatalogDigestSha256,
+    });
+    expect(result.candidate).toBe(candidate);
+    expect(result.observation).toMatchObject({
+      kind: "reviewrouter-live-catalog-successful-capture",
+      disposableDatabaseIdentity: "rr-disposable-1001-1-a",
+      observedCatalogDigest: liveV70V73CatalogDigestSha256,
+      receiptCatalogDigest: liveV70V73CatalogDigestSha256,
+      projectionExport: "fencedLiveV70V73CatalogDigestSql",
+    });
+    for (const mutation of [
+      { disposableDatabaseIdentity: "production" },
+      { observedCatalogDigest: `sha256:${"f".repeat(64)}` },
+      { receiptCatalogDigest: `sha256:${"e".repeat(64)}` },
+    ])
+      expect(() =>
+        successfulLiveCatalogCaptureObservation({
+          candidate,
+          disposableDatabaseIdentity: "rr-disposable-1001-1-a",
+          observedCatalogDigest: liveV70V73CatalogDigestSha256,
+          receiptCatalogDigest: liveV70V73CatalogDigestSha256,
+          ...mutation,
+        }),
+      ).toThrow("private_pg17_capture_catalog_digest_unproven");
   });
   it("uses a narrow transactional and asserted capture-only fixture cleanup", () => {
     const sql = captureOnlyRehearsalFixtureCleanupSql();
@@ -480,13 +515,14 @@ describe("disposable dual-version rehearsal", () => {
         captureCandidate,
         stageTargetServices,
       }),
-    ).resolves.toEqual({ mode: "capture-only", candidate });
+    ).resolves.toEqual({ mode: "capture-only", capture: candidate });
     expect(calls).toEqual([
       "stage:run_release_migration",
       "rollout-use-case-cas",
       "capture-candidate",
     ]);
     expect(runReleaseMigration).toHaveBeenCalledOnce();
+    expect(captureCandidate).toHaveBeenCalledWith(migratedRollout);
     expect(stageTargetServices).not.toHaveBeenCalled();
   });
   it("keeps normal migration in the rollout use case and stages its result", async () => {

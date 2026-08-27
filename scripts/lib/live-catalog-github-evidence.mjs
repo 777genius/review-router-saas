@@ -70,7 +70,7 @@ function exactJob(jobs, id, name, runId, attempt, headSha) {
     matches[0].head_branch !== "main" ||
     matches[0].status !== "completed" ||
     matches[0].conclusion !== "success" ||
-    JSON.stringify(matches[0].labels) !== JSON.stringify(["ubuntu-latest"]) ||
+    JSON.stringify(matches[0].labels) !== JSON.stringify(["ubuntu-24.04"]) ||
     matches[0].runner_group_id !== 0 ||
     matches[0].runner_group_name !== "GitHub Actions" ||
     !/^GitHub Actions [1-9][0-9]*$/u.test(matches[0].runner_name ?? "")
@@ -89,11 +89,10 @@ export async function collectLiveCatalogClaim(
     throw new Error("live_catalog_github_token_required");
   const runId = positiveInteger(configuration.runId, "run_id");
   const artifactId = positiveInteger(configuration.artifactId, "artifact_id");
-  const qualityJobId = positiveInteger(
-    configuration.qualityJobId,
-    "quality_job_id",
+  const producerJobId = positiveInteger(
+    configuration.producerJobId,
+    "producer_job_id",
   );
-  const pg17JobId = positiveInteger(configuration.pg17JobId, "pg17_job_id");
   const attestorCommit = configuration.attestorCommit;
   if (!/^[a-f0-9]{40}$/u.test(attestorCommit ?? ""))
     throw new Error("live_catalog_attestor_commit_invalid");
@@ -149,18 +148,10 @@ export async function collectLiveCatalogClaim(
     jobsResponse.total_count > 100
   )
     throw new Error("live_catalog_job_inventory_incomplete");
-  const qualityJob = exactJob(
+  const producerJob = exactJob(
     jobsResponse.jobs,
-    qualityJobId,
-    "Quality Gates",
-    runId,
-    1,
-    run.head_sha,
-  );
-  const pg17Job = exactJob(
-    jobsResponse.jobs,
-    pg17JobId,
-    "Dedicated Release Authority PG17 contract",
+    producerJobId,
+    "Full private PG16 to PG17 rehearsal",
     runId,
     1,
     run.head_sha,
@@ -169,6 +160,11 @@ export async function collectLiveCatalogClaim(
     String(artifact.id) !== String(artifactId) ||
     artifact.name !== `activation-catalog-policy-${run.head_sha}-1` ||
     String(artifact.workflow_run?.id) !== String(runId) ||
+    String(artifact.workflow_run?.repository_id) !== String(repository.id) ||
+    String(artifact.workflow_run?.head_repository_id) !==
+      String(repository.id) ||
+    artifact.workflow_run?.head_branch !== "main" ||
+    artifact.workflow_run?.head_sha !== run.head_sha ||
     artifact.expired !== false ||
     !/^sha256:[a-f0-9]{64}$/u.test(artifact.digest ?? "")
   )
@@ -179,7 +175,6 @@ export async function collectLiveCatalogClaim(
     ancestry,
     workflowSourceBytes,
     projectionSourceBytes,
-    qualityLogBytes,
     archiveBytes,
   ] = await Promise.all([
     json(fetchImpl, `${prefix}/git/commits/${run.head_sha}`, token),
@@ -204,12 +199,6 @@ export async function collectLiveCatalogClaim(
     ),
     bytes(
       fetchImpl,
-      `${prefix}/actions/jobs/${qualityJobId}/logs`,
-      token,
-      128 * 1024 * 1024,
-    ),
-    bytes(
-      fetchImpl,
       `${prefix}/actions/artifacts/${artifactId}/zip`,
       token,
       32 * 1024 * 1024,
@@ -228,7 +217,14 @@ export async function collectLiveCatalogClaim(
   const candidateEntries = [...entries.entries()].filter(([entryName]) =>
     /^activation-catalog-policy-candidate-[12]\.json$/u.test(entryName),
   );
-  if (candidateEntries.length !== entries.size)
+  const captureEvidenceBytes = entries.get(
+    "live-catalog-successful-capture-evidence.json",
+  );
+  if (
+    candidateEntries.length !== 2 ||
+    entries.size !== 3 ||
+    !captureEvidenceBytes
+  )
     throw new Error("live_catalog_artifact_contains_unexpected_entries");
 
   const claim = assembleLiveCatalogClaim({
@@ -240,32 +236,26 @@ export async function collectLiveCatalogClaim(
     sourceBranch: run.head_branch,
     sourceWorkflowPath: run.path,
     sourceEvent: run.event,
+    sourceStatus: run.status,
+    sourceConclusion: run.conclusion,
     runId,
     runAttempt: run.run_attempt,
-    qualityJob: {
-      id: qualityJob.id,
-      name: qualityJob.name,
-      conclusion: qualityJob.conclusion,
-      runnerGroupId: qualityJob.runner_group_id,
-      runnerGroupName: qualityJob.runner_group_name,
-      runnerName: qualityJob.runner_name,
-      labels: qualityJob.labels,
-    },
-    pg17Job: {
-      id: pg17Job.id,
-      name: pg17Job.name,
-      conclusion: pg17Job.conclusion,
-      runnerGroupId: pg17Job.runner_group_id,
-      runnerGroupName: pg17Job.runner_group_name,
-      runnerName: pg17Job.runner_name,
-      labels: pg17Job.labels,
+    producerJob: {
+      id: producerJob.id,
+      name: producerJob.name,
+      status: producerJob.status,
+      conclusion: producerJob.conclusion,
+      runnerGroupId: producerJob.runner_group_id,
+      runnerGroupName: producerJob.runner_group_name,
+      runnerName: producerJob.runner_name,
+      labels: producerJob.labels,
     },
     runnerEnvironment: "github-hosted",
     artifactId,
     artifactName: artifact.name,
     archiveSha256: sha256Hex(archiveBytes),
     candidateEntries,
-    qualityLogBytes,
+    captureEvidenceBytes,
     workflowSourceBytes,
     projectionSourceBytes,
     pg17Image: LIVE_CATALOG_PG17_IMAGE,
@@ -284,7 +274,7 @@ export async function collectLiveCatalogClaim(
     evidence: Object.freeze({
       archiveBytes,
       projectionSourceBytes,
-      qualityLogBytes,
+      captureEvidenceBytes,
       workflowSourceBytes,
     }),
   });

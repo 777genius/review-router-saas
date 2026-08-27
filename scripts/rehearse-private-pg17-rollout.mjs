@@ -70,6 +70,10 @@ import {
   runtimeGrantSql,
 } from "./run-codex-rotating-release-migration.mjs";
 import { parsePrivatePg17ActivationCatalogPolicyCandidate } from "./capture-private-pg17-activation-catalog-policy.mjs";
+import {
+  fencedLiveV70V73CatalogDigestSql,
+  liveV70V73CatalogDigestSha256,
+} from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 
 function rehearsalLegacyAmbiguityReceipt({
   rollout,
@@ -411,15 +415,48 @@ export function assertDisposableCaptureTarget({
     );
 }
 
+export function successfulLiveCatalogCaptureObservation({
+  candidate,
+  disposableDatabaseIdentity,
+  observedCatalogDigest,
+  receiptCatalogDigest,
+}) {
+  if (
+    !/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(
+      disposableDatabaseIdentity ?? "",
+    ) ||
+    observedCatalogDigest !== liveV70V73CatalogDigestSha256 ||
+    receiptCatalogDigest !== observedCatalogDigest
+  )
+    throw new Error("private_pg17_capture_catalog_digest_unproven");
+  return Object.freeze({
+    candidate,
+    observation: Object.freeze({
+      kind: "reviewrouter-live-catalog-successful-capture",
+      version: 1,
+      disposableDatabaseIdentity,
+      observedCatalogDigest,
+      receiptCatalogDigest,
+      projectionPath:
+        "packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs",
+      projectionExport: "fencedLiveV70V73CatalogDigestSql",
+      projectionSqlSha256: createHash("sha256")
+        .update(fencedLiveV70V73CatalogDigestSql)
+        .digest("hex"),
+    }),
+  });
+}
+
 export async function routeRehearsalAfterReleaseMigration({
   captureOnly,
   captureCandidate,
+  migratedRollout,
   stageTargetServices,
 }) {
   if (captureOnly)
     return Object.freeze({
       mode: "capture-only",
-      candidate: await captureCandidate(),
+      capture: await captureCandidate(migratedRollout),
     });
   return Object.freeze({
     mode: "rollout",
@@ -457,6 +494,7 @@ export async function runRehearsalReleaseMigration({
   return routeRehearsalAfterReleaseMigration({
     captureOnly,
     captureCandidate,
+    migratedRollout,
     stageTargetServices: () => stageTargetServices(migratedRollout),
   });
 }
@@ -3405,7 +3443,7 @@ COMMIT;
         );
       return useCases.runReleaseMigration(rollout, sourceLegacyAmbiguity);
     },
-    captureCandidate: () => {
+    captureCandidate: (migratedRollout) => {
       const identity = facts.captureOnly.disposableDatabaseIdentity;
       assertDisposableCaptureTarget({
         createdContainers: facts.createdContainers,
@@ -3478,7 +3516,32 @@ $attest_disposable_capture_database$;\n`,
           ),
         },
       );
-      return parsePrivatePg17ActivationCatalogPolicyCandidate(stdout);
+      const candidate =
+        parsePrivatePg17ActivationCatalogPolicyCandidate(stdout);
+      const observedCatalogDigest = canonicalRun(
+        "capture_live_catalog_digest_evidence",
+        "psql",
+        [
+          facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
+          "--no-psqlrc",
+          "--tuples-only",
+          "--no-align",
+        ],
+        {
+          env: {
+            DATABASE_URL:
+              facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
+          },
+          input: `\\set ON_ERROR_STOP on\nSELECT digest FROM (${fencedLiveV70V73CatalogDigestSql}) live(digest);\n`,
+        },
+      ).trim();
+      const receipt = migratedRollout.receipts.at(-1);
+      return successfulLiveCatalogCaptureObservation({
+        candidate,
+        disposableDatabaseIdentity: identity,
+        observedCatalogDigest,
+        receiptCatalogDigest: receipt?.postCatalogDigest,
+      });
     },
     stageTargetServices: (migratedRollout) =>
       runStage("stage_target_services", () =>
@@ -3486,7 +3549,7 @@ $attest_disposable_capture_database$;\n`,
       ),
   });
   await assertTargetActivationReadiness("post_migration", true);
-  if (postMigration.mode === "capture-only") return postMigration.candidate;
+  if (postMigration.mode === "capture-only") return postMigration.capture;
   rollout = postMigration.rollout;
   rollout = await runStage("activate_target_generation", () =>
     useCases.activateTargetGeneration(rollout, cutoverRunner.workflowJobId),

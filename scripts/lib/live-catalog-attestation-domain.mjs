@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import ts from "typescript";
 import { parseDocument } from "yaml";
+import { parsePrivatePg17ActivationCatalogPolicyArtifactBytes } from "../capture-private-pg17-activation-catalog-policy.mjs";
 
 export const LIVE_CATALOG_CLAIM_SCHEMA =
-  "reviewrouter.live-catalog-provenance.v1";
+  "reviewrouter.live-catalog-provenance.v2";
 export const LIVE_CATALOG_WORKFLOW =
   ".github/workflows/attest-live-catalog-digest.yml";
 export const LIVE_CATALOG_SOURCE_WORKFLOW = ".github/workflows/ci.yml";
@@ -104,6 +105,15 @@ function exportedLiteral(sourceBytes, exportName) {
   const matches = [];
   for (const statement of source.statements) {
     if (
+      ts.isExportDeclaration(statement) &&
+      statement.exportClause &&
+      ts.isNamedExports(statement.exportClause) &&
+      statement.exportClause.elements.some(
+        (element) => element.name.text === exportName,
+      )
+    )
+      matches.push(undefined);
+    if (
       !ts.isVariableStatement(statement) ||
       !(statement.modifiers ?? []).some(
         (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
@@ -134,76 +144,227 @@ export function assertSourceWorkflowPg17Image(sourceBytes) {
   if (document.errors.length > 0)
     throw new Error("live_catalog_source_workflow_yaml_invalid");
   const workflow = document.toJS({ maxAliasCount: 0 });
-  const plain = (path) => document.getIn(path, true)?.type === "PLAIN";
+  const scalarType = (path) => document.getIn(path, true)?.type;
+  const plain = (path) => scalarType(path) === "PLAIN";
   const jobs = workflow?.jobs;
-  const releaseJob = jobs?.["release-authority-pg17-contract"];
-  const qualityJob = jobs?.quality;
+  const producer = jobs?.["private-pg16-to-pg17-rehearsal"];
+  const steps = producer?.steps;
+  const namedStep = (name) =>
+    Array.isArray(steps) ? steps.filter((step) => step?.name === name) : [];
+  const capture = namedStep(
+    "Capture two reproducible activation catalog policies",
+  );
+  const upload = namedStep("Upload activation catalog policy captures");
+  const producerPath = ["jobs", "private-pg16-to-pg17-rehearsal", "steps"];
+  const producerDeclarations = Object.entries(jobs ?? {}).filter(
+    ([, job]) => job?.name === "Full private PG16 to PG17 rehearsal",
+  );
+  const captureDeclarations = Object.entries(jobs ?? {}).flatMap(
+    ([jobId, job]) =>
+      Array.isArray(job?.steps)
+        ? job.steps
+            .filter(
+              (step) =>
+                step?.name ===
+                "Capture two reproducible activation catalog policies",
+            )
+            .map((step) => ({ jobId, step }))
+        : [],
+  );
+  const uploadDeclarations = Object.entries(jobs ?? {}).flatMap(
+    ([jobId, job]) =>
+      Array.isArray(job?.steps)
+        ? job.steps
+            .filter(
+              (step) =>
+                step?.with?.name ===
+                "activation-catalog-policy-${{ github.sha }}-${{ github.run_attempt }}",
+            )
+            .map((step) => ({ jobId, step }))
+        : [],
+  );
+  const expectedCaptureRun = `export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-\${GITHUB_RUN_ID}-\${GITHUB_RUN_ATTEMPT}-a"
+node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-capture-result-1.json
+export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-\${GITHUB_RUN_ID}-\${GITHUB_RUN_ATTEMPT}-b"
+node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-capture-result-2.json
+node --import tsx scripts/package-live-catalog-capture-evidence.mjs activation-catalog-capture-result-1.json activation-catalog-capture-result-2.json
+cmp activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json
+sha256sum activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json live-catalog-successful-capture-evidence.json
+`;
   if (
     !jobs ||
     typeof jobs !== "object" ||
     Array.isArray(jobs) ||
-    !releaseJob ||
-    !qualityJob ||
-    releaseJob.name !== "Dedicated Release Authority PG17 contract" ||
-    releaseJob["runs-on"] !== "ubuntu-latest" ||
-    releaseJob.env?.REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE !==
-      LIVE_CATALOG_PG17_IMAGE ||
-    qualityJob.name !== "Quality Gates" ||
-    qualityJob["runs-on"] !== "ubuntu-latest" ||
-    qualityJob.services?.postgres?.image !== LIVE_CATALOG_PG17_IMAGE ||
-    !plain([
-      "jobs",
-      "release-authority-pg17-contract",
+    !producer ||
+    producerDeclarations.length !== 1 ||
+    producerDeclarations[0][0] !== "private-pg16-to-pg17-rehearsal" ||
+    producer.name !== "Full private PG16 to PG17 rehearsal" ||
+    producer["runs-on"] !== "ubuntu-24.04" ||
+    !plain(["jobs", "private-pg16-to-pg17-rehearsal", "name"]) ||
+    !plain(["jobs", "private-pg16-to-pg17-rehearsal", "runs-on"]) ||
+    capture.length !== 1 ||
+    captureDeclarations.length !== 1 ||
+    captureDeclarations[0].jobId !== "private-pg16-to-pg17-rehearsal" ||
+    upload.length !== 1 ||
+    uploadDeclarations.length !== 1 ||
+    uploadDeclarations[0].jobId !== "private-pg16-to-pg17-rehearsal" ||
+    !plain([...producerPath, steps.indexOf(capture[0]), "name"]) ||
+    !plain([...producerPath, steps.indexOf(capture[0]), "if"]) ||
+    scalarType([
+      ...producerPath,
+      steps.indexOf(capture[0]),
       "env",
-      "REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE",
+      "REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL",
+    ]) !== "QUOTE_DOUBLE" ||
+    scalarType([
+      ...producerPath,
+      steps.indexOf(capture[0]),
+      "env",
+      "REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY",
+    ]) !== "QUOTE_DOUBLE" ||
+    !plain([
+      ...producerPath,
+      steps.indexOf(capture[0]),
+      "env",
+      "REVIEW_ROUTER_REHEARSAL_PG17_IMAGE",
     ]) ||
-    !plain(["jobs", "quality", "services", "postgres", "image"])
+    capture[0].if !== "${{ inputs.activation_catalog_policy_capture }}" ||
+    capture[0].env?.REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL !== "1" ||
+    capture[0].env
+      ?.REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY !==
+      "1" ||
+    capture[0].env?.REVIEW_ROUTER_REHEARSAL_PG17_IMAGE !==
+      LIVE_CATALOG_PG17_IMAGE ||
+    Object.hasOwn(capture[0], "uses") ||
+    capture[0]["continue-on-error"] !== undefined ||
+    capture[0].run !== expectedCaptureRun ||
+    upload[0].if !== "${{ inputs.activation_catalog_policy_capture }}" ||
+    upload[0].uses !==
+      "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" ||
+    Object.hasOwn(upload[0], "run") ||
+    upload[0]["continue-on-error"] !== undefined ||
+    upload[0].with?.name !==
+      "activation-catalog-policy-${{ github.sha }}-${{ github.run_attempt }}" ||
+    upload[0].with?.path !==
+      "activation-catalog-policy-candidate-1.json\nactivation-catalog-policy-candidate-2.json\nlive-catalog-successful-capture-evidence.json\n" ||
+    upload[0].with?.["if-no-files-found"] !== "error" ||
+    upload[0].with?.["retention-days"] !== 14 ||
+    !plain([...producerPath, steps.indexOf(upload[0]), "name"]) ||
+    !plain([...producerPath, steps.indexOf(upload[0]), "if"]) ||
+    !plain([...producerPath, steps.indexOf(upload[0]), "uses"]) ||
+    !plain([...producerPath, steps.indexOf(upload[0]), "with", "name"]) ||
+    !plain([
+      ...producerPath,
+      steps.indexOf(upload[0]),
+      "with",
+      "if-no-files-found",
+    ]) ||
+    !plain([
+      ...producerPath,
+      steps.indexOf(upload[0]),
+      "with",
+      "retention-days",
+    ]) ||
+    document.getIn(
+      [
+        "jobs",
+        "private-pg16-to-pg17-rehearsal",
+        "steps",
+        steps.indexOf(capture[0]),
+        "run",
+      ],
+      true,
+    )?.type !== "BLOCK_LITERAL" ||
+    document.getIn(
+      [
+        "jobs",
+        "private-pg16-to-pg17-rehearsal",
+        "steps",
+        steps.indexOf(upload[0]),
+        "with",
+        "path",
+      ],
+      true,
+    )?.type !== "BLOCK_LITERAL"
   )
-    throw new Error("live_catalog_source_workflow_pg17_image_unpinned");
-}
-
-export function sanitizeOneObservation(logBytes) {
-  const log = Buffer.from(logBytes).toString("utf8");
-  const matches = [];
-  for (const rawLine of log.split(/\r?\n/u)) {
-    const detail = rawLine.match(
-      /^Quality Gates\tStop containers\t\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z {2}(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}) UTC \[[1-9][0-9]*\] DETAIL: {2}expected=(sha256:[a-f0-9]{64}) observed=(sha256:[a-f0-9]{64})$/u,
-    );
-    if (detail) {
-      matches.push({
-        lineBytes: Buffer.from(rawLine, "utf8"),
-        observation: {
-          kind: "release-migration-live-catalog-digest",
-          observedAt: `${detail[1].replace(" ", "T")}Z`,
-          expectedDigest: detail[2],
-          observedDigest: detail[3],
-        },
-      });
-    }
-  }
-  if (matches.length !== 1)
-    throw new Error("live_catalog_observation_count_not_one");
-  return Object.freeze(matches[0]);
+    throw new Error("live_catalog_source_workflow_producer_invalid");
 }
 
 function candidateFacts(name, bytes) {
   const value = Buffer.from(bytes);
   if (value.length === 0) throw new Error("live_catalog_candidate_empty");
-  let parsed;
-  try {
-    parsed = JSON.parse(value.toString("utf8"));
-  } catch {
-    throw new Error("live_catalog_candidate_not_json");
-  }
-  if (
-    parsed?.kind !==
-      "reviewrouter-activation-catalog-policy-artifact-candidate" ||
-    parsed.version !== 1 ||
-    !parsed.policies?.preactivation ||
-    !parsed.policies?.activated
-  )
-    throw new Error("live_catalog_candidate_contract_invalid");
+  parsePrivatePg17ActivationCatalogPolicyArtifactBytes(value);
   return Object.freeze({ name, size: value.length, sha256: sha256Hex(value) });
+}
+
+function captureEvidenceFacts(
+  bytes,
+  candidates,
+  projectionBytes,
+  configuredDigest,
+  runId,
+  runAttempt,
+) {
+  let evidence;
+  try {
+    evidence = JSON.parse(Buffer.from(bytes).toString("utf8"));
+  } catch {
+    throw new Error("live_catalog_capture_evidence_not_json");
+  }
+  exactKeys(
+    evidence,
+    ["kind", "version", "observedCatalogDigest", "projection", "inputs"],
+    "capture_evidence",
+  );
+  exactKeys(
+    evidence.projection,
+    ["path", "export", "sqlSha256"],
+    "capture_projection",
+  );
+  if (!Array.isArray(evidence.inputs) || evidence.inputs.length !== 2)
+    throw new Error("live_catalog_capture_inputs_invalid");
+  evidence.inputs.forEach((input, index) => {
+    exactKeys(
+      input,
+      [
+        "disposableDatabaseIdentity",
+        "candidateName",
+        "candidateSize",
+        "candidateSha256",
+        "receiptCatalogDigest",
+      ],
+      "capture_input",
+    );
+    if (
+      !/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(
+        input.disposableDatabaseIdentity ?? "",
+      ) ||
+      !input.disposableDatabaseIdentity.endsWith(index === 0 ? "-a" : "-b") ||
+      input.disposableDatabaseIdentity !==
+        `rr-disposable-${runId}-${runAttempt}-${index === 0 ? "a" : "b"}` ||
+      input.candidateName !== candidates[index].name ||
+      input.candidateSize !== candidates[index].size ||
+      input.candidateSha256 !== candidates[index].sha256 ||
+      input.receiptCatalogDigest !== configuredDigest
+    )
+      throw new Error("live_catalog_capture_input_tuple_invalid");
+  });
+  if (
+    evidence.kind !== "reviewrouter-live-catalog-successful-capture-evidence" ||
+    evidence.version !== 1 ||
+    evidence.observedCatalogDigest !== configuredDigest ||
+    evidence.projection.path !== LIVE_CATALOG_PROJECTION_PATH ||
+    evidence.projection.export !== LIVE_CATALOG_PROJECTION_EXPORT ||
+    evidence.projection.sqlSha256 !== sha256Hex(projectionBytes)
+  )
+    throw new Error("live_catalog_capture_evidence_tuple_invalid");
+  return Object.freeze({
+    size: Buffer.byteLength(bytes),
+    sha256: sha256Hex(bytes),
+    observedCatalogDigest: evidence.observedCatalogDigest,
+    projectionSqlSha256: evidence.projection.sqlSha256,
+    inputs: evidence.inputs.map((input) => Object.freeze({ ...input })),
+  });
 }
 
 function githubHostedJob(job, label) {
@@ -211,7 +372,7 @@ function githubHostedJob(job, label) {
     job.runnerGroupId !== 0 ||
     job.runnerGroupName !== "GitHub Actions" ||
     !/^GitHub Actions [1-9][0-9]*$/u.test(job.runnerName ?? "") ||
-    JSON.stringify(job.labels) !== JSON.stringify(["ubuntu-latest"])
+    JSON.stringify(job.labels) !== JSON.stringify(["ubuntu-24.04"])
   )
     throw new Error(`live_catalog_${label}_runner_tuple_invalid`);
   return {
@@ -258,15 +419,16 @@ export function assembleLiveCatalogClaim(input) {
   if (input.sourceEvent !== "workflow_dispatch")
     throw new Error("live_catalog_source_event_mismatch");
   if (
-    input.qualityJob.name !== "Quality Gates" ||
-    input.qualityJob.conclusion !== "success"
+    input.sourceStatus !== "completed" ||
+    input.sourceConclusion !== "success"
   )
-    throw new Error("live_catalog_quality_job_mismatch");
+    throw new Error("live_catalog_source_run_not_successful");
   if (
-    input.pg17Job.name !== "Dedicated Release Authority PG17 contract" ||
-    input.pg17Job.conclusion !== "success"
+    input.producerJob.name !== "Full private PG16 to PG17 rehearsal" ||
+    input.producerJob.status !== "completed" ||
+    input.producerJob.conclusion !== "success"
   )
-    throw new Error("live_catalog_pg17_job_mismatch");
+    throw new Error("live_catalog_producer_job_mismatch");
   if (input.runnerEnvironment !== "github-hosted")
     throw new Error("live_catalog_self_hosted_runner_denied");
   if (input.pg17Image !== LIVE_CATALOG_PG17_IMAGE)
@@ -285,14 +447,18 @@ export function assembleLiveCatalogClaim(input) {
   )
     throw new Error("live_catalog_candidate_pair_not_byte_identical");
 
-  const sanitized = sanitizeOneObservation(input.qualityLogBytes);
-  const observation = sanitized.observation;
   const projectionBytes = extractProjectionBytes(input.projectionSourceBytes);
   const configuredDigest = extractConfiguredCatalogDigest(
     input.projectionSourceBytes,
   );
-  if (observation.expectedDigest !== configuredDigest)
-    throw new Error("live_catalog_observation_expected_digest_mismatch");
+  const captureEvidence = captureEvidenceFacts(
+    input.captureEvidenceBytes,
+    candidates,
+    projectionBytes,
+    configuredDigest,
+    input.runId,
+    input.runAttempt,
+  );
   const claim = {
     schemaVersion: LIVE_CATALOG_CLAIM_SCHEMA,
     repository: {
@@ -314,11 +480,11 @@ export function assembleLiveCatalogClaim(input) {
       runAttempt: input.runAttempt,
       workflowPath: input.sourceWorkflowPath,
       event: input.sourceEvent,
-      qualityJob: {
-        ...githubHostedJob(input.qualityJob, "quality_job"),
-      },
-      pg17Job: {
-        ...githubHostedJob(input.pg17Job, "pg17_job"),
+      status: input.sourceStatus,
+      conclusion: input.sourceConclusion,
+      producerJob: {
+        ...githubHostedJob(input.producerJob, "producer_job"),
+        status: input.producerJob.status,
       },
       runnerEnvironment: input.runnerEnvironment,
     },
@@ -327,13 +493,7 @@ export function assembleLiveCatalogClaim(input) {
       name: string(input.artifactName, "artifact_name", /^[A-Za-z0-9_.-]+$/u),
       archiveSha256: string(input.archiveSha256, "archive_sha256", shaPattern),
       candidates,
-    },
-    qualityLog: {
-      size: Buffer.byteLength(input.qualityLogBytes),
-      sha256: sha256Hex(input.qualityLogBytes),
-      observationLineSize: sanitized.lineBytes.length,
-      observationLineSha256: sha256Hex(sanitized.lineBytes),
-      observation,
+      captureEvidence,
     },
     sources: {
       workflow: {
@@ -353,10 +513,10 @@ export function assembleLiveCatalogClaim(input) {
       },
     },
     pg17Image: input.pg17Image,
-    observedCatalogDigest: observation.observedDigest,
+    observedCatalogDigest: captureEvidence.observedCatalogDigest,
     candidateToObservedDigest: candidateToObservedDigest(
       candidates,
-      observation.observedDigest,
+      captureEvidence.observedCatalogDigest,
     ),
     attestor: {
       workflowPath: LIVE_CATALOG_WORKFLOW,
@@ -381,7 +541,6 @@ export function validateLiveCatalogClaim(claim) {
       "source",
       "execution",
       "artifact",
-      "qualityLog",
       "sources",
       "pg17Image",
       "observedCatalogDigest",
@@ -401,53 +560,42 @@ export function validateLiveCatalogClaim(claim) {
       "runAttempt",
       "workflowPath",
       "event",
-      "qualityJob",
-      "pg17Job",
+      "status",
+      "conclusion",
+      "producerJob",
       "runnerEnvironment",
     ],
     "execution",
   );
   exactKeys(
     claim.artifact,
-    ["id", "name", "archiveSha256", "candidates"],
+    ["id", "name", "archiveSha256", "candidates", "captureEvidence"],
     "artifact",
   );
   exactKeys(
-    claim.execution.qualityJob,
+    claim.execution.producerJob,
     [
       "id",
       "name",
       "conclusion",
+      "status",
       "runnerGroupId",
       "runnerGroupName",
       "runnerName",
       "labels",
     ],
-    "quality_job",
+    "producer_job",
   );
   exactKeys(
-    claim.execution.pg17Job,
-    [
-      "id",
-      "name",
-      "conclusion",
-      "runnerGroupId",
-      "runnerGroupName",
-      "runnerName",
-      "labels",
-    ],
-    "pg17_job",
-  );
-  exactKeys(
-    claim.qualityLog,
+    claim.artifact.captureEvidence,
     [
       "size",
       "sha256",
-      "observationLineSize",
-      "observationLineSha256",
-      "observation",
+      "observedCatalogDigest",
+      "projectionSqlSha256",
+      "inputs",
     ],
-    "quality_log",
+    "capture_evidence_facts",
   );
   exactKeys(claim.sources, ["workflow", "projection"], "sources");
   exactKeys(
@@ -482,11 +630,23 @@ export function validateLiveCatalogClaim(claim) {
     ],
     "attestor",
   );
-  exactKeys(
-    claim.qualityLog.observation,
-    ["kind", "observedAt", "expectedDigest", "observedDigest"],
-    "observation",
-  );
+  if (
+    !Array.isArray(claim.artifact.candidates) ||
+    !Array.isArray(claim.artifact.captureEvidence.inputs)
+  )
+    throw new Error("live_catalog_claim_candidate_tuple_mismatch");
+  for (const input of claim.artifact.captureEvidence.inputs)
+    exactKeys(
+      input,
+      [
+        "disposableDatabaseIdentity",
+        "candidateName",
+        "candidateSize",
+        "candidateSha256",
+        "receiptCatalogDigest",
+      ],
+      "capture_input",
+    );
   for (const candidate of claim.artifact.candidates)
     exactKeys(candidate, ["name", "size", "sha256"], "candidate");
   if (
@@ -499,34 +659,33 @@ export function validateLiveCatalogClaim(claim) {
     claim.execution.runAttempt !== 1 ||
     claim.execution.workflowPath !== LIVE_CATALOG_SOURCE_WORKFLOW ||
     claim.execution.event !== "workflow_dispatch" ||
+    claim.execution.status !== "completed" ||
+    claim.execution.conclusion !== "success" ||
     !/^[1-9][0-9]*$/u.test(claim.execution.runId) ||
-    !/^[1-9][0-9]*$/u.test(claim.execution.qualityJob.id) ||
-    claim.execution.qualityJob.name !== "Quality Gates" ||
-    claim.execution.qualityJob.conclusion !== "success" ||
-    claim.execution.qualityJob.runnerGroupId !== 0 ||
-    claim.execution.qualityJob.runnerGroupName !== "GitHub Actions" ||
+    !/^[1-9][0-9]*$/u.test(claim.execution.producerJob.id) ||
+    claim.execution.producerJob.name !==
+      "Full private PG16 to PG17 rehearsal" ||
+    claim.execution.producerJob.status !== "completed" ||
+    claim.execution.producerJob.conclusion !== "success" ||
+    claim.execution.producerJob.runnerGroupId !== 0 ||
+    claim.execution.producerJob.runnerGroupName !== "GitHub Actions" ||
     !/^GitHub Actions [1-9][0-9]*$/u.test(
-      claim.execution.qualityJob.runnerName,
+      claim.execution.producerJob.runnerName,
     ) ||
-    JSON.stringify(claim.execution.qualityJob.labels) !==
-      JSON.stringify(["ubuntu-latest"]) ||
-    !/^[1-9][0-9]*$/u.test(claim.execution.pg17Job.id) ||
-    claim.execution.pg17Job.name !==
-      "Dedicated Release Authority PG17 contract" ||
-    claim.execution.pg17Job.conclusion !== "success" ||
-    claim.execution.pg17Job.runnerGroupId !== 0 ||
-    claim.execution.pg17Job.runnerGroupName !== "GitHub Actions" ||
-    !/^GitHub Actions [1-9][0-9]*$/u.test(claim.execution.pg17Job.runnerName) ||
-    JSON.stringify(claim.execution.pg17Job.labels) !==
-      JSON.stringify(["ubuntu-latest"]) ||
+    JSON.stringify(claim.execution.producerJob.labels) !==
+      JSON.stringify(["ubuntu-24.04"]) ||
     claim.execution.runnerEnvironment !== "github-hosted" ||
     !/^[1-9][0-9]*$/u.test(claim.artifact.id) ||
     claim.artifact.name !==
       `activation-catalog-policy-${claim.source.commit}-1` ||
     !shaPattern.test(claim.artifact.archiveSha256) ||
-    !Number.isSafeInteger(claim.qualityLog.size) ||
-    claim.qualityLog.size <= 0 ||
-    !shaPattern.test(claim.qualityLog.sha256) ||
+    !Number.isSafeInteger(claim.artifact.captureEvidence.size) ||
+    claim.artifact.captureEvidence.size <= 0 ||
+    !shaPattern.test(claim.artifact.captureEvidence.sha256) ||
+    claim.artifact.captureEvidence.observedCatalogDigest !==
+      claim.observedCatalogDigest ||
+    claim.artifact.captureEvidence.projectionSqlSha256 !==
+      claim.sources.projection.sha256 ||
     claim.pg17Image !== LIVE_CATALOG_PG17_IMAGE ||
     claim.attestor.workflowPath !== LIVE_CATALOG_WORKFLOW ||
     claim.attestor.ref !== "refs/heads/main" ||
@@ -551,19 +710,7 @@ export function validateLiveCatalogClaim(claim) {
     claim.sources.projection.size <= 0 ||
     !shaPattern.test(claim.sources.projection.sha256) ||
     !digestPattern.test(claim.observedCatalogDigest) ||
-    claim.qualityLog.observation.kind !==
-      "release-migration-live-catalog-digest" ||
-    !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(
-      claim.qualityLog.observation.observedAt,
-    ) ||
-    !digestPattern.test(claim.qualityLog.observation.expectedDigest) ||
-    claim.qualityLog.observation.expectedDigest !==
-      claim.sources.projection.configuredDigest ||
-    claim.qualityLog.observation.observedDigest !==
-      claim.observedCatalogDigest ||
-    !Number.isSafeInteger(claim.qualityLog.observationLineSize) ||
-    claim.qualityLog.observationLineSize <= 0 ||
-    !shaPattern.test(claim.qualityLog.observationLineSha256) ||
+    claim.observedCatalogDigest !== claim.sources.projection.configuredDigest ||
     claim.candidateToObservedDigest !==
       candidateToObservedDigest(
         claim.artifact.candidates,
@@ -582,7 +729,21 @@ export function validateLiveCatalogClaim(claim) {
     !shaPattern.test(claim.artifact.candidates[0].sha256) ||
     claim.artifact.candidates[0].sha256 !==
       claim.artifact.candidates[1].sha256 ||
-    claim.artifact.candidates[0].size !== claim.artifact.candidates[1].size
+    claim.artifact.candidates[0].size !== claim.artifact.candidates[1].size ||
+    claim.artifact.captureEvidence.inputs.length !== 2 ||
+    claim.artifact.captureEvidence.inputs.some(
+      (input, index) =>
+        !/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(
+          input.disposableDatabaseIdentity,
+        ) ||
+        !input.disposableDatabaseIdentity.endsWith(index === 0 ? "-a" : "-b") ||
+        input.disposableDatabaseIdentity !==
+          `rr-disposable-${claim.execution.runId}-${claim.execution.runAttempt}-${index === 0 ? "a" : "b"}` ||
+        input.candidateName !== claim.artifact.candidates[index].name ||
+        input.candidateSize !== claim.artifact.candidates[index].size ||
+        input.candidateSha256 !== claim.artifact.candidates[index].sha256 ||
+        input.receiptCatalogDigest !== claim.observedCatalogDigest,
+    )
   )
     throw new Error("live_catalog_claim_candidate_tuple_mismatch");
   return claim;

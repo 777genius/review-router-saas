@@ -83,8 +83,22 @@ export function verifyLiveCatalogAttestation(
   const candidateEntries = [...entries.entries()].filter(([name]) =>
     /^activation-catalog-policy-candidate-[12]\.json$/u.test(name),
   );
-  if (candidateEntries.length !== entries.size)
+  const captureEvidenceBytes = entries.get(
+    "live-catalog-successful-capture-evidence.json",
+  );
+  if (
+    candidateEntries.length !== 2 ||
+    entries.size !== 3 ||
+    !captureEvidenceBytes
+  )
     throw new Error("live_catalog_offline_evidence_entries_invalid");
+  const retainedCaptureEvidence = readBoundedRegularFile(
+    join(input.evidencePath, "successful-capture.json"),
+    2 * 1024 * 1024,
+    "capture_evidence",
+  );
+  if (!retainedCaptureEvidence.equals(captureEvidenceBytes))
+    throw new Error("live_catalog_offline_capture_evidence_mismatch");
   const reconstructed = assembleLiveCatalogClaim({
     repositoryId: claim.repository.id,
     repositoryName: claim.repository.name,
@@ -94,36 +108,26 @@ export function verifyLiveCatalogAttestation(
     sourceBranch: claim.source.branch,
     sourceWorkflowPath: claim.execution.workflowPath,
     sourceEvent: claim.execution.event,
+    sourceStatus: claim.execution.status,
+    sourceConclusion: claim.execution.conclusion,
     runId: claim.execution.runId,
     runAttempt: claim.execution.runAttempt,
-    qualityJob: {
-      id: claim.execution.qualityJob.id,
-      name: claim.execution.qualityJob.name,
-      conclusion: claim.execution.qualityJob.conclusion,
-      runnerGroupId: claim.execution.qualityJob.runnerGroupId,
-      runnerGroupName: claim.execution.qualityJob.runnerGroupName,
-      runnerName: claim.execution.qualityJob.runnerName,
-      labels: claim.execution.qualityJob.labels,
-    },
-    pg17Job: {
-      id: claim.execution.pg17Job.id,
-      name: claim.execution.pg17Job.name,
-      conclusion: claim.execution.pg17Job.conclusion,
-      runnerGroupId: claim.execution.pg17Job.runnerGroupId,
-      runnerGroupName: claim.execution.pg17Job.runnerGroupName,
-      runnerName: claim.execution.pg17Job.runnerName,
-      labels: claim.execution.pg17Job.labels,
+    producerJob: {
+      id: claim.execution.producerJob.id,
+      name: claim.execution.producerJob.name,
+      status: claim.execution.producerJob.status,
+      conclusion: claim.execution.producerJob.conclusion,
+      runnerGroupId: claim.execution.producerJob.runnerGroupId,
+      runnerGroupName: claim.execution.producerJob.runnerGroupName,
+      runnerName: claim.execution.producerJob.runnerName,
+      labels: claim.execution.producerJob.labels,
     },
     runnerEnvironment: claim.execution.runnerEnvironment,
     artifactId: claim.artifact.id,
     artifactName: claim.artifact.name,
     archiveSha256: sha256Hex(archiveBytes),
     candidateEntries,
-    qualityLogBytes: readBoundedRegularFile(
-      join(input.evidencePath, "quality.log"),
-      128 * 1024 * 1024,
-      "log",
-    ),
+    captureEvidenceBytes,
     workflowSourceBytes: readBoundedRegularFile(
       join(input.evidencePath, "source-ci.yml"),
       2 * 1024 * 1024,

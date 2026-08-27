@@ -262,6 +262,8 @@ function crc32(bytes) {
 }
 
 function endOfCentralDirectory(archive) {
+  if (archive.length < 22)
+    throw new Error("trusted evidence artifact is not a supported ZIP archive");
   const minimum = Math.max(0, archive.length - 65_557);
   for (let offset = archive.length - 22; offset >= minimum; offset -= 1) {
     if (archive.readUInt32LE(offset) === 0x06054b50) return offset;
@@ -274,8 +276,18 @@ export function readExactZipEntries(
   {
     maximumEntryBytes = 16 * 1024 * 1024,
     maximumTotalBytes = 24 * 1024 * 1024,
+    maximumCompressedEntryBytes = 16 * 1024 * 1024,
+    maximumTotalCompressedBytes = 24 * 1024 * 1024,
   } = {},
 ) {
+  for (const limit of [
+    maximumEntryBytes,
+    maximumTotalBytes,
+    maximumCompressedEntryBytes,
+    maximumTotalCompressedBytes,
+  ])
+    if (!Number.isSafeInteger(limit) || limit <= 0)
+      throw new Error("trusted evidence ZIP limit is invalid");
   const archive = Buffer.from(archiveBytes);
   const end = endOfCentralDirectory(archive);
   const disk = archive.readUInt16LE(end + 4);
@@ -298,11 +310,17 @@ export function readExactZipEntries(
 
   const entries = new Map();
   let totalUncompressedBytes = 0;
+  let totalCompressedBytes = 0;
   let cursor = centralOffset;
   for (let index = 0; index < entryCount; index += 1) {
-    if (archive.readUInt32LE(cursor) !== 0x02014b50)
+    if (
+      cursor < 0 ||
+      cursor + 46 > end ||
+      archive.readUInt32LE(cursor) !== 0x02014b50
+    )
       throw new Error("trusted evidence ZIP central directory is invalid");
     const flags = archive.readUInt16LE(cursor + 8);
+    const versionMadeBy = archive.readUInt16LE(cursor + 4);
     const method = archive.readUInt16LE(cursor + 10);
     const expectedCrc = archive.readUInt32LE(cursor + 16);
     const compressedSize = archive.readUInt32LE(cursor + 20);
@@ -311,11 +329,14 @@ export function readExactZipEntries(
     const extraLength = archive.readUInt16LE(cursor + 30);
     const entryCommentLength = archive.readUInt16LE(cursor + 32);
     const localOffset = archive.readUInt32LE(cursor + 42);
+    const externalAttributes = archive.readUInt32LE(cursor + 38);
+    if (cursor + 46 + nameLength + extraLength + entryCommentLength > end)
+      throw new Error("trusted evidence ZIP central directory is truncated");
     const name = archive
       .subarray(cursor + 46, cursor + 46 + nameLength)
       .toString("utf8");
     if (
-      flags & 1 ||
+      (flags & ~0x800) !== 0 ||
       ![0, 8].includes(method) ||
       !name ||
       name.startsWith("/") ||
@@ -323,18 +344,31 @@ export function readExactZipEntries(
       name.split("/").includes("..") ||
       name.endsWith("/") ||
       entries.has(name) ||
+      compressedSize > maximumCompressedEntryBytes ||
       uncompressedSize > maximumEntryBytes ||
+      (method === 0 && compressedSize !== uncompressedSize) ||
+      (versionMadeBy >>> 8 === 3 &&
+        ((externalAttributes >>> 16) & 0xf000) !== 0x8000) ||
+      localOffset + 30 > centralOffset ||
       archive.readUInt32LE(localOffset) !== 0x04034b50
     )
       throw new Error("trusted evidence ZIP entry is unsafe or unsupported");
     const localFlags = archive.readUInt16LE(localOffset + 6);
     const localMethod = archive.readUInt16LE(localOffset + 8);
+    const localCrc = archive.readUInt32LE(localOffset + 14);
+    const localCompressedSize = archive.readUInt32LE(localOffset + 18);
+    const localUncompressedSize = archive.readUInt32LE(localOffset + 22);
     const localNameLength = archive.readUInt16LE(localOffset + 26);
     const localExtraLength = archive.readUInt16LE(localOffset + 28);
     const localName = archive
       .subarray(localOffset + 30, localOffset + 30 + localNameLength)
       .toString("utf8");
     const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
+    if (
+      dataOffset > centralOffset ||
+      dataOffset + compressedSize > centralOffset
+    )
+      throw new Error("trusted evidence ZIP local entry exceeds data area");
     const compressed = archive.subarray(
       dataOffset,
       dataOffset + compressedSize,
@@ -342,6 +376,9 @@ export function readExactZipEntries(
     if (
       localFlags !== flags ||
       localMethod !== method ||
+      localCrc !== expectedCrc ||
+      localCompressedSize !== compressedSize ||
+      localUncompressedSize !== uncompressedSize ||
       localName !== name ||
       compressed.length !== compressedSize
     )
@@ -349,12 +386,15 @@ export function readExactZipEntries(
         "trusted evidence ZIP local entry mismatches its directory",
       );
     totalUncompressedBytes += uncompressedSize;
+    totalCompressedBytes += compressedSize;
     if (totalUncompressedBytes > maximumTotalBytes)
       throw new Error("trusted evidence ZIP uncompressed total is too large");
+    if (totalCompressedBytes > maximumTotalCompressedBytes)
+      throw new Error("trusted evidence ZIP compressed total is too large");
     const value =
       method === 0
         ? Buffer.from(compressed)
-        : inflateRawSync(compressed, { maxOutputLength: maximumEntryBytes });
+        : inflateRawSync(compressed, { maxOutputLength: uncompressedSize });
     if (value.length !== uncompressedSize || crc32(value) !== expectedCrc)
       throw new Error("trusted evidence ZIP entry digest is invalid");
     entries.set(name, value);

@@ -7,12 +7,8 @@ on:
         description: Successful protected-main CI workflow_dispatch run ID (attempt 1)
         required: true
         type: string
-      quality_job_id:
-        description: Exact successful Quality Gates job ID
-        required: true
-        type: string
-      pg17_job_id:
-        description: Exact successful Dedicated Release Authority PG17 contract job ID
+      producer_job_id:
+        description: Exact successful Full private PG16 to PG17 rehearsal job ID
         required: true
         type: string
       artifact_id:
@@ -56,16 +52,21 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Enable pinned pnpm
+        run: corepack enable pnpm
+
+      - name: Install frozen attestor dependencies
+        run: pnpm install --filter review-router --frozen-lockfile --ignore-scripts --no-optional --prod=false
+
       - name: Assemble authenticated canonical claim
         id: claim
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-          QUALITY_JOB_ID: ${{ inputs.quality_job_id }}
-          PG17_JOB_ID: ${{ inputs.pg17_job_id }}
+          PRODUCER_JOB_ID: ${{ inputs.producer_job_id }}
           SOURCE_ARTIFACT_ID: ${{ inputs.artifact_id }}
-        run: node scripts/attest-live-catalog-digest.mjs assemble
+        run: node --import tsx scripts/attest-live-catalog-digest.mjs assemble
 
       - name: Attest canonical claim subject
         id: attest
@@ -77,7 +78,7 @@ jobs:
         shell: bash
         env:
           ATTESTATION_BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
-        run: node scripts/attest-live-catalog-digest.mjs finalize-bundle
+        run: node --import tsx scripts/attest-live-catalog-digest.mjs finalize-bundle
 
       - name: Publish machine-readable subject and bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

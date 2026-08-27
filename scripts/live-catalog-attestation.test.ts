@@ -8,7 +8,6 @@ import {
   extractConfiguredCatalogDigest,
   extractProjectionBytes,
   LIVE_CATALOG_PG17_IMAGE,
-  sanitizeOneObservation,
   sha256Hex,
 } from "./lib/live-catalog-attestation-domain.mjs";
 
@@ -29,15 +28,10 @@ describe("historical non-authoritative live catalog rejection fixture", () => {
   });
 
   it("retains supplied bytes only as deterministic rejection evidence", () => {
-    const observation = sanitizeOneObservation(
-      Buffer.from(fixture.observationLine),
-    );
-    expect(observation.lineBytes).toHaveLength(265);
-    expect(sha256Hex(observation.lineBytes)).toBe(
+    const historicalFailureLine = Buffer.from(fixture.observationLine);
+    expect(historicalFailureLine).toHaveLength(265);
+    expect(sha256Hex(historicalFailureLine)).toBe(
       fixture.observationLineSha256,
-    );
-    expect(observation.observation.observedDigest).toBe(
-      fixture.observedCatalogDigest,
     );
     expect(fixture.runId).toBe("33020660492");
     expect(fixture.runAttempt).toBe(1);
@@ -133,6 +127,36 @@ describe("live catalog attestor workflow", () => {
     );
     expect(uses).toContain(
       "actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be",
+    );
+  });
+
+  it("installs the pinned lockfile before executing TypeScript-backed semantic parsers", () => {
+    const enable = job.steps.find(
+      (step: { name?: string }) => step.name === "Enable pinned pnpm",
+    );
+    const install = job.steps.find(
+      (step: { name?: string }) =>
+        step.name === "Install frozen attestor dependencies",
+    );
+    const assemble = job.steps.find(
+      (step: { name?: string }) =>
+        step.name === "Assemble authenticated canonical claim",
+    );
+    expect(install?.run).toBe(
+      "pnpm install --filter review-router --frozen-lockfile --ignore-scripts --no-optional --prod=false",
+    );
+    expect(enable?.run).toBe("corepack enable pnpm");
+    expect(
+      JSON.parse(readFileSync("package.json", "utf8")).packageManager,
+    ).toBe("pnpm@10.33.0");
+    expect(raw.indexOf("Enable pinned pnpm")).toBeLessThan(
+      raw.indexOf("Install frozen attestor dependencies"),
+    );
+    expect(assemble?.run).toBe(
+      "node --import tsx scripts/attest-live-catalog-digest.mjs assemble",
+    );
+    expect(raw.indexOf("Install frozen attestor dependencies")).toBeLessThan(
+      raw.indexOf("Assemble authenticated canonical claim"),
     );
   });
 

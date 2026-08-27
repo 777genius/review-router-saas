@@ -44,7 +44,7 @@ export async function writeLiveCatalogAttestationSubject(configuration) {
   mkdirSync(evidencePath, { mode: 0o700 });
   for (const [name, bytes] of [
     ["artifact.zip", evidence.archiveBytes],
-    ["quality.log", evidence.qualityLogBytes],
+    ["successful-capture.json", evidence.captureEvidenceBytes],
     ["source-ci.yml", evidence.workflowSourceBytes],
     ["source-live-catalog-projection.mjs", evidence.projectionSourceBytes],
   ])
@@ -69,8 +69,7 @@ async function main() {
       token: required("GH_TOKEN"),
       runId: required("SOURCE_RUN_ID"),
       artifactId: required("SOURCE_ARTIFACT_ID"),
-      qualityJobId: required("QUALITY_JOB_ID"),
-      pg17JobId: required("PG17_JOB_ID"),
+      producerJobId: required("PRODUCER_JOB_ID"),
       attestorCommit: required("GITHUB_SHA"),
       attestorRunId: required("GITHUB_RUN_ID"),
       attestorRunAttempt: required("GITHUB_RUN_ATTEMPT"),

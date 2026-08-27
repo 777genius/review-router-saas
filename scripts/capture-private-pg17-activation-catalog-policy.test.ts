@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parsePrivatePg17ActivationCatalogPolicyCandidate } from "./capture-private-pg17-activation-catalog-policy.mjs";
+import {
+  normalizePrivatePg17ActivationCatalogPolicyArtifactCandidate,
+  parsePrivatePg17ActivationCatalogPolicyArtifactBytes,
+  parsePrivatePg17ActivationCatalogPolicyCandidate,
+} from "./capture-private-pg17-activation-catalog-policy.mjs";
 import {
   canonicalActivationPrincipalNames,
   canonicalBootstrapMembershipRoleNames,
@@ -112,6 +116,32 @@ describe("activation catalog policy candidate capture", () => {
         })}\n`,
       ),
     ).toThrow("activation_catalog_policy_candidate_envelope_invalid");
+  });
+
+  it("reuses the exact production normalizer for stored artifact candidates", () => {
+    const valid = parsePrivatePg17ActivationCatalogPolicyCandidate(
+      envelope(policy("preactivation"), policy("activated")),
+    );
+    expect(
+      parsePrivatePg17ActivationCatalogPolicyArtifactBytes(
+        Buffer.from(JSON.stringify(valid)),
+      ),
+    ).toEqual(valid);
+    expect(() =>
+      normalizePrivatePg17ActivationCatalogPolicyArtifactCandidate({
+        ...valid,
+        extra: true,
+      }),
+    ).toThrow("activation_catalog_policy_candidate_envelope_invalid");
+    expect(() =>
+      normalizePrivatePg17ActivationCatalogPolicyArtifactCandidate({
+        ...valid,
+        policies: {
+          preactivation: policy("activated"),
+          activated: policy("preactivation"),
+        },
+      }),
+    ).toThrow("activation_catalog_policy_candidate_invalid:preactivation");
   });
 
   it("rejects rehearsal resources and duplicate normalized grant identities", () => {

@@ -136,7 +136,7 @@ jobs:
   private-pg16-to-pg17-rehearsal:
     name: Full private PG16 to PG17 rehearsal
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.private_pg16_to_pg17_rehearsal) || (github.event_name == 'workflow_dispatch' && inputs.activation_catalog_policy_capture) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -171,17 +171,21 @@ jobs:
           REVIEW_ROUTER_REHEARSAL_PG17_IMAGE: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
         run: |
           export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-a"
-          node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-policy-candidate-1.json
+          node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-capture-result-1.json
           export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b"
-          node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-policy-candidate-2.json
+          node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-capture-result-2.json
+          node --import tsx scripts/package-live-catalog-capture-evidence.mjs activation-catalog-capture-result-1.json activation-catalog-capture-result-2.json
           cmp activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json
-          sha256sum activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json
+          sha256sum activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json live-catalog-successful-capture-evidence.json
       - name: Upload activation catalog policy captures
         if: ${{ inputs.activation_catalog_policy_capture }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: activation-catalog-policy-${{ github.sha }}-${{ github.run_attempt }}
-          path: activation-catalog-policy-candidate-*.json
+          path: |
+            activation-catalog-policy-candidate-1.json
+            activation-catalog-policy-candidate-2.json
+            live-catalog-successful-capture-evidence.json
           if-no-files-found: error
           retention-days: 14
       - name: Create exact release-gate evidence

@@ -6,40 +6,17 @@ import {
 } from "./github-actions-trusted-evidence.mjs";
 import { collectLiveCatalogClaim } from "./live-catalog-github-evidence.mjs";
 import { sha256Hex } from "./live-catalog-attestation-domain.mjs";
+import {
+  testCandidate as candidate,
+  testCaptureEvidence as captureEvidence,
+  testProjectionSource as projection,
+  testWorkflowSource as workflow,
+} from "./live-catalog-attestation-test-fixtures.mjs";
 
 const sourceCommit = "a".repeat(40);
 const attestorCommit = "b".repeat(40);
 const tree = "c".repeat(40);
 const prefix = "/repos/owner/repo";
-const projection = Buffer.from(
-  `export const fencedLiveV70V73CatalogDigestSql = \`SELECT 'ok'\`;\n` +
-    `export const liveV70V73CatalogDigestSha256 = "sha256:${"1".repeat(64)}";\n`,
-);
-const workflow = Buffer.from(`jobs:
-  release-authority-pg17-contract:
-    name: Dedicated Release Authority PG17 contract
-    runs-on: ubuntu-latest
-    env:
-      REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
-  quality:
-    name: Quality Gates
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
-`);
-const candidate = Buffer.from(
-  JSON.stringify({
-    kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
-    version: 1,
-    policies: { preactivation: { value: 1 }, activated: { value: 1 } },
-  }),
-);
-const log = Buffer.from(
-  `Quality Gates\tStop containers\t2026-08-26T22:49:15.6169885Z  ` +
-    `2026-08-26 22:49:13.883 UTC [2032] DETAIL:  expected=sha256:${"1".repeat(64)} ` +
-    `observed=sha256:${"2".repeat(64)}\n`,
-);
 
 function crc32(bytes: Buffer) {
   let crc = 0xffffffff;
@@ -91,12 +68,13 @@ function fixture(mutate?: (values: Record<string, any>) => void) {
   const archive = zip({
     "activation-catalog-policy-candidate-1.json": candidate,
     "activation-catalog-policy-candidate-2.json": candidate,
+    "live-catalog-successful-capture-evidence.json": captureEvidence,
   });
   const values: Record<string, any> = {
     repository: { id: 17, full_name: "Owner/Repo", default_branch: "main" },
     main: { name: "main", protected: true, commit: { sha: attestorCommit } },
     run: {
-      id: 101,
+      id: 1001,
       run_attempt: 1,
       event: "workflow_dispatch",
       path: ".github/workflows/ci.yml",
@@ -108,42 +86,34 @@ function fixture(mutate?: (values: Record<string, any>) => void) {
       head_repository: { id: 17, full_name: "Owner/Repo" },
     },
     jobs: {
-      total_count: 2,
+      total_count: 1,
       jobs: [
         {
-          id: 201,
-          run_id: 101,
+          id: 203,
+          run_id: 1001,
           run_attempt: 1,
           head_sha: sourceCommit,
           head_branch: "main",
-          name: "Quality Gates",
+          name: "Full private PG16 to PG17 rehearsal",
           status: "completed",
           conclusion: "success",
-          labels: ["ubuntu-latest"],
+          labels: ["ubuntu-24.04"],
           runner_group_id: 0,
           runner_group_name: "GitHub Actions",
-          runner_name: "GitHub Actions 1001",
-        },
-        {
-          id: 202,
-          run_id: 101,
-          run_attempt: 1,
-          head_sha: sourceCommit,
-          head_branch: "main",
-          name: "Dedicated Release Authority PG17 contract",
-          status: "completed",
-          conclusion: "success",
-          labels: ["ubuntu-latest"],
-          runner_group_id: 0,
-          runner_group_name: "GitHub Actions",
-          runner_name: "GitHub Actions 1002",
+          runner_name: "GitHub Actions 1003",
         },
       ],
     },
     artifact: {
       id: 301,
       name: `activation-catalog-policy-${sourceCommit}-1`,
-      workflow_run: { id: 101 },
+      workflow_run: {
+        id: 1001,
+        repository_id: 17,
+        head_repository_id: 17,
+        head_branch: "main",
+        head_sha: sourceCommit,
+      },
       expired: false,
       digest: `sha256:${sha256Hex(archive)}`,
     },
@@ -167,8 +137,11 @@ function fixture(mutate?: (values: Record<string, any>) => void) {
   const bodies = new Map<string, unknown>([
     [prefix, values.repository],
     [`${prefix}/branches/main`, values.main],
-    [`${prefix}/actions/runs/101`, values.run],
-    [`${prefix}/actions/runs/101/jobs?filter=latest&per_page=100`, values.jobs],
+    [`${prefix}/actions/runs/1001`, values.run],
+    [
+      `${prefix}/actions/runs/1001/jobs?filter=latest&per_page=100`,
+      values.jobs,
+    ],
     [`${prefix}/actions/artifacts/301`, values.artifact],
     [`${prefix}/git/commits/${sourceCommit}`, values.commit],
     [`${prefix}/compare/${sourceCommit}...${attestorCommit}`, values.ancestry],
@@ -185,7 +158,6 @@ function fixture(mutate?: (values: Record<string, any>) => void) {
     ],
   ]);
   const downloads = new Map<string, Buffer>([
-    [`${prefix}/actions/jobs/201/logs`, log],
     [`${prefix}/actions/artifacts/301/zip`, values.archive],
   ]);
   const fetchImpl = async (url: string) => {
@@ -203,10 +175,9 @@ function fixture(mutate?: (values: Record<string, any>) => void) {
 const configuration = {
   repository: "owner/repo",
   token: "token",
-  runId: 101,
+  runId: 1001,
   artifactId: 301,
-  qualityJobId: 201,
-  pg17JobId: 202,
+  producerJobId: 203,
   attestorCommit,
   attestorRunId: 401,
   attestorRunAttempt: 1,
@@ -228,8 +199,7 @@ describe("live catalog authenticated GitHub adapter", () => {
       ref: sourceCommit,
       branch: "main",
     });
-    expect(result.claim.execution.qualityJob.id).toBe("201");
-    expect(result.claim.execution.pg17Job.id).toBe("202");
+    expect(result.claim.execution.producerJob.id).toBe("203");
     expect(result.evidence.workflowSourceBytes).toEqual(workflow);
     expect(result.evidence.projectionSourceBytes).toEqual(projection);
   });
@@ -238,6 +208,11 @@ describe("live catalog authenticated GitHub adapter", () => {
     [
       "repository rename",
       (value: any) => (value.repository.full_name = "Owner/Other"),
+    ],
+    ["repository ID", (value: any) => (value.repository.id = 18)],
+    [
+      "default branch",
+      (value: any) => (value.repository.default_branch = "develop"),
     ],
     ["unprotected main", (value: any) => (value.main.protected = false)],
     ["stale attestor", (value: any) => (value.main.commit.sha = sourceCommit)],
@@ -251,21 +226,51 @@ describe("live catalog authenticated GitHub adapter", () => {
       (value: any) => (value.run.path = ".github/workflows/other.yml"),
     ],
     ["source retry", (value: any) => (value.run.run_attempt = 2)],
+    ["run repository ID", (value: any) => (value.run.repository.id = 18)],
+    [
+      "run repository name",
+      (value: any) => (value.run.repository.full_name = "Owner/Other"),
+    ],
+    [
+      "head repository name",
+      (value: any) => (value.run.head_repository.full_name = "Owner/Other"),
+    ],
     ["pull request source", (value: any) => (value.run.event = "pull_request")],
     ["source tree", (value: any) => (value.commit.tree.sha = "invalid")],
+    ["commit identity", (value: any) => (value.commit.sha = attestorCommit)],
     ["source ancestry", (value: any) => (value.ancestry.status = "diverged")],
     [
-      "failed Quality",
+      "ancestry base",
+      (value: any) => (value.ancestry.base_commit.sha = attestorCommit),
+    ],
+    [
+      "ancestry merge base",
+      (value: any) => (value.ancestry.merge_base_commit.sha = attestorCommit),
+    ],
+    [
+      "failed producer",
       (value: any) => (value.jobs.jobs[0].conclusion = "failure"),
     ],
     [
-      "historical wrong PG17 job",
-      (value: any) =>
-        (value.jobs.jobs[1].name = "Full private PG16 to PG17 rehearsal"),
+      "wrong producer name",
+      (value: any) => (value.jobs.jobs[0].name = "Quality Gates"),
     ],
     [
-      "self-hosted PG17",
-      (value: any) => value.jobs.jobs[1].labels.push("self-hosted"),
+      "self-hosted producer",
+      (value: any) => value.jobs.jobs[0].labels.push("self-hosted"),
+    ],
+    ["producer status", (value: any) => (value.jobs.jobs[0].status = "queued")],
+    ["producer ID", (value: any) => (value.jobs.jobs[0].id = 999)],
+    ["job inventory", (value: any) => (value.jobs.total_count = 2)],
+    ["producer run", (value: any) => (value.jobs.jobs[0].run_id = 999)],
+    ["producer attempt", (value: any) => (value.jobs.jobs[0].run_attempt = 2)],
+    [
+      "producer branch",
+      (value: any) => (value.jobs.jobs[0].head_branch = "other"),
+    ],
+    [
+      "runner group name",
+      (value: any) => (value.jobs.jobs[0].runner_group_name = "Other"),
     ],
     [
       "custom runner group",
@@ -280,6 +285,34 @@ describe("live catalog authenticated GitHub adapter", () => {
       (value: any) => (value.jobs.jobs[0].head_sha = attestorCommit),
     ],
     ["artifact replay", (value: any) => (value.artifact.workflow_run.id = 999)],
+    [
+      "artifact repository",
+      (value: any) => (value.artifact.workflow_run.repository_id = 999),
+    ],
+    [
+      "artifact head repository",
+      (value: any) => (value.artifact.workflow_run.head_repository_id = 999),
+    ],
+    [
+      "artifact branch",
+      (value: any) => (value.artifact.workflow_run.head_branch = "other"),
+    ],
+    [
+      "artifact commit",
+      (value: any) => (value.artifact.workflow_run.head_sha = attestorCommit),
+    ],
+    ["expired artifact", (value: any) => (value.artifact.expired = true)],
+    ["artifact ID", (value: any) => (value.artifact.id = 999)],
+    [
+      "artifact digest",
+      (value: any) => (value.artifact.digest = `sha256:${"f".repeat(64)}`),
+    ],
+    ["source run status", (value: any) => (value.run.status = "queued")],
+    [
+      "source run conclusion",
+      (value: any) => (value.run.conclusion = "failure"),
+    ],
+    ["source run ID", (value: any) => (value.run.id = 999)],
     [
       "artifact name",
       (value: any) => (value.artifact.name = "candidate-decoy"),

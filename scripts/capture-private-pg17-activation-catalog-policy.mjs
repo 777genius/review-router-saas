@@ -16,6 +16,55 @@ const assertCandidate = (value, phase) => {
   }
 };
 
+const parseCandidateArtifact = (parsed) => {
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    JSON.stringify(Object.keys(parsed).sort()) !==
+      JSON.stringify(["kind", "policies", "version"]) ||
+    parsed.kind !==
+      "reviewrouter-activation-catalog-policy-artifact-candidate" ||
+    parsed.version !== 1 ||
+    parsed.policies === null ||
+    typeof parsed.policies !== "object" ||
+    Array.isArray(parsed.policies) ||
+    JSON.stringify(Object.keys(parsed.policies).sort()) !==
+      JSON.stringify(["activated", "preactivation"])
+  )
+    throw new Error("activation_catalog_policy_candidate_envelope_invalid");
+  return Object.freeze({
+    kind: parsed.kind,
+    version: parsed.version,
+    policies: Object.freeze({
+      preactivation: assertCandidate(
+        parsed.policies.preactivation,
+        "preactivation",
+      ),
+      activated: assertCandidate(parsed.policies.activated, "activated"),
+    }),
+  });
+};
+
+export function parsePrivatePg17ActivationCatalogPolicyArtifactBytes(bytes) {
+  let parsed;
+  try {
+    const value = Buffer.from(bytes);
+    if (value.length === 0 || value.length > 4 * 1024 * 1024)
+      throw new Error("size");
+    parsed = JSON.parse(value.toString("utf8"));
+  } catch {
+    throw new Error("activation_catalog_policy_candidate_output_invalid");
+  }
+  return parseCandidateArtifact(parsed);
+}
+
+export function normalizePrivatePg17ActivationCatalogPolicyArtifactCandidate(
+  value,
+) {
+  return parseCandidateArtifact(value);
+}
+
 export function parsePrivatePg17ActivationCatalogPolicyCandidate(stdout) {
   if (typeof stdout !== "string")
     throw new Error("activation_catalog_policy_candidate_output_invalid");
@@ -40,12 +89,9 @@ export function parsePrivatePg17ActivationCatalogPolicyCandidate(stdout) {
   )
     throw new Error("activation_catalog_policy_candidate_envelope_invalid");
   const { preactivation, activated } = observations[0];
-  return Object.freeze({
+  return parseCandidateArtifact({
     kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
     version: 1,
-    policies: Object.freeze({
-      preactivation: assertCandidate(preactivation, "preactivation"),
-      activated: assertCandidate(activated, "activated"),
-    }),
+    policies: { preactivation, activated },
   });
 }
