@@ -27,12 +27,16 @@ jobs:
           node-version: "24"
       - name: Enable pinned pnpm
         run: corepack enable pnpm
-      - name: Install frozen dependencies
+      - name: Fetch frozen dependencies without lifecycle scripts
         env:
           SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
-        run: node scripts/install-private-dependencies.mjs --frozen-lockfile
-      - name: Generate Prisma client
-        run: pnpm db:generate
+        run: node scripts/install-private-dependencies.mjs --frozen-lockfile --require-deploy-key
+      - name: Generate Prisma client offline after credential teardown
+        run: |
+          test -z "${SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64:-}"
+          test -z "${GIT_SSH_COMMAND:-}"
+          test -z "${GIT_SSH_VARIANT:-}"
+          pnpm --offline --filter @reviewrouter/platform-db db:generate
       - name: Migrate and capture twice
         env:
           REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1"

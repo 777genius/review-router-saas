@@ -248,7 +248,12 @@ function fixture(mutate?: (value: any) => void) {
   });
   const sources = sourceFiles();
   const value: any = {
-    repository: { id: 17, full_name: "Owner/Repo", default_branch: "main" },
+    repository: {
+      id: 17,
+      owner: { id: 11 },
+      full_name: "Owner/Repo",
+      default_branch: "main",
+    },
     main: { name: "main", protected: true, commit: { sha: commit } },
     run: {
       id: 1001,
@@ -354,6 +359,8 @@ function producerVerifier(input: any) {
       signerDigest: commit,
       sourceRef: "refs/heads/main",
       sourceDigest: commit,
+      sourceRepositoryIdentifier: "17",
+      sourceRepositoryOwnerIdentifier: "11",
       runnerEnvironment: "github-hosted",
       runInvocationURI:
         "https://github.com/owner/repo/actions/runs/1001/attempts/1",
@@ -367,6 +374,20 @@ function producerVerifier(input: any) {
 }
 
 describe("authenticated producer evidence", () => {
+  it.each(["01", "+1", "1e3", " 1", "1 "])(
+    "rejects non-canonical numeric workflow input %s before GitHub requests",
+    async (value) => {
+      const fetchImpl = vi.fn(fixture() as any);
+      await expect(
+        collectLiveCatalogClaim(
+          { ...configuration, runId: value },
+          fetchImpl as any,
+          producerVerifier,
+        ),
+      ).rejects.toThrow("live_catalog_run_id_invalid");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
   it("requires exact current main, one producer, producer attestation, and independent closure", async () => {
     const verifier = vi.fn(producerVerifier);
     const result = await collectLiveCatalogClaim(
@@ -449,6 +470,11 @@ describe("authenticated producer evidence", () => {
       },
     ],
     ["attempt two", (value: any) => (value.run.run_attempt = 2)],
+    ["repository reincarnation", (value: any) => (value.repository.id = 18)],
+    [
+      "repository owner mismatch",
+      (value: any) => (value.repository.owner.id = 12),
+    ],
     [
       "self hosted",
       (value: any) => (value.jobs.jobs[0].runner_group_name = "Default"),
@@ -498,7 +524,13 @@ describe("authenticated producer evidence", () => {
   it("fails the immediate pre-sign freshness recheck after main advances", async () => {
     await expect(
       assertFreshProtectedMain(
-        { repository: "owner/repo", token: "token", expectedCommit: commit },
+        {
+          repository: "owner/repo",
+          token: "token",
+          expectedCommit: commit,
+          expectedRepositoryId: "17",
+          expectedRepositoryOwnerId: "11",
+        },
         fixture((value) => (value.main.commit.sha = "c".repeat(40))) as any,
       ),
     ).rejects.toThrow("live_catalog_attestor_not_fresh_protected_main");

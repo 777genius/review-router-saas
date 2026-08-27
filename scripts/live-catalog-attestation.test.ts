@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
+import { parseAttestCommandArguments } from "./attest-live-catalog-digest.mjs";
 import {
   assertSourceWorkflowPg17Image,
   candidateToObservedDigest,
@@ -198,6 +199,46 @@ describe("live catalog attestor workflow", () => {
     expect(extractProjectionBytes(projection).length).toBeGreaterThan(1_000);
     expect(extractConfiguredCatalogDigest(projection)).toMatch(
       /^sha256:[a-f0-9]{64}$/u,
+    );
+  });
+
+  it("rejects missing, unknown, and extra attestor CLI arguments", () => {
+    expect(parseAttestCommandArguments(["assemble"])).toBe("assemble");
+    for (const argv of [
+      [],
+      ["unknown"],
+      ["assemble", "extra"],
+      ["assert-fresh-main", "extra"],
+    ])
+      expect(() => parseAttestCommandArguments(argv)).toThrow(
+        "usage: attest-live-catalog-digest.mjs",
+      );
+  });
+});
+
+describe("live catalog capture credential boundary", () => {
+  const raw = readFileSync(
+    ".github/workflows/capture-live-catalog.yml",
+    "utf8",
+  );
+  const steps = parse(raw).jobs.producer.steps;
+
+  it("disables lifecycle scripts while the deploy key exists, then generates offline", () => {
+    const fetchStep = steps.find((step: { name?: string }) =>
+      step.name?.startsWith("Fetch frozen dependencies"),
+    );
+    const offlineStep = steps.find((step: { name?: string }) =>
+      step.name?.startsWith("Generate Prisma client offline"),
+    );
+    expect(fetchStep.run).toContain("--require-deploy-key");
+    expect(fetchStep.env).toHaveProperty("SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64");
+    expect(offlineStep.env).toBeUndefined();
+    expect(offlineStep.run).toContain('test -z "${GIT_SSH_COMMAND:-}"');
+    expect(offlineStep.run).toContain(
+      "pnpm --offline --filter @reviewrouter/platform-db db:generate",
+    );
+    expect(raw.indexOf(fetchStep.name)).toBeLessThan(
+      raw.indexOf(offlineStep.name),
     );
   });
 });

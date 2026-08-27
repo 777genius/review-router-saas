@@ -5,11 +5,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import canonicalArtifact from "../packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js";
 import { gitBlobSha } from "./lib/github-actions-trusted-evidence.mjs";
 import {
@@ -28,6 +29,7 @@ import {
 import {
   parseVerifyArguments,
   trustedCurrentMainFromArguments,
+  trustedCurrentMainIdentityFromArguments,
   verifyLiveCatalogAttestation,
 } from "./verify-live-catalog-attestation.mjs";
 import {
@@ -39,6 +41,11 @@ import {
 } from "./lib/live-catalog-source-inventory-domain.mjs";
 
 const commit = "a".repeat(40);
+const temporaryDirectories: string[] = [];
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0))
+    rmSync(directory, { force: true, recursive: true });
+});
 let tree = "";
 const workflow = readFileSync(LIVE_CATALOG_SOURCE_WORKFLOW);
 const contract = readFileSync(LIVE_CATALOG_CONTRACT_PATH);
@@ -219,6 +226,7 @@ function sourceTree(sources: Map<string, Buffer>) {
 
 function makeFixture() {
   const directory = mkdtempSync(join(tmpdir(), "rr-offline-verifier-"));
+  temporaryDirectories.push(directory);
   const evidencePath = join(directory, "evidence");
   mkdirSync(evidencePath);
   const capture = Buffer.from(
@@ -261,6 +269,7 @@ function makeFixture() {
   }));
   const claim = assembleLiveCatalogClaim({
     repositoryId: 17,
+    repositoryOwnerId: 11,
     repositoryName: "owner/repo",
     sourceCommit: commit,
     sourceTree: tree,
@@ -307,6 +316,8 @@ function makeFixture() {
       signerDigest: commit,
       sourceRef: "refs/heads/main",
       sourceDigest: commit,
+      sourceRepositoryIdentifier: "17",
+      sourceRepositoryOwnerIdentifier: "11",
       runnerEnvironment: "github-hosted",
       runInvocationURI:
         "https://github.com/owner/repo/actions/runs/1001/attempts/1",
@@ -372,6 +383,8 @@ function makeFixture() {
     bundlePath,
     claim,
     claimBytes,
+    trustedCurrentMainRepositoryIdentifier: "17",
+    trustedCurrentMainRepositoryOwnerIdentifier: "11",
   };
 }
 
@@ -386,6 +399,10 @@ const argumentsFor = (fixture: ReturnType<typeof makeFixture>) => [
   fixture.bundlePath,
   "--evidence",
   fixture.evidencePath,
+  "--trusted-current-main-repository-id",
+  "17",
+  "--trusted-current-main-owner-id",
+  "11",
   "--trusted-current-main",
   commit,
 ];
@@ -395,6 +412,10 @@ describe("offline verifier executable and trust boundary", () => {
     const fixture = makeFixture();
     const parsed = parseVerifyArguments(argumentsFor(fixture));
     expect(trustedCurrentMainFromArguments(parsed)).toBe(commit);
+    expect(trustedCurrentMainIdentityFromArguments(parsed)).toEqual({
+      repositoryIdentifier: "17",
+      ownerIdentifier: "11",
+    });
     const trustedFile = join(fixture.directory, "trusted-main");
     writeFileSync(trustedFile, `${commit}\n`);
     const fileArgs = argumentsFor(fixture)
@@ -457,6 +478,48 @@ describe("offline verifier executable and trust boundary", () => {
     ).toThrow("live_catalog_claim_stale_protected_main");
   });
 
+  it("rejects separate trust and final-certificate repository identity divergence", () => {
+    const fixture = makeFixture();
+    expect(() =>
+      verifyLiveCatalogAttestation(
+        {
+          repository: "owner/repo",
+          ...fixture,
+          trustedCurrentMainRepositoryOwnerIdentifier: "12",
+          trustedCurrentMainCommit: commit,
+        },
+        vi.fn(),
+      ),
+    ).toThrow("trusted_current_main_identity_mismatch");
+    expect(() =>
+      verifyLiveCatalogAttestation(
+        {
+          repository: "owner/repo",
+          ...fixture,
+          trustedCurrentMainCommit: commit,
+        },
+        (input: any) => ({
+          certificate: {
+            repository: "owner/repo",
+            signerWorkflow: `owner/repo/${input.signerWorkflowPath}`,
+            signerDigest: input.signerDigest,
+            sourceRef: input.sourceRef,
+            sourceDigest: input.sourceDigest,
+            sourceRepositoryIdentifier: "17",
+            sourceRepositoryOwnerIdentifier: "12",
+            runnerEnvironment: "github-hosted",
+            runInvocationURI: `https://github.com/owner/repo/actions/runs/${input.runId}/attempts/1`,
+          },
+          subject: {
+            name: input.subjectName,
+            digest: `sha256:${sha256Hex(input.subjectBytes)}`,
+          },
+          bundleBytes: input.bundleBytes,
+        }),
+      ),
+    ).toThrow("final_certificate_identity_mismatch");
+  });
+
   it("verifies final claim before producer bytes and rejects coordinated retained-evidence tamper", () => {
     const fixture = makeFixture();
     const verifier = vi.fn((input: any) => ({
@@ -466,6 +529,8 @@ describe("offline verifier executable and trust boundary", () => {
         signerDigest: input.signerDigest,
         sourceRef: input.sourceRef,
         sourceDigest: input.sourceDigest,
+        sourceRepositoryIdentifier: "17",
+        sourceRepositoryOwnerIdentifier: "11",
         runnerEnvironment: "github-hosted",
         runInvocationURI: `https://github.com/owner/repo/actions/runs/${input.runId}/attempts/1`,
       },
@@ -521,6 +586,8 @@ describe("offline verifier executable and trust boundary", () => {
           signerDigest: input.signerDigest,
           sourceRef: input.sourceRef,
           sourceDigest: input.sourceDigest,
+          sourceRepositoryIdentifier: "17",
+          sourceRepositoryOwnerIdentifier: "11",
           runnerEnvironment: "github-hosted",
           runInvocationURI: `https://github.com/owner/repo/actions/runs/${input.runId}/attempts/1`,
         },
@@ -595,7 +662,12 @@ describe("offline verifier executable and trust boundary", () => {
           if (
             input.signerWorkflowPath.endsWith("attest-live-catalog-digest.yml")
           )
-            return {};
+            return {
+              certificate: {
+                sourceRepositoryIdentifier: "17",
+                sourceRepositoryOwnerIdentifier: "11",
+              },
+            };
           if (input.bundleBytes.equals(tamperedBundle))
             throw new Error("live_catalog_gh_attestation_invalid");
           throw new Error("unexpected_verification_stage");
@@ -639,6 +711,8 @@ describe("offline verifier executable and trust boundary", () => {
               signerDigest: input.signerDigest,
               sourceRef: input.sourceRef,
               sourceDigest: input.sourceDigest,
+              sourceRepositoryIdentifier: "17",
+              sourceRepositoryOwnerIdentifier: "11",
               runnerEnvironment: "github-hosted",
               runInvocationURI: `https://github.com/owner/repo/actions/runs/${input.runId}/attempts/1`,
             },

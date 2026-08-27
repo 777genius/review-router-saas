@@ -271,6 +271,64 @@ function endOfCentralDirectory(archive) {
   throw new Error("trusted evidence artifact is not a supported ZIP archive");
 }
 
+const zipDosName = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
+const zipUnicodeHazard =
+  /[\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/u;
+
+function safeZipEntryName(nameBytes) {
+  const name = nameBytes.toString("utf8");
+  if (
+    !name ||
+    Buffer.from(name, "utf8").compare(nameBytes) !== 0 ||
+    name !== name.normalize("NFC") ||
+    name.startsWith("/") ||
+    name.includes("\\") ||
+    name.endsWith("/") ||
+    zipUnicodeHazard.test(name)
+  )
+    return undefined;
+  const segments = name.split("/");
+  if (
+    segments.some(
+      (segment) =>
+        !segment ||
+        segment === "." ||
+        segment === ".." ||
+        [...segment].some((character) => character.codePointAt(0) < 32) ||
+        /[<>:"|?*]/u.test(segment) ||
+        segment.endsWith(".") ||
+        segment.endsWith(" ") ||
+        zipDosName.test(segment),
+    )
+  )
+    return undefined;
+  return name;
+}
+
+function zipDataDescriptor(archive, offset, limit, expected) {
+  const matches = [];
+  if (
+    offset + 12 <= limit &&
+    archive.readUInt32LE(offset) === expected.crc &&
+    archive.readUInt32LE(offset + 4) === expected.compressedSize &&
+    archive.readUInt32LE(offset + 8) === expected.uncompressedSize
+  )
+    matches.push({ end: offset + 12, signed: false });
+  if (
+    offset + 16 <= limit &&
+    archive.readUInt32LE(offset) === 0x08074b50 &&
+    archive.readUInt32LE(offset + 4) === expected.crc &&
+    archive.readUInt32LE(offset + 8) === expected.compressedSize &&
+    archive.readUInt32LE(offset + 12) === expected.uncompressedSize
+  )
+    matches.push({ end: offset + 16, signed: true });
+  if (matches.length !== 1)
+    throw new Error(
+      "trusted evidence ZIP data descriptor is invalid or ambiguous",
+    );
+  return matches[0];
+}
+
 export function readExactZipEntries(
   archiveBytes,
   {
@@ -343,18 +401,19 @@ export function readExactZipEntries(
     const externalAttributes = archive.readUInt32LE(cursor + 38);
     if (cursor + 46 + nameLength + extraLength + entryCommentLength > end)
       throw new Error("trusted evidence ZIP central directory is truncated");
-    const name = archive
-      .subarray(cursor + 46, cursor + 46 + nameLength)
-      .toString("utf8");
+    const centralNameBytes = archive.subarray(
+      cursor + 46,
+      cursor + 46 + nameLength,
+    );
+    const name = safeZipEntryName(centralNameBytes);
     if (
-      (flags & ~0x800) !== 0 ||
+      (flags & ~(0x800 | 0x8)) !== 0 ||
       ![0, 8].includes(method) ||
       !name ||
-      name.startsWith("/") ||
-      name.includes("\\") ||
-      name.split("/").includes("..") ||
-      name.endsWith("/") ||
       entryNames.has(name) ||
+      compressedSize === 0xffffffff ||
+      uncompressedSize === 0xffffffff ||
+      localOffset === 0xffffffff ||
       compressedSize > maximumCompressedEntryBytes ||
       uncompressedSize > maximumEntryBytes ||
       (method === 0 && compressedSize !== uncompressedSize) ||
@@ -383,16 +442,20 @@ export function readExactZipEntries(
       dataOffset + compressedSize > centralOffset
     )
       throw new Error("trusted evidence ZIP local entry exceeds data area");
-    const localName = archive
-      .subarray(localNameOffset, localExtraOffset)
-      .toString("utf8");
+    const localNameBytes = archive.subarray(localNameOffset, localExtraOffset);
+    const localName = safeZipEntryName(localNameBytes);
     assertSafeZipExtraFields(archive, localExtraOffset, localExtraLength);
+    const streamed = (flags & 0x8) !== 0;
     if (
       localFlags !== flags ||
       localMethod !== method ||
-      localCrc !== expectedCrc ||
-      localCompressedSize !== compressedSize ||
-      localUncompressedSize !== uncompressedSize ||
+      (streamed
+        ? localCrc !== 0 ||
+          localCompressedSize !== 0 ||
+          localUncompressedSize !== 0
+        : localCrc !== expectedCrc ||
+          localCompressedSize !== compressedSize ||
+          localUncompressedSize !== uncompressedSize) ||
       localName !== name
     )
       throw new Error(
@@ -404,10 +467,20 @@ export function readExactZipEntries(
       throw new Error("trusted evidence ZIP uncompressed total is too large");
     if (totalCompressedBytes > maximumTotalCompressedBytes)
       throw new Error("trusted evidence ZIP compressed total is too large");
+    const dataEnd = dataOffset + compressedSize;
+    const dataDescriptor = streamed
+      ? zipDataDescriptor(archive, dataEnd, centralOffset, {
+          crc: expectedCrc,
+          compressedSize,
+          uncompressedSize,
+        })
+      : { end: dataEnd, signed: undefined };
     descriptors.push({
       compressedSize,
       dataOffset,
+      entryEnd: dataDescriptor.end,
       expectedCrc,
+      localOffset,
       method,
       name,
       uncompressedSize,
@@ -416,6 +489,22 @@ export function readExactZipEntries(
   }
   if (cursor !== end)
     throw new Error("trusted evidence ZIP directory has trailing data");
+
+  const physicalEntries = [...descriptors].sort(
+    (left, right) => left.localOffset - right.localOffset,
+  );
+  let physicalCursor = 0;
+  for (const descriptor of physicalEntries) {
+    if (
+      descriptor.localOffset !== physicalCursor ||
+      descriptor.entryEnd <= descriptor.localOffset ||
+      descriptor.entryEnd > centralOffset
+    )
+      throw new Error("trusted evidence ZIP entries overlap or are ambiguous");
+    physicalCursor = descriptor.entryEnd;
+  }
+  if (physicalCursor !== centralOffset)
+    throw new Error("trusted evidence ZIP data area is ambiguous");
 
   const entries = new Map();
   for (const descriptor of descriptors) {
@@ -431,10 +520,15 @@ export function readExactZipEntries(
       dataOffset,
       dataOffset + compressedSize,
     );
-    const value =
-      method === 0
-        ? Buffer.from(compressed)
-        : inflateRawSync(compressed, { maxOutputLength: uncompressedSize });
+    let value;
+    try {
+      value =
+        method === 0
+          ? Buffer.from(compressed)
+          : inflateRawSync(compressed, { maxOutputLength: uncompressedSize });
+    } catch {
+      throw new Error("trusted evidence ZIP entry compression is invalid");
+    }
     if (value.length !== uncompressedSize || crc32(value) !== expectedCrc)
       throw new Error("trusted evidence ZIP entry digest is invalid");
     entries.set(name, value);
@@ -457,7 +551,7 @@ function assertSafeZipExtraFields(archive, offset, length) {
     identifiers.add(identifier);
     // PKWARE Unix (0x000d) and ASi Unix (0x756e) can encode link targets
     // independently of the central-directory host marker and mode bits.
-    if (identifier === 0x000d || identifier === 0x756e)
+    if (identifier === 0x0001 || identifier === 0x000d || identifier === 0x756e)
       throw new Error("trusted evidence ZIP entry is unsafe or unsupported");
     cursor += dataLength;
   }

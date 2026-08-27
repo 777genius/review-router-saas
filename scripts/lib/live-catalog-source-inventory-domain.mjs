@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { builtinModules } from "node:module";
 import { posix } from "node:path";
 import ts from "typescript";
 
@@ -22,9 +23,63 @@ export const LIVE_CATALOG_SOURCE_FETCH_LIMITS = Object.freeze({
   retainedBytes: 24 * 1024 * 1024,
 });
 
+/** Aggregate adapter-fetch budget. A failed lease releases every reservation. */
+export function createLiveCatalogSourceFetchBudget() {
+  let retainedBytes = 0;
+  let inFlightBytes = 0;
+  let requestedFiles = 0;
+  const reserve = (sizes) => {
+    if (
+      !Array.isArray(sizes) ||
+      !sizes.length ||
+      sizes.some(
+        (size) =>
+          !Number.isSafeInteger(size) ||
+          size < 0 ||
+          size > LIVE_CATALOG_SOURCE_FETCH_LIMITS.fileBytes,
+      )
+    )
+      throw new Error("live_catalog_source_closure_limit_exceeded");
+    const bytes = sizes.reduce((total, size) => total + size, 0);
+    if (
+      requestedFiles + sizes.length > LIVE_CATALOG_SOURCE_FETCH_LIMITS.files ||
+      retainedBytes + inFlightBytes + bytes >
+        LIVE_CATALOG_SOURCE_FETCH_LIMITS.retainedBytes
+    )
+      throw new Error("live_catalog_source_closure_limit_exceeded");
+    requestedFiles += sizes.length;
+    inFlightBytes += bytes;
+    let active = true;
+    return Object.freeze({
+      commit(actualBytes) {
+        if (!active || actualBytes !== bytes)
+          throw new Error("live_catalog_source_closure_reservation_mismatch");
+        active = false;
+        inFlightBytes -= bytes;
+        retainedBytes += actualBytes;
+      },
+      release() {
+        if (!active) return;
+        active = false;
+        inFlightBytes -= bytes;
+        requestedFiles -= sizes.length;
+      },
+    });
+  };
+  return Object.freeze({
+    reserve,
+    facts: () =>
+      Object.freeze({ retainedBytes, inFlightBytes, requestedFiles }),
+  });
+}
+
 const sha1Pattern = /^[a-f0-9]{40}$/u;
 const forbiddenDosName = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
 const textSourcePattern = /\.(?:[cm]?[jt]s|tsx?)$/u;
+const builtinSpecifiers = new Set([
+  ...builtinModules,
+  ...builtinModules.map((name) => `node:${name}`),
+]);
 const validatedInventories = new WeakSet();
 const byteCompare = (left, right) =>
   Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
@@ -320,6 +375,136 @@ function parseModuleSpecifiers(path, bytes) {
   if (source.parseDiagnostics.length)
     throw new Error("live_catalog_source_selector_syntax_invalid");
   const result = [];
+  const requireAliases = new Set(["require"]);
+  const requireResolveAliases = new Set();
+  const createRequireAliases = new Set();
+  const moduleNamespaceAliases = new Set();
+  const importMetaResolve = (node) =>
+    ts.isPropertyAccessExpression(node) &&
+    node.name.text === "resolve" &&
+    ts.isMetaProperty(node.expression) &&
+    node.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+    node.expression.name.text === "meta";
+  const importMetaUrl = (node) =>
+    ts.isPropertyAccessExpression(node) &&
+    node.name.text === "url" &&
+    ts.isMetaProperty(node.expression) &&
+    node.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+    node.expression.name.text === "meta";
+  const staticSpecifier = (call) => {
+    if (call.arguments.length !== 1 || !ts.isStringLiteral(call.arguments[0]))
+      throw new Error("live_catalog_source_selector_dynamic_resolution");
+    result.push(call.arguments[0].text);
+  };
+  const createRequireExpression = (node) =>
+    (ts.isIdentifier(node) && createRequireAliases.has(node.text)) ||
+    (ts.isPropertyAccessExpression(node) &&
+      node.name.text === "createRequire" &&
+      ts.isIdentifier(node.expression) &&
+      moduleNamespaceAliases.has(node.expression.text));
+
+  // Establish only simple, immutable aliases whose meaning is statically
+  // reliable. Shadowing or reassignment is denied below.
+  const collectAliases = (node) => {
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      (node.moduleSpecifier.text === "node:module" ||
+        node.moduleSpecifier.text === "module")
+    ) {
+      if (ts.isNamespaceImport(node.importClause?.namedBindings))
+        moduleNamespaceAliases.add(node.importClause.namedBindings.name.text);
+      for (const element of node.importClause?.namedBindings?.elements ?? [])
+        if (
+          element.propertyName?.text === "createRequire" ||
+          (!element.propertyName && element.name.text === "createRequire")
+        )
+          createRequireAliases.add(element.name.text);
+    }
+    if (ts.isVariableStatement(node)) {
+      for (const declaration of node.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name) || !declaration.initializer)
+          continue;
+        const name = declaration.name.text;
+        const initializer = declaration.initializer;
+        const resolverAlias =
+          (ts.isIdentifier(initializer) &&
+            (requireAliases.has(initializer.text) ||
+              requireResolveAliases.has(initializer.text) ||
+              createRequireAliases.has(initializer.text))) ||
+          (ts.isPropertyAccessExpression(initializer) &&
+            initializer.name.text === "resolve" &&
+            ts.isIdentifier(initializer.expression) &&
+            requireAliases.has(initializer.expression.text)) ||
+          (ts.isCallExpression(initializer) &&
+            createRequireExpression(initializer.expression));
+        if (resolverAlias && !(node.declarationList.flags & ts.NodeFlags.Const))
+          throw new Error(
+            "live_catalog_source_selector_mutable_resolution_alias",
+          );
+        if (
+          (requireAliases.has(name) ||
+            requireResolveAliases.has(name) ||
+            createRequireAliases.has(name)) &&
+          !resolverAlias
+        )
+          throw new Error("live_catalog_source_selector_resolution_shadowed");
+        if (
+          ts.isIdentifier(initializer) &&
+          requireAliases.has(initializer.text)
+        )
+          requireAliases.add(name);
+        else if (
+          ts.isIdentifier(initializer) &&
+          requireResolveAliases.has(initializer.text)
+        )
+          requireResolveAliases.add(name);
+        else if (
+          ts.isIdentifier(initializer) &&
+          createRequireAliases.has(initializer.text)
+        )
+          createRequireAliases.add(name);
+        else if (
+          ts.isPropertyAccessExpression(initializer) &&
+          initializer.name.text === "resolve" &&
+          ts.isIdentifier(initializer.expression) &&
+          requireAliases.has(initializer.expression.text)
+        )
+          requireResolveAliases.add(name);
+        else if (
+          ts.isCallExpression(initializer) &&
+          createRequireExpression(initializer.expression)
+        ) {
+          if (
+            initializer.arguments.length !== 1 ||
+            !importMetaUrl(initializer.arguments[0])
+          )
+            throw new Error("live_catalog_source_selector_dynamic_resolution");
+          requireAliases.add(name);
+        }
+      }
+    }
+    if (
+      ts.isParameter(node) &&
+      ts.isIdentifier(node.name) &&
+      (requireAliases.has(node.name.text) ||
+        requireResolveAliases.has(node.name.text) ||
+        createRequireAliases.has(node.name.text) ||
+        moduleNamespaceAliases.has(node.name.text))
+    )
+      throw new Error("live_catalog_source_selector_resolution_shadowed");
+    ts.forEachChild(node, collectAliases);
+  };
+  collectAliases(source);
+  const declarationIdentifier = (node) =>
+    (ts.isVariableDeclaration(node.parent) && node.parent.name === node) ||
+    (ts.isImportSpecifier(node.parent) &&
+      (node.parent.name === node || node.parent.propertyName === node)) ||
+    (ts.isNamespaceImport(node.parent) && node.parent.name === node);
+  const aliasedInitializer = (node) =>
+    ts.isVariableDeclaration(node.parent) &&
+    ts.isIdentifier(node.parent.name) &&
+    node.parent.initializer === node;
   const visit = (node) => {
     if (
       (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
@@ -329,20 +514,121 @@ function parseModuleSpecifiers(path, bytes) {
         throw new Error("live_catalog_source_selector_dynamic_resolution");
       result.push(node.moduleSpecifier.text);
     }
+    if (ts.isImportEqualsDeclaration(node)) {
+      if (
+        !ts.isExternalModuleReference(node.moduleReference) ||
+        !node.moduleReference.expression ||
+        !ts.isStringLiteral(node.moduleReference.expression)
+      )
+        throw new Error("live_catalog_source_selector_dynamic_resolution");
+      result.push(node.moduleReference.expression.text);
+    }
     if (
       ts.isCallExpression(node) &&
-      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
-        (ts.isIdentifier(node.expression) &&
-          node.expression.text === "require"))
+      node.expression.kind === ts.SyntaxKind.ImportKeyword
     ) {
-      if (node.arguments.length !== 1 || !ts.isStringLiteral(node.arguments[0]))
-        throw new Error("live_catalog_source_selector_dynamic_resolution");
-      result.push(node.arguments[0].text);
+      staticSpecifier(node);
+    } else if (ts.isCallExpression(node)) {
+      const expression = node.expression;
+      if (
+        (ts.isIdentifier(expression) &&
+          (requireAliases.has(expression.text) ||
+            requireResolveAliases.has(expression.text))) ||
+        (ts.isPropertyAccessExpression(expression) &&
+          expression.name.text === "resolve" &&
+          ts.isIdentifier(expression.expression) &&
+          requireAliases.has(expression.expression.text)) ||
+        importMetaResolve(expression)
+      )
+        staticSpecifier(node);
+      else if (createRequireExpression(expression)) {
+        if (node.arguments.length !== 1 || !importMetaUrl(node.arguments[0]))
+          throw new Error("live_catalog_source_selector_dynamic_resolution");
+        if (ts.isCallExpression(node.parent) && node.parent.expression === node)
+          staticSpecifier(node.parent);
+        else if (
+          !ts.isVariableDeclaration(node.parent) ||
+          node.parent.initializer !== node
+        )
+          throw new Error(
+            "live_catalog_source_selector_unsupported_resolution",
+          );
+      } else if (
+        ts.isElementAccessExpression(expression) &&
+        ts.isIdentifier(expression.expression) &&
+        requireAliases.has(expression.expression.text)
+      )
+        throw new Error("live_catalog_source_selector_unsupported_resolution");
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      ts.isIdentifier(node.left) &&
+      (requireAliases.has(node.left.text) ||
+        requireResolveAliases.has(node.left.text) ||
+        createRequireAliases.has(node.left.text))
+    )
+      throw new Error("live_catalog_source_selector_mutable_resolution_alias");
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      node.name.text === "resolve" &&
+      ts.isIdentifier(node.expression) &&
+      requireAliases.has(node.expression.text) &&
+      !(
+        (ts.isCallExpression(node.parent) && node.parent.expression === node) ||
+        (ts.isVariableDeclaration(node.parent) &&
+          node.parent.initializer === node)
+      )
+    )
+      throw new Error("live_catalog_source_selector_unsupported_resolution");
+    if (
+      importMetaResolve(node) &&
+      !(ts.isCallExpression(node.parent) && node.parent.expression === node)
+    )
+      throw new Error("live_catalog_source_selector_unsupported_resolution");
+    if (ts.isIdentifier(node)) {
+      const resolver =
+        requireAliases.has(node.text) ||
+        requireResolveAliases.has(node.text) ||
+        createRequireAliases.has(node.text);
+      const namespace = moduleNamespaceAliases.has(node.text);
+      const recognizedResolverUse =
+        declarationIdentifier(node) ||
+        aliasedInitializer(node) ||
+        (ts.isCallExpression(node.parent) && node.parent.expression === node) ||
+        (ts.isPropertyAccessExpression(node.parent) &&
+          node.parent.expression === node &&
+          ((requireAliases.has(node.text) &&
+            node.parent.name.text === "resolve") ||
+            (namespace && node.parent.name.text === "createRequire")));
+      if ((resolver || namespace) && !recognizedResolverUse)
+        throw new Error("live_catalog_source_selector_unsupported_resolution");
     }
     ts.forEachChild(node, visit);
   };
   visit(source);
   return [...new Set(result)].sort(byteCompare);
+}
+
+function packageNameFromSpecifier(specifier) {
+  return specifier.startsWith("@")
+    ? specifier.split("/").slice(0, 2).join("/")
+    : specifier.split("/")[0];
+}
+
+function assertSupportedSpecifier(specifier) {
+  if (
+    typeof specifier !== "string" ||
+    !specifier ||
+    specifier.startsWith("/") ||
+    (/^[a-z][a-z0-9+.-]*:/iu.test(specifier) &&
+      !specifier.startsWith("node:")) ||
+    specifier.startsWith("#") ||
+    specifier.includes("\\") ||
+    specifier.includes("\0")
+  )
+    throw new Error(
+      `live_catalog_source_selector_unsupported_specifier:${specifier}`,
+    );
 }
 
 function resolveRelative(importer, specifier, blobs) {
@@ -401,9 +687,7 @@ function governingManifests(path, blobs) {
 }
 
 function resolveWorkspacePackage(specifier, blobs, getBytes) {
-  const packageName = specifier.startsWith("@")
-    ? specifier.split("/").slice(0, 2).join("/")
-    : specifier.split("/")[0];
+  const packageName = packageNameFromSpecifier(specifier);
   const matches = [];
   let matchingPackages = 0;
   for (const directory of packageDirectories(blobs)) {
@@ -433,27 +717,24 @@ function resolveWorkspacePackage(specifier, blobs, getBytes) {
             manifest.main ||
             "src/index.ts",
         );
-      const resolved = [
-        ...new Set(
-          targets.flatMap((target) => {
-            try {
-              return [
-                resolveRelative(
-                  manifestPath,
-                  target.startsWith(".") ? target : `./${target}`,
-                  blobs,
-                ),
-              ];
-            } catch {
-              return [];
-            }
-          }),
-        ),
-      ];
-      if (!resolved.length)
+      let resolved;
+      try {
+        resolved = [
+          ...new Set(
+            targets.map((target) =>
+              resolveRelative(
+                manifestPath,
+                target.startsWith(".") ? target : `./${target}`,
+                blobs,
+              ),
+            ),
+          ),
+        ];
+      } catch {
         throw new Error(
           `live_catalog_source_selector_workspace_ambiguous:${specifier}`,
         );
+      }
       matches.push(...resolved);
       matches.push(manifestPath);
     }
@@ -464,6 +745,40 @@ function resolveWorkspacePackage(specifier, blobs, getBytes) {
       `live_catalog_source_selector_workspace_ambiguous:${specifier}`,
     );
   return [...new Set(matches)].sort(byteCompare);
+}
+
+function assertDeclaredExternal(importer, specifier, blobs, getBytes) {
+  const packageName = packageNameFromSpecifier(specifier);
+  let declaration;
+  for (const manifestPath of governingManifests(importer, blobs)) {
+    const manifestBytes = getBytes(manifestPath);
+    if (!manifestBytes)
+      throw new Error("live_catalog_source_selector_manifest_unavailable");
+    const manifest = parseManifest(manifestBytes, "manifest");
+    for (const field of [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+      "peerDependencies",
+    ]) {
+      const dependencies = manifest[field];
+      if (
+        dependencies &&
+        typeof dependencies === "object" &&
+        !Array.isArray(dependencies) &&
+        typeof dependencies[packageName] === "string"
+      )
+        declaration = dependencies[packageName];
+    }
+  }
+  if (!declaration)
+    throw new Error(
+      `live_catalog_source_selector_undeclared_package:${specifier}`,
+    );
+  if (/^(?:workspace|file|link):/u.test(declaration))
+    throw new Error(
+      `live_catalog_source_selector_workspace_unresolved:${specifier}`,
+    );
 }
 
 function assertSafeManifest(path, bytes) {
@@ -528,10 +843,14 @@ export function liveCatalogSourceDependencies(
             : getBytesInput?.[dependencyPath];
   const additions = [...governingManifests(path, blobs)];
   for (const specifier of parseModuleSpecifiers(path, bytes)) {
+    assertSupportedSpecifier(specifier);
     if (specifier.startsWith("."))
       additions.push(resolveRelative(path, specifier, blobs));
-    else if (!specifier.startsWith("node:"))
-      additions.push(...resolveWorkspacePackage(specifier, blobs, getBytes));
+    else if (!builtinSpecifiers.has(specifier)) {
+      const workspace = resolveWorkspacePackage(specifier, blobs, getBytes);
+      if (workspace.length) additions.push(...workspace);
+      else assertDeclaredExternal(path, specifier, blobs, getBytes);
+    }
   }
   return [...new Set(additions)].sort(byteCompare);
 }

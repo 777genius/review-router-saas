@@ -13,7 +13,7 @@ import {
 } from "./live-catalog-source-inventory-domain.mjs";
 
 export const LIVE_CATALOG_CLAIM_SCHEMA =
-  "reviewrouter.live-catalog-provenance.v4";
+  "reviewrouter.live-catalog-provenance.v5";
 export const LIVE_CATALOG_WORKFLOW =
   ".github/workflows/attest-live-catalog-digest.yml";
 export const LIVE_CATALOG_SOURCE_WORKFLOW =
@@ -41,7 +41,7 @@ const uploadPin =
 const attestPin =
   "actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be";
 const exactAttestorWorkflowSha256 =
-  "45751fad09f4cf7c61b32f769613ca8e3cdfa0f2a65e87cf2968245c50b52eea";
+  "b7ada308a90c117d268e26e387775aa77f5a30c3663797061ae878ff08eacd6c";
 
 export const sha256Hex = (value) =>
   createHash("sha256").update(value).digest("hex");
@@ -314,14 +314,17 @@ export function assertSourceWorkflowPg17Image(sourceBytes) {
           },
           { name: "Enable pinned pnpm", run: "corepack enable pnpm" },
           {
-            name: "Install frozen dependencies",
+            name: "Fetch frozen dependencies without lifecycle scripts",
             env: {
               SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64:
                 "${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}",
             },
-            run: "node scripts/install-private-dependencies.mjs --frozen-lockfile",
+            run: "node scripts/install-private-dependencies.mjs --frozen-lockfile --require-deploy-key",
           },
-          { name: "Generate Prisma client", run: "pnpm db:generate" },
+          {
+            name: "Generate Prisma client offline after credential teardown",
+            run: 'test -z "${SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64:-}"\ntest -z "${GIT_SSH_COMMAND:-}"\ntest -z "${GIT_SSH_VARIANT:-}"\npnpm --offline --filter @reviewrouter/platform-db db:generate\n',
+          },
           {
             name: "Migrate and capture twice",
             env: {
@@ -517,6 +520,8 @@ function validateCertificate(certificate, source, execution, repository) {
       "signerDigest",
       "sourceRef",
       "sourceDigest",
+      "sourceRepositoryIdentifier",
+      "sourceRepositoryOwnerIdentifier",
       "runnerEnvironment",
       "runInvocationURI",
     ],
@@ -529,6 +534,8 @@ function validateCertificate(certificate, source, execution, repository) {
     certificate.signerDigest !== source.commit ||
     certificate.sourceRef !== "refs/heads/main" ||
     certificate.sourceDigest !== source.commit ||
+    certificate.sourceRepositoryIdentifier !== repository.id ||
+    certificate.sourceRepositoryOwnerIdentifier !== repository.ownerId ||
     certificate.runnerEnvironment !== "github-hosted" ||
     certificate.runInvocationURI !==
       `https://github.com/${repository.name}/actions/runs/${execution.runId}/attempts/1`
@@ -564,6 +571,9 @@ export function assembleLiveCatalogClaim(input) {
     throw new Error("live_catalog_source_closure_version_invalid");
   const repository = {
     id: String(positiveInteger(input.repositoryId, "repository_id")),
+    ownerId: String(
+      positiveInteger(input.repositoryOwnerId, "repository_owner_id"),
+    ),
     name: String(input.repositoryName).toLowerCase(),
   };
   const source = {
@@ -671,7 +681,7 @@ export function validateLiveCatalogClaim(claim) {
   );
   if (claim.schemaVersion !== LIVE_CATALOG_CLAIM_SCHEMA)
     throw new Error("live_catalog_claim_version_invalid");
-  exactKeys(claim.repository, ["id", "name"], "repository");
+  exactKeys(claim.repository, ["id", "ownerId", "name"], "repository");
   exactKeys(
     claim.source,
     ["commit", "tree", "ref", "branch", "inventory"],
@@ -839,6 +849,7 @@ export function validateLiveCatalogClaim(claim) {
   const job = claim.execution.producerJob;
   if (
     !/^[1-9][0-9]*$/u.test(claim.repository.id) ||
+    !/^[1-9][0-9]*$/u.test(claim.repository.ownerId) ||
     !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/u.test(claim.repository.name) ||
     !commitPattern.test(claim.source.commit) ||
     !commitPattern.test(claim.source.tree) ||

@@ -74,6 +74,8 @@ jobs:
       - name: Recheck exact protected main immediately before signing
         env:
           GH_TOKEN: ${{ github.token }}
+          EXPECTED_REPOSITORY_ID: ${{ steps.claim.outputs.repository_id }}
+          EXPECTED_REPOSITORY_OWNER_ID: ${{ steps.claim.outputs.repository_owner_id }}
         run: node --import tsx scripts/attest-live-catalog-digest.mjs assert-fresh-main
 
       - name: Attest canonical claim subject

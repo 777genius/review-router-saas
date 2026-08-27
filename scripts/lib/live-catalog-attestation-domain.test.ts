@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -141,6 +142,7 @@ function input(overrides: Record<string, unknown> = {}) {
   const archiveSha256 = "f".repeat(64);
   return {
     repositoryId: 17,
+    repositoryOwnerId: 11,
     repositoryName: "owner/repo",
     sourceCommit: commit,
     sourceTree: "b".repeat(40),
@@ -185,6 +187,8 @@ function input(overrides: Record<string, unknown> = {}) {
       signerDigest: commit,
       sourceRef: "refs/heads/main",
       sourceDigest: commit,
+      sourceRepositoryIdentifier: "17",
+      sourceRepositoryOwnerIdentifier: "11",
       runnerEnvironment: "github-hosted",
       runInvocationURI:
         "https://github.com/owner/repo/actions/runs/1001/attempts/1",
@@ -387,10 +391,10 @@ describe("capture contract and source closure", () => {
   });
 });
 
-describe("schema v4 convergence", () => {
+describe("schema v5 identity convergence", () => {
   it("assembles exact-main producer certificate, tuple, bundle, and closure", () => {
     const claim = assembleLiveCatalogClaim(input() as any);
-    expect(claim.schemaVersion).toBe("reviewrouter.live-catalog-provenance.v4");
+    expect(claim.schemaVersion).toBe("reviewrouter.live-catalog-provenance.v5");
     expect(claim.source.commit).toBe(claim.attestor.commit);
     expect(claim.artifact.restDigest).toBe(
       claim.producerAttestation.subject.digest,
@@ -403,6 +407,26 @@ describe("schema v4 convergence", () => {
 
   it.each([
     ["ancestor A then B", { attestorCommit: "c".repeat(40) }],
+    ["repository reincarnation", { repositoryId: 18 }],
+    ["repository owner mismatch", { repositoryOwnerId: 12 }],
+    [
+      "producer repository identifier mismatch",
+      {
+        producerCertificate: {
+          ...input().producerCertificate,
+          sourceRepositoryIdentifier: "18",
+        },
+      },
+    ],
+    [
+      "producer owner identifier mismatch",
+      {
+        producerCertificate: {
+          ...input().producerCertificate,
+          sourceRepositoryOwnerIdentifier: "12",
+        },
+      },
+    ],
     [
       "REST digest divergence",
       { artifactRestDigest: `sha256:${"e".repeat(64)}` },
@@ -458,7 +482,7 @@ describe("schema v4 convergence", () => {
     );
   });
 
-  it.each(["v1", "v2", "v3"])(
+  it.each(["v1", "v2", "v3", "v4"])(
     "rejects legacy production claim %s",
     (version) => {
       const claim: any = JSON.parse(
@@ -558,6 +582,8 @@ describe("deterministic gh JSON normalization", () => {
       normalizeGhAttestationResult(value, policy).certificate,
     ).toMatchObject({
       signerDigest: commit,
+      sourceRepositoryIdentifier: "17",
+      sourceRepositoryOwnerIdentifier: "11",
       runInvocationURI:
         "https://github.com/owner/repo/actions/runs/1001/attempts/1",
     });
@@ -882,7 +908,7 @@ describe("deterministic gh JSON normalization", () => {
     writeFileSync(
       executable,
       `#!${process.execPath}\n` +
-        `import fs from "node:fs";import crypto from "node:crypto";\n` +
+        `const fs=require("node:fs"),crypto=require("node:crypto");\n` +
         `const a=process.argv.slice(2),at=(f)=>a[a.indexOf(f)+1],one=(f)=>a.filter(v=>v===f).length===1;\n` +
         `if(a[0]!=="attestation"||a[1]!=="verify"||!one("--bundle")||!one("--repo")||!one("--deny-self-hosted-runners")||!one("--signer-workflow")||!one("--signer-digest")||!one("--source-ref")||!one("--source-digest")||!one("--format"))process.exit(2);\n` +
         `if(at("--repo")!=="owner/repo"||at("--signer-workflow")!=="owner/repo/${LIVE_CATALOG_SOURCE_WORKFLOW}"||at("--signer-digest")!=="${commit}"||at("--source-ref")!=="refs/heads/main"||at("--source-digest")!=="${commit}"||at("--format")!=="json")process.exit(3);\n` +
@@ -921,10 +947,11 @@ describe("deterministic gh JSON normalization", () => {
           },
         ),
       ).toThrow(/live_catalog_gh_/u);
+      expect(temporarySubject).not.toBe("");
+      expect(existsSync(temporarySubject)).toBe(false);
     } finally {
       process.env.PATH = originalPath;
+      rmSync(directory, { recursive: true, force: true });
     }
-    expect(temporarySubject).not.toBe("");
-    expect(existsSync(temporarySubject)).toBe(false);
   });
 });

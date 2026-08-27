@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   createLiveCatalogSourceInventory,
+  createLiveCatalogSourceFetchBudget,
   deriveLiveCatalogSourceClosure,
   gitBlobSha,
   LIVE_CATALOG_SELECTOR_ROOTS,
@@ -143,6 +146,35 @@ function inventory(files: Map<string, Buffer>) {
 }
 
 describe("live catalog source inventory and installed selector", () => {
+  it("reserves aggregate bytes before fetch and releases a failed lease", () => {
+    const budget = createLiveCatalogSourceFetchBudget();
+    const lease = budget.reserve([4 * 1024 * 1024, 4 * 1024 * 1024]);
+    expect(budget.facts()).toEqual({
+      retainedBytes: 0,
+      inFlightBytes: 8 * 1024 * 1024,
+      requestedFiles: 2,
+    });
+    expect(() =>
+      budget.reserve(Array.from({ length: 5 }, () => 4 * 1024 * 1024)),
+    ).toThrow("closure_limit_exceeded");
+    lease.release();
+    expect(budget.facts()).toEqual({
+      retainedBytes: 0,
+      inFlightBytes: 0,
+      requestedFiles: 0,
+    });
+  });
+  it("derives the closure from the current checked-in repository sources", () => {
+    const paths = execFileSync("git", ["ls-files", "-z"])
+      .toString("utf8")
+      .split("\0")
+      .filter(Boolean);
+    const files = new Map(paths.map((path) => [path, readFileSync(path)]));
+    const closure = deriveLiveCatalogSourceClosure(inventory(files), files);
+    expect(closure.entries.length).toBeGreaterThan(
+      LIVE_CATALOG_SELECTOR_ROOTS.length,
+    );
+  });
   it("canonicalizes, reconstructs, selects both migration generations, and is deterministic across cycles", () => {
     const files = selectedFiles();
     files.set(
@@ -238,6 +270,126 @@ describe("live catalog source inventory and installed selector", () => {
     expect(() =>
       deriveLiveCatalogSourceClosure(inventory(operator), operator),
     ).toThrow(/(?:lifecycle_hook|script_operator)/u);
+  });
+
+  it("derives every supported static executable-resolution form, including nested TSX", () => {
+    const files = selectedFiles();
+    files.set(
+      "scripts/attest-live-catalog-digest.mjs",
+      Buffer.from(`
+        import { createRequire as makeRequire } from "node:module";
+        import * as moduleApi from "node:module";
+        import equal = require("./selector-dependency.mjs");
+        const req = require;
+        const reqResolve = require.resolve;
+        const reqResolveAgain = reqResolve;
+        const makeRequireAgain = makeRequire;
+        const local = makeRequire(import.meta.url);
+        const namespacedLocal = moduleApi.createRequire(import.meta.url);
+        req("./selector-dependency.mjs");
+        reqResolve("./selector-dependency.mjs");
+        reqResolveAgain("./selector-dependency.mjs");
+        makeRequireAgain(import.meta.url)("./selector-dependency.mjs");
+        local.resolve("./selector-dependency.mjs");
+        namespacedLocal("./selector-dependency.mjs");
+        import.meta.resolve("./selector-dependency.mjs");
+        import("./selector-dependency.mjs");
+        import("./nested.tsx");
+      `),
+    );
+    files.set("scripts/selector-dependency.mjs", Buffer.from("export {}\n"));
+    files.set(
+      "scripts/nested.tsx",
+      Buffer.from(
+        'import "./selector-dependency.mjs"; export const view = <section>{<span>nested</span>}</section>;\n',
+      ),
+    );
+    const closure = deriveLiveCatalogSourceClosure(inventory(files), files);
+    expect(closure.entries.map((entry) => entry.path)).toContain(
+      "scripts/selector-dependency.mjs",
+    );
+  });
+
+  it.each([
+    [
+      "unknown dynamic import",
+      "import(process.env.MODULE);",
+      "dynamic_resolution",
+    ],
+    [
+      "aliased dynamic require",
+      "const req = require; req(value);",
+      "dynamic_resolution",
+    ],
+    [
+      "computed require.resolve",
+      'require["resolve"]("./x.mjs");',
+      "unsupported_resolution",
+    ],
+    ["absolute path", 'require("/tmp/x.mjs");', "unsupported_specifier"],
+    ["file URL", 'import("file:///tmp/x.mjs");', "unsupported_specifier"],
+    ["data URL", 'import("data:text/javascript,1");', "unsupported_specifier"],
+    [
+      "HTTP URL",
+      'import("https://example.test/x.mjs");',
+      "unsupported_specifier",
+    ],
+    ["package imports", 'import("#private");', "unsupported_specifier"],
+    ["undeclared package", 'import("left-pad");', "undeclared_package"],
+    [
+      "unresolved workspace subpath",
+      'import("@reviewrouter/platform-db/not-exported");',
+      "workspace_ambiguous",
+    ],
+    [
+      "mutable alias",
+      'let req = require; req("./x.mjs");',
+      "mutable_resolution_alias",
+    ],
+    [
+      "destructured require primitive",
+      "const { resolve } = require; resolve('./x.mjs');",
+      "unsupported_resolution",
+    ],
+    [
+      "escaped require primitive",
+      "consume(require);",
+      "unsupported_resolution",
+    ],
+    [
+      "escaped createRequire primitive",
+      'import { createRequire } from "node:module"; consume(createRequire);',
+      "unsupported_resolution",
+    ],
+    [
+      "unsupported module namespace property",
+      'import * as moduleApi from "node:module"; moduleApi.isBuiltin("fs");',
+      "unsupported_resolution",
+    ],
+    ["unsupported URL scheme", 'import("bun:test");', "unsupported_specifier"],
+  ])("rejects %s without silently omitting it", (_name, source, error) => {
+    const files = selectedFiles();
+    files.set(
+      "scripts/attest-live-catalog-digest.mjs",
+      Buffer.from(`${source}\n`),
+    );
+    expect(() =>
+      deriveLiveCatalogSourceClosure(inventory(files), files),
+    ).toThrow(error);
+  });
+
+  it("preserves builtins and declared external packages without fetching them", () => {
+    const files = selectedFiles();
+    const manifest = JSON.parse(files.get("package.json")!.toString());
+    manifest.devDependencies = { typescript: "5.9.2" };
+    files.set("package.json", Buffer.from(JSON.stringify(manifest)));
+    files.set(
+      "scripts/attest-live-catalog-digest.mjs",
+      Buffer.from('import "node:fs"; import "typescript";\n'),
+    );
+    expect(() =>
+      deriveLiveCatalogSourceClosure(inventory(files), files),
+    ).not.toThrow();
   });
 
   it("rejects inventory tamper, root mismatch, DOS paths, symlinks, and declared bounds", () => {

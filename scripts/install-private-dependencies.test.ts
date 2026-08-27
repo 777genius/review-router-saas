@@ -35,6 +35,7 @@ describe("private dependency installer", () => {
         "  args: process.argv.slice(2),",
         "  deployKeyPresent: 'SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64' in process.env,",
         "  gitSshCommand: process.env.GIT_SSH_COMMAND ?? null,",
+        "  gitSshVariant: process.env.GIT_SSH_VARIANT ?? null,",
         "}));",
       ].join("\n"),
     );
@@ -78,6 +79,7 @@ describe("private dependency installer", () => {
       args: ["install", "--frozen-lockfile"],
       deployKeyPresent: true,
       gitSshCommand: null,
+      gitSshVariant: null,
     });
   });
 
@@ -158,9 +160,13 @@ describe("private dependency installer", () => {
     expect(result.status).toBe(0);
     expect(JSON.parse(readFileSync(capturePath, "utf8"))).toEqual({
       nodeEnv: "development",
-      args: ["install", "--frozen-lockfile"],
+      args: ["install", "--frozen-lockfile", "--ignore-scripts"],
       deployKeyPresent: false,
       gitSshCommand: expect.stringContaining("StrictHostKeyChecking=yes"),
+      gitSshVariant: null,
     });
+    expect(result.stderr).toContain(
+      "private dependency credential teardown verified",
+    );
   });
 });

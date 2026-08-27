@@ -16,6 +16,7 @@ import {
 import { verifyWithGhAttestation } from "./live-catalog-gh-attestation-adapter.mjs";
 import {
   canonicalSourceInventoryJson,
+  createLiveCatalogSourceFetchBudget,
   createLiveCatalogSourceInventory,
   deriveLiveCatalogSourceClosure,
   initialLiveCatalogSourceSelection,
@@ -31,6 +32,11 @@ function repositoryParts(repository) {
 }
 
 function positiveInteger(value, label) {
+  if (
+    (typeof value === "string" && !/^[1-9][0-9]*$/u.test(value)) ||
+    (typeof value !== "string" && typeof value !== "number")
+  )
+    throw new Error(`live_catalog_${label}_invalid`);
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed <= 0)
     throw new Error(`live_catalog_${label}_invalid`);
@@ -117,31 +123,14 @@ export async function buildLiveCatalogSourceClosure({
       .map((entry) => [entry.path, entry]),
   );
   const selected = new Set(initialLiveCatalogSourceSelection(inventory));
-  let retainedBytes = 0;
-  let inFlightBytes = 0;
-  let requestedFiles = 0;
+  const fetchBudget = createLiveCatalogSourceFetchBudget();
   const fetchPaths = async (paths) => {
     const results = [];
     for (let offset = 0; offset < paths.length; offset += 12) {
       const batch = paths.slice(offset, offset + 12);
-      const reservation = batch.reduce((total, path) => {
-        const size = blobs.get(path)?.size;
-        if (
-          !Number.isSafeInteger(size) ||
-          size > LIVE_CATALOG_SOURCE_FETCH_LIMITS.fileBytes
-        )
-          throw new Error("live_catalog_source_closure_limit_exceeded");
-        return total + size;
-      }, 0);
-      if (
-        requestedFiles + batch.length >
-          LIVE_CATALOG_SOURCE_FETCH_LIMITS.files ||
-        retainedBytes + inFlightBytes + reservation >
-          LIVE_CATALOG_SOURCE_FETCH_LIMITS.retainedBytes
-      )
-        throw new Error("live_catalog_source_closure_limit_exceeded");
-      requestedFiles += batch.length;
-      inFlightBytes += reservation;
+      const lease = fetchBudget.reserve(
+        batch.map((path) => blobs.get(path)?.size),
+      );
       try {
         const fetched = await Promise.all(
           batch.map(async (path) => [
@@ -149,13 +138,12 @@ export async function buildLiveCatalogSourceClosure({
             await sourceFile(fetchImpl, prefix, token, blobs.get(path)),
           ]),
         );
-        retainedBytes += fetched.reduce(
-          (total, [, value]) => total + value.length,
-          0,
+        lease.commit(
+          fetched.reduce((total, [, value]) => total + value.length, 0),
         );
         results.push(...fetched);
       } finally {
-        inFlightBytes -= reservation;
+        lease.release();
       }
     }
     return results;
@@ -227,12 +215,16 @@ export async function assertFreshProtectedMain(
 ) {
   const [owner, name] = repositoryParts(configuration.repository);
   const prefix = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-  const main = await json(
-    fetchImpl,
-    `${prefix}/branches/main`,
-    configuration.token,
-  );
+  const [repository, main] = await Promise.all([
+    json(fetchImpl, prefix, configuration.token),
+    json(fetchImpl, `${prefix}/branches/main`, configuration.token),
+  ]);
   if (
+    String(repository.id) !== String(configuration.expectedRepositoryId) ||
+    String(repository.owner?.id) !==
+      String(configuration.expectedRepositoryOwnerId) ||
+    repository.full_name?.toLowerCase() !==
+      configuration.repository.toLowerCase() ||
     main.name !== "main" ||
     main.protected !== true ||
     main.commit?.sha !== configuration.expectedCommit
@@ -274,6 +266,8 @@ export async function collectLiveCatalogClaim(
     repository.full_name?.toLowerCase() !==
       configuration.repository.toLowerCase() ||
     repository.default_branch !== "main" ||
+    !Number.isSafeInteger(repository.owner?.id) ||
+    repository.owner.id <= 0 ||
     String(run.repository?.id) !== String(repository.id) ||
     run.repository?.full_name?.toLowerCase() !==
       configuration.repository.toLowerCase() ||
@@ -389,6 +383,7 @@ export async function collectLiveCatalogClaim(
     throw new Error("live_catalog_artifact_contains_unexpected_entries");
   const claim = assembleLiveCatalogClaim({
     repositoryId: repository.id,
+    repositoryOwnerId: repository.owner.id,
     repositoryName: repository.full_name,
     sourceCommit: run.head_sha,
     sourceTree: commit.tree.sha,

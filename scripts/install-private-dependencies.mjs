@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,12 +14,12 @@ const forwardedInstallArguments = installArguments.filter(
   (argument) => argument !== requireDeployKeyFlag,
 );
 
-const runPnpmInstall = (env = process.env) => {
+const runPnpmInstall = (env = process.env, disableScripts = false) => {
   const installEnv = { ...env, NODE_ENV: "development" };
-  const result = spawnSync("pnpm", ["install", ...forwardedInstallArguments], {
-    env: installEnv,
-    stdio: "inherit",
-  });
+  const args = ["install", ...forwardedInstallArguments];
+  if (disableScripts && !args.includes("--ignore-scripts"))
+    args.push("--ignore-scripts");
+  const result = spawnSync("pnpm", args, { env: installEnv, stdio: "inherit" });
   if (result.signal) {
     console.error(`pnpm install terminated by ${result.signal}`);
     return 1;
@@ -35,6 +35,10 @@ if (!encodedKey) {
   }
   process.exit(runPnpmInstall());
 }
+
+// Do not retain the encoded credential in this process environment after it
+// has been copied into process-private memory for validation.
+delete process.env.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64;
 
 const normalizedEncodedKey = encodedKey.replace(/\s+/gu, "");
 if (
@@ -59,6 +63,7 @@ if (
 const sshDir = mkdtempSync(join(tmpdir(), "reviewrouter-private-dependency-"));
 const keyPath = join(sshDir, "id_ed25519");
 const knownHostsPath = join(sshDir, "known_hosts");
+let teardownFailure;
 
 try {
   writeFileSync(keyPath, `${privateKey}\n`, { mode: 0o600 });
@@ -83,8 +88,28 @@ try {
       "-o StrictHostKeyChecking=yes",
     ].join(" ");
 
-    process.exitCode = runPnpmInstall(childEnv);
+    // Fetch/link only. Arbitrary package lifecycle code must never execute in
+    // the environment that carries the deploy-key-backed SSH command.
+    process.exitCode = runPnpmInstall(childEnv, true);
   }
 } finally {
   rmSync(sshDir, { force: true, recursive: true });
+  delete process.env.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64;
+  delete process.env.GIT_SSH_COMMAND;
+  delete process.env.GIT_SSH_VARIANT;
+  if (existsSync(sshDir) || existsSync(keyPath) || existsSync(knownHostsPath))
+    teardownFailure = new Error(
+      "private dependency credential teardown failed",
+    );
+  else if (
+    process.env.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 !== undefined ||
+    process.env.GIT_SSH_COMMAND !== undefined ||
+    process.env.GIT_SSH_VARIANT !== undefined
+  )
+    teardownFailure = new Error(
+      "private dependency credential environment survived",
+    );
+  else console.error("private dependency credential teardown verified");
 }
+
+if (teardownFailure) throw teardownFailure;

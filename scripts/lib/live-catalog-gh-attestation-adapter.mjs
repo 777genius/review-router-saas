@@ -188,6 +188,9 @@ export function normalizeGhAttestationResult(entry, policy) {
       signerDigest: certificate.buildSignerDigest,
       sourceRef: certificate.sourceRepositoryRef,
       sourceDigest: certificate.sourceRepositoryDigest,
+      sourceRepositoryIdentifier: certificate.sourceRepositoryIdentifier,
+      sourceRepositoryOwnerIdentifier:
+        certificate.sourceRepositoryOwnerIdentifier,
       runnerEnvironment: certificate.runnerEnvironment,
       runInvocationURI: certificate.runInvocationURI,
     }),

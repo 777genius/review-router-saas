@@ -3,6 +3,7 @@ import {
   assertTrustedGitHubEvidence,
   fetchTrustedGitHubEvidence,
   gitBlobSha,
+  readExactZipEntries,
 } from "./github-actions-trusted-evidence.mjs";
 import { describe, expect, it, vi } from "vitest";
 import { claimTrustedMigrationEvidence } from "../deploy-render-hosted-beta.mjs";
@@ -52,6 +53,61 @@ function zip(entries: Record<string, Buffer>) {
   end.writeUInt32LE(directory.length, 12);
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, directory, end]);
+}
+
+function streamedZip(
+  name: string,
+  value: Buffer,
+  options: { signed?: boolean; descriptor?: Buffer } = {},
+) {
+  const nameBytes = Buffer.from(name);
+  const checksum = crc32(value);
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(0x8, 6);
+  local.writeUInt16LE(nameBytes.length, 26);
+  const descriptor =
+    options.descriptor ??
+    (() => {
+      const bytes = Buffer.alloc(options.signed === false ? 12 : 16);
+      let cursor = 0;
+      if (options.signed !== false) {
+        bytes.writeUInt32LE(0x08074b50, cursor);
+        cursor += 4;
+      }
+      bytes.writeUInt32LE(checksum, cursor);
+      bytes.writeUInt32LE(value.length, cursor + 4);
+      bytes.writeUInt32LE(value.length, cursor + 8);
+      return bytes;
+    })();
+  const centralOffset =
+    local.length + nameBytes.length + value.length + descriptor.length;
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(0x8, 8);
+  central.writeUInt32LE(checksum, 16);
+  central.writeUInt32LE(value.length, 20);
+  central.writeUInt32LE(value.length, 24);
+  central.writeUInt16LE(nameBytes.length, 28);
+  central.writeUInt32LE(0x80000000, 38);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length + nameBytes.length, 12);
+  end.writeUInt32LE(centralOffset, 16);
+  return Buffer.concat([
+    local,
+    nameBytes,
+    value,
+    descriptor,
+    central,
+    nameBytes,
+    end,
+  ]);
 }
 
 function fixture() {
@@ -177,6 +233,47 @@ function fixture() {
 }
 
 describe("authenticated GitHub Actions rollout evidence", () => {
+  it.each([true, false])(
+    "accepts a bit-3 streamed entry with signed=%s descriptor",
+    (signed) => {
+      const archive = streamedZip("capture.json", Buffer.from("evidence"), {
+        signed,
+      });
+      expect(readExactZipEntries(archive).get("capture.json")?.toString()).toBe(
+        "evidence",
+      );
+    },
+  );
+
+  it("rejects mismatched and truncated streamed descriptors", () => {
+    const mismatch = streamedZip("capture.json", Buffer.from("evidence"));
+    mismatch.writeUInt32LE(1, 30 + Buffer.byteLength("capture.json") + 8 + 8);
+    expect(() => readExactZipEntries(mismatch)).toThrow("data descriptor");
+    const truncatedDescriptor = Buffer.alloc(8);
+    const truncated = streamedZip("capture.json", Buffer.from("evidence"), {
+      descriptor: truncatedDescriptor,
+    });
+    expect(() => readExactZipEntries(truncated)).toThrow("data descriptor");
+  });
+
+  it("rejects ambiguous descriptor bytes and hazardous entry names", () => {
+    const value = Buffer.from("evidence");
+    const canonical = streamedZip("capture.json", value);
+    const central = canonical.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    const archive = Buffer.concat([
+      canonical.subarray(0, central),
+      Buffer.from([0]),
+      canonical.subarray(central),
+    ]);
+    archive.writeUInt32LE(central + 1, archive.length - 22 + 16);
+    expect(() => readExactZipEntries(archive)).toThrow(
+      "data area is ambiguous",
+    );
+    for (const name of ["CON", "a/../b", "trailing. ", "bidi\u202ec.txt"])
+      expect(() => readExactZipEntries(zip({ [name]: value }))).toThrow(
+        "unsafe or unsupported",
+      );
+  });
   it("accepts only the exact immutable run, job, source, and artifact digest", async () => {
     const value = fixture();
     const trusted = await fetchTrustedGitHubEvidence(

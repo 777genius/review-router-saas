@@ -107,6 +107,13 @@ export function verifyLiveCatalogAttestation(
   const subjectFile = parseCanonical(input.subjectPath, "subject", 64 * 1024);
   const claim = validateLiveCatalogClaim(claimFile.value);
   assertLiveCatalogClaimAtProtectedMain(claim, input.trustedCurrentMainCommit);
+  if (
+    String(input.trustedCurrentMainRepositoryIdentifier) !==
+      claim.repository.id ||
+    String(input.trustedCurrentMainRepositoryOwnerIdentifier) !==
+      claim.repository.ownerId
+  )
+    throw new Error("live_catalog_trusted_current_main_identity_mismatch");
   const subject = subjectFile.value;
   if (
     !subject ||
@@ -134,7 +141,7 @@ export function verifyLiveCatalogAttestation(
     8 * 1024 * 1024,
     "bundle",
   );
-  ghVerifier({
+  const finalAttestation = ghVerifier({
     repository: input.repository.toLowerCase(),
     subjectBytes: claimFile.bytes,
     subjectName: basename(input.claimPath),
@@ -146,6 +153,13 @@ export function verifyLiveCatalogAttestation(
     runId: claim.attestor.runId,
     token: input.token,
   });
+  if (
+    finalAttestation.certificate.sourceRepositoryIdentifier !==
+      claim.repository.id ||
+    finalAttestation.certificate.sourceRepositoryOwnerIdentifier !==
+      claim.repository.ownerId
+  )
+    throw new Error("live_catalog_final_certificate_identity_mismatch");
 
   const inventoryFile = parseCanonical(
     join(input.evidencePath, "source-inventory.json"),
@@ -246,6 +260,7 @@ export function verifyLiveCatalogAttestation(
   });
   const reconstructed = assembleLiveCatalogClaim({
     repositoryId: claim.repository.id,
+    repositoryOwnerId: claim.repository.ownerId,
     repositoryName: claim.repository.name,
     sourceCommit: claim.source.commit,
     sourceTree: claim.source.tree,
@@ -297,6 +312,8 @@ export function parseVerifyArguments(argv) {
     "subject",
     "bundle",
     "evidence",
+    "trusted-current-main-repository-id",
+    "trusted-current-main-owner-id",
   ]);
   const trustArguments = new Set([
     "trusted-current-main",
@@ -341,8 +358,20 @@ export function trustedCurrentMainFromArguments(args) {
   return normalized;
 }
 
+export function trustedCurrentMainIdentityFromArguments(args) {
+  const repositoryIdentifier = args["trusted-current-main-repository-id"];
+  const ownerIdentifier = args["trusted-current-main-owner-id"];
+  if (
+    !/^[1-9][0-9]*$/u.test(repositoryIdentifier ?? "") ||
+    !/^[1-9][0-9]*$/u.test(ownerIdentifier ?? "")
+  )
+    throw new Error("live_catalog_trusted_current_main_identity_invalid");
+  return Object.freeze({ repositoryIdentifier, ownerIdentifier });
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const args = parseVerifyArguments(process.argv.slice(2));
+  const trustedIdentity = trustedCurrentMainIdentityFromArguments(args);
   const result = verifyLiveCatalogAttestation({
     repository: args.repository,
     claimPath: args.claim,
@@ -350,6 +379,10 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     bundlePath: args.bundle,
     evidencePath: args.evidence,
     trustedCurrentMainCommit: trustedCurrentMainFromArguments(args),
+    trustedCurrentMainRepositoryIdentifier:
+      trustedIdentity.repositoryIdentifier,
+    trustedCurrentMainRepositoryOwnerIdentifier:
+      trustedIdentity.ownerIdentifier,
     token: process.env.GH_TOKEN,
   });
   process.stdout.write(

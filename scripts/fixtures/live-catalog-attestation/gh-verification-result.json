@@ -1,6 +1,22 @@
 {
   "attestation": {
-    "bundle": "deterministic-test-fixture"
+    "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+    "verificationMaterial": {
+      "certificate": {
+        "rawBytes": "U0FOSVRJWkVEX1BVQkxJQ19DRVJUSUZJQ0FURQ=="
+      },
+      "tlogEntries": []
+    },
+    "dsseEnvelope": {
+      "payload": "U0FOSVRJWkVEX1BVQkxJQ19JTlRPVE9fU1RBVEVNRU5U",
+      "payloadType": "application/vnd.in-toto+json",
+      "signatures": [
+        {
+          "keyid": "",
+          "sig": "U0FOSVRJWkVEX1BVQkxJQ19TSUdOQVRVUkU="
+        }
+      ]
+    }
   },
   "verificationResult": {
     "mediaType": "application/vnd.dev.sigstore.verificationresult+json;version=0.1",

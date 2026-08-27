@@ -81,8 +81,19 @@ function required(name) {
   return value;
 }
 
+export function parseAttestCommandArguments(argv) {
+  if (
+    argv.length !== 1 ||
+    !["assemble", "assert-fresh-main", "finalize-bundle"].includes(argv[0])
+  )
+    throw new Error(
+      "usage: attest-live-catalog-digest.mjs <assemble|assert-fresh-main|finalize-bundle>",
+    );
+  return argv[0];
+}
+
 async function main() {
-  const command = process.argv[2];
+  const command = parseAttestCommandArguments(process.argv.slice(2));
   if (command === "assemble") {
     const result = await writeLiveCatalogAttestationSubject({
       repository: required("GITHUB_REPOSITORY"),
@@ -100,7 +111,7 @@ async function main() {
     const output = required("GITHUB_OUTPUT");
     writeFileSync(
       output,
-      `claim_path=${result.claimPath}\nsubject_path=${result.subjectPath}\nevidence_path=${result.evidencePath}\nfingerprint=${result.subject.fingerprint}\n`,
+      `claim_path=${result.claimPath}\nsubject_path=${result.subjectPath}\nevidence_path=${result.evidencePath}\nfingerprint=${result.subject.fingerprint}\nrepository_id=${result.claim.repository.id}\nrepository_owner_id=${result.claim.repository.ownerId}\n`,
       { encoding: "utf8", flag: "a" },
     );
     return;
@@ -110,6 +121,8 @@ async function main() {
       repository: required("GITHUB_REPOSITORY"),
       token: required("GH_TOKEN"),
       expectedCommit: required("GITHUB_SHA"),
+      expectedRepositoryId: required("EXPECTED_REPOSITORY_ID"),
+      expectedRepositoryOwnerId: required("EXPECTED_REPOSITORY_OWNER_ID"),
     });
     return;
   }
@@ -123,9 +136,6 @@ async function main() {
     });
     return;
   }
-  throw new Error(
-    "usage: attest-live-catalog-digest.mjs <assemble|assert-fresh-main|finalize-bundle>",
-  );
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) await main();
