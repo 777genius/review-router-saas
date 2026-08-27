@@ -11,35 +11,18 @@ import {
   LIVE_CATALOG_PRODUCER_JOB_NAME,
   LIVE_CATALOG_PROJECTION_PATH,
   LIVE_CATALOG_SOURCE_WORKFLOW,
-  localImportSpecifiers,
-  resolveLocalImport,
   sha256Hex,
 } from "./live-catalog-attestation-domain.mjs";
 import { verifyWithGhAttestation } from "./live-catalog-gh-attestation-adapter.mjs";
-
-const closureRoots = Object.freeze([
-  LIVE_CATALOG_SOURCE_WORKFLOW,
-  "package.json",
-  "pnpm-lock.yaml",
-  "pnpm-workspace.yaml",
-  "scripts/install-private-dependencies.mjs",
-  "scripts/run-with-env.mjs",
-  "scripts/rehearse-private-pg17-rollout.mjs",
-  "scripts/package-live-catalog-capture-evidence.mjs",
-  "scripts/capture-private-pg17-activation-catalog-policy.mjs",
-  "scripts/run-codex-rotating-release-migration.mjs",
-  "scripts/run-codex-rotating-role-bootstrap.mjs",
-  "scripts/run-private-pg17-copy-bootstrap.ts",
-  "scripts/activate-private-pg17-generation.mjs",
-  "scripts/install-release-authority-db.mjs",
-  LIVE_CATALOG_CONTRACT_PATH,
-  LIVE_CATALOG_PROJECTION_PATH,
-  "packages/platform/db/prisma.config.ts",
-  "packages/platform/db/prisma/schema.prisma",
-]);
-
-const maximumClosureFiles = 512;
-const maximumClosureBytes = 24 * 1024 * 1024;
+import {
+  canonicalSourceInventoryJson,
+  createLiveCatalogSourceInventory,
+  deriveLiveCatalogSourceClosure,
+  initialLiveCatalogSourceSelection,
+  liveCatalogSourceDependencies,
+  LIVE_CATALOG_SOURCE_FETCH_LIMITS,
+  liveCatalogSourceInventoryFacts,
+} from "./live-catalog-source-inventory-domain.mjs";
 
 function repositoryParts(repository) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository ?? ""))
@@ -62,24 +45,41 @@ const bytes = (fetchImpl, path, token, maximumBytes) =>
     fetchImpl,
   );
 
-async function sourceFile(fetchImpl, prefix, path, commit, token, expected) {
-  const value = await json(
-    fetchImpl,
-    `${prefix}/contents/${path}?ref=${commit}`,
-    token,
-  );
+async function sourceFile(fetchImpl, prefix, token, expected) {
+  let value;
+  try {
+    value = JSON.parse(
+      (
+        await boundedGithubRequest(
+          {
+            path: `${prefix}/git/blobs/${expected.sha}`,
+            token,
+            kind: "json",
+            maximumBytes: 6 * 1024 * 1024,
+            maximumRedirects: 0,
+          },
+          fetchImpl,
+        )
+      ).toString("utf8"),
+    );
+  } catch {
+    throw new Error("live_catalog_source_file_identity_invalid");
+  }
   if (
-    value.type !== "file" ||
-    value.path !== path ||
+    value.sha !== expected.sha ||
+    value.size !== expected.size ||
     value.encoding !== "base64" ||
     typeof value.content !== "string"
   )
     throw new Error("live_catalog_source_file_identity_invalid");
-  const fileBytes = Buffer.from(value.content.replaceAll("\n", ""), "base64");
+  const encoded = value.content.replaceAll("\n", "");
+  const fileBytes = Buffer.from(encoded, "base64");
   if (
+    fileBytes.toString("base64") !== encoded ||
     fileBytes.length !== value.size ||
     gitBlobSha(fileBytes) !== value.sha ||
-    (expected && (expected.sha !== value.sha || expected.size !== value.size))
+    expected.sha !== value.sha ||
+    expected.size !== value.size
   )
     throw new Error("live_catalog_source_file_digest_invalid");
   return fileBytes;
@@ -89,70 +89,75 @@ export async function buildLiveCatalogSourceClosure({
   fetchImpl,
   prefix,
   token,
-  commit,
   treeSha,
 }) {
-  const tree = await json(
-    fetchImpl,
-    `${prefix}/git/trees/${treeSha}?recursive=1`,
-    token,
-  );
-  if (
-    tree.sha !== treeSha ||
-    tree.truncated !== false ||
-    !Array.isArray(tree.tree)
-  )
+  let tree;
+  try {
+    tree = JSON.parse(
+      (
+        await boundedGithubRequest(
+          {
+            path: `${prefix}/git/trees/${treeSha}?recursive=1`,
+            token,
+            kind: "json",
+            maximumBytes: 8 * 1024 * 1024,
+            maximumRedirects: 0,
+          },
+          fetchImpl,
+        )
+      ).toString("utf8"),
+    );
+  } catch {
     throw new Error("live_catalog_source_tree_inventory_invalid");
-  const blobs = new Map();
-  for (const entry of tree.tree) {
-    if (
-      entry.type === "blob" &&
-      typeof entry.path === "string" &&
-      /^[a-f0-9]{40}$/u.test(entry.sha ?? "") &&
-      Number.isSafeInteger(entry.size) &&
-      entry.size >= 0
-    )
-      blobs.set(entry.path, entry);
   }
-  const selected = new Set(closureRoots);
-  for (const path of blobs.keys())
-    if (
-      /^packages\/platform\/db\/prisma\/migrations\/[^/]+\/migration\.sql$/u.test(
-        path,
-      ) ||
-      /^packages\/platform\/release-authority-db\/migrations\/[^/]+\/migration\.sql$/u.test(
-        path,
-      ) ||
-      /^packages\/platform\/release-authority-db\/legacy-catalog\/[^/]+\/migration\.sql$/u.test(
-        path,
-      )
-    )
-      selected.add(path);
-  if (selected.size > maximumClosureFiles)
-    throw new Error("live_catalog_source_closure_limit_exceeded");
-  for (const root of selected)
-    if (!blobs.has(root))
-      throw new Error("live_catalog_source_closure_root_missing");
+  const inventory = createLiveCatalogSourceInventory(tree, treeSha);
+  const blobs = new Map(
+    inventory.entries
+      .filter((entry) => entry.type === "blob")
+      .map((entry) => [entry.path, entry]),
+  );
+  const selected = new Set(initialLiveCatalogSourceSelection(inventory));
+  let retainedBytes = 0;
+  let inFlightBytes = 0;
+  let requestedFiles = 0;
   const fetchPaths = async (paths) => {
     const results = [];
-    for (let offset = 0; offset < paths.length; offset += 12)
-      results.push(
-        ...(await Promise.all(
-          paths
-            .slice(offset, offset + 12)
-            .map(async (path) => [
-              path,
-              await sourceFile(
-                fetchImpl,
-                prefix,
-                path,
-                commit,
-                token,
-                blobs.get(path),
-              ),
-            ]),
-        )),
-      );
+    for (let offset = 0; offset < paths.length; offset += 12) {
+      const batch = paths.slice(offset, offset + 12);
+      const reservation = batch.reduce((total, path) => {
+        const size = blobs.get(path)?.size;
+        if (
+          !Number.isSafeInteger(size) ||
+          size > LIVE_CATALOG_SOURCE_FETCH_LIMITS.fileBytes
+        )
+          throw new Error("live_catalog_source_closure_limit_exceeded");
+        return total + size;
+      }, 0);
+      if (
+        requestedFiles + batch.length >
+          LIVE_CATALOG_SOURCE_FETCH_LIMITS.files ||
+        retainedBytes + inFlightBytes + reservation >
+          LIVE_CATALOG_SOURCE_FETCH_LIMITS.retainedBytes
+      )
+        throw new Error("live_catalog_source_closure_limit_exceeded");
+      requestedFiles += batch.length;
+      inFlightBytes += reservation;
+      try {
+        const fetched = await Promise.all(
+          batch.map(async (path) => [
+            path,
+            await sourceFile(fetchImpl, prefix, token, blobs.get(path)),
+          ]),
+        );
+        retainedBytes += fetched.reduce(
+          (total, [, value]) => total + value.length,
+          0,
+        );
+        results.push(...fetched);
+      } finally {
+        inFlightBytes -= reservation;
+      }
+    }
     return results;
   };
   const loaded = new Map();
@@ -162,48 +167,36 @@ export async function buildLiveCatalogSourceClosure({
     const results = await fetchPaths(pending);
     for (const [path, fileBytes] of results) loaded.set(path, fileBytes);
     for (const [path, fileBytes] of results)
-      for (const specifier of localImportSpecifiers(path, fileBytes))
-        selected.add(resolveLocalImport(path, specifier, blobs));
-    if (
-      selected.size > maximumClosureFiles ||
-      [...loaded.values()].reduce((total, value) => total + value.length, 0) >
-        maximumClosureBytes
-    )
+      for (const dependency of liveCatalogSourceDependencies(
+        inventory,
+        path,
+        fileBytes,
+        loaded,
+      ))
+        selected.add(dependency);
+    if (selected.size > LIVE_CATALOG_SOURCE_FETCH_LIMITS.files)
       throw new Error("live_catalog_source_closure_limit_exceeded");
   }
-  // Package metadata affects resolution and dependency installation. Include every
-  // package manifest governing a selected source file.
-  for (const path of [...selected]) {
-    let directory = path.includes("/")
-      ? path.slice(0, path.lastIndexOf("/"))
-      : "";
-    while (directory) {
-      const manifest = `${directory}/package.json`;
-      if (blobs.has(manifest)) selected.add(manifest);
-      directory = directory.includes("/")
-        ? directory.slice(0, directory.lastIndexOf("/"))
-        : "";
-    }
-  }
-  if (selected.size > maximumClosureFiles)
-    throw new Error("live_catalog_source_closure_limit_exceeded");
-  const metadataPending = [...selected].filter((path) => !loaded.has(path));
-  const metadata = await fetchPaths(metadataPending);
-  for (const [path, fileBytes] of metadata) loaded.set(path, fileBytes);
-  if (
-    [...loaded.values()].reduce((total, value) => total + value.length, 0) >
-    maximumClosureBytes
-  )
-    throw new Error("live_catalog_source_closure_limit_exceeded");
-  return [...loaded.entries()]
-    .map(([path, fileBytes]) => ({
-      path,
-      gitBlobSha: blobs.get(path).sha,
-      size: fileBytes.length,
-      sha256: sha256Hex(fileBytes),
-      bytes: fileBytes,
+  const closure = deriveLiveCatalogSourceClosure(inventory, loaded);
+  const files = closure.entries
+    .map((entry) => ({
+      path: entry.path,
+      mode: entry.mode,
+      gitBlobSha: entry.gitBlobSha,
+      size: entry.size,
+      sha256: entry.sha256.slice("sha256:".length),
+      bytes: loaded.get(entry.path),
     }))
-    .sort((left, right) => left.path.localeCompare(right.path, "en"));
+    .sort((left, right) =>
+      Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)),
+    );
+  return Object.freeze({
+    inventory,
+    inventoryBytes: Buffer.from(canonicalSourceInventoryJson(inventory)),
+    inventoryFacts: liveCatalogSourceInventoryFacts(inventory),
+    closure,
+    files,
+  });
 }
 
 function exactProducerJob(jobs, id, runId, headSha) {
@@ -366,17 +359,19 @@ export async function collectLiveCatalogClaim(
   )
     throw new Error("live_catalog_producer_artifact_digest_mismatch");
 
-  const sourceClosureFiles = await buildLiveCatalogSourceClosure({
+  const sourceEvidence = await buildLiveCatalogSourceClosure({
     fetchImpl,
     prefix,
     token,
-    commit: run.head_sha,
     treeSha: commit.tree.sha,
   });
   const byPath = new Map(
-    sourceClosureFiles.map((file) => [file.path, file.bytes]),
+    sourceEvidence.files.map((file) => [file.path, file.bytes]),
   );
   const workflowSourceBytes = byPath.get(LIVE_CATALOG_SOURCE_WORKFLOW);
+  const attestorWorkflowSourceBytes = byPath.get(
+    ".github/workflows/attest-live-catalog-digest.yml",
+  );
   const projectionSourceBytes = byPath.get(LIVE_CATALOG_PROJECTION_PATH);
   const contractSourceBytes = byPath.get(LIVE_CATALOG_CONTRACT_PATH);
   const entries = readExactZipEntries(archiveBytes);
@@ -423,9 +418,13 @@ export async function collectLiveCatalogClaim(
     candidateEntries,
     captureEvidenceBytes,
     workflowSourceBytes,
+    attestorWorkflowSourceBytes,
     projectionSourceBytes,
     contractSourceBytes,
-    sourceClosureFiles,
+    sourceClosureFiles: sourceEvidence.files,
+    sourceInventory: sourceEvidence.inventory,
+    sourceInventoryFacts: sourceEvidence.inventoryFacts,
+    sourceClosure: sourceEvidence.closure,
     producerCertificate: producerAttestation.certificate,
     producerSubject: producerAttestation.subject,
     producerBundleBytes: producerAttestation.bundleBytes,
@@ -449,7 +448,10 @@ export async function collectLiveCatalogClaim(
       archiveBytes,
       captureEvidenceBytes,
       producerBundleBytes: producerAttestation.bundleBytes,
-      sourceClosureFiles,
+      sourceClosureFiles: sourceEvidence.files,
+      sourceInventory: sourceEvidence.inventory,
+      sourceInventoryBytes: sourceEvidence.inventoryBytes,
+      sourceClosure: sourceEvidence.closure,
     }),
   });
 }

@@ -47,9 +47,13 @@ export async function writeLiveCatalogAttestationSubject(configuration) {
   mkdirSync(evidencePath, { mode: 0o700 });
   const closureEvidence = Buffer.from(
     canonicalJson({
-      schemaVersion: "reviewrouter.live-catalog.source-closure-evidence.v1",
+      schemaVersion: "reviewrouter.live-catalog.source-closure-evidence.v2",
+      selector: evidence.sourceClosure.selector,
+      inventoryDigest: evidence.sourceClosure.inventoryDigest,
+      digest: evidence.sourceClosure.digest,
       files: evidence.sourceClosureFiles.map((file) => ({
         path: file.path,
+        mode: file.mode,
         gitBlobSha: file.gitBlobSha,
         size: file.size,
         sha256: file.sha256,
@@ -61,6 +65,7 @@ export async function writeLiveCatalogAttestationSubject(configuration) {
     ["artifact.zip", evidence.archiveBytes],
     ["successful-capture.json", evidence.captureEvidenceBytes],
     ["producer.bundle.json", evidence.producerBundleBytes],
+    ["source-inventory.json", evidence.sourceInventoryBytes],
     ["source-closure.json", closureEvidence],
   ])
     writeFileSync(`${evidencePath}/${name}`, bytes, {

@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import canonicalArtifact from "../../packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js";
 import { gitBlobSha } from "./github-actions-trusted-evidence.mjs";
@@ -16,27 +17,35 @@ import {
   assembleLiveCatalogClaim,
   assertLiveCatalogClaimAtProtectedMain,
   assertLiveCatalogCaptureContract,
+  assertLiveCatalogAttestorWorkflow,
   assertSourceWorkflowPg17Image,
   canonicalJson,
   extractConfiguredCatalogDigest,
   extractProjectionBytes,
+  exactSemanticAstForm,
   LIVE_CATALOG_CONTRACT_PATH,
   LIVE_CATALOG_PG17_IMAGE,
   LIVE_CATALOG_PROJECTION_PATH,
   LIVE_CATALOG_SOURCE_WORKFLOW,
-  localImportSpecifiers,
-  resolveLocalImport,
   sha256Hex,
-  sourceClosureFacts,
   validateLiveCatalogClaim,
 } from "./live-catalog-attestation-domain.mjs";
 import {
   normalizeGhAttestationResult,
   verifyWithGhAttestation,
 } from "./live-catalog-gh-attestation-adapter.mjs";
+import {
+  canonicalSourceInventoryJson,
+  LIVE_CATALOG_SOURCE_CLOSURE_SCHEMA,
+  LIVE_CATALOG_SOURCE_INVENTORY_SCHEMA,
+  LIVE_CATALOG_SOURCE_SELECTOR,
+} from "./live-catalog-source-inventory-domain.mjs";
 
 const commit = "a".repeat(40);
 const workflow = readFileSync(LIVE_CATALOG_SOURCE_WORKFLOW);
+const attestorWorkflow = readFileSync(
+  ".github/workflows/attest-live-catalog-digest.yml",
+);
 const contract = readFileSync(LIVE_CATALOG_CONTRACT_PATH);
 const projection = readFileSync(LIVE_CATALOG_PROJECTION_PATH);
 const configuredDigest = extractConfiguredCatalogDigest(projection);
@@ -54,6 +63,7 @@ const producerBundle = Buffer.from(
 function closureFile(path: string, bytes: Buffer) {
   return {
     path,
+    mode: "100644",
     bytes,
     size: bytes.length,
     sha256: sha256Hex(bytes),
@@ -67,6 +77,43 @@ const closureFiles = [
   closureFile(LIVE_CATALOG_PROJECTION_PATH, projection),
   closureFile("package.json", readFileSync("package.json")),
 ];
+
+const sourceInventoryFacts = {
+  schemaVersion: LIVE_CATALOG_SOURCE_INVENTORY_SCHEMA,
+  treeSha: "b".repeat(40),
+  digest: `sha256:${"c".repeat(64)}`,
+  canonicalBytes: 1024,
+  entryCount: 8,
+  blobCount: 4,
+  logicalBytes: closureFiles.reduce((total, file) => total + file.size, 0),
+};
+const sourceClosurePayload = {
+  selector: LIVE_CATALOG_SOURCE_SELECTOR,
+  inventoryDigest: sourceInventoryFacts.digest,
+  entries: closureFiles
+    .map((entry) => ({
+      path: entry.path,
+      mode: "100644",
+      gitBlobSha: entry.gitBlobSha,
+      size: entry.size,
+      sha256: `sha256:${entry.sha256}`,
+    }))
+    .sort((left, right) =>
+      Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)),
+    ),
+};
+const sourceClosure = {
+  schemaVersion: LIVE_CATALOG_SOURCE_CLOSURE_SCHEMA,
+  ...sourceClosurePayload,
+  digest: `sha256:${sha256Hex(
+    Buffer.from(
+      canonicalSourceInventoryJson({
+        domain: LIVE_CATALOG_SOURCE_CLOSURE_SCHEMA,
+        ...sourceClosurePayload,
+      }),
+    ),
+  )}`,
+};
 
 function captureEvidence() {
   return Buffer.from(
@@ -126,9 +173,12 @@ function input(overrides: Record<string, unknown> = {}) {
     ],
     captureEvidenceBytes: captureEvidence(),
     workflowSourceBytes: workflow,
+    attestorWorkflowSourceBytes: attestorWorkflow,
     contractSourceBytes: contract,
     projectionSourceBytes: projection,
     sourceClosureFiles: closureFiles,
+    sourceInventoryFacts,
+    sourceClosure,
     producerCertificate: {
       repository: "owner/repo",
       signerWorkflow: "owner/repo/.github/workflows/capture-live-catalog.yml",
@@ -224,6 +274,24 @@ describe("dedicated producer workflow semantics", () => {
 });
 
 describe("capture contract and source closure", () => {
+  it("requires the exact single-job final attestor workflow", () => {
+    expect(() =>
+      assertLiveCatalogAttestorWorkflow(attestorWorkflow),
+    ).not.toThrow();
+    expect(() =>
+      assertLiveCatalogAttestorWorkflow(
+        Buffer.concat([attestorWorkflow, Buffer.from("\n# decoy job\n")]),
+      ),
+    ).toThrow("live_catalog_attestor_workflow_invalid");
+    expect(() =>
+      assertLiveCatalogAttestorWorkflow(
+        Buffer.concat([
+          attestorWorkflow,
+          Buffer.from("\n  decoy:\n    runs-on: ubuntu-24.04\n    steps: []\n"),
+        ]),
+      ),
+    ).toThrow("live_catalog_attestor_workflow_invalid");
+  });
   it("validates the unique narrow contract and literal projection references", () => {
     expect(() => assertLiveCatalogCaptureContract(contract)).not.toThrow();
     expect(() =>
@@ -234,6 +302,46 @@ describe("capture contract and source closure", () => {
         ]),
       ),
     ).toThrow("live_catalog_contract_semantics_invalid");
+  });
+
+  it("binds raw and decoded TemplateHead/Tail text without shape changes", () => {
+    expect(() =>
+      assertLiveCatalogCaptureContract(
+        Buffer.from(
+          contract.toString().replace("ON_ERROR_STOP on", "ON_ERROR_STOP xx"),
+        ),
+      ),
+    ).toThrow("live_catalog_contract_semantics_invalid");
+    expect(() =>
+      assertLiveCatalogCaptureContract(
+        Buffer.from(
+          contract.toString().replace(" live(digest)", " evil(digest)"),
+        ),
+      ),
+    ).toThrow("live_catalog_contract_semantics_invalid");
+  });
+
+  it("tokenizes and binds TemplateMiddle raw and decoded text", () => {
+    const source = ts.createSourceFile(
+      "middle.mjs",
+      "const value = `head${first}middle${second}tail`;",
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.JS,
+    );
+    expect(JSON.stringify(exactSemanticAstForm(source))).toContain(
+      String(ts.SyntaxKind.TemplateMiddle),
+    );
+    const changed = ts.createSourceFile(
+      "middle.mjs",
+      "const value = `head${first}mutate${second}tail`;",
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.JS,
+    );
+    expect(exactSemanticAstForm(changed)).not.toEqual(
+      exactSemanticAstForm(source),
+    );
   });
 
   it.each([
@@ -277,42 +385,12 @@ describe("capture contract and source closure", () => {
       "live_catalog_contract_semantics_invalid",
     );
   });
-
-  it("binds path, git blob, bytes, size and aggregate digest", () => {
-    const facts = sourceClosureFacts(closureFiles);
-    expect(facts.entries).toHaveLength(4);
-    expect(facts.digest).toMatch(/^sha256:[a-f0-9]{64}$/u);
-    expect(() =>
-      sourceClosureFacts([
-        {
-          ...closureFiles[0],
-          bytes: Buffer.concat([workflow, Buffer.from("x")]),
-        },
-      ]),
-    ).toThrow("live_catalog_source_closure_entry_invalid");
-  });
-
-  it("rejects unresolved and dynamic local imports", () => {
-    expect(() =>
-      resolveLocalImport(
-        "scripts/a.mjs",
-        "./missing.mjs",
-        new Set(["scripts/a.mjs"]),
-      ),
-    ).toThrow("live_catalog_source_closure_unresolved_import");
-    expect(() =>
-      localImportSpecifiers(
-        "scripts/a.mjs",
-        Buffer.from("await import(target)"),
-      ),
-    ).toThrow("live_catalog_source_closure_dynamic_import_denied");
-  });
 });
 
-describe("schema v3 convergence", () => {
+describe("schema v4 convergence", () => {
   it("assembles exact-main producer certificate, tuple, bundle, and closure", () => {
     const claim = assembleLiveCatalogClaim(input() as any);
-    expect(claim.schemaVersion).toBe("reviewrouter.live-catalog-provenance.v3");
+    expect(claim.schemaVersion).toBe("reviewrouter.live-catalog-provenance.v4");
     expect(claim.source.commit).toBe(claim.attestor.commit);
     expect(claim.artifact.restDigest).toBe(
       claim.producerAttestation.subject.digest,
@@ -379,6 +457,19 @@ describe("schema v3 convergence", () => {
       "live_catalog_claim_tuple_mismatch",
     );
   });
+
+  it.each(["v1", "v2", "v3"])(
+    "rejects legacy production claim %s",
+    (version) => {
+      const claim: any = JSON.parse(
+        canonicalJson(assembleLiveCatalogClaim(input() as any)),
+      );
+      claim.schemaVersion = `reviewrouter.live-catalog-provenance.${version}`;
+      expect(() => validateLiveCatalogClaim(claim)).toThrow(
+        "live_catalog_claim_version_invalid",
+      );
+    },
+  );
 
   it.each([
     ["repository", (claim: any) => (claim.repository.name = "owner/other")],

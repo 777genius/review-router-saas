@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   mkdirSync,
@@ -29,9 +30,16 @@ import {
   trustedCurrentMainFromArguments,
   verifyLiveCatalogAttestation,
 } from "./verify-live-catalog-attestation.mjs";
+import {
+  canonicalSourceInventoryJson,
+  createLiveCatalogSourceInventory,
+  deriveLiveCatalogSourceClosure,
+  LIVE_CATALOG_SELECTOR_ROOTS,
+  liveCatalogSourceInventoryFacts,
+} from "./lib/live-catalog-source-inventory-domain.mjs";
 
 const commit = "a".repeat(40);
-const tree = "b".repeat(40);
+let tree = "";
 const workflow = readFileSync(LIVE_CATALOG_SOURCE_WORKFLOW);
 const contract = readFileSync(LIVE_CATALOG_CONTRACT_PATH);
 const projection = readFileSync(LIVE_CATALOG_PROJECTION_PATH);
@@ -91,6 +99,124 @@ function zip(entries: Record<string, Buffer>) {
   return Buffer.concat([...locals, directory, end]);
 }
 
+function offlineSources() {
+  const empty = Buffer.from("export {};\n");
+  const sources = new Map<string, Buffer>();
+  for (const path of LIVE_CATALOG_SELECTOR_ROOTS) sources.set(path, empty);
+  sources.set(LIVE_CATALOG_SOURCE_WORKFLOW, workflow);
+  sources.set(
+    ".github/workflows/attest-live-catalog-digest.yml",
+    readFileSync(".github/workflows/attest-live-catalog-digest.yml"),
+  );
+  sources.set(LIVE_CATALOG_CONTRACT_PATH, contract);
+  sources.set(LIVE_CATALOG_PROJECTION_PATH, projection);
+  sources.set("package.json", readFileSync("package.json"));
+  sources.set(
+    "packages/platform/db/package.json",
+    readFileSync("packages/platform/db/package.json"),
+  );
+  sources.set("pnpm-lock.yaml", Buffer.from("lockfileVersion: '9.0'\n"));
+  sources.set("pnpm-workspace.yaml", Buffer.from("packages: []\n"));
+  sources.set(
+    "packages/platform/db/prisma/schema.prisma",
+    Buffer.from("generator client {}\n"),
+  );
+  sources.set(
+    "packages/platform/db/prisma/migrations/current/migration.sql",
+    Buffer.from("SELECT 1;\n"),
+  );
+  sources.set(
+    "packages/platform/release-authority-db/migrations/current/migration.sql",
+    Buffer.from("SELECT 2;\n"),
+  );
+  sources.set(
+    "packages/platform/release-authority-db/legacy-catalog/legacy/migration.sql",
+    Buffer.from("SELECT 3;\n"),
+  );
+  return sources;
+}
+
+function sourceTree(sources: Map<string, Buffer>) {
+  const directories = new Set<string>();
+  for (const path of sources.keys()) {
+    const parts = path.split("/");
+    for (let index = 1; index < parts.length; index += 1)
+      directories.add(parts.slice(0, index).join("/"));
+  }
+  const shas = new Map<string, string>();
+  for (const directory of ["", ...directories].sort(
+    (a, b) => (b ? b.split("/").length : 0) - (a ? a.split("/").length : 0),
+  )) {
+    const children: Array<{
+      mode: string;
+      name: string;
+      sha: string;
+      tree: boolean;
+    }> = [];
+    for (const [path, bytes] of sources)
+      if (
+        (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "") ===
+        directory
+      )
+        children.push({
+          mode: "100644",
+          name: path.split("/").at(-1)!,
+          sha: gitBlobSha(bytes),
+          tree: false,
+        });
+    for (const child of directories)
+      if (
+        (child.includes("/") ? child.slice(0, child.lastIndexOf("/")) : "") ===
+        directory
+      )
+        children.push({
+          mode: "40000",
+          name: child.split("/").at(-1)!,
+          sha: shas.get(child)!,
+          tree: true,
+        });
+    children.sort((a, b) =>
+      Buffer.compare(
+        Buffer.from(`${a.name}${a.tree ? "/" : ""}`),
+        Buffer.from(`${b.name}${b.tree ? "/" : ""}`),
+      ),
+    );
+    const body = Buffer.concat(
+      children.flatMap((child) => [
+        Buffer.from(`${child.mode} ${child.name}\0`),
+        Buffer.from(child.sha, "hex"),
+      ]),
+    );
+    shas.set(
+      directory,
+      createHash("sha1")
+        .update(`tree ${body.length}\0`)
+        .update(body)
+        .digest("hex"),
+    );
+  }
+  return {
+    sha: shas.get("")!,
+    url: "",
+    truncated: false,
+    tree: [
+      ...[...directories].map((path) => ({
+        path,
+        mode: "040000",
+        type: "tree",
+        sha: shas.get(path)!,
+      })),
+      ...[...sources].map(([path, bytes]) => ({
+        path,
+        mode: "100644",
+        type: "blob",
+        sha: gitBlobSha(bytes),
+        size: bytes.length,
+      })),
+    ],
+  };
+}
+
 function makeFixture() {
   const directory = mkdtempSync(join(tmpdir(), "rr-offline-verifier-"));
   const evidencePath = join(directory, "evidence");
@@ -120,17 +246,18 @@ function makeFixture() {
     "live-catalog-successful-capture-evidence.json": capture,
   });
   const bundle = Buffer.from('{"valid":true}');
-  const closureFiles = [
-    [LIVE_CATALOG_SOURCE_WORKFLOW, workflow],
-    [LIVE_CATALOG_CONTRACT_PATH, contract],
-    [LIVE_CATALOG_PROJECTION_PATH, projection],
-    ["package.json", readFileSync("package.json")],
-  ].map(([path, bytes]) => ({
-    path: path as string,
-    bytes: bytes as Buffer,
-    size: (bytes as Buffer).length,
-    sha256: sha256Hex(bytes as Buffer),
-    gitBlobSha: gitBlobSha(bytes as Buffer),
+  const sources = offlineSources();
+  const rawTree = sourceTree(sources);
+  tree = rawTree.sha;
+  const inventory = createLiveCatalogSourceInventory(rawTree, tree);
+  const sourceClosure = deriveLiveCatalogSourceClosure(inventory, sources);
+  const closureFiles = sourceClosure.entries.map((entry) => ({
+    path: entry.path,
+    mode: entry.mode,
+    bytes: sources.get(entry.path)!,
+    size: entry.size,
+    sha256: entry.sha256.slice("sha256:".length),
+    gitBlobSha: entry.gitBlobSha,
   }));
   const claim = assembleLiveCatalogClaim({
     repositoryId: 17,
@@ -166,9 +293,14 @@ function makeFixture() {
     ],
     captureEvidenceBytes: capture,
     workflowSourceBytes: workflow,
+    attestorWorkflowSourceBytes: sources.get(
+      ".github/workflows/attest-live-catalog-digest.yml",
+    ),
     projectionSourceBytes: projection,
     contractSourceBytes: contract,
     sourceClosureFiles: closureFiles,
+    sourceInventoryFacts: liveCatalogSourceInventoryFacts(inventory),
+    sourceClosure,
     producerCertificate: {
       repository: "owner/repo",
       signerWorkflow: `owner/repo/${LIVE_CATALOG_SOURCE_WORKFLOW}`,
@@ -212,11 +344,19 @@ function makeFixture() {
   writeFileSync(join(evidencePath, "successful-capture.json"), capture);
   writeFileSync(join(evidencePath, "producer.bundle.json"), bundle);
   writeFileSync(
+    join(evidencePath, "source-inventory.json"),
+    canonicalSourceInventoryJson(inventory),
+  );
+  writeFileSync(
     join(evidencePath, "source-closure.json"),
     canonicalJson({
-      schemaVersion: "reviewrouter.live-catalog.source-closure-evidence.v1",
+      schemaVersion: "reviewrouter.live-catalog.source-closure-evidence.v2",
+      selector: sourceClosure.selector,
+      inventoryDigest: sourceClosure.inventoryDigest,
+      digest: sourceClosure.digest,
       files: closureFiles.map(({ path, size, sha256, gitBlobSha, bytes }) => ({
         path,
+        mode: "100644",
         gitBlobSha,
         size,
         sha256,
@@ -276,6 +416,33 @@ describe("offline verifier executable and trust boundary", () => {
     ).toThrow("live_catalog_verify_usage");
   });
 
+  it("rejects zero, odd, unknown, duplicate, missing, and malformed CLI trust input", () => {
+    const fixture = makeFixture();
+    const valid = argumentsFor(fixture);
+    for (const argv of [
+      [],
+      ["--repository"],
+      [...valid, "--unknown", "x"],
+      [...valid, "--claim", fixture.claimPath],
+      valid.slice(2),
+      valid.slice(0, -2),
+    ])
+      expect(() => parseVerifyArguments(argv)).toThrow(
+        "live_catalog_verify_usage",
+      );
+    for (const value of ["", "A".repeat(40), `${commit}\n`, "f".repeat(39)])
+      expect(() =>
+        trustedCurrentMainFromArguments({ "trusted-current-main": value }),
+      ).toThrow("live_catalog_trusted_current_main_invalid");
+    const malformedFile = join(fixture.directory, "malformed-main");
+    writeFileSync(malformedFile, `${commit}\n\n`);
+    expect(() =>
+      trustedCurrentMainFromArguments({
+        "trusted-current-main-file": malformedFile,
+      }),
+    ).toThrow("live_catalog_trusted_current_main_invalid");
+  });
+
   it("rejects a signed main-A claim after protected main advances to B", () => {
     const fixture = makeFixture();
     expect(() =>
@@ -290,7 +457,7 @@ describe("offline verifier executable and trust boundary", () => {
     ).toThrow("live_catalog_claim_stale_protected_main");
   });
 
-  it("verifies producer then final bytes and rejects coordinated retained-evidence tamper", () => {
+  it("verifies final claim before producer bytes and rejects coordinated retained-evidence tamper", () => {
     const fixture = makeFixture();
     const verifier = vi.fn((input: any) => ({
       certificate: {
@@ -319,6 +486,12 @@ describe("offline verifier executable and trust boundary", () => {
       ),
     ).not.toThrow();
     expect(verifier).toHaveBeenCalledTimes(2);
+    expect(
+      verifier.mock.calls.map(([input]: [any]) => input.signerWorkflowPath),
+    ).toEqual([
+      ".github/workflows/attest-live-catalog-digest.yml",
+      LIVE_CATALOG_SOURCE_WORKFLOW,
+    ]);
     writeFileSync(
       join(fixture.evidencePath, "successful-capture.json"),
       "{}\n",
@@ -419,6 +592,10 @@ describe("offline verifier executable and trust boundary", () => {
           trustedCurrentMainCommit: commit,
         },
         (input: any) => {
+          if (
+            input.signerWorkflowPath.endsWith("attest-live-catalog-digest.yml")
+          )
+            return {};
           if (input.bundleBytes.equals(tamperedBundle))
             throw new Error("live_catalog_gh_attestation_invalid");
           throw new Error("unexpected_verification_stage");
@@ -509,5 +686,5 @@ describe("offline verifier executable and trust boundary", () => {
       },
     );
     expect(JSON.parse(output)).toMatchObject({ verified: true });
-  });
+  }, 15_000);
 });

@@ -18,7 +18,9 @@ The trust root is the two-stage GitHub attestation chain from the exact checked-
 
 The assembler reads repository, current `main` protection/head, run, complete one-job inventory, artifact, commit/tree, and a recursively derived source closure through authenticated GitHub APIs. It verifies the downloaded archive's producer attestation before parsing the archive or signing a claim. The producer certificate must bind the exact repository, capture workflow, signer digest, main source ref/digest, GitHub-hosted runner, and selected run invocation. Predicate fields are not authority.
 
-The source closure is fetched independently at the exact source commit. It binds path, Git blob SHA, byte SHA-256, size, and one canonical aggregate for the workflow, package/lock/workspace metadata, installer, rehearsal, packager, candidate parser, capture contract, migration/bootstrap/activation entry points, projection, transitive local imports, Prisma schema, and every consumed Prisma migration. Unresolved or dynamic local imports fail closed.
+The assembler first canonicalizes the complete, untruncated recursive Git tree as source-inventory v1 and reconstructs every Git tree object through the claimed root SHA. Symlinks, submodules, unsafe or duplicate paths, unsupported modes/types, and inventory bounds fail closed. The installed `reviewrouter.live-catalog.source-selector.v2` policy derives source-closure v2 from that inventory. It covers both workflows, package/lock/workspace and governing manifests, the narrow install lifecycle, installer/rehearsal/packager/migration/bootstrap chain, capture contract and projection, Prisma configuration/schema, all current and legacy release migrations, and statically resolved imports/re-exports. Unknown dynamic resolution, tracked dotenv/npm hook configuration, or an unknown lifecycle/operator fails closed.
+
+Immutable blobs are reserved by declared tree size before any request. At most 512 files, 4 MiB per fetched blob, and 24 MiB retained plus in-flight raw bytes are allowed. Each fetch addresses the immutable Git blob SHA and verifies declared size and Git blob identity. Claim schema v4 binds the tree SHA plus inventory digest/count/byte facts; source-closure v2 binds the installed selector, inventory digest, exact byte-sorted entries, modes, blob identities, sizes, and byte digests. Claims v1-v3 are rejected without fallback.
 
 ## Dispatch
 
@@ -50,6 +52,7 @@ The stable artifact `live-catalog-provenance-<attestor-main-sha>` contains:
 - `live-catalog-provenance.subject.json`: subject size, SHA-256, and claim fingerprint;
 - `live-catalog-provenance.bundle.json`: final Sigstore/GitHub attestation bundle copied to a stable name;
 - `live-catalog-provenance.evidence/producer.bundle.json`: retained producer artifact-attestation bundle;
+- `live-catalog-provenance.evidence/source-inventory.json`: canonical complete recursive Git tree inventory;
 - `live-catalog-provenance.evidence/source-closure.json`: canonical retained source bytes and per-file facts;
 - the authenticated artifact archive and successful capture evidence needed for offline field recomputation.
 
@@ -71,7 +74,7 @@ node --import tsx scripts/verify-live-catalog-attestation.mjs \
 
 Alternatively, pass `--trusted-current-main-file <operator-controlled-file>` containing exactly the 40-hex SHA and an optional final newline. The file must come from the same separately authenticated current-main lookup, not from the attestation artifact.
 
-The verifier first authenticates the retained producer bundle against the exact archive bytes and normalized producer certificate. It then reconstructs the REST/producer/archive/claim digest convergence, the three exact archive entries, capture facts, contract/projection facts, complete retained source closure, and canonical schema-v3 claim. Only after that reconstruction does it verify the final bundle against the exact claim bytes, repository, signer workflow/digest, main source ref/digest, selected attestor run, and GitHub-hosted runner policy. Bundle replay, artifact replay, missing certificate fields, and coordinated local edits fail closed.
+The verifier accepts the separately trusted current-main SHA before reading artifact policy data. It bounded-parses the canonical v4 claim and authenticates the final bundle over those exact claim bytes first. Only then does it parse source-inventory v1, reconstruct the Git tree root, rerun the installed selector v2, and exact-set compare inventory, closure, claim, and retained evidence. It validates retained bytes, both exact workflow sources, capture contract/projection, archive entries, and capture facts; finally it reconstructs the canonical claim and authenticates the producer archive and normalized producer certificate. The artifact cannot select a policy or older schema. Bundle replay, artifact replay, root/inventory/closure tamper, missing certificate fields, and coordinated local edits fail closed.
 
 ## Historical regression tuple
 
@@ -79,4 +82,4 @@ The immutable v29 regression values are recorded only as a rejection test fixtur
 
 ## Failure handling
 
-Stop and keep production on HOLD for any branch-protection or exact-head mismatch, main advance before signing or consumption, producer run/job/artifact tuple mismatch, sibling job, non-attempt-1 run, self-hosted label/group, archive/REST/subject/claim digest divergence, source-closure mismatch, extra artifact entry, non-identical or malformed candidate, missing/duplicate/tampered successful capture evidence, wrong contract/projection export, attestation failure, environment refusal, provider quota, or infrastructure failure. Do not repeatedly retry an infrastructure-blocked attestation and do not fall back to checked-in unsigned evidence. A disposable protected-main live contract proving the real two-attestation certificate shape remains required after merge and before production reconsideration.
+Stop and keep production on HOLD for any branch-protection or exact-head mismatch, main advance before signing or consumption, producer run/job/artifact tuple mismatch, sibling job, non-attempt-1 run, self-hosted label/group, archive/REST/subject/claim digest divergence, source-inventory/tree-root/source-closure mismatch, extra artifact entry, non-identical or malformed candidate, missing/duplicate/tampered successful capture evidence, wrong workflow/contract/projection source, attestation failure, environment refusal, provider quota, or infrastructure failure. Do not repeatedly retry an infrastructure-blocked attestation and do not fall back to checked-in unsigned evidence. A disposable protected-main live contract proving the real two-attestation certificate shape remains required after merge and before production reconsideration.

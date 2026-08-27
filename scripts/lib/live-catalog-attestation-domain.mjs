@@ -1,12 +1,19 @@
 import { createHash } from "node:crypto";
-import { posix } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import ts from "typescript";
 import { parseDocument } from "yaml";
 import { parsePrivatePg17ActivationCatalogPolicyArtifactBytes } from "../capture-private-pg17-activation-catalog-policy.mjs";
+import {
+  canonicalSourceInventoryJson,
+  LIVE_CATALOG_SOURCE_CLOSURE_SCHEMA,
+  LIVE_CATALOG_SOURCE_FETCH_LIMITS,
+  LIVE_CATALOG_SOURCE_INVENTORY_LIMITS,
+  LIVE_CATALOG_SOURCE_INVENTORY_SCHEMA,
+  LIVE_CATALOG_SOURCE_SELECTOR,
+} from "./live-catalog-source-inventory-domain.mjs";
 
 export const LIVE_CATALOG_CLAIM_SCHEMA =
-  "reviewrouter.live-catalog-provenance.v3";
+  "reviewrouter.live-catalog-provenance.v4";
 export const LIVE_CATALOG_WORKFLOW =
   ".github/workflows/attest-live-catalog-digest.yml";
 export const LIVE_CATALOG_SOURCE_WORKFLOW =
@@ -33,18 +40,12 @@ const uploadPin =
   "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02";
 const attestPin =
   "actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be";
+const exactAttestorWorkflowSha256 =
+  "45751fad09f4cf7c61b32f769613ca8e3cdfa0f2a65e87cf2968245c50b52eea";
 
 export const sha256Hex = (value) =>
   createHash("sha256").update(value).digest("hex");
 export const sha256Digest = (value) => `sha256:${sha256Hex(value)}`;
-const gitBlobShaHex = (value) => {
-  const bytes = Buffer.from(value);
-  return createHash("sha1")
-    .update(`blob ${bytes.length}\0`)
-    .update(bytes)
-    .digest("hex");
-};
-
 function canonicalize(value) {
   if (value === null || typeof value === "string" || typeof value === "boolean")
     return value;
@@ -162,6 +163,8 @@ export function extractConfiguredCatalogDigest(sourceBytes) {
 
 export function assertLiveCatalogCaptureContract(sourceBytes) {
   const text = Buffer.from(sourceBytes).toString("utf8");
+  if (text.includes("//") || text.includes("/*"))
+    throw new Error("live_catalog_contract_semantics_invalid");
   const source = ts.createSourceFile(
     LIVE_CATALOG_CONTRACT_PATH,
     text,
@@ -171,51 +174,98 @@ export function assertLiveCatalogCaptureContract(sourceBytes) {
   );
   if (source.parseDiagnostics.length)
     throw new Error("live_catalog_contract_source_syntax_invalid");
-  let containsComment = false;
-  const inspectComments = (node) => {
+  const triviaScanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    false,
+    ts.LanguageVariant.Standard,
+    text,
+  );
+  let triviaKind;
+  do {
+    triviaKind = triviaScanner.scan();
     if (
-      ts.getLeadingCommentRanges(text, node.getFullStart())?.length ||
-      ts.getTrailingCommentRanges(text, node.end)?.length
+      triviaKind === ts.SyntaxKind.SingleLineCommentTrivia ||
+      triviaKind === ts.SyntaxKind.MultiLineCommentTrivia ||
+      triviaKind === ts.SyntaxKind.ShebangTrivia ||
+      triviaKind === ts.SyntaxKind.ConflictMarkerTrivia
     )
-      containsComment = true;
-    node.forEachChild(inspectComments);
-  };
-  inspectComments(source);
-  if (containsComment)
+      throw new Error("live_catalog_contract_semantics_invalid");
+  } while (triviaKind !== ts.SyntaxKind.EndOfFileToken);
+  if (
+    ts.getLeadingCommentRanges(text, source.end)?.length ||
+    ts.getTrailingCommentRanges(text, Math.max(0, source.end - 1))?.length
+  )
+    throw new Error("live_catalog_contract_semantics_invalid");
+  if (source.statements.length !== 5)
     throw new Error("live_catalog_contract_semantics_invalid");
   const expected = ts.createSourceFile(
     "expected-live-catalog-contract.mjs",
     `import { createHash } from "node:crypto";
-import { fencedLiveV70V73CatalogDigestSql, liveV70V73CatalogDigestSha256 } from "../../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
+import { fencedLiveV70V73CatalogDigestSql, liveV70V73CatalogDigestSha256, } from "../../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 const projectionPath = "${LIVE_CATALOG_PROJECTION_PATH}";
 const projectionExport = "${LIVE_CATALOG_PROJECTION_EXPORT}";
-export function captureSuccessfulLiveCatalogContract({ candidate, disposableDatabaseIdentity, migrationReceipt, runProjection }) {
-  if (!/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(disposableDatabaseIdentity ?? "") || migrationReceipt?.postCatalogDigest !== liveV70V73CatalogDigestSha256 || typeof runProjection !== "function") throw new Error("private_pg17_capture_catalog_digest_unproven");
-  const observedCatalogDigest = String(runProjection(\`\\\\set ON_ERROR_STOP on\\nSELECT digest FROM (\${fencedLiveV70V73CatalogDigestSql}) live(digest);\\n\`)).trim();
+export function captureSuccessfulLiveCatalogContract({ candidate, disposableDatabaseIdentity, migrationReceipt, runProjection, }) {
+  if (!/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(disposableDatabaseIdentity ?? "",) || migrationReceipt?.postCatalogDigest !== liveV70V73CatalogDigestSha256 || typeof runProjection !== "function") throw new Error("private_pg17_capture_catalog_digest_unproven");
+  const observedCatalogDigest = String(runProjection(\`\\\\set ON_ERROR_STOP on\\nSELECT digest FROM (\${fencedLiveV70V73CatalogDigestSql}) live(digest);\\n\`,),).trim();
   if (observedCatalogDigest !== liveV70V73CatalogDigestSha256 || observedCatalogDigest !== migrationReceipt.postCatalogDigest) throw new Error("private_pg17_capture_catalog_digest_unproven");
-  return Object.freeze({ candidate, observation: Object.freeze({ kind: "reviewrouter-live-catalog-successful-capture", version: 1, disposableDatabaseIdentity, observedCatalogDigest, receiptCatalogDigest: migrationReceipt.postCatalogDigest, projectionPath, projectionExport, projectionSqlSha256: createHash("sha256").update(fencedLiveV70V73CatalogDigestSql).digest("hex") }) });
+  return Object.freeze({ candidate, observation: Object.freeze({ kind: "reviewrouter-live-catalog-successful-capture", version: 1, disposableDatabaseIdentity, observedCatalogDigest, receiptCatalogDigest: migrationReceipt.postCatalogDigest, projectionPath, projectionExport, projectionSqlSha256: createHash("sha256").update(fencedLiveV70V73CatalogDigestSql).digest("hex"), }), });
 }`,
     ts.ScriptTarget.Latest,
     true,
     ts.ScriptKind.JS,
   );
-  const structuralForm = (node) => {
-    const children = [];
-    node.forEachChild((child) => {
-      children.push(structuralForm(child));
-    });
-    const value =
-      ts.isIdentifier(node) ||
-      ts.isStringLiteral(node) ||
-      ts.isNumericLiteral(node) ||
-      ts.isNoSubstitutionTemplateLiteral(node) ||
-      ts.isRegularExpressionLiteral(node)
-        ? node.text
-        : undefined;
-    return [node.kind, value, children];
-  };
-  if (!isDeepStrictEqual(structuralForm(source), structuralForm(expected)))
+  const actualForm = exactSemanticAstForm(source);
+  const expectedForm = exactSemanticAstForm(expected);
+  if (!isDeepStrictEqual(actualForm, expectedForm))
     throw new Error("live_catalog_contract_semantics_invalid");
+}
+
+const decodedTextTokenKinds = new Set([
+  ts.SyntaxKind.Identifier,
+  ts.SyntaxKind.PrivateIdentifier,
+  ts.SyntaxKind.NumericLiteral,
+  ts.SyntaxKind.BigIntLiteral,
+  ts.SyntaxKind.StringLiteral,
+  ts.SyntaxKind.JsxText,
+  ts.SyntaxKind.JsxTextAllWhiteSpaces,
+  ts.SyntaxKind.RegularExpressionLiteral,
+  ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+  ts.SyntaxKind.TemplateHead,
+  ts.SyntaxKind.TemplateMiddle,
+  ts.SyntaxKind.TemplateTail,
+]);
+
+/**
+ * An exact, position-independent semantic proof. getChildren includes every
+ * keyword, operator and punctuation token omitted by forEachChild. Raw token
+ * spelling and TypeScript's decoded value are both bound for text tokens.
+ */
+export function exactSemanticAstForm(source) {
+  const visit = (node) => {
+    const children = node.getChildren(source).map(visit);
+    if (
+      node.kind >= ts.SyntaxKind.FirstToken &&
+      node.kind <= ts.SyntaxKind.LastToken
+    ) {
+      const raw = node.getText(source);
+      let decoded = null;
+      if (decodedTextTokenKinds.has(node.kind)) {
+        if (typeof node.text !== "string")
+          throw new Error("live_catalog_contract_unknown_text_token");
+        decoded = node.text;
+      } else if (
+        ts.isLiteralExpression(node) ||
+        ts.isTemplateLiteralToken(node) ||
+        ts.isIdentifier(node) ||
+        ts.isPrivateIdentifier(node)
+      ) {
+        throw new Error("live_catalog_contract_unknown_text_token");
+      }
+      return [node.kind, raw, decoded, children];
+    }
+    return [node.kind, null, null, children];
+  };
+  return visit(source);
 }
 
 const expectedCaptureRun = `export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-\${GITHUB_RUN_ID}-\${GITHUB_RUN_ATTEMPT}-a"
@@ -317,6 +367,29 @@ export function assertSourceWorkflowPg17Image(sourceBytes) {
     throw new Error("live_catalog_source_workflow_producer_invalid");
 }
 
+export function assertLiveCatalogAttestorWorkflow(sourceBytes) {
+  const bytes = Buffer.from(sourceBytes);
+  const document = parseDocument(bytes.toString("utf8"), {
+    prettyErrors: false,
+    strict: true,
+    uniqueKeys: true,
+  });
+  if (
+    document.errors.length ||
+    sha256Hex(bytes) !== exactAttestorWorkflowSha256
+  )
+    throw new Error("live_catalog_attestor_workflow_invalid");
+  const workflow = document.toJS({ maxAliasCount: 0 });
+  if (
+    !workflow?.jobs ||
+    Object.keys(workflow.jobs).length !== 1 ||
+    !workflow.jobs.attest ||
+    workflow.jobs.attest.environment !== "production-release" ||
+    workflow.jobs.attest["runs-on"] !== "ubuntu-24.04"
+  )
+    throw new Error("live_catalog_attestor_workflow_invalid");
+}
+
 function candidateFacts(name, bytes) {
   const value = Buffer.from(bytes);
   parsePrivatePg17ActivationCatalogPolicyArtifactBytes(value);
@@ -389,46 +462,38 @@ function captureEvidenceFacts(
   });
 }
 
-export function sourceClosureFacts(files) {
-  if (!Array.isArray(files) || !files.length)
-    throw new Error("live_catalog_source_closure_empty");
-  const paths = new Set();
-  const entries = files
-    .map((file) => {
-      const bytes = Buffer.from(file.bytes);
-      if (
-        typeof file.path !== "string" ||
-        file.path.startsWith("/") ||
-        file.path.includes("..") ||
-        paths.has(file.path) ||
-        !commitPattern.test(file.gitBlobSha ?? "") ||
-        file.gitBlobSha !== gitBlobShaHex(bytes) ||
-        file.size !== bytes.length ||
-        file.sha256 !== sha256Hex(bytes)
-      )
-        throw new Error("live_catalog_source_closure_entry_invalid");
-      paths.add(file.path);
-      return Object.freeze({
-        path: file.path,
-        gitBlobSha: file.gitBlobSha,
-        size: bytes.length,
-        sha256: file.sha256,
-      });
-    })
-    .sort((left, right) => left.path.localeCompare(right.path, "en"));
-  const digest = sourceClosureDigest(entries);
-  return Object.freeze({ digest, entries });
-}
-
-function sourceClosureDigest(entries) {
-  return sha256Digest(
-    Buffer.from(
-      canonicalJson({
-        domain: "reviewrouter.live-catalog.source-closure.v1",
-        entries,
-      }),
-    ),
+export function validateLiveCatalogCaptureSources(input) {
+  assertSourceWorkflowPg17Image(input.workflowSourceBytes);
+  assertLiveCatalogAttestorWorkflow(input.attestorWorkflowSourceBytes);
+  assertLiveCatalogCaptureContract(input.contractSourceBytes);
+  const projectionBytes = extractProjectionBytes(input.projectionSourceBytes);
+  const configuredDigest = extractConfiguredCatalogDigest(
+    input.projectionSourceBytes,
   );
+  const candidates = [...input.candidateEntries]
+    .sort(([left], [right]) => left.localeCompare(right, "en"))
+    .map(([name, bytes]) => candidateFacts(name, bytes));
+  if (
+    candidates.length !== 2 ||
+    candidates[0].name !== "activation-catalog-policy-candidate-1.json" ||
+    candidates[1].name !== "activation-catalog-policy-candidate-2.json" ||
+    candidates[0].size !== candidates[1].size ||
+    candidates[0].sha256 !== candidates[1].sha256
+  )
+    throw new Error("live_catalog_candidate_pair_not_byte_identical");
+  const captureEvidence = captureEvidenceFacts(
+    input.captureEvidenceBytes,
+    candidates,
+    projectionBytes,
+    configuredDigest,
+    input.runId,
+  );
+  return Object.freeze({
+    projectionBytes,
+    configuredDigest,
+    candidates,
+    captureEvidence,
+  });
 }
 
 export function candidateToObservedDigest(candidates, observedDigest) {
@@ -492,31 +557,11 @@ export function assembleLiveCatalogClaim(input) {
     input.attestorEnvironment !== "production-release"
   )
     throw new Error("live_catalog_execution_tuple_invalid");
-  assertSourceWorkflowPg17Image(input.workflowSourceBytes);
-  assertLiveCatalogCaptureContract(input.contractSourceBytes);
-  const projectionBytes = extractProjectionBytes(input.projectionSourceBytes);
-  const configuredDigest = extractConfiguredCatalogDigest(
-    input.projectionSourceBytes,
-  );
-  const candidates = [...input.candidateEntries]
-    .sort(([left], [right]) => left.localeCompare(right, "en"))
-    .map(([name, bytes]) => candidateFacts(name, bytes));
-  if (
-    candidates.length !== 2 ||
-    candidates[0].name !== "activation-catalog-policy-candidate-1.json" ||
-    candidates[1].name !== "activation-catalog-policy-candidate-2.json" ||
-    candidates[0].size !== candidates[1].size ||
-    candidates[0].sha256 !== candidates[1].sha256
-  )
-    throw new Error("live_catalog_candidate_pair_not_byte_identical");
-  const captureEvidence = captureEvidenceFacts(
-    input.captureEvidenceBytes,
-    candidates,
-    projectionBytes,
-    configuredDigest,
-    input.runId,
-  );
-  const closure = sourceClosureFacts(input.sourceClosureFiles);
+  const { projectionBytes, configuredDigest, candidates, captureEvidence } =
+    validateLiveCatalogCaptureSources(input);
+  const closure = input.sourceClosure;
+  if (!closure || closure.schemaVersion !== LIVE_CATALOG_SOURCE_CLOSURE_SCHEMA)
+    throw new Error("live_catalog_source_closure_version_invalid");
   const repository = {
     id: String(positiveInteger(input.repositoryId, "repository_id")),
     name: String(input.repositoryName).toLowerCase(),
@@ -526,6 +571,7 @@ export function assembleLiveCatalogClaim(input) {
     tree: input.sourceTree,
     ref: input.sourceRef,
     branch: input.sourceBranch,
+    inventory: { ...input.sourceInventoryFacts },
   };
   const execution = {
     runId: String(positiveInteger(input.runId, "run_id")),
@@ -573,7 +619,8 @@ export function assembleLiveCatalogClaim(input) {
     },
     sourceClosure: closure,
     sources: {
-      workflow: LIVE_CATALOG_SOURCE_WORKFLOW,
+      producerWorkflow: LIVE_CATALOG_SOURCE_WORKFLOW,
+      attestorWorkflow: LIVE_CATALOG_WORKFLOW,
       contract: LIVE_CATALOG_CONTRACT_PATH,
       projection: {
         path: LIVE_CATALOG_PROJECTION_PATH,
@@ -625,7 +672,24 @@ export function validateLiveCatalogClaim(claim) {
   if (claim.schemaVersion !== LIVE_CATALOG_CLAIM_SCHEMA)
     throw new Error("live_catalog_claim_version_invalid");
   exactKeys(claim.repository, ["id", "name"], "repository");
-  exactKeys(claim.source, ["commit", "tree", "ref", "branch"], "source");
+  exactKeys(
+    claim.source,
+    ["commit", "tree", "ref", "branch", "inventory"],
+    "source",
+  );
+  exactKeys(
+    claim.source.inventory,
+    [
+      "schemaVersion",
+      "treeSha",
+      "digest",
+      "canonicalBytes",
+      "entryCount",
+      "blobCount",
+      "logicalBytes",
+    ],
+    "source_inventory",
+  );
   exactKeys(
     claim.execution,
     [
@@ -706,8 +770,16 @@ export function validateLiveCatalogClaim(claim) {
       ],
       "capture_input",
     );
-  exactKeys(claim.sourceClosure, ["digest", "entries"], "source_closure");
-  exactKeys(claim.sources, ["workflow", "contract", "projection"], "sources");
+  exactKeys(
+    claim.sourceClosure,
+    ["schemaVersion", "selector", "inventoryDigest", "digest", "entries"],
+    "source_closure",
+  );
+  exactKeys(
+    claim.sources,
+    ["producerWorkflow", "attestorWorkflow", "contract", "projection"],
+    "sources",
+  );
   exactKeys(
     claim.sources.projection,
     [
@@ -743,19 +815,23 @@ export function validateLiveCatalogClaim(claim) {
   for (const entry of claim.sourceClosure.entries ?? []) {
     exactKeys(
       entry,
-      ["path", "gitBlobSha", "size", "sha256"],
+      ["path", "mode", "gitBlobSha", "size", "sha256"],
       "source_closure_entry",
     );
     if (
       typeof entry.path !== "string" ||
       (previousClosurePath &&
-        entry.path.localeCompare(previousClosurePath, "en") <= 0) ||
+        Buffer.compare(
+          Buffer.from(entry.path, "utf8"),
+          Buffer.from(previousClosurePath, "utf8"),
+        ) <= 0) ||
       entry.path.startsWith("/") ||
       entry.path.includes("..") ||
       !commitPattern.test(entry.gitBlobSha) ||
       !Number.isSafeInteger(entry.size) ||
       entry.size < 0 ||
-      !shaPattern.test(entry.sha256)
+      (entry.mode !== "100644" && entry.mode !== "100755") ||
+      !digestPattern.test(entry.sha256)
     )
       throw new Error("live_catalog_source_closure_entry_invalid");
     previousClosurePath = entry.path;
@@ -768,6 +844,25 @@ export function validateLiveCatalogClaim(claim) {
     !commitPattern.test(claim.source.tree) ||
     claim.source.commit !== claim.attestor.commit ||
     claim.source.tree !== claim.attestor.tree ||
+    claim.source.inventory.schemaVersion !==
+      LIVE_CATALOG_SOURCE_INVENTORY_SCHEMA ||
+    claim.source.inventory.treeSha !== claim.source.tree ||
+    !digestPattern.test(claim.source.inventory.digest) ||
+    !Number.isSafeInteger(claim.source.inventory.canonicalBytes) ||
+    claim.source.inventory.canonicalBytes <= 0 ||
+    claim.source.inventory.canonicalBytes >
+      LIVE_CATALOG_SOURCE_INVENTORY_LIMITS.canonicalBytes ||
+    !Number.isSafeInteger(claim.source.inventory.entryCount) ||
+    claim.source.inventory.entryCount <= 0 ||
+    claim.source.inventory.entryCount >
+      LIVE_CATALOG_SOURCE_INVENTORY_LIMITS.entries ||
+    !Number.isSafeInteger(claim.source.inventory.blobCount) ||
+    claim.source.inventory.blobCount <= 0 ||
+    claim.source.inventory.blobCount > claim.source.inventory.entryCount ||
+    !Number.isSafeInteger(claim.source.inventory.logicalBytes) ||
+    claim.source.inventory.logicalBytes < 0 ||
+    claim.source.inventory.logicalBytes >
+      LIVE_CATALOG_SOURCE_INVENTORY_LIMITS.logicalBytes ||
     claim.source.ref !== claim.source.commit ||
     claim.source.branch !== "main" ||
     claim.execution.workflowPath !== LIVE_CATALOG_SOURCE_WORKFLOW ||
@@ -801,12 +896,34 @@ export function validateLiveCatalogClaim(claim) {
     claim.producerAttestation.subject.name !== claim.artifact.name ||
     claim.producerAttestation.subject.digest !== claim.artifact.restDigest ||
     !shaPattern.test(claim.producerAttestation.bundleSha256) ||
+    claim.sourceClosure.schemaVersion !== LIVE_CATALOG_SOURCE_CLOSURE_SCHEMA ||
+    claim.sourceClosure.selector !== LIVE_CATALOG_SOURCE_SELECTOR ||
+    claim.sourceClosure.inventoryDigest !== claim.source.inventory.digest ||
     !digestPattern.test(claim.sourceClosure.digest) ||
     !Array.isArray(claim.sourceClosure.entries) ||
     !claim.sourceClosure.entries.length ||
+    claim.sourceClosure.entries.length >
+      LIVE_CATALOG_SOURCE_FETCH_LIMITS.files ||
+    claim.sourceClosure.entries.some(
+      (entry) => entry.size > LIVE_CATALOG_SOURCE_FETCH_LIMITS.fileBytes,
+    ) ||
+    claim.sourceClosure.entries.reduce(
+      (total, entry) => total + entry.size,
+      0,
+    ) > LIVE_CATALOG_SOURCE_FETCH_LIMITS.retainedBytes ||
     claim.sourceClosure.digest !==
-      sourceClosureDigest(claim.sourceClosure.entries) ||
-    claim.sources.workflow !== LIVE_CATALOG_SOURCE_WORKFLOW ||
+      sha256Digest(
+        Buffer.from(
+          canonicalSourceInventoryJson({
+            domain: LIVE_CATALOG_SOURCE_CLOSURE_SCHEMA,
+            selector: claim.sourceClosure.selector,
+            inventoryDigest: claim.sourceClosure.inventoryDigest,
+            entries: claim.sourceClosure.entries,
+          }),
+        ),
+      ) ||
+    claim.sources.producerWorkflow !== LIVE_CATALOG_SOURCE_WORKFLOW ||
+    claim.sources.attestorWorkflow !== LIVE_CATALOG_WORKFLOW ||
     claim.sources.contract !== LIVE_CATALOG_CONTRACT_PATH ||
     claim.sources.projection.path !== LIVE_CATALOG_PROJECTION_PATH ||
     claim.sources.projection.export !== LIVE_CATALOG_PROJECTION_EXPORT ||
@@ -876,64 +993,4 @@ export function assertLiveCatalogClaimAtProtectedMain(
     claim.attestor.commit !== expectedMainCommit
   )
     throw new Error("live_catalog_claim_stale_protected_main");
-}
-
-export function localImportSpecifiers(path, bytes) {
-  if (!/\.(?:[cm]?[jt]s|tsx?)$/u.test(path)) return [];
-  const source = ts.createSourceFile(
-    path,
-    Buffer.from(bytes).toString("utf8"),
-    ts.ScriptTarget.Latest,
-    true,
-  );
-  if (source.parseDiagnostics.length)
-    throw new Error("live_catalog_source_closure_syntax_invalid");
-  const specifiers = [];
-  const visit = (node) => {
-    if (
-      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
-      node.moduleSpecifier
-    ) {
-      if (!ts.isStringLiteral(node.moduleSpecifier))
-        throw new Error("live_catalog_source_closure_dynamic_import_denied");
-      if (node.moduleSpecifier.text.startsWith("."))
-        specifiers.push(node.moduleSpecifier.text);
-    }
-    if (
-      ts.isCallExpression(node) &&
-      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
-        (ts.isIdentifier(node.expression) &&
-          node.expression.text === "require"))
-    ) {
-      if (node.arguments.length !== 1 || !ts.isStringLiteral(node.arguments[0]))
-        throw new Error("live_catalog_source_closure_dynamic_import_denied");
-      if (node.arguments[0].text.startsWith("."))
-        specifiers.push(node.arguments[0].text);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return [...new Set(specifiers)].sort();
-}
-
-export function resolveLocalImport(importer, specifier, paths) {
-  const base = posix.normalize(posix.join(posix.dirname(importer), specifier));
-  const sourceMapped = base.endsWith(".js")
-    ? [base.slice(0, -3) + ".ts", base.slice(0, -3) + ".tsx"]
-    : [];
-  const candidates = [
-    base,
-    ...sourceMapped,
-    `${base}.mjs`,
-    `${base}.js`,
-    `${base}.ts`,
-    `${base}.tsx`,
-    posix.join(base, "index.mjs"),
-    posix.join(base, "index.js"),
-    posix.join(base, "index.ts"),
-  ];
-  const matches = candidates.filter((candidate) => paths.has(candidate));
-  if (matches.length !== 1)
-    throw new Error("live_catalog_source_closure_unresolved_import");
-  return matches[0];
 }

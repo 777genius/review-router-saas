@@ -18,8 +18,16 @@ import {
   LIVE_CATALOG_SOURCE_WORKFLOW,
   LIVE_CATALOG_WORKFLOW,
   sha256Hex,
+  validateLiveCatalogCaptureSources,
   validateLiveCatalogClaim,
 } from "./lib/live-catalog-attestation-domain.mjs";
+import {
+  canonicalSourceInventoryJson,
+  deriveLiveCatalogSourceClosure,
+  liveCatalogSourceInventoryFacts,
+  parseLiveCatalogSourceInventory,
+  reconstructLiveCatalogTree,
+} from "./lib/live-catalog-source-inventory-domain.mjs";
 
 function parseCanonical(path, label, maximumBytes) {
   const bytes = readBoundedRegularFile(path, maximumBytes, label);
@@ -36,27 +44,42 @@ function parseCanonical(path, label, maximumBytes) {
 }
 
 function parseClosureEvidence(path) {
-  const parsed = parseCanonical(path, "source_closure", 32 * 1024 * 1024).value;
+  const parsed = parseCanonical(path, "source_closure", 40 * 1024 * 1024).value;
   if (
     !parsed ||
     typeof parsed !== "object" ||
     Array.isArray(parsed) ||
     parsed.schemaVersion !==
-      "reviewrouter.live-catalog.source-closure-evidence.v1" ||
+      "reviewrouter.live-catalog.source-closure-evidence.v2" ||
     JSON.stringify(Object.keys(parsed).sort()) !==
-      JSON.stringify(["schemaVersion", "files"].sort()) ||
+      JSON.stringify(
+        [
+          "schemaVersion",
+          "selector",
+          "inventoryDigest",
+          "digest",
+          "files",
+        ].sort(),
+      ) ||
     !Array.isArray(parsed.files) ||
     !parsed.files.length
   )
     throw new Error("live_catalog_source_closure_evidence_invalid");
-  return parsed.files.map((file) => {
+  const files = parsed.files.map((file) => {
     if (
       !file ||
       typeof file !== "object" ||
       Array.isArray(file) ||
       JSON.stringify(Object.keys(file).sort()) !==
         JSON.stringify(
-          ["path", "gitBlobSha", "size", "sha256", "contentBase64"].sort(),
+          [
+            "path",
+            "mode",
+            "gitBlobSha",
+            "size",
+            "sha256",
+            "contentBase64",
+          ].sort(),
         ) ||
       typeof file.contentBase64 !== "string"
     )
@@ -71,6 +94,7 @@ function parseClosureEvidence(path) {
       throw new Error("live_catalog_source_closure_evidence_invalid");
     return { ...file, bytes };
   });
+  return { ...parsed, files };
 }
 
 export function verifyLiveCatalogAttestation(
@@ -103,6 +127,40 @@ export function verifyLiveCatalogAttestation(
   )
     throw new Error("live_catalog_subject_tuple_mismatch");
 
+  // Authenticate the exact final claim before any artifact-provided inventory
+  // or selection evidence is interpreted.
+  const finalBundleBytes = readBoundedRegularFile(
+    input.bundlePath,
+    8 * 1024 * 1024,
+    "bundle",
+  );
+  ghVerifier({
+    repository: input.repository.toLowerCase(),
+    subjectBytes: claimFile.bytes,
+    subjectName: basename(input.claimPath),
+    bundleBytes: finalBundleBytes,
+    signerWorkflowPath: LIVE_CATALOG_WORKFLOW,
+    signerDigest: claim.attestor.commit,
+    sourceRef: "refs/heads/main",
+    sourceDigest: claim.attestor.commit,
+    runId: claim.attestor.runId,
+    token: input.token,
+  });
+
+  const inventoryFile = parseCanonical(
+    join(input.evidencePath, "source-inventory.json"),
+    "source_inventory",
+    4 * 1024 * 1024,
+  );
+  const inventory = parseLiveCatalogSourceInventory(inventoryFile.value);
+  reconstructLiveCatalogTree(inventory);
+  if (
+    canonicalSourceInventoryJson(inventory) !== inventoryFile.raw ||
+    canonicalJson(liveCatalogSourceInventoryFacts(inventory)) !==
+      canonicalJson(claim.source.inventory)
+  )
+    throw new Error("live_catalog_offline_source_inventory_mismatch");
+
   const archiveBytes = readBoundedRegularFile(
     join(input.evidencePath, "artifact.zip"),
     32 * 1024 * 1024,
@@ -119,20 +177,6 @@ export function verifyLiveCatalogAttestation(
   )
     throw new Error("live_catalog_offline_producer_digest_mismatch");
 
-  // Verify the producer signature and authenticated certificate before parsing
-  // the archive or accepting any capture assertion.
-  const producer = ghVerifier({
-    repository: input.repository.toLowerCase(),
-    subjectBytes: archiveBytes,
-    subjectName: claim.artifact.name,
-    bundleBytes: producerBundleBytes,
-    signerWorkflowPath: LIVE_CATALOG_SOURCE_WORKFLOW,
-    signerDigest: claim.source.commit,
-    sourceRef: "refs/heads/main",
-    sourceDigest: claim.source.commit,
-    runId: claim.execution.runId,
-    token: input.token,
-  });
   const entries = readExactZipEntries(archiveBytes);
   const candidateEntries = [...entries.entries()].filter(([name]) =>
     /^activation-catalog-policy-candidate-[12]\.json$/u.test(name),
@@ -153,12 +197,53 @@ export function verifyLiveCatalogAttestation(
   );
   if (!retainedCapture.equals(captureEvidenceBytes))
     throw new Error("live_catalog_offline_capture_evidence_mismatch");
-  const sourceClosureFiles = parseClosureEvidence(
+  const closureEvidence = parseClosureEvidence(
     join(input.evidencePath, "source-closure.json"),
   );
+  const sourceClosureFiles = closureEvidence.files;
   const source = new Map(
     sourceClosureFiles.map((file) => [file.path, file.bytes]),
   );
+  const rerunClosure = deriveLiveCatalogSourceClosure(inventory, source);
+  const retainedClosure = {
+    schemaVersion: closureEvidence.schemaVersion.replace("-evidence", ""),
+    selector: closureEvidence.selector,
+    inventoryDigest: closureEvidence.inventoryDigest,
+    digest: closureEvidence.digest,
+    entries: closureEvidence.files.map((entry) => ({
+      path: entry.path,
+      mode: entry.mode,
+      gitBlobSha: entry.gitBlobSha,
+      size: entry.size,
+      sha256: `sha256:${entry.sha256}`,
+    })),
+  };
+  if (
+    canonicalJson(rerunClosure) !== canonicalJson(claim.sourceClosure) ||
+    canonicalJson(retainedClosure) !== canonicalJson(claim.sourceClosure)
+  )
+    throw new Error("live_catalog_offline_source_closure_mismatch");
+  validateLiveCatalogCaptureSources({
+    workflowSourceBytes: source.get(LIVE_CATALOG_SOURCE_WORKFLOW),
+    attestorWorkflowSourceBytes: source.get(LIVE_CATALOG_WORKFLOW),
+    projectionSourceBytes: source.get(LIVE_CATALOG_PROJECTION_PATH),
+    contractSourceBytes: source.get(LIVE_CATALOG_CONTRACT_PATH),
+    candidateEntries,
+    captureEvidenceBytes,
+    runId: claim.execution.runId,
+  });
+  const producer = ghVerifier({
+    repository: input.repository.toLowerCase(),
+    subjectBytes: archiveBytes,
+    subjectName: claim.artifact.name,
+    bundleBytes: producerBundleBytes,
+    signerWorkflowPath: LIVE_CATALOG_SOURCE_WORKFLOW,
+    signerDigest: claim.source.commit,
+    sourceRef: "refs/heads/main",
+    sourceDigest: claim.source.commit,
+    runId: claim.execution.runId,
+    token: input.token,
+  });
   const reconstructed = assembleLiveCatalogClaim({
     repositoryId: claim.repository.id,
     repositoryName: claim.repository.name,
@@ -181,9 +266,13 @@ export function verifyLiveCatalogAttestation(
     candidateEntries,
     captureEvidenceBytes,
     workflowSourceBytes: source.get(LIVE_CATALOG_SOURCE_WORKFLOW),
+    attestorWorkflowSourceBytes: source.get(LIVE_CATALOG_WORKFLOW),
     projectionSourceBytes: source.get(LIVE_CATALOG_PROJECTION_PATH),
     contractSourceBytes: source.get(LIVE_CATALOG_CONTRACT_PATH),
     sourceClosureFiles,
+    sourceInventory: inventory,
+    sourceInventoryFacts: liveCatalogSourceInventoryFacts(inventory),
+    sourceClosure: rerunClosure,
     producerCertificate: producer.certificate,
     producerSubject: producer.subject,
     producerBundleBytes,
@@ -198,25 +287,6 @@ export function verifyLiveCatalogAttestation(
   if (canonicalJson(reconstructed) !== claimFile.raw)
     throw new Error("live_catalog_offline_evidence_tuple_mismatch");
 
-  // The final bundle is checked only after the producer chain and all retained
-  // evidence have reconstructed the exact claim bytes.
-  const finalBundleBytes = readBoundedRegularFile(
-    input.bundlePath,
-    8 * 1024 * 1024,
-    "bundle",
-  );
-  ghVerifier({
-    repository: input.repository.toLowerCase(),
-    subjectBytes: claimFile.bytes,
-    subjectName: basename(input.claimPath),
-    bundleBytes: finalBundleBytes,
-    signerWorkflowPath: LIVE_CATALOG_WORKFLOW,
-    signerDigest: claim.attestor.commit,
-    sourceRef: "refs/heads/main",
-    sourceDigest: claim.attestor.commit,
-    runId: claim.attestor.runId,
-    token: input.token,
-  });
   return Object.freeze({ fingerprint: subject.fingerprint, claim });
 }
 
@@ -264,7 +334,8 @@ export function trustedCurrentMainFromArguments(args) {
         "utf8",
       )
     : direct;
-  const normalized = value?.endsWith("\n") ? value.slice(0, -1) : value;
+  const normalized =
+    fromFile && value?.endsWith("\n") ? value.slice(0, -1) : value;
   if (!/^[a-f0-9]{40}$/u.test(normalized ?? ""))
     throw new Error("live_catalog_trusted_current_main_invalid");
   return normalized;

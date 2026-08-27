@@ -20,7 +20,7 @@ import {
 } from "./live-catalog-attestation-domain.mjs";
 
 const commit = "a".repeat(40);
-const treeSha = "b".repeat(40);
+let treeSha = "";
 const prefix = "/repos/owner/repo";
 const projection = Buffer.from(
   `export const fencedLiveV70V73CatalogDigestSql = \`SELECT 'ok'\`;\n` +
@@ -104,10 +104,15 @@ function sourceFiles() {
   const empty = Buffer.from("export {};\n");
   return new Map<string, Buffer>([
     [LIVE_CATALOG_SOURCE_WORKFLOW, readFileSync(LIVE_CATALOG_SOURCE_WORKFLOW)],
-    ["package.json", Buffer.from('{"name":"review-router"}\n')],
+    [
+      ".github/workflows/attest-live-catalog-digest.yml",
+      readFileSync(".github/workflows/attest-live-catalog-digest.yml"),
+    ],
+    ["package.json", readFileSync("package.json")],
     ["pnpm-lock.yaml", Buffer.from("lockfileVersion: '9.0'\n")],
     ["pnpm-workspace.yaml", Buffer.from("packages: []\n")],
     ["scripts/install-private-dependencies.mjs", empty],
+    ["scripts/attest-live-catalog-digest.mjs", empty],
     ["scripts/run-with-env.mjs", empty],
     ["scripts/rehearse-private-pg17-rollout.mjs", empty],
     ["scripts/package-live-catalog-capture-evidence.mjs", empty],
@@ -118,8 +123,13 @@ function sourceFiles() {
     ["scripts/activate-private-pg17-generation.mjs", empty],
     ["scripts/install-release-authority-db.mjs", empty],
     [LIVE_CATALOG_CONTRACT_PATH, readFileSync(LIVE_CATALOG_CONTRACT_PATH)],
+    ["scripts/lib/live-catalog-source-inventory-domain.mjs", empty],
     [LIVE_CATALOG_PROJECTION_PATH, projection],
     ["packages/platform/db/prisma.config.ts", empty],
+    [
+      "packages/platform/db/package.json",
+      readFileSync("packages/platform/db/package.json"),
+    ],
     [
       "packages/platform/db/prisma/schema.prisma",
       Buffer.from("generator client {}\n"),
@@ -133,12 +143,102 @@ function sourceFiles() {
       Buffer.from("SELECT 2;\n"),
     ],
     [
+      "packages/platform/release-authority-db/migrations/000001_current/migration.sql",
+      Buffer.from("SELECT 2;\n"),
+    ],
+    [
       "packages/platform/release-authority-db/legacy-catalog/000002_external_effect_protocol/migration.sql",
       Buffer.from("SELECT 3;\n"),
     ],
     ["docs/unrelated.txt", Buffer.from("unrelated\n")],
   ]);
 }
+
+function gitTree(sources: Map<string, Buffer>) {
+  const directories = new Set<string>();
+  for (const path of sources.keys()) {
+    const parts = path.split("/");
+    for (let index = 1; index < parts.length; index += 1)
+      directories.add(parts.slice(0, index).join("/"));
+  }
+  const treeShas = new Map<string, string>();
+  const orderedDirectories = ["", ...directories].sort(
+    (left, right) =>
+      (right ? right.split("/").length : 0) -
+      (left ? left.split("/").length : 0),
+  );
+  for (const directory of orderedDirectories) {
+    const children: Array<{
+      mode: string;
+      name: string;
+      sha: string;
+      tree: boolean;
+    }> = [];
+    for (const [path, bytes] of sources)
+      if (
+        (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "") ===
+        directory
+      )
+        children.push({
+          mode: "100644",
+          name: path.split("/").at(-1)!,
+          sha: gitBlobSha(bytes),
+          tree: false,
+        });
+    for (const childDirectory of directories)
+      if (
+        (childDirectory.includes("/")
+          ? childDirectory.slice(0, childDirectory.lastIndexOf("/"))
+          : "") === directory
+      )
+        children.push({
+          mode: "40000",
+          name: childDirectory.split("/").at(-1)!,
+          sha: treeShas.get(childDirectory)!,
+          tree: true,
+        });
+    children.sort((left, right) =>
+      Buffer.compare(
+        Buffer.from(`${left.name}${left.tree ? "/" : ""}`),
+        Buffer.from(`${right.name}${right.tree ? "/" : ""}`),
+      ),
+    );
+    const body = Buffer.concat(
+      children.flatMap((child) => [
+        Buffer.from(`${child.mode} ${child.name}\0`),
+        Buffer.from(child.sha, "hex"),
+      ]),
+    );
+    treeShas.set(
+      directory,
+      createHash("sha1")
+        .update(`tree ${body.length}\0`)
+        .update(body)
+        .digest("hex"),
+    );
+  }
+  return {
+    sha: treeShas.get("")!,
+    truncated: false,
+    tree: [
+      ...[...directories].map((path) => ({
+        path,
+        mode: "040000",
+        type: "tree",
+        sha: treeShas.get(path)!,
+      })),
+      ...[...sources].map(([path, bytes]) => ({
+        path,
+        mode: "100644",
+        type: "blob",
+        sha: gitBlobSha(bytes),
+        size: bytes.length,
+      })),
+    ],
+  };
+}
+
+treeSha = gitTree(sourceFiles()).sha;
 
 function fixture(mutate?: (value: any) => void) {
   const archive = zip({
@@ -195,16 +295,7 @@ function fixture(mutate?: (value: any) => void) {
       digest: `sha256:${sha256Hex(archive)}`,
     },
     commit: { sha: commit, tree: { sha: treeSha } },
-    tree: {
-      sha: treeSha,
-      truncated: false,
-      tree: [...sources].map(([path, bytes]) => ({
-        path,
-        type: "blob",
-        sha: gitBlobSha(bytes),
-        size: bytes.length,
-      })),
-    },
+    tree: gitTree(sources),
     archive,
     sources,
   };
@@ -218,10 +309,8 @@ function fixture(mutate?: (value: any) => void) {
     [`${prefix}/git/commits/${commit}`, value.commit],
     [`${prefix}/git/trees/${treeSha}?recursive=1`, value.tree],
   ]);
-  for (const [path, bytes] of value.sources)
-    bodies.set(`${prefix}/contents/${path}?ref=${commit}`, {
-      type: "file",
-      path,
+  for (const [, bytes] of value.sources)
+    bodies.set(`${prefix}/git/blobs/${gitBlobSha(bytes)}`, {
       encoding: "base64",
       content: bytes.toString("base64"),
       size: bytes.length,
@@ -310,37 +399,41 @@ describe("authenticated producer evidence", () => {
       });
     };
     const baseline = await getClosure();
-    const digest = (files: any[]) =>
-      files.map(({ path, sha256 }) => `${path}:${sha256}`).join("\n");
     for (const relevant of [
       "scripts/run-with-env.mjs",
       "packages/platform/db/prisma.config.ts",
       "packages/platform/release-authority-db/legacy-catalog/000001_release_authority/migration.sql",
       "packages/platform/release-authority-db/legacy-catalog/000002_external_effect_protocol/migration.sql",
     ]) {
-      const changed = await getClosure((value) => {
-        const bytes = Buffer.concat([
-          value.sources.get(relevant),
-          Buffer.from("x"),
-        ]);
-        value.sources.set(relevant, bytes);
-        const entry = value.tree.tree.find(
-          (item: any) => item.path === relevant,
-        );
-        entry.sha = gitBlobSha(bytes);
-        entry.size = bytes.length;
-      });
-      expect(digest(changed)).not.toBe(digest(baseline));
+      expect(baseline.files.some((file: any) => file.path === relevant)).toBe(
+        true,
+      );
     }
-    const unrelated = await getClosure((value) => {
-      const path = "docs/unrelated.txt";
-      const bytes = Buffer.from("changed unrelated\n");
-      value.sources.set(path, bytes);
-      const entry = value.tree.tree.find((item: any) => item.path === path);
-      entry.sha = gitBlobSha(bytes);
-      entry.size = bytes.length;
+    expect(
+      baseline.files.some((file: any) => file.path === "docs/unrelated.txt"),
+    ).toBe(false);
+  });
+
+  it("rejects an immutable blob size budget before issuing its request", async () => {
+    const base = fixture((value) => {
+      value.tree.tree.find(
+        (entry: any) => entry.path === "scripts/run-with-env.mjs",
+      ).size = 4 * 1024 * 1024 + 1;
     });
-    expect(digest(unrelated)).toBe(digest(baseline));
+    const blobRequests: string[] = [];
+    const fetchImpl = async (url: string) => {
+      if (new URL(url).pathname.includes("/git/blobs/")) blobRequests.push(url);
+      return base(url);
+    };
+    await expect(
+      buildLiveCatalogSourceClosure({
+        fetchImpl: fetchImpl as any,
+        prefix,
+        token: "token",
+        treeSha,
+      }),
+    ).rejects.toThrow("live_catalog_source_selector_limit_exceeded");
+    expect(blobRequests).toHaveLength(0);
   });
 
   it.each([
@@ -525,6 +618,31 @@ describe("bounded GitHub transport adversarial contract", () => {
     ).rejects.toThrow(/live_catalog_github_/u);
   });
 
+  it("accepts an exact maximum body and rejects maximum plus one", async () => {
+    await expect(
+      boundedGithubRequest(
+        {
+          path: "/download",
+          token: "token",
+          kind: "download",
+          maximumBytes: 16,
+        },
+        async () => new Response("0123456789abcdef"),
+      ),
+    ).resolves.toEqual(Buffer.from("0123456789abcdef"));
+    await expect(
+      boundedGithubRequest(
+        {
+          path: "/download",
+          token: "token",
+          kind: "download",
+          maximumBytes: 16,
+        },
+        async () => new Response("0123456789abcdefg"),
+      ),
+    ).rejects.toThrow(/live_catalog_github_/u);
+  });
+
   it("aborts once at timeout without retrying", async () => {
     const fetchImpl = vi.fn(
       async (_url: string, init: any) =>
@@ -549,3 +667,4 @@ describe("bounded GitHub transport adversarial contract", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 });
+import { createHash } from "node:crypto";
