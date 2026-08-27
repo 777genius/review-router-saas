@@ -1,0 +1,125 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { parse } from "yaml";
+import { describe, expect, it } from "vitest";
+import {
+  candidateToObservedDigest,
+  extractConfiguredCatalogDigest,
+  extractProjectionBytes,
+  LIVE_CATALOG_PG17_IMAGE,
+  sanitizeOneObservation,
+  sha256Hex,
+} from "./lib/live-catalog-attestation-domain.mjs";
+
+const fixture = JSON.parse(
+  readFileSync(
+    "scripts/fixtures/live-catalog-attestation/historical-v29.json",
+    "utf8",
+  ),
+);
+
+describe("historical live catalog attestation fixture", () => {
+  it("binds every supplied authenticated tuple and the correct projection export", () => {
+    const observation = sanitizeOneObservation(
+      Buffer.from(fixture.observationLine),
+    );
+    expect(observation.lineBytes).toHaveLength(265);
+    expect(sha256Hex(observation.lineBytes)).toBe(
+      fixture.observationLineSha256,
+    );
+    expect(observation.observation.observedDigest).toBe(
+      fixture.observedCatalogDigest,
+    );
+    expect(fixture.runId).toBe("33020660492");
+    expect(fixture.runAttempt).toBe(1);
+    expect(fixture.qualityJobId).toBe("98349971837");
+    expect(fixture.pg17JobId).toBe("98349971721");
+    expect(fixture.artifactId).toBe("9626432342");
+    expect(fixture.archiveSha256).toBe(
+      "9e88f3da90218591477f8b8fd2a7dacdb52f120597c67406ea63090453818244",
+    );
+    expect(fixture.candidateSize).toBe(2627574);
+    expect(fixture.candidateSha256).toBe(
+      "bd6aba2349266bb8165c64d309ba537c0d63846c58c425b040ed408f857ebe62",
+    );
+    expect(fixture.qualityLogSha256).toBe(
+      "dd75255a145d455e4a9388bf88b542338889518e9d723832337ef0b37b79bd1a",
+    );
+    expect(fixture.qualityLogSize).toBe(415725);
+    expect(fixture.pg17Image).toBe(LIVE_CATALOG_PG17_IMAGE);
+    expect(fixture.projectionExport).toBe("fencedLiveV70V73CatalogDigestSql");
+    expect(fixture.configuredCatalogDigestExport).toBe(
+      "liveV70V73CatalogDigestSha256",
+    );
+    expect(
+      candidateToObservedDigest(
+        [1, 2].map((number) => ({
+          name: `activation-catalog-policy-candidate-${number}.json`,
+          size: fixture.candidateSize,
+          sha256: fixture.candidateSha256,
+        })),
+        fixture.observedCatalogDigest,
+      ),
+    ).toBe(fixture.candidateToObservedDigest);
+  });
+
+  it("recomputes workflow and projection bytes from the immutable source commit", () => {
+    const show = (path: string) =>
+      execFileSync("git", ["show", `${fixture.sourceCommit}:${path}`]);
+    const workflow = show(".github/workflows/ci.yml");
+    const projectionSource = show(
+      "packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs",
+    );
+    expect(sha256Hex(workflow)).toBe(fixture.workflowSha256);
+    expect(sha256Hex(extractProjectionBytes(projectionSource))).toBe(
+      fixture.projectionSha256,
+    );
+    expect(extractConfiguredCatalogDigest(projectionSource)).toBe(
+      fixture.configuredCatalogDigest,
+    );
+    expect(
+      execFileSync("git", ["show", "-s", "--format=%T", fixture.sourceCommit], {
+        encoding: "utf8",
+      }).trim(),
+    ).toBe(fixture.sourceTree);
+  });
+});
+
+describe("live catalog attestor workflow", () => {
+  const raw = readFileSync(
+    ".github/workflows/attest-live-catalog-digest.yml",
+    "utf8",
+  );
+  const workflow = parse(raw);
+  const job = workflow.jobs.attest;
+
+  it("is manual, non-deploying, protected-main attempt-one, and production-release reviewed", () => {
+    expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
+    expect(job["runs-on"]).toBe("ubuntu-24.04");
+    expect(job.environment).toBe("production-release");
+    expect(workflow.permissions).toEqual({
+      actions: "read",
+      contents: "read",
+      "id-token": "write",
+      attestations: "write",
+    });
+    expect(raw).toContain('test "$RUN_ATTEMPT" = 1');
+    expect(raw).toContain('test "$SOURCE_REF" = refs/heads/main');
+    expect(raw).not.toMatch(
+      /deploy|migration|render|release-migration-transition/iu,
+    );
+  });
+
+  it("pins every action and the required provenance action exactly", () => {
+    const uses = job.steps.flatMap((step: { uses?: string }) =>
+      step.uses ? [step.uses] : [],
+    );
+    expect(uses.length).toBeGreaterThan(0);
+    expect(uses.every((value: string) => /@[a-f0-9]{40}$/u.test(value))).toBe(
+      true,
+    );
+    expect(uses).toContain(
+      "actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be",
+    );
+  });
+});

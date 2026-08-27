@@ -1,0 +1,99 @@
+name: Attest live catalog digest
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful protected-main CI workflow_dispatch run ID (attempt 1)
+        required: true
+        type: string
+      quality_job_id:
+        description: Exact successful Quality Gates job ID
+        required: true
+        type: string
+      pg17_job_id:
+        description: Exact successful Dedicated Release Authority PG17 contract job ID
+        required: true
+        type: string
+      artifact_id:
+        description: Exact activation catalog candidate artifact ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  attest:
+    name: Attest independently authenticated live catalog provenance
+    environment: production-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require first attempt on exact main ref
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SOURCE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$EVENT_NAME" = workflow_dispatch
+          test "$RUN_ATTEMPT" = 1
+          test "$SOURCE_REF" = refs/heads/main
+
+      - name: Checkout exact attestor commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24"
+
+      - name: Assemble authenticated canonical claim
+        id: claim
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          QUALITY_JOB_ID: ${{ inputs.quality_job_id }}
+          PG17_JOB_ID: ${{ inputs.pg17_job_id }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.artifact_id }}
+        run: node scripts/attest-live-catalog-digest.mjs assemble
+
+      - name: Attest canonical claim subject
+        id: attest
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-path: ${{ steps.claim.outputs.claim_path }}
+
+      - name: Normalize stable bundle path
+        shell: bash
+        env:
+          ATTESTATION_BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: node scripts/attest-live-catalog-digest.mjs finalize-bundle
+
+      - name: Publish machine-readable subject and bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: live-catalog-provenance-${{ github.sha }}
+          path: |
+            live-catalog-provenance.claim.json
+            live-catalog-provenance.subject.json
+            live-catalog-provenance.bundle.json
+            live-catalog-provenance.evidence/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Record fingerprint
+        shell: bash
+        env:
+          FINGERPRINT: ${{ steps.claim.outputs.fingerprint }}
+        run: printf '%s\n' "live-catalog-claim-fingerprint=$FINGERPRINT" >> "$GITHUB_STEP_SUMMARY"
