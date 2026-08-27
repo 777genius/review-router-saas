@@ -15,7 +15,7 @@ The trust root is GitHub's attestation signature from the exact checked-in `.git
 - The activation-catalog artifact belongs to that run, is unexpired, has GitHub's archive digest, and contains only the two byte-identical candidate files.
 - The `production-release` environment approval is granted for attestation only. It is not deployment approval.
 
-The assembler reads repository, current `main` protection/head, run, jobs, artifact, commit/tree, job log, workflow source, and projection source through authenticated GitHub APIs. The source workflow and `fencedLiveV70V73CatalogDigestSql` bytes are fetched at the source commit. The current checkout is never used as a substitute for those source-commit bytes. The source run may predate the attestor and need not equal the current main head; the independent authority comes from the attestor itself running at the exact current protected-main digest.
+The assembler reads repository, current `main` protection/head, run, jobs, artifact, commit/tree, job log, workflow source, and projection source through authenticated GitHub APIs. The source workflow and `fencedLiveV70V73CatalogDigestSql` bytes are fetched at the source commit. The current checkout is never used as a substitute for those source-commit bytes. The source run must itself be an attempt-1 `workflow_dispatch` on `main` in the exact repository, and its commit must be the current protected-main commit or an authenticated ancestor of the attestor's current protected-main commit.
 
 ## Dispatch
 

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
 import {
+  assertSourceWorkflowPg17Image,
   candidateToObservedDigest,
   extractConfiguredCatalogDigest,
   extractProjectionBytes,
@@ -18,8 +19,16 @@ const fixture = JSON.parse(
   ),
 );
 
-describe("historical live catalog attestation fixture", () => {
-  it("binds every supplied authenticated tuple and the correct projection export", () => {
+describe("historical non-authoritative live catalog rejection fixture", () => {
+  it("records the historical non-main source and mismatched API job name", () => {
+    expect(fixture.sourceBranch).not.toBe("main");
+    expect(fixture.pg17JobName).toBe("Full private PG16 to PG17 rehearsal");
+    expect(fixture.pg17JobName).not.toBe(
+      "Dedicated Release Authority PG17 contract",
+    );
+  });
+
+  it("retains supplied bytes only as deterministic rejection evidence", () => {
     const observation = sanitizeOneObservation(
       Buffer.from(fixture.observationLine),
     );
@@ -63,24 +72,28 @@ describe("historical live catalog attestation fixture", () => {
     ).toBe(fixture.candidateToObservedDigest);
   });
 
-  it("recomputes workflow and projection bytes from the immutable source commit", () => {
+  it("recomputes immutable source facts and rejects its computed projection export", () => {
     const show = (path: string) =>
-      execFileSync("git", ["show", `${fixture.sourceCommit}:${path}`]);
+      execFileSync("/usr/bin/git", ["show", `${fixture.sourceCommit}:${path}`]);
     const workflow = show(".github/workflows/ci.yml");
     const projectionSource = show(
       "packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs",
     );
     expect(sha256Hex(workflow)).toBe(fixture.workflowSha256);
-    expect(sha256Hex(extractProjectionBytes(projectionSource))).toBe(
-      fixture.projectionSha256,
+    expect(() => extractProjectionBytes(projectionSource)).toThrow(
+      "live_catalog_projection_export_not_static_template",
     );
     expect(extractConfiguredCatalogDigest(projectionSource)).toBe(
       fixture.configuredCatalogDigest,
     );
     expect(
-      execFileSync("git", ["show", "-s", "--format=%T", fixture.sourceCommit], {
-        encoding: "utf8",
-      }).trim(),
+      execFileSync(
+        "/usr/bin/git",
+        ["show", "-s", "--format=%T", fixture.sourceCommit],
+        {
+          encoding: "utf8",
+        },
+      ).trim(),
     ).toBe(fixture.sourceTree);
   });
 });
@@ -120,6 +133,18 @@ describe("live catalog attestor workflow", () => {
     );
     expect(uses).toContain(
       "actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be",
+    );
+  });
+
+  it("semantically parses the checked-in source workflow and literal projection exports", () => {
+    const sourceWorkflow = readFileSync(".github/workflows/ci.yml");
+    const projection = readFileSync(
+      "packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs",
+    );
+    expect(() => assertSourceWorkflowPg17Image(sourceWorkflow)).not.toThrow();
+    expect(extractProjectionBytes(projection).length).toBeGreaterThan(1_000);
+    expect(extractConfiguredCatalogDigest(projection)).toMatch(
+      /^sha256:[a-f0-9]{64}$/u,
     );
   });
 });

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 import { collectLiveCatalogClaim } from "./lib/live-catalog-github-evidence.mjs";
@@ -9,6 +9,7 @@ import {
   LIVE_CATALOG_CLAIM_SCHEMA,
   sha256Hex,
 } from "./lib/live-catalog-attestation-domain.mjs";
+import { readBoundedRegularFile } from "./lib/github-actions-trusted-evidence.mjs";
 
 export async function writeLiveCatalogAttestationSubject(configuration) {
   const collected = await collectLiveCatalogClaim(
@@ -87,8 +88,12 @@ async function main() {
   }
   if (command === "finalize-bundle") {
     const source = required("ATTESTATION_BUNDLE_PATH");
-    JSON.parse(readFileSync(source, "utf8"));
-    copyFileSync(source, "live-catalog-provenance.bundle.json");
+    const bytes = readBoundedRegularFile(source, 8 * 1024 * 1024, "bundle");
+    JSON.parse(bytes.toString("utf8"));
+    writeFileSync("live-catalog-provenance.bundle.json", bytes, {
+      flag: "wx",
+      mode: 0o600,
+    });
     return;
   }
   throw new Error(

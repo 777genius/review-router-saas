@@ -1,4 +1,15 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { execFileSync } from "node:child_process";
+import { deflateRawSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -9,12 +20,19 @@ import {
   canonicalJson,
   candidateToObservedDigest,
   claimFingerprint,
+  extractConfiguredCatalogDigest,
+  extractProjectionBytes,
   LIVE_CATALOG_PG17_IMAGE,
   sanitizeOneObservation,
   sha256Hex,
   validateLiveCatalogClaim,
 } from "./live-catalog-attestation-domain.mjs";
 import { verifyLiveCatalogAttestation } from "../verify-live-catalog-attestation.mjs";
+import { parseVerifyArguments } from "../verify-live-catalog-attestation.mjs";
+import {
+  readBoundedRegularFile,
+  readExactZipEntries,
+} from "./github-actions-trusted-evidence.mjs";
 
 const commit = "a".repeat(40);
 const attestorCommit = "b".repeat(40);
@@ -31,9 +49,13 @@ const observationLine =
   `observed=sha256:${"2".repeat(64)}`;
 const workflowSource = `jobs:
   release-authority-pg17-contract:
+    name: Dedicated Release Authority PG17 contract
+    runs-on: ubuntu-latest
     env:
       REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE: ${LIVE_CATALOG_PG17_IMAGE}
   quality:
+    name: Quality Gates
+    runs-on: ubuntu-latest
     services:
       postgres:
         image: ${LIVE_CATALOG_PG17_IMAGE}
@@ -88,6 +110,36 @@ function zip(entries: Record<string, Buffer>) {
   return Buffer.concat([...locals, directory, end]);
 }
 
+function zipWithFalseSmallInflatedSize(value: Buffer) {
+  const name = Buffer.from("bomb");
+  const compressed = deflateRawSync(value);
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(8, 8);
+  local.writeUInt32LE(crc32(value), 14);
+  local.writeUInt32LE(compressed.length, 18);
+  local.writeUInt32LE(4, 22);
+  local.writeUInt16LE(name.length, 26);
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(8, 10);
+  central.writeUInt32LE(crc32(value), 16);
+  central.writeUInt32LE(compressed.length, 20);
+  central.writeUInt32LE(4, 24);
+  central.writeUInt16LE(name.length, 28);
+  const directoryOffset = local.length + name.length + compressed.length;
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length + name.length, 12);
+  end.writeUInt32LE(directoryOffset, 16);
+  return Buffer.concat([local, name, compressed, central, name, end]);
+}
+
 function writeEvidence(directory: string) {
   mkdirSync(directory);
   writeFileSync(
@@ -112,16 +164,28 @@ function claim() {
     sourceCommit: commit,
     sourceTree: "c".repeat(40),
     sourceRef: commit,
-    sourceBranch: "fix/pr227-r41-ci-remediation",
+    sourceBranch: "main",
     sourceWorkflowPath: ".github/workflows/ci.yml",
     sourceEvent: "workflow_dispatch",
     runId: 101,
     runAttempt: 1,
-    qualityJob: { id: 201, name: "Quality Gates", conclusion: "success" },
+    qualityJob: {
+      id: 201,
+      name: "Quality Gates",
+      conclusion: "success",
+      runnerGroupId: 0,
+      runnerGroupName: "GitHub Actions",
+      runnerName: "GitHub Actions 1001",
+      labels: ["ubuntu-latest"],
+    },
     pg17Job: {
       id: 202,
       name: "Dedicated Release Authority PG17 contract",
       conclusion: "success",
+      runnerGroupId: 0,
+      runnerGroupName: "GitHub Actions",
+      runnerName: "GitHub Actions 1002",
+      labels: ["ubuntu-latest"],
     },
     runnerEnvironment: "github-hosted",
     artifactId: 301,
@@ -169,7 +233,16 @@ describe("live catalog attestation domain", () => {
   });
 
   it.each([
+    ["repository", (value: any) => (value.repository.id = "0")],
+    [
+      "repository name",
+      (value: any) => (value.repository.name = "owner/other!"),
+    ],
+    ["source commit", (value: any) => (value.source.commit = "bad")],
+    ["source tree", (value: any) => (value.source.tree = "bad")],
     ["source ref", (value: any) => (value.source.ref = "refs/heads/main")],
+    ["non-main", (value: any) => (value.source.branch = "pull/227")],
+    ["run", (value: any) => (value.execution.runId = "0")],
     ["attempt", (value: any) => (value.execution.runAttempt = 2)],
     [
       "quality job",
@@ -178,6 +251,18 @@ describe("live catalog attestation domain", () => {
     [
       "PG17 job",
       (value: any) => (value.execution.pg17Job.conclusion = "failure"),
+    ],
+    [
+      "runner group",
+      (value: any) => (value.execution.pg17Job.runnerGroupId = 1),
+    ],
+    [
+      "runner name",
+      (value: any) => (value.execution.qualityJob.runnerName = "self-hosted"),
+    ],
+    [
+      "runner labels",
+      (value: any) => value.execution.qualityJob.labels.push("self-hosted"),
     ],
     [
       "runner",
@@ -189,6 +274,8 @@ describe("live catalog attestation domain", () => {
         (value.execution.workflowPath = ".github/workflows/evil.yml"),
     ],
     ["artifact", (value: any) => (value.artifact.id = "0")],
+    ["artifact name", (value: any) => (value.artifact.name = "decoy")],
+    ["archive digest", (value: any) => (value.artifact.archiveSha256 = "bad")],
     [
       "candidate size",
       (value: any) => (value.artifact.candidates[1].size += 1),
@@ -201,6 +288,11 @@ describe("live catalog attestation domain", () => {
       "observation",
       (value: any) =>
         (value.qualityLog.observation.observedDigest = `sha256:${"5".repeat(64)}`),
+    ],
+    ["log", (value: any) => (value.qualityLog.sha256 = "bad")],
+    [
+      "workflow source",
+      (value: any) => (value.sources.workflow.sha256 = "bad"),
     ],
     [
       "projection export",
@@ -251,6 +343,132 @@ describe("live catalog attestation domain", () => {
       ),
     ).toThrow("live_catalog_source_workflow_pg17_image_unpinned");
   });
+
+  it.each([
+    [
+      "comment",
+      `// export const fencedLiveV70V73CatalogDigestSql = \`SELECT 'ok'\`;`,
+    ],
+    [
+      "computed",
+      `export const fencedLiveV70V73CatalogDigestSql = String.raw\`SELECT 'ok'\`;`,
+    ],
+    [
+      "duplicate",
+      `${projectionSource}export const fencedLiveV70V73CatalogDigestSql = \`decoy\`;`,
+    ],
+    [
+      "interpolation",
+      `export const fencedLiveV70V73CatalogDigestSql = \`SELECT \${value}\`;`,
+    ],
+  ])("rejects %s JavaScript export decoys", (_name, source) => {
+    expect(() => extractProjectionBytes(Buffer.from(source))).toThrow(
+      /live_catalog_/u,
+    );
+  });
+
+  it.each([
+    [
+      "comment",
+      `// export const liveV70V73CatalogDigestSha256 = "sha256:${"1".repeat(64)}";`,
+    ],
+    [
+      "computed",
+      `export const liveV70V73CatalogDigestSha256 = "sha256:" + "${"1".repeat(64)}";`,
+    ],
+    [
+      "duplicate",
+      `${projectionSource}export const liveV70V73CatalogDigestSha256 = "sha256:${"1".repeat(64)}";`,
+    ],
+    [
+      "template",
+      `export const liveV70V73CatalogDigestSha256 = \`sha256:${"1".repeat(64)}\`;`,
+    ],
+  ])("rejects %s configured-digest decoys", (_name, source) => {
+    expect(() => extractConfiguredCatalogDigest(Buffer.from(source))).toThrow(
+      /live_catalog_/u,
+    );
+  });
+
+  it.each([
+    ["comment", workflowSource.replace("image:", "# image:")],
+    [
+      "block scalar",
+      workflowSource.replace(
+        `image: ${LIVE_CATALOG_PG17_IMAGE}`,
+        `image: |-\n          ${LIVE_CATALOG_PG17_IMAGE}`,
+      ),
+    ],
+    [
+      "duplicate job",
+      `${workflowSource}\n  quality:\n    name: Quality Gates\n    runs-on: ubuntu-latest\n`,
+    ],
+    [
+      "wrong job name",
+      workflowSource.replace(
+        "Dedicated Release Authority PG17 contract",
+        "Full private PG16 to PG17 rehearsal",
+      ),
+    ],
+    [
+      "computed runs-on",
+      workflowSource.replace(
+        "runs-on: ubuntu-latest",
+        "runs-on: ${{ matrix.runner }}",
+      ),
+    ],
+  ])("rejects %s YAML semantic decoys", (_name, source) => {
+    expect(() => assertSourceWorkflowPg17Image(Buffer.from(source))).toThrow(
+      /live_catalog_/u,
+    );
+  });
+});
+
+describe("bounded offline files", () => {
+  it.each(["symlink", "hardlink", "fifo", "directory"])(
+    "rejects %s input",
+    (kind) => {
+      const directory = mkdtempSync(join(tmpdir(), "rr-bounded-file-"));
+      const source = join(directory, "source");
+      const target = join(directory, "target");
+      writeFileSync(source, "safe");
+      if (kind === "symlink") symlinkSync(source, target);
+      if (kind === "hardlink") linkSync(source, target);
+      if (kind === "fifo") execFileSync("/usr/bin/mkfifo", [target]);
+      if (kind === "directory") mkdirSync(target);
+      expect(() => readBoundedRegularFile(target, 16, "test")).toThrow(
+        /live_catalog_test_file_/u,
+      );
+    },
+  );
+
+  it("deterministically rejects replacement between identity check and open", () => {
+    const directory = mkdtempSync(join(tmpdir(), "rr-bounded-race-"));
+    const target = join(directory, "target");
+    const replacement = join(directory, "replacement");
+    writeFileSync(target, "claim-a");
+    writeFileSync(replacement, "claim-b");
+    expect(() =>
+      readBoundedRegularFile(target, 32, "race", {
+        afterLstat: () => renameSync(replacement, target),
+      }),
+    ).toThrow(/live_catalog_race_file_/u);
+  });
+
+  it("enforces per-entry zlib output and aggregate ZIP limits", () => {
+    expect(() =>
+      readExactZipEntries(zipWithFalseSmallInflatedSize(Buffer.alloc(64)), {
+        maximumEntryBytes: 16,
+        maximumTotalBytes: 32,
+      }),
+    ).toThrow();
+    expect(() =>
+      readExactZipEntries(zip({ one: Buffer.alloc(4), two: Buffer.alloc(4) }), {
+        maximumEntryBytes: 4,
+        maximumTotalBytes: 7,
+      }),
+    ).toThrow("trusted evidence ZIP uncompressed total is too large");
+  });
 });
 
 describe("offline gh attestation boundary", () => {
@@ -259,8 +477,8 @@ describe("offline gh attestation boundary", () => {
     verifyWithGhAttestation(
       {
         repository: "owner/repo",
-        claimPath: "claim.json",
-        bundlePath: "bundle.json",
+        claimBytes: Buffer.from("claim"),
+        bundleBytes: Buffer.from("{}"),
         attestorCommit,
       },
       spawn as any,
@@ -268,9 +486,9 @@ describe("offline gh attestation boundary", () => {
     expect(spawn.mock.calls[0]![1]).toEqual([
       "attestation",
       "verify",
-      "claim.json",
+      expect.stringMatching(/\/claim\.json$/u),
       "--bundle",
-      "bundle.json",
+      expect.stringMatching(/\/bundle\.json$/u),
       "--repo",
       "owner/repo",
       "--deny-self-hosted-runners",
@@ -281,6 +499,50 @@ describe("offline gh attestation boundary", () => {
       "--source-digest",
       attestorCommit,
     ]);
+  });
+
+  it("gives gh private snapshots even when the original paths are replaced", () => {
+    const directory = mkdtempSync(join(tmpdir(), "rr-gh-race-"));
+    const originalClaim = join(directory, "claim.json");
+    const originalBundle = join(directory, "bundle.json");
+    const claimBytes = Buffer.from("claim-a");
+    const bundleBytes = Buffer.from('{"bundle":"a"}');
+    writeFileSync(originalClaim, claimBytes);
+    writeFileSync(originalBundle, bundleBytes);
+    const spawn = vi.fn((_command: string, args: string[]) => {
+      writeFileSync(originalClaim, "claim-b");
+      writeFileSync(originalBundle, '{"bundle":"b"}');
+      expect(readFileSync(args[2]!)).toEqual(claimBytes);
+      expect(readFileSync(args[4]!)).toEqual(bundleBytes);
+      expect(args[2]).not.toBe(originalClaim);
+      expect(args[4]).not.toBe(originalBundle);
+      return { status: 0 };
+    });
+    verifyWithGhAttestation(
+      { repository: "owner/repo", claimBytes, bundleBytes, attestorCommit },
+      spawn as any,
+    );
+    expect(spawn).toHaveBeenCalledOnce();
+  });
+
+  it("cleans private snapshots in finally when gh fails", () => {
+    let snapshotPath = "";
+    expect(() =>
+      verifyWithGhAttestation(
+        {
+          repository: "owner/repo",
+          claimBytes: Buffer.from("claim"),
+          bundleBytes: Buffer.from("{}"),
+          attestorCommit,
+        },
+        ((_command: string, args: string[]) => {
+          snapshotPath = args[2]!;
+          throw new Error("spawn failed");
+        }) as any,
+      ),
+    ).toThrow("spawn failed");
+    expect(snapshotPath).not.toBe("");
+    expect(existsSync(snapshotPath)).toBe(false);
   });
 
   it("rejects coordinated claim and subject edits against retained raw evidence", () => {
@@ -325,7 +587,7 @@ describe("offline gh attestation boundary", () => {
         ghVerifier,
       ),
     ).toThrow("live_catalog_offline_evidence_tuple_mismatch");
-    expect(ghVerifier).not.toHaveBeenCalled();
+    expect(ghVerifier).toHaveBeenCalledOnce();
   });
 
   it("rejects coordinated claim, subject, and raw evidence edits at the signature boundary", () => {
@@ -391,5 +653,38 @@ describe("offline gh attestation boundary", () => {
         },
       ),
     ).toThrow("live_catalog_gh_attestation_invalid");
+  });
+});
+
+describe("verify CLI contract", () => {
+  const argv = [
+    "--repository",
+    "owner/repo",
+    "--claim",
+    "claim.json",
+    "--subject",
+    "subject.json",
+    "--bundle",
+    "bundle.json",
+    "--evidence",
+    "evidence",
+    "--attestor-digest",
+    attestorCommit,
+  ];
+  it("accepts the exact argument tuple", () => {
+    expect(parseVerifyArguments(argv)).toHaveProperty(
+      "repository",
+      "owner/repo",
+    );
+  });
+  it.each([
+    ["missing", argv.slice(0, -2)],
+    ["duplicate", [...argv, "--claim", "other"]],
+    ["unknown", [...argv, "--extra", "value"]],
+    ["odd", [...argv, "--claim"]],
+  ])("rejects %s arguments", (_name, value) => {
+    expect(() => parseVerifyArguments(value)).toThrow(
+      "live_catalog_verify_usage",
+    );
   });
 });

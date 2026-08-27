@@ -144,12 +144,10 @@ function fixture() {
   };
   const fetchImpl = vi.fn(async (url: string) => {
     if (url.endsWith("/zip"))
-      return {
-        ok: true,
+      return new Response(archive, {
         status: 200,
-        url: "https://artifact.actions.githubusercontent.com/archive.zip",
-        arrayBuffer: async () => archive,
-      };
+        headers: { "content-length": String(archive.length) },
+      });
     const key = url.includes("/jobs?")
       ? "jobs"
       : url.includes("/artifacts/")
@@ -159,12 +157,11 @@ function fixture() {
           : url.includes("/actions/runs/")
             ? "run"
             : "repository";
-    return {
-      ok: true,
+    const body = JSON.stringify(bodies[key]);
+    return new Response(body, {
       status: 200,
-      url,
-      text: async () => JSON.stringify(bodies[key]),
-    };
+      headers: { "content-length": String(Buffer.byteLength(body)) },
+    });
   });
   return {
     archive,

@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { readExactZipEntries } from "./lib/github-actions-trusted-evidence.mjs";
+import {
+  readBoundedRegularFile,
+  readExactZipEntries,
+} from "./lib/github-actions-trusted-evidence.mjs";
 import { verifyWithGhAttestation } from "./lib/live-catalog-gh-attestation-adapter.mjs";
 import {
   assembleLiveCatalogClaim,
@@ -13,8 +15,9 @@ import {
   validateLiveCatalogClaim,
 } from "./lib/live-catalog-attestation-domain.mjs";
 
-function parseCanonical(path, label) {
-  const raw = readFileSync(path, "utf8");
+function parseCanonical(path, label, maximumBytes) {
+  const bytes = readBoundedRegularFile(path, maximumBytes, label);
+  const raw = bytes.toString("utf8");
   let value;
   try {
     value = JSON.parse(raw);
@@ -23,7 +26,7 @@ function parseCanonical(path, label) {
   }
   if (canonicalJson(value) !== raw)
     throw new Error(`live_catalog_${label}_not_canonical`);
-  return { raw, value };
+  return { bytes, raw, value };
 }
 
 export function verifyLiveCatalogAttestation(
@@ -32,11 +35,18 @@ export function verifyLiveCatalogAttestation(
 ) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(input.repository ?? ""))
     throw new Error("live_catalog_verify_repository_invalid");
-  const claimFile = parseCanonical(input.claimPath, "claim");
-  const subjectFile = parseCanonical(input.subjectPath, "subject");
+  const claimFile = parseCanonical(input.claimPath, "claim", 2 * 1024 * 1024);
+  const subjectFile = parseCanonical(input.subjectPath, "subject", 64 * 1024);
   const claim = validateLiveCatalogClaim(claimFile.value);
   const subject = subjectFile.value;
   if (
+    !subject ||
+    typeof subject !== "object" ||
+    Array.isArray(subject) ||
+    JSON.stringify(Object.keys(subject).sort()) !==
+      JSON.stringify(
+        ["schemaVersion", "claimPath", "size", "sha256", "fingerprint"].sort(),
+      ) ||
     subject?.schemaVersion !== `${LIVE_CATALOG_CLAIM_SCHEMA}.subject` ||
     subject.claimPath !== basename(input.claimPath) ||
     subject.size !== Buffer.byteLength(claimFile.raw) ||
@@ -46,7 +56,29 @@ export function verifyLiveCatalogAttestation(
     claim.attestor.commit !== input.attestorCommit
   )
     throw new Error("live_catalog_subject_tuple_mismatch");
-  const archiveBytes = readFileSync(join(input.evidencePath, "artifact.zip"));
+  const bundleBytes = readBoundedRegularFile(
+    input.bundlePath,
+    8 * 1024 * 1024,
+    "bundle",
+  );
+  try {
+    JSON.parse(bundleBytes.toString("utf8"));
+  } catch {
+    throw new Error("live_catalog_bundle_not_json");
+  }
+  // Authenticate the exact immutable snapshot before processing large evidence.
+  ghVerifier({
+    repository: input.repository,
+    claimBytes: claimFile.bytes,
+    bundleBytes,
+    attestorCommit: input.attestorCommit,
+    token: input.token,
+  });
+  const archiveBytes = readBoundedRegularFile(
+    join(input.evidencePath, "artifact.zip"),
+    32 * 1024 * 1024,
+    "archive",
+  );
   const entries = readExactZipEntries(archiveBytes);
   const candidateEntries = [...entries.entries()].filter(([name]) =>
     /^activation-catalog-policy-candidate-[12]\.json$/u.test(name),
@@ -68,23 +100,39 @@ export function verifyLiveCatalogAttestation(
       id: claim.execution.qualityJob.id,
       name: claim.execution.qualityJob.name,
       conclusion: claim.execution.qualityJob.conclusion,
+      runnerGroupId: claim.execution.qualityJob.runnerGroupId,
+      runnerGroupName: claim.execution.qualityJob.runnerGroupName,
+      runnerName: claim.execution.qualityJob.runnerName,
+      labels: claim.execution.qualityJob.labels,
     },
     pg17Job: {
       id: claim.execution.pg17Job.id,
       name: claim.execution.pg17Job.name,
       conclusion: claim.execution.pg17Job.conclusion,
+      runnerGroupId: claim.execution.pg17Job.runnerGroupId,
+      runnerGroupName: claim.execution.pg17Job.runnerGroupName,
+      runnerName: claim.execution.pg17Job.runnerName,
+      labels: claim.execution.pg17Job.labels,
     },
     runnerEnvironment: claim.execution.runnerEnvironment,
     artifactId: claim.artifact.id,
     artifactName: claim.artifact.name,
     archiveSha256: sha256Hex(archiveBytes),
     candidateEntries,
-    qualityLogBytes: readFileSync(join(input.evidencePath, "quality.log")),
-    workflowSourceBytes: readFileSync(
-      join(input.evidencePath, "source-ci.yml"),
+    qualityLogBytes: readBoundedRegularFile(
+      join(input.evidencePath, "quality.log"),
+      128 * 1024 * 1024,
+      "log",
     ),
-    projectionSourceBytes: readFileSync(
+    workflowSourceBytes: readBoundedRegularFile(
+      join(input.evidencePath, "source-ci.yml"),
+      2 * 1024 * 1024,
+      "workflow_source",
+    ),
+    projectionSourceBytes: readBoundedRegularFile(
       join(input.evidencePath, "source-live-catalog-projection.mjs"),
+      8 * 1024 * 1024,
+      "projection_source",
     ),
     pg17Image: claim.pg17Image,
     attestorCommit: claim.attestor.commit,
@@ -96,31 +144,39 @@ export function verifyLiveCatalogAttestation(
   });
   if (canonicalJson(reconstructed) !== claimFile.raw)
     throw new Error("live_catalog_offline_evidence_tuple_mismatch");
-  JSON.parse(readFileSync(input.bundlePath, "utf8"));
-  ghVerifier({
-    repository: input.repository,
-    claimPath: input.claimPath,
-    bundlePath: input.bundlePath,
-    attestorCommit: input.attestorCommit,
-    token: input.token,
-  });
   return Object.freeze({ fingerprint: subject.fingerprint, claim });
 }
 
-function argumentsFrom(argv) {
+export function parseVerifyArguments(argv) {
+  const expected = new Set([
+    "repository",
+    "claim",
+    "subject",
+    "bundle",
+    "evidence",
+    "attestor-digest",
+  ]);
   const values = {};
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index];
     const value = argv[index + 1];
-    if (!key?.startsWith("--") || !value)
+    const name = key?.slice(2);
+    if (
+      !key?.startsWith("--") ||
+      !value ||
+      !expected.has(name) ||
+      Object.hasOwn(values, name)
+    )
       throw new Error("live_catalog_verify_usage");
-    values[key.slice(2)] = value;
+    values[name] = value;
   }
+  if (Object.keys(values).length !== expected.size)
+    throw new Error("live_catalog_verify_usage");
   return values;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  const args = argumentsFrom(process.argv.slice(2));
+  const args = parseVerifyArguments(process.argv.slice(2));
   const result = verifyLiveCatalogAttestation({
     repository: args.repository,
     claimPath: args.claim,

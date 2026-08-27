@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { gitBlobSha } from "./github-actions-trusted-evidence.mjs";
+import { describe, expect, it, vi } from "vitest";
+import {
+  boundedGithubJson,
+  boundedGithubRequest,
+  gitBlobSha,
+} from "./github-actions-trusted-evidence.mjs";
 import { collectLiveCatalogClaim } from "./live-catalog-github-evidence.mjs";
 import { sha256Hex } from "./live-catalog-attestation-domain.mjs";
 
@@ -13,9 +17,13 @@ const projection = Buffer.from(
 );
 const workflow = Buffer.from(`jobs:
   release-authority-pg17-contract:
+    name: Dedicated Release Authority PG17 contract
+    runs-on: ubuntu-latest
     env:
       REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
   quality:
+    name: Quality Gates
+    runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
@@ -85,19 +93,19 @@ function fixture(mutate?: (values: Record<string, any>) => void) {
     "activation-catalog-policy-candidate-2.json": candidate,
   });
   const values: Record<string, any> = {
-    repository: { id: 17, full_name: "Owner/Repo" },
+    repository: { id: 17, full_name: "Owner/Repo", default_branch: "main" },
     main: { name: "main", protected: true, commit: { sha: attestorCommit } },
     run: {
       id: 101,
       run_attempt: 1,
       event: "workflow_dispatch",
       path: ".github/workflows/ci.yml",
-      head_branch: "fix/pr227-r41-ci-remediation",
+      head_branch: "main",
       head_sha: sourceCommit,
       status: "completed",
       conclusion: "success",
-      repository: { id: 17 },
-      head_repository: { id: 17 },
+      repository: { id: 17, full_name: "Owner/Repo" },
+      head_repository: { id: 17, full_name: "Owner/Repo" },
     },
     jobs: {
       total_count: 2,
@@ -106,21 +114,29 @@ function fixture(mutate?: (values: Record<string, any>) => void) {
           id: 201,
           run_id: 101,
           run_attempt: 1,
+          head_sha: sourceCommit,
+          head_branch: "main",
           name: "Quality Gates",
           status: "completed",
           conclusion: "success",
           labels: ["ubuntu-latest"],
-          runner_group_name: null,
+          runner_group_id: 0,
+          runner_group_name: "GitHub Actions",
+          runner_name: "GitHub Actions 1001",
         },
         {
           id: 202,
           run_id: 101,
           run_attempt: 1,
+          head_sha: sourceCommit,
+          head_branch: "main",
           name: "Dedicated Release Authority PG17 contract",
           status: "completed",
           conclusion: "success",
           labels: ["ubuntu-latest"],
-          runner_group_name: null,
+          runner_group_id: 0,
+          runner_group_name: "GitHub Actions",
+          runner_name: "GitHub Actions 1002",
         },
       ],
     },
@@ -132,6 +148,11 @@ function fixture(mutate?: (values: Record<string, any>) => void) {
       digest: `sha256:${sha256Hex(archive)}`,
     },
     commit: { sha: sourceCommit, tree: { sha: tree } },
+    ancestry: {
+      status: "ahead",
+      base_commit: { sha: sourceCommit },
+      merge_base_commit: { sha: sourceCommit },
+    },
     archive,
   };
   mutate?.(values);
@@ -150,6 +171,7 @@ function fixture(mutate?: (values: Record<string, any>) => void) {
     [`${prefix}/actions/runs/101/jobs?filter=latest&per_page=100`, values.jobs],
     [`${prefix}/actions/artifacts/301`, values.artifact],
     [`${prefix}/git/commits/${sourceCommit}`, values.commit],
+    [`${prefix}/compare/${sourceCommit}...${attestorCommit}`, values.ancestry],
     [
       `${prefix}/contents/.github/workflows/ci.yml?ref=${sourceCommit}`,
       source(".github/workflows/ci.yml", workflow),
@@ -170,15 +192,10 @@ function fixture(mutate?: (values: Record<string, any>) => void) {
     const path = new URL(url).pathname + new URL(url).search;
     const download = downloads.get(path);
     const body = download ?? Buffer.from(JSON.stringify(bodies.get(path)));
-    return {
-      ok: download !== undefined || bodies.has(path),
+    return new Response(body, {
       status: download !== undefined || bodies.has(path) ? 200 : 404,
-      url: download
-        ? "https://objects.githubusercontent.com/reviewrouter/evidence"
-        : url,
-      text: async () => body.toString("utf8"),
-      arrayBuffer: async () => body,
-    } as any;
+      headers: { "content-length": String(body.length) },
+    });
   };
   return fetchImpl;
 }
@@ -209,7 +226,7 @@ describe("live catalog authenticated GitHub adapter", () => {
       commit: sourceCommit,
       tree,
       ref: sourceCommit,
-      branch: "fix/pr227-r41-ci-remediation",
+      branch: "main",
     });
     expect(result.claim.execution.qualityJob.id).toBe("201");
     expect(result.claim.execution.pg17Job.id).toBe("202");
@@ -218,19 +235,55 @@ describe("live catalog authenticated GitHub adapter", () => {
   });
 
   it.each([
+    [
+      "repository rename",
+      (value: any) => (value.repository.full_name = "Owner/Other"),
+    ],
     ["unprotected main", (value: any) => (value.main.protected = false)],
     ["stale attestor", (value: any) => (value.main.commit.sha = sourceCommit)],
+    ["non-main source", (value: any) => (value.run.head_branch = "pull/227")],
+    [
+      "source repository fork",
+      (value: any) => (value.run.head_repository.id = 18),
+    ],
+    [
+      "source workflow",
+      (value: any) => (value.run.path = ".github/workflows/other.yml"),
+    ],
     ["source retry", (value: any) => (value.run.run_attempt = 2)],
     ["pull request source", (value: any) => (value.run.event = "pull_request")],
+    ["source tree", (value: any) => (value.commit.tree.sha = "invalid")],
+    ["source ancestry", (value: any) => (value.ancestry.status = "diverged")],
     [
       "failed Quality",
       (value: any) => (value.jobs.jobs[0].conclusion = "failure"),
     ],
     [
+      "historical wrong PG17 job",
+      (value: any) =>
+        (value.jobs.jobs[1].name = "Full private PG16 to PG17 rehearsal"),
+    ],
+    [
       "self-hosted PG17",
       (value: any) => value.jobs.jobs[1].labels.push("self-hosted"),
     ],
+    [
+      "custom runner group",
+      (value: any) => (value.jobs.jobs[0].runner_group_id = 7),
+    ],
+    [
+      "runner name spoof",
+      (value: any) => (value.jobs.jobs[0].runner_name = "ubuntu-latest"),
+    ],
+    [
+      "job source mismatch",
+      (value: any) => (value.jobs.jobs[0].head_sha = attestorCommit),
+    ],
     ["artifact replay", (value: any) => (value.artifact.workflow_run.id = 999)],
+    [
+      "artifact name",
+      (value: any) => (value.artifact.name = "candidate-decoy"),
+    ],
     [
       "archive substitution",
       (value: any) => (value.archive = Buffer.from("bad")),
@@ -239,5 +292,157 @@ describe("live catalog authenticated GitHub adapter", () => {
     await expect(
       collectLiveCatalogClaim(configuration, fixture(mutate) as any),
     ).rejects.toThrow(/live_catalog_/u);
+  });
+});
+
+describe("shared bounded GitHub transport", () => {
+  it("streams bounded API JSON and rejects JSON redirects", async () => {
+    const ok = vi.fn(
+      async () =>
+        new Response('{"ok":true}', {
+          status: 200,
+          headers: { "content-length": "11" },
+        }),
+    );
+    await expect(
+      boundedGithubJson("/repos/owner/repo", "token", ok as any),
+    ).resolves.toEqual({ ok: true });
+    expect(ok.mock.calls[0]![1]).toMatchObject({ redirect: "manual" });
+    await expect(
+      boundedGithubJson(
+        "/repos/owner/repo",
+        "token",
+        async () =>
+          new Response(null, {
+            status: 302,
+            headers: { location: "https://api.github.com/other" },
+          }),
+      ),
+    ).rejects.toThrow("live_catalog_github_redirect_invalid");
+  });
+
+  it("allows explicit storage redirects and strips cross-origin authorization", async () => {
+    const seen: Array<{ url: string; authorization?: string }> = [];
+    const fetchImpl = async (url: string, init: any) => {
+      seen.push({ url, authorization: init.headers.Authorization });
+      if (url.startsWith("https://api.github.com/"))
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: "https://objects.githubusercontent.com/evidence",
+          },
+        });
+      return new Response("archive", {
+        headers: { "content-length": "7" },
+      });
+    };
+    await expect(
+      boundedGithubRequest(
+        {
+          path: "/download",
+          token: "secret",
+          kind: "download",
+          maximumBytes: 16,
+        },
+        fetchImpl,
+      ),
+    ).resolves.toEqual(Buffer.from("archive"));
+    expect(seen).toEqual([
+      {
+        url: "https://api.github.com/download",
+        authorization: "Bearer secret",
+      },
+      {
+        url: "https://objects.githubusercontent.com/evidence",
+        authorization: undefined,
+      },
+    ]);
+  });
+
+  it.each([
+    ["HTTP", "http://objects.githubusercontent.com/evidence"],
+    ["lookalike", "https://objects.githubusercontent.com.evil.test/evidence"],
+    ["arbitrary", "https://example.com/evidence"],
+  ])("rejects %s redirects", async (_name, location) => {
+    await expect(
+      boundedGithubRequest(
+        {
+          path: "/download",
+          token: "token",
+          kind: "download",
+          maximumBytes: 16,
+        },
+        async () => new Response(null, { status: 302, headers: { location } }),
+      ),
+    ).rejects.toThrow(/live_catalog_github_/u);
+  });
+
+  it("rejects redirect loops at the finite boundary", async () => {
+    await expect(
+      boundedGithubRequest(
+        {
+          path: "/download",
+          token: "token",
+          kind: "download",
+          maximumBytes: 16,
+          maximumRedirects: 1,
+        },
+        async () =>
+          new Response(null, {
+            status: 302,
+            headers: {
+              location: "https://objects.githubusercontent.com/loop",
+            },
+          }),
+      ),
+    ).rejects.toThrow("live_catalog_github_redirect_invalid");
+  });
+
+  it.each([
+    [
+      "oversized declared",
+      new Response("x", { headers: { "content-length": "17" } }),
+    ],
+    ["oversized streamed", new Response("0123456789abcdefg")],
+    [
+      "truncated",
+      new Response("short", { headers: { "content-length": "9" } }),
+    ],
+  ])("rejects %s bodies", async (_name, response) => {
+    await expect(
+      boundedGithubRequest(
+        {
+          path: "/download",
+          token: "token",
+          kind: "download",
+          maximumBytes: 16,
+        },
+        async () => response,
+      ),
+    ).rejects.toThrow(/live_catalog_github_/u);
+  });
+
+  it("aborts once at timeout without retries", async () => {
+    const fetchImpl = vi.fn(
+      async (_url: string, init: any) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init.signal.addEventListener("abort", () =>
+            reject(new Error("aborted")),
+          );
+        }),
+    );
+    await expect(
+      boundedGithubRequest(
+        {
+          path: "/download",
+          token: "token",
+          kind: "download",
+          maximumBytes: 16,
+          timeoutMs: 5,
+        },
+        fetchImpl as any,
+      ),
+    ).rejects.toThrow("live_catalog_github_transport_timeout");
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 });

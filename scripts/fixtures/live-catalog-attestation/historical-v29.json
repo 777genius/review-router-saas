@@ -12,6 +12,7 @@
   "observedCatalogDigest": "sha256:1263f5c7c12179382cecf46ee434d530ede3763bbb0b9e43e658a352029f8961",
   "pg17Image": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4",
   "pg17JobId": "98349971721",
+  "pg17JobName": "Full private PG16 to PG17 rehearsal",
   "projectionExport": "fencedLiveV70V73CatalogDigestSql",
   "projectionSha256": "bcf3dac1e3877d8e83ab867ddf755b5b1f9e2d638d3883ec94ab28529397da59",
   "qualityJobId": "98349971837",
@@ -20,6 +21,7 @@
   "runAttempt": 1,
   "runId": "33020660492",
   "sourceCommit": "da0d56a73f366d3372cf3c2ebacfe431c6d21ed1",
+  "sourceBranch": "fix/pr227-r41-ci-remediation",
   "sourceTree": "34c3b8534ece73c336af9156d55890725c628cda",
   "workflowSha256": "f5dc276a6168564234a15ed2bb4aed83aba7a355a6f7efb9a665f019832f0567"
 }

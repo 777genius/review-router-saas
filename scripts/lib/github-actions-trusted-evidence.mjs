@@ -1,4 +1,12 @@
 import { createHash } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+} from "node:fs";
 import { inflateRawSync } from "node:zlib";
 
 const githubApi = "https://api.github.com";
@@ -12,6 +20,191 @@ export const gitBlobSha = (value) => {
     .update(bytes)
     .digest("hex");
 };
+
+export function readBoundedRegularFile(
+  path,
+  maximumBytes,
+  label,
+  { afterLstat } = {},
+) {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0)
+    throw new Error("bounded_regular_file_limit_invalid");
+  let before;
+  try {
+    before = lstatSync(path, { bigint: true });
+  } catch {
+    throw new Error(`live_catalog_${label}_file_unavailable`);
+  }
+  if (!before.isFile() || before.nlink !== 1n)
+    throw new Error(`live_catalog_${label}_file_not_private_regular`);
+  afterLstat?.();
+  let descriptor;
+  try {
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1n ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino ||
+      opened.size !== before.size ||
+      opened.size <= 0n ||
+      opened.size > BigInt(maximumBytes)
+    )
+      throw new Error(`live_catalog_${label}_file_identity_or_size_invalid`);
+    const expected = Number(opened.size);
+    const value = Buffer.allocUnsafe(expected);
+    let offset = 0;
+    while (offset < expected) {
+      const count = readSync(
+        descriptor,
+        value,
+        offset,
+        expected - offset,
+        null,
+      );
+      if (count === 0) throw new Error(`live_catalog_${label}_file_truncated`);
+      offset += count;
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      after.dev !== opened.dev ||
+      after.ino !== opened.ino ||
+      after.size !== opened.size ||
+      after.nlink !== 1n
+    )
+      throw new Error(`live_catalog_${label}_file_replaced`);
+    return value;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+const storageHosts = [
+  "artifact.actions.githubusercontent.com",
+  "objects.githubusercontent.com",
+  "pipelines.actions.githubusercontent.com",
+];
+
+function isStorageHost(hostname) {
+  return (
+    storageHosts.includes(hostname) ||
+    hostname.endsWith(".blob.core.windows.net")
+  );
+}
+
+function assertTransportUrl(url, kind, redirected) {
+  if (url.protocol !== "https:")
+    throw new Error("live_catalog_github_transport_url_untrusted");
+  if (!redirected && url.origin !== githubApi)
+    throw new Error("live_catalog_github_transport_url_untrusted");
+  if (redirected && (kind === "json" || !isStorageHost(url.hostname)))
+    throw new Error("live_catalog_github_redirect_host_untrusted");
+}
+
+async function boundedBody(response, maximumBytes) {
+  const declared = response.headers?.get?.("content-length");
+  if (declared !== null && declared !== undefined) {
+    if (!/^[0-9]+$/u.test(declared) || Number(declared) > maximumBytes)
+      throw new Error("live_catalog_github_content_length_invalid");
+  }
+  if (!response.body)
+    throw new Error("live_catalog_github_response_body_missing");
+  const chunks = [];
+  let size = 0;
+  const reader = response.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maximumBytes) {
+        await reader.cancel();
+        throw new Error("live_catalog_github_download_size_invalid");
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (size === 0 || (declared != null && Number(declared) !== size))
+    throw new Error("live_catalog_github_download_size_invalid");
+  return Buffer.concat(chunks, size);
+}
+
+export async function boundedGithubRequest(
+  { path, token, kind, maximumBytes, timeoutMs = 20_000, maximumRedirects = 3 },
+  fetchImpl = globalThis.fetch,
+) {
+  if (!path.startsWith("/"))
+    throw new Error("live_catalog_github_transport_path_invalid");
+  let url = new URL(path, githubApi);
+  let authorization = `Bearer ${token}`;
+  const controller = new globalThis.AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    for (let redirects = 0; ; redirects += 1) {
+      assertTransportUrl(url, kind, redirects > 0);
+      let response;
+      try {
+        response = await fetchImpl(url.href, {
+          headers: {
+            Accept: "application/vnd.github+json",
+            "Accept-Encoding": "identity",
+            ...(authorization ? { Authorization: authorization } : {}),
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+          method: "GET",
+          redirect: "manual",
+          signal: controller.signal,
+        });
+      } catch (error) {
+        if (controller.signal.aborted)
+          throw new Error("live_catalog_github_transport_timeout", {
+            cause: error,
+          });
+        throw error;
+      }
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        if (kind === "json" || redirects >= maximumRedirects)
+          throw new Error("live_catalog_github_redirect_invalid");
+        const location = response.headers?.get?.("location");
+        if (!location) throw new Error("live_catalog_github_redirect_invalid");
+        const next = new URL(location, url);
+        assertTransportUrl(next, kind, true);
+        if (next.origin !== url.origin) authorization = "";
+        url = next;
+        continue;
+      }
+      if (!response.ok)
+        throw new Error(`live_catalog_github_http_${response.status}`);
+      return await boundedBody(response, maximumBytes);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function boundedGithubJson(path, token, fetchImpl) {
+  const bytes = await boundedGithubRequest(
+    {
+      path,
+      token,
+      kind: "json",
+      maximumBytes: 2 * 1024 * 1024,
+      maximumRedirects: 0,
+    },
+    fetchImpl,
+  );
+  try {
+    return JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error("live_catalog_github_response_not_json");
+  }
+}
 
 function requiredString(value, label) {
   if (typeof value !== "string" || value.length === 0)
@@ -37,23 +230,25 @@ function repositoryParts(value) {
 }
 
 async function githubJson(fetchImpl, path, headers) {
-  const response = await fetchImpl(`${githubApi}${path}`, {
-    headers,
-    method: "GET",
-    redirect: "follow",
-  });
-  const text = await response.text();
-  if (!response.ok)
-    throw new Error(
-      `trusted evidence GitHub API request failed: HTTP ${response.status}`,
-    );
+  const token = headers.Authorization.replace(/^Bearer /u, "");
+  const bytes = await boundedGithubRequest(
+    {
+      path,
+      token,
+      kind: "json",
+      maximumBytes: 2 * 1024 * 1024,
+      maximumRedirects: 0,
+    },
+    fetchImpl,
+  );
+  const text = bytes.toString("utf8");
   let body;
   try {
     body = JSON.parse(text);
   } catch {
     throw new Error("trusted evidence GitHub API response is not JSON");
   }
-  return { body, bodySha256: sha256(Buffer.from(text)), url: response.url };
+  return { body, bodySha256: sha256(bytes) };
 }
 
 function crc32(bytes) {
@@ -74,7 +269,13 @@ function endOfCentralDirectory(archive) {
   throw new Error("trusted evidence artifact is not a supported ZIP archive");
 }
 
-export function readExactZipEntries(archiveBytes) {
+export function readExactZipEntries(
+  archiveBytes,
+  {
+    maximumEntryBytes = 16 * 1024 * 1024,
+    maximumTotalBytes = 24 * 1024 * 1024,
+  } = {},
+) {
   const archive = Buffer.from(archiveBytes);
   const end = endOfCentralDirectory(archive);
   const disk = archive.readUInt16LE(end + 4);
@@ -96,6 +297,7 @@ export function readExactZipEntries(archiveBytes) {
     throw new Error("trusted evidence ZIP structure is not canonical");
 
   const entries = new Map();
+  let totalUncompressedBytes = 0;
   let cursor = centralOffset;
   for (let index = 0; index < entryCount; index += 1) {
     if (archive.readUInt32LE(cursor) !== 0x02014b50)
@@ -121,7 +323,7 @@ export function readExactZipEntries(archiveBytes) {
       name.split("/").includes("..") ||
       name.endsWith("/") ||
       entries.has(name) ||
-      uncompressedSize > 16 * 1024 * 1024 ||
+      uncompressedSize > maximumEntryBytes ||
       archive.readUInt32LE(localOffset) !== 0x04034b50
     )
       throw new Error("trusted evidence ZIP entry is unsafe or unsupported");
@@ -146,8 +348,13 @@ export function readExactZipEntries(archiveBytes) {
       throw new Error(
         "trusted evidence ZIP local entry mismatches its directory",
       );
+    totalUncompressedBytes += uncompressedSize;
+    if (totalUncompressedBytes > maximumTotalBytes)
+      throw new Error("trusted evidence ZIP uncompressed total is too large");
     const value =
-      method === 0 ? Buffer.from(compressed) : inflateRawSync(compressed);
+      method === 0
+        ? Buffer.from(compressed)
+        : inflateRawSync(compressed, { maxOutputLength: maximumEntryBytes });
     if (value.length !== uncompressedSize || crc32(value) !== expectedCrc)
       throw new Error("trusted evidence ZIP entry digest is invalid");
     entries.set(name, value);
@@ -355,31 +562,15 @@ export async function fetchTrustedGitHubEvidence(
   )
     throw new Error("trusted evidence artifact is stale or replayed");
 
-  const archiveResponse = await fetchImpl(
-    `${githubApi}${prefix}/actions/artifacts/${expected.artifactId}/zip`,
+  const archive = await boundedGithubRequest(
     {
-      headers,
-      method: "GET",
-      redirect: "follow",
+      path: `${prefix}/actions/artifacts/${expected.artifactId}/zip`,
+      token,
+      kind: "download",
+      maximumBytes: 32 * 1024 * 1024,
     },
+    fetchImpl,
   );
-  if (!archiveResponse.ok)
-    throw new Error(
-      `trusted evidence artifact download failed: HTTP ${archiveResponse.status}`,
-    );
-  const finalUrl = new URL(archiveResponse.url);
-  if (
-    finalUrl.protocol !== "https:" ||
-    !(
-      finalUrl.hostname === "api.github.com" ||
-      finalUrl.hostname.endsWith(".githubusercontent.com") ||
-      finalUrl.hostname.endsWith(".blob.core.windows.net")
-    )
-  )
-    throw new Error(
-      "trusted evidence artifact download redirected to an untrusted host",
-    );
-  const archive = Buffer.from(await archiveResponse.arrayBuffer());
   if (
     archive.length === 0 ||
     archive.length > 32 * 1024 * 1024 ||

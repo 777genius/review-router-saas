@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import ts from "typescript";
+import { parseDocument } from "yaml";
 
 export const LIVE_CATALOG_CLAIM_SCHEMA =
   "reviewrouter.live-catalog-provenance.v1";
@@ -67,54 +69,95 @@ const digestPattern = /^sha256:[a-f0-9]{64}$/u;
 const commitPattern = /^[a-f0-9]{40}$/u;
 
 export function extractProjectionBytes(sourceBytes) {
-  const source = Buffer.from(sourceBytes).toString("utf8");
-  const marker = `export const ${LIVE_CATALOG_PROJECTION_EXPORT} = \``;
-  const start = source.indexOf(marker);
-  if (start < 0 || source.indexOf(marker, start + marker.length) >= 0)
-    throw new Error("live_catalog_projection_export_missing_or_ambiguous");
-  const bodyStart = start + marker.length;
-  const bodyEnd = source.indexOf("`;", bodyStart);
-  if (bodyEnd < 0 || source.slice(bodyStart, bodyEnd).includes("`"))
+  const initializer = exportedLiteral(
+    sourceBytes,
+    LIVE_CATALOG_PROJECTION_EXPORT,
+  );
+  if (!ts.isNoSubstitutionTemplateLiteral(initializer))
     throw new Error("live_catalog_projection_export_not_static_template");
-  return Buffer.from(source.slice(bodyStart, bodyEnd), "utf8");
+  return Buffer.from(initializer.text, "utf8");
 }
 
 export function extractConfiguredCatalogDigest(sourceBytes) {
-  const source = Buffer.from(sourceBytes).toString("utf8");
-  const marker = `export const ${LIVE_CATALOG_EXPECTED_DIGEST_EXPORT} =`;
-  const start = source.indexOf(marker);
-  if (start < 0 || source.indexOf(marker, start + marker.length) >= 0)
-    throw new Error("live_catalog_expected_digest_export_missing_or_ambiguous");
-  const declaration = source.slice(start, source.indexOf(";", start) + 1);
-  const match = declaration.match(/=\s*"(sha256:[a-f0-9]{64})"\s*;$/u);
-  if (!match) throw new Error("live_catalog_expected_digest_export_invalid");
-  return match[1];
+  const initializer = exportedLiteral(
+    sourceBytes,
+    LIVE_CATALOG_EXPECTED_DIGEST_EXPORT,
+  );
+  if (
+    !ts.isStringLiteral(initializer) ||
+    !/^sha256:[a-f0-9]{64}$/u.test(initializer.text)
+  )
+    throw new Error("live_catalog_expected_digest_export_invalid");
+  return initializer.text;
+}
+
+function exportedLiteral(sourceBytes, exportName) {
+  const source = ts.createSourceFile(
+    "live-catalog-projection.mjs",
+    Buffer.from(sourceBytes).toString("utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  if (source.parseDiagnostics.length > 0)
+    throw new Error("live_catalog_projection_source_syntax_invalid");
+  const matches = [];
+  for (const statement of source.statements) {
+    if (
+      !ts.isVariableStatement(statement) ||
+      !(statement.modifiers ?? []).some(
+        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+      ) ||
+      (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+    )
+      continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (
+        ts.isIdentifier(declaration.name) &&
+        declaration.name.text === exportName &&
+        declaration.initializer
+      )
+        matches.push(declaration.initializer);
+    }
+  }
+  if (matches.length !== 1)
+    throw new Error("live_catalog_projection_export_missing_or_ambiguous");
+  return matches[0];
 }
 
 export function assertSourceWorkflowPg17Image(sourceBytes) {
-  const source = Buffer.from(sourceBytes).toString("utf8");
-  const jobBlock = (name) => {
-    const startPattern = new RegExp(`^  ${name}:\\s*$`, "mu");
-    const start = startPattern.exec(source);
-    if (!start) return "";
-    const bodyStart = start.index + start[0].length;
-    const next = /^ {2}[a-z0-9-]+:\s*$/gmu;
-    next.lastIndex = bodyStart;
-    const end = next.exec(source)?.index ?? source.length;
-    return source.slice(bodyStart, end);
-  };
-  const releaseJob = jobBlock("release-authority-pg17-contract");
-  const qualityJob = jobBlock("quality");
-  const escaped = LIVE_CATALOG_PG17_IMAGE.replace(
-    /[.*+?^${}()|[\]\\]/gu,
-    "\\$&",
-  );
+  const document = parseDocument(Buffer.from(sourceBytes).toString("utf8"), {
+    prettyErrors: false,
+    strict: true,
+    uniqueKeys: true,
+  });
+  if (document.errors.length > 0)
+    throw new Error("live_catalog_source_workflow_yaml_invalid");
+  const workflow = document.toJS({ maxAliasCount: 0 });
+  const plain = (path) => document.getIn(path, true)?.type === "PLAIN";
+  const jobs = workflow?.jobs;
+  const releaseJob = jobs?.["release-authority-pg17-contract"];
+  const qualityJob = jobs?.quality;
   if (
-    !new RegExp(
-      `^      REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE: ${escaped}\\s*$`,
-      "mu",
-    ).test(releaseJob) ||
-    !new RegExp(`^        image: ${escaped}\\s*$`, "mu").test(qualityJob)
+    !jobs ||
+    typeof jobs !== "object" ||
+    Array.isArray(jobs) ||
+    !releaseJob ||
+    !qualityJob ||
+    releaseJob.name !== "Dedicated Release Authority PG17 contract" ||
+    releaseJob["runs-on"] !== "ubuntu-latest" ||
+    releaseJob.env?.REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE !==
+      LIVE_CATALOG_PG17_IMAGE ||
+    qualityJob.name !== "Quality Gates" ||
+    qualityJob["runs-on"] !== "ubuntu-latest" ||
+    qualityJob.services?.postgres?.image !== LIVE_CATALOG_PG17_IMAGE ||
+    !plain([
+      "jobs",
+      "release-authority-pg17-contract",
+      "env",
+      "REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE",
+    ]) ||
+    !plain(["jobs", "quality", "services", "postgres", "image"])
   )
     throw new Error("live_catalog_source_workflow_pg17_image_unpinned");
 }
@@ -163,6 +206,25 @@ function candidateFacts(name, bytes) {
   return Object.freeze({ name, size: value.length, sha256: sha256Hex(value) });
 }
 
+function githubHostedJob(job, label) {
+  if (
+    job.runnerGroupId !== 0 ||
+    job.runnerGroupName !== "GitHub Actions" ||
+    !/^GitHub Actions [1-9][0-9]*$/u.test(job.runnerName ?? "") ||
+    JSON.stringify(job.labels) !== JSON.stringify(["ubuntu-latest"])
+  )
+    throw new Error(`live_catalog_${label}_runner_tuple_invalid`);
+  return {
+    id: String(integer(job.id, `${label}_id`)),
+    name: job.name,
+    conclusion: job.conclusion,
+    runnerGroupId: job.runnerGroupId,
+    runnerGroupName: job.runnerGroupName,
+    runnerName: job.runnerName,
+    labels: [...job.labels],
+  };
+}
+
 export function candidateToObservedDigest(candidates, observedDigest) {
   return sha256Digest(
     Buffer.from(
@@ -189,11 +251,7 @@ export function assembleLiveCatalogClaim(input) {
     throw new Error("live_catalog_attestor_execution_invalid");
   if (input.runAttempt !== 1)
     throw new Error("live_catalog_source_run_attempt_must_be_one");
-  if (
-    input.sourceRef !== input.sourceCommit ||
-    typeof input.sourceBranch !== "string" ||
-    !/^[A-Za-z0-9._/-]+$/u.test(input.sourceBranch)
-  )
+  if (input.sourceRef !== input.sourceCommit || input.sourceBranch !== "main")
     throw new Error("live_catalog_source_ref_invalid");
   if (input.sourceWorkflowPath !== LIVE_CATALOG_SOURCE_WORKFLOW)
     throw new Error("live_catalog_source_workflow_mismatch");
@@ -257,14 +315,10 @@ export function assembleLiveCatalogClaim(input) {
       workflowPath: input.sourceWorkflowPath,
       event: input.sourceEvent,
       qualityJob: {
-        id: String(integer(input.qualityJob.id, "quality_job_id")),
-        name: input.qualityJob.name,
-        conclusion: input.qualityJob.conclusion,
+        ...githubHostedJob(input.qualityJob, "quality_job"),
       },
       pg17Job: {
-        id: String(integer(input.pg17Job.id, "pg17_job_id")),
-        name: input.pg17Job.name,
-        conclusion: input.pg17Job.conclusion,
+        ...githubHostedJob(input.pg17Job, "pg17_job"),
       },
       runnerEnvironment: input.runnerEnvironment,
     },
@@ -360,10 +414,30 @@ export function validateLiveCatalogClaim(claim) {
   );
   exactKeys(
     claim.execution.qualityJob,
-    ["id", "name", "conclusion"],
+    [
+      "id",
+      "name",
+      "conclusion",
+      "runnerGroupId",
+      "runnerGroupName",
+      "runnerName",
+      "labels",
+    ],
     "quality_job",
   );
-  exactKeys(claim.execution.pg17Job, ["id", "name", "conclusion"], "pg17_job");
+  exactKeys(
+    claim.execution.pg17Job,
+    [
+      "id",
+      "name",
+      "conclusion",
+      "runnerGroupId",
+      "runnerGroupName",
+      "runnerName",
+      "labels",
+    ],
+    "pg17_job",
+  );
   exactKeys(
     claim.qualityLog,
     [
@@ -421,7 +495,7 @@ export function validateLiveCatalogClaim(claim) {
     !commitPattern.test(claim.source.commit) ||
     !commitPattern.test(claim.source.tree) ||
     claim.source.ref !== claim.source.commit ||
-    !/^[A-Za-z0-9._/-]+$/u.test(claim.source.branch) ||
+    claim.source.branch !== "main" ||
     claim.execution.runAttempt !== 1 ||
     claim.execution.workflowPath !== LIVE_CATALOG_SOURCE_WORKFLOW ||
     claim.execution.event !== "workflow_dispatch" ||
@@ -429,10 +503,22 @@ export function validateLiveCatalogClaim(claim) {
     !/^[1-9][0-9]*$/u.test(claim.execution.qualityJob.id) ||
     claim.execution.qualityJob.name !== "Quality Gates" ||
     claim.execution.qualityJob.conclusion !== "success" ||
+    claim.execution.qualityJob.runnerGroupId !== 0 ||
+    claim.execution.qualityJob.runnerGroupName !== "GitHub Actions" ||
+    !/^GitHub Actions [1-9][0-9]*$/u.test(
+      claim.execution.qualityJob.runnerName,
+    ) ||
+    JSON.stringify(claim.execution.qualityJob.labels) !==
+      JSON.stringify(["ubuntu-latest"]) ||
     !/^[1-9][0-9]*$/u.test(claim.execution.pg17Job.id) ||
     claim.execution.pg17Job.name !==
       "Dedicated Release Authority PG17 contract" ||
     claim.execution.pg17Job.conclusion !== "success" ||
+    claim.execution.pg17Job.runnerGroupId !== 0 ||
+    claim.execution.pg17Job.runnerGroupName !== "GitHub Actions" ||
+    !/^GitHub Actions [1-9][0-9]*$/u.test(claim.execution.pg17Job.runnerName) ||
+    JSON.stringify(claim.execution.pg17Job.labels) !==
+      JSON.stringify(["ubuntu-latest"]) ||
     claim.execution.runnerEnvironment !== "github-hosted" ||
     !/^[1-9][0-9]*$/u.test(claim.artifact.id) ||
     claim.artifact.name !==

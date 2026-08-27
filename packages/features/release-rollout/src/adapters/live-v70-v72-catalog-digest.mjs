@@ -2,16 +2,6 @@
  * Canonical PostgreSQL projection of the live V70-V73 application catalog.
  * Keep this in the Postgres adapter layer: the domain receives only its digest.
  */
-const dynamicWriteAclPrincipals = Object.freeze([
-  "reviewrouter_api",
-  "reviewrouter_web",
-  "reviewrouter_worker",
-]);
-// Runtime write bits vary with the ACL gate and are attested by its policy proof.
-const dynamicWriteAclPrincipalSql = dynamicWriteAclPrincipals
-  .map((principal) => `'${principal}'`)
-  .join(",");
-
 export const fencedLiveV70V73CatalogDigestSql = `
 WITH selected_relations AS (
   SELECT c.oid, n.oid AS namespace_oid, n.nspname, c.relname, c.relkind,
@@ -71,7 +61,7 @@ WITH selected_relations AS (
         FROM (
           SELECT CASE
             WHEN relname='CodexOAuthWritebackIntent'
-              AND split_part(v::text,'=',1) IN (${dynamicWriteAclPrincipalSql})
+              AND split_part(v::text,'=',1) IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker')
             THEN split_part(v::text,'=',1)||'='||pg_catalog.regexp_replace(
               split_part(split_part(v::text,'/',1),'=',2),'[awdD]','','g'
             )||'/'||split_part(v::text,'/',2)

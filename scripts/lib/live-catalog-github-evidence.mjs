@@ -1,4 +1,6 @@
 import {
+  boundedGithubJson,
+  boundedGithubRequest,
   readExactZipEntries,
   gitBlobSha,
 } from "./github-actions-trusted-evidence.mjs";
@@ -9,8 +11,6 @@ import {
   LIVE_CATALOG_SOURCE_WORKFLOW,
   sha256Hex,
 } from "./live-catalog-attestation-domain.mjs";
-
-const api = "https://api.github.com";
 
 function repositoryParts(repository) {
   if (
@@ -28,45 +28,15 @@ function positiveInteger(value, label) {
   return parsed;
 }
 
-async function response(fetchImpl, path, token) {
-  const result = await fetchImpl(`${api}${path}`, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-    method: "GET",
-    redirect: "follow",
-  });
-  if (!result.ok) throw new Error(`live_catalog_github_http_${result.status}`);
-  return result;
-}
-
 async function json(fetchImpl, path, token) {
-  const result = await response(fetchImpl, path, token);
-  try {
-    return JSON.parse(await result.text());
-  } catch {
-    throw new Error("live_catalog_github_response_not_json");
-  }
+  return boundedGithubJson(path, token, fetchImpl);
 }
 
 async function bytes(fetchImpl, path, token, maximumBytes) {
-  const result = await response(fetchImpl, path, token);
-  const final = new URL(result.url);
-  if (
-    final.protocol !== "https:" ||
-    !(
-      final.hostname === "api.github.com" ||
-      final.hostname.endsWith(".githubusercontent.com") ||
-      final.hostname.endsWith(".blob.core.windows.net")
-    )
-  )
-    throw new Error("live_catalog_github_redirect_host_untrusted");
-  const value = Buffer.from(await result.arrayBuffer());
-  if (value.length === 0 || value.length > maximumBytes)
-    throw new Error("live_catalog_github_download_size_invalid");
-  return value;
+  return boundedGithubRequest(
+    { path, token, kind: "download", maximumBytes },
+    fetchImpl,
+  );
 }
 
 async function sourceFile(fetchImpl, prefix, path, commit, token) {
@@ -88,7 +58,7 @@ async function sourceFile(fetchImpl, prefix, path, commit, token) {
   return fileBytes;
 }
 
-function exactJob(jobs, id, name, runId, attempt) {
+function exactJob(jobs, id, name, runId, attempt, headSha) {
   const matches = jobs.filter(
     (job) => String(job.id) === String(id) && job.name === name,
   );
@@ -96,10 +66,14 @@ function exactJob(jobs, id, name, runId, attempt) {
     matches.length !== 1 ||
     String(matches[0].run_id) !== String(runId) ||
     matches[0].run_attempt !== attempt ||
+    matches[0].head_sha !== headSha ||
+    matches[0].head_branch !== "main" ||
     matches[0].status !== "completed" ||
     matches[0].conclusion !== "success" ||
-    !matches[0].labels?.includes("ubuntu-latest") ||
-    matches[0].labels?.includes("self-hosted")
+    JSON.stringify(matches[0].labels) !== JSON.stringify(["ubuntu-latest"]) ||
+    matches[0].runner_group_id !== 0 ||
+    matches[0].runner_group_name !== "GitHub Actions" ||
+    !/^GitHub Actions [1-9][0-9]*$/u.test(matches[0].runner_name ?? "")
   )
     throw new Error("live_catalog_job_tuple_invalid");
   return matches[0];
@@ -143,7 +117,12 @@ export async function collectLiveCatalogClaim(
   if (
     repository.full_name?.toLowerCase() !==
       configuration.repository.toLowerCase() ||
-    String(run.repository?.id) !== String(repository.id)
+    repository.default_branch !== "main" ||
+    String(run.repository?.id) !== String(repository.id) ||
+    run.repository?.full_name?.toLowerCase() !==
+      configuration.repository.toLowerCase() ||
+    run.head_repository?.full_name?.toLowerCase() !==
+      configuration.repository.toLowerCase()
   )
     throw new Error("live_catalog_repository_identity_mismatch");
   if (
@@ -157,7 +136,7 @@ export async function collectLiveCatalogClaim(
     run.run_attempt !== 1 ||
     run.event !== "workflow_dispatch" ||
     run.path !== LIVE_CATALOG_SOURCE_WORKFLOW ||
-    !/^[A-Za-z0-9._/-]+$/u.test(run.head_branch ?? "") ||
+    run.head_branch !== "main" ||
     !/^[a-f0-9]{40}$/u.test(run.head_sha ?? "") ||
     run.status !== "completed" ||
     run.conclusion !== "success" ||
@@ -176,6 +155,7 @@ export async function collectLiveCatalogClaim(
     "Quality Gates",
     runId,
     1,
+    run.head_sha,
   );
   const pg17Job = exactJob(
     jobsResponse.jobs,
@@ -183,6 +163,7 @@ export async function collectLiveCatalogClaim(
     "Dedicated Release Authority PG17 contract",
     runId,
     1,
+    run.head_sha,
   );
   if (
     String(artifact.id) !== String(artifactId) ||
@@ -195,12 +176,18 @@ export async function collectLiveCatalogClaim(
 
   const [
     commit,
+    ancestry,
     workflowSourceBytes,
     projectionSourceBytes,
     qualityLogBytes,
     archiveBytes,
   ] = await Promise.all([
     json(fetchImpl, `${prefix}/git/commits/${run.head_sha}`, token),
+    json(
+      fetchImpl,
+      `${prefix}/compare/${run.head_sha}...${attestorCommit}`,
+      token,
+    ),
     sourceFile(
       fetchImpl,
       prefix,
@@ -231,6 +218,9 @@ export async function collectLiveCatalogClaim(
   if (
     commit.sha !== run.head_sha ||
     !/^[a-f0-9]{40}$/u.test(commit.tree?.sha ?? "") ||
+    !["ahead", "identical"].includes(ancestry.status) ||
+    ancestry.base_commit?.sha !== run.head_sha ||
+    ancestry.merge_base_commit?.sha !== run.head_sha ||
     `sha256:${sha256Hex(archiveBytes)}` !== artifact.digest
   )
     throw new Error("live_catalog_source_or_archive_digest_mismatch");
@@ -256,11 +246,19 @@ export async function collectLiveCatalogClaim(
       id: qualityJob.id,
       name: qualityJob.name,
       conclusion: qualityJob.conclusion,
+      runnerGroupId: qualityJob.runner_group_id,
+      runnerGroupName: qualityJob.runner_group_name,
+      runnerName: qualityJob.runner_name,
+      labels: qualityJob.labels,
     },
     pg17Job: {
       id: pg17Job.id,
       name: pg17Job.name,
       conclusion: pg17Job.conclusion,
+      runnerGroupId: pg17Job.runner_group_id,
+      runnerGroupName: pg17Job.runner_group_name,
+      runnerName: pg17Job.runner_name,
+      labels: pg17Job.labels,
     },
     runnerEnvironment: "github-hosted",
     artifactId,
