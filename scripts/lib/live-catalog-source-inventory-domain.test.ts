@@ -282,17 +282,20 @@ describe("live catalog source inventory and installed selector", () => {
         import equal = require("./selector-dependency.mjs");
         const req = require;
         const reqResolve = require.resolve;
+        const computedResolve = require["resolve"];
         const reqResolveAgain = reqResolve;
         const makeRequireAgain = makeRequire;
         const local = makeRequire(import.meta.url);
         const namespacedLocal = moduleApi.createRequire(import.meta.url);
         req("./selector-dependency.mjs");
         reqResolve("./selector-dependency.mjs");
+        computedResolve("./selector-dependency.mjs");
         reqResolveAgain("./selector-dependency.mjs");
         makeRequireAgain(import.meta.url)("./selector-dependency.mjs");
         local.resolve("./selector-dependency.mjs");
         namespacedLocal("./selector-dependency.mjs");
         import.meta.resolve("./selector-dependency.mjs");
+        moduleApi["register"]("./selector-dependency.mjs", import.meta.url);
         import("./selector-dependency.mjs");
         import("./nested.tsx");
       `),
@@ -321,11 +324,6 @@ describe("live catalog source inventory and installed selector", () => {
       "const req = require; req(value);",
       "dynamic_resolution",
     ],
-    [
-      "computed require.resolve",
-      'require["resolve"]("./x.mjs");',
-      "unsupported_resolution",
-    ],
     ["absolute path", 'require("/tmp/x.mjs");', "unsupported_specifier"],
     ["file URL", 'import("file:///tmp/x.mjs");', "unsupported_specifier"],
     ["data URL", 'import("data:text/javascript,1");', "unsupported_specifier"],
@@ -336,11 +334,6 @@ describe("live catalog source inventory and installed selector", () => {
     ],
     ["package imports", 'import("#private");', "unsupported_specifier"],
     ["undeclared package", 'import("left-pad");', "undeclared_package"],
-    [
-      "unresolved workspace subpath",
-      'import("@reviewrouter/platform-db/not-exported");',
-      "workspace_ambiguous",
-    ],
     [
       "mutable alias",
       'let req = require; req("./x.mjs");',
@@ -376,6 +369,22 @@ describe("live catalog source inventory and installed selector", () => {
     expect(() =>
       deriveLiveCatalogSourceClosure(inventory(files), files),
     ).toThrow(error);
+  });
+
+  it("retains the owning workspace package for wildcard unknown-subpath exports", () => {
+    const files = selectedFiles();
+    files.set(
+      "scripts/attest-live-catalog-digest.mjs",
+      Buffer.from('export * from "@reviewrouter/platform-db/not-exported";\n'),
+    );
+    files.set(
+      "packages/platform/db/src/unknown.jsx",
+      Buffer.from("export const value = <span />;\n"),
+    );
+    const closure = deriveLiveCatalogSourceClosure(inventory(files), files);
+    expect(closure.entries.map((entry) => entry.path)).toContain(
+      "packages/platform/db/src/unknown.jsx",
+    );
   });
 
   it("preserves builtins and declared external packages without fetching them", () => {

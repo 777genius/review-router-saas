@@ -76,6 +76,9 @@ export function createLiveCatalogSourceFetchBudget() {
 const sha1Pattern = /^[a-f0-9]{40}$/u;
 const forbiddenDosName = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
 const textSourcePattern = /\.(?:[cm]?[jt]s|tsx?)$/u;
+const executableSourcePattern = /\.(?:[cm]?[jt]s|[cm]?tsx?|jsx|prisma)$/u;
+const testSourcePattern =
+  /(?:^|\/)(?:tests?|fixtures?)\/|\.(?:test|spec|e2e)\.[cm]?[jt]sx?$/u;
 const builtinSpecifiers = new Set([
   ...builtinModules,
   ...builtinModules.map((name) => `node:${name}`),
@@ -391,10 +394,30 @@ function parseModuleSpecifiers(path, bytes) {
     ts.isMetaProperty(node.expression) &&
     node.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
     node.expression.name.text === "meta";
-  const staticSpecifier = (call) => {
-    if (call.arguments.length !== 1 || !ts.isStringLiteral(call.arguments[0]))
+  const staticString = (node) => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
+      return node.text;
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.PlusToken
+    ) {
+      const left = staticString(node.left);
+      const right = staticString(node.right);
+      return left === undefined || right === undefined
+        ? undefined
+        : `${left}${right}`;
+    }
+  };
+  const staticPropertyName = (node) => {
+    if (ts.isPropertyAccessExpression(node)) return node.name.text;
+    if (ts.isElementAccessExpression(node))
+      return staticString(node.argumentExpression);
+  };
+  const staticSpecifier = (call, argumentIndex = 0) => {
+    const specifier = staticString(call.arguments[argumentIndex]);
+    if (specifier === undefined)
       throw new Error("live_catalog_source_selector_dynamic_resolution");
-    result.push(call.arguments[0].text);
+    result.push(specifier);
   };
   const createRequireExpression = (node) =>
     (ts.isIdentifier(node) && createRequireAliases.has(node.text)) ||
@@ -432,8 +455,9 @@ function parseModuleSpecifiers(path, bytes) {
             (requireAliases.has(initializer.text) ||
               requireResolveAliases.has(initializer.text) ||
               createRequireAliases.has(initializer.text))) ||
-          (ts.isPropertyAccessExpression(initializer) &&
-            initializer.name.text === "resolve" &&
+          ((ts.isPropertyAccessExpression(initializer) ||
+            ts.isElementAccessExpression(initializer)) &&
+            staticPropertyName(initializer) === "resolve" &&
             ts.isIdentifier(initializer.expression) &&
             requireAliases.has(initializer.expression.text)) ||
           (ts.isCallExpression(initializer) &&
@@ -465,8 +489,9 @@ function parseModuleSpecifiers(path, bytes) {
         )
           createRequireAliases.add(name);
         else if (
-          ts.isPropertyAccessExpression(initializer) &&
-          initializer.name.text === "resolve" &&
+          (ts.isPropertyAccessExpression(initializer) ||
+            ts.isElementAccessExpression(initializer)) &&
+          staticPropertyName(initializer) === "resolve" &&
           ts.isIdentifier(initializer.expression) &&
           requireAliases.has(initializer.expression.text)
         )
@@ -534,8 +559,9 @@ function parseModuleSpecifiers(path, bytes) {
         (ts.isIdentifier(expression) &&
           (requireAliases.has(expression.text) ||
             requireResolveAliases.has(expression.text))) ||
-        (ts.isPropertyAccessExpression(expression) &&
-          expression.name.text === "resolve" &&
+        ((ts.isPropertyAccessExpression(expression) ||
+          ts.isElementAccessExpression(expression)) &&
+          staticPropertyName(expression) === "resolve" &&
           ts.isIdentifier(expression.expression) &&
           requireAliases.has(expression.expression.text)) ||
         importMetaResolve(expression)
@@ -553,6 +579,16 @@ function parseModuleSpecifiers(path, bytes) {
           throw new Error(
             "live_catalog_source_selector_unsupported_resolution",
           );
+      } else if (
+        (ts.isPropertyAccessExpression(expression) ||
+          ts.isElementAccessExpression(expression)) &&
+        staticPropertyName(expression) === "register" &&
+        ts.isIdentifier(expression.expression) &&
+        moduleNamespaceAliases.has(expression.expression.text)
+      ) {
+        if (!node.arguments.length)
+          throw new Error("live_catalog_source_selector_dynamic_resolution");
+        staticSpecifier(node);
       } else if (
         ts.isElementAccessExpression(expression) &&
         ts.isIdentifier(expression.expression) &&
@@ -595,11 +631,15 @@ function parseModuleSpecifiers(path, bytes) {
         declarationIdentifier(node) ||
         aliasedInitializer(node) ||
         (ts.isCallExpression(node.parent) && node.parent.expression === node) ||
-        (ts.isPropertyAccessExpression(node.parent) &&
+        ((ts.isPropertyAccessExpression(node.parent) ||
+          ts.isElementAccessExpression(node.parent)) &&
           node.parent.expression === node &&
           ((requireAliases.has(node.text) &&
-            node.parent.name.text === "resolve") ||
-            (namespace && node.parent.name.text === "createRequire")));
+            staticPropertyName(node.parent) === "resolve") ||
+            (namespace &&
+              ["createRequire", "register"].includes(
+                staticPropertyName(node.parent),
+              ))));
       if ((resolver || namespace) && !recognizedResolverUse)
         throw new Error("live_catalog_source_selector_unsupported_resolution");
     }
@@ -674,6 +714,61 @@ function packageDirectories(blobs) {
     .map((path) => posix.dirname(path));
 }
 
+function sensitiveOrGeneratedPath(path) {
+  const base = posix.basename(path).toLowerCase();
+  return (
+    base === ".env" ||
+    base.startsWith(".env.") ||
+    base === ".npmrc" ||
+    base === ".pnpmfile" ||
+    base.startsWith(".pnpmfile.") ||
+    /^pnpmfile\.(?:c?js|mjs|ts)$/u.test(base) ||
+    path
+      .split("/")
+      .some((segment) =>
+        [
+          "node_modules",
+          "dist",
+          "build",
+          "coverage",
+          ".next",
+          ".husky",
+        ].includes(segment.toLowerCase()),
+      )
+  );
+}
+
+function safeSupersetSource(path) {
+  const base = posix.basename(path);
+  return (
+    !sensitiveOrGeneratedPath(path) &&
+    !testSourcePattern.test(path) &&
+    (executableSourcePattern.test(path) ||
+      base === "package.json" ||
+      /^tsconfig(?:\.[A-Za-z0-9_-]+)?\.json$/u.test(base) ||
+      (path.startsWith(".github/workflows/") && /\.ya?ml$/u.test(path)))
+  );
+}
+
+function packageRootForPath(path, blobs) {
+  for (const manifest of governingManifests(path, blobs))
+    if (manifest !== "package.json") return posix.dirname(manifest);
+}
+
+function owningSourceRoot(path, blobs) {
+  const packageRoot = packageRootForPath(path, blobs);
+  if (packageRoot) return packageRoot;
+  if (path.startsWith("scripts/")) return "scripts";
+  if (path.startsWith(".github/workflows/")) return ".github/workflows";
+}
+
+function safeFilesUnderRoot(root, blobs) {
+  const prefix = `${root}/`;
+  return [...blobs.keys()]
+    .filter((path) => path.startsWith(prefix) && safeSupersetSource(path))
+    .sort(byteCompare);
+}
+
 function governingManifests(path, blobs) {
   const manifests = [];
   let directory = posix.dirname(path);
@@ -695,48 +790,7 @@ function resolveWorkspacePackage(specifier, blobs, getBytes) {
     const manifest = parseManifest(getBytes(manifestPath), "manifest");
     if (manifest.name === packageName) {
       matchingPackages += 1;
-      const subpath = specifier.slice(packageName.length).replace(/^\//u, "");
-      const exported = manifest.exports
-        ? subpath
-          ? manifest.exports[`./${subpath}`]
-          : (manifest.exports["."] ?? manifest.exports)
-        : undefined;
-      const targets = [];
-      const collectTargets = (value) => {
-        if (typeof value === "string") targets.push(value);
-        else if (value && typeof value === "object" && !Array.isArray(value))
-          for (const key of ["source", "types", "import", "node", "default"])
-            if (Object.hasOwn(value, key)) collectTargets(value[key]);
-      };
-      collectTargets(exported);
-      if (!targets.length)
-        targets.push(
-          subpath ||
-            manifest.source ||
-            manifest.module ||
-            manifest.main ||
-            "src/index.ts",
-        );
-      let resolved;
-      try {
-        resolved = [
-          ...new Set(
-            targets.map((target) =>
-              resolveRelative(
-                manifestPath,
-                target.startsWith(".") ? target : `./${target}`,
-                blobs,
-              ),
-            ),
-          ),
-        ];
-      } catch {
-        throw new Error(
-          `live_catalog_source_selector_workspace_ambiguous:${specifier}`,
-        );
-      }
-      matches.push(...resolved);
-      matches.push(manifestPath);
+      matches.push(...safeFilesUnderRoot(directory, blobs), manifestPath);
     }
   }
   if (!matches.length) return [];
@@ -892,6 +946,11 @@ export function initialLiveCatalogSourceSelection(inventoryValue) {
       throw new Error("live_catalog_source_selector_sensitive_config_denied");
   }
   const selected = new Set(LIVE_CATALOG_SELECTOR_ROOTS);
+  for (const root of LIVE_CATALOG_SELECTOR_ROOTS) {
+    const owner = owningSourceRoot(root, blobs);
+    if (owner)
+      for (const path of safeFilesUnderRoot(owner, blobs)) selected.add(path);
+  }
   for (const path of blobs.keys())
     if (
       path === "package.json" ||
@@ -931,7 +990,10 @@ export function deriveLiveCatalogSourceClosure(inventoryValue, getBytesInput) {
             ? getBytesInput.get(path)
             : getBytesInput?.[path];
   const selected = new Set(initialLiveCatalogSourceSelection(inventory));
-  const queue = [...selected].sort(byteCompare);
+  // Retain complete owning roots, but discover dependencies from executable
+  // roots. Unrelated retained scripts are evidence, not reachable entrypoints.
+  const queue = [...LIVE_CATALOG_SELECTOR_ROOTS].sort(byteCompare);
+  const queued = new Set(queue);
   const processed = new Set();
   while (queue.length) {
     const path = queue.shift();
@@ -951,16 +1013,22 @@ export function deriveLiveCatalogSourceClosure(inventoryValue, getBytesInput) {
       bytes,
       getBytes,
     );
-    for (const addition of additions.sort(byteCompare))
-      if (!selected.has(addition)) {
-        selected.add(addition);
+    for (const addition of additions.sort(byteCompare)) {
+      selected.add(addition);
+      if (!processed.has(addition) && !queued.has(addition)) {
         queue.push(addition);
+        queued.add(addition);
       }
+    }
     assertSourceSelectionBounds(selected, blobs);
   }
   const entries = [...selected].sort(byteCompare).map((path) => {
     const entry = blobs.get(path);
     const bytes = Buffer.from(getBytes(path));
+    if (bytes.length !== entry?.size || gitBlobSha(bytes) !== entry?.sha)
+      throw new Error("live_catalog_source_selector_blob_invalid");
+    if (path.endsWith("package.json") && !processed.has(path))
+      assertSafeManifest(path, bytes);
     return Object.freeze({
       path,
       mode: entry.mode,

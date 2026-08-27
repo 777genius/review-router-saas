@@ -4,17 +4,31 @@ import {
   mkdirSync,
   mkdtempSync,
   renameSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateRawSync } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   readBoundedRegularFile,
   readExactZipEntries,
 } from "./github-actions-trusted-evidence.mjs";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0))
+    rmSync(directory, { force: true, recursive: true });
+});
+
+function temporaryDirectory(prefix: string) {
+  const directory = mkdtempSync(join(tmpdir(), prefix));
+  temporaryDirectories.push(directory);
+  return directory;
+}
 
 function crc32(bytes: Buffer) {
   let crc = 0xffffffff;
@@ -114,7 +128,7 @@ describe("bounded offline evidence", () => {
   it.each(["symlink", "hardlink", "fifo", "directory"])(
     "rejects %s input",
     (kind) => {
-      const directory = mkdtempSync(join(tmpdir(), "rr-bounded-file-"));
+      const directory = temporaryDirectory("rr-bounded-file-");
       const source = join(directory, "source");
       const target = join(directory, "target");
       writeFileSync(source, "safe");
@@ -129,7 +143,7 @@ describe("bounded offline evidence", () => {
   );
 
   it("rejects replacement between identity check and open", () => {
-    const directory = mkdtempSync(join(tmpdir(), "rr-bounded-race-"));
+    const directory = temporaryDirectory("rr-bounded-race-");
     const target = join(directory, "target");
     const replacement = join(directory, "replacement");
     writeFileSync(target, "claim-a");

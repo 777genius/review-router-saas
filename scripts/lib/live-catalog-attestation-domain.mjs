@@ -41,7 +41,7 @@ const uploadPin =
 const attestPin =
   "actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be";
 const exactAttestorWorkflowSha256 =
-  "b7ada308a90c117d268e26e387775aa77f5a30c3663797061ae878ff08eacd6c";
+  "aaca68fe091f61fe59f1f6f615c998a8aa925063d2a68e558d535d9dcbc9f78e";
 
 export const sha256Hex = (value) =>
   createHash("sha256").update(value).digest("hex");
@@ -323,7 +323,8 @@ export function assertSourceWorkflowPg17Image(sourceBytes) {
           },
           {
             name: "Generate Prisma client offline after credential teardown",
-            run: 'test -z "${SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64:-}"\ntest -z "${GIT_SSH_COMMAND:-}"\ntest -z "${GIT_SSH_VARIANT:-}"\npnpm --offline --filter @reviewrouter/platform-db db:generate\n',
+            shell: "bash",
+            run: 'set -euo pipefail\ntest -z "${SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64:-}"\ntest -z "${GIT_SSH_COMMAND:-}"\ntest -z "${GIT_SSH_VARIANT:-}"\noffline_user="$(id -un)"\noffline_home="$HOME"\npnpm_bin="$(command -v pnpm)"\nnode_bin="$(command -v node)"\ncase "$pnpm_bin" in "$GITHUB_WORKSPACE"/*) exit 1 ;; esac\nsudo unshare --net -- true\nsudo unshare --net -- sudo -H -u "$offline_user" env -i \\\n  HOME="$offline_home" \\\n  PATH="$GITHUB_WORKSPACE/node_modules/.bin:$(dirname "$node_bin"):/usr/bin:/bin" \\\n  "$pnpm_bin" --offline --filter @reviewrouter/platform-db db:generate\n',
           },
           {
             name: "Migrate and capture twice",

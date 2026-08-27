@@ -312,7 +312,7 @@ describe("release workflow contract", () => {
 
   it("runs the authority contract with an exact event-specific baseline", () => {
     expect(ci).toContain(
-      "if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.private_pg16_to_pg17_rehearsal) || (github.event_name == 'workflow_dispatch' && inputs.activation_catalog_policy_capture) }}",
+      "if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.private_pg16_to_pg17_rehearsal) }}",
     );
     expect(ci).toContain(
       "github.event_name == 'push' || github.event_name == 'pull_request'",

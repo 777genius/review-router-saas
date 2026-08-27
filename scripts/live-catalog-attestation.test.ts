@@ -223,7 +223,7 @@ describe("live catalog capture credential boundary", () => {
   );
   const steps = parse(raw).jobs.producer.steps;
 
-  it("disables lifecycle scripts while the deploy key exists, then generates offline", () => {
+  it("disables pnpm hooks with the deploy key, then generates in an unprivileged network namespace", () => {
     const fetchStep = steps.find((step: { name?: string }) =>
       step.name?.startsWith("Fetch frozen dependencies"),
     );
@@ -233,9 +233,17 @@ describe("live catalog capture credential boundary", () => {
     expect(fetchStep.run).toContain("--require-deploy-key");
     expect(fetchStep.env).toHaveProperty("SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64");
     expect(offlineStep.env).toBeUndefined();
+    expect(offlineStep.shell).toBe("bash");
     expect(offlineStep.run).toContain('test -z "${GIT_SSH_COMMAND:-}"');
+    expect(offlineStep.run).toContain("sudo unshare --net -- true");
     expect(offlineStep.run).toContain(
-      "pnpm --offline --filter @reviewrouter/platform-db db:generate",
+      'sudo unshare --net -- sudo -H -u "$offline_user" env -i',
+    );
+    expect(offlineStep.run).toContain(
+      'PATH="$GITHUB_WORKSPACE/node_modules/.bin:$(dirname "$node_bin"):/usr/bin:/bin"',
+    );
+    expect(offlineStep.run).toContain(
+      '"$pnpm_bin" --offline --filter @reviewrouter/platform-db db:generate',
     );
     expect(raw.indexOf(fetchStep.name)).toBeLessThan(
       raw.indexOf(offlineStep.name),

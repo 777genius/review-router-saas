@@ -32,11 +32,22 @@ jobs:
           SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
         run: node scripts/install-private-dependencies.mjs --frozen-lockfile --require-deploy-key
       - name: Generate Prisma client offline after credential teardown
+        shell: bash
         run: |
+          set -euo pipefail
           test -z "${SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64:-}"
           test -z "${GIT_SSH_COMMAND:-}"
           test -z "${GIT_SSH_VARIANT:-}"
-          pnpm --offline --filter @reviewrouter/platform-db db:generate
+          offline_user="$(id -un)"
+          offline_home="$HOME"
+          pnpm_bin="$(command -v pnpm)"
+          node_bin="$(command -v node)"
+          case "$pnpm_bin" in "$GITHUB_WORKSPACE"/*) exit 1 ;; esac
+          sudo unshare --net -- true
+          sudo unshare --net -- sudo -H -u "$offline_user" env -i \
+            HOME="$offline_home" \
+            PATH="$GITHUB_WORKSPACE/node_modules/.bin:$(dirname "$node_bin"):/usr/bin:/bin" \
+            "$pnpm_bin" --offline --filter @reviewrouter/platform-db db:generate
       - name: Migrate and capture twice
         env:
           REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1"

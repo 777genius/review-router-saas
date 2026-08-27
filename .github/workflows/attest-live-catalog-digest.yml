@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: Successful protected-main CI workflow_dispatch run ID (attempt 1)
+        description: Successful protected-main Capture live catalog workflow run ID (attempt 1)
         required: true
         type: string
       producer_job_id:
-        description: Exact successful Full private PG16 to PG17 rehearsal job ID
+        description: Exact successful Capture live catalog producer job ID
         required: true
         type: string
       artifact_id:
