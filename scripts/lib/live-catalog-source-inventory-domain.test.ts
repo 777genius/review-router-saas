@@ -8,6 +8,7 @@ import {
   deriveLiveCatalogSourceClosure,
   gitBlobSha,
   LIVE_CATALOG_SELECTOR_ROOTS,
+  LIVE_CATALOG_SOURCE_FETCH_LIMITS,
   LIVE_CATALOG_SOURCE_INVENTORY_LIMITS,
   liveCatalogSourceInventoryFacts,
   parseLiveCatalogSourceInventory,
@@ -125,6 +126,11 @@ function selectedFiles() {
   );
   files.set("pnpm-lock.yaml", Buffer.from("lockfileVersion: '9.0'\n"));
   files.set("pnpm-workspace.yaml", Buffer.from("packages: []\n"));
+  files.set(
+    "tsconfig.json",
+    Buffer.from('{"extends":"./tsconfig.base.json"}\n'),
+  );
+  files.set("tsconfig.base.json", Buffer.from('{"compilerOptions":{}}\n'));
   files.set(
     "packages/platform/db/prisma/migrations/current/migration.sql",
     Buffer.from("SELECT 1;\n"),
@@ -272,12 +278,14 @@ describe("live catalog source inventory and installed selector", () => {
     ).toThrow(/(?:lifecycle_hook|script_operator)/u);
   });
 
-  it("derives every supported static executable-resolution form, including nested TSX", () => {
+  it("derives every supported static executable-resolution form, including named, computed, aliased, destructured, JSX, MTS, CTS, and CJS loaders", () => {
     const files = selectedFiles();
     files.set(
       "scripts/attest-live-catalog-digest.mjs",
       Buffer.from(`
         import { createRequire as makeRequire } from "node:module";
+        import { register as namedRegister } from "node:module";
+        import Module from "node:module";
         import * as moduleApi from "node:module";
         import equal = require("./selector-dependency.mjs");
         const req = require;
@@ -285,8 +293,13 @@ describe("live catalog source inventory and installed selector", () => {
         const computedResolve = require["resolve"];
         const reqResolveAgain = reqResolve;
         const makeRequireAgain = makeRequire;
+        const moduleAlias = moduleApi;
+        const { createRequire: destructuredRequire, register: destructuredRegister } = moduleAlias;
         const local = makeRequire(import.meta.url);
-        const namespacedLocal = moduleApi.createRequire(import.meta.url);
+        const namespacedLocal = moduleAlias["createRequire"](import.meta["url"]);
+        const destructuredLocal = destructuredRequire(import.meta["url"]);
+        const defaultLocal = Module["createRequire"](import.meta["url"]);
+        const directRegister = require("module")["register"];
         req("./selector-dependency.mjs");
         reqResolve("./selector-dependency.mjs");
         computedResolve("./selector-dependency.mjs");
@@ -294,10 +307,22 @@ describe("live catalog source inventory and installed selector", () => {
         makeRequireAgain(import.meta.url)("./selector-dependency.mjs");
         local.resolve("./selector-dependency.mjs");
         namespacedLocal("./selector-dependency.mjs");
-        import.meta.resolve("./selector-dependency.mjs");
+        destructuredLocal("./selector-dependency.mjs");
+        defaultLocal("./selector-dependency.mjs");
+        require("node:module")["createRequire"](import.meta.url)("./selector-dependency.mjs");
+        import.meta["resolve"]("./selector-dependency.mjs");
         moduleApi["register"]("./selector-dependency.mjs", import.meta.url);
+        namedRegister("./selector-dependency.mjs", import.meta.url);
+        destructuredRegister("./selector-dependency.mjs", import.meta.url);
+        directRegister("./selector-dependency.mjs", import.meta.url);
         import("./selector-dependency.mjs");
         import("./nested.tsx");
+        import("./nested-jsx");
+        import("./nested-mts");
+        import("./nested-cts");
+        import("./nested-cjs");
+        import("./mapped.mjs");
+        import("./mapped.cjs");
       `),
     );
     files.set("scripts/selector-dependency.mjs", Buffer.from("export {}\n"));
@@ -307,10 +332,50 @@ describe("live catalog source inventory and installed selector", () => {
         'import "./selector-dependency.mjs"; export const view = <section>{<span>nested</span>}</section>;\n',
       ),
     );
+    for (const extension of ["jsx", "mts", "cts", "cjs"])
+      files.set(
+        `scripts/nested-${extension}.${extension}`,
+        Buffer.from(
+          extension === "jsx"
+            ? 'import "./selector-dependency.mjs"; export const view = <span />;\n'
+            : 'import "./selector-dependency.mjs"; export {};\n',
+        ),
+      );
+    files.set("scripts/mapped.mts", Buffer.from("export {};\n"));
+    files.set("scripts/mapped.cts", Buffer.from("export {};\n"));
     const closure = deriveLiveCatalogSourceClosure(inventory(files), files);
     expect(closure.entries.map((entry) => entry.path)).toContain(
       "scripts/selector-dependency.mjs",
     );
+  });
+
+  it("retains root tsconfig extends and a complete newly owning package root", () => {
+    const files = selectedFiles();
+    files.set(
+      "scripts/attest-live-catalog-digest.mjs",
+      Buffer.from('import "../packages/new-owner/src/entry.mts";\n'),
+    );
+    files.set(
+      "packages/new-owner/package.json",
+      Buffer.from('{"name":"@reviewrouter/new-owner","scripts":{}}\n'),
+    );
+    files.set(
+      "packages/new-owner/src/entry.mts",
+      Buffer.from('import "./nested.cjs";\n'),
+    );
+    files.set(
+      "packages/new-owner/src/nested.cjs",
+      Buffer.from("module.exports = {};\n"),
+    );
+    files.set(
+      "packages/new-owner/src/retained.jsx",
+      Buffer.from("export const view = <span />;\n"),
+    );
+    const closure = deriveLiveCatalogSourceClosure(inventory(files), files);
+    const paths = closure.entries.map((entry) => entry.path);
+    expect(paths).toContain("tsconfig.json");
+    expect(paths).toContain("tsconfig.base.json");
+    expect(paths).toContain("packages/new-owner/src/retained.jsx");
   });
 
   it.each([
@@ -340,6 +405,11 @@ describe("live catalog source inventory and installed selector", () => {
       "mutable_resolution_alias",
     ],
     [
+      "mutable module loader",
+      'import * as moduleApi from "node:module"; moduleApi["register"] = consume;',
+      "mutable_resolution_alias",
+    ],
+    [
       "destructured require primitive",
       "const { resolve } = require; resolve('./x.mjs');",
       "unsupported_resolution",
@@ -353,6 +423,42 @@ describe("live catalog source inventory and installed selector", () => {
       "escaped createRequire primitive",
       'import { createRequire } from "node:module"; consume(createRequire);',
       "unsupported_resolution",
+    ],
+    [
+      "default Module._load",
+      'import Module from "node:module"; const load = Module["_load"]; load("./x.mjs");',
+      "module_load_denied",
+    ],
+    [
+      "required Module._load",
+      'require("node:module")._load("./x.mjs");',
+      "module_load_denied",
+    ],
+    [
+      "named registerHooks",
+      'import { registerHooks } from "node:module"; registerHooks({});',
+      "module_load_denied",
+    ],
+    [
+      "dynamic node module namespace",
+      'const moduleApi = await import("node:module"); moduleApi.register("./x.mjs", import.meta.url);',
+      "unsupported_resolution",
+    ],
+    ["direct eval", 'eval("require(\\"./x.mjs\\")");', "evaluator_denied"],
+    [
+      "aliased eval",
+      'const evaluate = globalThis["eval"]; evaluate("require(\\"./x.mjs\\")");',
+      "evaluator_denied",
+    ],
+    [
+      "global alias eval",
+      'const runtimeGlobal = globalThis; const evaluate = runtimeGlobal["eval"]; evaluate("require(\\"./x.mjs\\")");',
+      "evaluator_denied",
+    ],
+    [
+      "Function constructor",
+      'Function("return require(\\"./x.mjs\\")")();',
+      "evaluator_denied",
     ],
     [
       "unsupported module namespace property",
@@ -478,7 +584,11 @@ describe("live catalog source inventory and installed selector", () => {
     ).toThrow("limit_exceeded");
 
     const closureOverflow = selectedFiles();
-    for (let index = 0; index < 513; index += 1)
+    for (
+      let index = 0;
+      index < LIVE_CATALOG_SOURCE_FETCH_LIMITS.files + 1;
+      index += 1
+    )
       closureOverflow.set(
         `packages/platform/db/prisma/migrations/m${index}/migration.sql`,
         Buffer.from("SELECT 1;\n"),

@@ -230,17 +230,17 @@ describe("dedicated producer workflow semantics", () => {
     ],
     [
       "overwrite",
-      (value: any) => (value.jobs.producer.steps[7].with.overwrite = true),
+      (value: any) => (value.jobs.producer.steps[8].with.overwrite = true),
     ],
     [
       "floating action",
       (value: any) =>
-        (value.jobs.producer.steps[7].uses = "actions/upload-artifact@v4"),
+        (value.jobs.producer.steps[8].uses = "actions/upload-artifact@v4"),
     ],
     [
       "wrong wiring",
       (value: any) =>
-        (value.jobs.producer.steps[8].with["subject-digest"] =
+        (value.jobs.producer.steps[9].with["subject-digest"] =
           "sha256:deadbeef"),
     ],
     [

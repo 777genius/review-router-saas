@@ -20,7 +20,8 @@ import {
   createLiveCatalogSourceInventory,
   deriveLiveCatalogSourceClosure,
   initialLiveCatalogSourceSelection,
-  liveCatalogSourceDependencies,
+  liveCatalogSourceDependencySelection,
+  LIVE_CATALOG_SELECTOR_ROOTS,
   LIVE_CATALOG_SOURCE_FETCH_LIMITS,
   liveCatalogSourceInventoryFacts,
 } from "./live-catalog-source-inventory-domain.mjs";
@@ -149,21 +150,46 @@ export async function buildLiveCatalogSourceClosure({
     return results;
   };
   const loaded = new Map();
+  const reachable = [...LIVE_CATALOG_SELECTOR_ROOTS];
+  const queued = new Set(reachable);
+  const processed = new Set();
   while (true) {
     const pending = [...selected].filter((path) => !loaded.has(path));
-    if (!pending.length) break;
-    const results = await fetchPaths(pending);
-    for (const [path, fileBytes] of results) loaded.set(path, fileBytes);
-    for (const [path, fileBytes] of results)
-      for (const dependency of liveCatalogSourceDependencies(
+    if (pending.length) {
+      const results = await fetchPaths(pending);
+      for (const [path, fileBytes] of results) loaded.set(path, fileBytes);
+    }
+    let discovered = false;
+    while (reachable.length) {
+      const path = reachable.shift();
+      if (processed.has(path)) continue;
+      const fileBytes = loaded.get(path);
+      if (!fileBytes) {
+        reachable.unshift(path);
+        break;
+      }
+      processed.add(path);
+      const dependencies = liveCatalogSourceDependencySelection(
         inventory,
         path,
         fileBytes,
         loaded,
-      ))
+      );
+      for (const dependency of dependencies.retained) {
         selected.add(dependency);
+        discovered ||= !loaded.has(dependency);
+      }
+      for (const dependency of dependencies.traversal) {
+        if (!processed.has(dependency) && !queued.has(dependency)) {
+          reachable.push(dependency);
+          queued.add(dependency);
+        }
+        discovered ||= !loaded.has(dependency);
+      }
+    }
     if (selected.size > LIVE_CATALOG_SOURCE_FETCH_LIMITS.files)
       throw new Error("live_catalog_source_closure_limit_exceeded");
+    if (!pending.length && !discovered && !reachable.length) break;
   }
   const closure = deriveLiveCatalogSourceClosure(inventory, loaded);
   const files = closure.entries

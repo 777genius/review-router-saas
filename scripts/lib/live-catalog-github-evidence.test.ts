@@ -111,7 +111,15 @@ function sourceFiles() {
     ["package.json", readFileSync("package.json")],
     ["pnpm-lock.yaml", Buffer.from("lockfileVersion: '9.0'\n")],
     ["pnpm-workspace.yaml", Buffer.from("packages: []\n")],
+    ["tsconfig.json", Buffer.from('{"extends":"./tsconfig.base.json"}\n')],
+    ["tsconfig.base.json", Buffer.from('{"compilerOptions":{}}\n')],
     ["scripts/install-private-dependencies.mjs", empty],
+    [
+      "scripts/check-external-subscription-runtime.mjs",
+      Buffer.from(
+        "export async function load(specifier) { return import(specifier); }\n",
+      ),
+    ],
     ["scripts/attest-live-catalog-digest.mjs", empty],
     ["scripts/run-with-env.mjs", empty],
     ["scripts/rehearse-private-pg17-rollout.mjs", empty],
@@ -433,6 +441,12 @@ describe("authenticated producer evidence", () => {
     expect(
       baseline.files.some((file: any) => file.path === "docs/unrelated.txt"),
     ).toBe(false);
+    expect(
+      baseline.files.some(
+        (file: any) =>
+          file.path === "scripts/check-external-subscription-runtime.mjs",
+      ),
+    ).toBe(true);
   });
 
   it("rejects an immutable blob size budget before issuing its request", async () => {

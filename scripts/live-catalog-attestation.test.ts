@@ -223,29 +223,69 @@ describe("live catalog capture credential boundary", () => {
   );
   const steps = parse(raw).jobs.producer.steps;
 
-  it("disables pnpm hooks with the deploy key, then generates in an unprivileged network namespace", () => {
+  it("materializes pinned engines after teardown, then generates without host network or privilege", () => {
     const fetchStep = steps.find((step: { name?: string }) =>
       step.name?.startsWith("Fetch frozen dependencies"),
     );
     const offlineStep = steps.find((step: { name?: string }) =>
       step.name?.startsWith("Generate Prisma client offline"),
     );
+    const enginesStep = steps.find((step: { name?: string }) =>
+      step.name?.startsWith("Materialize exact pinned Prisma engines"),
+    );
     expect(fetchStep.run).toContain("--require-deploy-key");
     expect(fetchStep.env).toHaveProperty("SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64");
+    expect(enginesStep.env).toBeUndefined();
+    expect(enginesStep.run).toContain("pnpm rebuild @prisma/engines");
+    expect(enginesStep.run).toContain(
+      "7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a",
+    );
+    expect(enginesStep.run).toContain(
+      'test -x "$engines_dir/schema-engine-debian-openssl-3.0.x"',
+    );
     expect(offlineStep.env).toBeUndefined();
     expect(offlineStep.shell).toBe("bash");
     expect(offlineStep.run).toContain('test -z "${GIT_SSH_COMMAND:-}"');
-    expect(offlineStep.run).toContain("sudo unshare --net -- true");
     expect(offlineStep.run).toContain(
-      'sudo unshare --net -- sudo -H -u "$offline_user" env -i',
+      "sudo useradd --system --user-group --no-create-home",
     );
     expect(offlineStep.run).toContain(
-      'PATH="$GITHUB_WORKSPACE/node_modules/.bin:$(dirname "$node_bin"):/usr/bin:/bin"',
+      "sudo unshare --net --pid --fork --mount-proc",
+    );
+    expect(offlineStep.run).toContain("--clear-groups");
+    expect(offlineStep.run).toContain("--bounding-set=-all");
+    expect(offlineStep.run).toContain("--no-new-privs");
+    expect(offlineStep.run).toContain("test ! -r /var/run/docker.sock");
+    expect(offlineStep.run).toContain("! sudo -n true");
+    expect(offlineStep.run).toContain("! nsenter -t 1 -n true");
+    expect(offlineStep.run).toContain(
+      'offline_root="$(sudo mktemp -d /var/tmp/reviewrouter-prisma.XXXXXX)"',
     );
     expect(offlineStep.run).toContain(
-      '"$pnpm_bin" --offline --filter @reviewrouter/platform-db db:generate',
+      'sudo cp -a --reflink=auto "$GITHUB_WORKSPACE/." "$staged_workspace/"',
+    );
+    expect(offlineStep.run).toContain(
+      'test ! -w "$HOST_WORKSPACE/node_modules"',
+    );
+    expect(offlineStep.run).toContain(
+      'PATH="$staged_workspace/node_modules/.bin:$(dirname "$node_bin"):/usr/bin:/bin"',
+    );
+    expect(offlineStep.run).toContain(
+      "--offline --filter @reviewrouter/platform-db db:generate",
+    );
+    expect(offlineStep.run).toContain('test "$generated_entries" -le 4096');
+    expect(offlineStep.run).toContain('test "$generated_files" -le 2048');
+    expect(offlineStep.run).toContain('test "$generated_bytes" -le 67108864');
+    expect(offlineStep.run).toContain(
+      'cp -a --no-preserve=ownership "$generated_dir" "$target_dir"',
+    );
+    expect(offlineStep.run).not.toContain(
+      'chown -R "$offline_uid:$offline_gid" "$GITHUB_WORKSPACE',
     );
     expect(raw.indexOf(fetchStep.name)).toBeLessThan(
+      raw.indexOf(enginesStep.name),
+    );
+    expect(raw.indexOf(enginesStep.name)).toBeLessThan(
       raw.indexOf(offlineStep.name),
     );
   });

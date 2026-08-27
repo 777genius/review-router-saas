@@ -31,6 +31,18 @@ jobs:
         env:
           SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
         run: node scripts/install-private-dependencies.mjs --frozen-lockfile --require-deploy-key
+      - name: Materialize exact pinned Prisma engines
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64:-}"
+          test -z "${GIT_SSH_COMMAND:-}"
+          test -z "${GIT_SSH_VARIANT:-}"
+          pnpm rebuild @prisma/engines
+          engines_dir="$GITHUB_WORKSPACE/node_modules/.pnpm/@prisma+engines@7.8.0/node_modules/@prisma/engines"
+          test "$(node -p "require('$engines_dir/package.json').version")" = "7.8.0"
+          test "$(node -p "require('$engines_dir/node_modules/@prisma/engines-version/package.json').version")" = "7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a"
+          test -x "$engines_dir/schema-engine-debian-openssl-3.0.x"
       - name: Generate Prisma client offline after credential teardown
         shell: bash
         run: |
@@ -38,16 +50,86 @@ jobs:
           test -z "${SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64:-}"
           test -z "${GIT_SSH_COMMAND:-}"
           test -z "${GIT_SSH_VARIANT:-}"
-          offline_user="$(id -un)"
-          offline_home="$HOME"
+          offline_user="reviewrouter-prisma"
           pnpm_bin="$(command -v pnpm)"
           node_bin="$(command -v node)"
           case "$pnpm_bin" in "$GITHUB_WORKSPACE"/*) exit 1 ;; esac
-          sudo unshare --net -- true
-          sudo unshare --net -- sudo -H -u "$offline_user" env -i \
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$offline_user"
+          offline_uid="$(id -u "$offline_user")"
+          offline_gid="$(id -g "$offline_user")"
+          test "$(id -G "$offline_user")" = "$offline_gid"
+          ! sudo -n -u "$offline_user" sudo -n true
+          sudo -n -u "$offline_user" test ! -r /var/run/docker.sock
+          offline_root="$(sudo mktemp -d /var/tmp/reviewrouter-prisma.XXXXXX)"
+          trap 'sudo rm -rf -- "$offline_root"' EXIT
+          sudo chmod 0711 "$offline_root"
+          offline_home="$offline_root/home"
+          sudo install -d -o "$offline_uid" -g "$offline_gid" "$offline_home"
+          staged_workspace="$offline_root/workspace"
+          sudo install -d "$staged_workspace"
+          sudo cp -a --reflink=auto "$GITHUB_WORKSPACE/." "$staged_workspace/"
+          sudo test -d "$staged_workspace/node_modules"
+          sudo test ! -L "$staged_workspace/node_modules"
+          sudo rm -rf -- "$staged_workspace/node_modules/.prisma"
+          sudo install -d "$staged_workspace/node_modules/.prisma"
+          sudo chown -R "$offline_uid:$offline_gid" "$staged_workspace"
+          host_net_namespace="$(readlink /proc/self/ns/net)"
+          host_pid_namespace="$(readlink /proc/self/ns/pid)"
+          sudo unshare --net --pid --fork --mount-proc \
+            setpriv \
+            --reuid="$offline_uid" \
+            --regid="$offline_gid" \
+            --clear-groups \
+            --bounding-set=-all \
+            --ambient-caps=-all \
+            --inh-caps=-all \
+            --no-new-privs \
+            env -i \
             HOME="$offline_home" \
-            PATH="$GITHUB_WORKSPACE/node_modules/.bin:$(dirname "$node_bin"):/usr/bin:/bin" \
-            "$pnpm_bin" --offline --filter @reviewrouter/platform-db db:generate
+            PATH="$staged_workspace/node_modules/.bin:$(dirname "$node_bin"):/usr/bin:/bin" \
+            HOST_WORKSPACE="$GITHUB_WORKSPACE" \
+            STAGED_WORKSPACE="$staged_workspace" \
+            HOST_NET_NAMESPACE="$host_net_namespace" \
+            HOST_PID_NAMESPACE="$host_pid_namespace" \
+            bash -ceu '
+              test "$(id -u)" = "'"$offline_uid"'"
+              test "$(id -G)" = "'"$offline_gid"'"
+              test "$(readlink /proc/self/ns/net)" != "$HOST_NET_NAMESPACE"
+              test "$(readlink /proc/self/ns/pid)" != "$HOST_PID_NAMESPACE"
+              test ! -r /var/run/docker.sock
+              test ! -w "$HOST_WORKSPACE"
+              test ! -w "$HOST_WORKSPACE/node_modules"
+              ! sudo -n true
+              ! nsenter -t 1 -n true
+              cd "$STAGED_WORKSPACE"
+              exec "'"$pnpm_bin"'" --offline --filter @reviewrouter/platform-db db:generate
+            '
+          generated_dir="$staged_workspace/node_modules/.prisma/client"
+          for trusted_dir in \
+            "$offline_root" \
+            "$staged_workspace" \
+            "$staged_workspace/node_modules" \
+            "$staged_workspace/node_modules/.prisma" \
+            "$generated_dir"; do
+            sudo test -d "$trusted_dir"
+            sudo test ! -L "$trusted_dir"
+          done
+          test -z "$(sudo find -P "$generated_dir" ! -type d ! -type f -print -quit)"
+          generated_entries="$(sudo find -P "$generated_dir" -mindepth 1 -printf . | wc -c)"
+          generated_files="$(sudo find -P "$generated_dir" -type f -printf . | wc -c)"
+          generated_bytes="$(sudo find -P "$generated_dir" -type f -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')"
+          test "$generated_entries" -gt 0
+          test "$generated_entries" -le 4096
+          test "$generated_files" -gt 0
+          test "$generated_files" -le 2048
+          test "$generated_bytes" -le 67108864
+          target_parent="$GITHUB_WORKSPACE/node_modules/.prisma"
+          target_dir="$target_parent/client"
+          test ! -L "$target_parent"
+          test ! -L "$target_dir"
+          rm -rf -- "$target_dir"
+          mkdir -p "$target_parent"
+          cp -a --no-preserve=ownership "$generated_dir" "$target_dir"
       - name: Migrate and capture twice
         env:
           REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1"
