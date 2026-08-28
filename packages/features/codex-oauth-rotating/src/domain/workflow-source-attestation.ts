@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
 import {
   CodexRotatingT0WorkflowSchemaVersion,
+  isVersionedSecretNamespaceCodexWorkflowSchemaVersion,
   renderCanonicalCodexRotatingT0WorkflowV1,
   renderCanonicalCodexRotatingT0WorkflowV2,
   renderCanonicalCodexRotatingT0WorkflowV3,
   renderCanonicalCodexRotatingT0WorkflowV4,
+  renderCanonicalCodexRotatingT0WorkflowV5,
   type CodexRotatingWorkflowSourceMetadata,
 } from "./codex-oauth-rotating";
 import {
@@ -151,7 +153,9 @@ export function readCanonicalCodexRotatingT0WorkflowSourceMetadata(
     workflowSchemaVersion !==
       CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3 &&
     workflowSchemaVersion !==
-      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 &&
+    workflowSchemaVersion !==
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5
   ) {
     throw new Error("codex_rotating_t0_workflow_metadata_missing");
   }
@@ -161,11 +165,11 @@ export function readCanonicalCodexRotatingT0WorkflowSourceMetadata(
   const providerInstanceId = requireNonEmptyString(
     reviewInputs.provider_instance_id,
   );
-  const secretNamespace =
-    workflowSchemaVersion ===
-    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
-      ? readVersionedSecretNamespace(root.name, providerInstanceId)
-      : undefined;
+  const secretNamespace = isVersionedSecretNamespaceCodexWorkflowSchemaVersion(
+    workflowSchemaVersion,
+  )
+    ? readVersionedSecretNamespace(root.name, providerInstanceId)
+    : undefined;
   const refreshScheduleCron =
     jobs["codex-refresh"] === undefined
       ? null
@@ -192,10 +196,16 @@ export function readCanonicalCodexRotatingT0WorkflowSourceMetadata(
         : workflowSchemaVersion ===
             CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3
           ? renderCanonicalCodexRotatingT0WorkflowV3(commonRenderInput)
-          : renderCanonicalCodexRotatingT0WorkflowV4({
-              ...commonRenderInput,
-              activeSecretNamespace: secretNamespace!,
-            });
+          : workflowSchemaVersion ===
+              CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+            ? renderCanonicalCodexRotatingT0WorkflowV4({
+                ...commonRenderInput,
+                activeSecretNamespace: secretNamespace!,
+              })
+            : renderCanonicalCodexRotatingT0WorkflowV5({
+                ...commonRenderInput,
+                activeSecretNamespace: secretNamespace!,
+              });
   if (!areWorkflowDocumentsSemanticallyEqual(workflow, expectedWorkflow)) {
     throw new Error("codex_rotating_t0_workflow_source_not_canonical");
   }
@@ -247,8 +257,9 @@ export function assertTrustedCanonicalVersionedWorkflow(input: {
     throw new Error("codex_rotating_workflow_provider_instance_mismatch");
   }
   if (
-    input.metadata.workflowSchemaVersion !==
-      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+    !isVersionedSecretNamespaceCodexWorkflowSchemaVersion(
+      input.metadata.workflowSchemaVersion,
+    ) ||
     !input.metadata.secretNamespace
   ) {
     throw new Error("codex_rotating_workflow_v4_required");

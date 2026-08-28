@@ -37,6 +37,7 @@ export enum CodexRotatingT0WorkflowSchemaVersion {
   ClientTriggeredV2 = 2,
   ClientTriggeredLifecycleV3 = 3,
   VersionedSecretNamespaceV4 = 4,
+  VersionedSecretNamespaceV5 = 5,
 }
 
 export const codexRotatingWorkflowSchemaVersion =
@@ -46,6 +47,7 @@ export const codexRotatingCanonicalT0WorkflowSchemaVersions = [
   CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
   CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
   CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+  CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
 ] as const;
 
 export function isClientTriggeredT0WorkflowSchemaVersion(
@@ -53,20 +55,33 @@ export function isClientTriggeredT0WorkflowSchemaVersion(
 ): value is
   | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
   | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3
-  | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 {
+  | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+  | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5 {
   return (
     value === CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2 ||
     value === CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3 ||
-    value === CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+    value === CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+    value === CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5
+  );
+}
+
+export function isVersionedSecretNamespaceCodexWorkflowSchemaVersion(
+  value: number | null | undefined,
+): value is
+  | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+  | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5 {
+  return (
+    value === CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+    value === CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5
   );
 }
 
 export function isTrustedDefaultBranchTriggeredCodexWorkflowSchemaVersion(
   value: number | null | undefined,
-): value is CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 {
-  return (
-    value === CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
-  );
+): value is
+  | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+  | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5 {
+  return isVersionedSecretNamespaceCodexWorkflowSchemaVersion(value);
 }
 
 export function codexRotatingT0DefaultTimeoutMinutesForSchema(
@@ -576,16 +591,14 @@ export function renderCodexRotatingAdvisoryWorkflow(
   }
   if (
     options.activeSecretNamespace &&
-    schemaVersion !==
-      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+    !isVersionedSecretNamespaceCodexWorkflowSchemaVersion(schemaVersion)
   ) {
     throw new Error(
       "codex_rotating_versioned_secret_namespace_schema_required",
     );
   }
   if (
-    schemaVersion ===
-      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 &&
+    isVersionedSecretNamespaceCodexWorkflowSchemaVersion(schemaVersion) &&
     !options.activeSecretNamespace
   ) {
     throw new Error("codex_rotating_active_secret_namespace_required");
@@ -608,10 +621,14 @@ export function renderCodexRotatingAdvisoryWorkflow(
   }
   if (
     reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 &&
-    schemaVersion ===
-      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+    isVersionedSecretNamespaceCodexWorkflowSchemaVersion(schemaVersion)
   ) {
-    return renderCanonicalCodexRotatingT0WorkflowV4({
+    const renderVersionedWorkflow =
+      schemaVersion ===
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+        ? renderCanonicalCodexRotatingT0WorkflowV4
+        : renderCanonicalCodexRotatingT0WorkflowV5;
+    return renderVersionedWorkflow({
       actionRef: options.actionRef,
       apiUrl: options.apiUrl,
       providerInstanceId: options.providerInstanceId,
@@ -1342,21 +1359,24 @@ function scanCodexRotatingT0AdvisoryWorkflow(
     source.workflowSchemaVersion,
   );
   const trustedDefaultBranchTriggered =
-    source.workflowSchemaVersion ===
-    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4;
+    isTrustedDefaultBranchTriggeredCodexWorkflowSchemaVersion(
+      source.workflowSchemaVersion,
+    );
   const versionedSecretName = workflow.match(
     /^name: ReviewRouter Codex OAuth \[namespace=[^;\]]+;epoch=[^;\]]+;secret=([A-Za-z0-9_]+)\]$/m,
   )?.[1];
   const expectedSecretName =
-    source.workflowSchemaVersion ===
-    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+    isVersionedSecretNamespaceCodexWorkflowSchemaVersion(
+      source.workflowSchemaVersion,
+    )
       ? versionedSecretName
       : codexRotatingSecretName;
   if (!expectedSecretName) {
     errors.push("t0_versioned_secret_namespace_metadata_missing");
   } else if (
-    source.workflowSchemaVersion ===
-    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+    isVersionedSecretNamespaceCodexWorkflowSchemaVersion(
+      source.workflowSchemaVersion,
+    )
   ) {
     try {
       parseVersionedProviderSecretName(expectedSecretName);
@@ -1863,6 +1883,31 @@ export function renderCanonicalCodexRotatingT0WorkflowV4(
   });
 }
 
+/**
+ * Immutable schema-v5 contract. Its byte shape is deliberately identical to
+ * schema v4 except for the workflow schema version markers.
+ */
+export function renderCanonicalCodexRotatingT0WorkflowV5(
+  input: Pick<
+    CodexRotatingWorkflowOptions,
+    | "actionRef"
+    | "apiUrl"
+    | "providerInstanceId"
+    | "refreshScheduleCron"
+    | "claudeCodeOAuthTokenSecret"
+    | "openRouterApiKeySecret"
+  > & { readonly activeSecretNamespace: VersionedProviderSecretNamespace },
+): string {
+  return renderCanonicalCodexRotatingClientTriggeredT0Workflow({
+    ...input,
+    workflowSchemaVersion:
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+    defaultTimeoutMinutes: codexRotatingT0DefaultTimeoutMinutesForSchema(
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+    ),
+  });
+}
+
 function renderCanonicalCodexRotatingClientTriggeredT0Workflow(
   input: Pick<
     CodexRotatingWorkflowOptions,
@@ -1876,7 +1921,8 @@ function renderCanonicalCodexRotatingClientTriggeredT0Workflow(
     readonly workflowSchemaVersion:
       | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
       | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3
-      | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4;
+      | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+      | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5;
     readonly defaultTimeoutMinutes: number;
     readonly activeSecretNamespace?: VersionedProviderSecretNamespace;
   },

@@ -3,9 +3,17 @@ import {
   allocateVersionedProviderSecretNamespace,
   assertActiveVersionedSecretWorkflowAttestation,
   assertTrustedCanonicalVersionedWorkflow,
+  CodexRotatingReviewActionV2Mode,
+  CodexRotatingT0WorkflowSchemaVersion,
   createVersionedSecretWorkflowSourceAttestation,
+  isClientTriggeredT0WorkflowSchemaVersion,
+  isTrustedDefaultBranchTriggeredCodexWorkflowSchemaVersion,
+  isVersionedSecretNamespaceCodexWorkflowSchemaVersion,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
+  renderCodexRotatingAdvisoryWorkflow,
   renderCanonicalCodexRotatingT0WorkflowV4,
+  renderCanonicalCodexRotatingT0WorkflowV5,
+  scanCodexRotatingAdvisoryWorkflow,
   WorkflowSourceTrust,
 } from "../index.js";
 
@@ -169,5 +177,86 @@ describe("exact active workflow attestation", () => {
         observedRepositoryId: "999999",
       }),
     ).toThrow("codex_rotating_workflow_repository_identity_mismatch");
+  });
+
+  it("renders and attests canonical V5 with the V4 byte shape and trusted namespace semantics", () => {
+    const actionRef =
+      "777genius/review-router@0123456789abcdef0123456789abcdef01234567";
+    const commonInput = {
+      actionRef,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:123456",
+      refreshScheduleCron: "17 */6 * * *",
+      activeSecretNamespace: namespace,
+      claudeCodeOAuthTokenSecret: true,
+      openRouterApiKeySecret: true,
+    } as const;
+    const workflowV4 = renderCanonicalCodexRotatingT0WorkflowV4(commonInput);
+    const workflowV5 = renderCanonicalCodexRotatingT0WorkflowV5(commonInput);
+
+    expect(
+      workflowV5
+        .replaceAll("workflow_schema_version: 5", "workflow_schema_version: 4")
+        .replaceAll(
+          'workflow-schema-version: "5"',
+          'workflow-schema-version: "4"',
+        ),
+    ).toBe(workflowV4);
+    expect(workflowV5).toContain("  pull_request_target:");
+    expect(workflowV5).not.toContain("  pull_request:");
+    expect(scanCodexRotatingAdvisoryWorkflow(workflowV5)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const renderedWorkflow = renderCodexRotatingAdvisoryWorkflow({
+      ...commonInput,
+      workflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+    expect(renderedWorkflow).toBe(workflowV5);
+
+    const metadata =
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(workflowV5);
+    expect(metadata).toMatchObject({
+      workflowSchemaVersion: 5,
+      secretNamespace: namespace,
+    });
+    expect(
+      isClientTriggeredT0WorkflowSchemaVersion(metadata.workflowSchemaVersion),
+    ).toBe(true);
+    expect(
+      isVersionedSecretNamespaceCodexWorkflowSchemaVersion(
+        metadata.workflowSchemaVersion,
+      ),
+    ).toBe(true);
+    expect(
+      isTrustedDefaultBranchTriggeredCodexWorkflowSchemaVersion(
+        metadata.workflowSchemaVersion,
+      ),
+    ).toBe(true);
+    expect(() =>
+      assertTrustedCanonicalVersionedWorkflow({
+        metadata,
+        observedRepositoryId: "123456",
+        observedRepositoryFullName: "777genius/example",
+        expectedRepositoryId: "123456",
+        expectedRepositoryFullName: "777genius/example",
+        trustedActionRefs: [actionRef],
+        expectedApiUrl: commonInput.apiUrl,
+        expectedProviderInstanceId: commonInput.providerInstanceId,
+        expectedSecretNamespace: namespace,
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+        workflowV5.replace(
+          "      runtime_config_mode: oidc",
+          "      runtime_config_mode: unsafe",
+        ),
+      ),
+    ).toThrow("codex_rotating_t0_workflow_source_not_canonical");
   });
 });
