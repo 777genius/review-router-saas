@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { CodexRotatingT0WorkflowSchemaVersion } from "@reviewrouter/features-workflow-provisioning";
 import {
   assertWorkspaceFeatureEntitlement,
   PrismaEntitlementRepository,
@@ -90,6 +91,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       defaultBranch: repository.defaultBranch,
       expectedRepositoryFullName: repository.fullName,
       expectedApiUrl: resolveWorkflowPublicApiUrl(),
+      expectedWorkflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
     });
     if (result.status === "not_configured") {
       throw new Error("codex_rotating_not_enabled");

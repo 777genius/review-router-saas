@@ -80,6 +80,7 @@ describe("Codex rotating CLI workflow activation route", () => {
       expect.objectContaining({
         githubRepositoryId: "1228051727",
         expectedApiUrl: "https://api.reviewrouter.test",
+        expectedWorkflowSchemaVersion: 5,
       }),
     );
     await expect(response.json()).resolves.toEqual({

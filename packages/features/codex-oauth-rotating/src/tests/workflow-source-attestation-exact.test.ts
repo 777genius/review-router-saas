@@ -147,10 +147,19 @@ describe("exact active workflow attestation", () => {
       expectedApiUrl: apiUrl,
       expectedProviderInstanceId: "codex-rotating:123456",
       expectedSecretNamespace: namespace,
+      expectedWorkflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
     } as const;
     expect(() =>
       assertTrustedCanonicalVersionedWorkflow(trusted),
     ).not.toThrow();
+    expect(() =>
+      assertTrustedCanonicalVersionedWorkflow({
+        ...trusted,
+        expectedWorkflowSchemaVersion:
+          CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+      }),
+    ).toThrow("codex_rotating_workflow_v4_required");
     expect(() =>
       assertTrustedCanonicalVersionedWorkflow({
         ...trusted,
@@ -247,8 +256,26 @@ describe("exact active workflow attestation", () => {
         expectedApiUrl: commonInput.apiUrl,
         expectedProviderInstanceId: commonInput.providerInstanceId,
         expectedSecretNamespace: namespace,
+        expectedWorkflowSchemaVersion:
+          CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
       }),
     ).not.toThrow();
+
+    expect(() =>
+      assertTrustedCanonicalVersionedWorkflow({
+        metadata,
+        observedRepositoryId: "123456",
+        observedRepositoryFullName: "777genius/example",
+        expectedRepositoryId: "123456",
+        expectedRepositoryFullName: "777genius/example",
+        trustedActionRefs: [actionRef],
+        expectedApiUrl: commonInput.apiUrl,
+        expectedProviderInstanceId: commonInput.providerInstanceId,
+        expectedSecretNamespace: namespace,
+        expectedWorkflowSchemaVersion:
+          CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+      }),
+    ).toThrow("codex_rotating_workflow_v4_required");
 
     expect(() =>
       readCanonicalCodexRotatingT0WorkflowSourceMetadata(

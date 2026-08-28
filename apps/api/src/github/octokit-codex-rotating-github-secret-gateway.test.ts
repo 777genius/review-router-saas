@@ -144,126 +144,130 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
     });
   });
 
-  it("publishes and verifies the exact V4 namespace on the default branch", async () => {
-    const currentNamespace = allocateVersionedProviderSecretNamespace({
-      scope: {
+  it.each([
+    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+  ])(
+    "publishes and verifies the exact schema-$workflowSchemaVersion namespace on the default branch",
+    async (workflowSchemaVersion) => {
+      const currentNamespace = allocateVersionedProviderSecretNamespace({
+        scope: {
+          repositoryId: "123456",
+          providerInstanceId: "codex-rotating:123456",
+        },
+        epoch: 8,
+        randomBytes: () => new Uint8Array(16).fill(0x33),
+      });
+      const nextNamespace = allocateVersionedProviderSecretNamespace({
+        scope: currentNamespace.scope,
+        epoch: 9,
+        randomBytes: () => new Uint8Array(16).fill(0x44),
+      });
+      const actionRef =
+        "777genius/review-router@2222222222222222222222222222222222222222";
+      const current = renderCodexRotatingAdvisoryWorkflow({
+        actionRef,
+        apiUrl: "https://reviewrouter.site",
+        providerInstanceId: "codex-rotating:123456",
+        reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+        workflowSchemaVersion,
+        activeSecretNamespace: currentNamespace,
+      });
+      const next = renderCodexRotatingAdvisoryWorkflow({
+        actionRef,
+        apiUrl: "https://reviewrouter.site",
+        providerInstanceId: "codex-rotating:123456",
+        reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+        workflowSchemaVersion,
+        activeSecretNamespace: nextNamespace,
+      });
+      mocks.auth
+        .mockResolvedValueOnce({
+          token: "ghs_contents_write_token",
+          expiresAt: "2026-05-25T12:15:00.000Z",
+          permissions: { contents: "write" },
+        })
+        .mockResolvedValueOnce({
+          token: "ghs_contents_read_token",
+          expiresAt: "2026-05-25T12:15:00.000Z",
+          permissions: { contents: "read" },
+        });
+      mocks.request
+        .mockResolvedValueOnce({
+          data: {
+            id: 123456,
+            full_name: "777genius/example",
+            default_branch: "main",
+          },
+        })
+        .mockResolvedValueOnce({
+          data: { name: "main", commit: { sha: "a".repeat(40) } },
+        })
+        .mockResolvedValueOnce({
+          data: {
+            type: "file",
+            encoding: "base64",
+            sha: gitBlobSha(current),
+            content: Buffer.from(current).toString("base64"),
+          },
+        })
+        .mockResolvedValueOnce({ data: { commit: { sha: "a".repeat(40) } } })
+        .mockResolvedValueOnce({
+          data: {
+            type: "file",
+            encoding: "base64",
+            sha: gitBlobSha(next),
+            content: Buffer.from(next).toString("base64"),
+          },
+        })
+        .mockResolvedValueOnce({
+          data: {
+            id: 123456,
+            full_name: "777genius/example",
+            default_branch: "main",
+          },
+        })
+        .mockResolvedValueOnce({
+          data: { name: "main", commit: { sha: "a".repeat(40) } },
+        });
+      const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+        appId: "123",
+        privateKey: "private-key",
+        expectedApiUrl: "https://reviewrouter.site",
+        trustedActionRefs: [actionRef],
+      });
+      await expect(
+        gateway.publishAndVerifyVersionedWorkflow({
+          repository: {
+            workspaceId: "workspace-1",
+            repositoryId: "repository-1",
+            githubInstallationId: "129500385",
+            githubRepositoryId: "123456",
+            fullName: "777genius/example",
+            owner: "777genius",
+            selected: true,
+            installationStatus: "active",
+          },
+          providerInstanceId: "codex-rotating:123456",
+          namespace: nextNamespace,
+        }),
+      ).resolves.toMatchObject({
         repositoryId: "123456",
-        providerInstanceId: "codex-rotating:123456",
-      },
-      epoch: 8,
-      randomBytes: () => new Uint8Array(16).fill(0x33),
-    });
-    const nextNamespace = allocateVersionedProviderSecretNamespace({
-      scope: currentNamespace.scope,
-      epoch: 9,
-      randomBytes: () => new Uint8Array(16).fill(0x44),
-    });
-    const actionRef =
-      "777genius/review-router@2222222222222222222222222222222222222222";
-    const current = renderCodexRotatingAdvisoryWorkflow({
-      actionRef,
-      apiUrl: "https://reviewrouter.site",
-      providerInstanceId: "codex-rotating:123456",
-      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
-      workflowSchemaVersion:
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
-      activeSecretNamespace: currentNamespace,
-    });
-    const next = renderCodexRotatingAdvisoryWorkflow({
-      actionRef,
-      apiUrl: "https://reviewrouter.site",
-      providerInstanceId: "codex-rotating:123456",
-      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
-      workflowSchemaVersion:
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
-      activeSecretNamespace: nextNamespace,
-    });
-    mocks.auth
-      .mockResolvedValueOnce({
-        token: "ghs_contents_write_token",
-        expiresAt: "2026-05-25T12:15:00.000Z",
-        permissions: { contents: "write" },
-      })
-      .mockResolvedValueOnce({
-        token: "ghs_contents_read_token",
-        expiresAt: "2026-05-25T12:15:00.000Z",
-        permissions: { contents: "read" },
+        workflowSourceCommitSha: "a".repeat(40),
+        secretNamespace: nextNamespace,
+        sourceTrust: "trusted_default_branch_revision",
       });
-    mocks.request
-      .mockResolvedValueOnce({
-        data: {
-          id: 123456,
-          full_name: "777genius/example",
-          default_branch: "main",
-        },
-      })
-      .mockResolvedValueOnce({
-        data: { name: "main", commit: { sha: "a".repeat(40) } },
-      })
-      .mockResolvedValueOnce({
-        data: {
-          type: "file",
-          encoding: "base64",
+      expect(mocks.request).toHaveBeenNthCalledWith(
+        4,
+        "PUT /repos/{owner}/{repo}/contents/{path}",
+        expect.objectContaining({
+          branch: "main",
           sha: gitBlobSha(current),
-          content: Buffer.from(current).toString("base64"),
-        },
-      })
-      .mockResolvedValueOnce({ data: { commit: { sha: "a".repeat(40) } } })
-      .mockResolvedValueOnce({
-        data: {
-          type: "file",
-          encoding: "base64",
-          sha: gitBlobSha(next),
           content: Buffer.from(next).toString("base64"),
-        },
-      })
-      .mockResolvedValueOnce({
-        data: {
-          id: 123456,
-          full_name: "777genius/example",
-          default_branch: "main",
-        },
-      })
-      .mockResolvedValueOnce({
-        data: { name: "main", commit: { sha: "a".repeat(40) } },
-      });
-    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
-      appId: "123",
-      privateKey: "private-key",
-      expectedApiUrl: "https://reviewrouter.site",
-      trustedActionRefs: [actionRef],
-    });
-    await expect(
-      gateway.publishAndVerifyVersionedWorkflow({
-        repository: {
-          workspaceId: "workspace-1",
-          repositoryId: "repository-1",
-          githubInstallationId: "129500385",
-          githubRepositoryId: "123456",
-          fullName: "777genius/example",
-          owner: "777genius",
-          selected: true,
-          installationStatus: "active",
-        },
-        providerInstanceId: "codex-rotating:123456",
-        namespace: nextNamespace,
-      }),
-    ).resolves.toMatchObject({
-      repositoryId: "123456",
-      workflowSourceCommitSha: "a".repeat(40),
-      secretNamespace: nextNamespace,
-      sourceTrust: "trusted_default_branch_revision",
-    });
-    expect(mocks.request).toHaveBeenNthCalledWith(
-      4,
-      "PUT /repos/{owner}/{repo}/contents/{path}",
-      expect.objectContaining({
-        branch: "main",
-        sha: gitBlobSha(current),
-        content: Buffer.from(next).toString("base64"),
-      }),
-    );
-  });
+        }),
+      );
+    },
+  );
 
   it("pins an unchanged active namespace before the default branch moves", async () => {
     const activeNamespace = allocateVersionedProviderSecretNamespace({

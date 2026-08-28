@@ -527,6 +527,8 @@ async function provisionPendingRepositoryOwnedWorkflow(input: {
           codexRotatingWorkflowSecretNamespace: namespaceInspection.namespace,
           codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
           forkAgenticSandboxEnabled: false,
+          codexRotatingWorkflowSchemaVersion:
+            CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
           actor: actor.actor,
         },
         {
@@ -1052,6 +1054,8 @@ async function createSetupPullRequestMutation(
     const codexRotatingV2Provisioning = codexRotatingProviderInstanceId
       ? {
           codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+          codexRotatingWorkflowSchemaVersion:
+            CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
         }
       : null;
     const forkAgenticSandboxEnabled = false;
@@ -1095,8 +1099,6 @@ async function createSetupPullRequestMutation(
               codexRotatingProviderInstanceId,
               codexRotatingWorkflowSecretNamespace:
                 codexRotatingWorkflowSecretNamespace!,
-              codexRotatingWorkflowSchemaVersion:
-                CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
               forkAgenticSandboxEnabled,
               ...(codexRotatingSecretInputs ?? {}),
               ...(codexRotatingV2Provisioning ?? {}),
@@ -1373,6 +1375,8 @@ async function confirmSetupPullRequestMergedMutation(
     const codexRotatingV2Provisioning = codexRotatingProviderInstanceId
       ? {
           codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+          codexRotatingWorkflowSchemaVersion:
+            CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
         }
       : null;
     const forkAgenticSandboxEnabled = false;
@@ -1408,8 +1412,6 @@ async function confirmSetupPullRequestMergedMutation(
                   codexRotatingProviderInstanceId,
                   codexRotatingWorkflowSecretNamespace:
                     codexRotatingWorkflowSecretNamespace!,
-                  codexRotatingWorkflowSchemaVersion:
-                    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
                   forkAgenticSandboxEnabled,
                   ...(codexRotatingSecretInputs ?? {}),
                   ...(codexRotatingV2Provisioning ?? {}),
@@ -1483,6 +1485,8 @@ async function confirmSetupPullRequestMergedMutation(
         defaultBranch: repository.defaultBranch,
         expectedRepositoryFullName: repository.fullName,
         expectedApiUrl: resolveWorkflowPublicApiUrl(),
+        expectedWorkflowSchemaVersion:
+          CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
       });
       if (hostedBinding?.status === "active") {
         await createPrismaHostedPoolDashboardMutationPort({
@@ -1609,6 +1613,8 @@ async function confirmProviderSecretSetupMutation(
         defaultBranch: repository.defaultBranch,
         expectedRepositoryFullName: repository.fullName,
         expectedApiUrl: resolveWorkflowPublicApiUrl(),
+        expectedWorkflowSchemaVersion:
+          CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
       });
       rotatingReadiness = await confirmCodexRotatingSetupReadiness(
         {
@@ -3077,6 +3083,8 @@ async function resolveCodexRotatingProvisioningActionRef(input: {
     expectedApiUrl: resolveWorkflowPublicApiUrl(),
     expectedProviderInstanceId: input.expectedProviderInstanceId,
     expectedSecretNamespace: input.inspection.namespace,
+    expectedWorkflowSchemaVersion:
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
   });
   const observedAttestation = createVersionedSecretWorkflowSourceAttestation({
     repositoryId: input.expectedRepositoryId,

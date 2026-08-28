@@ -95,6 +95,7 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       expect.objectContaining({
         expectedRepositoryId: "1228051727",
         expectedApiUrl: "https://api.reviewrouter.test",
+        expectedWorkflowSchemaVersion: 5,
       }),
     );
     expect(mocks.activate).toHaveBeenCalledWith(
@@ -214,6 +215,7 @@ function fixture() {
       defaultBranch: "main",
       expectedRepositoryFullName: "777genius/review-router-saas-e2e",
       expectedApiUrl: "https://api.reviewrouter.test",
+      expectedWorkflowSchemaVersion: 5,
     },
   };
 }

@@ -24,6 +24,7 @@ import {
 } from "../../../packages/features/repositories/src/index.ts";
 import {
   CodexRotatingReviewActionV2Mode,
+  CodexRotatingT0WorkflowSchemaVersion,
   WorkflowSourceTrust,
   assertSameVersionedProviderSecretNamespace,
   assertTrustedCanonicalVersionedWorkflow,
@@ -564,6 +565,8 @@ async function provisionRotatingWorkflow(input: {
       codexRotatingProviderInstanceId: input.providerInstanceId,
       codexRotatingWorkflowSecretNamespace: input.workflowNamespace,
       codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      codexRotatingWorkflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
       forkAgenticSandboxEnabled: false,
     },
     {
@@ -697,6 +700,8 @@ async function isRotatingWorkflowCurrentOnDefaultBranch(
       expectedApiUrl: apiUrl,
       expectedProviderInstanceId: providerInstanceId,
       expectedSecretNamespace: workflowNamespace,
+      expectedWorkflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
     });
     return true;
   } catch {
@@ -764,6 +769,8 @@ async function activateVersionedSetupNamespace(input: {
     expectedApiUrl: apiUrl,
     expectedProviderInstanceId: input.providerInstanceId,
     expectedSecretNamespace: input.workflowNamespace,
+    expectedWorkflowSchemaVersion:
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
   });
   const attestation = createVersionedSecretWorkflowSourceAttestation({
     repositoryId: input.githubRepositoryId,

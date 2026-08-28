@@ -229,6 +229,7 @@ export function assertTrustedCanonicalVersionedWorkflow(input: {
   readonly expectedApiUrl: string;
   readonly expectedProviderInstanceId: string;
   readonly expectedSecretNamespace: VersionedProviderSecretNamespace;
+  readonly expectedWorkflowSchemaVersion: CodexRotatingT0WorkflowSchemaVersion;
 }): void {
   if (!/^[1-9][0-9]*$/u.test(input.observedRepositoryId)) {
     throw new Error("codex_rotating_workflow_repository_id_invalid");
@@ -260,6 +261,8 @@ export function assertTrustedCanonicalVersionedWorkflow(input: {
     !isVersionedSecretNamespaceCodexWorkflowSchemaVersion(
       input.metadata.workflowSchemaVersion,
     ) ||
+    input.metadata.workflowSchemaVersion !==
+      input.expectedWorkflowSchemaVersion ||
     !input.metadata.secretNamespace
   ) {
     throw new Error("codex_rotating_workflow_v4_required");

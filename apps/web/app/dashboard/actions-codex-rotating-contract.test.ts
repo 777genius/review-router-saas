@@ -65,6 +65,22 @@ describe("dashboard rotating namespace activation contract", () => {
     ).toBeLessThan(helper.indexOf("return metadata.actionRef"));
     expect(helper).not.toContain("resolveReviewRouterActionRef");
   });
+
+  it("uses schema 5 for current rotating readiness, provisioning, and activation", () => {
+    const source = readFileSync(
+      new URL("./actions.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain(
+      "CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5",
+    );
+    expect(source).not.toContain(
+      "CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4",
+    );
+    expect(source).toContain("codexRotatingWorkflowSchemaVersion:");
+    expect(source).toContain("expectedWorkflowSchemaVersion:");
+  });
 });
 
 function sliceBetween(source: string, startAnchor: string, endAnchor: string) {

@@ -6,6 +6,7 @@ import {
 } from "@reviewrouter/features-provider-setup";
 import {
   assertTrustedCanonicalVersionedWorkflow,
+  type CodexRotatingT0WorkflowSchemaVersion,
   createVersionedSecretWorkflowSourceAttestation,
   defaultCodexRotatingWorkflowPath,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
@@ -46,6 +47,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
   readonly defaultBranch: string;
   readonly expectedRepositoryFullName: string;
   readonly expectedApiUrl: string;
+  readonly expectedWorkflowSchemaVersion: CodexRotatingT0WorkflowSchemaVersion;
 }): Promise<CodexRotatingWorkflowActivationResult> {
   const rotatingProvider =
     await input.prisma.codexOAuthProviderInstance.findUnique({
@@ -119,6 +121,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     expectedApiUrl: input.expectedApiUrl,
     expectedProviderInstanceId: providerInstanceId,
     expectedSecretNamespace: namespace,
+    expectedWorkflowSchemaVersion: input.expectedWorkflowSchemaVersion,
   });
   const attestation = createVersionedSecretWorkflowSourceAttestation({
     repositoryId: input.githubRepositoryId,
