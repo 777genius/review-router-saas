@@ -159,7 +159,7 @@ describe("exact active workflow attestation", () => {
         expectedWorkflowSchemaVersion:
           CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
       }),
-    ).toThrow("codex_rotating_workflow_v4_required");
+    ).toThrow("codex_rotating_workflow_schema_version_mismatch");
     expect(() =>
       assertTrustedCanonicalVersionedWorkflow({
         ...trusted,
@@ -275,7 +275,7 @@ describe("exact active workflow attestation", () => {
         expectedWorkflowSchemaVersion:
           CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
       }),
-    ).toThrow("codex_rotating_workflow_v4_required");
+    ).toThrow("codex_rotating_workflow_schema_version_mismatch");
 
     expect(() =>
       readCanonicalCodexRotatingT0WorkflowSourceMetadata(

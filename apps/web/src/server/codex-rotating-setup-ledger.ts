@@ -29,6 +29,11 @@ export const codexRotatingSetupLedger = {
     recordCodexRotatingSetupDispatchOutcome(input, ledger()),
   status: (input: unknown) => getCodexRotatingSetupStatus(input, ledger()),
   activate: (input: unknown) => activateCodexRotatingSetup(input, ledger()),
+  replaceActiveWorkflowSource: (
+    input: Parameters<
+      PrismaCodexRotatingSetupPayloadClaim["replaceActiveWorkflowSource"]
+    >[0],
+  ) => ledger().claims.replaceActiveWorkflowSource(input),
 };
 
 export function codexRotatingSetupLedgerHttpError(error: unknown): {

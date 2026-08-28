@@ -413,9 +413,9 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "new queued/in-progress supported workflow-schema work arrived between observations",
     ],
     [
-      "unknown future workflow schema",
+      "new v5 workflow arrival",
       (fixture: any) => {
-        fixture.artifacts.workflowRuns.observations[0].runs.push({
+        fixture.artifacts.workflowRuns.observations[1].runs.push({
           runId: "103",
           status: "queued",
           workflowSchemaVersion: 5,
@@ -423,13 +423,26 @@ describe("observation-backed Codex rotating rollout verifier", () => {
           headSha: "8".repeat(40),
         });
       },
+      "new queued/in-progress supported workflow-schema work arrived between observations",
+    ],
+    [
+      "unknown future workflow schema",
+      (fixture: any) => {
+        fixture.artifacts.workflowRuns.observations[0].runs.push({
+          runId: "104",
+          status: "queued",
+          workflowSchemaVersion: 6,
+          workflowPath: ".github/workflows/reviewrouter-codex.yml",
+          headSha: "8".repeat(40),
+        });
+      },
       "queued/in-progress supported workflow-schema inventory is incomplete",
     ],
     [
-      "omitted v4 schema inventory",
+      "omitted v5 schema inventory",
       (fixture: any) => {
         fixture.artifacts.workflowRuns.observations[1].inventoriedWorkflowSchemaVersions =
-          [1, 2, 3];
+          [1, 2, 3, 4];
       },
       "queued/in-progress supported workflow-schema inventory is incomplete",
     ],
@@ -2293,11 +2306,11 @@ function observedFixture(): any {
     workflowRuns: {
       observationVersion: 1,
       source: "github-actions-api",
-      supportedWorkflowSchemaVersions: [1, 2, 3, 4],
+      supportedWorkflowSchemaVersions: [1, 2, 3, 4, 5],
       observations: [
         {
           observedAt: "2026-08-09T00:03:05Z",
-          inventoriedWorkflowSchemaVersions: [1, 2, 3, 4],
+          inventoriedWorkflowSchemaVersions: [1, 2, 3, 4, 5],
           runs: [
             {
               runId: "100",
@@ -2310,7 +2323,7 @@ function observedFixture(): any {
         },
         {
           observedAt: "2026-08-09T00:03:35Z",
-          inventoriedWorkflowSchemaVersions: [1, 2, 3, 4],
+          inventoriedWorkflowSchemaVersions: [1, 2, 3, 4, 5],
           runs: [
             {
               runId: "100",

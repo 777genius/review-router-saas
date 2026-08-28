@@ -921,4 +921,64 @@ describe("Prisma rotating setup writer proof", () => {
     expect(activationSql[1]).toContain('UPDATE "CodexOAuthSetupPayloadClaim"');
     expect(activationSql[1]).toContain("'retired_active'");
   });
+
+  it("atomically replaces source attestation only for the exact active namespace", async () => {
+    const activeClaim = { ...claim, status: "active" };
+    const attempt = {
+      attemptId: "attempt:writer-proof",
+      namespaceId: "namespace:writer-proof",
+      namespaceEpoch: 1n,
+      secretName:
+        "REVIEWROUTER_CODEX_AUTH_JSON_R123456_P0000000000000000_E1_00000000000000000000000000000000",
+      status: "confirmed",
+      dispatchExpiresAt: new Date("2999-01-01T00:10:00.000Z"),
+    };
+    const tx = {
+      $executeRawUnsafe: vi.fn().mockResolvedValue(0),
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([activeClaim])
+        .mockResolvedValueOnce([
+          { writer: true, databaseIncarnation: claim.databaseIncarnation },
+        ])
+        .mockResolvedValueOnce([{ id: claim.providerInstanceRowId }])
+        .mockResolvedValueOnce([activeClaim])
+        .mockResolvedValueOnce([attempt]),
+    };
+    const prisma = { $transaction: vi.fn((callback) => callback(tx)) };
+    const ledger = new PrismaCodexRotatingSetupPayloadClaim(
+      prisma as never,
+      recoveryWitness,
+    );
+
+    await expect(
+      ledger.replaceActiveWorkflowSource({
+        claimId: activeClaim.id,
+        attemptId: attempt.attemptId,
+        namespaceId: attempt.namespaceId,
+        namespaceEpoch: attempt.namespaceEpoch.toString(),
+        secretName: attempt.secretName,
+        repositoryId: activeClaim.githubRepositoryId,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSourceCommitSha: "a".repeat(40),
+        workflowSourceBlobSha: "b".repeat(40),
+        workflowSourceSha256: "c".repeat(64),
+        workflowSemanticSha256: "d".repeat(64),
+        sourceTrust: "trusted_default_branch_revision",
+        expectedCurrentWorkflowSourceCommitSha: "e".repeat(40),
+        expectedCurrentWorkflowSourceBlobSha: "f".repeat(40),
+        expectedCurrentWorkflowSourceSha256: "1".repeat(64),
+        expectedCurrentWorkflowSemanticSha256: "2".repeat(64),
+      }),
+    ).resolves.toEqual({ status: "active" });
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    const sql = Array.from(
+      tx.$executeRaw.mock.calls[0]![0] as readonly string[],
+    ).join("?");
+    expect(sql).toContain("namespace.\"status\" = 'active'");
+    expect(sql).toContain('provider."activeSecretNamespaceId"');
+    expect(sql).toContain('provider."activeSecretNamespaceEpoch"');
+    expect(sql).toContain('namespace."workflowSourceCommitSha"');
+  });
 });

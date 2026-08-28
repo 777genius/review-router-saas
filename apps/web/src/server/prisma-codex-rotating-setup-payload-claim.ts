@@ -687,6 +687,86 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
     );
   }
 
+  /**
+   * Re-attests the workflow source for an unchanged active namespace. This is
+   * used when a canonical workflow schema is upgraded without rotating the
+   * provider secret generation.
+   */
+  async replaceActiveWorkflowSource(
+    input: Omit<CodexRotatingActivation, "workflowPath" | "sourceTrust"> & {
+      readonly workflowPath: string;
+      readonly sourceTrust: string;
+      readonly expectedCurrentWorkflowSourceCommitSha: string;
+      readonly expectedCurrentWorkflowSourceBlobSha: string;
+      readonly expectedCurrentWorkflowSourceSha256: string;
+      readonly expectedCurrentWorkflowSemanticSha256: string;
+    },
+  ) {
+    return this.prisma.$transaction(
+      async (tx) => {
+        const initial = await findClaim(tx, input.claimId);
+        await requireProvenWriter(
+          tx,
+          initial.databaseIncarnation,
+          initial.databaseRecoveryWitness,
+          this.databaseRecoveryWitness,
+        );
+        await lockCodexRotatingProviderRow(tx, initial.providerInstanceRowId);
+        const claim = await findClaimForUpdate(tx, input.claimId);
+        const attempt = await findAttemptForUpdate(
+          tx,
+          input.claimId,
+          input.attemptId,
+        );
+        if (
+          claim.status !== "active" ||
+          attempt.status !== "confirmed" ||
+          attempt.namespaceId !== input.namespaceId ||
+          attempt.namespaceEpoch.toString() !== input.namespaceEpoch ||
+          attempt.secretName !== input.secretName ||
+          claim.githubRepositoryId !== input.repositoryId
+        ) {
+          throw new Error("codex_rotating_setup_activation_mismatch");
+        }
+        const updated = await tx.$executeRaw`
+          UPDATE "CodexOAuthSecretNamespace" AS namespace
+          SET "workflowPath" = ${input.workflowPath},
+              "workflowSourceCommitSha" = ${input.workflowSourceCommitSha},
+              "workflowSourceBlobSha" = ${input.workflowSourceBlobSha},
+              "workflowSourceSha256" = ${input.workflowSourceSha256},
+              "workflowSemanticSha256" = ${input.workflowSemanticSha256},
+              "workflowSourceTrust" = ${input.sourceTrust},
+              "attestedRepositoryId" = ${input.repositoryId}
+          WHERE namespace."id" = ${input.namespaceId}
+            AND namespace."status" = 'active'
+            AND namespace."permanentlyRetired" = false
+            AND namespace."namespaceEpoch" = ${BigInt(input.namespaceEpoch)}
+            AND namespace."secretName" = ${input.secretName}
+            AND namespace."workflowPath" = ${input.workflowPath}
+            AND namespace."workflowSourceCommitSha" = ${input.expectedCurrentWorkflowSourceCommitSha}
+            AND namespace."workflowSourceBlobSha" = ${input.expectedCurrentWorkflowSourceBlobSha}
+            AND namespace."workflowSourceSha256" = ${input.expectedCurrentWorkflowSourceSha256}
+            AND namespace."workflowSemanticSha256" = ${input.expectedCurrentWorkflowSemanticSha256}
+            AND namespace."workflowSourceTrust" = ${input.sourceTrust}
+            AND namespace."attestedRepositoryId" = ${input.repositoryId}
+            AND EXISTS (
+              SELECT 1 FROM "CodexOAuthProviderInstance" AS provider
+              WHERE provider."id" = ${claim.providerInstanceRowId}
+                AND provider."state" = 'active'
+                AND provider."activeSecretNamespaceId" = namespace."id"
+                AND provider."activeSecretNamespaceEpoch" = namespace."namespaceEpoch"
+                AND provider."activeSecretNamespaceName" = namespace."secretName"
+            )
+        `;
+        if (updated !== 1) {
+          throw new Error("codex_rotating_setup_activation_stale_epoch");
+        }
+        return { status: "active" as const };
+      },
+      { timeout: transactionTimeoutMs },
+    );
+  }
+
   async retireProviderGeneration(
     input: CodexRotatingSetupRecoveryFence,
   ): Promise<void> {

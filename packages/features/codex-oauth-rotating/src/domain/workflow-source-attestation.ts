@@ -265,7 +265,7 @@ export function assertTrustedCanonicalVersionedWorkflow(input: {
       input.expectedWorkflowSchemaVersion ||
     !input.metadata.secretNamespace
   ) {
-    throw new Error("codex_rotating_workflow_v4_required");
+    throw new Error("codex_rotating_workflow_schema_version_mismatch");
   }
   assertSameVersionedProviderSecretNamespace({
     expected: input.expectedSecretNamespace,

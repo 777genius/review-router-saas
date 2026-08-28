@@ -2304,7 +2304,7 @@ function verifyWorkflowRuns(observation, descriptor, need, options) {
     need,
     options,
   );
-  const supportedWorkflowSchemaVersions = [1, 2, 3, 4];
+  const supportedWorkflowSchemaVersions = [1, 2, 3, 4, 5];
   const hasExactSupportedSchemaInventory = (versions) =>
     Array.isArray(versions) &&
     JSON.stringify(versions) ===

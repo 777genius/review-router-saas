@@ -141,8 +141,72 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     throw new Error("codex_rotating_workflow_default_head_changed");
   }
   if (inspection.source === "active") {
+    const currentAttestation =
+      await input.prisma.codexOAuthSecretNamespace.findUnique({
+        where: { id: namespace.namespaceId },
+        select: {
+          workflowPath: true,
+          workflowSourceCommitSha: true,
+          workflowSourceBlobSha: true,
+          workflowSourceSha256: true,
+          workflowSemanticSha256: true,
+          workflowSourceTrust: true,
+          attestedRepositoryId: true,
+        },
+      });
+    if (
+      currentAttestation?.workflowPath !== attestation.workflowPath ||
+      !currentAttestation.workflowSourceCommitSha ||
+      !currentAttestation.workflowSourceBlobSha ||
+      !currentAttestation.workflowSourceSha256 ||
+      !currentAttestation.workflowSemanticSha256 ||
+      currentAttestation.workflowSourceTrust !== attestation.sourceTrust ||
+      currentAttestation.attestedRepositoryId !== attestation.repositoryId
+    ) {
+      throw new Error("codex_rotating_workflow_source_attestation_missing");
+    }
+    if (
+      currentAttestation.workflowSourceCommitSha ===
+        attestation.workflowSourceCommitSha &&
+      currentAttestation.workflowSourceBlobSha ===
+        attestation.workflowSourceBlobSha &&
+      currentAttestation.workflowSourceSha256 ===
+        attestation.workflowSourceSha256 &&
+      currentAttestation.workflowSemanticSha256 ===
+        attestation.workflowSemanticSha256 &&
+      currentAttestation.workflowSourceTrust === attestation.sourceTrust &&
+      currentAttestation.attestedRepositoryId === attestation.repositoryId
+    ) {
+      return {
+        status: "already_active",
+        namespaceEpoch: namespace.epoch.toString(),
+        workflowSourceCommitSha,
+      };
+    }
+    await codexRotatingSetupLedger.replaceActiveWorkflowSource({
+      claimId: inspection.claimId,
+      attemptId: inspection.attemptId,
+      namespaceId: namespace.namespaceId,
+      namespaceEpoch: namespace.epoch.toString(),
+      secretName: namespace.name,
+      repositoryId: attestation.repositoryId,
+      workflowPath: attestation.workflowPath,
+      workflowSourceCommitSha: attestation.workflowSourceCommitSha,
+      workflowSourceBlobSha: attestation.workflowSourceBlobSha,
+      workflowSourceSha256: attestation.workflowSourceSha256,
+      workflowSemanticSha256: attestation.workflowSemanticSha256,
+      sourceTrust: attestation.sourceTrust,
+      expectedCurrentWorkflowSourceCommitSha:
+        currentAttestation.workflowSourceCommitSha,
+      expectedCurrentWorkflowSourceBlobSha:
+        currentAttestation.workflowSourceBlobSha,
+      expectedCurrentWorkflowSourceSha256:
+        currentAttestation.workflowSourceSha256,
+      expectedCurrentWorkflowSemanticSha256:
+        currentAttestation.workflowSemanticSha256,
+    });
     return {
-      status: "already_active",
+      status: "activated",
       namespaceEpoch: namespace.epoch.toString(),
       workflowSourceCommitSha,
     };

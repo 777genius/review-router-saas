@@ -217,6 +217,19 @@ describe("Codex rotating CLI workflow activation route", () => {
     });
   });
 
+  it("returns the schema-neutral workflow mismatch code", async () => {
+    mocks.activate.mockRejectedValueOnce(
+      new Error("codex_rotating_workflow_schema_version_mismatch"),
+    );
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "codex_rotating_workflow_schema_version_mismatch",
+    });
+  });
+
   it("extracts only an allowlisted activation invariant from wrapped errors", async () => {
     mocks.activate.mockRejectedValueOnce(
       new Error(

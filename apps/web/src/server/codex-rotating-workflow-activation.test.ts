@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   createAttestation: vi.fn(),
   inspectNamespace: vi.fn(),
   readMetadata: vi.fn(),
+  replaceActiveWorkflowSource: vi.fn(),
   semanticSha: vi.fn(),
 }));
 
@@ -33,7 +34,10 @@ vi.mock("@reviewrouter/platform-config", () => ({
   ],
 }));
 vi.mock("./codex-rotating-setup-ledger", () => ({
-  codexRotatingSetupLedger: { activate: mocks.activate },
+  codexRotatingSetupLedger: {
+    activate: mocks.activate,
+    replaceActiveWorkflowSource: mocks.replaceActiveWorkflowSource,
+  },
 }));
 vi.mock("./prisma-codex-rotating-workflow-namespace", () => ({
   PrismaCodexRotatingWorkflowNamespace: class {},
@@ -127,6 +131,49 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       workflowSourceCommitSha: firstHead,
     });
     expect(mocks.activate).not.toHaveBeenCalled();
+    expect(mocks.replaceActiveWorkflowSource).not.toHaveBeenCalled();
+  });
+
+  it("re-attests an active V4 namespace after its workflow is upgraded to V5", async () => {
+    mocks.inspectNamespace.mockResolvedValueOnce({
+      source: "active",
+      claimId: "claim_1",
+      attemptId: "attempt_1",
+      namespace: {
+        namespaceId: "namespace_2",
+        epoch: 2n,
+        name: "REVIEWROUTER_CODEX_AUTH_JSON_TEST_E2",
+      },
+    });
+    const { input, findAttestation } = fixture();
+    findAttestation.mockResolvedValueOnce({
+      workflowPath: ".github/workflows/reviewrouter-codex.yml",
+      workflowSourceCommitSha: "d".repeat(40),
+      workflowSourceBlobSha: "e".repeat(40),
+      workflowSourceSha256: "f".repeat(64),
+      workflowSemanticSha256: "1".repeat(64),
+      workflowSourceTrust: "trusted_default_branch_revision",
+      attestedRepositoryId: "1228051727",
+    });
+
+    await expect(
+      activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
+    ).resolves.toEqual({
+      status: "activated",
+      namespaceEpoch: "2",
+      workflowSourceCommitSha: firstHead,
+    });
+    expect(mocks.assertTrusted).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedWorkflowSchemaVersion: 5 }),
+    );
+    expect(mocks.replaceActiveWorkflowSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        claimId: "claim_1",
+        attemptId: "attempt_1",
+        namespaceId: "namespace_2",
+        workflowSourceCommitSha: firstHead,
+      }),
+    );
   });
 
   it("fails closed when the default branch changes during attestation", async () => {
@@ -193,6 +240,15 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
 
 function fixture() {
   const findUnique = vi.fn().mockResolvedValue({ id: "provider_1" });
+  const findAttestation = vi.fn().mockResolvedValue({
+    workflowPath: ".github/workflows/reviewrouter-codex.yml",
+    workflowSourceCommitSha: firstHead,
+    workflowSourceBlobSha: blobSha,
+    workflowSourceSha256: "c".repeat(64),
+    workflowSemanticSha256: "b".repeat(64),
+    workflowSourceTrust: "trusted_default_branch_revision",
+    attestedRepositoryId: "1228051727",
+  });
   const request = vi
     .fn()
     .mockResolvedValueOnce(repositoryResponse())
@@ -201,10 +257,12 @@ function fixture() {
     .mockResolvedValueOnce(refResponse(firstHead));
   return {
     findUnique,
+    findAttestation,
     request,
     input: {
       prisma: {
         codexOAuthProviderInstance: { findUnique },
+        codexOAuthSecretNamespace: { findUnique: findAttestation },
       } as never,
       octokit: { request },
       workspaceId: "workspace_1",

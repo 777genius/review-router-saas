@@ -54,6 +54,12 @@ describe("dashboard rotating namespace activation contract", () => {
     );
     expect(helper).toContain("assertTrustedCanonicalVersionedWorkflow");
     expect(helper).toContain(
+      "isVersionedSecretNamespaceCodexWorkflowSchemaVersion",
+    );
+    expect(helper).toContain(
+      "expectedWorkflowSchemaVersion: metadata.workflowSchemaVersion",
+    );
+    expect(helper).toContain(
       "expectedSecretNamespace: input.inspection.namespace",
     );
     expect(helper).toContain("codexOAuthSecretNamespace.findUnique");

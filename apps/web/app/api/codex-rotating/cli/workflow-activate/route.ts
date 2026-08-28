@@ -175,6 +175,8 @@ function safeErrorCode(error: unknown): string {
     "codex_rotating_workflow_repository_id_invalid",
     "codex_rotating_workflow_repository_identity_mismatch",
     "codex_rotating_workflow_string_required",
+    "codex_rotating_workflow_schema_version_mismatch",
+    // Kept safe for responses from an older web/API package during rollout.
     "codex_rotating_workflow_v4_required",
     "codex_rotating_workflow_yaml_invalid",
     "provider_secret_namespace_epoch_mismatch",

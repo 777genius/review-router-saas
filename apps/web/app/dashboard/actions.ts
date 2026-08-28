@@ -72,6 +72,7 @@ import {
   assertActiveVersionedSecretWorkflowAttestation,
   assertTrustedCanonicalVersionedWorkflow,
   createVersionedSecretWorkflowSourceAttestation,
+  isVersionedSecretNamespaceCodexWorkflowSchemaVersion,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
   workflowDocumentSemanticSha256,
   WorkflowSourceTrust,
@@ -3073,6 +3074,13 @@ async function resolveCodexRotatingProvisioningActionRef(input: {
   );
   const { source, blobSha } = readGitHubWorkflowBlob(contentResponse.data);
   const metadata = readCanonicalCodexRotatingT0WorkflowSourceMetadata(source);
+  if (
+    !isVersionedSecretNamespaceCodexWorkflowSchemaVersion(
+      metadata.workflowSchemaVersion,
+    )
+  ) {
+    throw new Error("codex_rotating_workflow_schema_version_mismatch");
+  }
   assertTrustedCanonicalVersionedWorkflow({
     metadata,
     observedRepositoryId: observedRepository.id,
@@ -3083,8 +3091,7 @@ async function resolveCodexRotatingProvisioningActionRef(input: {
     expectedApiUrl: resolveWorkflowPublicApiUrl(),
     expectedProviderInstanceId: input.expectedProviderInstanceId,
     expectedSecretNamespace: input.inspection.namespace,
-    expectedWorkflowSchemaVersion:
-      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+    expectedWorkflowSchemaVersion: metadata.workflowSchemaVersion,
   });
   const observedAttestation = createVersionedSecretWorkflowSourceAttestation({
     repositoryId: input.expectedRepositoryId,
