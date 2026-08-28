@@ -91,6 +91,13 @@ const migrations = [
     expectedSha256:
       "3e5b6606f22c8bec6f75f52f48b693806d597fa283155f6e033844c4f6be4de6",
   },
+  {
+    id: "000079_codex_oauth_v4_v5_workflow_reattestation",
+    sourceFile:
+      "packages/platform/db/prisma/migrations/000079_codex_oauth_v4_v5_workflow_reattestation/migration.sql",
+    expectedSha256:
+      "dbc4c472b188f6fd0b423c8415afeffa9d7907f4476d44d8aeb74e1a3534c4fc",
+  },
 ];
 const checkedInRotatingMigrations = readdirSync(
   resolve(checkoutRoot, "packages/platform/db/prisma/migrations"),
@@ -1420,6 +1427,10 @@ function exactFunctionDefinition(entry) {
         "target_kind text, target_id text, replacement_lease_id text DEFAULT NULL::text",
       codex_oauth_repair_quarantined_provider:
         "provider_row_id text, old_workspace_id text, old_repository_id text, old_provider_instance_id text, old_auth_mode text, old_secret_name text, old_repository_provider text, old_github_repository_id bigint, old_external_repository_id text, new_workspace_id text, new_repository_id text, new_provider_instance_id text, new_auth_mode text, new_secret_name text, new_github_repository_id bigint, target_signature text",
+      codex_oauth_reattest_active_namespace_v4_to_v5:
+        "target_provider_row_id text, target_claim_id text, target_attempt_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_generation_hash text, target_workflow_path text, target_source_trust text, expected_schema_version integer, target_schema_version integer, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text",
+      codex_oauth_v4_v5_reattestation_transition:
+        "target_provider_row_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_workflow_path text, target_source_trust text, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text",
     }[entry?.name] ?? "";
   const expectedResult = entry?.name?.startsWith("codex_oauth_authorize_")
     ? "void"
@@ -1428,11 +1439,14 @@ function exactFunctionDefinition(entry) {
       : entry?.name === "codex_oauth_database_authority_challenge" ||
           entry?.name === "codex_oauth_sign_database_authority" ||
           entry?.name === "codex_oauth_provider_identity_transition" ||
-          entry?.name === "codex_oauth_provider_identity_repair_challenge"
+          entry?.name === "codex_oauth_provider_identity_repair_challenge" ||
+          entry?.name === "codex_oauth_v4_v5_reattestation_transition"
         ? "text"
-        : entry?.name?.includes("repair")
+        : entry?.name === "codex_oauth_reattest_active_namespace_v4_to_v5"
           ? "void"
-          : "trigger";
+          : entry?.name?.includes("repair")
+            ? "void"
+            : "trigger";
   const securityDefinerFunction =
     entry?.name?.startsWith("codex_oauth_authorize_") ||
     entry?.name === "codex_oauth_consume_database_authority" ||
@@ -1440,13 +1454,16 @@ function exactFunctionDefinition(entry) {
     entry?.name === "codex_oauth_provider_identity_repair_challenge" ||
     entry?.name === "codex_oauth_provider_identity_guard" ||
     entry?.name === "codex_oauth_runtime_referential_action_guard" ||
-    entry?.name === "codex_oauth_repair_quarantined_provider";
+    entry?.name === "codex_oauth_repair_quarantined_provider" ||
+    entry?.name === "codex_oauth_reattest_active_namespace_v4_to_v5" ||
+    entry?.name === "codex_oauth_secret_namespace_tombstone_guard";
   const fixedSearchPathFunction =
     securityDefinerFunction ||
     entry?.name === "codex_oauth_database_authority_challenge" ||
     entry?.name === "codex_oauth_database_authority_receipt_guard" ||
     entry?.name === "codex_oauth_provider_identity_transition" ||
-    entry?.name === "codex_oauth_provider_identity_repair_challenge";
+    entry?.name === "codex_oauth_provider_identity_repair_challenge" ||
+    entry?.name === "codex_oauth_v4_v5_reattestation_transition";
   return (
     typeof bodySha256 === "string" &&
     hasExactKeys(entry, [

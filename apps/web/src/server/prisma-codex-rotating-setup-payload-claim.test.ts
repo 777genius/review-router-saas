@@ -966,19 +966,18 @@ describe("Prisma rotating setup writer proof", () => {
         workflowSourceSha256: "c".repeat(64),
         workflowSemanticSha256: "d".repeat(64),
         sourceTrust: "trusted_default_branch_revision",
+        expectedCurrentWorkflowSchemaVersion: 4,
+        workflowSchemaVersion: 5,
         expectedCurrentWorkflowSourceCommitSha: "e".repeat(40),
         expectedCurrentWorkflowSourceBlobSha: "f".repeat(40),
         expectedCurrentWorkflowSourceSha256: "1".repeat(64),
         expectedCurrentWorkflowSemanticSha256: "2".repeat(64),
       }),
     ).resolves.toEqual({ status: "active" });
-    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
     const sql = Array.from(
-      tx.$executeRaw.mock.calls[0]![0] as readonly string[],
+      tx.$queryRaw.mock.calls.at(-1)![0] as readonly string[],
     ).join("?");
-    expect(sql).toContain("namespace.\"status\" = 'active'");
-    expect(sql).toContain('provider."activeSecretNamespaceId"');
-    expect(sql).toContain('provider."activeSecretNamespaceEpoch"');
-    expect(sql).toContain('namespace."workflowSourceCommitSha"');
+    expect(sql).toContain("codex_oauth_reattest_active_namespace_v4_to_v5");
   });
 });

@@ -132,21 +132,25 @@ export const canonicalReleaseMigrationEntries = Object.freeze([
     "000073_codex_oauth_active_namespace_refresh",
     "3e5b6606f22c8bec6f75f52f48b693806d597fa283155f6e033844c4f6be4de6",
   ],
+  [
+    "000079_codex_oauth_v4_v5_workflow_reattestation",
+    "dbc4c472b188f6fd0b423c8415afeffa9d7907f4476d44d8aeb74e1a3534c4fc",
+  ],
 ] as const).map(([name, checksum]) =>
   Object.freeze({ migrationName: name, migrationSqlSha256: checksum }),
 );
 
 export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
-    "sha256:bc7853ee946ab41b455e786dded6b34fb0f548a4591ca965d066e8efb1479cd5",
+    "sha256:80a2579253251ca88a0a632897d2dfa60022d340945d3cf03a6436acea749194",
   preManifestIdentity:
     "sha256:bb102d7d6013f7373f177ea5f266a5427a877fc54b95af8876d30ec2b17ab478",
   orderedPendingEntriesSha256:
-    "sha256:c2eae628ec1b20ab29f09ae56ea6111a7d97948c8e5fea370c6cf5e45cf330fa",
+    "sha256:dd38e5d9a9479a3dd6073f08e6ed9984ec2a653664ba37fbbabbb11a418b0c3b",
   migrationBundleSha256:
-    "sha256:b98968fc30e81ab1af1d5e0c47004e158e281b1a690c41c4f2b74eec6400d73a",
+    "sha256:df9c80cf4b8920a19661c3a7c6974eb7cb2d118863b25c4517d9f0436819b940",
   postManifestIdentity:
-    "sha256:0d5e4d1977714b1239f0bd2f6581cd5ba0f4b8ef9d16c02e1def2562492be004",
+    "sha256:26fce7eaa4eee4396fe5a94e425554b67fe755d5b0a6a8560c4ba19f7ac58f68",
   // Captured digest of the canonical live V70-V73 catalog projection.
   postCatalogDigest:
     "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0",

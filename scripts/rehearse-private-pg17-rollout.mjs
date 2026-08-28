@@ -279,6 +279,7 @@ const preReleaseMigrationBoundary = Object.freeze({
     "000072_retire_superseded_codex_setup_claims",
     "000072_runtime_canary_challenge",
     "000073_codex_oauth_active_namespace_refresh",
+    "000079_codex_oauth_v4_v5_workflow_reattestation",
   ]),
   retained: Object.freeze([
     "000067_review_live_progress",

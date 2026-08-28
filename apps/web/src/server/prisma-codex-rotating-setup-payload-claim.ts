@@ -696,6 +696,8 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
     input: Omit<CodexRotatingActivation, "workflowPath" | "sourceTrust"> & {
       readonly workflowPath: string;
       readonly sourceTrust: string;
+      readonly expectedCurrentWorkflowSchemaVersion: 4;
+      readonly workflowSchemaVersion: 5;
       readonly expectedCurrentWorkflowSourceCommitSha: string;
       readonly expectedCurrentWorkflowSourceBlobSha: string;
       readonly expectedCurrentWorkflowSourceSha256: string;
@@ -728,39 +730,21 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
         ) {
           throw new Error("codex_rotating_setup_activation_mismatch");
         }
-        const updated = await tx.$executeRaw`
-          UPDATE "CodexOAuthSecretNamespace" AS namespace
-          SET "workflowPath" = ${input.workflowPath},
-              "workflowSourceCommitSha" = ${input.workflowSourceCommitSha},
-              "workflowSourceBlobSha" = ${input.workflowSourceBlobSha},
-              "workflowSourceSha256" = ${input.workflowSourceSha256},
-              "workflowSemanticSha256" = ${input.workflowSemanticSha256},
-              "workflowSourceTrust" = ${input.sourceTrust},
-              "attestedRepositoryId" = ${input.repositoryId}
-          WHERE namespace."id" = ${input.namespaceId}
-            AND namespace."status" = 'active'
-            AND namespace."permanentlyRetired" = false
-            AND namespace."namespaceEpoch" = ${BigInt(input.namespaceEpoch)}
-            AND namespace."secretName" = ${input.secretName}
-            AND namespace."workflowPath" = ${input.workflowPath}
-            AND namespace."workflowSourceCommitSha" = ${input.expectedCurrentWorkflowSourceCommitSha}
-            AND namespace."workflowSourceBlobSha" = ${input.expectedCurrentWorkflowSourceBlobSha}
-            AND namespace."workflowSourceSha256" = ${input.expectedCurrentWorkflowSourceSha256}
-            AND namespace."workflowSemanticSha256" = ${input.expectedCurrentWorkflowSemanticSha256}
-            AND namespace."workflowSourceTrust" = ${input.sourceTrust}
-            AND namespace."attestedRepositoryId" = ${input.repositoryId}
-            AND EXISTS (
-              SELECT 1 FROM "CodexOAuthProviderInstance" AS provider
-              WHERE provider."id" = ${claim.providerInstanceRowId}
-                AND provider."state" = 'active'
-                AND provider."activeSecretNamespaceId" = namespace."id"
-                AND provider."activeSecretNamespaceEpoch" = namespace."namespaceEpoch"
-                AND provider."activeSecretNamespaceName" = namespace."secretName"
-            )
+        await tx.$queryRaw`
+          SELECT "codex_oauth_reattest_active_namespace_v4_to_v5"(
+            ${claim.providerInstanceRowId}, ${claim.id}, ${attempt.attemptId},
+            ${input.namespaceId}, ${BigInt(input.namespaceEpoch)}, ${input.secretName},
+            ${input.repositoryId}, ${claim.generationHash}, ${input.workflowPath},
+            ${input.sourceTrust}, ${input.expectedCurrentWorkflowSchemaVersion},
+            ${input.workflowSchemaVersion},
+            ${input.expectedCurrentWorkflowSourceCommitSha},
+            ${input.expectedCurrentWorkflowSourceBlobSha},
+            ${input.expectedCurrentWorkflowSourceSha256},
+            ${input.expectedCurrentWorkflowSemanticSha256},
+            ${input.workflowSourceCommitSha}, ${input.workflowSourceBlobSha},
+            ${input.workflowSourceSha256}, ${input.workflowSemanticSha256}
+          )
         `;
-        if (updated !== 1) {
-          throw new Error("codex_rotating_setup_activation_stale_epoch");
-        }
         return { status: "active" as const };
       },
       { timeout: transactionTimeoutMs },

@@ -153,7 +153,7 @@ describe("production-writer rollout observation capture", () => {
       functionsEnd,
     );
 
-    expect(codexRotatingFunctionBodyDigests).toHaveLength(22);
+    expect(codexRotatingFunctionBodyDigests).toHaveLength(24);
     expect(functionsSql).toContain("'bodySha256'");
     expect(functionsSql).toContain("'owner', owner.rolname");
     expect(functionsSql).toContain("p.prosrc");
@@ -632,6 +632,10 @@ describe("production-writer rollout observation capture", () => {
         },
         {
           id: "000073_codex_oauth_active_namespace_refresh",
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        },
+        {
+          id: "000079_codex_oauth_v4_v5_workflow_reattestation",
           sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
         },
       ],

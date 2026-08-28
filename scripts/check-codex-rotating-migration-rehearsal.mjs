@@ -60,6 +60,7 @@ const migration76Name =
   "000076_hosted_codex_terminalization_restore_invariants";
 const migration77Name = "000077_hosted_codex_r57_security_race_remediation";
 const migration78Name = "000078_review_investigation_maintenance_checkpoint";
+const migration79Name = "000079_codex_oauth_v4_v5_workflow_reattestation";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -93,6 +94,7 @@ assert(
       migration76Name,
       migration77Name,
       migration78Name,
+      migration79Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -189,6 +191,11 @@ try {
   proveCompletedRecoveryEvidenceRetention(providerAdmin);
   const versionedNamespaceEvidence =
     proveVersionedNamespaceLedger(providerAdmin);
+  await proveActiveNamespaceV4V5Reattestation(
+    providerAdmin,
+    runtimeClients,
+    versionedNamespaceEvidence,
+  );
   provePrismaCleanupRetention(providerAdmin, versionedNamespaceEvidence);
   proveLegacyChildWritesRejected(providerAdmin);
   proveParentIdentityWriteRejected(providerAdmin);
@@ -201,7 +208,7 @@ try {
   const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000078 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000079 rehearsal passed.\n",
   );
 } finally {
   const databaseDrop = psql(
@@ -1566,6 +1573,213 @@ function proveVersionedNamespaceLedger(url) {
     assertVersionedNamespaceEvidenceRetained(url, evidence, table);
   }
   return evidence;
+}
+
+async function proveActiveNamespaceV4V5Reattestation(
+  adminUrl,
+  clients,
+  evidence,
+) {
+  const target = JSON.parse(
+    psql(adminUrl, [
+      "-Atc",
+      `SELECT row_to_json(target) FROM (
+        SELECT provider."id" AS "providerId", provider."latestGenerationHash" AS "generationHash",
+          claim."id" AS "claimId", attempt."id" AS "attemptId",
+          namespace."id" AS "namespaceId", namespace."namespaceEpoch"::text AS "namespaceEpoch",
+          namespace."secretName", namespace."githubRepositoryId" AS "repositoryId",
+          namespace."workflowPath", namespace."workflowSourceTrust" AS "sourceTrust",
+          namespace."workflowSourceCommitSha" AS "commitSha",
+          namespace."workflowSourceBlobSha" AS "blobSha",
+          namespace."workflowSourceSha256" AS "sourceSha256",
+          namespace."workflowSemanticSha256" AS "semanticSha256"
+        FROM "CodexOAuthProviderInstance" provider
+        JOIN "CodexOAuthSecretNamespace" namespace
+          ON namespace."id" = provider."activeSecretNamespaceId"
+        JOIN "CodexOAuthSetupDispatchAttempt" attempt
+          ON attempt."namespaceId" = namespace."id"
+        JOIN "CodexOAuthSetupPayloadClaim" claim
+          ON claim."id" = attempt."claimId"
+        WHERE namespace."id"=${quoteLiteral(evidence.activeRecoverySetupNamespace.namespaceId)}
+      ) target`,
+    ]).stdout.trim(),
+  );
+  const nextHex = (length, current, digit) => {
+    const candidate = digit.repeat(length);
+    return candidate === current
+      ? (digit === "a" ? "b" : "a").repeat(length)
+      : candidate;
+  };
+  const winner = {
+    commitSha: nextHex(40, target.commitSha, "1"),
+    blobSha: nextHex(40, target.blobSha, "2"),
+    sourceSha256: nextHex(64, target.sourceSha256, "3"),
+    semanticSha256: nextHex(64, target.semanticSha256, "4"),
+  };
+  const competitor = {
+    commitSha: nextHex(40, target.commitSha, "5"),
+    blobSha: nextHex(40, target.blobSha, "6"),
+    sourceSha256: nextHex(64, target.sourceSha256, "7"),
+    semanticSha256: nextHex(64, target.semanticSha256, "8"),
+  };
+  const call = (oldEvidence, newEvidence, overrides = {}) => {
+    const exact = { ...target, ...overrides };
+    return `public."codex_oauth_reattest_active_namespace_v4_to_v5"(
+      ${quoteLiteral(exact.providerId)},${quoteLiteral(exact.claimId)},${quoteLiteral(exact.attemptId)},
+      ${quoteLiteral(exact.namespaceId)},${exact.namespaceEpoch}::bigint,${quoteLiteral(exact.secretName)},
+      ${quoteLiteral(exact.repositoryId)},${quoteLiteral(exact.generationHash)},
+      ${quoteLiteral(exact.workflowPath)},${quoteLiteral(exact.sourceTrust)},4,5,
+      ${quoteLiteral(oldEvidence.commitSha)},${quoteLiteral(oldEvidence.blobSha)},
+      ${quoteLiteral(oldEvidence.sourceSha256)},${quoteLiteral(oldEvidence.semanticSha256)},
+      ${quoteLiteral(newEvidence.commitSha)},${quoteLiteral(newEvidence.blobSha)},
+      ${quoteLiteral(newEvidence.sourceSha256)},${quoteLiteral(newEvidence.semanticSha256)})`;
+  };
+
+  const winnerInvocation = createSecretSafePostgresInvocation({
+    databaseUrl: clients.web,
+    args: ["-X", "-qAt", "-v", "ON_ERROR_STOP=1"],
+  });
+  const winnerProcess = spawn(psqlBinary, winnerInvocation.args, {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: winnerInvocation.environment,
+  });
+  const winnerClose = new Promise((resolveClose) =>
+    winnerProcess.once("close", resolveClose),
+  );
+  const winnerLines = createInterface({ input: winnerProcess.stdout })[
+    Symbol.asyncIterator
+  ]();
+  let winnerError = "";
+  winnerProcess.stderr.on("data", (chunk) => {
+    winnerError += String(chunk);
+  });
+  try {
+    winnerProcess.stdin.end(
+      `BEGIN; SELECT ${call(target, winner)}; SELECT 'winner-updated'; SELECT pg_sleep(0.5); COMMIT;\n`,
+    );
+    let marker;
+    do {
+      marker = await winnerLines.next();
+    } while (!marker.done && marker.value !== "winner-updated");
+    assert(
+      !marker.done,
+      "active_namespace_reattestation_winner_did_not_update",
+    );
+
+    const loser = psql(
+      clients.web,
+      ["-c", `SELECT ${call(target, competitor)}`],
+      false,
+    );
+    assertPsqlFailedWithExactMessage(
+      loser,
+      "codex_oauth_active_namespace_reattestation_stale",
+      "concurrent active namespace re-attestation did not fail closed",
+    );
+    const winnerStatus = await winnerClose;
+    assert(
+      winnerStatus === 0,
+      `authorized active namespace re-attestation failed:${winnerError}`,
+    );
+  } finally {
+    await terminateChild(winnerProcess);
+    winnerInvocation.cleanup();
+  }
+
+  const stale = psql(
+    clients.web,
+    ["-c", `SELECT ${call(target, competitor)}`],
+    false,
+  );
+  assertPsqlFailedWithExactMessage(
+    stale,
+    "codex_oauth_active_namespace_reattestation_stale",
+    "stale old workflow SHA did not fail closed",
+  );
+
+  const postWinner = { ...target, ...winner };
+  for (const [label, overrides, expectedError] of [
+    [
+      "repository",
+      { repositoryId: "999999999" },
+      "codex_oauth_active_namespace_reattestation_stale",
+    ],
+    [
+      "epoch",
+      { namespaceEpoch: String(BigInt(target.namespaceEpoch) + 1n) },
+      "codex_oauth_active_namespace_reattestation_stale",
+    ],
+    [
+      "generation",
+      { generationHash: nextHex(64, target.generationHash, "9") },
+      "codex_oauth_active_namespace_reattestation_stale",
+    ],
+    [
+      "path",
+      { workflowPath: ".github/workflows/not-the-active-workflow.yml" },
+      "codex_oauth_active_namespace_reattestation_stale",
+    ],
+    [
+      "trust",
+      { sourceTrust: "mutable_or_untrusted" },
+      "codex_oauth_active_namespace_reattestation_invalid",
+    ],
+  ]) {
+    const rejected = psql(
+      clients.web,
+      ["-c", `SELECT ${call(postWinner, competitor, overrides)}`],
+      false,
+    );
+    assertPsqlFailedWithExactMessage(
+      rejected,
+      expectedError,
+      `wrong ${label} active namespace re-attestation did not fail closed`,
+    );
+  }
+
+  const direct = psql(
+    adminUrl,
+    [
+      "-c",
+      `UPDATE "CodexOAuthSecretNamespace"
+       SET "workflowSourceCommitSha"=${quoteLiteral(competitor.commitSha)}
+       WHERE "id"=${quoteLiteral(target.namespaceId)}`,
+    ],
+    false,
+  );
+  assertPsqlFailedWithExactMessage(
+    direct,
+    "codex_oauth_secret_namespace_identity_immutable",
+    "direct active namespace evidence update bypassed the tombstone guard",
+  );
+  assert(
+    psql(adminUrl, [
+      "-Atc",
+      `SELECT count(*) FROM "CodexOAuthSecretNamespace"
+       WHERE "id"=${quoteLiteral(target.namespaceId)}
+         AND "workflowSourceCommitSha"=${quoteLiteral(winner.commitSha)}
+         AND "workflowSourceBlobSha"=${quoteLiteral(winner.blobSha)}
+         AND "workflowSourceSha256"=${quoteLiteral(winner.sourceSha256)}
+         AND "workflowSemanticSha256"=${quoteLiteral(winner.semanticSha256)}`,
+    ]).stdout.trim() === "1",
+    "failed re-attestation attempt changed active namespace evidence",
+  );
+  assert(
+    psql(adminUrl, [
+      "-Atc",
+      `SELECT concat_ws(':',
+        EXISTS (
+          SELECT 1 FROM pg_proc routine
+          CROSS JOIN LATERAL aclexplode(routine.proacl) privilege
+          WHERE routine.oid='public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text)'::regprocedure
+            AND privilege.grantee=0 AND privilege.privilege_type='EXECUTE'
+        )::int,
+        has_function_privilege('reviewrouter_api', 'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text)', 'EXECUTE')::int,
+        has_function_privilege('reviewrouter_worker', 'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text)', 'EXECUTE')::int,
+        has_function_privilege('reviewrouter_web', 'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text)', 'EXECUTE')::int)`,
+    ]).stdout.trim() === "0:0:0:1",
+    "active namespace re-attestation routine ACL is not web-only",
+  );
 }
 
 function assertVersionedNamespaceEvidenceRetained(

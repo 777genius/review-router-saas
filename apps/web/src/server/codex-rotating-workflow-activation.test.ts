@@ -18,6 +18,10 @@ vi.mock("@reviewrouter/features-provider-setup", () => ({
   inspectCodexRotatingWorkflowNamespace: mocks.inspectNamespace,
 }));
 vi.mock("@reviewrouter/features-workflow-provisioning", () => ({
+  CodexRotatingT0WorkflowSchemaVersion: {
+    VersionedSecretNamespaceV4: 4,
+    VersionedSecretNamespaceV5: 5,
+  },
   assertTrustedCanonicalVersionedWorkflow: mocks.assertTrusted,
   createVersionedSecretWorkflowSourceAttestation: mocks.createAttestation,
   defaultCodexRotatingWorkflowPath: ".github/workflows/reviewrouter-codex.yml",
@@ -135,6 +139,12 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
   });
 
   it("re-attests an active V4 namespace after its workflow is upgraded to V5", async () => {
+    const previousSource = "name: canonical v4 workflow\n";
+    const previousBlobSha = gitBlobSha(previousSource);
+    const previousSourceSha256 = createHash("sha256")
+      .update(previousSource)
+      .digest("hex");
+    const previousSemanticSha256 = "1".repeat(64);
     mocks.inspectNamespace.mockResolvedValueOnce({
       source: "active",
       claimId: "claim_1",
@@ -145,16 +155,37 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
         name: "REVIEWROUTER_CODEX_AUTH_JSON_TEST_E2",
       },
     });
-    const { input, findAttestation } = fixture();
+    const { input, findAttestation, request } = fixture();
     findAttestation.mockResolvedValueOnce({
       workflowPath: ".github/workflows/reviewrouter-codex.yml",
       workflowSourceCommitSha: "d".repeat(40),
-      workflowSourceBlobSha: "e".repeat(40),
-      workflowSourceSha256: "f".repeat(64),
-      workflowSemanticSha256: "1".repeat(64),
+      workflowSourceBlobSha: previousBlobSha,
+      workflowSourceSha256: previousSourceSha256,
+      workflowSemanticSha256: previousSemanticSha256,
       workflowSourceTrust: "trusted_default_branch_revision",
       attestedRepositoryId: "1228051727",
     });
+    request.mockResolvedValueOnce({
+      data: {
+        type: "file",
+        encoding: "base64",
+        content: Buffer.from(previousSource, "utf8").toString("base64"),
+        sha: previousBlobSha,
+      },
+    });
+    request.mockResolvedValueOnce(refResponse(firstHead));
+    mocks.semanticSha
+      .mockReturnValueOnce("b".repeat(64))
+      .mockReturnValueOnce(previousSemanticSha256);
+    mocks.readMetadata
+      .mockReturnValueOnce({
+        actionRef: "action-sha",
+        workflowSchemaVersion: 5,
+      })
+      .mockReturnValueOnce({
+        actionRef: "action-sha",
+        workflowSchemaVersion: 4,
+      });
 
     await expect(
       activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
@@ -172,7 +203,12 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
         attemptId: "attempt_1",
         namespaceId: "namespace_2",
         workflowSourceCommitSha: firstHead,
+        expectedCurrentWorkflowSchemaVersion: 4,
+        workflowSchemaVersion: 5,
       }),
+    );
+    expect(mocks.assertTrusted).toHaveBeenLastCalledWith(
+      expect.objectContaining({ expectedWorkflowSchemaVersion: 4 }),
     );
   });
 

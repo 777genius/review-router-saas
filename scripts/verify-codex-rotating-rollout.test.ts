@@ -72,6 +72,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "000065_codex_oauth_authority_acl_hardening",
       "000066_codex_oauth_rotating_cascade_authority",
       "000073_codex_oauth_active_namespace_refresh",
+      "000079_codex_oauth_v4_v5_workflow_reattestation",
     ]) {
       const sql = readFileSync(
         join(
@@ -305,7 +306,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
         "Render services still expose independent migration callers",
         "compatibility probe cases are missing executable observations or derived digests",
         "v2 issuance was observed before v1/v2 installer and workflow publication",
-        "000073_codex_oauth_active_namespace_refresh migration history is not exactly one current success",
+        "000079_codex_oauth_v4_v5_workflow_reattestation migration history is not exactly one current success",
         "rollback floor must be the fence-aware deployed commit",
       ]),
     );
@@ -1460,6 +1461,12 @@ function observedFixture(): any {
             "packages/platform/db/prisma/migrations/000073_codex_oauth_active_namespace_refresh/migration.sql",
           ),
         },
+        {
+          id: "000079_codex_oauth_v4_v5_workflow_reattestation",
+          sha256: sourceDigest(
+            "packages/platform/db/prisma/migrations/000079_codex_oauth_v4_v5_workflow_reattestation/migration.sql",
+          ),
+        },
       ],
       history: [
         {
@@ -1523,6 +1530,15 @@ function observedFixture(): any {
           migration_name: "000073_codex_oauth_active_namespace_refresh",
           checksum: sourceDigest(
             "packages/platform/db/prisma/migrations/000073_codex_oauth_active_namespace_refresh/migration.sql",
+          ),
+          finished: true,
+          current: true,
+          applied_steps_count: 1,
+        },
+        {
+          migration_name: "000079_codex_oauth_v4_v5_workflow_reattestation",
+          checksum: sourceDigest(
+            "packages/platform/db/prisma/migrations/000079_codex_oauth_v4_v5_workflow_reattestation/migration.sql",
           ),
           finished: true,
           current: true,
@@ -1767,6 +1783,8 @@ function observedFixture(): any {
               name === "codex_oauth_provider_identity_guard" ||
               name === "codex_oauth_runtime_referential_action_guard" ||
               name === "codex_oauth_repair_quarantined_provider" ||
+              name === "codex_oauth_reattest_active_namespace_v4_to_v5" ||
+              name === "codex_oauth_secret_namespace_tombstone_guard" ||
               name === "codex_oauth_sign_database_authority",
             config:
               name.startsWith("codex_oauth_authorize_") ||
@@ -1778,6 +1796,9 @@ function observedFixture(): any {
               name === "codex_oauth_provider_identity_transition" ||
               name === "codex_oauth_provider_identity_repair_challenge" ||
               name === "codex_oauth_repair_quarantined_provider" ||
+              name === "codex_oauth_reattest_active_namespace_v4_to_v5" ||
+              name === "codex_oauth_secret_namespace_tombstone_guard" ||
+              name === "codex_oauth_v4_v5_reattestation_transition" ||
               name === "codex_oauth_sign_database_authority"
                 ? ["search_path=pg_catalog, public"]
                 : null,
@@ -1793,11 +1814,14 @@ function observedFixture(): any {
                 : name === "codex_oauth_database_authority_challenge" ||
                     name === "codex_oauth_sign_database_authority" ||
                     name === "codex_oauth_provider_identity_transition" ||
-                    name === "codex_oauth_provider_identity_repair_challenge"
+                    name === "codex_oauth_provider_identity_repair_challenge" ||
+                    name === "codex_oauth_v4_v5_reattestation_transition"
                   ? "text"
-                  : name.includes("repair")
+                  : name === "codex_oauth_reattest_active_namespace_v4_to_v5"
                     ? "void"
-                    : "trigger",
+                    : name.includes("repair")
+                      ? "void"
+                      : "trigger",
             arguments:
               name === "codex_oauth_authorize_runtime_completion"
                 ? "target_intent_id text, target_signature text"
@@ -1821,7 +1845,13 @@ function observedFixture(): any {
                                 : name ===
                                     "codex_oauth_repair_quarantined_provider"
                                   ? "provider_row_id text, old_workspace_id text, old_repository_id text, old_provider_instance_id text, old_auth_mode text, old_secret_name text, old_repository_provider text, old_github_repository_id bigint, old_external_repository_id text, new_workspace_id text, new_repository_id text, new_provider_instance_id text, new_auth_mode text, new_secret_name text, new_github_repository_id bigint, target_signature text"
-                                  : "",
+                                  : name ===
+                                      "codex_oauth_reattest_active_namespace_v4_to_v5"
+                                    ? "target_provider_row_id text, target_claim_id text, target_attempt_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_generation_hash text, target_workflow_path text, target_source_trust text, expected_schema_version integer, target_schema_version integer, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text"
+                                    : name ===
+                                        "codex_oauth_v4_v5_reattestation_transition"
+                                      ? "target_provider_row_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_workflow_path text, target_source_trust text, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text"
+                                      : "",
           }),
         ),
         checks: [
@@ -2402,6 +2432,7 @@ function observedFixture(): any {
             "000065_codex_oauth_authority_acl_hardening",
             "000066_codex_oauth_rotating_cascade_authority",
             "000073_codex_oauth_active_namespace_refresh",
+            "000079_codex_oauth_v4_v5_workflow_reattestation",
           ],
           singleCaller: true,
           caller: "release-migration",

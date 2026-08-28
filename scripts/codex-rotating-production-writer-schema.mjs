@@ -1244,6 +1244,10 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
     "0c735bbe8f8748d5efa6a001b416bc268e92ad7cc466d23cb21b98d0b0750d06",
   ),
   functionBody(
+    "codex_oauth_reattest_active_namespace_v4_to_v5",
+    "f7e911e83fdd821eebe774b7e83f795ed8120ab6cccd8cfd7c6fc5e3b0f68fae",
+  ),
+  functionBody(
     "codex_oauth_repair_quarantined_child",
     "d07c4ff352fea8060d67294f4deb2ba2a691c60bac6d3acfc8f1106af2716426",
   ),
@@ -1265,7 +1269,7 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
   ),
   functionBody(
     "codex_oauth_secret_namespace_tombstone_guard",
-    "f52841303c4626a6270c1a897ffcf46d2e17c8f785a8bdd1dad6321f9a26d85f",
+    "de395d67890f834a3b3986a0a5791369458be7c8207ea00bb0dcdf113b7c837a",
   ),
   functionBody(
     "codex_oauth_setup_attempt_evidence_guard",
@@ -1286,6 +1290,10 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
   functionBody(
     "codex_oauth_sign_database_authority",
     "2ece5dafc439c426f32d929d9580fe9fbb7cd65a24ac8733f11a1cf64c3b018f",
+  ),
+  functionBody(
+    "codex_oauth_v4_v5_reattestation_transition",
+    "2d4586ae5b2100dc320230fef3b7cf7ee9ed98a79a689b5896a233687a285e1c",
   ),
 ]);
 
