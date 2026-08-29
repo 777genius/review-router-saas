@@ -86,6 +86,11 @@ describe("disposable dual-version rehearsal", () => {
     ).toBe("release_migration_target_permit_invalid");
     expect(
       safeRehearsalStageErrorCode(
+        new Error("legacy_ambiguity_evidence_invalid"),
+      ),
+    ).toBe("legacy_ambiguity_evidence_invalid");
+    expect(
+      safeRehearsalStageErrorCode(
         new Error("database failed token=do-not-print"),
       ),
     ).toBeUndefined();

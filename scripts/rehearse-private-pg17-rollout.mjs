@@ -654,7 +654,7 @@ function redactedErrorChain(error) {
 
 export function safeRehearsalStageErrorCode(error) {
   const message = error instanceof Error ? error.message : "";
-  return /^(?:private_pg17_rehearsal|release_migration|release_rollout|runner_ledger|trusted_rollout)_[a-z0-9_]{2,160}$/u.test(
+  return /^(?:legacy_ambiguity|private_pg17_rehearsal|release_migration|release_rollout|runner_ledger|trusted_rollout)_[a-z0-9_]{2,160}$/u.test(
     message,
   )
     ? message
