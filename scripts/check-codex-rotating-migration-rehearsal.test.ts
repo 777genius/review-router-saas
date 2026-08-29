@@ -174,6 +174,20 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
+  it("silences command status for the lock snapshot JSON query", () => {
+    const lockSnapshot =
+      /const lockSnapshot = \(url\) =>([\s\S]+?)\n  const waitForLockState/u.exec(
+        source,
+      )?.[1];
+
+    expect(lockSnapshot).toBeDefined();
+    expect(lockSnapshot).toContain('psql(url, [\n        "-qAtc",');
+    expect(lockSnapshot).toContain("SET statement_timeout='2s';");
+    expect(lockSnapshot).toContain(
+      "SELECT COALESCE(json_agg(row_to_json(observation)), '[]'::json)::text",
+    );
+  });
+
   it.each([{ timedOut: true }, { error: { code: "ETIMEDOUT" } }])(
     "rejects timed-out failure evidence %#",
     (timeoutState) => {

@@ -407,7 +407,7 @@ async function proveMigration81TwoSessionBoundary() {
   const lockSnapshot = (url) =>
     JSON.parse(
       psql(url, [
-        "-Atc",
+        "-qAtc",
         String.raw`SET statement_timeout='2s';
           SELECT COALESCE(json_agg(row_to_json(observation)), '[]'::json)::text
           FROM (
