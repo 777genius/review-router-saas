@@ -14,14 +14,12 @@ export function isExpectedPrismaLockTimeoutFailure({
     markers.prismaMigrationFailure &&
     markers.migrationNamed &&
     (markers.lockTimeout || markers.abortedTransaction);
-  const migration60AbortedTransactionEnvelope =
-    migrationName === "000060_codex_oauth_setup_serialization" &&
-    markers.migrationNamed &&
-    markers.abortedTransaction;
+  const genericAbortedTransactionEnvelope =
+    markers.migrationNamed && markers.abortedTransaction;
   return (
     markers.exactCurrentFailure &&
     markers.directLockTimeoutProof &&
-    (strongPrismaEnvelope || migration60AbortedTransactionEnvelope)
+    (strongPrismaEnvelope || genericAbortedTransactionEnvelope)
   );
 }
 

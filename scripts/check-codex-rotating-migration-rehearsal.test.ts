@@ -661,8 +661,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
-  it("accepts the generic 000060 aborted-transaction wrapper with exact direct and history proof", () => {
-    const output = `Migration name: 000060_codex_oauth_setup_serialization\nERROR: current transaction is aborted`;
+  it("accepts the generic 000061 aborted-transaction wrapper with exact direct and history proof", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    const output = `Migration name: ${migrationName}\nERROR: current transaction is aborted`;
     const exactEvidence = {
       total: 1,
       currentFailed: 1,
@@ -675,10 +676,10 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(
       isExpectedPrismaLockTimeoutFailure({
         output,
-        migrationName: "000060_codex_oauth_setup_serialization",
+        migrationName,
         historyEvidence: exactEvidence,
         directLockTimeoutProof: {
-          migrationName: "000060_codex_oauth_setup_serialization",
+          migrationName,
           observed: true,
         },
       }),
@@ -699,12 +700,20 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(true);
   });
 
-  it("fails the generic 000060 wrapper closed without each required proof", () => {
-    const migrationName = "000060_codex_oauth_setup_serialization";
+  it("fails a generic aborted-transaction wrapper closed without each required proof", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
     const output = `Migration name: ${migrationName}\nERROR: current transaction is aborted`;
     const exactEvidence = { total: 1, currentFailed: 1, zeroStep: 1 };
     const directLockTimeoutProof = { migrationName, observed: true };
 
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof: undefined,
+      }),
+    ).toBe(false);
     expect(
       isExpectedPrismaLockTimeoutFailure({
         output,
@@ -719,7 +728,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         migrationName,
         historyEvidence: exactEvidence,
         directLockTimeoutProof: {
-          migrationName: "000061_codex_oauth_provider_mutation_fence",
+          migrationName: "000060_codex_oauth_setup_serialization",
           observed: true,
         },
       }),
@@ -728,7 +737,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       isExpectedPrismaLockTimeoutFailure({
         output,
         migrationName,
-        historyEvidence: { ...exactEvidence, total: 0, currentFailed: 0 },
+        historyEvidence: { ...exactEvidence, currentFailed: 0 },
         directLockTimeoutProof,
       }),
     ).toBe(false);
@@ -764,27 +773,16 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         directLockTimeoutProof,
       }),
     ).toBe(false);
-    expect(
-      isExpectedPrismaLockTimeoutFailure({
-        output: `Migration name: 000061_codex_oauth_provider_mutation_fence\nERROR: current transaction is aborted`,
-        migrationName: "000061_codex_oauth_provider_mutation_fence",
-        historyEvidence: exactEvidence,
-        directLockTimeoutProof: {
-          migrationName: "000061_codex_oauth_provider_mutation_fence",
-          observed: true,
-        },
-      }),
-    ).toBe(false);
   });
 
-  it("does not treat a bare 000060 lock-timeout string as a Prisma wrapper", () => {
+  it("does not treat a bare 000061 lock-timeout string as a Prisma wrapper", () => {
     expect(
       isExpectedPrismaLockTimeoutFailure({
-        output: "000060_codex_oauth_setup_serialization: lock timeout",
-        migrationName: "000060_codex_oauth_setup_serialization",
+        output: "000061_codex_oauth_provider_mutation_fence: lock timeout",
+        migrationName: "000061_codex_oauth_provider_mutation_fence",
         historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
         directLockTimeoutProof: {
-          migrationName: "000060_codex_oauth_setup_serialization",
+          migrationName: "000061_codex_oauth_provider_mutation_fence",
           observed: true,
         },
       }),
