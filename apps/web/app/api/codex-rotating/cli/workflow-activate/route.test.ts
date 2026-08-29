@@ -230,6 +230,19 @@ describe("Codex rotating CLI workflow activation route", () => {
     });
   });
 
+  it.each([
+    ["codex_rotating_workflow_reattestation_stale", 409],
+    ["codex_rotating_workflow_reattestation_invalid", 400],
+    ["codex_rotating_workflow_reattestation_forbidden", 403],
+  ])("maps typed safe re-attestation error %s", async (error, status) => {
+    mocks.activate.mockRejectedValueOnce(new Error(error));
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(status);
+    await expect(response.json()).resolves.toEqual({ error });
+  });
+
   it("extracts only an allowlisted activation invariant from wrapped errors", async () => {
     mocks.activate.mockRejectedValueOnce(
       new Error(

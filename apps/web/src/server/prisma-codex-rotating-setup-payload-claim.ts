@@ -37,6 +37,65 @@ const transactionTimeoutMs = 10_000;
 const maximumAttempts = 3;
 const expiredDispatchRetired = Symbol("expired_dispatch_retired");
 
+export type CodexRotatingWorkflowReattestationErrorCode =
+  | "codex_rotating_workflow_reattestation_stale"
+  | "codex_rotating_workflow_reattestation_invalid"
+  | "codex_rotating_workflow_reattestation_forbidden";
+
+export class CodexRotatingWorkflowReattestationError extends Error {
+  override readonly name = "CodexRotatingWorkflowReattestationError";
+
+  constructor(readonly code: CodexRotatingWorkflowReattestationErrorCode) {
+    super(code);
+  }
+}
+
+export function translateWorkflowReattestationDatabaseError(
+  error: unknown,
+): unknown {
+  if (error instanceof CodexRotatingWorkflowReattestationError) return error;
+  if (typeof error !== "object" || error === null) return error;
+  const candidate = error as {
+    readonly code?: unknown;
+    readonly message?: unknown;
+    readonly meta?: { readonly code?: unknown; readonly message?: unknown };
+  };
+  if (candidate.code !== "P2010") return error;
+  const sqlState =
+    typeof candidate.meta?.code === "string" ? candidate.meta.code : "";
+  const wrappedMessage = [candidate.message, candidate.meta?.message]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  const mappings = [
+    [
+      "40001",
+      "codex_oauth_active_namespace_reattestation_stale",
+      "codex_rotating_workflow_reattestation_stale",
+    ],
+    [
+      "22023",
+      "codex_oauth_active_namespace_reattestation_invalid",
+      "codex_rotating_workflow_reattestation_invalid",
+    ],
+    [
+      "42501",
+      "codex_oauth_active_namespace_reattestation_role_forbidden",
+      "codex_rotating_workflow_reattestation_forbidden",
+    ],
+  ] as const;
+  const mapping = mappings.find(
+    ([expectedState, databaseCode]) =>
+      sqlState === expectedState &&
+      new RegExp(
+        `(?:^|[^A-Za-z0-9_])${databaseCode}(?:$|[^A-Za-z0-9_])`,
+        "u",
+      ).test(wrappedMessage),
+  );
+  return mapping
+    ? new CodexRotatingWorkflowReattestationError(mapping[2])
+    : error;
+}
+
 async function signDatabaseAuthorityChallenge(input: {
   readonly tx: Prisma.TransactionClient;
   readonly authority: Pick<PrismaClient, "$queryRaw">;
@@ -635,6 +694,7 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
           "workflowSourceSha256" = ${input.workflowSourceSha256},
           "workflowSemanticSha256" = ${input.workflowSemanticSha256},
           "workflowSourceTrust" = ${input.sourceTrust},
+          "workflowSchemaVersion" = ${input.workflowSchemaVersion},
           "attestedRepositoryId" = ${input.repositoryId},
           "activatedAt" = ${now} WHERE "id" = ${input.namespaceId} AND "status" = 'confirmed_candidate'
       `;
@@ -704,51 +764,55 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
       readonly expectedCurrentWorkflowSemanticSha256: string;
     },
   ) {
-    return this.prisma.$transaction(
-      async (tx) => {
-        const initial = await findClaim(tx, input.claimId);
-        await requireProvenWriter(
-          tx,
-          initial.databaseIncarnation,
-          initial.databaseRecoveryWitness,
-          this.databaseRecoveryWitness,
-        );
-        await lockCodexRotatingProviderRow(tx, initial.providerInstanceRowId);
-        const claim = await findClaimForUpdate(tx, input.claimId);
-        const attempt = await findAttemptForUpdate(
-          tx,
-          input.claimId,
-          input.attemptId,
-        );
-        if (
-          claim.status !== "active" ||
-          attempt.status !== "confirmed" ||
-          attempt.namespaceId !== input.namespaceId ||
-          attempt.namespaceEpoch.toString() !== input.namespaceEpoch ||
-          attempt.secretName !== input.secretName ||
-          claim.githubRepositoryId !== input.repositoryId
-        ) {
-          throw new Error("codex_rotating_setup_activation_mismatch");
-        }
-        await tx.$queryRaw`
-          SELECT "codex_oauth_reattest_active_namespace_v4_to_v5"(
-            ${claim.providerInstanceRowId}, ${claim.id}, ${attempt.attemptId},
-            ${input.namespaceId}, ${BigInt(input.namespaceEpoch)}, ${input.secretName},
-            ${input.repositoryId}, ${claim.generationHash}, ${input.workflowPath},
-            ${input.sourceTrust}, ${input.expectedCurrentWorkflowSchemaVersion},
-            ${input.workflowSchemaVersion},
-            ${input.expectedCurrentWorkflowSourceCommitSha},
-            ${input.expectedCurrentWorkflowSourceBlobSha},
-            ${input.expectedCurrentWorkflowSourceSha256},
-            ${input.expectedCurrentWorkflowSemanticSha256},
-            ${input.workflowSourceCommitSha}, ${input.workflowSourceBlobSha},
-            ${input.workflowSourceSha256}, ${input.workflowSemanticSha256}
-          )
-        `;
-        return { status: "active" as const };
-      },
-      { timeout: transactionTimeoutMs },
-    );
+    try {
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const initial = await findClaim(tx, input.claimId);
+          await requireProvenWriter(
+            tx,
+            initial.databaseIncarnation,
+            initial.databaseRecoveryWitness,
+            this.databaseRecoveryWitness,
+          );
+          await lockCodexRotatingProviderRow(tx, initial.providerInstanceRowId);
+          const claim = await findClaimForUpdate(tx, input.claimId);
+          const attempt = await findAttemptForUpdate(
+            tx,
+            input.claimId,
+            input.attemptId,
+          );
+          if (
+            claim.status !== "active" ||
+            attempt.status !== "confirmed" ||
+            attempt.namespaceId !== input.namespaceId ||
+            attempt.namespaceEpoch.toString() !== input.namespaceEpoch ||
+            attempt.secretName !== input.secretName ||
+            claim.githubRepositoryId !== input.repositoryId
+          ) {
+            throw new Error("codex_rotating_setup_activation_mismatch");
+          }
+          await tx.$queryRaw`
+            SELECT "codex_oauth_reattest_active_namespace_v4_to_v5"(
+              ${claim.providerInstanceRowId}, ${claim.id}, ${attempt.attemptId},
+              ${input.namespaceId}, ${BigInt(input.namespaceEpoch)}, ${input.secretName},
+              ${input.repositoryId}, ${claim.generationHash}, ${input.workflowPath},
+              ${input.sourceTrust}, ${input.expectedCurrentWorkflowSchemaVersion},
+              ${input.workflowSchemaVersion},
+              ${input.expectedCurrentWorkflowSourceCommitSha},
+              ${input.expectedCurrentWorkflowSourceBlobSha},
+              ${input.expectedCurrentWorkflowSourceSha256},
+              ${input.expectedCurrentWorkflowSemanticSha256},
+              ${input.workflowSourceCommitSha}, ${input.workflowSourceBlobSha},
+              ${input.workflowSourceSha256}, ${input.workflowSemanticSha256}
+            )
+          `;
+          return { status: "active" as const };
+        },
+        { timeout: transactionTimeoutMs },
+      );
+    } catch (error) {
+      throw translateWorkflowReattestationDatabaseError(error);
+    }
   }
 
   async retireProviderGeneration(

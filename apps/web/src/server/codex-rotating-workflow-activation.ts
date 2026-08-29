@@ -151,6 +151,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
           workflowSourceSha256: true,
           workflowSemanticSha256: true,
           workflowSourceTrust: true,
+          workflowSchemaVersion: true,
           attestedRepositoryId: true,
         },
       });
@@ -161,6 +162,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
       !currentAttestation.workflowSourceSha256 ||
       !currentAttestation.workflowSemanticSha256 ||
       currentAttestation.workflowSourceTrust !== attestation.sourceTrust ||
+      currentAttestation.workflowSchemaVersion === null ||
       currentAttestation.attestedRepositoryId !== attestation.repositoryId
     ) {
       throw new Error("codex_rotating_workflow_source_attestation_missing");
@@ -174,6 +176,8 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
         attestation.workflowSourceSha256 &&
       currentAttestation.workflowSemanticSha256 ===
         attestation.workflowSemanticSha256 &&
+      currentAttestation.workflowSchemaVersion ===
+        input.expectedWorkflowSchemaVersion &&
       currentAttestation.workflowSourceTrust === attestation.sourceTrust &&
       currentAttestation.attestedRepositoryId === attestation.repositoryId
     ) {
@@ -185,7 +189,9 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     }
     if (
       input.expectedWorkflowSchemaVersion !==
-      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5 ||
+      currentAttestation.workflowSchemaVersion !==
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
     ) {
       throw new Error(
         "codex_rotating_workflow_reattestation_transition_invalid",
@@ -284,6 +290,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     workflowSourceSha256: attestation.workflowSourceSha256,
     workflowSemanticSha256: attestation.workflowSemanticSha256,
     sourceTrust: attestation.sourceTrust,
+    workflowSchemaVersion: input.expectedWorkflowSchemaVersion,
   });
   return {
     status: "activated",

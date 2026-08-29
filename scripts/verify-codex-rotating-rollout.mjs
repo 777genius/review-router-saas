@@ -22,6 +22,7 @@ import {
   codexRotatingCatalogIndexNames,
   codexRotatingCatalogTables,
   codexRotatingFunctionBodyDigests,
+  codexRotatingFunctionIdentityArguments,
   codexRotatingIndexDefinitions,
   codexRotatingPartialIndexPredicates,
   codexRotatingDatabaseRoles,
@@ -96,7 +97,7 @@ const migrations = [
     sourceFile:
       "packages/platform/db/prisma/migrations/000079_codex_oauth_v4_v5_workflow_reattestation/migration.sql",
     expectedSha256:
-      "dbc4c472b188f6fd0b423c8415afeffa9d7907f4476d44d8aeb74e1a3534c4fc",
+      "f5d58da6dae81defd440e9490472fde75c1d596cc19f53c0b24ee1a67c0cd051",
   },
 ];
 const checkedInRotatingMigrations = readdirSync(
@@ -115,7 +116,7 @@ const exactServiceRoles = new Map([
   ["reviewrouter-web", "web"],
   ["reviewrouter-worker", "worker"],
 ]);
-const releaseMigrationRole = codexRotatingDatabaseRoles.releaseMigration;
+const releaseSchemaOwnerRole = codexRotatingDatabaseRoles.schemaOwner;
 const effectAuthorityRole = codexRotatingDatabaseRoles.effectAuthority;
 const runtimeDatabaseRoles = codexRotatingDatabaseRoles.runtime;
 const exactForeignKeys = codexRotatingCatalogForeignKeys.map(
@@ -656,11 +657,13 @@ function verifyDatabase(db, descriptor, need, options) {
             "forceRowSecurity",
             "kind",
             "name",
+            "owner",
             "persistence",
             "rowSecurity",
           ]) &&
           entry.kind === "r" &&
           entry.persistence === "p" &&
+          entry.owner === releaseSchemaOwnerRole &&
           entry.rowSecurity === false &&
           entry.forceRowSecurity === false,
       ),
@@ -783,7 +786,7 @@ function verifyDatabase(db, descriptor, need, options) {
     exactCatalogAcl(
       db?.catalog?.privileges?.tables,
       codexRotatingCatalogTables,
-      [releaseMigrationRole, effectAuthorityRole, ...runtimeDatabaseRoles],
+      [releaseSchemaOwnerRole, effectAuthorityRole, ...runtimeDatabaseRoles],
       null,
     ),
     "database owned table privileges are not exact",
@@ -826,7 +829,7 @@ function exactCatalogAcl(entries, objects, grantees, fixedPrivileges) {
   for (const name of objects) {
     for (const grantee of grantees) {
       const privileges =
-        grantee === releaseMigrationRole
+        grantee === releaseSchemaOwnerRole
           ? ownerPrivileges
           : grantee === effectAuthorityRole ||
               name === "CodexOAuthDatabaseAuthorityKey" ||
@@ -842,7 +845,7 @@ function exactCatalogAcl(entries, objects, grantees, fixedPrivileges) {
         expected.push({
           name,
           grantee,
-          grantor: releaseMigrationRole,
+          grantor: releaseSchemaOwnerRole,
           privilege,
           grantable: false,
         });
@@ -879,7 +882,7 @@ function exactColumnCatalogAcl(entries) {
     codexRotatingProviderRuntimeUpdateColumns.map((column) => ({
       name: `CodexOAuthProviderInstance.${column}`,
       grantee,
-      grantor: releaseMigrationRole,
+      grantor: releaseSchemaOwnerRole,
       privilege: "UPDATE",
       grantable: false,
     })),
@@ -904,6 +907,7 @@ function exactFunctionCatalogAcl(entries) {
           "grantable",
           "grantee",
           "grantor",
+          "identityArguments",
           "name",
           "privilege",
         ]),
@@ -919,20 +923,23 @@ function exactFunctionCatalogAcl(entries) {
     ["codex_oauth_authorize_runtime_completion", ["reviewrouter_api"]],
     ["codex_oauth_provider_identity_repair_challenge", ["reviewrouter_web"]],
     ["codex_oauth_repair_quarantined_provider", ["reviewrouter_web"]],
+    ["codex_oauth_reattest_active_namespace_v4_to_v5", ["reviewrouter_web"]],
     ["codex_oauth_sign_database_authority", [effectAuthorityRole]],
   ]);
   const expected = exactFunctions.flatMap((name) => [
     {
       name,
-      grantee: releaseMigrationRole,
-      grantor: releaseMigrationRole,
+      identityArguments: expectedFunctionIdentityArguments(name),
+      grantee: releaseSchemaOwnerRole,
+      grantor: releaseSchemaOwnerRole,
       privilege: "EXECUTE",
       grantable: false,
     },
     ...(runtimeExecute.get(name) ?? []).map((grantee) => ({
       name,
+      identityArguments: expectedFunctionIdentityArguments(name),
       grantee,
-      grantor: releaseMigrationRole,
+      grantor: releaseSchemaOwnerRole,
       privilege: "EXECUTE",
       grantable: false,
     })),
@@ -940,12 +947,17 @@ function exactFunctionCatalogAcl(entries) {
   const key = (entry) =>
     JSON.stringify([
       entry.name,
+      entry.identityArguments,
       entry.grantee,
       entry.grantor,
       entry.privilege,
       entry.grantable,
     ]);
   return equalSorted(entries.map(key), expected.map(key));
+}
+
+function expectedFunctionIdentityArguments(name) {
+  return codexRotatingFunctionIdentityArguments[name] ?? "";
 }
 
 export function verifyCodexRotatingDatabaseCatalog(
@@ -1017,7 +1029,7 @@ function verifyDatabaseAuthorization(authorization, need) {
       "schemaOwner",
     ]) &&
       authorization.databaseOwner === bootstrapRole &&
-      authorization.schemaOwner === releaseRole &&
+      authorization.schemaOwner === releaseSchemaOwnerRole &&
       equalSorted(
         roles.map((entry) => entry.name),
         expectedRoleNames,
@@ -1077,21 +1089,6 @@ function verifyDatabaseAuthorization(authorization, need) {
         Array.isArray(entry.repositoryConnectionColumnInsert) &&
         Array.isArray(entry.repositoryConnectionColumnUpdate) &&
         Array.isArray(entry.repositoryConnectionColumnReferences);
-      const releaseColumnsAreFull =
-        columnPrivilegeArraysAreValid &&
-        entry.repositoryConnectionColumnSelect.length > 0 &&
-        equalSorted(
-          entry.repositoryConnectionColumnInsert,
-          entry.repositoryConnectionColumnSelect,
-        ) &&
-        equalSorted(
-          entry.repositoryConnectionColumnUpdate,
-          entry.repositoryConnectionColumnSelect,
-        ) &&
-        equalSorted(
-          entry.repositoryConnectionColumnReferences,
-          entry.repositoryConnectionColumnSelect,
-        );
       const runtimeColumnsAreSelectOnly =
         columnPrivilegeArraysAreValid &&
         entry.repositoryConnectionColumnSelect.length > 0 &&
@@ -1106,29 +1103,33 @@ function verifyDatabaseAuthorization(authorization, need) {
         entry.repositoryConnectionColumnUpdate.length === 0 &&
         entry.repositoryConnectionColumnReferences.length === 0;
       return (
-        entry.databaseCreate === isRelease &&
-        entry.schemaCreate === isRelease &&
+        entry.databaseCreate === false &&
+        entry.schemaCreate === false &&
         entry.canSetReleaseRole === isRelease &&
-        entry.ownsCatalogObject === isRelease &&
-        entry.ownsRepositoryConnection === isRelease &&
-        entry.ddlTablePrivileges === isRelease &&
+        entry.ownsCatalogObject === false &&
+        entry.ownsRepositoryConnection === false &&
+        entry.ddlTablePrivileges === false &&
         entry.migrationHistoryPrivileges === isRelease &&
-        entry.providerSetupStateSelect === (isRelease || isRuntime) &&
-        entry.providerSetupStateInsert === (isRelease || isRuntime) &&
-        entry.providerSetupStateUpdate === (isRelease || isRuntime) &&
-        entry.providerSetupStateDelete === (isRelease || isRuntime) &&
-        entry.allSequenceUsage === (isRelease || isRuntime) &&
-        entry.anySequenceSelectOrUpdate === isRelease &&
-        entry.authorityTablePrivileges === isRelease &&
-        entry.repositoryConnectionSelect === (isRelease || isRuntime) &&
-        entry.repositoryConnectionInsert === isRelease &&
-        entry.repositoryConnectionUpdate === isRelease &&
-        entry.repositoryConnectionDelete === isRelease &&
-        (isRelease
-          ? releaseColumnsAreFull
-          : isRuntime
-            ? runtimeColumnsAreSelectOnly
-            : effectColumnsAreEmpty)
+        entry.providerSetupStateSelect === isRuntime &&
+        entry.providerSetupStateInsert === isRuntime &&
+        entry.providerSetupStateUpdate === isRuntime &&
+        entry.providerSetupStateDelete === isRuntime &&
+        entry.allSequenceUsage === isRuntime &&
+        entry.anySequenceSelectOrUpdate === false &&
+        entry.authorityTablePrivileges === false &&
+        entry.repositoryConnectionSelect === isRuntime &&
+        entry.repositoryConnectionInsert === false &&
+        entry.repositoryConnectionUpdate === false &&
+        entry.repositoryConnectionDelete === false &&
+        (isRuntime
+          ? runtimeColumnsAreSelectOnly
+          : isEffectAuthority
+            ? effectColumnsAreEmpty
+            : columnPrivilegeArraysAreValid &&
+              entry.repositoryConnectionColumnSelect.length === 0 &&
+              entry.repositoryConnectionColumnInsert.length === 0 &&
+              entry.repositoryConnectionColumnUpdate.length === 0 &&
+              entry.repositoryConnectionColumnReferences.length === 0)
       );
     }) &&
       Array.isArray(authorization?.memberships) &&
@@ -1397,9 +1398,44 @@ function exactTriggerBinding(entry) {
       27,
     ],
   };
+  const updateColumns = {
+    RepositoryConnection_runtime_referential_action_guard: [
+      "id",
+      "workspaceId",
+      "installationId",
+      "gitlabInstallationId",
+      "scmRepositoryIdentityId",
+    ],
+  };
+  const isRepositoryIdentityConstraint =
+    entry.name === "RepositoryConnection_codex_oauth_identity_guard";
   return (
-    hasExactKeys(entry, ["enabled", "function", "name", "table", "type"]) &&
+    hasExactKeys(entry, [
+      "arguments",
+      "constraint",
+      "deferrable",
+      "definition",
+      "enabled",
+      "function",
+      "initiallyDeferred",
+      "name",
+      "table",
+      "type",
+      "updateColumns",
+      "whenExpression",
+    ]) &&
+    typeof entry.definition === "string" &&
+    entry.definition.startsWith(
+      `CREATE ${isRepositoryIdentityConstraint ? "CONSTRAINT " : ""}TRIGGER "${entry.name}" `,
+    ) &&
     entry.enabled === "O" &&
+    entry.arguments === "" &&
+    entry.constraint === isRepositoryIdentityConstraint &&
+    entry.deferrable === isRepositoryIdentityConstraint &&
+    entry.initiallyDeferred === false &&
+    entry.whenExpression === null &&
+    JSON.stringify(entry.updateColumns) ===
+      JSON.stringify(updateColumns[entry.name] ?? []) &&
     JSON.stringify([entry.table, entry.function, entry.type]) ===
       JSON.stringify(bindings[entry.name])
   );
@@ -1472,6 +1508,7 @@ function exactFunctionDefinition(entry) {
       "config",
       "language",
       "leakproof",
+      "identityArguments",
       "name",
       "owner",
       "parallel",
@@ -1486,7 +1523,8 @@ function exactFunctionDefinition(entry) {
       "volatility",
     ]) &&
     entry?.securityDefiner === securityDefinerFunction &&
-    entry.owner === releaseMigrationRole &&
+    entry.identityArguments === expectedFunctionIdentityArguments(entry.name) &&
+    entry.owner === releaseSchemaOwnerRole &&
     entry.prokind === "f" &&
     entry.proretset === false &&
     entry.prosupport === null &&

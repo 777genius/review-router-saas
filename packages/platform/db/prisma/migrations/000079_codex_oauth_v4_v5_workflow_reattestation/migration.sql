@@ -3,6 +3,44 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '5min';
 
+ALTER TABLE public."CodexOAuthSecretNamespace"
+  ADD COLUMN "workflowSchemaVersion" INTEGER;
+
+-- Before this migration the only workflow schema that could create the
+-- currently active namespace was V4.  Bind that fact only where the complete
+-- active-provider pointer and trusted source attestation already agree.  Do
+-- not guess a version for retired, incomplete, or otherwise ambiguous rows.
+UPDATE public."CodexOAuthSecretNamespace" namespace
+SET "workflowSchemaVersion" = 4
+FROM public."CodexOAuthProviderInstance" provider
+WHERE namespace."status" = 'active'
+  AND NOT namespace."permanentlyRetired"
+  AND namespace."workflowSchemaVersion" IS NULL
+  AND namespace."workflowPath" IS NOT NULL
+  AND namespace."workflowSourceCommitSha" IS NOT NULL
+  AND namespace."workflowSourceBlobSha" IS NOT NULL
+  AND namespace."workflowSourceSha256" IS NOT NULL
+  AND namespace."workflowSemanticSha256" IS NOT NULL
+  AND namespace."workflowSourceTrust" = 'trusted_default_branch_revision'
+  AND namespace."attestedRepositoryId" = namespace."githubRepositoryId"
+  AND provider."id" = namespace."providerInstanceRowId"
+  AND provider."state" = 'active'
+  AND provider."activeSecretNamespaceId" = namespace."id"
+  AND provider."activeSecretNamespaceEpoch" = namespace."namespaceEpoch"
+  AND provider."activeSecretNamespaceName" = namespace."secretName";
+
+DO $backfill$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM public."CodexOAuthSecretNamespace"
+    WHERE "status" = 'active' AND "workflowSchemaVersion" IS NULL
+  ) THEN
+    RAISE EXCEPTION 'codex_oauth_active_namespace_schema_version_ambiguous'
+      USING ERRCODE = '23514';
+  END IF;
+END
+$backfill$;
+
 -- Active namespace identity remains immutable.  This helper only creates the
 -- exact, transaction-local receipt consumed by the tombstone guard below.
 CREATE FUNCTION "codex_oauth_v4_v5_reattestation_transition"(
@@ -60,6 +98,7 @@ BEGIN
        OR NEW."workflowPath" IS NOT NULL OR NEW."workflowSourceCommitSha" IS NOT NULL
        OR NEW."workflowSourceBlobSha" IS NOT NULL OR NEW."workflowSourceSha256" IS NOT NULL
        OR NEW."workflowSemanticSha256" IS NOT NULL OR NEW."workflowSourceTrust" IS NOT NULL
+       OR NEW."workflowSchemaVersion" IS NOT NULL
        OR NEW."attestedRepositoryId" IS NOT NULL OR NOT initial_authority_matches
     THEN RAISE EXCEPTION 'codex_oauth_secret_namespace_initial_state_invalid' USING ERRCODE = '23514'; END IF;
     RETURN NEW;
@@ -107,6 +146,14 @@ BEGIN
     promotion_evidence_matches := TRUE;
   END IF;
 
+  IF NEW."status" = 'active' AND (
+    NEW."workflowSchemaVersion" IS NULL
+    OR NEW."workflowSchemaVersion" NOT BETWEEN 1 AND 5
+  ) THEN
+    RAISE EXCEPTION 'codex_oauth_secret_namespace_workflow_schema_invalid'
+      USING ERRCODE = '23514';
+  END IF;
+
   IF OLD."status" = 'active'
      AND NEW."status" = 'active'
      AND NEW."id" IS NOT DISTINCT FROM OLD."id"
@@ -115,8 +162,11 @@ BEGIN
      AND NEW."namespaceEpoch" IS NOT DISTINCT FROM OLD."namespaceEpoch"
      AND NEW."secretName" IS NOT DISTINCT FROM OLD."secretName"
      AND NEW."databaseRecoveryWitness" IS NOT DISTINCT FROM OLD."databaseRecoveryWitness"
+     AND NEW."createdAt" IS NOT DISTINCT FROM OLD."createdAt"
      AND NEW."workflowPath" IS NOT DISTINCT FROM OLD."workflowPath"
      AND NEW."workflowSourceTrust" IS NOT DISTINCT FROM OLD."workflowSourceTrust"
+     AND OLD."workflowSchemaVersion" = 4
+     AND NEW."workflowSchemaVersion" = 5
      AND NEW."attestedRepositoryId" IS NOT DISTINCT FROM OLD."attestedRepositoryId"
      AND NEW."activatedAt" IS NOT DISTINCT FROM OLD."activatedAt"
      AND NEW."confirmedAt" IS NOT DISTINCT FROM OLD."confirmedAt"
@@ -142,6 +192,7 @@ BEGIN
      OR NEW."namespaceEpoch" IS DISTINCT FROM OLD."namespaceEpoch"
      OR NEW."secretName" IS DISTINCT FROM OLD."secretName"
      OR NEW."databaseRecoveryWitness" IS DISTINCT FROM OLD."databaseRecoveryWitness"
+     OR NEW."createdAt" IS DISTINCT FROM OLD."createdAt"
      OR (NEW."confirmedAt" IS DISTINCT FROM OLD."confirmedAt" AND NOT (
        OLD."confirmedAt" IS NULL AND NEW."confirmedAt" IS NOT NULL
        AND OLD."status" = 'dispatch_authorized' AND NEW."status" = 'confirmed_candidate'
@@ -153,6 +204,7 @@ BEGIN
        OR NEW."workflowSourceSha256" IS DISTINCT FROM OLD."workflowSourceSha256"
        OR NEW."workflowSemanticSha256" IS DISTINCT FROM OLD."workflowSemanticSha256"
        OR NEW."workflowSourceTrust" IS DISTINCT FROM OLD."workflowSourceTrust"
+       OR NEW."workflowSchemaVersion" IS DISTINCT FROM OLD."workflowSchemaVersion"
        OR NEW."attestedRepositoryId" IS DISTINCT FROM OLD."attestedRepositoryId"
        OR NEW."activatedAt" IS DISTINCT FROM OLD."activatedAt")
        AND NOT (OLD."status" = 'confirmed_candidate' AND NEW."status" = 'active')
@@ -164,6 +216,7 @@ BEGIN
        OR NEW."workflowSourceSha256" IS DISTINCT FROM OLD."workflowSourceSha256"
        OR NEW."workflowSemanticSha256" IS DISTINCT FROM OLD."workflowSemanticSha256"
        OR NEW."workflowSourceTrust" IS DISTINCT FROM OLD."workflowSourceTrust"
+       OR NEW."workflowSchemaVersion" IS DISTINCT FROM OLD."workflowSchemaVersion"
        OR NEW."attestedRepositoryId" IS DISTINCT FROM OLD."attestedRepositoryId"
        OR NEW."activatedAt" IS DISTINCT FROM OLD."activatedAt"
      ) AND NOT active_reattestation_matches)
@@ -211,16 +264,21 @@ DECLARE caller_role TEXT := session_user;
 DECLARE transition_key TEXT;
 DECLARE affected_count INTEGER;
 BEGIN
-  IF caller_role NOT IN ('reviewrouter_web', 'reviewrouter_release_migration')
-     AND caller_role <> pg_get_userbyid((
-       SELECT relowner FROM pg_class
-       WHERE oid = 'public."CodexOAuthDatabaseAuthorityReceipt"'::regclass
-     ))
-  THEN
+  IF caller_role <> 'reviewrouter_web' THEN
     RAISE EXCEPTION 'codex_oauth_active_namespace_reattestation_role_forbidden'
       USING ERRCODE = '42501';
   END IF;
-  IF expected_schema_version <> 4 OR target_schema_version <> 5
+  IF expected_schema_version IS NULL OR target_schema_version IS NULL
+     OR target_provider_row_id IS NULL OR target_claim_id IS NULL
+     OR target_attempt_id IS NULL OR target_namespace_id IS NULL
+     OR target_namespace_epoch IS NULL OR target_secret_name IS NULL
+     OR target_repository_id IS NULL OR target_generation_hash IS NULL
+     OR target_workflow_path IS NULL OR target_source_trust IS NULL
+     OR old_commit_sha IS NULL OR old_blob_sha IS NULL
+     OR old_source_sha256 IS NULL OR old_semantic_sha256 IS NULL
+     OR new_commit_sha IS NULL OR new_blob_sha IS NULL
+     OR new_source_sha256 IS NULL OR new_semantic_sha256 IS NULL
+     OR expected_schema_version <> 4 OR target_schema_version <> 5
      OR target_source_trust <> 'trusted_default_branch_revision'
      OR target_repository_id !~ '^[1-9][0-9]*$'
      OR target_workflow_path !~ '^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$'
@@ -243,7 +301,6 @@ BEGIN
   FROM public."CodexOAuthProviderInstance" provider
   JOIN public."RepositoryConnection" repository ON repository."id" = provider."repositoryId"
   WHERE provider."id" = target_provider_row_id
-    AND provider."state" = 'active'
     AND provider."activeSecretNamespaceId" = target_namespace_id
     AND provider."activeSecretNamespaceEpoch" = target_namespace_epoch
     AND provider."activeSecretNamespaceName" = target_secret_name
@@ -271,6 +328,7 @@ BEGIN
     AND NOT namespace."permanentlyRetired"
     AND namespace."workflowPath" = target_workflow_path
     AND namespace."workflowSourceTrust" = target_source_trust
+    AND namespace."workflowSchemaVersion" = expected_schema_version
     AND namespace."workflowSourceCommitSha" = old_commit_sha
     AND namespace."workflowSourceBlobSha" = old_blob_sha
     AND namespace."workflowSourceSha256" = old_source_sha256
@@ -282,7 +340,6 @@ BEGIN
     AND claim."confirmedAttemptId" = target_attempt_id
     AND claim."providerInstanceRowId" = target_provider_row_id
     AND claim."githubRepositoryId" = target_repository_id
-    AND claim."generationHash" = target_generation_hash
   FOR UPDATE OF namespace, attempt, claim;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'codex_oauth_active_namespace_reattestation_stale'
@@ -307,7 +364,8 @@ BEGIN
   SET "workflowSourceCommitSha" = new_commit_sha,
       "workflowSourceBlobSha" = new_blob_sha,
       "workflowSourceSha256" = new_source_sha256,
-      "workflowSemanticSha256" = new_semantic_sha256
+      "workflowSemanticSha256" = new_semantic_sha256,
+      "workflowSchemaVersion" = target_schema_version
   WHERE "id" = target_namespace_id
     AND "providerInstanceRowId" = target_provider_row_id
     AND "namespaceEpoch" = target_namespace_epoch
@@ -318,6 +376,7 @@ BEGIN
     AND NOT "permanentlyRetired"
     AND "workflowPath" = target_workflow_path
     AND "workflowSourceTrust" = target_source_trust
+    AND "workflowSchemaVersion" = expected_schema_version
     AND "workflowSourceCommitSha" = old_commit_sha
     AND "workflowSourceBlobSha" = old_blob_sha
     AND "workflowSourceSha256" = old_source_sha256
@@ -348,39 +407,76 @@ REVOKE EXECUTE ON FUNCTION "codex_oauth_reattest_active_namespace_v4_to_v5"(
   TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT
 ) FROM PUBLIC;
 
-DO $$
+DO $ownership$
 DECLARE runtime_role TEXT;
+DECLARE canonical_owner TEXT;
+DECLARE owned_function REGPROCEDURE;
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_release_migration') THEN
-    ALTER FUNCTION "codex_oauth_v4_v5_reattestation_transition"(
-      TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT,
-      TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT
-    ) OWNER TO reviewrouter_release_migration;
-    ALTER FUNCTION "codex_oauth_secret_namespace_tombstone_guard"()
-      OWNER TO reviewrouter_release_migration;
-    ALTER FUNCTION "codex_oauth_reattest_active_namespace_v4_to_v5"(
-      TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER,
-      TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT
-    ) OWNER TO reviewrouter_release_migration;
+  SELECT owner.rolname INTO STRICT canonical_owner
+  FROM pg_class relation
+  JOIN pg_roles owner ON owner.oid = relation.relowner
+  WHERE relation.oid = 'public."CodexOAuthSecretNamespace"'::regclass;
+
+  IF EXISTS (SELECT 1 FROM pg_roles
+             WHERE rolname = 'reviewrouter_release_schema_owner') THEN
+    IF canonical_owner <> 'reviewrouter_release_schema_owner'
+       OR (SELECT owner.rolname
+           FROM pg_namespace namespace
+           JOIN pg_roles owner ON owner.oid = namespace.nspowner
+           WHERE namespace.nspname = 'public')
+          <> 'reviewrouter_release_schema_owner'
+       OR EXISTS (
+         SELECT 1 FROM pg_roles
+         WHERE rolname = 'reviewrouter_release_schema_owner'
+           AND (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole
+                OR rolreplication OR rolbypassrls)
+       )
+    THEN
+      RAISE EXCEPTION 'codex_oauth_release_schema_owner_noncanonical'
+        USING ERRCODE = '42501';
+    END IF;
+  ELSIF canonical_owner <> current_user
+        AND canonical_owner <> session_user
+        AND canonical_owner <> 'reviewrouter_release_migration' THEN
+    RAISE EXCEPTION 'codex_oauth_release_schema_owner_unrecognized'
+      USING ERRCODE = '42501';
   END IF;
 
-  FOREACH runtime_role IN ARRAY ARRAY[
-    'reviewrouter_api', 'reviewrouter_worker', 'reviewrouter_codex_effect_authority'
+  FOREACH owned_function IN ARRAY ARRAY[
+    'public.codex_oauth_v4_v5_reattestation_transition(text,text,bigint,text,text,text,text,text,text,text,text,text,text,text,text)'::regprocedure,
+    'public.codex_oauth_secret_namespace_tombstone_guard()'::regprocedure,
+    'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text)'::regprocedure
   ] LOOP
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = runtime_role) THEN
-      EXECUTE format(
-        'REVOKE EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"' ||
-        '(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text) FROM %I',
-        runtime_role
-      );
-    END IF;
+    EXECUTE format('ALTER FUNCTION %s OWNER TO %I', owned_function, canonical_owner);
   END LOOP;
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_web') THEN
-    GRANT EXECUTE ON FUNCTION "codex_oauth_reattest_active_namespace_v4_to_v5"(
-      TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER,
-      TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT
-    ) TO reviewrouter_web;
+
+  FOR runtime_role IN
+    SELECT DISTINCT grantee.rolname
+    FROM pg_proc routine
+    CROSS JOIN LATERAL aclexplode(
+      coalesce(routine.proacl, acldefault('f', routine.proowner))
+    ) acl
+    JOIN pg_roles grantee ON grantee.oid = acl.grantee
+    WHERE routine.oid =
+      'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text)'::regprocedure
+      AND acl.privilege_type = 'EXECUTE'
+      AND grantee.rolname NOT IN (canonical_owner, 'reviewrouter_web')
+  LOOP
+    EXECUTE format(
+      'REVOKE EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"' ||
+      '(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text) FROM %I',
+      runtime_role
+    );
+  END LOOP;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_web') THEN
+    RAISE EXCEPTION 'codex_oauth_reattestation_web_role_missing'
+      USING ERRCODE = '42501';
   END IF;
-END $$;
+  GRANT EXECUTE ON FUNCTION "codex_oauth_reattest_active_namespace_v4_to_v5"(
+    TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER,
+    TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT
+  ) TO reviewrouter_web;
+END
+$ownership$;
 
 COMMIT;

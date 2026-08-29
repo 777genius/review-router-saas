@@ -417,6 +417,7 @@ model CodexOAuthSecretNamespace {
   workflowSourceSha256    String?
   workflowSemanticSha256  String?
   workflowSourceTrust     String?
+  workflowSchemaVersion   Int?
   attestedRepositoryId    String?
   createdAt               DateTime  @default(now()) @db.Timestamptz(3)
   confirmedAt             DateTime? @db.Timestamptz(3)

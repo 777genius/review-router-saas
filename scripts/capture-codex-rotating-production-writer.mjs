@@ -86,6 +86,7 @@ const catalogTriggerTables = [
   ...codexRotatingCatalogTables,
 ];
 const releaseMigrationRole = codexRotatingDatabaseRoles.releaseMigration;
+const releaseSchemaOwnerRole = codexRotatingDatabaseRoles.schemaOwner;
 const roleBootstrapRole = "reviewrouter_role_bootstrap";
 const runtimeDatabaseRoles = codexRotatingDatabaseRoles.runtime;
 const allDatabaseRoles = [
@@ -331,14 +332,14 @@ SELECT jsonb_build_object(
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = current_schema()
         AND c.relname IN (${sqlLiterals([...codexRotatingCatalogTables, "_prisma_migrations"])})
-        AND c.relowner <> (SELECT oid FROM pg_roles WHERE rolname = '${releaseMigrationRole}')
+        AND c.relowner <> (SELECT oid FROM pg_roles WHERE rolname = '${releaseSchemaOwnerRole}')
     ), '[]'::jsonb),
     'nonReleaseOwnedFunctions', coalesce((
       SELECT jsonb_agg(p.proname ORDER BY p.proname)
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
       WHERE n.nspname = current_schema()
         AND p.proname LIKE 'codex_oauth_%'
-        AND p.proowner <> (SELECT oid FROM pg_roles WHERE rolname = '${releaseMigrationRole}')
+        AND p.proowner <> (SELECT oid FROM pg_roles WHERE rolname = '${releaseSchemaOwnerRole}')
     ), '[]'::jsonb)
   ),
   'unsafeWork', jsonb_build_object(
@@ -377,6 +378,7 @@ SELECT jsonb_build_object(
       ,'000065_codex_oauth_authority_acl_hardening'
       ,'000066_codex_oauth_rotating_cascade_authority'
       ,'000073_codex_oauth_active_namespace_refresh'
+      ,'000079_codex_oauth_v4_v5_workflow_reattestation'
     )
   ), '[]'::jsonb),
   'catalog', jsonb_build_object(
@@ -387,6 +389,7 @@ SELECT jsonb_build_object(
         'persistence', c.relpersistence,
         'rowSecurity', c.relrowsecurity,
         'forceRowSecurity', c.relforcerowsecurity
+        ,'owner', pg_get_userbyid(c.relowner)
       ) ORDER BY c.relname)
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = current_schema()
@@ -486,6 +489,17 @@ SELECT jsonb_build_object(
         'function', p.proname,
         'type', t.tgtype,
         'enabled', t.tgenabled
+        ,'definition', pg_get_triggerdef(t.oid, true),
+        'updateColumns', coalesce((
+          SELECT jsonb_agg(a.attname ORDER BY update_column.ordinality)
+          FROM unnest(t.tgattr::smallint[]) WITH ORDINALITY AS update_column(attnum, ordinality)
+          JOIN pg_attribute a ON a.attrelid = t.tgrelid AND a.attnum = update_column.attnum
+        ), '[]'::jsonb),
+        'whenExpression', CASE WHEN t.tgqual IS NULL THEN NULL ELSE pg_get_expr(t.tgqual, t.tgrelid) END,
+        'arguments', encode(t.tgargs, 'escape'),
+        'constraint', t.tgconstraint <> 0::oid,
+        'deferrable', t.tgdeferrable,
+        'initiallyDeferred', t.tginitdeferred
       ) ORDER BY t.tgname)
       FROM pg_trigger t
       JOIN pg_class c ON c.oid = t.tgrelid
@@ -500,6 +514,7 @@ SELECT jsonb_build_object(
     'functions', coalesce((
       SELECT jsonb_agg(jsonb_build_object(
         'name', p.proname,
+        'identityArguments', pg_get_function_identity_arguments(p.oid),
         'owner', owner.rolname,
         'bodySha256', encode(sha256(convert_to(btrim(
           replace(replace(p.prosrc, E'\r\n', E'\n'), E'\r', E'\n'),
@@ -683,6 +698,7 @@ SELECT jsonb_build_object(
       'functions', coalesce((
         SELECT jsonb_agg(jsonb_build_object(
           'name', p.proname,
+          'identityArguments', pg_get_function_identity_arguments(p.oid),
           'grantee', CASE WHEN acl.grantee = 0 THEN 'PUBLIC' ELSE grantee.rolname END,
           'grantor', grantor.rolname,
           'privilege', acl.privilege_type,

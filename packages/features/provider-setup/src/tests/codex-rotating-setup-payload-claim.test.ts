@@ -255,6 +255,7 @@ describe("versioned rotating setup recovery ledger", () => {
         workflowSourceSha256: "c".repeat(64),
         workflowSemanticSha256: "f".repeat(64),
         sourceTrust: "trusted_default_branch_revision",
+        workflowSchemaVersion: 5,
       }),
     ).rejects.toThrow("codex_rotating_setup_namespace_retired");
     await expect(ledger.status(prepared.claimId)).resolves.toMatchObject({
@@ -348,6 +349,7 @@ describe("versioned rotating setup recovery ledger", () => {
       workflowSourceSha256: "c".repeat(64),
       workflowSemanticSha256: "f".repeat(64),
       sourceTrust: "trusted_default_branch_revision" as const,
+      workflowSchemaVersion: 5,
     };
     await ledger.activate(activation);
     await expect(ledger.claim(claim)).rejects.toThrow(
@@ -500,6 +502,7 @@ describe("versioned rotating setup recovery ledger", () => {
         workflowSourceSha256: "c".repeat(64),
         workflowSemanticSha256: "f".repeat(64),
         sourceTrust: "trusted_default_branch_revision",
+        workflowSchemaVersion: 5,
       }),
     ).resolves.toEqual({ status: "active" });
     await expect(
@@ -671,6 +674,7 @@ describe("versioned rotating setup recovery ledger", () => {
       workflowSourceSha256: "c".repeat(64),
       workflowSemanticSha256: "f".repeat(64),
       sourceTrust: "trusted_default_branch_revision" as const,
+      workflowSchemaVersion: 5,
     };
     await expect(
       ledger.activate({

@@ -18,6 +18,7 @@ import {
   codexRotatingCatalogIndexNames,
   codexRotatingCatalogTables,
   codexRotatingFunctionBodyDigests,
+  codexRotatingFunctionIdentityArguments,
   codexRotatingIndexDefinitions,
   codexRotatingPartialIndexPredicates,
   codexRotatingFunctions,
@@ -532,22 +533,12 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "runtime database roles can perform DDL or assume the release-migration role",
     ],
     [
-      "release role no longer owns the catalog",
+      "canonical schema ownership changed",
       (fixture: any) => {
-        fixture.artifacts.database.databaseAuthorization.roles.find(
-          (role: any) => role.name === "reviewrouter_release_migration",
-        ).ownsCatalogObject = false;
+        fixture.artifacts.database.databaseAuthorization.schemaOwner =
+          "reviewrouter_release_migration";
       },
-      "runtime database roles can perform DDL or assume the release-migration role",
-    ],
-    [
-      "release role no longer owns repository configuration",
-      (fixture: any) => {
-        fixture.artifacts.database.databaseAuthorization.roles.find(
-          (role: any) => role.name === "reviewrouter_release_migration",
-        ).ownsRepositoryConnection = false;
-      },
-      "runtime database roles can perform DDL or assume the release-migration role",
+      "database bootstrap ownership, schema DDL ownership, and canonical role inventory are not exclusive",
     ],
     [
       "runtime role can update repository configuration",
@@ -649,47 +640,11 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "runtime database roles can perform DDL or assume the release-migration role",
     ],
     [
-      "release owner lost full repository update columns",
+      "release migration role gains repository update columns",
       (fixture: any) => {
         fixture.artifacts.database.databaseAuthorization.roles.find(
           (role: any) => role.name === "reviewrouter_release_migration",
         ).repositoryConnectionColumnUpdate = ["id"];
-      },
-      "runtime database roles can perform DDL or assume the release-migration role",
-    ],
-    [
-      "release owner lost full repository insert privilege",
-      (fixture: any) => {
-        fixture.artifacts.database.databaseAuthorization.roles.find(
-          (role: any) => role.name === "reviewrouter_release_migration",
-        ).repositoryConnectionInsert = false;
-      },
-      "runtime database roles can perform DDL or assume the release-migration role",
-    ],
-    [
-      "release owner lost full repository select privilege",
-      (fixture: any) => {
-        fixture.artifacts.database.databaseAuthorization.roles.find(
-          (role: any) => role.name === "reviewrouter_release_migration",
-        ).repositoryConnectionSelect = false;
-      },
-      "runtime database roles can perform DDL or assume the release-migration role",
-    ],
-    [
-      "release owner lost full repository update privilege",
-      (fixture: any) => {
-        fixture.artifacts.database.databaseAuthorization.roles.find(
-          (role: any) => role.name === "reviewrouter_release_migration",
-        ).repositoryConnectionUpdate = false;
-      },
-      "runtime database roles can perform DDL or assume the release-migration role",
-    ],
-    [
-      "release owner lost full repository delete privilege",
-      (fixture: any) => {
-        fixture.artifacts.database.databaseAuthorization.roles.find(
-          (role: any) => role.name === "reviewrouter_release_migration",
-        ).repositoryConnectionDelete = false;
       },
       "runtime database roles can perform DDL or assume the release-migration role",
     ],
@@ -974,6 +929,48 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "database trigger bindings are not exact",
     ],
     [
+      "trigger definition gains a conditional bypass",
+      (catalog: any) => {
+        catalog.triggers[0].definition += " WHEN (false)";
+        catalog.triggers[0].whenExpression = "false";
+      },
+      "database trigger bindings are not exact",
+    ],
+    [
+      "reattestation routine is dropped",
+      (catalog: any) => {
+        catalog.functions = catalog.functions.filter(
+          (entry: any) =>
+            entry.name !== "codex_oauth_reattest_active_namespace_v4_to_v5",
+        );
+        catalog.inventory.functions = catalog.inventory.functions.filter(
+          (name: string) =>
+            name !== "codex_oauth_reattest_active_namespace_v4_to_v5",
+        );
+      },
+      "database rotating OAuth catalog inventory is not exact",
+    ],
+    [
+      "reattestation routine body is replaced",
+      (catalog: any) => {
+        catalog.functions.find(
+          (entry: any) =>
+            entry.name === "codex_oauth_reattest_active_namespace_v4_to_v5",
+        ).bodySha256 = digest(Buffer.from("BEGIN RETURN; END"));
+      },
+      "database trigger function definitions are not exact",
+    ],
+    [
+      "reattestation routine owner is changed",
+      (catalog: any) => {
+        catalog.functions.find(
+          (entry: any) =>
+            entry.name === "codex_oauth_reattest_active_namespace_v4_to_v5",
+        ).owner = "reviewrouter_web";
+      },
+      "database trigger function definitions are not exact",
+    ],
+    [
       "same-token weakened function body",
       (catalog: any) => {
         catalog.functions.find(
@@ -1143,6 +1140,22 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "database owned function privileges are not exact",
     ],
     [
+      "reattestation routine is executable by the API role",
+      (catalog: any) =>
+        catalog.privileges.functions.push({
+          name: "codex_oauth_reattest_active_namespace_v4_to_v5",
+          identityArguments:
+            codexRotatingFunctionIdentityArguments[
+              "codex_oauth_reattest_active_namespace_v4_to_v5"
+            ],
+          grantee: "reviewrouter_api",
+          grantor: "reviewrouter_release_schema_owner",
+          privilege: "EXECUTE",
+          grantable: false,
+        }),
+      "database owned function privileges are not exact",
+    ],
+    [
       "effect authority can read signing key",
       (catalog: any) =>
         catalog.privileges.tables.push({
@@ -1271,7 +1284,7 @@ function observedFixture(): any {
       },
       databaseAuthorization: {
         databaseOwner: "reviewrouter_role_bootstrap",
-        schemaOwner: "reviewrouter_release_migration",
+        schemaOwner: "reviewrouter_release_schema_owner",
         roles: [
           "reviewrouter_release_migration",
           "reviewrouter_codex_effect_authority",
@@ -1300,38 +1313,35 @@ function observedFixture(): any {
           ];
           return {
             name,
-            allSequenceUsage: release || runtime,
-            anySequenceSelectOrUpdate: release,
-            authorityTablePrivileges: release,
+            allSequenceUsage: runtime,
+            anySequenceSelectOrUpdate: false,
+            authorityTablePrivileges: false,
             canLogin: true,
             superuser: false,
             createDatabase: false,
             createRole: false,
             replication: false,
             bypassRls: false,
-            databaseCreate: release,
-            schemaCreate: release,
+            databaseCreate: false,
+            schemaCreate: false,
             schemaUsage: true,
             canSetReleaseRole: release,
-            ownsCatalogObject: release,
-            ownsRepositoryConnection: release,
-            ddlTablePrivileges: release,
+            ownsCatalogObject: false,
+            ownsRepositoryConnection: false,
+            ddlTablePrivileges: false,
             migrationHistoryPrivileges: release,
-            providerSetupStateSelect: release || runtime,
-            providerSetupStateInsert: release || runtime,
-            providerSetupStateUpdate: release || runtime,
-            providerSetupStateDelete: release || runtime,
-            repositoryConnectionSelect: release || runtime,
-            repositoryConnectionInsert: release,
-            repositoryConnectionUpdate: release,
-            repositoryConnectionDelete: release,
-            repositoryConnectionColumnSelect:
-              release || runtime ? repositoryColumns : [],
-            repositoryConnectionColumnInsert: release ? repositoryColumns : [],
-            repositoryConnectionColumnUpdate: release ? repositoryColumns : [],
-            repositoryConnectionColumnReferences: release
-              ? repositoryColumns
-              : [],
+            providerSetupStateSelect: runtime,
+            providerSetupStateInsert: runtime,
+            providerSetupStateUpdate: runtime,
+            providerSetupStateDelete: runtime,
+            repositoryConnectionSelect: runtime,
+            repositoryConnectionInsert: false,
+            repositoryConnectionUpdate: false,
+            repositoryConnectionDelete: false,
+            repositoryConnectionColumnSelect: runtime ? repositoryColumns : [],
+            repositoryConnectionColumnInsert: [],
+            repositoryConnectionColumnUpdate: [],
+            repositoryConnectionColumnReferences: [],
           };
         }),
         memberships: [
@@ -1552,6 +1562,7 @@ function observedFixture(): any {
           persistence: "p",
           rowSecurity: false,
           forceRowSecurity: false,
+          owner: "reviewrouter_release_schema_owner",
         })),
         inventory: {
           columns: [...codexRotatingCatalogColumnKeys],
@@ -1577,14 +1588,14 @@ function observedFixture(): any {
             codexRotatingProviderRuntimeUpdateColumns.map((column) => ({
               name: `CodexOAuthProviderInstance.${column}`,
               grantee,
-              grantor: "reviewrouter_release_migration",
+              grantor: "reviewrouter_release_schema_owner",
               privilege: "UPDATE",
               grantable: false,
             })),
           ),
           functions: codexRotatingFunctions.flatMap((name) =>
             [
-              "reviewrouter_release_migration",
+              "reviewrouter_release_schema_owner",
               ...(name === "codex_oauth_consume_database_authority"
                 ? [
                     "reviewrouter_api",
@@ -1603,7 +1614,9 @@ function observedFixture(): any {
                       ? ["reviewrouter_web"]
                       : name ===
                             "codex_oauth_provider_identity_repair_challenge" ||
-                          name === "codex_oauth_repair_quarantined_provider"
+                          name === "codex_oauth_repair_quarantined_provider" ||
+                          name ===
+                            "codex_oauth_reattest_active_namespace_v4_to_v5"
                         ? ["reviewrouter_web"]
                         : name ===
                               "codex_oauth_authorize_runtime_confirmation" ||
@@ -1612,21 +1625,23 @@ function observedFixture(): any {
                           : []),
             ].map((grantee) => ({
               name,
+              identityArguments:
+                codexRotatingFunctionIdentityArguments[name] ?? "",
               grantee,
-              grantor: "reviewrouter_release_migration",
+              grantor: "reviewrouter_release_schema_owner",
               privilege: "EXECUTE",
               grantable: false,
             })),
           ),
           tables: codexRotatingCatalogTables.flatMap((name) =>
             [
-              "reviewrouter_release_migration",
+              "reviewrouter_release_schema_owner",
               "reviewrouter_codex_effect_authority",
               "reviewrouter_api",
               "reviewrouter_web",
               "reviewrouter_worker",
             ].flatMap((grantee) =>
-              (grantee === "reviewrouter_release_migration"
+              (grantee === "reviewrouter_release_schema_owner"
                 ? [
                     "DELETE",
                     "INSERT",
@@ -1650,7 +1665,7 @@ function observedFixture(): any {
               ).map((privilege) => ({
                 name,
                 grantee,
-                grantor: "reviewrouter_release_migration",
+                grantor: "reviewrouter_release_schema_owner",
                 privilege,
                 grantable: false,
               })),
@@ -1765,11 +1780,31 @@ function observedFixture(): any {
           function: fn,
           type,
           enabled: "O",
+          definition: `CREATE ${name === "RepositoryConnection_codex_oauth_identity_guard" ? "CONSTRAINT " : ""}TRIGGER "${name}" ON ${table}`,
+          updateColumns:
+            name === "RepositoryConnection_runtime_referential_action_guard"
+              ? [
+                  "id",
+                  "workspaceId",
+                  "installationId",
+                  "gitlabInstallationId",
+                  "scmRepositoryIdentityId",
+                ]
+              : [],
+          whenExpression: null,
+          arguments: "",
+          constraint:
+            name === "RepositoryConnection_codex_oauth_identity_guard",
+          deferrable:
+            name === "RepositoryConnection_codex_oauth_identity_guard",
+          initiallyDeferred: false,
         })),
         functions: codexRotatingFunctionBodyDigests.map(
           ({ name, bodySha256 }) => ({
             name,
-            owner: "reviewrouter_release_migration",
+            identityArguments:
+              codexRotatingFunctionIdentityArguments[name] ?? "",
+            owner: "reviewrouter_release_schema_owner",
             bodySha256,
             prokind: "f",
             proretset: false,

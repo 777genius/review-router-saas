@@ -163,6 +163,7 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       workflowSourceSha256: previousSourceSha256,
       workflowSemanticSha256: previousSemanticSha256,
       workflowSourceTrust: "trusted_default_branch_revision",
+      workflowSchemaVersion: 4,
       attestedRepositoryId: "1228051727",
     });
     request.mockResolvedValueOnce({
@@ -283,6 +284,7 @@ function fixture() {
     workflowSourceSha256: "c".repeat(64),
     workflowSemanticSha256: "b".repeat(64),
     workflowSourceTrust: "trusted_default_branch_revision",
+    workflowSchemaVersion: 5,
     attestedRepositoryId: "1228051727",
   });
   const request = vi

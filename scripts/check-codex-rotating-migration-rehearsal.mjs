@@ -14,7 +14,7 @@ import {
 import {
   activationAuthorityProvisioningSql,
   executeCanonicalReleaseMigration,
-  liveV70V73CatalogDigestSha256,
+  liveV70V79CatalogDigestSha256,
   roleProvisioningSql,
   runtimeGrantStatements,
 } from "./run-codex-rotating-release-migration.mjs";
@@ -1585,7 +1585,8 @@ async function proveActiveNamespaceV4V5Reattestation(
       "-Atc",
       `SELECT row_to_json(target) FROM (
         SELECT provider."id" AS "providerId", provider."latestGenerationHash" AS "generationHash",
-          claim."id" AS "claimId", attempt."id" AS "attemptId",
+          ${quoteLiteral(evidence.activeRecoverySetupNamespace.claimId)} AS "claimId",
+          ${quoteLiteral(evidence.activeRecoverySetupNamespace.attemptId)} AS "attemptId",
           namespace."id" AS "namespaceId", namespace."namespaceEpoch"::text AS "namespaceEpoch",
           namespace."secretName", namespace."githubRepositoryId" AS "repositoryId",
           namespace."workflowPath", namespace."workflowSourceTrust" AS "sourceTrust",
@@ -1596,10 +1597,6 @@ async function proveActiveNamespaceV4V5Reattestation(
         FROM "CodexOAuthProviderInstance" provider
         JOIN "CodexOAuthSecretNamespace" namespace
           ON namespace."id" = provider."activeSecretNamespaceId"
-        JOIN "CodexOAuthSetupDispatchAttempt" attempt
-          ON attempt."namespaceId" = namespace."id"
-        JOIN "CodexOAuthSetupPayloadClaim" claim
-          ON claim."id" = attempt."claimId"
         WHERE namespace."id"=${quoteLiteral(evidence.activeRecoverySetupNamespace.namespaceId)}
       ) target`,
     ]).stdout.trim(),
@@ -1623,17 +1620,41 @@ async function proveActiveNamespaceV4V5Reattestation(
     semanticSha256: nextHex(64, target.semanticSha256, "8"),
   };
   const call = (oldEvidence, newEvidence, overrides = {}) => {
-    const exact = { ...target, ...overrides };
+    const exact = {
+      ...target,
+      expectedSchemaVersion: 4,
+      targetSchemaVersion: 5,
+      ...overrides,
+    };
+    const schemaLiteral = (value) =>
+      value === null ? "NULL" : `${Number(value)}::integer`;
     return `public."codex_oauth_reattest_active_namespace_v4_to_v5"(
       ${quoteLiteral(exact.providerId)},${quoteLiteral(exact.claimId)},${quoteLiteral(exact.attemptId)},
       ${quoteLiteral(exact.namespaceId)},${exact.namespaceEpoch}::bigint,${quoteLiteral(exact.secretName)},
       ${quoteLiteral(exact.repositoryId)},${quoteLiteral(exact.generationHash)},
-      ${quoteLiteral(exact.workflowPath)},${quoteLiteral(exact.sourceTrust)},4,5,
+      ${quoteLiteral(exact.workflowPath)},${quoteLiteral(exact.sourceTrust)},
+      ${schemaLiteral(exact.expectedSchemaVersion)},${schemaLiteral(exact.targetSchemaVersion)},
       ${quoteLiteral(oldEvidence.commitSha)},${quoteLiteral(oldEvidence.blobSha)},
       ${quoteLiteral(oldEvidence.sourceSha256)},${quoteLiteral(oldEvidence.semanticSha256)},
       ${quoteLiteral(newEvidence.commitSha)},${quoteLiteral(newEvidence.blobSha)},
       ${quoteLiteral(newEvidence.sourceSha256)},${quoteLiteral(newEvidence.semanticSha256)})`;
   };
+
+  for (const versionOverride of [
+    { expectedSchemaVersion: null },
+    { targetSchemaVersion: null },
+  ]) {
+    const rejectedNull = psql(
+      clients.web,
+      ["-c", `SELECT ${call(target, winner, versionOverride)}`],
+      false,
+    );
+    assertPsqlFailedWithExactMessage(
+      rejectedNull,
+      "codex_oauth_active_namespace_reattestation_invalid",
+      "NULL workflow schema version did not fail closed",
+    );
+  }
 
   const winnerInvocation = createSecretSafePostgresInvocation({
     databaseUrl: clients.web,
@@ -1696,6 +1717,16 @@ async function proveActiveNamespaceV4V5Reattestation(
     "codex_oauth_active_namespace_reattestation_stale",
     "stale old workflow SHA did not fail closed",
   );
+  const replay = psql(
+    clients.web,
+    ["-c", `SELECT ${call(target, winner)}`],
+    false,
+  );
+  assertPsqlFailedWithExactMessage(
+    replay,
+    "codex_oauth_active_namespace_reattestation_stale",
+    "completed V4-to-V5 receipt replay did not fail closed",
+  );
 
   const postWinner = { ...target, ...winner };
   for (const [label, overrides, expectedError] of [
@@ -1752,6 +1783,36 @@ async function proveActiveNamespaceV4V5Reattestation(
     "codex_oauth_secret_namespace_identity_immutable",
     "direct active namespace evidence update bypassed the tombstone guard",
   );
+  const directSchemaVersion = psql(
+    adminUrl,
+    [
+      "-c",
+      `UPDATE "CodexOAuthSecretNamespace"
+       SET "workflowSchemaVersion"=4
+       WHERE "id"=${quoteLiteral(target.namespaceId)}`,
+    ],
+    false,
+  );
+  assertPsqlFailedWithExactMessage(
+    directSchemaVersion,
+    "codex_oauth_secret_namespace_identity_immutable",
+    "direct active namespace workflow schema update bypassed the tombstone guard",
+  );
+  const createdAtMutation = psql(
+    adminUrl,
+    [
+      "-c",
+      `UPDATE "CodexOAuthSecretNamespace"
+       SET "createdAt"="createdAt" + interval '1 second'
+       WHERE "id"=${quoteLiteral(target.namespaceId)}`,
+    ],
+    false,
+  );
+  assertPsqlFailedWithExactMessage(
+    createdAtMutation,
+    "codex_oauth_secret_namespace_identity_immutable",
+    "active namespace createdAt mutation bypassed the tombstone guard",
+  );
   assert(
     psql(adminUrl, [
       "-Atc",
@@ -1760,7 +1821,8 @@ async function proveActiveNamespaceV4V5Reattestation(
          AND "workflowSourceCommitSha"=${quoteLiteral(winner.commitSha)}
          AND "workflowSourceBlobSha"=${quoteLiteral(winner.blobSha)}
          AND "workflowSourceSha256"=${quoteLiteral(winner.sourceSha256)}
-         AND "workflowSemanticSha256"=${quoteLiteral(winner.semanticSha256)}`,
+         AND "workflowSemanticSha256"=${quoteLiteral(winner.semanticSha256)}
+         AND "workflowSchemaVersion"=5`,
     ]).stdout.trim() === "1",
     "failed re-attestation attempt changed active namespace evidence",
   );
@@ -1983,7 +2045,7 @@ function proveDatabasePrivileges(url) {
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = current_schema() AND p.proname LIKE 'codex_oauth_%';
-        IF function_count <> 22 OR unsafe_function_count <> 0 THEN
+        IF function_count <> 24 OR unsafe_function_count <> 0 THEN
           RAISE EXCEPTION 'Codex OAuth function privilege mismatch: %, %', function_count, unsafe_function_count;
         END IF;
 
@@ -3092,7 +3154,7 @@ function installRehearsalMigrationPermit(
         ${quoteLiteral(permit.transitionSha256)},
         ${quoteLiteral(permit.previousReceiptSha256)},
         ${quoteLiteral(rehearsalPostManifestIdentitySha256)},
-        ${quoteLiteral(liveV70V73CatalogDigestSha256)},
+        ${quoteLiteral(liveV70V79CatalogDigestSha256)},
         ${quoteLiteral(JSON.stringify(sourceLegacyAmbiguity))}::jsonb,
         ${quoteLiteral(eligibilityCutoff)}::timestamptz,
         ${permit.epoch}::bigint,
@@ -3815,6 +3877,17 @@ function proveRuntimeParentCascadesDenied(adminUrl, clients) {
         ],
       ]) {
         const result = psql(url, ["-c", sql], false);
+        if (label === "workspace key update") {
+          assertPsqlFailedWithOneOfExactMessages(
+            result,
+            [
+              "codex_oauth_runtime_referential_update_forbidden",
+              "codex_oauth_provider_identity_authority_required",
+            ],
+            `${role} bypassed rotating protection through ${label}`,
+          );
+          continue;
+        }
         assertPsqlFailedWithExactMessage(
           result,
           expected,

@@ -134,7 +134,7 @@ export const canonicalReleaseMigrationEntries = Object.freeze([
   ],
   [
     "000079_codex_oauth_v4_v5_workflow_reattestation",
-    "dbc4c472b188f6fd0b423c8415afeffa9d7907f4476d44d8aeb74e1a3534c4fc",
+    "f5d58da6dae81defd440e9490472fde75c1d596cc19f53c0b24ee1a67c0cd051",
   ],
 ] as const).map(([name, checksum]) =>
   Object.freeze({ migrationName: name, migrationSqlSha256: checksum }),
@@ -142,18 +142,19 @@ export const canonicalReleaseMigrationEntries = Object.freeze([
 
 export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
-    "sha256:80a2579253251ca88a0a632897d2dfa60022d340945d3cf03a6436acea749194",
+    "sha256:91327392a838ba22e97e9b9cec18899f7d93a6a9f27dbdb6b55b84e3a6578709",
   preManifestIdentity:
     "sha256:bb102d7d6013f7373f177ea5f266a5427a877fc54b95af8876d30ec2b17ab478",
   orderedPendingEntriesSha256:
-    "sha256:dd38e5d9a9479a3dd6073f08e6ed9984ec2a653664ba37fbbabbb11a418b0c3b",
+    "sha256:ebf1761377d856f81920a4eaf213bec71440e8cf7a39ca0d3782fd5c5ed2a6d2",
   migrationBundleSha256:
-    "sha256:df9c80cf4b8920a19661c3a7c6974eb7cb2d118863b25c4517d9f0436819b940",
+    "sha256:d47463772967618efd46edfa2fae8771aa7c9b9d66335debcc3824ad549501b7",
   postManifestIdentity:
-    "sha256:26fce7eaa4eee4396fe5a94e425554b67fe755d5b0a6a8560c4ba19f7ac58f68",
-  // Captured digest of the canonical live V70-V73 catalog projection.
+    "sha256:d223888b6afdd03e03e162ef3afe679e5c9945b812c4a169029c927b4bf959b4",
+  // Disposable PG17 candidate for the canonical V70-V79 catalog projection.
+  // Production promotion remains gated on independent capture review.
   postCatalogDigest:
-    "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0",
+    "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68",
 });
 
 export const canonicalReleaseMigrationResumeManifestIdentities = Object.freeze([

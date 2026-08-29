@@ -151,6 +151,9 @@ function safeErrorCode(error: unknown): string {
     "codex_rotating_workflow_default_head_changed",
     "codex_rotating_setup_activation_mismatch",
     "codex_rotating_setup_activation_stale_epoch",
+    "codex_rotating_workflow_reattestation_stale",
+    "codex_rotating_workflow_reattestation_invalid",
+    "codex_rotating_workflow_reattestation_forbidden",
   ]);
   if (allowed.has(code)) return code;
 
@@ -202,6 +205,7 @@ function statusForError(code: string): number {
   }
   if (code === "github_cli_repository_forbidden") return 403;
   if (code === "entitlement_denied") return 403;
+  if (code === "codex_rotating_workflow_reattestation_forbidden") return 403;
   if (code === "rate_limited") return 429;
   if (
     code === "github_cli_repository_not_found" ||
@@ -216,6 +220,7 @@ function statusForError(code: string): number {
   ) {
     return 502;
   }
+  if (code === "codex_rotating_workflow_reattestation_invalid") return 400;
   if (code.startsWith("codex_rotating_") || code.startsWith("codex_oauth_")) {
     return 409;
   }

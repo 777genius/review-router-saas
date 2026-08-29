@@ -3,8 +3,10 @@ import { createHash } from "node:crypto";
 import { codexRotatingSetupTerminalClaimStatuses } from "@reviewrouter/features-provider-setup";
 import {
   completeSetupRecoveryAssociation,
+  CodexRotatingWorkflowReattestationError,
   PrismaCodexRotatingSetupPayloadClaim,
   retireAttemptAndNamespace,
+  translateWorkflowReattestationDatabaseError,
 } from "./prisma-codex-rotating-setup-payload-claim";
 
 const recoveryWitness = "w".repeat(43);
@@ -277,6 +279,7 @@ describe("Prisma rotating setup writer proof", () => {
                   workflowSourceSha256: "c".repeat(64),
                   workflowSemanticSha256: "d".repeat(64),
                   sourceTrust: "trusted_default_branch_revision",
+                  workflowSchemaVersion: 5,
                 });
 
         await expect(result).rejects.toThrow(
@@ -908,6 +911,7 @@ describe("Prisma rotating setup writer proof", () => {
         workflowSourceSha256: "c".repeat(64),
         workflowSemanticSha256: "d".repeat(64),
         sourceTrust: "trusted_default_branch_revision",
+        workflowSchemaVersion: 5,
       }),
     ).resolves.toEqual({ status: "active" });
     expect(tx.$executeRaw).toHaveBeenCalledTimes(8);
@@ -979,5 +983,47 @@ describe("Prisma rotating setup writer proof", () => {
       tx.$queryRaw.mock.calls.at(-1)![0] as readonly string[],
     ).join("?");
     expect(sql).toContain("codex_oauth_reattest_active_namespace_v4_to_v5");
+  });
+});
+
+describe("workflow re-attestation database errors", () => {
+  it.each([
+    [
+      "40001",
+      "codex_oauth_active_namespace_reattestation_stale",
+      "codex_rotating_workflow_reattestation_stale",
+    ],
+    [
+      "22023",
+      "codex_oauth_active_namespace_reattestation_invalid",
+      "codex_rotating_workflow_reattestation_invalid",
+    ],
+    [
+      "42501",
+      "codex_oauth_active_namespace_reattestation_role_forbidden",
+      "codex_rotating_workflow_reattestation_forbidden",
+    ],
+  ])("maps wrapped Prisma %s errors to %s", (sqlState, dbCode, safeCode) => {
+    const translated = translateWorkflowReattestationDatabaseError({
+      code: "P2010",
+      message: `Raw query failed. Code: ${sqlState}`,
+      meta: { code: sqlState, message: `ERROR: ${dbCode}` },
+    });
+
+    expect(translated).toBeInstanceOf(CodexRotatingWorkflowReattestationError);
+    expect((translated as Error).message).toBe(safeCode);
+  });
+
+  it("does not translate a token without the matching SQLSTATE", () => {
+    const original = {
+      code: "P2010",
+      meta: {
+        code: "23514",
+        message: "codex_oauth_active_namespace_reattestation_stale",
+      },
+    };
+    expect(translateWorkflowReattestationDatabaseError(original)).toBe(
+      original,
+    );
   });
 });

@@ -1,5 +1,5 @@
 /**
- * Canonical PostgreSQL projection of the live V70-V73 application catalog.
+ * Canonical PostgreSQL projection of the live V70-V79 application catalog.
  * Keep this in the Postgres adapter layer: the domain receives only its digest.
  */
 const dynamicWriteAclPrincipals = Object.freeze([
@@ -20,7 +20,7 @@ WITH selected_relations AS (
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
   WHERE n.nspname='public' AND c.relname IN
-    ('CodexOAuthWritebackIntent','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+    ('CodexOAuthWritebackIntent','CodexOAuthSecretNamespace','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
 ), facts AS (
   SELECT jsonb_build_object(
     'columns',coalesce((SELECT jsonb_agg(jsonb_build_object(
@@ -123,7 +123,10 @@ WITH selected_relations AS (
         'reviewrouter_runtime_generation_write_read_canary',
         'reviewrouter_request_runtime_canary_challenge',
         'reviewrouter_answer_runtime_canary_challenge',
-        'reviewrouter_read_runtime_canary_challenge_proofs')),'[]'::jsonb),
+        'reviewrouter_read_runtime_canary_challenge_proofs',
+        'codex_oauth_v4_v5_reattestation_transition',
+        'codex_oauth_reattest_active_namespace_v4_to_v5',
+        'codex_oauth_secret_namespace_tombstone_guard')),'[]'::jsonb),
     'defaultAcl',coalesce((SELECT jsonb_agg(jsonb_build_object(
       'owner',pg_catalog.pg_get_userbyid(d.defaclrole),'namespace',n.nspname,
       'kind',d.defaclobjtype,'acl',(SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
@@ -131,7 +134,7 @@ WITH selected_relations AS (
       FROM pg_catalog.pg_default_acl d LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace
       WHERE n.nspname='public'),'[]'::jsonb),
     'history',CASE WHEN reviewrouter_activation.read_activation_migration_manifest_identity()
-      = 'sha256:26fce7eaa4eee4396fe5a94e425554b67fe755d5b0a6a8560c4ba19f7ac58f68'
+      = 'sha256:7085eae80c4c611e912b360b645f0fdb66d706daa7843e186c138a1921698b07'
       THEN jsonb_build_array(
         jsonb_build_object('name','000070_runtime_generation_witness_proof',
           'checksum','cb9c42171f9bd924d21093852a1053cb947100acef1321ec8cf62e8fd5928c6f',
@@ -147,6 +150,24 @@ WITH selected_relations AS (
           'finished',true,'rolledBack',false),
         jsonb_build_object('name','000073_codex_oauth_active_namespace_refresh',
           'checksum','3e5b6606f22c8bec6f75f52f48b693806d597fa283155f6e033844c4f6be4de6',
+          'finished',true,'rolledBack',false),
+        jsonb_build_object('name','000074_hosted_codex_account_pool',
+          'checksum','c992feca661fba44d5f147bab3834c2fd9223c43b1a161dcd1f1787993b32014',
+          'finished',true,'rolledBack',false),
+        jsonb_build_object('name','000075_hosted_codex_security_certification',
+          'checksum','8b7a21c3139edb507290ebe9f464d21044aff95e3c1e51dad84a0eaeda495edf',
+          'finished',true,'rolledBack',false),
+        jsonb_build_object('name','000076_hosted_codex_terminalization_restore_invariants',
+          'checksum','d97f4499092604424b0105aee4caf216789933fad2caddf8df4da594361ce561',
+          'finished',true,'rolledBack',false),
+        jsonb_build_object('name','000077_hosted_codex_r57_security_race_remediation',
+          'checksum','d7320c240460275ca3b063c05a393b713214f369a025595f749ed3b4845c73f4',
+          'finished',true,'rolledBack',false),
+        jsonb_build_object('name','000078_review_investigation_maintenance_checkpoint',
+          'checksum','21de6c901dee41a52cdfa0bea8e3559d1d0ea847003bd136d729c0e4cb4cba8d',
+          'finished',true,'rolledBack',false),
+        jsonb_build_object('name','000079_codex_oauth_v4_v5_workflow_reattestation',
+          'checksum','f5d58da6dae81defd440e9490472fde75c1d596cc19f53c0b24ee1a67c0cd051',
           'finished',true,'rolledBack',false))
       ELSE '[]'::jsonb END,
     'unresolvedHistory',false,
@@ -163,9 +184,12 @@ SELECT 'sha256:'||encode(pg_catalog.sha256(convert_to(value::text,'UTF8')),'hex'
 FROM facts`;
 
 export const liveV70V73CatalogDigestSha256 =
-  "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0";
+  "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68";
 
 // Compatibility aliases for existing external consumers during the V73 rollout.
 export const fencedLiveV70V72CatalogDigestSql =
   fencedLiveV70V73CatalogDigestSql;
 export const liveV70V72CatalogDigestSha256 = liveV70V73CatalogDigestSha256;
+export const fencedLiveV70V79CatalogDigestSql =
+  fencedLiveV70V73CatalogDigestSql;
+export const liveV70V79CatalogDigestSha256 = liveV70V73CatalogDigestSha256;

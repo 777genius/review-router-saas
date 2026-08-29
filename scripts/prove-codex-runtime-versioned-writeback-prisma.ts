@@ -391,6 +391,7 @@ try {
     workflowSourceSha256: "1".repeat(64),
     workflowSemanticSha256: "1".repeat(64),
     sourceTrust: "trusted_default_branch_revision",
+    workflowSchemaVersion: 5,
   });
   const activeA = createVersionedProviderSecretNamespace({
     scope: { repositoryId: "900007", providerInstanceId },
@@ -903,6 +904,9 @@ try {
     workflowSourceSha256: "4".repeat(64),
     workflowSemanticSha256: "4".repeat(64),
     sourceTrust: "trusted_default_branch_revision",
+    // Preserve one evidence-backed V4 active namespace for the migration's
+    // one-shot V4-to-V5 re-attestation proof below.
+    workflowSchemaVersion: 4,
   });
   const recovered =
     await adminPrisma.codexOAuthWritebackIntent.findUniqueOrThrow({

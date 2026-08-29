@@ -16,6 +16,7 @@ import {
   fingerprintDatabaseRecoveryWitness,
   codexRotatingAuthMode,
   codexRotatingCanonicalT0WorkflowSchemaVersions,
+  codexRotatingWorkflowSchemaVersion,
   codexRotatingSecretName,
   mapActiveVersionedProviderSecretNamespace,
   parseVersionedProviderSecretName,
@@ -156,6 +157,7 @@ export class PrismaCodexRotatingOAuthRepository
             workflowSourceSha256: true,
             workflowSemanticSha256: true,
             workflowSourceTrust: true,
+            workflowSchemaVersion: true,
             attestedRepositoryId: true,
           },
         },
@@ -188,6 +190,7 @@ export class PrismaCodexRotatingOAuthRepository
       !source.workflowSourceBlobSha ||
       !source.workflowSourceSha256 ||
       source.workflowSourceTrust !== "trusted_default_branch_revision" ||
+      source.workflowSchemaVersion !== input.workflowSchemaVersion ||
       !source.attestedRepositoryId ||
       !source.workflowSemanticSha256
     ) {
@@ -1941,6 +1944,7 @@ export class PrismaCodexRotatingOAuthRepository
             workflowSourceSha256: input.attestation.workflowSourceSha256,
             workflowSemanticSha256: input.attestation.workflowSemanticSha256,
             workflowSourceTrust: input.attestation.sourceTrust,
+            workflowSchemaVersion: codexRotatingWorkflowSchemaVersion,
             attestedRepositoryId: input.attestation.repositoryId,
             activatedAt: now,
           },

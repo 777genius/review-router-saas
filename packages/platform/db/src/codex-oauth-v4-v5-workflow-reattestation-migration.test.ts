@@ -14,7 +14,7 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
 
   it("is an atomic forward migration with a pinned digest", () => {
     expect(createHash("sha256").update(sql).digest("hex")).toBe(
-      "dbc4c472b188f6fd0b423c8415afeffa9d7907f4476d44d8aeb74e1a3534c4fc",
+      "f5d58da6dae81defd440e9490472fde75c1d596cc19f53c0b24ee1a67c0cd051",
     );
     expect(sql).toMatch(/^BEGIN;[\s\S]+COMMIT;\s*$/u);
   });
@@ -27,6 +27,13 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
     expect(sql).toContain("FOR UPDATE OF namespace, attempt, claim");
     expect(sql).toContain("expected_schema_version <> 4");
     expect(sql).toContain("target_schema_version <> 5");
+    expect(sql).toContain(
+      'namespace."workflowSchemaVersion" = expected_schema_version',
+    );
+    expect(sql).toContain('"workflowSchemaVersion" = target_schema_version');
+    expect(sql).toContain('OLD."workflowSchemaVersion" = 4');
+    expect(sql).toContain('NEW."workflowSchemaVersion" = 5');
+    expect(sql).toContain("expected_schema_version IS NULL");
     expect(sql).toContain(
       'provider."activeSecretNamespaceId" = target_namespace_id',
     );
@@ -51,5 +58,7 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
     expect(sql).toContain("TO reviewrouter_web");
     expect(sql).not.toMatch(/TO reviewrouter_(?:api|worker);/u);
     expect(sql).not.toContain("GRANT UPDATE");
+    expect(sql).toContain("reviewrouter_release_schema_owner");
+    expect(sql).toContain('NEW."createdAt" IS DISTINCT FROM OLD."createdAt"');
   });
 });

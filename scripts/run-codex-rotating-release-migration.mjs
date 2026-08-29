@@ -4931,6 +4931,8 @@ export const liveV70V73CatalogDigestSql = fencedLiveV70V73CatalogDigestSql;
 
 export const liveV70V72CatalogDigestSha256 = liveV70V73CatalogDigestSha256;
 export const liveV70V72CatalogDigestSql = liveV70V73CatalogDigestSql;
+export const liveV70V79CatalogDigestSha256 = liveV70V73CatalogDigestSha256;
+export const liveV70V79CatalogDigestSql = liveV70V73CatalogDigestSql;
 
 if (liveV70V73CatalogDigestSha256 !== fencedLiveV70V73CatalogDigestSha256)
   throw new Error("release_migration_fenced_catalog_projection_drift");

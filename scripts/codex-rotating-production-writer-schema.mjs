@@ -391,6 +391,7 @@ export const codexRotatingOwnedColumns = Object.freeze([
     ["workflowSourceSha256", "text", true],
     ["workflowSemanticSha256", "text", true],
     ["workflowSourceTrust", "text", true],
+    ["workflowSchemaVersion", "integer", true],
     ["attestedRepositoryId", "text", true],
     ["createdAt", "timestamp(3) with time zone", false, "CURRENT_TIMESTAMP"],
     ["confirmedAt", "timestamp(3) with time zone", true],
@@ -876,6 +877,7 @@ export const codexRotatingIndexDefinitions = Object.freeze([
 ]);
 
 export const codexRotatingDatabaseRoles = Object.freeze({
+  schemaOwner: "reviewrouter_release_schema_owner",
   releaseMigration: "reviewrouter_release_migration",
   effectAuthority: "reviewrouter_codex_effect_authority",
   runtime: Object.freeze([
@@ -1245,7 +1247,7 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
   ),
   functionBody(
     "codex_oauth_reattest_active_namespace_v4_to_v5",
-    "f7e911e83fdd821eebe774b7e83f795ed8120ab6cccd8cfd7c6fc5e3b0f68fae",
+    "4707d4714fe10712b541c93acad8bd0bd3e33dabad8816a78261949f989548bf",
   ),
   functionBody(
     "codex_oauth_repair_quarantined_child",
@@ -1269,7 +1271,7 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
   ),
   functionBody(
     "codex_oauth_secret_namespace_tombstone_guard",
-    "de395d67890f834a3b3986a0a5791369458be7c8207ea00bb0dcdf113b7c837a",
+    "2e8896288465d4ae4d52ff84aca037b8f87570bfd219ac95516ebbbc1b9a923f",
   ),
   functionBody(
     "codex_oauth_setup_attempt_evidence_guard",
@@ -1300,6 +1302,26 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
 export const codexRotatingFunctions = Object.freeze(
   codexRotatingFunctionBodyDigests.map(({ name }) => name),
 );
+
+export const codexRotatingFunctionIdentityArguments = Object.freeze({
+  codex_oauth_authorize_runtime_completion: "text, text",
+  codex_oauth_authorize_runtime_confirmation: "text, text, integer, text",
+  codex_oauth_authorize_setup_confirmation: "text, integer, text",
+  codex_oauth_consume_database_authority: "text, text, integer",
+  codex_oauth_database_authority_challenge: "text, text, integer",
+  codex_oauth_provider_identity_transition:
+    "text, text, text, text, text, text, text, text, text, text, text",
+  codex_oauth_provider_identity_repair_challenge:
+    "text, text, text, text, text, text, text, bigint, text, text, text, text, text, text, bigint",
+  codex_oauth_sign_database_authority: "text",
+  codex_oauth_repair_quarantined_child: "text, text, text",
+  codex_oauth_repair_quarantined_provider:
+    "text, text, text, text, text, text, text, bigint, text, text, text, text, text, text, bigint, text",
+  codex_oauth_reattest_active_namespace_v4_to_v5:
+    "text, text, text, text, bigint, text, text, text, text, text, integer, integer, text, text, text, text, text, text, text, text",
+  codex_oauth_v4_v5_reattestation_transition:
+    "text, text, bigint, text, text, text, text, text, text, text, text, text, text, text, text",
+});
 
 export const codexRotatingTriggers = Object.freeze([
   "CodexOAuthChildIdentityQuarantine_cascade_guard",
