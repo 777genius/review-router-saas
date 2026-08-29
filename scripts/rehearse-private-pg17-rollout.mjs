@@ -2332,8 +2332,10 @@ async function verifyProductionPathRehearsal(facts) {
       credential.cleanup();
     }
   };
-  const canonicalRun = (step, command, args, options = {}) =>
-    canonicalProcessRun(step, command, args, {
+  const canonicalRun = (step, command, args, options = {}) => {
+    const safeStep = /^[a-z][a-z0-9_]{2,63}$/u.test(step) ? step : "unknown";
+    process.stderr.write(`rehearsal_canonical_step_started:${safeStep}\n`);
+    const output = canonicalProcessRun(step, command, args, {
       ...options,
       ...(options.env
         ? {
@@ -2346,6 +2348,9 @@ async function verifyProductionPathRehearsal(facts) {
           }
         : {}),
     });
+    process.stderr.write(`rehearsal_canonical_step_completed:${safeStep}\n`);
+    return output;
+  };
   const activationCommands = {
     execute(command, args, options) {
       return {

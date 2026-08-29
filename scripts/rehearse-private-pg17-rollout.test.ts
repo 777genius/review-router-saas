@@ -1390,6 +1390,8 @@ describe("disposable dual-version rehearsal", () => {
       "rehearsal_control_health_not_ready:status=${status}",
     );
     expect(source).toContain("rehearsal_canonical_postgres_error:${step}");
+    expect(source).toContain("rehearsal_canonical_step_started:${safeStep}");
+    expect(source).toContain("rehearsal_canonical_step_completed:${safeStep}");
     expect(source).toContain(
       '"rehearsal_migration_substep_started:configuration\\n"',
     );
