@@ -477,6 +477,7 @@ const fullyProtectedRuntimeTables = Object.freeze([
 export const runtimeAuthorityReadOnlyTables = Object.freeze([
   "HostedCodexRuntimeGate",
   "HostedCodexRuntimeClosure",
+  "ReviewProviderScopeConcurrencyControl",
 ]);
 
 export const workerOwnedMaintenanceCheckpointTable =

@@ -116,6 +116,7 @@ export async function buildHostedCertificationEvidence(input: {
     "packages/platform/db/prisma/migrations/000077_hosted_codex_r57_security_race_remediation/migration.sql",
     "packages/platform/db/prisma/migrations/000078_review_investigation_maintenance_checkpoint/migration.sql",
     "packages/platform/db/prisma/migrations/000079_hosted_codex_output_limits/migration.sql",
+    "packages/platform/db/prisma/migrations/000079_remove_account_wide_provider_lane_serialization/migration.sql",
     "packages/platform/db/prisma/migrations/000080_hosted_codex_attempt_generation/migration.sql",
     "packages/platform/db/prisma/migrations/000081_hosted_codex_runtime_gate/migration.sql",
     "packages/platform/db/prisma/migrations/000082_validate_hosted_codex_output_limits/migration.sql",

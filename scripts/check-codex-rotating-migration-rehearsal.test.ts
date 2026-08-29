@@ -93,6 +93,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "migration77Name",
       "migration78Name",
       "migration79Name",
+      "migration79ScopeName",
       "migration80Name",
       "migration81Name",
       "migration82Name",
@@ -139,6 +140,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).toContain(
       'const migration86Name = "000086_comment_token_custody_r18_remediation"',
+    );
+    expect(source).toContain(
+      '"000079_remove_account_wide_provider_lane_serialization"',
     );
     expect(source).toContain(
       'const migration72RetireName = "000072_retire_superseded_codex_setup_claims"',

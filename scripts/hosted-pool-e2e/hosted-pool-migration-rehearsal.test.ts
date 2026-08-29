@@ -46,6 +46,65 @@ beforeAll(async () => {
 afterAll(async () => client.end());
 
 describe("hosted pool populated 000074 to 000075 migration", () => {
+  it.runIf(phase === "seed-000074")(
+    "retains the legacy vote index and exposes SELECT-only runtime rollout control",
+    async () => {
+      const catalog = await client.query(`
+        SELECT
+          index_catalog.indisvalid,
+          index_catalog.indisready,
+          index_catalog.indisunique,
+          pg_get_indexdef(index_catalog.indexrelid) AS definition
+        FROM pg_catalog.pg_index index_catalog
+        WHERE index_catalog.indexrelid =
+          'public."ReviewInvocationLeaseV2_one_active_provider_vote_lane"'::regclass
+      `);
+      expect(catalog.rows).toEqual([
+        {
+          indisvalid: true,
+          indisready: true,
+          indisunique: true,
+          definition:
+            'CREATE UNIQUE INDEX "ReviewInvocationLeaseV2_one_active_provider_vote_lane" ON public."ReviewInvocationLeaseV2" USING btree ("providerVoteIdentityHash") WHERE ((state = \'active\'::"ReviewInvocationLeaseStateV2") AND (purpose = \'provider_execution\'::"ReviewInvocationLeasePurposeV2"))',
+        },
+      ]);
+
+      const authority = await client.query(`
+        SELECT role_name,
+          has_table_privilege(
+            role_name,
+            'public."ReviewProviderScopeConcurrencyControl"',
+            'SELECT'
+          ) AS can_select,
+          has_table_privilege(
+            role_name,
+            'public."ReviewProviderScopeConcurrencyControl"',
+            'INSERT,UPDATE,DELETE,TRUNCATE'
+          ) AS can_mutate
+        FROM unnest(ARRAY[
+          'reviewrouter_api', 'reviewrouter_web', 'reviewrouter_worker'
+        ]) AS role_name
+        ORDER BY role_name
+      `);
+      expect(authority.rows).toEqual([
+        { role_name: "reviewrouter_api", can_select: true, can_mutate: false },
+        { role_name: "reviewrouter_web", can_select: true, can_mutate: false },
+        {
+          role_name: "reviewrouter_worker",
+          can_select: true,
+          can_mutate: false,
+        },
+      ]);
+      await expect(
+        client.query(`
+          SELECT "activated"
+          FROM "ReviewProviderScopeConcurrencyControl"
+          WHERE "singleton" = true
+        `),
+      ).resolves.toMatchObject({ rows: [{ activated: false }] });
+    },
+  );
+
   it.runIf(phase === "verify-000083")(
     "adds the durable mint ledger and closed legacy quarantine without rewriting legacy receipts",
     async () => {

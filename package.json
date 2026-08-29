@@ -68,6 +68,7 @@
     "db:migrate:status": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/platform-db db:migrate:status",
     "db:migrate:smoke": "node scripts/run-with-env.mjs node scripts/check-migration-smoke.mjs",
     "outbox:fencing:cutover": "node scripts/run-with-env.mjs node scripts/activate-outbox-fencing.mjs",
+    "review-provider-scope-concurrency": "node scripts/run-with-env.mjs node scripts/manage-review-provider-scope-concurrency.mjs",
     "review-v2:migrate": "node scripts/run-with-env.mjs node scripts/review-v2-migrate.mjs",
     "review-v2:migration-rehearsal": "node scripts/run-with-env.mjs node scripts/check-review-v2-migration-rehearsal.mjs",
     "review-investigation:migration-rehearsal": "REVIEW_ROUTER_REVIEW_INVESTIGATION_MIGRATION_REHEARSAL=1 node scripts/run-with-env.mjs vitest run scripts/review-investigation-mixed-version-migration.test.ts",

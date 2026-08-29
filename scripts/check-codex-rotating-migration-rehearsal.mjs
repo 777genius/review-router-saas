@@ -61,6 +61,8 @@ const migration76Name =
 const migration77Name = "000077_hosted_codex_r57_security_race_remediation";
 const migration78Name = "000078_review_investigation_maintenance_checkpoint";
 const migration79Name = "000079_hosted_codex_output_limits";
+const migration79ScopeName =
+  "000079_remove_account_wide_provider_lane_serialization";
 const migration80Name = "000080_hosted_codex_attempt_generation";
 const migration81Name = "000081_hosted_codex_runtime_gate";
 const migration82Name = "000082_validate_hosted_codex_output_limits";
@@ -102,6 +104,7 @@ assert(
       migration77Name,
       migration78Name,
       migration79Name,
+      migration79ScopeName,
       migration80Name,
       migration81Name,
       migration82Name,
@@ -596,6 +599,7 @@ function applyCanonicalPreMigrationBaseline(url) {
         directory === migration77Name ||
         directory === migration78Name ||
         directory === migration79Name ||
+        directory === migration79ScopeName ||
         directory === migration80Name ||
         directory === migration81Name ||
         directory === migration82Name ||

@@ -121,6 +121,7 @@ try {
   if (runPostgresE2e) {
     runMigrationDeploy("packages/platform/db", databaseUrl);
     await applyProductionRuntimeAcl(databaseUrl, database);
+    await proveProviderScopeConcurrencyRollout(databaseUrl);
     await proveCustodyCredentialRotation(databaseUrl, custodyDatabaseUrl);
     try {
       run(
@@ -145,6 +146,87 @@ try {
     rmSync(rehearsalDirectory, { recursive: true, force: true });
   if (started) {
     spawnSync("docker", ["rm", "--force", container], { stdio: "ignore" });
+  }
+}
+
+async function proveProviderScopeConcurrencyRollout(connectionString) {
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    const runtimeAuthority = await client.query(`
+      SELECT role_name,
+        has_table_privilege(
+          role_name, 'public."ReviewProviderScopeConcurrencyControl"', 'SELECT'
+        ) AS can_select,
+        has_table_privilege(
+          role_name, 'public."ReviewProviderScopeConcurrencyControl"',
+          'INSERT,UPDATE,DELETE,TRUNCATE'
+        ) AS can_mutate
+      FROM unnest(ARRAY[
+        'reviewrouter_api', 'reviewrouter_web', 'reviewrouter_worker'
+      ]) AS role_name
+      ORDER BY role_name
+    `);
+    if (
+      runtimeAuthority.rows.some(
+        (row) => row.can_select !== true || row.can_mutate !== false,
+      )
+    ) {
+      throw new Error("provider_scope_concurrency_runtime_acl_invalid");
+    }
+
+    run(
+      "node",
+      [
+        "scripts/manage-review-provider-scope-concurrency.mjs",
+        "--activate",
+        "--confirm-old-replicas-drained",
+      ],
+      { DATABASE_URL: connectionString },
+    );
+    run(
+      "node",
+      [
+        "scripts/manage-review-provider-scope-concurrency.mjs",
+        "--close-for-rollback",
+        "--confirm-no-old-replica-started",
+      ],
+      { DATABASE_URL: connectionString },
+    );
+    await client.query(`
+      CREATE INDEX "ReviewInvocationLeaseV2_one_active_provider_vote_lane"
+      ON "ReviewInvocationLeaseV2" ("leaseId")
+    `);
+    run(
+      "node",
+      [
+        "scripts/manage-review-provider-scope-concurrency.mjs",
+        "--verify-rollback-ready",
+      ],
+      { DATABASE_URL: connectionString },
+    );
+    const repaired = await client.query(`
+      SELECT index_catalog.indisvalid,
+             index_catalog.indisready,
+             index_catalog.indisunique,
+             pg_get_indexdef(index_catalog.indexrelid) AS definition
+      FROM pg_catalog.pg_index index_catalog
+      WHERE index_catalog.indexrelid =
+        'public."ReviewInvocationLeaseV2_one_active_provider_vote_lane"'::regclass
+    `);
+    const expectedDefinition =
+      'CREATE UNIQUE INDEX "ReviewInvocationLeaseV2_one_active_provider_vote_lane" ON public."ReviewInvocationLeaseV2" USING btree ("providerVoteIdentityHash") WHERE ((state = \'active\'::"ReviewInvocationLeaseStateV2") AND (purpose = \'provider_execution\'::"ReviewInvocationLeasePurposeV2"))';
+    if (
+      repaired.rows.length !== 1 ||
+      repaired.rows[0]?.indisvalid !== true ||
+      repaired.rows[0]?.indisready !== true ||
+      repaired.rows[0]?.indisunique !== true ||
+      repaired.rows[0]?.definition !== expectedDefinition
+    ) {
+      throw new Error("provider_scope_concurrency_rollback_repair_invalid");
+    }
+  } finally {
+    await client.end();
   }
 }
 

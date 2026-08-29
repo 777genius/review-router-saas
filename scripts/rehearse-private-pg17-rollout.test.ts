@@ -619,6 +619,9 @@ describe("disposable dual-version rehearsal", () => {
       "000078_review_investigation_maintenance_checkpoint",
     );
     expect(exclusions).not.toContain("000079_hosted_codex_output_limits");
+    expect(exclusions).not.toContain(
+      "000079_remove_account_wide_provider_lane_serialization",
+    );
     expect(exclusions).not.toContain("000080_hosted_codex_attempt_generation");
     expect(exclusions).not.toContain("000081_hosted_codex_runtime_gate");
     expect(exclusions).not.toContain(

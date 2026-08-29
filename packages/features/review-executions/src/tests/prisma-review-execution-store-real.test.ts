@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   createPrismaClient,
   type PrismaClient,
 } from "@reviewrouter/platform-db";
 import { PrismaReviewExecutionStore } from "../infrastructure/prisma/prisma-review-execution-store";
+import { isTransactionConflictError } from "../infrastructure/prisma/prisma-review-execution-utils";
 import { PrismaReviewRequestedIntentStore } from "../infrastructure/prisma/prisma-review-requested-intent-store";
 import {
   ReviewRequestAdmissionState,
@@ -69,20 +71,14 @@ if (databaseUrl) {
         workSlot("slot-concurrent-prepare", 6),
       ]);
 
-      const results = await Promise.all([
+      const results = await settleConcurrent([
         harness.executions.prepareExecution(command),
         harness.executions.prepareExecution(command),
       ]);
-      expect(
-        results.filter((result) => result.status === "prepared"),
-      ).toHaveLength(1);
-      expect(
-        results.every((result) =>
-          ["prepared", "restored", "concurrency_conflict"].includes(
-            result.status,
-          ),
-        ),
-      ).toBe(true);
+      expect(results.map((result) => result.status).sort()).toEqual([
+        "prepared",
+        "restored",
+      ]);
       await expect(
         prisma.reviewExecutionV2.count({
           where: {
@@ -219,7 +215,7 @@ if (databaseUrl) {
       const first = candidate("first", 7);
       const second = candidate("second", 10);
 
-      const results = await Promise.all([
+      const results = await settleConcurrent([
         intentStore.registerIntent({ candidate: first }),
         intentStore.registerIntent({ candidate: second }),
       ]);
@@ -886,41 +882,211 @@ if (databaseUrl) {
       expect(renewed.lease?.resultReportUntil).toEqual(lease.resultReportUntil);
     });
 
-    it("serializes one provider lane across concurrent pull-request scopes", async () => {
-      const first = await createHarness();
-      const second = await createHarness();
-      const firstRunning = await prepareAndAdmit(first, "provider-lane-a");
-      const secondRunning = await prepareAndAdmit(second, "provider-lane-b");
-      const firstCommand = leaseCommand(
-        first,
-        firstRunning.snapshot,
-        "provider-lane-a",
-      );
-      const secondCommand = leaseCommand(
-        second,
-        secondRunning.snapshot,
-        "provider-lane-b",
-      );
-      expect(firstCommand.providerVoteIdentityHash).toBe(
-        secondCommand.providerVoteIdentityHash,
-      );
-
-      const results = await Promise.all([
-        first.executions.acquireLease(firstCommand),
-        second.executions.acquireLease(secondCommand),
-      ]);
-
+    it("prepares, admits, then acquires 16 same-vote leases across pull requests in one repository", async () => {
+      await expect(
+        prisma.$queryRaw<Array<{ postgresMajor: number }>>`
+          SELECT current_setting('server_version_num')::integer / 10000 AS "postgresMajor"
+        `,
+      ).resolves.toEqual([{ postgresMajor: 17 }]);
+      await setProviderScopeConcurrency(true);
+      const firstHarness = await createHarness(100);
+      const harnesses = [
+        firstHarness,
+        ...(await settleConcurrent(
+          Array.from({ length: 15 }, (_, index) =>
+            createPullRequestHarness(firstHarness, 101 + index),
+          ),
+        )),
+      ];
       expect(
-        results.filter((result) => result.status === "acquired"),
-      ).toHaveLength(1);
-      expect(results.filter((result) => result.status === "busy")).toHaveLength(
-        1,
+        new Set(harnesses.map((harness) => harness.scope.workspaceId)),
+      ).toEqual(new Set([firstHarness.scope.workspaceId]));
+      expect(
+        new Set(
+          harnesses.map((harness) => harness.scope.repositoryConnectionId),
+        ),
+      ).toEqual(new Set([firstHarness.scope.repositoryConnectionId]));
+      expect(
+        harnesses.map((harness) => harness.scope.pullRequestNumber),
+      ).toEqual(Array.from({ length: 16 }, (_, index) => 100 + index));
+
+      const identities = harnesses.map((_, index) => `provider-scope-${index}`);
+      const prepared = await settleConcurrent(
+        harnesses.map((harness, index) =>
+          harness.executions.prepareExecution(
+            prepareCommand(harness, identities[index]!, [
+              workSlot(`slot-${identities[index]}`, 4),
+            ]),
+          ),
+        ),
+      );
+      expect(prepared.map((result) => result.status)).toEqual(
+        Array.from({ length: 16 }, () => ReviewExecutionPrepareStatus.Prepared),
+      );
+
+      const admitted = await settleConcurrent(
+        harnesses.map((harness, index) => {
+          const snapshot = prepared[index]!.snapshot!;
+          return harness.executions.confirmAdmission({
+            scope: harness.scope,
+            expectedStreamVersion: snapshot.stream.version,
+            executionId: snapshot.execution.executionId,
+            authorizationId: harness.authorizationId,
+            mutationEpoch: 1n,
+            requestedRevision: snapshot.execution.revision,
+            observedRevision: snapshot.execution.revision,
+            verdict: ReviewExecutionAdmissionVerdict.Current,
+            checkedAt: new Date(),
+          });
+        }),
+      );
+      expect(admitted.map((result) => result.status)).toEqual(
+        Array.from(
+          { length: 16 },
+          () => ReviewExecutionAdmissionStatus.Admitted,
+        ),
+      );
+
+      const commands = harnesses.map((harness, index) =>
+        leaseCommand(harness, admitted[index]!.snapshot!, identities[index]!),
+      );
+      expect(
+        new Set(commands.map((command) => command.providerVoteIdentityHash))
+          .size,
+      ).toBe(1);
+
+      const results = await settleConcurrent(
+        harnesses.map((harness, index) =>
+          harness.executions.acquireLease(commands[index]!),
+        ),
+      );
+
+      expect(results.map((result) => result.status)).toEqual(
+        Array.from({ length: 16 }, () => "acquired"),
       );
       await expect(
         prisma.reviewInvocationLeaseV2.count({
           where: {
-            providerVoteIdentityHash: firstCommand.providerVoteIdentityHash,
+            providerVoteIdentityHash: commands[0]!.providerVoteIdentityHash,
             purpose: "provider_execution",
+            state: "active",
+          },
+        }),
+      ).resolves.toBe(16);
+    });
+
+    it("keeps old-binary global reads safe after 000079 until activation", async () => {
+      await setProviderScopeConcurrency(false);
+      const harnesses = await settleConcurrent([
+        createHarness(301),
+        createHarness(302),
+      ]);
+      const running = await settleConcurrent(
+        harnesses.map((harness, index) =>
+          prepareAndAdmit(harness, `mixed-version-${index}`),
+        ),
+      );
+      const commands = harnesses.map((harness, index) =>
+        leaseCommand(
+          harness,
+          running[index]!.snapshot,
+          `mixed-version-${index}`,
+        ),
+      );
+
+      const results = await settleConcurrent(
+        harnesses.map((harness, index) =>
+          harness.executions.acquireLease(commands[index]!),
+        ),
+      );
+      expect(results.map((result) => result.status).sort()).toEqual([
+        "acquired",
+        "busy",
+      ]);
+
+      // This is the pre-000079 read shape: it is safe only while at most one
+      // globally active row exists for a vote identity.
+      await expect(
+        prisma.reviewInvocationLeaseV2.findMany({
+          where: {
+            providerVoteIdentityHash: commands[0]!.providerVoteIdentityHash,
+            purpose: "provider_execution",
+            state: "active",
+          },
+          take: 2,
+        }),
+      ).resolves.toHaveLength(1);
+    });
+
+    it("requires close then active-lane drain before reverse-order rollback", async () => {
+      await setProviderScopeConcurrency(true);
+      const harnesses = await settleConcurrent([
+        createHarness(401),
+        createHarness(402),
+      ]);
+      const running = await settleConcurrent(
+        harnesses.map((harness, index) =>
+          prepareAndAdmit(harness, `rollback-${index}`),
+        ),
+      );
+      const commands = harnesses.map((harness, index) =>
+        leaseCommand(harness, running[index]!.snapshot, `rollback-${index}`),
+      );
+      const acquired = await settleConcurrent(
+        harnesses.map((harness, index) =>
+          harness.executions.acquireLease(commands[index]!),
+        ),
+      );
+      expect(acquired.every((result) => result.status === "acquired")).toBe(
+        true,
+      );
+
+      await setProviderScopeConcurrency(false);
+      await expect(activeVoteLaneDuplicateCount()).resolves.toBe(1);
+
+      await prisma.reviewInvocationLeaseV2.updateMany({
+        where: {
+          providerVoteIdentityHash: commands[0]!.providerVoteIdentityHash,
+          purpose: "provider_execution",
+          state: "active",
+        },
+        data: { state: "released" },
+      });
+      await expect(activeVoteLaneDuplicateCount()).resolves.toBe(0);
+      await restoreLegacyProviderVoteIndex();
+      await expect(
+        prisma.$queryRaw<Array<{ present: boolean }>>`
+          SELECT to_regclass('"ReviewInvocationLeaseV2_one_active_provider_vote_lane"') IS NOT NULL AS present
+        `,
+      ).resolves.toEqual([{ present: true }]);
+    });
+
+    it("joins an exact acquire race and keeps work-slot conflicts busy", async () => {
+      const harness = await createHarness();
+      const running = await prepareAndAdmit(harness, "exact-race");
+      const exact = leaseCommand(harness, running.snapshot, "exact-race");
+      const exactResults = await settleConcurrent([
+        harness.executions.acquireLease(exact),
+        harness.executions.acquireLease(exact),
+      ]);
+      expect(exactResults.map((result) => result.status).sort()).toEqual([
+        "acquired",
+        "restored",
+      ]);
+
+      const conflict = {
+        ...leaseCommand(harness, running.snapshot, "work-slot-conflict"),
+        providerInvocationKey: hashFromText("different-provider-invocation"),
+      };
+      await expect(
+        harness.executions.acquireLease(conflict),
+      ).resolves.toMatchObject({
+        status: "busy",
+      });
+      await expect(
+        prisma.reviewInvocationLeaseV2.count({
+          where: {
+            executionId: running.snapshot.execution.executionId,
             state: "active",
           },
         }),
@@ -1018,7 +1184,9 @@ if (databaseUrl) {
   });
 }
 
-async function createHarness(): Promise<ReviewExecutionStoreContractHarness> {
+async function createHarness(
+  pullRequestNumber = 42,
+): Promise<ReviewExecutionStoreContractHarness> {
   const suffix = randomUUID();
   const workspaceId = `execution-workspace-${suffix}`;
   const repositoryConnectionId = `execution-repository-${suffix}`;
@@ -1086,7 +1254,7 @@ async function createHarness(): Promise<ReviewExecutionStoreContractHarness> {
       workspaceId,
       repositoryConnectionId,
       scmRepositoryIdentityId,
-      pullRequestNumber: 42,
+      pullRequestNumber,
       sourceRunId: `run-${suffix}`,
       sourceRunAttempt: "1",
       workflowIdentityHash: hash(0),
@@ -1124,7 +1292,7 @@ async function createHarness(): Promise<ReviewExecutionStoreContractHarness> {
       workspaceId,
       repositoryConnectionId,
       scmRepositoryIdentityId,
-      pullRequestNumber: 42,
+      pullRequestNumber,
     },
     authorizationId,
     producerReleaseId,
@@ -1187,6 +1355,99 @@ async function createHarness(): Promise<ReviewExecutionStoreContractHarness> {
       });
     },
   };
+}
+
+async function createPullRequestHarness(
+  base: ReviewExecutionStoreContractHarness,
+  pullRequestNumber: number,
+): Promise<ReviewExecutionStoreContractHarness> {
+  const source = await prisma.reviewRunAuthorization.findUniqueOrThrow({
+    where: { authorizationId: base.authorizationId },
+  });
+  const suffix = randomUUID();
+  const authorizationId = `execution-authorization-${suffix}`;
+  await prisma.reviewRunAuthorization.create({
+    data: {
+      ...source,
+      authorizationId,
+      pullRequestNumber,
+      sourceRunId: `run-${suffix}`,
+      oidcReplayKeyHash: hashFromText(`oidc-${suffix}`),
+      createdAt: new Date(),
+      renewedAt: null,
+      revokedAt: null,
+    } as Prisma.ReviewRunAuthorizationUncheckedCreateInput,
+  });
+  return {
+    ...base,
+    scope: { ...base.scope, pullRequestNumber },
+    authorizationId,
+  };
+}
+
+async function settleConcurrent<T>(
+  promises: Iterable<PromiseLike<T>>,
+): Promise<T[]> {
+  const outcomes = await Promise.allSettled(promises);
+  const failure = outcomes.find(
+    (outcome): outcome is PromiseRejectedResult =>
+      outcome.status === "rejected",
+  );
+  if (failure !== undefined) throw failure.reason;
+  return outcomes.map(
+    (outcome) => (outcome as PromiseFulfilledResult<T>).value,
+  );
+}
+
+async function setProviderScopeConcurrency(activated: boolean): Promise<void> {
+  if (activated) {
+    await prisma.$executeRawUnsafe(
+      'DROP INDEX CONCURRENTLY IF EXISTS "ReviewInvocationLeaseV2_one_active_provider_vote_lane"',
+    );
+  }
+  await serializableFixtureUpdate(
+    (transaction) =>
+      transaction.$executeRaw`
+      UPDATE "ReviewProviderScopeConcurrencyControl"
+      SET "activated" = ${activated}, "updatedAt" = statement_timestamp()
+      WHERE "singleton" = true
+    `,
+  );
+}
+
+async function serializableFixtureUpdate(
+  update: (transaction: Prisma.TransactionClient) => Promise<unknown>,
+): Promise<void> {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await prisma.$transaction(update, { isolationLevel: "Serializable" });
+      return;
+    } catch (error) {
+      if (attempt === 3 || !isTransactionConflictError(error)) throw error;
+    }
+  }
+}
+
+async function restoreLegacyProviderVoteIndex(): Promise<void> {
+  await prisma.$executeRawUnsafe(`
+    CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "ReviewInvocationLeaseV2_one_active_provider_vote_lane"
+    ON "ReviewInvocationLeaseV2" ("providerVoteIdentityHash")
+    WHERE "state" = 'active' AND "purpose" = 'provider_execution'
+  `);
+}
+
+async function activeVoteLaneDuplicateCount(): Promise<number> {
+  const rows = await prisma.$queryRaw<Array<{ count: bigint }>>`
+    SELECT count(*)::bigint AS count
+    FROM (
+      SELECT "providerVoteIdentityHash"
+      FROM "ReviewInvocationLeaseV2"
+      WHERE "purpose" = 'provider_execution' AND "state" = 'active'
+      GROUP BY "providerVoteIdentityHash"
+      HAVING count(*) > 1
+    ) duplicate
+  `;
+  return Number(rows[0]?.count ?? 0n);
 }
 
 async function seedSharedProfiles(): Promise<void> {

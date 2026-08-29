@@ -1372,6 +1372,9 @@ describe("canonical exclusive release migration caller", () => {
       for (const table of runtimeAuthorityReadOnlyTables) {
         expect(runtimeAuthorityAcl).toContain(`'${table}'`);
       }
+      expect(runtimeAuthorityReadOnlyTables).toContain(
+        "ReviewProviderScopeConcurrencyControl",
+      );
       expect(runtimeAuthorityAcl).toContain(
         "'REVOKE INSERT, UPDATE, DELETE ON TABLE public.%I FROM %I'",
       );
