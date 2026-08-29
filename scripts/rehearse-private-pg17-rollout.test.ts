@@ -81,6 +81,11 @@ describe("disposable dual-version rehearsal", () => {
     ).toBe("trusted_rollout_evidence_receipt_chain_invalid");
     expect(
       safeRehearsalStageErrorCode(
+        new Error("release_migration_target_permit_invalid"),
+      ),
+    ).toBe("release_migration_target_permit_invalid");
+    expect(
+      safeRehearsalStageErrorCode(
         new Error("database failed token=do-not-print"),
       ),
     ).toBeUndefined();
