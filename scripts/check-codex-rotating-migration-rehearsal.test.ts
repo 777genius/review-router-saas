@@ -12,7 +12,11 @@ import {
   rehearsalSchemaOwnerIdentity,
 } from "./codex-rotating-rehearsal-authority-context.mjs";
 import { codexRotatingFunctions } from "./codex-rotating-production-writer-schema.mjs";
-import { isExpectedPrismaLockTimeoutFailure } from "./codex-rotating-lock-timeout-proof.mjs";
+import {
+  hasExactPostgresAbortedTransactionEnvelope,
+  hasExactPostgresLockTimeoutEnvelope,
+  isExpectedPrismaLockTimeoutFailure,
+} from "./codex-rotating-lock-timeout-proof.mjs";
 import {
   assertPsqlFailedWithExactMessage,
   assertPsqlFailedWithOneOfExactMessages,
@@ -153,8 +157,19 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).toContain("oldLock.blockers.includes(migrationLock.pid)");
     expect(source).toContain("migrationLock.blockers.includes(oldLock.pid)");
-    expect(source).toContain('"Migration81RaceLatch"');
-    expect(source).toContain('"AccessShareLock",\n                false');
+    expect(source).toContain("PERFORM pg_advisory_xact_lock(810081, 1)");
+    expect(source).toContain(
+      'blocker.write("SELECT pg_advisory_lock(810081, 1);\\n")',
+    );
+    expect(source).toContain("const oldBarrierLock = advisoryBarrierLock(");
+    expect(source).toContain('"rr-m81-old-first",\n              false');
+    expect(source).toContain(
+      "oldBarrierLock.blockers.includes(holderLock.pid)",
+    );
+    expect(source).toContain('lock.mode === "ExclusiveLock"');
+    expect(source).toContain("lock.classId === 810081");
+    expect(source).toContain("lock.objectId === 1");
+    expect(source).toContain("lock.objectSubId === 2");
     expect(source).toContain(
       "migration81 queued old invocation failed with generic does-not-exist",
     );
@@ -164,6 +179,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       )?.[1];
     expect(proof).toBeDefined();
     expect(proof).not.toContain("pg_sleep");
+    expect(proof).not.toContain('"Migration81RaceLatch"');
     expect(proof).not.toMatch(/predecessor_evidence_missing\|does not exist/u);
     expect(proof).toContain("migration81_blocker_cleanup_failed");
     expect(proof).toContain("migration81_database_cleanup_failed");
@@ -174,9 +190,16 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
+  it("exposes the disposable real-PG17 migration81 boundary phase", () => {
+    expect(source).toContain('"--migration81-boundary-only"');
+    expect(source).toContain(
+      "Codex rotating PostgreSQL 17 migration81 two-session boundary passed.",
+    );
+  });
+
   it("silences command status for the lock snapshot JSON query", () => {
     const lockSnapshot =
-      /const lockSnapshot = \(url\) =>([\s\S]+?)\n  const waitForLockState/u.exec(
+      /const lockSnapshot = \(url\) =>([\s\S]+?)\n[ ]{2}const waitForLockState/u.exec(
         source,
       )?.[1];
 
@@ -778,6 +801,58 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
           observed: true,
         },
       }),
+    ).toBe(true);
+  });
+
+  it.each([
+    [
+      "aborted transaction",
+      "Migration runner note: current transaction is aborted after cleanup",
+    ],
+    ["lock timeout", "Migration runner note: lock timeout was expected"],
+  ])(
+    "rejects unrelated %s prose despite exact migration, history, and direct proof",
+    (_case, unrelatedProse) => {
+      const migrationName = "000061_codex_oauth_provider_mutation_fence";
+      expect(
+        isExpectedPrismaLockTimeoutFailure({
+          output: `P3018\nMigration name: ${migrationName}\n${unrelatedProse}`,
+          migrationName,
+          historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+          directLockTimeoutProof: { migrationName, observed: true },
+        }),
+      ).toBe(false);
+    },
+  );
+
+  it("requires a canonical ERROR line for the rehearsal aborted-transaction fallback", () => {
+    expect(
+      hasExactPostgresAbortedTransactionEnvelope(
+        "unrelated prose says current transaction is aborted",
+      ),
+    ).toBe(false);
+    expect(
+      hasExactPostgresAbortedTransactionEnvelope(
+        "\u001b[31mError: ERROR: current transaction is aborted, commands ignored until end of transaction block\u001b[0m",
+      ),
+    ).toBe(true);
+  });
+
+  it("requires a canonical ERROR line for direct lock-timeout proof", () => {
+    expect(
+      hasExactPostgresLockTimeoutEnvelope(
+        "unrelated prose says the lock timeout was expected",
+      ),
+    ).toBe(false);
+    expect(
+      hasExactPostgresLockTimeoutEnvelope(
+        "\u001b[31mERROR: canceling statement due to lock timeout\u001b[0m",
+      ),
+    ).toBe(true);
+    expect(
+      hasExactPostgresLockTimeoutEnvelope(
+        "psql:/workspace/migration.sql:42: ERROR: canceling statement due to lock timeout",
+      ),
     ).toBe(true);
   });
 

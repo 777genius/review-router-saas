@@ -31,6 +31,8 @@ import {
   runSecretSafePostgresCommand,
 } from "./lib/secret-safe-command-boundary.mjs";
 import {
+  hasExactPostgresAbortedTransactionEnvelope,
+  hasExactPostgresLockTimeoutEnvelope,
   isExpectedPrismaLockTimeoutFailure,
   prismaLockTimeoutFailureMarkers,
 } from "./codex-rotating-lock-timeout-proof.mjs";
@@ -121,6 +123,9 @@ const databaseName = `rr_codex_fence_${process.pid}_${Date.now()}`;
 const adminUrl = databaseUrl(baseUrl, "postgres");
 const rehearsalProviderAdminUrl = databaseUrl(baseUrl, databaseName);
 const rehearsalRoleMarker = `reviewrouter-rehearsal-managed:${process.pid}:${randomUUID()}`;
+const migration81BoundaryOnly = process.argv.includes(
+  "--migration81-boundary-only",
+);
 let rehearsalAuthority;
 
 try {
@@ -131,103 +136,114 @@ try {
       .startsWith("17"),
     "the rehearsal database server must be PostgreSQL 17",
   );
-  await proveMigrationSpecificLegacyBehavior();
-  proveCanonicalLegacyReconciliationNegativeCases();
-  await proveMigration81TwoSessionBoundary();
-  const rehearsalRelease = prepareCanonicalReleaseRoles(
-    rehearsalProviderAdminUrl,
-    applyCanonicalPreMigrationBaseline,
-  );
-  rehearsalAuthority = rehearsalRelease.authority;
-  const providerAdmin = rehearsalAuthority.providerAdmin;
-  const runtimeClients = rehearsalAuthority.runtime;
-  seedDirtyFixtures(providerAdmin, { canonicalSuccess: true });
-  const migrationPermitEnvironment =
-    installRehearsalMigrationPermit(rehearsalAuthority);
-  const releaseMigrationResult = executeCanonicalReleaseMigration(
-    {
-      ...rehearsalRelease.environment,
-      ...migrationPermitEnvironment,
-      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
-    },
-    runRehearsalReleaseSubprocess,
-    loopbackRehearsalDatabaseIdentity,
-  );
-  assert(
-    releaseMigrationResult.aclGateState === "open",
-    "combined migration rehearsal must exercise the open runtime ACL state",
-  );
-  const targetMigrationReceipt = releaseMigrationResult.targetMigrationReceipt;
-  const expectedEffectFingerprint = `sha256:${createHash("sha256")
-    .update(
-      [
-        targetMigrationReceipt.rolloutId,
-        targetMigrationReceipt.transitionSha256,
-        targetMigrationReceipt.permitEpoch,
-        targetMigrationReceipt.permitNonce,
-        targetMigrationReceipt.sourceLegacyAmbiguity.inventorySha256,
-        targetMigrationReceipt.eligibilityCutoff,
-        targetMigrationReceipt.postManifestIdentity,
-        targetMigrationReceipt.postCatalogDigest,
-      ].join(":"),
-    )
-    .digest("hex")}`;
-  assert(
-    targetMigrationReceipt.effectFingerprint === expectedEffectFingerprint,
-    "target migration effect fingerprint must match independently observed receipt facts",
-  );
-  const replayMigrationResult = executeCanonicalReleaseMigration(
-    {
-      ...rehearsalRelease.environment,
-      ...migrationPermitEnvironment,
-      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
-    },
-    runRehearsalReleaseSubprocess,
-    loopbackRehearsalDatabaseIdentity,
-  );
-  assert(
-    JSON.stringify(replayMigrationResult.targetMigrationReceipt) ===
-      JSON.stringify(releaseMigrationResult.targetMigrationReceipt) &&
-      JSON.stringify(replayMigrationResult.legacyReconciliation.inventory) ===
-        JSON.stringify(releaseMigrationResult.legacyReconciliation.inventory),
-    "canonical replay did not return the immutable original receipt",
-  );
+  if (migration81BoundaryOnly) {
+    await proveMigration81TwoSessionBoundary();
+    process.stderr.write(
+      "Codex rotating PostgreSQL 17 migration81 two-session boundary passed.\n",
+    );
+  } else {
+    await proveMigrationSpecificLegacyBehavior();
+    proveCanonicalLegacyReconciliationNegativeCases();
+    await proveMigration81TwoSessionBoundary();
+    const rehearsalRelease = prepareCanonicalReleaseRoles(
+      rehearsalProviderAdminUrl,
+      applyCanonicalPreMigrationBaseline,
+    );
+    rehearsalAuthority = rehearsalRelease.authority;
+    const providerAdmin = rehearsalAuthority.providerAdmin;
+    const runtimeClients = rehearsalAuthority.runtime;
+    seedDirtyFixtures(providerAdmin, { canonicalSuccess: true });
+    const migrationPermitEnvironment =
+      installRehearsalMigrationPermit(rehearsalAuthority);
+    const releaseMigrationResult = executeCanonicalReleaseMigration(
+      {
+        ...rehearsalRelease.environment,
+        ...migrationPermitEnvironment,
+        REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
+      },
+      runRehearsalReleaseSubprocess,
+      loopbackRehearsalDatabaseIdentity,
+    );
+    assert(
+      releaseMigrationResult.aclGateState === "open",
+      "combined migration rehearsal must exercise the open runtime ACL state",
+    );
+    const targetMigrationReceipt =
+      releaseMigrationResult.targetMigrationReceipt;
+    const expectedEffectFingerprint = `sha256:${createHash("sha256")
+      .update(
+        [
+          targetMigrationReceipt.rolloutId,
+          targetMigrationReceipt.transitionSha256,
+          targetMigrationReceipt.permitEpoch,
+          targetMigrationReceipt.permitNonce,
+          targetMigrationReceipt.sourceLegacyAmbiguity.inventorySha256,
+          targetMigrationReceipt.eligibilityCutoff,
+          targetMigrationReceipt.postManifestIdentity,
+          targetMigrationReceipt.postCatalogDigest,
+        ].join(":"),
+      )
+      .digest("hex")}`;
+    assert(
+      targetMigrationReceipt.effectFingerprint === expectedEffectFingerprint,
+      "target migration effect fingerprint must match independently observed receipt facts",
+    );
+    const replayMigrationResult = executeCanonicalReleaseMigration(
+      {
+        ...rehearsalRelease.environment,
+        ...migrationPermitEnvironment,
+        REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
+      },
+      runRehearsalReleaseSubprocess,
+      loopbackRehearsalDatabaseIdentity,
+    );
+    assert(
+      JSON.stringify(replayMigrationResult.targetMigrationReceipt) ===
+        JSON.stringify(releaseMigrationResult.targetMigrationReceipt) &&
+        JSON.stringify(replayMigrationResult.legacyReconciliation.inventory) ===
+          JSON.stringify(releaseMigrationResult.legacyReconciliation.inventory),
+      "canonical replay did not return the immutable original receipt",
+    );
 
-  proveSuccessfulCombinedRelease(providerAdmin);
-  proveDatabasePrivileges(providerAdmin);
-  proveRuntimeParentCascadesDenied(providerAdmin, runtimeClients);
-  proveStaleAclProviderIdentityEscalationDenied(providerAdmin, runtimeClients);
-  proveMaintenanceCheckpointColumnAclConvergence(providerAdmin);
-  proveTerminalInsertGuards(providerAdmin);
-  proveSequentialFabricationDeniedForEveryRuntimeRole(runtimeClients);
-  proveRuntimeVersionedWriteback(providerAdmin, runtimeClients);
-  proveAccountSwitchRecoveryContract(providerAdmin);
-  proveCompletedRecoveryEvidenceRetention(providerAdmin);
-  const versionedNamespaceEvidence =
-    proveVersionedNamespaceLedger(providerAdmin);
-  await proveActiveNamespaceV4V5Reattestation(
-    providerAdmin,
-    runtimeClients,
-    versionedNamespaceEvidence,
-  );
-  proveSelfHostedV4V5ReattestationOwnerInvocation(
-    providerAdmin,
-    runtimeClients.web,
-  );
-  provePrismaCleanupRetention(providerAdmin, versionedNamespaceEvidence);
-  proveLegacyChildWritesRejected(providerAdmin);
-  proveParentIdentityWriteRejected(providerAdmin);
-  await proveProviderRepairAuthorityV2(providerAdmin, runtimeClients);
-  await proveQuarantineCleanupPathV2(providerAdmin, runtimeClients);
-  proveExactProductionCatalogContract(providerAdmin);
-  proveMigrateDeployNoOp(providerAdmin);
-  proveLateMigrationRollbackAndReplayMatrix();
-  proveReleaseAuthorityMarkerIsolation(providerAdmin);
-  const observation = collectObservation(providerAdmin);
-  process.stdout.write(`${JSON.stringify(observation)}\n`);
-  process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000081 rehearsal passed.\n",
-  );
+    proveSuccessfulCombinedRelease(providerAdmin);
+    proveDatabasePrivileges(providerAdmin);
+    proveRuntimeParentCascadesDenied(providerAdmin, runtimeClients);
+    proveStaleAclProviderIdentityEscalationDenied(
+      providerAdmin,
+      runtimeClients,
+    );
+    proveMaintenanceCheckpointColumnAclConvergence(providerAdmin);
+    proveTerminalInsertGuards(providerAdmin);
+    proveSequentialFabricationDeniedForEveryRuntimeRole(runtimeClients);
+    proveRuntimeVersionedWriteback(providerAdmin, runtimeClients);
+    proveAccountSwitchRecoveryContract(providerAdmin);
+    proveCompletedRecoveryEvidenceRetention(providerAdmin);
+    const versionedNamespaceEvidence =
+      proveVersionedNamespaceLedger(providerAdmin);
+    await proveActiveNamespaceV4V5Reattestation(
+      providerAdmin,
+      runtimeClients,
+      versionedNamespaceEvidence,
+    );
+    proveSelfHostedV4V5ReattestationOwnerInvocation(
+      providerAdmin,
+      runtimeClients.web,
+    );
+    provePrismaCleanupRetention(providerAdmin, versionedNamespaceEvidence);
+    proveLegacyChildWritesRejected(providerAdmin);
+    proveParentIdentityWriteRejected(providerAdmin);
+    await proveProviderRepairAuthorityV2(providerAdmin, runtimeClients);
+    await proveQuarantineCleanupPathV2(providerAdmin, runtimeClients);
+    proveExactProductionCatalogContract(providerAdmin);
+    proveMigrateDeployNoOp(providerAdmin);
+    proveLateMigrationRollbackAndReplayMatrix();
+    proveReleaseAuthorityMarkerIsolation(providerAdmin);
+    const observation = collectObservation(providerAdmin);
+    process.stdout.write(`${JSON.stringify(observation)}\n`);
+    process.stderr.write(
+      "Codex rotating PostgreSQL 17 combined 000060 through 000081 rehearsal passed.\n",
+    );
+  }
 } finally {
   const databaseDrop = psql(
     adminUrl,
@@ -333,8 +349,6 @@ async function proveMigration81TwoSessionBoundary() {
           "effect" text, "ownerId" text, "effectCode" integer,
           "consumedAt" timestamptz
         );
-        CREATE TABLE public."Migration81RaceLatch" ("id" integer PRIMARY KEY);
-        INSERT INTO public."Migration81RaceLatch" VALUES (1);
         INSERT INTO public."RepositoryConnection" VALUES ('repository', 900001);
         INSERT INTO public."CodexOAuthProviderInstance" (
           "id","repositoryId","state","activeSecretNamespaceId",
@@ -360,7 +374,11 @@ async function proveMigration81TwoSessionBoundary() {
         BEGIN
           UPDATE public."CodexOAuthSecretNamespace"
           SET "workflowSchemaVersion"=5 WHERE "id"='namespace';
-          PERFORM 1 FROM public."Migration81RaceLatch" WHERE "id"=1;
+          -- A relation-backed latch is not an execution barrier here: routine
+          -- query-plan initialization may take its relation lock before this
+          -- UPDATE. The advisory request has no relation dependency, so its
+          -- wait proves this backend executed the preceding UPDATE first.
+          PERFORM pg_advisory_xact_lock(810081, 1);
         END $old$;
       `,
     ]);
@@ -416,19 +434,30 @@ async function proveMigration81TwoSessionBoundary() {
                    activity.state,
                    activity.wait_event_type AS "waitEventType",
                    activity.wait_event AS "waitEvent",
-                   relation_lock.mode,
-                   relation_lock.granted,
-                   relation_lock.relation::regclass::text AS relation,
+                   observed_lock.mode,
+                   observed_lock.granted,
+                   CASE WHEN observed_lock.locktype='relation'
+                     THEN observed_lock.relation::regclass::text
+                   END AS relation,
+                   observed_lock.classid::bigint AS "classId",
+                   observed_lock.objid::bigint AS "objectId",
+                   observed_lock.objsubid AS "objectSubId",
                    pg_blocking_pids(activity.pid) AS blockers
             FROM pg_stat_activity activity
-            JOIN pg_locks relation_lock ON relation_lock.pid=activity.pid
+            JOIN pg_locks observed_lock ON observed_lock.pid=activity.pid
             WHERE activity.application_name LIKE 'rr-m81-%'
-              AND relation_lock.locktype='relation'
-              AND relation_lock.relation IN (
-                'public."CodexOAuthSecretNamespace"'::regclass,
-                'public."Migration81RaceLatch"'::regclass
+              AND (
+                (observed_lock.locktype='relation'
+                 AND observed_lock.relation =
+                   'public."CodexOAuthSecretNamespace"'::regclass)
+                OR
+                (observed_lock.locktype='advisory'
+                 AND observed_lock.classid=810081
+                 AND observed_lock.objid=1
+                 AND observed_lock.objsubid=2)
               )
-            ORDER BY activity.application_name, relation_lock.relation, relation_lock.mode
+            ORDER BY activity.application_name, observed_lock.locktype,
+                     observed_lock.relation, observed_lock.mode
           ) observation`,
       ]).stdout.trim(),
     );
@@ -452,6 +481,16 @@ async function proveMigration81TwoSessionBoundary() {
         lock.mode === mode &&
         lock.granted === granted,
     );
+  const advisoryBarrierLock = (snapshot, application, granted) =>
+    snapshot.find(
+      (lock) =>
+        lock.application === application &&
+        lock.mode === "ExclusiveLock" &&
+        lock.granted === granted &&
+        lock.classId === 810081 &&
+        lock.objectId === 1 &&
+        lock.objectSubId === 2,
+    );
   const releaseBlocker = async (blocker) => {
     if (!blocker || blocker.child.exitCode !== null) return;
     blocker.write("COMMIT;\n\\q\n");
@@ -471,21 +510,11 @@ async function proveMigration81TwoSessionBoundary() {
       installPre81BoundaryFixture(url);
       if (ordering === "old_invocation_first") {
         const blockerUrl = new URL(String(url));
-        blockerUrl.searchParams.set("application_name", "rr-m81-old-latch");
+        blockerUrl.searchParams.set("application_name", "rr-m81-old-barrier");
         const blocker = spawnPsql(blockerUrl, [], true);
-        blocker.write(
-          'BEGIN; LOCK TABLE public."Migration81RaceLatch" IN ACCESS EXCLUSIVE MODE;\n',
-        );
-        await waitForLockState(url, "old latch held", (snapshot) =>
-          Boolean(
-            relationLock(
-              snapshot,
-              "rr-m81-old-latch",
-              '"Migration81RaceLatch"',
-              "AccessExclusiveLock",
-              true,
-            ),
-          ),
+        blocker.write("SELECT pg_advisory_lock(810081, 1);\n");
+        await waitForLockState(url, "old barrier held", (snapshot) =>
+          Boolean(advisoryBarrierLock(snapshot, "rr-m81-old-barrier", true)),
         );
         const oldUrl = new URL(String(url));
         oldUrl.searchParams.set("application_name", "rr-m81-old-first");
@@ -493,8 +522,19 @@ async function proveMigration81TwoSessionBoundary() {
         await waitForLockState(
           url,
           "old invocation crossed update",
-          (snapshot) =>
-            Boolean(
+          (snapshot) => {
+            const holderLock = advisoryBarrierLock(
+              snapshot,
+              "rr-m81-old-barrier",
+              true,
+            );
+            const oldBarrierLock = advisoryBarrierLock(
+              snapshot,
+              "rr-m81-old-first",
+              false,
+            );
+            return Boolean(
+              holderLock &&
               relationLock(
                 snapshot,
                 "rr-m81-old-first",
@@ -502,14 +542,10 @@ async function proveMigration81TwoSessionBoundary() {
                 "RowExclusiveLock",
                 true,
               ) &&
-              relationLock(
-                snapshot,
-                "rr-m81-old-first",
-                '"Migration81RaceLatch"',
-                "AccessShareLock",
-                false,
-              ),
-            ),
+              oldBarrierLock &&
+              oldBarrierLock.blockers.includes(holderLock.pid),
+            );
+          },
         );
         const migrationUrl = new URL(String(url));
         migrationUrl.searchParams.set(
@@ -542,7 +578,18 @@ async function proveMigration81TwoSessionBoundary() {
             );
           },
         );
-        await releaseBlocker(blocker);
+        blocker.write(
+          "SELECT CASE WHEN pg_advisory_unlock(810081, 1) " +
+            "THEN 'migration81_barrier_released' ELSE 'migration81_barrier_missing' END;\n\\q\n",
+        );
+        blocker.child.stdin.end();
+        const blockerResult = await blocker.result;
+        assert(
+          blockerResult.status === 0 &&
+            !blockerResult.timedOut &&
+            blockerResult.stdout.includes("migration81_barrier_released"),
+          `migration81_blocker_cleanup_failed:${psqlResultDiagnostic(blockerResult)}`,
+        );
         const [oldResult, migrationResult] = await Promise.all([
           old.result,
           migration.result,
@@ -1222,7 +1269,7 @@ async function proveMigration60LockTimeout(url, fixtureAdminUrl) {
       "held manifest lock must reject direct 000060",
     );
     assert(
-      directOutput.toLowerCase().includes("lock timeout"),
+      hasExactPostgresLockTimeoutEnvelope(directOutput),
       "direct_000060_lock_timeout_not_observed",
     );
     assert(
@@ -1306,7 +1353,7 @@ async function proveCombinedLockTimeout(url, fixtureAdminUrl) {
       "held provider lock must reject direct 000061 execution",
     );
     assert(
-      directFailureOutput.toLowerCase().includes("lock timeout"),
+      hasExactPostgresLockTimeoutEnvelope(directFailureOutput),
       "direct_000061_lock_timeout_not_observed",
     );
     assert(
@@ -5287,12 +5334,13 @@ function assertPrismaLockTimeoutEnvelope(
 }
 
 function assertPrismaMigrationFailureEnvelope(result, marker, message) {
-  const output = `${result.stdout}${result.stderr}`.toLowerCase();
+  const rawOutput = `${result.stdout}${result.stderr}`;
+  const output = rawOutput.toLowerCase();
   const exactFailure =
     output.includes(marker.toLowerCase()) && output.includes("already exists");
   assert(
     result.status !== 0 &&
-      (exactFailure || output.includes("current transaction is aborted")),
+      (exactFailure || hasExactPostgresAbortedTransactionEnvelope(rawOutput)),
     message,
   );
 }

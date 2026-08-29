@@ -72,6 +72,7 @@
     "review-v2:migration-rehearsal": "node scripts/run-with-env.mjs node scripts/check-review-v2-migration-rehearsal.mjs",
     "review-investigation:migration-rehearsal": "REVIEW_ROUTER_REVIEW_INVESTIGATION_MIGRATION_REHEARSAL=1 node scripts/run-with-env.mjs vitest run scripts/review-investigation-mixed-version-migration.test.ts",
     "codex-rotating:migration-rehearsal": "node --import tsx scripts/check-codex-rotating-migration-rehearsal.mjs",
+    "codex-rotating:migration81-boundary": "node --import tsx scripts/check-codex-rotating-migration-rehearsal.mjs --migration81-boundary-only",
     "codex-rotating:migration-preflight": "node --import tsx scripts/preflight-codex-rotating-migration-history.ts",
     "codex-rotating:role-bootstrap": "node --import tsx scripts/run-codex-rotating-role-bootstrap.mjs",
     "codex-rotating:release-migration": "node --import tsx scripts/run-codex-rotating-release-migration.mjs",
