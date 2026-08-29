@@ -489,73 +489,77 @@ describe("PrismaActionControlPlaneRepository helpers", () => {
     ).toBe(false);
   });
 
-  it("hydrates Claude Code provider records without falling back to Codex", async () => {
-    const prisma = {
-      reviewConfiguration: {
-        findUnique: vi.fn().mockResolvedValue({
-          versions: [
-            {
-              version: 11,
-              schemaVersion: 2,
-              providerKind: "codex",
-              providerAuthMode: "codex_subscription_oauth",
-              model: "gpt-5.5",
-              reasoningEffort: "medium",
-              agenticContext: true,
-              fastMode: false,
-              failOnSeverity: "critical",
-              inlineMaxComments: 5,
-              providerLimit: 1,
-              providerMaxParallel: 1,
-              inlineMinAgreement: 1,
-              targetTokensPerBatch: 50000,
-              reviewLanguage: "Russian",
-              investigationRecordingEnabled: true,
-              investigationShadowEnabled: true,
-              investigationContextCriticEnabled: true,
-              investigationVerifiedCleanEnabled: true,
-              investigationCrossRevisionReplayEnabled: true,
-              investigationProductionEffectsEnabled: true,
-              providers: [
-                {
-                  providerKind: "claude",
-                  providerAuthMode: "claude_code_oauth",
-                  model: "sonnet",
-                  reasoningEffort: "medium",
-                  agenticContext: true,
-                  fastMode: false,
-                  requiredHealthy: true,
-                },
-              ],
-            },
-          ],
-        }),
-      },
-    } as unknown as PrismaClient;
-    const repository = new PrismaActionControlPlaneRepository(prisma);
+  it.each(["max", "ultra"] as const)(
+    "hydrates stored %s effort without downgrading it",
+    async (reasoningEffort) => {
+      const prisma = {
+        reviewConfiguration: {
+          findUnique: vi.fn().mockResolvedValue({
+            versions: [
+              {
+                version: 11,
+                schemaVersion: 2,
+                providerKind: "codex",
+                providerAuthMode: "codex_subscription_oauth",
+                model: "gpt-5.5",
+                reasoningEffort,
+                agenticContext: true,
+                fastMode: false,
+                failOnSeverity: "critical",
+                inlineMaxComments: 5,
+                providerLimit: 1,
+                providerMaxParallel: 1,
+                inlineMinAgreement: 1,
+                targetTokensPerBatch: 50000,
+                reviewLanguage: "Russian",
+                investigationRecordingEnabled: true,
+                investigationShadowEnabled: true,
+                investigationContextCriticEnabled: true,
+                investigationVerifiedCleanEnabled: true,
+                investigationCrossRevisionReplayEnabled: true,
+                investigationProductionEffectsEnabled: true,
+                providers: [
+                  {
+                    providerKind: "claude",
+                    providerAuthMode: "claude_code_oauth",
+                    model: "sonnet",
+                    reasoningEffort,
+                    agenticContext: true,
+                    fastMode: false,
+                    requiredHealthy: true,
+                  },
+                ],
+              },
+            ],
+          }),
+        },
+      } as unknown as PrismaClient;
+      const repository = new PrismaActionControlPlaneRepository(prisma);
 
-    const record = await repository.findRuntimeReviewConfiguration({
-      workspaceId: "workspace_1",
-      repositoryId: "repo_1",
-    });
+      const record = await repository.findRuntimeReviewConfiguration({
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      });
 
-    expect(record?.config.provider).toMatchObject({
-      kind: "claude",
-      authMode: "claude_code_oauth",
-      model: "sonnet",
-    });
-    expect(record?.config.reviewLanguage).toBe("Russian");
-    expect(record?.config.providers).toHaveLength(1);
-    expect(record?.config.providers[0]?.requiredHealthy).toBe(true);
-    expect(record?.config.investigationRollout).toEqual({
-      recordingEnabled: true,
-      shadowEnabled: true,
-      contextCriticEnabled: true,
-      verifiedCleanEnabled: true,
-      crossRevisionReplayEnabled: true,
-      productionEffectsEnabled: true,
-    });
-  });
+      expect(record?.config.provider).toMatchObject({
+        kind: "claude",
+        authMode: "claude_code_oauth",
+        model: "sonnet",
+        reasoningEffort,
+      });
+      expect(record?.config.reviewLanguage).toBe("Russian");
+      expect(record?.config.providers).toHaveLength(1);
+      expect(record?.config.providers[0]?.requiredHealthy).toBe(true);
+      expect(record?.config.investigationRollout).toEqual({
+        recordingEnabled: true,
+        shadowEnabled: true,
+        contextCriticEnabled: true,
+        verifiedCleanEnabled: true,
+        crossRevisionReplayEnabled: true,
+        productionEffectsEnabled: true,
+      });
+    },
+  );
 });
 
 describe("PrismaCodexRotatingOAuthRepository", () => {

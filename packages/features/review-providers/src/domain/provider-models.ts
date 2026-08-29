@@ -9,6 +9,24 @@ export type ReviewModelOption = {
   readonly disabled?: boolean;
 };
 
+export type CodexReasoningEffort =
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
+
+export function codexModelSupportsReasoningEffort(
+  model: string,
+  effort: CodexReasoningEffort,
+): boolean {
+  return (
+    (effort !== "max" && effort !== "ultra") ||
+    model.trim() === defaultCodexModel
+  );
+}
+
 export const codexModelOptions: readonly ReviewModelOption[] = [
   {
     value: defaultCodexModel,

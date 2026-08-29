@@ -98,7 +98,7 @@ describe("review configuration", () => {
   it.each(["max", "ultra"] as const)(
     "persists and maps %s reasoning effort to runtime env",
     (reasoningEffort) => {
-      const config = parseReviewConfiguration({
+      const config = parseReviewConfigurationStrict({
         ...safeDefaultReviewConfiguration,
         provider: {
           ...safeDefaultReviewConfiguration.provider,
@@ -115,6 +115,34 @@ describe("review configuration", () => {
       expect(config.provider.reasoningEffort).toBe(reasoningEffort);
       expect(mapConfigToRuntimeEnv(config).CODEX_REASONING_EFFORT).toBe(
         reasoningEffort,
+      );
+    },
+  );
+
+  it.each(["max", "ultra"] as const)(
+    "tolerates stored %s effort for an older model but rejects a new save",
+    (reasoningEffort) => {
+      const input = {
+        ...safeDefaultReviewConfiguration,
+        provider: {
+          ...safeDefaultReviewConfiguration.provider,
+          model: "gpt-5.5",
+          reasoningEffort,
+        },
+        providers: [
+          {
+            ...safeDefaultReviewConfiguration.provider,
+            model: "gpt-5.5",
+            reasoningEffort,
+          },
+        ],
+      };
+
+      expect(parseReviewConfiguration(input).provider.reasoningEffort).toBe(
+        reasoningEffort,
+      );
+      expect(() => parseReviewConfigurationStrict(input)).toThrow(
+        "review_reasoning_effort_unsupported_for_model",
       );
     },
   );

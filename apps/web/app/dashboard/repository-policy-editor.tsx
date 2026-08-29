@@ -16,6 +16,7 @@ import type {
   ReviewProviderConfiguration,
 } from "@reviewrouter/features-review-config";
 import {
+  codexModelSupportsReasoningEffort,
   getDefaultProviderConfigForAuthMode,
   getProviderAuthModeMetadata,
   providerKindForAuthMode,
@@ -144,6 +145,12 @@ const reasoningEffortOptions = [
     description: "Deepest available reasoning pass.",
   },
 ] as const;
+
+function reasoningEffortOptionsForModel(model: string) {
+  return reasoningEffortOptions.filter((option) =>
+    codexModelSupportsReasoningEffort(model, option.value),
+  );
+}
 
 const failOnSeverityOptions = [
   { value: "off", label: "Off", description: "Never fail the check." },
@@ -1297,10 +1304,20 @@ export function ReviewConfigForm({
                       disabled={!mutationsEnabled}
                       options={providerOptions}
                       onValueChange={(value) =>
-                        updateProvider(index, (current) => ({
-                          ...current,
-                          model: value,
-                        }))
+                        updateProvider(index, (current) => {
+                          const reasoningEffort =
+                            codexModelSupportsReasoningEffort(
+                              value,
+                              current.reasoningEffort,
+                            )
+                              ? current.reasoningEffort
+                              : "xhigh";
+                          return {
+                            ...current,
+                            model: value,
+                            reasoningEffort,
+                          };
+                        })
                       }
                     />
                     <DashboardSwitchField
@@ -1334,7 +1351,9 @@ export function ReviewConfigForm({
                           helpText={fieldHelp.reasoningEffort}
                           value={provider.reasoningEffort}
                           disabled={!mutationsEnabled}
-                          options={reasoningEffortOptions}
+                          options={reasoningEffortOptionsForModel(
+                            provider.model,
+                          )}
                           onValueChange={(value) =>
                             updateProvider(index, (current) => ({
                               ...current,
