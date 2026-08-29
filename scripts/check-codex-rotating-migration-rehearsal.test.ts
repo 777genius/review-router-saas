@@ -13,6 +13,11 @@ import {
 } from "./codex-rotating-rehearsal-authority-context.mjs";
 import { codexRotatingFunctions } from "./codex-rotating-production-writer-schema.mjs";
 import { isExpectedPrismaLockTimeoutFailure } from "./codex-rotating-lock-timeout-proof.mjs";
+import {
+  assertPsqlFailedWithExactMessage,
+  assertPsqlFailedWithOneOfExactMessages,
+  rehearsalProcessDiagnostic,
+} from "./codex-rotating-rehearsal-process-result.mjs";
 
 describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   const source = readFileSync(
@@ -163,15 +168,40 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(proof).toContain("migration81_blocker_cleanup_failed");
     expect(proof).toContain("migration81_database_cleanup_failed");
     expect(proof).toContain('child.kill("SIGKILL")');
-    expect(source).toContain("result.timedOut !== true");
     expect(proof).toContain('child.once("close", (status, signal)');
     expect(proof).toContain(
       "resolveChild({ status, signal, stdout, stderr, timedOut })",
     );
-    expect(source).toContain(
-      'timedOut: result.timedOut === true || result.error?.code === "ETIMEDOUT"',
-    );
   });
+
+  it.each([{ timedOut: true }, { error: { code: "ETIMEDOUT" } }])(
+    "rejects timed-out failure evidence %#",
+    (timeoutState) => {
+      const result = {
+        status: null,
+        signal: "SIGKILL",
+        stdout: "expected_failure",
+        stderr: "",
+        ...timeoutState,
+      };
+
+      expect(() =>
+        assertPsqlFailedWithExactMessage(
+          result,
+          "expected_failure",
+          "exact timeout",
+        ),
+      ).toThrow(/exact timeout/u);
+      expect(() =>
+        assertPsqlFailedWithOneOfExactMessages(
+          result,
+          ["expected_failure"],
+          "one-of timeout",
+        ),
+      ).toThrow(/one-of timeout/u);
+      expect(rehearsalProcessDiagnostic(result).metadata.timedOut).toBe(true);
+    },
+  );
 
   it("retains ordinary migration 000074 in the pre-release source manifest", () => {
     expect(source).toContain("directory === migration74Name");
@@ -1276,73 +1306,32 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   });
 
   it("rejects unrelated permission-denied failures", () => {
-    const helperSource =
-      /function assertPsqlFailedWithExactMessage\(result, expectedFailure, message\) \{[\s\S]+?\n\}/u.exec(
-        source,
-      )?.[0];
-    expect(helperSource).toBeDefined();
-
-    const observedConditions: boolean[] = [];
-    const assertPsqlFailedWithExactMessage = runInNewContext(
-      `${helperSource}; assertPsqlFailedWithExactMessage`,
-      {
-        assert(condition: boolean) {
-          observedConditions.push(condition);
-        },
-        psqlResultDiagnostic() {
-          return "diagnostic";
-        },
-      },
-    ) as (
-      result: { status: number; stdout: string; stderr: string },
-      expectedFailure: string,
-      message: string,
-    ) => void;
-
     const exactFailures = [
       "codex_oauth_database_authority_signature_invalid",
       "permission denied for function codex_oauth_authorize_setup_confirmation",
       "permission denied for function codex_oauth_authorize_runtime_confirmation",
     ];
     for (const expectedFailure of exactFailures) {
-      assertPsqlFailedWithExactMessage(
-        { status: 1, stdout: "", stderr: `ERROR: ${expectedFailure}` },
-        expectedFailure,
-        "expected failure",
-      );
-      assertPsqlFailedWithExactMessage(
-        {
-          status: 1,
-          stdout: "",
-          stderr:
-            "ERROR: permission denied for table CodexOAuthProviderInstance",
-        },
-        expectedFailure,
-        "unrelated table failure",
-      );
-      assertPsqlFailedWithExactMessage(
-        {
-          status: 1,
-          stdout: "",
-          stderr:
-            "ERROR: permission denied for function codex_oauth_provider_identity_guard",
-        },
-        expectedFailure,
-        "unrelated function failure",
-      );
+      expect(() =>
+        assertPsqlFailedWithExactMessage(
+          { status: 1, stdout: "", stderr: `ERROR: ${expectedFailure}` },
+          expectedFailure,
+          "expected failure",
+        ),
+      ).not.toThrow();
+      for (const stderr of [
+        "ERROR: permission denied for table CodexOAuthProviderInstance",
+        "ERROR: permission denied for function codex_oauth_provider_identity_guard",
+      ]) {
+        expect(() =>
+          assertPsqlFailedWithExactMessage(
+            { status: 1, stdout: "", stderr },
+            expectedFailure,
+            "unrelated failure",
+          ),
+        ).toThrow(/unrelated failure/u);
+      }
     }
-
-    expect(observedConditions).toEqual([
-      true,
-      false,
-      false,
-      true,
-      false,
-      false,
-      true,
-      false,
-      false,
-    ]);
   });
 
   it("routes production Prisma terminal writers through database authority", () => {

@@ -22,10 +22,7 @@ import {
 } from "./run-codex-rotating-release-migration.mjs";
 import { legacyAmbiguityInventorySql } from "./reconcile-codex-rotating-legacy-ambiguity.mjs";
 import { verifyCodexRotatingDatabaseCatalog } from "./verify-codex-rotating-rollout.mjs";
-import {
-  createSanitizedDiagnostic,
-  sanitizedDiagnosticError,
-} from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
+import { sanitizedDiagnosticError } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
 import { sha256Canonical } from "../packages/features/release-rollout/src/domain/canonical-json.ts";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
 import {
@@ -37,6 +34,12 @@ import {
   isExpectedPrismaLockTimeoutFailure,
   prismaLockTimeoutFailureMarkers,
 } from "./codex-rotating-lock-timeout-proof.mjs";
+import {
+  assertPsqlFailedWithExactMessage,
+  assertPsqlFailedWithOneOfExactMessages,
+  psqlResultDiagnostic,
+  rehearsalProcessDiagnostic,
+} from "./codex-rotating-rehearsal-process-result.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const dbDirectory = join(root, "packages/platform/db");
@@ -5449,41 +5452,6 @@ function quoteIdentifier(value) {
 }
 function quoteLiteral(value) {
   return `'${value.replaceAll("'", "''")}'`;
-}
-function psqlResultDiagnostic(result) {
-  return JSON.stringify(rehearsalProcessDiagnostic(result));
-}
-function rehearsalProcessDiagnostic(result) {
-  return createSanitizedDiagnostic({
-    code: "private_pg17_rehearsal_command_failed",
-    phase: "rehearsal",
-    exitCode: result.status,
-    signal: result.signal,
-    timedOut: result.timedOut === true || result.error?.code === "ETIMEDOUT",
-  });
-}
-function assertPsqlFailedWithExactMessage(result, expectedFailure, message) {
-  assert(
-    result.timedOut !== true &&
-      result.status !== 0 &&
-      `${result.stdout}${result.stderr}`.includes(expectedFailure),
-    `${message}: expected=${JSON.stringify(expectedFailure)}; ${psqlResultDiagnostic(result)}`,
-  );
-}
-function assertPsqlFailedWithOneOfExactMessages(
-  result,
-  expectedFailures,
-  message,
-) {
-  const output = `${result.stdout}${result.stderr}`;
-  assert(
-    result.timedOut !== true &&
-      result.status !== 0 &&
-      expectedFailures.some((expectedFailure) =>
-        output.includes(expectedFailure),
-      ),
-    `${message}: expectedOneOf=${JSON.stringify(expectedFailures)}; ${psqlResultDiagnostic(result)}`,
-  );
 }
 function assert(condition, message) {
   if (!condition) throw new Error(message);
