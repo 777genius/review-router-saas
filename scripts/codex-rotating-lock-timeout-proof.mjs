@@ -21,6 +21,7 @@ export function isExpectedPrismaLockTimeoutFailure({
     markers.abortedTransaction;
   const emptyDatabaseRecordedEnvelope =
     markers.exactAbortedTransactionEnvelope &&
+    !markers.contradictoryFailure &&
     !markers.prismaFailureCodePresent &&
     !markers.migrationNameFieldPresent &&
     markers.emptyLogRows === 1 &&
@@ -48,7 +49,9 @@ export function prismaLockTimeoutFailureMarkers({
     lockTimeout: normalized.includes("lock timeout"),
     abortedTransaction: normalized.includes("current transaction is aborted"),
     exactAbortedTransactionEnvelope:
-      /^ERROR:[\t ]*current transaction is aborted\r?\n?$/iu.test(output),
+      /(?:^|\r?\n)ERROR:[\t ]*current transaction is aborted(?=\r?\n|$)/iu.test(
+        output,
+      ),
     prismaMigrationFailure: normalized.includes("p3018"),
     prismaFailureCodePresent: /\bP\d{4}\b/iu.test(output),
     migrationNameFieldPresent: migrationNames.length > 0,

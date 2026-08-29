@@ -798,6 +798,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(true);
     expect(
       isExpectedPrismaLockTimeoutFailure({
+        output:
+          "Schema engine migration failure\nERROR: current transaction is aborted\nMigration rolled back",
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
         output: "ERROR: permission denied",
         migrationName,
         historyEvidence: exactEvidence,
