@@ -5380,6 +5380,14 @@ export function executeCanonicalRoleBootstrap(
   };
 }
 
+export function parseActivationCatalogCaptureState(rawState) {
+  try {
+    return JSON.parse(rawState.trim());
+  } catch {
+    throw new Error("activation_catalog_policy_capture_state_json_invalid");
+  }
+}
+
 export function executeCanonicalReleaseMigration(
   env = process.env,
   run = runReleaseMigrationSubprocess,
@@ -5446,17 +5454,16 @@ export function executeCanonicalReleaseMigration(
     },
   );
   if (catalogCaptureOnly) {
-    const captureState = JSON.parse(
-      run(
-        "verify_catalog_capture_migration_state",
-        "psql",
-        [
-          configuration.releaseUrl,
-          "--no-psqlrc",
-          "--tuples-only",
-          "--no-align",
-          "--command",
-          `SELECT jsonb_build_object(
+    const rawCaptureState = run(
+      "verify_catalog_capture_migration_state",
+      "psql",
+      [
+        configuration.releaseUrl,
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        `SELECT jsonb_build_object(
             'manifestIdentity','sha256:'||encode(pg_catalog.sha256(convert_to(coalesce(string_agg(
               migration_name||':'||checksum,',' ORDER BY migration_name),''),'UTF8')),'hex'),
             'catalogDigest',(SELECT digest FROM (${fencedLiveV70V73CatalogDigestSql}) live(digest)),
@@ -5466,9 +5473,15 @@ export function executeCanonicalReleaseMigration(
               WHERE finished_at IS NULL AND rolled_back_at IS NULL)
           ) FROM public._prisma_migrations
           WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL`,
-        ],
-        { env: childEnv },
-      ).trim(),
+      ],
+      { env: childEnv },
+    );
+    process.stderr.write(
+      "activation_catalog_policy_capture_raw_state_received\n",
+    );
+    const captureState = parseActivationCatalogCaptureState(rawCaptureState);
+    process.stderr.write(
+      "activation_catalog_policy_capture_json_parse_complete\n",
     );
     const captureStateChecks = Object.freeze({
       manifestIdentityExact:
@@ -5483,6 +5496,9 @@ export function executeCanonicalReleaseMigration(
       permitConsumed: captureState.permitState === "consumed",
       noUnfinishedMigrations: Number(captureState.unfinishedCount) === 0,
     });
+    process.stderr.write(
+      "activation_catalog_policy_capture_checks_constructed\n",
+    );
     if (Object.values(captureStateChecks).some((check) => !check)) {
       process.stderr.write(
         `activation_catalog_policy_capture_state_invalid:${JSON.stringify(captureStateChecks)}\n`,

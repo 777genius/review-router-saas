@@ -13,9 +13,12 @@ export function isExpectedPrismaLockTimeoutFailure({
   const strongPrismaEnvelope =
     markers.prismaMigrationFailure &&
     markers.migrationNamed &&
+    !markers.contradictoryFailure &&
     (markers.lockTimeout || markers.abortedTransaction);
   const genericAbortedTransactionEnvelope =
-    markers.migrationNamed && markers.abortedTransaction;
+    markers.migrationNamed &&
+    !markers.contradictoryFailure &&
+    markers.abortedTransaction;
   const emptyDatabaseRecordedEnvelope =
     markers.exactAbortedTransactionEnvelope &&
     !markers.prismaFailureCodePresent &&
@@ -58,6 +61,17 @@ export function prismaLockTimeoutFailureMarkers({
     abortedTransactionLogRows: historyEvidence?.abortedTransactionLog ?? null,
     emptyLogRows: historyEvidence?.emptyLog ?? null,
     exactFailureLogRows: historyEvidence?.exactFailureLog ?? null,
+    contradictoryFailure:
+      [...output.matchAll(/\b(P\d{4})\b/giu)].some(
+        (match) => match[1]?.toUpperCase() !== "P3018",
+      ) ||
+      /(?:ERROR:\s*)?(?:28P01|3D000|3F000|42501|42703|42704|42883|42P01)\b/iu.test(
+        output,
+      ) ||
+      /\b(?:password authentication failed|authentication failed|permission denied|insufficient privilege)\b/iu.test(
+        output,
+      ) ||
+      /\bdoes not exist\b/iu.test(output),
     directLockTimeoutProof:
       directLockTimeoutProof?.migrationName === migrationName &&
       directLockTimeoutProof?.observed === true,

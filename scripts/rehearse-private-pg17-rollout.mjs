@@ -834,6 +834,10 @@ export function safePostgresErrorClassification(stderr) {
     /ERROR:\s*[0-9A-Z]{5}:\s*/gu,
     "ERROR: ",
   );
+  const errorMessages = (normalizedStderr ?? "")
+    .split(/\r?\n/u)
+    .map((line) => /ERROR:\s*(.*?)\s*$/iu.exec(line)?.[1]?.toLowerCase())
+    .filter((message) => message !== undefined);
   const prismaCode = sqlState
     ? undefined
     : stderr?.match(/\b(P[0-9]{4})\b/u)?.[1];
@@ -858,43 +862,57 @@ export function safePostgresErrorClassification(stderr) {
     return `permission denied for ${deniedObject[1]?.toLowerCase()} ${deniedObject[2]}`;
   if (/ERROR:\s*permission denied/iu.test(normalizedStderr ?? ""))
     return "permission denied";
-  const namedInvariant = normalizedStderr?.match(
-    /ERROR:\s*((?:codex_oauth|reviewrouter|runtime|release)_[a-z0-9_]{2,160})(?:\n|$)/iu,
-  )?.[1];
-  if (namedInvariant) return namedInvariant.toLowerCase();
-  const missingObject = normalizedStderr?.match(
-    /ERROR:\s*((?:relation|role|schema|function|procedure) "[A-Za-z][A-Za-z0-9_.]{0,127}" does not exist)(?:\n|$)/iu,
-  )?.[1];
-  if (missingObject) return missingObject.toLowerCase();
-  const staticInvariant = normalizedStderr?.match(
-    /ERROR:\s*([a-z][a-z0-9 -]{2,100})(?:\n|$)/iu,
-  )?.[1];
-  if (staticInvariant) {
-    const normalizedInvariant = staticInvariant.toLowerCase();
-    const digestEvidence =
-      normalizedInvariant === "activation catalog policy mismatch"
-        ? stderr?.match(
-            /DETAIL:\s*sections=([A-Za-z,]+) expected=(sha256:[a-f0-9]{64}) observed=(sha256:[a-f0-9]{64})(?:\n|$)/u,
-          )
-        : undefined;
-    return digestEvidence
-      ? `${normalizedInvariant}:sections=${digestEvidence[1]}:expected=${digestEvidence[2]}:observed=${digestEvidence[3]}`
-      : normalizedInvariant;
-  }
   const releaseInvariant = safeReleaseMigrationInvariantMessages.find(
-    (message) => normalizedStderr?.includes(message),
+    (message) => errorMessages.includes(message.toLowerCase()),
   );
   if (releaseInvariant) {
     const digestEvidence =
       releaseInvariant ===
       "release migration target live completion mismatch:catalog_digest_observed"
         ? stderr?.match(
-            /DETAIL:\s*expected=(sha256:[a-f0-9]{64}) observed=(sha256:[a-f0-9]{64})(?:\n|$)/u,
+            /DETAIL:\s*expected=(sha256:[a-f0-9]{64}) observed=(sha256:[a-f0-9]{64})(?:\r?\n|$)/u,
           )
         : undefined;
     return digestEvidence
       ? `${releaseInvariant.toLowerCase()}:expected=${digestEvidence[1]}:observed=${digestEvidence[2]}`
       : releaseInvariant.toLowerCase();
+  }
+  const namedInvariant = normalizedStderr?.match(
+    /ERROR:\s*((?:codex_oauth|reviewrouter|runtime|release)_[a-z0-9_]{2,160})(?:\n|$)/iu,
+  )?.[1];
+  if (namedInvariant) return "postgres named invariant rejected";
+  const missingObject = normalizedStderr?.match(
+    /ERROR:\s*((?:relation|role|schema|function|procedure) "[A-Za-z][A-Za-z0-9_.]{0,127}" does not exist)(?:\n|$)/iu,
+  )?.[1];
+  if (missingObject) return missingObject.toLowerCase();
+  if (errorMessages.includes("public ownership convergence failed"))
+    return "public ownership convergence failed";
+  if (errorMessages.includes("activation catalog policy mismatch")) {
+    const digestEvidence = stderr?.match(
+      /DETAIL:\s*sections=([A-Za-z]+(?:,[A-Za-z]+)*) expected=(sha256:[a-f0-9]{64}) observed=(sha256:[a-f0-9]{64})(?:\r?\n|$)/u,
+    );
+    const safeSections = Object.freeze([
+      "database",
+      "effectivePermissions",
+      "extensions",
+      "grants",
+      "kind",
+      "memberships",
+      "phase",
+      "roleReachability",
+      "roles",
+      "rowSecurity",
+      "version",
+    ]);
+    const sections = digestEvidence?.[1].split(",");
+    if (
+      digestEvidence &&
+      sections &&
+      new Set(sections).size === sections.length &&
+      sections.every((section) => safeSections.includes(section)) &&
+      sections.join(",") === [...sections].sort().join(",")
+    )
+      return `activation catalog policy mismatch:sections=${digestEvidence[1]}:expected=${digestEvidence[2]}:observed=${digestEvidence[3]}`;
   }
   if (/ERROR:\s*release migration/iu.test(normalizedStderr ?? ""))
     return "release migration invariant rejected";

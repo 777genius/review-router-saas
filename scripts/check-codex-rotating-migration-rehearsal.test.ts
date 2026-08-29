@@ -878,6 +878,42 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   });
 
   it.each([
+    ["permission failure", "ERROR: permission denied for schema public"],
+    ["authentication failure", "ERROR: password authentication failed"],
+    ["authentication SQLSTATE", "ERROR: 28P01: redacted"],
+    ["permission SQLSTATE", "ERROR: 42501: redacted"],
+    ["missing schema", 'ERROR: schema "private_data" does not exist'],
+    ["missing schema SQLSTATE", "ERROR: 3F000: redacted"],
+    ["missing object", 'ERROR: relation "private_table" does not exist'],
+    ["missing object SQLSTATE", "ERROR: 42P01: redacted"],
+  ])(
+    "rejects a P3018 lock-timeout envelope with a contradictory %s",
+    (_case, contradiction) => {
+      const migrationName = "000061_codex_oauth_provider_mutation_fence";
+      expect(
+        isExpectedPrismaLockTimeoutFailure({
+          output: `P3018\nMigration name: ${migrationName}\nERROR: lock timeout\n${contradiction}`,
+          migrationName,
+          historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+          directLockTimeoutProof: { migrationName, observed: true },
+        }),
+      ).toBe(false);
+    },
+  );
+
+  it("rejects mixed P1000 and P3018 codes with the correct migration field", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `P1000\nP3018\nMigration name: ${migrationName}\nERROR: lock timeout`,
+        migrationName,
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(false);
+  });
+
+  it.each([
     ["prefix", "attacker_000061_codex_oauth_provider_mutation_fence"],
     ["suffix", "000061_codex_oauth_provider_mutation_fence_attacker"],
     ["substring", "codex_oauth_provider_mutation"],

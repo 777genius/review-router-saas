@@ -304,7 +304,7 @@ describe("disposable dual-version rehearsal", () => {
       safePostgresErrorClassification(
         "psql: ERROR:  P0001: release migration V70-V73 live catalog digest mismatch: internal context redacted\nDETAIL: token=secret",
       ),
-    ).toBe("release migration v70-v73 live catalog digest mismatch");
+    ).toBe("release migration invariant rejected");
     expect(
       safePostgresErrorClassification(
         `psql: ERROR:  P0001: release migration target live completion mismatch:catalog_digest_observed\nDETAIL: expected=sha256:${"1".repeat(64)} observed=sha256:${"2".repeat(64)}\nCONTEXT: token=secret`,
@@ -323,7 +323,7 @@ describe("disposable dual-version rehearsal", () => {
       safePostgresErrorClassification(
         "psql: ERROR:  P0001: codex_oauth_provider_identity_mismatch\nDETAIL: token=secret",
       ),
-    ).toBe("codex_oauth_provider_identity_mismatch");
+    ).toBe("postgres named invariant rejected");
     expect(
       safePostgresErrorClassification(
         'psql: ERROR:  42P01: relation "CodexOAuthSetupManifest" does not exist\nDETAIL: token=secret',
@@ -334,6 +334,51 @@ describe("disposable dual-version rehearsal", () => {
         'psql: ERROR:  0A000: unsupported operation near "secret"\nDETAIL: token=secret',
       ),
     ).toBe("postgres sqlstate 0A000");
+  });
+
+  it.each([
+    [
+      "direct named release invariant",
+      "psql: ERROR: P0001: release_migration_password_hunter2",
+    ],
+    [
+      "nested-looking named release invariant",
+      "psql: ERROR: P0001: wrapper_release_migration_password_hunter2",
+    ],
+    [
+      "direct named codex invariant",
+      "psql: ERROR: P0001: codex_oauth_token_secret",
+    ],
+    [
+      "nested-looking named codex invariant",
+      "psql: ERROR: P0001: wrapper_codex_oauth_token_secret",
+    ],
+    [
+      "arbitrary P0001 sentence",
+      "psql: ERROR: P0001: release migration password hunter2",
+    ],
+    [
+      "nested-looking arbitrary P0001 sentence",
+      "psql: ERROR: P0001: wrapper release migration password hunter2",
+    ],
+  ])("does not publish attacker text from a %s", (_case, stderr) => {
+    const classification = safePostgresErrorClassification(stderr);
+    expect(classification).toBeDefined();
+    expect(classification).not.toMatch(/password|hunter2|token|secret/u);
+  });
+
+  it("requires a strictly allowlisted activation catalog digest detail", () => {
+    for (const detail of [
+      `sections=grants,passwordHunter expected=sha256:${"3".repeat(64)} observed=sha256:${"4".repeat(64)}`,
+      `sections=roleReachability,grants expected=sha256:${"3".repeat(64)} observed=sha256:${"4".repeat(64)}`,
+      `sections=grants,grants expected=sha256:${"3".repeat(64)} observed=sha256:${"4".repeat(64)}`,
+    ]) {
+      const classification = safePostgresErrorClassification(
+        `psql: ERROR: P0001: activation catalog policy mismatch\nDETAIL: ${detail}`,
+      );
+      expect(classification).toBe("postgres sqlstate P0001");
+      expect(classification).not.toMatch(/password|hunter2|token|secret/u);
+    }
   });
   it("requires explicit opt-in and immutable PG16.13/PG17 images", () => {
     expect(
@@ -1348,6 +1393,9 @@ describe("disposable dual-version rehearsal", () => {
     expect(bootstrapStage).toBeLessThan(releaseMigrationStage);
     expect(source).toContain("rehearsal_canonical_step_failed:${step}");
     expect(source).toContain("safePostgresErrorClassification(result.stderr)");
+    expect(source).toMatch(
+      /const classification = safePostgresErrorClassification\(result\.stderr\);[\s\S]*?rehearsal_canonical_postgres_error:\$\{step\}:\$\{classification\}/u,
+    );
     expect(source).toContain("rehearsal_control_stage_started:health_ready");
     expect(source).toContain("expectedDatabaseIdentity");
     expect(source.indexOf('runStage("quiesce_source"')).toBeLessThan(

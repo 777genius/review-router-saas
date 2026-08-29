@@ -17,6 +17,7 @@ import {
   executeCanonicalRoleBootstrap,
   liveV70V72CatalogDigestSql,
   isActivationPrincipalRoleCapabilityPermitted,
+  parseActivationCatalogCaptureState,
   resolveReleaseMigrationConfiguration,
   resolveRoleBootstrapConfiguration,
   roleProvisioningSql,
@@ -215,6 +216,42 @@ describe("application database release-authority isolation", () => {
     );
     expect(executableSource).toContain(
       "activation_catalog_policy_capture_state_invalid:${JSON.stringify(captureStateChecks)}",
+    );
+    const rawCheckpoint = executableSource.indexOf(
+      "activation_catalog_policy_capture_raw_state_received",
+    );
+    const parseCheckpoint = executableSource.indexOf(
+      "activation_catalog_policy_capture_json_parse_complete",
+    );
+    const checksCheckpoint = executableSource.indexOf(
+      "activation_catalog_policy_capture_checks_constructed",
+    );
+    expect(rawCheckpoint).toBeGreaterThan(-1);
+    expect(parseCheckpoint).toBeGreaterThan(rawCheckpoint);
+    expect(checksCheckpoint).toBeGreaterThan(parseCheckpoint);
+  });
+
+  it("parses capture state without reflecting malformed raw output", () => {
+    expect(
+      parseActivationCatalogCaptureState(
+        '  {"permitState":"consumed","unfinishedCount":0}\n',
+      ),
+    ).toEqual({ permitState: "consumed", unfinishedCount: 0 });
+
+    const attackerOutput =
+      "not-json postgresql://release:password_hunter2@db.internal/review_router";
+    let thrown: unknown;
+    try {
+      parseActivationCatalogCaptureState(attackerOutput);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe(
+      "activation_catalog_policy_capture_state_json_invalid",
+    );
+    expect((thrown as Error).message).not.toMatch(
+      /not-json|postgresql|password|hunter2|db\.internal/u,
     );
   });
 
