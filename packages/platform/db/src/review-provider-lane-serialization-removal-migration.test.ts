@@ -35,12 +35,32 @@ describe("000079 provider lane serialization removal", () => {
       'GRANT SELECT ON TABLE public."ReviewProviderScopeConcurrencyControl" TO %I',
     );
     expect(sql).toContain(
-      'GRANT SELECT, UPDATE\n      ON TABLE "ReviewProviderScopeConcurrencyControl"\n      TO reviewrouter_release_migration',
+      'REVOKE ALL\n      ON TABLE "ReviewProviderScopeConcurrencyControl"\n      FROM reviewrouter_release_migration',
     );
     expect(sql).not.toMatch(
       /GRANT\s+(?:INSERT|UPDATE|DELETE|TRUNCATE|ALL)[^;]*ReviewProviderScopeConcurrencyControl/iu,
     );
-    expect(sql).not.toContain("DROP INDEX");
+    expect(sql).toContain(
+      "CREATE OR REPLACE FUNCTION reviewrouter_provider_scope_concurrency_activate()",
+    );
+    expect(sql).toContain(
+      "CREATE OR REPLACE FUNCTION reviewrouter_provider_scope_concurrency_close_for_rollback()",
+    );
+    expect(sql).toContain(
+      "CREATE OR REPLACE FUNCTION reviewrouter_provider_scope_concurrency_verify_rollback()",
+    );
+    expect(sql).toContain("SECURITY DEFINER");
+    expect(sql).toContain("OWNER TO reviewrouter_release_schema_owner");
+    expect(sql).toContain(
+      "GRANT EXECUTE ON FUNCTION reviewrouter_provider_scope_concurrency_activate()\n    TO reviewrouter_release_migration",
+    );
+    expect(sql).toContain(
+      "REVOKE ALL ON FUNCTION reviewrouter_provider_scope_concurrency_activate() FROM PUBLIC",
+    );
+    expect(sql).toContain("index_catalog.indisvalid");
+    expect(sql).toContain("index_catalog.indisready");
+    expect(sql).toContain("index_catalog.indisunique");
+    expect(sql).toContain("pg_get_indexdef(index_catalog.indexrelid)");
     expect(sql).not.toContain(
       '"ReviewInvocationLeaseV2_one_active_provider_invocation"',
     );

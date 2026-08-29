@@ -1,221 +1,178 @@
 #!/usr/bin/env node
+import { pathToFileURL } from "node:url";
 import pg from "pg";
 
-const args = new Set(process.argv.slice(2));
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) fail("DATABASE_URL is required");
+const routineByOperation = Object.freeze({
+  status: "reviewrouter_provider_scope_concurrency_status",
+  activate: "reviewrouter_provider_scope_concurrency_activate",
+  close: "reviewrouter_provider_scope_concurrency_close_for_rollback",
+  verifyRollback: "reviewrouter_provider_scope_concurrency_verify_rollback",
+});
 
-const operationCount = [
-  "--status",
-  "--activate",
-  "--close-for-rollback",
-  "--verify-rollback-ready",
-].filter((operation) => args.has(operation)).length;
-if (operationCount !== 1) {
-  fail(
-    "Choose exactly one of --status, --activate, --close-for-rollback, or --verify-rollback-ready",
+const ambiguousConnectionCodes = new Set([
+  "08000",
+  "08001",
+  "08003",
+  "08004",
+  "08006",
+  "08007",
+  "08P01",
+  "57P01",
+  "57P02",
+  "57P03",
+  "ECONNRESET",
+  "EPIPE",
+  "ETIMEDOUT",
+]);
+
+/**
+ * Execute one bounded operator transition.  A connection failure after the
+ * server may have committed is reconciled by reading the desired state with a
+ * new connection and, when still needed, safely retrying the idempotent
+ * routine.  createClient is injectable so the real PG harness can discard a
+ * committed response at the client boundary.
+ */
+export async function runProviderScopeConcurrencyOperation({
+  operation,
+  databaseUrl,
+  createClient = () => new pg.Client({ connectionString: databaseUrl }),
+  maxAttempts = 3,
+}) {
+  if (!Object.hasOwn(routineByOperation, operation)) {
+    throw new Error("provider_scope_concurrency_operation_invalid");
+  }
+  if (!databaseUrl) throw new Error("DATABASE_URL is required");
+  if (
+    !Number.isSafeInteger(maxAttempts) ||
+    maxAttempts < 1 ||
+    maxAttempts > 5
+  ) {
+    throw new Error("provider_scope_concurrency_attempt_limit_invalid");
+  }
+
+  let ambiguousFailure;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return {
+        status: await callRestrictedRoutine(
+          routineByOperation[operation],
+          createClient,
+        ),
+        reconciledAfterAmbiguousCommit: false,
+      };
+    } catch (error) {
+      if (!isAmbiguousConnectionFailure(error)) throw error;
+      ambiguousFailure = error;
+    }
+
+    if (operation !== "status") {
+      try {
+        const status = await callRestrictedRoutine(
+          routineByOperation.status,
+          createClient,
+        );
+        if (isDesiredState(operation, status)) {
+          return { status, reconciledAfterAmbiguousCommit: true };
+        }
+      } catch (error) {
+        if (!isAmbiguousConnectionFailure(error)) throw error;
+        ambiguousFailure = error;
+      }
+    }
+  }
+  throw ambiguousFailure;
+}
+
+async function callRestrictedRoutine(routineName, createClient) {
+  const client = createClient();
+  await client.connect();
+  try {
+    const result = await client.query(
+      `SELECT public.${routineName}() AS status`,
+    );
+    if (result.rows.length !== 1 || result.rows[0]?.status === undefined) {
+      throw new Error("provider_scope_concurrency_routine_response_invalid");
+    }
+    return result.rows[0].status;
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+function isDesiredState(operation, status) {
+  if (!status || typeof status !== "object") return false;
+  if (operation === "activate") {
+    return status.activated === true && status.legacyProviderVoteIndex === null;
+  }
+  if (operation === "close") return status.activated === false;
+  return (
+    operation === "verifyRollback" &&
+    status.activated === false &&
+    status.duplicateActiveVoteLanes === 0 &&
+    status.legacyProviderVoteIndex?.exact === true
   );
 }
-if (args.has("--activate") && !args.has("--confirm-old-replicas-drained")) {
-  fail("Activation requires --confirm-old-replicas-drained");
-}
-if (
-  args.has("--close-for-rollback") &&
-  !args.has("--confirm-no-old-replica-started")
-) {
-  fail("Closing requires --confirm-no-old-replica-started");
+
+function isAmbiguousConnectionFailure(error) {
+  if (!error || typeof error !== "object") return false;
+  if (ambiguousConnectionCodes.has(error.code)) return true;
+  return /connection|socket|server closed|terminating connection/iu.test(
+    error.message ?? "",
+  );
 }
 
-const client = new pg.Client({ connectionString: databaseUrl });
-const legacyProviderVoteIndexName =
-  "ReviewInvocationLeaseV2_one_active_provider_vote_lane";
-const legacyProviderVoteIndexDefinition =
-  'CREATE UNIQUE INDEX "ReviewInvocationLeaseV2_one_active_provider_vote_lane" ON public."ReviewInvocationLeaseV2" USING btree ("providerVoteIdentityHash") WHERE ((state = \'active\'::"ReviewInvocationLeaseStateV2") AND (purpose = \'provider_execution\'::"ReviewInvocationLeasePurposeV2"))';
-await client.connect();
-try {
-  if (args.has("--status")) {
-    await withSchemaOwnerTransaction(printStatus);
-  } else if (args.has("--activate")) {
-    await withSessionFleetFence(async () => {
-      await withSchemaOwnerTransaction(async () => {
-        const legacyIndex = await readLegacyProviderVoteIndex();
-        if (!isExactLegacyProviderVoteIndex(legacyIndex)) {
-          throw new Error("provider_scope_concurrency_legacy_index_invalid");
-        }
-        await client.query(`
-          DROP INDEX public."ReviewInvocationLeaseV2_one_active_provider_vote_lane"
-        `);
-        await client.query(`
-          UPDATE "ReviewProviderScopeConcurrencyControl"
-          SET "activated" = true, "updatedAt" = statement_timestamp()
-          WHERE "singleton" = true
-        `);
-      });
-    });
-    console.log("Scoped provider concurrency activated after old-fleet drain.");
-  } else if (args.has("--close-for-rollback")) {
-    await withSessionFleetFence(() =>
-      withSchemaOwnerTransaction(async () => {
-        await client.query(`
-          UPDATE "ReviewProviderScopeConcurrencyControl"
-          SET "activated" = false, "updatedAt" = statement_timestamp()
-          WHERE "singleton" = true
-        `);
-      }),
+async function main(argv = process.argv.slice(2), env = process.env) {
+  const args = new Set(argv);
+  const selected = [
+    ["--status", "status"],
+    ["--activate", "activate"],
+    ["--close-for-rollback", "close"],
+    ["--verify-rollback-ready", "verifyRollback"],
+  ].filter(([flag]) => args.has(flag));
+  if (selected.length !== 1) {
+    throw new Error(
+      "Choose exactly one of --status, --activate, --close-for-rollback, or --verify-rollback-ready",
     );
+  }
+  const operation = selected[0][1];
+  if (operation === "activate" && !args.has("--confirm-old-replicas-drained")) {
+    throw new Error("Activation requires --confirm-old-replicas-drained");
+  }
+  if (operation === "close" && !args.has("--confirm-no-old-replica-started")) {
+    throw new Error("Closing requires --confirm-no-old-replica-started");
+  }
+
+  const result = await runProviderScopeConcurrencyOperation({
+    operation,
+    databaseUrl: env.DATABASE_URL,
+  });
+  if (operation === "status") {
+    console.log(JSON.stringify(result.status));
+  } else if (operation === "activate") {
+    console.log("Scoped provider concurrency activated after old-fleet drain.");
+  } else if (operation === "close") {
     console.log(
       "Scoped provider concurrency is closed. Drain duplicate active vote lanes and run --verify-rollback-ready before starting any old replica.",
     );
-    await withSchemaOwnerTransaction(printStatus);
+    console.log(JSON.stringify(result.status));
   } else {
-    await withSessionFleetFence(async () => {
-      await withSchemaOwnerTransaction(async () => {
-        const control = await client.query(`
-          SELECT "activated"
-          FROM "ReviewProviderScopeConcurrencyControl"
-          WHERE "singleton" = true
-          FOR UPDATE
-        `);
-        if (control.rows[0]?.activated !== false) {
-          throw new Error("provider_scope_concurrency_must_be_closed");
-        }
-        const duplicates = await duplicateVoteLaneCount();
-        if (duplicates !== 0) {
-          throw new Error(
-            `provider_scope_concurrency_rollback_requires_drain:${duplicates}`,
-          );
-        }
-        await repairLegacyProviderVoteIndex();
-      });
-    });
     console.log(
       "Rollback fence is closed and old-binary global reads are safe.",
     );
   }
-} catch (error) {
-  fail(error instanceof Error ? error.message : String(error));
-} finally {
-  await client.end();
-}
-
-async function withSessionFleetFence(operation) {
-  await client.query("SELECT pg_advisory_lock(1381126735, 1381192279)");
-  try {
-    return await operation();
-  } finally {
-    await client.query("SELECT pg_advisory_unlock(1381126735, 1381192279)");
+  if (result.reconciledAfterAmbiguousCommit) {
+    console.log("Committed operation reconciled after response loss.");
   }
 }
 
-async function withSchemaOwnerTransaction(operation) {
-  return inTransaction(async () => {
-    await client.query("SET LOCAL ROLE reviewrouter_release_schema_owner");
-    return operation();
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((error) => {
+    console.error(
+      `ERROR: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
   });
-}
-
-async function inTransaction(operation) {
-  await client.query("BEGIN");
-  try {
-    const result = await operation();
-    await client.query("COMMIT");
-    return result;
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
-    throw error;
-  }
-}
-
-async function duplicateVoteLaneCount() {
-  const result = await client.query(`
-    SELECT count(*)::integer AS count
-    FROM (
-      SELECT "providerVoteIdentityHash"
-      FROM "ReviewInvocationLeaseV2"
-      WHERE "purpose" = 'provider_execution' AND "state" = 'active'
-      GROUP BY "providerVoteIdentityHash"
-      HAVING count(*) > 1
-    ) duplicate
-  `);
-  return result.rows[0]?.count ?? 0;
-}
-
-async function readLegacyProviderVoteIndex() {
-  const result = await client.query(
-    `
-      SELECT
-        index_catalog.indisvalid,
-        index_catalog.indisready,
-        index_catalog.indisunique,
-        pg_get_indexdef(index_catalog.indexrelid) AS definition
-      FROM pg_catalog.pg_index index_catalog
-      JOIN pg_catalog.pg_class index_relation
-        ON index_relation.oid = index_catalog.indexrelid
-      JOIN pg_catalog.pg_namespace index_namespace
-        ON index_namespace.oid = index_relation.relnamespace
-      JOIN pg_catalog.pg_class table_relation
-        ON table_relation.oid = index_catalog.indrelid
-      JOIN pg_catalog.pg_namespace table_namespace
-        ON table_namespace.oid = table_relation.relnamespace
-      WHERE index_namespace.nspname = 'public'
-        AND index_relation.relname = $1
-        AND table_namespace.nspname = 'public'
-        AND table_relation.relname = 'ReviewInvocationLeaseV2'
-    `,
-    [legacyProviderVoteIndexName],
-  );
-  if (result.rowCount === 0) return null;
-  if (result.rowCount !== 1) {
-    throw new Error("provider_scope_concurrency_legacy_index_ambiguous");
-  }
-  return result.rows[0];
-}
-
-function isExactLegacyProviderVoteIndex(index) {
-  return (
-    index !== null &&
-    index.indisvalid === true &&
-    index.indisready === true &&
-    index.indisunique === true &&
-    index.definition === legacyProviderVoteIndexDefinition
-  );
-}
-
-async function repairLegacyProviderVoteIndex() {
-  const before = await readLegacyProviderVoteIndex();
-  if (isExactLegacyProviderVoteIndex(before)) return;
-  if (before !== null) {
-    await client.query(`
-      DROP INDEX public."ReviewInvocationLeaseV2_one_active_provider_vote_lane"
-    `);
-  }
-  await client.query(`
-    CREATE UNIQUE INDEX "ReviewInvocationLeaseV2_one_active_provider_vote_lane"
-    ON public."ReviewInvocationLeaseV2" ("providerVoteIdentityHash")
-    WHERE "state" = 'active' AND "purpose" = 'provider_execution'
-  `);
-  const repaired = await readLegacyProviderVoteIndex();
-  if (!isExactLegacyProviderVoteIndex(repaired)) {
-    throw new Error("provider_scope_concurrency_legacy_index_repair_failed");
-  }
-}
-
-async function printStatus() {
-  const control = await client.query(`
-    SELECT "activated", "updatedAt"
-    FROM "ReviewProviderScopeConcurrencyControl"
-    WHERE "singleton" = true
-  `);
-  console.log(
-    JSON.stringify({
-      ...control.rows[0],
-      duplicateActiveVoteLanes: await duplicateVoteLaneCount(),
-      legacyProviderVoteIndex: await readLegacyProviderVoteIndex(),
-    }),
-  );
-}
-
-function fail(message) {
-  console.error(`ERROR: ${message}`);
-  process.exit(1);
 }

@@ -1993,12 +1993,62 @@ function proveDatabasePrivileges(url) {
                AND has_function_privilege(
                  'reviewrouter_release_migration', routine.oid, 'EXECUTE'
                )
-               AND routine.oid <> 'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure
+               AND routine.oid NOT IN (
+                 'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure,
+                 'public.reviewrouter_provider_scope_concurrency_status()'::regprocedure,
+                 'public.reviewrouter_provider_scope_concurrency_activate()'::regprocedure,
+                 'public.reviewrouter_provider_scope_concurrency_close_for_rollback()'::regprocedure,
+                 'public.reviewrouter_provider_scope_concurrency_verify_rollback()'::regprocedure
+               )
            )
            OR NOT has_function_privilege(
              'reviewrouter_release_migration',
              'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure,
              'EXECUTE'
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_status()'::regprocedure,
+             'EXECUTE'
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_activate()'::regprocedure,
+             'EXECUTE'
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_close_for_rollback()'::regprocedure,
+             'EXECUTE'
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_verify_rollback()'::regprocedure,
+             'EXECUTE'
+           )
+           OR has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_snapshot()'::regprocedure,
+             'EXECUTE'
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_proc routine
+             JOIN pg_roles owner ON owner.oid = routine.proowner
+             WHERE routine.oid IN (
+               'public.reviewrouter_provider_scope_concurrency_snapshot()'::regprocedure,
+               'public.reviewrouter_provider_scope_concurrency_status()'::regprocedure,
+               'public.reviewrouter_provider_scope_concurrency_activate()'::regprocedure,
+               'public.reviewrouter_provider_scope_concurrency_close_for_rollback()'::regprocedure,
+               'public.reviewrouter_provider_scope_concurrency_verify_rollback()'::regprocedure
+             )
+               AND (
+                 owner.rolname <> 'reviewrouter_release_schema_owner'
+                 OR NOT routine.prosecdef
+                 OR routine.proconfig IS DISTINCT FROM
+                    ARRAY['search_path=pg_catalog, public']::text[]
+                 OR has_function_privilege('public', routine.oid, 'EXECUTE')
+               )
            )
            OR NOT has_table_privilege(
              'reviewrouter_release_migration',
@@ -2164,6 +2214,7 @@ function proveDatabasePrivileges(url) {
                    'HostedCodexCommentTokenMint',
                    'HostedCodexCommentTokenRevocationProof',
                    'HostedCodexRuntimeClosure',
+                   'ReviewProviderScopeConcurrencyControl',
                    'CodexOAuthDatabaseAuthorityKey',
                    'CodexOAuthDatabaseAuthorityReceipt',
                    'CodexOAuthChildIdentityQuarantine',
@@ -2180,6 +2231,16 @@ function proveDatabasePrivileges(url) {
                  AND NOT has_table_privilege(
                    role_name, relation.oid, 'SELECT,INSERT,UPDATE,DELETE'
                  )
+             )
+             OR NOT has_table_privilege(
+               role_name,
+               'public."ReviewProviderScopeConcurrencyControl"',
+               'SELECT'
+             )
+             OR has_table_privilege(
+               role_name,
+               'public."ReviewProviderScopeConcurrencyControl"',
+               'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
              )
              OR has_table_privilege(
                role_name,
