@@ -799,7 +799,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(
       isExpectedPrismaLockTimeoutFailure({
         output:
-          "Schema engine migration failure\nERROR: current transaction is aborted\nMigration rolled back",
+          "Schema engine migration failure: ERROR: current transaction is aborted; migration rolled back",
         migrationName,
         historyEvidence: exactEvidence,
         directLockTimeoutProof,

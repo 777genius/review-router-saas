@@ -20,7 +20,7 @@ export function isExpectedPrismaLockTimeoutFailure({
     !markers.contradictoryFailure &&
     markers.abortedTransaction;
   const emptyDatabaseRecordedEnvelope =
-    markers.exactAbortedTransactionEnvelope &&
+    markers.abortedTransaction &&
     !markers.contradictoryFailure &&
     !markers.prismaFailureCodePresent &&
     !markers.migrationNameFieldPresent &&
