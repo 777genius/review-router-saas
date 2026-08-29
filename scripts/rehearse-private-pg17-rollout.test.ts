@@ -489,6 +489,27 @@ describe("disposable dual-version rehearsal", () => {
     expect(runReleaseMigration).toHaveBeenCalledOnce();
     expect(stageTargetServices).not.toHaveBeenCalled();
   });
+  it("captures after an exact disposable catalog-digest mismatch without staging or promotion", async () => {
+    const candidate = Object.freeze({ kind: "candidate", version: 1 });
+    const captureCandidate = vi.fn(async () => candidate);
+    const stageTargetServices = vi.fn();
+    const runReleaseMigration = vi.fn(async () => {
+      throw new Error("activation_catalog_policy_capture_ready");
+    });
+
+    await expect(
+      runRehearsalReleaseMigration({
+        captureOnly: { disposableDatabaseIdentity: "rr-disposable-test" },
+        rollout: { phase: "pre-migration" },
+        runStage: vi.fn(async (_name, operation) => operation()),
+        runReleaseMigration,
+        captureCandidate,
+        stageTargetServices,
+      }),
+    ).resolves.toEqual({ mode: "capture-only", candidate });
+    expect(captureCandidate).toHaveBeenCalledOnce();
+    expect(stageTargetServices).not.toHaveBeenCalled();
+  });
   it("keeps normal migration in the rollout use case and stages its result", async () => {
     const preMigrationRollout = Object.freeze({ phase: "pre-migration" });
     const transition = Object.freeze({
@@ -1191,7 +1212,7 @@ describe("disposable dual-version rehearsal", () => {
       "private_pg17_rehearsal_activation_catalog_policy_trust_root_blocked",
     );
     const releaseMigration = source.indexOf(
-      "const migratedRollout = await runStage(",
+      "migratedRollout = await runStage(",
     );
     const capture = source.indexOf(
       '"capture_activation_catalog_policy_candidate"',
@@ -1223,11 +1244,14 @@ describe("disposable dual-version rehearsal", () => {
     expect(releaseMigration).toBeGreaterThan(-1);
     expect(releaseMigration).toBeLessThan(marker);
     expect(releaseMigration).toBeLessThan(fixtureCleanup);
-    expect(fixtureCleanup).toBeLessThan(marker);
-    expect(marker).toBeLessThan(capture);
+    expect(marker).toBeLessThan(fixtureCleanup);
+    expect(fixtureCleanup).toBeLessThan(capture);
     expect(capture).toBeLessThan(stageTarget);
     expect(stageTarget).toBeLessThan(activate);
-    const fixtureCleanupBranch = source.slice(fixtureCleanup, marker);
+    const fixtureCleanupBranch = source.slice(
+      fixtureCleanup,
+      source.indexOf("const stdout = canonicalRun(", fixtureCleanup),
+    );
     expect(fixtureCleanupBranch).toContain(
       "facts.sql(facts.targetContainer, statement)",
     );

@@ -2,6 +2,8 @@
  * Canonical PostgreSQL projection of the live V70-V79 application catalog.
  * Keep this in the Postgres adapter layer: the domain receives only its digest.
  */
+import { canonicalReleaseMigrationPostManifestIdentity } from "../domain/release-migration-artifact-identity.js";
+
 const dynamicWriteAclPrincipals = Object.freeze([
   "reviewrouter_api",
   "reviewrouter_web",
@@ -134,7 +136,7 @@ WITH selected_relations AS (
       FROM pg_catalog.pg_default_acl d LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace
       WHERE n.nspname='public'),'[]'::jsonb),
     'history',CASE WHEN reviewrouter_activation.read_activation_migration_manifest_identity()
-      = 'sha256:28941cb847006d45d798db0a363f3ba8a63454b4255e95632b69e4767769eb8e'
+      = '${canonicalReleaseMigrationPostManifestIdentity}'
       THEN jsonb_build_array(
         jsonb_build_object('name','000070_runtime_generation_witness_proof',
           'checksum','cb9c42171f9bd924d21093852a1053cb947100acef1321ec8cf62e8fd5928c6f',
@@ -167,7 +169,7 @@ WITH selected_relations AS (
           'checksum','21de6c901dee41a52cdfa0bea8e3559d1d0ea847003bd136d729c0e4cb4cba8d',
           'finished',true,'rolledBack',false),
         jsonb_build_object('name','000079_codex_oauth_v4_v5_workflow_reattestation',
-          'checksum','88816a26cf0d6f10aaf3457c251e7546f1b09f85cd3681ad337f696dd4999346',
+          'checksum','d443e366de64879b1d6c32f4edba3648d8e8da160f804b6ec87bede581343109',
           'finished',true,'rolledBack',false))
       ELSE '[]'::jsonb END,
     'unresolvedHistory',false,

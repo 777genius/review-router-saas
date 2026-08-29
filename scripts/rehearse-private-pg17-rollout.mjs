@@ -435,10 +435,27 @@ export async function runRehearsalReleaseMigration({
   captureCandidate,
   stageTargetServices,
 }) {
-  const migratedRollout = await runStage(
-    "run_release_migration",
-    runReleaseMigration,
-  );
+  let migratedRollout;
+  try {
+    migratedRollout = await runStage(
+      "run_release_migration",
+      runReleaseMigration,
+    );
+  } catch (error) {
+    if (
+      !captureOnly ||
+      !(error instanceof Error) ||
+      error.message !== "activation_catalog_policy_capture_ready"
+    )
+      throw error;
+    return routeRehearsalAfterReleaseMigration({
+      captureOnly,
+      captureCandidate,
+      stageTargetServices: () => {
+        throw new Error("activation_catalog_policy_capture_rollout_forbidden");
+      },
+    });
+  }
   const migrationReceipt = migratedRollout.receipts.at(-1);
   if (
     migratedRollout.targetManifestPhase !== "post_migration" ||
@@ -1623,6 +1640,14 @@ ROLLBACK;`,
       GITHUB_RUN_ID: "1",
       GITHUB_RUN_ATTEMPT: "1",
       REVIEW_ROUTER_CUTOVER_WORKFLOW_JOB_ID: "11",
+      ...(captureOnly
+        ? {
+            REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:
+              "1",
+            REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+              captureOnly.disposableDatabaseIdentity,
+          }
+        : {}),
     };
     const publicTableReadDrift = JSON.parse(
       sql(
@@ -2605,6 +2630,14 @@ async function verifyProductionPathRehearsal(facts) {
       },
       canonicalRun,
     );
+    if (migration.captureOnlyStatus === "catalog_candidate_ready") {
+      if (!facts.captureOnly)
+        throw new Error("activation_catalog_policy_capture_mode_invalid");
+      process.stderr.write(
+        `activation_catalog_policy_observed_catalog_digest:${migration.observedCatalogDigest}\n`,
+      );
+      throw new Error("activation_catalog_policy_capture_ready");
+    }
     process.stderr.write(
       "rehearsal_migration_substep_completed:canonical_migration\n",
     );
@@ -3395,44 +3428,30 @@ COMMIT;
   ({ rollout } = await runStage("provision_cutover_runner", () =>
     useCases.provisionCutoverRunner(rollout),
   ));
-  const postMigration = await runRehearsalReleaseMigration({
-    captureOnly: facts.captureOnly,
-    rollout,
-    runStage,
-    runReleaseMigration: () => {
-      if (!sourceLegacyAmbiguity)
-        throw new Error(
-          "private_pg17_rehearsal_source_legacy_ambiguity_missing",
-        );
-      return useCases.runReleaseMigration(rollout, sourceLegacyAmbiguity);
-    },
-    captureCandidate: () => {
-      const identity = facts.captureOnly.disposableDatabaseIdentity;
-      assertDisposableCaptureTarget({
-        createdContainers: facts.createdContainers,
-        sourceContainer: facts.sourceContainer,
-        targetContainer: facts.targetContainer,
-      });
-      const attestationNonce = rawSha256(
-        `${identity}:${facts.targetSystemIdentifier}:${facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256}`,
-      );
-      cleanupCaptureOnlyRehearsalFixtures({
-        executeSql: (statement) => facts.sql(facts.targetContainer, statement),
-      });
-      canonicalRun(
-        "mark_disposable_activation_catalog_database",
-        "psql",
-        [
-          facts.canonicalEnv.REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL,
-          "--no-psqlrc",
-          "--quiet",
-        ],
-        {
-          env: {
-            DATABASE_URL:
-              facts.canonicalEnv.REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL,
-          },
-          input: `DO $attest_disposable_capture_database$
+  if (facts.captureOnly) {
+    const identity = facts.captureOnly.disposableDatabaseIdentity;
+    assertDisposableCaptureTarget({
+      createdContainers: facts.createdContainers,
+      sourceContainer: facts.sourceContainer,
+      targetContainer: facts.targetContainer,
+    });
+    const attestationNonce = rawSha256(
+      `${identity}:${facts.targetSystemIdentifier}:${facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256}`,
+    );
+    canonicalRun(
+      "mark_disposable_activation_catalog_database",
+      "psql",
+      [
+        facts.canonicalEnv.REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL,
+        "--no-psqlrc",
+        "--quiet",
+      ],
+      {
+        env: {
+          DATABASE_URL:
+            facts.canonicalEnv.REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL,
+        },
+        input: `DO $attest_disposable_capture_database$
 DECLARE binding jsonb;
 BEGIN
   SELECT shobj_description(oid,'pg_database')::jsonb INTO STRICT binding
@@ -3457,8 +3476,25 @@ BEGIN
   EXECUTE format('COMMENT ON DATABASE %I IS %L',current_database(),binding::text);
 END
 $attest_disposable_capture_database$;\n`,
-        },
-      );
+      },
+    );
+  }
+  const postMigration = await runRehearsalReleaseMigration({
+    captureOnly: facts.captureOnly,
+    rollout,
+    runStage,
+    runReleaseMigration: () => {
+      if (!sourceLegacyAmbiguity)
+        throw new Error(
+          "private_pg17_rehearsal_source_legacy_ambiguity_missing",
+        );
+      return useCases.runReleaseMigration(rollout, sourceLegacyAmbiguity);
+    },
+    captureCandidate: () => {
+      const identity = facts.captureOnly.disposableDatabaseIdentity;
+      cleanupCaptureOnlyRehearsalFixtures({
+        executeSql: (statement) => facts.sql(facts.targetContainer, statement),
+      });
       const stdout = canonicalRun(
         "capture_activation_catalog_policy_candidate",
         "psql",
@@ -3486,8 +3522,8 @@ $attest_disposable_capture_database$;\n`,
         useCases.stageTargetServices(migratedRollout),
       ),
   });
-  await assertTargetActivationReadiness("post_migration", true);
   if (postMigration.mode === "capture-only") return postMigration.candidate;
+  await assertTargetActivationReadiness("post_migration", true);
   rollout = postMigration.rollout;
   rollout = await runStage("activate_target_generation", () =>
     useCases.activateTargetGeneration(rollout, cutoverRunner.workflowJobId),

@@ -616,6 +616,13 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       provisioning.indexOf("SELECT rolname INTO existing_role"),
     );
     expect(source).toContain("runRehearsalReleaseSubprocess");
+    expect(source).toContain("proveSelfHostedV4V5ReattestationOwnerInvocation");
+    expect(source).toContain(
+      "self-hosted canonical table/function owner session was not admitted",
+    );
+    expect(source).toContain(
+      "self-hosted non-owner session bypassed exact owner admission",
+    );
     expect(provisioning).toContain(
       "markCanonicalRehearsalRoles(url.toString())",
     );

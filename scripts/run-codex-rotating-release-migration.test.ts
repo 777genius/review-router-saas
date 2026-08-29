@@ -31,6 +31,11 @@ import {
   workerOwnedMaintenanceCheckpointTable,
 } from "./run-codex-rotating-release-migration.mjs";
 
+const executableSource = readFileSync(
+  new URL("./run-codex-rotating-release-migration.mjs", import.meta.url),
+  "utf8",
+);
+
 const legacyEvidenceUnsigned = {
   schemaVersion: 1 as const,
   rolloutId: "rollout-test",
@@ -202,6 +207,15 @@ describe("application database release-authority isolation", () => {
     expect(authoritySql).toContain("nonce");
     expect(sql).not.toContain("install_activation_permit");
     expect(sql).not.toContain("activate_generation");
+    expect(executableSource).toContain(
+      "verify_catalog_capture_migration_state",
+    );
+    expect(executableSource).toContain(
+      'captureOnlyStatus: "catalog_candidate_ready"',
+    );
+    expect(executableSource).toContain(
+      "captureState.catalogDigest ===\n        canonicalReleaseMigrationArtifact.postCatalogDigest",
+    );
   });
 
   it("provisions only target-local activation capability", () => {

@@ -196,6 +196,10 @@ try {
     runtimeClients,
     versionedNamespaceEvidence,
   );
+  proveSelfHostedV4V5ReattestationOwnerInvocation(
+    providerAdmin,
+    runtimeClients.web,
+  );
   provePrismaCleanupRetention(providerAdmin, versionedNamespaceEvidence);
   proveLegacyChildWritesRejected(providerAdmin);
   proveParentIdentityWriteRejected(providerAdmin);
@@ -228,6 +232,47 @@ try {
     "rehearsal_database_removal_not_proven_before_role_cleanup",
   );
   cleanupRuntimeRoles(adminUrl);
+}
+
+function proveSelfHostedV4V5ReattestationOwnerInvocation(
+  providerAdmin,
+  hostedWebUrl,
+) {
+  const temporaryWebRole = `rr_rehearsal_web_absent_${process.pid}`;
+  const ownerPassword = `${randomUUID()}${randomUUID()}`;
+  const ownerUrl = new URL(String(providerAdmin));
+  ownerUrl.username = "reviewrouter_release_schema_owner";
+  ownerUrl.password = ownerPassword;
+  const renamedWebUrl = new URL(String(hostedWebUrl));
+  renamedWebUrl.username = temporaryWebRole;
+  const call = `SELECT public."codex_oauth_reattest_active_namespace_v4_to_v5"(
+    NULL::text,NULL::text,NULL::text,NULL::text,NULL::bigint,NULL::text,
+    NULL::text,NULL::text,NULL::text,NULL::text,NULL::integer,NULL::integer,
+    NULL::text,NULL::text,NULL::text,NULL::text,NULL::text,NULL::text,
+    NULL::text,NULL::text)`;
+  psql(providerAdmin, [
+    "-c",
+    `ALTER ROLE reviewrouter_web RENAME TO ${quoteIdentifier(temporaryWebRole)};
+     ALTER ROLE reviewrouter_release_schema_owner LOGIN PASSWORD ${quoteLiteral(ownerPassword)}`,
+  ]);
+  try {
+    assertPsqlFailedWithExactMessage(
+      psql(ownerUrl, ["-c", call], false),
+      "codex_oauth_active_namespace_reattestation_invalid",
+      "self-hosted canonical table/function owner session was not admitted",
+    );
+    assertPsqlFailedWithExactMessage(
+      psql(renamedWebUrl, ["-c", call], false),
+      "codex_oauth_active_namespace_reattestation_role_forbidden",
+      "self-hosted non-owner session bypassed exact owner admission",
+    );
+  } finally {
+    psql(providerAdmin, [
+      "-c",
+      `ALTER ROLE reviewrouter_release_schema_owner NOLOGIN;
+       ALTER ROLE ${quoteIdentifier(temporaryWebRole)} RENAME TO reviewrouter_web`,
+    ]);
+  }
 }
 
 async function proveMigrationSpecificLegacyBehavior() {

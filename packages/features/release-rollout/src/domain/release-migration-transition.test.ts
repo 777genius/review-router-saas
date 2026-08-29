@@ -8,7 +8,10 @@ import {
   canonicalReleaseMigrationEntries,
   canonicalReleaseMigrationResumeManifestIdentities,
   createReleaseMigrationTransition,
+  deriveOrderedPendingEntriesSha256,
 } from "./release-migration-transition";
+import { canonicalReleaseMigrationPostManifestIdentity } from "./release-migration-artifact-identity.js";
+import { fencedLiveV70V73CatalogDigestSql } from "../adapters/live-v70-v72-catalog-digest.mjs";
 
 const migrationRoot = "packages/platform/db/prisma/migrations";
 const sha256 = (value: string | Buffer) =>
@@ -100,6 +103,37 @@ describe("canonical release migration transition", () => {
         trusted,
       ),
     ).toThrow("release_migration_transition_untrusted");
+  });
+
+  it("derives the ordered-pending digest and rejects an independently supplied value", () => {
+    const trusted = createReleaseMigrationTransition({
+      commitSha: "d".repeat(40),
+      releaseImageDigest: `sha256:${"e".repeat(64)}`,
+    });
+    expect(trusted.orderedPendingEntriesSha256).toBe(
+      deriveOrderedPendingEntriesSha256(trusted.orderedMigrationEntries),
+    );
+    expect(() =>
+      assertReleaseMigrationTransition(
+        {
+          ...trusted,
+          orderedPendingEntriesSha256: `sha256:${"f".repeat(64)}`,
+        },
+        trusted,
+      ),
+    ).toThrow("release_migration_transition_untrusted");
+  });
+
+  it("binds the live history projection to the canonical post-manifest identity", () => {
+    expect(canonicalReleaseMigrationArtifact.postManifestIdentity).toBe(
+      canonicalReleaseMigrationPostManifestIdentity,
+    );
+    expect(fencedLiveV70V73CatalogDigestSql).toContain(
+      `= '${canonicalReleaseMigrationArtifact.postManifestIdentity}'`,
+    );
+    expect(fencedLiveV70V73CatalogDigestSql).not.toContain(
+      "sha256:28941cb847006d45d798db0a363f3ba8a63454b4255e95632b69e4767769eb8e",
+    );
   });
 
   it("binds the target observation to the source inventory and fixed cutoff", () => {

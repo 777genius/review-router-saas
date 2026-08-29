@@ -14,7 +14,7 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
 
   it("is an atomic forward migration with a pinned digest", () => {
     expect(createHash("sha256").update(sql).digest("hex")).toBe(
-      "88816a26cf0d6f10aaf3457c251e7546f1b09f85cd3681ad337f696dd4999346",
+      "d443e366de64879b1d6c32f4edba3648d8e8da160f804b6ec87bede581343109",
     );
     expect(sql).toMatch(/^BEGIN;[\s\S]+COMMIT;\s*$/u);
   });
@@ -73,6 +73,10 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
       "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_web') THEN",
     );
     expect(sql).not.toContain("codex_oauth_reattestation_web_role_missing");
+    expect(sql).toContain("caller_role <> 'reviewrouter_web'");
+    expect(sql).toContain("canonical_function_owner <> canonical_table_owner");
+    expect(sql).toContain("caller_role <> canonical_function_owner");
+    expect(sql).toContain(`'public."CodexOAuthSecretNamespace"'::regclass`);
     expect(sql).toContain("TO reviewrouter_web");
   });
 
@@ -91,6 +95,7 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
     expect(sql).toContain("TO reviewrouter_web");
     expect(sql).not.toMatch(/TO reviewrouter_(?:api|worker);/u);
     expect(sql).not.toContain("GRANT UPDATE");
+    expect(sql).not.toMatch(/GRANT EXECUTE[\s\S]+TO PUBLIC/u);
     expect(sql).toContain("reviewrouter_release_schema_owner");
     expect(sql).toContain('NEW."createdAt" IS DISTINCT FROM OLD."createdAt"');
   });

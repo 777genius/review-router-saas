@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { LegacyAmbiguityEvidence } from "./trusted-rollout-evidence";
+import { canonicalReleaseMigrationPostManifestIdentity } from "./release-migration-artifact-identity.js";
 
 export const TargetManifestPhase = Object.freeze({
   PreMigration: "pre_migration",
@@ -134,23 +135,27 @@ export const canonicalReleaseMigrationEntries = Object.freeze([
   ],
   [
     "000079_codex_oauth_v4_v5_workflow_reattestation",
-    "88816a26cf0d6f10aaf3457c251e7546f1b09f85cd3681ad337f696dd4999346",
+    "d443e366de64879b1d6c32f4edba3648d8e8da160f804b6ec87bede581343109",
   ],
 ] as const).map(([name, checksum]) =>
   Object.freeze({ migrationName: name, migrationSqlSha256: checksum }),
 );
 
+export const deriveOrderedPendingEntriesSha256 = (
+  entries: readonly ReleaseMigrationEntry[],
+): string => canonicalDigest(entries);
+
 export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
-    "sha256:bf0d6a2a039882f09830a30e7c03fca67446519d8194476fb252a41691062aa7",
+    "sha256:2b91b9e6fce9e69a0d9c293712e082fcf16c4306c46690139d1a13690ed2c779",
   preManifestIdentity:
     "sha256:bb102d7d6013f7373f177ea5f266a5427a877fc54b95af8876d30ec2b17ab478",
-  orderedPendingEntriesSha256:
-    "sha256:ebf1761377d856f81920a4eaf213bec71440e8cf7a39ca0d3782fd5c5ed2a6d2",
+  orderedPendingEntriesSha256: deriveOrderedPendingEntriesSha256(
+    canonicalReleaseMigrationEntries,
+  ),
   migrationBundleSha256:
-    "sha256:1acc12d031362e7965ce24d4ddbfbefc2fd461f22064e1abfaf648ec3e29d59e",
-  postManifestIdentity:
-    "sha256:3d3fca74e22efefda962cc05f6cb7b6197b3b8bede351fb0a564c5d55efe495e",
+    "sha256:7e2db1f64d3c49b1d629af0ba7a3a359a644313dbcee311f2a51a88d7d695b03",
+  postManifestIdentity: canonicalReleaseMigrationPostManifestIdentity,
   // Disposable PG17 candidate for the canonical V70-V79 catalog projection.
   // Production promotion remains gated on independent capture review.
   postCatalogDigest:
@@ -204,6 +209,8 @@ export function assertReleaseMigrationTransitionIntegrity(
     value.schemaVersion !== 1 ||
     !/^[a-f0-9]{40}$/u.test(value.commitSha) ||
     !digest.test(value.releaseImageDigest) ||
+    value.orderedPendingEntriesSha256 !==
+      deriveOrderedPendingEntriesSha256(value.orderedMigrationEntries) ||
     value.transitionSha256 !== canonicalDigest(unsigned)
   )
     throw new Error("release_migration_transition_untrusted");

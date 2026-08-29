@@ -2341,18 +2341,12 @@ function assertLockedWorkflowAdmissionMatches(input: {
     verified.repositoryId !== persisted.attestedRepositoryId ||
     verified.workflowPath !== persisted.workflowPath ||
     !persisted.workflowSourceCommitSha ||
-    (verified.sourceTrust ===
-      WorkflowSourceTrust.TrustedDefaultBranchRevision &&
-      verified.workflowSourceCommitSha !== persisted.workflowSourceCommitSha) ||
+    verified.sourceTrust !== WorkflowSourceTrust.TrustedDefaultBranchRevision ||
     verified.workflowSourceBlobSha !== persisted.workflowSourceBlobSha ||
     verified.workflowSourceSha256 !== persisted.workflowSourceSha256 ||
     verified.workflowSemanticSha256 !== persisted.workflowSemanticSha256 ||
     persisted.workflowSourceTrust !==
       WorkflowSourceTrust.TrustedDefaultBranchRevision ||
-    (verified.sourceTrust !==
-      WorkflowSourceTrust.TrustedDefaultBranchRevision &&
-      verified.sourceTrust !==
-        WorkflowSourceTrust.TrustedCanonicalBranchMirrorRevision) ||
     verified.workflowSchemaVersion !== persisted.workflowSchemaVersion
   ) {
     throw new Error("codex_rotating_workflow_attestation_stale");

@@ -4052,6 +4052,8 @@ DROP PROCEDURE IF EXISTS public.reviewrouter_execute_release_migration(
   text,text,text,text,text,bigint,text,jsonb);
 DROP PROCEDURE IF EXISTS public.reviewrouter_execute_release_migration(
   text,text,text,text,text,bigint,text,jsonb,boolean);
+DROP PROCEDURE IF EXISTS public.reviewrouter_execute_release_migration(
+  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean);
 CREATE OR REPLACE PROCEDURE public.reviewrouter_execute_release_migration(
   requested_rollout_id text,
   requested_target_system_identifier text,
@@ -4062,7 +4064,8 @@ CREATE OR REPLACE PROCEDURE public.reviewrouter_execute_release_migration(
   requested_permit_nonce text,
   requested_source_legacy_ambiguity jsonb,
   requested_eligibility_cutoff timestamptz,
-  requested_acl_gate_closed boolean
+  requested_acl_gate_closed boolean,
+  requested_catalog_capture_only boolean
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -4073,12 +4076,33 @@ AS $rr_guarded_release_executor_v1$
 DECLARE permit_result text;
 DECLARE requested_inventory jsonb;
 DECLARE observed_inventory jsonb;
+DECLARE capture_binding jsonb;
 BEGIN
   IF session_user <> 'reviewrouter_release_migration' THEN
     RAISE EXCEPTION 'release migration executor caller invalid';
   END IF;
-  IF requested_acl_gate_closed IS NULL THEN
+  IF requested_acl_gate_closed IS NULL OR requested_catalog_capture_only IS NULL THEN
     RAISE EXCEPTION 'release migration executor ACL gate mode invalid';
+  END IF;
+  IF requested_catalog_capture_only THEN
+    SELECT pg_catalog.shobj_description(database.oid,'pg_database')::jsonb
+    INTO STRICT capture_binding
+    FROM pg_catalog.pg_database database
+    WHERE database.datname=pg_catalog.current_database();
+    IF pg_catalog.current_setting(
+         'reviewrouter.activation_catalog_candidate_capture',true
+       ) IS DISTINCT FROM 'disposable-only'
+       OR capture_binding->'disposableCaptureAttestation'->>'kind'
+          IS DISTINCT FROM 'reviewrouter-disposable-database-attestation-v1'
+       OR capture_binding->'disposableCaptureAttestation'->>'identity'
+          IS DISTINCT FROM pg_catalog.current_setting(
+            'reviewrouter.activation_catalog_disposable_database_identity',true
+          )
+       OR capture_binding->'disposableCaptureAttestation'->>'systemIdentifier'
+          IS DISTINCT FROM requested_target_system_identifier
+       OR capture_binding->'disposableCaptureAttestation'->>'recoveryWitnessSha256'
+          IS DISTINCT FROM requested_target_recovery_witness_sha256
+    THEN RAISE EXCEPTION 'release migration catalog capture target invalid'; END IF;
   END IF;
   permit_result := reviewrouter_activation.consume_migration_permit(
     requested_rollout_id,requested_target_system_identifier,
@@ -4173,15 +4197,17 @@ ${guardedAclGate}
   ) THEN
     RAISE EXCEPTION 'release migration executor runtime write gate mismatch';
   END IF;
-  PERFORM reviewrouter_activation.complete_migration_permit(
-    requested_rollout_id,requested_permit_epoch,requested_permit_nonce,
-    '{}'::jsonb);
+  IF NOT requested_catalog_capture_only THEN
+    PERFORM reviewrouter_activation.complete_migration_permit(
+      requested_rollout_id,requested_permit_epoch,requested_permit_nonce,
+      '{}'::jsonb);
+  END IF;
 END
 $rr_guarded_release_executor_v1$;
 REVOKE ALL ON PROCEDURE public.reviewrouter_execute_release_migration(
-  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) FROM PUBLIC;
+  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean) FROM PUBLIC;
 GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(
-  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) TO reviewrouter_release_migration;
+  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean) TO reviewrouter_release_migration;
 DO $transferred_public_routine_acl$
 DECLARE routine_row record;
 BEGIN
@@ -4996,6 +5022,8 @@ export function atomicMigrationAndGrantSql(
   configuration,
   {
     gateClosed = false,
+    catalogCaptureOnly = false,
+    disposableDatabaseIdentity,
     migrationBundleSql = atomicReleaseMigrationBundleSql(),
     migrationPermit,
     legacyReconciliation,
@@ -5007,10 +5035,25 @@ export function atomicMigrationAndGrantSql(
     throw new Error("release_migration_bundle_override_forbidden");
   if (!legacyReconciliation?.evidence)
     throw new Error("release_migration_legacy_reconciliation_missing");
+  if (
+    catalogCaptureOnly &&
+    !/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(
+      disposableDatabaseIdentity ?? "",
+    )
+  )
+    throw new Error(
+      "activation_catalog_policy_candidate_disposable_identity_required",
+    );
   return `\\set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL lock_timeout = '5000ms';
 SET LOCAL statement_timeout = '120000ms';
+${
+  catalogCaptureOnly
+    ? `SET LOCAL reviewrouter.activation_catalog_candidate_capture = 'disposable-only';
+SET LOCAL reviewrouter.activation_catalog_disposable_database_identity = ${quoted(disposableDatabaseIdentity)};`
+    : ""
+}
 -- Migration takes the target lock exclusively before touching catalog state.
 -- Authority begin/complete use target-shared then control-authority order and
 -- never upgrade a shared lock, preventing cross-worker upgrade deadlocks.
@@ -5025,7 +5068,8 @@ CALL public.reviewrouter_execute_release_migration(
   ${quoted(migrationPermit.nonce)},
   ${quoted(JSON.stringify(legacyReconciliation.evidence))}::jsonb,
   ${quoted(migrationPermit.eligibilityCutoff)}::timestamptz,
-  ${gateClosed ? "true" : "false"}::boolean);
+  ${gateClosed ? "true" : "false"}::boolean,
+  ${catalogCaptureOnly ? "true" : "false"}::boolean);
 SET LOCAL search_path = pg_catalog, pg_temp;
 DO $phase_aware_manifest_postcondition$
 DECLARE manifest_identity text;
@@ -5058,12 +5102,16 @@ BEGIN
     ) AND NOT prosecdef
   ) THEN RAISE EXCEPTION 'release migration V72 routine security invalid'; END IF;
   SELECT digest INTO STRICT catalog_digest FROM (${liveV70V73CatalogDigestSql}) live(digest);
-  SELECT reviewrouter_activation.read_migration_receipt(
+  ${
+    catalogCaptureOnly
+      ? ""
+      : `SELECT reviewrouter_activation.read_migration_receipt(
     ${quoted(migrationPermit.rolloutId)},${migrationPermit.epoch}::bigint,
     ${quoted(migrationPermit.nonce)}
   )->>'postCatalogDigest' INTO STRICT receipt_catalog_digest;
   IF catalog_digest IS DISTINCT FROM receipt_catalog_digest
-    THEN RAISE EXCEPTION 'release migration V70-V73 live catalog digest mismatch'; END IF;
+    THEN RAISE EXCEPTION 'release migration V70-V73 live catalog digest mismatch'; END IF;`
+  }
 END
 $phase_aware_manifest_postcondition$;
 COMMIT;
@@ -5384,6 +5432,9 @@ export function executeCanonicalReleaseMigration(
     },
     run,
   );
+  const catalogCaptureOnly =
+    env.REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY ===
+    "1";
   run(
     "deploy_migrations_and_converge_grants",
     "psql",
@@ -5392,11 +5443,56 @@ export function executeCanonicalReleaseMigration(
       env: childEnv,
       input: atomicMigrationAndGrantSql(configuration, {
         gateClosed: env.REVIEW_ROUTER_RELEASE_ACL_GATE_MODE === "closed",
+        catalogCaptureOnly,
+        disposableDatabaseIdentity:
+          env.REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY,
         migrationPermit,
         legacyReconciliation,
       }),
     },
   );
+  if (catalogCaptureOnly) {
+    const captureState = JSON.parse(
+      run(
+        "verify_catalog_capture_migration_state",
+        "psql",
+        [
+          configuration.releaseUrl,
+          "--no-psqlrc",
+          "--tuples-only",
+          "--no-align",
+          "--command",
+          `SELECT jsonb_build_object(
+            'manifestIdentity','sha256:'||encode(pg_catalog.sha256(convert_to(coalesce(string_agg(
+              migration_name||':'||checksum,',' ORDER BY migration_name),''),'UTF8')),'hex'),
+            'catalogDigest',(SELECT digest FROM (${fencedLiveV70V73CatalogDigestSql}) live(digest)),
+            'permitState',(SELECT state FROM reviewrouter_activation.migration_permit
+              WHERE rollout_id=${quoted(migrationPermit.rolloutId)}),
+            'unfinishedCount',(SELECT count(*) FROM public._prisma_migrations
+              WHERE finished_at IS NULL AND rolled_back_at IS NULL)
+          ) FROM public._prisma_migrations
+          WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL`,
+        ],
+        { env: childEnv },
+      ).trim(),
+    );
+    if (
+      captureState.manifestIdentity !==
+        canonicalReleaseMigrationArtifact.postManifestIdentity ||
+      !/^sha256:[a-f0-9]{64}$/u.test(captureState.catalogDigest ?? "") ||
+      captureState.catalogDigest ===
+        canonicalReleaseMigrationArtifact.postCatalogDigest ||
+      captureState.permitState !== "consumed" ||
+      Number(captureState.unfinishedCount) !== 0
+    )
+      throw new Error("activation_catalog_policy_capture_state_invalid");
+    return Object.freeze({
+      version: 1,
+      captureOnlyStatus: "catalog_candidate_ready",
+      observedManifestIdentity: captureState.manifestIdentity,
+      observedCatalogDigest: captureState.catalogDigest,
+    });
+  }
   const targetMigrationReceipt = JSON.parse(
     run(
       "read_target_migration_receipt",

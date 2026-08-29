@@ -307,10 +307,7 @@ describe("Prisma Codex rotating new-work barrier", () => {
         {
           ...verifiedWorkflowAttestation,
           workflowSchemaVersion,
-          sourceTrust:
-            workflowSchemaVersion === 5
-              ? WorkflowSourceTrust.TrustedCanonicalBranchMirrorRevision
-              : WorkflowSourceTrust.TrustedDefaultBranchRevision,
+          sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
         },
       );
       const persistedRequestAttestation = {
@@ -409,6 +406,177 @@ describe("Prisma Codex rotating new-work barrier", () => {
       );
     },
   );
+
+  it("admits an activation-verified newer default-branch commit when every durable workflow byte and binding is exact", async () => {
+    const newerDefaultBranchAttestation =
+      createVersionedSecretWorkflowSourceAttestation({
+        ...verifiedWorkflowAttestation,
+        workflowSourceCommitSha: "e".repeat(40),
+      });
+    const providerUpdate = vi.fn(async () => ({}));
+    const leaseUpsert = vi.fn(async () => ({ id: "lease-1" }));
+    const tx = {
+      $queryRaw: vi.fn(async (query: unknown) =>
+        isNamespaceLock(query)
+          ? [lockedWorkflowAdmission(persistedWorkflowAttestation)]
+          : [],
+      ),
+      $executeRawUnsafe: vi.fn(),
+      codexOAuthProviderInstance: {
+        findUnique: vi.fn(async () => ({
+          id: "provider-row-1",
+          workspaceId: "workspace-1",
+          repositoryId: "repository-1",
+          providerInstanceId: "codex-rotating:123456",
+          authMode: "codex_subscription_oauth_rotating",
+          secretName: "REVIEWROUTER_CODEX_AUTH_JSON",
+          activeLeaseId: null,
+          activeLeaseExpiresAt: null,
+          mutationEpoch: 3n,
+          mutationOwner: null,
+          mutationOwnerId: null,
+          activeSecretNamespaceId: activeSecretNamespace.namespaceId,
+          activeSecretNamespaceEpoch: 1n,
+          activeSecretNamespaceName: activeSecretNamespace.name,
+          activeSecretNamespace: {
+            ...persistedWorkflowAttestation,
+            status: "active",
+            databaseRecoveryWitness: databaseRecoveryWitnessFingerprint,
+          },
+          state: "active",
+          latestGeneration: 1,
+          latestGenerationHash: "generation-hash",
+          generationHashSalt: "generation-salt",
+          accountFingerprintSalt: "account-salt",
+        })),
+        update: providerUpdate,
+      },
+      codexOAuthWritebackIntent: { findFirst: vi.fn(async () => null) },
+      codexOAuthSetupManifest: { findFirst: vi.fn(async () => null) },
+      codexOAuthLease: { upsert: leaseUpsert },
+    };
+    const repository = new PrismaCodexRotatingOAuthRepository(
+      { $transaction: vi.fn(async (callback) => callback(tx)) } as never,
+      {
+        actionOwnerRepo: "reviewrouter/action",
+        databaseRecoveryWitness,
+        transactionClock: fixedClock("2026-08-09T00:00:00Z"),
+      },
+    );
+
+    await expect(
+      repository.acquirePrelease({
+        repository: {
+          workspaceId: "workspace-1",
+          repositoryId: "repository-1",
+          githubRepositoryId: "123456",
+          githubInstallationId: "789",
+          fullName: "owner/repo",
+          owner: "owner",
+          selected: true,
+          installationStatus: "active",
+        },
+        providerInstanceId: "codex-rotating:123456",
+        githubRunId: "101",
+        githubRunAttempt: "1",
+        verifiedWorkflowAttestation: newerDefaultBranchAttestation,
+        newWorkAdmissionBarrier: { assertAdmitted: () => undefined },
+      }),
+    ).resolves.toMatchObject({ status: "preleased" });
+    expect(providerUpdate).toHaveBeenCalledTimes(2);
+    expect(leaseUpsert).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["changed blob", { workflowSourceBlobSha: "e".repeat(40) }],
+    ["changed source bytes", { workflowSourceSha256: "e".repeat(64) }],
+    ["changed semantics", { workflowSemanticSha256: "e".repeat(64) }],
+    [
+      "non-default trust",
+      {
+        sourceTrust: WorkflowSourceTrust.TrustedCanonicalBranchMirrorRevision,
+      },
+    ],
+  ])("rejects a newer commit with %s", async (_label, changed) => {
+    const adversarialAttestation =
+      createVersionedSecretWorkflowSourceAttestation({
+        ...verifiedWorkflowAttestation,
+        workflowSourceCommitSha: "e".repeat(40),
+        ...changed,
+      });
+    const providerUpdate = vi.fn();
+    const leaseUpsert = vi.fn();
+    const tx = {
+      $queryRaw: vi.fn(async (query: unknown) =>
+        isNamespaceLock(query)
+          ? [lockedWorkflowAdmission(persistedWorkflowAttestation)]
+          : [],
+      ),
+      $executeRawUnsafe: vi.fn(),
+      codexOAuthProviderInstance: {
+        findUnique: vi.fn(async () => ({
+          id: "provider-row-1",
+          workspaceId: "workspace-1",
+          repositoryId: "repository-1",
+          providerInstanceId: "codex-rotating:123456",
+          authMode: "codex_subscription_oauth_rotating",
+          secretName: "REVIEWROUTER_CODEX_AUTH_JSON",
+          activeLeaseId: null,
+          activeLeaseExpiresAt: null,
+          mutationEpoch: 3n,
+          mutationOwner: null,
+          mutationOwnerId: null,
+          activeSecretNamespaceId: activeSecretNamespace.namespaceId,
+          activeSecretNamespaceEpoch: 1n,
+          activeSecretNamespaceName: activeSecretNamespace.name,
+          activeSecretNamespace: {
+            ...persistedWorkflowAttestation,
+            status: "active",
+            databaseRecoveryWitness: databaseRecoveryWitnessFingerprint,
+          },
+          state: "active",
+          latestGeneration: 1,
+          latestGenerationHash: "generation-hash",
+          generationHashSalt: "generation-salt",
+          accountFingerprintSalt: "account-salt",
+        })),
+        update: providerUpdate,
+      },
+      codexOAuthWritebackIntent: { findFirst: vi.fn(async () => null) },
+      codexOAuthSetupManifest: { findFirst: vi.fn(async () => null) },
+      codexOAuthLease: { upsert: leaseUpsert },
+    };
+    const repository = new PrismaCodexRotatingOAuthRepository(
+      { $transaction: vi.fn(async (callback) => callback(tx)) } as never,
+      {
+        actionOwnerRepo: "reviewrouter/action",
+        databaseRecoveryWitness,
+        transactionClock: fixedClock("2026-08-09T00:00:00Z"),
+      },
+    );
+
+    await expect(
+      repository.acquirePrelease({
+        repository: {
+          workspaceId: "workspace-1",
+          repositoryId: "repository-1",
+          githubRepositoryId: "123456",
+          githubInstallationId: "789",
+          fullName: "owner/repo",
+          owner: "owner",
+          selected: true,
+          installationStatus: "active",
+        },
+        providerInstanceId: "codex-rotating:123456",
+        githubRunId: "102",
+        githubRunAttempt: "1",
+        verifiedWorkflowAttestation: adversarialAttestation,
+        newWorkAdmissionBarrier: { assertAdmitted: () => undefined },
+      }),
+    ).rejects.toThrow("codex_rotating_workflow_attestation_stale");
+    expect(providerUpdate).not.toHaveBeenCalled();
+    expect(leaseUpsert).not.toHaveBeenCalled();
+  });
 
   it("rejects a restored active namespace under a different witness before provider or lease writes", async () => {
     const providerUpdate = vi.fn();

@@ -268,10 +268,28 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE caller_role TEXT := session_user;
+DECLARE canonical_table_owner TEXT;
+DECLARE canonical_function_owner TEXT;
 DECLARE transition_key TEXT;
 DECLARE affected_count INTEGER;
 BEGIN
-  IF caller_role <> 'reviewrouter_web' THEN
+  SELECT table_owner.rolname INTO STRICT canonical_table_owner
+  FROM pg_catalog.pg_class relation
+  JOIN pg_catalog.pg_roles table_owner ON table_owner.oid = relation.relowner
+  WHERE relation.oid = 'public."CodexOAuthSecretNamespace"'::regclass;
+  SELECT function_owner.rolname INTO STRICT canonical_function_owner
+  FROM pg_catalog.pg_proc routine
+  JOIN pg_catalog.pg_roles function_owner ON function_owner.oid = routine.proowner
+  WHERE routine.oid =
+    'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text)'::regprocedure;
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles
+             WHERE rolname = 'reviewrouter_web') THEN
+    IF caller_role <> 'reviewrouter_web' THEN
+      RAISE EXCEPTION 'codex_oauth_active_namespace_reattestation_role_forbidden'
+        USING ERRCODE = '42501';
+    END IF;
+  ELSIF canonical_function_owner <> canonical_table_owner
+        OR caller_role <> canonical_function_owner THEN
     RAISE EXCEPTION 'codex_oauth_active_namespace_reattestation_role_forbidden'
       USING ERRCODE = '42501';
   END IF;
