@@ -52,7 +52,7 @@ export function prismaLockTimeoutFailureMarkers({
     lockTimeout: normalized.includes("lock timeout"),
     abortedTransaction: normalized.includes("current transaction is aborted"),
     exactAbortedTransactionEnvelope:
-      /(?:^|\r?\n)ERROR:[\t ]*current transaction is aborted(?=\r?\n|$)/iu.test(
+      /(?:^|\r?\n)ERROR:[\t ]*current transaction is aborted(?:,[\t ]*commands ignored until end of transaction block)?(?=\r?\n|$)/iu.test(
         normalizedOutput,
       ),
     prismaMigrationFailure: normalized.includes("p3018"),
