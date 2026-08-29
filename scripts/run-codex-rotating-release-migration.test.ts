@@ -279,7 +279,13 @@ describe("application database release-authority isolation", () => {
     const candidateDigest =
       "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68";
     let captureArgs: readonly string[] | undefined;
-    const run = (step: string, _command: string, args: readonly string[]) => {
+    let captureInput: string | undefined;
+    const run = (
+      step: string,
+      _command: string,
+      args: readonly string[],
+      options?: { input?: string },
+    ) => {
       if (step === "verify_release_authority")
         return JSON.stringify({
           currentUser: "reviewrouter_release_migration",
@@ -300,6 +306,7 @@ describe("application database release-authority isolation", () => {
         });
       if (step === "verify_catalog_capture_migration_state") {
         captureArgs = args;
+        captureInput = options?.input;
         return JSON.stringify({
           manifestIdentity:
             canonicalReleaseMigrationArtifact.postManifestIdentity,
@@ -338,9 +345,9 @@ describe("application database release-authority isolation", () => {
       canonicalReleaseMigrationArtifact.postCatalogDigest,
     );
     expect(captureArgs).toContain("--quiet");
-    const captureCommand = captureArgs?.at(-1);
-    expect(captureCommand).toMatch(/^COPY \(SELECT jsonb_build_object\(/u);
-    expect(captureCommand).toMatch(/\) TO STDOUT$/u);
+    expect(captureArgs).not.toContain("--command");
+    expect(captureInput).toMatch(/^COPY \(SELECT jsonb_build_object\(/u);
+    expect(captureInput).toMatch(/\) TO STDOUT$/u);
     expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
       "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0",
     );
