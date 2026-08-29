@@ -320,11 +320,28 @@ BEGIN
   END IF;
 
   PERFORM 1
-  FROM public."CodexOAuthSecretNamespace" namespace
-  JOIN public."CodexOAuthSetupDispatchAttempt" attempt
-    ON attempt."namespaceId" = namespace."id"
+  FROM public."CodexOAuthSetupDispatchAttempt" attempt
   JOIN public."CodexOAuthSetupPayloadClaim" claim
     ON claim."id" = attempt."claimId"
+  WHERE attempt."id" = target_attempt_id
+    AND attempt."status" = 'confirmed'
+    AND claim."id" = target_claim_id
+    AND claim."status" = 'active'
+    AND claim."confirmedAttemptId" = target_attempt_id
+    AND claim."providerInstanceRowId" = target_provider_row_id
+    AND claim."githubRepositoryId" = target_repository_id
+    AND (SELECT count(*)
+         FROM public."CodexOAuthSetupPayloadClaim" active_claim
+         WHERE active_claim."providerInstanceRowId" = target_provider_row_id
+           AND active_claim."status" = 'active') = 1
+  FOR UPDATE OF attempt, claim;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'codex_oauth_active_namespace_reattestation_stale'
+      USING ERRCODE = '40001';
+  END IF;
+
+  PERFORM 1
+  FROM public."CodexOAuthSecretNamespace" namespace
   WHERE namespace."id" = target_namespace_id
     AND namespace."providerInstanceRowId" = target_provider_row_id
     AND namespace."namespaceEpoch" = target_namespace_epoch
@@ -340,14 +357,11 @@ BEGIN
     AND namespace."workflowSourceBlobSha" = old_blob_sha
     AND namespace."workflowSourceSha256" = old_source_sha256
     AND namespace."workflowSemanticSha256" = old_semantic_sha256
-    AND attempt."id" = target_attempt_id
-    AND attempt."status" = 'confirmed'
-    AND claim."id" = target_claim_id
-    AND claim."status" = 'active'
-    AND claim."confirmedAttemptId" = target_attempt_id
-    AND claim."providerInstanceRowId" = target_provider_row_id
-    AND claim."githubRepositoryId" = target_repository_id
-  FOR UPDATE OF namespace, attempt, claim;
+    AND (SELECT count(*)
+         FROM public."CodexOAuthSecretNamespace" active_namespace
+         WHERE active_namespace."providerInstanceRowId" = target_provider_row_id
+           AND active_namespace."status" = 'active') = 1
+  FOR UPDATE OF namespace;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'codex_oauth_active_namespace_reattestation_stale'
       USING ERRCODE = '40001';
@@ -475,14 +489,12 @@ BEGIN
       runtime_role
     );
   END LOOP;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_web') THEN
-    RAISE EXCEPTION 'codex_oauth_reattestation_web_role_missing'
-      USING ERRCODE = '42501';
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_web') THEN
+    GRANT EXECUTE ON FUNCTION "codex_oauth_reattest_active_namespace_v4_to_v5"(
+      TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER,
+      TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT
+    ) TO reviewrouter_web;
   END IF;
-  GRANT EXECUTE ON FUNCTION "codex_oauth_reattest_active_namespace_v4_to_v5"(
-    TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER,
-    TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT
-  ) TO reviewrouter_web;
 END
 $ownership$;
 

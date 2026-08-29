@@ -1247,7 +1247,7 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
   ),
   functionBody(
     "codex_oauth_reattest_active_namespace_v4_to_v5",
-    "4707d4714fe10712b541c93acad8bd0bd3e33dabad8816a78261949f989548bf",
+    "5b601f009dc9ceb50eec0af8ec74eecd5ae9bfe779dbad5f65c216d282c15701",
   ),
   functionBody(
     "codex_oauth_repair_quarantined_child",

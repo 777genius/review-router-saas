@@ -14,7 +14,7 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
 
   it("is an atomic forward migration with a pinned digest", () => {
     expect(createHash("sha256").update(sql).digest("hex")).toBe(
-      "9ba8a0e4cfde1c07076af8a2f0ea89bf9f34bc1e30901cc52843714ea02ea65c",
+      "88816a26cf0d6f10aaf3457c251e7546f1b09f85cd3681ad337f696dd4999346",
     );
     expect(sql).toMatch(/^BEGIN;[\s\S]+COMMIT;\s*$/u);
   });
@@ -24,7 +24,8 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
       'CREATE FUNCTION "codex_oauth_reattest_active_namespace_v4_to_v5"',
     );
     expect(sql).toContain("FOR UPDATE OF provider");
-    expect(sql).toContain("FOR UPDATE OF namespace, attempt, claim");
+    expect(sql).toContain("FOR UPDATE OF attempt, claim");
+    expect(sql).toContain("FOR UPDATE OF namespace");
     expect(sql).toContain("expected_schema_version <> 4");
     expect(sql).toContain("target_schema_version <> 5");
     expect(sql).toContain(
@@ -38,6 +39,12 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
       'provider."activeSecretNamespaceId" = target_namespace_id',
     );
     expect(sql).toContain(
+      'active_claim."providerInstanceRowId" = target_provider_row_id',
+    );
+    expect(sql).toContain(
+      'active_namespace."providerInstanceRowId" = target_provider_row_id',
+    );
+    expect(sql).toContain(
       'provider."latestGenerationHash" = target_generation_hash',
     );
     expect(sql).toContain(
@@ -48,6 +55,25 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
     );
     expect(sql).toContain("active_namespace_v4_v5_reattestation");
     expect(sql).toContain('"codex_oauth_consume_database_authority"');
+  });
+
+  it("permits an exact runtime-promoted namespace without assigning it to the setup attempt", () => {
+    expect(sql).not.toContain(
+      'JOIN public."CodexOAuthSetupDispatchAttempt" attempt\n    ON attempt."namespaceId" = namespace."id"',
+    );
+    expect(sql).toContain('WHERE attempt."id" = target_attempt_id');
+    expect(sql).toContain('WHERE namespace."id" = target_namespace_id');
+    expect(sql).toContain(
+      'provider."activeSecretNamespaceId" = target_namespace_id',
+    );
+  });
+
+  it("keeps the production web-only ACL while accepting a self-hosted topology without that role", () => {
+    expect(sql).toContain(
+      "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_web') THEN",
+    );
+    expect(sql).not.toContain("codex_oauth_reattestation_web_role_missing");
+    expect(sql).toContain("TO reviewrouter_web");
   });
 
   it("admits only V4 and V5 for active namespace promotion or re-attestation", () => {

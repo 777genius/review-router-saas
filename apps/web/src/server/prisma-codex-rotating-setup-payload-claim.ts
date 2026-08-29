@@ -19,6 +19,8 @@ import {
   type CodexRotatingSetupAttemptStatus,
   type CodexRotatingSetupClaimStatus,
   type CodexRotatingSetupPayloadClaimPort,
+  type CodexRotatingWorkflowReattestation,
+  type CodexRotatingWorkflowReattestationPort,
   type CodexRotatingSetupStatus,
 } from "@reviewrouter/features-provider-setup";
 import {
@@ -174,7 +176,11 @@ type AttemptRow = {
   dispatchExpiresAt: Date;
 };
 
-export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupPayloadClaimPort {
+export class PrismaCodexRotatingSetupPayloadClaim
+  implements
+    CodexRotatingSetupPayloadClaimPort,
+    CodexRotatingWorkflowReattestationPort
+{
   constructor(
     private readonly prisma: PrismaClient,
     private readonly databaseRecoveryWitness?: string,
@@ -752,18 +758,7 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
    * used when a canonical workflow schema is upgraded without rotating the
    * provider secret generation.
    */
-  async replaceActiveWorkflowSource(
-    input: Omit<CodexRotatingActivation, "workflowPath" | "sourceTrust"> & {
-      readonly workflowPath: string;
-      readonly sourceTrust: string;
-      readonly expectedCurrentWorkflowSchemaVersion: 4;
-      readonly workflowSchemaVersion: 5;
-      readonly expectedCurrentWorkflowSourceCommitSha: string;
-      readonly expectedCurrentWorkflowSourceBlobSha: string;
-      readonly expectedCurrentWorkflowSourceSha256: string;
-      readonly expectedCurrentWorkflowSemanticSha256: string;
-    },
-  ) {
+  async replaceActiveWorkflowSource(input: CodexRotatingWorkflowReattestation) {
     try {
       return await this.prisma.$transaction(
         async (tx) => {
@@ -784,9 +779,6 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
           if (
             claim.status !== "active" ||
             attempt.status !== "confirmed" ||
-            attempt.namespaceId !== input.namespaceId ||
-            attempt.namespaceEpoch.toString() !== input.namespaceEpoch ||
-            attempt.secretName !== input.secretName ||
             claim.githubRepositoryId !== input.repositoryId
           ) {
             throw new Error("codex_rotating_setup_activation_mismatch");
@@ -795,7 +787,7 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
             SELECT "codex_oauth_reattest_active_namespace_v4_to_v5"(
               ${claim.providerInstanceRowId}, ${claim.id}, ${attempt.attemptId},
               ${input.namespaceId}, ${BigInt(input.namespaceEpoch)}, ${input.secretName},
-              ${input.repositoryId}, ${claim.generationHash}, ${input.workflowPath},
+              ${input.repositoryId}, ${input.expectedGenerationHash}, ${input.workflowPath},
               ${input.sourceTrust}, ${input.expectedCurrentWorkflowSchemaVersion},
               ${input.workflowSchemaVersion},
               ${input.expectedCurrentWorkflowSourceCommitSha},

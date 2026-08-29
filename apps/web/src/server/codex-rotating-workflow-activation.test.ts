@@ -169,6 +169,100 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
     expect(mocks.replaceActiveWorkflowSource).not.toHaveBeenCalled();
   });
 
+  it("is idempotent after an unrelated commit when trusted workflow bytes are unchanged", async () => {
+    const unrelatedHead = "d".repeat(40);
+    mocks.inspectNamespace.mockResolvedValueOnce({
+      source: "active",
+      namespace: {
+        namespaceId: "namespace_2",
+        epoch: 2n,
+        name: "REVIEWROUTER_CODEX_AUTH_JSON_TEST_E2",
+      },
+    });
+    mocks.createAttestation.mockReturnValueOnce({
+      repositoryId: "1228051727",
+      workflowPath: ".github/workflows/reviewrouter-codex.yml",
+      workflowSourceCommitSha: unrelatedHead,
+      workflowSourceBlobSha: blobSha,
+      workflowSourceSha256: "c".repeat(64),
+      workflowSemanticSha256: "b".repeat(64),
+      workflowSchemaVersion: 5,
+      sourceTrust: "trusted_default_branch_revision",
+    });
+    const { input, request } = fixture();
+    request
+      .mockReset()
+      .mockResolvedValueOnce(repositoryResponse())
+      .mockResolvedValueOnce(refResponse(unrelatedHead))
+      .mockResolvedValueOnce(contentResponse())
+      .mockResolvedValueOnce(refResponse(unrelatedHead));
+
+    await expect(
+      activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
+    ).resolves.toEqual({
+      status: "already_active",
+      namespaceEpoch: "2",
+      workflowSourceCommitSha: unrelatedHead,
+    });
+    expect(mocks.replaceActiveWorkflowSource).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the active repository binding changed", async () => {
+    mocks.inspectNamespace.mockResolvedValueOnce({
+      source: "active",
+      namespace: {
+        namespaceId: "namespace_2",
+        epoch: 2n,
+        name: "REVIEWROUTER_CODEX_AUTH_JSON_TEST_E2",
+      },
+    });
+    const { input, findAttestation } = fixture();
+    findAttestation.mockResolvedValueOnce({
+      workflowPath: ".github/workflows/reviewrouter-codex.yml",
+      workflowSourceCommitSha: firstHead,
+      workflowSourceBlobSha: blobSha,
+      workflowSourceSha256: "c".repeat(64),
+      workflowSemanticSha256: "b".repeat(64),
+      workflowSourceTrust: "trusted_default_branch_revision",
+      workflowSchemaVersion: 5,
+      attestedRepositoryId: "999999999",
+    });
+
+    await expect(
+      activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
+    ).rejects.toThrow("codex_rotating_workflow_source_attestation_missing");
+    expect(mocks.replaceActiveWorkflowSource).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when trusted V5 workflow bytes changed", async () => {
+    mocks.inspectNamespace.mockResolvedValueOnce({
+      source: "active",
+      namespace: {
+        namespaceId: "namespace_2",
+        epoch: 2n,
+        name: "REVIEWROUTER_CODEX_AUTH_JSON_TEST_E2",
+      },
+    });
+    mocks.createAttestation.mockReturnValueOnce({
+      repositoryId: "1228051727",
+      workflowPath: ".github/workflows/reviewrouter-codex.yml",
+      workflowSourceCommitSha: firstHead,
+      workflowSourceBlobSha: "e".repeat(40),
+      workflowSourceSha256: "f".repeat(64),
+      workflowSemanticSha256: "1".repeat(64),
+      workflowSchemaVersion: 5,
+      sourceTrust: "trusted_default_branch_revision",
+    });
+    const { input } = fixture();
+
+    await expect(
+      activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
+    ).rejects.toThrow(
+      "codex_rotating_workflow_reattestation_transition_invalid",
+    );
+    expect(mocks.replaceActiveWorkflowSource).not.toHaveBeenCalled();
+  });
+
   it("re-attests an active V4 namespace after its workflow is upgraded to V5", async () => {
     const previousSource = "name: canonical v4 workflow\n";
     const previousBlobSha = gitBlobSha(previousSource);
@@ -235,6 +329,7 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
         attemptId: "attempt_1",
         namespaceId: "namespace_2",
         workflowSourceCommitSha: firstHead,
+        expectedGenerationHash: "9".repeat(64),
         expectedCurrentWorkflowSchemaVersion: 4,
         workflowSchemaVersion: 5,
       }),
@@ -307,7 +402,10 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
 });
 
 function fixture() {
-  const findUnique = vi.fn().mockResolvedValue({ id: "provider_1" });
+  const findUnique = vi.fn().mockResolvedValue({
+    id: "provider_1",
+    latestGenerationHash: "9".repeat(64),
+  });
   const findAttestation = vi.fn().mockResolvedValue({
     workflowPath: ".github/workflows/reviewrouter-codex.yml",
     workflowSourceCommitSha: firstHead,

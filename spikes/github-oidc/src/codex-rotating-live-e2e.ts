@@ -759,8 +759,9 @@ async function activateVersionedSetupNamespace(input: {
     },
   );
   const { source, blobSha } = readGitHubWorkflowBlob(contentResponse.data);
+  const metadata = readCanonicalCodexRotatingT0WorkflowSourceMetadata(source);
   assertTrustedCanonicalVersionedWorkflow({
-    metadata: readCanonicalCodexRotatingT0WorkflowSourceMetadata(source),
+    metadata,
     observedRepositoryId: observedRepository.id,
     observedRepositoryFullName: observedRepository.fullName,
     expectedRepositoryId: input.githubRepositoryId,
@@ -815,6 +816,7 @@ async function activateVersionedSetupNamespace(input: {
     workflowSourceSha256: attestation.workflowSourceSha256,
     workflowSemanticSha256: attestation.workflowSemanticSha256,
     sourceTrust: "trusted_default_branch_revision",
+    workflowSchemaVersion: attestation.workflowSchemaVersion,
   });
 }
 

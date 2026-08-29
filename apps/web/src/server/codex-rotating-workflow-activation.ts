@@ -57,7 +57,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
           authMode: codexRotatingAuthMode,
         },
       },
-      select: { id: true },
+      select: { id: true, latestGenerationHash: true },
     });
   if (!rotatingProvider) return { status: "not_configured" };
 
@@ -168,9 +168,10 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     ) {
       throw new Error("codex_rotating_workflow_source_attestation_missing");
     }
+    if (!rotatingProvider.latestGenerationHash) {
+      throw new Error("codex_rotating_workflow_generation_missing");
+    }
     if (
-      currentAttestation.workflowSourceCommitSha ===
-        attestation.workflowSourceCommitSha &&
       currentAttestation.workflowSourceBlobSha ===
         attestation.workflowSourceBlobSha &&
       currentAttestation.workflowSourceSha256 ===
@@ -255,6 +256,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
       namespaceEpoch: namespace.epoch.toString(),
       secretName: namespace.name,
       repositoryId: attestation.repositoryId,
+      expectedGenerationHash: rotatingProvider.latestGenerationHash,
       workflowPath: attestation.workflowPath,
       workflowSourceCommitSha: attestation.workflowSourceCommitSha,
       workflowSourceBlobSha: attestation.workflowSourceBlobSha,

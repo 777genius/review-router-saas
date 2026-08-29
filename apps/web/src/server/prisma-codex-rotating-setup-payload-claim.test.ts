@@ -926,11 +926,12 @@ describe("Prisma rotating setup writer proof", () => {
     expect(activationSql[1]).toContain("'retired_active'");
   });
 
-  it("atomically replaces source attestation only for the exact active namespace", async () => {
+  it("re-attests a runtime-promoted namespace through its active setup claim", async () => {
     const activeClaim = { ...claim, status: "active" };
+    const runtimeGenerationHash = "9".repeat(64);
     const attempt = {
       attemptId: "attempt:writer-proof",
-      namespaceId: "namespace:writer-proof",
+      namespaceId: "namespace:original-setup",
       namespaceEpoch: 1n,
       secretName:
         "REVIEWROUTER_CODEX_AUTH_JSON_R123456_P0000000000000000_E1_00000000000000000000000000000000",
@@ -960,10 +961,12 @@ describe("Prisma rotating setup writer proof", () => {
       ledger.replaceActiveWorkflowSource({
         claimId: activeClaim.id,
         attemptId: attempt.attemptId,
-        namespaceId: attempt.namespaceId,
-        namespaceEpoch: attempt.namespaceEpoch.toString(),
-        secretName: attempt.secretName,
+        namespaceId: "namespace:runtime-promoted",
+        namespaceEpoch: "2",
+        secretName:
+          "REVIEWROUTER_CODEX_AUTH_JSON_R123456_P0000000000000000_E2_00000000000000000000000000000000",
         repositoryId: activeClaim.githubRepositoryId,
+        expectedGenerationHash: runtimeGenerationHash,
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
         workflowSourceCommitSha: "a".repeat(40),
         workflowSourceBlobSha: "b".repeat(40),
@@ -983,6 +986,8 @@ describe("Prisma rotating setup writer proof", () => {
       tx.$queryRaw.mock.calls.at(-1)![0] as readonly string[],
     ).join("?");
     expect(sql).toContain("codex_oauth_reattest_active_namespace_v4_to_v5");
+    expect(tx.$queryRaw.mock.calls.at(-1)).toContain(runtimeGenerationHash);
+    expect(runtimeGenerationHash).not.toBe(activeClaim.generationHash);
   });
 });
 

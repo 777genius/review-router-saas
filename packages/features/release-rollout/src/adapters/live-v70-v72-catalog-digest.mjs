@@ -167,7 +167,7 @@ WITH selected_relations AS (
           'checksum','21de6c901dee41a52cdfa0bea8e3559d1d0ea847003bd136d729c0e4cb4cba8d',
           'finished',true,'rolledBack',false),
         jsonb_build_object('name','000079_codex_oauth_v4_v5_workflow_reattestation',
-          'checksum','9ba8a0e4cfde1c07076af8a2f0ea89bf9f34bc1e30901cc52843714ea02ea65c',
+          'checksum','88816a26cf0d6f10aaf3457c251e7546f1b09f85cd3681ad337f696dd4999346',
           'finished',true,'rolledBack',false))
       ELSE '[]'::jsonb END,
     'unresolvedHistory',false,
