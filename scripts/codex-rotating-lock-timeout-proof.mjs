@@ -10,12 +10,18 @@ export function isExpectedPrismaLockTimeoutFailure({
     historyEvidence,
     directLockTimeoutProof,
   });
-  return (
+  const strongPrismaEnvelope =
     markers.prismaMigrationFailure &&
     markers.migrationNamed &&
+    (markers.lockTimeout || markers.abortedTransaction);
+  const migration60AbortedTransactionEnvelope =
+    migrationName === "000060_codex_oauth_setup_serialization" &&
+    markers.migrationNamed &&
+    markers.abortedTransaction;
+  return (
     markers.exactCurrentFailure &&
     markers.directLockTimeoutProof &&
-    (markers.lockTimeout || markers.abortedTransaction)
+    (strongPrismaEnvelope || migration60AbortedTransactionEnvelope)
   );
 }
 

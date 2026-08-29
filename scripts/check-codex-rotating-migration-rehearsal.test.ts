@@ -659,12 +659,14 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
-  it("accepts Prisma's aborted-transaction wrapper only with exact 000060 history evidence", () => {
-    const output = `P3018\nMigration name: 000060_codex_oauth_setup_serialization\nERROR: current transaction is aborted`;
+  it("accepts the generic 000060 aborted-transaction wrapper with exact direct and history proof", () => {
+    const output = `Migration name: 000060_codex_oauth_setup_serialization\nERROR: current transaction is aborted`;
     const exactEvidence = {
       total: 1,
       currentFailed: 1,
       zeroStep: 1,
+      lockTimeoutLog: 0,
+      abortedTransactionLog: 0,
       exactFailureLog: 0,
       emptyLog: 1,
     };
@@ -679,58 +681,109 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         },
       }),
     ).toBe(true);
+  });
+
+  it("keeps the stronger P3018 and migration-name lock-timeout path", () => {
     expect(
       isExpectedPrismaLockTimeoutFailure({
-        output,
+        output: `P3018\nMigration name: 000061_codex_oauth_provider_mutation_fence\nERROR: lock timeout`,
         migrationName: "000061_codex_oauth_provider_mutation_fence",
-        historyEvidence: exactEvidence,
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
         directLockTimeoutProof: {
-          migrationName: "000060_codex_oauth_setup_serialization",
-          observed: true,
-        },
-      }),
-    ).toBe(false);
-    expect(
-      isExpectedPrismaLockTimeoutFailure({
-        output,
-        migrationName: "000060_codex_oauth_setup_serialization",
-        historyEvidence: { ...exactEvidence, zeroStep: 0 },
-        directLockTimeoutProof: {
-          migrationName: "000060_codex_oauth_setup_serialization",
-          observed: true,
-        },
-      }),
-    ).toBe(false);
-    expect(
-      isExpectedPrismaLockTimeoutFailure({
-        output: "000060_codex_oauth_setup_serialization: lock timeout",
-        migrationName: "000060_codex_oauth_setup_serialization",
-        historyEvidence: exactEvidence,
-        directLockTimeoutProof: {
-          migrationName: "000060_codex_oauth_setup_serialization",
-          observed: true,
-        },
-      }),
-    ).toBe(false);
-    expect(
-      isExpectedPrismaLockTimeoutFailure({
-        output,
-        migrationName: "000060_codex_oauth_setup_serialization",
-        historyEvidence: { ...exactEvidence, emptyLog: 0 },
-        directLockTimeoutProof: {
-          migrationName: "000060_codex_oauth_setup_serialization",
+          migrationName: "000061_codex_oauth_provider_mutation_fence",
           observed: true,
         },
       }),
     ).toBe(true);
+  });
+
+  it("fails the generic 000060 wrapper closed without each required proof", () => {
+    const migrationName = "000060_codex_oauth_setup_serialization";
+    const output = `Migration name: ${migrationName}\nERROR: current transaction is aborted`;
+    const exactEvidence = { total: 1, currentFailed: 1, zeroStep: 1 };
+    const directLockTimeoutProof = { migrationName, observed: true };
+
     expect(
       isExpectedPrismaLockTimeoutFailure({
         output,
-        migrationName: "000060_codex_oauth_setup_serialization",
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof: { ...directLockTimeoutProof, observed: false },
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
         historyEvidence: exactEvidence,
         directLockTimeoutProof: {
+          migrationName: "000061_codex_oauth_provider_mutation_fence",
+          observed: true,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
+        historyEvidence: { ...exactEvidence, total: 0, currentFailed: 0 },
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
+        historyEvidence: { ...exactEvidence, total: 2 },
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
+        historyEvidence: { ...exactEvidence, zeroStep: 0 },
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `Migration name: ${migrationName}\nERROR: permission denied`,
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "ERROR: current transaction is aborted",
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `Migration name: 000061_codex_oauth_provider_mutation_fence\nERROR: current transaction is aborted`,
+        migrationName: "000061_codex_oauth_provider_mutation_fence",
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof: {
+          migrationName: "000061_codex_oauth_provider_mutation_fence",
+          observed: true,
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not treat a bare 000060 lock-timeout string as a Prisma wrapper", () => {
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "000060_codex_oauth_setup_serialization: lock timeout",
+        migrationName: "000060_codex_oauth_setup_serialization",
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: {
           migrationName: "000060_codex_oauth_setup_serialization",
-          observed: false,
+          observed: true,
         },
       }),
     ).toBe(false);
