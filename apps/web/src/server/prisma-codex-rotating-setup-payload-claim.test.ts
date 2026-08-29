@@ -1010,68 +1010,72 @@ describe("Prisma rotating setup writer proof", () => {
     expect(runtimeGenerationHash).not.toBe(activeClaim.generationHash);
   });
 
-  it("fails the V4-to-V5 CAS closed when a runtime lease wins the provider-row race", async () => {
-    const activeClaim = { ...claim, status: "active" };
-    const tx = {
-      $executeRawUnsafe: vi.fn().mockResolvedValue(0),
-      $executeRaw: vi.fn().mockResolvedValue(1),
-      $queryRaw: vi
-        .fn()
-        .mockResolvedValueOnce([activeClaim])
-        .mockResolvedValueOnce([
-          { writer: true, databaseIncarnation: claim.databaseIncarnation },
-        ])
-        .mockResolvedValueOnce([{ id: claim.providerInstanceRowId }])
-        .mockResolvedValueOnce([
-          {
-            mutationOwner: "runtime",
-            mutationOwnerId: "lease:won-race",
-            activeLeaseId: "lease:won-race",
-          },
-        ]),
-    };
-    const prisma = { $transaction: vi.fn((callback) => callback(tx)) };
-    const ledger = new PrismaCodexRotatingSetupPayloadClaim(
-      prisma as never,
-      recoveryWitness,
-    );
-    const namespace = allocateVersionedProviderSecretNamespace({
-      scope: {
-        repositoryId: activeClaim.githubRepositoryId,
-        providerInstanceId: "codex-rotating:123456",
-      },
-      epoch: 2n,
-      randomBytes: () => new Uint8Array(16).fill(0x22),
-    });
-    const workflow = (schema: 4 | 5, marker: string) =>
-      createVersionedSecretWorkflowSourceAttestation({
-        repositoryId: activeClaim.githubRepositoryId,
-        workflowPath: ".github/workflows/reviewrouter-codex.yml",
-        workflowSourceCommitSha: marker.repeat(40),
-        workflowSourceBlobSha: marker.repeat(40),
-        workflowSourceSha256: marker.repeat(64),
-        workflowSemanticSha256: marker.repeat(64),
-        workflowSchemaVersion: schema,
-        sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
-        secretNamespace: namespace,
+  it.each(["setup", "recovery", "runtime"] as const)(
+    "fails the V4-to-V5 CAS closed when %s owns the provider-row mutation fence",
+    async (mutationOwner) => {
+      const activeClaim = { ...claim, status: "active" };
+      const tx = {
+        $executeRawUnsafe: vi.fn().mockResolvedValue(0),
+        $executeRaw: vi.fn().mockResolvedValue(1),
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValueOnce([activeClaim])
+          .mockResolvedValueOnce([
+            { writer: true, databaseIncarnation: claim.databaseIncarnation },
+          ])
+          .mockResolvedValueOnce([{ id: claim.providerInstanceRowId }])
+          .mockResolvedValueOnce([
+            {
+              mutationOwner,
+              mutationOwnerId: `${mutationOwner}:won-race`,
+              activeLeaseId:
+                mutationOwner === "runtime" ? "lease:won-race" : null,
+            },
+          ]),
+      };
+      const prisma = { $transaction: vi.fn((callback) => callback(tx)) };
+      const ledger = new PrismaCodexRotatingSetupPayloadClaim(
+        prisma as never,
+        recoveryWitness,
+      );
+      const namespace = allocateVersionedProviderSecretNamespace({
+        scope: {
+          repositoryId: activeClaim.githubRepositoryId,
+          providerInstanceId: "codex-rotating:123456",
+        },
+        epoch: 2n,
+        randomBytes: () => new Uint8Array(16).fill(0x22),
       });
-
-    await expect(
-      ledger.replaceActiveWorkflowSource({
-        target: {
-          claimId: activeClaim.id,
-          attemptId: "attempt:writer-proof",
-          expectedGenerationHash: "9".repeat(64),
+      const workflow = (schema: 4 | 5, marker: string) =>
+        createVersionedSecretWorkflowSourceAttestation({
           repositoryId: activeClaim.githubRepositoryId,
           workflowPath: ".github/workflows/reviewrouter-codex.yml",
-          namespace,
-        },
-        expectedCurrent: workflow(4, "4"),
-        replacement: workflow(5, "5"),
-      }),
-    ).rejects.toThrow("codex_rotating_workflow_reattestation_stale");
-    expect(tx.$executeRaw).not.toHaveBeenCalled();
-  });
+          workflowSourceCommitSha: marker.repeat(40),
+          workflowSourceBlobSha: marker.repeat(40),
+          workflowSourceSha256: marker.repeat(64),
+          workflowSemanticSha256: marker.repeat(64),
+          workflowSchemaVersion: schema,
+          sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+          secretNamespace: namespace,
+        });
+
+      await expect(
+        ledger.replaceActiveWorkflowSource({
+          target: {
+            claimId: activeClaim.id,
+            attemptId: "attempt:writer-proof",
+            expectedGenerationHash: "9".repeat(64),
+            repositoryId: activeClaim.githubRepositoryId,
+            workflowPath: ".github/workflows/reviewrouter-codex.yml",
+            namespace,
+          },
+          expectedCurrent: workflow(4, "4"),
+          replacement: workflow(5, "5"),
+        }),
+      ).rejects.toThrow("codex_rotating_workflow_reattestation_stale");
+      expect(tx.$executeRaw).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("workflow re-attestation database errors", () => {

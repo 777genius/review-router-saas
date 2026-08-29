@@ -638,6 +638,10 @@ describe("production-writer rollout observation capture", () => {
           id: "000079_codex_oauth_v4_v5_workflow_reattestation",
           sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
         },
+        {
+          id: "000080_codex_oauth_reattestation_mutation_owner_fence",
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        },
       ],
     });
     expect(query).toHaveBeenCalledTimes(4);

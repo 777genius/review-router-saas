@@ -64,6 +64,7 @@ const migration76Name =
 const migration77Name = "000077_hosted_codex_r57_security_race_remediation";
 const migration78Name = "000078_review_investigation_maintenance_checkpoint";
 const migration79Name = "000079_codex_oauth_v4_v5_workflow_reattestation";
+const migration80Name = "000080_codex_oauth_reattestation_mutation_owner_fence";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -98,6 +99,7 @@ assert(
       migration77Name,
       migration78Name,
       migration79Name,
+      migration80Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -215,7 +217,7 @@ try {
   const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000079 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000080 rehearsal passed.\n",
   );
 } finally {
   const databaseDrop = psql(
@@ -1725,6 +1727,32 @@ async function proveActiveNamespaceV4V5Reattestation(
       rejectedNull,
       "codex_oauth_active_namespace_reattestation_invalid",
       "NULL workflow schema version did not fail closed",
+    );
+  }
+
+  for (const mutationOwner of ["setup", "recovery"]) {
+    const mutationOwnerId =
+      mutationOwner === "setup"
+        ? target.claimId
+        : "setup-recovery:reattestation-proof";
+    const ownerHeld = psql(
+      clients.web,
+      [
+        "-c",
+        `BEGIN;
+         UPDATE "CodexOAuthProviderInstance"
+         SET "mutationOwner"=${quoteLiteral(mutationOwner)},
+             "mutationOwnerId"=${quoteLiteral(mutationOwnerId)}
+         WHERE "id"=${quoteLiteral(target.providerId)};
+         SELECT ${call(target, winner)};
+         ROLLBACK;`,
+      ],
+      false,
+    );
+    assertPsqlFailedWithExactMessage(
+      ownerHeld,
+      "codex_oauth_active_namespace_reattestation_stale",
+      `${mutationOwner} mutation ownership did not fence direct security-definer re-attestation`,
     );
   }
 

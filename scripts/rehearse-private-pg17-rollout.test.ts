@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.js";
 import {
@@ -30,6 +38,23 @@ import {
 } from "./rehearse-private-pg17-rollout.mjs";
 
 const digest = "d".repeat(64);
+
+function gitCustodyFixture() {
+  const root = mkdtempSync(join(tmpdir(), "rr-catalog-git-custody-"));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+  git("init", "-q");
+  git("config", "user.name", "ReviewRouter Test");
+  git("config", "user.email", "reviewrouter@example.invalid");
+  writeFileSync(join(root, "evidence.txt"), "base\n");
+  git("add", "evidence.txt");
+  git("commit", "-qm", "base");
+  const base = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "evidence.txt"), "audited\n");
+  git("commit", "-qam", "audited");
+  const head = git("rev-parse", "HEAD");
+  return { root, base, head, cleanup: () => rmSync(root, { recursive: true }) };
+}
 
 const migrationManifestIdentity = (migrationNames: readonly string[]) => {
   const migrationsRoot = "packages/platform/db/prisma/migrations";
@@ -308,44 +333,76 @@ describe("disposable dual-version rehearsal", () => {
     expect(setup).not.toHaveProperty("bootstrapDemotion");
   });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
-    const identity = "rr-disposable-production-shaped-capture";
-    const captureBaseCommit = "9".repeat(40);
-    const auditedHead = "a".repeat(40);
-    expect(
-      resolveRehearsalCaptureOnlyConfiguration({
-        REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1",
-        REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY: identity,
-        REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT: captureBaseCommit,
-        REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
-      }),
-    ).toEqual({
-      disposableDatabaseIdentity: identity,
-      captureBaseCommit,
-      auditedHead,
-    });
-    for (const value of [undefined, "0", "true", "01"])
+    const repository = gitCustodyFixture();
+    try {
+      const identity = "rr-disposable-production-shaped-capture";
+      const captureBaseCommit = repository.base;
+      const auditedHead = repository.head;
       expect(
-        resolveRehearsalCaptureOnlyConfiguration({
-          REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:
-            value,
-          REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
-            identity,
-          REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT:
-            captureBaseCommit,
-          REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
-        }),
-      ).toBeUndefined();
-    expect(() =>
-      resolveRehearsalCaptureOnlyConfiguration({
-        REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1",
-        REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
-          "production",
-        REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT: captureBaseCommit,
-        REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
-      }),
-    ).toThrow(
-      "activation_catalog_policy_candidate_disposable_identity_required",
-    );
+        resolveRehearsalCaptureOnlyConfiguration(
+          {
+            REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:
+              "1",
+            REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+              identity,
+            REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT:
+              captureBaseCommit,
+            REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
+          },
+          repository.root,
+        ),
+      ).toEqual({
+        disposableDatabaseIdentity: identity,
+        captureBaseCommit,
+        auditedHead,
+      });
+      for (const value of [undefined, "0", "true", "01"])
+        expect(
+          resolveRehearsalCaptureOnlyConfiguration(
+            {
+              REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:
+                value,
+              REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+                identity,
+              REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT:
+                captureBaseCommit,
+              REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
+            },
+            repository.root,
+          ),
+        ).toBeUndefined();
+      expect(() =>
+        resolveRehearsalCaptureOnlyConfiguration(
+          {
+            REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:
+              "1",
+            REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+              "production",
+            REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT:
+              captureBaseCommit,
+            REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
+          },
+          repository.root,
+        ),
+      ).toThrow(
+        "activation_catalog_policy_candidate_disposable_identity_required",
+      );
+      expect(() =>
+        resolveRehearsalCaptureOnlyConfiguration(
+          {
+            REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:
+              "1",
+            REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+              identity,
+            REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT: auditedHead,
+            REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
+          },
+          repository.root,
+        ),
+      ).toThrow("activation_catalog_policy_git_review_range_invalid");
+    } finally {
+      repository.cleanup();
+    }
   });
   it("rejects capture against a durable or source database target", () => {
     expect(() =>
@@ -689,6 +746,7 @@ describe("disposable dual-version rehearsal", () => {
       "000072_runtime_canary_challenge",
       "000073_codex_oauth_active_namespace_refresh",
       "000079_codex_oauth_v4_v5_workflow_reattestation",
+      "000080_codex_oauth_reattestation_mutation_owner_fence",
     ]);
     expect(exclusions).not.toContain("000067_review_live_progress");
     expect(exclusions).not.toContain(

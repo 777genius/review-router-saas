@@ -58,6 +58,10 @@ const migrationFiles = [
     "000079_codex_oauth_v4_v5_workflow_reattestation",
     "packages/platform/db/prisma/migrations/000079_codex_oauth_v4_v5_workflow_reattestation/migration.sql",
   ],
+  [
+    "000080_codex_oauth_reattestation_mutation_owner_fence",
+    "packages/platform/db/prisma/migrations/000080_codex_oauth_reattestation_mutation_owner_fence/migration.sql",
+  ],
 ];
 assertExactMigrationInventory(
   readdirSync(resolve(checkoutRoot, "packages/platform/db/prisma/migrations"))
@@ -379,6 +383,7 @@ SELECT jsonb_build_object(
       ,'000066_codex_oauth_rotating_cascade_authority'
       ,'000073_codex_oauth_active_namespace_refresh'
       ,'000079_codex_oauth_v4_v5_workflow_reattestation'
+      ,'000080_codex_oauth_reattestation_mutation_owner_fence'
     )
   ), '[]'::jsonb),
   'catalog', jsonb_build_object(

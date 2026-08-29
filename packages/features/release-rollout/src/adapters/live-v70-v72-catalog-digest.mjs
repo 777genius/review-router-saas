@@ -1,5 +1,5 @@
 /**
- * Canonical PostgreSQL projection of the live V70-V79 application catalog.
+ * Canonical PostgreSQL projection of the live V70-V80 application catalog.
  * Keep this in the Postgres adapter layer: the domain receives only its digest.
  */
 import { canonicalReleaseMigrationPostManifestIdentity } from "../domain/release-migration-artifact-identity.js";
@@ -195,6 +195,9 @@ WITH selected_relations AS (
           'finished',true,'rolledBack',false),
         jsonb_build_object('name','000079_codex_oauth_v4_v5_workflow_reattestation',
           'checksum','d443e366de64879b1d6c32f4edba3648d8e8da160f804b6ec87bede581343109',
+          'finished',true,'rolledBack',false),
+        jsonb_build_object('name','000080_codex_oauth_reattestation_mutation_owner_fence',
+          'checksum','18a1e48953d1360d3661ea6753b7aa350fc7e28caeaeb65d42c9ac42569f1cf0',
           'finished',true,'rolledBack',false))
       ELSE '[]'::jsonb END,
     'unresolvedHistory',false,
@@ -214,4 +217,6 @@ FROM facts`;
 export const fencedLiveV70V72CatalogDigestSql =
   fencedLiveV70V73CatalogDigestSql;
 export const fencedLiveV70V79CatalogDigestSql =
+  fencedLiveV70V73CatalogDigestSql;
+export const fencedLiveV70V80CatalogDigestSql =
   fencedLiveV70V73CatalogDigestSql;

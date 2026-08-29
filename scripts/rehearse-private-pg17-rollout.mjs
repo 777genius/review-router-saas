@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import {
@@ -70,6 +70,9 @@ import {
   runtimeGrantSql,
 } from "./run-codex-rotating-release-migration.mjs";
 import { parsePrivatePg17ActivationCatalogPolicyCandidate } from "./capture-private-pg17-activation-catalog-policy.mjs";
+import { assertActivationCatalogGitCustody } from "./lib/activation-catalog-git-custody.mjs";
+
+const checkoutRoot = resolve(import.meta.dirname, "..");
 
 function rehearsalLegacyAmbiguityReceipt({
   rollout,
@@ -280,6 +283,7 @@ const preReleaseMigrationBoundary = Object.freeze({
     "000072_runtime_canary_challenge",
     "000073_codex_oauth_active_namespace_refresh",
     "000079_codex_oauth_v4_v5_workflow_reattestation",
+    "000080_codex_oauth_reattestation_mutation_owner_fence",
   ]),
   retained: Object.freeze([
     "000067_review_live_progress",
@@ -376,7 +380,10 @@ export function validateRehearsalConfiguration(env) {
   return Object.freeze({ sourceImage, targetImage });
 }
 
-export function resolveRehearsalCaptureOnlyConfiguration(env) {
+export function resolveRehearsalCaptureOnlyConfiguration(
+  env,
+  repositoryRoot = checkoutRoot,
+) {
   if (
     env.REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY !==
     "1"
@@ -400,6 +407,12 @@ export function resolveRehearsalCaptureOnlyConfiguration(env) {
     !/^[a-f0-9]{40}$/u.test(auditedHead)
   )
     throw new Error("activation_catalog_policy_capture_custody_required");
+  assertActivationCatalogGitCustody({
+    repositoryRoot,
+    captureBaseCommit,
+    auditedHead,
+    requireExactCheckoutHead: true,
+  });
   return Object.freeze({
     disposableDatabaseIdentity,
     captureBaseCommit,

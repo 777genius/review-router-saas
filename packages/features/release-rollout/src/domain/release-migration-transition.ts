@@ -137,6 +137,10 @@ export const canonicalReleaseMigrationEntries = Object.freeze([
     "000079_codex_oauth_v4_v5_workflow_reattestation",
     "d443e366de64879b1d6c32f4edba3648d8e8da160f804b6ec87bede581343109",
   ],
+  [
+    "000080_codex_oauth_reattestation_mutation_owner_fence",
+    "18a1e48953d1360d3661ea6753b7aa350fc7e28caeaeb65d42c9ac42569f1cf0",
+  ],
 ] as const).map(([name, checksum]) =>
   Object.freeze({ migrationName: name, migrationSqlSha256: checksum }),
 );
@@ -157,14 +161,14 @@ export const deriveOrderedPendingEntriesSha256 = (
 
 export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
-    "sha256:2b91b9e6fce9e69a0d9c293712e082fcf16c4306c46690139d1a13690ed2c779",
+    "sha256:7688fe11ad21522144b6af56c3aa4b1d8bae2c27cce32a4ddef882aca7ad70f3",
   preManifestIdentity:
     "sha256:bb102d7d6013f7373f177ea5f266a5427a877fc54b95af8876d30ec2b17ab478",
   orderedPendingEntriesSha256: deriveOrderedPendingEntriesSha256(
     canonicalReleaseMigrationEntries,
   ),
   migrationBundleSha256:
-    "sha256:7e2db1f64d3c49b1d629af0ba7a3a359a644313dbcee311f2a51a88d7d695b03",
+    "sha256:77f72be4f237b5ecd0e3a9448cc7b93fd85626c4b82dbbc9177707421947e829",
   postManifestIdentity: canonicalReleaseMigrationPostManifestIdentity,
   // Last independently reviewed and promoted production catalog trust root.
   // A newer observation may only be emitted by the disposable capture path;

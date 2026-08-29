@@ -17,6 +17,7 @@ import {
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation.ts";
 import { assertActivationCatalogPolicyPromotionProvenance } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
 import { fencedLiveV70V73CatalogDigestSql } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
+import { assertActivationCatalogGitCustody } from "./lib/activation-catalog-git-custody.mjs";
 
 export {
   activationCatalogPromotionOptIn,
@@ -377,9 +378,22 @@ export async function promotePrivatePg17ActivationCatalogPolicy({
   )
     throw new Error("activation_catalog_policy_promotion_opt_in_required");
   const { candidatePath, write } = parseArguments(argv);
-  const generated = canonicalActivationCatalogArtifactSource(
-    await readFile(candidatePath),
-  );
+  const candidateBytes = await readFile(candidatePath);
+  const generated = canonicalActivationCatalogArtifactSource(candidateBytes);
+  let candidate;
+  try {
+    candidate = JSON.parse(candidateBytes.toString("utf8"));
+  } catch {
+    throw new Error("activation_catalog_policy_promotion_candidate_invalid");
+  }
+  assertArtifactCandidate(candidate);
+  if (candidate.version !== 2)
+    throw new Error("activation_catalog_policy_promotion_git_custody_required");
+  assertActivationCatalogGitCustody({
+    repositoryRoot,
+    captureBaseCommit: candidate.capture.custody.captureBaseCommit,
+    auditedHead: candidate.capture.custody.auditedHead,
+  });
   const provenance = await readPromotionProvenance();
   assertReviewedActivationCatalogPromotionProvenance(provenance);
   await assertActivationCatalogPolicyIndependentReviewEvidence(provenance);

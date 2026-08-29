@@ -839,7 +839,8 @@ export class PrismaCodexRotatingSetupPayloadClaim
           const mutationFence = mutationFences[0];
           if (
             !mutationFence ||
-            mutationFence.mutationOwner === "runtime" ||
+            mutationFence.mutationOwner !== null ||
+            mutationFence.mutationOwnerId !== null ||
             mutationFence.activeLeaseId !== null
           ) {
             throw new Error("codex_rotating_workflow_reattestation_stale");

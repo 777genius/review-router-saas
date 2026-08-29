@@ -17,6 +17,10 @@ import {
   prepareCodexRotatingSetup,
   recordCodexRotatingSetupDispatchOutcome,
 } from "../index";
+import {
+  ProviderSecretNamespaceMode,
+  WorkflowSourceTrust,
+} from "@reviewrouter/features-codex-oauth-rotating";
 
 const claim = {
   payloadVersion: 2 as const,
@@ -686,6 +690,24 @@ describe("versioned rotating setup recovery ledger", () => {
     await expect(ledger.activate(attestation)).resolves.toEqual({
       status: "active",
     });
+    await expect(
+      ledger.readActiveWorkflowAttestation({
+        mode: ProviderSecretNamespaceMode.VersionedNeverReused,
+        scope: {
+          repositoryId: claim.repositoryId,
+          providerInstanceId: claim.providerInstanceId,
+        },
+        namespaceId: attempt.namespaceId,
+        epoch: BigInt(attempt.namespaceEpoch),
+        name: attempt.secretName,
+      }),
+    ).resolves.toMatchObject({
+      workflowSourceCommitSha: attestation.workflowSourceCommitSha,
+      workflowSourceBlobSha: attestation.workflowSourceBlobSha,
+      workflowSourceSha256: attestation.workflowSourceSha256,
+      workflowSemanticSha256: attestation.workflowSemanticSha256,
+      workflowSchemaVersion: 5,
+    });
     expect(() =>
       assertCodexRotatingRunNamespace({
         activeNamespaceId: attempt.namespaceId,
@@ -694,6 +716,153 @@ describe("versioned rotating setup recovery ledger", () => {
         presentedNamespaceEpoch: 1n,
       }),
     ).toThrow("stale_secret_namespace");
+  });
+
+  it("fails reattestation closed without existing persisted workflow evidence", async () => {
+    const ledger = new InMemoryCodexRotatingSetupPayloadClaim();
+    const prepared = await ledger.claim(claim);
+    const attempt = await ledger.authorizeDispatch({
+      claimId: prepared.claimId,
+      idempotencyKey: "dispatch:reattest-missing-source",
+    });
+    await ledger.recordDispatchOutcome({
+      claimId: prepared.claimId,
+      attemptId: attempt.attemptId,
+      outcome: "definite_success",
+      responseCode: 201,
+    });
+    const namespace = {
+      mode: ProviderSecretNamespaceMode.VersionedNeverReused,
+      scope: {
+        repositoryId: claim.repositoryId,
+        providerInstanceId: claim.providerInstanceId,
+      },
+      namespaceId: attempt.namespaceId,
+      epoch: BigInt(attempt.namespaceEpoch),
+      name: attempt.secretName,
+    } as const;
+    const current = {
+      repositoryId: claim.repositoryId,
+      workflowPath: ".github/workflows/reviewrouter-codex.yml",
+      workflowSourceCommitSha: "a".repeat(40),
+      workflowSourceBlobSha: "b".repeat(40),
+      workflowSourceSha256: "c".repeat(64),
+      workflowSemanticSha256: "d".repeat(64),
+      workflowSchemaVersion: 4 as const,
+      sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+      secretNamespace: namespace,
+    };
+
+    await expect(
+      ledger.replaceActiveWorkflowSource({
+        target: {
+          claimId: prepared.claimId,
+          attemptId: attempt.attemptId,
+          expectedGenerationHash: claim.generationHash,
+          repositoryId: claim.repositoryId,
+          workflowPath: current.workflowPath,
+          namespace,
+        },
+        expectedCurrent: current,
+        replacement: {
+          ...current,
+          workflowSourceCommitSha: "e".repeat(40),
+          workflowSourceBlobSha: "f".repeat(40),
+          workflowSourceSha256: "1".repeat(64),
+          workflowSemanticSha256: "2".repeat(64),
+          workflowSchemaVersion: 5,
+        },
+      }),
+    ).rejects.toThrow("codex_rotating_workflow_reattestation_stale");
+    await expect(
+      ledger.readActiveWorkflowAttestation(namespace),
+    ).resolves.toBeNull();
+  });
+
+  it("compares every persisted workflow digest before replacing V4 with V5", async () => {
+    const ledger = new InMemoryCodexRotatingSetupPayloadClaim();
+    const prepared = await ledger.claim(claim);
+    const attempt = await ledger.authorizeDispatch({
+      claimId: prepared.claimId,
+      idempotencyKey: "dispatch:reattest-exact-source",
+    });
+    await ledger.recordDispatchOutcome({
+      claimId: prepared.claimId,
+      attemptId: attempt.attemptId,
+      outcome: "definite_success",
+      responseCode: 204,
+    });
+    const activation = {
+      claimId: prepared.claimId,
+      attemptId: attempt.attemptId,
+      repositoryId: claim.repositoryId,
+      namespaceId: attempt.namespaceId,
+      namespaceEpoch: attempt.namespaceEpoch,
+      secretName: attempt.secretName,
+      workflowPath: ".github/workflows/reviewrouter-codex.yml" as const,
+      workflowSourceCommitSha: "a".repeat(40),
+      workflowSourceBlobSha: "b".repeat(40),
+      workflowSourceSha256: "c".repeat(64),
+      workflowSemanticSha256: "d".repeat(64),
+      sourceTrust: "trusted_default_branch_revision" as const,
+      workflowSchemaVersion: 4 as const,
+    };
+    await ledger.activate(activation);
+    const namespace = {
+      mode: ProviderSecretNamespaceMode.VersionedNeverReused,
+      scope: {
+        repositoryId: claim.repositoryId,
+        providerInstanceId: claim.providerInstanceId,
+      },
+      namespaceId: attempt.namespaceId,
+      epoch: BigInt(attempt.namespaceEpoch),
+      name: attempt.secretName,
+    } as const;
+    const current = (await ledger.readActiveWorkflowAttestation(namespace))!;
+    const replacement = {
+      ...current,
+      workflowSourceCommitSha: "e".repeat(40),
+      workflowSourceBlobSha: "f".repeat(40),
+      workflowSourceSha256: "1".repeat(64),
+      workflowSemanticSha256: "2".repeat(64),
+      workflowSchemaVersion: 5 as const,
+    };
+    const target = {
+      claimId: prepared.claimId,
+      attemptId: attempt.attemptId,
+      expectedGenerationHash: claim.generationHash,
+      repositoryId: claim.repositoryId,
+      workflowPath: activation.workflowPath,
+      namespace,
+    };
+
+    for (const mismatch of [
+      { workflowSourceBlobSha: "0".repeat(40) },
+      { workflowSourceSha256: "0".repeat(64) },
+      { workflowSemanticSha256: "0".repeat(64) },
+      { workflowSchemaVersion: 5 as const },
+    ]) {
+      await expect(
+        ledger.replaceActiveWorkflowSource({
+          target,
+          expectedCurrent: { ...current, ...mismatch },
+          replacement,
+        }),
+      ).rejects.toThrow("codex_rotating_workflow_reattestation_stale");
+    }
+    await expect(
+      ledger.readActiveWorkflowAttestation(namespace),
+    ).resolves.toEqual(current);
+    await expect(
+      ledger.replaceActiveWorkflowSource({
+        target,
+        expectedCurrent: current,
+        replacement,
+      }),
+    ).resolves.toEqual({ status: "active" });
+    await expect(
+      ledger.readActiveWorkflowAttestation(namespace),
+    ).resolves.toEqual(replacement);
   });
 
   it("property: no two dispatches ever share a secret name across faults", async () => {

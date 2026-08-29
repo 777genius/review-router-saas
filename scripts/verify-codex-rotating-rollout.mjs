@@ -99,6 +99,13 @@ const migrations = [
     expectedSha256:
       "d443e366de64879b1d6c32f4edba3648d8e8da160f804b6ec87bede581343109",
   },
+  {
+    id: "000080_codex_oauth_reattestation_mutation_owner_fence",
+    sourceFile:
+      "packages/platform/db/prisma/migrations/000080_codex_oauth_reattestation_mutation_owner_fence/migration.sql",
+    expectedSha256:
+      "18a1e48953d1360d3661ea6753b7aa350fc7e28caeaeb65d42c9ac42569f1cf0",
+  },
 ];
 const checkedInRotatingMigrations = readdirSync(
   resolve(checkoutRoot, "packages/platform/db/prisma/migrations"),
