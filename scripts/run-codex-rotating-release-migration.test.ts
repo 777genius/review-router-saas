@@ -1068,8 +1068,9 @@ describe("canonical exclusive release migration caller", () => {
       "PERFORM reviewrouter_activation.complete_migration_permit(",
     );
     expect(provisioning).toContain("requested_acl_gate_closed boolean");
+    expect(provisioning).toContain("requested_catalog_capture_only boolean");
     expect(provisioning).toContain(
-      "text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean",
+      "text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean",
     );
     expect(provisioning).toContain(
       "release migration executor ACL gate mode invalid",
@@ -1242,6 +1243,9 @@ describe("canonical exclusive release migration caller", () => {
       "RAISE EXCEPTION 'release migration target live completion mismatch';",
     );
     expect(provisioning).toContain(
+      "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(\n  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean) TO reviewrouter_release_migration;",
+    );
+    expect(provisioning).not.toContain(
       "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(\n  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) TO reviewrouter_release_migration;",
     );
     expect(provisioning).not.toContain(

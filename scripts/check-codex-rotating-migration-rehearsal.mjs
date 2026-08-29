@@ -2344,11 +2344,11 @@ function proveDatabasePrivileges(url) {
                AND has_function_privilege(
                  'reviewrouter_release_migration', routine.oid, 'EXECUTE'
                )
-               AND routine.oid <> 'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure
+               AND routine.oid <> 'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean)'::regprocedure
            )
            OR NOT has_function_privilege(
              'reviewrouter_release_migration',
-             'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure,
+             'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean)'::regprocedure,
              'EXECUTE'
            )
            OR NOT has_table_privilege(

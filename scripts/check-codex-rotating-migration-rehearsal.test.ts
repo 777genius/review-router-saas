@@ -303,7 +303,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "'reviewrouter_release_migration', namespace.oid, 'CREATE'",
     );
     expect(privilegeProof).toContain(
-      "'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure",
+      "'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean)'::regprocedure",
     );
     expect(privilegeProof).toContain('public."_prisma_migrations"');
     expect(privilegeProof).toContain("attribute.attname IN ('id','status')");
