@@ -290,18 +290,13 @@ export class InMemoryCodexRotatingSetupPayloadClaim
     const stored = [...new Set(this.#claims.values())].find(
       (candidate) =>
         candidate.status === "active" &&
-        candidate.workflowAttestation?.secretNamespace.namespaceId ===
-          namespace.namespaceId,
+        candidate.workflowAttestation !== null &&
+        sameExactNamespace(
+          candidate.workflowAttestation.secretNamespace,
+          namespace,
+        ),
     );
     if (!stored?.workflowAttestation) return null;
-    try {
-      assertSameVersionedProviderSecretNamespace({
-        expected: namespace,
-        actual: stored.workflowAttestation.secretNamespace,
-      });
-    } catch {
-      return null;
-    }
     return createVersionedSecretWorkflowSourceAttestation(
       stored.workflowAttestation,
     );
@@ -344,7 +339,11 @@ export class InMemoryCodexRotatingSetupPayloadClaim
       transition.replacement.workflowSchemaVersion !== 5 ||
       transition.replacement.repositoryId !== persisted.repositoryId ||
       transition.replacement.workflowPath !== persisted.workflowPath ||
-      transition.replacement.sourceTrust !== persisted.sourceTrust
+      transition.replacement.sourceTrust !== persisted.sourceTrust ||
+      transition.replacement.workflowSourceSha256 ===
+        persisted.workflowSourceSha256 ||
+      transition.replacement.workflowSemanticSha256 ===
+        persisted.workflowSemanticSha256
     ) {
       throw new Error("codex_rotating_workflow_reattestation_stale");
     }
@@ -445,6 +444,20 @@ export class InMemoryCodexRotatingSetupPayloadClaim
       throw error;
     }
   }
+}
+
+function sameExactNamespace(
+  left: VersionedSecretWorkflowSourceAttestation["secretNamespace"],
+  right: VersionedSecretWorkflowSourceAttestation["secretNamespace"],
+): boolean {
+  return (
+    left.mode === right.mode &&
+    left.namespaceId === right.namespaceId &&
+    left.epoch === right.epoch &&
+    left.name === right.name &&
+    left.scope.repositoryId === right.scope.repositoryId &&
+    left.scope.providerInstanceId === right.scope.providerInstanceId
+  );
 }
 
 function sameExactWorkflowAttestation(

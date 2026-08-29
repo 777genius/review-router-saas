@@ -837,6 +837,7 @@ describe("versioned rotating setup recovery ledger", () => {
     };
 
     for (const mismatch of [
+      { workflowSourceCommitSha: "0".repeat(40) },
       { workflowSourceBlobSha: "0".repeat(40) },
       { workflowSourceSha256: "0".repeat(64) },
       { workflowSemanticSha256: "0".repeat(64) },
@@ -847,6 +848,21 @@ describe("versioned rotating setup recovery ledger", () => {
           target,
           expectedCurrent: { ...current, ...mismatch },
           replacement,
+        }),
+      ).rejects.toThrow("codex_rotating_workflow_reattestation_stale");
+    }
+    await expect(
+      ledger.readActiveWorkflowAttestation(namespace),
+    ).resolves.toEqual(current);
+    for (const mismatch of [
+      { workflowSourceSha256: current.workflowSourceSha256 },
+      { workflowSemanticSha256: current.workflowSemanticSha256 },
+    ]) {
+      await expect(
+        ledger.replaceActiveWorkflowSource({
+          target,
+          expectedCurrent: current,
+          replacement: { ...replacement, ...mismatch },
         }),
       ).rejects.toThrow("codex_rotating_workflow_reattestation_stale");
     }
