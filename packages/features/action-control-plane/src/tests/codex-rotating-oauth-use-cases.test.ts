@@ -144,6 +144,61 @@ describe("Codex rotating OAuth action control plane", () => {
     ).rejects.toThrow("codex_rotating_workflow_attestation_stale");
   });
 
+  it.each([
+    ["workflow blob", "workflowSourceBlobSha", "e".repeat(40)],
+    ["workflow source digest", "workflowSourceSha256", "e".repeat(64)],
+    ["workflow semantic digest", "workflowSemanticSha256", "e".repeat(64)],
+  ] as const)(
+    "fails closed when the memory adapter receives changed %s bytes",
+    async (_name, field, changedValue) => {
+      const persisted = memoryWorkflowAttestation();
+      const binding = {
+        providerInstanceId: "codex-rotating:123456",
+        repositoryFullName: repository.fullName,
+        githubRepositoryId: repository.githubRepositoryId,
+        actionRef: `777genius/review-router@${workflowSha}`,
+        workflowPath: persisted.workflowPath,
+        workflowSchemaVersion: persisted.workflowSchemaVersion,
+        activeSecretNamespace: persisted.secretNamespace,
+        activeWorkflowSource: {
+          workflowPath: persisted.workflowPath,
+          workflowSourceCommitSha: persisted.workflowSourceCommitSha,
+          workflowSourceBlobSha: persisted.workflowSourceBlobSha,
+          workflowSourceSha256: persisted.workflowSourceSha256,
+          workflowSemanticSha256: persisted.workflowSemanticSha256,
+          sourceTrust: "trusted_default_branch_revision" as const,
+          repositoryId: persisted.repositoryId,
+        },
+      } as const;
+      const ledger = new InMemoryCodexRotatingOAuthRepository([binding]);
+      const changed = createVersionedSecretWorkflowSourceAttestation({
+        ...persisted,
+        [field]: changedValue,
+      });
+      await ledger.ensureVerifiedProviderBinding({
+        repository,
+        binding: {
+          ...binding,
+          activeWorkflowSource: {
+            ...binding.activeWorkflowSource,
+            [field]: changedValue,
+          },
+        },
+      });
+
+      await expect(
+        ledger.acquirePrelease({
+          repository,
+          providerInstanceId: binding.providerInstanceId,
+          githubRunId: `changed-${field}`,
+          githubRunAttempt: "1",
+          verifiedWorkflowAttestation: changed,
+          newWorkAdmissionBarrier: allowNewWorkAdmission,
+        }),
+      ).rejects.toThrow("codex_rotating_workflow_attestation_stale");
+    },
+  );
+
   it("fails closed across a recovery-witness change before memory lease and writeback mutation", async () => {
     const witnessOne = "witness_generation_one_12345678901234567890";
     const witnessTwo = "witness_generation_two_12345678901234567890";

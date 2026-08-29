@@ -673,6 +673,10 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         output,
         migrationName: "000060_codex_oauth_setup_serialization",
         historyEvidence: exactEvidence,
+        directLockTimeoutProof: {
+          migrationName: "000060_codex_oauth_setup_serialization",
+          observed: true,
+        },
       }),
     ).toBe(true);
     expect(
@@ -680,6 +684,10 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         output,
         migrationName: "000061_codex_oauth_provider_mutation_fence",
         historyEvidence: exactEvidence,
+        directLockTimeoutProof: {
+          migrationName: "000060_codex_oauth_setup_serialization",
+          observed: true,
+        },
       }),
     ).toBe(false);
     expect(
@@ -687,6 +695,10 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         output,
         migrationName: "000060_codex_oauth_setup_serialization",
         historyEvidence: { ...exactEvidence, zeroStep: 0 },
+        directLockTimeoutProof: {
+          migrationName: "000060_codex_oauth_setup_serialization",
+          observed: true,
+        },
       }),
     ).toBe(false);
     expect(
@@ -694,6 +706,32 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         output: "000060_codex_oauth_setup_serialization: lock timeout",
         migrationName: "000060_codex_oauth_setup_serialization",
         historyEvidence: exactEvidence,
+        directLockTimeoutProof: {
+          migrationName: "000060_codex_oauth_setup_serialization",
+          observed: true,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName: "000060_codex_oauth_setup_serialization",
+        historyEvidence: { ...exactEvidence, emptyLog: 0 },
+        directLockTimeoutProof: {
+          migrationName: "000060_codex_oauth_setup_serialization",
+          observed: true,
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName: "000060_codex_oauth_setup_serialization",
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof: {
+          migrationName: "000060_codex_oauth_setup_serialization",
+          observed: false,
+        },
       }),
     ).toBe(false);
   });

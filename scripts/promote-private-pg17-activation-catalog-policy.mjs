@@ -173,7 +173,7 @@ function assertArtifactCandidate(value) {
     throw new Error("activation_catalog_policy_promotion_candidate_invalid");
   if (value.version === 1 && Object.hasOwn(value, "capture"))
     throw new Error("activation_catalog_policy_promotion_candidate_invalid");
-  if (value.version === 2) assertCaptureBinding(value.capture);
+  if (value.version === 2) assertCaptureBinding(value.capture, value.policies);
   assertNormalizedCandidatePolicy(
     value.policies.preactivation,
     "preactivation",
@@ -185,19 +185,18 @@ export function assertActivationCatalogPolicyCandidateSchema(value) {
   assertArtifactCandidate(value);
 }
 
-function assertCaptureBinding(value) {
+function assertCaptureBinding(value, policies) {
   const database = value?.database;
   const projection = value?.projection;
+  const custody = value?.custody;
   if (
     value === null ||
     typeof value !== "object" ||
     Array.isArray(value) ||
     Object.keys(value).sort().join(",") !==
-      "commitSha,database,postManifestIdentity,projection" ||
+      "commitSha,custody,database,postManifestIdentity,projection" ||
     !/^[a-f0-9]{40}$/u.test(value.commitSha ?? "") ||
     !/^sha256:[a-f0-9]{64}$/u.test(value.postManifestIdentity ?? "") ||
-    value.postManifestIdentity !==
-      reviewedActivationCatalogPromotionExpectation.postManifestIdentity ||
     database === null ||
     typeof database !== "object" ||
     Array.isArray(database) ||
@@ -220,15 +219,49 @@ function assertCaptureBinding(value) {
       `sha256:${sha256(fencedLiveV70V73CatalogDigestSql)}` ||
     !/^sha256:[a-f0-9]{64}$/u.test(projection.observedDigest ?? "") ||
     projection.observedDigest ===
-      reviewedActivationCatalogPromotionExpectation.activeProductionCatalogDigest
+      reviewedActivationCatalogPromotionExpectation.activeProductionCatalogDigest ||
+    custody === null ||
+    typeof custody !== "object" ||
+    Array.isArray(custody) ||
+    Object.keys(custody).sort().join(",") !==
+      "auditedHead,captureBaseCommit,evidenceSha256" ||
+    !/^[a-f0-9]{40}$/u.test(custody.captureBaseCommit ?? "") ||
+    !/^[a-f0-9]{40}$/u.test(custody.auditedHead ?? "") ||
+    custody.auditedHead !== value.commitSha ||
+    !/^sha256:[a-f0-9]{64}$/u.test(custody.evidenceSha256 ?? "") ||
+    custody.evidenceSha256 !==
+      `sha256:${sha256(
+        canonicalJson({
+          auditedHead: custody.auditedHead,
+          captureBaseCommit: custody.captureBaseCommit,
+          commitSha: value.commitSha,
+          database,
+          policies,
+          postManifestIdentity: value.postManifestIdentity,
+          projection,
+        }),
+      )}`
   )
     throw new Error(
       "activation_catalog_policy_promotion_capture_binding_invalid",
     );
 }
 
-export function assertActivationCatalogPolicyCaptureBinding(value) {
-  assertCaptureBinding(value);
+export function assertActivationCatalogPolicyCaptureBinding(value, policies) {
+  assertCaptureBinding(value, policies);
+}
+
+function assertCaptureReviewedForCurrentTrustRoot(capture) {
+  const expectation = reviewedActivationCatalogPromotionExpectation;
+  if (
+    capture.custody.captureBaseCommit !== expectation.captureBaseCommit ||
+    capture.custody.auditedHead !== expectation.auditedHead ||
+    capture.commitSha !== expectation.auditedHead ||
+    capture.postManifestIdentity !== expectation.postManifestIdentity
+  )
+    throw new Error(
+      "activation_catalog_policy_promotion_new_candidate_review_required",
+    );
 }
 
 function assertNormalizedCandidatePolicy(value, phase) {
@@ -263,6 +296,8 @@ export function canonicalActivationCatalogArtifactSource(candidateBytes) {
     throw new Error("activation_catalog_policy_promotion_candidate_invalid");
   }
   assertArtifactCandidate(candidate);
+  if (candidate.version === 2)
+    assertCaptureReviewedForCurrentTrustRoot(candidate.capture);
   const reviewedPayloadBytes =
     candidate.version === 2
       ? Buffer.from(

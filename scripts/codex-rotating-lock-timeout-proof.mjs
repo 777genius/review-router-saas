@@ -2,16 +2,19 @@ export function isExpectedPrismaLockTimeoutFailure({
   output,
   migrationName,
   historyEvidence,
+  directLockTimeoutProof,
 }) {
   const markers = prismaLockTimeoutFailureMarkers({
     output,
     migrationName,
     historyEvidence,
+    directLockTimeoutProof,
   });
   return (
     markers.prismaMigrationFailure &&
     markers.migrationNamed &&
     markers.exactCurrentFailure &&
+    markers.directLockTimeoutProof &&
     (markers.lockTimeout || markers.abortedTransaction)
   );
 }
@@ -20,6 +23,7 @@ export function prismaLockTimeoutFailureMarkers({
   output,
   migrationName,
   historyEvidence,
+  directLockTimeoutProof,
 }) {
   const normalized = output.toLowerCase();
   return Object.freeze({
@@ -34,11 +38,12 @@ export function prismaLockTimeoutFailureMarkers({
     abortedTransactionLogRows: historyEvidence?.abortedTransactionLog ?? null,
     emptyLogRows: historyEvidence?.emptyLog ?? null,
     exactFailureLogRows: historyEvidence?.exactFailureLog ?? null,
+    directLockTimeoutProof:
+      directLockTimeoutProof?.migrationName === migrationName &&
+      directLockTimeoutProof?.observed === true,
     exactCurrentFailure:
       historyEvidence?.total === 1 &&
       historyEvidence?.currentFailed === 1 &&
-      historyEvidence?.zeroStep === 1 &&
-      (historyEvidence?.exactFailureLog === 1 ||
-        historyEvidence?.emptyLog === 1),
+      historyEvidence?.zeroStep === 1,
   });
 }

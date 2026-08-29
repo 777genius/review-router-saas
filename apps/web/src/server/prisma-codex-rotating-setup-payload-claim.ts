@@ -825,6 +825,25 @@ export class PrismaCodexRotatingSetupPayloadClaim
             this.databaseRecoveryWitness,
           );
           await lockCodexRotatingProviderRow(tx, initial.providerInstanceRowId);
+          const mutationFences = await tx.$queryRaw<
+            Array<{
+              mutationOwner: string | null;
+              mutationOwnerId: string | null;
+              activeLeaseId: string | null;
+            }>
+          >`
+            SELECT "mutationOwner", "mutationOwnerId", "activeLeaseId"
+            FROM "CodexOAuthProviderInstance"
+            WHERE "id" = ${initial.providerInstanceRowId}
+          `;
+          const mutationFence = mutationFences[0];
+          if (
+            !mutationFence ||
+            mutationFence.mutationOwner === "runtime" ||
+            mutationFence.activeLeaseId !== null
+          ) {
+            throw new Error("codex_rotating_workflow_reattestation_stale");
+          }
           const claim = await findClaimForUpdate(tx, target.claimId);
           const attempt = await findAttemptForUpdate(
             tx,

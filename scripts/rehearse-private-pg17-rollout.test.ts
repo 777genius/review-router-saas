@@ -309,12 +309,20 @@ describe("disposable dual-version rehearsal", () => {
   });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
     const identity = "rr-disposable-production-shaped-capture";
+    const captureBaseCommit = "9".repeat(40);
+    const auditedHead = "a".repeat(40);
     expect(
       resolveRehearsalCaptureOnlyConfiguration({
         REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1",
         REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY: identity,
+        REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT: captureBaseCommit,
+        REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
       }),
-    ).toEqual({ disposableDatabaseIdentity: identity });
+    ).toEqual({
+      disposableDatabaseIdentity: identity,
+      captureBaseCommit,
+      auditedHead,
+    });
     for (const value of [undefined, "0", "true", "01"])
       expect(
         resolveRehearsalCaptureOnlyConfiguration({
@@ -322,6 +330,9 @@ describe("disposable dual-version rehearsal", () => {
             value,
           REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
             identity,
+          REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT:
+            captureBaseCommit,
+          REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
         }),
       ).toBeUndefined();
     expect(() =>
@@ -329,6 +340,8 @@ describe("disposable dual-version rehearsal", () => {
         REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1",
         REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
           "production",
+        REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT: captureBaseCommit,
+        REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
       }),
     ).toThrow(
       "activation_catalog_policy_candidate_disposable_identity_required",
@@ -381,6 +394,8 @@ describe("disposable dual-version rehearsal", () => {
         disposableIdentity: "rr-disposable-candidate-test",
         systemIdentifier: "7612345678901234567",
         recoveryWitnessSha256: "d".repeat(64),
+        captureBaseCommit: "9".repeat(40),
+        auditedHead: candidate.commitSha,
       }),
     ).toEqual({
       kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
@@ -399,6 +414,11 @@ describe("disposable dual-version rehearsal", () => {
           sha256: candidate.projectionSha256,
           observedDigest: candidate.catalogDigest,
         },
+        custody: {
+          captureBaseCommit: "9".repeat(40),
+          auditedHead: candidate.commitSha,
+          evidenceSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        },
       },
     });
     expect(candidate.catalogDigest).not.toBe(
@@ -411,6 +431,8 @@ describe("disposable dual-version rehearsal", () => {
         disposableIdentity: "production",
         systemIdentifier: "7612345678901234567",
         recoveryWitnessSha256: "d".repeat(64),
+        captureBaseCommit: "9".repeat(40),
+        auditedHead: candidate.commitSha,
       }),
     ).toThrow("activation_catalog_policy_capture_binding_invalid");
   });

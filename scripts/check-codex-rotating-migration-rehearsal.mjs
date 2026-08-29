@@ -854,6 +854,7 @@ async function proveMigration60LockTimeout(url, fixtureAdminUrl) {
       readPrismaLockTimeoutHistoryEvidence(url, migration60Name),
       migration60Name,
       "runner_000060_lock_timeout_not_observed",
+      { migrationName: migration60Name, observed: true },
     );
     assert(
       runnerElapsedMs >= 14_000 && runnerElapsedMs < 45_000,
@@ -937,6 +938,7 @@ async function proveCombinedLockTimeout(url, fixtureAdminUrl) {
       readPrismaLockTimeoutHistoryEvidence(url, migration61Name),
       migration61Name,
       "runner_000061_lock_timeout_not_observed",
+      { migrationName: migration61Name, observed: true },
     );
     assert(
       elapsedMs >= 14_000 && elapsedMs < 45_000,
@@ -4816,23 +4818,26 @@ function assertPrismaLockTimeoutEnvelope(
   historyEvidence,
   migrationName,
   message,
+  directLockTimeoutProof,
 ) {
   const output = `${result.stdout}${result.stderr}`.toLowerCase();
   // Prisma's schema engine can replace the inner PostgreSQL lock-timeout error
   // with the transaction-aborted envelope after the migration rolls back.  Do
-  // not accept that generic envelope unless the exact failed migration row and
-  // its stored log independently bind it to this zero-step lock failure.
+  // not accept that generic envelope unless the exact zero-step failed row and
+  // the direct psql attempt against this same held-lock fixture prove it.
   assert(
     isExpectedPrismaLockTimeoutFailure({
       output,
       migrationName,
       historyEvidence,
+      directLockTimeoutProof,
     }),
     `${message}:${JSON.stringify(
       prismaLockTimeoutFailureMarkers({
         output,
         migrationName,
         historyEvidence,
+        directLockTimeoutProof,
       }),
     )}`,
   );

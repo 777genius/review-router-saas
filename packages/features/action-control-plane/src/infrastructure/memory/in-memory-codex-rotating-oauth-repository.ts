@@ -217,7 +217,17 @@ export class InMemoryCodexRotatingOAuthRepository
       }
       this.providers.set(input.binding.providerInstanceId, {
         ...existing,
-        binding: input.binding,
+        binding: {
+          ...input.binding,
+          ...(existing.binding.activeSecretNamespace
+            ? {
+                activeSecretNamespace: existing.binding.activeSecretNamespace,
+              }
+            : {}),
+          ...(existing.binding.activeWorkflowSource
+            ? { activeWorkflowSource: existing.binding.activeWorkflowSource }
+            : {}),
+        },
         repository: input.repository,
       });
       return;
@@ -1188,6 +1198,7 @@ function assertMemoryWorkflowAdmissionMatches(input: {
   readonly verified: VersionedSecretWorkflowSourceAttestation;
 }): void {
   const { provider, repository } = input;
+  const persisted = provider?.binding.activeWorkflowSource;
   let verified: VersionedSecretWorkflowSourceAttestation;
   try {
     verified = createVersionedSecretWorkflowSourceAttestation(input.verified);
@@ -1200,6 +1211,13 @@ function assertMemoryWorkflowAdmissionMatches(input: {
     verified.repositoryId !== provider.binding.githubRepositoryId ||
     verified.workflowPath !== provider.binding.workflowPath ||
     verified.workflowSchemaVersion !== provider.binding.workflowSchemaVersion ||
+    (persisted !== undefined &&
+      (verified.repositoryId !== persisted.repositoryId ||
+        verified.workflowPath !== persisted.workflowPath ||
+        verified.workflowSourceBlobSha !== persisted.workflowSourceBlobSha ||
+        verified.workflowSourceSha256 !== persisted.workflowSourceSha256 ||
+        verified.workflowSemanticSha256 !== persisted.workflowSemanticSha256 ||
+        verified.sourceTrust !== persisted.sourceTrust)) ||
     verified.sourceTrust !== WorkflowSourceTrust.TrustedDefaultBranchRevision ||
     verified.secretNamespace.scope.repositoryId !==
       repository.githubRepositoryId ||

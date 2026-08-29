@@ -158,9 +158,27 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
     secretNamespace: namespace,
   });
+  const finalRepositoryResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}",
+    { owner: input.owner, repo: input.name },
+  );
+  const finalRepository = readGitHubRepositoryIdentity(
+    finalRepositoryResponse.data,
+  );
+  if (
+    finalRepository.id !== observedRepository.id ||
+    finalRepository.fullName !== observedRepository.fullName ||
+    finalRepository.defaultBranch !== observedRepository.defaultBranch
+  ) {
+    throw new Error("codex_rotating_workflow_repository_identity_changed");
+  }
   const finalRefResponse = await input.octokit.request(
     "GET /repos/{owner}/{repo}/git/ref/{ref}",
-    refParameters,
+    {
+      owner: input.owner,
+      repo: input.name,
+      ref: `heads/${finalRepository.defaultBranch}`,
+    },
   );
   if (readGitHubCommitSha(finalRefResponse.data) !== workflowSourceCommitSha) {
     throw new Error("codex_rotating_workflow_default_head_changed");

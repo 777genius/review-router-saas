@@ -101,7 +101,7 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       expect.objectContaining({ ref: "heads/main" }),
     );
     expect(request).toHaveBeenNthCalledWith(
-      4,
+      5,
       "GET /repos/{owner}/{repo}/git/ref/{ref}",
       expect.objectContaining({ ref: "heads/main" }),
     );
@@ -204,6 +204,7 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       .mockResolvedValueOnce(repositoryResponse())
       .mockResolvedValueOnce(refResponse(unrelatedHead))
       .mockResolvedValueOnce(contentResponse())
+      .mockResolvedValueOnce(repositoryResponse())
       .mockResolvedValueOnce(refResponse(unrelatedHead));
 
     await expect(
@@ -422,13 +423,38 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
     );
   });
 
-  it("fails closed when the default branch changes during attestation", async () => {
+  it.each([
+    ["repository id", { id: 1228051728 }],
+    ["repository full name", { full_name: "attacker/renamed" }],
+    ["default branch", { default_branch: "trunk" }],
+  ])(
+    "fails closed when the %s changes immediately before initial activation persistence",
+    async (_name, identityChange) => {
+      const { input, request } = fixture();
+      request
+        .mockReset()
+        .mockResolvedValueOnce(repositoryResponse())
+        .mockResolvedValueOnce(refResponse(firstHead))
+        .mockResolvedValueOnce(contentResponse())
+        .mockResolvedValueOnce({
+          data: { ...repositoryResponse().data, ...identityChange },
+        });
+
+      await expect(
+        activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
+      ).rejects.toThrow("codex_rotating_workflow_repository_identity_changed");
+      expect(mocks.activate).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fails closed when the default head changes after the final identity reread", async () => {
     const { input, request } = fixture();
     request
       .mockReset()
       .mockResolvedValueOnce(repositoryResponse())
       .mockResolvedValueOnce(refResponse(firstHead))
       .mockResolvedValueOnce(contentResponse())
+      .mockResolvedValueOnce(repositoryResponse())
       .mockResolvedValueOnce(refResponse("d".repeat(40)));
 
     await expect(
@@ -504,6 +530,7 @@ function fixture() {
     .mockResolvedValueOnce(repositoryResponse())
     .mockResolvedValueOnce(refResponse(firstHead))
     .mockResolvedValueOnce(contentResponse())
+    .mockResolvedValueOnce(repositoryResponse())
     .mockResolvedValueOnce(refResponse(firstHead));
   return {
     findUnique,

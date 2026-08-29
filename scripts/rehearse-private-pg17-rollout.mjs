@@ -384,6 +384,9 @@ export function resolveRehearsalCaptureOnlyConfiguration(env) {
     return undefined;
   const disposableDatabaseIdentity =
     env.REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY ?? "";
+  const captureBaseCommit =
+    env.REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT ?? "";
+  const auditedHead = env.REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD ?? "";
   if (
     !/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(
       disposableDatabaseIdentity,
@@ -392,7 +395,16 @@ export function resolveRehearsalCaptureOnlyConfiguration(env) {
     throw new Error(
       "activation_catalog_policy_candidate_disposable_identity_required",
     );
-  return Object.freeze({ disposableDatabaseIdentity });
+  if (
+    !/^[a-f0-9]{40}$/u.test(captureBaseCommit) ||
+    !/^[a-f0-9]{40}$/u.test(auditedHead)
+  )
+    throw new Error("activation_catalog_policy_capture_custody_required");
+  return Object.freeze({
+    disposableDatabaseIdentity,
+    captureBaseCommit,
+    auditedHead,
+  });
 }
 
 export function assertDisposableCaptureTarget({
@@ -418,6 +430,8 @@ export function createActivationCatalogCaptureCheckpoint({
   disposableIdentity,
   systemIdentifier,
   recoveryWitnessSha256,
+  captureBaseCommit,
+  auditedHead,
 }) {
   if (
     artifact?.kind !==
@@ -433,9 +447,31 @@ export function createActivationCatalogCaptureCheckpoint({
       disposableIdentity ?? "",
     ) ||
     !/^[1-9][0-9]{0,19}$/u.test(systemIdentifier ?? "") ||
-    !/^[a-f0-9]{64}$/u.test(recoveryWitnessSha256 ?? "")
+    !/^[a-f0-9]{64}$/u.test(recoveryWitnessSha256 ?? "") ||
+    !/^[a-f0-9]{40}$/u.test(captureBaseCommit ?? "") ||
+    !/^[a-f0-9]{40}$/u.test(auditedHead ?? "") ||
+    candidate?.commitSha !== auditedHead
   )
     throw new Error("activation_catalog_policy_capture_binding_invalid");
+  const database = Object.freeze({
+    disposableIdentity,
+    configuredIdentity: candidate.databaseIdentity,
+    systemIdentifier,
+    recoveryWitnessSha256,
+  });
+  const projection = Object.freeze({
+    sha256: candidate.projectionSha256,
+    observedDigest: candidate.catalogDigest,
+  });
+  const immutableEvidence = {
+    auditedHead,
+    captureBaseCommit,
+    commitSha: candidate.commitSha,
+    database,
+    policies: artifact.policies,
+    postManifestIdentity: candidate.manifestIdentity,
+    projection,
+  };
   return Object.freeze({
     kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
     version: 2,
@@ -443,15 +479,12 @@ export function createActivationCatalogCaptureCheckpoint({
     capture: Object.freeze({
       commitSha: candidate.commitSha,
       postManifestIdentity: candidate.manifestIdentity,
-      database: Object.freeze({
-        disposableIdentity,
-        configuredIdentity: candidate.databaseIdentity,
-        systemIdentifier,
-        recoveryWitnessSha256,
-      }),
-      projection: Object.freeze({
-        sha256: candidate.projectionSha256,
-        observedDigest: candidate.catalogDigest,
+      database,
+      projection,
+      custody: Object.freeze({
+        captureBaseCommit,
+        auditedHead,
+        evidenceSha256: `sha256:${sha256Canonical(immutableEvidence)}`,
       }),
     }),
   });
@@ -1673,7 +1706,8 @@ ROLLBACK;`,
         "reviewrouter_codex_effect_authority",
         configuration.roles[3].password,
       ),
-      REVIEW_ROUTER_RELEASE_COMMIT_SHA: "d".repeat(40),
+      REVIEW_ROUTER_RELEASE_COMMIT_SHA:
+        captureOnly?.auditedHead ?? "d".repeat(40),
       REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: sha256(sourceSnapshot),
       REVIEW_ROUTER_ROLLOUT_ID: "disposable-rehearsal",
       REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER: sourceSystemIdentifier,
@@ -3571,6 +3605,8 @@ $attest_disposable_capture_database$;\n`,
         systemIdentifier: facts.targetSystemIdentifier,
         recoveryWitnessSha256:
           facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256,
+        captureBaseCommit: facts.captureOnly.captureBaseCommit,
+        auditedHead: facts.captureOnly.auditedHead,
       });
     },
     stageTargetServices: (migratedRollout) =>
