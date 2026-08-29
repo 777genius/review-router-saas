@@ -5475,10 +5475,11 @@ export function executeCanonicalReleaseMigration(
       [
         configuration.releaseUrl,
         "--no-psqlrc",
+        "--quiet",
         "--tuples-only",
         "--no-align",
         "--command",
-        `SELECT jsonb_build_object(
+        `COPY (SELECT jsonb_build_object(
             'manifestIdentity','sha256:'||encode(pg_catalog.sha256(convert_to(coalesce(string_agg(
               migration_name||':'||checksum,',' ORDER BY migration_name),''),'UTF8')),'hex'),
             'catalogDigest',(SELECT digest FROM (${fencedLiveV70V73CatalogDigestSql}) live(digest)),
@@ -5487,7 +5488,7 @@ export function executeCanonicalReleaseMigration(
             'unfinishedCount',(SELECT count(*) FROM public._prisma_migrations
               WHERE finished_at IS NULL AND rolled_back_at IS NULL)
           ) FROM public._prisma_migrations
-          WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL`,
+          WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL) TO STDOUT`,
       ],
       { env: childEnv },
     );

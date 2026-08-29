@@ -278,7 +278,8 @@ describe("application database release-authority isolation", () => {
   it("emits the untrusted catalog candidate only from capture while production keeps the promoted digest", () => {
     const candidateDigest =
       "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68";
-    const run = (step: string) => {
+    let captureArgs: readonly string[] | undefined;
+    const run = (step: string, _command: string, args: readonly string[]) => {
       if (step === "verify_release_authority")
         return JSON.stringify({
           currentUser: "reviewrouter_release_migration",
@@ -297,7 +298,8 @@ describe("application database release-authority isolation", () => {
           pendingIntentIds: [],
           intentStatuses: [],
         });
-      if (step === "verify_catalog_capture_migration_state")
+      if (step === "verify_catalog_capture_migration_state") {
+        captureArgs = args;
         return JSON.stringify({
           manifestIdentity:
             canonicalReleaseMigrationArtifact.postManifestIdentity,
@@ -305,6 +307,7 @@ describe("application database release-authority isolation", () => {
           permitState: "consumed",
           unfinishedCount: 0,
         });
+      }
       return step === "migration_history_preflight" ? "preflight" : "";
     };
     const result = executeCanonicalReleaseMigration(
@@ -334,6 +337,10 @@ describe("application database release-authority isolation", () => {
     expect(candidateDigest).not.toBe(
       canonicalReleaseMigrationArtifact.postCatalogDigest,
     );
+    expect(captureArgs).toContain("--quiet");
+    const captureCommand = captureArgs?.at(-1);
+    expect(captureCommand).toMatch(/^COPY \(SELECT jsonb_build_object\(/u);
+    expect(captureCommand).toMatch(/\) TO STDOUT$/u);
     expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
       "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0",
     );
