@@ -34,13 +34,17 @@ const legacyProviderVoteIndexDefinition =
 await client.connect();
 try {
   if (args.has("--status")) {
-    await printStatus();
+    await withSchemaOwnerTransaction(printStatus);
   } else if (args.has("--activate")) {
     await withSessionFleetFence(async () => {
-      await client.query(`
-        DROP INDEX CONCURRENTLY IF EXISTS "ReviewInvocationLeaseV2_one_active_provider_vote_lane"
-      `);
-      await inTransaction(async () => {
+      await withSchemaOwnerTransaction(async () => {
+        const legacyIndex = await readLegacyProviderVoteIndex();
+        if (!isExactLegacyProviderVoteIndex(legacyIndex)) {
+          throw new Error("provider_scope_concurrency_legacy_index_invalid");
+        }
+        await client.query(`
+          DROP INDEX public."ReviewInvocationLeaseV2_one_active_provider_vote_lane"
+        `);
         await client.query(`
           UPDATE "ReviewProviderScopeConcurrencyControl"
           SET "activated" = true, "updatedAt" = statement_timestamp()
@@ -50,20 +54,22 @@ try {
     });
     console.log("Scoped provider concurrency activated after old-fleet drain.");
   } else if (args.has("--close-for-rollback")) {
-    await withFleetFence(async () => {
-      await client.query(`
-        UPDATE "ReviewProviderScopeConcurrencyControl"
-        SET "activated" = false, "updatedAt" = statement_timestamp()
-        WHERE "singleton" = true
-      `);
-    });
+    await withSessionFleetFence(() =>
+      withSchemaOwnerTransaction(async () => {
+        await client.query(`
+          UPDATE "ReviewProviderScopeConcurrencyControl"
+          SET "activated" = false, "updatedAt" = statement_timestamp()
+          WHERE "singleton" = true
+        `);
+      }),
+    );
     console.log(
       "Scoped provider concurrency is closed. Drain duplicate active vote lanes and run --verify-rollback-ready before starting any old replica.",
     );
-    await printStatus();
+    await withSchemaOwnerTransaction(printStatus);
   } else {
     await withSessionFleetFence(async () => {
-      await inTransaction(async () => {
+      await withSchemaOwnerTransaction(async () => {
         const control = await client.query(`
           SELECT "activated"
           FROM "ReviewProviderScopeConcurrencyControl"
@@ -79,8 +85,8 @@ try {
             `provider_scope_concurrency_rollback_requires_drain:${duplicates}`,
           );
         }
+        await repairLegacyProviderVoteIndex();
       });
-      await repairLegacyProviderVoteIndex();
     });
     console.log(
       "Rollback fence is closed and old-binary global reads are safe.",
@@ -92,10 +98,6 @@ try {
   await client.end();
 }
 
-async function withFleetFence(operation) {
-  return withSessionFleetFence(() => inTransaction(operation));
-}
-
 async function withSessionFleetFence(operation) {
   await client.query("SELECT pg_advisory_lock(1381126735, 1381192279)");
   try {
@@ -103,6 +105,13 @@ async function withSessionFleetFence(operation) {
   } finally {
     await client.query("SELECT pg_advisory_unlock(1381126735, 1381192279)");
   }
+}
+
+async function withSchemaOwnerTransaction(operation) {
+  return inTransaction(async () => {
+    await client.query("SET LOCAL ROLE reviewrouter_release_schema_owner");
+    return operation();
+  });
 }
 
 async function inTransaction(operation) {
@@ -177,12 +186,12 @@ async function repairLegacyProviderVoteIndex() {
   if (isExactLegacyProviderVoteIndex(before)) return;
   if (before !== null) {
     await client.query(`
-      DROP INDEX CONCURRENTLY "ReviewInvocationLeaseV2_one_active_provider_vote_lane"
+      DROP INDEX public."ReviewInvocationLeaseV2_one_active_provider_vote_lane"
     `);
   }
   await client.query(`
-    CREATE UNIQUE INDEX CONCURRENTLY "ReviewInvocationLeaseV2_one_active_provider_vote_lane"
-    ON "ReviewInvocationLeaseV2" ("providerVoteIdentityHash")
+    CREATE UNIQUE INDEX "ReviewInvocationLeaseV2_one_active_provider_vote_lane"
+    ON public."ReviewInvocationLeaseV2" ("providerVoteIdentityHash")
     WHERE "state" = 'active' AND "purpose" = 'provider_execution'
   `);
   const repaired = await readLegacyProviderVoteIndex();

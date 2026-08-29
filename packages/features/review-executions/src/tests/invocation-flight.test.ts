@@ -113,6 +113,39 @@ describe("InvocationFlight singleflight", () => {
     ).toHaveLength(0);
   });
 
+  it("acquires independent owners for the same provider account in separate scopes", async () => {
+    const store = new InMemoryReviewExecutionStore(undefined, {
+      providerScopeConcurrencyActivated: true,
+    });
+    await prepareAndAdmit(store, scope, "execution-1", revision);
+    await prepareAndAdmit(store, otherScope, "execution-2", revision);
+    const useCase = new AcquireOrJoinInvocationFlight(store, store, store);
+
+    const results = await Promise.all([
+      useCase.execute(
+        leaseCommand({
+          index: 1,
+          scope,
+          executionId: "execution-1",
+          now: plus(2),
+        }),
+      ),
+      useCase.execute(
+        leaseCommand({
+          index: 2,
+          scope: otherScope,
+          executionId: "execution-2",
+          now: plus(2),
+        }),
+      ),
+    ]);
+
+    expect(results.map((result) => result.status)).toEqual([
+      AcquireOrJoinInvocationFlightStatus.OwnerAcquired,
+      AcquireOrJoinInvocationFlightStatus.OwnerAcquired,
+    ]);
+  });
+
   it("does not join when provider or compatibility-policy identity differs", async () => {
     const store = new InMemoryReviewExecutionStore();
     await prepareAndAdmit(store, scope, "execution-1", revision);

@@ -154,12 +154,13 @@ export function runReviewExecutionStoreContract(
       const acquired = await harness.executions.acquireLease(
         leaseCommand(harness, running.snapshot, "flight-restore"),
       );
-      const observed =
-        await harness.executions.observeActiveInvocationFlightByLane({
-          providerVoteIdentityHash:
-            running.snapshot.execution.workSlots[0]!.providerVoteIdentityHash,
-          requestedAt: new Date(),
-        });
+      const observed = await harness.executions.observeActiveInvocationFlight({
+        scope: harness.scope,
+        providerInvocationKey: acquired.lease!.providerInvocationKey,
+        providerVoteIdentityHash:
+          running.snapshot.execution.workSlots[0]!.providerVoteIdentityHash,
+        requestedAt: new Date(),
+      });
 
       expect(observed.observedAt).toBeInstanceOf(Date);
       expect(observed.flight).toMatchObject({

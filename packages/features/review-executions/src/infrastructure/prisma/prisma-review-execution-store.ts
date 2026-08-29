@@ -262,14 +262,32 @@ export class PrismaReviewExecutionStore
   async observeActiveInvocationFlight(input: {
     readonly scope: ReviewExecutionScope;
     readonly providerInvocationKey: string;
+    readonly providerVoteIdentityHash: string;
     readonly requestedAt: Date;
   }): Promise<Readonly<{ flight: InvocationFlight | null; observedAt: Date }>> {
     return this.prisma.$transaction(async (transaction) => {
       const observedAt = await databaseNow(transaction);
+      const controls = await transaction.$queryRaw<
+        Array<{ activated: boolean }>
+      >`
+        SELECT "activated"
+        FROM "ReviewProviderScopeConcurrencyControl"
+        WHERE "singleton" = true
+      `;
+      if (controls.length !== 1) {
+        throw new Error("review_provider_scope_concurrency_control_missing");
+      }
+      const activated = controls[0]!.activated;
       const incumbents = await transaction.reviewInvocationLeaseV2.findMany({
         where: {
-          ...scopeWhere(input.scope),
-          providerInvocationKey: input.providerInvocationKey,
+          ...(activated
+            ? {
+                ...scopeWhere(input.scope),
+                providerInvocationKey: input.providerInvocationKey,
+              }
+            : {
+                providerVoteIdentityHash: input.providerVoteIdentityHash,
+              }),
           purpose: leasePurposeToPrisma(
             ReviewInvocationLeasePurpose.ProviderExecution,
           ),
@@ -279,7 +297,11 @@ export class PrismaReviewExecutionStore
         take: 2,
       });
       if (incumbents.length > 1) {
-        throw new Error("review_provider_invocation_invariant_violated");
+        throw new Error(
+          activated
+            ? "review_provider_invocation_invariant_violated"
+            : "review_provider_lane_invariant_violated",
+        );
       }
       const record = incumbents[0];
       if (record === undefined) return { flight: null, observedAt };

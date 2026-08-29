@@ -7,12 +7,16 @@ describe("provider scope concurrency rollout control", () => {
     join(import.meta.dirname, "manage-review-provider-scope-concurrency.mjs"),
     "utf8",
   );
+  const pg17Proof = readFileSync(
+    join(import.meta.dirname, "run-hosted-pool-postgres-e2e.mjs"),
+    "utf8",
+  );
 
   it("requires an explicit old-fleet drain before activation", () => {
     expect(source).toContain("--confirm-old-replicas-drained");
     expect(source).toContain("pg_advisory_lock(1381126735, 1381192279)");
     expect(source).toContain(
-      'DROP INDEX CONCURRENTLY IF EXISTS "ReviewInvocationLeaseV2_one_active_provider_vote_lane"',
+      'DROP INDEX public."ReviewInvocationLeaseV2_one_active_provider_vote_lane"',
     );
     expect(source).toContain('SET "activated" = true');
   });
@@ -36,13 +40,41 @@ describe("provider scope concurrency rollout control", () => {
       "index.definition === legacyProviderVoteIndexDefinition",
     );
     expect(source).toContain(
-      'DROP INDEX CONCURRENTLY "ReviewInvocationLeaseV2_one_active_provider_vote_lane"',
+      'DROP INDEX public."ReviewInvocationLeaseV2_one_active_provider_vote_lane"',
     );
     expect(source).toContain(
-      'CREATE UNIQUE INDEX CONCURRENTLY "ReviewInvocationLeaseV2_one_active_provider_vote_lane"',
+      'CREATE UNIQUE INDEX "ReviewInvocationLeaseV2_one_active_provider_vote_lane"',
     );
-    expect(source).not.toContain(
-      "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS",
+    expect(source).not.toContain("CREATE UNIQUE INDEX IF NOT EXISTS");
+    expect(source).toContain("provider_scope_concurrency_legacy_index_invalid");
+  });
+
+  it("bounds owner-only index DDL and catalog inspection to a local role transaction", () => {
+    expect(source).toContain(
+      "SET LOCAL ROLE reviewrouter_release_schema_owner",
+    );
+    expect(source).toContain("withSchemaOwnerTransaction(printStatus)");
+    expect(source).toContain("await repairLegacyProviderVoteIndex()");
+    expect(source).not.toContain("DROP INDEX CONCURRENTLY");
+    expect(source).not.toContain("CREATE UNIQUE INDEX CONCURRENTLY");
+  });
+
+  it("runs the real PG17 activation and rollback proof as the restricted release login", () => {
+    expect(pg17Proof).toContain(
+      "proveProviderScopeConcurrencyRollout(releaseMigrationDatabaseUrl)",
+    );
+    expect(pg17Proof).not.toContain(
+      "proveProviderScopeConcurrencyRollout(databaseUrl)",
+    );
+    expect(pg17Proof).toContain("WITH ADMIN FALSE, INHERIT FALSE, SET TRUE");
+    expect(pg17Proof).toContain(
+      "provider_scope_concurrency_release_authority_invalid",
+    );
+    expect(
+      pg17Proof.match(/DATABASE_URL: restrictedConnectionString/gu),
+    ).toHaveLength(3);
+    expect(pg17Proof).toContain(
+      "SET LOCAL ROLE reviewrouter_release_schema_owner",
     );
   });
 });

@@ -2760,7 +2760,7 @@ BEGIN
         '${workerOwnedMaintenanceCheckpointTable}','HostedCodexRuntimeGate',
         'HostedCodexRuntimeClosure','HostedCodexCommentTokenMint',
         'HostedCodexCommentTokenRevocationProof','HostedCodexCommentRefreshCapability',
-        'HostedCodexCommentRefreshUse'
+        'HostedCodexCommentRefreshUse','ReviewProviderScopeConcurrencyControl'
       ) AND attribute.attnum>0 AND NOT attribute.attisdropped
     ), sequence_facts AS (
       SELECT role_name, role_kind, relname,
@@ -2813,7 +2813,8 @@ BEGIN
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthDatabaseAuthorityKey',
            'CodexOAuthDatabaseAuthorityReceipt','RuntimeGenerationWitnessProof',
            'HostedCodexCommentTokenRevocationProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
-           AND relname NOT IN ('HostedCodexRuntimeGate','HostedCodexRuntimeClosure')
+           AND relname NOT IN ('HostedCodexRuntimeGate','HostedCodexRuntimeClosure',
+             'ReviewProviderScopeConcurrencyControl')
            AND relname <> 'HostedCodexCommentTokenMint'
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker') END)
          OR can_update IS DISTINCT FROM (CASE WHEN role_kind='custody' THEN false
@@ -2822,7 +2823,8 @@ BEGIN
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance',
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
            'HostedCodexCommentTokenRevocationProof','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
-           AND relname NOT IN ('HostedCodexRuntimeGate','HostedCodexRuntimeClosure')
+           AND relname NOT IN ('HostedCodexRuntimeGate','HostedCodexRuntimeClosure',
+             'ReviewProviderScopeConcurrencyControl')
            AND relname <> 'HostedCodexCommentTokenMint'
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker') END)
          OR can_delete IS DISTINCT FROM (role_kind NOT IN ('effect-authority','custody') AND relname NOT IN (
@@ -2833,7 +2835,8 @@ BEGIN
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
            'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof',
            'HostedCodexCommentTokenRevocationProof','${workerOwnedMaintenanceCheckpointTable}',
-           'HostedCodexRuntimeGate','HostedCodexRuntimeClosure','HostedCodexCommentTokenMint'))
+           'HostedCodexRuntimeGate','HostedCodexRuntimeClosure',
+           'ReviewProviderScopeConcurrencyControl','HostedCodexCommentTokenMint'))
          OR can_truncate OR can_reference OR can_trigger)
        OR EXISTS (
          SELECT 1 FROM column_facts
@@ -4817,6 +4820,7 @@ export function runtimeGrantStatements(
     "RepositoryConnection",
     ...rotatingEvidenceTables,
     ...fullyProtectedRuntimeTables,
+    ...runtimeAuthorityReadOnlyTables,
     workerOwnedMaintenanceCheckpointTable,
   ]
     .map((table) => `'${table}'`)

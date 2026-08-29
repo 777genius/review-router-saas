@@ -36,8 +36,10 @@ const databaseUrl = `postgresql://postgres:${password}@127.0.0.1:${port}/${datab
 const migrationDatabaseUrl = `postgresql://postgres:${password}@127.0.0.1:${port}/${migrationDatabase}?schema=public`;
 const custodyPassword = randomBytes(24).toString("base64url");
 const apiPassword = randomBytes(24).toString("base64url");
+const releaseMigrationPassword = randomBytes(24).toString("base64url");
 const custodyDatabaseUrl = `postgresql://reviewrouter_comment_token_custody:${custodyPassword}@127.0.0.1:${port}/${database}?schema=public`;
 const apiDatabaseUrl = `postgresql://reviewrouter_api:${apiPassword}@127.0.0.1:${port}/${database}?schema=public`;
+const releaseMigrationDatabaseUrl = `postgresql://reviewrouter_release_migration:${releaseMigrationPassword}@127.0.0.1:${port}/${database}?schema=public`;
 
 let started = false;
 let rehearsalDirectory;
@@ -62,6 +64,7 @@ try {
   await provisionAdversarialRuntimeRoles(databaseUrl, {
     custodyPassword,
     apiPassword,
+    releaseMigrationPassword,
   });
   if (runMigration) {
     run("docker", [
@@ -121,7 +124,8 @@ try {
   if (runPostgresE2e) {
     runMigrationDeploy("packages/platform/db", databaseUrl);
     await applyProductionRuntimeAcl(databaseUrl, database);
-    await proveProviderScopeConcurrencyRollout(databaseUrl);
+    await prepareProviderScopeConcurrencyReleaseAuthority(databaseUrl);
+    await proveProviderScopeConcurrencyRollout(releaseMigrationDatabaseUrl);
     await proveCustodyCredentialRotation(databaseUrl, custodyDatabaseUrl);
     try {
       run(
@@ -149,10 +153,43 @@ try {
   }
 }
 
-async function proveProviderScopeConcurrencyRollout(connectionString) {
-  const client = new pg.Client({ connectionString });
+async function proveProviderScopeConcurrencyRollout(
+  restrictedConnectionString,
+) {
+  const client = new pg.Client({
+    connectionString: restrictedConnectionString,
+  });
   await client.connect();
   try {
+    const restrictedAuthority = await client.query(`
+      SELECT current_user, session_user, login.rolcanlogin, login.rolsuper,
+             login.rolcreaterole, login.rolinherit, login.rolcreatedb,
+             login.rolreplication, login.rolbypassrls,
+             membership.inherit_option, membership.set_option
+      FROM pg_roles login
+      JOIN pg_auth_members membership
+        ON membership.member = login.oid
+      WHERE login.rolname = 'reviewrouter_release_migration'
+        AND membership.roleid = 'reviewrouter_release_schema_owner'::regrole
+    `);
+    if (
+      restrictedAuthority.rows.length !== 1 ||
+      restrictedAuthority.rows[0]?.current_user !==
+        "reviewrouter_release_migration" ||
+      restrictedAuthority.rows[0]?.session_user !==
+        "reviewrouter_release_migration" ||
+      restrictedAuthority.rows[0]?.rolcanlogin !== true ||
+      restrictedAuthority.rows[0]?.rolsuper !== false ||
+      restrictedAuthority.rows[0]?.rolcreaterole !== false ||
+      restrictedAuthority.rows[0]?.rolinherit !== false ||
+      restrictedAuthority.rows[0]?.rolcreatedb !== false ||
+      restrictedAuthority.rows[0]?.rolreplication !== false ||
+      restrictedAuthority.rows[0]?.rolbypassrls !== false ||
+      restrictedAuthority.rows[0]?.inherit_option !== false ||
+      restrictedAuthority.rows[0]?.set_option !== true
+    ) {
+      throw new Error("provider_scope_concurrency_release_authority_invalid");
+    }
     const runtimeAuthority = await client.query(`
       SELECT role_name,
         has_table_privilege(
@@ -182,7 +219,7 @@ async function proveProviderScopeConcurrencyRollout(connectionString) {
         "--activate",
         "--confirm-old-replicas-drained",
       ],
-      { DATABASE_URL: connectionString },
+      { DATABASE_URL: restrictedConnectionString },
     );
     run(
       "node",
@@ -191,29 +228,46 @@ async function proveProviderScopeConcurrencyRollout(connectionString) {
         "--close-for-rollback",
         "--confirm-no-old-replica-started",
       ],
-      { DATABASE_URL: connectionString },
+      { DATABASE_URL: restrictedConnectionString },
     );
-    await client.query(`
-      CREATE INDEX "ReviewInvocationLeaseV2_one_active_provider_vote_lane"
-      ON "ReviewInvocationLeaseV2" ("leaseId")
-    `);
+    await client.query("BEGIN");
+    try {
+      await client.query("SET LOCAL ROLE reviewrouter_release_schema_owner");
+      await client.query(`
+        CREATE INDEX "ReviewInvocationLeaseV2_one_active_provider_vote_lane"
+        ON "ReviewInvocationLeaseV2" ("leaseId")
+      `);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    }
     run(
       "node",
       [
         "scripts/manage-review-provider-scope-concurrency.mjs",
         "--verify-rollback-ready",
       ],
-      { DATABASE_URL: connectionString },
+      { DATABASE_URL: restrictedConnectionString },
     );
-    const repaired = await client.query(`
-      SELECT index_catalog.indisvalid,
-             index_catalog.indisready,
-             index_catalog.indisunique,
-             pg_get_indexdef(index_catalog.indexrelid) AS definition
-      FROM pg_catalog.pg_index index_catalog
-      WHERE index_catalog.indexrelid =
-        'public."ReviewInvocationLeaseV2_one_active_provider_vote_lane"'::regclass
-    `);
+    await client.query("BEGIN");
+    let repaired;
+    try {
+      await client.query("SET LOCAL ROLE reviewrouter_release_schema_owner");
+      repaired = await client.query(`
+        SELECT index_catalog.indisvalid,
+               index_catalog.indisready,
+               index_catalog.indisunique,
+               pg_get_indexdef(index_catalog.indexrelid) AS definition
+        FROM pg_catalog.pg_index index_catalog
+        WHERE index_catalog.indexrelid =
+          'public."ReviewInvocationLeaseV2_one_active_provider_vote_lane"'::regclass
+      `);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    }
     const expectedDefinition =
       'CREATE UNIQUE INDEX "ReviewInvocationLeaseV2_one_active_provider_vote_lane" ON public."ReviewInvocationLeaseV2" USING btree ("providerVoteIdentityHash") WHERE ((state = \'active\'::"ReviewInvocationLeaseStateV2") AND (purpose = \'provider_execution\'::"ReviewInvocationLeasePurposeV2"))';
     if (
@@ -314,14 +368,15 @@ async function canConnect(connectionString) {
 
 async function provisionAdversarialRuntimeRoles(
   connectionString,
-  { custodyPassword, apiPassword },
+  { custodyPassword, apiPassword, releaseMigrationPassword },
 ) {
   const client = new pg.Client({ connectionString });
   await client.connect();
   try {
     if (
       !/^[A-Za-z0-9_-]+$/u.test(custodyPassword) ||
-      !/^[A-Za-z0-9_-]+$/u.test(apiPassword)
+      !/^[A-Za-z0-9_-]+$/u.test(apiPassword) ||
+      !/^[A-Za-z0-9_-]+$/u.test(releaseMigrationPassword)
     )
       throw new Error("hosted_pool_e2e_role_password_invalid");
     await client.query(
@@ -342,6 +397,38 @@ async function provisionAdversarialRuntimeRoles(
     await client.query(
       "CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS",
     );
+    await client.query(
+      `CREATE ROLE reviewrouter_release_migration LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '${releaseMigrationPassword}'`,
+    );
+    await client.query(`
+      GRANT reviewrouter_release_schema_owner TO reviewrouter_release_migration
+        WITH ADMIN FALSE, INHERIT FALSE, SET TRUE
+    `);
+  } finally {
+    await client.end();
+  }
+}
+
+async function prepareProviderScopeConcurrencyReleaseAuthority(
+  connectionString,
+) {
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query(`
+      ALTER TABLE public."ReviewInvocationLeaseV2"
+        OWNER TO reviewrouter_release_schema_owner;
+      ALTER TABLE public."ReviewProviderScopeConcurrencyControl"
+        OWNER TO reviewrouter_release_schema_owner;
+      GRANT USAGE, CREATE ON SCHEMA public
+        TO reviewrouter_release_schema_owner;
+      GRANT CONNECT ON DATABASE ${database}
+        TO reviewrouter_release_migration;
+      GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration;
+      GRANT SELECT, UPDATE
+        ON TABLE public."ReviewProviderScopeConcurrencyControl"
+        TO reviewrouter_release_migration;
+    `);
   } finally {
     await client.end();
   }

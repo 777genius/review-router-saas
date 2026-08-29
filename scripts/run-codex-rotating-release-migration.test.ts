@@ -1336,6 +1336,12 @@ describe("canonical exclusive release migration caller", () => {
     expect(activationAuthority).toContain(
       "WHEN role_kind='api' AND proname='reviewrouter_runtime_generation_write_read_canary' THEN",
     );
+    expect(activationAuthority).toContain(
+      "'HostedCodexRuntimeGate','HostedCodexRuntimeClosure',\n             'ReviewProviderScopeConcurrencyControl'",
+    );
+    expect(activationAuthority).toContain(
+      "'HostedCodexRuntimeGate','HostedCodexRuntimeClosure',\n           'ReviewProviderScopeConcurrencyControl','HostedCodexCommentTokenMint'",
+    );
     expect(grants).toContain(
       "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM reviewrouter_codex_effect_authority",
     );
@@ -1413,6 +1419,7 @@ describe("canonical exclusive release migration caller", () => {
         expect(grants).toContain(`'${table}'`);
       }
       expect(grants).toContain("REVOKE ALL (%I) ON TABLE public.%I FROM %I");
+      expect(grants).toContain("'ReviewProviderScopeConcurrencyControl'");
       expect(grants).toContain("'REVOKE DELETE ON TABLE public.%I FROM %I'");
       expect(grants).toContain(
         "'REVOKE INSERT, UPDATE, DELETE ON TABLE public.%I FROM %I'",
@@ -1436,6 +1443,41 @@ describe("canonical exclusive release migration caller", () => {
       grants.indexOf(
         'GRANT EXECUTE ON FUNCTION public."codex_oauth_sign_database_authority"(text) TO reviewrouter_codex_effect_authority',
       ),
+    );
+  });
+
+  it("keeps provider-scope rollout control SELECT-only in the activation ACL verifier", () => {
+    const activationAuthority = activationAuthorityProvisioningSql();
+    const activateGeneration = activationAuthority.slice(
+      activationAuthority.indexOf(
+        "CREATE OR REPLACE FUNCTION reviewrouter_activation.activate_generation(",
+      ),
+      activationAuthority.indexOf(
+        "ALTER FUNCTION reviewrouter_activation.activate_generation(text)",
+      ),
+    );
+    const insertExpectation = activateGeneration.slice(
+      activateGeneration.indexOf("OR can_insert IS DISTINCT FROM"),
+      activateGeneration.indexOf("OR can_update IS DISTINCT FROM"),
+    );
+    const updateExpectation = activateGeneration.slice(
+      activateGeneration.indexOf("OR can_update IS DISTINCT FROM"),
+      activateGeneration.indexOf("OR can_delete IS DISTINCT FROM"),
+    );
+    const deleteExpectation = activateGeneration.slice(
+      activateGeneration.indexOf("OR can_delete IS DISTINCT FROM"),
+      activateGeneration.indexOf("OR can_truncate"),
+    );
+
+    for (const expectation of [
+      insertExpectation,
+      updateExpectation,
+      deleteExpectation,
+    ]) {
+      expect(expectation).toContain("ReviewProviderScopeConcurrencyControl");
+    }
+    expect(activateGeneration).toContain(
+      "'HostedCodexCommentRefreshUse','ReviewProviderScopeConcurrencyControl'",
     );
   });
 

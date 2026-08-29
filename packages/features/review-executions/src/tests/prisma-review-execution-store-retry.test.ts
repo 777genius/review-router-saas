@@ -13,6 +13,58 @@ import { ReviewInvocationLeasePurpose } from "../domain/review-execution";
 import { ReviewExecutionState } from "../domain/review-execution";
 
 describe("Prisma review execution transaction retries", () => {
+  it.each([
+    {
+      activated: false,
+      expectedIdentity: { providerVoteIdentityHash: "vote-identity" },
+    },
+    {
+      activated: true,
+      expectedIdentity: {
+        ...scope,
+        providerInvocationKey: "provider-invocation",
+      },
+    },
+  ])(
+    "selects the $activated production flight observation identity",
+    async ({ activated, expectedIdentity }) => {
+      const findMany = vi.fn().mockResolvedValue([]);
+      const transaction = {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValueOnce([{ epochMs: 1_775_203_200_000n }])
+          .mockResolvedValueOnce([{ activated }]),
+        reviewInvocationLeaseV2: { findMany },
+      };
+      const prisma = {
+        $transaction: vi.fn(
+          async (operation: (client: typeof transaction) => unknown) =>
+            operation(transaction),
+        ),
+      };
+      const store = new PrismaReviewExecutionStore(prisma as never);
+
+      await expect(
+        store.observeActiveInvocationFlight({
+          scope,
+          providerInvocationKey: "provider-invocation",
+          providerVoteIdentityHash: "vote-identity",
+          requestedAt: new Date("2026-04-02T00:00:00.000Z"),
+        }),
+      ).resolves.toMatchObject({ flight: null });
+
+      expect(findMany).toHaveBeenCalledWith({
+        where: {
+          ...expectedIdentity,
+          purpose: "provider_execution",
+          state: "active",
+        },
+        orderBy: { leaseId: "asc" },
+        take: 2,
+      });
+    },
+  );
+
   it("uses read committed for scope-local preparation and admission but serializable for lease fencing", async () => {
     const prisma = {
       $transaction: vi

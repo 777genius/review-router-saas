@@ -6,6 +6,10 @@ import {
   type PrismaClient,
 } from "@reviewrouter/platform-db";
 import { PrismaReviewExecutionStore } from "../infrastructure/prisma/prisma-review-execution-store";
+import {
+  AcquireOrJoinInvocationFlight,
+  AcquireOrJoinInvocationFlightStatus,
+} from "../application/use-cases/acquire-or-join-invocation-flight";
 import { isTransactionConflictError } from "../infrastructure/prisma/prisma-review-execution-utils";
 import { PrismaReviewRequestedIntentStore } from "../infrastructure/prisma/prisma-review-requested-intent-store";
 import {
@@ -1016,6 +1020,130 @@ if (databaseUrl) {
           take: 2,
         }),
       ).resolves.toHaveLength(1);
+    });
+
+    it("drives production flight acquisition through legacy and activated scope observation", async () => {
+      await expect(
+        prisma.$queryRaw<Array<{ postgresMajor: number }>>`
+          SELECT current_setting('server_version_num')::integer / 10000 AS "postgresMajor"
+        `,
+      ).resolves.toEqual([{ postgresMajor: 17 }]);
+      const harnesses = await settleConcurrent([
+        createHarness(501),
+        createHarness(502),
+      ]);
+      expect(
+        new Set(
+          harnesses.map((harness) => harness.scope.repositoryConnectionId),
+        ).size,
+      ).toBe(2);
+      expect(
+        new Set(harnesses.map((harness) => harness.scope.pullRequestNumber))
+          .size,
+      ).toBe(2);
+      const running = await settleConcurrent(
+        harnesses.map((harness, index) =>
+          prepareAndAdmit(harness, `production-flight-${index}`),
+        ),
+      );
+      const useCases = harnesses.map(
+        (harness) =>
+          new AcquireOrJoinInvocationFlight(
+            harness.executions,
+            harness.executions,
+            harness.executions,
+          ),
+      );
+      const providerInvocationKey = hashFromText(
+        "shared-production-provider-account",
+      );
+      const commandsFor = (phase: string) =>
+        harnesses.map((harness, index) => ({
+          ...leaseCommand(
+            harness,
+            running[index]!.snapshot,
+            `${phase}-${index}`,
+          ),
+          providerInvocationKey,
+          preparedManifestKey: hashFromText(`manifest-${index}`),
+        }));
+
+      try {
+        await setProviderScopeConcurrency(false);
+        const legacyCommands = commandsFor("legacy-production-flight");
+        expect(
+          new Set(
+            legacyCommands.map((command) => command.providerVoteIdentityHash),
+          ).size,
+        ).toBe(1);
+        const legacy = await settleConcurrent(
+          useCases.map((useCase, index) =>
+            useCase.execute(legacyCommands[index]!),
+          ),
+        );
+        expect(legacy.map((result) => result.status).sort()).toEqual([
+          AcquireOrJoinInvocationFlightStatus.Busy,
+          AcquireOrJoinInvocationFlightStatus.OwnerAcquired,
+        ]);
+        const legacyOwnerIndex = legacy.findIndex(
+          (result) =>
+            result.status === AcquireOrJoinInvocationFlightStatus.OwnerAcquired,
+        );
+        const legacyOwner = legacy[legacyOwnerIndex]!;
+        const legacyOwnerCommand = legacyCommands[legacyOwnerIndex]!;
+        await expect(
+          harnesses[legacyOwnerIndex]!.executions.releaseLease({
+            leaseId: legacyOwner.flight!.ownerLeaseId,
+            ownerIdHash: legacyOwnerCommand.ownerIdHash,
+            leaseCapabilityId: legacyOwnerCommand.leaseCapabilityId,
+            fencingToken: legacyOwner.flight!.fencingToken,
+            now: new Date(),
+          }),
+        ).resolves.toMatchObject({ status: "applied" });
+
+        await setProviderScopeConcurrency(true);
+        const activatedCommands = commandsFor("activated-production-flight");
+        const activated = await settleConcurrent(
+          useCases.map((useCase, index) =>
+            useCase.execute(activatedCommands[index]!),
+          ),
+        );
+        expect(activated.map((result) => result.status)).toEqual([
+          AcquireOrJoinInvocationFlightStatus.OwnerAcquired,
+          AcquireOrJoinInvocationFlightStatus.OwnerAcquired,
+        ]);
+
+        const duplicate = await useCases[0]!.execute({
+          ...activatedCommands[0]!,
+          leaseId: "lease-activated-production-flight-duplicate",
+          attemptId: "attempt-activated-production-flight-duplicate",
+          acquireRequestIdHash: hashFromText(
+            "activated-production-flight-duplicate-request-id",
+          ),
+          acquireRequestHash: hashFromText(
+            "activated-production-flight-duplicate-request",
+          ),
+          ownerIdHash: "owner-activated-production-flight-duplicate",
+          leaseCapabilityId: "capability-activated-production-flight-duplicate",
+        });
+        expect(duplicate).toMatchObject({
+          status: AcquireOrJoinInvocationFlightStatus.Joined,
+          flight: { flightId: activated[0]!.flight!.flightId },
+        });
+      } finally {
+        await setProviderScopeConcurrency(false);
+        await prisma.reviewInvocationLeaseV2.updateMany({
+          where: {
+            workspaceId: {
+              in: harnesses.map((item) => item.scope.workspaceId),
+            },
+            purpose: "provider_execution",
+            state: "active",
+          },
+          data: { state: "released" },
+        });
+        await restoreLegacyProviderVoteIndex();
+      }
     });
 
     it("requires close then active-lane drain before reverse-order rollback", async () => {
