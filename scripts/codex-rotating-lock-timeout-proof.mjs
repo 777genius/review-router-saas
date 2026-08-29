@@ -39,13 +39,13 @@ export function prismaLockTimeoutFailureMarkers({
 }) {
   const normalized = output.toLowerCase();
   const migrationNames = [
-    ...output.matchAll(/^[\t ]*Migration name:[\t ]*([^\r\n]+?)[\t ]*\r?$/gmu),
+    ...output.matchAll(/^[\t ]*Migration name:[\t ]*([^\r\n]+?)[\t ]*\r?$/gimu),
   ].map((match) => match[1]);
   return Object.freeze({
     lockTimeout: normalized.includes("lock timeout"),
     abortedTransaction: normalized.includes("current transaction is aborted"),
     exactAbortedTransactionEnvelope:
-      /^ERROR:[\t ]*current transaction is aborted\r?\n?$/u.test(output),
+      /^ERROR:[\t ]*current transaction is aborted\r?\n?$/iu.test(output),
     prismaMigrationFailure: normalized.includes("p3018"),
     prismaFailureCodePresent: /\bP\d{4}\b/iu.test(output),
     migrationNameFieldPresent: migrationNames.length > 0,

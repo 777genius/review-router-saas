@@ -196,6 +196,46 @@ describe("disposable dual-version rehearsal", () => {
     expect(diagnostic).not.toContain("do-not-print");
   });
 
+  it.each([
+    ["direct snake case", new Error("credential_supersecret123")],
+    [
+      "prefixed migration snake case",
+      new Error("release_migration_password_hunter2"),
+    ],
+    [
+      "nested snake case",
+      {
+        meta: { driverAdapterError: { message: "credential_supersecret123" } },
+      },
+    ],
+    ["direct release text", new Error("release migration password hunter2")],
+    [
+      "nested P0001 release text",
+      {
+        meta: {
+          driverAdapterError: {
+            cause: {
+              originalCode: "P0001",
+              originalMessage: "release migration password hunter2",
+            },
+          },
+        },
+      },
+    ],
+  ])("redacts adversarial %s diagnostics", (_case, error) => {
+    const diagnostic = safeRehearsalStageErrorDiagnostic(
+      "run_release_migration",
+      error,
+    );
+    expect(diagnostic).toBe(
+      '{"version":1,"code":"private_pg17_rehearsal_command_failed","phase":"rehearsal","exit":{"code":null,"signal":null},"metadata":{},"operatorHint":"Inspect the disposable rehearsal phase and local container state."}',
+    );
+    expect(diagnostic).not.toContain("credential_supersecret123");
+    expect(diagnostic).not.toContain("release migration password hunter2");
+    expect(diagnostic).not.toContain("release_migration_password_hunter2");
+    expect(diagnostic).not.toContain("hunter2");
+  });
+
   it("reports authority readiness drift without credential material", () => {
     expect(
       summarizeAuthorityReadinessMismatch({
@@ -1350,6 +1390,16 @@ describe("disposable dual-version rehearsal", () => {
       "rehearsal_control_health_not_ready:status=${status}",
     );
     expect(source).toContain("rehearsal_canonical_postgres_error:${step}");
+    expect(source).toContain(
+      '"rehearsal_migration_substep_started:configuration\\n"',
+    );
+    expect(source).toContain(
+      '"rehearsal_migration_substep_completed:configuration\\n"',
+    );
+    expect(source).toContain('"rehearsal_migration_substep_started:permit\\n"');
+    expect(source).toContain(
+      '"rehearsal_migration_substep_completed:permit\\n"',
+    );
     expect(source).toContain(
       "rehearsal_stage_failed:${safeName}:${safeRehearsalStageErrorDiagnostic(safeName, error)}",
     );

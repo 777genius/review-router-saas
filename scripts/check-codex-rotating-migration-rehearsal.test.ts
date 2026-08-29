@@ -790,6 +790,14 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(true);
     expect(
       isExpectedPrismaLockTimeoutFailure({
+        output: "ERROR: current transaction is aborted".toLowerCase(),
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
         output: "ERROR: permission denied",
         migrationName,
         historyEvidence: exactEvidence,
@@ -847,6 +855,18 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(
       isExpectedPrismaLockTimeoutFailure({
         output: `P3018\nMigration name: 000061_codex_oauth_provider_mutation_fence\nERROR: lock timeout`,
+        migrationName: "000061_codex_oauth_provider_mutation_fence",
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: {
+          migrationName: "000061_codex_oauth_provider_mutation_fence",
+          observed: true,
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output:
+          `P3018\nMigration name: 000061_codex_oauth_provider_mutation_fence\nERROR: lock timeout`.toLowerCase(),
         migrationName: "000061_codex_oauth_provider_mutation_fence",
         historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
         directLockTimeoutProof: {

@@ -63,6 +63,8 @@ import { PostgresCleanupObservationAdapter } from "../apps/api/src/release-witne
 import {
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
+  releaseMigrationPermitFromEnv,
+  resolveReleaseMigrationConfiguration,
   activationAuthorityProvisioningSql,
   activationRoutineBodyTrustRoots,
   canonicalActivationCatalogPolicyCandidateSql,
@@ -761,12 +763,34 @@ export function safeReleaseAuthorityErrorClassification(error) {
 }
 
 export function safeRehearsalStageErrorDiagnostic(stageName, error) {
-  const safeStageCode = safeRehearsalStageErrorCode(error);
-  if (safeStageCode) return safeStageCode;
-  if (stageName === "run_release_migration") {
-    const safeAuthorityClassification =
-      safeReleaseAuthorityErrorClassification(error);
-    if (safeAuthorityClassification) return safeAuthorityClassification;
+  if (stageName !== "run_release_migration") {
+    return safeRehearsalStageErrorCode(error) ?? redactedErrorChain(error);
+  }
+  {
+    const pending = [error];
+    const seen = new Set();
+    const safeMessages = [
+      ...safeReleaseAuthorityInvariantMessages,
+      ...safeReleaseMigrationInvariantMessages,
+    ];
+    while (pending.length > 0) {
+      const current = pending.shift();
+      if (!current || typeof current !== "object" || seen.has(current))
+        continue;
+      seen.add(current);
+      for (const key of ["message", "originalMessage"]) {
+        const message = current[key];
+        if (typeof message !== "string") continue;
+        const classification = safeMessages.find(
+          (candidate) =>
+            message === candidate || message === `ERROR: ${candidate}`,
+        );
+        if (classification) return classification;
+      }
+      for (const key of ["cause", "meta", "driverAdapterError"])
+        if (current[key] && typeof current[key] === "object")
+          pending.push(current[key]);
+    }
   }
   return redactedErrorChain(error);
 }
@@ -2710,30 +2734,38 @@ async function verifyProductionPathRehearsal(facts) {
   let migrationCatalogCandidate;
   const sourceLegacyAmbiguity = facts.sourceLegacyAmbiguity;
   const runReleaseMigrationPort = async (_target, transition, permit) => {
+    const migrationEnv = {
+      ...facts.canonicalEnv,
+      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+      REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_SYSTEM_IDENTIFIER:
+        permit.targetSystemIdentifier,
+      REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_RECOVERY_WITNESS_SHA256:
+        permit.targetRecoveryWitnessSha256,
+      REVIEW_ROUTER_MIGRATION_PERMIT_TRANSITION_SHA256: permit.transitionSha256,
+      REVIEW_ROUTER_MIGRATION_PERMIT_PREVIOUS_RECEIPT_SHA256:
+        permit.expectedPreviousReceiptSha256,
+      REVIEW_ROUTER_MIGRATION_PERMIT_EPOCH: String(permit.epoch),
+      REVIEW_ROUTER_MIGRATION_PERMIT_NONCE: permit.nonce,
+      REVIEW_ROUTER_MIGRATION_PERMIT_SOURCE_LEGACY_AMBIGUITY_BASE64URL:
+        Buffer.from(JSON.stringify(permit.sourceLegacyAmbiguity)).toString(
+          "base64url",
+        ),
+      REVIEW_ROUTER_MIGRATION_PERMIT_ELIGIBILITY_CUTOFF:
+        permit.eligibilityCutoff,
+    };
+    process.stderr.write("rehearsal_migration_substep_started:configuration\n");
+    resolveReleaseMigrationConfiguration(migrationEnv);
+    process.stderr.write(
+      "rehearsal_migration_substep_completed:configuration\n",
+    );
+    process.stderr.write("rehearsal_migration_substep_started:permit\n");
+    releaseMigrationPermitFromEnv(migrationEnv);
+    process.stderr.write("rehearsal_migration_substep_completed:permit\n");
     process.stderr.write(
       "rehearsal_migration_substep_started:canonical_migration\n",
     );
     const migration = executeCanonicalReleaseMigration(
-      {
-        ...facts.canonicalEnv,
-        REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
-        REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_SYSTEM_IDENTIFIER:
-          permit.targetSystemIdentifier,
-        REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_RECOVERY_WITNESS_SHA256:
-          permit.targetRecoveryWitnessSha256,
-        REVIEW_ROUTER_MIGRATION_PERMIT_TRANSITION_SHA256:
-          permit.transitionSha256,
-        REVIEW_ROUTER_MIGRATION_PERMIT_PREVIOUS_RECEIPT_SHA256:
-          permit.expectedPreviousReceiptSha256,
-        REVIEW_ROUTER_MIGRATION_PERMIT_EPOCH: String(permit.epoch),
-        REVIEW_ROUTER_MIGRATION_PERMIT_NONCE: permit.nonce,
-        REVIEW_ROUTER_MIGRATION_PERMIT_SOURCE_LEGACY_AMBIGUITY_BASE64URL:
-          Buffer.from(JSON.stringify(permit.sourceLegacyAmbiguity)).toString(
-            "base64url",
-          ),
-        REVIEW_ROUTER_MIGRATION_PERMIT_ELIGIBILITY_CUTOFF:
-          permit.eligibilityCutoff,
-      },
+      migrationEnv,
       canonicalRun,
     );
     if (migration.captureOnlyStatus === "catalog_candidate_ready") {
