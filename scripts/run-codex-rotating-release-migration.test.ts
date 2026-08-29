@@ -211,7 +211,10 @@ describe("application database release-authority isolation", () => {
       'captureOnlyStatus: "catalog_candidate_ready"',
     );
     expect(executableSource).toContain(
-      "captureState.catalogDigest ===\n        canonicalReleaseMigrationArtifact.postCatalogDigest",
+      "catalogDigestUnpromoted:\n        captureState.catalogDigest !==\n        canonicalReleaseMigrationArtifact.postCatalogDigest",
+    );
+    expect(executableSource).toContain(
+      "activation_catalog_policy_capture_state_invalid:${JSON.stringify(captureStateChecks)}",
     );
   });
 

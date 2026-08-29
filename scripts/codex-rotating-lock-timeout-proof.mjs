@@ -16,10 +16,18 @@ export function isExpectedPrismaLockTimeoutFailure({
     (markers.lockTimeout || markers.abortedTransaction);
   const genericAbortedTransactionEnvelope =
     markers.migrationNamed && markers.abortedTransaction;
+  const emptyDatabaseRecordedEnvelope =
+    markers.abortedTransaction &&
+    !markers.prismaMigrationFailure &&
+    !markers.migrationNamed &&
+    markers.emptyLogRows === 1 &&
+    markers.exactFailureLogRows === 0;
   return (
     markers.exactCurrentFailure &&
     markers.directLockTimeoutProof &&
-    (strongPrismaEnvelope || genericAbortedTransactionEnvelope)
+    (strongPrismaEnvelope ||
+      genericAbortedTransactionEnvelope ||
+      emptyDatabaseRecordedEnvelope)
   );
 }
 

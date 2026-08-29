@@ -767,6 +767,45 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(true);
   });
 
+  it("accepts Prisma 7.8's empty-log aborted envelope only with exact DB and direct proof", () => {
+    const migrationName = "000060_codex_oauth_setup_serialization";
+    const exactEvidence = {
+      total: 1,
+      currentFailed: 1,
+      zeroStep: 1,
+      lockTimeoutLog: 0,
+      abortedTransactionLog: 0,
+      exactFailureLog: 0,
+      emptyLog: 1,
+    };
+    const directLockTimeoutProof = { migrationName, observed: true };
+
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "ERROR: current transaction is aborted",
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "ERROR: permission denied",
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "ERROR: current transaction is aborted",
+        migrationName,
+        historyEvidence: { ...exactEvidence, emptyLog: 0 },
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+  });
+
   it("keeps the stronger P3018 and migration-name lock-timeout path", () => {
     expect(
       isExpectedPrismaLockTimeoutFailure({

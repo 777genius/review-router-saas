@@ -5470,16 +5470,25 @@ export function executeCanonicalReleaseMigration(
         { env: childEnv },
       ).trim(),
     );
-    if (
-      captureState.manifestIdentity !==
-        canonicalReleaseMigrationArtifact.postManifestIdentity ||
-      !/^sha256:[a-f0-9]{64}$/u.test(captureState.catalogDigest ?? "") ||
-      captureState.catalogDigest ===
-        canonicalReleaseMigrationArtifact.postCatalogDigest ||
-      captureState.permitState !== "consumed" ||
-      Number(captureState.unfinishedCount) !== 0
-    )
+    const captureStateChecks = Object.freeze({
+      manifestIdentityExact:
+        captureState.manifestIdentity ===
+        canonicalReleaseMigrationArtifact.postManifestIdentity,
+      catalogDigestValid: /^sha256:[a-f0-9]{64}$/u.test(
+        captureState.catalogDigest ?? "",
+      ),
+      catalogDigestUnpromoted:
+        captureState.catalogDigest !==
+        canonicalReleaseMigrationArtifact.postCatalogDigest,
+      permitConsumed: captureState.permitState === "consumed",
+      noUnfinishedMigrations: Number(captureState.unfinishedCount) === 0,
+    });
+    if (Object.values(captureStateChecks).some((check) => !check)) {
+      process.stderr.write(
+        `activation_catalog_policy_capture_state_invalid:${JSON.stringify(captureStateChecks)}\n`,
+      );
       throw new Error("activation_catalog_policy_capture_state_invalid");
+    }
     return Object.freeze({
       version: 1,
       captureOnlyStatus: "catalog_candidate_ready",
