@@ -1344,6 +1344,12 @@ describe("disposable dual-version rehearsal", () => {
       /trustedActivationCatalogPolicies:\s+captureOnly\s+\? canonicalActivationCatalogPolicies\s+: authorizeCanonicalActivationCatalogPolicies/u,
     );
     expect(source).toContain(
+      "const releaseCommitSha = facts.canonicalEnv.REVIEW_ROUTER_RELEASE_COMMIT_SHA",
+    );
+    expect(source).toContain("expectedCommitSha: releaseCommitSha");
+    expect(source).toContain("commitSha: releaseCommitSha");
+    expect(source).toContain("sourceCommitSha: releaseCommitSha");
+    expect(source).toContain(
       "private_pg17_rehearsal_activation_catalog_policy_trust_root_blocked",
     );
     const releaseMigration = source.indexOf(

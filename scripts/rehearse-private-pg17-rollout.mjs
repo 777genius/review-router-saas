@@ -2330,9 +2330,10 @@ async function verifyProductionPathRehearsal(facts) {
     roleJobName: "private-role-job",
     cutoverJobName: "private-cutover-job",
   };
+  const releaseCommitSha = facts.canonicalEnv.REVIEW_ROUTER_RELEASE_COMMIT_SHA;
   let rollout = createReleaseRollout({
     rolloutId: "disposable-rehearsal",
-    expectedCommitSha: "d".repeat(40),
+    expectedCommitSha: releaseCommitSha,
     execution,
     source: {
       renderResourceId: "dpg-disposable-source",
@@ -2351,7 +2352,7 @@ async function verifyProductionPathRehearsal(facts) {
       recoveryWitnessSha256: "c".repeat(64),
     },
     migrationTransition: createReleaseMigrationTransition({
-      commitSha: "d".repeat(40),
+      commitSha: releaseCommitSha,
       releaseImageDigest: facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST,
     }),
   });
@@ -2367,7 +2368,7 @@ async function verifyProductionPathRehearsal(facts) {
     workflowJobId: lifecycle === "role" ? "10" : "11",
     workflowJobName:
       lifecycle === "role" ? execution.roleJobName : execution.cutoverJobName,
-    commitSha: "d".repeat(40),
+    commitSha: releaseCommitSha,
     runnerName: `rr-${lifecycle}`,
     cleanupCanary: `rr-cleanup:disposable-rehearsal:rr-${lifecycle}`,
     renderJobId: job,
@@ -2379,7 +2380,7 @@ async function verifyProductionPathRehearsal(facts) {
     provenance: { kind: "image", deployId: "dep-disposable", imageSha: digest },
     imageAttestation: {
       subjectDigest: digest,
-      sourceCommitSha: "d".repeat(40),
+      sourceCommitSha: releaseCommitSha,
       statementSha256: digest,
       builderId: "disposable-rehearsal-builder",
     },
