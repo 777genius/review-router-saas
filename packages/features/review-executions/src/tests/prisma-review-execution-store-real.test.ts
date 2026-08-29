@@ -1022,6 +1022,63 @@ if (databaseUrl) {
       ).resolves.toHaveLength(1);
     });
 
+    it("fences flight observation across the scope-concurrency activation boundary", async () => {
+      await setProviderScopeConcurrency(false);
+      await restoreLegacyProviderVoteIndex();
+      const harness = await createHarness(303);
+      let activationReady!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        activationReady = resolve;
+      });
+      let releaseActivation!: () => void;
+      const released = new Promise<void>((resolve) => {
+        releaseActivation = resolve;
+      });
+      const activation = prisma.$transaction(async (transaction) => {
+        await transaction.$queryRaw`
+          SELECT pg_advisory_xact_lock(1381126735, 1381192279) IS NULL AS "locked"
+        `;
+        await transaction.$executeRawUnsafe(
+          'DROP INDEX IF EXISTS "ReviewInvocationLeaseV2_one_active_provider_vote_lane"',
+        );
+        await transaction.$executeRaw`
+          UPDATE "ReviewProviderScopeConcurrencyControl"
+          SET "activated" = true, "updatedAt" = statement_timestamp()
+          WHERE "singleton" = true
+        `;
+        activationReady();
+        await released;
+      });
+
+      try {
+        await ready;
+        const priorWaiterCount = await cutoverSharedLockWaiterCount();
+        const observation = harness.executions.observeActiveInvocationFlight({
+          scope: harness.scope,
+          providerInvocationKey: hashFromText("activation-boundary-provider"),
+          providerVoteIdentityHash: hashFromText("activation-boundary-vote"),
+          requestedAt: new Date(),
+        });
+
+        await waitForCutoverSharedLockWaiter(priorWaiterCount);
+        releaseActivation();
+        await activation;
+        await expect(observation).resolves.toMatchObject({ flight: null });
+        await expect(
+          prisma.$queryRaw<Array<{ activated: boolean }>>`
+            SELECT "activated"
+            FROM "ReviewProviderScopeConcurrencyControl"
+            WHERE "singleton" = true
+          `,
+        ).resolves.toEqual([{ activated: true }]);
+      } finally {
+        releaseActivation();
+        await activation;
+        await setProviderScopeConcurrency(false);
+        await restoreLegacyProviderVoteIndex();
+      }
+    });
+
     it("drives production flight acquisition through legacy and activated scope observation", async () => {
       await expect(
         prisma.$queryRaw<Array<{ postgresMajor: number }>>`
@@ -1574,6 +1631,32 @@ async function activeVoteLaneDuplicateCount(): Promise<number> {
       GROUP BY "providerVoteIdentityHash"
       HAVING count(*) > 1
     ) duplicate
+  `;
+  return Number(rows[0]?.count ?? 0n);
+}
+
+async function waitForCutoverSharedLockWaiter(
+  priorWaiterCount: number,
+): Promise<void> {
+  for (let attempt = 1; attempt <= 1_000; attempt += 1) {
+    if ((await cutoverSharedLockWaiterCount()) > priorWaiterCount) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("flight observer did not wait on the fleet cutover lock");
+}
+
+async function cutoverSharedLockWaiterCount(): Promise<number> {
+  const rows = await prisma.$queryRaw<Array<{ count: bigint }>>`
+    SELECT count(*)::bigint AS count
+    FROM pg_locks
+    WHERE locktype = 'advisory'
+      AND database = (
+        SELECT oid FROM pg_database WHERE datname = current_database()
+      )
+      AND classid = 1381126735
+      AND objid = 1381192279
+      AND mode = 'ShareLock'
+      AND NOT granted
   `;
   return Number(rows[0]?.count ?? 0n);
 }

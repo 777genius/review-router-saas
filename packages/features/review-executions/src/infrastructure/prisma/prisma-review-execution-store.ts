@@ -267,6 +267,12 @@ export class PrismaReviewExecutionStore
   }): Promise<Readonly<{ flight: InvocationFlight | null; observedAt: Date }>> {
     return this.prisma.$transaction(async (transaction) => {
       const observedAt = await databaseNow(transaction);
+      // Shared only: this fences the fleet cutover transaction while the
+      // observer chooses its read shape. It is not invocation capacity or an
+      // account-wide provider lock.
+      await transaction.$queryRaw`
+        SELECT pg_advisory_xact_lock_shared(1381126735, 1381192279) IS NULL AS "locked"
+      `;
       const controls = await transaction.$queryRaw<
         Array<{ activated: boolean }>
       >`

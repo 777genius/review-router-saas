@@ -33,6 +33,7 @@ describe("Prisma review execution transaction retries", () => {
         $queryRaw: vi
           .fn()
           .mockResolvedValueOnce([{ epochMs: 1_775_203_200_000n }])
+          .mockResolvedValueOnce([{ locked: true }])
           .mockResolvedValueOnce([{ activated }]),
         reviewInvocationLeaseV2: { findMany },
       };
@@ -64,6 +65,51 @@ describe("Prisma review execution transaction retries", () => {
       });
     },
   );
+
+  it("fences the rollout-state read behind the shared fleet cutover lock", async () => {
+    let releaseCutoverFence!: () => void;
+    const cutoverFence = new Promise<void>((resolve) => {
+      releaseCutoverFence = resolve;
+    });
+    const findMany = vi.fn().mockResolvedValue([]);
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValueOnce([{ epochMs: 1_775_203_200_000n }])
+      .mockImplementationOnce(() => cutoverFence)
+      .mockResolvedValueOnce([{ activated: true }]);
+    const transaction = {
+      $queryRaw: queryRaw,
+      reviewInvocationLeaseV2: { findMany },
+    };
+    const prisma = {
+      $transaction: vi.fn(
+        async (operation: (client: typeof transaction) => unknown) =>
+          operation(transaction),
+      ),
+    };
+    const store = new PrismaReviewExecutionStore(prisma as never);
+
+    const observation = store.observeActiveInvocationFlight({
+      scope,
+      providerInvocationKey: "provider-invocation",
+      providerVoteIdentityHash: "vote-identity",
+      requestedAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+    await vi.waitFor(() => expect(queryRaw).toHaveBeenCalledTimes(2));
+
+    expect(findMany).not.toHaveBeenCalled();
+    releaseCutoverFence();
+    await expect(observation).resolves.toMatchObject({ flight: null });
+    expect(queryRaw).toHaveBeenCalledTimes(3);
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ...scope,
+          providerInvocationKey: "provider-invocation",
+        }),
+      }),
+    );
+  });
 
   it("uses read committed for scope-local preparation and admission but serializable for lease fencing", async () => {
     const prisma = {
