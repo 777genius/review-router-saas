@@ -36,6 +36,8 @@ const authorityAclHardeningForwardChecksum =
   "ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c";
 const rotatingCascadeAuthorityForwardChecksum =
   "3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8";
+const v4V5WorkflowReattestationForwardChecksum =
+  "9ba8a0e4cfde1c07076af8a2f0ea89bf9f34bc1e30901cc52843714ea02ea65c";
 
 describe("observation-backed Codex rotating rollout verifier", () => {
   it("keeps the exhaustive column inventory synchronized with Prisma", () => {
@@ -188,6 +190,39 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "000064_codex_oauth_versioned_secret_namespaces checked-in forward migration digest mismatched",
     );
     expect(versionedSecretNamespaceForwardChecksum).not.toBe(rewrittenDigest);
+  });
+
+  it("rejects stale 000079 digest evidence even when source and history agree", () => {
+    const fixture = observedFixture();
+    const sourcePath =
+      "packages/platform/db/prisma/migrations/000079_codex_oauth_v4_v5_workflow_reattestation/migration.sql";
+    const staleBytes = Buffer.from(
+      readFileSync(sourcePath, "utf8").replace(
+        "NOT IN (4, 5)",
+        "NOT BETWEEN 1 AND 5",
+      ),
+    );
+    const staleDigest = digest(staleBytes);
+    expect(staleDigest).not.toBe(v4V5WorkflowReattestationForwardChecksum);
+    const observedSource = fixture.artifacts.database.migrationSources.find(
+      (entry: { id: string }) =>
+        entry.id === "000079_codex_oauth_v4_v5_workflow_reattestation",
+    );
+    const history = fixture.artifacts.database.history.find(
+      (entry: { migration_name: string }) =>
+        entry.migration_name ===
+        "000079_codex_oauth_v4_v5_workflow_reattestation",
+    );
+    observedSource.sha256 = staleDigest;
+    history.checksum = staleDigest;
+    fixture.options.readSource = (path: string) =>
+      path.endsWith(sourcePath) ? staleBytes : readFileSync(path);
+
+    expect(
+      verifyCodexRotatingRollout(fixture.evidence, fixture.options).failures,
+    ).toContain(
+      "000079_codex_oauth_v4_v5_workflow_reattestation checked-in forward migration digest mismatched",
+    );
   });
 
   it("reuses the exact production catalog verifier for PostgreSQL rehearsal", () => {

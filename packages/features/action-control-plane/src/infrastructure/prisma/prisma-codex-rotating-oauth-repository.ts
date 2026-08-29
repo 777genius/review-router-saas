@@ -20,6 +20,7 @@ import {
   mapActiveVersionedProviderSecretNamespace,
   parseVersionedProviderSecretName,
   RuntimeVersionedDurableMarker,
+  WorkflowSourceTrust,
   reserveRuntimeVersionedEffectConfirmationWindow,
   type CodexRotatingEncryptedWritebackRequest,
   type CodexRotatingProviderBinding,
@@ -276,6 +277,9 @@ export class PrismaCodexRotatingOAuthRepository
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
+    readonly verifiedWorkflowAttestation?:
+      | VersionedSecretWorkflowSourceAttestation
+      | undefined;
     readonly newWorkAdmissionBarrier: Readonly<{
       assertAdmitted(): void;
     }>;
@@ -349,6 +353,29 @@ export class PrismaCodexRotatingOAuthRepository
         throw new Error("codex_rotating_provider_identity_mismatch");
       }
       const activeNamespace = requireActiveNamespaceBinding(provider);
+      const lockedWorkflowAdmissions = await tx.$queryRaw<
+        LockedWorkflowAdmissionRow[]
+      >(Prisma.sql`
+          SELECT namespace."id", namespace."githubRepositoryId",
+            namespace."namespaceEpoch", namespace."secretName",
+            namespace."status", namespace."permanentlyRetired",
+            namespace."workflowPath", namespace."workflowSourceCommitSha",
+            namespace."workflowSourceBlobSha", namespace."workflowSourceSha256",
+            namespace."workflowSemanticSha256", namespace."workflowSourceTrust",
+            namespace."workflowSchemaVersion", namespace."attestedRepositoryId"
+          FROM "CodexOAuthSecretNamespace" namespace
+          WHERE namespace."id" = ${provider.activeSecretNamespaceId}
+            AND namespace."providerInstanceRowId" = ${provider.id}
+          FOR UPDATE
+        `);
+      assertLockedWorkflowAdmissionMatches({
+        persisted:
+          lockedWorkflowAdmissions.length === 1
+            ? lockedWorkflowAdmissions[0]!
+            : null,
+        activeNamespace,
+        verified: input.verifiedWorkflowAttestation,
+      });
       assertAutomaticRuntimeDatabaseRecoveryWitness(
         provider.activeSecretNamespace?.databaseRecoveryWitness,
         this.options.databaseRecoveryWitness,
@@ -2272,6 +2299,64 @@ function requireActiveNamespaceBinding(provider: {
     id: provider.activeSecretNamespaceId,
     epoch: provider.activeSecretNamespaceEpoch,
   };
+}
+
+type LockedWorkflowAdmissionRow = Readonly<{
+  id: string;
+  githubRepositoryId: string;
+  namespaceEpoch: bigint;
+  secretName: string;
+  status: string;
+  permanentlyRetired: boolean;
+  workflowPath: string | null;
+  workflowSourceCommitSha: string | null;
+  workflowSourceBlobSha: string | null;
+  workflowSourceSha256: string | null;
+  workflowSemanticSha256: string | null;
+  workflowSourceTrust: string | null;
+  workflowSchemaVersion: number | null;
+  attestedRepositoryId: string | null;
+}>;
+
+function assertLockedWorkflowAdmissionMatches(input: {
+  readonly persisted: LockedWorkflowAdmissionRow | null;
+  readonly activeNamespace: {
+    readonly id: string | null;
+    readonly epoch: bigint | null;
+  };
+  readonly verified: VersionedSecretWorkflowSourceAttestation | undefined;
+}): void {
+  const { persisted, activeNamespace, verified } = input;
+  if (
+    !persisted ||
+    !verified ||
+    persisted.status !== "active" ||
+    persisted.permanentlyRetired ||
+    activeNamespace.id !== persisted.id ||
+    activeNamespace.epoch !== persisted.namespaceEpoch ||
+    verified.secretNamespace.namespaceId !== persisted.id ||
+    verified.secretNamespace.epoch !== persisted.namespaceEpoch ||
+    verified.secretNamespace.name !== persisted.secretName ||
+    verified.repositoryId !== persisted.githubRepositoryId ||
+    verified.repositoryId !== persisted.attestedRepositoryId ||
+    verified.workflowPath !== persisted.workflowPath ||
+    !persisted.workflowSourceCommitSha ||
+    (verified.sourceTrust ===
+      WorkflowSourceTrust.TrustedDefaultBranchRevision &&
+      verified.workflowSourceCommitSha !== persisted.workflowSourceCommitSha) ||
+    verified.workflowSourceBlobSha !== persisted.workflowSourceBlobSha ||
+    verified.workflowSourceSha256 !== persisted.workflowSourceSha256 ||
+    verified.workflowSemanticSha256 !== persisted.workflowSemanticSha256 ||
+    persisted.workflowSourceTrust !==
+      WorkflowSourceTrust.TrustedDefaultBranchRevision ||
+    (verified.sourceTrust !==
+      WorkflowSourceTrust.TrustedDefaultBranchRevision &&
+      verified.sourceTrust !==
+        WorkflowSourceTrust.TrustedCanonicalBranchMirrorRevision) ||
+    verified.workflowSchemaVersion !== persisted.workflowSchemaVersion
+  ) {
+    throw new Error("codex_rotating_workflow_attestation_stale");
+  }
 }
 
 async function lockProviderByInstanceId(

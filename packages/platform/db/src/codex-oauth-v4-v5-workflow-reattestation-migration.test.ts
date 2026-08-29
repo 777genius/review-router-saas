@@ -14,7 +14,7 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
 
   it("is an atomic forward migration with a pinned digest", () => {
     expect(createHash("sha256").update(sql).digest("hex")).toBe(
-      "f5d58da6dae81defd440e9490472fde75c1d596cc19f53c0b24ee1a67c0cd051",
+      "9ba8a0e4cfde1c07076af8a2f0ea89bf9f34bc1e30901cc52843714ea02ea65c",
     );
     expect(sql).toMatch(/^BEGIN;[\s\S]+COMMIT;\s*$/u);
   });
@@ -48,6 +48,13 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
     );
     expect(sql).toContain("active_namespace_v4_v5_reattestation");
     expect(sql).toContain('"codex_oauth_consume_database_authority"');
+  });
+
+  it("admits only V4 and V5 for active namespace promotion or re-attestation", () => {
+    expect(sql).toContain('NEW."workflowSchemaVersion" NOT IN (4, 5)');
+    expect(sql).not.toContain(
+      'NEW."workflowSchemaVersion" NOT BETWEEN 1 AND 5',
+    );
   });
 
   it("retains direct-update rejection and exposes no generic runtime mutation", () => {

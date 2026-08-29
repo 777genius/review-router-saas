@@ -148,7 +148,7 @@ BEGIN
 
   IF NEW."status" = 'active' AND (
     NEW."workflowSchemaVersion" IS NULL
-    OR NEW."workflowSchemaVersion" NOT BETWEEN 1 AND 5
+    OR NEW."workflowSchemaVersion" NOT IN (4, 5)
   ) THEN
     RAISE EXCEPTION 'codex_oauth_secret_namespace_workflow_schema_invalid'
       USING ERRCODE = '23514';

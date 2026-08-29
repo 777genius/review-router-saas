@@ -127,6 +127,16 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toContain("combined 000060 through 000079 rehearsal passed");
   });
 
+  it("rehearses rejection of legacy active namespace schemas 1 through 3", () => {
+    expect(source).toContain("for (const rejectedSchemaVersion of [1, 2, 3])");
+    expect(source).toContain(
+      "codex_oauth_secret_namespace_workflow_schema_invalid",
+    );
+    expect(source).toContain(
+      "active namespace schema V${rejectedSchemaVersion} did not fail closed",
+    );
+  });
+
   it("reproduces the trusted production pre-migration manifest", () => {
     expect(source).toContain("applyCanonicalPreMigrationBaseline");
     expect(source).toContain("directory === migration67Name");

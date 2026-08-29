@@ -1640,6 +1640,24 @@ async function proveActiveNamespaceV4V5Reattestation(
       ${quoteLiteral(newEvidence.sourceSha256)},${quoteLiteral(newEvidence.semanticSha256)})`;
   };
 
+  for (const rejectedSchemaVersion of [1, 2, 3]) {
+    const rejectedLegacyActiveSchema = psql(
+      adminUrl,
+      [
+        "-c",
+        `UPDATE "CodexOAuthSecretNamespace"
+         SET "workflowSchemaVersion"=${rejectedSchemaVersion}
+         WHERE "id"=${quoteLiteral(target.namespaceId)}`,
+      ],
+      false,
+    );
+    assertPsqlFailedWithExactMessage(
+      rejectedLegacyActiveSchema,
+      "codex_oauth_secret_namespace_workflow_schema_invalid",
+      `active namespace schema V${rejectedSchemaVersion} did not fail closed`,
+    );
+  }
+
   for (const versionOverride of [
     { expectedSchemaVersion: null },
     { targetSchemaVersion: null },

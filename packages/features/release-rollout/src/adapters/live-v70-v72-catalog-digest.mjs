@@ -134,7 +134,7 @@ WITH selected_relations AS (
       FROM pg_catalog.pg_default_acl d LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace
       WHERE n.nspname='public'),'[]'::jsonb),
     'history',CASE WHEN reviewrouter_activation.read_activation_migration_manifest_identity()
-      = 'sha256:7085eae80c4c611e912b360b645f0fdb66d706daa7843e186c138a1921698b07'
+      = 'sha256:28941cb847006d45d798db0a363f3ba8a63454b4255e95632b69e4767769eb8e'
       THEN jsonb_build_array(
         jsonb_build_object('name','000070_runtime_generation_witness_proof',
           'checksum','cb9c42171f9bd924d21093852a1053cb947100acef1321ec8cf62e8fd5928c6f',
@@ -167,7 +167,7 @@ WITH selected_relations AS (
           'checksum','21de6c901dee41a52cdfa0bea8e3559d1d0ea847003bd136d729c0e4cb4cba8d',
           'finished',true,'rolledBack',false),
         jsonb_build_object('name','000079_codex_oauth_v4_v5_workflow_reattestation',
-          'checksum','f5d58da6dae81defd440e9490472fde75c1d596cc19f53c0b24ee1a67c0cd051',
+          'checksum','9ba8a0e4cfde1c07076af8a2f0ea89bf9f34bc1e30901cc52843714ea02ea65c',
           'finished',true,'rolledBack',false))
       ELSE '[]'::jsonb END,
     'unresolvedHistory',false,

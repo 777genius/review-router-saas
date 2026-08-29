@@ -46,6 +46,9 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
+    readonly verifiedWorkflowAttestation?:
+      | VersionedSecretWorkflowSourceAttestation
+      | undefined;
     readonly newWorkAdmissionBarrier: Readonly<{
       assertAdmitted(): void;
     }>;
