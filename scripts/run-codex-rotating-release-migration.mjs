@@ -5380,10 +5380,25 @@ export function executeCanonicalRoleBootstrap(
   };
 }
 
+export function classifyActivationCatalogCaptureStateShape(rawState) {
+  if (typeof rawState !== "string") return "not_string";
+  const trimmed = rawState.trim();
+  if (trimmed.length === 0) return "empty";
+  if (trimmed.includes("\u0000")) return "contains_nul";
+  const lineCount = trimmed.split(/\r?\n/u).length;
+  const objectBounded = trimmed.startsWith("{") && trimmed.endsWith("}");
+  if (lineCount === 1)
+    return objectBounded ? "single_line_object" : "single_line_other";
+  return objectBounded ? "multi_line_object_boundary" : "multi_line_other";
+}
+
 export function parseActivationCatalogCaptureState(rawState) {
   try {
     return JSON.parse(rawState.trim());
   } catch {
+    process.stderr.write(
+      `activation_catalog_policy_capture_state_json_invalid:${classifyActivationCatalogCaptureStateShape(rawState)}\n`,
+    );
     throw new Error("activation_catalog_policy_capture_state_json_invalid");
   }
 }

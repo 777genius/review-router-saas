@@ -13,6 +13,7 @@ import {
   canonicalActivationCatalogPolicyCandidateSql,
   canonicalRoleTopologyObservationSql,
   canonicalDatabaseGenerationObservationSql,
+  classifyActivationCatalogCaptureStateShape,
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
   liveV70V72CatalogDigestSql,
@@ -253,6 +254,25 @@ describe("application database release-authority isolation", () => {
     expect((thrown as Error).message).not.toMatch(
       /not-json|postgresql|password|hunter2|db\.internal/u,
     );
+  });
+
+  it("classifies malformed capture output without retaining its contents", () => {
+    expect(classifyActivationCatalogCaptureStateShape(undefined)).toBe(
+      "not_string",
+    );
+    expect(classifyActivationCatalogCaptureStateShape("  \n")).toBe("empty");
+    expect(classifyActivationCatalogCaptureStateShape('{"a":1}')).toBe(
+      "single_line_object",
+    );
+    expect(classifyActivationCatalogCaptureStateShape('{"a":\n1}')).toBe(
+      "multi_line_object_boundary",
+    );
+    expect(classifyActivationCatalogCaptureStateShape("secret\nvalue")).toBe(
+      "multi_line_other",
+    );
+    expect(
+      classifyActivationCatalogCaptureStateShape("secret\u0000value"),
+    ).toBe("contains_nul");
   });
 
   it("emits the untrusted catalog candidate only from capture while production keeps the promoted digest", () => {
