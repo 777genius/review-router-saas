@@ -277,7 +277,7 @@ export class PrismaCodexRotatingOAuthRepository
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
-    readonly verifiedWorkflowAttestation: VersionedSecretWorkflowSourceAttestation | null;
+    readonly verifiedWorkflowAttestation: VersionedSecretWorkflowSourceAttestation;
     readonly newWorkAdmissionBarrier: Readonly<{
       assertAdmitted(): void;
     }>;
@@ -2322,12 +2322,11 @@ function assertLockedWorkflowAdmissionMatches(input: {
     readonly id: string | null;
     readonly epoch: bigint | null;
   };
-  readonly verified: VersionedSecretWorkflowSourceAttestation | null;
+  readonly verified: VersionedSecretWorkflowSourceAttestation;
 }): void {
   const { persisted, activeNamespace, verified } = input;
   if (
     !persisted ||
-    !verified ||
     persisted.status !== "active" ||
     persisted.permanentlyRetired ||
     activeNamespace.id !== persisted.id ||

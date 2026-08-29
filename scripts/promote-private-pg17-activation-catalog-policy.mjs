@@ -16,6 +16,7 @@ import {
   reviewedActivationCatalogPromotionExpectation,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation.ts";
 import { assertActivationCatalogPolicyPromotionProvenance } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
+import { fencedLiveV70V73CatalogDigestSql } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 
 export {
   activationCatalogPromotionOptIn,
@@ -154,25 +155,80 @@ function parseArguments(argv) {
 }
 
 function assertArtifactCandidate(value) {
+  const v1Fields = "kind,policies,version";
+  const v2Fields = "capture,kind,policies,version";
   if (
     value === null ||
     typeof value !== "object" ||
     Array.isArray(value) ||
-    Object.keys(value).sort().join(",") !== "kind,policies,version" ||
+    ![v1Fields, v2Fields].includes(Object.keys(value).sort().join(",")) ||
     value.kind !==
       "reviewrouter-activation-catalog-policy-artifact-candidate" ||
-    value.version !== 1 ||
+    ![1, 2].includes(value.version) ||
     value.policies === null ||
     typeof value.policies !== "object" ||
     Array.isArray(value.policies) ||
     Object.keys(value.policies).sort().join(",") !== "activated,preactivation"
   )
     throw new Error("activation_catalog_policy_promotion_candidate_invalid");
+  if (value.version === 1 && Object.hasOwn(value, "capture"))
+    throw new Error("activation_catalog_policy_promotion_candidate_invalid");
+  if (value.version === 2) assertCaptureBinding(value.capture);
   assertNormalizedCandidatePolicy(
     value.policies.preactivation,
     "preactivation",
   );
   assertNormalizedCandidatePolicy(value.policies.activated, "activated");
+}
+
+export function assertActivationCatalogPolicyCandidateSchema(value) {
+  assertArtifactCandidate(value);
+}
+
+function assertCaptureBinding(value) {
+  const database = value?.database;
+  const projection = value?.projection;
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join(",") !==
+      "commitSha,database,postManifestIdentity,projection" ||
+    !/^[a-f0-9]{40}$/u.test(value.commitSha ?? "") ||
+    !/^sha256:[a-f0-9]{64}$/u.test(value.postManifestIdentity ?? "") ||
+    value.postManifestIdentity !==
+      reviewedActivationCatalogPromotionExpectation.postManifestIdentity ||
+    database === null ||
+    typeof database !== "object" ||
+    Array.isArray(database) ||
+    Object.keys(database).sort().join(",") !==
+      "configuredIdentity,disposableIdentity,recoveryWitnessSha256,systemIdentifier" ||
+    !/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(
+      database.disposableIdentity ?? "",
+    ) ||
+    !/^[a-z0-9.-]+:[0-9]{1,5}\/[A-Za-z0-9_.-]+$/u.test(
+      database.configuredIdentity ?? "",
+    ) ||
+    !/^[1-9][0-9]{0,19}$/u.test(database.systemIdentifier ?? "") ||
+    !/^[a-f0-9]{64}$/u.test(database.recoveryWitnessSha256 ?? "") ||
+    projection === null ||
+    typeof projection !== "object" ||
+    Array.isArray(projection) ||
+    Object.keys(projection).sort().join(",") !== "observedDigest,sha256" ||
+    !/^sha256:[a-f0-9]{64}$/u.test(projection.sha256 ?? "") ||
+    projection.sha256 !==
+      `sha256:${sha256(fencedLiveV70V73CatalogDigestSql)}` ||
+    !/^sha256:[a-f0-9]{64}$/u.test(projection.observedDigest ?? "") ||
+    projection.observedDigest ===
+      reviewedActivationCatalogPromotionExpectation.activeProductionCatalogDigest
+  )
+    throw new Error(
+      "activation_catalog_policy_promotion_capture_binding_invalid",
+    );
+}
+
+export function assertActivationCatalogPolicyCaptureBinding(value) {
+  assertCaptureBinding(value);
 }
 
 function assertNormalizedCandidatePolicy(value, phase) {
@@ -192,17 +248,55 @@ function assertNormalizedCandidatePolicy(value, phase) {
 export function canonicalActivationCatalogArtifactSource(candidateBytes) {
   if (!Buffer.isBuffer(candidateBytes))
     throw new Error("activation_catalog_policy_promotion_candidate_invalid");
-  if (candidateBytes.byteLength !== reviewedActivationCatalogCandidate.bytes)
-    throw new Error("activation_catalog_policy_promotion_candidate_size_drift");
-  if (sha256(candidateBytes) !== reviewedActivationCatalogCandidate.sha256)
-    throw new Error("activation_catalog_policy_promotion_candidate_hash_drift");
   let candidate;
   try {
     candidate = JSON.parse(candidateBytes.toString("utf8"));
   } catch {
+    if (candidateBytes.byteLength !== reviewedActivationCatalogCandidate.bytes)
+      throw new Error(
+        "activation_catalog_policy_promotion_candidate_size_drift",
+      );
+    if (sha256(candidateBytes) !== reviewedActivationCatalogCandidate.sha256)
+      throw new Error(
+        "activation_catalog_policy_promotion_candidate_hash_drift",
+      );
     throw new Error("activation_catalog_policy_promotion_candidate_invalid");
   }
   assertArtifactCandidate(candidate);
+  const reviewedPayloadBytes =
+    candidate.version === 2
+      ? Buffer.from(
+          canonicalJson({
+            kind: candidate.kind,
+            policies: candidate.policies,
+            version: 1,
+          }),
+          "utf8",
+        )
+      : candidateBytes;
+  if (candidate.version === 2) {
+    if (
+      sha256(reviewedPayloadBytes) !==
+      reviewedActivationCatalogCandidate.canonicalSha256
+    )
+      throw new Error(
+        "activation_catalog_policy_promotion_candidate_canonical_hash_drift",
+      );
+  } else {
+    if (
+      reviewedPayloadBytes.byteLength !==
+      reviewedActivationCatalogCandidate.bytes
+    )
+      throw new Error(
+        "activation_catalog_policy_promotion_candidate_size_drift",
+      );
+    if (
+      sha256(reviewedPayloadBytes) !== reviewedActivationCatalogCandidate.sha256
+    )
+      throw new Error(
+        "activation_catalog_policy_promotion_candidate_hash_drift",
+      );
+  }
   const artifact = {
     kind: "reviewrouter-activation-catalog-policy-artifact",
     version: 1,

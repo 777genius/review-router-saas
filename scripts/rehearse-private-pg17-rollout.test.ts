@@ -383,11 +383,12 @@ describe("disposable dual-version rehearsal", () => {
         recoveryWitnessSha256: "d".repeat(64),
       }),
     ).toEqual({
-      kind: "reviewrouter-activation-catalog-policy-capture-checkpoint",
-      version: 1,
+      kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+      version: 2,
+      policies: artifact.policies,
       capture: {
         commitSha: candidate.commitSha,
-        manifestIdentity: candidate.manifestIdentity,
+        postManifestIdentity: candidate.manifestIdentity,
         database: {
           disposableIdentity: "rr-disposable-candidate-test",
           configuredIdentity: candidate.databaseIdentity,
@@ -399,7 +400,6 @@ describe("disposable dual-version rehearsal", () => {
           observedDigest: candidate.catalogDigest,
         },
       },
-      artifact,
     });
     expect(candidate.catalogDigest).not.toBe(
       canonicalReleaseMigrationArtifact.postCatalogDigest,

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CodexRotatingDefaultWorkflowSourcePort } from "@reviewrouter/features-provider-setup";
 
 const mocks = vi.hoisted(() => ({
   activate: vi.fn(),
@@ -346,9 +347,78 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
         namespace: expect.objectContaining({ namespaceId: "namespace_2" }),
       }),
       expect.objectContaining({
-        readDefaultHead: expect.any(Function),
+        readDefaultSourceIdentity: expect.any(Function),
         readVerifiedWorkflowAt: expect.any(Function),
       }),
+    );
+  });
+
+  it("re-reads the GitHub repository identity and exact default ref through the reattestation port", async () => {
+    mocks.inspectNamespace.mockResolvedValueOnce({
+      source: "active",
+      claimId: "claim_1",
+      attemptId: "attempt_1",
+      namespace: {
+        namespaceId: "namespace_2",
+        epoch: 2n,
+        name: "REVIEWROUTER_CODEX_AUTH_JSON_TEST_E2",
+      },
+    });
+    const { input, request } = fixture();
+    request
+      .mockReset()
+      .mockResolvedValueOnce(repositoryResponse())
+      .mockResolvedValueOnce(refResponse(firstHead))
+      .mockResolvedValueOnce(contentResponse())
+      .mockResolvedValueOnce({
+        data: {
+          id: 1228051728,
+          full_name: "attacker/renamed",
+          default_branch: "main",
+        },
+      })
+      .mockResolvedValueOnce(refResponse("d".repeat(40)));
+    const observedIdentities: unknown[] = [];
+    mocks.replaceActiveWorkflowSource.mockImplementationOnce(
+      async (
+        _target: unknown,
+        sourcePort: CodexRotatingDefaultWorkflowSourcePort,
+      ) => {
+        const initial = await sourcePort.readDefaultSourceIdentity();
+        observedIdentities.push(initial);
+        await sourcePort.readVerifiedWorkflowAt({
+          commitSha: initial.headCommitSha,
+          expectedSchemaVersion: 5,
+        });
+        observedIdentities.push(await sourcePort.readDefaultSourceIdentity());
+        return {
+          status: "already_active",
+          workflowSourceCommitSha: initial.headCommitSha,
+        };
+      },
+    );
+
+    await expect(
+      activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
+    ).resolves.toMatchObject({ status: "already_active" });
+    expect(observedIdentities).toEqual([
+      {
+        repositoryId: "1228051727",
+        repositoryFullName: "777genius/review-router-saas-e2e",
+        defaultBranch: "main",
+        headCommitSha: firstHead,
+      },
+      {
+        repositoryId: "1228051728",
+        repositoryFullName: "attacker/renamed",
+        defaultBranch: "main",
+        headCommitSha: "d".repeat(40),
+      },
+    ]);
+    expect(request).toHaveBeenNthCalledWith(
+      5,
+      "GET /repos/{owner}/{repo}/git/ref/{ref}",
+      expect.objectContaining({ ref: "heads/main" }),
     );
   });
 

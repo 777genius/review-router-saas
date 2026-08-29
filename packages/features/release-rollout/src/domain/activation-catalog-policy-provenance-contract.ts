@@ -17,6 +17,8 @@ export type ActivationCatalogPolicyPromotionExpectation = Readonly<{
   preactivationCatalogPolicySha256: string;
   activatedCatalogPolicySha256: string;
   artifactCanonicalSha256: string;
+  postManifestIdentity: string;
+  activeProductionCatalogDigest: string;
 }>;
 
 export type ActivationCatalogPolicyTrustRootReadiness = Readonly<{

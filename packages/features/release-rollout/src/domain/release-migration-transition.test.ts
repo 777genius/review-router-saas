@@ -11,7 +11,11 @@ import {
   deriveOrderedPendingEntriesSha256,
 } from "./release-migration-transition";
 import { canonicalReleaseMigrationPostManifestIdentity } from "./release-migration-artifact-identity.js";
-import { fencedLiveV70V73CatalogDigestSql } from "../adapters/live-v70-v72-catalog-digest.mjs";
+import {
+  fencedLiveV70V73CatalogDigestSql,
+  liveV70V79CatalogProjectionRelations,
+  liveV70V79CatalogProjectionRoutines,
+} from "../adapters/live-v70-v72-catalog-digest.mjs";
 
 const migrationRoot = "packages/platform/db/prisma/migrations";
 const sha256 = (value: string | Buffer) =>
@@ -153,6 +157,39 @@ describe("canonical release migration transition", () => {
     );
     expect(fencedLiveV70V73CatalogDigestSql).not.toContain(
       "sha256:28941cb847006d45d798db0a363f3ba8a63454b4255e95632b69e4767769eb8e",
+    );
+  });
+
+  it("projects every V79 reattestation authority, consumer, ACL, and replay guard", () => {
+    expect(liveV70V79CatalogProjectionRelations).toEqual([
+      "CodexOAuthWritebackIntent",
+      "CodexOAuthSecretNamespace",
+      "CodexOAuthProviderInstance",
+      "RepositoryConnection",
+      "CodexOAuthSetupDispatchAttempt",
+      "CodexOAuthSetupPayloadClaim",
+      "CodexOAuthDatabaseAuthorityReceipt",
+      "RuntimeGenerationWitnessProof",
+      "RuntimeCanaryChallenge",
+      "RuntimeCanaryChallengeProof",
+    ]);
+    expect(liveV70V79CatalogProjectionRoutines).toEqual([
+      "reviewrouter_record_runtime_generation_witness_proof",
+      "reviewrouter_read_runtime_generation_witness_proofs",
+      "reviewrouter_runtime_generation_write_read_canary",
+      "reviewrouter_request_runtime_canary_challenge",
+      "reviewrouter_answer_runtime_canary_challenge",
+      "reviewrouter_read_runtime_canary_challenge_proofs",
+      "codex_oauth_v4_v5_reattestation_transition",
+      "codex_oauth_reattest_active_namespace_v4_to_v5",
+      "codex_oauth_secret_namespace_tombstone_guard",
+      "codex_oauth_consume_database_authority",
+      "codex_oauth_database_authority_receipt_guard",
+    ]);
+    expect(fencedLiveV70V73CatalogDigestSql).toContain("'acl',coalesce");
+    expect(fencedLiveV70V73CatalogDigestSql).toContain("'triggers',coalesce");
+    expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
+      "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0",
     );
   });
 

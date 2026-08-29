@@ -26,8 +26,10 @@ export async function reattestCodexRotatingWorkflow(
     workflowSourceCommitSha: string;
   }>
 > {
-  const initialHead =
-    await dependencies.defaultWorkflowSource.readDefaultHead();
+  const initialIdentity =
+    await dependencies.defaultWorkflowSource.readDefaultSourceIdentity();
+  assertRepositoryIdentityMatchesTarget(initialIdentity, target);
+  const initialHead = initialIdentity.headCommitSha;
   const replacement = canonicalBoundAttestation(
     await dependencies.defaultWorkflowSource.readVerifiedWorkflowAt({
       commitSha: initialHead,
@@ -57,7 +59,7 @@ export async function reattestCodexRotatingWorkflow(
         "codex_rotating_workflow_reattestation_transition_invalid",
       );
     }
-    await assertDefaultHeadUnchanged(initialHead, dependencies);
+    await assertDefaultSourceIdentityUnchanged(initialIdentity, dependencies);
     return {
       status: "already_active",
       workflowSourceCommitSha: initialHead,
@@ -77,7 +79,7 @@ export async function reattestCodexRotatingWorkflow(
   if (!sameExactAttestation(current, verifiedCurrent)) {
     throw new Error("codex_rotating_workflow_previous_attestation_mismatch");
   }
-  await assertDefaultHeadUnchanged(initialHead, dependencies);
+  await assertDefaultSourceIdentityUnchanged(initialIdentity, dependencies);
   await dependencies.workflowReattestation.replaceActiveWorkflowSource({
     target,
     expectedCurrent: current,
@@ -137,13 +139,33 @@ function sameExactAttestation(
   );
 }
 
-async function assertDefaultHeadUnchanged(
-  expected: string,
+type DefaultSourceIdentity = Awaited<
+  ReturnType<
+    CodexRotatingDefaultWorkflowSourcePort["readDefaultSourceIdentity"]
+  >
+>;
+
+function assertRepositoryIdentityMatchesTarget(
+  identity: DefaultSourceIdentity,
+  target: CodexRotatingWorkflowReattestationRequest,
+): void {
+  if (identity.repositoryId !== target.repositoryId) {
+    throw new Error("codex_rotating_workflow_repository_identity_changed");
+  }
+}
+
+async function assertDefaultSourceIdentityUnchanged(
+  expected: DefaultSourceIdentity,
   dependencies: CodexRotatingWorkflowReattestationDependencies,
 ): Promise<void> {
+  const observed =
+    await dependencies.defaultWorkflowSource.readDefaultSourceIdentity();
   if (
-    (await dependencies.defaultWorkflowSource.readDefaultHead()) !== expected
-  ) {
+    observed.repositoryId !== expected.repositoryId ||
+    observed.repositoryFullName !== expected.repositoryFullName ||
+    observed.defaultBranch !== expected.defaultBranch
+  )
+    throw new Error("codex_rotating_workflow_repository_identity_changed");
+  if (observed.headCommitSha !== expected.headCommitSha)
     throw new Error("codex_rotating_workflow_default_head_changed");
-  }
 }

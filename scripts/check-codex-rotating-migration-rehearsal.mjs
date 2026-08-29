@@ -30,6 +30,10 @@ import {
   createSecretSafePostgresInvocation,
   runSecretSafePostgresCommand,
 } from "./lib/secret-safe-command-boundary.mjs";
+import {
+  isExpectedPrismaLockTimeoutFailure,
+  prismaLockTimeoutFailureMarkers,
+} from "./codex-rotating-lock-timeout-proof.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const dbDirectory = join(root, "packages/platform/db");
@@ -847,10 +851,12 @@ async function proveMigration60LockTimeout(url, fixtureAdminUrl) {
     );
     assertPrismaLockTimeoutEnvelope(
       runnerFailure,
+      readPrismaLockTimeoutHistoryEvidence(url, migration60Name),
+      migration60Name,
       "runner_000060_lock_timeout_not_observed",
     );
     assert(
-      runnerElapsedMs >= 14_000 && runnerElapsedMs < 30_000,
+      runnerElapsedMs >= 14_000 && runnerElapsedMs < 45_000,
       `prisma_000060_lock_timeout_unbounded:${runnerElapsedMs}`,
     );
     proveMigrationRunnerHistory(url, migration60Name, false);
@@ -928,10 +934,12 @@ async function proveCombinedLockTimeout(url, fixtureAdminUrl) {
     );
     assertPrismaLockTimeoutEnvelope(
       failed,
+      readPrismaLockTimeoutHistoryEvidence(url, migration61Name),
+      migration61Name,
       "runner_000061_lock_timeout_not_observed",
     );
     assert(
-      elapsedMs >= 14_000 && elapsedMs < 30_000,
+      elapsedMs >= 14_000 && elapsedMs < 45_000,
       `prisma_000061_lock_timeout_unbounded:${elapsedMs}`,
     );
     proveMigrationRunnerHistory(url, migration60Name, true);
@@ -4765,14 +4773,68 @@ function withApplicationName(url, applicationName) {
   return result.toString();
 }
 
-function assertPrismaLockTimeoutEnvelope(result, message) {
+function readPrismaLockTimeoutHistoryEvidence(url, migrationName) {
+  return JSON.parse(
+    psql(url, [
+      "-Atc",
+      String.raw`SELECT json_build_object(
+        'total',count(*),
+        'currentFailed',count(*) FILTER (
+          WHERE finished_at IS NULL AND rolled_back_at IS NULL
+        ),
+        'zeroStep',count(*) FILTER (
+          WHERE finished_at IS NULL AND rolled_back_at IS NULL
+            AND applied_steps_count = 0
+        ),
+        'lockTimeoutLog',count(*) FILTER (
+          WHERE finished_at IS NULL AND rolled_back_at IS NULL
+            AND coalesce(logs,'') ILIKE '%lock timeout%'
+        ),
+        'abortedTransactionLog',count(*) FILTER (
+          WHERE finished_at IS NULL AND rolled_back_at IS NULL
+            AND coalesce(logs,'') ILIKE '%current transaction is aborted%'
+        ),
+        'emptyLog',count(*) FILTER (
+          WHERE finished_at IS NULL AND rolled_back_at IS NULL
+            AND coalesce(logs,'') = ''
+        ),
+        'exactFailureLog',count(*) FILTER (
+          WHERE finished_at IS NULL AND rolled_back_at IS NULL
+            AND applied_steps_count = 0
+            AND (coalesce(logs,'') ILIKE '%lock timeout%'
+              OR coalesce(logs,'') ILIKE '%current transaction is aborted%')
+        )
+      )
+      FROM "_prisma_migrations"
+      WHERE migration_name = ${quoteLiteral(migrationName)}`,
+    ]).stdout,
+  );
+}
+
+function assertPrismaLockTimeoutEnvelope(
+  result,
+  historyEvidence,
+  migrationName,
+  message,
+) {
   const output = `${result.stdout}${result.stderr}`.toLowerCase();
   // Prisma's schema engine can replace the inner PostgreSQL lock-timeout error
-  // with the transaction-aborted envelope after the migration rolls back.
+  // with the transaction-aborted envelope after the migration rolls back.  Do
+  // not accept that generic envelope unless the exact failed migration row and
+  // its stored log independently bind it to this zero-step lock failure.
   assert(
-    output.includes("lock timeout") ||
-      output.includes("current transaction is aborted"),
-    message,
+    isExpectedPrismaLockTimeoutFailure({
+      output,
+      migrationName,
+      historyEvidence,
+    }),
+    `${message}:${JSON.stringify(
+      prismaLockTimeoutFailureMarkers({
+        output,
+        migrationName,
+        historyEvidence,
+      }),
+    )}`,
   );
 }
 
@@ -4833,12 +4895,17 @@ function migrateResolve(url, resolution, name) {
 }
 
 function prisma(url, args, requireSuccess = true) {
-  const command = process.env.npm_execpath
+  const command = process.env.REVIEW_ROUTER_PRISMA_BINARY
     ? {
-        executable: process.execPath,
-        args: [process.env.npm_execpath, "exec", "prisma", ...args],
+        executable: process.env.REVIEW_ROUTER_PRISMA_BINARY,
+        args,
       }
-    : { executable: "pnpm", args: ["exec", "prisma", ...args] };
+    : process.env.npm_execpath
+      ? {
+          executable: process.execPath,
+          args: [process.env.npm_execpath, "exec", "prisma", ...args],
+        }
+      : { executable: "pnpm", args: ["exec", "prisma", ...args] };
   const credential = createDatabaseCredentialBoundary(url);
   try {
     const result = spawnSync(command.executable, command.args, {

@@ -14,6 +14,40 @@ const dynamicWriteAclPrincipalSql = dynamicWriteAclPrincipals
   .map((principal) => `'${principal}'`)
   .join(",");
 
+export const liveV70V79CatalogProjectionRelations = Object.freeze([
+  "CodexOAuthWritebackIntent",
+  "CodexOAuthSecretNamespace",
+  "CodexOAuthProviderInstance",
+  "RepositoryConnection",
+  "CodexOAuthSetupDispatchAttempt",
+  "CodexOAuthSetupPayloadClaim",
+  "CodexOAuthDatabaseAuthorityReceipt",
+  "RuntimeGenerationWitnessProof",
+  "RuntimeCanaryChallenge",
+  "RuntimeCanaryChallengeProof",
+]);
+
+export const liveV70V79CatalogProjectionRoutines = Object.freeze([
+  "reviewrouter_record_runtime_generation_witness_proof",
+  "reviewrouter_read_runtime_generation_witness_proofs",
+  "reviewrouter_runtime_generation_write_read_canary",
+  "reviewrouter_request_runtime_canary_challenge",
+  "reviewrouter_answer_runtime_canary_challenge",
+  "reviewrouter_read_runtime_canary_challenge_proofs",
+  "codex_oauth_v4_v5_reattestation_transition",
+  "codex_oauth_reattest_active_namespace_v4_to_v5",
+  "codex_oauth_secret_namespace_tombstone_guard",
+  "codex_oauth_consume_database_authority",
+  "codex_oauth_database_authority_receipt_guard",
+]);
+
+const selectedRelationsSql = liveV70V79CatalogProjectionRelations
+  .map((relation) => `'${relation}'`)
+  .join(",");
+const selectedRoutinesSql = liveV70V79CatalogProjectionRoutines
+  .map((routine) => `'${routine}'`)
+  .join(",");
+
 export const fencedLiveV70V73CatalogDigestSql = `
 WITH selected_relations AS (
   SELECT c.oid, n.oid AS namespace_oid, n.nspname, c.relname, c.relkind,
@@ -22,7 +56,7 @@ WITH selected_relations AS (
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
   WHERE n.nspname='public' AND c.relname IN
-    ('CodexOAuthWritebackIntent','CodexOAuthSecretNamespace','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+    (${selectedRelationsSql})
 ), facts AS (
   SELECT jsonb_build_object(
     'columns',coalesce((SELECT jsonb_agg(jsonb_build_object(
@@ -119,16 +153,7 @@ WITH selected_relations AS (
       'acl',coalesce((SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
         FROM unnest(p.proacl) v),'[]'::jsonb)) ORDER BY p.oid::regprocedure::text COLLATE "C")
       FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-      WHERE n.nspname='public' AND p.proname IN (
-        'reviewrouter_record_runtime_generation_witness_proof',
-        'reviewrouter_read_runtime_generation_witness_proofs',
-        'reviewrouter_runtime_generation_write_read_canary',
-        'reviewrouter_request_runtime_canary_challenge',
-        'reviewrouter_answer_runtime_canary_challenge',
-        'reviewrouter_read_runtime_canary_challenge_proofs',
-        'codex_oauth_v4_v5_reattestation_transition',
-        'codex_oauth_reattest_active_namespace_v4_to_v5',
-        'codex_oauth_secret_namespace_tombstone_guard')),'[]'::jsonb),
+      WHERE n.nspname='public' AND p.proname IN (${selectedRoutinesSql})),'[]'::jsonb),
     'defaultAcl',coalesce((SELECT jsonb_agg(jsonb_build_object(
       'owner',pg_catalog.pg_get_userbyid(d.defaclrole),'namespace',n.nspname,
       'kind',d.defaclobjtype,'acl',(SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")

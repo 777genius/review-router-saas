@@ -36,6 +36,13 @@ const attestation = (schema: 4 | 5, marker: string, commitMarker = marker) =>
     secretNamespace: namespace,
   });
 
+const sourceIdentity = (headCommitSha: string) => ({
+  repositoryId: target.repositoryId,
+  repositoryFullName: "777genius/review-router-saas-e2e",
+  defaultBranch: "main",
+  headCommitSha,
+});
+
 describe("reattestCodexRotatingWorkflow", () => {
   it("owns the exact V4-to-V5 evidence policy and transactional transition", async () => {
     const current = attestation(4, "4");
@@ -46,9 +53,9 @@ describe("reattestCodexRotatingWorkflow", () => {
     const readVerifiedWorkflowAt = vi.fn(async ({ expectedSchemaVersion }) =>
       expectedSchemaVersion === 5 ? replacement : current,
     );
-    const readDefaultHead = vi
+    const readDefaultSourceIdentity = vi
       .fn()
-      .mockResolvedValue(replacement.workflowSourceCommitSha);
+      .mockResolvedValue(sourceIdentity(replacement.workflowSourceCommitSha));
 
     await expect(
       reattestCodexRotatingWorkflow(target, {
@@ -56,7 +63,7 @@ describe("reattestCodexRotatingWorkflow", () => {
           readActiveWorkflowAttestation: vi.fn().mockResolvedValue(current),
         },
         defaultWorkflowSource: {
-          readDefaultHead,
+          readDefaultSourceIdentity,
           readVerifiedWorkflowAt,
         },
         workflowReattestation: { replaceActiveWorkflowSource },
@@ -73,7 +80,7 @@ describe("reattestCodexRotatingWorkflow", () => {
       commitSha: current.workflowSourceCommitSha,
       expectedSchemaVersion: 4,
     });
-    expect(readDefaultHead).toHaveBeenCalledTimes(2);
+    expect(readDefaultSourceIdentity).toHaveBeenCalledTimes(2);
     expect(replaceActiveWorkflowSource).toHaveBeenCalledWith({
       target,
       expectedCurrent: current,
@@ -85,9 +92,9 @@ describe("reattestCodexRotatingWorkflow", () => {
     const current = attestation(5, "5", "4");
     const replacement = attestation(5, "5", "6");
     const replaceActiveWorkflowSource = vi.fn();
-    const readDefaultHead = vi
+    const readDefaultSourceIdentity = vi
       .fn()
-      .mockResolvedValue(replacement.workflowSourceCommitSha);
+      .mockResolvedValue(sourceIdentity(replacement.workflowSourceCommitSha));
 
     await expect(
       reattestCodexRotatingWorkflow(target, {
@@ -95,7 +102,7 @@ describe("reattestCodexRotatingWorkflow", () => {
           readActiveWorkflowAttestation: vi.fn().mockResolvedValue(current),
         },
         defaultWorkflowSource: {
-          readDefaultHead,
+          readDefaultSourceIdentity,
           readVerifiedWorkflowAt: vi.fn().mockResolvedValue(replacement),
         },
         workflowReattestation: { replaceActiveWorkflowSource },
@@ -105,6 +112,31 @@ describe("reattestCodexRotatingWorkflow", () => {
       workflowSourceCommitSha: replacement.workflowSourceCommitSha,
     });
     expect(replaceActiveWorkflowSource).not.toHaveBeenCalled();
+  });
+
+  it("re-reads identity immediately before returning already active", async () => {
+    const current = attestation(5, "5", "4");
+    const replacement = attestation(5, "5", "6");
+    const initial = sourceIdentity(replacement.workflowSourceCommitSha);
+
+    await expect(
+      reattestCodexRotatingWorkflow(target, {
+        currentWorkflowAttestation: {
+          readActiveWorkflowAttestation: vi.fn().mockResolvedValue(current),
+        },
+        defaultWorkflowSource: {
+          readDefaultSourceIdentity: vi
+            .fn()
+            .mockResolvedValueOnce(initial)
+            .mockResolvedValueOnce({
+              ...initial,
+              repositoryFullName: "attacker/renamed",
+            }),
+          readVerifiedWorkflowAt: vi.fn().mockResolvedValue(replacement),
+        },
+        workflowReattestation: { replaceActiveWorkflowSource: vi.fn() },
+      }),
+    ).rejects.toThrow("codex_rotating_workflow_repository_identity_changed");
   });
 
   it("rejects a previous blob that does not reproduce durable V4 evidence", async () => {
@@ -119,9 +151,11 @@ describe("reattestCodexRotatingWorkflow", () => {
           readActiveWorkflowAttestation: vi.fn().mockResolvedValue(current),
         },
         defaultWorkflowSource: {
-          readDefaultHead: vi
+          readDefaultSourceIdentity: vi
             .fn()
-            .mockResolvedValue(replacement.workflowSourceCommitSha),
+            .mockResolvedValue(
+              sourceIdentity(replacement.workflowSourceCommitSha),
+            ),
           readVerifiedWorkflowAt: vi
             .fn()
             .mockResolvedValueOnce(replacement)
@@ -144,10 +178,12 @@ describe("reattestCodexRotatingWorkflow", () => {
           readActiveWorkflowAttestation: vi.fn().mockResolvedValue(current),
         },
         defaultWorkflowSource: {
-          readDefaultHead: vi
+          readDefaultSourceIdentity: vi
             .fn()
-            .mockResolvedValueOnce(replacement.workflowSourceCommitSha)
-            .mockResolvedValueOnce("6".repeat(40)),
+            .mockResolvedValueOnce(
+              sourceIdentity(replacement.workflowSourceCommitSha),
+            )
+            .mockResolvedValueOnce(sourceIdentity("6".repeat(40))),
           readVerifiedWorkflowAt: vi
             .fn()
             .mockResolvedValueOnce(replacement)
@@ -156,6 +192,37 @@ describe("reattestCodexRotatingWorkflow", () => {
         workflowReattestation: { replaceActiveWorkflowSource },
       }),
     ).rejects.toThrow("codex_rotating_workflow_default_head_changed");
+    expect(replaceActiveWorkflowSource).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["repository id", { repositoryId: "1228051728" }],
+    ["repository full name", { repositoryFullName: "attacker/renamed" }],
+    ["default branch", { defaultBranch: "trunk" }],
+  ])("rejects a %s race immediately before CAS", async (_name, change) => {
+    const current = attestation(4, "4");
+    const replacement = attestation(5, "5");
+    const initial = sourceIdentity(replacement.workflowSourceCommitSha);
+    const replaceActiveWorkflowSource = vi.fn();
+
+    await expect(
+      reattestCodexRotatingWorkflow(target, {
+        currentWorkflowAttestation: {
+          readActiveWorkflowAttestation: vi.fn().mockResolvedValue(current),
+        },
+        defaultWorkflowSource: {
+          readDefaultSourceIdentity: vi
+            .fn()
+            .mockResolvedValueOnce(initial)
+            .mockResolvedValueOnce({ ...initial, ...change }),
+          readVerifiedWorkflowAt: vi
+            .fn()
+            .mockResolvedValueOnce(replacement)
+            .mockResolvedValueOnce(current),
+        },
+        workflowReattestation: { replaceActiveWorkflowSource },
+      }),
+    ).rejects.toThrow("codex_rotating_workflow_repository_identity_changed");
     expect(replaceActiveWorkflowSource).not.toHaveBeenCalled();
   });
 });

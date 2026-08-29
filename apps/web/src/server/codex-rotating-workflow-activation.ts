@@ -81,16 +81,6 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     },
   );
   const namespace = inspection.namespace;
-  const repositoryResponse = await input.octokit.request(
-    "GET /repos/{owner}/{repo}",
-    { owner: input.owner, repo: input.name },
-  );
-  const observedRepository = readGitHubRepositoryIdentity(
-    repositoryResponse.data,
-  );
-  if (observedRepository.defaultBranch !== input.defaultBranch) {
-    throw new Error("codex_rotating_workflow_default_branch_mismatch");
-  }
   if (inspection.source === "active") {
     if (!rotatingProvider.latestGenerationHash) {
       throw new Error("codex_rotating_workflow_generation_missing");
@@ -104,12 +94,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
         workflowPath: defaultCodexRotatingWorkflowPath,
         namespace,
       },
-      defaultWorkflowSourcePort(
-        input,
-        observedRepository,
-        providerInstanceId,
-        namespace,
-      ),
+      defaultWorkflowSourcePort(input, providerInstanceId, namespace),
     );
     return {
       status:
@@ -117,6 +102,16 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
       namespaceEpoch: namespace.epoch.toString(),
       workflowSourceCommitSha: result.workflowSourceCommitSha,
     };
+  }
+  const repositoryResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}",
+    { owner: input.owner, repo: input.name },
+  );
+  const observedRepository = readGitHubRepositoryIdentity(
+    repositoryResponse.data,
+  );
+  if (observedRepository.defaultBranch !== input.defaultBranch) {
+    throw new Error("codex_rotating_workflow_default_branch_mismatch");
   }
   const refParameters = {
     owner: input.owner,
@@ -203,23 +198,42 @@ function defaultWorkflowSourcePort(
     | "expectedRepositoryFullName"
     | "expectedApiUrl"
   >,
-  observedRepository: Readonly<{ id: string; fullName: string }>,
   providerInstanceId: string,
   namespace: VersionedProviderSecretNamespace,
 ): CodexRotatingDefaultWorkflowSourcePort {
+  let observedRepository:
+    | Readonly<{ id: string; fullName: string; defaultBranch: string }>
+    | undefined;
   return {
-    async readDefaultHead() {
+    async readDefaultSourceIdentity() {
+      const repositoryResponse = await input.octokit.request(
+        "GET /repos/{owner}/{repo}",
+        { owner: input.owner, repo: input.name },
+      );
+      const repository = readGitHubRepositoryIdentity(repositoryResponse.data);
+      if (repository.defaultBranch !== input.defaultBranch) {
+        throw new Error("codex_rotating_workflow_default_branch_mismatch");
+      }
+      observedRepository = repository;
       const response = await input.octokit.request(
         "GET /repos/{owner}/{repo}/git/ref/{ref}",
         {
           owner: input.owner,
           repo: input.name,
-          ref: `heads/${input.defaultBranch}`,
+          ref: `heads/${repository.defaultBranch}`,
         },
       );
-      return readGitHubCommitSha(response.data);
+      return {
+        repositoryId: repository.id,
+        repositoryFullName: repository.fullName,
+        defaultBranch: repository.defaultBranch,
+        headCommitSha: readGitHubCommitSha(response.data),
+      };
     },
     async readVerifiedWorkflowAt({ commitSha, expectedSchemaVersion }) {
+      if (!observedRepository) {
+        throw new Error("codex_rotating_workflow_repository_identity_missing");
+      }
       const workflowPath = defaultCodexRotatingWorkflowPath;
       const response = await input.octokit.request(
         "GET /repos/{owner}/{repo}/contents/{path}",

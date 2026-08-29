@@ -11,6 +11,7 @@ import {
   createRehearsalAuthorityContext,
   rehearsalSchemaOwnerIdentity,
 } from "./codex-rotating-rehearsal-authority-context.mjs";
+import { isExpectedPrismaLockTimeoutFailure } from "./codex-rotating-lock-timeout-proof.mjs";
 
 describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   const source = readFileSync(
@@ -497,10 +498,8 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toContain(
       "withApplicationName(fixtureAdminUrl, applicationName)",
     );
-    expect(source).toContain('output.includes("lock timeout")');
-    expect(source).toContain(
-      'output.includes("current transaction is aborted")',
-    );
+    expect(source).toContain("isExpectedPrismaLockTimeoutFailure({");
+    expect(source).toContain("runnerElapsedMs < 45_000");
     expect(prepareIndex).toBeLessThan(helperIndex);
     expect(source).toContain(
       "discardRehearsalOnlyRolledBackMigrationHistory(providerAdmin)",
@@ -658,6 +657,45 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         "rehearsal_database_removal_not_proven_before_role_cleanup",
       ),
     );
+  });
+
+  it("accepts Prisma's aborted-transaction wrapper only with exact 000060 history evidence", () => {
+    const output = `P3018\nMigration name: 000060_codex_oauth_setup_serialization\nERROR: current transaction is aborted`;
+    const exactEvidence = {
+      total: 1,
+      currentFailed: 1,
+      zeroStep: 1,
+      exactFailureLog: 0,
+      emptyLog: 1,
+    };
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName: "000060_codex_oauth_setup_serialization",
+        historyEvidence: exactEvidence,
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName: "000061_codex_oauth_provider_mutation_fence",
+        historyEvidence: exactEvidence,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName: "000060_codex_oauth_setup_serialization",
+        historyEvidence: { ...exactEvidence, zeroStep: 0 },
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "000060_codex_oauth_setup_serialization: lock timeout",
+        migrationName: "000060_codex_oauth_setup_serialization",
+        historyEvidence: exactEvidence,
+      }),
+    ).toBe(false);
   });
 
   it("restores source-owned evidence before installing a rehearsal migration permit", () => {

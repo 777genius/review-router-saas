@@ -24,6 +24,8 @@ const expected: ActivationCatalogPolicyPromotionExpectation = {
   preactivationCatalogPolicySha256: `sha256:${"e".repeat(64)}`,
   activatedCatalogPolicySha256: `sha256:${"f".repeat(64)}`,
   artifactCanonicalSha256: `sha256:${"1".repeat(64)}`,
+  postManifestIdentity: `sha256:${"7".repeat(64)}`,
+  activeProductionCatalogDigest: `sha256:${"8".repeat(64)}`,
 };
 
 const ready = () => ({

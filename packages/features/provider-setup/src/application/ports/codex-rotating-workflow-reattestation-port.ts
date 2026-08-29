@@ -27,7 +27,15 @@ export interface CodexRotatingCurrentWorkflowAttestationPort {
 
 /** Reads and verifies workflow evidence at the repository's default branch. */
 export interface CodexRotatingDefaultWorkflowSourcePort {
-  readDefaultHead(): Promise<string>;
+  /** Re-reads repository identity and the exact default-branch ref head. */
+  readDefaultSourceIdentity(): Promise<
+    Readonly<{
+      repositoryId: string;
+      repositoryFullName: string;
+      defaultBranch: string;
+      headCommitSha: string;
+    }>
+  >;
   readVerifiedWorkflowAt(input: {
     readonly commitSha: string;
     readonly expectedSchemaVersion: 4 | 5;

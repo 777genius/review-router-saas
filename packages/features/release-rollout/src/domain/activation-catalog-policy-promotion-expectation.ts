@@ -5,6 +5,8 @@ export const activationCatalogPromotionOptIn =
 
 export const reviewedActivationCatalogCandidate = Object.freeze({
   sha256: "3f20cac0f84591e99f2f4f4a555faac4e2900fc5e6271238d20c71b67a6538bb",
+  canonicalSha256:
+    "3f8db8d7ba78126d72df34def855dea4139d17d61d7318d7144c9c0242dff89e",
   bytes: 2_489_008,
   preactivationCatalogPolicySha256:
     "sha256:36e6e4875c530beba1cb6bfc580a358d031895334e6af6a6bad193148e1beebe",
@@ -43,4 +45,8 @@ export const reviewedActivationCatalogPromotionExpectation = Object.freeze({
     reviewedActivationCatalogCandidate.activatedCatalogPolicySha256,
   artifactCanonicalSha256:
     reviewedActivationCatalogCandidate.artifactCanonicalSha256,
+  postManifestIdentity:
+    "sha256:381abaecf082c48e20ac2b620d50fd72b12cc974d6cde894529961b269a644d4",
+  activeProductionCatalogDigest:
+    "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0",
 } satisfies ActivationCatalogPolicyPromotionExpectation);

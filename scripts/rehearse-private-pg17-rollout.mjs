@@ -437,11 +437,12 @@ export function createActivationCatalogCaptureCheckpoint({
   )
     throw new Error("activation_catalog_policy_capture_binding_invalid");
   return Object.freeze({
-    kind: "reviewrouter-activation-catalog-policy-capture-checkpoint",
-    version: 1,
+    kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+    version: 2,
+    policies: artifact.policies,
     capture: Object.freeze({
       commitSha: candidate.commitSha,
-      manifestIdentity: candidate.manifestIdentity,
+      postManifestIdentity: candidate.manifestIdentity,
       database: Object.freeze({
         disposableIdentity,
         configuredIdentity: candidate.databaseIdentity,
@@ -453,7 +454,6 @@ export function createActivationCatalogCaptureCheckpoint({
         observedDigest: candidate.catalogDigest,
       }),
     }),
-    artifact,
   });
 }
 

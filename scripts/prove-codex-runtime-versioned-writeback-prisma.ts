@@ -935,7 +935,12 @@ try {
     {
       currentWorkflowAttestation: setupLedger,
       defaultWorkflowSource: {
-        readDefaultHead: async () => reattestedWorkflow.workflowSourceCommitSha,
+        readDefaultSourceIdentity: async () => ({
+          repositoryId: "900007",
+          repositoryFullName: "reviewrouter/runtime-proof",
+          defaultBranch: "main",
+          headCommitSha: reattestedWorkflow.workflowSourceCommitSha,
+        }),
         readVerifiedWorkflowAt: async ({ expectedSchemaVersion }) =>
           expectedSchemaVersion === 4
             ? verifiedWorkflowAttestation

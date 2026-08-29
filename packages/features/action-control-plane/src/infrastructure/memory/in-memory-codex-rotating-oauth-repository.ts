@@ -7,6 +7,7 @@ import {
   type CodexRotatingEncryptedWritebackRequest,
   type CodexRotatingProviderBinding,
   allocateVersionedProviderSecretNamespace,
+  createVersionedSecretWorkflowSourceAttestation,
   assertSameVersionedProviderSecretNamespace,
   assertProviderSecretTransitionAuthorized,
   assertRuntimeVersionedAmbiguousRetirementAuthorized,
@@ -242,7 +243,7 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
     readonly now?: Date;
-    readonly verifiedWorkflowAttestation: VersionedSecretWorkflowSourceAttestation | null;
+    readonly verifiedWorkflowAttestation: VersionedSecretWorkflowSourceAttestation;
     readonly newWorkAdmissionBarrier: Readonly<{
       assertAdmitted(): void;
     }>;
@@ -251,6 +252,11 @@ export class InMemoryCodexRotatingOAuthRepository
     input.newWorkAdmissionBarrier.assertAdmitted();
     const provider = this.providers.get(input.providerInstanceId);
     this.assertAutomaticRuntimeDatabaseRecoveryWitness(provider);
+    assertMemoryWorkflowAdmissionMatches({
+      provider,
+      repository: input.repository,
+      verified: input.verifiedWorkflowAttestation,
+    });
     if (
       provider?.state === "unknown_auth_state" ||
       provider?.state === "needs_reconnect" ||
@@ -1174,6 +1180,38 @@ function initialNamespace(
     epoch: 1n,
     randomBytes: () => new Uint8Array(16),
   });
+}
+
+function assertMemoryWorkflowAdmissionMatches(input: {
+  readonly provider: ProviderRecord | undefined;
+  readonly repository: ActionRepositoryContext;
+  readonly verified: VersionedSecretWorkflowSourceAttestation;
+}): void {
+  const { provider, repository } = input;
+  let verified: VersionedSecretWorkflowSourceAttestation;
+  try {
+    verified = createVersionedSecretWorkflowSourceAttestation(input.verified);
+  } catch {
+    throw new Error("codex_rotating_workflow_attestation_stale");
+  }
+  if (
+    !provider ||
+    verified.repositoryId !== repository.githubRepositoryId ||
+    verified.repositoryId !== provider.binding.githubRepositoryId ||
+    verified.workflowPath !== provider.binding.workflowPath ||
+    verified.workflowSchemaVersion !== provider.binding.workflowSchemaVersion ||
+    verified.sourceTrust !== WorkflowSourceTrust.TrustedDefaultBranchRevision ||
+    verified.secretNamespace.scope.repositoryId !==
+      repository.githubRepositoryId ||
+    verified.secretNamespace.scope.providerInstanceId !==
+      provider.binding.providerInstanceId ||
+    verified.secretNamespace.namespaceId !==
+      provider.activeNamespace.namespaceId ||
+    verified.secretNamespace.epoch !== provider.activeNamespace.epoch ||
+    verified.secretNamespace.name !== provider.activeNamespace.name
+  ) {
+    throw new Error("codex_rotating_workflow_attestation_stale");
+  }
 }
 
 function withoutMutationOwnership(provider: ProviderRecord): ProviderRecord {
