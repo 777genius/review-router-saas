@@ -72,6 +72,75 @@ const terminalClaimReplayCases = codexRotatingSetupTerminalClaimStatuses.map(
   (status) => [status, "codex_rotating_setup_recovery_required"] as const,
 );
 
+function v5ValidationFixture(finalRows: readonly Record<string, unknown>[]) {
+  const activeClaim = { ...claim, status: "active" };
+  const namespace = allocateVersionedProviderSecretNamespace({
+    scope: {
+      repositoryId: activeClaim.githubRepositoryId,
+      providerInstanceId: "codex-rotating:123456",
+    },
+    epoch: 2n,
+    randomBytes: () => new Uint8Array(16).fill(0x22),
+  });
+  const expectedCurrent = createVersionedSecretWorkflowSourceAttestation({
+    repositoryId: activeClaim.githubRepositoryId,
+    workflowPath: ".github/workflows/reviewrouter-codex.yml",
+    workflowSourceCommitSha: "5".repeat(40),
+    workflowSourceBlobSha: "5".repeat(40),
+    workflowSourceSha256: "5".repeat(64),
+    workflowSemanticSha256: "5".repeat(64),
+    workflowSchemaVersion: 5,
+    sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+    secretNamespace: namespace,
+  });
+  const verifiedActive = createVersionedSecretWorkflowSourceAttestation({
+    ...expectedCurrent,
+    workflowSourceCommitSha: "6".repeat(40),
+  });
+  const tx = {
+    $executeRawUnsafe: vi.fn().mockResolvedValue(0),
+    $queryRaw: vi
+      .fn()
+      .mockResolvedValueOnce([activeClaim])
+      .mockResolvedValueOnce([
+        { writer: true, databaseIncarnation: claim.databaseIncarnation },
+      ])
+      .mockResolvedValueOnce([{ id: claim.providerInstanceRowId }])
+      .mockResolvedValueOnce(finalRows),
+  };
+  const prisma = { $transaction: vi.fn((callback) => callback(tx)) };
+  const ledger = new PrismaCodexRotatingSetupPayloadClaim(
+    prisma as never,
+    recoveryWitness,
+  );
+  return {
+    ledger,
+    tx,
+    input: {
+      target: {
+        claimId: activeClaim.id,
+        attemptId: "attempt:writer-proof",
+        expectedGenerationHash: "9".repeat(64),
+        repositoryId: activeClaim.githubRepositoryId,
+        workflowPath: expectedCurrent.workflowPath,
+        namespace,
+      },
+      expectedCurrent,
+      verifiedActive,
+    },
+    persistedRow: {
+      workflowPath: expectedCurrent.workflowPath,
+      workflowSourceCommitSha: expectedCurrent.workflowSourceCommitSha,
+      workflowSourceBlobSha: expectedCurrent.workflowSourceBlobSha,
+      workflowSourceSha256: expectedCurrent.workflowSourceSha256,
+      workflowSemanticSha256: expectedCurrent.workflowSemanticSha256,
+      workflowSourceTrust: expectedCurrent.sourceTrust,
+      workflowSchemaVersion: expectedCurrent.workflowSchemaVersion,
+      attestedRepositoryId: expectedCurrent.repositoryId,
+    },
+  };
+}
+
 function retirementRow(
   attempt: {
     attemptId: string;
@@ -999,6 +1068,7 @@ describe("Prisma rotating setup writer proof", () => {
         },
         expectedCurrent: workflow(4, "4"),
         replacement: workflow(5, "5"),
+        compatibilityWindowSeconds: 90_000,
       }),
     ).resolves.toEqual({ status: "active" });
     expect(tx.$executeRaw).toHaveBeenCalledOnce();
@@ -1071,11 +1141,42 @@ describe("Prisma rotating setup writer proof", () => {
           },
           expectedCurrent: workflow(4, "4"),
           replacement: workflow(5, "5"),
+          compatibilityWindowSeconds: 90_000,
         }),
       ).rejects.toThrow("codex_rotating_workflow_reattestation_stale");
       expect(tx.$executeRaw).not.toHaveBeenCalled();
     },
   );
+
+  it("linearizes already-active V5 under the exact provider and namespace locks", async () => {
+    const provisional = v5ValidationFixture([]);
+    const fixture = v5ValidationFixture([provisional.persistedRow]);
+
+    await expect(
+      fixture.ledger.validateActiveWorkflowSource(fixture.input),
+    ).resolves.toEqual({ status: "active" });
+    const sql = Array.from(
+      fixture.tx.$queryRaw.mock.calls.at(-1)![0] as readonly string[],
+    ).join("?");
+    expect(sql).toContain("provider.\"state\" = 'active'");
+    expect(sql).toContain('provider."mutationOwner" IS NULL');
+    expect(sql).toContain('provider."activeLeaseId" IS NULL');
+    expect(sql).toContain("namespace.\"status\" = 'active'");
+    expect(sql).toContain('NOT namespace."permanentlyRetired"');
+    expect(sql).toContain("FOR UPDATE OF provider, namespace, claim, attempt");
+  });
+
+  it.each([
+    "namespace retirement",
+    "claim supersession",
+    "mutation-owner acquisition",
+    "runtime-lease acquisition",
+  ])("rejects an already-active result that loses the %s race", async () => {
+    const fixture = v5ValidationFixture([]);
+    await expect(
+      fixture.ledger.validateActiveWorkflowSource(fixture.input),
+    ).rejects.toThrow("codex_rotating_workflow_reattestation_stale");
+  });
 });
 
 describe("workflow re-attestation database errors", () => {

@@ -16,6 +16,7 @@ export type CodexRotatingWorkflowReattestationTransition = Readonly<{
   target: CodexRotatingWorkflowReattestationRequest;
   expectedCurrent: VersionedSecretWorkflowSourceAttestation;
   replacement: VersionedSecretWorkflowSourceAttestation;
+  compatibilityWindowSeconds: number;
 }>;
 
 /** Reads the durable evidence currently bound to the active namespace. */
@@ -44,6 +45,15 @@ export interface CodexRotatingDefaultWorkflowSourcePort {
 
 /** Performs the final compare-and-swap under the provider transaction lock. */
 export interface CodexRotatingWorkflowReattestationPersistencePort {
+  /** Linearizes an idempotent V5 success under the provider mutation fence. */
+  validateActiveWorkflowSource(
+    input: Readonly<{
+      target: CodexRotatingWorkflowReattestationRequest;
+      expectedCurrent: VersionedSecretWorkflowSourceAttestation;
+      verifiedActive: VersionedSecretWorkflowSourceAttestation;
+    }>,
+  ): Promise<{ readonly status: "active" }>;
+
   replaceActiveWorkflowSource(
     transition: CodexRotatingWorkflowReattestationTransition,
   ): Promise<{ readonly status: "active" }>;

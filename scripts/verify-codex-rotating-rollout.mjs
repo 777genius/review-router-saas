@@ -106,6 +106,13 @@ const migrations = [
     expectedSha256:
       "18a1e48953d1360d3661ea6753b7aa350fc7e28caeaeb65d42c9ac42569f1cf0",
   },
+  {
+    id: "000081_codex_oauth_v4_v5_staged_compatibility",
+    sourceFile:
+      "packages/platform/db/prisma/migrations/000081_codex_oauth_v4_v5_staged_compatibility/migration.sql",
+    expectedSha256:
+      "037d64a2e8da2edc404de7500c8615b65b00df284dc3ddf77d3f440c21b6331b",
+  },
 ];
 const checkedInRotatingMigrations = readdirSync(
   resolve(checkoutRoot, "packages/platform/db/prisma/migrations"),
@@ -842,12 +849,16 @@ function exactCatalogAcl(entries, objects, grantees, fixedPrivileges) {
               name === "CodexOAuthDatabaseAuthorityKey" ||
               name === "CodexOAuthDatabaseAuthorityReceipt"
             ? []
-            : name === "CodexOAuthChildIdentityQuarantine" ||
-                name === "CodexOAuthProviderIdentityQuarantine"
-              ? ["SELECT"]
-              : name === "CodexOAuthProviderInstance"
-                ? ["INSERT", "SELECT"]
-                : runtimePrivileges;
+            : name === "CodexOAuthWorkflowCompatibility"
+              ? ["reviewrouter_api", "reviewrouter_web"].includes(grantee)
+                ? ["SELECT"]
+                : []
+              : name === "CodexOAuthChildIdentityQuarantine" ||
+                  name === "CodexOAuthProviderIdentityQuarantine"
+                ? ["SELECT"]
+                : name === "CodexOAuthProviderInstance"
+                  ? ["INSERT", "SELECT"]
+                  : runtimePrivileges;
       for (const privilege of privileges)
         expected.push({
           name,
@@ -1394,6 +1405,11 @@ function exactTriggerBinding(entry) {
       "codex_oauth_runtime_writeback_evidence_guard",
       31,
     ],
+    CodexOAuthWorkflowCompatibility_guard: [
+      "CodexOAuthWorkflowCompatibility",
+      "codex_oauth_workflow_compatibility_guard",
+      31,
+    ],
     RepositoryConnection_codex_oauth_identity_guard: [
       "RepositoryConnection",
       "codex_oauth_repository_identity_guard",
@@ -1471,7 +1487,7 @@ function exactFunctionDefinition(entry) {
       codex_oauth_repair_quarantined_provider:
         "provider_row_id text, old_workspace_id text, old_repository_id text, old_provider_instance_id text, old_auth_mode text, old_secret_name text, old_repository_provider text, old_github_repository_id bigint, old_external_repository_id text, new_workspace_id text, new_repository_id text, new_provider_instance_id text, new_auth_mode text, new_secret_name text, new_github_repository_id bigint, target_signature text",
       codex_oauth_reattest_active_namespace_v4_to_v5:
-        "target_provider_row_id text, target_claim_id text, target_attempt_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_generation_hash text, target_workflow_path text, target_source_trust text, expected_schema_version integer, target_schema_version integer, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text",
+        "target_provider_row_id text, target_claim_id text, target_attempt_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_generation_hash text, target_workflow_path text, target_source_trust text, expected_schema_version integer, target_schema_version integer, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text, compatibility_window_seconds integer",
       codex_oauth_v4_v5_reattestation_transition:
         "target_provider_row_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_workflow_path text, target_source_trust text, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text",
     }[entry?.name] ?? "";
@@ -1499,6 +1515,7 @@ function exactFunctionDefinition(entry) {
     entry?.name === "codex_oauth_runtime_referential_action_guard" ||
     entry?.name === "codex_oauth_repair_quarantined_provider" ||
     entry?.name === "codex_oauth_reattest_active_namespace_v4_to_v5" ||
+    entry?.name === "codex_oauth_workflow_compatibility_guard" ||
     entry?.name === "codex_oauth_secret_namespace_tombstone_guard";
   const fixedSearchPathFunction =
     securityDefinerFunction ||
@@ -1506,7 +1523,8 @@ function exactFunctionDefinition(entry) {
     entry?.name === "codex_oauth_database_authority_receipt_guard" ||
     entry?.name === "codex_oauth_provider_identity_transition" ||
     entry?.name === "codex_oauth_provider_identity_repair_challenge" ||
-    entry?.name === "codex_oauth_v4_v5_reattestation_transition";
+    entry?.name === "codex_oauth_v4_v5_reattestation_transition" ||
+    entry?.name === "codex_oauth_workflow_compatibility_guard";
   return (
     typeof bodySha256 === "string" &&
     hasExactKeys(entry, [
@@ -1678,6 +1696,26 @@ function exactCheckDefinition(entry) {
       "recoveryRequestRowId",
       "recoveryResolvedAt",
     ],
+    CodexOAuthWorkflowCompatibility_v4_check: ["workflowSchemaVersion", "4"],
+    CodexOAuthWorkflowCompatibility_trust_check: [
+      "workflowSourceTrust",
+      "trusted_default_branch_revision",
+    ],
+    CodexOAuthWorkflowCompatibility_path_check: ["workflowPath"],
+    CodexOAuthWorkflowCompatibility_commit_check: ["workflowSourceCommitSha"],
+    CodexOAuthWorkflowCompatibility_blob_check: ["workflowSourceBlobSha"],
+    CodexOAuthWorkflowCompatibility_source_digest_check: [
+      "workflowSourceSha256",
+    ],
+    CodexOAuthWorkflowCompatibility_semantic_digest_check: [
+      "workflowSemanticSha256",
+    ],
+    CodexOAuthWorkflowCompatibility_repository_check: ["attestedRepositoryId"],
+    CodexOAuthWorkflowCompatibility_retirement_check: [
+      "retireAt",
+      "createdAt",
+      "25",
+    ],
   }[entry?.name];
   const expectedValidated =
     entry?.name === "CodexOAuthSetupRecoveryRequest_epoch_check" ||
@@ -1824,6 +1862,7 @@ function exactIndexDefinition(entry) {
     CodexOAuthWritebackIntent_dispatchAttemptId_key: ["dispatchAttemptId"],
     CodexOAuthWritebackIntent_secretNamespaceId_idx: ["secretNamespaceId"],
     CodexOAuthWritebackIntent_versioned_lease_key: ["leaseId"],
+    CodexOAuthWorkflowCompatibility_retire_at_idx: ["retireAt"],
   }[entry?.name];
   const predicateTokens = {
     CodexOAuthSetupManifest_one_active_provider_key: [
@@ -1852,7 +1891,7 @@ function exactIndexDefinition(entry) {
         ? "int4_ops"
         : ["resolvedAt", "expiresAt", "activeLeaseExpiresAt"].includes(key)
           ? "timestamp_ops"
-          : key === "recoveryExpiresAt"
+          : ["recoveryExpiresAt", "retireAt"].includes(key)
             ? "timestamptz_ops"
             : "text_ops",
   );

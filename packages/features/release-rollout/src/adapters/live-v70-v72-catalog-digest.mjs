@@ -1,5 +1,5 @@
 /**
- * Canonical PostgreSQL projection of the live V70-V80 application catalog.
+ * Canonical PostgreSQL projection of the live V70-V81 application catalog.
  * Keep this in the Postgres adapter layer: the domain receives only its digest.
  */
 import { canonicalReleaseMigrationPostManifestIdentity } from "../domain/release-migration-artifact-identity.js";
@@ -22,6 +22,7 @@ export const liveV70V79CatalogProjectionRelations = Object.freeze([
   "CodexOAuthSetupDispatchAttempt",
   "CodexOAuthSetupPayloadClaim",
   "CodexOAuthDatabaseAuthorityReceipt",
+  "CodexOAuthWorkflowCompatibility",
   "RuntimeGenerationWitnessProof",
   "RuntimeCanaryChallenge",
   "RuntimeCanaryChallengeProof",
@@ -39,6 +40,7 @@ export const liveV70V79CatalogProjectionRoutines = Object.freeze([
   "codex_oauth_secret_namespace_tombstone_guard",
   "codex_oauth_consume_database_authority",
   "codex_oauth_database_authority_receipt_guard",
+  "codex_oauth_workflow_compatibility_guard",
 ]);
 
 const selectedRelationsSql = liveV70V79CatalogProjectionRelations
@@ -198,6 +200,9 @@ WITH selected_relations AS (
           'finished',true,'rolledBack',false),
         jsonb_build_object('name','000080_codex_oauth_reattestation_mutation_owner_fence',
           'checksum','18a1e48953d1360d3661ea6753b7aa350fc7e28caeaeb65d42c9ac42569f1cf0',
+          'finished',true,'rolledBack',false),
+        jsonb_build_object('name','000081_codex_oauth_v4_v5_staged_compatibility',
+          'checksum','037d64a2e8da2edc404de7500c8615b65b00df284dc3ddf77d3f440c21b6331b',
           'finished',true,'rolledBack',false))
       ELSE '[]'::jsonb END,
     'unresolvedHistory',false,
@@ -219,4 +224,6 @@ export const fencedLiveV70V72CatalogDigestSql =
 export const fencedLiveV70V79CatalogDigestSql =
   fencedLiveV70V73CatalogDigestSql;
 export const fencedLiveV70V80CatalogDigestSql =
+  fencedLiveV70V73CatalogDigestSql;
+export const fencedLiveV70V81CatalogDigestSql =
   fencedLiveV70V73CatalogDigestSql;

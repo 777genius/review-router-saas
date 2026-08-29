@@ -4,6 +4,7 @@ export * from "./domain/codex-rotating-setup-recovery-http";
 export * from "./domain/codex-rotating-setup-payload-claim";
 export * from "./domain/codex-rotating-setup-readiness";
 export * from "./domain/codex-rotating-workflow-namespace";
+export * from "./domain/codex-rotating-workflow-reattestation";
 export * from "./application/ports/codex-rotating-setup-recovery-port";
 export * from "./application/ports/codex-rotating-setup-payload-claim-port";
 export * from "./application/ports/codex-rotating-setup-readiness-port";

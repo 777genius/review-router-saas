@@ -241,7 +241,7 @@ function post000079CapturedPolicies() {
     canonicalActivationCatalogPolicyArtifact.policies,
   );
   const resource =
-    "routine:public.codex_oauth_reattest_active_namespace_v4_to_v5(pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.int8,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.int4,pg_catalog.int4,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text)";
+    "routine:public.codex_oauth_reattest_active_namespace_v4_to_v5(pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.int8,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.int4,pg_catalog.int4,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.int4)";
   for (const policy of [policies.preactivation, policies.activated]) {
     policy.grants.push({
       principal: "reviewrouter_web",

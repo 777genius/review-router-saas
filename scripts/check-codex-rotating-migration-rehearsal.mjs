@@ -65,6 +65,7 @@ const migration77Name = "000077_hosted_codex_r57_security_race_remediation";
 const migration78Name = "000078_review_investigation_maintenance_checkpoint";
 const migration79Name = "000079_codex_oauth_v4_v5_workflow_reattestation";
 const migration80Name = "000080_codex_oauth_reattestation_mutation_owner_fence";
+const migration81Name = "000081_codex_oauth_v4_v5_staged_compatibility";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -100,6 +101,7 @@ assert(
       migration78Name,
       migration79Name,
       migration80Name,
+      migration81Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -217,7 +219,7 @@ try {
   const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000080 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000081 rehearsal passed.\n",
   );
 } finally {
   const databaseDrop = psql(
@@ -254,7 +256,7 @@ function proveSelfHostedV4V5ReattestationOwnerInvocation(
     NULL::text,NULL::text,NULL::text,NULL::text,NULL::bigint,NULL::text,
     NULL::text,NULL::text,NULL::text,NULL::text,NULL::integer,NULL::integer,
     NULL::text,NULL::text,NULL::text,NULL::text,NULL::text,NULL::text,
-    NULL::text,NULL::text)`;
+    NULL::text,NULL::text,NULL::integer)`;
   psql(providerAdmin, [
     "-c",
     `ALTER ROLE reviewrouter_web RENAME TO ${quoteIdentifier(temporaryWebRole)};
@@ -1693,7 +1695,7 @@ async function proveActiveNamespaceV4V5Reattestation(
       ${quoteLiteral(oldEvidence.commitSha)},${quoteLiteral(oldEvidence.blobSha)},
       ${quoteLiteral(oldEvidence.sourceSha256)},${quoteLiteral(oldEvidence.semanticSha256)},
       ${quoteLiteral(newEvidence.commitSha)},${quoteLiteral(newEvidence.blobSha)},
-      ${quoteLiteral(newEvidence.sourceSha256)},${quoteLiteral(newEvidence.semanticSha256)})`;
+      ${quoteLiteral(newEvidence.sourceSha256)},${quoteLiteral(newEvidence.semanticSha256)},90000::integer)`;
   };
 
   for (const rejectedSchemaVersion of [1, 2, 3]) {
@@ -1978,12 +1980,12 @@ async function proveActiveNamespaceV4V5Reattestation(
         EXISTS (
           SELECT 1 FROM pg_proc routine
           CROSS JOIN LATERAL aclexplode(routine.proacl) privilege
-          WHERE routine.oid='public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text)'::regprocedure
+          WHERE routine.oid='public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer)'::regprocedure
             AND privilege.grantee=0 AND privilege.privilege_type='EXECUTE'
         )::int,
-        has_function_privilege('reviewrouter_api', 'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text)', 'EXECUTE')::int,
-        has_function_privilege('reviewrouter_worker', 'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text)', 'EXECUTE')::int,
-        has_function_privilege('reviewrouter_web', 'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text)', 'EXECUTE')::int)`,
+        has_function_privilege('reviewrouter_api', 'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer)', 'EXECUTE')::int,
+        has_function_privilege('reviewrouter_worker', 'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer)', 'EXECUTE')::int,
+        has_function_privilege('reviewrouter_web', 'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer)', 'EXECUTE')::int)`,
     ]).stdout.trim() === "0:0:0:1",
     "active namespace re-attestation routine ACL is not web-only",
   );

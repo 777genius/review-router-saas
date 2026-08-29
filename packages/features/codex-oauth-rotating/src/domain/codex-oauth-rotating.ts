@@ -2072,6 +2072,17 @@ export type CodexRotatingProviderBinding = {
     sourceTrust: "trusted_default_branch_revision";
     repositoryId: string;
   }>;
+  readonly retiringWorkflowSource?: Readonly<{
+    workflowPath: string;
+    workflowSourceCommitSha: string;
+    workflowSourceBlobSha: string;
+    workflowSourceSha256: string;
+    workflowSemanticSha256: string;
+    sourceTrust: "trusted_default_branch_revision";
+    repositoryId: string;
+    workflowSchemaVersion: 4;
+    retireAt: Date;
+  }>;
 };
 
 export function validateCodexRotatingPrelease(input: {

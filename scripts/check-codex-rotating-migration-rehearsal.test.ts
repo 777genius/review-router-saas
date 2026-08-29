@@ -47,7 +47,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
-  it("rehearses every canonical migration from 000060 through 000080 in order", () => {
+  it("rehearses every canonical migration from 000060 through 000081 in order", () => {
     const inventory =
       /JSON\.stringify\(\[([\s\S]+?)\]\),\n\s+"rehearsal migration inventory/u.exec(
         source,
@@ -81,6 +81,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "migration78Name",
       "migration79Name",
       "migration80Name",
+      "migration81Name",
     ]);
     expect(source).toContain(
       'const migration67Name = "000067_review_live_progress"',
@@ -112,6 +113,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toContain(
       '"000079_codex_oauth_v4_v5_workflow_reattestation"',
       '"000080_codex_oauth_reattestation_mutation_owner_fence"',
+      '"000081_codex_oauth_v4_v5_staged_compatibility"',
     );
     expect(source).toContain(
       "for (const migrationName of rotatingMigrationNames)",
@@ -127,7 +129,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).not.toContain("applyOrdinaryPostReleaseMigrations");
     expect(source).not.toContain("assertMigrationAbsentFromHistory");
     expect(source).toContain("proveMigrateDeployNoOp(providerAdmin)");
-    expect(source).toContain("combined 000060 through 000080 rehearsal passed");
+    expect(source).toContain("combined 000060 through 000081 rehearsal passed");
   });
 
   it("rehearses rejection of legacy active namespace schemas 1 through 3", () => {
@@ -696,6 +698,70 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
           migrationName: "000061_codex_oauth_provider_mutation_fence",
           observed: true,
         },
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["prefix", "attacker_000061_codex_oauth_provider_mutation_fence"],
+    ["suffix", "000061_codex_oauth_provider_mutation_fence_attacker"],
+    ["substring", "codex_oauth_provider_mutation"],
+  ])("rejects a %s migration-name field", (_case, presentedName) => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `P3018\nMigration name: ${presentedName}\nERROR: lock timeout`,
+        migrationName,
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects multiple conflicting migration-name fields", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `P3018\nMigration name: ${migrationName}\nMigration name: ${migrationName}_attacker\nERROR: lock timeout`,
+        migrationName,
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a missing migration-name field", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "P3018\nERROR: lock timeout",
+        migrationName,
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects duplicate exact migration-name fields", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `P3018\nMigration name: ${migrationName}\nMigration name: ${migrationName}\nERROR: lock timeout`,
+        migrationName,
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts the exact real 000061 Prisma field with CRLF output", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `P3018\r\nMigration name: ${migrationName}\r\nERROR: current transaction is aborted\r\n`,
+        migrationName,
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: { migrationName, observed: true },
       }),
     ).toBe(true);
   });

@@ -30,11 +30,15 @@ export function prismaLockTimeoutFailureMarkers({
   directLockTimeoutProof,
 }) {
   const normalized = output.toLowerCase();
+  const migrationNames = [
+    ...output.matchAll(/^[\t ]*Migration name:[\t ]*([^\r\n]+?)[\t ]*\r?$/gmu),
+  ].map((match) => match[1]);
   return Object.freeze({
     lockTimeout: normalized.includes("lock timeout"),
     abortedTransaction: normalized.includes("current transaction is aborted"),
     prismaMigrationFailure: normalized.includes("p3018"),
-    migrationNamed: normalized.includes(migrationName.toLowerCase()),
+    migrationNamed:
+      migrationNames.length === 1 && migrationNames[0] === migrationName,
     currentFailedRows: historyEvidence?.currentFailed ?? null,
     totalRows: historyEvidence?.total ?? null,
     zeroStepRows: historyEvidence?.zeroStep ?? null,

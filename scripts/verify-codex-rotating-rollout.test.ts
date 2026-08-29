@@ -77,6 +77,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "000073_codex_oauth_active_namespace_refresh",
       "000079_codex_oauth_v4_v5_workflow_reattestation",
       "000080_codex_oauth_reattestation_mutation_owner_fence",
+      "000081_codex_oauth_v4_v5_staged_compatibility",
     ]) {
       const sql = readFileSync(
         join(
@@ -86,7 +87,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
         "utf8",
       );
       for (const match of sql.matchAll(
-        /CREATE (?:OR REPLACE )?FUNCTION "([^"]+)"\s*\([\s\S]*?\)\s*RETURNS?\s+[\s\S]*?LANGUAGE plpgsql[\s\S]*?AS \$\$([\s\S]*?)\$\$;|DROP FUNCTION "([^"]+)"\s*\([^;]*\);/gu,
+        /CREATE (?:OR REPLACE )?FUNCTION (?:public\.)?"([^"]+)"\s*\([\s\S]*?\)\s*RETURNS?\s+[\s\S]*?LANGUAGE plpgsql[\s\S]*?AS \$\$([\s\S]*?)\$\$;|DROP FUNCTION (?:public\.)?"([^"]+)"\s*\([^;]*\);/gu,
       )) {
         if (match[3]) finalBodies.delete(match[3]);
         else finalBodies.set(match[1]!, match[2]!);
@@ -343,7 +344,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
         "Render services still expose independent migration callers",
         "compatibility probe cases are missing executable observations or derived digests",
         "v2 issuance was observed before v1/v2 installer and workflow publication",
-        "000080_codex_oauth_reattestation_mutation_owner_fence migration history is not exactly one current success",
+        "000081_codex_oauth_v4_v5_staged_compatibility migration history is not exactly one current success",
         "rollback floor must be the fence-aware deployed commit",
       ]),
     );
@@ -1519,6 +1520,12 @@ function observedFixture(): any {
             "packages/platform/db/prisma/migrations/000080_codex_oauth_reattestation_mutation_owner_fence/migration.sql",
           ),
         },
+        {
+          id: "000081_codex_oauth_v4_v5_staged_compatibility",
+          sha256: sourceDigest(
+            "packages/platform/db/prisma/migrations/000081_codex_oauth_v4_v5_staged_compatibility/migration.sql",
+          ),
+        },
       ],
       history: [
         {
@@ -1601,6 +1608,15 @@ function observedFixture(): any {
             "000080_codex_oauth_reattestation_mutation_owner_fence",
           checksum: sourceDigest(
             "packages/platform/db/prisma/migrations/000080_codex_oauth_reattestation_mutation_owner_fence/migration.sql",
+          ),
+          finished: true,
+          current: true,
+          applied_steps_count: 1,
+        },
+        {
+          migration_name: "000081_codex_oauth_v4_v5_staged_compatibility",
+          checksum: sourceDigest(
+            "packages/platform/db/prisma/migrations/000081_codex_oauth_v4_v5_staged_compatibility/migration.sql",
           ),
           finished: true,
           current: true,
@@ -1704,16 +1720,20 @@ function observedFixture(): any {
                     "TRUNCATE",
                     "UPDATE",
                   ]
-                : grantee === "reviewrouter_codex_effect_authority" ||
-                    name === "CodexOAuthDatabaseAuthorityKey" ||
-                    name === "CodexOAuthDatabaseAuthorityReceipt"
-                  ? []
-                  : name === "CodexOAuthChildIdentityQuarantine" ||
-                      name === "CodexOAuthProviderIdentityQuarantine"
+                : name === "CodexOAuthWorkflowCompatibility"
+                  ? ["reviewrouter_api", "reviewrouter_web"].includes(grantee)
                     ? ["SELECT"]
-                    : name === "CodexOAuthProviderInstance"
-                      ? ["INSERT", "SELECT"]
-                      : ["INSERT", "SELECT", "UPDATE"]
+                    : []
+                  : grantee === "reviewrouter_codex_effect_authority" ||
+                      name === "CodexOAuthDatabaseAuthorityKey" ||
+                      name === "CodexOAuthDatabaseAuthorityReceipt"
+                    ? []
+                    : name === "CodexOAuthChildIdentityQuarantine" ||
+                        name === "CodexOAuthProviderIdentityQuarantine"
+                      ? ["SELECT"]
+                      : name === "CodexOAuthProviderInstance"
+                        ? ["INSERT", "SELECT"]
+                        : ["INSERT", "SELECT", "UPDATE"]
               ).map((privilege) => ({
                 name,
                 grantee,
@@ -1826,6 +1846,12 @@ function observedFixture(): any {
             "codex_oauth_runtime_referential_action_guard",
             27,
           ],
+          [
+            "CodexOAuthWorkflowCompatibility_guard",
+            "CodexOAuthWorkflowCompatibility",
+            "codex_oauth_workflow_compatibility_guard",
+            31,
+          ],
         ].map(([name, table, fn, type]) => ({
           name,
           table,
@@ -1871,6 +1897,7 @@ function observedFixture(): any {
               name === "codex_oauth_runtime_referential_action_guard" ||
               name === "codex_oauth_repair_quarantined_provider" ||
               name === "codex_oauth_reattest_active_namespace_v4_to_v5" ||
+              name === "codex_oauth_workflow_compatibility_guard" ||
               name === "codex_oauth_secret_namespace_tombstone_guard" ||
               name === "codex_oauth_sign_database_authority",
             config:
@@ -1884,6 +1911,7 @@ function observedFixture(): any {
               name === "codex_oauth_provider_identity_repair_challenge" ||
               name === "codex_oauth_repair_quarantined_provider" ||
               name === "codex_oauth_reattest_active_namespace_v4_to_v5" ||
+              name === "codex_oauth_workflow_compatibility_guard" ||
               name === "codex_oauth_secret_namespace_tombstone_guard" ||
               name === "codex_oauth_v4_v5_reattestation_transition" ||
               name === "codex_oauth_sign_database_authority"
@@ -1934,7 +1962,7 @@ function observedFixture(): any {
                                   ? "provider_row_id text, old_workspace_id text, old_repository_id text, old_provider_instance_id text, old_auth_mode text, old_secret_name text, old_repository_provider text, old_github_repository_id bigint, old_external_repository_id text, new_workspace_id text, new_repository_id text, new_provider_instance_id text, new_auth_mode text, new_secret_name text, new_github_repository_id bigint, target_signature text"
                                   : name ===
                                       "codex_oauth_reattest_active_namespace_v4_to_v5"
-                                    ? "target_provider_row_id text, target_claim_id text, target_attempt_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_generation_hash text, target_workflow_path text, target_source_trust text, expected_schema_version integer, target_schema_version integer, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text"
+                                    ? "target_provider_row_id text, target_claim_id text, target_attempt_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_generation_hash text, target_workflow_path text, target_source_trust text, expected_schema_version integer, target_schema_version integer, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text, compatibility_window_seconds integer"
                                     : name ===
                                         "codex_oauth_v4_v5_reattestation_transition"
                                       ? "target_provider_row_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_workflow_path text, target_source_trust text, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text"
@@ -2064,6 +2092,31 @@ function observedFixture(): any {
             "recoveryRequestRowId recoveryResolvedAt",
             true,
           ],
+          ...codexRotatingCatalogCheckNames
+            .filter((name) =>
+              name.startsWith("CodexOAuthWorkflowCompatibility_"),
+            )
+            .map((name) => [
+              name,
+              name.endsWith("_v4_check")
+                ? "workflowSchemaVersion 4"
+                : name.endsWith("_trust_check")
+                  ? "workflowSourceTrust trusted_default_branch_revision"
+                  : name.endsWith("_path_check")
+                    ? "workflowPath"
+                    : name.endsWith("_commit_check")
+                      ? "workflowSourceCommitSha"
+                      : name.endsWith("_blob_check")
+                        ? "workflowSourceBlobSha"
+                        : name.endsWith("_source_digest_check")
+                          ? "workflowSourceSha256"
+                          : name.endsWith("_semantic_digest_check")
+                            ? "workflowSemanticSha256"
+                            : name.endsWith("_repository_check")
+                              ? "attestedRepositoryId"
+                              : "retireAt createdAt 25",
+              true,
+            ]),
         ].map(([name, definition, validated]) => ({
           name,
           table: String(name).split("_", 1)[0],
@@ -2279,6 +2332,7 @@ function observedFixture(): any {
             false,
           ],
           ["CodexOAuthWritebackIntent_versioned_lease_key", "leaseId", true],
+          ["CodexOAuthWorkflowCompatibility_retire_at_idx", "retireAt", false],
         ].map(([name, definition, unique]) => ({
           name,
           definition,
@@ -2316,7 +2370,7 @@ function observedFixture(): any {
                         "activeLeaseExpiresAt",
                       ].includes(key)
                     ? "timestamp_ops"
-                    : key === "recoveryExpiresAt"
+                    : ["recoveryExpiresAt", "retireAt"].includes(key)
                       ? "timestamptz_ops"
                       : "text_ops",
             ),
@@ -2521,6 +2575,7 @@ function observedFixture(): any {
             "000073_codex_oauth_active_namespace_refresh",
             "000079_codex_oauth_v4_v5_workflow_reattestation",
             "000080_codex_oauth_reattestation_mutation_owner_fence",
+            "000081_codex_oauth_v4_v5_staged_compatibility",
           ],
           singleCaller: true,
           caller: "release-migration",

@@ -115,7 +115,7 @@ describe("canonical release migration transition", () => {
       releaseImageDigest: `sha256:${"e".repeat(64)}`,
     });
     expect(trusted.orderedPendingEntriesSha256).toBe(
-      "sha256:58f7ead222e035509d5e2d8872d5b9675d5e96dd569a8e46b3c9e616c418d79a",
+      "sha256:55aa0d2c132e43d2799c88443aaaa913a4c4561a03d0192f04c2cf069a06cf3c",
     );
     expect(trusted.orderedPendingEntriesSha256).toBe(
       deriveOrderedPendingEntriesSha256(trusted.orderedMigrationEntries),
@@ -169,6 +169,7 @@ describe("canonical release migration transition", () => {
       "CodexOAuthSetupDispatchAttempt",
       "CodexOAuthSetupPayloadClaim",
       "CodexOAuthDatabaseAuthorityReceipt",
+      "CodexOAuthWorkflowCompatibility",
       "RuntimeGenerationWitnessProof",
       "RuntimeCanaryChallenge",
       "RuntimeCanaryChallengeProof",
@@ -185,6 +186,7 @@ describe("canonical release migration transition", () => {
       "codex_oauth_secret_namespace_tombstone_guard",
       "codex_oauth_consume_database_authority",
       "codex_oauth_database_authority_receipt_guard",
+      "codex_oauth_workflow_compatibility_guard",
     ]);
     expect(fencedLiveV70V73CatalogDigestSql).toContain("'acl',coalesce");
     expect(fencedLiveV70V73CatalogDigestSql).toContain("'triggers',coalesce");

@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   assertCodexRotatingAccountIdentityTransition,
+  assertCodexRotatingWorkflowAlreadyActiveTransition,
+  assertCodexRotatingWorkflowV4ToV5Transition,
   assertProviderSecretTransitionAuthorized,
   fingerprintDatabaseRecoveryWitness,
   codexRotatingSetupIdentityBearingClaimStatuses,
@@ -40,6 +42,10 @@ import {
   lockCodexRotatingSetupProvider,
 } from "./codex-rotating-provider-mutation-fence";
 import { retirePriorNamespaceGeneration } from "./prisma-codex-rotating-setup-recovery";
+
+type VersionedSecretWorkflowSourceAttestation = ReturnType<
+  typeof createVersionedSecretWorkflowSourceAttestation
+>;
 
 const transactionTimeoutMs = 10_000;
 const maximumAttempts = 3;
@@ -768,20 +774,41 @@ export class PrismaCodexRotatingSetupPayloadClaim
   async readActiveWorkflowAttestation(
     namespace: VersionedProviderSecretNamespace,
   ) {
-    const row = await this.prisma.codexOAuthSecretNamespace.findUnique({
-      where: { id: namespace.namespaceId },
-      select: {
-        githubRepositoryId: true,
-        workflowPath: true,
-        workflowSourceCommitSha: true,
-        workflowSourceBlobSha: true,
-        workflowSourceSha256: true,
-        workflowSemanticSha256: true,
-        workflowSourceTrust: true,
-        workflowSchemaVersion: true,
-        attestedRepositoryId: true,
-      },
-    });
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        githubRepositoryId: string;
+        workflowPath: string | null;
+        workflowSourceCommitSha: string | null;
+        workflowSourceBlobSha: string | null;
+        workflowSourceSha256: string | null;
+        workflowSemanticSha256: string | null;
+        workflowSourceTrust: string | null;
+        workflowSchemaVersion: number | null;
+        attestedRepositoryId: string | null;
+      }>
+    >`
+      SELECT namespace."githubRepositoryId", namespace."workflowPath",
+        namespace."workflowSourceCommitSha", namespace."workflowSourceBlobSha",
+        namespace."workflowSourceSha256", namespace."workflowSemanticSha256",
+        namespace."workflowSourceTrust", namespace."workflowSchemaVersion",
+        namespace."attestedRepositoryId"
+      FROM "CodexOAuthSecretNamespace" namespace
+      JOIN "CodexOAuthProviderInstance" provider
+        ON provider."id" = namespace."providerInstanceRowId"
+      WHERE namespace."id" = ${namespace.namespaceId}
+        AND namespace."providerInstanceRowId" = provider."id"
+        AND namespace."githubRepositoryId" = ${namespace.scope.repositoryId}
+        AND namespace."namespaceEpoch" = ${namespace.epoch}
+        AND namespace."secretName" = ${namespace.name}
+        AND namespace."status" = 'active'
+        AND NOT namespace."permanentlyRetired"
+        AND provider."providerInstanceId" = ${namespace.scope.providerInstanceId}
+        AND provider."state" = 'active'
+        AND provider."activeSecretNamespaceId" = namespace."id"
+        AND provider."activeSecretNamespaceEpoch" = namespace."namespaceEpoch"
+        AND provider."activeSecretNamespaceName" = namespace."secretName"
+    `;
+    const row = rows.length === 1 ? rows[0] : null;
     if (
       !row ||
       row.githubRepositoryId !== namespace.scope.repositoryId ||
@@ -810,10 +837,118 @@ export class PrismaCodexRotatingSetupPayloadClaim
     });
   }
 
+  async validateActiveWorkflowSource(
+    input: Parameters<
+      CodexRotatingWorkflowReattestationPersistencePort["validateActiveWorkflowSource"]
+    >[0],
+  ) {
+    const { target, expectedCurrent, verifiedActive } = input;
+    try {
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const initial = await findClaim(tx, target.claimId);
+          await requireProvenWriter(
+            tx,
+            initial.databaseIncarnation,
+            initial.databaseRecoveryWitness,
+            this.databaseRecoveryWitness,
+          );
+          await lockCodexRotatingProviderRow(tx, initial.providerInstanceRowId);
+          const rows = await tx.$queryRaw<
+            Array<{
+              workflowPath: string;
+              workflowSourceCommitSha: string;
+              workflowSourceBlobSha: string;
+              workflowSourceSha256: string;
+              workflowSemanticSha256: string;
+              workflowSourceTrust: WorkflowSourceTrust;
+              workflowSchemaVersion: number;
+              attestedRepositoryId: string;
+            }>
+          >`
+            SELECT namespace."workflowPath", namespace."workflowSourceCommitSha",
+              namespace."workflowSourceBlobSha", namespace."workflowSourceSha256",
+              namespace."workflowSemanticSha256", namespace."workflowSourceTrust",
+              namespace."workflowSchemaVersion", namespace."attestedRepositoryId"
+            FROM "CodexOAuthProviderInstance" provider
+            JOIN "CodexOAuthSecretNamespace" namespace
+              ON namespace."id" = provider."activeSecretNamespaceId"
+            JOIN "CodexOAuthSetupPayloadClaim" claim
+              ON claim."id" = ${target.claimId}
+            JOIN "CodexOAuthSetupDispatchAttempt" attempt
+              ON attempt."id" = ${target.attemptId}
+            WHERE provider."id" = ${initial.providerInstanceRowId}
+              AND provider."state" = 'active'
+              AND provider."latestGenerationHash" = ${target.expectedGenerationHash}
+              AND provider."mutationOwner" IS NULL
+              AND provider."mutationOwnerId" IS NULL
+              AND provider."activeLeaseId" IS NULL
+              AND provider."activeSecretNamespaceId" = ${target.namespace.namespaceId}
+              AND provider."activeSecretNamespaceEpoch" = ${target.namespace.epoch}
+              AND provider."activeSecretNamespaceName" = ${target.namespace.name}
+              AND namespace."providerInstanceRowId" = provider."id"
+              AND namespace."githubRepositoryId" = ${target.repositoryId}
+              AND namespace."namespaceEpoch" = ${target.namespace.epoch}
+              AND namespace."secretName" = ${target.namespace.name}
+              AND namespace."status" = 'active'
+              AND NOT namespace."permanentlyRetired"
+              AND namespace."attestedRepositoryId" = ${target.repositoryId}
+              AND claim."providerInstanceRowId" = provider."id"
+              AND claim."githubRepositoryId" = ${target.repositoryId}
+              AND claim."generationHash" = ${target.expectedGenerationHash}
+              AND claim."status" = 'active'
+              AND claim."confirmedAttemptId" = attempt."id"
+              AND attempt."claimId" = claim."id"
+              AND attempt."namespaceId" = namespace."id"
+              AND attempt."status" = 'confirmed'
+              AND (SELECT count(*) FROM "CodexOAuthSetupPayloadClaim" active_claim
+                   WHERE active_claim."providerInstanceRowId" = provider."id"
+                     AND active_claim."status" = 'active') = 1
+              AND (SELECT count(*) FROM "CodexOAuthSecretNamespace" active_namespace
+                   WHERE active_namespace."providerInstanceRowId" = provider."id"
+                     AND active_namespace."status" = 'active') = 1
+            FOR UPDATE OF provider, namespace, claim, attempt
+          `;
+          const row = rows.length === 1 ? rows[0] : null;
+          if (!row) {
+            throw new Error("codex_rotating_workflow_reattestation_stale");
+          }
+          const persisted = createVersionedSecretWorkflowSourceAttestation({
+            repositoryId: row.attestedRepositoryId,
+            workflowPath: row.workflowPath,
+            workflowSourceCommitSha: row.workflowSourceCommitSha,
+            workflowSourceBlobSha: row.workflowSourceBlobSha,
+            workflowSourceSha256: row.workflowSourceSha256,
+            workflowSemanticSha256: row.workflowSemanticSha256,
+            sourceTrust: row.workflowSourceTrust,
+            workflowSchemaVersion: row.workflowSchemaVersion,
+            secretNamespace: target.namespace,
+          });
+          if (!sameExactWorkflowAttestation(persisted, expectedCurrent)) {
+            throw new Error("codex_rotating_workflow_reattestation_stale");
+          }
+          assertCodexRotatingWorkflowAlreadyActiveTransition({
+            persisted,
+            verified: verifiedActive,
+          });
+          return { status: "active" as const };
+        },
+        { timeout: transactionTimeoutMs },
+      );
+    } catch (error) {
+      throw translateWorkflowReattestationDatabaseError(error);
+    }
+  }
+
   async replaceActiveWorkflowSource(
     transition: CodexRotatingWorkflowReattestationTransition,
   ) {
     const { target, expectedCurrent, replacement } = transition;
+    assertCodexRotatingWorkflowV4ToV5Transition({
+      current: expectedCurrent,
+      replacement,
+      compatibilityWindowSeconds: transition.compatibilityWindowSeconds,
+    });
     try {
       return await this.prisma.$transaction(
         async (tx) => {
@@ -870,7 +1005,8 @@ export class PrismaCodexRotatingSetupPayloadClaim
               ${expectedCurrent.workflowSourceSha256},
               ${expectedCurrent.workflowSemanticSha256},
               ${replacement.workflowSourceCommitSha}, ${replacement.workflowSourceBlobSha},
-              ${replacement.workflowSourceSha256}, ${replacement.workflowSemanticSha256}
+              ${replacement.workflowSourceSha256}, ${replacement.workflowSemanticSha256},
+              ${transition.compatibilityWindowSeconds}
             )
           `;
           return { status: "active" as const };
@@ -1402,4 +1538,27 @@ async function requireProvenWriter(
     databaseIncarnation: proof.databaseIncarnation,
     databaseRecoveryWitness,
   };
+}
+
+function sameExactWorkflowAttestation(
+  left: VersionedSecretWorkflowSourceAttestation,
+  right: VersionedSecretWorkflowSourceAttestation,
+): boolean {
+  return (
+    left.repositoryId === right.repositoryId &&
+    left.workflowPath === right.workflowPath &&
+    left.workflowSourceCommitSha === right.workflowSourceCommitSha &&
+    left.workflowSourceBlobSha === right.workflowSourceBlobSha &&
+    left.workflowSourceSha256 === right.workflowSourceSha256 &&
+    left.workflowSemanticSha256 === right.workflowSemanticSha256 &&
+    left.workflowSchemaVersion === right.workflowSchemaVersion &&
+    left.sourceTrust === right.sourceTrust &&
+    left.secretNamespace.namespaceId === right.secretNamespace.namespaceId &&
+    left.secretNamespace.epoch === right.secretNamespace.epoch &&
+    left.secretNamespace.name === right.secretNamespace.name &&
+    left.secretNamespace.scope.repositoryId ===
+      right.secretNamespace.scope.repositoryId &&
+    left.secretNamespace.scope.providerInstanceId ===
+      right.secretNamespace.scope.providerInstanceId
+  );
 }

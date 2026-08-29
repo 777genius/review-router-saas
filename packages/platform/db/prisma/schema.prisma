@@ -428,9 +428,31 @@ model CodexOAuthSecretNamespace {
   activeForProvider CodexOAuthProviderInstance?     @relation("CodexOAuthActiveSecretNamespace")
   dispatchAttempt   CodexOAuthSetupDispatchAttempt?
   runtimeWritebacks CodexOAuthWritebackIntent[]
+  workflowCompatibility CodexOAuthWorkflowCompatibility?
 
   @@unique([providerInstanceRowId, namespaceEpoch], map: "CodexOAuthSecretNamespace_provider_epoch_key")
   @@index([providerInstanceRowId, status], map: "CodexOAuthSecretNamespace_provider_status_idx")
+}
+
+/// A bounded, immutable V4 admission bridge retained when the active source
+/// advances to V5. Runtime admission still requires the exact active namespace
+/// and provider pointer, and stops at retireAt.
+model CodexOAuthWorkflowCompatibility {
+  namespaceId                String   @id
+  workflowPath               String
+  workflowSourceCommitSha    String
+  workflowSourceBlobSha      String
+  workflowSourceSha256       String
+  workflowSemanticSha256     String
+  workflowSourceTrust        String
+  workflowSchemaVersion      Int
+  attestedRepositoryId       String
+  retireAt                   DateTime @db.Timestamptz(3)
+  createdAt                  DateTime @default(now()) @db.Timestamptz(3)
+
+  namespace CodexOAuthSecretNamespace @relation(fields: [namespaceId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthWorkflowCompatibility_namespace_fkey")
+
+  @@index([retireAt], map: "CodexOAuthWorkflowCompatibility_retire_at_idx")
 }
 
 model CodexOAuthSetupDispatchAttempt {

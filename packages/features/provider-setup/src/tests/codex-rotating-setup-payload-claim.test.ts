@@ -772,6 +772,7 @@ describe("versioned rotating setup recovery ledger", () => {
           workflowSemanticSha256: "2".repeat(64),
           workflowSchemaVersion: 5,
         },
+        compatibilityWindowSeconds: 90_000,
       }),
     ).rejects.toThrow("codex_rotating_workflow_reattestation_stale");
     await expect(
@@ -779,8 +780,9 @@ describe("versioned rotating setup recovery ledger", () => {
     ).resolves.toBeNull();
   });
 
-  it("compares every persisted workflow digest before replacing V4 with V5", async () => {
-    const ledger = new InMemoryCodexRotatingSetupPayloadClaim();
+  it("stages V4 through a bounded retirement barrier while V5 is active", async () => {
+    const time = mutableClock();
+    const ledger = new InMemoryCodexRotatingSetupPayloadClaim(time.clock);
     const prepared = await ledger.claim(claim);
     const attempt = await ledger.authorizeDispatch({
       claimId: prepared.claimId,
@@ -848,6 +850,7 @@ describe("versioned rotating setup recovery ledger", () => {
           target,
           expectedCurrent: { ...current, ...mismatch },
           replacement,
+          compatibilityWindowSeconds: 90_000,
         }),
       ).rejects.toThrow("codex_rotating_workflow_reattestation_stale");
     }
@@ -863,6 +866,7 @@ describe("versioned rotating setup recovery ledger", () => {
           target,
           expectedCurrent: current,
           replacement: { ...replacement, ...mismatch },
+          compatibilityWindowSeconds: 90_000,
         }),
       ).rejects.toThrow("codex_rotating_workflow_reattestation_stale");
     }
@@ -874,11 +878,59 @@ describe("versioned rotating setup recovery ledger", () => {
         target,
         expectedCurrent: current,
         replacement,
+        compatibilityWindowSeconds: 90_000,
       }),
     ).resolves.toEqual({ status: "active" });
     await expect(
       ledger.readActiveWorkflowAttestation(namespace),
     ).resolves.toEqual(replacement);
+    await expect(
+      ledger.readWorkflowAttestationForAdmission(namespace, 4),
+    ).resolves.toEqual(current);
+    await expect(
+      ledger.readWorkflowAttestationForAdmission(namespace, 5),
+    ).resolves.toEqual(replacement);
+
+    // A rollback or queued-before-activation V4 retry remains exact and safe
+    // during the bridge, while another namespace can never borrow it.
+    await expect(
+      ledger.readWorkflowAttestationForAdmission(
+        { ...namespace, namespaceId: "namespace:cross-generation" },
+        4,
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      ledger.validateActiveWorkflowSource({
+        target,
+        expectedCurrent: replacement,
+        verifiedActive: {
+          ...replacement,
+          workflowSourceCommitSha: "9".repeat(40),
+        },
+      }),
+    ).resolves.toEqual({ status: "active" });
+
+    time.advance(90_000 * 1000);
+    await expect(
+      ledger.readWorkflowAttestationForAdmission(namespace, 4),
+    ).resolves.toBeNull();
+    await expect(
+      ledger.readWorkflowAttestationForAdmission(namespace, 5),
+    ).resolves.toEqual(replacement);
+
+    ledger.authorizeRecoveryFence({
+      providerInstanceId: claim.providerInstanceId,
+      recoveryRequestId: "recovery:staged-retirement",
+      recoveryEpoch: 8n,
+    });
+    await ledger.retireProviderGeneration({
+      providerInstanceId: claim.providerInstanceId,
+      recoveryRequestId: "recovery:staged-retirement",
+      recoveryEpoch: 8n,
+    });
+    await expect(
+      ledger.readWorkflowAttestationForAdmission(namespace, 5),
+    ).resolves.toBeNull();
   });
 
   it("property: no two dispatches ever share a secret name across faults", async () => {

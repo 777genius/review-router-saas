@@ -62,6 +62,10 @@ const migrationFiles = [
     "000080_codex_oauth_reattestation_mutation_owner_fence",
     "packages/platform/db/prisma/migrations/000080_codex_oauth_reattestation_mutation_owner_fence/migration.sql",
   ],
+  [
+    "000081_codex_oauth_v4_v5_staged_compatibility",
+    "packages/platform/db/prisma/migrations/000081_codex_oauth_v4_v5_staged_compatibility/migration.sql",
+  ],
 ];
 assertExactMigrationInventory(
   readdirSync(resolve(checkoutRoot, "packages/platform/db/prisma/migrations"))

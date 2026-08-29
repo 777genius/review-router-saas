@@ -170,9 +170,24 @@ export class InMemoryCodexRotatingOAuthRepository
     }
     const existing = this.providers.get(input.providerInstanceId);
     if (existing) {
+      const currentSource =
+        existing.binding.workflowSchemaVersion === input.workflowSchemaVersion
+          ? existing.binding.activeWorkflowSource
+          : undefined;
+      const retiring = existing.binding.retiringWorkflowSource;
+      const retiringSource =
+        retiring?.workflowSchemaVersion === input.workflowSchemaVersion &&
+        retiring.retireAt > this.durableNow()
+          ? retiring
+          : undefined;
+      const selectedSource = currentSource ?? retiringSource;
+      if (existing.binding.activeSecretNamespace && !selectedSource) {
+        return null;
+      }
       return {
         ...existing.binding,
         workflowSchemaVersion: input.workflowSchemaVersion,
+        ...(selectedSource ? { activeWorkflowSource: selectedSource } : {}),
       };
     }
 
@@ -219,6 +234,7 @@ export class InMemoryCodexRotatingOAuthRepository
         ...existing,
         binding: {
           ...input.binding,
+          workflowSchemaVersion: existing.binding.workflowSchemaVersion,
           ...(existing.binding.activeSecretNamespace
             ? {
                 activeSecretNamespace: existing.binding.activeSecretNamespace,
@@ -226,6 +242,11 @@ export class InMemoryCodexRotatingOAuthRepository
             : {}),
           ...(existing.binding.activeWorkflowSource
             ? { activeWorkflowSource: existing.binding.activeWorkflowSource }
+            : {}),
+          ...(existing.binding.retiringWorkflowSource
+            ? {
+                retiringWorkflowSource: existing.binding.retiringWorkflowSource,
+              }
             : {}),
         },
         repository: input.repository,
@@ -266,6 +287,7 @@ export class InMemoryCodexRotatingOAuthRepository
       provider,
       repository: input.repository,
       verified: input.verifiedWorkflowAttestation,
+      now,
     });
     if (
       provider?.state === "unknown_auth_state" ||
@@ -1196,9 +1218,21 @@ function assertMemoryWorkflowAdmissionMatches(input: {
   readonly provider: ProviderRecord | undefined;
   readonly repository: ActionRepositoryContext;
   readonly verified: VersionedSecretWorkflowSourceAttestation;
+  readonly now: Date;
 }): void {
   const { provider, repository } = input;
-  const persisted = provider?.binding.activeWorkflowSource;
+  const hasPersistedWorkflowPolicy =
+    provider?.binding.activeWorkflowSource !== undefined ||
+    provider?.binding.retiringWorkflowSource !== undefined;
+  const persisted =
+    provider?.binding.workflowSchemaVersion ===
+    input.verified.workflowSchemaVersion
+      ? provider.binding.activeWorkflowSource
+      : provider?.binding.retiringWorkflowSource?.workflowSchemaVersion ===
+            input.verified.workflowSchemaVersion &&
+          provider.binding.retiringWorkflowSource.retireAt > input.now
+        ? provider.binding.retiringWorkflowSource
+        : undefined;
   let verified: VersionedSecretWorkflowSourceAttestation;
   try {
     verified = createVersionedSecretWorkflowSourceAttestation(input.verified);
@@ -1210,7 +1244,7 @@ function assertMemoryWorkflowAdmissionMatches(input: {
     verified.repositoryId !== repository.githubRepositoryId ||
     verified.repositoryId !== provider.binding.githubRepositoryId ||
     verified.workflowPath !== provider.binding.workflowPath ||
-    verified.workflowSchemaVersion !== provider.binding.workflowSchemaVersion ||
+    (hasPersistedWorkflowPolicy && !persisted) ||
     (persisted !== undefined &&
       (verified.repositoryId !== persisted.repositoryId ||
         verified.workflowPath !== persisted.workflowPath ||

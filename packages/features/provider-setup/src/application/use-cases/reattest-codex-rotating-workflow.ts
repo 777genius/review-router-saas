@@ -1,4 +1,8 @@
 import {
+  assertCodexRotatingWorkflowV4ToV5Transition,
+  codexRotatingV4CompatibilityWindowSeconds,
+} from "../../domain/codex-rotating-workflow-reattestation";
+import {
   assertSameVersionedProviderSecretNamespace,
   createVersionedSecretWorkflowSourceAttestation,
   WorkflowSourceTrust,
@@ -60,6 +64,11 @@ export async function reattestCodexRotatingWorkflow(
       );
     }
     await assertDefaultSourceIdentityUnchanged(initialIdentity, dependencies);
+    await dependencies.workflowReattestation.validateActiveWorkflowSource({
+      target,
+      expectedCurrent: current,
+      verifiedActive: replacement,
+    });
     return {
       status: "already_active",
       workflowSourceCommitSha: initialHead,
@@ -80,11 +89,20 @@ export async function reattestCodexRotatingWorkflow(
     throw new Error("codex_rotating_workflow_previous_attestation_mismatch");
   }
   await assertDefaultSourceIdentityUnchanged(initialIdentity, dependencies);
-  await dependencies.workflowReattestation.replaceActiveWorkflowSource({
+  const transition = {
     target,
     expectedCurrent: current,
     replacement,
+    compatibilityWindowSeconds: codexRotatingV4CompatibilityWindowSeconds,
+  };
+  assertCodexRotatingWorkflowV4ToV5Transition({
+    current,
+    replacement,
+    compatibilityWindowSeconds: transition.compatibilityWindowSeconds,
   });
+  await dependencies.workflowReattestation.replaceActiveWorkflowSource(
+    transition,
+  );
   return {
     status: "reattested",
     workflowSourceCommitSha: initialHead,

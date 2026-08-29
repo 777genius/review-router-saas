@@ -183,7 +183,51 @@ export class PrismaCodexRotatingOAuthRepository
     } catch {
       return null;
     }
-    const source = provider.activeSecretNamespace;
+    const currentSource = provider.activeSecretNamespace;
+    let source = currentSource;
+    if (
+      currentSource?.workflowSchemaVersion !== input.workflowSchemaVersion &&
+      input.workflowSchemaVersion === 4
+    ) {
+      const retiringSources = await this.prisma.$queryRaw<
+        Array<{
+          id: string;
+          githubRepositoryId: string;
+          namespaceEpoch: bigint;
+          secretName: string;
+          status: string;
+          workflowPath: string;
+          workflowSourceCommitSha: string;
+          workflowSourceBlobSha: string;
+          workflowSourceSha256: string;
+          workflowSemanticSha256: string;
+          workflowSourceTrust: string;
+          workflowSchemaVersion: number;
+          attestedRepositoryId: string;
+        }>
+      >`
+        SELECT namespace."id", namespace."githubRepositoryId",
+          namespace."namespaceEpoch", namespace."secretName", namespace."status",
+          compatibility."workflowPath", compatibility."workflowSourceCommitSha",
+          compatibility."workflowSourceBlobSha", compatibility."workflowSourceSha256",
+          compatibility."workflowSemanticSha256", compatibility."workflowSourceTrust",
+          compatibility."workflowSchemaVersion", compatibility."attestedRepositoryId"
+        FROM "CodexOAuthWorkflowCompatibility" compatibility
+        JOIN "CodexOAuthSecretNamespace" namespace
+          ON namespace."id" = compatibility."namespaceId"
+        JOIN "CodexOAuthProviderInstance" provider
+          ON provider."id" = namespace."providerInstanceRowId"
+        WHERE compatibility."namespaceId" = ${activeSecretNamespace.namespaceId}
+          AND compatibility."retireAt" > CURRENT_TIMESTAMP
+          AND compatibility."workflowSchemaVersion" = ${input.workflowSchemaVersion}
+          AND namespace."status" = 'active'
+          AND NOT namespace."permanentlyRetired"
+          AND provider."id" = ${provider.id}
+          AND provider."activeSecretNamespaceId" = namespace."id"
+          AND provider."activeSecretNamespaceEpoch" = namespace."namespaceEpoch"
+      `;
+      source = retiringSources.length === 1 ? retiringSources[0]! : null;
+    }
     if (
       !source?.workflowPath ||
       !source.workflowSourceCommitSha ||
@@ -366,6 +410,24 @@ export class PrismaCodexRotatingOAuthRepository
             AND namespace."providerInstanceRowId" = ${provider.id}
           FOR UPDATE
         `);
+      const lockedCompatibilityAdmissions = await tx.$queryRaw<
+        LockedWorkflowAdmissionRow[]
+      >(Prisma.sql`
+          SELECT namespace."id", namespace."githubRepositoryId",
+            namespace."namespaceEpoch", namespace."secretName",
+            namespace."status", namespace."permanentlyRetired",
+            compatibility."workflowPath", compatibility."workflowSourceCommitSha",
+            compatibility."workflowSourceBlobSha", compatibility."workflowSourceSha256",
+            compatibility."workflowSemanticSha256", compatibility."workflowSourceTrust",
+            compatibility."workflowSchemaVersion", compatibility."attestedRepositoryId",
+            compatibility."retireAt"
+          FROM "CodexOAuthWorkflowCompatibility" compatibility
+          JOIN "CodexOAuthSecretNamespace" namespace
+            ON namespace."id" = compatibility."namespaceId"
+          WHERE compatibility."namespaceId" = ${provider.activeSecretNamespaceId}
+            AND namespace."providerInstanceRowId" = ${provider.id}
+          FOR UPDATE OF compatibility
+        `);
       assertLockedWorkflowAdmissionMatches({
         persisted:
           lockedWorkflowAdmissions.length === 1
@@ -373,6 +435,11 @@ export class PrismaCodexRotatingOAuthRepository
             : null,
         activeNamespace,
         verified: input.verifiedWorkflowAttestation,
+        compatibility:
+          lockedCompatibilityAdmissions.length === 1
+            ? lockedCompatibilityAdmissions[0]!
+            : null,
+        now,
       });
       assertAutomaticRuntimeDatabaseRecoveryWitness(
         provider.activeSecretNamespace?.databaseRecoveryWitness,
@@ -2314,6 +2381,7 @@ type LockedWorkflowAdmissionRow = Readonly<{
   workflowSourceTrust: string | null;
   workflowSchemaVersion: number | null;
   attestedRepositoryId: string | null;
+  retireAt?: Date | undefined;
 }>;
 
 function assertLockedWorkflowAdmissionMatches(input: {
@@ -2323,8 +2391,19 @@ function assertLockedWorkflowAdmissionMatches(input: {
     readonly epoch: bigint | null;
   };
   readonly verified: VersionedSecretWorkflowSourceAttestation;
+  readonly compatibility: LockedWorkflowAdmissionRow | null;
+  readonly now: Date;
 }): void {
-  const { persisted, activeNamespace, verified } = input;
+  const { activeNamespace, verified } = input;
+  const persisted =
+    input.persisted?.workflowSchemaVersion === verified.workflowSchemaVersion
+      ? input.persisted
+      : input.compatibility?.workflowSchemaVersion ===
+            verified.workflowSchemaVersion &&
+          input.compatibility.retireAt !== undefined &&
+          input.compatibility.retireAt > input.now
+        ? input.compatibility
+        : null;
   if (
     !persisted ||
     persisted.status !== "active" ||

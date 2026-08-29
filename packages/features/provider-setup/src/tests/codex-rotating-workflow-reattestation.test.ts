@@ -66,7 +66,10 @@ describe("reattestCodexRotatingWorkflow", () => {
           readDefaultSourceIdentity,
           readVerifiedWorkflowAt,
         },
-        workflowReattestation: { replaceActiveWorkflowSource },
+        workflowReattestation: {
+          validateActiveWorkflowSource: vi.fn(),
+          replaceActiveWorkflowSource,
+        },
       }),
     ).resolves.toEqual({
       status: "reattested",
@@ -85,6 +88,7 @@ describe("reattestCodexRotatingWorkflow", () => {
       target,
       expectedCurrent: current,
       replacement,
+      compatibilityWindowSeconds: 90_000,
     });
   });
 
@@ -92,6 +96,9 @@ describe("reattestCodexRotatingWorkflow", () => {
     const current = attestation(5, "5", "4");
     const replacement = attestation(5, "5", "6");
     const replaceActiveWorkflowSource = vi.fn();
+    const validateActiveWorkflowSource = vi
+      .fn()
+      .mockResolvedValue({ status: "active" as const });
     const readDefaultSourceIdentity = vi
       .fn()
       .mockResolvedValue(sourceIdentity(replacement.workflowSourceCommitSha));
@@ -105,13 +112,21 @@ describe("reattestCodexRotatingWorkflow", () => {
           readDefaultSourceIdentity,
           readVerifiedWorkflowAt: vi.fn().mockResolvedValue(replacement),
         },
-        workflowReattestation: { replaceActiveWorkflowSource },
+        workflowReattestation: {
+          validateActiveWorkflowSource,
+          replaceActiveWorkflowSource,
+        },
       }),
     ).resolves.toEqual({
       status: "already_active",
       workflowSourceCommitSha: replacement.workflowSourceCommitSha,
     });
     expect(replaceActiveWorkflowSource).not.toHaveBeenCalled();
+    expect(validateActiveWorkflowSource).toHaveBeenCalledWith({
+      target,
+      expectedCurrent: current,
+      verifiedActive: replacement,
+    });
   });
 
   it("re-reads identity immediately before returning already active", async () => {
@@ -134,7 +149,10 @@ describe("reattestCodexRotatingWorkflow", () => {
             }),
           readVerifiedWorkflowAt: vi.fn().mockResolvedValue(replacement),
         },
-        workflowReattestation: { replaceActiveWorkflowSource: vi.fn() },
+        workflowReattestation: {
+          validateActiveWorkflowSource: vi.fn(),
+          replaceActiveWorkflowSource: vi.fn(),
+        },
       }),
     ).rejects.toThrow("codex_rotating_workflow_repository_identity_changed");
   });
@@ -161,7 +179,10 @@ describe("reattestCodexRotatingWorkflow", () => {
             .mockResolvedValueOnce(replacement)
             .mockResolvedValueOnce(changedPrevious),
         },
-        workflowReattestation: { replaceActiveWorkflowSource },
+        workflowReattestation: {
+          validateActiveWorkflowSource: vi.fn(),
+          replaceActiveWorkflowSource,
+        },
       }),
     ).rejects.toThrow("codex_rotating_workflow_previous_attestation_mismatch");
     expect(replaceActiveWorkflowSource).not.toHaveBeenCalled();
@@ -189,7 +210,10 @@ describe("reattestCodexRotatingWorkflow", () => {
             .mockResolvedValueOnce(replacement)
             .mockResolvedValueOnce(current),
         },
-        workflowReattestation: { replaceActiveWorkflowSource },
+        workflowReattestation: {
+          validateActiveWorkflowSource: vi.fn(),
+          replaceActiveWorkflowSource,
+        },
       }),
     ).rejects.toThrow("codex_rotating_workflow_default_head_changed");
     expect(replaceActiveWorkflowSource).not.toHaveBeenCalled();
@@ -220,7 +244,10 @@ describe("reattestCodexRotatingWorkflow", () => {
             .mockResolvedValueOnce(replacement)
             .mockResolvedValueOnce(current),
         },
-        workflowReattestation: { replaceActiveWorkflowSource },
+        workflowReattestation: {
+          validateActiveWorkflowSource: vi.fn(),
+          replaceActiveWorkflowSource,
+        },
       }),
     ).rejects.toThrow("codex_rotating_workflow_repository_identity_changed");
     expect(replaceActiveWorkflowSource).not.toHaveBeenCalled();

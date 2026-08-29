@@ -87,6 +87,121 @@ const refreshedAuthJson = JSON.stringify({
 });
 
 describe("Codex rotating OAuth local E2E", () => {
+  it("admits queued V4 only through the staged barrier and keeps V5 current", async () => {
+    let now = new Date("2026-08-29T00:00:00.000Z");
+    const v5 = runtimeWorkflowAttestation();
+    const v4 = createVersionedSecretWorkflowSourceAttestation({
+      ...v5,
+      workflowSourceCommitSha: "4".repeat(40),
+      workflowSourceBlobSha: "4".repeat(40),
+      workflowSourceSha256: "4".repeat(64),
+      workflowSemanticSha256: "4".repeat(64),
+      workflowSchemaVersion: 4,
+    });
+    const binding = {
+      providerInstanceId,
+      repositoryFullName: repository.fullName,
+      githubRepositoryId: repository.githubRepositoryId,
+      actionRef,
+      workflowPath: v5.workflowPath,
+      workflowSchemaVersion: 5,
+      activeSecretNamespace: v5.secretNamespace,
+      activeWorkflowSource: {
+        workflowPath: v5.workflowPath,
+        workflowSourceCommitSha: v5.workflowSourceCommitSha,
+        workflowSourceBlobSha: v5.workflowSourceBlobSha,
+        workflowSourceSha256: v5.workflowSourceSha256,
+        workflowSemanticSha256: v5.workflowSemanticSha256,
+        sourceTrust: "trusted_default_branch_revision" as const,
+        repositoryId: v5.repositoryId,
+      },
+      retiringWorkflowSource: {
+        workflowPath: v4.workflowPath,
+        workflowSourceCommitSha: v4.workflowSourceCommitSha,
+        workflowSourceBlobSha: v4.workflowSourceBlobSha,
+        workflowSourceSha256: v4.workflowSourceSha256,
+        workflowSemanticSha256: v4.workflowSemanticSha256,
+        sourceTrust: "trusted_default_branch_revision" as const,
+        repositoryId: v4.repositoryId,
+        workflowSchemaVersion: 4 as const,
+        retireAt: new Date(now.getTime() + 90_000 * 1000),
+      },
+    } as const;
+    const runtime = new InMemoryCodexRotatingOAuthRepository([binding], {
+      clock: { now: () => new Date(now.getTime()) },
+    });
+
+    await expect(
+      runtime.findProviderBinding({
+        repository,
+        providerInstanceId,
+        workflowSha: v4.workflowSourceCommitSha,
+        workflowSchemaVersion: 4,
+      }),
+    ).resolves.toMatchObject({
+      workflowSchemaVersion: 4,
+      activeWorkflowSource: {
+        workflowSourceSha256: v4.workflowSourceSha256,
+      },
+    });
+    await expect(
+      runtime.acquirePrelease({
+        repository,
+        providerInstanceId,
+        githubRunId: "queued-before-v5",
+        githubRunAttempt: "1",
+        verifiedWorkflowAttestation: v4,
+        newWorkAdmissionBarrier: allowNewWorkAdmission,
+      }),
+    ).resolves.toMatchObject({ status: "preleased" });
+
+    const currentRuntime = new InMemoryCodexRotatingOAuthRepository([binding], {
+      clock: { now: () => new Date(now.getTime()) },
+    });
+    await expect(
+      currentRuntime.acquirePrelease({
+        repository,
+        providerInstanceId,
+        githubRunId: "post-activation-v5",
+        githubRunAttempt: "1",
+        verifiedWorkflowAttestation: v5,
+        newWorkAdmissionBarrier: allowNewWorkAdmission,
+      }),
+    ).resolves.toMatchObject({ status: "preleased" });
+
+    const crossNamespace = createVersionedSecretWorkflowSourceAttestation({
+      ...v4,
+      secretNamespace: allocateVersionedProviderSecretNamespace({
+        scope: v4.secretNamespace.scope,
+        epoch: 2n,
+        randomBytes: () => new Uint8Array(16).fill(2),
+      }),
+    });
+    const crossRuntime = new InMemoryCodexRotatingOAuthRepository([binding], {
+      clock: { now: () => new Date(now.getTime()) },
+    });
+    await expect(
+      crossRuntime.acquirePrelease({
+        repository,
+        providerInstanceId,
+        githubRunId: "cross-generation-v4",
+        githubRunAttempt: "1",
+        verifiedWorkflowAttestation: crossNamespace,
+        newWorkAdmissionBarrier: allowNewWorkAdmission,
+      }),
+    ).rejects.toThrow("codex_rotating_workflow_attestation_stale");
+
+    now = new Date(now.getTime() + 90_000 * 1000);
+    await expect(
+      runtime.findProviderBinding({
+        repository,
+        providerInstanceId,
+        workflowSha: v4.workflowSourceCommitSha,
+        workflowSchemaVersion: 4,
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("proves setup workflow -> first writeback -> next-run restore without plaintext SaaS", async () => {
     const githubPublicKeyBase64 = Buffer.alloc(32, 1).toString("base64");
     const workflow = renderCodexRotatingAdvisoryWorkflow({
