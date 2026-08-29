@@ -3,6 +3,7 @@ import {
   canonicalCodexRotatingProviderId,
   codexRotatingAuthMode,
   inspectCodexRotatingWorkflowNamespace,
+  type CodexRotatingDefaultWorkflowSourcePort,
 } from "@reviewrouter/features-provider-setup";
 import {
   assertTrustedCanonicalVersionedWorkflow,
@@ -12,6 +13,7 @@ import {
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
   workflowDocumentSemanticSha256,
   WorkflowSourceTrust,
+  type VersionedProviderSecretNamespace,
 } from "@reviewrouter/features-workflow-provisioning";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
@@ -89,6 +91,33 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
   if (observedRepository.defaultBranch !== input.defaultBranch) {
     throw new Error("codex_rotating_workflow_default_branch_mismatch");
   }
+  if (inspection.source === "active") {
+    if (!rotatingProvider.latestGenerationHash) {
+      throw new Error("codex_rotating_workflow_generation_missing");
+    }
+    const result = await codexRotatingSetupLedger.replaceActiveWorkflowSource(
+      {
+        claimId: inspection.claimId,
+        attemptId: inspection.attemptId,
+        expectedGenerationHash: rotatingProvider.latestGenerationHash,
+        repositoryId: input.githubRepositoryId,
+        workflowPath: defaultCodexRotatingWorkflowPath,
+        namespace,
+      },
+      defaultWorkflowSourcePort(
+        input,
+        observedRepository,
+        providerInstanceId,
+        namespace,
+      ),
+    );
+    return {
+      status:
+        result.status === "already_active" ? "already_active" : "activated",
+      namespaceEpoch: namespace.epoch.toString(),
+      workflowSourceCommitSha: result.workflowSourceCommitSha,
+    };
+  }
   const refParameters = {
     owner: input.owner,
     repo: input.name,
@@ -141,146 +170,6 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
   if (readGitHubCommitSha(finalRefResponse.data) !== workflowSourceCommitSha) {
     throw new Error("codex_rotating_workflow_default_head_changed");
   }
-  if (inspection.source === "active") {
-    const currentAttestation =
-      await input.prisma.codexOAuthSecretNamespace.findUnique({
-        where: { id: namespace.namespaceId },
-        select: {
-          workflowPath: true,
-          workflowSourceCommitSha: true,
-          workflowSourceBlobSha: true,
-          workflowSourceSha256: true,
-          workflowSemanticSha256: true,
-          workflowSourceTrust: true,
-          workflowSchemaVersion: true,
-          attestedRepositoryId: true,
-        },
-      });
-    if (
-      currentAttestation?.workflowPath !== attestation.workflowPath ||
-      !currentAttestation.workflowSourceCommitSha ||
-      !currentAttestation.workflowSourceBlobSha ||
-      !currentAttestation.workflowSourceSha256 ||
-      !currentAttestation.workflowSemanticSha256 ||
-      currentAttestation.workflowSourceTrust !== attestation.sourceTrust ||
-      currentAttestation.workflowSchemaVersion === null ||
-      currentAttestation.attestedRepositoryId !== attestation.repositoryId
-    ) {
-      throw new Error("codex_rotating_workflow_source_attestation_missing");
-    }
-    if (!rotatingProvider.latestGenerationHash) {
-      throw new Error("codex_rotating_workflow_generation_missing");
-    }
-    if (
-      currentAttestation.workflowSourceBlobSha ===
-        attestation.workflowSourceBlobSha &&
-      currentAttestation.workflowSourceSha256 ===
-        attestation.workflowSourceSha256 &&
-      currentAttestation.workflowSemanticSha256 ===
-        attestation.workflowSemanticSha256 &&
-      currentAttestation.workflowSchemaVersion ===
-        input.expectedWorkflowSchemaVersion &&
-      currentAttestation.workflowSourceTrust === attestation.sourceTrust &&
-      currentAttestation.attestedRepositoryId === attestation.repositoryId
-    ) {
-      return {
-        status: "already_active",
-        namespaceEpoch: namespace.epoch.toString(),
-        workflowSourceCommitSha,
-      };
-    }
-    if (
-      input.expectedWorkflowSchemaVersion !==
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5 ||
-      attestation.workflowSchemaVersion !==
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5 ||
-      currentAttestation.workflowSchemaVersion !==
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
-    ) {
-      throw new Error(
-        "codex_rotating_workflow_reattestation_transition_invalid",
-      );
-    }
-    const previousContentResponse = await input.octokit.request(
-      "GET /repos/{owner}/{repo}/contents/{path}",
-      {
-        owner: input.owner,
-        repo: input.name,
-        path: workflowPath,
-        ref: currentAttestation.workflowSourceCommitSha,
-      },
-    );
-    const previousWorkflow = readGitHubWorkflowBlob(
-      previousContentResponse.data,
-    );
-    if (
-      previousWorkflow.blobSha !==
-        currentAttestation.workflowSourceBlobSha.toLowerCase() ||
-      createHash("sha256").update(previousWorkflow.source).digest("hex") !==
-        currentAttestation.workflowSourceSha256.toLowerCase() ||
-      workflowDocumentSemanticSha256(previousWorkflow.source) !==
-        currentAttestation.workflowSemanticSha256.toLowerCase()
-    ) {
-      throw new Error("codex_rotating_workflow_previous_attestation_mismatch");
-    }
-    const previousMetadata = readCanonicalCodexRotatingT0WorkflowSourceMetadata(
-      previousWorkflow.source,
-    );
-    assertTrustedCanonicalVersionedWorkflow({
-      metadata: previousMetadata,
-      observedRepositoryId: observedRepository.id,
-      observedRepositoryFullName: observedRepository.fullName,
-      expectedRepositoryId: input.githubRepositoryId,
-      expectedRepositoryFullName: input.expectedRepositoryFullName,
-      trustedActionRefs: resolveReviewRouterCodexRotatingTrustedActionRefs(),
-      expectedApiUrl: input.expectedApiUrl,
-      expectedProviderInstanceId: providerInstanceId,
-      expectedSecretNamespace: namespace,
-      expectedWorkflowSchemaVersion:
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
-    });
-    const transitionRefResponse = await input.octokit.request(
-      "GET /repos/{owner}/{repo}/git/ref/{ref}",
-      refParameters,
-    );
-    if (
-      readGitHubCommitSha(transitionRefResponse.data) !==
-      workflowSourceCommitSha
-    ) {
-      throw new Error("codex_rotating_workflow_default_head_changed");
-    }
-    await codexRotatingSetupLedger.replaceActiveWorkflowSource({
-      claimId: inspection.claimId,
-      attemptId: inspection.attemptId,
-      namespaceId: namespace.namespaceId,
-      namespaceEpoch: namespace.epoch.toString(),
-      secretName: namespace.name,
-      repositoryId: attestation.repositoryId,
-      expectedGenerationHash: rotatingProvider.latestGenerationHash,
-      workflowPath: attestation.workflowPath,
-      workflowSourceCommitSha: attestation.workflowSourceCommitSha,
-      workflowSourceBlobSha: attestation.workflowSourceBlobSha,
-      workflowSourceSha256: attestation.workflowSourceSha256,
-      workflowSemanticSha256: attestation.workflowSemanticSha256,
-      sourceTrust: attestation.sourceTrust,
-      expectedCurrentWorkflowSchemaVersion:
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
-      workflowSchemaVersion: attestation.workflowSchemaVersion,
-      expectedCurrentWorkflowSourceCommitSha:
-        currentAttestation.workflowSourceCommitSha,
-      expectedCurrentWorkflowSourceBlobSha:
-        currentAttestation.workflowSourceBlobSha,
-      expectedCurrentWorkflowSourceSha256:
-        currentAttestation.workflowSourceSha256,
-      expectedCurrentWorkflowSemanticSha256:
-        currentAttestation.workflowSemanticSha256,
-    });
-    return {
-      status: "activated",
-      namespaceEpoch: namespace.epoch.toString(),
-      workflowSourceCommitSha,
-    };
-  }
   await codexRotatingSetupLedger.activate({
     claimId: inspection.claimId,
     attemptId: inspection.attemptId,
@@ -300,6 +189,74 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     status: "activated",
     namespaceEpoch: namespace.epoch.toString(),
     workflowSourceCommitSha,
+  };
+}
+
+function defaultWorkflowSourcePort(
+  input: Pick<
+    Parameters<typeof activateConfirmedCodexNamespaceAfterWorkflowMerge>[0],
+    | "octokit"
+    | "owner"
+    | "name"
+    | "defaultBranch"
+    | "githubRepositoryId"
+    | "expectedRepositoryFullName"
+    | "expectedApiUrl"
+  >,
+  observedRepository: Readonly<{ id: string; fullName: string }>,
+  providerInstanceId: string,
+  namespace: VersionedProviderSecretNamespace,
+): CodexRotatingDefaultWorkflowSourcePort {
+  return {
+    async readDefaultHead() {
+      const response = await input.octokit.request(
+        "GET /repos/{owner}/{repo}/git/ref/{ref}",
+        {
+          owner: input.owner,
+          repo: input.name,
+          ref: `heads/${input.defaultBranch}`,
+        },
+      );
+      return readGitHubCommitSha(response.data);
+    },
+    async readVerifiedWorkflowAt({ commitSha, expectedSchemaVersion }) {
+      const workflowPath = defaultCodexRotatingWorkflowPath;
+      const response = await input.octokit.request(
+        "GET /repos/{owner}/{repo}/contents/{path}",
+        {
+          owner: input.owner,
+          repo: input.name,
+          path: workflowPath,
+          ref: commitSha,
+        },
+      );
+      const { source, blobSha } = readGitHubWorkflowBlob(response.data);
+      const metadata =
+        readCanonicalCodexRotatingT0WorkflowSourceMetadata(source);
+      assertTrustedCanonicalVersionedWorkflow({
+        metadata,
+        observedRepositoryId: observedRepository.id,
+        observedRepositoryFullName: observedRepository.fullName,
+        expectedRepositoryId: input.githubRepositoryId,
+        expectedRepositoryFullName: input.expectedRepositoryFullName,
+        trustedActionRefs: resolveReviewRouterCodexRotatingTrustedActionRefs(),
+        expectedApiUrl: input.expectedApiUrl,
+        expectedProviderInstanceId: providerInstanceId,
+        expectedSecretNamespace: namespace,
+        expectedWorkflowSchemaVersion: expectedSchemaVersion,
+      });
+      return createVersionedSecretWorkflowSourceAttestation({
+        repositoryId: input.githubRepositoryId,
+        workflowPath,
+        workflowSourceCommitSha: commitSha,
+        workflowSourceBlobSha: blobSha,
+        workflowSourceSha256: createHash("sha256").update(source).digest("hex"),
+        workflowSemanticSha256: workflowDocumentSemanticSha256(source),
+        workflowSchemaVersion: metadata.workflowSchemaVersion,
+        sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+        secretNamespace: namespace,
+      });
+    },
   };
 }
 

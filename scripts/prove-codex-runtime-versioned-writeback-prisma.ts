@@ -12,6 +12,7 @@ import {
 import {
   codexRotatingSetupManifestSchema,
   codexRotatingSetupRecoveryAcknowledgement,
+  reattestCodexRotatingWorkflow,
   recoverCodexRotatingSetup,
 } from "../packages/features/provider-setup/src/index";
 import { PrismaCodexRotatingOAuthRepository } from "../packages/features/action-control-plane/src/infrastructure/prisma/prisma-codex-rotating-oauth-repository";
@@ -64,6 +65,7 @@ const attestationFor = (
     typeof createVersionedSecretWorkflowSourceAttestation
   >[0]["secretNamespace"],
   marker: string,
+  workflowSchemaVersion: 4 | 5 = 5,
 ) =>
   createVersionedSecretWorkflowSourceAttestation({
     repositoryId: "900007",
@@ -72,7 +74,7 @@ const attestationFor = (
     workflowSourceBlobSha: marker.repeat(40),
     workflowSourceSha256: marker.repeat(64),
     workflowSemanticSha256: marker.repeat(64),
-    workflowSchemaVersion: 5,
+    workflowSchemaVersion,
     sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
     secretNamespace: namespace,
   });
@@ -400,6 +402,7 @@ try {
     epoch: BigInt(initialDispatch.namespaceEpoch),
     name: initialDispatch.secretName,
   });
+  let verifiedWorkflowAttestation = attestationFor(activeA, "1");
   let ledger = new PrismaCodexRotatingOAuthRepository(apiPrisma, {
     actionOwnerRepo: "777genius/review-router",
     databaseRecoveryWitness: databaseRecoveryWitnessW1,
@@ -416,6 +419,7 @@ try {
       providerInstanceId,
       githubRunId: runId,
       githubRunAttempt: "1",
+      verifiedWorkflowAttestation,
       newWorkAdmissionBarrier: { assertAdmitted: () => undefined },
     });
     if (lease.status !== "preleased")
@@ -480,6 +484,7 @@ try {
       providerInstanceId,
       githubRunId: "runtime-proof-w2-before-recovery",
       githubRunAttempt: "1",
+      verifiedWorkflowAttestation,
       newWorkAdmissionBarrier: { assertAdmitted: () => undefined },
     });
   } catch (error) {
@@ -594,6 +599,7 @@ try {
     executorOwner: definite.executorOwner,
     attestation: attestationFor(definite.namespace, "2"),
   });
+  verifiedWorkflowAttestation = attestationFor(definite.namespace, "2");
   await assertConsumedReceipt(adminPrisma, {
     ownerId: definite.intentId,
     effect: "runtime_completion",
@@ -909,6 +915,36 @@ try {
     // one-shot V4-to-V5 re-attestation proof below.
     workflowSchemaVersion: 4,
   });
+  const recoveredNamespace = createVersionedProviderSecretNamespace({
+    scope: { repositoryId: "900007", providerInstanceId },
+    namespaceId: replacement.namespaceId,
+    epoch: BigInt(replacement.namespaceEpoch),
+    name: replacement.secretName,
+  });
+  verifiedWorkflowAttestation = attestationFor(recoveredNamespace, "4", 4);
+  const reattestedWorkflow = attestationFor(recoveredNamespace, "5", 5);
+  await reattestCodexRotatingWorkflow(
+    {
+      claimId: prepared.claimId,
+      attemptId: replacement.attemptId,
+      expectedGenerationHash: "h".repeat(43),
+      repositoryId: "900007",
+      workflowPath: ".github/workflows/reviewrouter-codex.yml",
+      namespace: recoveredNamespace,
+    },
+    {
+      currentWorkflowAttestation: setupLedger,
+      defaultWorkflowSource: {
+        readDefaultHead: async () => reattestedWorkflow.workflowSourceCommitSha,
+        readVerifiedWorkflowAt: async ({ expectedSchemaVersion }) =>
+          expectedSchemaVersion === 4
+            ? verifiedWorkflowAttestation
+            : reattestedWorkflow,
+      },
+      workflowReattestation: setupLedger,
+    },
+  );
+  verifiedWorkflowAttestation = reattestedWorkflow;
   const recovered =
     await adminPrisma.codexOAuthWritebackIntent.findUniqueOrThrow({
       where: { id: ambiguous.intentId },
@@ -1164,6 +1200,7 @@ try {
     executorOwner: rollbackClaim.executorOwner,
     attestation: attestationFor(rollbackClaim.namespace, "6"),
   });
+  verifiedWorkflowAttestation = attestationFor(rollbackClaim.namespace, "6");
 
   const confirmedRestart = await run(
     "runtime-proof-confirmed-restart",

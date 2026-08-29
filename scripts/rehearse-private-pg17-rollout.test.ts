@@ -6,6 +6,7 @@ import { canonicalReleaseMigrationArtifact } from "../packages/features/release-
 import {
   assertDisposableCaptureTarget,
   createRehearsalRunnerJobBinding,
+  createActivationCatalogCaptureCheckpoint,
   cleanupCaptureOnlyRehearsalFixtures,
   cleanupDisposableRehearsalResources,
   captureOnlyRehearsalFixtureCleanupSql,
@@ -359,6 +360,59 @@ describe("disposable dual-version rehearsal", () => {
         targetContainer: "rr-target",
       }),
     ).toBeUndefined();
+  });
+  it("binds an emitted candidate to the exact disposable capture checkpoint", () => {
+    const artifact = {
+      kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+      version: 1,
+      policies: {},
+    };
+    const candidate = {
+      commitSha: "a".repeat(40),
+      databaseIdentity: "127.0.0.1:5432/review_router",
+      manifestIdentity: canonicalReleaseMigrationArtifact.postManifestIdentity,
+      projectionSha256: `sha256:${"b".repeat(64)}`,
+      catalogDigest: `sha256:${"c".repeat(64)}`,
+    };
+    expect(
+      createActivationCatalogCaptureCheckpoint({
+        artifact,
+        candidate,
+        disposableIdentity: "rr-disposable-candidate-test",
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "d".repeat(64),
+      }),
+    ).toEqual({
+      kind: "reviewrouter-activation-catalog-policy-capture-checkpoint",
+      version: 1,
+      capture: {
+        commitSha: candidate.commitSha,
+        manifestIdentity: candidate.manifestIdentity,
+        database: {
+          disposableIdentity: "rr-disposable-candidate-test",
+          configuredIdentity: candidate.databaseIdentity,
+          systemIdentifier: "7612345678901234567",
+          recoveryWitnessSha256: "d".repeat(64),
+        },
+        projection: {
+          sha256: candidate.projectionSha256,
+          observedDigest: candidate.catalogDigest,
+        },
+      },
+      artifact,
+    });
+    expect(candidate.catalogDigest).not.toBe(
+      canonicalReleaseMigrationArtifact.postCatalogDigest,
+    );
+    expect(() =>
+      createActivationCatalogCaptureCheckpoint({
+        artifact,
+        candidate,
+        disposableIdentity: "production",
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "d".repeat(64),
+      }),
+    ).toThrow("activation_catalog_policy_capture_binding_invalid");
   });
   it("stops the capture-only branch before target staging", async () => {
     const candidate = Object.freeze({ kind: "candidate", version: 1 });

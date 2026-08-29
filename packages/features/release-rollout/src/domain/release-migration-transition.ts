@@ -143,7 +143,17 @@ export const canonicalReleaseMigrationEntries = Object.freeze([
 
 export const deriveOrderedPendingEntriesSha256 = (
   entries: readonly ReleaseMigrationEntry[],
-): string => canonicalDigest(entries);
+): string =>
+  `sha256:${createHash("sha256")
+    .update(
+      entries
+        .map(
+          ({ migrationName, migrationSqlSha256 }) =>
+            `${migrationName}:${migrationSqlSha256}`,
+        )
+        .join(","),
+    )
+    .digest("hex")}`;
 
 export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
@@ -156,10 +166,11 @@ export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationBundleSha256:
     "sha256:7e2db1f64d3c49b1d629af0ba7a3a359a644313dbcee311f2a51a88d7d695b03",
   postManifestIdentity: canonicalReleaseMigrationPostManifestIdentity,
-  // Disposable PG17 candidate for the canonical V70-V79 catalog projection.
-  // Production promotion remains gated on independent capture review.
+  // Last independently reviewed and promoted production catalog trust root.
+  // A newer observation may only be emitted by the disposable capture path;
+  // it is deliberately not accepted here until separately promoted.
   postCatalogDigest:
-    "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68",
+    "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0",
 });
 
 export const canonicalReleaseMigrationResumeManifestIdentities = Object.freeze([

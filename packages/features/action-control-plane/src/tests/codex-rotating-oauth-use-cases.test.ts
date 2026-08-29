@@ -86,6 +86,7 @@ describe("Codex rotating OAuth action control plane", () => {
         githubRunId: "witness-run",
         githubRunAttempt: "1",
         now,
+        verifiedWorkflowAttestation: null,
         newWorkAdmissionBarrier: allowNewWorkAdmission,
       }),
     ).rejects.toThrow("codex_rotating_database_recovery_witness_mismatch");
@@ -97,6 +98,7 @@ describe("Codex rotating OAuth action control plane", () => {
       githubRunId: "witness-run",
       githubRunAttempt: "1",
       now,
+      verifiedWorkflowAttestation: null,
       newWorkAdmissionBarrier: allowNewWorkAdmission,
     });
     expect(lease.status).toBe("preleased");
@@ -534,6 +536,7 @@ describe("Codex rotating OAuth action control plane", () => {
       githubRunId: "9002",
       githubRunAttempt: "1",
       now,
+      verifiedWorkflowAttestation: null,
       newWorkAdmissionBarrier: allowNewWorkAdmission,
     });
     if (unchangedLease.status === "conflict") {
@@ -606,6 +609,7 @@ describe("Codex rotating OAuth action control plane", () => {
       githubRunId: "9003",
       githubRunAttempt: "1",
       now,
+      verifiedWorkflowAttestation: null,
       newWorkAdmissionBarrier: allowNewWorkAdmission,
     });
     if (newerOwner.status === "conflict") {

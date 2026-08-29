@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { codexRotatingSetupTerminalClaimStatuses } from "@reviewrouter/features-provider-setup";
+import {
+  allocateVersionedProviderSecretNamespace,
+  codexRotatingSetupTerminalClaimStatuses,
+} from "@reviewrouter/features-provider-setup";
+import {
+  createVersionedSecretWorkflowSourceAttestation,
+  WorkflowSourceTrust,
+} from "@reviewrouter/features-workflow-provisioning";
 import {
   completeSetupRecoveryAssociation,
   CodexRotatingWorkflowReattestationError,
@@ -956,37 +963,47 @@ describe("Prisma rotating setup writer proof", () => {
       prisma as never,
       recoveryWitness,
     );
+    const namespace = allocateVersionedProviderSecretNamespace({
+      scope: {
+        repositoryId: activeClaim.githubRepositoryId,
+        providerInstanceId: "codex-rotating:123456",
+      },
+      epoch: 2n,
+      randomBytes: () => new Uint8Array(16).fill(0x22),
+    });
+    const workflow = (schema: 4 | 5, marker: string) =>
+      createVersionedSecretWorkflowSourceAttestation({
+        repositoryId: activeClaim.githubRepositoryId,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSourceCommitSha: marker.repeat(40),
+        workflowSourceBlobSha: marker.repeat(40),
+        workflowSourceSha256: marker.repeat(64),
+        workflowSemanticSha256: marker.repeat(64),
+        workflowSchemaVersion: schema,
+        sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+        secretNamespace: namespace,
+      });
 
     await expect(
       ledger.replaceActiveWorkflowSource({
-        claimId: activeClaim.id,
-        attemptId: attempt.attemptId,
-        namespaceId: "namespace:runtime-promoted",
-        namespaceEpoch: "2",
-        secretName:
-          "REVIEWROUTER_CODEX_AUTH_JSON_R123456_P0000000000000000_E2_00000000000000000000000000000000",
-        repositoryId: activeClaim.githubRepositoryId,
-        expectedGenerationHash: runtimeGenerationHash,
-        workflowPath: ".github/workflows/reviewrouter-codex.yml",
-        workflowSourceCommitSha: "a".repeat(40),
-        workflowSourceBlobSha: "b".repeat(40),
-        workflowSourceSha256: "c".repeat(64),
-        workflowSemanticSha256: "d".repeat(64),
-        sourceTrust: "trusted_default_branch_revision",
-        expectedCurrentWorkflowSchemaVersion: 4,
-        workflowSchemaVersion: 5,
-        expectedCurrentWorkflowSourceCommitSha: "e".repeat(40),
-        expectedCurrentWorkflowSourceBlobSha: "f".repeat(40),
-        expectedCurrentWorkflowSourceSha256: "1".repeat(64),
-        expectedCurrentWorkflowSemanticSha256: "2".repeat(64),
+        target: {
+          claimId: activeClaim.id,
+          attemptId: attempt.attemptId,
+          expectedGenerationHash: runtimeGenerationHash,
+          repositoryId: activeClaim.githubRepositoryId,
+          workflowPath: ".github/workflows/reviewrouter-codex.yml",
+          namespace,
+        },
+        expectedCurrent: workflow(4, "4"),
+        replacement: workflow(5, "5"),
       }),
     ).resolves.toEqual({ status: "active" });
-    expect(tx.$executeRaw).not.toHaveBeenCalled();
+    expect(tx.$executeRaw).toHaveBeenCalledOnce();
     const sql = Array.from(
-      tx.$queryRaw.mock.calls.at(-1)![0] as readonly string[],
+      tx.$executeRaw.mock.calls.at(-1)![0] as readonly string[],
     ).join("?");
     expect(sql).toContain("codex_oauth_reattest_active_namespace_v4_to_v5");
-    expect(tx.$queryRaw.mock.calls.at(-1)).toContain(runtimeGenerationHash);
+    expect(tx.$executeRaw.mock.calls.at(-1)).toContain(runtimeGenerationHash);
     expect(runtimeGenerationHash).not.toBe(activeClaim.generationHash);
   });
 });

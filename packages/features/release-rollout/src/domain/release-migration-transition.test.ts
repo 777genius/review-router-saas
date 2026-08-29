@@ -111,8 +111,19 @@ describe("canonical release migration transition", () => {
       releaseImageDigest: `sha256:${"e".repeat(64)}`,
     });
     expect(trusted.orderedPendingEntriesSha256).toBe(
+      "sha256:d8125f74972abfb9943f354d8f1573ed67b9da6d7c82985896b1ae5591c76965",
+    );
+    expect(trusted.orderedPendingEntriesSha256).toBe(
       deriveOrderedPendingEntriesSha256(trusted.orderedMigrationEntries),
     );
+    expect(trusted.orderedPendingEntriesSha256).not.toBe(
+      trusted.migrationArtifactDigest,
+    );
+    expect(
+      deriveOrderedPendingEntriesSha256(
+        trusted.orderedMigrationEntries.toReversed(),
+      ),
+    ).not.toBe(trusted.orderedPendingEntriesSha256);
     expect(() =>
       assertReleaseMigrationTransition(
         {
@@ -122,6 +133,15 @@ describe("canonical release migration transition", () => {
         trusted,
       ),
     ).toThrow("release_migration_transition_untrusted");
+  });
+
+  it("trusts only the last promoted production catalog digest", () => {
+    expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
+      "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0",
+    );
+    expect(canonicalReleaseMigrationArtifact.postCatalogDigest).not.toBe(
+      "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68",
+    );
   });
 
   it("binds the live history projection to the canonical post-manifest identity", () => {

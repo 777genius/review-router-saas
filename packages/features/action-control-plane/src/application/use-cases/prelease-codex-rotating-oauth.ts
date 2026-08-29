@@ -218,9 +218,7 @@ export async function preleaseCodexRotatingOAuth(
     githubRunId: claims.run_id,
     githubRunAttempt: claims.run_attempt,
     ...(pullRequestNumber ? { pullRequestNumber } : {}),
-    ...(verifiedWorkflow.attestation
-      ? { verifiedWorkflowAttestation: verifiedWorkflow.attestation }
-      : {}),
+    verifiedWorkflowAttestation: verifiedWorkflow.attestation ?? null,
     newWorkAdmissionBarrier: {
       assertAdmitted: assertNewWorkAdmitted,
     },

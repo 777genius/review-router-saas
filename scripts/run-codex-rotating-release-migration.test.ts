@@ -1,9 +1,7 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  liveV70V72CatalogDigestSha256 as fencedLiveV70V72CatalogDigestSha256,
-  fencedLiveV70V72CatalogDigestSql,
-} from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
+import { fencedLiveV70V72CatalogDigestSql } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
 import { sha256Canonical } from "../packages/features/release-rollout/src/domain/release-rollout";
 import {
@@ -17,7 +15,6 @@ import {
   canonicalDatabaseGenerationObservationSql,
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
-  liveV70V72CatalogDigestSha256,
   liveV70V72CatalogDigestSql,
   isActivationPrincipalRoleCapabilityPermitted,
   resolveReleaseMigrationConfiguration,
@@ -215,6 +212,70 @@ describe("application database release-authority isolation", () => {
     );
     expect(executableSource).toContain(
       "captureState.catalogDigest ===\n        canonicalReleaseMigrationArtifact.postCatalogDigest",
+    );
+  });
+
+  it("emits the untrusted catalog candidate only from capture while production keeps the promoted digest", () => {
+    const candidateDigest =
+      "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68";
+    const run = (step: string) => {
+      if (step === "verify_release_authority")
+        return JSON.stringify({
+          currentUser: "reviewrouter_release_migration",
+          sessionUser: "reviewrouter_release_migration",
+          login: true,
+          superuser: false,
+          createDatabase: false,
+          createRole: false,
+          replication: false,
+          bypassRls: false,
+        });
+      if (step.startsWith("legacy_ambiguity_inventory_"))
+        return JSON.stringify({
+          activeLeaseIds: [],
+          fetchedSetupIds: [],
+          pendingIntentIds: [],
+          intentStatuses: [],
+        });
+      if (step === "verify_catalog_capture_migration_state")
+        return JSON.stringify({
+          manifestIdentity:
+            canonicalReleaseMigrationArtifact.postManifestIdentity,
+          catalogDigest: candidateDigest,
+          permitState: "consumed",
+          unfinishedCount: 0,
+        });
+      return step === "migration_history_preflight" ? "preflight" : "";
+    };
+    const result = executeCanonicalReleaseMigration(
+      {
+        ...environment(),
+        REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1",
+        REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+          "rr-disposable-candidate-test",
+      },
+      run as never,
+    );
+
+    expect(result).toEqual({
+      version: 1,
+      captureOnlyStatus: "catalog_candidate_ready",
+      candidate: {
+        commitSha: "a".repeat(40),
+        databaseIdentity: "db.internal:5432/review_router",
+        manifestIdentity:
+          canonicalReleaseMigrationArtifact.postManifestIdentity,
+        projectionSha256: `sha256:${createHash("sha256")
+          .update(fencedLiveV70V72CatalogDigestSql)
+          .digest("hex")}`,
+        catalogDigest: candidateDigest,
+      },
+    });
+    expect(candidateDigest).not.toBe(
+      canonicalReleaseMigrationArtifact.postCatalogDigest,
+    );
+    expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
+      "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0",
     );
   });
 
@@ -830,8 +891,11 @@ describe("canonical exclusive release migration caller", () => {
     expect(activationAuthority).toContain(
       "JOIN table_facts USING (role_name,role_kind,relname)",
     );
-    expect(liveV70V72CatalogDigestSha256).toBe(
-      fencedLiveV70V72CatalogDigestSha256,
+    expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
+      "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0",
+    );
+    expect(executableSource).not.toContain(
+      "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68",
     );
     expect(fencedLiveV70V72CatalogDigestSql).toContain(
       "read_activation_migration_manifest_identity()",

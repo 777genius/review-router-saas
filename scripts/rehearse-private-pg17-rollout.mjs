@@ -412,6 +412,51 @@ export function assertDisposableCaptureTarget({
     );
 }
 
+export function createActivationCatalogCaptureCheckpoint({
+  artifact,
+  candidate,
+  disposableIdentity,
+  systemIdentifier,
+  recoveryWitnessSha256,
+}) {
+  if (
+    artifact?.kind !==
+      "reviewrouter-activation-catalog-policy-artifact-candidate" ||
+    artifact?.version !== 1 ||
+    !/^[a-f0-9]{40}$/u.test(candidate?.commitSha ?? "") ||
+    !/^sha256:[a-f0-9]{64}$/u.test(candidate?.manifestIdentity ?? "") ||
+    !/^sha256:[a-f0-9]{64}$/u.test(candidate?.projectionSha256 ?? "") ||
+    !/^sha256:[a-f0-9]{64}$/u.test(candidate?.catalogDigest ?? "") ||
+    typeof candidate?.databaseIdentity !== "string" ||
+    candidate.databaseIdentity.length < 3 ||
+    !/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(
+      disposableIdentity ?? "",
+    ) ||
+    !/^[1-9][0-9]{0,19}$/u.test(systemIdentifier ?? "") ||
+    !/^[a-f0-9]{64}$/u.test(recoveryWitnessSha256 ?? "")
+  )
+    throw new Error("activation_catalog_policy_capture_binding_invalid");
+  return Object.freeze({
+    kind: "reviewrouter-activation-catalog-policy-capture-checkpoint",
+    version: 1,
+    capture: Object.freeze({
+      commitSha: candidate.commitSha,
+      manifestIdentity: candidate.manifestIdentity,
+      database: Object.freeze({
+        disposableIdentity,
+        configuredIdentity: candidate.databaseIdentity,
+        systemIdentifier,
+        recoveryWitnessSha256,
+      }),
+      projection: Object.freeze({
+        sha256: candidate.projectionSha256,
+        observedDigest: candidate.catalogDigest,
+      }),
+    }),
+    artifact,
+  });
+}
+
 export async function routeRehearsalAfterReleaseMigration({
   captureOnly,
   captureCandidate,
@@ -2602,6 +2647,7 @@ async function verifyProductionPathRehearsal(facts) {
   };
   let evidence;
   let legacyReconciliation;
+  let migrationCatalogCandidate;
   const sourceLegacyAmbiguity = facts.sourceLegacyAmbiguity;
   const runReleaseMigrationPort = async (_target, transition, permit) => {
     process.stderr.write(
@@ -2634,8 +2680,9 @@ async function verifyProductionPathRehearsal(facts) {
       if (!facts.captureOnly)
         throw new Error("activation_catalog_policy_capture_mode_invalid");
       process.stderr.write(
-        `activation_catalog_policy_observed_catalog_digest:${migration.observedCatalogDigest}\n`,
+        `activation_catalog_policy_observed_catalog_digest:${migration.candidate.catalogDigest}\n`,
       );
+      migrationCatalogCandidate = migration.candidate;
       throw new Error("activation_catalog_policy_capture_ready");
     }
     process.stderr.write(
@@ -3515,7 +3562,16 @@ $attest_disposable_capture_database$;\n`,
           ),
         },
       );
-      return parsePrivatePg17ActivationCatalogPolicyCandidate(stdout);
+      if (!migrationCatalogCandidate)
+        throw new Error("activation_catalog_policy_capture_binding_missing");
+      return createActivationCatalogCaptureCheckpoint({
+        artifact: parsePrivatePg17ActivationCatalogPolicyCandidate(stdout),
+        candidate: migrationCatalogCandidate,
+        disposableIdentity: identity,
+        systemIdentifier: facts.targetSystemIdentifier,
+        recoveryWitnessSha256:
+          facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256,
+      });
     },
     stageTargetServices: (migratedRollout) =>
       runStage("stage_target_services", () =>

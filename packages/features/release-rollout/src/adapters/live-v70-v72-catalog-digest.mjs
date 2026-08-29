@@ -185,13 +185,8 @@ WITH selected_relations AS (
 SELECT 'sha256:'||encode(pg_catalog.sha256(convert_to(value::text,'UTF8')),'hex')
 FROM facts`;
 
-export const liveV70V73CatalogDigestSha256 =
-  "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68";
-
 // Compatibility aliases for existing external consumers during the V73 rollout.
 export const fencedLiveV70V72CatalogDigestSql =
   fencedLiveV70V73CatalogDigestSql;
-export const liveV70V72CatalogDigestSha256 = liveV70V73CatalogDigestSha256;
 export const fencedLiveV70V79CatalogDigestSql =
   fencedLiveV70V73CatalogDigestSql;
-export const liveV70V79CatalogDigestSha256 = liveV70V73CatalogDigestSha256;

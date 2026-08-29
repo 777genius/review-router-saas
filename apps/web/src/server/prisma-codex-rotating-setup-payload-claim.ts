@@ -19,10 +19,16 @@ import {
   type CodexRotatingSetupAttemptStatus,
   type CodexRotatingSetupClaimStatus,
   type CodexRotatingSetupPayloadClaimPort,
-  type CodexRotatingWorkflowReattestation,
-  type CodexRotatingWorkflowReattestationPort,
+  type CodexRotatingCurrentWorkflowAttestationPort,
+  type CodexRotatingWorkflowReattestationPersistencePort,
+  type CodexRotatingWorkflowReattestationTransition,
   type CodexRotatingSetupStatus,
 } from "@reviewrouter/features-provider-setup";
+import {
+  createVersionedSecretWorkflowSourceAttestation,
+  WorkflowSourceTrust,
+  type VersionedProviderSecretNamespace,
+} from "@reviewrouter/features-workflow-provisioning";
 import {
   PostgresTransactionClock,
   type TransactionClock,
@@ -179,7 +185,8 @@ type AttemptRow = {
 export class PrismaCodexRotatingSetupPayloadClaim
   implements
     CodexRotatingSetupPayloadClaimPort,
-    CodexRotatingWorkflowReattestationPort
+    CodexRotatingCurrentWorkflowAttestationPort,
+    CodexRotatingWorkflowReattestationPersistencePort
 {
   constructor(
     private readonly prisma: PrismaClient,
@@ -758,11 +765,59 @@ export class PrismaCodexRotatingSetupPayloadClaim
    * used when a canonical workflow schema is upgraded without rotating the
    * provider secret generation.
    */
-  async replaceActiveWorkflowSource(input: CodexRotatingWorkflowReattestation) {
+  async readActiveWorkflowAttestation(
+    namespace: VersionedProviderSecretNamespace,
+  ) {
+    const row = await this.prisma.codexOAuthSecretNamespace.findUnique({
+      where: { id: namespace.namespaceId },
+      select: {
+        githubRepositoryId: true,
+        workflowPath: true,
+        workflowSourceCommitSha: true,
+        workflowSourceBlobSha: true,
+        workflowSourceSha256: true,
+        workflowSemanticSha256: true,
+        workflowSourceTrust: true,
+        workflowSchemaVersion: true,
+        attestedRepositoryId: true,
+      },
+    });
+    if (
+      !row ||
+      row.githubRepositoryId !== namespace.scope.repositoryId ||
+      row.attestedRepositoryId !== namespace.scope.repositoryId ||
+      !row.workflowPath ||
+      !row.workflowSourceCommitSha ||
+      !row.workflowSourceBlobSha ||
+      !row.workflowSourceSha256 ||
+      !row.workflowSemanticSha256 ||
+      row.workflowSourceTrust !==
+        WorkflowSourceTrust.TrustedDefaultBranchRevision ||
+      row.workflowSchemaVersion === null
+    ) {
+      return null;
+    }
+    return createVersionedSecretWorkflowSourceAttestation({
+      repositoryId: row.attestedRepositoryId,
+      workflowPath: row.workflowPath,
+      workflowSourceCommitSha: row.workflowSourceCommitSha,
+      workflowSourceBlobSha: row.workflowSourceBlobSha,
+      workflowSourceSha256: row.workflowSourceSha256,
+      workflowSemanticSha256: row.workflowSemanticSha256,
+      sourceTrust: row.workflowSourceTrust,
+      workflowSchemaVersion: row.workflowSchemaVersion,
+      secretNamespace: namespace,
+    });
+  }
+
+  async replaceActiveWorkflowSource(
+    transition: CodexRotatingWorkflowReattestationTransition,
+  ) {
+    const { target, expectedCurrent, replacement } = transition;
     try {
       return await this.prisma.$transaction(
         async (tx) => {
-          const initial = await findClaim(tx, input.claimId);
+          const initial = await findClaim(tx, target.claimId);
           await requireProvenWriter(
             tx,
             initial.databaseIncarnation,
@@ -770,32 +825,32 @@ export class PrismaCodexRotatingSetupPayloadClaim
             this.databaseRecoveryWitness,
           );
           await lockCodexRotatingProviderRow(tx, initial.providerInstanceRowId);
-          const claim = await findClaimForUpdate(tx, input.claimId);
+          const claim = await findClaimForUpdate(tx, target.claimId);
           const attempt = await findAttemptForUpdate(
             tx,
-            input.claimId,
-            input.attemptId,
+            target.claimId,
+            target.attemptId,
           );
           if (
             claim.status !== "active" ||
             attempt.status !== "confirmed" ||
-            claim.githubRepositoryId !== input.repositoryId
+            claim.githubRepositoryId !== target.repositoryId
           ) {
             throw new Error("codex_rotating_setup_activation_mismatch");
           }
-          await tx.$queryRaw`
+          await tx.$executeRaw`
             SELECT "codex_oauth_reattest_active_namespace_v4_to_v5"(
               ${claim.providerInstanceRowId}, ${claim.id}, ${attempt.attemptId},
-              ${input.namespaceId}, ${BigInt(input.namespaceEpoch)}, ${input.secretName},
-              ${input.repositoryId}, ${input.expectedGenerationHash}, ${input.workflowPath},
-              ${input.sourceTrust}, ${input.expectedCurrentWorkflowSchemaVersion},
-              ${input.workflowSchemaVersion},
-              ${input.expectedCurrentWorkflowSourceCommitSha},
-              ${input.expectedCurrentWorkflowSourceBlobSha},
-              ${input.expectedCurrentWorkflowSourceSha256},
-              ${input.expectedCurrentWorkflowSemanticSha256},
-              ${input.workflowSourceCommitSha}, ${input.workflowSourceBlobSha},
-              ${input.workflowSourceSha256}, ${input.workflowSemanticSha256}
+              ${target.namespace.namespaceId}, ${target.namespace.epoch}, ${target.namespace.name},
+              ${target.repositoryId}, ${target.expectedGenerationHash}, ${target.workflowPath},
+              ${replacement.sourceTrust}, ${expectedCurrent.workflowSchemaVersion},
+              ${replacement.workflowSchemaVersion},
+              ${expectedCurrent.workflowSourceCommitSha},
+              ${expectedCurrent.workflowSourceBlobSha},
+              ${expectedCurrent.workflowSourceSha256},
+              ${expectedCurrent.workflowSemanticSha256},
+              ${replacement.workflowSourceCommitSha}, ${replacement.workflowSourceBlobSha},
+              ${replacement.workflowSourceSha256}, ${replacement.workflowSemanticSha256}
             )
           `;
           return { status: "active" as const };

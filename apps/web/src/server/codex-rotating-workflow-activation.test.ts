@@ -56,6 +56,10 @@ const firstHead = "a".repeat(40);
 describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.replaceActiveWorkflowSource.mockResolvedValue({
+      status: "already_active",
+      workflowSourceCommitSha: firstHead,
+    });
     mocks.inspectNamespace.mockResolvedValue({
       source: "confirmed_setup_candidate",
       claimId: "claim_1",
@@ -166,7 +170,7 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       workflowSourceCommitSha: firstHead,
     });
     expect(mocks.activate).not.toHaveBeenCalled();
-    expect(mocks.replaceActiveWorkflowSource).not.toHaveBeenCalled();
+    expect(mocks.replaceActiveWorkflowSource).toHaveBeenCalledOnce();
   });
 
   it("is idempotent after an unrelated commit when trusted workflow bytes are unchanged", async () => {
@@ -189,6 +193,10 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       workflowSchemaVersion: 5,
       sourceTrust: "trusted_default_branch_revision",
     });
+    mocks.replaceActiveWorkflowSource.mockResolvedValueOnce({
+      status: "already_active",
+      workflowSourceCommitSha: unrelatedHead,
+    });
     const { input, request } = fixture();
     request
       .mockReset()
@@ -204,7 +212,7 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       namespaceEpoch: "2",
       workflowSourceCommitSha: unrelatedHead,
     });
-    expect(mocks.replaceActiveWorkflowSource).not.toHaveBeenCalled();
+    expect(mocks.replaceActiveWorkflowSource).toHaveBeenCalledOnce();
   });
 
   it("fails closed when the active repository binding changed", async () => {
@@ -217,6 +225,9 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       },
     });
     const { input, findAttestation } = fixture();
+    mocks.replaceActiveWorkflowSource.mockRejectedValueOnce(
+      new Error("codex_rotating_workflow_source_attestation_missing"),
+    );
     findAttestation.mockResolvedValueOnce({
       workflowPath: ".github/workflows/reviewrouter-codex.yml",
       workflowSourceCommitSha: firstHead,
@@ -231,7 +242,7 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
     await expect(
       activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
     ).rejects.toThrow("codex_rotating_workflow_source_attestation_missing");
-    expect(mocks.replaceActiveWorkflowSource).not.toHaveBeenCalled();
+    expect(mocks.replaceActiveWorkflowSource).toHaveBeenCalledOnce();
   });
 
   it("fails closed when trusted V5 workflow bytes changed", async () => {
@@ -254,13 +265,16 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       sourceTrust: "trusted_default_branch_revision",
     });
     const { input } = fixture();
+    mocks.replaceActiveWorkflowSource.mockRejectedValueOnce(
+      new Error("codex_rotating_workflow_reattestation_transition_invalid"),
+    );
 
     await expect(
       activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
     ).rejects.toThrow(
       "codex_rotating_workflow_reattestation_transition_invalid",
     );
-    expect(mocks.replaceActiveWorkflowSource).not.toHaveBeenCalled();
+    expect(mocks.replaceActiveWorkflowSource).toHaveBeenCalledOnce();
   });
 
   it("re-attests an active V4 namespace after its workflow is upgraded to V5", async () => {
@@ -312,6 +326,10 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
         actionRef: "action-sha",
         workflowSchemaVersion: 4,
       });
+    mocks.replaceActiveWorkflowSource.mockResolvedValueOnce({
+      status: "reattested",
+      workflowSourceCommitSha: firstHead,
+    });
 
     await expect(
       activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
@@ -320,22 +338,17 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       namespaceEpoch: "2",
       workflowSourceCommitSha: firstHead,
     });
-    expect(mocks.assertTrusted).toHaveBeenCalledWith(
-      expect.objectContaining({ expectedWorkflowSchemaVersion: 5 }),
-    );
     expect(mocks.replaceActiveWorkflowSource).toHaveBeenCalledWith(
       expect.objectContaining({
         claimId: "claim_1",
         attemptId: "attempt_1",
-        namespaceId: "namespace_2",
-        workflowSourceCommitSha: firstHead,
         expectedGenerationHash: "9".repeat(64),
-        expectedCurrentWorkflowSchemaVersion: 4,
-        workflowSchemaVersion: 5,
+        namespace: expect.objectContaining({ namespaceId: "namespace_2" }),
       }),
-    );
-    expect(mocks.assertTrusted).toHaveBeenLastCalledWith(
-      expect.objectContaining({ expectedWorkflowSchemaVersion: 4 }),
+      expect.objectContaining({
+        readDefaultHead: expect.any(Function),
+        readVerifiedWorkflowAt: expect.any(Function),
+      }),
     );
   });
 

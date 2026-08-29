@@ -18,6 +18,7 @@ import {
   RuntimeVersionedDurableMarker,
   reserveRuntimeVersionedEffectConfirmationWindow,
   type VersionedProviderSecretNamespace,
+  type VersionedSecretWorkflowSourceAttestation,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
 import {
@@ -241,6 +242,7 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
     readonly now?: Date;
+    readonly verifiedWorkflowAttestation: VersionedSecretWorkflowSourceAttestation | null;
     readonly newWorkAdmissionBarrier: Readonly<{
       assertAdmitted(): void;
     }>;

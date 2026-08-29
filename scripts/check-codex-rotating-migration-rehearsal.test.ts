@@ -1115,6 +1115,20 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toHaveLength(2);
   });
 
+  it("executes the void re-attestation routine without Prisma row decoding", () => {
+    const reattestation =
+      /async replaceActiveWorkflowSource\([\s\S]+?\n {2}\}\n\n {2}async retireProviderGeneration/u.exec(
+        setupAdapterSource,
+      )?.[0];
+    expect(reattestation).toBeDefined();
+    expect(reattestation).toContain("await tx.$executeRaw`");
+    expect(reattestation).not.toContain("await tx.$queryRaw`");
+    expect(reattestation).toContain(
+      'SELECT "codex_oauth_reattest_active_namespace_v4_to_v5"',
+    );
+    expect(runtimeProofSource).toContain("reattestCodexRotatingWorkflow(");
+  });
+
   it("binds acknowledged W2 recovery issuance to the explicit proof witness", () => {
     const recoveryFlow =
       /const recoveryRequestId = "recovery:runtime-proof-ambiguous";([\s\S]+?)\n {2}ledger = rotatedRuntime;/u.exec(
@@ -1146,6 +1160,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(witnessBoundary).toContain(
       'providerBeforeRejectedPrelease.state !== "active"',
     );
+    expect(witnessBoundary).toContain("verifiedWorkflowAttestation,");
     expect(witnessBoundary).toContain(
       '"codex_rotating_database_recovery_witness_mismatch"',
     );
@@ -1157,6 +1172,26 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(runtimeProofSource).not.toMatch(
       /process\.env\.REVIEW_ROUTER_(?:CODEX_ROTATING_SETUP_ISSUANCE_ENABLED|ENABLE_CODEX_ROTATING_OAUTH|CODEX_ROTATING_OAUTH_REPOSITORIES)\s*=/u,
+    );
+  });
+
+  it("passes and advances the exact verified workflow attestation through the real runtime proof", () => {
+    const runHelper = /const run = async \([\s\S]+?\n {2}\};/u.exec(
+      runtimeProofSource,
+    )?.[0];
+    expect(runHelper).toBeDefined();
+    expect(runHelper).toContain("verifiedWorkflowAttestation,");
+    expect(runtimeProofSource).toContain(
+      'verifiedWorkflowAttestation = attestationFor(definite.namespace, "2")',
+    );
+    expect(runtimeProofSource).toContain(
+      'verifiedWorkflowAttestation = attestationFor(recoveredNamespace, "4", 4)',
+    );
+    expect(runtimeProofSource).toContain(
+      "verifiedWorkflowAttestation = reattestedWorkflow",
+    );
+    expect(runtimeProofSource).toContain(
+      'verifiedWorkflowAttestation = attestationFor(rollbackClaim.namespace, "6")',
     );
   });
 

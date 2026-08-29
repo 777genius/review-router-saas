@@ -22,10 +22,7 @@ import {
 } from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
 import { normalizeSecretSafePostgresArguments } from "./lib/secret-safe-command-boundary.mjs";
 import { effectivePrincipalInventorySql } from "../packages/features/release-rollout/src/adapters/effective-principal-postgres.mjs";
-import {
-  liveV70V73CatalogDigestSha256 as fencedLiveV70V73CatalogDigestSha256,
-  fencedLiveV70V73CatalogDigestSql,
-} from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
+import { fencedLiveV70V73CatalogDigestSql } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 import {
   prepareLegacyAmbiguityReconciliation,
   verifyLegacyAmbiguityReconciliation,
@@ -4951,17 +4948,10 @@ COMMIT;
 }
 
 /** Canonical projection of the live V70-V73 security catalog. */
-export const liveV70V73CatalogDigestSha256 =
-  fencedLiveV70V73CatalogDigestSha256;
 export const liveV70V73CatalogDigestSql = fencedLiveV70V73CatalogDigestSql;
 
-export const liveV70V72CatalogDigestSha256 = liveV70V73CatalogDigestSha256;
 export const liveV70V72CatalogDigestSql = liveV70V73CatalogDigestSql;
-export const liveV70V79CatalogDigestSha256 = liveV70V73CatalogDigestSha256;
 export const liveV70V79CatalogDigestSql = liveV70V73CatalogDigestSql;
-
-if (liveV70V73CatalogDigestSha256 !== fencedLiveV70V73CatalogDigestSha256)
-  throw new Error("release_migration_fenced_catalog_projection_drift");
 
 export function releaseMigrationPermitFromEnv(env) {
   const permit = {
@@ -5489,8 +5479,15 @@ export function executeCanonicalReleaseMigration(
     return Object.freeze({
       version: 1,
       captureOnlyStatus: "catalog_candidate_ready",
-      observedManifestIdentity: captureState.manifestIdentity,
-      observedCatalogDigest: captureState.catalogDigest,
+      candidate: Object.freeze({
+        commitSha: configuration.commit,
+        databaseIdentity: configuration.databaseIdentity,
+        manifestIdentity: captureState.manifestIdentity,
+        projectionSha256: `sha256:${createHash("sha256")
+          .update(fencedLiveV70V73CatalogDigestSql)
+          .digest("hex")}`,
+        catalogDigest: captureState.catalogDigest,
+      }),
     });
   }
   const targetMigrationReceipt = JSON.parse(

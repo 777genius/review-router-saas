@@ -404,6 +404,7 @@ describe("Codex rotating OAuth local E2E", () => {
       githubRunId: "9004",
       githubRunAttempt: "1",
       now: firstRunAt,
+      verifiedWorkflowAttestation: null,
       newWorkAdmissionBarrier: allowNewWorkAdmission,
     });
     expect(conflictingLease).toMatchObject({
