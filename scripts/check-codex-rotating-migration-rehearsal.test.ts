@@ -139,16 +139,30 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       'for (const ordering of ["old_invocation_first", "migration_boundary_first"])',
     );
     expect(source).toContain('spawnPsql(migrationUrl, ["-f", migration81])');
-    expect(source).toContain('spawnPsql(url, ["-f", migration81])');
     expect(source).toContain(
       'LOCK TABLE public."CodexOAuthSecretNamespace" IN ROW EXCLUSIVE MODE',
     );
-    expect(source).toContain(
-      'waitForRelationLock(url, "rr-m81-migration-first", false)',
-    );
+    expect(source).toContain('"ShareRowExclusiveLock",\n              false');
     expect(source).toContain(
       "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
     );
+    expect(source).toContain("oldLock.blockers.includes(migrationLock.pid)");
+    expect(source).toContain("migrationLock.blockers.includes(oldLock.pid)");
+    expect(source).toContain('"Migration81RaceLatch"');
+    expect(source).toContain('"AccessShareLock",\n                false');
+    expect(source).toContain(
+      "migration81 queued old invocation failed with generic does-not-exist",
+    );
+    const proof =
+      /async function proveMigration81TwoSessionBoundary\(\) \{([\s\S]+?)\n\}\n\nasync function proveMigrationSpecificLegacyBehavior/u.exec(
+        source,
+      )?.[1];
+    expect(proof).toBeDefined();
+    expect(proof).not.toContain("pg_sleep");
+    expect(proof).not.toMatch(/predecessor_evidence_missing\|does not exist/u);
+    expect(proof).toContain("migration81_blocker_cleanup_failed");
+    expect(proof).toContain("migration81_database_cleanup_failed");
+    expect(proof).toContain('child.kill("SIGKILL")');
   });
 
   it("retains ordinary migration 000074 in the pre-release source manifest", () => {

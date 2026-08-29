@@ -330,6 +330,8 @@ async function proveMigration81TwoSessionBoundary() {
           "effect" text, "ownerId" text, "effectCode" integer,
           "consumedAt" timestamptz
         );
+        CREATE TABLE public."Migration81RaceLatch" ("id" integer PRIMARY KEY);
+        INSERT INTO public."Migration81RaceLatch" VALUES (1);
         INSERT INTO public."RepositoryConnection" VALUES ('repository', 900001);
         INSERT INTO public."CodexOAuthProviderInstance" (
           "id","repositoryId","state","activeSecretNamespaceId",
@@ -355,50 +357,107 @@ async function proveMigration81TwoSessionBoundary() {
         BEGIN
           UPDATE public."CodexOAuthSecretNamespace"
           SET "workflowSchemaVersion"=5 WHERE "id"='namespace';
-          PERFORM pg_sleep(0.4);
+          PERFORM 1 FROM public."Migration81RaceLatch" WHERE "id"=1;
         END $old$;
       `,
     ]);
   const oldCall = String.raw`SELECT public."codex_oauth_reattest_active_namespace_v4_to_v5"(
     NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
     NULL,NULL,NULL,NULL)`;
-  const spawnPsql = (url, args) => {
+  const spawned = new Set();
+  const spawnPsql = (url, args = [], keepStdinOpen = false) => {
     const invocation = createSecretSafePostgresInvocation({
       databaseUrl: url,
       args: ["-X", "-v", "ON_ERROR_STOP=1", ...args],
     });
     const child = spawn(psqlBinary, invocation.args, {
       env: invocation.environment,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [keepStdinOpen ? "pipe" : "ignore", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => (stdout += chunk));
     child.stderr.on("data", (chunk) => (stderr += chunk));
-    return new Promise((resolveChild) =>
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null)
+          child.kill("SIGKILL");
+      }, 2_000).unref();
+    }, 30_000);
+    timeout.unref();
+    const handle = { child, stdout: () => stdout, stderr: () => stderr };
+    handle.result = new Promise((resolveChild) =>
       child.once("close", (status) => {
+        clearTimeout(timeout);
         invocation.cleanup();
-        resolveChild({ status, stdout, stderr });
+        spawned.delete(handle);
+        resolveChild({ status, stdout, stderr, timedOut });
       }),
     );
+    handle.write = (sql) => child.stdin.write(sql);
+    spawned.add(handle);
+    return handle;
   };
-  const waitForRelationLock = async (url, applicationName, granted) => {
+  const lockSnapshot = (url) =>
+    JSON.parse(
+      psql(url, [
+        "-Atc",
+        String.raw`SET statement_timeout='2s';
+          SELECT COALESCE(json_agg(row_to_json(observation)), '[]'::json)::text
+          FROM (
+            SELECT activity.application_name AS application,
+                   activity.pid,
+                   activity.state,
+                   activity.wait_event_type AS "waitEventType",
+                   activity.wait_event AS "waitEvent",
+                   relation_lock.mode,
+                   relation_lock.granted,
+                   relation_lock.relation::regclass::text AS relation,
+                   pg_blocking_pids(activity.pid) AS blockers
+            FROM pg_stat_activity activity
+            JOIN pg_locks relation_lock ON relation_lock.pid=activity.pid
+            WHERE activity.application_name LIKE 'rr-m81-%'
+              AND relation_lock.locktype='relation'
+              AND relation_lock.relation IN (
+                'public."CodexOAuthSecretNamespace"'::regclass,
+                'public."Migration81RaceLatch"'::regclass
+              )
+            ORDER BY activity.application_name, relation_lock.relation, relation_lock.mode
+          ) observation`,
+      ]).stdout.trim(),
+    );
+  const waitForLockState = async (url, description, predicate) => {
     const deadline = Date.now() + 15_000;
+    let snapshot = [];
     while (Date.now() < deadline) {
-      const found = Number(
-        psql(url, [
-          "-Atc",
-          `SELECT count(*) FROM pg_locks lock
-           JOIN pg_stat_activity activity ON activity.pid=lock.pid
-           WHERE lock.relation='public."CodexOAuthSecretNamespace"'::regclass
-             AND activity.application_name=${quoteLiteral(applicationName)}
-             AND lock.granted=${granted ? "true" : "false"}`,
-        ]).stdout,
-      );
-      if (found > 0) return;
+      snapshot = lockSnapshot(url);
+      if (predicate(snapshot)) return snapshot;
       await delay(20);
     }
-    throw new Error(`migration81_${applicationName}_lock_not_observed`);
+    throw new Error(
+      `migration81_lock_state_not_observed:${description}:${JSON.stringify(snapshot)}`,
+    );
+  };
+  const relationLock = (snapshot, application, relation, mode, granted) =>
+    snapshot.find(
+      (lock) =>
+        lock.application === application &&
+        lock.relation === relation &&
+        lock.mode === mode &&
+        lock.granted === granted,
+    );
+  const releaseBlocker = async (blocker) => {
+    if (!blocker || blocker.child.exitCode !== null) return;
+    blocker.write("COMMIT;\n\\q\n");
+    blocker.child.stdin.end();
+    const result = await blocker.result;
+    assert(
+      result.status === 0 && !result.timedOut,
+      `migration81_blocker_cleanup_failed:${psqlResultDiagnostic(result)}`,
+    );
   };
 
   for (const ordering of ["old_invocation_first", "migration_boundary_first"]) {
@@ -408,69 +467,197 @@ async function proveMigration81TwoSessionBoundary() {
     try {
       installPre81BoundaryFixture(url);
       if (ordering === "old_invocation_first") {
+        const blockerUrl = new URL(String(url));
+        blockerUrl.searchParams.set("application_name", "rr-m81-old-latch");
+        const blocker = spawnPsql(blockerUrl, [], true);
+        blocker.write(
+          'BEGIN; LOCK TABLE public."Migration81RaceLatch" IN ACCESS EXCLUSIVE MODE;\n',
+        );
+        await waitForLockState(url, "old latch held", (snapshot) =>
+          Boolean(
+            relationLock(
+              snapshot,
+              "rr-m81-old-latch",
+              '"Migration81RaceLatch"',
+              "AccessExclusiveLock",
+              true,
+            ),
+          ),
+        );
         const oldUrl = new URL(String(url));
         oldUrl.searchParams.set("application_name", "rr-m81-old-first");
         const old = spawnPsql(oldUrl, ["-c", oldCall]);
-        await waitForRelationLock(url, "rr-m81-old-first", true);
-        const migration = spawnPsql(url, ["-f", migration81]);
+        await waitForLockState(
+          url,
+          "old invocation crossed update",
+          (snapshot) =>
+            Boolean(
+              relationLock(
+                snapshot,
+                "rr-m81-old-first",
+                '"CodexOAuthSecretNamespace"',
+                "RowExclusiveLock",
+                true,
+              ) &&
+              relationLock(
+                snapshot,
+                "rr-m81-old-first",
+                '"Migration81RaceLatch"',
+                "AccessShareLock",
+                false,
+              ),
+            ),
+        );
+        const migrationUrl = new URL(String(url));
+        migrationUrl.searchParams.set(
+          "application_name",
+          "rr-m81-old-first-migration",
+        );
+        const migration = spawnPsql(migrationUrl, ["-f", migration81]);
+        await waitForLockState(
+          url,
+          "migration queued behind old update",
+          (snapshot) => {
+            const oldLock = relationLock(
+              snapshot,
+              "rr-m81-old-first",
+              '"CodexOAuthSecretNamespace"',
+              "RowExclusiveLock",
+              true,
+            );
+            const migrationLock = relationLock(
+              snapshot,
+              "rr-m81-old-first-migration",
+              '"CodexOAuthSecretNamespace"',
+              "ShareRowExclusiveLock",
+              false,
+            );
+            return Boolean(
+              oldLock &&
+              migrationLock &&
+              migrationLock.blockers.includes(oldLock.pid),
+            );
+          },
+        );
+        await releaseBlocker(blocker);
         const [oldResult, migrationResult] = await Promise.all([
-          old,
-          migration,
+          old.result,
+          migration.result,
         ]);
         assert(
-          oldResult.status === 0,
-          "migration81_old_first_invocation_failed",
+          oldResult.status === 0 && !oldResult.timedOut,
+          `migration81_old_first_invocation_failed:${psqlResultDiagnostic(oldResult)}`,
         );
-        assert(
-          migrationResult.status !== 0 &&
-            `${migrationResult.stdout}${migrationResult.stderr}`.includes(
-              "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
-            ),
+        assertPsqlFailedWithExactMessage(
+          migrationResult,
+          "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
           "migration81 did not wait for and reject the old invocation V5 result",
         );
       } else {
         const blockerUrl = new URL(String(url));
         blockerUrl.searchParams.set("application_name", "rr-m81-blocker");
-        const blocker = spawnPsql(blockerUrl, [
-          "-c",
-          `BEGIN; LOCK TABLE public."CodexOAuthSecretNamespace" IN ROW EXCLUSIVE MODE;
-           SELECT pg_sleep(0.8); COMMIT;`,
-        ]);
-        await waitForRelationLock(url, "rr-m81-blocker", true);
+        const blocker = spawnPsql(blockerUrl, [], true);
+        blocker.write(
+          'BEGIN; LOCK TABLE public."CodexOAuthSecretNamespace" IN ROW EXCLUSIVE MODE;\n',
+        );
+        await waitForLockState(
+          url,
+          "migration ordering blocker held",
+          (snapshot) =>
+            Boolean(
+              relationLock(
+                snapshot,
+                "rr-m81-blocker",
+                '"CodexOAuthSecretNamespace"',
+                "RowExclusiveLock",
+                true,
+              ),
+            ),
+        );
         const migrationUrl = new URL(String(url));
         migrationUrl.searchParams.set(
           "application_name",
           "rr-m81-migration-first",
         );
         const migration = spawnPsql(migrationUrl, ["-f", migration81]);
-        await waitForRelationLock(url, "rr-m81-migration-first", false);
-        const old = spawnPsql(url, ["-c", oldCall]);
-        const [blockerResult, migrationResult, oldResult] = await Promise.all([
-          blocker,
-          migration,
-          old,
+        await waitForLockState(url, "migration boundary queued", (snapshot) =>
+          Boolean(
+            relationLock(
+              snapshot,
+              "rr-m81-migration-first",
+              '"CodexOAuthSecretNamespace"',
+              "ShareRowExclusiveLock",
+              false,
+            ),
+          ),
+        );
+        const oldUrl = new URL(String(url));
+        oldUrl.searchParams.set(
+          "application_name",
+          "rr-m81-migration-first-old",
+        );
+        const old = spawnPsql(oldUrl, ["-c", oldCall]);
+        await waitForLockState(
+          url,
+          "old invocation queued behind migration boundary",
+          (snapshot) => {
+            const migrationLock = relationLock(
+              snapshot,
+              "rr-m81-migration-first",
+              '"CodexOAuthSecretNamespace"',
+              "ShareRowExclusiveLock",
+              false,
+            );
+            const oldLock = relationLock(
+              snapshot,
+              "rr-m81-migration-first-old",
+              '"CodexOAuthSecretNamespace"',
+              "RowExclusiveLock",
+              false,
+            );
+            return Boolean(
+              migrationLock &&
+              oldLock &&
+              oldLock.blockers.includes(migrationLock.pid),
+            );
+          },
+        );
+        await releaseBlocker(blocker);
+        const [migrationResult, oldResult] = await Promise.all([
+          migration.result,
+          old.result,
         ]);
         assert(
-          blockerResult.status === 0,
-          "migration81_ordering_blocker_failed",
+          migrationResult.status === 0 && !migrationResult.timedOut,
+          `migration81_boundary_first_failed:${psqlResultDiagnostic(migrationResult)}`,
         );
-        assert(
-          migrationResult.status === 0,
-          "migration81_boundary_first_failed",
-        );
-        assert(
-          oldResult.status !== 0 &&
-            /codex_oauth_v4_v5_compatibility_predecessor_evidence_missing|does not exist/iu.test(
-              `${oldResult.stdout}${oldResult.stderr}`,
-            ),
+        assertPsqlFailedWithExactMessage(
+          oldResult,
+          "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
           "old invocation crossed the committed migration81 boundary",
+        );
+        assert(
+          !`${oldResult.stdout}${oldResult.stderr}`.includes("does not exist"),
+          "migration81 queued old invocation failed with generic does-not-exist",
         );
       }
     } finally {
-      psql(
+      const unsettled = [...spawned];
+      await Promise.all(
+        unsettled.map(async (handle) => {
+          if (handle.child.exitCode === null)
+            await terminateChild(handle.child);
+          return handle.result;
+        }),
+      );
+      const dropResult = psql(
         adminUrl,
         ["-c", `DROP DATABASE IF EXISTS ${quoteIdentifier(name)} WITH (FORCE)`],
         false,
+      );
+      assert(
+        dropResult.status === 0 && !dropResult.error,
+        `migration81_database_cleanup_failed:${psqlResultDiagnostic(dropResult)}`,
       );
     }
   }
