@@ -390,11 +390,11 @@ async function proveMigration81TwoSessionBoundary() {
     timeout.unref();
     const handle = { child, stdout: () => stdout, stderr: () => stderr };
     handle.result = new Promise((resolveChild) =>
-      child.once("close", (status) => {
+      child.once("close", (status, signal) => {
         clearTimeout(timeout);
         invocation.cleanup();
         spawned.delete(handle);
-        resolveChild({ status, stdout, stderr, timedOut });
+        resolveChild({ status, signal, stdout, stderr, timedOut });
       }),
     );
     handle.write = (sql) => child.stdin.write(sql);
@@ -5459,12 +5459,13 @@ function rehearsalProcessDiagnostic(result) {
     phase: "rehearsal",
     exitCode: result.status,
     signal: result.signal,
-    timedOut: result.error?.code === "ETIMEDOUT",
+    timedOut: result.timedOut === true || result.error?.code === "ETIMEDOUT",
   });
 }
 function assertPsqlFailedWithExactMessage(result, expectedFailure, message) {
   assert(
-    result.status !== 0 &&
+    result.timedOut !== true &&
+      result.status !== 0 &&
       `${result.stdout}${result.stderr}`.includes(expectedFailure),
     `${message}: expected=${JSON.stringify(expectedFailure)}; ${psqlResultDiagnostic(result)}`,
   );
@@ -5476,7 +5477,8 @@ function assertPsqlFailedWithOneOfExactMessages(
 ) {
   const output = `${result.stdout}${result.stderr}`;
   assert(
-    result.status !== 0 &&
+    result.timedOut !== true &&
+      result.status !== 0 &&
       expectedFailures.some((expectedFailure) =>
         output.includes(expectedFailure),
       ),

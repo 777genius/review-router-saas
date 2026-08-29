@@ -163,6 +163,14 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(proof).toContain("migration81_blocker_cleanup_failed");
     expect(proof).toContain("migration81_database_cleanup_failed");
     expect(proof).toContain('child.kill("SIGKILL")');
+    expect(source).toContain("result.timedOut !== true");
+    expect(proof).toContain('child.once("close", (status, signal)');
+    expect(proof).toContain(
+      "resolveChild({ status, signal, stdout, stderr, timedOut })",
+    );
+    expect(source).toContain(
+      'timedOut: result.timedOut === true || result.error?.code === "ETIMEDOUT"',
+    );
   });
 
   it("retains ordinary migration 000074 in the pre-release source manifest", () => {
