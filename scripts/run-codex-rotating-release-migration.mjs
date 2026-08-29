@@ -5481,12 +5481,11 @@ export function executeCanonicalReleaseMigration(
       ],
       {
         env: childEnv,
-        input: `COPY (SELECT jsonb_build_object(
+        input: `\\set ON_ERROR_STOP on
+COPY (SELECT jsonb_build_object(
             'manifestIdentity','sha256:'||encode(pg_catalog.sha256(convert_to(coalesce(string_agg(
               migration_name||':'||checksum,',' ORDER BY migration_name),''),'UTF8')),'hex'),
             'catalogDigest',(SELECT digest FROM (${fencedLiveV70V73CatalogDigestSql}) live(digest)),
-            'permitState',(SELECT state FROM reviewrouter_activation.migration_permit
-              WHERE rollout_id=${quoted(migrationPermit.rolloutId)}),
             'unfinishedCount',(SELECT count(*) FROM public._prisma_migrations
               WHERE finished_at IS NULL AND rolled_back_at IS NULL)
           ) FROM public._prisma_migrations
@@ -5510,7 +5509,6 @@ export function executeCanonicalReleaseMigration(
       catalogDigestUnpromoted:
         captureState.catalogDigest !==
         canonicalReleaseMigrationArtifact.postCatalogDigest,
-      permitConsumed: captureState.permitState === "consumed",
       noUnfinishedMigrations: Number(captureState.unfinishedCount) === 0,
     });
     process.stderr.write(

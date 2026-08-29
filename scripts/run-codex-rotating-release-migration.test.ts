@@ -311,7 +311,6 @@ describe("application database release-authority isolation", () => {
           manifestIdentity:
             canonicalReleaseMigrationArtifact.postManifestIdentity,
           catalogDigest: candidateDigest,
-          permitState: "consumed",
           unfinishedCount: 0,
         });
       }
@@ -346,8 +345,13 @@ describe("application database release-authority isolation", () => {
     );
     expect(captureArgs).toContain("--quiet");
     expect(captureArgs).not.toContain("--command");
-    expect(captureInput).toMatch(/^COPY \(SELECT jsonb_build_object\(/u);
+    expect(captureInput).toMatch(
+      /^\\set ON_ERROR_STOP on\nCOPY \(SELECT jsonb_build_object\(/u,
+    );
     expect(captureInput).toMatch(/\) TO STDOUT$/u);
+    expect(captureInput).not.toContain(
+      "reviewrouter_activation.migration_permit",
+    );
     expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
       "sha256:039bb3284d3e664958e40a3a319157ee04030240082c0e1e832dcf8d64b014f0",
     );
