@@ -115,7 +115,7 @@ describe("canonical release migration transition", () => {
       releaseImageDigest: `sha256:${"e".repeat(64)}`,
     });
     expect(trusted.orderedPendingEntriesSha256).toBe(
-      "sha256:5bcb52cccf2a85533c73e55eb86ecf2bbb9396a15f084e2f1776af237a10df45",
+      "sha256:12c79bf890c98d868decf966567324ee3602e0fe6e3fda9a87e6fe596e729d13",
     );
     expect(trusted.orderedPendingEntriesSha256).toBe(
       deriveOrderedPendingEntriesSha256(trusted.orderedMigrationEntries),

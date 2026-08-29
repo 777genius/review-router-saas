@@ -11,6 +11,7 @@ import {
   createRehearsalAuthorityContext,
   rehearsalSchemaOwnerIdentity,
 } from "./codex-rotating-rehearsal-authority-context.mjs";
+import { codexRotatingFunctions } from "./codex-rotating-production-writer-schema.mjs";
 import { isExpectedPrismaLockTimeoutFailure } from "./codex-rotating-lock-timeout-proof.mjs";
 
 describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
@@ -122,6 +123,32 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "proveMigrationRunnerHistory(url, migrationName, true)",
     );
     expect(source).not.toContain("000067_release_rollout_ledger");
+  });
+
+  it("derives the post-000081 exact function count from the canonical manifest", () => {
+    expect(codexRotatingFunctions).toHaveLength(25);
+    expect(source).toContain(
+      "IF function_count <> ${codexRotatingFunctions.length} OR unsafe_function_count <> 0 THEN",
+    );
+    expect(source).not.toContain("IF function_count <> 24");
+  });
+
+  it("runs the exact migration81 SQL in two PG17 sessions for both lock orderings", () => {
+    expect(source).toContain("await proveMigration81TwoSessionBoundary()");
+    expect(source).toContain(
+      'for (const ordering of ["old_invocation_first", "migration_boundary_first"])',
+    );
+    expect(source).toContain('spawnPsql(migrationUrl, ["-f", migration81])');
+    expect(source).toContain('spawnPsql(url, ["-f", migration81])');
+    expect(source).toContain(
+      'LOCK TABLE public."CodexOAuthSecretNamespace" IN ROW EXCLUSIVE MODE',
+    );
+    expect(source).toContain(
+      'waitForRelationLock(url, "rr-m81-migration-first", false)',
+    );
+    expect(source).toContain(
+      "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
+    );
   });
 
   it("retains ordinary migration 000074 in the pre-release source manifest", () => {

@@ -3,28 +3,6 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '5min';
 
--- 000079/000080 did not retain the exact V4 bytes after replacing an active
--- namespace with V5.  Applying this bridge after such a replacement would
--- create an unprovable compatibility gap, so admission fails closed instead
--- of synthesizing predecessor evidence.
-DO $compatibility_admission$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-    FROM public."CodexOAuthProviderInstance" provider
-    JOIN public."CodexOAuthSecretNamespace" namespace
-      ON namespace."id" = provider."activeSecretNamespaceId"
-    WHERE provider."state" = 'active'
-      AND namespace."status" = 'active'
-      AND NOT namespace."permanentlyRetired"
-      AND namespace."workflowSchemaVersion" = 5
-  ) THEN
-    RAISE EXCEPTION 'codex_oauth_v4_v5_compatibility_predecessor_evidence_missing'
-      USING ERRCODE = '55000';
-  END IF;
-END
-$compatibility_admission$;
-
 CREATE TABLE public."CodexOAuthWorkflowCompatibility" (
   "namespaceId" TEXT PRIMARY KEY,
   "workflowPath" TEXT NOT NULL,
@@ -70,6 +48,31 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 BEGIN
+  IF TG_TABLE_NAME = 'CodexOAuthSecretNamespace' THEN
+    IF TG_OP = 'UPDATE'
+       AND OLD."status" = 'active'
+       AND NEW."status" = 'active'
+       AND OLD."workflowSchemaVersion" = 4
+       AND NEW."workflowSchemaVersion" = 5
+       AND NOT EXISTS (
+         SELECT 1
+         FROM public."CodexOAuthWorkflowCompatibility" compatibility
+         WHERE compatibility."namespaceId" = OLD."id"
+           AND compatibility."workflowPath" = OLD."workflowPath"
+           AND compatibility."workflowSourceCommitSha" = OLD."workflowSourceCommitSha"
+           AND compatibility."workflowSourceBlobSha" = OLD."workflowSourceBlobSha"
+           AND compatibility."workflowSourceSha256" = OLD."workflowSourceSha256"
+           AND compatibility."workflowSemanticSha256" = OLD."workflowSemanticSha256"
+           AND compatibility."workflowSourceTrust" = OLD."workflowSourceTrust"
+           AND compatibility."workflowSchemaVersion" = OLD."workflowSchemaVersion"
+           AND compatibility."attestedRepositoryId" = OLD."attestedRepositoryId"
+       )
+    THEN
+      RAISE EXCEPTION 'codex_oauth_v4_v5_compatibility_predecessor_evidence_missing'
+        USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+  END IF;
   IF TG_OP <> 'INSERT' THEN
     RAISE EXCEPTION 'codex_oauth_workflow_compatibility_immutable'
       USING ERRCODE = '23514';
@@ -108,9 +111,22 @@ CREATE TRIGGER "CodexOAuthWorkflowCompatibility_guard"
 BEFORE INSERT OR UPDATE OR DELETE ON public."CodexOAuthWorkflowCompatibility"
 FOR EACH ROW EXECUTE FUNCTION public."codex_oauth_workflow_compatibility_guard"();
 
--- Establish the rollback floor before removing the predecessor entry point.
--- REVOKE rejects every new old-consumer call; DROP then takes the routine DDL
--- lock and therefore waits for any already-running invocation to drain.
+-- PostgreSQL takes ROW EXCLUSIVE for the old routine's namespace UPDATE.
+-- Acquiring SHARE ROW EXCLUSIVE therefore waits for every invocation that has
+-- crossed into that UPDATE, while PostgreSQL's lock queue holds later writers
+-- behind this migration.  The new trigger is installed while that table lock
+-- remains held, so a later already-resolved 20-argument call cannot cross the
+-- boundary after commit without exact predecessor evidence.
+LOCK TABLE public."CodexOAuthSecretNamespace" IN SHARE ROW EXCLUSIVE MODE;
+
+CREATE TRIGGER "CodexOAuthSecretNamespace_workflow_compatibility_guard"
+BEFORE UPDATE ON public."CodexOAuthSecretNamespace"
+FOR EACH ROW EXECUTE FUNCTION public."codex_oauth_workflow_compatibility_guard"();
+
+-- Preserve the rollback floor and remove the predecessor entry point while
+-- the namespace DDL boundary is held.  REVOKE is defense in depth; the table
+-- lock plus the persistent trigger, rather than uncommitted ACL visibility,
+-- provide the cross-session boundary.
 REVOKE EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(
   TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER,
   TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT
@@ -147,6 +163,25 @@ DROP FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(
   TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER,
   TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT
 );
+
+-- This is deliberately after the writer drain and DROP, and deliberately
+-- scans every active V5 namespace without joining to or filtering provider
+-- state.  Any predecessor call that won the table lock makes admission fail;
+-- no V4 evidence is synthesized.
+DO $compatibility_admission$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM public."CodexOAuthSecretNamespace" namespace
+    WHERE namespace."status" = 'active'
+      AND NOT namespace."permanentlyRetired"
+      AND namespace."workflowSchemaVersion" = 5
+  ) THEN
+    RAISE EXCEPTION 'codex_oauth_v4_v5_compatibility_predecessor_evidence_missing'
+      USING ERRCODE = '55000';
+  END IF;
+END
+$compatibility_admission$;
 
 CREATE FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(
   target_provider_row_id TEXT,

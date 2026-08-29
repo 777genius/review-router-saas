@@ -14,7 +14,7 @@ describe("000081 Codex OAuth staged V4-to-V5 compatibility", () => {
 
   it("is pinned and atomic", () => {
     expect(createHash("sha256").update(sql).digest("hex")).toBe(
-      "f664e83e8d22b3dc0e093a8c82181cf0941b78a14ead63e9a1e2c74119dd4585",
+      "bd35157bc11c84dd181ba7f2edf589503d75cb359c12e9a93bf4a884f94c9db7",
     );
     expect(sql).toMatch(/^BEGIN;[\s\S]+COMMIT;\s*$/u);
   });
@@ -41,13 +41,31 @@ describe("000081 Codex OAuth staged V4-to-V5 compatibility", () => {
     }
   });
 
-  it("fails migration admission closed when V5 already replaced unretained V4 evidence", () => {
+  it("checks every active V5 namespace only after the PostgreSQL writer drain", () => {
     expect(sql).toContain(
       "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
     );
-    expect(sql).toMatch(
-      /CodexOAuthProviderInstance[\s\S]+activeSecretNamespaceId[\s\S]+workflowSchemaVersion" = 5[\s\S]+ERRCODE = '55000'/u,
+    const lock = sql.indexOf(
+      'LOCK TABLE public."CodexOAuthSecretNamespace" IN SHARE ROW EXCLUSIVE MODE',
     );
+    const drop = sql.indexOf(
+      'DROP FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"',
+    );
+    const postDrainCheck = sql.indexOf("DO $compatibility_admission$", drop);
+    const checkSql = sql.slice(
+      postDrainCheck,
+      sql.indexOf("$compatibility_admission$;", postDrainCheck),
+    );
+    expect(lock).toBeGreaterThan(0);
+    expect(drop).toBeGreaterThan(lock);
+    expect(postDrainCheck).toBeGreaterThan(drop);
+    expect(checkSql).toContain(
+      'FROM public."CodexOAuthSecretNamespace" namespace',
+    );
+    expect(checkSql).toContain("namespace.\"status\" = 'active'");
+    expect(checkSql).toContain('NOT namespace."permanentlyRetired"');
+    expect(checkSql).toContain('namespace."workflowSchemaVersion" = 5');
+    expect(checkSql).not.toContain("CodexOAuthProviderInstance");
   });
 
   it("revokes old consumers and drains in-flight calls before dropping the 20-argument floor", () => {
@@ -64,6 +82,12 @@ describe("000081 Codex OAuth staged V4-to-V5 compatibility", () => {
     expect(sql).toContain("codex_oauth_v4_consumer_rollback_floor_incomplete");
     expect(sql.slice(revoke, drop)).toContain(
       "text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text",
+    );
+    expect(sql).toContain(
+      'CREATE TRIGGER "CodexOAuthSecretNamespace_workflow_compatibility_guard"',
+    );
+    expect(sql).toContain(
+      'compatibility."workflowSourceSha256" = OLD."workflowSourceSha256"',
     );
   });
 

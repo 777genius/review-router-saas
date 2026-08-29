@@ -1388,7 +1388,7 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
   ),
   functionBody(
     "codex_oauth_workflow_compatibility_guard",
-    "dfcab25ae65cf317798c8373df887205acedd021ee01cd98474036221a751dff",
+    "5565da3d4314848555f12b58b697e7c5277f233bd3badd1da27d36dbd37851cd",
   ),
 ]);
 
@@ -1431,6 +1431,7 @@ export const codexRotatingTriggers = Object.freeze([
   "CodexOAuthSetupManifest_identity_fence_guard",
   "CodexOAuthSetupManifest_evidence_guard",
   "CodexOAuthSecretNamespace_tombstone_guard",
+  "CodexOAuthSecretNamespace_workflow_compatibility_guard",
   "CodexOAuthSetupPayloadClaim_cascade_guard",
   "CodexOAuthSetupPayloadClaim_evidence_guard",
   "CodexOAuthSetupDispatchAttempt_evidence_guard",

@@ -111,7 +111,7 @@ const migrations = [
     sourceFile:
       "packages/platform/db/prisma/migrations/000081_codex_oauth_v4_v5_staged_compatibility/migration.sql",
     expectedSha256:
-      "f664e83e8d22b3dc0e093a8c82181cf0941b78a14ead63e9a1e2c74119dd4585",
+      "bd35157bc11c84dd181ba7f2edf589503d75cb359c12e9a93bf4a884f94c9db7",
   },
 ];
 const checkedInRotatingMigrations = readdirSync(
@@ -1409,6 +1409,11 @@ function exactTriggerBinding(entry) {
       "CodexOAuthWorkflowCompatibility",
       "codex_oauth_workflow_compatibility_guard",
       31,
+    ],
+    CodexOAuthSecretNamespace_workflow_compatibility_guard: [
+      "CodexOAuthSecretNamespace",
+      "codex_oauth_workflow_compatibility_guard",
+      19,
     ],
     RepositoryConnection_codex_oauth_identity_guard: [
       "RepositoryConnection",

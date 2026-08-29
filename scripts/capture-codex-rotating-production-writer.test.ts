@@ -8,6 +8,8 @@ import {
   captureProductionWriterObservation,
 } from "./capture-codex-rotating-production-writer.mjs";
 import {
+  codexRotatingCatalogCheckNames,
+  codexRotatingCatalogTables,
   codexRotatingFunctionBodyDigests,
   codexRotatingCatalogForeignKeyNames,
 } from "./codex-rotating-production-writer-schema.mjs";
@@ -116,6 +118,32 @@ describe("production-writer rollout observation capture", () => {
     expect(sql).toContain("'privileges', jsonb_build_object(");
     expect(sql).toContain("'columns', coalesce((");
     expect(sql).toContain("'tables', coalesce((");
+
+    const checksStart = sql.indexOf("\n    'checks', coalesce((");
+    const checksEnd = sql.indexOf("\n    'indexes', coalesce((", checksStart);
+    const checksSql = sql.slice(checksStart, checksEnd);
+    const projectedTables = [...checksSql.matchAll(/'([^']+)'/gu)]
+      .map(([, value]) => value)
+      .filter((value) => codexRotatingCatalogTables.includes(value));
+    const projectedChecks = [...checksSql.matchAll(/'([^']+_check)'/gu)].map(
+      ([, value]) => value,
+    );
+
+    expect(checksStart).toBeGreaterThan(0);
+    expect(checksEnd).toBeGreaterThan(checksStart);
+    expect(new Set(projectedTables)).toEqual(
+      new Set(codexRotatingCatalogTables),
+    );
+    expect(new Set(projectedChecks)).toEqual(
+      new Set(codexRotatingCatalogCheckNames),
+    );
+    expect(
+      projectedChecks.filter((name) =>
+        name.startsWith("CodexOAuthWorkflowCompatibility_"),
+      ),
+    ).toHaveLength(9);
+    expect(checksSql).toContain("'definition', pg_get_constraintdef(con.oid)");
+    expect(checksSql).toContain("'validated', con.convalidated");
   });
 
   it("observes every exact rotating-writer foreign key", () => {

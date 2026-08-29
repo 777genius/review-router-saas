@@ -1847,6 +1847,12 @@ function observedFixture(): any {
             27,
           ],
           [
+            "CodexOAuthSecretNamespace_workflow_compatibility_guard",
+            "CodexOAuthSecretNamespace",
+            "codex_oauth_workflow_compatibility_guard",
+            19,
+          ],
+          [
             "CodexOAuthWorkflowCompatibility_guard",
             "CodexOAuthWorkflowCompatibility",
             "codex_oauth_workflow_compatibility_guard",

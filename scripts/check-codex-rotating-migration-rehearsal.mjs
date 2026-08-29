@@ -5,7 +5,10 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { codexRotatingProductionWriterBaseObservationSql } from "./capture-codex-rotating-production-writer.mjs";
-import { codexRotatingTriggers } from "./codex-rotating-production-writer-schema.mjs";
+import {
+  codexRotatingFunctions,
+  codexRotatingTriggers,
+} from "./codex-rotating-production-writer-schema.mjs";
 import { createRehearsalAuthorityContext } from "./codex-rotating-rehearsal-authority-context.mjs";
 import {
   assertRehearsalRoleObservation,
@@ -127,6 +130,7 @@ try {
   );
   await proveMigrationSpecificLegacyBehavior();
   proveCanonicalLegacyReconciliationNegativeCases();
+  await proveMigration81TwoSessionBoundary();
   const rehearsalRelease = prepareCanonicalReleaseRoles(
     rehearsalProviderAdminUrl,
     applyCanonicalPreMigrationBaseline,
@@ -279,6 +283,196 @@ function proveSelfHostedV4V5ReattestationOwnerInvocation(
       `ALTER ROLE reviewrouter_release_schema_owner NOLOGIN;
        ALTER ROLE ${quoteIdentifier(temporaryWebRole)} RENAME TO reviewrouter_web`,
     ]);
+  }
+}
+
+async function proveMigration81TwoSessionBoundary() {
+  const migration81 = join(
+    migrationsDirectory,
+    migration81Name,
+    "migration.sql",
+  );
+  const installPre81BoundaryFixture = (url) =>
+    psql(url, [
+      "-c",
+      String.raw`
+        CREATE TABLE public."RepositoryConnection" (
+          "id" text PRIMARY KEY, "githubRepositoryId" bigint NOT NULL
+        );
+        CREATE TABLE public."CodexOAuthProviderInstance" (
+          "id" text PRIMARY KEY, "repositoryId" text NOT NULL,
+          "state" text NOT NULL, "activeSecretNamespaceId" text,
+          "activeSecretNamespaceEpoch" bigint, "activeSecretNamespaceName" text,
+          "latestGenerationHash" text, "mutationOwner" text,
+          "mutationOwnerId" text, "activeLeaseId" text
+        );
+        CREATE TABLE public."CodexOAuthSecretNamespace" (
+          "id" text PRIMARY KEY, "providerInstanceRowId" text NOT NULL,
+          "githubRepositoryId" text NOT NULL, "namespaceEpoch" bigint NOT NULL,
+          "secretName" text NOT NULL, "status" text NOT NULL,
+          "permanentlyRetired" boolean NOT NULL DEFAULT false,
+          "workflowPath" text, "workflowSourceCommitSha" text,
+          "workflowSourceBlobSha" text, "workflowSourceSha256" text,
+          "workflowSemanticSha256" text, "workflowSourceTrust" text,
+          "workflowSchemaVersion" integer, "attestedRepositoryId" text
+        );
+        CREATE TABLE public."CodexOAuthSetupPayloadClaim" (
+          "id" text PRIMARY KEY, "providerInstanceRowId" text,
+          "githubRepositoryId" text, "generationHash" text, "status" text,
+          "confirmedAttemptId" text
+        );
+        CREATE TABLE public."CodexOAuthSetupDispatchAttempt" (
+          "id" text PRIMARY KEY, "claimId" text, "namespaceId" text,
+          "status" text
+        );
+        CREATE TABLE public."CodexOAuthDatabaseAuthorityReceipt" (
+          "databaseRole" text, "backendPid" integer, "transactionId" bigint,
+          "effect" text, "ownerId" text, "effectCode" integer,
+          "consumedAt" timestamptz
+        );
+        INSERT INTO public."RepositoryConnection" VALUES ('repository', 900001);
+        INSERT INTO public."CodexOAuthProviderInstance" (
+          "id","repositoryId","state","activeSecretNamespaceId",
+          "activeSecretNamespaceEpoch","activeSecretNamespaceName","latestGenerationHash"
+        ) VALUES ('provider','repository','retired','namespace',1,'secret','generation');
+        INSERT INTO public."CodexOAuthSecretNamespace" (
+          "id","providerInstanceRowId","githubRepositoryId","namespaceEpoch",
+          "secretName","status","workflowPath","workflowSourceCommitSha",
+          "workflowSourceBlobSha","workflowSourceSha256","workflowSemanticSha256",
+          "workflowSourceTrust","workflowSchemaVersion","attestedRepositoryId"
+        ) VALUES (
+          'namespace','provider','900001',1,'secret','active',
+          '.github/workflows/reviewrouter-codex.yml',repeat('a',40),repeat('b',40),
+          repeat('c',64),repeat('d',64),'trusted_default_branch_revision',4,'900001'
+        );
+        CREATE FUNCTION public."codex_oauth_v4_v5_reattestation_transition"(
+          text,text,bigint,text,text,text,text,text,text,text,text,text,text,text,text
+        ) RETURNS text LANGUAGE sql IMMUTABLE AS 'SELECT ''transition''::text';
+        CREATE FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(
+          text,text,text,text,bigint,text,text,text,text,text,integer,integer,
+          text,text,text,text,text,text,text,text
+        ) RETURNS void LANGUAGE plpgsql AS $old$
+        BEGIN
+          UPDATE public."CodexOAuthSecretNamespace"
+          SET "workflowSchemaVersion"=5 WHERE "id"='namespace';
+          PERFORM pg_sleep(0.4);
+        END $old$;
+      `,
+    ]);
+  const oldCall = String.raw`SELECT public."codex_oauth_reattest_active_namespace_v4_to_v5"(
+    NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+    NULL,NULL,NULL,NULL)`;
+  const spawnPsql = (url, args) => {
+    const invocation = createSecretSafePostgresInvocation({
+      databaseUrl: url,
+      args: ["-X", "-v", "ON_ERROR_STOP=1", ...args],
+    });
+    const child = spawn(psqlBinary, invocation.args, {
+      env: invocation.environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    return new Promise((resolveChild) =>
+      child.once("close", (status) => {
+        invocation.cleanup();
+        resolveChild({ status, stdout, stderr });
+      }),
+    );
+  };
+  const waitForRelationLock = async (url, applicationName, granted) => {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const found = Number(
+        psql(url, [
+          "-Atc",
+          `SELECT count(*) FROM pg_locks lock
+           JOIN pg_stat_activity activity ON activity.pid=lock.pid
+           WHERE lock.relation='public."CodexOAuthSecretNamespace"'::regclass
+             AND activity.application_name=${quoteLiteral(applicationName)}
+             AND lock.granted=${granted ? "true" : "false"}`,
+        ]).stdout,
+      );
+      if (found > 0) return;
+      await delay(20);
+    }
+    throw new Error(`migration81_${applicationName}_lock_not_observed`);
+  };
+
+  for (const ordering of ["old_invocation_first", "migration_boundary_first"]) {
+    const name = `${databaseName}_migration81_${ordering}`;
+    const url = databaseUrl(baseUrl, name);
+    psql(adminUrl, ["-c", `CREATE DATABASE ${quoteIdentifier(name)}`]);
+    try {
+      installPre81BoundaryFixture(url);
+      if (ordering === "old_invocation_first") {
+        const oldUrl = new URL(String(url));
+        oldUrl.searchParams.set("application_name", "rr-m81-old-first");
+        const old = spawnPsql(oldUrl, ["-c", oldCall]);
+        await waitForRelationLock(url, "rr-m81-old-first", true);
+        const migration = spawnPsql(url, ["-f", migration81]);
+        const [oldResult, migrationResult] = await Promise.all([
+          old,
+          migration,
+        ]);
+        assert(
+          oldResult.status === 0,
+          "migration81_old_first_invocation_failed",
+        );
+        assert(
+          migrationResult.status !== 0 &&
+            `${migrationResult.stdout}${migrationResult.stderr}`.includes(
+              "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
+            ),
+          "migration81 did not wait for and reject the old invocation V5 result",
+        );
+      } else {
+        const blockerUrl = new URL(String(url));
+        blockerUrl.searchParams.set("application_name", "rr-m81-blocker");
+        const blocker = spawnPsql(blockerUrl, [
+          "-c",
+          `BEGIN; LOCK TABLE public."CodexOAuthSecretNamespace" IN ROW EXCLUSIVE MODE;
+           SELECT pg_sleep(0.8); COMMIT;`,
+        ]);
+        await waitForRelationLock(url, "rr-m81-blocker", true);
+        const migrationUrl = new URL(String(url));
+        migrationUrl.searchParams.set(
+          "application_name",
+          "rr-m81-migration-first",
+        );
+        const migration = spawnPsql(migrationUrl, ["-f", migration81]);
+        await waitForRelationLock(url, "rr-m81-migration-first", false);
+        const old = spawnPsql(url, ["-c", oldCall]);
+        const [blockerResult, migrationResult, oldResult] = await Promise.all([
+          blocker,
+          migration,
+          old,
+        ]);
+        assert(
+          blockerResult.status === 0,
+          "migration81_ordering_blocker_failed",
+        );
+        assert(
+          migrationResult.status === 0,
+          "migration81_boundary_first_failed",
+        );
+        assert(
+          oldResult.status !== 0 &&
+            /codex_oauth_v4_v5_compatibility_predecessor_evidence_missing|does not exist/iu.test(
+              `${oldResult.stdout}${oldResult.stderr}`,
+            ),
+          "old invocation crossed the committed migration81 boundary",
+        );
+      }
+    } finally {
+      psql(
+        adminUrl,
+        ["-c", `DROP DATABASE IF EXISTS ${quoteIdentifier(name)} WITH (FORCE)`],
+        false,
+      );
+    }
   }
 }
 
@@ -2221,7 +2415,7 @@ function proveDatabasePrivileges(url) {
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = current_schema() AND p.proname LIKE 'codex_oauth_%';
-        IF function_count <> 24 OR unsafe_function_count <> 0 THEN
+        IF function_count <> ${codexRotatingFunctions.length} OR unsafe_function_count <> 0 THEN
           RAISE EXCEPTION 'Codex OAuth function privilege mismatch: %, %', function_count, unsafe_function_count;
         END IF;
 

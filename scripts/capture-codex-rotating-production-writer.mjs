@@ -13,6 +13,7 @@ import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs"
 import {
   codexRotatingCatalogTables,
   codexRotatingCatalogColumns,
+  codexRotatingCatalogCheckNames,
   codexRotatingPrimaryKeys,
   codexRotatingCatalogForeignKeyNames,
   codexRotatingDatabaseRoles,
@@ -581,35 +582,8 @@ SELECT jsonb_build_object(
       JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE con.contype = 'c'
         AND n.nspname = current_schema()
-        AND c.relname IN ('CodexOAuthDatabaseAuthorityKey','CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent','CodexOAuthSetupRecoveryRequest','CodexOAuthSetupPayloadClaim','CodexOAuthSecretNamespace','CodexOAuthSetupDispatchAttempt')
-        AND con.conname IN (
-          'CodexOAuthDatabaseAuthorityKey_singleton_check',
-          'CodexOAuthProviderInstance_mutation_fence_check',
-          'CodexOAuthLease_pullRequestNumber_check',
-          'CodexOAuthSetupManifest_epoch_check',
-          'CodexOAuthLease_epoch_check',
-          'CodexOAuthWritebackIntent_epoch_check'
-          ,'CodexOAuthSetupRecoveryRequest_epoch_check'
-          ,'CodexOAuthSetupRecoveryRequest_contract_check'
-          ,'CodexOAuthSetupRecoveryRequest_database_recovery_witness_check'
-          ,'CodexOAuthSetupManifest_payload_claim_complete_check'
-          ,'CodexOAuthSetupManifest_recovery_expiry_check'
-          ,'CodexOAuthSetupManifest_database_recovery_witness_check'
-          ,'CodexOAuthSetupPayloadClaim_payload_check'
-          ,'CodexOAuthSecretNamespace_lifecycle_check'
-          ,'CodexOAuthSecretNamespace_name_check'
-          ,'CodexOAuthSecretNamespace_recovery_witness_check'
-          ,'CodexOAuthSetupDispatchAttempt_lifecycle_check'
-          ,'CodexOAuthProviderInstance_active_namespace_pair_check'
-          ,'CodexOAuthLease_secret_namespace_pair_check'
-          ,'CodexOAuthWritebackIntent_versioned_dispatch_check'
-          ,'CodexOAuthWritebackIntent_executor_lease_check'
-          ,'CodexOAuthWritebackIntent_provider_response_check'
-          ,'CodexOAuthWritebackIntent_database_incarnation_check'
-          ,'CodexOAuthWritebackIntent_database_recovery_witness_check'
-          ,'CodexOAuthWritebackIntent_account_identity_check'
-          ,'CodexOAuthWritebackIntent_recovery_resolution_check'
-        )
+        AND c.relname IN (${sqlLiterals(codexRotatingCatalogTables)})
+        AND con.conname IN (${sqlLiterals(codexRotatingCatalogCheckNames)})
     ), '[]'::jsonb),
     'indexes', coalesce((
       SELECT jsonb_agg(jsonb_build_object(
