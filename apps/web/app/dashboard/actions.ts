@@ -3048,6 +3048,7 @@ async function resolveCodexRotatingProvisioningActionRef(input: {
         workflowSourceSha256: true,
         workflowSemanticSha256: true,
         workflowSourceTrust: true,
+        workflowSchemaVersion: true,
         attestedRepositoryId: true,
       },
     });
@@ -3057,6 +3058,7 @@ async function resolveCodexRotatingProvisioningActionRef(input: {
     !expectedSource.workflowSourceBlobSha ||
     !expectedSource.workflowSourceSha256 ||
     !expectedSource.workflowSemanticSha256 ||
+    expectedSource.workflowSchemaVersion === null ||
     expectedSource.workflowSourceTrust !==
       WorkflowSourceTrust.TrustedDefaultBranchRevision ||
     expectedSource.attestedRepositoryId !== input.expectedRepositoryId
@@ -3091,7 +3093,7 @@ async function resolveCodexRotatingProvisioningActionRef(input: {
     expectedApiUrl: resolveWorkflowPublicApiUrl(),
     expectedProviderInstanceId: input.expectedProviderInstanceId,
     expectedSecretNamespace: input.inspection.namespace,
-    expectedWorkflowSchemaVersion: metadata.workflowSchemaVersion,
+    expectedWorkflowSchemaVersion: expectedSource.workflowSchemaVersion,
   });
   const observedAttestation = createVersionedSecretWorkflowSourceAttestation({
     repositoryId: input.expectedRepositoryId,
@@ -3100,6 +3102,7 @@ async function resolveCodexRotatingProvisioningActionRef(input: {
     workflowSourceBlobSha: blobSha,
     workflowSourceSha256: createHash("sha256").update(source).digest("hex"),
     workflowSemanticSha256: workflowDocumentSemanticSha256(source),
+    workflowSchemaVersion: metadata.workflowSchemaVersion,
     sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
     secretNamespace: input.inspection.namespace,
   });

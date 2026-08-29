@@ -19,6 +19,81 @@ import { PrismaCodexRotatingOAuthRepository } from "../infrastructure/prisma/pri
 
 const databaseRecoveryWitness = "witness_generation_one_12345678901234567890";
 
+describe("persisted workflow schema admission", () => {
+  it.each([4, 5] as const)(
+    "admits V%s only when the subsequent request equals the persisted version",
+    async (workflowSchemaVersion) => {
+      const namespace = allocateVersionedProviderSecretNamespace({
+        scope: {
+          repositoryId: "123456",
+          providerInstanceId: "codex-rotating:123456",
+        },
+        epoch: 2n,
+        randomBytes: () => new Uint8Array(16).fill(workflowSchemaVersion),
+      });
+      const provider = {
+        id: "provider-row-1",
+        workspaceId: "workspace-1",
+        repositoryId: "repository-1",
+        authMode: "codex_subscription_oauth_rotating",
+        activeSecretNamespaceId: namespace.namespaceId,
+        activeSecretNamespaceEpoch: namespace.epoch,
+        activeSecretNamespace: {
+          id: namespace.namespaceId,
+          githubRepositoryId: "123456",
+          namespaceEpoch: namespace.epoch,
+          secretName: namespace.name,
+          status: "active",
+          workflowPath: ".github/workflows/reviewrouter-codex.yml",
+          workflowSourceCommitSha: "a".repeat(40),
+          workflowSourceBlobSha: "b".repeat(40),
+          workflowSourceSha256: "c".repeat(64),
+          workflowSemanticSha256: "d".repeat(64),
+          workflowSourceTrust: "trusted_default_branch_revision",
+          workflowSchemaVersion,
+          attestedRepositoryId: "123456",
+        },
+      };
+      const prisma = {
+        codexOAuthProviderInstance: {
+          findUnique: vi.fn(async () => provider),
+        },
+      };
+      const repository = new PrismaCodexRotatingOAuthRepository(
+        prisma as never,
+        { actionOwnerRepo: "777genius/review-router" },
+      );
+      const request = {
+        repository: {
+          workspaceId: "workspace-1",
+          repositoryId: "repository-1",
+          githubRepositoryId: "123456",
+          githubInstallationId: "789",
+          fullName: "777genius/example",
+          owner: "777genius",
+          selected: true,
+          installationStatus: "active",
+        },
+        providerInstanceId: "codex-rotating:123456",
+        workflowSha: "e".repeat(40),
+      } as const;
+
+      await expect(
+        repository.findProviderBinding({
+          ...request,
+          workflowSchemaVersion,
+        }),
+      ).resolves.toMatchObject({ workflowSchemaVersion });
+      await expect(
+        repository.findProviderBinding({
+          ...request,
+          workflowSchemaVersion: workflowSchemaVersion === 4 ? 5 : 4,
+        }),
+      ).resolves.toBeNull();
+    },
+  );
+});
+
 describe("completed versioned writeback replay fencing", () => {
   it("fails restored W1 terminal evidence closed under W2 without mutating it", async () => {
     const databaseIncarnation = "7612345678901234567";
@@ -840,11 +915,18 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
   });
 
   it.each([
-    ["promoted candidate", "confirmed_candidate", null, true],
-    ["reused active namespace", "active", "active", false],
+    ["V4 promoted candidate", "confirmed_candidate", null, true, 4],
+    ["V5 promoted candidate", "confirmed_candidate", null, true, 5],
+    ["reused active namespace", "active", "active", false, 5],
   ] as const)(
     "completes a changed-generation lease with a %s inside the activation transaction",
-    async (_, namespaceStatus, activeNamespaceMarker, mutatesNamespace) => {
+    async (
+      _,
+      namespaceStatus,
+      activeNamespaceMarker,
+      mutatesNamespace,
+      workflowSchemaVersion,
+    ) => {
       const allocatedNamespace = allocateVersionedProviderSecretNamespace({
         scope: {
           repositoryId: "123456",
@@ -946,6 +1028,7 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
         workflowSourceBlobSha: "b".repeat(40),
         workflowSourceSha256: "c".repeat(64),
         workflowSemanticSha256: "d".repeat(64),
+        workflowSchemaVersion,
         sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
         secretNamespace: allocatedNamespace,
       });
@@ -979,6 +1062,12 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
       expect(tx.codexOAuthSecretNamespace.updateMany).toHaveBeenCalledTimes(
         mutatesNamespace ? 1 : 0,
       );
+      if (mutatesNamespace) {
+        expect(tx.codexOAuthSecretNamespace.update).toHaveBeenCalledWith({
+          where: { id: namespace.id },
+          data: expect.objectContaining({ workflowSchemaVersion }),
+        });
+      }
     },
   );
 });

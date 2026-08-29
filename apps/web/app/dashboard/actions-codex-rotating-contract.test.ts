@@ -57,6 +57,11 @@ describe("dashboard rotating namespace activation contract", () => {
       "isVersionedSecretNamespaceCodexWorkflowSchemaVersion",
     );
     expect(helper).toContain(
+      "expectedWorkflowSchemaVersion: expectedSource.workflowSchemaVersion",
+    );
+    expect(helper).toContain("workflowSchemaVersion: true");
+    expect(helper).toContain("expectedSource.workflowSchemaVersion === null");
+    expect(helper).not.toContain(
       "expectedWorkflowSchemaVersion: metadata.workflowSchemaVersion",
     );
     expect(helper).toContain(

@@ -1359,6 +1359,22 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
+  it("rehearses retiredAt set, change, and clear as immutable direct updates", () => {
+    expect(source).toContain(
+      "direct ${runtimeRole} namespace retiredAt set bypassed the tombstone guard",
+    );
+    expect(source).toContain(
+      "direct ${runtimeRole} namespace retiredAt ${label} bypassed the tombstone guard",
+    );
+    expect(source).toContain("api: clients.api");
+    expect(source).toContain("web: clients.web");
+    expect(source).toContain("worker: clients.worker");
+    expect(source).toContain(
+      '["change", `"retiredAt" + interval \'1 second\'`]',
+    );
+    expect(source).toContain('["clear", "NULL"]');
+  });
+
   it("reads ignored authority receipts with typed parameterized raw SQL", () => {
     const receiptAssertion =
       /async function assertConsumedReceipt\([\s\S]+?\n\}/u.exec(

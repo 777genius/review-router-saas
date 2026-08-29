@@ -130,6 +130,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     workflowSourceBlobSha: blobSha,
     workflowSourceSha256: createHash("sha256").update(source).digest("hex"),
     workflowSemanticSha256: workflowDocumentSemanticSha256(source),
+    workflowSchemaVersion: metadata.workflowSchemaVersion,
     sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
     secretNamespace: namespace,
   });
@@ -189,6 +190,8 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     }
     if (
       input.expectedWorkflowSchemaVersion !==
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5 ||
+      attestation.workflowSchemaVersion !==
         CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5 ||
       currentAttestation.workflowSchemaVersion !==
         CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
@@ -260,8 +263,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
       sourceTrust: attestation.sourceTrust,
       expectedCurrentWorkflowSchemaVersion:
         CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
-      workflowSchemaVersion:
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+      workflowSchemaVersion: attestation.workflowSchemaVersion,
       expectedCurrentWorkflowSourceCommitSha:
         currentAttestation.workflowSourceCommitSha,
       expectedCurrentWorkflowSourceBlobSha:
@@ -290,7 +292,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     workflowSourceSha256: attestation.workflowSourceSha256,
     workflowSemanticSha256: attestation.workflowSemanticSha256,
     sourceTrust: attestation.sourceTrust,
-    workflowSchemaVersion: input.expectedWorkflowSchemaVersion,
+    workflowSchemaVersion: attestation.workflowSchemaVersion,
   });
   return {
     status: "activated",

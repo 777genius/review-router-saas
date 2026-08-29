@@ -523,6 +523,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
       workflowSourceBlobSha,
       workflowSourceSha256,
       workflowSemanticSha256: workflowDocumentSemanticSha256(workflow),
+      workflowSchemaVersion: metadata.workflowSchemaVersion,
       sourceTrust:
         workflowBranch === defaultBranch
           ? WorkflowSourceTrust.TrustedDefaultBranchRevision

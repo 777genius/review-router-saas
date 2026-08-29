@@ -254,6 +254,7 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
       ).resolves.toMatchObject({
         repositoryId: "123456",
         workflowSourceCommitSha: "a".repeat(40),
+        workflowSchemaVersion,
         secretNamespace: nextNamespace,
         sourceTrust: "trusted_default_branch_revision",
       });

@@ -75,6 +75,7 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       workflowSourceBlobSha: blobSha,
       workflowSourceSha256: "c".repeat(64),
       workflowSemanticSha256: "b".repeat(64),
+      workflowSchemaVersion: 5,
       sourceTrust: "trusted_default_branch_revision",
     });
   });
@@ -114,6 +115,36 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
         workflowSourceCommitSha: firstHead,
       }),
     );
+  });
+
+  it("rejects an independently observed workflow schema mismatch", async () => {
+    const { input } = fixture();
+    mocks.readMetadata.mockReturnValueOnce({
+      actionRef: "action-sha",
+      workflowSchemaVersion: 4,
+    });
+    mocks.assertTrusted.mockImplementationOnce(
+      ({
+        metadata,
+        expectedWorkflowSchemaVersion,
+      }: {
+        metadata: { workflowSchemaVersion: number };
+        expectedWorkflowSchemaVersion: number;
+      }) => {
+        if (metadata.workflowSchemaVersion !== expectedWorkflowSchemaVersion) {
+          throw new Error("codex_rotating_workflow_schema_version_mismatch");
+        }
+      },
+    );
+
+    await expect(
+      activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
+    ).rejects.toThrow("codex_rotating_workflow_schema_version_mismatch");
+    expect(mocks.assertTrusted).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedWorkflowSchemaVersion: 5 }),
+    );
+    expect(mocks.activate).not.toHaveBeenCalled();
+    expect(mocks.replaceActiveWorkflowSource).not.toHaveBeenCalled();
   });
 
   it("does not write the ledger again for an already-active namespace", async () => {

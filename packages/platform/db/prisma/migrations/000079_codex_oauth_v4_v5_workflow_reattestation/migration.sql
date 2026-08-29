@@ -193,6 +193,13 @@ BEGIN
      OR NEW."secretName" IS DISTINCT FROM OLD."secretName"
      OR NEW."databaseRecoveryWitness" IS DISTINCT FROM OLD."databaseRecoveryWitness"
      OR NEW."createdAt" IS DISTINCT FROM OLD."createdAt"
+     OR (NEW."retiredAt" IS DISTINCT FROM OLD."retiredAt" AND NOT (
+       OLD."retiredAt" IS NULL AND NEW."retiredAt" IS NOT NULL AND (
+         (OLD."status" = 'dispatch_authorized' AND NEW."status" IN ('retired_predispatch','retired_ambiguous'))
+         OR (OLD."status" = 'confirmed_candidate' AND NEW."status" = 'retired_ambiguous')
+         OR (OLD."status" = 'active' AND NEW."status" = 'retired_superseded')
+       )
+     ))
      OR (NEW."confirmedAt" IS DISTINCT FROM OLD."confirmedAt" AND NOT (
        OLD."confirmedAt" IS NULL AND NEW."confirmedAt" IS NOT NULL
        AND OLD."status" = 'dispatch_authorized' AND NEW."status" = 'confirmed_candidate'

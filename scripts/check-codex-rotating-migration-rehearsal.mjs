@@ -1813,6 +1813,51 @@ async function proveActiveNamespaceV4V5Reattestation(
     "codex_oauth_secret_namespace_identity_immutable",
     "active namespace createdAt mutation bypassed the tombstone guard",
   );
+  for (const [runtimeRole, runtimeUrl] of Object.entries({
+    api: clients.api,
+    web: clients.web,
+    worker: clients.worker,
+  })) {
+    const retiredAtSet = psql(
+      runtimeUrl,
+      [
+        "-c",
+        `UPDATE "CodexOAuthSecretNamespace"
+         SET "retiredAt"=clock_timestamp()
+         WHERE "id"=${quoteLiteral(target.namespaceId)}`,
+      ],
+      false,
+    );
+    assertPsqlFailedWithExactMessage(
+      retiredAtSet,
+      "codex_oauth_secret_namespace_identity_immutable",
+      `direct ${runtimeRole} namespace retiredAt set bypassed the tombstone guard`,
+    );
+    for (const [label, expression] of [
+      ["change", `"retiredAt" + interval '1 second'`],
+      ["clear", "NULL"],
+    ]) {
+      const rejected = psql(
+        runtimeUrl,
+        [
+          "-c",
+          `UPDATE "CodexOAuthSecretNamespace"
+           SET "retiredAt"=${expression}
+           WHERE "id"=(
+             SELECT "id" FROM "CodexOAuthSecretNamespace"
+             WHERE "retiredAt" IS NOT NULL
+             ORDER BY "createdAt" LIMIT 1
+           )`,
+        ],
+        false,
+      );
+      assertPsqlFailedWithExactMessage(
+        rejected,
+        "codex_oauth_secret_namespace_identity_immutable",
+        `direct ${runtimeRole} namespace retiredAt ${label} bypassed the tombstone guard`,
+      );
+    }
+  }
   assert(
     psql(adminUrl, [
       "-Atc",

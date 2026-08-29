@@ -30,6 +30,7 @@ export type VersionedSecretWorkflowSourceAttestation = Readonly<{
   workflowSourceBlobSha: string;
   workflowSourceSha256: string;
   workflowSemanticSha256: string;
+  workflowSchemaVersion: 4 | 5;
   sourceTrust: WorkflowSourceTrust;
   secretNamespace: VersionedProviderSecretNamespace;
 }>;
@@ -41,6 +42,7 @@ export function createVersionedSecretWorkflowSourceAttestation(input: {
   readonly workflowSourceBlobSha: string;
   readonly workflowSourceSha256: string;
   readonly workflowSemanticSha256: string;
+  readonly workflowSchemaVersion: number;
   readonly sourceTrust: WorkflowSourceTrust;
   readonly secretNamespace: VersionedProviderSecretNamespace;
 }): VersionedSecretWorkflowSourceAttestation {
@@ -56,6 +58,11 @@ export function createVersionedSecretWorkflowSourceAttestation(input: {
     throw new Error("workflow_source_attestation_digest_invalid");
   if (!/^[a-f0-9]{64}$/i.test(input.workflowSemanticSha256))
     throw new Error("workflow_source_attestation_semantic_digest_invalid");
+  const workflowSchemaVersion = input.workflowSchemaVersion;
+  if (
+    !isVersionedSecretNamespaceCodexWorkflowSchemaVersion(workflowSchemaVersion)
+  )
+    throw new Error("workflow_source_attestation_schema_version_invalid");
   const secretNamespace = createVersionedProviderSecretNamespace(
     input.secretNamespace,
   );
@@ -63,6 +70,7 @@ export function createVersionedSecretWorkflowSourceAttestation(input: {
     throw new Error("workflow_source_attestation_repository_mismatch");
   return Object.freeze({
     ...input,
+    workflowSchemaVersion,
     workflowSourceCommitSha: input.workflowSourceCommitSha.toLowerCase(),
     workflowSourceBlobSha: input.workflowSourceBlobSha.toLowerCase(),
     workflowSourceSha256: input.workflowSourceSha256.toLowerCase(),

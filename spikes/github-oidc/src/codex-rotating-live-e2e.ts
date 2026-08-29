@@ -779,6 +779,7 @@ async function activateVersionedSetupNamespace(input: {
     workflowSourceBlobSha: blobSha,
     workflowSourceSha256: createHash("sha256").update(source).digest("hex"),
     workflowSemanticSha256: workflowDocumentSemanticSha256(source),
+    workflowSchemaVersion: metadata.workflowSchemaVersion,
     sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
     secretNamespace: input.workflowNamespace,
   });

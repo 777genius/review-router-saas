@@ -32,6 +32,7 @@ const evidence = {
   workflowSourceBlobSha: "b".repeat(40),
   workflowSourceSha256: "c".repeat(64),
   workflowSemanticSha256: "d".repeat(64),
+  workflowSchemaVersion: 5,
   sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
   secretNamespace: namespace,
 } as const;
@@ -71,6 +72,9 @@ describe("exact active workflow attestation", () => {
         sourceTrust: WorkflowSourceTrust.MutableOrUntrusted,
       }),
     ).toThrow("workflow_source_attestation_untrusted");
+    expect(() => assert({ ...evidence, workflowSchemaVersion: 3 })).toThrow(
+      "workflow_source_attestation_schema_version_invalid",
+    );
   });
 
   it("accepts an exact unchanged workflow at a newer current default-branch revision", () => {

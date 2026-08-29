@@ -72,6 +72,7 @@ const attestationFor = (
     workflowSourceBlobSha: marker.repeat(40),
     workflowSourceSha256: marker.repeat(64),
     workflowSemanticSha256: marker.repeat(64),
+    workflowSchemaVersion: 5,
     sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
     secretNamespace: namespace,
   });
