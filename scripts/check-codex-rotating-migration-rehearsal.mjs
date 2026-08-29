@@ -2543,6 +2543,8 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     COMMENT ON ROLE reviewrouter_codex_effect_authority IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_release_migration LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_release_migration"))};
     COMMENT ON ROLE reviewrouter_release_migration IS ${quoteLiteral(rehearsalRoleMarker)};
+    CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+    COMMENT ON ROLE reviewrouter_release_schema_owner IS ${quoteLiteral(rehearsalRoleMarker)};
     GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_web TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_worker TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;

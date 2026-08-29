@@ -613,11 +613,17 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(provisioning).toContain(
       "CREATE ROLE reviewrouter_release_migration LOGIN",
     );
+    expect(provisioning).toContain(
+      "CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
     expect(
       provisioning.indexOf("CREATE ROLE reviewrouter_release_migration LOGIN"),
-    ).toBeLessThan(
-      provisioning.indexOf('"external_activation_authority_provisioning"'),
-    );
+    ).toBeLessThan(provisioning.indexOf("installHistoricalSchema(bootstrap)"));
+    expect(
+      provisioning.indexOf(
+        "CREATE ROLE reviewrouter_release_schema_owner NOLOGIN",
+      ),
+    ).toBeLessThan(provisioning.indexOf("installHistoricalSchema(bootstrap)"));
     expect(provisioning).toContain(
       "GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
     );
