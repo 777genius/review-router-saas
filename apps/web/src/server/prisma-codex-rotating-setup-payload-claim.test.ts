@@ -1056,20 +1056,41 @@ describe("Prisma rotating setup writer proof", () => {
         secretNamespace: namespace,
       });
 
+    const transition = () => ({
+      target: {
+        claimId: activeClaim.id,
+        attemptId: attempt.attemptId,
+        expectedGenerationHash: runtimeGenerationHash,
+        repositoryId: activeClaim.githubRepositoryId,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        namespace,
+      },
+      expectedCurrent: workflow(4, "4"),
+      replacement: workflow(5, "5"),
+      compatibilityWindowSeconds: 90_000,
+    });
+
     await expect(
-      ledger.replaceActiveWorkflowSource({
-        target: {
-          claimId: activeClaim.id,
-          attemptId: attempt.attemptId,
-          expectedGenerationHash: runtimeGenerationHash,
-          repositoryId: activeClaim.githubRepositoryId,
-          workflowPath: ".github/workflows/reviewrouter-codex.yml",
-          namespace,
-        },
-        expectedCurrent: workflow(4, "4"),
-        replacement: workflow(5, "5"),
-        compatibilityWindowSeconds: 90_000,
-      }),
+      ledger.replaceActiveWorkflowSource(transition()),
+    ).rejects.toThrow("codex_rotating_setup_activation_mismatch");
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
+
+    attempt.namespaceId = namespace.namespaceId;
+    attempt.namespaceEpoch = namespace.epoch;
+    tx.$queryRaw
+      .mockResolvedValueOnce([activeClaim])
+      .mockResolvedValueOnce([
+        { writer: true, databaseIncarnation: claim.databaseIncarnation },
+      ])
+      .mockResolvedValueOnce([{ id: claim.providerInstanceRowId }])
+      .mockResolvedValueOnce([
+        { mutationOwner: null, mutationOwnerId: null, activeLeaseId: null },
+      ])
+      .mockResolvedValueOnce([activeClaim])
+      .mockResolvedValueOnce([attempt]);
+
+    await expect(
+      ledger.replaceActiveWorkflowSource(transition()),
     ).resolves.toEqual({ status: "active" });
     expect(tx.$executeRaw).toHaveBeenCalledOnce();
     const sql = Array.from(

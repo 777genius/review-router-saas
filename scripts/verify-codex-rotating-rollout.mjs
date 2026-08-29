@@ -111,7 +111,7 @@ const migrations = [
     sourceFile:
       "packages/platform/db/prisma/migrations/000081_codex_oauth_v4_v5_staged_compatibility/migration.sql",
     expectedSha256:
-      "037d64a2e8da2edc404de7500c8615b65b00df284dc3ddf77d3f440c21b6331b",
+      "f664e83e8d22b3dc0e093a8c82181cf0941b78a14ead63e9a1e2c74119dd4585",
   },
 ];
 const checkedInRotatingMigrations = readdirSync(

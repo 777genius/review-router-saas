@@ -398,6 +398,9 @@ export class InMemoryCodexRotatingSetupPayloadClaim
       stored.status !== "active" ||
       !attempt ||
       attempt.status !== "confirmed" ||
+      attempt.namespaceId !== transition.target.namespace.namespaceId ||
+      attempt.namespaceEpoch !== transition.target.namespace.epoch.toString() ||
+      attempt.secretName !== transition.target.namespace.name ||
       stored.claim.repositoryId !== transition.target.repositoryId ||
       stored.claim.generationHash !==
         transition.target.expectedGenerationHash ||

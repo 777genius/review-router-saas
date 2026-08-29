@@ -989,6 +989,7 @@ export class PrismaCodexRotatingSetupPayloadClaim
           if (
             claim.status !== "active" ||
             attempt.status !== "confirmed" ||
+            attempt.namespaceId !== target.namespace.namespaceId ||
             claim.githubRepositoryId !== target.repositoryId
           ) {
             throw new Error("codex_rotating_setup_activation_mismatch");

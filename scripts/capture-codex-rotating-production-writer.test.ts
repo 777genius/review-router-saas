@@ -106,6 +106,18 @@ describe("production-writer rollout observation capture", () => {
     );
   });
 
+  it("projects migration 000081 and its compatibility catalog directly from the production SQL", () => {
+    const sql = codexRotatingProductionWriterBaseObservationSql;
+    expect(sql).toContain("'000081_codex_oauth_v4_v5_staged_compatibility'");
+    expect(sql).toContain("'CodexOAuthWorkflowCompatibility'");
+    expect(sql).toContain("'checks', coalesce((");
+    expect(sql).toContain("'indexes', coalesce((");
+    expect(sql).toContain("'triggers', coalesce((");
+    expect(sql).toContain("'privileges', jsonb_build_object(");
+    expect(sql).toContain("'columns', coalesce((");
+    expect(sql).toContain("'tables', coalesce((");
+  });
+
   it("observes every exact rotating-writer foreign key", () => {
     const foreignKeysStart =
       codexRotatingProductionWriterBaseObservationSql.indexOf(

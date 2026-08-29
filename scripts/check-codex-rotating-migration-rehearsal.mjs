@@ -1989,6 +1989,35 @@ async function proveActiveNamespaceV4V5Reattestation(
     ]).stdout.trim() === "0:0:0:1",
     "active namespace re-attestation routine ACL is not web-only",
   );
+  assert(
+    psql(adminUrl, [
+      "-Atc",
+      `SELECT concat_ws(':',
+        has_table_privilege('reviewrouter_api','public."CodexOAuthWorkflowCompatibility"','SELECT')::int,
+        has_table_privilege('reviewrouter_api','public."CodexOAuthWorkflowCompatibility"','INSERT,UPDATE,DELETE')::int,
+        has_table_privilege('reviewrouter_web','public."CodexOAuthWorkflowCompatibility"','SELECT')::int,
+        has_table_privilege('reviewrouter_web','public."CodexOAuthWorkflowCompatibility"','INSERT,UPDATE,DELETE')::int,
+        has_table_privilege('reviewrouter_worker','public."CodexOAuthWorkflowCompatibility"','SELECT,INSERT,UPDATE,DELETE')::int,
+        has_table_privilege('reviewrouter_codex_effect_authority','public."CodexOAuthWorkflowCompatibility"','SELECT,INSERT,UPDATE,DELETE')::int)`,
+    ]).stdout.trim() === "1:0:1:0:0:0",
+    "workflow compatibility table ACL is not read-only for API/web",
+  );
+  for (const [runtimeRole, databaseUrl] of Object.entries(clients)) {
+    const rejected = psql(
+      databaseUrl,
+      [
+        "-c",
+        `INSERT INTO "CodexOAuthWorkflowCompatibility" ("namespaceId")
+         VALUES ('adversarial-runtime-insert')`,
+      ],
+      false,
+    );
+    assertPsqlFailedWithExactMessage(
+      rejected,
+      "permission denied for table CodexOAuthWorkflowCompatibility",
+      `${runtimeRole} retained workflow compatibility INSERT`,
+    );
+  }
 }
 
 function assertVersionedNamespaceEvidenceRetained(

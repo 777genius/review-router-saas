@@ -59,6 +59,11 @@ describe("Prisma Codex rotating new-work barrier", () => {
     (query as { strings?: readonly string[] }).strings
       ?.join("")
       .includes('FROM "CodexOAuthSecretNamespace" namespace') === true;
+  const isCompatibilityLock = (query: unknown) =>
+    (query as { strings?: readonly string[] }).strings
+      ?.join("")
+      .includes('FROM "CodexOAuthWorkflowCompatibility" compatibility') ===
+    true;
 
   it("fails a stale V4 request after durable V5 re-attestation wins the provider lock", async () => {
     let releaseVerifiedRequest!: () => void;
@@ -185,7 +190,7 @@ describe("Prisma Codex rotating new-work barrier", () => {
     await expect(staleRequest).rejects.toThrow(
       "codex_rotating_workflow_attestation_stale",
     );
-    expect(queryRaw).toHaveBeenCalledTimes(3);
+    expect(queryRaw).toHaveBeenCalledTimes(4);
     expect(providerUpdate).not.toHaveBeenCalled();
     expect(leaseUpsert).not.toHaveBeenCalled();
   });
@@ -267,7 +272,7 @@ describe("Prisma Codex rotating new-work barrier", () => {
       }),
     ).rejects.toThrow("codex_rotating_new_work_admission_closed");
     expect(transaction).toHaveBeenCalledOnce();
-    expect(queryRaw).toHaveBeenCalledTimes(3);
+    expect(queryRaw).toHaveBeenCalledTimes(4);
     expect(
       (
         queryRaw.mock.calls[0]?.[0] as { strings: readonly string[] }
@@ -404,6 +409,123 @@ describe("Prisma Codex rotating new-work barrier", () => {
           }),
         }),
       );
+    },
+  );
+
+  it.each([
+    ["valid non-expired", {}, true],
+    ["expired", { retireAt: new Date("2026-08-08T23:59:59Z") }, false],
+    ["absent", { absent: true }, false],
+    ["retired", { status: "retired" }, false],
+    ["superseded", { id: "superseded-namespace" }, false],
+    ["provider pointer mismatch", { providerId: "other-namespace" }, false],
+    ["provider generation mismatch", { providerEpoch: 2n }, false],
+  ] as const)(
+    "%s compatibility row is enforced inside the provider-lock transaction",
+    async (_label, changed, admitted) => {
+      const providerUpdate = vi.fn(async () => ({}));
+      const leaseUpsert = vi.fn(async () => ({ id: "lease-compatibility" }));
+      const currentV5 = lockedWorkflowAdmission({
+        ...persistedWorkflowAttestation,
+        workflowSourceCommitSha: "e".repeat(40),
+        workflowSourceBlobSha: "f".repeat(40),
+        workflowSourceSha256: "1".repeat(64),
+        workflowSemanticSha256: "2".repeat(64),
+        workflowSchemaVersion: 5,
+      });
+      const compatibility = {
+        ...lockedWorkflowAdmission(persistedWorkflowAttestation),
+        id: "id" in changed ? changed.id : activeSecretNamespace.namespaceId,
+        status: "status" in changed ? changed.status : "active",
+        retireAt:
+          "retireAt" in changed
+            ? changed.retireAt
+            : new Date("2026-08-10T01:00:00Z"),
+      };
+      const providerId =
+        "providerId" in changed
+          ? changed.providerId
+          : activeSecretNamespace.namespaceId;
+      const providerEpoch =
+        "providerEpoch" in changed ? changed.providerEpoch : 1n;
+      const providerRow = {
+        id: "provider-row-1",
+        workspaceId: "workspace-1",
+        repositoryId: "repository-1",
+        providerInstanceId: "codex-rotating:123456",
+        authMode: "codex_subscription_oauth_rotating",
+        secretName: "REVIEWROUTER_CODEX_AUTH_JSON",
+        activeLeaseId: null,
+        activeLeaseExpiresAt: null,
+        mutationEpoch: 3n,
+        mutationOwner: null,
+        mutationOwnerId: null,
+        activeSecretNamespaceId: providerId,
+        activeSecretNamespaceEpoch: providerEpoch,
+        activeSecretNamespaceName: activeSecretNamespace.name,
+        activeSecretNamespace: {
+          ...currentV5,
+          databaseRecoveryWitness: databaseRecoveryWitnessFingerprint,
+        },
+        state: "active",
+        latestGeneration: 1,
+        latestGenerationHash: "generation-hash",
+        generationHashSalt: "generation-salt",
+        accountFingerprintSalt: "account-salt",
+      };
+      const queryRaw = vi.fn(async (query: unknown) => {
+        if (isCompatibilityLock(query)) {
+          return "absent" in changed && changed.absent ? [] : [compatibility];
+        }
+        return isNamespaceLock(query) ? [currentV5] : [];
+      });
+      const tx = {
+        $queryRaw: queryRaw,
+        $executeRawUnsafe: vi.fn(),
+        codexOAuthProviderInstance: {
+          findUnique: vi.fn(async () => providerRow),
+          update: providerUpdate,
+        },
+        codexOAuthWritebackIntent: { findFirst: vi.fn(async () => null) },
+        codexOAuthSetupManifest: { findFirst: vi.fn(async () => null) },
+        codexOAuthLease: { upsert: leaseUpsert },
+      };
+      const repository = new PrismaCodexRotatingOAuthRepository(
+        { $transaction: vi.fn(async (callback) => callback(tx)) } as never,
+        {
+          actionOwnerRepo: "reviewrouter/action",
+          databaseRecoveryWitness,
+          transactionClock: fixedClock("2026-08-09T00:00:00Z"),
+        },
+      );
+      const result = repository.acquirePrelease({
+        repository: {
+          workspaceId: "workspace-1",
+          repositoryId: "repository-1",
+          githubRepositoryId: "123456",
+          githubInstallationId: "789",
+          fullName: "owner/repo",
+          owner: "owner",
+          selected: true,
+          installationStatus: "active",
+        },
+        providerInstanceId: "codex-rotating:123456",
+        githubRunId: `compatibility-${_label}`,
+        githubRunAttempt: "1",
+        verifiedWorkflowAttestation,
+        newWorkAdmissionBarrier: { assertAdmitted: () => undefined },
+      });
+      if (admitted) {
+        await expect(result).resolves.toMatchObject({ status: "preleased" });
+        expect(leaseUpsert).toHaveBeenCalledOnce();
+      } else {
+        await expect(result).rejects.toThrow(
+          "codex_rotating_workflow_attestation_stale",
+        );
+        expect(providerUpdate).not.toHaveBeenCalled();
+        expect(leaseUpsert).not.toHaveBeenCalled();
+      }
+      expect(queryRaw).toHaveBeenCalledTimes(4);
     },
   );
 

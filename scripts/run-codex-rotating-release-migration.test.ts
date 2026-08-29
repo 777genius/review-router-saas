@@ -1392,6 +1392,15 @@ describe("canonical exclusive release migration caller", () => {
       expect(grants).toContain(
         `GRANT SELECT ON TABLE public."RepositoryConnection" TO ${role}`,
       );
+      expect(grants).toContain(
+        `REVOKE ALL ON TABLE public."CodexOAuthWorkflowCompatibility" FROM ${role}`,
+      );
+      const compatibilitySelect = `GRANT SELECT ON TABLE public."CodexOAuthWorkflowCompatibility" TO ${role}`;
+      if (role === "reviewrouter_api" || role === "reviewrouter_web") {
+        expect(grants).toContain(compatibilitySelect);
+      } else {
+        expect(grants).not.toContain(compatibilitySelect);
+      }
       const genericGrant = grants.indexOf(
         `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
       );
@@ -1439,6 +1448,12 @@ describe("canonical exclusive release migration caller", () => {
           )}) ON TABLE public."CodexOAuthProviderInstance" TO ${role}`,
       );
     }
+    expect(grants).toContain(
+      'GRANT EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer) TO reviewrouter_web',
+    );
+    expect(grants).not.toContain(
+      'GRANT EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text) TO reviewrouter_web',
+    );
     expect(
       grants.indexOf(
         "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM reviewrouter_codex_effect_authority",

@@ -3,6 +3,28 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '5min';
 
+-- 000079/000080 did not retain the exact V4 bytes after replacing an active
+-- namespace with V5.  Applying this bridge after such a replacement would
+-- create an unprovable compatibility gap, so admission fails closed instead
+-- of synthesizing predecessor evidence.
+DO $compatibility_admission$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM public."CodexOAuthProviderInstance" provider
+    JOIN public."CodexOAuthSecretNamespace" namespace
+      ON namespace."id" = provider."activeSecretNamespaceId"
+    WHERE provider."state" = 'active'
+      AND namespace."status" = 'active'
+      AND NOT namespace."permanentlyRetired"
+      AND namespace."workflowSchemaVersion" = 5
+  ) THEN
+    RAISE EXCEPTION 'codex_oauth_v4_v5_compatibility_predecessor_evidence_missing'
+      USING ERRCODE = '55000';
+  END IF;
+END
+$compatibility_admission$;
+
 CREATE TABLE public."CodexOAuthWorkflowCompatibility" (
   "namespaceId" TEXT PRIMARY KEY,
   "workflowPath" TEXT NOT NULL,
@@ -86,6 +108,41 @@ CREATE TRIGGER "CodexOAuthWorkflowCompatibility_guard"
 BEFORE INSERT OR UPDATE OR DELETE ON public."CodexOAuthWorkflowCompatibility"
 FOR EACH ROW EXECUTE FUNCTION public."codex_oauth_workflow_compatibility_guard"();
 
+-- Establish the rollback floor before removing the predecessor entry point.
+-- REVOKE rejects every new old-consumer call; DROP then takes the routine DDL
+-- lock and therefore waits for any already-running invocation to drain.
+REVOKE EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(
+  TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER,
+  TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT
+) FROM PUBLIC;
+
+DO $v4_consumer_rollback_floor$
+DECLARE runtime_role TEXT;
+BEGIN
+  FOREACH runtime_role IN ARRAY ARRAY[
+    'reviewrouter_api', 'reviewrouter_web', 'reviewrouter_worker',
+    'reviewrouter_codex_effect_authority'
+  ] LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = runtime_role) THEN
+      EXECUTE format(
+        'REVOKE EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"' ||
+        '(text,text,text,text,bigint,text,text,text,text,text,integer,integer,' ||
+        'text,text,text,text,text,text,text,text) FROM %I',
+        runtime_role
+      );
+      IF has_function_privilege(
+        runtime_role,
+        'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text)',
+        'EXECUTE'
+      ) THEN
+        RAISE EXCEPTION 'codex_oauth_v4_consumer_rollback_floor_incomplete'
+          USING ERRCODE = '55000';
+      END IF;
+    END IF;
+  END LOOP;
+END
+$v4_consumer_rollback_floor$;
+
 DROP FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(
   TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER,
   TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT
@@ -123,7 +180,7 @@ DECLARE canonical_table_owner TEXT;
 DECLARE canonical_function_owner TEXT;
 DECLARE transition_key TEXT;
 DECLARE affected_count INTEGER;
-DECLARE compatibility_created_at TIMESTAMPTZ(3) := transaction_timestamp();
+DECLARE compatibility_created_at TIMESTAMPTZ(3);
 BEGIN
   SELECT table_owner.rolname INTO STRICT canonical_table_owner
   FROM pg_catalog.pg_class relation
@@ -204,6 +261,7 @@ BEGIN
     AND claim."providerInstanceRowId" = target_provider_row_id
     AND claim."githubRepositoryId" = target_repository_id
     AND claim."generationHash" = target_generation_hash
+    AND attempt."namespaceId" = target_namespace_id
     AND (SELECT count(*) FROM public."CodexOAuthSetupPayloadClaim" active_claim
          WHERE active_claim."providerInstanceRowId" = target_provider_row_id
            AND active_claim."status" = 'active') = 1
@@ -241,6 +299,11 @@ BEGIN
     RAISE EXCEPTION 'codex_oauth_active_namespace_reattestation_stale'
       USING ERRCODE = '40001';
   END IF;
+
+  -- Start the fixed window at the activation insertion point, after every
+  -- serialization lock.  One millisecond-normalized database-clock value is
+  -- reused for both columns.
+  compatibility_created_at := date_trunc('milliseconds', clock_timestamp());
 
   INSERT INTO public."CodexOAuthWorkflowCompatibility" (
     "namespaceId", "workflowPath", "workflowSourceCommitSha",
@@ -327,6 +390,7 @@ BEGIN
     canonical_owner
   );
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_web') THEN
+    REVOKE ALL ON TABLE public."CodexOAuthWorkflowCompatibility" FROM reviewrouter_web;
     GRANT SELECT ON TABLE public."CodexOAuthWorkflowCompatibility" TO reviewrouter_web;
     GRANT EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(
       TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER,
@@ -334,7 +398,14 @@ BEGIN
     ) TO reviewrouter_web;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_api') THEN
+    REVOKE ALL ON TABLE public."CodexOAuthWorkflowCompatibility" FROM reviewrouter_api;
     GRANT SELECT ON TABLE public."CodexOAuthWorkflowCompatibility" TO reviewrouter_api;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_worker') THEN
+    REVOKE ALL ON TABLE public."CodexOAuthWorkflowCompatibility" FROM reviewrouter_worker;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_codex_effect_authority') THEN
+    REVOKE ALL ON TABLE public."CodexOAuthWorkflowCompatibility" FROM reviewrouter_codex_effect_authority;
   END IF;
 END
 $ownership$;

@@ -875,6 +875,23 @@ describe("versioned rotating setup recovery ledger", () => {
     ).resolves.toEqual(current);
     await expect(
       ledger.replaceActiveWorkflowSource({
+        target: {
+          ...target,
+          namespace: {
+            ...namespace,
+            namespaceId: "namespace:confirmed-attempt-mismatch",
+          },
+        },
+        expectedCurrent: current,
+        replacement,
+        compatibilityWindowSeconds: 90_000,
+      }),
+    ).rejects.toThrow("codex_rotating_workflow_reattestation_stale");
+    await expect(
+      ledger.readActiveWorkflowAttestation(namespace),
+    ).resolves.toEqual(current);
+    await expect(
+      ledger.replaceActiveWorkflowSource({
         target,
         expectedCurrent: current,
         replacement,

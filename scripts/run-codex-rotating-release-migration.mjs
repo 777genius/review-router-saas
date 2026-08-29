@@ -458,6 +458,7 @@ const quarantineTables = Object.freeze([
 ]);
 
 const fullyProtectedRuntimeTables = Object.freeze([
+  "CodexOAuthWorkflowCompatibility",
   "CodexOAuthDatabaseAuthorityKey",
   "CodexOAuthDatabaseAuthorityReceipt",
   "RuntimeGenerationWitnessProof",
@@ -2736,7 +2737,7 @@ BEGIN
         'RepositoryConnection','CodexOAuthChildIdentityQuarantine','CodexOAuthLease',
         'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
         'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
-        'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
+        'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent','CodexOAuthWorkflowCompatibility',
         'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
         '${workerOwnedMaintenanceCheckpointTable}'
       ) AND attribute.attnum>0 AND NOT attribute.attisdropped
@@ -2780,17 +2781,18 @@ BEGIN
          can_select IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname <> '_prisma_migrations'
            AND relname NOT IN ('CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
              'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+           AND (relname <> 'CodexOAuthWorkflowCompatibility' OR role_kind IN ('api','web'))
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker'))
          OR can_insert IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthDatabaseAuthorityKey',
-           'CodexOAuthDatabaseAuthorityReceipt','RuntimeGenerationWitnessProof',
+           'CodexOAuthDatabaseAuthorityReceipt','CodexOAuthWorkflowCompatibility','RuntimeGenerationWitnessProof',
            'RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker'))
          OR can_update IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance',
-           'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
+           'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt','CodexOAuthWorkflowCompatibility',
            'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker'))
          OR can_delete IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
@@ -2798,7 +2800,7 @@ BEGIN
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
            'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
            'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
-           'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
+           'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt','CodexOAuthWorkflowCompatibility',
            'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof',
            '${workerOwnedMaintenanceCheckpointTable}'))
          OR can_truncate OR can_reference OR can_trigger)
@@ -2843,7 +2845,7 @@ BEGIN
          WHEN role_kind='web' AND proname='codex_oauth_authorize_setup_confirmation' THEN argument_types='text, integer, text'
          WHEN role_kind='web' AND proname='codex_oauth_provider_identity_repair_challenge' THEN argument_types='text, text, text, text, text, text, text, bigint, text, text, text, text, text, text, bigint'
          WHEN role_kind='web' AND proname='codex_oauth_repair_quarantined_provider' THEN argument_types='text, text, text, text, text, text, text, bigint, text, text, text, text, text, text, bigint, text'
-         WHEN role_kind='web' AND proname='codex_oauth_reattest_active_namespace_v4_to_v5' THEN argument_types='text, text, text, text, bigint, text, text, text, text, text, integer, integer, text, text, text, text, text, text, text, text'
+         WHEN role_kind='web' AND proname='codex_oauth_reattest_active_namespace_v4_to_v5' THEN argument_types='text, text, text, text, bigint, text, text, text, text, text, integer, integer, text, text, text, text, text, text, text, text, integer'
          ELSE false END)
        OR has_database_privilege('public',current_database(),'CONNECT')
        OR has_database_privilege('public',current_database(),'CREATE')
@@ -4804,7 +4806,7 @@ ${
     ? `GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_setup_confirmation"(text, integer, text) TO ${username};
 GRANT EXECUTE ON FUNCTION public."codex_oauth_provider_identity_repair_challenge"(text,text,text,text,text,text,text,bigint,text,text,text,text,text,text,bigint) TO ${username};
 GRANT EXECUTE ON FUNCTION public."codex_oauth_repair_quarantined_provider"(text,text,text,text,text,text,text,bigint,text,text,text,text,text,text,bigint,text) TO ${username};
-GRANT EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text) TO ${username};`
+GRANT EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer) TO ${username};`
     : role === "api"
       ? `GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_runtime_confirmation"(text, text, integer, text) TO ${username};
 GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_runtime_completion"(text, text) TO ${username};`
@@ -4860,6 +4862,8 @@ REVOKE UPDATE ON TABLE public."CodexOAuthProviderInstance" FROM ${username};
 GRANT UPDATE (${providerUpdateColumnList}) ON TABLE public."CodexOAuthProviderInstance" TO ${username};
 REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityKey" FROM ${username};
 REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityReceipt" FROM ${username};
+REVOKE ALL ON TABLE public."CodexOAuthWorkflowCompatibility" FROM ${username};
+${role === "api" || role === "web" ? `GRANT SELECT ON TABLE public."CodexOAuthWorkflowCompatibility" TO ${username};` : ""}
 REVOKE ALL ON TABLE public."RuntimeGenerationWitnessProof" FROM ${username};
 REVOKE ALL ON TABLE public."RuntimeCanaryChallenge" FROM ${username};
 REVOKE ALL ON TABLE public."RuntimeCanaryChallengeProof" FROM ${username};
