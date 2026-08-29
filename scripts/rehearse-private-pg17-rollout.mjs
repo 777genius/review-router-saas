@@ -760,6 +760,17 @@ export function safeReleaseAuthorityErrorClassification(error) {
   return undefined;
 }
 
+export function safeRehearsalStageErrorDiagnostic(stageName, error) {
+  const safeStageCode = safeRehearsalStageErrorCode(error);
+  if (safeStageCode) return safeStageCode;
+  if (stageName === "run_release_migration") {
+    const safeAuthorityClassification =
+      safeReleaseAuthorityErrorClassification(error);
+    if (safeAuthorityClassification) return safeAuthorityClassification;
+  }
+  return redactedErrorChain(error);
+}
+
 export function summarizeErrorShape(error) {
   const pending = [{ path: "error", value: error, depth: 0 }];
   const seen = new Set();
@@ -3473,9 +3484,8 @@ COMMIT;
       process.stderr.write(`rehearsal_stage_completed:${safeName}\n`);
       return result;
     } catch (error) {
-      const safeError = safeRehearsalStageErrorCode(error);
       process.stderr.write(
-        `rehearsal_stage_failed:${safeName}:${safeError ?? redactedErrorChain(error)}\n`,
+        `rehearsal_stage_failed:${safeName}:${safeRehearsalStageErrorDiagnostic(safeName, error)}\n`,
       );
       throw error;
     } finally {

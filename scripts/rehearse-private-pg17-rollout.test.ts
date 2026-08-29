@@ -25,6 +25,7 @@ import {
   resolvePreReleaseMigrationExclusions,
   safePostgresErrorClassification,
   safeRehearsalStageErrorCode,
+  safeRehearsalStageErrorDiagnostic,
   safeReleaseAuthorityErrorClassification,
   summarizeErrorShape,
   summarizeAuthorityReadinessMismatch,
@@ -166,6 +167,33 @@ describe("disposable dual-version rehearsal", () => {
         keys: ["message", "stack"],
       },
     ]);
+  });
+
+  it("selects safe release-migration diagnostics and redacts arbitrary errors", () => {
+    expect(
+      safeRehearsalStageErrorDiagnostic("run_release_migration", {
+        meta: {
+          driverAdapterError: {
+            cause: {
+              originalMessage:
+                "ERROR: release migration begin binding conflict",
+            },
+          },
+        },
+      }),
+    ).toBe("release migration begin binding conflict");
+
+    const secret =
+      "postgres://admin:do-not-print@private.example/db?token=do-not-print";
+    const diagnostic = safeRehearsalStageErrorDiagnostic(
+      "run_release_migration",
+      new Error(`database failed at ${secret}`),
+    );
+    expect(diagnostic).toBe(
+      '{"version":1,"code":"private_pg17_rehearsal_command_failed","phase":"rehearsal","exit":{"code":null,"signal":null},"metadata":{},"operatorHint":"Inspect the disposable rehearsal phase and local container state."}',
+    );
+    expect(diagnostic).not.toContain(secret);
+    expect(diagnostic).not.toContain("do-not-print");
   });
 
   it("reports authority readiness drift without credential material", () => {
@@ -1323,7 +1351,7 @@ describe("disposable dual-version rehearsal", () => {
     );
     expect(source).toContain("rehearsal_canonical_postgres_error:${step}");
     expect(source).toContain(
-      "rehearsal_stage_failed:${safeName}:${safeError ?? redactedErrorChain(error)}",
+      "rehearsal_stage_failed:${safeName}:${safeRehearsalStageErrorDiagnostic(safeName, error)}",
     );
     expect(source).toContain(
       "migrationManifestIdentity:\n              current.activationReceipt.postManifestIdentity",

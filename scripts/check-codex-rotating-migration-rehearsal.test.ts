@@ -806,6 +806,43 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(false);
   });
 
+  it.each([
+    [
+      "permission denial",
+      "ERROR: permission denied for schema public\nERROR: current transaction is aborted",
+    ],
+    [
+      "a different Prisma failure",
+      "P1000\nERROR: current transaction is aborted",
+    ],
+    [
+      "a missing relation",
+      'ERROR: relation "private_table" does not exist\nERROR: current transaction is aborted',
+    ],
+    [
+      "a different migration-name field",
+      "Migration name: 000059_other_migration\nERROR: current transaction is aborted",
+    ],
+  ])("rejects empty-log fallback combined with %s", (_case, output) => {
+    const migrationName = "000060_codex_oauth_setup_serialization";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
+        historyEvidence: {
+          total: 1,
+          currentFailed: 1,
+          zeroStep: 1,
+          lockTimeoutLog: 0,
+          abortedTransactionLog: 0,
+          exactFailureLog: 0,
+          emptyLog: 1,
+        },
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(false);
+  });
+
   it("keeps the stronger P3018 and migration-name lock-timeout path", () => {
     expect(
       isExpectedPrismaLockTimeoutFailure({
