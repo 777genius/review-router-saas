@@ -526,6 +526,12 @@ describe("Prisma Codex rotating new-work barrier", () => {
         expect(leaseUpsert).not.toHaveBeenCalled();
       }
       expect(queryRaw).toHaveBeenCalledTimes(4);
+      const compatibilityQuery = queryRaw.mock.calls.find(([query]) =>
+        isCompatibilityLock(query),
+      )?.[0] as { strings?: readonly string[] } | undefined;
+      expect(compatibilityQuery?.strings?.join("")).not.toContain(
+        "FOR UPDATE OF compatibility",
+      );
     },
   );
 

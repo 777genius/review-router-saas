@@ -413,6 +413,9 @@ export class PrismaCodexRotatingOAuthRepository
       const lockedCompatibilityAdmissions = await tx.$queryRaw<
         LockedWorkflowAdmissionRow[]
       >(Prisma.sql`
+          -- Compatibility rows are immutable. Their sole insertion path locks
+          -- this namespace row before inserting, so the namespace lock above
+          -- serializes admission without runtime UPDATE authority here.
           SELECT namespace."id", namespace."githubRepositoryId",
             namespace."namespaceEpoch", namespace."secretName",
             namespace."status", namespace."permanentlyRetired",
@@ -426,7 +429,6 @@ export class PrismaCodexRotatingOAuthRepository
             ON namespace."id" = compatibility."namespaceId"
           WHERE compatibility."namespaceId" = ${provider.activeSecretNamespaceId}
             AND namespace."providerInstanceRowId" = ${provider.id}
-          FOR UPDATE OF compatibility
         `);
       assertLockedWorkflowAdmissionMatches({
         persisted:
