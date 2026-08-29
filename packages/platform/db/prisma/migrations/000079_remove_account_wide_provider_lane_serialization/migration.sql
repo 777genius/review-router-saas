@@ -2,6 +2,24 @@
 -- Old replicas globally inspect providerVoteIdentityHash and cannot tolerate
 -- two active rows.  The trigger preserves that invariant after the index is
 -- removed until an operator explicitly activates scoped concurrency.
+DO $authority_role_topology$
+DECLARE
+  schema_owner_exists boolean :=
+    to_regrole('reviewrouter_release_schema_owner') IS NOT NULL;
+  release_migration_exists boolean :=
+    to_regrole('reviewrouter_release_migration') IS NOT NULL;
+BEGIN
+  IF schema_owner_exists <> release_migration_exists THEN
+    IF NOT schema_owner_exists THEN
+      RAISE EXCEPTION
+        'provider_scope_concurrency_authority_roles_partial:reviewrouter_release_schema_owner_missing';
+    END IF;
+    RAISE EXCEPTION
+      'provider_scope_concurrency_authority_roles_partial:reviewrouter_release_migration_missing';
+  END IF;
+END
+$authority_role_topology$;
+
 CREATE TABLE "ReviewProviderScopeConcurrencyControl" (
   "singleton" boolean PRIMARY KEY DEFAULT true CHECK ("singleton"),
   "activated" boolean NOT NULL DEFAULT false,
@@ -311,11 +329,62 @@ REVOKE ALL ON FUNCTION reviewrouter_provider_scope_concurrency_close_for_rollbac
 REVOKE ALL ON FUNCTION reviewrouter_provider_scope_concurrency_verify_rollback() FROM PUBLIC;
 
 DO $operator_routine_acl$
+DECLARE
+  schema_owner_exists boolean :=
+    to_regrole('reviewrouter_release_schema_owner') IS NOT NULL;
+  release_migration_exists boolean :=
+    to_regrole('reviewrouter_release_migration') IS NOT NULL;
+  temporary_schema_create boolean := false;
 BEGIN
-  IF to_regrole('reviewrouter_release_schema_owner') IS NULL
-     OR to_regrole('reviewrouter_release_migration') IS NULL THEN
-    RAISE EXCEPTION 'provider_scope_concurrency_authority_roles_missing';
+  IF schema_owner_exists <> release_migration_exists THEN
+    IF NOT schema_owner_exists THEN
+      RAISE EXCEPTION
+        'provider_scope_concurrency_authority_roles_partial:reviewrouter_release_schema_owner_missing';
+    END IF;
+    RAISE EXCEPTION
+      'provider_scope_concurrency_authority_roles_partial:reviewrouter_release_migration_missing';
   END IF;
+
+  IF NOT schema_owner_exists THEN
+    -- Baseline/self-hosted databases intentionally have no SaaS release
+    -- authority.  Keep the bridge and legacy index closed, and remove the
+    -- SECURITY DEFINER operator surface instead of leaving it owned by the
+    -- ordinary migration principal.
+    ALTER TABLE public."ReviewProviderScopeConcurrencyControl"
+      ADD CONSTRAINT "ReviewProviderScopeConcurrencyControl_baseline_closed"
+      CHECK ("activated" = false);
+    DROP FUNCTION reviewrouter_provider_scope_concurrency_status();
+    DROP FUNCTION reviewrouter_provider_scope_concurrency_activate();
+    DROP FUNCTION reviewrouter_provider_scope_concurrency_close_for_rollback();
+    DROP FUNCTION reviewrouter_provider_scope_concurrency_verify_rollback();
+    DROP FUNCTION reviewrouter_provider_scope_concurrency_snapshot();
+    RETURN;
+  END IF;
+
+  -- PostgreSQL requires a function's new owner to have CREATE on the
+  -- containing schema. During the trusted pre-release bootstrap, public is
+  -- still owned by the bootstrap role and the NOLOGIN schema owner has only a
+  -- bounded SET handoff. Provision the missing prerequisite only for this
+  -- ownership transfer and remove the explicit ACL again before returning.
+  IF NOT has_schema_privilege(
+    'reviewrouter_release_schema_owner', 'public', 'CREATE'
+  ) THEN
+    GRANT CREATE ON SCHEMA public TO reviewrouter_release_schema_owner;
+    temporary_schema_create := true;
+  END IF;
+
+  -- Establish the operator ACL while the migration principal still owns the
+  -- routines. The ACL survives the ownership transfer below; afterwards the
+  -- non-inheriting bootstrap membership cannot grant on the new owner's behalf.
+  GRANT EXECUTE ON FUNCTION reviewrouter_provider_scope_concurrency_status()
+    TO reviewrouter_release_migration;
+  GRANT EXECUTE ON FUNCTION reviewrouter_provider_scope_concurrency_activate()
+    TO reviewrouter_release_migration;
+  GRANT EXECUTE ON FUNCTION reviewrouter_provider_scope_concurrency_close_for_rollback()
+    TO reviewrouter_release_migration;
+  GRANT EXECUTE ON FUNCTION reviewrouter_provider_scope_concurrency_verify_rollback()
+    TO reviewrouter_release_migration;
+
   ALTER FUNCTION reviewrouter_provider_scope_concurrency_snapshot()
     OWNER TO reviewrouter_release_schema_owner;
   ALTER FUNCTION reviewrouter_provider_scope_concurrency_status()
@@ -326,13 +395,22 @@ BEGIN
     OWNER TO reviewrouter_release_schema_owner;
   ALTER FUNCTION reviewrouter_provider_scope_concurrency_verify_rollback()
     OWNER TO reviewrouter_release_schema_owner;
-  GRANT EXECUTE ON FUNCTION reviewrouter_provider_scope_concurrency_status()
-    TO reviewrouter_release_migration;
-  GRANT EXECUTE ON FUNCTION reviewrouter_provider_scope_concurrency_activate()
-    TO reviewrouter_release_migration;
-  GRANT EXECUTE ON FUNCTION reviewrouter_provider_scope_concurrency_close_for_rollback()
-    TO reviewrouter_release_migration;
-  GRANT EXECUTE ON FUNCTION reviewrouter_provider_scope_concurrency_verify_rollback()
-    TO reviewrouter_release_migration;
+
+  IF temporary_schema_create THEN
+    REVOKE CREATE ON SCHEMA public FROM reviewrouter_release_schema_owner;
+    IF EXISTS (
+      SELECT 1
+      FROM pg_namespace namespace
+      CROSS JOIN LATERAL aclexplode(
+        coalesce(namespace.nspacl, acldefault('n', namespace.nspowner))
+      ) acl
+      WHERE namespace.nspname = 'public'
+        AND acl.grantee = 'reviewrouter_release_schema_owner'::regrole
+        AND acl.privilege_type = 'CREATE'
+    ) THEN
+      RAISE EXCEPTION
+        'provider_scope_concurrency_schema_owner_create_handoff_survived';
+    END IF;
+  END IF;
 END
 $operator_routine_acl$;

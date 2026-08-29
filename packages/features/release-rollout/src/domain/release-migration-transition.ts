@@ -140,13 +140,13 @@ export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
     "sha256:bc7853ee946ab41b455e786dded6b34fb0f548a4591ca965d066e8efb1479cd5",
   preManifestIdentity:
-    "sha256:401238e6f9266b9fe4c3a7b1d5e8090b53356befba97c6621d3e3c02d21f8050",
+    "sha256:bc26edacc50ea02a293db1ba36f7b500b7ca66e57e3529821079d05e2b5d17d4",
   orderedPendingEntriesSha256:
     "sha256:c2eae628ec1b20ab29f09ae56ea6111a7d97948c8e5fea370c6cf5e45cf330fa",
   migrationBundleSha256:
     "sha256:b98968fc30e81ab1af1d5e0c47004e158e281b1a690c41c4f2b74eec6400d73a",
   postManifestIdentity:
-    "sha256:2a1425aca9060bf1f1a22d675d824670ebe88c9bab6554e12e32ce89ec61ed69",
+    "sha256:e6c4b49b7bebd02fcf940192cfb3dc050e73441f3863a3ea28e670750646c7ed",
   // Last reviewed digest; the scoped-concurrency projection remains HOLD
   // pending exact disposable-PG17 capture and reviewed artifact promotion.
   postCatalogDigest:

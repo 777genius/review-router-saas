@@ -1418,13 +1418,15 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c 
    CREATE ROLE reviewrouter_comment_token_custody LOGIN PASSWORD 'custody';
    CREATE ROLE reviewrouter_codex_effect_authority LOGIN PASSWORD 'effect';
    CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'migration';
+   CREATE ROLE reviewrouter_release_schema_owner NOLOGIN;
    CREATE ROLE reviewrouter_role_bootstrap LOGIN PASSWORD 'bootstrap' NOCREATEDB CREATEROLE;
    GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
    GRANT reviewrouter_web TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
    GRANT reviewrouter_worker TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
    GRANT reviewrouter_comment_token_custody TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
    GRANT reviewrouter_codex_effect_authority TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
-   GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE" >/dev/null
+   GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+   GRANT reviewrouter_release_schema_owner TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET TRUE" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
   "CREATE DATABASE rr_activation_target OWNER reviewrouter_role_bootstrap" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
@@ -1461,6 +1463,52 @@ RR_FIXTURE_CONFIG="$contract_tmp/pre-release-prisma.config.mjs" \
 REVIEW_ROUTER_ACTIVATION_FIXTURE_DATABASE_URL="postgresql://reviewrouter_role_bootstrap:bootstrap@127.0.0.1:$postgres_port/rr_activation_target" \
   pnpm --filter @reviewrouter/platform-db exec prisma migrate deploy \
     --config "$contract_tmp/pre-release-prisma.config.mjs" >/dev/null
+# PG17 requires the target owner of ALTER FUNCTION ... OWNER TO to hold CREATE
+# on the containing schema. Migration 000079 must provision that prerequisite
+# only transaction-locally and leave the hardened routine ACL behind.
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+  -d rr_activation_target -Atc \
+  "WITH routines AS (
+     SELECT routine.oid, owner.rolname AS owner_name, routine.prosecdef
+     FROM pg_proc routine
+     JOIN pg_namespace namespace ON namespace.oid=routine.pronamespace
+     JOIN pg_roles owner ON owner.oid=routine.proowner
+     WHERE namespace.nspname='public'
+       AND routine.proname IN (
+         'reviewrouter_provider_scope_concurrency_snapshot',
+         'reviewrouter_provider_scope_concurrency_status',
+         'reviewrouter_provider_scope_concurrency_activate',
+         'reviewrouter_provider_scope_concurrency_close_for_rollback',
+         'reviewrouter_provider_scope_concurrency_verify_rollback'
+       )
+   ), routine_acl AS (
+     SELECT routines.oid, acl.grantee, acl.privilege_type
+     FROM routines
+     CROSS JOIN LATERAL aclexplode(
+       coalesce((SELECT proacl FROM pg_proc WHERE oid=routines.oid),
+                acldefault('f',(SELECT proowner FROM pg_proc WHERE oid=routines.oid)))
+     ) acl
+   )
+   SELECT
+     (SELECT count(*) FROM routines
+      WHERE owner_name='reviewrouter_release_schema_owner')||'|'||
+     (SELECT count(*) FROM routines WHERE prosecdef)||'|'||
+     (SELECT count(*) FROM routine_acl
+      WHERE grantee=0 AND privilege_type='EXECUTE')||'|'||
+     (SELECT count(*) FROM routine_acl
+      WHERE grantee='reviewrouter_release_migration'::regrole
+        AND privilege_type='EXECUTE')||'|'||
+     (SELECT count(*) FROM routine_acl
+      WHERE grantee IN ('reviewrouter_api'::regrole,'reviewrouter_web'::regrole,
+                        'reviewrouter_worker'::regrole)
+        AND privilege_type='EXECUTE')||'|'||
+     (SELECT count(*) FROM pg_namespace namespace
+      CROSS JOIN LATERAL aclexplode(
+        coalesce(namespace.nspacl,acldefault('n',namespace.nspowner))
+      ) acl
+      WHERE namespace.nspname='public'
+        AND acl.grantee='reviewrouter_release_schema_owner'::regrole
+        AND acl.privilege_type='CREATE')")" = "5|5|0|4|0|0"
 node --import tsx -e "import('./scripts/run-codex-rotating-release-migration.mjs').then(m => process.stdout.write(m.activationAuthorityProvisioningSql()))" \
   > "$contract_tmp/activation-authority.sql"
 docker cp "$contract_tmp/activation-authority.sql" \
@@ -1480,6 +1528,20 @@ docker cp "$contract_tmp/activation-role-provisioning.sql" \
   "$name:/tmp/activation-role-provisioning.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_role_bootstrap \
   -d rr_activation_target -f /tmp/activation-role-provisioning.sql >/dev/null
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+  -d rr_activation_target -Atc \
+  "SELECT owner.rolname||'|'||
+     has_schema_privilege('reviewrouter_release_schema_owner','public','USAGE')||'|'||
+     has_schema_privilege('reviewrouter_release_schema_owner','public','CREATE')||'|'||
+     (SELECT count(*) FROM aclexplode(
+        coalesce(namespace.nspacl,'{}'::aclitem[])
+      ) acl
+      WHERE acl.grantee='reviewrouter_role_bootstrap'::regrole
+         OR acl.grantor='reviewrouter_role_bootstrap'::regrole)
+   FROM pg_namespace namespace
+   JOIN pg_roles owner ON owner.oid=namespace.nspowner
+   WHERE namespace.nspname='public'")" = \
+  "reviewrouter_release_schema_owner|true|true|0"
 
 # The credential bootstrap deliberately nulls the original authority owner
 # password. This disposable cluster reuses postgres for unrelated activation

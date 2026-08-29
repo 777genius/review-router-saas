@@ -1085,6 +1085,30 @@ describe("canonical exclusive release migration caller", () => {
       "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_schema_owner",
     );
     expect(provisioning).toContain(
+      "REVOKE USAGE, CREATE ON SCHEMA public FROM reviewrouter_release_schema_owner",
+    );
+    expect(provisioning).toContain(
+      "release schema owner public ACL handoff survived convergence",
+    );
+    expect(
+      provisioning.indexOf(
+        "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_schema_owner",
+      ),
+    ).toBeLessThan(
+      provisioning.indexOf(
+        "REVOKE USAGE, CREATE ON SCHEMA public FROM reviewrouter_release_schema_owner",
+      ),
+    );
+    expect(
+      provisioning.indexOf(
+        "REVOKE USAGE, CREATE ON SCHEMA public FROM reviewrouter_release_schema_owner",
+      ),
+    ).toBeLessThan(
+      provisioning.indexOf(
+        "SELECT 'ALTER SCHEMA public OWNER TO reviewrouter_release_schema_owner'",
+      ),
+    );
+    expect(provisioning).toContain(
       "REVOKE CREATE, TEMPORARY ON DATABASE %I FROM reviewrouter_release_migration",
     );
     expect(provisioning).toContain(

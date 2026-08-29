@@ -4100,6 +4100,27 @@ BEGIN
   END IF;
 END
 $public_ownership_converged$;
+-- CREATE was required while public still belonged to bootstrap. Remove the
+-- explicit handoff before making the NOLOGIN role the schema owner; ownership
+-- supplies the canonical privilege without leaving a redundant ACL grant.
+REVOKE USAGE, CREATE ON SCHEMA public FROM ${releaseSchemaOwnerRoleName};
+DO $schema_owner_public_acl_handoff_cleanup$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_namespace namespace
+    CROSS JOIN LATERAL aclexplode(
+      coalesce(namespace.nspacl, acldefault('n', namespace.nspowner))
+    ) acl
+    WHERE namespace.nspname = 'public'
+      AND acl.grantee = '${releaseSchemaOwnerRoleName}'::regrole
+      AND acl.privilege_type IN ('USAGE', 'CREATE')
+  ) THEN
+    RAISE EXCEPTION
+      'release schema owner public ACL handoff survived convergence';
+  END IF;
+END
+$schema_owner_public_acl_handoff_cleanup$;
 SELECT 'ALTER SCHEMA public OWNER TO ${releaseSchemaOwnerRoleName}'
 WHERE (SELECT owner.rolname FROM pg_namespace namespace JOIN pg_roles owner ON owner.oid = namespace.nspowner WHERE namespace.nspname = 'public') <> '${releaseSchemaOwnerRoleName}'
 \\gexec

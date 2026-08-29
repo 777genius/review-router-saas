@@ -66,4 +66,80 @@ describe("000079 provider lane serialization removal", () => {
     );
     expect(sql).not.toContain('"ReviewInvocationLeaseV2_one_active_work_slot"');
   });
+
+  it("retains the restricted SaaS operator contract when both roles exist", () => {
+    expect(sql).toContain(
+      "IF schema_owner_exists <> release_migration_exists THEN",
+    );
+    expect(sql).toContain(
+      "ALTER FUNCTION reviewrouter_provider_scope_concurrency_snapshot()\n    OWNER TO reviewrouter_release_schema_owner",
+    );
+    expect(sql).toContain(
+      "GRANT CREATE ON SCHEMA public TO reviewrouter_release_schema_owner",
+    );
+    expect(sql).toContain(
+      "REVOKE CREATE ON SCHEMA public FROM reviewrouter_release_schema_owner",
+    );
+    expect(sql).toContain(
+      "provider_scope_concurrency_schema_owner_create_handoff_survived",
+    );
+    expect(sql.indexOf("GRANT CREATE ON SCHEMA public")).toBeLessThan(
+      sql.indexOf(
+        "ALTER FUNCTION reviewrouter_provider_scope_concurrency_snapshot()",
+      ),
+    );
+    expect(
+      sql.indexOf(
+        "ALTER FUNCTION reviewrouter_provider_scope_concurrency_verify_rollback()\n    OWNER TO",
+      ),
+    ).toBeLessThan(sql.indexOf("REVOKE CREATE ON SCHEMA public"));
+    expect(sql).toContain(
+      "GRANT EXECUTE ON FUNCTION reviewrouter_provider_scope_concurrency_status()\n    TO reviewrouter_release_migration",
+    );
+    expect(
+      sql.indexOf(
+        "GRANT EXECUTE ON FUNCTION reviewrouter_provider_scope_concurrency_status()",
+      ),
+    ).toBeLessThan(
+      sql.indexOf(
+        "ALTER FUNCTION reviewrouter_provider_scope_concurrency_snapshot()\n    OWNER TO reviewrouter_release_schema_owner",
+      ),
+    );
+    expect(sql).not.toMatch(
+      /GRANT EXECUTE ON FUNCTION reviewrouter_provider_scope_concurrency_[^(]+\(\)\s+TO (?:PUBLIC|reviewrouter_api|reviewrouter_web|reviewrouter_worker)/u,
+    );
+  });
+
+  it("keeps the baseline topology closed and removes its operator surface", () => {
+    expect(sql).toContain("IF NOT schema_owner_exists THEN");
+    expect(sql).toContain(
+      'ADD CONSTRAINT "ReviewProviderScopeConcurrencyControl_baseline_closed"\n      CHECK ("activated" = false)',
+    );
+    for (const routine of [
+      "status",
+      "activate",
+      "close_for_rollback",
+      "verify_rollback",
+      "snapshot",
+    ]) {
+      expect(sql).toContain(
+        `DROP FUNCTION reviewrouter_provider_scope_concurrency_${routine}();`,
+      );
+    }
+    expect(sql).not.toMatch(
+      /CREATE ROLE|ALTER ROLE|GRANT\s+\S+\s+TO\s+\S+\s+WITH ADMIN/iu,
+    );
+  });
+
+  it("rejects either partial release-role topology with a specific diagnostic", () => {
+    expect(sql).toContain(
+      "provider_scope_concurrency_authority_roles_partial:reviewrouter_release_schema_owner_missing",
+    );
+    expect(sql).toContain(
+      "provider_scope_concurrency_authority_roles_partial:reviewrouter_release_migration_missing",
+    );
+    expect(sql).not.toContain(
+      "provider_scope_concurrency_authority_roles_missing",
+    );
+  });
 });
