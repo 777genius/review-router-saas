@@ -1662,6 +1662,35 @@ describe("action control plane", () => {
     expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);
   });
 
+  it("returns persisted ultra reasoning effort in OIDC runtime config", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.runtimeConfig = parseReviewConfiguration({
+      ...defaultOpenRouterRuntimeConfig,
+      provider: {
+        ...defaultOpenRouterRuntimeConfig.provider,
+        reasoningEffort: "ultra",
+      },
+      providers: [
+        {
+          ...defaultOpenRouterRuntimeConfig.provider,
+          reasoningEffort: "ultra",
+        },
+      ],
+    });
+
+    const config = await getActionRuntimeConfig(
+      { sessionToken: "session" },
+      {
+        repositories,
+        sessions: new StaticSessionTokenService(),
+        clock,
+      },
+    );
+
+    expect(config.provider.reasoningEffort).toBe("ultra");
+    expect(config.runtimeEnv.CODEX_REASONING_EFFORT).toBe("ultra");
+  });
+
   it("uses deployment defaults only when no persisted review config exists", async () => {
     const repositories = new InMemoryActionControlPlaneRepository();
     repositories.runtimeConfig = null;

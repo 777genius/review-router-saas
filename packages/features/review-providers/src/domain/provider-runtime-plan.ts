@@ -9,7 +9,13 @@ import {
   type RuntimeAuthMode,
 } from "./provider-catalog";
 
-export type RuntimePlanReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type RuntimePlanReasoningEffort =
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
 
 export type RuntimePlanProviderConfiguration = {
   readonly kind: ProviderKind;

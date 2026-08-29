@@ -12,7 +12,7 @@ describe("ReviewRouter operator CLI", () => {
       Response.json({
         result: {
           repository: "777genius/agent-teams-ai",
-          reasoningEffort: "xhigh",
+          reasoningEffort: "ultra",
           changed: true,
         },
       }),
@@ -25,7 +25,7 @@ describe("ReviewRouter operator CLI", () => {
         "--repo",
         "777genius/agent-teams-ai",
         "--effort",
-        "xhigh",
+        "ultra",
       ],
       {
         REVIEW_ROUTER_REVIEW_CONFIG_OPERATOR_CREDENTIAL: credential,
@@ -36,7 +36,7 @@ describe("ReviewRouter operator CLI", () => {
 
     expect(result).toMatchObject({
       repository: "777genius/agent-teams-ai",
-      reasoningEffort: "xhigh",
+      reasoningEffort: "ultra",
     });
     expect(fetchImpl).toHaveBeenCalledOnce();
     const [url, init] = fetchImpl.mock.calls[0]!;
@@ -54,7 +54,7 @@ describe("ReviewRouter operator CLI", () => {
     expect(JSON.parse(String(init?.body))).toEqual({
       repository: "777genius/agent-teams-ai",
       provider: "github",
-      effort: "xhigh",
+      effort: "ultra",
     });
     expect(JSON.stringify(result)).not.toContain(credential);
   });

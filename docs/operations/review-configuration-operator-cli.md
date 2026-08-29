@@ -102,7 +102,7 @@ reviewrouter config set \
   --reason "pin reviewer policy"
 ```
 
-Allowed effort values are `low`, `medium`, `high`, and `xhigh`.
+Allowed effort values are `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`.
 `--reason` is stored in sanitized audit metadata; when omitted it uses the
 stable `operator_cli_config_set` reason.
 

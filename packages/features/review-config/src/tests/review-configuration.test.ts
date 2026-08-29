@@ -95,6 +95,30 @@ describe("review configuration", () => {
     expect(Object.keys(env).join("\n")).not.toContain("KEY");
   });
 
+  it.each(["max", "ultra"] as const)(
+    "persists and maps %s reasoning effort to runtime env",
+    (reasoningEffort) => {
+      const config = parseReviewConfiguration({
+        ...safeDefaultReviewConfiguration,
+        provider: {
+          ...safeDefaultReviewConfiguration.provider,
+          reasoningEffort,
+        },
+        providers: [
+          {
+            ...safeDefaultReviewConfiguration.provider,
+            reasoningEffort,
+          },
+        ],
+      });
+
+      expect(config.provider.reasoningEffort).toBe(reasoningEffort);
+      expect(mapConfigToRuntimeEnv(config).CODEX_REASONING_EFFORT).toBe(
+        reasoningEffort,
+      );
+    },
+  );
+
   it("maps only explicitly enabled investigation rollout flags to canonical 1 values", () => {
     const config = parseReviewConfiguration({
       ...safeDefaultReviewConfiguration,

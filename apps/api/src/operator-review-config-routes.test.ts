@@ -165,7 +165,7 @@ describe("operator review config routes", () => {
       headers: { authorization: `Bearer ${credential}` },
       payload: {
         repository: "777genius/example",
-        effort: "high",
+        effort: "ultra",
       },
     });
     const get = await app.inject({
@@ -178,12 +178,12 @@ describe("operator review config routes", () => {
     expect(patch.json().result).toMatchObject({
       changed: true,
       source: "repository",
-      reasoningEffort: "high",
+      reasoningEffort: "ultra",
     });
     expect(get.statusCode).toBe(200);
     expect(get.json().result).toMatchObject({
       source: "repository",
-      reasoningEffort: "high",
+      reasoningEffort: "ultra",
     });
   });
 
@@ -386,7 +386,7 @@ describe("operator review config routes", () => {
       headers: { authorization: `Bearer ${credential}` },
       payload: {
         repository: "777genius/example",
-        effort: "ultra",
+        effort: "extreme",
       },
     });
     const missing = await app.inject({

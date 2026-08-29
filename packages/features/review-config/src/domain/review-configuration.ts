@@ -13,7 +13,7 @@ export const reviewProviderConfigurationSchema = z
     authMode: providerAuthModeSchema,
     model: z.string().trim().min(1),
     reasoningEffort: z
-      .enum(["low", "medium", "high", "xhigh"])
+      .enum(["low", "medium", "high", "xhigh", "max", "ultra"])
       .default(defaultProviderReasoningEffort),
     agenticContext: z.boolean().default(true),
     fastMode: z.boolean().default(false),

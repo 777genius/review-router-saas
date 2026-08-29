@@ -135,7 +135,13 @@ const reasoningEffortOptions = [
   {
     value: "xhigh",
     label: "XHigh",
-    description: "Maximum reasoning depth. Default.",
+    description: "Extra-high reasoning depth. Default.",
+  },
+  { value: "max", label: "Max", description: "Very deep reasoning pass." },
+  {
+    value: "ultra",
+    label: "Ultra",
+    description: "Deepest available reasoning pass.",
   },
 ] as const;
 

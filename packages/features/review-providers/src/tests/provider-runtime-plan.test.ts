@@ -46,6 +46,28 @@ describe("provider runtime plan", () => {
     expect(plan.requiredCliTools).toEqual(["codex"]);
   });
 
+  it.each(["max", "ultra"] as const)(
+    "passes %s reasoning effort through the runtime plan",
+    (reasoningEffort) => {
+      const plan = buildProviderRuntimePlan({
+        ...baseInput,
+        providers: [
+          {
+            kind: "codex",
+            authMode: "codex_subscription_oauth_rotating",
+            model: "gpt-5.6-sol",
+            reasoningEffort,
+            agenticContext: true,
+            fastMode: false,
+            requiredHealthy: true,
+          },
+        ],
+      });
+
+      expect(plan.runtimeEnv.CODEX_REASONING_EFFORT).toBe(reasoningEffort);
+    },
+  );
+
   it("plans rotating Codex OAuth without falling back to the legacy secret", () => {
     const plan = buildProviderRuntimePlan({
       ...baseInput,

@@ -510,6 +510,15 @@ describe("ReviewConfigForm", () => {
     expect(screen.queryByRole("option", { name: /Codex API key/i })).toBeNull();
   });
 
+  it("offers max and ultra reasoning effort for Codex", () => {
+    renderReviewConfigForm();
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
+
+    expect(screen.getByRole("option", { name: /Max/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Ultra/ })).toBeTruthy();
+  });
+
   it("checks the Claude Code OAuth secret for a saved Claude provider", async () => {
     vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
       status: "missing",
