@@ -109,12 +109,16 @@ describe("PG17 production migration baseline fixture ordering", () => {
       providerAdminUsername,
       demoteProvider: false,
     });
-    expect(targetRoleFoundation).toContain(
-      "CREATE ROLE reviewrouter_release_schema_owner",
-    );
+    const schemaOwnerCreate = "CREATE ROLE reviewrouter_release_schema_owner";
+    expect(targetRoleFoundation).toContain(schemaOwnerCreate);
     expect(canonicalReleaseAuthorityRoleFoundationSql).not.toContain(
-      "CREATE ROLE reviewrouter_release_schema_owner",
+      schemaOwnerCreate,
     );
+    expect(
+      `${targetRoleFoundation}\n${canonicalReleaseAuthorityRoleFoundationSql}`.split(
+        schemaOwnerCreate,
+      ),
+    ).toHaveLength(2);
     expect(canonicalReleaseAuthorityRoleFoundationSql).toContain(
       `GRANT reviewrouter_release_schema_owner TO ${adminUsername}`,
     );
