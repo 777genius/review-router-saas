@@ -113,9 +113,13 @@ describe("review configuration", () => {
       });
 
       expect(config.provider.reasoningEffort).toBe(reasoningEffort);
-      expect(mapConfigToRuntimeEnv(config).CODEX_REASONING_EFFORT).toBe(
-        reasoningEffort,
-      );
+      const runtimeEnv = mapConfigToRuntimeEnv(config);
+      expect(runtimeEnv.CODEX_REASONING_EFFORT).toBe(reasoningEffort);
+      if (reasoningEffort === "ultra") {
+        expect(runtimeEnv.RUN_TIMEOUT_SECONDS).toBe("1800");
+      } else {
+        expect(runtimeEnv).not.toHaveProperty("RUN_TIMEOUT_SECONDS");
+      }
     },
   );
 
