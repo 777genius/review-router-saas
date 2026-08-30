@@ -4,12 +4,23 @@ import { PrismaSetupPullRequestMergeHandler } from "./prisma-setup-pull-request-
 describe("PrismaSetupPullRequestMergeHandler", () => {
   it("recovers failed provisioning and accepts a repeated merge delivery idempotently", async () => {
     const repositoryUpdate = vi.fn();
-    const provisioningUpdate = vi.fn(async () => undefined);
+    let status: "failed" | "configured" = "failed";
+    const provisioningUpdate = vi.fn(async () => {
+      status = "configured";
+      return { count: 1 };
+    });
     const transactionClient = {
       repositoryConnection: { update: repositoryUpdate },
       workflowProvisioning: {
-        findMany: vi.fn(async () => [{ id: "provisioning_1" }]),
-        update: provisioningUpdate,
+        findFirst: vi.fn(async () => ({
+          id: "provisioning_1",
+          status,
+          branch: "reviewrouter/setup",
+          pullRequestUrl: "https://github.com/acme/widget/pull/7",
+          errorMessage: status === "failed" ? "setup_pr_closed" : null,
+        })),
+        updateMany: provisioningUpdate,
+        findUnique: vi.fn(async () => ({ status })),
       },
     };
     const prisma = {
@@ -63,22 +74,25 @@ describe("PrismaSetupPullRequestMergeHandler", () => {
     });
 
     expect(
-      transactionClient.workflowProvisioning.findMany,
+      transactionClient.workflowProvisioning.findFirst,
     ).toHaveBeenCalledWith({
-      where: {
-        repositoryId: "repository_1",
-        OR: [
-          { branch: "reviewrouter/setup" },
-          { pullRequestUrl: { endsWith: "/pull/7" } },
-        ],
-      },
+      where: { repositoryId: "repository_1" },
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-      take: 2,
-      select: { id: true },
+      select: {
+        id: true,
+        status: true,
+        branch: true,
+        pullRequestUrl: true,
+        errorMessage: true,
+      },
     });
-    expect(provisioningUpdate).toHaveBeenCalledTimes(2);
+    expect(provisioningUpdate).toHaveBeenCalledTimes(1);
     expect(provisioningUpdate).toHaveBeenLastCalledWith({
-      where: { id: "provisioning_1" },
+      where: {
+        id: "provisioning_1",
+        status: { in: ["setup_pr_open", "failed"] },
+        pullRequestUrl: "https://github.com/acme/widget/pull/7",
+      },
       data: { status: "configured", errorMessage: null },
     });
     expect(repositoryUpdate).not.toHaveBeenCalled();
@@ -87,8 +101,9 @@ describe("PrismaSetupPullRequestMergeHandler", () => {
   it("ignores a merged PR when no provisioning row matches", async () => {
     const transactionClient = {
       workflowProvisioning: {
-        findMany: vi.fn(async () => []),
-        update: vi.fn(),
+        findFirst: vi.fn(async () => null),
+        updateMany: vi.fn(),
+        findUnique: vi.fn(),
       },
     };
     const prisma = {
@@ -134,7 +149,7 @@ describe("PrismaSetupPullRequestMergeHandler", () => {
       reason: "not_reviewrouter_setup_pr",
     });
     expect(
-      transactionClient.workflowProvisioning.update,
+      transactionClient.workflowProvisioning.updateMany,
     ).not.toHaveBeenCalled();
   });
 });

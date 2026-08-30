@@ -1249,8 +1249,10 @@ async function confirmSetupPullRequestMergedMutation(
           select: { status: true, githubInstallationId: true },
         },
         provisioning: {
-          where: { status: "setup_pr_open" },
-          orderBy: { updatedAt: "desc" },
+          where: {
+            status: { in: ["setup_pr_open", "failed", "configured"] },
+          },
+          orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
           take: 1,
           select: {
             branch: true,
