@@ -171,6 +171,27 @@ describe("OctokitCertifiedForkReviewGateway", () => {
     ).rejects.toThrow("certified_fork_diff_budget_exceeded");
   });
 
+  it("enforces the paginated file-count budget", async () => {
+    const gateway = fixture(async (route, parameters) => {
+      if (route.endsWith("/pulls/{pull_number}/files")) {
+        const page = Number(parameters?.page);
+        return {
+          data: Array.from({ length: page <= 3 ? 100 : 1 }, (_, index) => ({
+            filename: `src/${page}-${index}.ts`,
+            status: "modified",
+            additions: 1,
+            deletions: 0,
+            patch: "@@",
+          })),
+        };
+      }
+      return response(route, parameters);
+    });
+    await expect(
+      gateway.prepareContext({ githubInstallationId: "7", binding }),
+    ).rejects.toThrow("certified_fork_diff_budget_exceeded");
+  });
+
   it("fails closed when the head moves between file pages", async () => {
     let pullReads = 0;
     const gateway = fixture(async (route, parameters) => {
