@@ -44,6 +44,30 @@ inputs:
   openrouter-api-key:
     description: OpenRouter API key for hybrid reviews.
     required: false
+  source-repository:
+    description: Exact fork repository full name for schema V5.
+    required: false
+  source-repository-id:
+    description: Exact numeric fork repository id for schema V5.
+    required: false
+  base-repository:
+    description: Exact base repository full name for schema V5.
+    required: false
+  base-repository-id:
+    description: Exact numeric base repository id for schema V5.
+    required: false
+  pull-request-number:
+    description: Exact base-repository pull request number for schema V5.
+    required: false
+  review-head-sha:
+    description: Exact fork head commit for schema V5.
+    required: false
+  base-sha:
+    description: Exact base commit for schema V5.
+    required: false
+  trust-domain:
+    description: Review trust domain. Schema V5 accepts fork only.
+    required: false
 runs:
   using: node24
   main: action-dist/index.cjs

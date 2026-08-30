@@ -941,6 +941,25 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
     if (input.openRouterApiKeySecret === true) {
       markers.push("OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}");
     }
+    if (
+      workflowSchemaVersion ===
+        CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5 &&
+      input.forkAgenticSandboxEnabled === true
+    ) {
+      markers.push(
+        "fork-sandbox-review:",
+        "github.event.pull_request.head.repo.full_name != github.repository",
+        "github.event.pull_request.head.repo.private == false",
+        "vars.REVIEW_ROUTER_FORK_AGENTIC_SANDBOX == 'certified'",
+        "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+        "persist-credentials: false",
+        'token: ""',
+        "mode: fork_prompt_only_v2",
+        "source-repository-id:",
+        "base-repository-id:",
+        "trust-domain: fork",
+      );
+    }
 
     return [markers];
   }

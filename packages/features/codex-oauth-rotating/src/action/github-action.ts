@@ -40,6 +40,7 @@ import {
   stat,
   statfs,
   symlink,
+  opendir,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,11 +48,13 @@ import { z } from "zod";
 import {
   codexRotatingRefreshRuntimeMode,
   codexRotatingRuntimeAuthMode,
+  codexForkPromptOnlyV2RuntimeMode,
   compactCodexAuthJson,
   computeCodexAuthGenerationHash,
   computeCodexRotatingAccountIdentityHash,
   encryptCodexRotatingAuthForGitHubSecret,
   classifyCodexRuntimeFailure,
+  CodexRotatingT0WorkflowSchemaVersion,
   pruneCodexRotatingChildEnv,
   validateCodexAuthJsonBytes,
 } from "../domain/codex-oauth-rotating";
@@ -150,6 +153,7 @@ type ActionRuntime = {
   readonly localProviderProxyFactory: LocalProviderProxyFactory;
   readonly fullReviewRuntimeRunner: FullReviewRuntimeRunner;
   readonly now: () => number;
+  readonly forkPromptOnlyV2Executor: ForkPromptOnlyV2Executor;
 };
 
 type ActionInputs = {
@@ -163,6 +167,36 @@ type ActionInputs = {
   readonly providerSecrets: ProviderSecretInputs;
   readonly sessionBindingId?: string | undefined;
   readonly sessionBindingVersion?: number | undefined;
+  readonly forkReviewBinding?: ForkReviewBinding | undefined;
+};
+
+export type ForkReviewBinding = {
+  readonly sourceRepository: string;
+  readonly sourceRepositoryId: string;
+  readonly baseRepository: string;
+  readonly baseRepositoryId: string;
+  readonly pullRequestNumber: number;
+  readonly reviewHeadSha: string;
+  readonly baseSha: string;
+  readonly trustDomain: "fork";
+};
+
+export type ForkPromptOnlyV2ExecutorInput = Readonly<{
+  apiUrl: string;
+  providerInstanceId: string;
+  workflowSchemaVersion: number;
+  workspace: string;
+  binding: ForkReviewBinding;
+}>;
+
+export interface ForkPromptOnlyV2Executor {
+  execute(input: ForkPromptOnlyV2ExecutorInput): Promise<void>;
+}
+
+const unavailableForkPromptOnlyV2Executor: ForkPromptOnlyV2Executor = {
+  async execute(): Promise<void> {
+    throw new Error("fork_prompt_only_executor_unavailable");
+  },
 };
 
 type ProviderSecretInputs = {
@@ -179,6 +213,8 @@ type PullRequestEvent = {
   readonly headSha: string;
   readonly baseSha: string;
   readonly changedLines?: number | undefined;
+  readonly sourceRepository?: string | undefined;
+  readonly sourceRepositoryId?: string | undefined;
 };
 
 type PreleaseResponse = {
@@ -456,6 +492,33 @@ export async function runCodexRotatingGitHubAction(
   const inputs = readActionInputs(env);
   maskProviderSecretInputs(io, inputs.providerSecrets);
   clearActionProviderSecretEnv(env);
+
+  if (inputs.mode === codexForkPromptOnlyV2RuntimeMode) {
+    try {
+      const event = await readForkPullRequestTargetEvent(
+        env,
+        inputs.workflowSchemaVersion,
+      );
+      assertSameRepositoryPullRequest(event, env);
+      assertForkReviewBindingMatchesEvent(inputs.forkReviewBinding, event);
+      const workspace = await resolveForkSandboxWorkspace(env);
+      await assertForkSandboxWorkspace(workspace);
+      clearActionAuthEnv(env);
+      await (
+        runtime.forkPromptOnlyV2Executor ?? unavailableForkPromptOnlyV2Executor
+      ).execute({
+        apiUrl: inputs.apiUrl,
+        providerInstanceId: inputs.providerInstanceId,
+        workflowSchemaVersion: inputs.workflowSchemaVersion,
+        workspace,
+        binding: inputs.forkReviewBinding,
+      });
+      return;
+    } finally {
+      clearActionAuthEnv(env);
+      clearOidcRequestEnv(env);
+    }
+  }
 
   if (inputs.mode === forkAgenticSandboxHostedPoolActionMode) {
     const executionDeadlineEpochMs = createReviewExecutionDeadlineEpochMs({
@@ -898,7 +961,10 @@ async function runForkAgenticSandboxGitHubAction(input: {
   readonly executionDeadlineEpochMs: number;
   readonly now: () => number;
 }): Promise<void> {
-  const event = await readForkPullRequestTargetEvent(input.env);
+  const event = await readForkPullRequestTargetEvent(
+    input.env,
+    input.inputs.workflowSchemaVersion,
+  );
   assertSameRepositoryPullRequest(event, input.env);
   const workspace = await resolveForkSandboxWorkspace(input.env);
   await assertForkSandboxWorkspace(workspace);
@@ -1359,6 +1425,15 @@ export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
           ),
         }
       : {};
+  const forkReviewBinding =
+    (mode === forkAgenticSandboxActionMode ||
+      mode === codexForkPromptOnlyV2RuntimeMode) &&
+    workflowSchemaVersion ===
+      CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
+      ? {
+          forkReviewBinding: readForkReviewBindingInputs(env),
+        }
+      : {};
 
   return {
     mode,
@@ -1373,7 +1448,49 @@ export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
       ...(openRouterApiKey ? { openRouterApiKey } : {}),
     },
     ...hostedBinding,
+    ...forkReviewBinding,
   };
+}
+
+function readForkReviewBindingInputs(
+  env: NodeJS.ProcessEnv,
+): ForkReviewBinding {
+  const trustDomain = requireInput(env, "trust-domain");
+  if (trustDomain !== "fork") {
+    throw new Error("invalid_fork_review_trust_domain");
+  }
+  return {
+    sourceRepository: requireRepositoryFullNameInput(env, "source-repository"),
+    sourceRepositoryId: requireNumericIdInput(env, "source-repository-id"),
+    baseRepository: requireRepositoryFullNameInput(env, "base-repository"),
+    baseRepositoryId: requireNumericIdInput(env, "base-repository-id"),
+    pullRequestNumber: readPositiveIntegerInput(env, "pull-request-number"),
+    reviewHeadSha: requireSha(
+      requireInput(env, "review-head-sha"),
+      "review_head_sha",
+    ),
+    baseSha: requireSha(requireInput(env, "base-sha"), "base_sha"),
+    trustDomain,
+  };
+}
+
+function requireRepositoryFullNameInput(
+  env: NodeJS.ProcessEnv,
+  name: string,
+): string {
+  const value = requireInput(env, name);
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value)) {
+    throw new Error(`invalid_repository_action_input:${name}`);
+  }
+  return value;
+}
+
+function requireNumericIdInput(env: NodeJS.ProcessEnv, name: string): string {
+  const value = requireInput(env, name);
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new Error(`invalid_numeric_id_action_input:${name}`);
+  }
+  return value;
 }
 
 export function readActionAuthJson(env: NodeJS.ProcessEnv): string {
@@ -1579,7 +1696,11 @@ async function readPullRequestEvent(
       readonly draft?: unknown;
       readonly head?: {
         readonly sha?: unknown;
-        readonly repo?: { readonly full_name?: unknown };
+        readonly repo?: {
+          readonly id?: unknown;
+          readonly full_name?: unknown;
+          readonly private?: unknown;
+        };
       };
       readonly base?: { readonly sha?: unknown };
       readonly additions?: unknown;
@@ -1664,6 +1785,7 @@ function formatReviewAdmissionSkipNotice(
 
 async function readForkPullRequestTargetEvent(
   env: NodeJS.ProcessEnv,
+  workflowSchemaVersion: number,
 ): Promise<PullRequestEvent> {
   if (env.GITHUB_EVENT_NAME !== "pull_request_target") {
     throw new Error("unsupported_event");
@@ -1682,7 +1804,11 @@ async function readForkPullRequestTargetEvent(
       readonly draft?: unknown;
       readonly head?: {
         readonly sha?: unknown;
-        readonly repo?: { readonly full_name?: unknown };
+        readonly repo?: {
+          readonly id?: unknown;
+          readonly full_name?: unknown;
+          readonly private?: unknown;
+        };
       };
       readonly base?: { readonly sha?: unknown };
     };
@@ -1698,6 +1824,17 @@ async function readForkPullRequestTargetEvent(
   if (repository === headRepo) {
     throw new Error("fork_pull_request_required");
   }
+  const sourceRepositoryId = event.pull_request?.head?.repo?.id;
+  const certifiedForkV5 =
+    workflowSchemaVersion ===
+    CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5;
+  if (
+    certifiedForkV5 &&
+    (!isSafeGitHubNumericId(sourceRepositoryId) ||
+      event.pull_request?.head?.repo?.private !== false)
+  ) {
+    throw new Error("public_fork_source_identity_required");
+  }
   const [owner, repo] = repository.split("/");
   if (!owner || !repo) {
     throw new Error("invalid_github_repository");
@@ -1712,7 +1849,32 @@ async function readForkPullRequestTargetEvent(
     repo,
     headSha: requireSha(event.pull_request?.head?.sha, "head_sha"),
     baseSha: requireSha(event.pull_request?.base?.sha, "base_sha"),
+    ...(certifiedForkV5
+      ? {
+          sourceRepository: headRepo,
+          sourceRepositoryId: String(sourceRepositoryId),
+        }
+      : {}),
   };
+}
+
+function assertForkReviewBindingMatchesEvent(
+  binding: ForkReviewBinding | undefined,
+  event: PullRequestEvent,
+): asserts binding is ForkReviewBinding {
+  if (!binding) throw new Error("fork_review_binding_required");
+  if (
+    binding.trustDomain !== "fork" ||
+    binding.sourceRepository !== event.sourceRepository ||
+    binding.sourceRepositoryId !== event.sourceRepositoryId ||
+    binding.baseRepository !== event.repository ||
+    binding.baseRepositoryId !== event.repositoryId ||
+    binding.pullRequestNumber !== event.number ||
+    binding.reviewHeadSha !== event.headSha ||
+    binding.baseSha !== event.baseSha
+  ) {
+    throw new Error("fork_review_binding_event_mismatch");
+  }
 }
 
 async function readTrustedSameRepositoryPullRequestTargetEvent(
@@ -1821,6 +1983,7 @@ async function requestCodexRotatingPreleaseWithFreshOidc(input: {
   readonly apiUrl: string;
   readonly providerInstanceId: string;
   readonly workflowSchemaVersion: number;
+  readonly forkReviewBinding?: ForkReviewBinding | undefined;
 }): Promise<PreleaseResponse> {
   let lastError: unknown;
   try {
@@ -1840,6 +2003,9 @@ async function requestCodexRotatingPreleaseWithFreshOidc(input: {
             oidcToken,
             providerInstanceId: input.providerInstanceId,
             workflowSchemaVersion: input.workflowSchemaVersion,
+            ...(input.forkReviewBinding
+              ? { forkReviewBinding: input.forkReviewBinding }
+              : {}),
           },
           maxAttempts: 1,
         });
@@ -3575,6 +3741,28 @@ async function assertForkSandboxWorkspace(workspace: string): Promise<void> {
     throw new Error("fork_sandbox_workspace_not_directory");
   }
   await assertGitConfigDoesNotPersistCredentials({ workspace });
+  await assertWorkspaceContainsNoSymlinks(workspace);
+}
+
+async function assertWorkspaceContainsNoSymlinks(root: string): Promise<void> {
+  const pending = [root];
+  let visited = 0;
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    const entries = await opendir(directory);
+    for await (const entry of entries) {
+      visited += 1;
+      if (visited > 100_000) {
+        throw new Error("fork_sandbox_workspace_entry_limit_exceeded");
+      }
+      if (entry.isSymbolicLink()) {
+        throw new Error("fork_sandbox_workspace_symlink_detected");
+      }
+      if (entry.isDirectory() && entry.name !== ".git") {
+        pending.push(join(directory, entry.name));
+      }
+    }
+  }
 }
 
 async function makeGitHubWorkspaceCodexHomeDirectory(

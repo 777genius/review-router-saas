@@ -24,6 +24,7 @@ export const codexRotatingSetupKind = "codex_oauth_rotating";
 export const codexRotatingRuntimeAuthMode = "codex-oauth-rotating";
 export const codexRotatingRefreshRuntimeMode = "codex-oauth-refresh";
 export const codexForkAgenticSandboxRuntimeMode = "fork-agentic-sandbox";
+export const codexForkPromptOnlyV2RuntimeMode = "fork_prompt_only_v2";
 export const codexRotatingSecretName = legacyCodexRotatingSecretName;
 export const codexRotatingProtocolVersion = 2 as const;
 export const codexRotatingReviewDraftsVariableName =
@@ -37,6 +38,7 @@ export enum CodexRotatingT0WorkflowSchemaVersion {
   ClientTriggeredV2 = 2,
   ClientTriggeredLifecycleV3 = 3,
   VersionedSecretNamespaceV4 = 4,
+  CertifiedForkReviewV5 = 5,
 }
 
 export const codexRotatingWorkflowSchemaVersion =
@@ -46,6 +48,7 @@ export const codexRotatingCanonicalT0WorkflowSchemaVersions = [
   CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
   CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
   CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+  CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5,
 ] as const;
 
 export function isClientTriggeredT0WorkflowSchemaVersion(
@@ -53,20 +56,31 @@ export function isClientTriggeredT0WorkflowSchemaVersion(
 ): value is
   | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
   | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3
-  | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 {
+  | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+  | CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5 {
   return (
     value === CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2 ||
     value === CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3 ||
-    value === CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+    value === CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+    value === CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
   );
 }
 
 export function isTrustedDefaultBranchTriggeredCodexWorkflowSchemaVersion(
   value: number | null | undefined,
-): value is CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 {
+): value is
+  | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+  | CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5 {
   return (
-    value === CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+    value === CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+    value === CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
   );
+}
+
+export function isCertifiedForkReviewWorkflowSchemaVersion(
+  value: number | null | undefined,
+): value is CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5 {
+  return value === CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5;
 }
 
 export function codexRotatingT0DefaultTimeoutMinutesForSchema(
@@ -577,15 +591,18 @@ export function renderCodexRotatingAdvisoryWorkflow(
   if (
     options.activeSecretNamespace &&
     schemaVersion !==
-      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 &&
+    schemaVersion !== CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
   ) {
     throw new Error(
       "codex_rotating_versioned_secret_namespace_schema_required",
     );
   }
   if (
-    schemaVersion ===
-      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 &&
+    (schemaVersion ===
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+      schemaVersion ===
+        CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5) &&
     !options.activeSecretNamespace
   ) {
     throw new Error("codex_rotating_active_secret_namespace_required");
@@ -604,7 +621,19 @@ export function renderCodexRotatingAdvisoryWorkflow(
     reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 &&
     options.forkAgenticSandboxEnabled === true
   ) {
-    throw new Error("codex_rotating_t0_fork_sandbox_not_supported");
+    if (
+      schemaVersion !==
+      CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
+    ) {
+      throw new Error("codex_rotating_t0_fork_sandbox_not_supported");
+    }
+    return renderCanonicalCodexRotatingT0WorkflowV5({
+      actionRef: options.actionRef,
+      apiUrl: options.apiUrl,
+      providerInstanceId: options.providerInstanceId,
+      refreshScheduleCron,
+      activeSecretNamespace: options.activeSecretNamespace!,
+    });
   }
   if (
     reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 &&
@@ -620,6 +649,12 @@ export function renderCodexRotatingAdvisoryWorkflow(
       openRouterApiKeySecret: options.openRouterApiKeySecret === true,
       activeSecretNamespace: options.activeSecretNamespace!,
     });
+  }
+  if (
+    reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 &&
+    schemaVersion === CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
+  ) {
+    throw new Error("codex_rotating_v5_fork_certification_required");
   }
   if (
     reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 &&
@@ -1041,6 +1076,13 @@ export function scanCodexRotatingAdvisoryWorkflow(
       workflow,
     )
   ) {
+    if (
+      extractCodexRotatingWorkflowSourceMetadata(workflow)
+        .workflowSchemaVersion ===
+      CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
+    ) {
+      return scanCanonicalCodexRotatingT0WorkflowV5(workflow);
+    }
     return scanCodexRotatingT0AdvisoryWorkflow(workflow);
   }
   const errors: string[] = [];
@@ -1324,6 +1366,194 @@ export function scanCodexRotatingAdvisoryWorkflow(
     ) {
       errors.push("refresh_job_requires_id_token_write");
     }
+  }
+  return { valid: errors.length === 0, errors };
+}
+
+function scanCanonicalCodexRotatingT0WorkflowV5(
+  workflow: string,
+): CodexRotatingWorkflowScanResult {
+  const errors: string[] = [];
+  const source = extractCodexRotatingWorkflowSourceMetadata(workflow);
+  const sameRepoJob = extractWorkflowJobSection(workflow, "codex-review") ?? "";
+  const forkJob =
+    extractWorkflowJobSection(workflow, "fork-sandbox-review") ?? "";
+  const refreshJob = extractWorkflowJobSection(workflow, "codex-refresh") ?? "";
+  const refreshEnabled = refreshJob.length > 0;
+  const expectedJobs = refreshEnabled
+    ? ["codex-review", "fork-sandbox-review", "codex-refresh"]
+    : ["codex-review", "fork-sandbox-review"];
+
+  if (!workflowJobIdsExactly(workflow, expectedJobs)) {
+    errors.push("t0_v5_job_inventory_invalid");
+  }
+  if (
+    source.workflowSchemaVersion !==
+    CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
+  ) {
+    errors.push("t0_v5_schema_invalid");
+  }
+  if (!source.actionRef || !source.apiUrl || !source.providerInstanceId) {
+    errors.push("t0_v5_source_metadata_missing");
+  }
+  let release:
+    | { readonly repository: string; readonly commitSha: string }
+    | undefined;
+  try {
+    release = source.actionRef
+      ? parseImmutableActionRelease(source.actionRef)
+      : undefined;
+  } catch {
+    errors.push("t0_v5_action_ref_must_be_full_sha");
+  }
+
+  const expectedConcurrencyGroup = source.providerInstanceId
+    ? renderCodexRotatingConcurrencyGroup(source.providerInstanceId)
+    : undefined;
+  for (const [job, code] of [
+    [sameRepoJob, "t0_v5_same_repo_concurrency_invalid"],
+    [forkJob, "t0_v5_fork_concurrency_invalid"],
+    ...(refreshEnabled
+      ? ([[refreshJob, "t0_v5_refresh_concurrency_invalid"]] as const)
+      : []),
+  ] as const) {
+    if (
+      !workflowJobUsesExpectedConcurrency({
+        job,
+        expectedGroup: expectedConcurrencyGroup,
+      })
+    ) {
+      errors.push(code);
+    }
+  }
+
+  const sameRepoGuard =
+    "github.event.pull_request.head.repo.full_name == github.repository";
+  const forkGuard =
+    "github.event.pull_request.head.repo.full_name != github.repository";
+  if (
+    !sameRepoJob.includes("github.event_name == 'pull_request_target'") ||
+    !sameRepoJob.includes(sameRepoGuard) ||
+    sameRepoJob.includes(forkGuard) ||
+    !sameRepoJob.includes("github.event.pull_request.user.type != 'Bot'")
+  ) {
+    errors.push("t0_v5_same_repo_guard_invalid");
+  }
+  for (const marker of [
+    "github.event_name == 'pull_request_target'",
+    forkGuard,
+    "github.event.pull_request.head.repo.private == false",
+    "github.event.pull_request.user.type != 'Bot'",
+    "github.event.pull_request.draft == false",
+    `vars.${codexForkAgenticSandboxCertificationVariable} == '${codexForkAgenticSandboxCertificationValue}'`,
+  ]) {
+    if (!forkJob.includes(marker)) {
+      errors.push(`t0_v5_fork_guard_missing:${marker}`);
+    }
+  }
+  if (forkJob.includes(sameRepoGuard)) {
+    errors.push("t0_v5_fork_guard_invalid");
+  }
+
+  if (
+    !/^ {2}pull_request_target:\s*$/m.test(workflow) ||
+    /^ {2}(?:pull_request|workflow_dispatch):\s*$/m.test(workflow)
+  ) {
+    errors.push("t0_v5_trusted_ingress_invalid");
+  }
+  if (!permissionsAreEmpty(parseWorkflowPermissions(workflow, 0))) {
+    errors.push("t0_v5_workflow_permissions_invalid");
+  }
+  if (
+    !permissionsExactly(parseWorkflowPermissions(sameRepoJob, 4), [
+      { name: "contents", value: "read" },
+      { name: "pull-requests", value: "read" },
+      { name: "id-token", value: "write" },
+    ])
+  ) {
+    errors.push("t0_v5_same_repo_permissions_invalid");
+  }
+  if (
+    !permissionsExactly(parseWorkflowPermissions(forkJob, 4), [
+      { name: "contents", value: "read" },
+      { name: "id-token", value: "write" },
+    ])
+  ) {
+    errors.push("t0_v5_fork_permissions_invalid");
+  }
+
+  const forkMarkers = [
+    "uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+    "repository: ${{ github.event.pull_request.head.repo.full_name }}",
+    "ref: ${{ github.event.pull_request.head.sha }}",
+    "path: safe-workspace",
+    "persist-credentials: false",
+    'token: ""',
+    "fetch-depth: 1",
+    "submodules: false",
+    "lfs: false",
+    "clean: true",
+    "set-safe-directory: false",
+    `mode: ${codexForkPromptOnlyV2RuntimeMode}`,
+    "source-repository: ${{ github.event.pull_request.head.repo.full_name }}",
+    "source-repository-id: ${{ format('{0}', github.event.pull_request.head.repo.id) }}",
+    "base-repository: ${{ github.repository }}",
+    "base-repository-id: ${{ github.repository_id }}",
+    "pull-request-number: ${{ format('{0}', github.event.pull_request.number) }}",
+    "review-head-sha: ${{ github.event.pull_request.head.sha }}",
+    "base-sha: ${{ github.event.pull_request.base.sha }}",
+    "trust-domain: fork",
+    "REVIEW_ROUTER_PR_WORKSPACE: ${{ github.workspace }}/safe-workspace",
+  ];
+  for (const marker of forkMarkers) {
+    if (!forkJob.includes(marker)) {
+      errors.push(`t0_v5_fork_marker_missing:${marker}`);
+    }
+  }
+  for (const forbidden of [
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "OPENROUTER_API_KEY",
+    "GITHUB_TOKEN:",
+    "CODEX_HOME:",
+    "auth-json:",
+    "run:",
+    "uses: ./",
+  ]) {
+    if (forkJob.includes(forbidden)) {
+      errors.push(`t0_v5_fork_surface_forbidden:${forbidden}`);
+    }
+  }
+  if ((forkJob.match(/^ {10}token:\s*""\s*$/gm)?.length ?? 0) !== 1) {
+    errors.push("t0_v5_fork_anonymous_checkout_required");
+  }
+  if ((forkJob.match(/^ {8}env:\s*$/gm)?.length ?? 0) !== 1) {
+    errors.push("t0_v5_fork_env_inventory_invalid");
+  }
+
+  const usesRefs = [...workflow.matchAll(/^\s*uses:\s*([^\s]+)$/gm)].map(
+    (match) => match[1]!,
+  );
+  const expectedRefs = release
+    ? [
+        `${release.repository}/.github/workflows/reviewrouter-t0-reusable.yml@${release.commitSha}`,
+        "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+        source.actionRef!,
+        ...(refreshEnabled ? [source.actionRef!] : []),
+      ]
+    : [];
+  if (
+    usesRefs.length !== expectedRefs.length ||
+    usesRefs.some((ref, index) => ref !== expectedRefs[index])
+  ) {
+    errors.push("t0_v5_action_inventory_invalid");
+  }
+  if (
+    refreshEnabled &&
+    !permissionsExactly(parseWorkflowPermissions(refreshJob, 4), [
+      { name: "id-token", value: "write" },
+    ])
+  ) {
+    errors.push("t0_v5_refresh_permissions_invalid");
   }
   return { valid: errors.length === 0, errors };
 }
@@ -1861,6 +2091,148 @@ export function renderCanonicalCodexRotatingT0WorkflowV4(
       CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
     ),
   });
+}
+
+/**
+ * Schema V5 deliberately lives beside, rather than inside, the immutable V4
+ * renderer. The same-repository lane keeps the V4 reusable-call shape while
+ * the fork lane runs only pinned, base-controlled actions.
+ */
+export function renderCanonicalCodexRotatingT0WorkflowV5(
+  input: Pick<
+    CodexRotatingWorkflowOptions,
+    "actionRef" | "apiUrl" | "providerInstanceId" | "refreshScheduleCron"
+  > & { readonly activeSecretNamespace: VersionedProviderSecretNamespace },
+): string {
+  assertSafeActionRef(input.actionRef);
+  const release = parseImmutableActionRelease(input.actionRef);
+  const reusableWorkflowRef = `${release.repository}/.github/workflows/reviewrouter-t0-reusable.yml@${release.commitSha}`;
+  const refreshScheduleCron =
+    input.refreshScheduleCron === undefined
+      ? codexRotatingDefaultRefreshScheduleCron
+      : input.refreshScheduleCron;
+  const concurrencyGroup = renderCodexRotatingConcurrencyGroup(
+    input.providerInstanceId,
+  );
+  const schemaVersion =
+    CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5;
+  const timeoutMinutes =
+    codexRotatingT0DefaultTimeoutMinutesForSchema(schemaVersion);
+  const secretName = input.activeSecretNamespace.name;
+  const workflowName = `ReviewRouter Codex OAuth [${serializeVersionedProviderSecretNamespaceMetadata(input.activeSecretNamespace)}]`;
+
+  return `name: ${workflowName}
+
+run-name: \${{ format('ReviewRouter review PR {0} at {1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]${
+      refreshScheduleCron
+        ? `
+  schedule:
+    - cron: ${JSON.stringify(refreshScheduleCron)}`
+        : ""
+    }
+
+permissions: {}
+
+jobs:
+  codex-review:
+    name: codex-review
+    if: \${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' && (github.event.pull_request.draft == false || vars.${codexRotatingReviewDraftsVariableName} == 'true') }}
+    concurrency:
+      group: ${concurrencyGroup}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    uses: ${reusableWorkflowRef}
+    with:
+      runtime_ref: ${JSON.stringify(release.commitSha)}
+      api_url: ${JSON.stringify(input.apiUrl)}
+      runtime_config_mode: oidc
+      pr_number: \${{ format('{0}', github.event.pull_request.number) }}
+      review_head_sha: \${{ github.event.pull_request.head.sha }}
+      provider_instance_id: ${JSON.stringify(input.providerInstanceId)}
+      workflow_schema_version: ${schemaVersion}
+      max_changed_lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}
+      review_timeout_minutes: \${{ fromJSON(vars.${codexRotatingTimeoutMinutesVariableName} || '${timeoutMinutes}') }}
+    secrets:
+      CODEX_AUTH_JSON: \${{ secrets.${secretName} }}
+
+  fork-sandbox-review:
+    name: fork-sandbox-review
+    if: \${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && github.event.pull_request.head.repo.private == false && github.event.pull_request.user.type != 'Bot' && github.event.pull_request.draft == false && vars.${codexForkAgenticSandboxCertificationVariable} == '${codexForkAgenticSandboxCertificationValue}' }}
+    runs-on: ${codexRotatingDefaultRunner}
+    timeout-minutes: \${{ fromJSON(vars.${codexRotatingTimeoutMinutesVariableName} || '${timeoutMinutes}') }}
+    concurrency:
+      group: ${concurrencyGroup}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout exact public fork head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: \${{ github.event.pull_request.head.repo.full_name }}
+          ref: \${{ github.event.pull_request.head.sha }}
+          path: safe-workspace
+          persist-credentials: false
+          token: ""
+          fetch-depth: 1
+          submodules: false
+          lfs: false
+          clean: true
+          set-safe-directory: false
+
+      - name: ReviewRouter certified fork review
+        id: run_fork_sandbox
+        uses: ${input.actionRef}
+        with:
+          mode: ${codexForkPromptOnlyV2RuntimeMode}
+          api-url: ${JSON.stringify(input.apiUrl)}
+          provider-instance-id: ${JSON.stringify(input.providerInstanceId)}
+          workflow-schema-version: "${schemaVersion}"
+          review-timeout-minutes: \${{ vars.${codexRotatingTimeoutMinutesVariableName} || '${timeoutMinutes}' }}
+          source-repository: \${{ github.event.pull_request.head.repo.full_name }}
+          source-repository-id: \${{ format('{0}', github.event.pull_request.head.repo.id) }}
+          base-repository: \${{ github.repository }}
+          base-repository-id: \${{ github.repository_id }}
+          pull-request-number: \${{ format('{0}', github.event.pull_request.number) }}
+          review-head-sha: \${{ github.event.pull_request.head.sha }}
+          base-sha: \${{ github.event.pull_request.base.sha }}
+          trust-domain: fork
+        env:
+          REVIEW_ROUTER_PR_WORKSPACE: \${{ github.workspace }}/safe-workspace
+${
+  refreshScheduleCron
+    ? `
+  codex-refresh:
+    name: codex-refresh
+    runs-on: ${codexRotatingDefaultRunner}
+    timeout-minutes: 60
+    concurrency:
+      group: ${concurrencyGroup}
+      cancel-in-progress: false
+    if: \${{ github.event_name == 'schedule' }}
+    permissions:
+      id-token: write
+    steps:
+      - name: ReviewRouter Codex OAuth refresh
+        id: refresh_codex
+        uses: ${input.actionRef}
+        with:
+          mode: ${codexRotatingRefreshRuntimeMode}
+          api-url: ${JSON.stringify(input.apiUrl)}
+          provider-instance-id: ${JSON.stringify(input.providerInstanceId)}
+          workflow-schema-version: "${schemaVersion}"
+          auth-json: \${{ secrets.${secretName} }}
+`
+    : ""
+}`;
 }
 
 function renderCanonicalCodexRotatingClientTriggeredT0Workflow(

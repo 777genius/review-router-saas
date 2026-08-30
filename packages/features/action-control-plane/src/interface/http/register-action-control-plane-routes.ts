@@ -137,6 +137,21 @@ const codexRotatingPreleaseBodySchema = z
     audience: z.string().min(1).optional(),
     providerInstanceId: z.string().min(8).max(160),
     workflowSchemaVersion: z.number().int().positive(),
+    forkReviewBinding: z
+      .object({
+        sourceRepository: z
+          .string()
+          .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+        sourceRepositoryId: z.string().regex(/^[1-9][0-9]*$/),
+        baseRepository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+        baseRepositoryId: z.string().regex(/^[1-9][0-9]*$/),
+        pullRequestNumber: z.number().int().positive(),
+        reviewHeadSha: z.string().regex(/^[a-fA-F0-9]{40}$/),
+        baseSha: z.string().regex(/^[a-fA-F0-9]{40}$/),
+        trustDomain: z.literal("fork"),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -329,6 +344,9 @@ export async function registerActionControlPlaneRoutes(
             audience,
             providerInstanceId: body.providerInstanceId,
             workflowSchemaVersion: body.workflowSchemaVersion,
+            ...(body.forkReviewBinding
+              ? { forkReviewBinding: body.forkReviewBinding }
+              : {}),
           },
           dependencies as PreleaseCodexRotatingOAuthDependencies,
         );

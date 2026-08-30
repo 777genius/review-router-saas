@@ -6,6 +6,7 @@ import {
   assertActiveVersionedSecretWorkflowAttestation,
   assertSameVersionedProviderSecretNamespace,
   type CodexRotatingOidcClaims,
+  isCertifiedForkReviewWorkflowSchemaVersion,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import type { Clock } from "@reviewrouter/shared";
 import type { ActionControlPlaneRepositoryPort } from "../ports/action-control-plane-repository-port.js";
@@ -46,7 +47,19 @@ type CodexRotatingPreleaseInput = {
   readonly audience: string;
   readonly providerInstanceId: string;
   readonly workflowSchemaVersion: number;
+  readonly forkReviewBinding?: ForkReviewBinding | undefined;
 };
+
+export type ForkReviewBinding = Readonly<{
+  sourceRepository: string;
+  sourceRepositoryId: string;
+  baseRepository: string;
+  baseRepositoryId: string;
+  pullRequestNumber: number;
+  reviewHeadSha: string;
+  baseSha: string;
+  trustDomain: "fork";
+}>;
 
 export type CodexRotatingPreleaseLeaseResponse = {
   readonly protocolVersion: 1;
@@ -81,6 +94,12 @@ export async function preleaseCodexRotatingOAuth(
       audience: input.audience,
     }),
   );
+  if (
+    input.forkReviewBinding &&
+    !isCertifiedForkReviewWorkflowSchemaVersion(input.workflowSchemaVersion)
+  ) {
+    throw new Error("fork_review_binding_schema_invalid");
+  }
   const repository =
     await dependencies.repositories.findSelectedRepositoryByGithubId(
       claims.repository_id,
@@ -179,6 +198,9 @@ export async function preleaseCodexRotatingOAuth(
     claims,
     repository,
     workflowSourceVerifier: dependencies.codexRotatingWorkflowSourceVerifier,
+    ...(input.forkReviewBinding
+      ? { forkReviewBinding: input.forkReviewBinding }
+      : {}),
   });
   const intentRequired =
     reviewIntentRequired({
@@ -292,6 +314,7 @@ async function resolvePullRequestNumber(input: {
   readonly claims: CodexRotatingOidcClaims;
   readonly repository: ActionRepositoryContext;
   readonly workflowSourceVerifier: CodexRotatingWorkflowSourceVerifierPort;
+  readonly forkReviewBinding?: ForkReviewBinding | undefined;
 }): Promise<number | undefined> {
   if (input.claims.event_name === "pull_request") {
     const match = /^refs\/pull\/([1-9][0-9]*)\/(?:merge|head)$/.exec(
@@ -305,6 +328,43 @@ async function resolvePullRequestNumber(input: {
     return pullRequestNumber;
   }
   if (input.claims.event_name !== "pull_request_target") return undefined;
+  if (input.forkReviewBinding) {
+    const resolveFork =
+      input.workflowSourceVerifier.resolveWorkflowRunForkPullRequest;
+    if (!resolveFork) {
+      throw new Error("codex_rotating_fork_pull_request_resolver_unavailable");
+    }
+    const live = await resolveFork.call(input.workflowSourceVerifier, {
+      repository: input.repository,
+      githubRunId: input.claims.run_id,
+      githubRunAttempt: input.claims.run_attempt,
+      eventName: input.claims.event_name,
+    });
+    const expected = input.forkReviewBinding;
+    if (
+      expected.trustDomain !== "fork" ||
+      live.baseRepository !== expected.baseRepository ||
+      live.baseRepositoryId !== expected.baseRepositoryId ||
+      live.baseRepository !== input.repository.fullName ||
+      live.baseRepositoryId !== input.repository.githubRepositoryId ||
+      live.sourceRepository !== expected.sourceRepository ||
+      live.sourceRepositoryId !== expected.sourceRepositoryId ||
+      live.sourceRepository === live.baseRepository ||
+      live.pullRequestNumber !== expected.pullRequestNumber ||
+      live.reviewHeadSha !== expected.reviewHeadSha.toLowerCase() ||
+      live.baseSha !== expected.baseSha.toLowerCase()
+    ) {
+      throw new Error("codex_rotating_fork_pull_request_identity_mismatch");
+    }
+    if (
+      live.sourceVisibility !== "public" ||
+      live.draft ||
+      live.authorType === "Bot"
+    ) {
+      throw new Error("codex_rotating_fork_pull_request_not_admitted");
+    }
+    return live.pullRequestNumber;
+  }
   const resolve = input.workflowSourceVerifier.resolveWorkflowRunPullRequest;
   if (!resolve) {
     throw new Error("codex_rotating_workflow_run_resolver_unavailable");

@@ -71,8 +71,10 @@ export async function isWorkflowSetupAlreadyCurrent(
                   }
                 : {}),
             }),
-          ...(input.codexRotatingWorkflowSchemaVersion ===
-            CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 &&
+          ...((input.codexRotatingWorkflowSchemaVersion ===
+            CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+            input.codexRotatingWorkflowSchemaVersion ===
+              CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5) &&
           input.codexRotatingWorkflowSecretNamespace
             ? {
                 expectedContentValidator: (workflow: string) =>
@@ -83,6 +85,8 @@ export async function isWorkflowSetupAlreadyCurrent(
                       input.codexRotatingProviderInstanceId!,
                     expectedSecretNamespace:
                       input.codexRotatingWorkflowSecretNamespace!,
+                    expectedWorkflowSchemaVersion:
+                      input.codexRotatingWorkflowSchemaVersion!,
                   }),
               }
             : {}),
@@ -110,6 +114,7 @@ function isCanonicalVersionedCodexWorkflowReady(input: {
   readonly expectedActionRef: string;
   readonly expectedProviderInstanceId: string;
   readonly expectedSecretNamespace: VersionedProviderSecretNamespace;
+  readonly expectedWorkflowSchemaVersion: CodexRotatingT0WorkflowSchemaVersion;
 }): boolean {
   try {
     if (!scanCodexRotatingAdvisoryWorkflow(input.workflow).valid) {
@@ -121,8 +126,7 @@ function isCanonicalVersionedCodexWorkflowReady(input: {
     if (
       metadata.actionRef !== input.expectedActionRef ||
       metadata.providerInstanceId !== input.expectedProviderInstanceId ||
-      metadata.workflowSchemaVersion !==
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+      metadata.workflowSchemaVersion !== input.expectedWorkflowSchemaVersion ||
       !metadata.secretNamespace
     ) {
       return false;

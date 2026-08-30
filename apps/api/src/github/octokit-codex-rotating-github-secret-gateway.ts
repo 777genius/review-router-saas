@@ -850,6 +850,57 @@ export class OctokitCodexRotatingGitHubSecretGateway
     });
   }
 
+  async resolveWorkflowRunForkPullRequest(input: {
+    readonly repository: {
+      readonly githubInstallationId: string;
+      readonly githubRepositoryId: string;
+      readonly fullName: string;
+      readonly owner: string;
+    };
+    readonly githubRunId: string;
+    readonly githubRunAttempt: string;
+    readonly eventName: "pull_request_target";
+  }) {
+    const token = await this.mintRepositoryToken({
+      githubInstallationId: input.repository.githubInstallationId,
+      githubRepositoryId: input.repository.githubRepositoryId,
+      permissions: { actions: "read", pull_requests: "read" },
+    });
+    const owner = input.repository.owner;
+    const repo = repoNameFromFullName(input.repository.fullName);
+    const runResponse = (await githubRequest(
+      "GET /repos/{owner}/{repo}/actions/runs/{run_id}",
+      {
+        owner,
+        repo,
+        run_id: parsePositiveSafeInteger(
+          input.githubRunId,
+          "codex_rotating_workflow_run_id_invalid",
+        ),
+        headers: { authorization: `Bearer ${token.token}` },
+      },
+    )) as WorkflowRunResponse;
+    const pullRequestNumber = decodeWorkflowRunPullRequest(runResponse.data, {
+      eventName: input.eventName,
+      githubRepositoryId: input.repository.githubRepositoryId,
+      githubRunAttempt: input.githubRunAttempt,
+    });
+    const pullResponse = (await githubRequest(
+      "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+      {
+        owner,
+        repo,
+        pull_number: pullRequestNumber,
+        headers: { authorization: `Bearer ${token.token}` },
+      },
+    )) as PullRequestResponse;
+    return decodeForkPullRequestBinding(pullResponse.data, {
+      baseRepository: input.repository.fullName,
+      baseRepositoryId: input.repository.githubRepositoryId,
+      pullRequestNumber,
+    });
+  }
+
   async resolve(input: {
     readonly repository: ActionRepositoryContext;
     readonly pullRequestNumber: number;
@@ -1581,6 +1632,77 @@ function decodePullRequestReviewFacts(
     headSha,
     additions: pullRequest.additions as number,
     deletions: pullRequest.deletions as number,
+  };
+}
+
+function decodeForkPullRequestBinding(
+  data: unknown,
+  expected: {
+    readonly baseRepository: string;
+    readonly baseRepositoryId: string;
+    readonly pullRequestNumber: number;
+  },
+) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("codex_rotating_fork_pull_request_invalid_response");
+  }
+  const pullRequest = data as {
+    readonly number?: unknown;
+    readonly draft?: unknown;
+    readonly user?: { readonly type?: unknown } | null;
+    readonly base?: {
+      readonly sha?: unknown;
+      readonly repo?: {
+        readonly id?: unknown;
+        readonly full_name?: unknown;
+      } | null;
+    };
+    readonly head?: {
+      readonly sha?: unknown;
+      readonly repo?: {
+        readonly id?: unknown;
+        readonly full_name?: unknown;
+        readonly private?: unknown;
+        readonly visibility?: unknown;
+      } | null;
+    };
+  };
+  const baseSha = normalizeCommitSha(pullRequest.base?.sha);
+  const reviewHeadSha = normalizeCommitSha(pullRequest.head?.sha);
+  const baseRepositoryId = String(pullRequest.base?.repo?.id ?? "");
+  const sourceRepositoryId = String(pullRequest.head?.repo?.id ?? "");
+  const baseRepository = pullRequest.base?.repo?.full_name;
+  const sourceRepository = pullRequest.head?.repo?.full_name;
+  const sourceVisibility =
+    pullRequest.head?.repo?.visibility ??
+    (pullRequest.head?.repo?.private === false ? "public" : "private");
+  if (
+    pullRequest.number !== expected.pullRequestNumber ||
+    pullRequest.draft !== false ||
+    typeof pullRequest.user?.type !== "string" ||
+    baseRepository !== expected.baseRepository ||
+    baseRepositoryId !== expected.baseRepositoryId ||
+    typeof sourceRepository !== "string" ||
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(sourceRepository) ||
+    sourceRepository === baseRepository ||
+    !/^[1-9][0-9]*$/.test(sourceRepositoryId) ||
+    !baseSha ||
+    !reviewHeadSha ||
+    !["public", "private", "internal"].includes(String(sourceVisibility))
+  ) {
+    throw new Error("codex_rotating_fork_pull_request_identity_invalid");
+  }
+  return {
+    baseRepository,
+    baseRepositoryId,
+    sourceRepository,
+    sourceRepositoryId,
+    sourceVisibility: sourceVisibility as "public" | "private" | "internal",
+    pullRequestNumber: expected.pullRequestNumber,
+    reviewHeadSha,
+    baseSha,
+    draft: false,
+    authorType: pullRequest.user.type,
   };
 }
 
