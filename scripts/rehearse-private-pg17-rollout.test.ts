@@ -14,6 +14,7 @@ import {
   cleanupCaptureOnlyRehearsalFixtures,
   cleanupDisposableRehearsalResources,
   captureOnlyRehearsalFixtureCleanupSql,
+  disposablePg16SourceAuthorityRoleFoundationSql,
   disposablePg17CanonicalRoleBootstrapSetupSql,
   disposablePg17TargetRoleFoundationSql,
   disposableSqlConfiguration,
@@ -288,9 +289,9 @@ describe("disposable dual-version rehearsal", () => {
   it("uses the exact reviewed compact digest authorization in normal rehearsal", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual({
       preactivationCatalogPolicySha256:
-        "sha256:95591a9df4dd88afe9a9a10118bf11b7e5ec4694748f8262de124d5f7ba7fd59",
+        "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
       activatedCatalogPolicySha256:
-        "sha256:6c8f40abc68b063b835289d3d42f7ee07d9769baf269c5b05fb85db72c8cb3a0",
+        "sha256:cc35c6b43fe8b117a492705eeaf2ab9a9ac0e05f98546fa32ac9d340df89867b",
     });
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual(
       canonicalActivationCatalogPolicyDigests,
@@ -334,6 +335,19 @@ describe("disposable dual-version rehearsal", () => {
     );
     expect(foundation).toContain(
       "GRANT reviewrouter_comment_token_custody TO reviewrouter_role_bootstrap WITH ADMIN TRUE",
+    );
+    expect(foundation).toContain(
+      "CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
+  });
+  it("models the published authority roles before source migrations", () => {
+    const foundation = disposablePg16SourceAuthorityRoleFoundationSql();
+
+    expect(foundation).toContain(
+      "CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
+    expect(foundation).toContain(
+      "CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
     );
   });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
@@ -466,7 +480,11 @@ describe("disposable dual-version rehearsal", () => {
   });
   it("runs capture-only through the authoritative migration use case without staging", async () => {
     const calls: string[] = [];
-    const candidate = Object.freeze({ kind: "candidate", version: 1 });
+    const candidate = Object.freeze({
+      kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+      version: 1,
+      policies: Object.freeze({}),
+    });
     const transition = Object.freeze({
       transitionSha256: `sha256:${"1".repeat(64)}`,
       migrationArtifactDigest: `sha256:${"2".repeat(64)}`,
@@ -510,7 +528,14 @@ describe("disposable dual-version rehearsal", () => {
         captureCandidate,
         stageTargetServices,
       }),
-    ).resolves.toEqual({ mode: "capture-only", candidate });
+    ).resolves.toEqual({
+      mode: "capture-only",
+      candidate: {
+        ...candidate,
+        version: 2,
+        liveCatalogDigest: transition.postCatalogDigest,
+      },
+    });
     expect(calls).toEqual([
       "stage:run_release_migration",
       "rollout-use-case-cas",

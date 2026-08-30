@@ -3,27 +3,33 @@ import { readFile } from "node:fs/promises";
 import {
   activationCatalogPromotionOptIn,
   activationCatalogPromotionProvenancePath,
+  assertArtifactCandidate,
   assertActivationCatalogPolicyIndependentReviewEvidence,
   assertReviewedActivationCatalogPromotionProvenance,
   promotePrivatePg17ActivationCatalogPolicy,
   reviewedActivationCatalogCandidate,
 } from "./promote-private-pg17-activation-catalog-policy.mjs";
+import canonicalActivationCatalogPolicyArtifact from "../packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js";
+import { assertActivationCatalogLiveDigestTransitionBinding } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation";
+import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
 
 describe("activation catalog policy promotion", () => {
-  it("pins the exact reviewed v28 candidate and operator opt-in", () => {
+  it("pins the exact reviewed v29 candidate and operator opt-in", () => {
     expect(activationCatalogPromotionOptIn).toBe(
-      "promote-reviewed-activation-catalog-v28",
+      "promote-reviewed-activation-catalog-v29",
     );
     expect(reviewedActivationCatalogCandidate).toEqual({
       sha256:
-        "ba51051d9407b4ca7b6b9c6ce74210f9ef70556e5df23512c4364024ef0800a9",
-      bytes: 2_506_590,
+        "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28",
+      bytes: 2_651_682,
+      liveCatalogDigest:
+        "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
       preactivationCatalogPolicySha256:
-        "sha256:95591a9df4dd88afe9a9a10118bf11b7e5ec4694748f8262de124d5f7ba7fd59",
+        "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
       activatedCatalogPolicySha256:
-        "sha256:6c8f40abc68b063b835289d3d42f7ee07d9769baf269c5b05fb85db72c8cb3a0",
+        "sha256:cc35c6b43fe8b117a492705eeaf2ab9a9ac0e05f98546fa32ac9d340df89867b",
       artifactCanonicalSha256:
-        "sha256:bb528f22b531f212641ecebdb5ea8d0b851f0291a8c830d5bb41c88b348ccb57",
+        "sha256:5d7a98bf13e65ab8071691086efb792699b994961caadf435ee9fd4845c2f1cf",
     });
   });
 
@@ -60,6 +66,58 @@ describe("activation catalog policy promotion", () => {
     ).rejects.toThrow(
       /activation_catalog_policy_promotion_candidate_(?:size|hash)_drift/u,
     );
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["wrong", `sha256:${"b".repeat(64)}`],
+  ])(
+    "rejects a %s reviewed live catalog digest",
+    (_name, liveCatalogDigest) => {
+      const candidate = {
+        kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+        version: 2,
+        ...(liveCatalogDigest === undefined ? {} : { liveCatalogDigest }),
+        policies: canonicalActivationCatalogPolicyArtifact.policies,
+      };
+
+      expect(() =>
+        assertArtifactCandidate(candidate, {
+          ...reviewedActivationCatalogCandidate,
+          liveCatalogDigest: `sha256:${"a".repeat(64)}`,
+        }),
+      ).toThrow("activation_catalog_policy_promotion_candidate_invalid");
+    },
+  );
+
+  it("accepts the exact reviewed live catalog digest", () => {
+    const liveCatalogDigest = `sha256:${"a".repeat(64)}`;
+    expect(() =>
+      assertArtifactCandidate(
+        {
+          kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+          version: 2,
+          liveCatalogDigest,
+          policies: canonicalActivationCatalogPolicyArtifact.policies,
+        },
+        { ...reviewedActivationCatalogCandidate, liveCatalogDigest },
+      ),
+    ).not.toThrow();
+  });
+
+  it("fails closed when the candidate and migration transition digests diverge", () => {
+    expect(() =>
+      assertActivationCatalogLiveDigestTransitionBinding(
+        reviewedActivationCatalogCandidate.liveCatalogDigest,
+        canonicalReleaseMigrationArtifact.postCatalogDigest,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertActivationCatalogLiveDigestTransitionBinding(
+        reviewedActivationCatalogCandidate.liveCatalogDigest,
+        `sha256:${"f".repeat(64)}`,
+      ),
+    ).toThrow("activation_catalog_policy_live_digest_transition_drift");
   });
 
   it("refuses promotion without exact independent GO evidence", () => {

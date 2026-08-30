@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   liveV70V72CatalogDigestSha256 as fencedLiveV70V72CatalogDigestSha256,
   fencedLiveV70V72CatalogDigestSql,
-  liveV70V86CatalogDigestCaptureHold,
 } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
 import { sha256Canonical } from "../packages/features/release-rollout/src/domain/release-rollout";
@@ -826,6 +825,9 @@ describe("canonical exclusive release migration caller", () => {
     expect(liveV70V72CatalogDigestSha256).toBe(
       fencedLiveV70V72CatalogDigestSha256,
     );
+    expect(fencedLiveV70V72CatalogDigestSha256).toBe(
+      canonicalReleaseMigrationArtifact.postCatalogDigest,
+    );
     expect(fencedLiveV70V72CatalogDigestSql).toContain(
       "read_activation_migration_manifest_identity()",
     );
@@ -855,21 +857,43 @@ describe("canonical exclusive release migration caller", () => {
       "hosted_codex_mutate_comment_token_mint_v85",
     ])
       expect(liveV70V72CatalogDigestSql).toContain(`'${custodyRoutine}'`);
-    expect(liveV70V86CatalogDigestCaptureHold).toEqual({
-      decision: "HOLD",
-      reason: "pg17_exact_catalog_capture_required_after_v86_projection_change",
-    });
-    expect(liveV70V72CatalogDigestSql).toContain(
-      "relname='CodexOAuthWritebackIntent'",
-    );
     for (const dynamicPrincipal of [
       "reviewrouter_api",
       "reviewrouter_web",
       "reviewrouter_worker",
+      "reviewrouter_comment_token_custody",
     ])
       expect(liveV70V72CatalogDigestSql).toContain(dynamicPrincipal);
+    expect(liveV70V72CatalogDigestSql).not.toContain(
+      "WHEN relname='CodexOAuthWritebackIntent'",
+    );
+    expect(liveV70V72CatalogDigestSql).toContain("FROM unnest(a.attacl) v");
+    expect(liveV70V72CatalogDigestSql).toContain("FROM unnest(relacl) v");
+    expect([
+      ...liveV70V72CatalogDigestSql.matchAll(
+        /WHERE split_part\(split_part\(normalized_acl\.entry,'\/',1\),'=',2\)<>''/gu,
+      ),
+    ]).toHaveLength(2);
+    expect(liveV70V72CatalogDigestSql).not.toContain("'[awdD]'");
+    expect([
+      ...liveV70V72CatalogDigestSql.matchAll(
+        /split_part\(v::text,'\/',2\)='reviewrouter_release_schema_owner'/gu,
+      ),
+    ]).toHaveLength(7);
     expect(liveV70V72CatalogDigestSql).toContain(
-      "pg_catalog.regexp_replace(\n              split_part(split_part(v::text,'/',1),'=',2),'[awdD]','','g'",
+      "WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'\n                AND split_part(v::text,'=',1) IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker')\n                AND relname IN ('GitHubInstallation','HostedCodexCommentRefreshCapability','HostedCodexCommentRefreshUse','HostedCodexInvocationGrant','HostedCodexPool','HostedCodexRepositoryBinding')\n              THEN '[awd]'",
+    );
+    expect(liveV70V72CatalogDigestSql).toContain(
+      "AND relname IN ('CodexOAuthWritebackIntent','GitHubInstallation','HostedCodexCommentRefreshCapability','HostedCodexCommentRefreshUse','HostedCodexInvocationGrant','HostedCodexPool','HostedCodexRepositoryBinding')\n              THEN '[aw]'",
+    );
+    expect(liveV70V72CatalogDigestSql).toContain(
+      "AND relname='HostedCodexCommentRefreshUse'\n              THEN '[a]'",
+    );
+    expect(liveV70V72CatalogDigestSql).toContain(
+      "WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'\n              AND split_part(v::text,'=',1)='reviewrouter_comment_token_custody'\n              AND r.relname='HostedCodexCommentRefreshCapability'\n              AND a.attname IN ('useCount','lastUsedAt','revision','updatedAt')",
+    );
+    expect(liveV70V72CatalogDigestSql).not.toMatch(
+      /RuntimeGenerationWitnessProof[^)]*THEN '\[a/gu,
     );
     expect(atomicMigration).toContain(
       "release migration V70-V73 live catalog digest mismatch",
@@ -932,6 +956,24 @@ describe("canonical exclusive release migration caller", () => {
     );
     expect(provisioning).toContain(
       "transferred public routine ACL is non-canonical",
+    );
+    expect(provisioning).toContain(
+      "DO $provider_scope_concurrency_operator_acl$",
+    );
+    expect(provisioning).toContain(
+      "provider scope concurrency operator topology is partial",
+    );
+    for (const routine of [
+      "status",
+      "activate",
+      "close_for_rollback",
+      "verify_rollback",
+    ])
+      expect(provisioning).toContain(
+        `GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_${routine}()`,
+      );
+    expect(provisioning).toContain(
+      "REVOKE ALL ON FUNCTION public.reviewrouter_provider_scope_concurrency_snapshot()",
     );
     expect(provisioning.indexOf("DO $transfer_public_ownership$")).toBeLessThan(
       provisioning.indexOf("DO $transferred_public_routine_acl$"),
@@ -1502,6 +1544,48 @@ describe("canonical exclusive release migration caller", () => {
     }
     expect(activateGeneration).toContain(
       "'HostedCodexCommentRefreshUse','ReviewProviderScopeConcurrencyControl'",
+    );
+    expect(activateGeneration).toContain(
+      "column_facts.role_kind NOT IN ('effect-authority','custody')",
+    );
+  });
+
+  it("rejects runtime column grant options while retaining custody UPDATE access", () => {
+    const activationAuthority = activationAuthorityProvisioningSql();
+    const activateGeneration = activationAuthority.slice(
+      activationAuthority.indexOf(
+        "CREATE OR REPLACE FUNCTION reviewrouter_activation.activate_generation(",
+      ),
+      activationAuthority.indexOf(
+        "ALTER FUNCTION reviewrouter_activation.activate_generation(text)",
+      ),
+    );
+    const columnGrantOptionCheck = activateGeneration.slice(
+      activateGeneration.indexOf(
+        "OR EXISTS (SELECT 1 FROM pg_attribute attribute",
+      ),
+      activateGeneration.indexOf(
+        "OR EXISTS (SELECT 1 FROM routines,",
+        activateGeneration.indexOf(
+          "OR EXISTS (SELECT 1 FROM pg_attribute attribute",
+        ),
+      ),
+    );
+
+    expect(columnGrantOptionCheck).toContain(
+      "CROSS JOIN LATERAL aclexplode(attribute.attacl) acl",
+    );
+    expect(columnGrantOptionCheck).toContain(
+      "WHERE attribute.attacl IS NOT NULL\n           AND attribute.attrelid IN (SELECT oid FROM tables)",
+    );
+    expect(columnGrantOptionCheck).toContain(
+      "AND attribute.attnum>0 AND NOT attribute.attisdropped\n           AND acl.is_grantable",
+    );
+    expect(columnGrantOptionCheck).toContain(
+      "'reviewrouter_comment_token_custody'",
+    );
+    expect(activateGeneration).toContain(
+      "WHEN column_facts.role_kind='custody'\n               AND column_facts.relname='HostedCodexCommentRefreshCapability'\n               AND column_facts.attname=ANY(ARRAY['useCount','lastUsedAt','revision','updatedAt'])\n             THEN true",
     );
   });
 

@@ -502,7 +502,7 @@ describe("hosted pool populated 000074 to 000075 migration", () => {
         FROM pg_constraint
         WHERE conname = 'HostedCodexInvocationGrant_output_budget_check'
       `);
-      expect(constraint.rows).toEqual([{ convalidated: false }]);
+      expect(constraint.rows).toEqual([{ convalidated: true }]);
       const budget = await client.query(`
         SELECT "maxResponseBytes", "maxOutputTokens"
         FROM "HostedCodexInvocationGrant"

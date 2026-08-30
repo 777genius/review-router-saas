@@ -140,13 +140,14 @@ kinds make projection fail closed. The built-in languages and tablespaces are
 accepted only in their immutable default shape. No catalog-local OID is admitted
 to the artifact.
 
-The promoted trust root is generated from the independently reviewed v28
+The promoted trust root is generated from the independently reviewed v29
 candidate. Immutable capture, image, phase-digest, audited-HEAD, and final-review
 evidence is recorded in the adjacent
 `activation-catalog-policy-provenance.json`. The immutable review report is
 stored under `docs/release-evidence/` and its byte SHA-256 is bound by provenance
-v3. These files are the machine-readable source for the precise ready state;
-stale capture blockers are not retained after promotion.
+v4. The candidate's captured live-catalog digest is bound to the canonical
+release-migration receipt. These files are the machine-readable source for the
+precise ready state; stale capture blockers are not retained after promotion.
 
 The command has no permit-installation or activation capability. It reads the
 preactivation candidate only after a capture-only transaction drops the exact
@@ -160,9 +161,9 @@ for the other. Review the complete diff, verify that no provider identity is
 present, then promote only the reviewed bytes with the exact operator opt-in:
 
 ```bash
-REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v28 \
+REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v29 \
   pnpm release-rollout:promote-activation-catalog-policy \
-  --candidate /secure/evidence/rr-activation-catalog-candidate-v28.json --write
+  --candidate /secure/evidence/rr-activation-catalog-candidate-v29.json --write
 ```
 
 Omit `--write` to verify that the checked-in generated module is byte-exact.
@@ -170,8 +171,10 @@ The command accepts no runtime policy path, verifies the reviewed whole-file
 size and SHA-256 before parsing, validates normalization, checks both reviewed
 phase digests and the canonical artifact digest, and writes only the fixed
 source-owned artifact path. Update both compact deployment digest
-authorizations as part of the same release change. Never run candidate capture
-on a live database and never add capture, promotion, or drafting to the
+authorizations and the disposable rehearsal authorization as part of the same
+release change. Promotion does not by itself authorize deployment; deployment
+still requires the separately approved release process. Never run candidate
+capture on a live database and never add capture, promotion, or drafting to the
 activation path.
 
 Activation principal evidence uses a single-session staged transaction. The

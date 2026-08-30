@@ -1,8 +1,15 @@
-import { assertPendingActivationCatalogPolicyCaptureNormalization } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts";
+import {
+  assertActivationCatalogPolicyNormalizationForProfile,
+  productionActivationCatalogPolicyNormalizationProfile,
+} from "../packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts";
 
 const assertCandidate = (value, phase) => {
   try {
-    assertPendingActivationCatalogPolicyCaptureNormalization(value, phase);
+    assertActivationCatalogPolicyNormalizationForProfile(
+      value,
+      phase,
+      productionActivationCatalogPolicyNormalizationProfile,
+    );
     return value;
   } catch (error) {
     const reason =

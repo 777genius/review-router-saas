@@ -12,6 +12,7 @@ export type ActivationCatalogPolicyPromotionExpectation = Readonly<{
   reviewDecisionId: string;
   candidateBytes: number;
   candidateSha256: string;
+  liveCatalogDigest: string;
   sourcePg16Image: string;
   targetPg17Image: string;
   preactivationCatalogPolicySha256: string;
@@ -70,7 +71,7 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
       ]) ||
       value.kind !==
         "reviewrouter-activation-catalog-policy-promotion-provenance" ||
-      value.version !== 3 ||
+      value.version !== 4 ||
       value.status !== "ready" ||
       value.readinessReason !== expected.readinessReason ||
       !validTimestamp(value.promotedAt) ||
@@ -85,11 +86,19 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
     const digests = value.canonicalDigests;
     const review = value.independentReview;
     if (
-      !exactRecord(candidate, ["bytes", "sha256", "captures"]) ||
+      !exactRecord(candidate, [
+        "bytes",
+        "sha256",
+        "liveCatalogDigest",
+        "captures",
+      ]) ||
       candidate.bytes !== expected.candidateBytes ||
       candidate.sha256 !== expected.candidateSha256 ||
       typeof candidate.sha256 !== "string" ||
       !sha256.test(candidate.sha256) ||
+      candidate.liveCatalogDigest !== expected.liveCatalogDigest ||
+      typeof candidate.liveCatalogDigest !== "string" ||
+      !prefixedSha256.test(candidate.liveCatalogDigest) ||
       !Array.isArray(candidate.captures) ||
       candidate.captures.length < 2 ||
       !exactRecord(images, ["sourcePg16", "targetPg17"]) ||
@@ -99,11 +108,22 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
       typeof images.targetPg17 !== "string" ||
       !image.test(images.sourcePg16) ||
       !image.test(images.targetPg17) ||
-      !exactRecord(digests, ["preactivation", "activated", "artifact"]) ||
+      !exactRecord(digests, [
+        "preactivation",
+        "activated",
+        "artifact",
+        "liveCatalogDigest",
+      ]) ||
       digests.preactivation !== expected.preactivationCatalogPolicySha256 ||
       digests.activated !== expected.activatedCatalogPolicySha256 ||
       digests.artifact !== expected.artifactCanonicalSha256 ||
-      ![digests.preactivation, digests.activated, digests.artifact].every(
+      digests.liveCatalogDigest !== candidate.liveCatalogDigest ||
+      ![
+        digests.preactivation,
+        digests.activated,
+        digests.artifact,
+        digests.liveCatalogDigest,
+      ].every(
         (digest) => typeof digest === "string" && prefixedSha256.test(digest),
       )
     )
@@ -180,10 +200,20 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
         "preactivation",
         "activated",
         "artifact",
+        "liveCatalogDigest",
       ]) ||
       review.canonicalDigests.preactivation !== digests.preactivation ||
       review.canonicalDigests.activated !== digests.activated ||
-      review.canonicalDigests.artifact !== digests.artifact
+      review.canonicalDigests.artifact !== digests.artifact ||
+      review.canonicalDigests.liveCatalogDigest !== digests.liveCatalogDigest ||
+      ![
+        review.canonicalDigests.preactivation,
+        review.canonicalDigests.activated,
+        review.canonicalDigests.artifact,
+        review.canonicalDigests.liveCatalogDigest,
+      ].every(
+        (digest) => typeof digest === "string" && prefixedSha256.test(digest),
+      )
     )
       return blocked("activation-catalog-policy-independent-review-invalid");
 

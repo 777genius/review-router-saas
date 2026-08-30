@@ -2849,8 +2849,8 @@ BEGIN
                AND column_facts.relname='HostedCodexCommentRefreshCapability'
                AND column_facts.attname=ANY(ARRAY['useCount','lastUsedAt','revision','updatedAt'])
              THEN true
-             WHEN column_facts.role_kind <> 'effect-authority'
-               AND column_facts.relname='CodexOAuthProviderInstance'
+            WHEN column_facts.role_kind NOT IN ('effect-authority','custody')
+              AND column_facts.relname='CodexOAuthProviderInstance'
                AND column_facts.attname=ANY(ARRAY[${providerRuntimeUpdateColumns.map((column) => `'${column}'`).join(",")}])
              THEN true
              ELSE table_facts.can_update
@@ -2918,6 +2918,14 @@ BEGIN
          LATERAL aclexplode(coalesce((SELECT relacl FROM pg_class WHERE oid=tables.oid),
            acldefault('r',(SELECT relowner FROM pg_class WHERE oid=tables.oid)))) acl
          WHERE acl.is_grantable
+           AND acl.grantee IN (SELECT oid FROM pg_roles WHERE rolname=ANY(ARRAY[
+             'reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority'])))
+       OR EXISTS (SELECT 1 FROM pg_attribute attribute
+         CROSS JOIN LATERAL aclexplode(attribute.attacl) acl
+         WHERE attribute.attacl IS NOT NULL
+           AND attribute.attrelid IN (SELECT oid FROM tables)
+           AND attribute.attnum>0 AND NOT attribute.attisdropped
+           AND acl.is_grantable
            AND acl.grantee IN (SELECT oid FROM pg_roles WHERE rolname=ANY(ARRAY[
              'reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority'])))
        OR EXISTS (SELECT 1 FROM routines,
@@ -4312,6 +4320,36 @@ BEGIN
   END IF;
 END
 $transferred_public_routine_acl_gate$;
+DO $provider_scope_concurrency_operator_acl$
+DECLARE operator_routine_count integer;
+BEGIN
+  SELECT count(*) INTO operator_routine_count
+  FROM unnest(ARRAY[
+    to_regprocedure('public.reviewrouter_provider_scope_concurrency_snapshot()'),
+    to_regprocedure('public.reviewrouter_provider_scope_concurrency_status()'),
+    to_regprocedure('public.reviewrouter_provider_scope_concurrency_activate()'),
+    to_regprocedure('public.reviewrouter_provider_scope_concurrency_close_for_rollback()'),
+    to_regprocedure('public.reviewrouter_provider_scope_concurrency_verify_rollback()')
+  ]) routine_oid
+  WHERE routine_oid IS NOT NULL;
+  IF operator_routine_count = 0 THEN
+    RETURN;
+  END IF;
+  IF operator_routine_count <> 5 THEN
+    RAISE EXCEPTION 'provider scope concurrency operator topology is partial';
+  END IF;
+  GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_status()
+    TO reviewrouter_release_migration;
+  GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_activate()
+    TO reviewrouter_release_migration;
+  GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_close_for_rollback()
+    TO reviewrouter_release_migration;
+  GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_verify_rollback()
+    TO reviewrouter_release_migration;
+  REVOKE ALL ON FUNCTION public.reviewrouter_provider_scope_concurrency_snapshot()
+    FROM reviewrouter_release_migration;
+END
+$provider_scope_concurrency_operator_acl$;
 ${
   ownerAuthorizedInitialRuntimeGateClosed
     ? `-- A fresh target may need its first canonical ACL projection before the
