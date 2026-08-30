@@ -17,7 +17,7 @@ on:
         type: string
       release_commit_sha:
         description: Exact review-router-saas main commit
-        required: false
+        required: true
         type: string
       action_commit_sha:
         description: Exact review-router Action commit to register
@@ -79,8 +79,65 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  trust-bootstrap:
+    name: Verify protected main dispatch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      trusted_main_sha: ${{ steps.trust.outputs.trusted_main_sha }}
+    steps:
+      - name: Establish immutable workflow trust before repository execution
+        id: trust
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { appendFileSync } = await import("node:fs");
+          const required = (name) => {
+            const value = process.env[name];
+            if (!value) throw new Error(`registration_trust_missing:${name}`);
+            return value;
+          };
+          const fail = (reason) => {
+            throw new Error(`registration_trust_rejected:${reason}`);
+          };
+          const repository = required("GITHUB_REPOSITORY");
+          const dispatchSha = required("GITHUB_SHA").toLowerCase();
+          if (required("GITHUB_EVENT_NAME") !== "workflow_dispatch") fail("event");
+          if (required("GITHUB_REF") !== "refs/heads/main") fail("workflow_ref");
+          if (!/^[a-f0-9]{40}$/.test(dispatchSha)) fail("dispatch_sha");
+          const response = await fetch(
+            `https://api.github.com/repos/${repository}/branches/main`,
+            {
+              headers: {
+                Authorization: `Bearer ${required("GH_TOKEN")}`,
+                Accept: "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+            },
+          );
+          if (!response.ok) fail(`github_api_${response.status}`);
+          const branch = await response.json();
+          if (
+            branch.protected !== true ||
+            branch.commit?.sha?.toLowerCase() !== dispatchSha
+          ) {
+            fail("stale_or_unprotected_main");
+          }
+          appendFileSync(
+            required("GITHUB_OUTPUT"),
+            `trusted_main_sha=${dispatchSha}\n`,
+            "utf8",
+          );
+          NODE
+
   recover:
     name: Complete restored PG17 cutover
+    needs: trust-bootstrap
     if: ${{ inputs.confirmation == 'RECOVER_EXISTING_PG17' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -99,8 +156,9 @@ jobs:
       - name: Checkout immutable recovery tooling
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.release_commit_sha }}
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_main_sha }}
 
       - name: Install and validate recovery tooling
         shell: bash
@@ -111,6 +169,12 @@ jobs:
           [[ "$RENDER_OWNER_ID" =~ ^tea-[a-z0-9-]+$ ]]
           [[ "$RENDER_ENVIRONMENT_ID" =~ ^evm-[a-z0-9-]+$ ]]
           [[ "$RELEASE_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          TRUSTED_MAIN_SHA="${{ needs.trust-bootstrap.outputs.trusted_main_sha }}"
+          [[ "$TRUSTED_MAIN_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$(git cat-file -t "$RELEASE_COMMIT_SHA")" == "commit" ]]
+          [[ "$(git cat-file -t "$TRUSTED_MAIN_SHA")" == "commit" ]]
+          git merge-base --is-ancestor "$RELEASE_COMMIT_SHA" "$TRUSTED_MAIN_SHA"
+          git switch --detach "$RELEASE_COMMIT_SHA"
           observed_source_sha="$(git rev-parse HEAD)"
           [[ "$observed_source_sha" == "$RELEASE_COMMIT_SHA" ]]
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
@@ -561,6 +625,7 @@ jobs:
 
   register-release:
     name: Register verified Review Action release
+    needs: trust-bootstrap
     if: ${{ inputs.confirmation == 'REGISTER_VERIFIED_REVIEW_ACTION_RELEASE' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -570,6 +635,7 @@ jobs:
       TARGET_DB_ID: ${{ inputs.target_db_id }}
       RENDER_OWNER_ID: ${{ inputs.owner_id }}
       RENDER_ENVIRONMENT_ID: ${{ inputs.environment_id }}
+      RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
       ACTION_COMMIT_SHA: ${{ inputs.action_commit_sha }}
       OPEN_GLOBAL_EMERGENCY: ${{ inputs.open_global_emergency }}
       OPERATOR_REPOSITORY: ${{ inputs.operator_repository }}
@@ -584,8 +650,9 @@ jobs:
       - name: Checkout immutable registration tooling
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.sha }}
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_main_sha }}
 
       - name: Install registration tooling
         shell: bash
@@ -594,6 +661,15 @@ jobs:
           [[ "$TARGET_DB_ID" =~ ^dpg-[a-z0-9-]+$ ]]
           [[ "$RENDER_OWNER_ID" =~ ^tea-[a-z0-9-]+$ ]]
           [[ "$RENDER_ENVIRONMENT_ID" =~ ^evm-[a-z0-9-]+$ ]]
+          [[ "$RELEASE_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          TRUSTED_MAIN_SHA="${{ needs.trust-bootstrap.outputs.trusted_main_sha }}"
+          [[ "$TRUSTED_MAIN_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$(git cat-file -t "$RELEASE_COMMIT_SHA")" == "commit" ]]
+          [[ "$(git cat-file -t "$TRUSTED_MAIN_SHA")" == "commit" ]]
+          git merge-base --is-ancestor "$RELEASE_COMMIT_SHA" "$TRUSTED_MAIN_SHA"
+          git switch --detach "$RELEASE_COMMIT_SHA"
+          observed_source_sha="$(git rev-parse HEAD)"
+          [[ "$observed_source_sha" == "$RELEASE_COMMIT_SHA" ]]
           [[ "$ACTION_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$API_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
           [[ "$WORKER_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
@@ -646,6 +722,13 @@ jobs:
               -H "Authorization: Bearer $RENDER_API_KEY" \
               "$@"
           }
+          render_deploy_mutation() {
+            curl --fail --silent --show-error \
+              --connect-timeout 15 --max-time 120 \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
           close_firewall() {
             if [[ "$firewall_open" -eq 1 ]]; then
               render_api -X PATCH \
@@ -673,6 +756,38 @@ jobs:
               and .environmentId == $environmentId
               and ((.ownerId // .owner.id) == $ownerId)
             ' "$work/target.json" >/dev/null
+
+          live_service_preflight='[]'
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            deploys="$(render_api "https://api.render.com/v1/services/$service_id/deploys?limit=1")"
+            observation="$(
+              jq -ce --arg serviceId "$service_id" '
+                (if type == "array" then .[0] else (.deploys[0] // .[0]) end)
+                | (.deploy // .) as $deploy
+                | {
+                    serviceId: $serviceId,
+                    deployId: ($deploy.id | select(type == "string" and length > 0)),
+                    observedStatus: ($deploy.status | select(type == "string")),
+                    observedCommitSha: (
+                      ($deploy.commit.id // $deploy.commit.sha // $deploy.commitId)
+                      | select(type == "string" and test("^[a-f0-9]{40}$"))
+                    )
+                  }
+              ' <<<"$deploys"
+            )"
+            live_service_preflight="$(
+              jq -c --argjson observation "$observation" '. + [$observation]' \
+                <<<"$live_service_preflight"
+            )"
+          done
+          printf '%s\n' "$live_service_preflight" \
+            > "$work/live-service-preflight.json"
+          jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and all(.observedStatus == "live")
+            and all(.observedCommitSha == $releaseCommitSha)
+          ' "$work/live-service-preflight.json" >/dev/null
 
           render_api "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars" \
             > "$work/api-env.json"
@@ -1342,13 +1457,163 @@ jobs:
           done
 
           deploys='[]'
+          deploy_creation_evidence='[]'
+          printf '%s\n' "$deploy_creation_evidence" \
+            > "$work/deploy-creation-evidence.json"
+          jq -n --arg commitId "$RELEASE_COMMIT_SHA" \
+            '{clearCache: "do_not_clear", commitId: $commitId}' \
+            > "$work/deploy-request.json"
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            before_deploy_id="$(
+              jq -er --arg serviceId "$service_id" '
+                map(select(.serviceId == $serviceId))
+                | if length == 1 then .[0].deployId
+                  else error("registration_deploy_preflight_identity")
+                  end
+              ' "$work/live-service-preflight.json"
+            )"
+            before_deploys="$(
+              render_api \
+                "https://api.render.com/v1/services/$service_id/deploys?limit=20"
+            )"
+            before_deploy_snapshot="$(
+              jq -ce --arg serviceId "$service_id" '
+                (if type == "array" then .
+                 elif (.deploys | type) == "array" then .deploys
+                 else error("registration_deploy_list_shape")
+                 end)
+                | map(.deploy // .)
+                | map({
+                    deployId: (
+                      .id
+                      | select(type == "string" and test("^dep-[a-z0-9-]+$"))
+                    ),
+                    serviceId: (.serviceId // $serviceId),
+                    status,
+                    observedCommitSha: (
+                      .commit.id // .commit.sha // .commitId // ""
+                    ),
+                    createdAt
+                  })
+              ' <<<"$before_deploys"
+            )"
+            jq -e \
+              --arg serviceId "$service_id" \
+              --arg beforeDeployId "$before_deploy_id" \
+              --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
+                length >= 1
+                and (([.[].deployId] | length) == ([.[].deployId] | unique | length))
+                and all(.serviceId == $serviceId)
+                and .[0].deployId == $beforeDeployId
+                and .[0].status == "live"
+                and .[0].observedCommitSha == $releaseCommitSha
+              ' <<<"$before_deploy_snapshot" >/dev/null
+            before_deploy_ids="$(
+              jq -c '[.[].deployId]' <<<"$before_deploy_snapshot"
+            )"
+            deploy_intent_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+            deploy_intent_epoch="$(date -u -d "$deploy_intent_at" +%s)"
+            set +e
             deploy="$(
-              render_api -X POST -H "Content-Type: application/json" \
-                --data-binary '{"clearCache":"do_not_clear"}' \
+              render_deploy_mutation -X POST -H "Content-Type: application/json" \
+                --data-binary @"$work/deploy-request.json" \
                 "https://api.render.com/v1/services/$service_id/deploys"
             )"
-            deploy_id="$(jq -er '.id // .deploy.id' <<<"$deploy")"
+            deploy_mutation_status=$?
+            set -e
+            deploy_id=""
+            if [[ "$deploy_mutation_status" -eq 0 ]]; then
+              deploy_id="$(
+                jq -r '
+                  if type == "object" then (.id // .deploy.id // empty)
+                  else empty
+                  end
+                ' <<<"$deploy" 2>/dev/null || true
+              )"
+              if [[ ! "$deploy_id" =~ ^dep-[a-z0-9-]+$ ]]; then
+                deploy_id=""
+              fi
+            fi
+            reconciled=false
+            if [[ -z "$deploy_id" ]]; then
+              reconciled=true
+              reconciliation_deadline=$((SECONDS + 120))
+              reconciliation_candidates='[]'
+              while (( SECONDS < reconciliation_deadline )); do
+                recent_deploys="$(
+                  render_api \
+                    "https://api.render.com/v1/services/$service_id/deploys?limit=20"
+                )"
+                reconciliation_candidates="$(
+                  jq -ce \
+                    --arg serviceId "$service_id" \
+                    --argjson beforeDeployIds "$before_deploy_ids" \
+                    --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+                    --argjson intentEpoch "$deploy_intent_epoch" '
+                      (if type == "array" then .
+                       elif (.deploys | type) == "array" then .deploys
+                       else error("registration_deploy_list_shape")
+                       end)
+                      | map(.deploy // .)
+                      | map(select(
+                          (.id | type) == "string"
+                          and (.id | test("^dep-[a-z0-9-]+$"))
+                          and (.id as $id | ($beforeDeployIds | index($id)) == null)
+                          and ((.serviceId // $serviceId) == $serviceId)
+                          and (
+                            (.commit.id // .commit.sha // .commitId // "")
+                            == $releaseCommitSha
+                          )
+                          and ((.createdAt | type) == "string")
+                          and (
+                            try (
+                              (.createdAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
+                              >= ($intentEpoch - 5)
+                            ) catch false
+                          )
+                        ))
+                      | map({
+                          deployId: .id,
+                          status,
+                          createdAt,
+                          observedCommitSha: (
+                            .commit.id // .commit.sha // .commitId
+                          )
+                        })
+                    ' <<<"$recent_deploys"
+                )"
+                jq -n \
+                  --arg serviceId "$service_id" \
+                  --arg beforeDeployId "$before_deploy_id" \
+                  --arg intentAt "$deploy_intent_at" \
+                  --argjson mutationExitStatus "$deploy_mutation_status" \
+                  --argjson candidates "$reconciliation_candidates" '
+                    {
+                      serviceId: $serviceId,
+                      beforeDeployId: $beforeDeployId,
+                      intentAt: $intentAt,
+                      mutationExitStatus: $mutationExitStatus,
+                      candidates: $candidates
+                    }
+                  ' > "$work/deploy-reconciliation-$service_id.json"
+                candidate_count="$(jq -r 'length' <<<"$reconciliation_candidates")"
+                if (( candidate_count > 1 )); then
+                  echo "::error::Render deploy reconciliation is ambiguous for $service_id"
+                  exit 1
+                fi
+                if (( candidate_count == 1 )); then
+                  deploy_id="$(jq -er '.[0].deployId' <<<"$reconciliation_candidates")"
+                  break
+                fi
+                sleep 5
+              done
+              if [[ -z "$deploy_id" ]]; then
+                echo "::error::Render deploy mutation could not be reconciled for $service_id"
+                exit 1
+              fi
+            fi
+            [[ "$deploy_id" =~ ^dep-[a-z0-9-]+$ ]]
+            [[ "$deploy_id" != "$before_deploy_id" ]]
             deploys="$(
               jq -c \
                 --arg serviceId "$service_id" \
@@ -1356,6 +1621,28 @@ jobs:
                 '. + [{serviceId: $serviceId, deployId: $deployId}]' \
                 <<<"$deploys"
             )"
+            deploy_creation_evidence="$(
+              jq -c \
+                --arg serviceId "$service_id" \
+                --arg beforeDeployId "$before_deploy_id" \
+                --argjson beforeDeployIds "$before_deploy_ids" \
+                --arg deployId "$deploy_id" \
+                --arg intentAt "$deploy_intent_at" \
+                --argjson mutationExitStatus "$deploy_mutation_status" \
+                --argjson reconciled "$reconciled" '
+                  . + [{
+                    serviceId: $serviceId,
+                    beforeDeployId: $beforeDeployId,
+                    beforeDeployIds: $beforeDeployIds,
+                    deployId: $deployId,
+                    intentAt: $intentAt,
+                    mutationExitStatus: $mutationExitStatus,
+                    reconciled: $reconciled
+                  }]
+                ' <<<"$deploy_creation_evidence"
+            )"
+            printf '%s\n' "$deploy_creation_evidence" \
+              > "$work/deploy-creation-evidence.json"
           done
 
           deadline=$((SECONDS + 900))
@@ -1368,17 +1655,40 @@ jobs:
                 render_api \
                   "https://api.render.com/v1/services/$service_id/deploys/$deploy_id"
               )"
-              status="$(jq -er '.status // .deploy.status' <<<"$deploy")"
+              status="$(jq -er '(.deploy // .).status' <<<"$deploy")"
+              observed_commit_sha="$(
+                jq -er '
+                  (.deploy // .)
+                  | (.commit.id // .commit.sha // .commitId // "")
+                  | select(
+                      type == "string"
+                      and (. == "" or test("^[a-f0-9]{40}$"))
+                    )
+                ' <<<"$deploy"
+              )"
               statuses="$(
                 jq -c \
                   --arg serviceId "$service_id" \
                   --arg deployId "$deploy_id" \
                   --arg status "$status" \
-                  '. + [{serviceId: $serviceId, deployId: $deployId, status: $status}]' \
+                  --arg observedCommitSha "$observed_commit_sha" \
+                  '. + [{
+                    serviceId: $serviceId,
+                    deployId: $deployId,
+                    status: $status,
+                    observedCommitSha: $observedCommitSha
+                  }]' \
                   <<<"$statuses"
               )"
+              if [[ -n "$observed_commit_sha" && "$observed_commit_sha" != "$RELEASE_COMMIT_SHA" ]]; then
+                failed=1
+              fi
               case "$status" in
-                live) ;;
+                live)
+                  if [[ "$observed_commit_sha" != "$RELEASE_COMMIT_SHA" ]]; then
+                    failed=1
+                  fi
+                  ;;
                 build_failed|update_failed|pre_deploy_failed|canceled|deactivated|failed|*_failed)
                   failed=1
                   ;;
@@ -1395,8 +1705,57 @@ jobs:
             fi
             sleep 10
           done
-          jq -e 'length == 3 and all(.status == "live")' \
+          jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and all(.status == "live")
+            and all(.observedCommitSha == $releaseCommitSha)
+          ' \
             "$work/deployment-result.json" >/dev/null
+
+          current_deployments='[]'
+          while IFS=$'\t' read -r service_id expected_deploy_id; do
+            latest_deploys="$(
+              render_api \
+                "https://api.render.com/v1/services/$service_id/deploys?limit=1"
+            )"
+            current_deployment="$(
+              jq -ce --arg serviceId "$service_id" '
+                (if type == "array" then .[0] else (.deploys[0] // .[0]) end)
+                | (.deploy // .) as $deploy
+                | {
+                    serviceId: $serviceId,
+                    deployId: ($deploy.id | select(type == "string" and length > 0)),
+                    status: ($deploy.status | select(type == "string")),
+                    observedCommitSha: (
+                      ($deploy.commit.id // $deploy.commit.sha // $deploy.commitId // "")
+                      | select(
+                          type == "string"
+                          and (. == "" or test("^[a-f0-9]{40}$"))
+                        )
+                    )
+                  }
+              ' <<<"$latest_deploys"
+            )"
+            current_deployments="$(
+              jq -c --argjson observation "$current_deployment" \
+                '. + [$observation]' <<<"$current_deployments"
+            )"
+            printf '%s\n' "$current_deployments" \
+              > "$work/current-deployment-result.json"
+            jq -e \
+              --arg expectedDeployId "$expected_deploy_id" \
+              --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
+                .deployId == $expectedDeployId
+                and .status == "live"
+                and .observedCommitSha == $releaseCommitSha
+              ' <<<"$current_deployment" >/dev/null
+          done < <(jq -r '.[] | [.serviceId, .deployId] | @tsv' <<<"$deploys")
+          jq -e '
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and ([.[].deployId] | unique | length == 3)
+          ' "$work/current-deployment-result.json" >/dev/null
           close_firewall
           firewall_open=0
 
@@ -1419,7 +1778,11 @@ jobs:
             ${{ runner.temp }}/reviewrouter-release-registration/investigation-rollout-status-result.json
             ${{ runner.temp }}/reviewrouter-release-registration/investigation-rollout-status-diagnostic.json
             ${{ runner.temp }}/reviewrouter-release-registration/investigation-env-proof.json
+            ${{ runner.temp }}/reviewrouter-release-registration/live-service-preflight.json
+            ${{ runner.temp }}/reviewrouter-release-registration/deploy-creation-evidence.json
+            ${{ runner.temp }}/reviewrouter-release-registration/deploy-reconciliation-*.json
             ${{ runner.temp }}/reviewrouter-release-registration/deployment-result.json
+            ${{ runner.temp }}/reviewrouter-release-registration/current-deployment-result.json
           if-no-files-found: warn
           retention-days: 30
           compression-level: 0
