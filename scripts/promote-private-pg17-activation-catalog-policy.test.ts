@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import {
   activationCatalogPromotionOptIn,
   activationCatalogPromotionProvenancePath,
+  assertActivationCatalogPolicyReviewedSourceBindings,
   assertArtifactCandidate,
   assertActivationCatalogPolicyIndependentReviewEvidence,
   assertReviewedActivationCatalogPromotionProvenance,
@@ -24,6 +25,10 @@ describe("activation catalog policy promotion", () => {
       bytes: 2_651_682,
       liveCatalogDigest:
         "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
+      liveCatalogProjectionSourceSha256:
+        "39e855060bfc186c6fb92fe1cd5c72410f8f72802200da49d6c1fe45eb6ed5f4",
+      normalizationSourceSha256:
+        "7b23d64a1f2160398cdeb9194b0a3f3583e5566a1b20a0b2009caaf7ddbe0da1",
       preactivationCatalogPolicySha256:
         "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
       activatedCatalogPolicySha256:
@@ -120,6 +125,12 @@ describe("activation catalog policy promotion", () => {
     ).toThrow("activation_catalog_policy_live_digest_transition_drift");
   });
 
+  it("binds review authorization to the exact projection and normalization sources", async () => {
+    await expect(
+      assertActivationCatalogPolicyReviewedSourceBindings(),
+    ).resolves.toBeUndefined();
+  });
+
   it("refuses promotion without exact independent GO evidence", () => {
     expect(() =>
       assertReviewedActivationCatalogPromotionProvenance({
@@ -129,12 +140,17 @@ describe("activation catalog policy promotion", () => {
     ).toThrow("activation_catalog_policy_promotion_provenance_invalid");
   });
 
-  it("verifies the immutable independent review and runtime evidence", async () => {
+  it("refuses the invalidated independent review provenance", async () => {
     const provenance = JSON.parse(
       await readFile(activationCatalogPromotionProvenancePath, "utf8"),
     );
+    expect(() =>
+      assertReviewedActivationCatalogPromotionProvenance(provenance),
+    ).toThrow("activation_catalog_policy_promotion_provenance_invalid");
     await expect(
       assertActivationCatalogPolicyIndependentReviewEvidence(provenance),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow(
+      "activation_catalog_policy_independent_review_evidence_invalid",
+    );
   });
 });

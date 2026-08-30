@@ -13,6 +13,8 @@ export type ActivationCatalogPolicyPromotionExpectation = Readonly<{
   candidateBytes: number;
   candidateSha256: string;
   liveCatalogDigest: string;
+  liveCatalogProjectionSourceSha256: string;
+  normalizationSourceSha256: string;
   sourcePg16Image: string;
   targetPg17Image: string;
   preactivationCatalogPolicySha256: string;
@@ -57,6 +59,43 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
 ): ActivationCatalogPolicyTrustRootReadiness {
   try {
     if (
+      exactRecord(value, [
+        "kind",
+        "version",
+        "status",
+        "readinessReason",
+        "invalidatedReview",
+        "pendingReviewSourceBindings",
+      ]) &&
+      value.kind ===
+        "reviewrouter-activation-catalog-policy-promotion-provenance" &&
+      value.version === 5 &&
+      value.status === "blocked" &&
+      typeof value.readinessReason === "string" &&
+      label.test(value.readinessReason) &&
+      exactRecord(value.invalidatedReview, [
+        "reviewDecisionId",
+        "auditedHead",
+        "invalidatedByCommit",
+      ]) &&
+      typeof value.invalidatedReview.reviewDecisionId === "string" &&
+      label.test(value.invalidatedReview.reviewDecisionId) &&
+      typeof value.invalidatedReview.auditedHead === "string" &&
+      commitSha.test(value.invalidatedReview.auditedHead) &&
+      typeof value.invalidatedReview.invalidatedByCommit === "string" &&
+      commitSha.test(value.invalidatedReview.invalidatedByCommit) &&
+      exactRecord(value.pendingReviewSourceBindings, [
+        "liveCatalogProjectionSourceSha256",
+        "normalizationSourceSha256",
+      ]) &&
+      value.pendingReviewSourceBindings.liveCatalogProjectionSourceSha256 ===
+        expected.liveCatalogProjectionSourceSha256 &&
+      value.pendingReviewSourceBindings.normalizationSourceSha256 ===
+        expected.normalizationSourceSha256
+    )
+      return blocked(value.readinessReason);
+
+    if (
       !exactRecord(value, [
         "kind",
         "version",
@@ -67,11 +106,12 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
         "candidate",
         "postgresImages",
         "canonicalDigests",
+        "reviewedSources",
         "independentReview",
       ]) ||
       value.kind !==
         "reviewrouter-activation-catalog-policy-promotion-provenance" ||
-      value.version !== 4 ||
+      value.version !== 5 ||
       value.status !== "ready" ||
       value.readinessReason !== expected.readinessReason ||
       !validTimestamp(value.promotedAt) ||
@@ -84,6 +124,7 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
     const candidate = value.candidate;
     const images = value.postgresImages;
     const digests = value.canonicalDigests;
+    const reviewedSources = value.reviewedSources;
     const review = value.independentReview;
     if (
       !exactRecord(candidate, [
@@ -125,6 +166,20 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
         digests.liveCatalogDigest,
       ].every(
         (digest) => typeof digest === "string" && prefixedSha256.test(digest),
+      ) ||
+      !exactRecord(reviewedSources, [
+        "liveCatalogProjectionSourceSha256",
+        "normalizationSourceSha256",
+      ]) ||
+      reviewedSources.liveCatalogProjectionSourceSha256 !==
+        expected.liveCatalogProjectionSourceSha256 ||
+      reviewedSources.normalizationSourceSha256 !==
+        expected.normalizationSourceSha256 ||
+      ![
+        reviewedSources.liveCatalogProjectionSourceSha256,
+        reviewedSources.normalizationSourceSha256,
+      ].every((sourceHash) =>
+        typeof sourceHash === "string" ? sha256.test(sourceHash) : false,
       )
     )
       return blocked("activation-catalog-policy-provenance-binding-mismatch");
@@ -175,6 +230,7 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
         "candidateSha256",
         "postgresImages",
         "canonicalDigests",
+        "reviewedSources",
       ]) ||
       review.result !== "GO" ||
       review.reviewerRunId !== expected.reviewerRunId ||
@@ -213,7 +269,15 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
         review.canonicalDigests.liveCatalogDigest,
       ].every(
         (digest) => typeof digest === "string" && prefixedSha256.test(digest),
-      )
+      ) ||
+      !exactRecord(review.reviewedSources, [
+        "liveCatalogProjectionSourceSha256",
+        "normalizationSourceSha256",
+      ]) ||
+      review.reviewedSources.liveCatalogProjectionSourceSha256 !==
+        reviewedSources.liveCatalogProjectionSourceSha256 ||
+      review.reviewedSources.normalizationSourceSha256 !==
+        reviewedSources.normalizationSourceSha256
     )
       return blocked("activation-catalog-policy-independent-review-invalid");
 

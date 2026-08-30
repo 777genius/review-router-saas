@@ -40,6 +40,14 @@ export const activationCatalogReviewerEvidencePath = resolve(
   repositoryRoot,
   "docs/release-evidence/activation-catalog-policy-v29-reviewer-runtime.json",
 );
+export const activationCatalogLiveProjectionSourcePath = resolve(
+  repositoryRoot,
+  "packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs",
+);
+export const activationCatalogNormalizationSourcePath = resolve(
+  repositoryRoot,
+  "packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts",
+);
 
 export function assertReviewedActivationCatalogPromotionProvenance(value) {
   assertActivationCatalogPolicyPromotionProvenance(
@@ -116,6 +124,8 @@ export async function assertActivationCatalogPolicyIndependentReviewEvidence(
     !report.includes(String(expectation.candidateBytes)) ||
     !report.includes(expectation.candidateSha256) ||
     !report.includes(expectation.liveCatalogDigest) ||
+    !report.includes(expectation.liveCatalogProjectionSourceSha256) ||
+    !report.includes(expectation.normalizationSourceSha256) ||
     !report.includes(expectation.preactivationCatalogPolicySha256) ||
     !report.includes(expectation.activatedCatalogPolicySha256) ||
     !report.includes(expectation.artifactCanonicalSha256) ||
@@ -160,6 +170,20 @@ async function writeArtifactAtomically(generated) {
 }
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+
+export async function assertActivationCatalogPolicyReviewedSourceBindings() {
+  const expectation = reviewedActivationCatalogPromotionExpectation;
+  const [projectionSource, normalizationSource] = await Promise.all([
+    readFile(activationCatalogLiveProjectionSourcePath),
+    readFile(activationCatalogNormalizationSourcePath),
+  ]);
+  if (
+    sha256(projectionSource) !==
+      expectation.liveCatalogProjectionSourceSha256 ||
+    sha256(normalizationSource) !== expectation.normalizationSourceSha256
+  )
+    throw new Error("activation_catalog_policy_reviewed_source_drift");
+}
 
 function parseArguments(argv) {
   let candidatePath;
@@ -289,6 +313,7 @@ export async function promotePrivatePg17ActivationCatalogPolicy({
   )
     throw new Error("activation_catalog_policy_promotion_opt_in_required");
   const { candidatePath, write } = parseArguments(argv);
+  await assertActivationCatalogPolicyReviewedSourceBindings();
   const generated = canonicalActivationCatalogArtifactSource(
     await readFile(candidatePath),
   );

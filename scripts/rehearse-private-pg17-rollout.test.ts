@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.js";
 import {
   authorizeCanonicalActivationCatalogPolicies,
-  canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-contract.js";
 import {
@@ -286,7 +285,7 @@ describe("disposable dual-version rehearsal", () => {
       }),
     ).rejects.toThrow("private_pg17_rehearsal_control_readiness_timeout");
   });
-  it("uses the exact reviewed compact digest authorization in normal rehearsal", () => {
+  it("blocks normal rehearsal while the catalog review evidence is stale", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual({
       preactivationCatalogPolicySha256:
         "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
@@ -296,11 +295,13 @@ describe("disposable dual-version rehearsal", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual(
       canonicalActivationCatalogPolicyDigests,
     );
-    expect(
+    expect(() =>
       authorizeCanonicalActivationCatalogPolicies(
         rehearsalActivationCatalogPolicyAuthorization,
       ),
-    ).toBe(canonicalActivationCatalogPolicies);
+    ).toThrow(
+      "activation_catalog_policy_trust_root_blocked:independent-review-required-after-catalog-projection-change",
+    );
   });
   it("allows loaded disposable catalog observations without changing production timing", () => {
     expect(rehearsalReadinessPolicy).toEqual({

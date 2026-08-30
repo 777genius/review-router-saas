@@ -17,6 +17,10 @@ export const reviewedActivationCatalogCandidate = Object.freeze({
   bytes: 2_651_682,
   liveCatalogDigest:
     "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
+  liveCatalogProjectionSourceSha256:
+    "39e855060bfc186c6fb92fe1cd5c72410f8f72802200da49d6c1fe45eb6ed5f4",
+  normalizationSourceSha256:
+    "7b23d64a1f2160398cdeb9194b0a3f3583e5566a1b20a0b2009caaf7ddbe0da1",
   preactivationCatalogPolicySha256:
     "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
   activatedCatalogPolicySha256:
@@ -50,6 +54,10 @@ export const reviewedActivationCatalogPromotionExpectation = Object.freeze({
   candidateBytes: reviewedActivationCatalogCandidate.bytes,
   candidateSha256: reviewedActivationCatalogCandidate.sha256,
   liveCatalogDigest: reviewedActivationCatalogCandidate.liveCatalogDigest,
+  liveCatalogProjectionSourceSha256:
+    reviewedActivationCatalogCandidate.liveCatalogProjectionSourceSha256,
+  normalizationSourceSha256:
+    reviewedActivationCatalogCandidate.normalizationSourceSha256,
   sourcePg16Image:
     "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
   targetPg17Image:

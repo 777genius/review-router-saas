@@ -20,6 +20,8 @@ const expected: ActivationCatalogPolicyPromotionExpectation = {
   candidateBytes: 42,
   candidateSha256: "b".repeat(64),
   liveCatalogDigest: `sha256:${"7".repeat(64)}`,
+  liveCatalogProjectionSourceSha256: "8".repeat(64),
+  normalizationSourceSha256: "9".repeat(64),
   sourcePg16Image: `postgres:16.13-bookworm@sha256:${"c".repeat(64)}`,
   targetPg17Image: `postgres:17.5-bookworm@sha256:${"d".repeat(64)}`,
   preactivationCatalogPolicySha256: `sha256:${"e".repeat(64)}`,
@@ -29,7 +31,7 @@ const expected: ActivationCatalogPolicyPromotionExpectation = {
 
 const ready = () => ({
   kind: "reviewrouter-activation-catalog-policy-promotion-provenance",
-  version: 4,
+  version: 5,
   status: "ready",
   readinessReason: expected.readinessReason,
   promotedAt: "2026-08-15T10:31:00.000Z",
@@ -69,6 +71,11 @@ const ready = () => ({
     artifact: expected.artifactCanonicalSha256,
     liveCatalogDigest: expected.liveCatalogDigest,
   },
+  reviewedSources: {
+    liveCatalogProjectionSourceSha256:
+      expected.liveCatalogProjectionSourceSha256,
+    normalizationSourceSha256: expected.normalizationSourceSha256,
+  },
   independentReview: {
     result: "GO",
     reviewerRunId: expected.reviewerRunId,
@@ -90,6 +97,11 @@ const ready = () => ({
       artifact: expected.artifactCanonicalSha256,
       liveCatalogDigest: expected.liveCatalogDigest,
     },
+    reviewedSources: {
+      liveCatalogProjectionSourceSha256:
+        expected.liveCatalogProjectionSourceSha256,
+      normalizationSourceSha256: expected.normalizationSourceSha256,
+    },
   },
 });
 
@@ -108,9 +120,9 @@ describe("activation catalog policy promotion provenance", () => {
 
   it.each([
     [
-      "legacy schema v3",
+      "legacy schema v4",
       (value: ReturnType<typeof ready>) => {
-        value.version = 3;
+        value.version = 4;
       },
     ],
     [
@@ -147,6 +159,21 @@ describe("activation catalog policy promotion provenance", () => {
       "malformed independent-review canonical digest",
       (value: ReturnType<typeof ready>) => {
         value.independentReview.canonicalDigests.artifact = "not-a-sha256";
+      },
+    ],
+    [
+      "reviewed projection source drift",
+      (value: ReturnType<typeof ready>) => {
+        value.reviewedSources.liveCatalogProjectionSourceSha256 = "0".repeat(
+          64,
+        );
+      },
+    ],
+    [
+      "independent-review normalization source drift",
+      (value: ReturnType<typeof ready>) => {
+        value.independentReview.reviewedSources.normalizationSourceSha256 =
+          "0".repeat(64);
       },
     ],
     [

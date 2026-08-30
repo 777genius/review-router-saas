@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
   canonicalActivationCatalogPolicyTrustRootReadiness,
 } from "@reviewrouter/features-release-rollout";
@@ -56,14 +55,15 @@ describe("activation catalog policy deployment authorization", () => {
     ).toThrow("activation_catalog_policy_digest_mismatch");
   });
 
-  it("authorizes the independently reviewed PG17 policy recapture", () => {
+  it("blocks deployment authorization until the changed projection is reviewed", () => {
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
-      status: "ready",
-      reason:
-        "reviewed-v29-comment-token-custody-promoted-with-exact-go-evidence",
+      status: "blocked",
+      reason: "independent-review-required-after-catalog-projection-change",
     });
-    expect(trustedActivationCatalogPoliciesFromEnvironment(configured)).toBe(
-      canonicalActivationCatalogPolicies,
+    expect(() =>
+      trustedActivationCatalogPoliciesFromEnvironment(configured),
+    ).toThrow(
+      "activation_catalog_policy_trust_root_blocked:independent-review-required-after-catalog-projection-change",
     );
   });
 });
