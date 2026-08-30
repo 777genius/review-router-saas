@@ -606,23 +606,26 @@ model CodexOAuthLease {
 }
 
 model CertifiedForkReviewClaim {
-  id                  String    @id @default(cuid())
-  scopeKey            String    @unique
-  baseRepositoryId    String
-  pullRequestNumber   Int
-  reviewHeadSha       String
-  baseSha             String
-  contextHash         String
-  promptPolicyVersion Int
-  reservationOwner    String
-  executionId         String?
-  status              String    @default("pending")
-  outputDigest        String?
-  commentId           String?
-  commentUrl          String?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
-  publishedAt         DateTime?
+  id                   String    @id @default(cuid())
+  scopeKey             String    @unique
+  baseRepositoryId     String
+  pullRequestNumber    Int
+  reviewHeadSha        String
+  baseSha              String
+  contextHash          String
+  promptPolicyVersion  Int
+  reservationOwner     String
+  reservationExpiresAt DateTime
+  recoveryState        String    @default("reserved")
+  recoveryEvidenceHash String?
+  executionId          String?
+  status               String    @default("pending")
+  outputDigest         String?
+  commentId            String?
+  commentUrl           String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  publishedAt          DateTime?
 
   @@index([baseRepositoryId, pullRequestNumber, reviewHeadSha])
 }

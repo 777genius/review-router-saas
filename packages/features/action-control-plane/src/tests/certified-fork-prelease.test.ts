@@ -92,6 +92,16 @@ describe("certified fork V5 prelease", () => {
     expect(fixture.admission).toHaveBeenCalledWith(binding);
   });
 
+  it("resumes the exact owner's lost prelease response and returns the same durable lease", async () => {
+    const fixture = preleaseFixture();
+    fixture.claimPrelease.mockResolvedValueOnce({ status: "resume" });
+    await expect(run(fixture.dependencies)).resolves.toMatchObject({
+      status: "ready",
+      leaseId: "lease-1",
+    });
+    expect(fixture.acquirePrelease).toHaveBeenCalledOnce();
+  });
+
   it.each(["feature off", "cohort miss"])(
     "blocks V5 prelease before any provider/auth effect when %s",
     async () => {
@@ -160,6 +170,7 @@ describe("certified fork V5 prelease", () => {
     fixture.acquirePrelease.mockRejectedValueOnce(new Error("response_lost"));
     await expect(run(fixture.dependencies)).rejects.toThrow("response_lost");
     expect(fixture.abandonPrelease).not.toHaveBeenCalled();
+    expect(fixture.markPreleaseAmbiguous).toHaveBeenCalledOnce();
   });
 
   it("releases the reservation when lease acquisition definitively conflicts", async () => {
@@ -181,6 +192,18 @@ describe("certified fork V5 prelease", () => {
     await expect(run(fixture.dependencies)).rejects.toThrow(
       "certified_fork_claim_conflict",
     );
+    expect(fixture.acquirePrelease).not.toHaveBeenCalled();
+  });
+
+  it("does not create a claim or OAuth lease when context preparation rejects a file patch budget", async () => {
+    const fixture = preleaseFixture();
+    fixture.assertBindingCurrent.mockRejectedValueOnce(
+      new Error("certified_fork_diff_budget_exceeded"),
+    );
+    await expect(run(fixture.dependencies)).rejects.toThrow(
+      "certified_fork_diff_budget_exceeded",
+    );
+    expect(fixture.claimPrelease).not.toHaveBeenCalled();
     expect(fixture.acquirePrelease).not.toHaveBeenCalled();
   });
 
@@ -269,11 +292,13 @@ function preleaseFixture(claimMutation: Record<string, unknown> = {}) {
   const claimPrelease = vi.fn<
     () => Promise<
       | { status: "ready" }
+      | { status: "resume" }
       | { status: "in_progress" }
       | { status: "already_published"; commentId: string; commentUrl?: string }
     >
   >(async () => ({ status: "ready" }));
   const abandonPrelease = vi.fn(async () => undefined);
+  const markPreleaseAmbiguous = vi.fn(async () => undefined);
   const assertBindingCurrent = vi.fn(async (input) => {
     if (JSON.stringify(input.binding) !== JSON.stringify(binding))
       throw new Error("certified_fork_tuple_mismatch");
@@ -317,6 +342,8 @@ function preleaseFixture(claimMutation: Record<string, unknown> = {}) {
     certifiedForkReviewClaims: {
       claimPrelease,
       abandonPrelease,
+      markPreleaseAmbiguous,
+      recoverAmbiguousPrelease: vi.fn(async () => undefined),
     },
     replayNonces: { tryConsumeNonce: replayNonce },
     hostedReviewPreleaseGate: { evaluate: intentGate },
@@ -336,5 +363,6 @@ function preleaseFixture(claimMutation: Record<string, unknown> = {}) {
     replayNonce,
     claimPrelease,
     abandonPrelease,
+    markPreleaseAmbiguous,
   };
 }

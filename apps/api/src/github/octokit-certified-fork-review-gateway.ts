@@ -17,6 +17,7 @@ type InstallationApp = {
 };
 const maxFiles = 300;
 const maxPatchBytes = 240_000;
+export const certifiedForkReviewMaxFilePatchBytes = 200_000;
 const maxChangedLines = 20_000;
 const maxCommentPages = 10;
 const githubRequestTimeoutMs = 15_000;
@@ -77,7 +78,10 @@ export class OctokitCertifiedForkReviewGateway implements CertifiedForkReviewGat
         throw new Error("certified_fork_files_invalid");
       for (const value of response.data) {
         const file = parseFile(value);
-        bytes += Buffer.byteLength(file.patch, "utf8");
+        const filePatchBytes = Buffer.byteLength(file.patch, "utf8");
+        if (filePatchBytes > certifiedForkReviewMaxFilePatchBytes)
+          throw new Error("certified_fork_diff_budget_exceeded");
+        bytes += filePatchBytes;
         lines += file.additions + file.deletions;
         if (
           files.length + 1 > maxFiles ||
@@ -399,6 +403,7 @@ function safePath(value: string) {
     !value.startsWith("/") &&
     !value.includes("\\") &&
     !value.includes("`") &&
+    !/[\u202a-\u202e\u2066-\u2069]/u.test(value) &&
     ![...value].some((character) => {
       const code = character.charCodeAt(0);
       return code < 32 || code === 127;

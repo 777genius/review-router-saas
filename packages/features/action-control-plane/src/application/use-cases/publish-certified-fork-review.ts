@@ -46,7 +46,7 @@ export async function publishCertifiedForkReview(
   await consumeFreshOidc(claims, d);
   const published = await d.certifiedForkReviewPublishLock.withLock(
     `certified-fork-publish:${input.forkReviewBinding.baseRepositoryId}:${input.forkReviewBinding.pullRequestNumber}:${input.forkReviewBinding.reviewHeadSha.toLowerCase()}`,
-    async () => {
+    async (lockedClaims) => {
       const current = await d.certifiedForkReviewGateway.assertContextCurrent({
         githubInstallationId: lease.githubInstallationId,
         binding: input.forkReviewBinding,
@@ -65,7 +65,7 @@ export async function publishCertifiedForkReview(
         input.forkReviewBinding,
         input.contextHash,
       );
-      const claim = await d.certifiedForkReviewClaims.beginPublish({
+      const claim = await lockedClaims.beginPublish({
         scope,
         executionId: input.executionId,
         outputDigest,
@@ -92,7 +92,7 @@ export async function publishCertifiedForkReview(
         outputDigest,
         body: `${marker}\n${rendered.body}`,
       });
-      await d.certifiedForkReviewClaims.completePublished({
+      await lockedClaims.completePublished({
         scope,
         executionId: input.executionId,
         outputDigest,

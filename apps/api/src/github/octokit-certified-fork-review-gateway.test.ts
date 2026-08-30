@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { OctokitCertifiedForkReviewGateway } from "./octokit-certified-fork-review-gateway.js";
+import {
+  certifiedForkReviewMaxFilePatchBytes,
+  OctokitCertifiedForkReviewGateway,
+} from "./octokit-certified-fork-review-gateway.js";
 const baseSha = "a".repeat(40);
 const headSha = "b".repeat(40);
 const binding = {
@@ -71,6 +74,7 @@ describe("OctokitCertifiedForkReviewGateway", () => {
     ["unsafe path", { path: "../secret" }],
     ["newline path", { path: "src/a.ts\n<!-- injected -->" }],
     ["backtick path", { path: "src/`injected`.ts" }],
+    ["bidi path", { path: "src/safe\u202Etxt.ts" }],
   ])("rejects %s files", async (_name, fileMutation) => {
     const gateway = fixture(async (route, parameters) =>
       response(route, parameters, {}, fileMutation),
@@ -311,11 +315,45 @@ describe("OctokitCertifiedForkReviewGateway", () => {
   });
 
   it.each([
-    ["byte", { patch: "x".repeat(240_001), additions: 1, deletions: 0 }],
+    [
+      "single-file byte",
+      {
+        patch: "x".repeat(certifiedForkReviewMaxFilePatchBytes + 1),
+        additions: 1,
+        deletions: 0,
+      },
+    ],
     ["line", { patch: "@@", additions: 20_001, deletions: 0 }],
   ])("enforces the %s budget", async (_name, fileMutation) => {
     const gateway = fixture(async (route, parameters) =>
       response(route, parameters, {}, fileMutation),
+    );
+    await expect(
+      gateway.prepareContext({ githubInstallationId: "7", binding }),
+    ).rejects.toThrow("certified_fork_diff_budget_exceeded");
+  });
+
+  it.each([
+    ["ASCII", "x".repeat(certifiedForkReviewMaxFilePatchBytes)],
+    ["multibyte", "é".repeat(certifiedForkReviewMaxFilePatchBytes / 2)],
+  ])(
+    "accepts an exact %s per-file UTF-8 byte boundary",
+    async (_name, patch) => {
+      const gateway = fixture(async (route, parameters) =>
+        response(route, parameters, {}, { patch, additions: 1, deletions: 0 }),
+      );
+      await expect(
+        gateway.prepareContext({ githubInstallationId: "7", binding }),
+      ).resolves.toMatchObject({
+        promptPacket: { files: [expect.objectContaining({ patch })] },
+      });
+    },
+  );
+
+  it("rejects a multibyte patch one UTF-8 code point over the per-file boundary", async () => {
+    const patch = "é".repeat(certifiedForkReviewMaxFilePatchBytes / 2) + "é";
+    const gateway = fixture(async (route, parameters) =>
+      response(route, parameters, {}, { patch, additions: 1, deletions: 0 }),
     );
     await expect(
       gateway.prepareContext({ githubInstallationId: "7", binding }),

@@ -31,15 +31,29 @@ import {
   codexRotatingReviewSnapshotAccessTtlMs,
   isCodexRotatingCompletedLeasePostingWindowActive,
 } from "../../domain/codex-rotating-oauth-posting-window.js";
-import type {
-  CodexRotatingOAuthRepositoryPort,
-  CodexRotatingPreleaseRecord,
-  CodexRotatingSecretWriteTarget,
-  CodexRotatingVersionedWritebackLedgerPort,
+import {
+  CodexRotatingPreleaseNotAcquiredError,
+  type CodexRotatingOAuthRepositoryPort,
+  type CodexRotatingPreleaseRecord,
+  type CodexRotatingSecretWriteTarget,
+  type CodexRotatingVersionedWritebackLedgerPort,
 } from "../../application/ports/codex-rotating-oauth-repository-port.js";
 import type { CodexRotatingReviewSnapshotAccessPort } from "../../application/ports/codex-rotating-review-snapshot-access-port.js";
 import type { CodexRotatingReviewExecutionCheckpointAccessPort } from "../../application/ports/codex-rotating-review-execution-checkpoint-access-port.js";
 import { certifiedForkReviewLeaseBindingKey } from "../../application/use-cases/certified-fork-review-binding.js";
+
+function definitePreleaseFailure(error: unknown) {
+  return new CodexRotatingPreleaseNotAcquiredError(
+    error instanceof Error ? error.message : "codex_rotating_prelease_rejected",
+  );
+}
+
+function isDefiniteRolledBackPreleaseFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /^(codex_rotating_provider_(?:not_found|identity_mismatch|unknown_auth_state|needs_reconnect|permission_required)|codex_rotating_mutation_fence_conflict|codex_rotating_new_work_admission_closed|automatic_runtime_database_recovery_witness_)/u.test(
+    error.message,
+  );
+}
 
 const codexRotatingRepositoryContextSelect = {
   id: true,
@@ -130,10 +144,14 @@ export class PrismaCodexRotatingOAuthRepository
     ) {
       return null;
     }
-    assertCanonicalCodexRotatingProviderId({
-      providerInstanceId: input.providerInstanceId,
-      githubRepositoryId: input.repository.githubRepositoryId,
-    });
+    try {
+      assertCanonicalCodexRotatingProviderId({
+        providerInstanceId: input.providerInstanceId,
+        githubRepositoryId: input.repository.githubRepositoryId,
+      });
+    } catch (error) {
+      throw definitePreleaseFailure(error);
+    }
 
     const provider = await this.prisma.codexOAuthProviderInstance.findUnique({
       where: { providerInstanceId: input.providerInstanceId },
@@ -297,280 +315,286 @@ export class PrismaCodexRotatingOAuthRepository
         : []),
     ].join(":");
 
-    return this.prisma.$transaction(async (tx) => {
-      await setBoundedProviderRowWaits(tx);
-      // A shared transaction-scoped advisory lock makes every admitted
-      // prelease attempt observable in pg_locks until the lease transaction
-      // commits or aborts. Drain tooling can take the matching exclusive lock
-      // to establish a hard zero-in-flight barrier.
-      await tx.$queryRaw<Array<{ locked: boolean }>>(Prisma.sql`
+    return this.prisma
+      .$transaction(async (tx) => {
+        await setBoundedProviderRowWaits(tx);
+        // A shared transaction-scoped advisory lock makes every admitted
+        // prelease attempt observable in pg_locks until the lease transaction
+        // commits or aborts. Drain tooling can take the matching exclusive lock
+        // to establish a hard zero-in-flight barrier.
+        await tx.$queryRaw<Array<{ locked: boolean }>>(Prisma.sql`
         SELECT pg_advisory_xact_lock_shared(1381126735, 1129271119) IS NULL AS "locked"
       `);
-      await tx.$queryRaw(Prisma.sql`
+        await tx.$queryRaw(Prisma.sql`
         SELECT "id" FROM "CodexOAuthProviderInstance"
         WHERE "providerInstanceId" = ${input.providerInstanceId}
         FOR UPDATE
       `);
-      const now = await this.transactionClock.now(tx);
-      const expiresAt = new Date(now.getTime() + 15 * 60 * 1000);
-      const provider = await tx.codexOAuthProviderInstance.findUnique({
-        where: { providerInstanceId: input.providerInstanceId },
-        select: {
-          id: true,
-          workspaceId: true,
-          repositoryId: true,
-          providerInstanceId: true,
-          authMode: true,
-          secretName: true,
-          activeLeaseId: true,
-          activeLeaseExpiresAt: true,
-          mutationEpoch: true,
-          mutationOwner: true,
-          mutationOwnerId: true,
-          activeSecretNamespaceId: true,
-          activeSecretNamespaceEpoch: true,
-          activeSecretNamespaceName: true,
-          activeSecretNamespace: {
-            select: {
-              id: true,
-              githubRepositoryId: true,
-              namespaceEpoch: true,
-              secretName: true,
-              status: true,
-              databaseRecoveryWitness: true,
-            },
-          },
-          state: true,
-          latestGeneration: true,
-          latestGenerationHash: true,
-          generationHashSalt: true,
-          accountFingerprintSalt: true,
-        },
-      });
-      if (!provider) {
-        throw new Error("codex_rotating_provider_not_found");
-      }
-      if (
-        provider.workspaceId !== input.repository.workspaceId ||
-        provider.repositoryId !== input.repository.repositoryId ||
-        provider.providerInstanceId !== input.providerInstanceId ||
-        provider.authMode !== codexRotatingAuthMode ||
-        provider.secretName !== codexRotatingSecretName
-      ) {
-        throw new Error("codex_rotating_provider_identity_mismatch");
-      }
-      const activeNamespace = requireActiveNamespaceBinding(provider);
-      assertAutomaticRuntimeDatabaseRecoveryWitness(
-        provider.activeSecretNamespace?.databaseRecoveryWitness,
-        this.options.databaseRecoveryWitness,
-      );
-      // The final policy assertion deliberately runs after the provider row is
-      // locked and in the same transaction that creates the lease. This is the
-      // admission barrier: a closed or malformed fence cannot race a lease.
-      input.newWorkAdmissionBarrier.assertAdmitted();
-      if (
-        provider.state === "unknown_auth_state" ||
-        provider.state === "needs_reconnect" ||
-        provider.state === "permission_required"
-      ) {
-        throw new Error(`codex_rotating_provider_${provider.state}`);
-      }
-      const pendingIntent = await tx.codexOAuthWritebackIntent.findFirst({
-        where: {
-          providerInstanceRowId: provider.id,
-          OR: [
-            { status: "pending" },
-            {
-              status: "remote_outcome_unknown",
-              recoveryResolvedAt: null,
-            },
-          ],
-        },
-        select: { id: true },
-      });
-      const blockingSetup = await tx.codexOAuthSetupManifest.findFirst({
-        where: {
-          providerInstanceRowId: provider.id,
-          OR: [
-            { status: "fetched" },
-            { status: "issued", expiresAt: { gt: now } },
-          ],
-        },
-        select: { id: true },
-      });
-      if (
-        provider.mutationOwner === "setup" ||
-        provider.mutationOwner === "recovery" ||
-        pendingIntent ||
-        blockingSetup
-      ) {
-        throw new Error("codex_rotating_mutation_fence_conflict");
-      }
-      if (
-        provider.activeLeaseId &&
-        provider.activeLeaseExpiresAt &&
-        provider.activeLeaseExpiresAt > now
-      ) {
-        const activeLease = await tx.codexOAuthLease.findUnique({
-          where: { id: provider.activeLeaseId },
+        const now = await this.transactionClock.now(tx);
+        const expiresAt = new Date(now.getTime() + 15 * 60 * 1000);
+        const provider = await tx.codexOAuthProviderInstance.findUnique({
+          where: { providerInstanceId: input.providerInstanceId },
           select: {
             id: true,
-            githubRunId: true,
-            githubRunAttempt: true,
-            pullRequestNumber: true,
-            leaseKey: true,
-            status: true,
-            expiresAt: true,
+            workspaceId: true,
+            repositoryId: true,
+            providerInstanceId: true,
+            authMode: true,
+            secretName: true,
+            activeLeaseId: true,
+            activeLeaseExpiresAt: true,
             mutationEpoch: true,
-            secretNamespaceId: true,
-            secretNamespaceEpoch: true,
+            mutationOwner: true,
+            mutationOwnerId: true,
+            activeSecretNamespaceId: true,
+            activeSecretNamespaceEpoch: true,
+            activeSecretNamespaceName: true,
+            activeSecretNamespace: {
+              select: {
+                id: true,
+                githubRepositoryId: true,
+                namespaceEpoch: true,
+                secretName: true,
+                status: true,
+                databaseRecoveryWitness: true,
+              },
+            },
+            state: true,
+            latestGeneration: true,
+            latestGenerationHash: true,
+            generationHashSalt: true,
+            accountFingerprintSalt: true,
           },
         });
+        if (!provider) {
+          throw new Error("codex_rotating_provider_not_found");
+        }
         if (
-          activeLease &&
-          activeLease.status !== "completed" &&
-          activeLease.expiresAt > now
+          provider.workspaceId !== input.repository.workspaceId ||
+          provider.repositoryId !== input.repository.repositoryId ||
+          provider.providerInstanceId !== input.providerInstanceId ||
+          provider.authMode !== codexRotatingAuthMode ||
+          provider.secretName !== codexRotatingSecretName
         ) {
-          if (
-            activeLease.githubRunId === input.githubRunId &&
-            activeLease.githubRunAttempt === input.githubRunAttempt &&
-            activeLease.leaseKey === leaseKey &&
-            activeLease.status === "preleased" &&
-            (activeNamespace.id === null ||
-              (activeLease.secretNamespaceId === activeNamespace.id &&
-                activeLease.secretNamespaceEpoch === activeNamespace.epoch))
-          ) {
-            return {
-              leaseId: activeLease.id,
-              providerInstanceId: input.providerInstanceId,
-              runId: input.githubRunId,
-              runAttempt: input.githubRunAttempt,
-              status: "preleased" as const,
-              expiresAt: activeLease.expiresAt,
-              repository: input.repository,
-              generationHashSalt: provider.generationHashSalt,
-              accountFingerprintSalt: provider.accountFingerprintSalt,
-              currentGeneration: provider.latestGeneration,
-              mutationEpoch:
-                activeLease.mutationEpoch ?? provider.mutationEpoch,
-              ...(activeLease.secretNamespaceId
-                ? { secretNamespaceId: activeLease.secretNamespaceId }
-                : {}),
-              ...(activeLease.secretNamespaceEpoch !== null
-                ? { secretNamespaceEpoch: activeLease.secretNamespaceEpoch }
-                : {}),
-              ...(provider.latestGenerationHash
-                ? { currentGenerationHash: provider.latestGenerationHash }
-                : {}),
-            };
-          }
-          if (
-            activeLease.githubRunId === input.githubRunId &&
-            activeLease.githubRunAttempt !== input.githubRunAttempt
-          ) {
-            await tx.codexOAuthLease.update({
-              where: { id: activeLease.id },
-              data: {
-                status: "expired",
-                expiresAt: now,
+          throw new Error("codex_rotating_provider_identity_mismatch");
+        }
+        const activeNamespace = requireActiveNamespaceBinding(provider);
+        assertAutomaticRuntimeDatabaseRecoveryWitness(
+          provider.activeSecretNamespace?.databaseRecoveryWitness,
+          this.options.databaseRecoveryWitness,
+        );
+        // The final policy assertion deliberately runs after the provider row is
+        // locked and in the same transaction that creates the lease. This is the
+        // admission barrier: a closed or malformed fence cannot race a lease.
+        input.newWorkAdmissionBarrier.assertAdmitted();
+        if (
+          provider.state === "unknown_auth_state" ||
+          provider.state === "needs_reconnect" ||
+          provider.state === "permission_required"
+        ) {
+          throw new Error(`codex_rotating_provider_${provider.state}`);
+        }
+        const pendingIntent = await tx.codexOAuthWritebackIntent.findFirst({
+          where: {
+            providerInstanceRowId: provider.id,
+            OR: [
+              { status: "pending" },
+              {
+                status: "remote_outcome_unknown",
+                recoveryResolvedAt: null,
               },
-            });
-          } else {
-            return {
-              leaseId: activeLease.id,
-              providerInstanceId: input.providerInstanceId,
-              runId: activeLease.githubRunId,
-              runAttempt: activeLease.githubRunAttempt,
-              status: "conflict" as const,
-              expiresAt: activeLease.expiresAt,
-              repository: input.repository,
-              generationHashSalt: provider.generationHashSalt,
-              accountFingerprintSalt: provider.accountFingerprintSalt,
-              currentGeneration: provider.latestGeneration,
-              mutationEpoch:
-                activeLease.mutationEpoch ?? provider.mutationEpoch,
-              ...(provider.latestGenerationHash
-                ? { currentGenerationHash: provider.latestGenerationHash }
-                : {}),
-            };
+            ],
+          },
+          select: { id: true },
+        });
+        const blockingSetup = await tx.codexOAuthSetupManifest.findFirst({
+          where: {
+            providerInstanceRowId: provider.id,
+            OR: [
+              { status: "fetched" },
+              { status: "issued", expiresAt: { gt: now } },
+            ],
+          },
+          select: { id: true },
+        });
+        if (
+          provider.mutationOwner === "setup" ||
+          provider.mutationOwner === "recovery" ||
+          pendingIntent ||
+          blockingSetup
+        ) {
+          throw new Error("codex_rotating_mutation_fence_conflict");
+        }
+        if (
+          provider.activeLeaseId &&
+          provider.activeLeaseExpiresAt &&
+          provider.activeLeaseExpiresAt > now
+        ) {
+          const activeLease = await tx.codexOAuthLease.findUnique({
+            where: { id: provider.activeLeaseId },
+            select: {
+              id: true,
+              githubRunId: true,
+              githubRunAttempt: true,
+              pullRequestNumber: true,
+              leaseKey: true,
+              status: true,
+              expiresAt: true,
+              mutationEpoch: true,
+              secretNamespaceId: true,
+              secretNamespaceEpoch: true,
+            },
+          });
+          if (
+            activeLease &&
+            activeLease.status !== "completed" &&
+            activeLease.expiresAt > now
+          ) {
+            if (
+              activeLease.githubRunId === input.githubRunId &&
+              activeLease.githubRunAttempt === input.githubRunAttempt &&
+              activeLease.leaseKey === leaseKey &&
+              activeLease.status === "preleased" &&
+              (activeNamespace.id === null ||
+                (activeLease.secretNamespaceId === activeNamespace.id &&
+                  activeLease.secretNamespaceEpoch === activeNamespace.epoch))
+            ) {
+              return {
+                leaseId: activeLease.id,
+                providerInstanceId: input.providerInstanceId,
+                runId: input.githubRunId,
+                runAttempt: input.githubRunAttempt,
+                status: "preleased" as const,
+                expiresAt: activeLease.expiresAt,
+                repository: input.repository,
+                generationHashSalt: provider.generationHashSalt,
+                accountFingerprintSalt: provider.accountFingerprintSalt,
+                currentGeneration: provider.latestGeneration,
+                mutationEpoch:
+                  activeLease.mutationEpoch ?? provider.mutationEpoch,
+                ...(activeLease.secretNamespaceId
+                  ? { secretNamespaceId: activeLease.secretNamespaceId }
+                  : {}),
+                ...(activeLease.secretNamespaceEpoch !== null
+                  ? { secretNamespaceEpoch: activeLease.secretNamespaceEpoch }
+                  : {}),
+                ...(provider.latestGenerationHash
+                  ? { currentGenerationHash: provider.latestGenerationHash }
+                  : {}),
+              };
+            }
+            if (
+              activeLease.githubRunId === input.githubRunId &&
+              activeLease.githubRunAttempt !== input.githubRunAttempt
+            ) {
+              await tx.codexOAuthLease.update({
+                where: { id: activeLease.id },
+                data: {
+                  status: "expired",
+                  expiresAt: now,
+                },
+              });
+            } else {
+              return {
+                leaseId: activeLease.id,
+                providerInstanceId: input.providerInstanceId,
+                runId: activeLease.githubRunId,
+                runAttempt: activeLease.githubRunAttempt,
+                status: "conflict" as const,
+                expiresAt: activeLease.expiresAt,
+                repository: input.repository,
+                generationHashSalt: provider.generationHashSalt,
+                accountFingerprintSalt: provider.accountFingerprintSalt,
+                currentGeneration: provider.latestGeneration,
+                mutationEpoch:
+                  activeLease.mutationEpoch ?? provider.mutationEpoch,
+                ...(provider.latestGenerationHash
+                  ? { currentGenerationHash: provider.latestGenerationHash }
+                  : {}),
+              };
+            }
           }
         }
-      }
 
-      const mutationEpoch = provider.mutationEpoch + 1n;
-      await tx.codexOAuthProviderInstance.update({
-        where: { id: provider.id },
-        data: {
-          mutationEpoch,
-          mutationOwner: "runtime",
-          mutationOwnerId: leaseKey,
-        },
-      });
-      const lease = await tx.codexOAuthLease.upsert({
-        where: { leaseKey },
-        update: {
-          status: "preleased",
-          expiresAt,
-          mutationEpoch,
-          secretNamespaceId: activeNamespace.id,
-          secretNamespaceEpoch: activeNamespace.epoch,
-          ...(input.pullRequestNumber
-            ? { pullRequestNumber: input.pullRequestNumber }
-            : {}),
-        },
-        create: {
-          providerInstanceRowId: provider.id,
+        const mutationEpoch = provider.mutationEpoch + 1n;
+        await tx.codexOAuthProviderInstance.update({
+          where: { id: provider.id },
+          data: {
+            mutationEpoch,
+            mutationOwner: "runtime",
+            mutationOwnerId: leaseKey,
+          },
+        });
+        const lease = await tx.codexOAuthLease.upsert({
+          where: { leaseKey },
+          update: {
+            status: "preleased",
+            expiresAt,
+            mutationEpoch,
+            secretNamespaceId: activeNamespace.id,
+            secretNamespaceEpoch: activeNamespace.epoch,
+            ...(input.pullRequestNumber
+              ? { pullRequestNumber: input.pullRequestNumber }
+              : {}),
+          },
+          create: {
+            providerInstanceRowId: provider.id,
+            providerInstanceId: input.providerInstanceId,
+            workspaceId: input.repository.workspaceId,
+            repositoryId: input.repository.repositoryId,
+            githubRunId: input.githubRunId,
+            githubRunAttempt: input.githubRunAttempt,
+            ...(input.pullRequestNumber
+              ? { pullRequestNumber: input.pullRequestNumber }
+              : {}),
+            leaseKey,
+            status: "preleased",
+            expiresAt,
+            mutationEpoch,
+            secretNamespaceId: activeNamespace.id,
+            secretNamespaceEpoch: activeNamespace.epoch,
+          },
+        });
+        await tx.codexOAuthProviderInstance.update({
+          where: { id: provider.id },
+          data: {
+            activeLeaseId: lease.id,
+            activeLeaseExpiresAt: expiresAt,
+            state: "setup_pending",
+            mutationEpoch,
+            mutationOwner: "runtime",
+            mutationOwnerId: lease.id,
+          },
+        });
+
+        return {
+          leaseId: lease.id,
           providerInstanceId: input.providerInstanceId,
-          workspaceId: input.repository.workspaceId,
-          repositoryId: input.repository.repositoryId,
-          githubRunId: input.githubRunId,
-          githubRunAttempt: input.githubRunAttempt,
-          ...(input.pullRequestNumber
-            ? { pullRequestNumber: input.pullRequestNumber }
-            : {}),
-          leaseKey,
-          status: "preleased",
+          runId: input.githubRunId,
+          runAttempt: input.githubRunAttempt,
+          status: "preleased" as const,
           expiresAt,
+          repository: input.repository,
+          generationHashSalt: provider.generationHashSalt,
+          accountFingerprintSalt: provider.accountFingerprintSalt,
+          currentGeneration: provider.latestGeneration,
           mutationEpoch,
-          secretNamespaceId: activeNamespace.id,
-          secretNamespaceEpoch: activeNamespace.epoch,
-        },
+          ...(activeNamespace.id
+            ? { secretNamespaceId: activeNamespace.id }
+            : {}),
+          ...(activeNamespace.epoch !== null
+            ? { secretNamespaceEpoch: activeNamespace.epoch }
+            : {}),
+          ...(provider.latestGenerationHash
+            ? { currentGenerationHash: provider.latestGenerationHash }
+            : {}),
+        };
+      })
+      .catch((error: unknown) => {
+        if (isDefiniteRolledBackPreleaseFailure(error))
+          throw definitePreleaseFailure(error);
+        throw error;
       });
-      await tx.codexOAuthProviderInstance.update({
-        where: { id: provider.id },
-        data: {
-          activeLeaseId: lease.id,
-          activeLeaseExpiresAt: expiresAt,
-          state: "setup_pending",
-          mutationEpoch,
-          mutationOwner: "runtime",
-          mutationOwnerId: lease.id,
-        },
-      });
-
-      return {
-        leaseId: lease.id,
-        providerInstanceId: input.providerInstanceId,
-        runId: input.githubRunId,
-        runAttempt: input.githubRunAttempt,
-        status: "preleased" as const,
-        expiresAt,
-        repository: input.repository,
-        generationHashSalt: provider.generationHashSalt,
-        accountFingerprintSalt: provider.accountFingerprintSalt,
-        currentGeneration: provider.latestGeneration,
-        mutationEpoch,
-        ...(activeNamespace.id
-          ? { secretNamespaceId: activeNamespace.id }
-          : {}),
-        ...(activeNamespace.epoch !== null
-          ? { secretNamespaceEpoch: activeNamespace.epoch }
-          : {}),
-        ...(provider.latestGenerationHash
-          ? { currentGenerationHash: provider.latestGenerationHash }
-          : {}),
-      };
-    });
   }
 
   async finalizeLease(input: {

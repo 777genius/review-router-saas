@@ -4,6 +4,7 @@ import {
   HmacCertifiedForkReviewTickets,
   PrismaCertifiedForkReviewLease,
   PrismaCertifiedForkReviewClaims,
+  PrismaCertifiedForkReviewPublishLock,
   StaticCertifiedForkReviewAdmission,
   StrictCertifiedForkReviewOutput,
 } from "./certified-fork-review-composition.js";
@@ -38,6 +39,46 @@ const promptPacket = {
   ],
 };
 describe("certified fork composition", () => {
+  it("uses the lock transaction delegate for claim mutations without a second pool checkout", async () => {
+    const transactionDelegate = {
+      $queryRaw: vi.fn(async () => []),
+      certifiedForkReviewClaim: {
+        findUnique: vi.fn(async () => null),
+      },
+    };
+    const topLevelClaim = {
+      findUnique: vi.fn(() => Promise.reject(new Error("pool_exhausted"))),
+    };
+    const prisma = {
+      certifiedForkReviewClaim: topLevelClaim,
+      $transaction: vi.fn(async (run) => await run(transactionDelegate)),
+    };
+    const lock = new PrismaCertifiedForkReviewPublishLock(prisma as never);
+    await expect(
+      lock.withLock("scope", async (claims) => {
+        await expect(
+          claims.beginPublish({
+            scope: {
+              baseRepositoryId: "99",
+              pullRequestNumber: 42,
+              reviewHeadSha: binding.reviewHeadSha,
+              baseSha: binding.baseSha,
+              contextHash: "c".repeat(64),
+              promptPolicyVersion: 1,
+            },
+            executionId: "execution",
+            outputDigest: "d".repeat(64),
+          }),
+        ).rejects.toThrow("certified_fork_claim_conflict");
+        return "done";
+      }),
+    ).resolves.toBe("done");
+    expect(topLevelClaim.findUnique).not.toHaveBeenCalled();
+    expect(
+      transactionDelegate.certifiedForkReviewClaim.findUnique,
+    ).toHaveBeenCalledOnce();
+  });
+
   it("atomically admits one pre-provider claim and fences publish execution/digest", async () => {
     let row: Record<string, unknown> | null = null;
     const delegate = {
@@ -51,6 +92,7 @@ describe("certified fork composition", () => {
           outputDigest: null,
           commentId: null,
           commentUrl: null,
+          recoveryState: "reserved",
           ...data,
         };
         return row;
@@ -89,6 +131,13 @@ describe("certified fork composition", () => {
       contextHash: "c".repeat(64),
       promptPolicyVersion: 1,
     };
+    await expect(
+      claims.recoverAmbiguousPrelease({
+        scope,
+        reservationOwner: "owner-1",
+        noProviderEffectEvidenceHash: "bad",
+      }),
+    ).rejects.toThrow("certified_fork_publish_digest_invalid");
     const [first, duplicate] = await Promise.all([
       claims.claimPrelease({ scope, reservationOwner: "owner-1" }),
       claims.claimPrelease({ scope, reservationOwner: "owner-2" }),
@@ -106,6 +155,9 @@ describe("certified fork composition", () => {
     const winningOwner = first.status === "ready" ? "owner-1" : "owner-2";
     const losingOwner = first.status === "ready" ? "owner-2" : "owner-1";
     await expect(
+      claims.claimPrelease({ scope, reservationOwner: winningOwner }),
+    ).resolves.toEqual({ status: "resume" });
+    await expect(
       claims.claimPrepare({
         scope,
         reservationOwner: losingOwner,
@@ -119,6 +171,13 @@ describe("certified fork composition", () => {
         executionId: "execution-1",
       }),
     ).resolves.toEqual({ status: "ready" });
+    await expect(
+      claims.claimPrepare({
+        scope,
+        reservationOwner: winningOwner,
+        executionId: "execution-1",
+      }),
+    ).resolves.toEqual({ status: "resume" });
     await expect(
       claims.beginPublish({
         scope,
@@ -329,7 +388,11 @@ describe("certified fork composition", () => {
     expect(rendered.body).not.toContain("<img");
     expect(rendered.body).not.toContain("<script>");
     expect(rendered.body).toContain("@\u200bmaintainer");
-    for (const path of ["src/`escape`.ts", "src/a.ts\nattack"]) {
+    for (const path of [
+      "src/`escape`.ts",
+      "src/a.ts\nattack",
+      "src/safe\u2066evil.ts",
+    ]) {
       expect(() =>
         output.render({
           generatedAt: new Date(),

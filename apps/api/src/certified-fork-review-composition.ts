@@ -99,6 +99,7 @@ export class PrismaCertifiedForkReviewClaims implements CertifiedForkReviewClaim
           scopeKey,
           ...input.scope,
           reservationOwner: input.reservationOwner,
+          reservationExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
         },
       });
       return { status: "ready" as const };
@@ -116,6 +117,12 @@ export class PrismaCertifiedForkReviewClaims implements CertifiedForkReviewClaim
     }
     if (existing.status !== "pending")
       throw new Error("certified_fork_claim_conflict");
+    if (
+      existing.reservationOwner === input.reservationOwner &&
+      existing.executionId === null &&
+      existing.recoveryState === "reserved"
+    )
+      return { status: "resume" as const };
     return { status: "in_progress" as const };
   }
 
@@ -132,6 +139,47 @@ export class PrismaCertifiedForkReviewClaims implements CertifiedForkReviewClaim
         outputDigest: null,
       },
     });
+  }
+
+  async markPreleaseAmbiguous(input: {
+    scope: CertifiedForkReviewClaimScope;
+    reservationOwner: string;
+  }): Promise<void> {
+    await this.prisma.certifiedForkReviewClaim.updateMany({
+      where: {
+        scopeKey: claimScopeKey(input.scope),
+        status: "pending",
+        reservationOwner: input.reservationOwner,
+        executionId: null,
+      },
+      data: { recoveryState: "ambiguous" },
+    });
+  }
+
+  async recoverAmbiguousPrelease(input: {
+    scope: CertifiedForkReviewClaimScope;
+    reservationOwner: string;
+    noProviderEffectEvidenceHash: string;
+  }): Promise<void> {
+    assertDigest(input.noProviderEffectEvidenceHash);
+    const scopeKey = claimScopeKey(input.scope);
+    const recovered = await this.prisma.certifiedForkReviewClaim.updateMany({
+      where: {
+        scopeKey,
+        status: "pending",
+        recoveryState: "ambiguous",
+        reservationOwner: input.reservationOwner,
+        executionId: null,
+        outputDigest: null,
+      },
+      data: {
+        status: "recovered",
+        recoveryEvidenceHash: input.noProviderEffectEvidenceHash,
+        scopeKey: `${scopeKey}:recovered:${input.noProviderEffectEvidenceHash}`,
+      },
+    });
+    if (recovered.count !== 1)
+      throw new Error("certified_fork_claim_recovery_conflict");
   }
 
   async claimPrepare(input: {
@@ -155,7 +203,9 @@ export class PrismaCertifiedForkReviewClaims implements CertifiedForkReviewClaim
     )
       throw new Error("certified_fork_claim_reservation_mismatch");
     if (existing.executionId !== null)
-      return { status: "in_progress" as const };
+      return existing.executionId === input.executionId
+        ? { status: "resume" as const }
+        : { status: "in_progress" as const };
     const updated = await this.prisma.certifiedForkReviewClaim.updateMany({
       where: {
         id: existing.id,
@@ -248,7 +298,10 @@ export class PrismaCertifiedForkReviewClaims implements CertifiedForkReviewClaim
 export class PrismaCertifiedForkReviewPublishLock implements CertifiedForkReviewPublishLockPort {
   constructor(private readonly prisma: PrismaClient) {}
 
-  async withLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+  async withLock<T>(
+    key: string,
+    run: (claims: CertifiedForkReviewClaimPort) => Promise<T>,
+  ): Promise<T> {
     if (!key || key.length > 500)
       throw new Error("certified_fork_publish_lock_invalid");
     return await this.prisma.$transaction(
@@ -256,7 +309,9 @@ export class PrismaCertifiedForkReviewPublishLock implements CertifiedForkReview
         await transaction.$queryRaw(
           Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
         );
-        return await run();
+        return await run(
+          new PrismaCertifiedForkReviewClaims(transaction as PrismaClient),
+        );
       },
       { maxWait: 60_000, timeout: 300_000 },
     );
@@ -485,6 +540,7 @@ function safePath(value: string) {
     !value.startsWith("/") &&
     !value.includes("\\") &&
     !value.includes("`") &&
+    !/[\u202a-\u202e\u2066-\u2069]/u.test(value) &&
     ![...value].some((character) => {
       const code = character.charCodeAt(0);
       return code < 32 || code === 127;

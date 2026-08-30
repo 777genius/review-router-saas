@@ -144,7 +144,7 @@ describe("certified fork review use cases", () => {
         tail = new Promise<void>((resolve) => (release = resolve));
         await previous;
         try {
-          return await run();
+          return await run(dependencies.certifiedForkReviewClaims);
         } finally {
           release();
         }
@@ -590,6 +590,8 @@ function fixture(claimChange: Record<string, unknown> = {}) {
     certifiedForkReviewClaims: {
       claimPrelease: async () => ({ status: "ready" }),
       abandonPrelease: async () => undefined,
+      markPreleaseAmbiguous: async () => undefined,
+      recoverAmbiguousPrelease: async () => undefined,
       claimPrepare: async () => ({ status: "ready" }),
       beginPublish: async ({ outputDigest }) => {
         if (claimedOutputDigest && claimedOutputDigest !== outputDigest)
@@ -601,7 +603,8 @@ function fixture(claimChange: Record<string, unknown> = {}) {
     },
     certifiedForkReviewAdmission: { assertEnabled: () => undefined },
     certifiedForkReviewPublishLock: {
-      withLock: async (_key, run) => await run(),
+      withLock: async (_key, run) =>
+        await run(dependencies.certifiedForkReviewClaims),
     },
   };
   return { dependencies, consumed, published };

@@ -323,6 +323,11 @@ export async function preleaseCodexRotatingOAuth(
         scope: certifiedForkReview.scope,
         reservationOwner: certifiedForkReview.reservationOwner,
       });
+    else if (certifiedForkReview)
+      await dependencies.certifiedForkReviewClaims!.markPreleaseAmbiguous({
+        scope: certifiedForkReview.scope,
+        reservationOwner: certifiedForkReview.reservationOwner,
+      });
     throw error;
   }
   if (lease.status === "conflict") {

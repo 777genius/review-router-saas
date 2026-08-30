@@ -1,12 +1,55 @@
 import { describe, expect, it, vi } from "vitest";
 import { fingerprintDatabaseRecoveryWitness } from "@reviewrouter/features-codex-oauth-rotating";
 import { PrismaCodexRotatingOAuthRepository } from "../infrastructure/prisma/prisma-codex-rotating-oauth-repository.js";
+import { CodexRotatingPreleaseNotAcquiredError } from "../application/ports/codex-rotating-oauth-repository-port.js";
 
 describe("Prisma Codex rotating new-work barrier", () => {
   const databaseRecoveryWitness = "witness_generation_one_12345678901234567890";
   const databaseRecoveryWitnessFingerprint = fingerprintDatabaseRecoveryWitness(
     databaseRecoveryWitness,
   );
+
+  it("classifies only deterministic rolled-back prelease failures as not acquired", async () => {
+    const makeRepository = (failure: Error) =>
+      new PrismaCodexRotatingOAuthRepository(
+        {
+          $transaction: vi.fn(async () => {
+            throw failure;
+          }),
+        } as never,
+        {
+          actionOwnerRepo: "reviewrouter/action",
+          databaseRecoveryWitness,
+          transactionClock: fixedClock("2026-08-09T00:00:00Z"),
+        },
+      );
+    const input = {
+      repository: {
+        workspaceId: "workspace-1",
+        repositoryId: "repository-1",
+        githubRepositoryId: "123456",
+        githubInstallationId: "789",
+        fullName: "owner/repo",
+        owner: "owner",
+        selected: true,
+        installationStatus: "active" as const,
+      },
+      providerInstanceId: "codex-rotating:123456",
+      githubRunId: "100",
+      githubRunAttempt: "1",
+      newWorkAdmissionBarrier: { assertAdmitted: () => undefined },
+    };
+    await expect(
+      makeRepository(
+        new Error("codex_rotating_provider_not_found"),
+      ).acquirePrelease(input),
+    ).rejects.toBeInstanceOf(CodexRotatingPreleaseNotAcquiredError);
+    await expect(
+      makeRepository(
+        new Error("database_commit_outcome_unknown"),
+      ).acquirePrelease(input),
+    ).rejects.not.toBeInstanceOf(CodexRotatingPreleaseNotAcquiredError);
+  });
 
   it("reasserts the closed fence inside the provider-lock transaction before lease writes", async () => {
     const providerUpdate = vi.fn();

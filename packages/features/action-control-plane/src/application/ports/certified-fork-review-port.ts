@@ -62,7 +62,10 @@ export interface CertifiedForkReviewGatewayPort {
 }
 
 export interface CertifiedForkReviewPublishLockPort {
-  withLock<T>(key: string, run: () => Promise<T>): Promise<T>;
+  withLock<T>(
+    key: string,
+    run: (claims: CertifiedForkReviewClaimPort) => Promise<T>,
+  ): Promise<T>;
 }
 
 export interface CertifiedForkReviewAdmissionPort {
@@ -83,7 +86,7 @@ export interface CertifiedForkReviewClaimPort {
     readonly scope: CertifiedForkReviewClaimScope;
     readonly reservationOwner: string;
   }): Promise<
-    | { readonly status: "ready" }
+    | { readonly status: "ready" | "resume" }
     | { readonly status: "in_progress" }
     | {
         readonly status: "already_published";
@@ -95,12 +98,21 @@ export interface CertifiedForkReviewClaimPort {
     readonly scope: CertifiedForkReviewClaimScope;
     readonly reservationOwner: string;
   }): Promise<void>;
+  markPreleaseAmbiguous(input: {
+    readonly scope: CertifiedForkReviewClaimScope;
+    readonly reservationOwner: string;
+  }): Promise<void>;
+  recoverAmbiguousPrelease(input: {
+    readonly scope: CertifiedForkReviewClaimScope;
+    readonly reservationOwner: string;
+    readonly noProviderEffectEvidenceHash: string;
+  }): Promise<void>;
   claimPrepare(input: {
     readonly scope: CertifiedForkReviewClaimScope;
     readonly reservationOwner: string;
     readonly executionId: string;
   }): Promise<
-    | { readonly status: "ready" }
+    | { readonly status: "ready" | "resume" }
     | { readonly status: "in_progress" }
     | {
         readonly status: "already_published";
