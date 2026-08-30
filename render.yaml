@@ -190,7 +190,7 @@ services:
     region: frankfurt
     image:
       url: ghcr.io/777genius/review-router-saas-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000
-    healthCheckPath: /health
+    healthCheckPath: /ready
     # Runtime deploys are explicit and follow the exclusive migration evidence gate.
     autoDeployTrigger: off
     maxShutdownDelaySeconds: 60

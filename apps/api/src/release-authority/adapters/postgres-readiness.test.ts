@@ -112,7 +112,8 @@ describe("release authority ACL readiness observation", () => {
     expect(sql).toContain("activate_generation(text)");
     expect(sql).toContain("aclexplode(coalesce(p.proacl,acldefault");
     expect(sql).toContain('AS "activationBootstrapRoleDemotedExact"');
-    expect(sql).toContain("count(DISTINCT granted.oid)=5");
+    expect(sql).toContain("count(DISTINCT granted.oid)=6");
+    expect(sql).toContain("'reviewrouter_comment_token_custody'");
     expect(sql).toContain("acl.is_grantable");
     expect(sql).toContain("AND NOT acl.is_grantable");
     expect(sql).toContain("routine.proowner=bootstrap.oid");

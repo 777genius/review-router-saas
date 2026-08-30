@@ -108,9 +108,9 @@ export const canonicalActivationCatalogPolicyDigests = Object.freeze({
 
 export const reviewedActivationCatalogPolicyDigests = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:36e6e4875c530beba1cb6bfc580a358d031895334e6af6a6bad193148e1beebe",
+    "sha256:95591a9df4dd88afe9a9a10118bf11b7e5ec4694748f8262de124d5f7ba7fd59",
   activatedCatalogPolicySha256:
-    "sha256:d0ccc9a760f69c467d3c9df56502704abb1f03116a2be156eb206100b35f5866",
+    "sha256:6c8f40abc68b063b835289d3d42f7ee07d9769baf269c5b05fb85db72c8cb3a0",
 });
 
 if (

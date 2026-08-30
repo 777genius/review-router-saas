@@ -4,8 +4,12 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { basename, dirname, join } from "node:path";
 import pg from "pg";
+import { runProviderScopeConcurrencyOperation } from "./manage-review-provider-scope-concurrency.mjs";
+import { runtimeGrantStatements } from "./run-codex-rotating-release-migration.mjs";
 
 const mode = process.argv[2];
+const prismaBinary = join(process.cwd(), "node_modules/.bin/prisma");
+const vitestBinary = join(process.cwd(), "node_modules/.bin/vitest");
 if (mode && mode !== "--migration-only" && mode !== "--postgres-only") {
   throw new Error("hosted_pool_e2e_mode_invalid");
 }
@@ -31,6 +35,12 @@ if (
 const hostNetwork = dockerNetwork === "host";
 const databaseUrl = `postgresql://postgres:${password}@127.0.0.1:${port}/${database}?schema=public`;
 const migrationDatabaseUrl = `postgresql://postgres:${password}@127.0.0.1:${port}/${migrationDatabase}?schema=public`;
+const custodyPassword = randomBytes(24).toString("base64url");
+const apiPassword = randomBytes(24).toString("base64url");
+const releaseMigrationPassword = randomBytes(24).toString("base64url");
+const custodyDatabaseUrl = `postgresql://reviewrouter_comment_token_custody:${custodyPassword}@127.0.0.1:${port}/${database}?schema=public`;
+const apiDatabaseUrl = `postgresql://reviewrouter_api:${apiPassword}@127.0.0.1:${port}/${database}?schema=public`;
+const releaseMigrationDatabaseUrl = `postgresql://reviewrouter_release_migration:${releaseMigrationPassword}@127.0.0.1:${port}/${database}?schema=public`;
 
 let started = false;
 let rehearsalDirectory;
@@ -52,6 +62,11 @@ try {
   ]);
   started = true;
   await waitForPostgres(container);
+  await provisionAdversarialRuntimeRoles(databaseUrl, {
+    custodyPassword,
+    apiPassword,
+    releaseMigrationPassword,
+  });
   if (runMigration) {
     run("docker", [
       "exec",
@@ -62,6 +77,7 @@ try {
       ...(hostNetwork ? ["--port", String(port)] : []),
       migrationDatabase,
     ]);
+    await grantMigrationSchemaOwnerAuthority(migrationDatabaseUrl);
     rehearsalDirectory = prepareMigrationRehearsal();
     runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
     runMigrationTest(migrationDatabaseUrl, "seed-000074");
@@ -74,6 +90,30 @@ try {
     addR57RemediationMigration(rehearsalDirectory);
     runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
     runMigrationTest(migrationDatabaseUrl, "verify-000077");
+    addOutputLimitsMigration(rehearsalDirectory);
+    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
+    runMigrationTest(migrationDatabaseUrl, "verify-000079");
+    addAttemptGenerationMigration(rehearsalDirectory);
+    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
+    runMigrationTest(migrationDatabaseUrl, "verify-000080");
+    addRuntimeGateMigration(rehearsalDirectory);
+    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
+    runMigrationTest(migrationDatabaseUrl, "verify-000081");
+    addOutputLimitsValidationMigration(rehearsalDirectory);
+    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
+    runMigrationTest(migrationDatabaseUrl, "verify-000082");
+    addCommentTokenMintProtocolMigration(rehearsalDirectory);
+    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
+    runMigrationTest(migrationDatabaseUrl, "verify-000083");
+    addCommentTokenCustodyHardeningMigration(rehearsalDirectory);
+    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
+    runMigrationTest(migrationDatabaseUrl, "verify-000084");
+    addCommentTokenGateLockResultMigration(rehearsalDirectory);
+    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
+    runMigrationTest(migrationDatabaseUrl, "verify-000085");
+    addCommentTokenR18RemediationMigration(rehearsalDirectory);
+    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
+    runMigrationTest(migrationDatabaseUrl, "verify-000086");
 
     const migrationCount = await countAppliedMigrations(migrationDatabaseUrl);
     runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
@@ -85,17 +125,22 @@ try {
   }
   if (runPostgresE2e) {
     runMigrationDeploy("packages/platform/db", databaseUrl);
+    await applyProductionRuntimeAcl(databaseUrl, database);
+    await prepareProviderScopeConcurrencyReleaseAuthority(databaseUrl);
+    await proveProviderScopeConcurrencyRollout(
+      releaseMigrationDatabaseUrl,
+      databaseUrl,
+    );
+    await proveCustodyCredentialRotation(databaseUrl, custodyDatabaseUrl);
     try {
       run(
-        "pnpm",
-        [
-          "exec",
-          "vitest",
-          "run",
-          "scripts/hosted-pool-e2e/hosted-pool-postgres.e2e.test.ts",
-        ],
+        vitestBinary,
+        ["run", "scripts/hosted-pool-e2e/hosted-pool-postgres.e2e.test.ts"],
         {
           REVIEW_ROUTER_HOSTED_POOL_E2E_DATABASE_URL: databaseUrl,
+          REVIEW_ROUTER_HOSTED_POOL_E2E_CUSTODY_DATABASE_URL:
+            custodyDatabaseUrl,
+          REVIEW_ROUTER_HOSTED_POOL_E2E_API_DATABASE_URL: apiDatabaseUrl,
           REVIEW_ROUTER_RUN_HOSTED_POOL_POSTGRES_E2E: "1",
         },
       );
@@ -110,6 +155,423 @@ try {
     rmSync(rehearsalDirectory, { recursive: true, force: true });
   if (started) {
     spawnSync("docker", ["rm", "--force", container], { stdio: "ignore" });
+  }
+}
+
+async function proveProviderScopeConcurrencyRollout(
+  restrictedConnectionString,
+  providerAdminConnectionString,
+) {
+  const client = new pg.Client({
+    connectionString: restrictedConnectionString,
+  });
+  await client.connect();
+  try {
+    const restrictedAuthority = await client.query(`
+      SELECT current_user, session_user, login.rolcanlogin, login.rolsuper,
+             login.rolcreaterole, login.rolinherit, login.rolcreatedb,
+             login.rolreplication, login.rolbypassrls,
+             (SELECT count(*)::integer
+                FROM pg_auth_members membership
+                WHERE membership.roleid =
+                        'reviewrouter_release_schema_owner'::regrole
+                   OR membership.member =
+                        'reviewrouter_release_schema_owner'::regrole
+                   OR membership.grantor =
+                        'reviewrouter_release_schema_owner'::regrole) AS owner_memberships,
+             has_table_privilege(
+               login.rolname,
+               'public."ReviewProviderScopeConcurrencyControl"',
+               'SELECT,INSERT,UPDATE,DELETE,TRUNCATE'
+             ) AS has_control_table_privilege,
+             has_function_privilege(
+               login.rolname,
+               'public.reviewrouter_provider_scope_concurrency_activate()',
+               'EXECUTE'
+             ) AS can_activate,
+             pg_has_role(
+               login.rolname,
+               'reviewrouter_release_schema_owner',
+               'SET'
+             ) AS can_set_schema_owner,
+             (SELECT count(*)::integer
+                FROM pg_proc routine
+                JOIN pg_roles owner ON owner.oid = routine.proowner
+                WHERE routine.oid IN (
+                  'public.reviewrouter_provider_scope_concurrency_snapshot()'::regprocedure,
+                  'public.reviewrouter_provider_scope_concurrency_status()'::regprocedure,
+                  'public.reviewrouter_provider_scope_concurrency_activate()'::regprocedure,
+                  'public.reviewrouter_provider_scope_concurrency_close_for_rollback()'::regprocedure,
+                  'public.reviewrouter_provider_scope_concurrency_verify_rollback()'::regprocedure
+                )
+                  AND owner.rolname = 'reviewrouter_release_schema_owner'
+                  AND routine.prosecdef
+                  AND routine.proconfig =
+                      ARRAY['search_path=pg_catalog, public']::text[]
+                  AND NOT has_function_privilege(
+                    'public', routine.oid, 'EXECUTE'
+                  )) AS bounded_routines
+      FROM pg_roles login
+      WHERE login.rolname = 'reviewrouter_release_migration'
+    `);
+    if (
+      restrictedAuthority.rows.length !== 1 ||
+      restrictedAuthority.rows[0]?.current_user !==
+        "reviewrouter_release_migration" ||
+      restrictedAuthority.rows[0]?.session_user !==
+        "reviewrouter_release_migration" ||
+      restrictedAuthority.rows[0]?.rolcanlogin !== true ||
+      restrictedAuthority.rows[0]?.rolsuper !== false ||
+      restrictedAuthority.rows[0]?.rolcreaterole !== false ||
+      restrictedAuthority.rows[0]?.rolinherit !== false ||
+      restrictedAuthority.rows[0]?.rolcreatedb !== false ||
+      restrictedAuthority.rows[0]?.rolreplication !== false ||
+      restrictedAuthority.rows[0]?.rolbypassrls !== false ||
+      restrictedAuthority.rows[0]?.owner_memberships !== 0 ||
+      restrictedAuthority.rows[0]?.has_control_table_privilege !== false ||
+      restrictedAuthority.rows[0]?.can_activate !== true ||
+      restrictedAuthority.rows[0]?.can_set_schema_owner !== false ||
+      restrictedAuthority.rows[0]?.bounded_routines !== 5
+    ) {
+      throw new Error("provider_scope_concurrency_release_authority_invalid");
+    }
+    const runtimeAuthority = await client.query(`
+      SELECT role_name,
+        has_table_privilege(
+          role_name, 'public."ReviewProviderScopeConcurrencyControl"', 'SELECT'
+        ) AS can_select,
+        has_table_privilege(
+          role_name, 'public."ReviewProviderScopeConcurrencyControl"',
+          'INSERT,UPDATE,DELETE,TRUNCATE'
+        ) AS can_mutate
+      FROM unnest(ARRAY[
+        'reviewrouter_api', 'reviewrouter_web', 'reviewrouter_worker'
+      ]) AS role_name
+      ORDER BY role_name
+    `);
+    if (
+      runtimeAuthority.rows.some(
+        (row) => row.can_select !== true || row.can_mutate !== false,
+      )
+    ) {
+      throw new Error("provider_scope_concurrency_runtime_acl_invalid");
+    }
+
+    await client
+      .query(
+        `UPDATE public."ReviewProviderScopeConcurrencyControl"
+              SET "activated" = true WHERE "singleton" = true`,
+      )
+      .then(
+        () => {
+          throw new Error("provider_scope_concurrency_restricted_dml_present");
+        },
+        () => undefined,
+      );
+    await client
+      .query(
+        `CREATE INDEX provider_scope_forbidden_ddl
+              ON public."ReviewInvocationLeaseV2" ("leaseId")`,
+      )
+      .then(
+        () => {
+          throw new Error("provider_scope_concurrency_restricted_ddl_present");
+        },
+        () => undefined,
+      );
+
+    let discardCommittedActivationResponse = true;
+    const recoveredActivation = await runProviderScopeConcurrencyOperation({
+      operation: "activate",
+      databaseUrl: restrictedConnectionString,
+      createClient: () => {
+        const connection = new pg.Client({
+          connectionString: restrictedConnectionString,
+        });
+        return {
+          connect: () => connection.connect(),
+          end: () => connection.end(),
+          query: async (...queryArgs) => {
+            const result = await connection.query(...queryArgs);
+            if (
+              discardCommittedActivationResponse &&
+              String(queryArgs[0]).includes(
+                "reviewrouter_provider_scope_concurrency_activate",
+              )
+            ) {
+              discardCommittedActivationResponse = false;
+              const responseLoss = new Error(
+                "simulated connection loss after committed activation",
+              );
+              responseLoss.code = "08006";
+              throw responseLoss;
+            }
+            return result;
+          },
+        };
+      },
+    });
+    if (
+      recoveredActivation.reconciledAfterAmbiguousCommit !== true ||
+      recoveredActivation.status.activated !== true ||
+      recoveredActivation.status.legacyProviderVoteIndex !== null
+    ) {
+      throw new Error(
+        "provider_scope_concurrency_commit_response_loss_recovery_invalid",
+      );
+    }
+    run(
+      "node",
+      [
+        "scripts/manage-review-provider-scope-concurrency.mjs",
+        "--activate",
+        "--confirm-old-replicas-drained",
+      ],
+      { DATABASE_URL: restrictedConnectionString },
+    );
+    run(
+      "node",
+      [
+        "scripts/manage-review-provider-scope-concurrency.mjs",
+        "--close-for-rollback",
+        "--confirm-no-old-replica-started",
+      ],
+      { DATABASE_URL: restrictedConnectionString },
+    );
+    const admin = new pg.Client({
+      connectionString: providerAdminConnectionString,
+    });
+    await admin.connect();
+    try {
+      await admin.query(`
+        CREATE INDEX "ReviewInvocationLeaseV2_one_active_provider_vote_lane"
+        ON "ReviewInvocationLeaseV2" ("leaseId")
+      `);
+    } finally {
+      await admin.end();
+    }
+    run(
+      "node",
+      [
+        "scripts/manage-review-provider-scope-concurrency.mjs",
+        "--verify-rollback-ready",
+      ],
+      { DATABASE_URL: restrictedConnectionString },
+    );
+    const repaired = await client.query(`
+        SELECT index_catalog.indisvalid,
+               index_catalog.indisready,
+               index_catalog.indisunique,
+               pg_get_indexdef(index_catalog.indexrelid) AS definition
+        FROM pg_catalog.pg_index index_catalog
+        WHERE index_catalog.indexrelid =
+          'public."ReviewInvocationLeaseV2_one_active_provider_vote_lane"'::regclass
+      `);
+    const expectedDefinition =
+      'CREATE UNIQUE INDEX "ReviewInvocationLeaseV2_one_active_provider_vote_lane" ON public."ReviewInvocationLeaseV2" USING btree ("providerVoteIdentityHash") WHERE ((state = \'active\'::"ReviewInvocationLeaseStateV2") AND (purpose = \'provider_execution\'::"ReviewInvocationLeasePurposeV2"))';
+    if (
+      repaired.rows.length !== 1 ||
+      repaired.rows[0]?.indisvalid !== true ||
+      repaired.rows[0]?.indisready !== true ||
+      repaired.rows[0]?.indisunique !== true ||
+      repaired.rows[0]?.definition !== expectedDefinition
+    ) {
+      throw new Error("provider_scope_concurrency_rollback_repair_invalid");
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+async function proveCustodyCredentialRotation(
+  providerAdminDatabaseUrl,
+  currentCustodyDatabaseUrl,
+) {
+  const current = new URL(currentCustodyDatabaseUrl);
+  const oldPassword = decodeURIComponent(current.password);
+  const newPassword = randomBytes(24).toString("base64url");
+  if (
+    !/^[A-Za-z0-9_-]+$/u.test(oldPassword) ||
+    !/^[A-Za-z0-9_-]+$/u.test(newPassword)
+  )
+    throw new Error("hosted_pool_e2e_custody_rotation_password_invalid");
+  const rotated = new URL(current);
+  rotated.password = newPassword;
+  const admin = new pg.Client({ connectionString: providerAdminDatabaseUrl });
+  const retained = new pg.Client({ connectionString: current.toString() });
+  retained.on("error", () => undefined);
+  await admin.connect();
+  await retained.connect();
+  try {
+    // Each query is its own committed transaction, matching the release
+    // bootstrap phases. Race an old-credential reconnect against termination
+    // only after committed NOLOGIN is externally observable.
+    await admin.query("ALTER ROLE reviewrouter_comment_token_custody NOLOGIN");
+    const [oldReconnectSucceeded] = await Promise.all([
+      canConnect(current.toString()),
+      admin.query(`SELECT pg_terminate_backend(pid)
+        FROM pg_stat_activity
+        WHERE usename='reviewrouter_comment_token_custody'
+          AND pid<>pg_backend_pid()`),
+    ]);
+    const remaining = await admin.query(
+      `SELECT count(*)::integer AS count FROM pg_stat_activity
+       WHERE usename='reviewrouter_comment_token_custody'`,
+    );
+    const retainedBackendSurvived = await retained.query("SELECT 1").then(
+      () => true,
+      () => false,
+    );
+    if (
+      oldReconnectSucceeded ||
+      retainedBackendSurvived ||
+      remaining.rows[0]?.count !== 0
+    )
+      throw new Error("hosted_pool_e2e_custody_old_backend_survived");
+
+    await admin.query(
+      `ALTER ROLE reviewrouter_comment_token_custody LOGIN PASSWORD '${newPassword}'`,
+    );
+    if (
+      (await canConnect(current.toString())) ||
+      !(await canConnect(rotated.toString()))
+    )
+      throw new Error("hosted_pool_e2e_custody_rotation_reconnect_invalid");
+  } finally {
+    await admin
+      .query(
+        `ALTER ROLE reviewrouter_comment_token_custody LOGIN PASSWORD '${oldPassword}'`,
+      )
+      .catch(() => undefined);
+    await retained.end().catch(() => undefined);
+    await admin.end().catch(() => undefined);
+  }
+}
+
+async function canConnect(connectionString) {
+  const client = new pg.Client({
+    connectionString,
+    connectionTimeoutMillis: 2_000,
+  });
+  client.on("error", () => undefined);
+  try {
+    await client.connect();
+    await client.query("SELECT 1");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+async function provisionAdversarialRuntimeRoles(
+  connectionString,
+  { custodyPassword, apiPassword, releaseMigrationPassword },
+) {
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    if (
+      !/^[A-Za-z0-9_-]+$/u.test(custodyPassword) ||
+      !/^[A-Za-z0-9_-]+$/u.test(apiPassword) ||
+      !/^[A-Za-z0-9_-]+$/u.test(releaseMigrationPassword)
+    )
+      throw new Error("hosted_pool_e2e_role_password_invalid");
+    await client.query(
+      `CREATE ROLE reviewrouter_comment_token_custody LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '${custodyPassword}'`,
+    );
+    await client.query(
+      `CREATE ROLE reviewrouter_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '${apiPassword}'`,
+    );
+    await client.query(
+      "CREATE ROLE reviewrouter_web NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS",
+    );
+    await client.query(
+      "CREATE ROLE reviewrouter_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS",
+    );
+    await client.query(
+      "CREATE ROLE reviewrouter_codex_effect_authority NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS",
+    );
+    await client.query(
+      "CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS",
+    );
+    await client.query(
+      `CREATE ROLE reviewrouter_release_migration LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '${releaseMigrationPassword}'`,
+    );
+    await client.query(
+      "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_schema_owner",
+    );
+  } finally {
+    await client.end();
+  }
+}
+
+async function prepareProviderScopeConcurrencyReleaseAuthority(
+  connectionString,
+) {
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query(`
+      ALTER TABLE public."ReviewInvocationLeaseV2"
+        OWNER TO reviewrouter_release_schema_owner;
+      ALTER TABLE public."ReviewProviderScopeConcurrencyControl"
+        OWNER TO reviewrouter_release_schema_owner;
+      GRANT USAGE, CREATE ON SCHEMA public
+        TO reviewrouter_release_schema_owner;
+      GRANT CONNECT ON DATABASE ${database}
+        TO reviewrouter_release_migration;
+      GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration;
+      REVOKE ALL
+        ON TABLE public."ReviewProviderScopeConcurrencyControl"
+        FROM reviewrouter_release_migration;
+    `);
+  } finally {
+    await client.end();
+  }
+}
+
+async function grantMigrationSchemaOwnerAuthority(connectionString) {
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query(
+      "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_schema_owner",
+    );
+  } finally {
+    await client.end();
+  }
+}
+
+async function applyProductionRuntimeAcl(connectionString, databaseName) {
+  if (!/^reviewrouter_hosted_pool_e2e_[a-f0-9]+$/u.test(databaseName))
+    throw new Error("hosted_pool_e2e_database_name_invalid");
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query(
+      runtimeGrantStatements(
+        {
+          roles: [
+            { role: "api", username: "reviewrouter_api" },
+            { role: "web", username: "reviewrouter_web" },
+            { role: "worker", username: "reviewrouter_worker" },
+            {
+              role: "comment-token-custody",
+              username: "reviewrouter_comment_token_custody",
+            },
+            {
+              role: "effect-authority",
+              username: "reviewrouter_codex_effect_authority",
+            },
+          ],
+        },
+        `"${databaseName}"`,
+      ),
+    );
+  } finally {
+    await client.end();
   }
 }
 
@@ -146,9 +608,90 @@ function prepareMigrationRehearsal() {
         "000075_hosted_codex_security_certification",
         "000076_hosted_codex_terminalization_restore_invariants",
         "000077_hosted_codex_r57_security_race_remediation",
+        "000079_hosted_codex_output_limits",
+        "000080_hosted_codex_attempt_generation",
+        "000081_hosted_codex_runtime_gate",
+        "000082_validate_hosted_codex_output_limits",
+        "000083_hosted_codex_comment_token_mint_protocol",
+        "000084_harden_comment_token_custody",
+        "000085_comment_token_gate_lock_result",
+        "000086_comment_token_custody_r18_remediation",
       ].includes(basename(source)),
   });
   return directory;
+}
+
+function addOutputLimitsMigration(directory) {
+  cpSync(
+    "packages/platform/db/prisma/migrations/000079_hosted_codex_output_limits",
+    join(directory, "prisma/migrations/000079_hosted_codex_output_limits"),
+    { recursive: true },
+  );
+}
+
+function addAttemptGenerationMigration(directory) {
+  cpSync(
+    "packages/platform/db/prisma/migrations/000080_hosted_codex_attempt_generation",
+    join(directory, "prisma/migrations/000080_hosted_codex_attempt_generation"),
+    { recursive: true },
+  );
+}
+
+function addRuntimeGateMigration(directory) {
+  cpSync(
+    "packages/platform/db/prisma/migrations/000081_hosted_codex_runtime_gate",
+    join(directory, "prisma/migrations/000081_hosted_codex_runtime_gate"),
+    { recursive: true },
+  );
+}
+
+function addOutputLimitsValidationMigration(directory) {
+  cpSync(
+    "packages/platform/db/prisma/migrations/000082_validate_hosted_codex_output_limits",
+    join(
+      directory,
+      "prisma/migrations/000082_validate_hosted_codex_output_limits",
+    ),
+    { recursive: true },
+  );
+}
+
+function addCommentTokenMintProtocolMigration(directory) {
+  cpSync(
+    "packages/platform/db/prisma/migrations/000083_hosted_codex_comment_token_mint_protocol",
+    join(
+      directory,
+      "prisma/migrations/000083_hosted_codex_comment_token_mint_protocol",
+    ),
+    { recursive: true },
+  );
+}
+
+function addCommentTokenCustodyHardeningMigration(directory) {
+  cpSync(
+    "packages/platform/db/prisma/migrations/000084_harden_comment_token_custody",
+    join(directory, "prisma/migrations/000084_harden_comment_token_custody"),
+    { recursive: true },
+  );
+}
+
+function addCommentTokenGateLockResultMigration(directory) {
+  cpSync(
+    "packages/platform/db/prisma/migrations/000085_comment_token_gate_lock_result",
+    join(directory, "prisma/migrations/000085_comment_token_gate_lock_result"),
+    { recursive: true },
+  );
+}
+
+function addCommentTokenR18RemediationMigration(directory) {
+  cpSync(
+    "packages/platform/db/prisma/migrations/000086_comment_token_custody_r18_remediation",
+    join(
+      directory,
+      "prisma/migrations/000086_comment_token_custody_r18_remediation",
+    ),
+    { recursive: true },
+  );
 }
 
 function addR57RemediationMigration(directory) {
@@ -186,28 +729,16 @@ function addSecurityCertificationMigration(directory) {
 
 function runMigrationDeploy(directory, url) {
   run(
-    "pnpm",
-    [
-      "exec",
-      "prisma",
-      "migrate",
-      "deploy",
-      "--config",
-      join(directory, "prisma.config.ts"),
-    ],
+    prismaBinary,
+    ["migrate", "deploy", "--config", join(directory, "prisma.config.ts")],
     { DATABASE_URL: url },
   );
 }
 
 function runMigrationTest(url, phase) {
   run(
-    "pnpm",
-    [
-      "exec",
-      "vitest",
-      "run",
-      "scripts/hosted-pool-e2e/hosted-pool-migration-rehearsal.test.ts",
-    ],
+    vitestBinary,
+    ["run", "scripts/hosted-pool-e2e/hosted-pool-migration-rehearsal.test.ts"],
     {
       REVIEW_ROUTER_HOSTED_POOL_MIGRATION_DATABASE_URL: url,
       REVIEW_ROUTER_HOSTED_POOL_MIGRATION_PHASE: phase,

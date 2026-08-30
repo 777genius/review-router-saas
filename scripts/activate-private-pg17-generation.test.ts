@@ -11,6 +11,8 @@ const env = {
     "postgresql://reviewrouter_web:web@db.internal/review_router",
   REVIEW_ROUTER_WORKER_DATABASE_URL:
     "postgresql://reviewrouter_worker:worker@db.internal/review_router",
+  REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+    "postgresql://reviewrouter_comment_token_custody:custody@db.internal/review_router",
   REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
     "postgresql://reviewrouter_codex_effect_authority:effect@db.internal/review_router",
   REVIEW_ROUTER_RELEASE_COMMIT_SHA: "a".repeat(40),

@@ -31,6 +31,7 @@ import {
   createSecretSafePostgresInvocation,
   runSecretSafePostgresCommand,
 } from "./lib/secret-safe-command-boundary.mjs";
+import { isExactPostgresGuardFailure } from "./lib/postgres-guard-failure.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const dbDirectory = join(root, "packages/platform/db");
@@ -60,6 +61,16 @@ const migration76Name =
   "000076_hosted_codex_terminalization_restore_invariants";
 const migration77Name = "000077_hosted_codex_r57_security_race_remediation";
 const migration78Name = "000078_review_investigation_maintenance_checkpoint";
+const migration79Name = "000079_hosted_codex_output_limits";
+const migration79ScopeName =
+  "000079_remove_account_wide_provider_lane_serialization";
+const migration80Name = "000080_hosted_codex_attempt_generation";
+const migration81Name = "000081_hosted_codex_runtime_gate";
+const migration82Name = "000082_validate_hosted_codex_output_limits";
+const migration83Name = "000083_hosted_codex_comment_token_mint_protocol";
+const migration84Name = "000084_harden_comment_token_custody";
+const migration85Name = "000085_comment_token_gate_lock_result";
+const migration86Name = "000086_comment_token_custody_r18_remediation";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -93,6 +104,15 @@ assert(
       migration76Name,
       migration77Name,
       migration78Name,
+      migration79Name,
+      migration79ScopeName,
+      migration80Name,
+      migration81Name,
+      migration82Name,
+      migration83Name,
+      migration84Name,
+      migration85Name,
+      migration86Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -132,14 +152,14 @@ try {
     {
       ...rehearsalRelease.environment,
       ...migrationPermitEnvironment,
-      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
+      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
     },
     runRehearsalReleaseSubprocess,
     loopbackRehearsalDatabaseIdentity,
   );
   assert(
-    releaseMigrationResult.aclGateState === "open",
-    "combined migration rehearsal must exercise the open runtime ACL state",
+    releaseMigrationResult.aclGateState === "closed",
+    "combined migration rehearsal must complete against the trusted pre-activation catalog",
   );
   const targetMigrationReceipt = releaseMigrationResult.targetMigrationReceipt;
   const expectedEffectFingerprint = `sha256:${createHash("sha256")
@@ -164,7 +184,7 @@ try {
     {
       ...rehearsalRelease.environment,
       ...migrationPermitEnvironment,
-      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
+      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
     },
     runRehearsalReleaseSubprocess,
     loopbackRehearsalDatabaseIdentity,
@@ -176,6 +196,10 @@ try {
         JSON.stringify(releaseMigrationResult.legacyReconciliation.inventory),
     "canonical replay did not return the immutable original receipt",
   );
+  // The trusted post-migration digest is the production pre-activation state.
+  // Reopen only after receipt replay so the remaining runtime behavior proofs
+  // can exercise the activated ACL without changing completion authority.
+  convergeRuntimePrivileges(providerAdmin);
 
   proveSuccessfulCombinedRelease(providerAdmin);
   proveDatabasePrivileges(providerAdmin);
@@ -201,7 +225,7 @@ try {
   const observation = collectObservation(providerAdmin);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000078 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000086 rehearsal passed.\n",
   );
 } finally {
   const databaseDrop = psql(
@@ -276,29 +300,68 @@ async function proveMigrationSpecificLegacyBehavior() {
 
 function proveCanonicalLegacyReconciliationNegativeCases() {
   for (const testCase of [
-    { name: "unresolved", options: { canonicalSuccess: false } },
+    {
+      name: "unresolved",
+      options: { canonicalSuccess: false },
+      expectedFailure: {
+        stage: "database",
+        error: "legacy_reconciliation_unresolved_intent",
+        evidence:
+          "canonical_negative_database_guard_observed:unresolved:legacy_reconciliation_unresolved_intent",
+      },
+    },
     {
       name: "unexpired",
       options: { canonicalSuccess: true, retainUnexpiredLease: true },
+      expectedFailure: {
+        stage: "database",
+        error: "legacy_reconciliation_lease_not_eligible",
+        evidence:
+          "canonical_negative_database_guard_observed:unexpired:legacy_reconciliation_lease_not_eligible",
+      },
     },
     {
       name: "inventory_race",
       options: { canonicalSuccess: true },
       injectInventoryRace: true,
+      expectedFailure: {
+        stage: "database",
+        error: "legacy_reconciliation_inventory_changed",
+        evidence:
+          "canonical_negative_database_guard_observed:inventory_race:legacy_reconciliation_inventory_changed",
+      },
     },
     {
       name: "ttl_crossing",
       options: { canonicalSuccess: true },
       injectTtlCrossing: true,
+      expectedFailure: {
+        stage: "database",
+        error: "legacy_reconciliation_lease_not_eligible",
+        evidence:
+          "canonical_negative_database_guard_observed:ttl_crossing:legacy_reconciliation_lease_not_eligible",
+      },
     },
     {
       name: "unknown_status",
       options: { canonicalSuccess: true },
       injectUnknownStatus: true,
+      expectedFailure: {
+        stage: "preflight",
+        error: "legacy_reconciliation_intent_status_unclassified:new_state",
+        evidence:
+          "canonical_negative_preflight_guard_observed:unknown_status:legacy_reconciliation_intent_status_unclassified:new_state",
+      },
     },
     {
       name: "forged_digest",
       options: { canonicalSuccess: true },
+      expectedFailure: {
+        stage: "preflight",
+        error: "legacy_ambiguity_evidence_digest_invalid",
+        evidence:
+          "canonical_negative_preflight_guard_observed:forged_digest:legacy_ambiguity_evidence_digest_invalid",
+      },
       transformSourceEvidence: (evidence) => ({
         ...evidence,
         inventorySha256: `sha256:${"0".repeat(64)}`,
@@ -355,18 +418,40 @@ function proveCanonicalLegacyReconciliationNegativeCases() {
               `UPDATE "CodexOAuthLease" SET status='expired' WHERE id='lease-expired'`,
             ]);
           }
-          return runRehearsalReleaseSubprocess(step, command, args, options);
+          return runRehearsalReleaseSubprocess(step, command, args, {
+            ...options,
+            expectedFailure:
+              testCase.expectedFailure.stage === "database" &&
+              step === "deploy_migrations_and_converge_grants"
+                ? {
+                    guard: testCase.expectedFailure.error,
+                    evidence: testCase.expectedFailure.evidence,
+                  }
+                : undefined,
+          });
         };
         executeCanonicalReleaseMigration(
           {
             ...release.environment,
             ...permit,
-            REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
+            REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
           },
           releaseRun,
           loopbackRehearsalDatabaseIdentity,
         );
-      } catch {
+      } catch (error) {
+        const exactPreflightFailure =
+          testCase.expectedFailure.stage === "preflight" &&
+          error instanceof Error &&
+          error.message === testCase.expectedFailure.error;
+        const exactDatabaseFailure =
+          testCase.expectedFailure.stage === "database" &&
+          error instanceof Error &&
+          error.message === testCase.expectedFailure.evidence;
+        assert(
+          exactPreflightFailure || exactDatabaseFailure,
+          `canonical ${testCase.name} fixture did not produce ${testCase.expectedFailure.evidence}`,
+        );
         rejected = true;
       }
       assert(rejected, `canonical ${testCase.name} fixture was not rejected`);
@@ -578,7 +663,16 @@ function applyCanonicalPreMigrationBaseline(url) {
         directory === migration75Name ||
         directory === migration76Name ||
         directory === migration77Name ||
-        directory === migration78Name);
+        directory === migration78Name ||
+        directory === migration79Name ||
+        directory === migration79ScopeName ||
+        directory === migration80Name ||
+        directory === migration81Name ||
+        directory === migration82Name ||
+        directory === migration83Name ||
+        directory === migration84Name ||
+        directory === migration85Name ||
+        directory === migration86Name);
     if (!isCanonicalPreMigration) continue;
     const source = join(migrationsDirectory, directory, "migration.sql");
     psql(url, ["-f", source]);
@@ -1125,7 +1219,11 @@ function proveSuccessfulCombinedRelease(url) {
 
       SELECT array_agg(tgname ORDER BY tgname) INTO actual FROM pg_trigger
       WHERE NOT tgisinternal
-        AND (tgname LIKE 'CodexOAuth%guard' OR tgname LIKE 'RepositoryConnection%guard');
+        AND (
+          tgname LIKE 'CodexOAuth%guard'
+          OR tgname LIKE 'RepositoryConnection%guard'
+          OR tgname = 'RepositoryConnection_comment_token_revoke'
+        );
       expected := ARRAY[${[...codexRotatingTriggers]
         .sort()
         .map((name) => quoteLiteral(name))
@@ -1145,7 +1243,8 @@ function proveSuccessfulCombinedRelease(url) {
           ('CodexOAuthSetupDispatchAttempt_evidence_guard','CodexOAuthSetupDispatchAttempt','codex_oauth_setup_attempt_evidence_guard',31::smallint),
           ('CodexOAuthSetupPayloadClaim_evidence_guard','CodexOAuthSetupPayloadClaim','codex_oauth_setup_claim_evidence_guard',31::smallint),
           ('CodexOAuthSetupRecoveryRequest_evidence_guard','CodexOAuthSetupRecoveryRequest','codex_oauth_setup_recovery_evidence_guard',31::smallint),
-          ('RepositoryConnection_codex_oauth_identity_guard','RepositoryConnection','codex_oauth_repository_identity_guard',17::smallint)
+          ('RepositoryConnection_codex_oauth_identity_guard','RepositoryConnection','codex_oauth_repository_identity_guard',17::smallint),
+          ('RepositoryConnection_comment_token_revoke','RepositoryConnection','hosted_codex_comment_token_authority_revoke_enqueue',17::smallint)
         ) wanted(trigger_name, table_name, function_name, trigger_type)
         WHERE NOT EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid
           WHERE t.tgname=wanted.trigger_name AND c.relname=wanted.table_name AND p.proname=wanted.function_name AND t.tgtype=wanted.trigger_type)
@@ -1960,12 +2059,62 @@ function proveDatabasePrivileges(url) {
                AND has_function_privilege(
                  'reviewrouter_release_migration', routine.oid, 'EXECUTE'
                )
-               AND routine.oid <> 'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure
+               AND routine.oid NOT IN (
+                 'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure,
+                 'public.reviewrouter_provider_scope_concurrency_status()'::regprocedure,
+                 'public.reviewrouter_provider_scope_concurrency_activate()'::regprocedure,
+                 'public.reviewrouter_provider_scope_concurrency_close_for_rollback()'::regprocedure,
+                 'public.reviewrouter_provider_scope_concurrency_verify_rollback()'::regprocedure
+               )
            )
            OR NOT has_function_privilege(
              'reviewrouter_release_migration',
              'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure,
              'EXECUTE'
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_status()'::regprocedure,
+             'EXECUTE'
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_activate()'::regprocedure,
+             'EXECUTE'
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_close_for_rollback()'::regprocedure,
+             'EXECUTE'
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_verify_rollback()'::regprocedure,
+             'EXECUTE'
+           )
+           OR has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_snapshot()'::regprocedure,
+             'EXECUTE'
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_proc routine
+             JOIN pg_roles owner ON owner.oid = routine.proowner
+             WHERE routine.oid IN (
+               'public.reviewrouter_provider_scope_concurrency_snapshot()'::regprocedure,
+               'public.reviewrouter_provider_scope_concurrency_status()'::regprocedure,
+               'public.reviewrouter_provider_scope_concurrency_activate()'::regprocedure,
+               'public.reviewrouter_provider_scope_concurrency_close_for_rollback()'::regprocedure,
+               'public.reviewrouter_provider_scope_concurrency_verify_rollback()'::regprocedure
+             )
+               AND (
+                 owner.rolname <> 'reviewrouter_release_schema_owner'
+                 OR NOT routine.prosecdef
+                 OR routine.proconfig IS DISTINCT FROM
+                    ARRAY['search_path=pg_catalog, public']::text[]
+                 OR has_function_privilege('public', routine.oid, 'EXECUTE')
+               )
            )
            OR NOT has_table_privilege(
              'reviewrouter_release_migration',
@@ -2128,6 +2277,10 @@ function proveDatabasePrivileges(url) {
                    'RuntimeCanaryChallengeProof',
                    'RuntimeGenerationWitnessProof',
                    'ReviewInvestigationMaintenanceCheckpoint',
+                   'HostedCodexCommentTokenMint',
+                   'HostedCodexCommentTokenRevocationProof',
+                   'HostedCodexRuntimeClosure',
+                   'ReviewProviderScopeConcurrencyControl',
                    'CodexOAuthDatabaseAuthorityKey',
                    'CodexOAuthDatabaseAuthorityReceipt',
                    'CodexOAuthChildIdentityQuarantine',
@@ -2144,6 +2297,16 @@ function proveDatabasePrivileges(url) {
                  AND NOT has_table_privilege(
                    role_name, relation.oid, 'SELECT,INSERT,UPDATE,DELETE'
                  )
+             )
+             OR NOT has_table_privilege(
+               role_name,
+               'public."ReviewProviderScopeConcurrencyControl"',
+               'SELECT'
+             )
+             OR has_table_privilege(
+               role_name,
+               'public."ReviewProviderScopeConcurrencyControl"',
+               'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
              )
              OR has_table_privilege(
                role_name,
@@ -2344,15 +2507,15 @@ function proveDatabasePrivileges(url) {
 
         SELECT count(*),
                count(*) FILTER (
-                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
                    AND member.rolname = 'reviewrouter_role_bootstrap'
-                   AND grantor.rolname NOT IN ('reviewrouter_role_bootstrap','reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+                   AND grantor.rolname NOT IN ('reviewrouter_role_bootstrap','reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
                    AND membership.admin_option
                    AND NOT membership.inherit_option
                    AND NOT membership.set_option
                ),
                count(DISTINCT granted.oid) FILTER (
-                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
                    AND member.rolname = 'reviewrouter_role_bootstrap'
                ),
                count(DISTINCT grantor.oid)
@@ -2362,16 +2525,16 @@ function proveDatabasePrivileges(url) {
         JOIN pg_roles member ON member.oid = membership.member
         JOIN pg_roles grantor ON grantor.oid = membership.grantor
         WHERE (
-               granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
-            OR member.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+               granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+            OR member.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
             OR granted.rolname = 'reviewrouter_role_bootstrap'
             OR member.rolname = 'reviewrouter_role_bootstrap'
         )
           AND granted.rolname <> 'reviewrouter_activation_receipt_guard'
           AND member.rolname <> 'reviewrouter_activation_receipt_guard';
-        IF membership_count <> 5
-           OR canonical_membership_count <> 5
-           OR membership_role_count <> 5
+        IF membership_count <> 6
+           OR canonical_membership_count <> 6
+           OR membership_role_count <> 6
            OR membership_grantor_count <> 1 THEN
           RAISE EXCEPTION
             'Codex OAuth role membership authority mismatch: total %, canonical %, roles %, grantors %',
@@ -2394,6 +2557,7 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     ["reviewrouter_api", "rr-rehearsal-api"],
     ["reviewrouter_web", "rr-rehearsal-web"],
     ["reviewrouter_worker", "rr-rehearsal-worker"],
+    ["reviewrouter_comment_token_custody", "rr-rehearsal-custody"],
     ["reviewrouter_codex_effect_authority", "rr-rehearsal-effect-authority"],
     ["reviewrouter_release_migration", "rr-rehearsal-release"],
   ];
@@ -2439,13 +2603,18 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     COMMENT ON ROLE reviewrouter_web IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_worker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_worker"))};
     COMMENT ON ROLE reviewrouter_worker IS ${quoteLiteral(rehearsalRoleMarker)};
+    CREATE ROLE reviewrouter_comment_token_custody LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_comment_token_custody"))};
+    COMMENT ON ROLE reviewrouter_comment_token_custody IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_codex_effect_authority LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_codex_effect_authority"))};
     COMMENT ON ROLE reviewrouter_codex_effect_authority IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_release_migration LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_release_migration"))};
     COMMENT ON ROLE reviewrouter_release_migration IS ${quoteLiteral(rehearsalRoleMarker)};
+    CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+    COMMENT ON ROLE reviewrouter_release_schema_owner IS ${quoteLiteral(rehearsalRoleMarker)};
     GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_web TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_worker TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+    GRANT reviewrouter_comment_token_custody TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_codex_effect_authority TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
@@ -2558,6 +2727,10 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     api: clientUrl("reviewrouter_api", "rr-rehearsal-api"),
     web: clientUrl("reviewrouter_web", "rr-rehearsal-web"),
     worker: clientUrl("reviewrouter_worker", "rr-rehearsal-worker"),
+    custody: clientUrl(
+      "reviewrouter_comment_token_custody",
+      "rr-rehearsal-custody",
+    ),
     effectAuthority: clientUrl(
       "reviewrouter_codex_effect_authority",
       "rr-rehearsal-effect-authority",
@@ -2570,6 +2743,8 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     REVIEW_ROUTER_API_DATABASE_URL: runtime.api.toString(),
     REVIEW_ROUTER_WEB_DATABASE_URL: runtime.web.toString(),
     REVIEW_ROUTER_WORKER_DATABASE_URL: runtime.worker.toString(),
+    REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+      runtime.custody.toString(),
     REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
       runtime.effectAuthority.toString(),
     REVIEW_ROUTER_RELEASE_COMMIT_SHA: "a".repeat(40),
@@ -2598,6 +2773,11 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
         role: "worker",
         username: "reviewrouter_worker",
         password: passwords.get("reviewrouter_worker"),
+      },
+      {
+        role: "comment-token-custody",
+        username: "reviewrouter_comment_token_custody",
+        password: passwords.get("reviewrouter_comment_token_custody"),
       },
       {
         role: "effect-authority",
@@ -2954,9 +3134,15 @@ function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
         code: "private_pg17_rehearsal_command_failed",
         phase: "rehearsal",
       });
+    const canonicalFailureSourceArgs = options.expectedFailure
+      ? ["--file=-"]
+      : [];
     const postgres = createSecretSafePostgresInvocation({
       databaseUrl: args[urlIndex],
-      args: args.filter((_, index) => index !== urlIndex),
+      args: [
+        ...args.filter((_, index) => index !== urlIndex),
+        ...canonicalFailureSourceArgs,
+      ],
       input: options.input,
     });
     const credential = createDatabaseCredentialBoundary(args[urlIndex]);
@@ -3000,6 +3186,11 @@ function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
       maxBuffer: 16 * 1024 * 1024,
       timeout: 600_000,
     });
+    if (
+      options.expectedFailure &&
+      isExactPostgresGuardFailure(result, options.expectedFailure.guard)
+    )
+      throw new Error(options.expectedFailure.evidence);
     if (result.status !== 0 || result.error)
       throw sanitizedDiagnosticError({
         code: "private_pg17_rehearsal_command_failed",
@@ -3021,6 +3212,7 @@ function markCanonicalRehearsalRoles(url) {
       "reviewrouter_api",
       "reviewrouter_web",
       "reviewrouter_worker",
+      "reviewrouter_comment_token_custody",
       "reviewrouter_codex_effect_authority",
       "reviewrouter_release_migration",
       "reviewrouter_release_schema_owner",
@@ -3038,6 +3230,7 @@ function cleanupRuntimeRoles(url) {
     "reviewrouter_api",
     "reviewrouter_web",
     "reviewrouter_worker",
+    "reviewrouter_comment_token_custody",
     "reviewrouter_codex_effect_authority",
     "reviewrouter_release_migration",
     "reviewrouter_release_schema_owner",

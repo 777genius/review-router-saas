@@ -45,15 +45,6 @@ export function registerApiDemoRoutes(
     return index;
   });
 
-  app.get("/ready", async (_request, reply) => {
-    setPublicDemoHeaders(reply);
-    return {
-      service: "review-router-api" as const,
-      status: "ready" as const,
-      checkedAt: options.clock.now(),
-    };
-  });
-
   app.get("/demo", async (_request, reply) => {
     setPublicDemoHeaders(reply);
     const input = buildDemoInput(options);

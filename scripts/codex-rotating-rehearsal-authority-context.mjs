@@ -18,6 +18,7 @@ export function createRehearsalAuthorityContext({
     api: runtime?.api,
     web: runtime?.web,
     worker: runtime?.worker,
+    custody: runtime?.custody,
     effectAuthority: runtime?.effectAuthority,
   };
   for (const [name, client] of Object.entries(clients)) {
@@ -35,6 +36,7 @@ export function createRehearsalAuthorityContext({
       api: clients.api,
       web: clients.web,
       worker: clients.worker,
+      custody: clients.custody,
       effectAuthority: clients.effectAuthority,
     }),
     schemaOwner: rehearsalSchemaOwnerIdentity,

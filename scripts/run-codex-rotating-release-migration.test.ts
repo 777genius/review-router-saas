@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   liveV70V72CatalogDigestSha256 as fencedLiveV70V72CatalogDigestSha256,
   fencedLiveV70V72CatalogDigestSql,
+  liveV70V86CatalogDigestCaptureHold,
 } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
 import { sha256Canonical } from "../packages/features/release-rollout/src/domain/release-rollout";
@@ -26,6 +27,7 @@ import {
   providerRuntimeUpdateColumns,
   rotatingEvidenceTables,
   runReleaseMigrationSubprocess,
+  runtimeAuthorityReadOnlyTables,
   runtimeGrantSql,
   stripAtomicMigrationEnvelope,
   workerOwnedMaintenanceCheckpointTable,
@@ -81,6 +83,8 @@ function environment() {
       "postgresql://reviewrouter_worker:worker-secret@db.internal/review_router",
     REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
       "postgresql://reviewrouter_codex_effect_authority:signer-secret@db.internal/review_router",
+    REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+      "postgresql://reviewrouter_comment_token_custody:custody-secret@db.internal/review_router",
     REVIEW_ROUTER_RELEASE_COMMIT_SHA: "a".repeat(40),
     REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
     REVIEW_ROUTER_ROLLOUT_ID: "rollout-test",
@@ -292,6 +296,7 @@ describe("application database release-authority isolation", () => {
         "reviewrouter_api",
         "reviewrouter_web",
         "reviewrouter_worker",
+        "reviewrouter_comment_token_custody",
         "reviewrouter_codex_effect_authority",
         "reviewrouter_release_migration",
         "reviewrouter_role_bootstrap",
@@ -353,6 +358,7 @@ describe("canonical exclusive release migration caller", () => {
   it("rejects role-attribute drift and non-canonical bootstrap topology", () => {
     const names = [
       "reviewrouter_api",
+      "reviewrouter_comment_token_custody",
       "reviewrouter_codex_effect_authority",
       "reviewrouter_release_migration",
       "reviewrouter_web",
@@ -492,12 +498,13 @@ describe("canonical exclusive release migration caller", () => {
     ).toThrow("release_migration_role_observation_failed");
   });
 
-  it("converges the four service roles and isolates effect authority", () => {
+  it("converges runtime, custody, and isolated effect-authority roles", () => {
     const configuration = resolveReleaseMigrationConfiguration(environment());
     expect(configuration.roles.map((role) => role.username)).toEqual([
       "reviewrouter_api",
       "reviewrouter_web",
       "reviewrouter_worker",
+      "reviewrouter_comment_token_custody",
       "reviewrouter_codex_effect_authority",
     ]);
     expect(() =>
@@ -843,6 +850,15 @@ describe("canonical exclusive release migration caller", () => {
     expect(liveV70V72CatalogDigestSql).toContain(
       "authority_root.relname='rollout'",
     );
+    for (const custodyRoutine of [
+      "hosted_codex_lock_comment_token_mint",
+      "hosted_codex_mutate_comment_token_mint_v85",
+    ])
+      expect(liveV70V72CatalogDigestSql).toContain(`'${custodyRoutine}'`);
+    expect(liveV70V86CatalogDigestCaptureHold).toEqual({
+      decision: "HOLD",
+      reason: "pg17_exact_catalog_capture_required_after_v86_projection_change",
+    });
     expect(liveV70V72CatalogDigestSql).toContain(
       "relname='CodexOAuthWritebackIntent'",
     );
@@ -872,6 +888,7 @@ describe("canonical exclusive release migration caller", () => {
         "reviewrouter_api",
         "reviewrouter_web",
         "reviewrouter_worker",
+        "reviewrouter_comment_token_custody",
         "reviewrouter_codex_effect_authority",
         "reviewrouter_release_migration",
       ].map((username) => ({
@@ -884,9 +901,11 @@ describe("canonical exclusive release migration caller", () => {
               ? "web-secret"
               : username === "reviewrouter_worker"
                 ? "worker-secret"
-                : username === "reviewrouter_codex_effect_authority"
-                  ? "signer-secret"
-                  : "release") +
+                : username === "reviewrouter_comment_token_custody"
+                  ? "custody-secret"
+                  : username === "reviewrouter_codex_effect_authority"
+                    ? "signer-secret"
+                    : "release") +
           "'",
       })),
     ]);
@@ -961,10 +980,34 @@ describe("canonical exclusive release migration caller", () => {
       provisioning.match(
         /ALTER ROLE reviewrouter_[a-z_]+ LOGIN NOCREATEROLE PASSWORD/gu,
       ),
-    ).toHaveLength(5);
+    ).toHaveLength(6);
     expect(provisioning).toContain(
       "refusing to converge unexpectedly privileged role",
     );
+    const custodyNoLogin = provisioning.indexOf(
+      "ALTER ROLE reviewrouter_comment_token_custody NOLOGIN;",
+    );
+    const custodyCommit = provisioning.indexOf("COMMIT;", custodyNoLogin);
+    const custodyTerminate = provisioning.indexOf(
+      "SELECT pg_terminate_backend(pid)",
+      custodyCommit,
+    );
+    const custodySessionProof = provisioning.indexOf(
+      "custody credential rotation retained an old backend",
+      custodyTerminate,
+    );
+    const custodyPassword = provisioning.indexOf(
+      "ALTER ROLE reviewrouter_comment_token_custody LOGIN NOCREATEROLE PASSWORD",
+      custodySessionProof,
+    );
+    expect(custodyNoLogin).toBeGreaterThan(0);
+    expect(custodyCommit).toBeGreaterThan(custodyNoLogin);
+    expect(custodyTerminate).toBeGreaterThan(custodyCommit);
+    expect(custodySessionProof).toBeGreaterThan(custodyTerminate);
+    expect(provisioning.lastIndexOf("BEGIN;", custodyPassword)).toBeGreaterThan(
+      custodySessionProof,
+    );
+    expect(custodyPassword).toBeGreaterThan(custodySessionProof);
     expect(provisioning).not.toContain(
       "GRANT reviewrouter_release_schema_owner TO reviewrouter_role_bootstrap",
     );
@@ -1040,6 +1083,30 @@ describe("canonical exclusive release migration caller", () => {
     );
     expect(provisioning).toContain(
       "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_schema_owner",
+    );
+    expect(provisioning).toContain(
+      "REVOKE USAGE, CREATE ON SCHEMA public FROM reviewrouter_release_schema_owner",
+    );
+    expect(provisioning).toContain(
+      "release schema owner public ACL handoff survived convergence",
+    );
+    expect(
+      provisioning.indexOf(
+        "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_schema_owner",
+      ),
+    ).toBeLessThan(
+      provisioning.indexOf(
+        "REVOKE USAGE, CREATE ON SCHEMA public FROM reviewrouter_release_schema_owner",
+      ),
+    );
+    expect(
+      provisioning.indexOf(
+        "REVOKE USAGE, CREATE ON SCHEMA public FROM reviewrouter_release_schema_owner",
+      ),
+    ).toBeLessThan(
+      provisioning.indexOf(
+        "SELECT 'ALTER SCHEMA public OWNER TO reviewrouter_release_schema_owner'",
+      ),
     );
     expect(provisioning).toContain(
       "REVOKE CREATE, TEMPORARY ON DATABASE %I FROM reviewrouter_release_migration",
@@ -1293,6 +1360,12 @@ describe("canonical exclusive release migration caller", () => {
     expect(activationAuthority).toContain(
       "WHEN role_kind='api' AND proname='reviewrouter_runtime_generation_write_read_canary' THEN",
     );
+    expect(activationAuthority).toContain(
+      "'HostedCodexRuntimeGate','HostedCodexRuntimeClosure',\n             'ReviewProviderScopeConcurrencyControl'",
+    );
+    expect(activationAuthority).toContain(
+      "'HostedCodexRuntimeGate','HostedCodexRuntimeClosure',\n           'ReviewProviderScopeConcurrencyControl','HostedCodexCommentTokenMint'",
+    );
     expect(grants).toContain(
       "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM reviewrouter_codex_effect_authority",
     );
@@ -1309,6 +1382,34 @@ describe("canonical exclusive release migration caller", () => {
       );
       expect(grants).toContain(
         `GRANT SELECT ON TABLE public."RepositoryConnection" TO ${role}`,
+      );
+      const runtimeAuthorityAclStart = grants.indexOf(
+        "DO $runtime_authority_acl$",
+        grants.indexOf(
+          `GRANT SELECT ON TABLE public."RepositoryConnection" TO ${role}`,
+        ),
+      );
+      const runtimeAuthorityAclEnd = grants.indexOf(
+        "$runtime_authority_acl$;",
+        runtimeAuthorityAclStart,
+      );
+      const runtimeAuthorityAcl = grants.slice(
+        runtimeAuthorityAclStart,
+        runtimeAuthorityAclEnd + "$runtime_authority_acl$;".length,
+      );
+      expect(runtimeAuthorityAclStart).toBeGreaterThan(-1);
+      expect(runtimeAuthorityAclEnd).toBeGreaterThan(runtimeAuthorityAclStart);
+      for (const table of runtimeAuthorityReadOnlyTables) {
+        expect(runtimeAuthorityAcl).toContain(`'${table}'`);
+      }
+      expect(runtimeAuthorityReadOnlyTables).toContain(
+        "ReviewProviderScopeConcurrencyControl",
+      );
+      expect(runtimeAuthorityAcl).toContain(
+        "'REVOKE INSERT, UPDATE, DELETE ON TABLE public.%I FROM %I'",
+      );
+      expect(runtimeAuthorityAcl).toContain(
+        "'GRANT SELECT ON TABLE public.%I TO %I'",
       );
       const genericGrant = grants.indexOf(
         `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
@@ -1342,6 +1443,7 @@ describe("canonical exclusive release migration caller", () => {
         expect(grants).toContain(`'${table}'`);
       }
       expect(grants).toContain("REVOKE ALL (%I) ON TABLE public.%I FROM %I");
+      expect(grants).toContain("'ReviewProviderScopeConcurrencyControl'");
       expect(grants).toContain("'REVOKE DELETE ON TABLE public.%I FROM %I'");
       expect(grants).toContain(
         "'REVOKE INSERT, UPDATE, DELETE ON TABLE public.%I FROM %I'",
@@ -1365,6 +1467,41 @@ describe("canonical exclusive release migration caller", () => {
       grants.indexOf(
         'GRANT EXECUTE ON FUNCTION public."codex_oauth_sign_database_authority"(text) TO reviewrouter_codex_effect_authority',
       ),
+    );
+  });
+
+  it("keeps provider-scope rollout control SELECT-only in the activation ACL verifier", () => {
+    const activationAuthority = activationAuthorityProvisioningSql();
+    const activateGeneration = activationAuthority.slice(
+      activationAuthority.indexOf(
+        "CREATE OR REPLACE FUNCTION reviewrouter_activation.activate_generation(",
+      ),
+      activationAuthority.indexOf(
+        "ALTER FUNCTION reviewrouter_activation.activate_generation(text)",
+      ),
+    );
+    const insertExpectation = activateGeneration.slice(
+      activateGeneration.indexOf("OR can_insert IS DISTINCT FROM"),
+      activateGeneration.indexOf("OR can_update IS DISTINCT FROM"),
+    );
+    const updateExpectation = activateGeneration.slice(
+      activateGeneration.indexOf("OR can_update IS DISTINCT FROM"),
+      activateGeneration.indexOf("OR can_delete IS DISTINCT FROM"),
+    );
+    const deleteExpectation = activateGeneration.slice(
+      activateGeneration.indexOf("OR can_delete IS DISTINCT FROM"),
+      activateGeneration.indexOf("OR can_truncate"),
+    );
+
+    for (const expectation of [
+      insertExpectation,
+      updateExpectation,
+      deleteExpectation,
+    ]) {
+      expect(expectation).toContain("ReviewProviderScopeConcurrencyControl");
+    }
+    expect(activateGeneration).toContain(
+      "'HostedCodexCommentRefreshUse','ReviewProviderScopeConcurrencyControl'",
     );
   });
 
@@ -1424,6 +1561,7 @@ describe("canonical exclusive release migration caller", () => {
     }> = [];
     const roleNames = [
       "reviewrouter_api",
+      "reviewrouter_comment_token_custody",
       "reviewrouter_codex_effect_authority",
       "reviewrouter_release_migration",
       "reviewrouter_web",

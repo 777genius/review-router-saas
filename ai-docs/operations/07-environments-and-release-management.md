@@ -461,6 +461,38 @@ Release order for database-backed changes:
 Do not deploy application code that depends on a schema change before
 `migrate deploy` has succeeded in that environment.
 
+### Provider-scope concurrency bridge
+
+Migration `000079_remove_account_wide_provider_lane_serialization` installs a
+fail-closed database trigger while retaining the old global unique index. The
+trigger preserves the old binary's global provider-vote read invariant during
+migration-first and rolling application deploys. Applying the migration does
+not remove the index or activate scoped concurrency; the post-drain activation
+command performs both sides of that cutover under the fleet fence.
+
+Use this order:
+
+1. Apply migration 000079 while the activation control remains closed.
+2. Deploy the new API and worker code to every replica.
+3. Drain every old replica and old queued process that can acquire a provider
+   execution lease.
+4. Explicitly activate with
+   `pnpm review-provider-scope-concurrency --activate --confirm-old-replicas-drained`.
+
+Run every status, activation, close, and rollback-readiness command with the
+restricted migration-operator database credential. API, web, and worker roles
+have SELECT-only access to `ReviewProviderScopeConcurrencyControl` and cannot
+perform the state transition.
+
+Activation retains only a shared cutover fence; it does not impose an
+account-wide lease limit, and inference leases do not use the bridge. For an
+old-binary rollback, first run
+`pnpm review-provider-scope-concurrency --close-for-rollback --confirm-no-old-replica-started`,
+drain active duplicate vote lanes, and then require
+`pnpm review-provider-scope-concurrency --verify-rollback-ready` to succeed
+before starting any old replica. Starting an old binary before that verification
+is forbidden because its global read can reject valid scoped rows.
+
 ## Environments
 
 Use separate environments:

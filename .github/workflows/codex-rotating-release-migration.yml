@@ -100,7 +100,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.release_commit_sha }}
 
       - name: Install and validate recovery tooling
         shell: bash
@@ -111,9 +111,14 @@ jobs:
           [[ "$RENDER_OWNER_ID" =~ ^tea-[a-z0-9-]+$ ]]
           [[ "$RENDER_ENVIRONMENT_ID" =~ ^evm-[a-z0-9-]+$ ]]
           [[ "$RELEASE_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          observed_source_sha="$(git rev-parse HEAD)"
+          [[ "$observed_source_sha" == "$RELEASE_COMMIT_SHA" ]]
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
             [[ "$service_id" =~ ^srv-[a-z0-9-]+$ ]]
           done
+          [[ "$API_SERVICE_ID" != "$WORKER_SERVICE_ID" ]]
+          [[ "$API_SERVICE_ID" != "$WEB_SERVICE_ID" ]]
+          [[ "$WORKER_SERVICE_ID" != "$WEB_SERVICE_ID" ]]
           corepack enable
           node scripts/install-private-dependencies.mjs --frozen-lockfile
           pnpm db:generate
@@ -149,6 +154,99 @@ jobs:
             rm -f "$work"/*secret* "$work"/*url* "$work"/*env.json "$work/connection-info.json"
           }
           trap cleanup EXIT
+
+          # Converge both an initially live set and a partially suspended set
+          # to the same fail-closed barrier. No database or credential mutation
+          # is permitted above the proof that all three exact IDs are stopped.
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            state="$(render_api "https://api.render.com/v1/services/$service_id" | jq -er '.suspended')"
+            if [[ "$state" != "suspended" ]]; then
+              render_api -X POST \
+                "https://api.render.com/v1/services/$service_id/suspend" \
+                -o /dev/null
+            fi
+          done
+          suspension_deadline=$((SECONDS + 600))
+          while (( SECONDS < suspension_deadline )); do
+            suspension_observations='[]'
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              service="$(render_api "https://api.render.com/v1/services/$service_id")"
+              suspension_observations="$(
+                jq -c \
+                  --arg serviceId "$service_id" \
+                  --arg suspended "$(jq -er '.suspended' <<<"$service")" \
+                  '. + [{serviceId: $serviceId, suspended: $suspended}]' \
+                  <<<"$suspension_observations"
+              )"
+            done
+            if jq -e 'length == 3 and all(.suspended == "suspended")' \
+              <<<"$suspension_observations" >/dev/null; then
+              break
+            fi
+            sleep 10
+          done
+          jq -e 'length == 3 and all(.suspended == "suspended")' \
+            <<<"$suspension_observations" >/dev/null
+          recovery_phase_key="REVIEW_ROUTER_PG17_RECOVERY_PHASE"
+          read_recovery_phase() {
+            local service_id="$1"
+            render_api "https://api.render.com/v1/services/$service_id/env-vars" \
+              | jq -er --arg key "$recovery_phase_key" '
+                  map(.envVar // .)
+                  | (map(select(.key == $key))[0].value // "{}")
+                  | try fromjson catch {}
+                  | if type == "object" then . else {} end
+                '
+          }
+          prior_recovery_phases='[]'
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            prior_recovery_phases="$(
+              jq -c --arg serviceId "$service_id" \
+                --argjson state "$(read_recovery_phase "$service_id")" \
+                '. + [{serviceId: $serviceId, state: $state}]' \
+                <<<"$prior_recovery_phases"
+            )"
+          done
+          printf '%s\n' "$prior_recovery_phases" > "$work/recovery-resume-state.json"
+          persist_recovery_phase() {
+            local phase="$1"
+            jq -n \
+              --arg phase "$phase" \
+              --arg targetDbId "$TARGET_DB_ID" \
+              --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
+                {value: ({
+                  schemaVersion: 1,
+                  phase: $phase,
+                  targetDbId: $targetDbId,
+                  releaseCommitSha: $releaseCommitSha
+                } | tojson)}
+              ' \
+              > "$work/recovery-phase-env.json"
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              render_api -X PUT -H "Content-Type: application/json" \
+                --data-binary @"$work/recovery-phase-env.json" \
+                "https://api.render.com/v1/services/$service_id/env-vars/$recovery_phase_key" \
+                -o /dev/null
+            done
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              read_recovery_phase "$service_id" | jq -e \
+                --arg phase "$phase" \
+                --arg targetDbId "$TARGET_DB_ID" \
+                --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
+                  .schemaVersion == 1
+                  and .phase == $phase
+                  and .targetDbId == $targetDbId
+                  and .releaseCommitSha == $releaseCommitSha
+                ' >/dev/null
+            done
+          }
+          persist_recovery_phase "services_suspended"
+          jq -n \
+            --arg phase "services_suspended" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --argjson services "$suspension_observations" \
+            '{phase: $phase, runId: $runId, services: $services}' \
+            > "$work/recovery-phase.json"
 
           render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" > "$work/target.json"
           jq -e \
@@ -187,6 +285,10 @@ jobs:
             worker: { username: "reviewrouter_worker", password: credential() },
             effectAuthority: {
               username: "reviewrouter_codex_effect_authority",
+              password: credential(),
+            },
+            commentTokenCustody: {
+              username: "reviewrouter_comment_token_custody",
               password: credential(),
             },
           };
@@ -237,6 +339,7 @@ jobs:
           \getenv web_password RR_WEB_PASSWORD
           \getenv worker_password RR_WORKER_PASSWORD
           \getenv effect_password RR_EFFECT_PASSWORD
+          \getenv custody_password RR_CUSTODY_PASSWORD
           BEGIN;
           SELECT 'CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
             WHERE to_regrole('reviewrouter_release_schema_owner') IS NULL \gexec
@@ -248,10 +351,31 @@ jobs:
             WHERE to_regrole('reviewrouter_worker') IS NULL \gexec
           SELECT format('CREATE ROLE reviewrouter_codex_effect_authority LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L', :'effect_password')
             WHERE to_regrole('reviewrouter_codex_effect_authority') IS NULL \gexec
+          SELECT format('CREATE ROLE reviewrouter_comment_token_custody LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L', :'custody_password')
+            WHERE to_regrole('reviewrouter_comment_token_custody') IS NULL \gexec
           ALTER ROLE reviewrouter_api LOGIN NOCREATEROLE PASSWORD :'api_password';
           ALTER ROLE reviewrouter_web LOGIN NOCREATEROLE PASSWORD :'web_password';
           ALTER ROLE reviewrouter_worker LOGIN NOCREATEROLE PASSWORD :'worker_password';
           ALTER ROLE reviewrouter_codex_effect_authority LOGIN NOCREATEROLE PASSWORD :'effect_password';
+          ALTER ROLE reviewrouter_comment_token_custody NOLOGIN;
+          -- Commit the login fence before terminating existing sessions so an
+          -- old credential cannot race a reconnect during password rotation.
+          COMMIT;
+          SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+            WHERE usename = 'reviewrouter_comment_token_custody'
+              AND pid <> pg_backend_pid();
+          DO $custody_sessions$
+          BEGIN
+            IF EXISTS (
+              SELECT 1 FROM pg_stat_activity
+              WHERE usename = 'reviewrouter_comment_token_custody'
+            ) THEN
+              RAISE EXCEPTION 'custody credential rotation retained an old backend';
+            END IF;
+          END
+          $custody_sessions$;
+          BEGIN;
+          ALTER ROLE reviewrouter_comment_token_custody LOGIN NOCREATEROLE PASSWORD :'custody_password';
           DO $membership$
           BEGIN
             IF NOT pg_has_role(current_user, 'reviewrouter_release_schema_owner', 'MEMBER') THEN
@@ -262,17 +386,22 @@ jobs:
           COMMIT;
           SQL
           chmod 600 "$work/create-runtime-roles.sql"
-          export RR_API_PASSWORD RR_WEB_PASSWORD RR_WORKER_PASSWORD RR_EFFECT_PASSWORD
+          export RR_API_PASSWORD RR_WEB_PASSWORD RR_WORKER_PASSWORD RR_EFFECT_PASSWORD RR_CUSTODY_PASSWORD
           RR_API_PASSWORD="$(jq -er '.roles.api.password' "$work/runtime-role-secrets.json")"
           RR_WEB_PASSWORD="$(jq -er '.roles.web.password' "$work/runtime-role-secrets.json")"
           RR_WORKER_PASSWORD="$(jq -er '.roles.worker.password' "$work/runtime-role-secrets.json")"
           RR_EFFECT_PASSWORD="$(jq -er '.roles.effectAuthority.password' "$work/runtime-role-secrets.json")"
+          RR_CUSTODY_PASSWORD="$(jq -er '.roles.commentTokenCustody.password' "$work/runtime-role-secrets.json")"
           docker run --rm \
             -e DATABASE_URL \
-            -e RR_API_PASSWORD -e RR_WEB_PASSWORD -e RR_WORKER_PASSWORD -e RR_EFFECT_PASSWORD \
+            -e RR_API_PASSWORD -e RR_WEB_PASSWORD -e RR_WORKER_PASSWORD -e RR_EFFECT_PASSWORD -e RR_CUSTODY_PASSWORD \
             -v "$work:/work:ro" postgres:17-alpine \
             sh -ceu 'psql "$DATABASE_URL" --no-psqlrc --quiet --file=/work/create-runtime-roles.sql'
-          unset RR_API_PASSWORD RR_WEB_PASSWORD RR_WORKER_PASSWORD RR_EFFECT_PASSWORD
+          unset RR_API_PASSWORD RR_WEB_PASSWORD RR_WORKER_PASSWORD RR_EFFECT_PASSWORD RR_CUSTODY_PASSWORD
+
+          persist_recovery_phase "credentials_rotated"
+          jq -n --arg phase "credentials_rotated" --arg runId "$GITHUB_RUN_ID" \
+            '{phase: $phase, runId: $runId}' > "$work/recovery-phase.json"
 
           DATABASE_URL="$external_url" pnpm db:migrate:deploy
           node --import tsx --input-type=module <<'NODE' > "$work/runtime-grants.sql"
@@ -282,6 +411,7 @@ jobs:
             { role: "web", username: "reviewrouter_web" },
             { role: "worker", username: "reviewrouter_worker" },
             { role: "effect-authority", username: "reviewrouter_codex_effect_authority" },
+            { role: "comment-token-custody", username: "reviewrouter_comment_token_custody" },
           ] });
           let removed = 0;
           const compatible = canonical.split("\n").filter((line) => {
@@ -297,27 +427,40 @@ jobs:
           docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
             sh -ceu 'psql "$DATABASE_URL" --no-psqlrc --quiet --file=/work/runtime-grants.sql'
 
+          node --input-type=module <<'NODE' > "$work/canonical-migration-catalog.json"
+          import { canonicalPrismaMigrationCatalog } from "./scripts/lib/canonical-prisma-migration-catalog.mjs";
+          process.stdout.write(`${JSON.stringify(canonicalPrismaMigrationCatalog)}\n`);
+          NODE
+
           docker run --rm -e DATABASE_URL postgres:17-alpine \
             sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "
               SELECT json_build_object(
                 '\''serverMajor'\'', current_setting('\''server_version_num'\'')::integer / 10000,
                 '\''publicTableCount'\'', (SELECT count(*) FROM information_schema.tables WHERE table_schema='\''public'\'' AND table_type='\''BASE TABLE'\''),
                 '\''appliedMigrationCount'\'', (SELECT count(*) FROM \"_prisma_migrations\" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL),
-                '\''runtimeRoleCount'\'', (SELECT count(*) FROM pg_roles WHERE rolname IN ('\''reviewrouter_api'\'','\''reviewrouter_web'\'','\''reviewrouter_worker'\'','\''reviewrouter_codex_effect_authority'\'')),
+                '\''runtimeRoleCount'\'', (SELECT count(*) FROM pg_roles WHERE rolname IN ('\''reviewrouter_api'\'','\''reviewrouter_web'\'','\''reviewrouter_worker'\'','\''reviewrouter_codex_effect_authority'\'','\''reviewrouter_comment_token_custody'\'')),
+                '\''latestMigration'\'', (SELECT migration_name FROM "_prisma_migrations" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY finished_at DESC, migration_name DESC LIMIT 1),
                 '\''publicConnect'\'', has_database_privilege('\''public'\'', current_database(), '\''CONNECT'\''),
                 '\''apiConnect'\'', has_database_privilege('\''reviewrouter_api'\'', current_database(), '\''CONNECT'\''),
-                '\''effectFunction'\'', has_function_privilege('\''reviewrouter_codex_effect_authority'\'', '\''public.codex_oauth_sign_database_authority(text)'\'', '\''EXECUTE'\'')
+                '\''effectFunction'\'', has_function_privilege('\''reviewrouter_codex_effect_authority'\'', '\''public.codex_oauth_sign_database_authority(text)'\'', '\''EXECUTE'\''),
+                '\''custodyFunction'\'', has_function_privilege('\''reviewrouter_comment_token_custody'\'', '\''public.hosted_codex_mutate_comment_token_mint(text,jsonb)'\'', '\''EXECUTE'\'')
               );
             "' > "$work/target-stats.json"
-          jq -e '
+          jq -e --slurpfile canonical "$work/canonical-migration-catalog.json" '
             .serverMajor == 17
             and .publicTableCount >= 110
-            and .appliedMigrationCount == 76
-            and .runtimeRoleCount == 4
+            and .appliedMigrationCount == $canonical[0].appliedMigrationCount
+            and .runtimeRoleCount == 5
+            and .latestMigration == $canonical[0].latestMigration
             and .publicConnect == false
             and .apiConnect == true
             and .effectFunction == true
+            and .custodyFunction == true
           ' "$work/target-stats.json" >/dev/null
+
+          persist_recovery_phase "migration_complete"
+          jq -n --arg phase "migration_complete" --arg runId "$GITHUB_RUN_ID" \
+            '{phase: $phase, runId: $runId}' > "$work/recovery-phase.json"
 
           jq -n --arg value "$(jq -er '.roles.api.internal' "$work/runtime-role-urls.json")" \
             '{value: $value}' > "$work/api-env.json"
@@ -327,6 +470,8 @@ jobs:
             '{value: $value}' > "$work/worker-env.json"
           jq -n --arg value "$(jq -er '.roles.effectAuthority.internal' "$work/runtime-role-urls.json")" \
             '{value: $value}' > "$work/effect-env.json"
+          jq -n --arg value "$(jq -er '.roles.commentTokenCustody.internal' "$work/runtime-role-urls.json")" \
+            '{value: $value}' > "$work/custody-env.json"
           render_api -X PUT -H "Content-Type: application/json" --data-binary @"$work/api-env.json" \
             "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars/DATABASE_URL" -o /dev/null
           render_api -X PUT -H "Content-Type: application/json" --data-binary @"$work/web-env.json" \
@@ -337,26 +482,70 @@ jobs:
             render_api -X PUT -H "Content-Type: application/json" --data-binary @"$work/effect-env.json" \
               "https://api.render.com/v1/services/$service_id/env-vars/REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL" -o /dev/null
           done
+          render_api -X PUT -H "Content-Type: application/json" --data-binary @"$work/custody-env.json" \
+            "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars/REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL" -o /dev/null
+          persist_recovery_phase "service_credentials_staged"
+          jq -n --arg phase "service_credentials_staged" --arg runId "$GITHUB_RUN_ID" \
+            '{phase: $phase, runId: $runId}' > "$work/recovery-phase.json"
 
           close_firewall
           firewall_open=0
+
+          service_revision_observations='[]'
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-            state="$(render_api "https://api.render.com/v1/services/$service_id" | jq -r '.suspended')"
-            if [[ "$state" == "suspended" ]]; then
-              render_api -X POST "https://api.render.com/v1/services/$service_id/resume" -o /dev/null
-            fi
+            deploys="$(render_api "https://api.render.com/v1/services/$service_id/deploys?limit=1")"
+            observation="$(
+              jq -ce --arg serviceId "$service_id" '
+                (if type == "array" then .[0] else (.deploys[0] // .[0]) end)
+                | (.deploy // .) as $deploy
+                | {
+                    serviceId: $serviceId,
+                    deployId: ($deploy.id | select(type == "string" and length > 0)),
+                    observedStatus: ($deploy.status | select(type == "string")),
+                    observedCommitSha: (
+                      ($deploy.commit.id // $deploy.commit.sha // $deploy.commitId)
+                      | select(type == "string" and test("^[a-f0-9]{40}$"))
+                    ),
+                    observedImageDigest: (
+                      ($deploy.image.sha // $deploy.image.digest // $deploy.imageDigest)
+                      | select(type == "string" and test("^sha256:[a-f0-9]{64}$"))
+                    )
+                  }
+              ' <<<"$deploys"
+            )"
+            service_revision_observations="$(
+              jq -c --argjson observation "$observation" '. + [$observation]' \
+                <<<"$service_revision_observations"
+            )"
+          done
+          jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
+            length == 3
+            and all(.observedCommitSha == $releaseCommitSha)
+            and all(.observedStatus == "live")
+            and ([.[].serviceId] | unique | length == 3)
+            and all(.observedImageDigest | test("^sha256:[a-f0-9]{64}$"))
+          ' <<<"$service_revision_observations" >/dev/null
+          printf '%s\n' "$service_revision_observations" \
+            > "$work/service-revision-observations.json"
+          persist_recovery_phase "ready_to_resume"
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            render_api -X POST \
+              "https://api.render.com/v1/services/$service_id/resume" -o /dev/null
           done
 
           jq -n \
             --arg targetDbId "$TARGET_DB_ID" \
             --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
             --arg recoveryRunId "$GITHUB_RUN_ID" \
+            --arg observedSourceCommitSha "$(git rev-parse HEAD)" \
+            --slurpfile serviceRevisions "$work/service-revision-observations.json" \
             --slurpfile targetStats "$work/target-stats.json" \
             '{
               targetDbId: $targetDbId,
               targetVersion: 17,
-              releaseCommitSha: $releaseCommitSha,
+              releaseCommitSha: $observedSourceCommitSha,
               recoveryRunId: $recoveryRunId,
+              serviceRevisions: $serviceRevisions[0],
               targetStats: $targetStats[0]
             }' > "$work/recovery-manifest.json"
           unset DATABASE_URL external_url

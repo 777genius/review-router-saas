@@ -37,6 +37,11 @@ const runtimeRoles = [
   ["web", "reviewrouter_web", "REVIEW_ROUTER_WEB_DATABASE_URL"],
   ["worker", "reviewrouter_worker", "REVIEW_ROUTER_WORKER_DATABASE_URL"],
   [
+    "comment-token-custody",
+    "reviewrouter_comment_token_custody",
+    "REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL",
+  ],
+  [
     "effect-authority",
     "reviewrouter_codex_effect_authority",
     "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
@@ -463,7 +468,16 @@ const quarantineTables = Object.freeze([
 const fullyProtectedRuntimeTables = Object.freeze([
   "CodexOAuthDatabaseAuthorityKey",
   "CodexOAuthDatabaseAuthorityReceipt",
+  "HostedCodexCommentTokenRevocationProof",
   "RuntimeGenerationWitnessProof",
+]);
+
+// Release/operator authority may be observed by application runtimes, but it
+// must never inherit the blanket application-table write grant.
+export const runtimeAuthorityReadOnlyTables = Object.freeze([
+  "HostedCodexRuntimeGate",
+  "HostedCodexRuntimeClosure",
+  "ReviewProviderScopeConcurrencyControl",
 ]);
 
 export const workerOwnedMaintenanceCheckpointTable =
@@ -521,6 +535,7 @@ const canonicalRoleNames = Object.freeze([
   "reviewrouter_api",
   "reviewrouter_web",
   "reviewrouter_worker",
+  "reviewrouter_comment_token_custody",
   "reviewrouter_codex_effect_authority",
   "reviewrouter_release_migration",
 ]);
@@ -1709,7 +1724,7 @@ ${effectivePrincipalInventorySql}
   SELECT jsonb_agg(name ORDER BY name COLLATE "C") INTO STRICT allowed_principal_contract FROM (
     SELECT DISTINCT unnest(ARRAY[
       'reviewrouter_api','reviewrouter_web','reviewrouter_worker',
-      'reviewrouter_codex_effect_authority','reviewrouter_release_migration',
+      'reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration',
       '${canonicalBootstrapRoleName}','${activationReceiptGuardRoleName}',
       '${activationPermitInstallerRoleName}','${activationReceiptReaderRoleName}',
       '${releaseSchemaOwnerRoleName}'
@@ -1751,7 +1766,7 @@ ${effectivePrincipalInventorySql}
     FROM role_facts
     WHERE role_facts.can_login IS DISTINCT FROM (role_facts.name IN (
         'reviewrouter_api','reviewrouter_web','reviewrouter_worker',
-        'reviewrouter_codex_effect_authority','reviewrouter_release_migration',
+        'reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration',
         '${canonicalBootstrapRoleName}',
         '${activationPermitInstallerRoleName}','${activationReceiptReaderRoleName}'))
       AND EXISTS (SELECT 1 FROM allowed_principals WHERE name=role_facts.name)
@@ -2697,6 +2712,7 @@ BEGIN
   WITH runtime_roles(role_name, role_kind) AS (VALUES
       ('reviewrouter_api','api'), ('reviewrouter_web','web'),
       ('reviewrouter_worker','worker'),
+      ('reviewrouter_comment_token_custody','custody'),
       ('reviewrouter_codex_effect_authority','effect-authority')
     ), tables AS (
       SELECT relation.oid, relation.relname
@@ -2741,7 +2757,10 @@ BEGIN
         'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
         'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
         'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-        '${workerOwnedMaintenanceCheckpointTable}'
+        '${workerOwnedMaintenanceCheckpointTable}','HostedCodexRuntimeGate',
+        'HostedCodexRuntimeClosure','HostedCodexCommentTokenMint',
+        'HostedCodexCommentTokenRevocationProof','HostedCodexCommentRefreshCapability',
+        'HostedCodexCommentRefreshUse','ReviewProviderScopeConcurrencyControl'
       ) AND attribute.attnum>0 AND NOT attribute.attisdropped
     ), sequence_facts AS (
       SELECT role_name, role_kind, relname,
@@ -2780,30 +2799,44 @@ BEGIN
          OR NOT has_schema_privilege(role_name,'public','USAGE')
          OR has_schema_privilege(role_name,'public','CREATE'))
        OR EXISTS (SELECT 1 FROM table_facts WHERE
-         can_select IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname <> '_prisma_migrations'
+         can_select IS DISTINCT FROM (CASE WHEN role_kind='custody' THEN relname IN (
+           'HostedCodexRuntimeGate','GitHubInstallation','RepositoryConnection','HostedCodexPool',
+           'HostedCodexRepositoryBinding','HostedCodexInvocationGrant',
+           'HostedCodexCommentRefreshCapability','HostedCodexCommentRefreshUse','HostedCodexCommentTokenMint')
+         ELSE role_kind <> 'effect-authority' AND relname <> '_prisma_migrations'
            AND relname NOT IN ('CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-             'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
-           AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker'))
-         OR can_insert IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
+             'HostedCodexCommentTokenMint','HostedCodexCommentTokenRevocationProof','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+           AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker') END)
+         OR can_insert IS DISTINCT FROM (CASE WHEN role_kind='custody' THEN relname='HostedCodexCommentRefreshUse'
+         ELSE role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthDatabaseAuthorityKey',
            'CodexOAuthDatabaseAuthorityReceipt','RuntimeGenerationWitnessProof',
-           'RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
-           AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker'))
-         OR can_update IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
+           'HostedCodexCommentTokenRevocationProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+           AND relname NOT IN ('HostedCodexRuntimeGate','HostedCodexRuntimeClosure',
+             'ReviewProviderScopeConcurrencyControl')
+           AND relname <> 'HostedCodexCommentTokenMint'
+           AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker') END)
+         OR can_update IS DISTINCT FROM (CASE WHEN role_kind='custody' THEN false
+         ELSE role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance',
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
-           'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
-           AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker'))
-         OR can_delete IS DISTINCT FROM (role_kind <> 'effect-authority' AND relname NOT IN (
+           'HostedCodexCommentTokenRevocationProof','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+           AND relname NOT IN ('HostedCodexRuntimeGate','HostedCodexRuntimeClosure',
+             'ReviewProviderScopeConcurrencyControl')
+           AND relname <> 'HostedCodexCommentTokenMint'
+           AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker') END)
+         OR can_delete IS DISTINCT FROM (role_kind NOT IN ('effect-authority','custody') AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine','CodexOAuthLease',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
            'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
            'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
            'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof',
-           '${workerOwnedMaintenanceCheckpointTable}'))
+           'HostedCodexCommentTokenRevocationProof','${workerOwnedMaintenanceCheckpointTable}',
+           'HostedCodexRuntimeGate','HostedCodexRuntimeClosure',
+           'ReviewProviderScopeConcurrencyControl','HostedCodexCommentTokenMint'))
          OR can_truncate OR can_reference OR can_trigger)
        OR EXISTS (
          SELECT 1 FROM column_facts
@@ -2812,6 +2845,10 @@ BEGIN
            OR column_facts.can_insert IS DISTINCT FROM table_facts.can_insert
            OR column_facts.can_reference IS DISTINCT FROM table_facts.can_reference
            OR column_facts.can_update IS DISTINCT FROM CASE
+             WHEN column_facts.role_kind='custody'
+               AND column_facts.relname='HostedCodexCommentRefreshCapability'
+               AND column_facts.attname=ANY(ARRAY['useCount','lastUsedAt','revision','updatedAt'])
+             THEN true
              WHEN column_facts.role_kind <> 'effect-authority'
                AND column_facts.relname='CodexOAuthProviderInstance'
                AND column_facts.attname=ANY(ARRAY[${providerRuntimeUpdateColumns.map((column) => `'${column}'`).join(",")}])
@@ -2820,11 +2857,20 @@ BEGIN
            END
        )
        OR EXISTS (SELECT 1 FROM sequence_facts WHERE
-         can_usage IS DISTINCT FROM (role_kind <> 'effect-authority')
+         can_usage IS DISTINCT FROM (role_kind NOT IN ('effect-authority','custody'))
          OR can_select OR can_update)
        OR EXISTS (SELECT 1 FROM function_facts WHERE can_execute IS DISTINCT FROM CASE
          WHEN role_kind='effect-authority' THEN proname='codex_oauth_sign_database_authority'
            AND argument_types='text'
+         WHEN role_kind='custody' THEN
+           (proname='hosted_codex_finalize_comment_token_revocation'
+             AND argument_types='text, text, text, text, bigint, text, text')
+           OR (proname='hosted_codex_mutate_comment_token_mint' AND argument_types='text, jsonb')
+           OR (proname='hosted_codex_lock_comment_token_mint' AND argument_types='text')
+           OR (proname='hosted_codex_lock_comment_token_runtime_gate' AND argument_types='')
+           OR (proname='hosted_codex_comment_token_authority_snapshot' AND argument_types='text')
+           OR (proname='hosted_codex_claim_comment_token_delivery'
+             AND argument_types='text, text, text')
          WHEN proname='reviewrouter_record_runtime_generation_witness_proof' THEN
            role_kind IN ('api','web','worker')
            AND argument_types='text, text, text, text'
@@ -2862,24 +2908,24 @@ BEGIN
          LATERAL aclexplode(coalesce(database.datacl,acldefault('d',database.datdba))) acl
          WHERE database.datname=current_database() AND acl.is_grantable
            AND acl.grantee IN (SELECT oid FROM pg_roles WHERE rolname=ANY(ARRAY[
-             'reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'])))
+             'reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority'])))
        OR EXISTS (SELECT 1 FROM pg_namespace namespace,
          LATERAL aclexplode(coalesce(namespace.nspacl,acldefault('n',namespace.nspowner))) acl
          WHERE namespace.nspname='public' AND acl.is_grantable
            AND acl.grantee IN (SELECT oid FROM pg_roles WHERE rolname=ANY(ARRAY[
-             'reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'])))
+             'reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority'])))
        OR EXISTS (SELECT 1 FROM tables,
          LATERAL aclexplode(coalesce((SELECT relacl FROM pg_class WHERE oid=tables.oid),
            acldefault('r',(SELECT relowner FROM pg_class WHERE oid=tables.oid)))) acl
          WHERE acl.is_grantable
            AND acl.grantee IN (SELECT oid FROM pg_roles WHERE rolname=ANY(ARRAY[
-             'reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'])))
+             'reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority'])))
        OR EXISTS (SELECT 1 FROM routines,
          LATERAL aclexplode(coalesce((SELECT proacl FROM pg_proc WHERE oid=routines.oid),
            acldefault('f',(SELECT proowner FROM pg_proc WHERE oid=routines.oid)))) acl
          WHERE acl.is_grantable
            AND acl.grantee IN (SELECT oid FROM pg_roles WHERE rolname=ANY(ARRAY[
-             'reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'])))
+             'reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority'])))
     ) INTO catalog_acl_facts, acl_is_canonical
     FROM runtime_roles LIMIT 1;
     expected_acl_facts := catalog_acl_facts;
@@ -3592,7 +3638,25 @@ BEGIN
   END IF;
 END
 $role$;
-ALTER ROLE ${username} LOGIN NOCREATEROLE PASSWORD ${quoted(password)};
+${
+  username === "reviewrouter_comment_token_custody"
+    ? `ALTER ROLE reviewrouter_comment_token_custody NOLOGIN;
+-- NOLOGIN must commit before old backends are terminated.  This prevents an
+-- old credential from racing a reconnect while rotation is in progress.
+COMMIT;
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+WHERE usename='reviewrouter_comment_token_custody' AND pid<>pg_backend_pid();
+DO $custody_sessions$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_stat_activity WHERE usename='reviewrouter_comment_token_custody') THEN
+    RAISE EXCEPTION 'custody credential rotation retained an old backend';
+  END IF;
+END
+$custody_sessions$;
+BEGIN;
+ALTER ROLE reviewrouter_comment_token_custody LOGIN NOCREATEROLE PASSWORD ${quoted(password)};`
+    : `ALTER ROLE ${username} LOGIN NOCREATEROLE PASSWORD ${quoted(password)};`
+}
 DO $membership$
 DECLARE membership record;
 BEGIN
@@ -4036,6 +4100,27 @@ BEGIN
   END IF;
 END
 $public_ownership_converged$;
+-- CREATE was required while public still belonged to bootstrap. Remove the
+-- explicit handoff before making the NOLOGIN role the schema owner; ownership
+-- supplies the canonical privilege without leaving a redundant ACL grant.
+REVOKE USAGE, CREATE ON SCHEMA public FROM ${releaseSchemaOwnerRoleName};
+DO $schema_owner_public_acl_handoff_cleanup$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_namespace namespace
+    CROSS JOIN LATERAL aclexplode(
+      coalesce(namespace.nspacl, acldefault('n', namespace.nspowner))
+    ) acl
+    WHERE namespace.nspname = 'public'
+      AND acl.grantee = '${releaseSchemaOwnerRoleName}'::regrole
+      AND acl.privilege_type IN ('USAGE', 'CREATE')
+  ) THEN
+    RAISE EXCEPTION
+      'release schema owner public ACL handoff survived convergence';
+  END IF;
+END
+$schema_owner_public_acl_handoff_cleanup$;
 SELECT 'ALTER SCHEMA public OWNER TO ${releaseSchemaOwnerRoleName}'
 WHERE (SELECT owner.rolname FROM pg_namespace namespace JOIN pg_roles owner ON owner.oid = namespace.nspowner WHERE namespace.nspname = 'public') <> '${releaseSchemaOwnerRoleName}'
 \\gexec
@@ -4749,10 +4834,14 @@ export function runtimeGrantStatements(
   const quarantineLiterals = quarantineTables
     .map((table) => `'${table}'`)
     .join(",");
+  const runtimeAuthorityReadOnlyLiterals = runtimeAuthorityReadOnlyTables
+    .map((table) => `'${table}'`)
+    .join(",");
   const staleColumnAclLiterals = [
     "RepositoryConnection",
     ...rotatingEvidenceTables,
     ...fullyProtectedRuntimeTables,
+    ...runtimeAuthorityReadOnlyTables,
     workerOwnedMaintenanceCheckpointTable,
   ]
     .map((table) => `'${table}'`)
@@ -4765,7 +4854,10 @@ ${databaseAclStatement("REVOKE CREATE ON DATABASE __DATABASE_TARGET__ FROM PUBLI
 ${databaseAclStatement("REVOKE CONNECT ON DATABASE __DATABASE_TARGET__ FROM PUBLIC;")}
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 ${configuration.roles
-  .filter(({ role }) => role !== "effect-authority")
+  .filter(
+    ({ role }) =>
+      role !== "effect-authority" && role !== "comment-token-custody",
+  )
   .map(
     ({
       role,
@@ -4812,6 +4904,38 @@ END
 $runtime_acl$;
 REVOKE INSERT, UPDATE, DELETE ON TABLE public."RepositoryConnection" FROM ${username};
 GRANT SELECT ON TABLE public."RepositoryConnection" TO ${username};
+DO $runtime_authority_acl$
+DECLARE authority_table text;
+BEGIN
+  FOREACH authority_table IN ARRAY ARRAY[${runtimeAuthorityReadOnlyLiterals}] LOOP
+    IF to_regclass(format('public.%I', authority_table)) IS NOT NULL THEN
+      EXECUTE format(
+        'REVOKE INSERT, UPDATE, DELETE ON TABLE public.%I FROM %I',
+        authority_table,
+        '${username}'
+      );
+      EXECUTE format(
+        'GRANT SELECT ON TABLE public.%I TO %I',
+        authority_table,
+        '${username}'
+      );
+    END IF;
+  END LOOP;
+END
+$runtime_authority_acl$;
+DO $comment_token_acl$
+BEGIN
+  IF to_regclass('public."HostedCodexCommentTokenMint"') IS NOT NULL THEN
+    EXECUTE format('REVOKE ALL ON TABLE public.%I FROM %I', 'HostedCodexCommentTokenMint', '${username}');
+  END IF;
+  IF to_regclass('public."HostedCodexCommentTokenRevocationProof"') IS NOT NULL THEN
+    EXECUTE format('REVOKE ALL ON TABLE public.%I FROM %I', 'HostedCodexCommentTokenRevocationProof', '${username}');
+  END IF;
+  IF to_regprocedure('public.hosted_codex_finalize_comment_token_revocation(text,text,text,text,bigint,text,text)') IS NOT NULL THEN
+    EXECUTE format('REVOKE ALL ON FUNCTION public.hosted_codex_finalize_comment_token_revocation(text,text,text,text,bigint,text,text) FROM %I', '${username}');
+  END IF;
+END
+$comment_token_acl$;
 DO $runtime_evidence_acl$
 DECLARE protected_table text;
 BEGIN
@@ -4865,6 +4989,27 @@ REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM reviewrouter_codex_effect_auth
 REVOKE CREATE ON SCHEMA public FROM reviewrouter_codex_effect_authority;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM reviewrouter_codex_effect_authority;
 GRANT EXECUTE ON FUNCTION public."codex_oauth_sign_database_authority"(text) TO reviewrouter_codex_effect_authority;
+${databaseAclStatement("GRANT CONNECT ON DATABASE __DATABASE_TARGET__ TO reviewrouter_comment_token_custody;")}
+GRANT USAGE ON SCHEMA public TO reviewrouter_comment_token_custody;
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM reviewrouter_comment_token_custody;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM reviewrouter_comment_token_custody;
+REVOKE CREATE ON SCHEMA public FROM reviewrouter_comment_token_custody;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM reviewrouter_comment_token_custody;
+GRANT SELECT ON TABLE public."HostedCodexRuntimeGate", public."GitHubInstallation",
+  public."RepositoryConnection", public."HostedCodexPool",
+  public."HostedCodexRepositoryBinding", public."HostedCodexInvocationGrant",
+  public."HostedCodexCommentRefreshCapability", public."HostedCodexCommentRefreshUse",
+  public."HostedCodexCommentTokenMint" TO reviewrouter_comment_token_custody;
+GRANT INSERT ON TABLE public."HostedCodexCommentRefreshUse" TO reviewrouter_comment_token_custody;
+GRANT UPDATE ("useCount", "lastUsedAt", "revision", "updatedAt") ON TABLE public."HostedCodexCommentRefreshCapability" TO reviewrouter_comment_token_custody;
+GRANT EXECUTE ON FUNCTION public.hosted_codex_finalize_comment_token_revocation(text,text,text,text,bigint,text,text)
+  TO reviewrouter_comment_token_custody;
+GRANT EXECUTE ON FUNCTION public.hosted_codex_mutate_comment_token_mint(text,jsonb),
+  public.hosted_codex_lock_comment_token_mint(text),
+  public.hosted_codex_lock_comment_token_runtime_gate(),
+  public.hosted_codex_comment_token_authority_snapshot(text),
+  public.hosted_codex_claim_comment_token_delivery(text,text,text)
+  TO reviewrouter_comment_token_custody;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
 `;
 }

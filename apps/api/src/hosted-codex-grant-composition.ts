@@ -7,7 +7,6 @@ import {
   type ActionOidcReplayNonceStorePort,
   type GitHubActionsOidcClaims,
   type GitHubActionsOidcTokenVerifierPort,
-  type GitHubAppCommentTokenIssuerPort,
   JoseGitHubActionsOidcTokenVerifier,
   PrismaActionOidcReplayNonceStore,
 } from "@reviewrouter/features-action-control-plane";
@@ -19,6 +18,7 @@ import {
   assertInvocationGrantAuthorityMatches,
   repositoryId,
   workspaceId,
+  hostedCommentTokenDelivery,
   type HostedAccountRepositoryPort,
   type HostedCodexGrantIssuerPort,
   type CommentTokenRefreshCapabilityPort,
@@ -42,6 +42,7 @@ import {
   PrismaHostedCodexGrantAdmission,
   type HostedWorkflowSourceReaderPort,
 } from "./prisma-hosted-codex-grant-admission.js";
+import type { HostedCodexCommentTokenIssuer } from "./hosted-codex-comment-token-composition.js";
 
 export type HostedCodexGrantAdmission = {
   readonly workspaceId: string;
@@ -56,6 +57,7 @@ export type HostedCodexGrantAdmission = {
   readonly bindingId: string;
   readonly bindingRevision: number;
   readonly authzEpoch: bigint;
+  readonly runtimeAuthzEpoch: bigint;
   readonly workflowSchemaVersion: number;
   readonly workflowSource: string;
   readonly workflowJobSource: string;
@@ -93,6 +95,8 @@ export type HostedCodexGrantPolicy = {
   readonly maxRequests: number;
   readonly maxConcurrentRequests: number;
   readonly maxRequestBodyBytes: number;
+  readonly maxResponseBytes: number;
+  readonly maxOutputTokens: number;
   readonly maxCommentTokenRefreshes: number;
 };
 
@@ -108,7 +112,10 @@ export class HostedCodexGrantIssuer implements HostedCodexGrantIssuerPort {
       readonly grants: InvocationGrantRepositoryPort;
       readonly grantCapabilities: InvocationGrantCapabilityPort;
       readonly refreshCapabilities: CommentTokenRefreshCapabilityPort;
-      readonly commentTokens: GitHubAppCommentTokenIssuerPort;
+      readonly commentTokens: Pick<
+        HostedCodexCommentTokenIssuer,
+        "issueInitial"
+      >;
       readonly clock: Clock;
       readonly relayUrl: string;
       readonly oidcAudience?: string;
@@ -170,8 +177,6 @@ export class HostedCodexGrantIssuer implements HostedCodexGrantIssuerPort {
       expectedWorkflow: admission.workflowContents,
       expectedWorkflowSourceBlobSha: admission.workflowSourceBlobSha,
     });
-    await consumeReplayNonce(claims, now, this.dependencies.replayNonces);
-
     const expiresAt = new Date(now.getTime() + this.dependencies.policy.ttlMs);
     const invocationIdentity = sha256(
       canonical([
@@ -184,6 +189,14 @@ export class HostedCodexGrantIssuer implements HostedCodexGrantIssuerPort {
       ]),
     );
     const grantId = invocationGrantId(`hosted-grant-${invocationIdentity}`);
+    const existing = await this.dependencies.grants.findByInvocationId(
+      invocationId(invocationIdentity),
+    );
+    // Every presented OIDC assertion is single-use, including a request that
+    // resolves to an existing durable grant. Response-loss recovery therefore
+    // requires a freshly issued GitHub OIDC token; the existing grant is not a
+    // bypass around jti consumption.
+    await consumeReplayNonce(claims, now, this.dependencies.replayNonces);
     const authority = {
       repositoryBindingId: hostedBindingId(admission.bindingId),
       reviewRequestId: admission.reviewRequestId,
@@ -196,15 +209,6 @@ export class HostedCodexGrantIssuer implements HostedCodexGrantIssuerPort {
       bindingRevision: admission.bindingRevision,
       authzEpoch: admission.authzEpoch,
     };
-    const commentToken =
-      await this.dependencies.commentTokens.issueCommentToken({
-        githubInstallationId: admission.githubInstallationId,
-        githubRepositoryId: admission.githubRepositoryId,
-        repositoryFullName: admission.repository,
-      });
-    const existing = await this.dependencies.grants.findByInvocationId(
-      invocationId(invocationIdentity),
-    );
     if (existing) {
       assertRetryMatches(existing, admission, authority, now);
       const [grantCapability, refreshCapability] = await Promise.all([
@@ -229,6 +233,12 @@ export class HostedCodexGrantIssuer implements HostedCodexGrantIssuerPort {
       ) {
         throw new Error("hosted_grant_retry_capability_key_mismatch");
       }
+      const commentToken = await this.dependencies.commentTokens.issueInitial({
+        grantId: existing.id,
+        bindingId: admission.bindingId,
+        bindingVersion: admission.bindingRevision,
+        invocationIdentity,
+      });
       return grantResponse({
         grant: grantCapability.plaintextToken,
         refreshCapability: refreshCapability.plaintextToken,
@@ -251,12 +261,15 @@ export class HostedCodexGrantIssuer implements HostedCodexGrantIssuerPort {
           maxRequests: this.dependencies.policy.maxRequests,
           maxConcurrentRequests: this.dependencies.policy.maxConcurrentRequests,
           maxRequestBytes: this.dependencies.policy.maxRequestBodyBytes,
+          maxResponseBytes: this.dependencies.policy.maxResponseBytes,
+          maxOutputTokens: this.dependencies.policy.maxOutputTokens,
         },
         commentRefreshBudget: {
           expiresAt,
           maxUses: this.dependencies.policy.maxCommentTokenRefreshes,
         },
         authority,
+        runtimeAuthzEpoch: admission.runtimeAuthzEpoch,
         now,
       },
       {
@@ -268,6 +281,12 @@ export class HostedCodexGrantIssuer implements HostedCodexGrantIssuerPort {
         commentRefreshCapabilities: this.dependencies.refreshCapabilities,
       },
     );
+    const commentToken = await this.dependencies.commentTokens.issueInitial({
+      grantId,
+      bindingId: admission.bindingId,
+      bindingVersion: admission.bindingRevision,
+      invocationIdentity,
+    });
     return grantResponse({
       grant: issued.plaintextToken,
       refreshCapability: issued.commentRefreshPlaintextToken,
@@ -288,7 +307,7 @@ function grantResponse(input: {
   readonly expiresAt: Date;
   readonly admission: HostedCodexGrantAdmission;
   readonly commentToken: Awaited<
-    ReturnType<GitHubAppCommentTokenIssuerPort["issueCommentToken"]>
+    ReturnType<HostedCodexCommentTokenIssuer["issueInitial"]>
   >;
   readonly relayUrl: string;
   readonly policy: HostedCodexGrantPolicy;
@@ -305,6 +324,12 @@ function grantResponse(input: {
     commentTokenRefreshCapability: input.refreshCapability,
     grantExpiresAt: input.expiresAt.toISOString(),
     commentTokenExpiresAt: input.commentToken.expiresAt.toISOString(),
+    ...(input.commentToken[hostedCommentTokenDelivery]
+      ? {
+          [hostedCommentTokenDelivery]:
+            input.commentToken[hostedCommentTokenDelivery],
+        }
+      : {}),
     policy: {
       maxRequests: input.policy.maxRequests,
       maxRequestBodyBytes: input.policy.maxRequestBodyBytes,
@@ -324,7 +349,8 @@ function assertRetryMatches(
     existing.repositoryId !== repositoryId(admission.repositoryId) ||
     existing.workspaceId !== workspaceId(admission.workspaceId) ||
     existing.repositoryBindingId !== hostedBindingId(admission.bindingId) ||
-    existing.budget.expiresAt <= now
+    existing.budget.expiresAt <= now ||
+    existing.runtimeAuthzEpoch !== admission.runtimeAuthzEpoch
   ) {
     throw new Error("hosted_grant_retry_authority_mismatch");
   }
@@ -336,7 +362,7 @@ export function createProductionHostedCodexGrantIssuer(input: {
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly relayUrl: string;
   readonly workflowSources: HostedWorkflowSourceReaderPort;
-  readonly commentTokens: GitHubAppCommentTokenIssuerPort;
+  readonly commentTokens: Pick<HostedCodexCommentTokenIssuer, "issueInitial">;
   readonly clock?: Clock;
 }): HostedCodexGrantIssuer {
   const clock = input.clock ?? new SystemClock();
@@ -365,7 +391,6 @@ export function createProductionHostedCodexGrantIssuer(input: {
     grantCapabilities,
     refreshCapabilities: {
       issue: (scope) => refreshCapabilityIssuer.issue(scope),
-      consume: (command) => grants.consume(command),
       revoke: (command) => grants.revoke(command),
     },
     commentTokens: input.commentTokens,
@@ -404,6 +429,20 @@ export function createProductionHostedCodexGrantIssuer(input: {
         1_024,
         2_000_000,
         "hosted_grant_max_request_bytes_invalid",
+      ),
+      maxResponseBytes: readBoundedInteger(
+        input.env.REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_RESPONSE_BYTES,
+        8_000_000,
+        64 * 1024,
+        32_000_000,
+        "hosted_grant_max_response_bytes_invalid",
+      ),
+      maxOutputTokens: readBoundedInteger(
+        input.env.REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_OUTPUT_TOKENS,
+        32_768,
+        256,
+        100_000,
+        "hosted_grant_max_output_tokens_invalid",
       ),
       maxCommentTokenRefreshes: readBoundedInteger(
         input.env.REVIEW_ROUTER_HOSTED_CODEX_COMMENT_REFRESH_MAX_USES,

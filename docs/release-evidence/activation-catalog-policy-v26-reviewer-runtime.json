@@ -1,0 +1,19 @@
+{
+  "status": "done",
+  "changedFiles": [],
+  "evidence": [
+    "safe_execution_status:completed",
+    "output_summary:# Verdict: GO\n\nDecision ID: codex:activation-policy-v26:83e55ce8772:f2eeaf4ed03d:go\nAudited Git SHA: 83e55ce8772e54757b97e0214721af56af18ae0b\nCandidate SHA-256: f2eeaf4ed03dbb72c7b551a483201aa6086788c3ee3d3b8118ded067ae5f3d1f\nAuthorization: mechanical trust-root publication of these exact bytes only; no deployment authorization.\n\nTwo disposable PostgreSQL 16 to 17 captures from GitHub Actions run 32848269242 are byte-identical. The normalized delta in both phases is limited to owner/object and routine execute authority for public.hosted_codex_invocation_output_budget_guard(). Roles, memberships, reachability, RLS inventory, extensions, existing ownership, and unrelated grants are unchanged. No PUBLIC, API, Web, worker, or provider-effect principal gains access.",
+    "attempt_count:1"
+  ],
+  "blockers": [],
+  "nextAction": "review_completed",
+  "schemaVersion": 1,
+  "provider": "codex",
+  "runId": "rr-activation-policy-v26-review-r1",
+  "taskId": "rr-activation-policy-v26-review-r1",
+  "details": {
+    "baseCommit": "83e55ce8772e54757b97e0214721af56af18ae0b"
+  },
+  "updatedAt": "2026-08-25T12:47:04.000Z"
+}

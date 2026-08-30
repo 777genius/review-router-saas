@@ -9,7 +9,62 @@ import {
   captureHostedCertificationWorkspace,
 } from "./hosted-pool-certification-evidence";
 
+const sensitiveEvidenceFixtures = [
+  ["Bear", "er credential-", "material-that-must-not-escape"].join(""),
+  ['{"access_', 'token":"credential-', 'material"}'].join(""),
+  ['{"tokens":{"account_', 'id":"auth-body-material"}}'].join(""),
+  ['{"client_', 'secret":"credential-', 'material"}'].join(""),
+  ['{"nested":"{\\"refresh_', 'token\\":\\"credential-', 'material\\"}"}'].join(
+    "",
+  ),
+  ["x-api-", "key: credential-", "material-that-must-not-escape"].join(""),
+  ["gh", "o_credential", "materialthatmustnotescape"].join(""),
+  ["-----BEGIN PRIVATE", " KEY-----"].join(""),
+  "certification-sentinel",
+];
+
 describe("hosted pool certification evidence", () => {
+  const gateStatuses = {
+    "hosted-pool:verify": "success",
+    "hosted-pool:migration-rehearsal": "success",
+    "hosted-pool:e2e:postgres": "success",
+  };
+
+  it("rejects a vacuous secret-sentinel scan", () => {
+    expect(() => assertHostedCertificationSecretFree([], [])).toThrow(
+      "hosted_certification_secret_sentinels_required",
+    );
+  });
+
+  it("rejects incomplete compliance gate evidence", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rr-hosted-gates-repo-"));
+    const outputDirectory = await mkdtemp(
+      join(tmpdir(), "rr-hosted-gates-output-"),
+    );
+    try {
+      git(workspace, ["init"]);
+      git(workspace, ["config", "user.email", "certification@example.invalid"]);
+      git(workspace, ["config", "user.name", "Certification Test"]);
+      await writeFile(join(workspace, "README.md"), "fixture\n");
+      git(workspace, ["add", "README.md"]);
+      git(workspace, ["commit", "-m", "fixture parent"]);
+      await writeFile(join(workspace, "SECOND.md"), "fixture\n");
+      git(workspace, ["add", "SECOND.md"]);
+      git(workspace, ["commit", "-m", "fixture"]);
+      await expect(
+        buildHostedCertificationEvidence({
+          workspace,
+          outputDirectory,
+          expectedCommitSha: git(workspace, ["rev-parse", "HEAD"]),
+          sentinels: ["certification-sentinel"],
+        }),
+      ).rejects.toThrow("hosted_certification_gate_failed");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("accepts bounded hashed relay evidence", () => {
     expect(() =>
       assertHostedCertificationSecretFree(
@@ -24,26 +79,19 @@ describe("hosted pool certification evidence", () => {
     ).not.toThrow();
   });
 
-  it.each([
-    "Bearer credential-material-that-must-not-escape",
-    '{"access_token":"credential-material"}',
-    '{"tokens":{"account_id":"auth-body-material"}}',
-    '{"client_secret":"credential-material"}',
-    '{"nested":"{\\"refresh_token\\":\\"credential-material\\"}"}',
-    "x-api-key: credential-material-that-must-not-escape",
-    "gho_credentialmaterialthatmustnotescape",
-    "-----BEGIN PRIVATE KEY-----",
-    "certification-sentinel",
-  ])("rejects sensitive evidence without echoing it", (secret) => {
-    expect(() =>
-      assertHostedCertificationSecretFree(
-        [{ name: "opaque-source", value: secret }],
-        ["certification-sentinel"],
-      ),
-    ).toThrow(
-      /^hosted_certification_sensitive_material_detected:[a-f0-9]{16}$/u,
-    );
-  });
+  it.each(sensitiveEvidenceFixtures)(
+    "rejects sensitive evidence without echoing it",
+    (secret) => {
+      expect(() =>
+        assertHostedCertificationSecretFree(
+          [{ name: "opaque-source", value: secret }],
+          ["certification-sentinel"],
+        ),
+      ).toThrow(
+        /^hosted_certification_sensitive_material_detected:[a-f0-9]{16}$/u,
+      );
+    },
+  );
 
   it("binds evidence to the exact commit, parent, tree, and migration hashes", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "rr-hosted-evidence-repo-"));
@@ -68,6 +116,15 @@ describe("hosted pool certification evidence", () => {
         "packages/platform/db/prisma/migrations/000076_hosted_codex_terminalization_restore_invariants/migration.sql",
         "packages/platform/db/prisma/migrations/000077_hosted_codex_r57_security_race_remediation/migration.sql",
         "packages/platform/db/prisma/migrations/000078_review_investigation_maintenance_checkpoint/migration.sql",
+        "packages/platform/db/prisma/migrations/000079_hosted_codex_output_limits/migration.sql",
+        "packages/platform/db/prisma/migrations/000079_remove_account_wide_provider_lane_serialization/migration.sql",
+        "packages/platform/db/prisma/migrations/000080_hosted_codex_attempt_generation/migration.sql",
+        "packages/platform/db/prisma/migrations/000081_hosted_codex_runtime_gate/migration.sql",
+        "packages/platform/db/prisma/migrations/000082_validate_hosted_codex_output_limits/migration.sql",
+        "packages/platform/db/prisma/migrations/000083_hosted_codex_comment_token_mint_protocol/migration.sql",
+        "packages/platform/db/prisma/migrations/000084_harden_comment_token_custody/migration.sql",
+        "packages/platform/db/prisma/migrations/000085_comment_token_gate_lock_result/migration.sql",
+        "packages/platform/db/prisma/migrations/000086_comment_token_custody_r18_remediation/migration.sql",
       ];
       for (const [index, path] of migrations.entries()) {
         await mkdir(dirname(join(workspace, path)), { recursive: true });
@@ -87,6 +144,8 @@ describe("hosted pool certification evidence", () => {
         outputDirectory,
         expectedCommitSha: commitSha,
         workspaceSnapshotPath,
+        sentinels: ["certification-sentinel"],
+        gateStatuses,
       });
       const evidence = JSON.parse(await readFile(result.path, "utf8")) as {
         subject: { commitSha: string; parentSha: string; treeSha: string };
@@ -146,6 +205,8 @@ describe("hosted pool certification evidence", () => {
             outputDirectory: join(runnerTemp, "hosted-certification"),
             expectedCommitSha: git(workspace, ["rev-parse", "HEAD"]),
             workspaceSnapshotPath: snapshotPath,
+            sentinels: ["certification-sentinel"],
+            gateStatuses,
           }),
         ).rejects.toThrow("hosted_certification_workspace_dirty");
       } finally {

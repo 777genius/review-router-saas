@@ -10,6 +10,8 @@ import {
   cleanupDisposableRehearsalResources,
   captureOnlyRehearsalFixtureCleanupSql,
   disposablePg17CanonicalRoleBootstrapSetupSql,
+  disposablePg17TargetRoleFoundationSql,
+  disposableSqlConfiguration,
   disposableTargetPublicTableAclCanonicalizationSql,
   normalizeRehearsalDockerInvocation,
   resolveRehearsalCaptureOnlyConfiguration,
@@ -281,9 +283,9 @@ describe("disposable dual-version rehearsal", () => {
   it("uses the exact reviewed compact digest authorization in normal rehearsal", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual({
       preactivationCatalogPolicySha256:
-        "sha256:36e6e4875c530beba1cb6bfc580a358d031895334e6af6a6bad193148e1beebe",
+        "sha256:b95cc2c1fdd94b64056f6d8cd9316d361dce87a8a6a8064c8db51db65a886e68",
       activatedCatalogPolicySha256:
-        "sha256:d0ccc9a760f69c467d3c9df56502704abb1f03116a2be156eb206100b35f5866",
+        "sha256:118834866426337911d13e47f2752f2f982c1393792668036e359b0062117c6f",
     });
   });
   it("allows loaded disposable catalog observations without changing production timing", () => {
@@ -305,6 +307,21 @@ describe("disposable dual-version rehearsal", () => {
       "activationAuthorityProvisioning",
     ]);
     expect(setup).not.toHaveProperty("bootstrapDemotion");
+  });
+  it("keeps comment-token custody in the disposable runtime role contract", () => {
+    expect(disposableSqlConfiguration().roles).toContainEqual({
+      role: "comment-token-custody",
+      username: "reviewrouter_comment_token_custody",
+      password: "disposable-custody",
+    });
+
+    const foundation = disposablePg17TargetRoleFoundationSql();
+    expect(foundation).toContain(
+      "CREATE ROLE reviewrouter_comment_token_custody LOGIN PASSWORD 'disposable-custody'",
+    );
+    expect(foundation).toContain(
+      "GRANT reviewrouter_comment_token_custody TO reviewrouter_role_bootstrap WITH ADMIN TRUE",
+    );
   });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
     const identity = "rr-disposable-production-shaped-capture";
@@ -484,6 +501,7 @@ describe("disposable dual-version rehearsal", () => {
     expect(calls).toEqual([
       "stage:run_release_migration",
       "rollout-use-case-cas",
+      "stage:capture_activation_catalog_policy",
       "capture-candidate",
     ]);
     expect(runReleaseMigration).toHaveBeenCalledOnce();
@@ -599,6 +617,23 @@ describe("disposable dual-version rehearsal", () => {
     expect(exclusions).not.toContain("000074_hosted_codex_account_pool");
     expect(exclusions).not.toContain(
       "000078_review_investigation_maintenance_checkpoint",
+    );
+    expect(exclusions).not.toContain("000079_hosted_codex_output_limits");
+    expect(exclusions).not.toContain(
+      "000079_remove_account_wide_provider_lane_serialization",
+    );
+    expect(exclusions).not.toContain("000080_hosted_codex_attempt_generation");
+    expect(exclusions).not.toContain("000081_hosted_codex_runtime_gate");
+    expect(exclusions).not.toContain(
+      "000082_validate_hosted_codex_output_limits",
+    );
+    expect(exclusions).not.toContain(
+      "000083_hosted_codex_comment_token_mint_protocol",
+    );
+    expect(exclusions).not.toContain("000084_harden_comment_token_custody");
+    expect(exclusions).not.toContain("000085_comment_token_gate_lock_result");
+    expect(exclusions).not.toContain(
+      "000086_comment_token_custody_r18_remediation",
     );
     expect(
       migrationManifestIdentity(

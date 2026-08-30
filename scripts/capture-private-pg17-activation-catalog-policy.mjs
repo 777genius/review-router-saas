@@ -1,18 +1,18 @@
-import {
-  assertActivationCatalogPolicyNormalizationForProfile,
-  productionActivationCatalogPolicyNormalizationProfile,
-} from "../packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts";
+import { assertPendingActivationCatalogPolicyCaptureNormalization } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts";
 
 const assertCandidate = (value, phase) => {
   try {
-    assertActivationCatalogPolicyNormalizationForProfile(
-      value,
-      phase,
-      productionActivationCatalogPolicyNormalizationProfile,
-    );
+    assertPendingActivationCatalogPolicyCaptureNormalization(value, phase);
     return value;
-  } catch {
-    throw new Error(`activation_catalog_policy_candidate_invalid:${phase}`);
+  } catch (error) {
+    const reason =
+      error instanceof Error && /^[a-z-]+$/u.test(error.message)
+        ? error.message
+        : "unknown";
+    throw new Error(
+      `activation_catalog_policy_candidate_invalid:${phase}:${reason}`,
+      { cause: error },
+    );
   }
 };
 

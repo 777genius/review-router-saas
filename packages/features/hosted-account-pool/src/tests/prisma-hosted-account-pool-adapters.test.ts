@@ -64,6 +64,9 @@ describe("Prisma hosted pool admin adapters", () => {
     expect(
       transaction.hostedCodexGenerationReceipt.create,
     ).toHaveBeenCalledTimes(2);
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      timeout: 15_000,
+    });
     expect(transaction.hostedCodexAccount.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({

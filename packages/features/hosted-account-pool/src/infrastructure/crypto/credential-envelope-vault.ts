@@ -5,6 +5,10 @@ import {
   createHmac,
   randomBytes,
 } from "node:crypto";
+import {
+  createCustodyDeadline,
+  defaultCustodyOperationTimeoutMs,
+} from "../../application/custody-operation-deadline.js";
 
 const algorithm = "aes-256-gcm" as const;
 const schemaVersion = 1 as const;
@@ -38,11 +42,13 @@ export interface CredentialKeyringPort {
     readonly dataEncryptionKey: Uint8Array;
     readonly associatedData: Uint8Array;
     readonly context: CredentialKeyringContext;
+    readonly signal?: AbortSignal;
   }): Promise<WrappedDataEncryptionKey>;
   unwrapDataEncryptionKey(input: {
     readonly wrappedKey: WrappedDataEncryptionKey;
     readonly associatedData: Uint8Array;
     readonly context: CredentialKeyringContext;
+    readonly signal?: AbortSignal;
   }): Promise<Uint8Array>;
 }
 
@@ -58,10 +64,17 @@ export type EncryptedCredentialEnvelope = {
   readonly ciphertextHash: string;
 };
 
+export type PreparedCredentialEnvelopeCapture = {
+  /** Local-only capture: all remote key wrapping completed before this exists. */
+  capture(plaintext: Uint8Array): EncryptedCredentialEnvelope;
+  destroy(): void;
+};
+
 export class CredentialEnvelopeVault {
   constructor(
     private readonly keyring: CredentialKeyringPort,
     private readonly purpose: CredentialKeyringContext["purpose"] = "relay",
+    private readonly operationTimeoutMs = defaultCustodyOperationTimeoutMs,
   ) {}
 
   get currentKeyId(): string {
@@ -71,49 +84,97 @@ export class CredentialEnvelopeVault {
   async encrypt(
     plaintext: Uint8Array,
     context: CredentialEnvelopeContext,
+    signal?: AbortSignal,
   ): Promise<EncryptedCredentialEnvelope> {
-    if (plaintext.byteLength === 0)
-      throw new Error("credential_plaintext_empty");
+    const prepared = await this.prepareEncrypt(context, signal);
+    try {
+      return prepared.capture(plaintext);
+    } finally {
+      prepared.destroy();
+    }
+  }
+
+  /**
+   * Wraps a fresh DEK before an external operation can yield a bearer. Once
+   * prepared, capture performs only synchronous local authenticated encryption
+   * and cannot fail because KMS or another remote dependency is unavailable.
+   */
+  async prepareEncrypt(
+    context: CredentialEnvelopeContext,
+    signal?: AbortSignal,
+  ): Promise<PreparedCredentialEnvelopeCapture> {
     const associatedData = encodeAssociatedData(context);
     const dataEncryptionKey = randomBytes(32);
-    const nonce = randomBytes(12);
+    const deadline = createCustodyDeadline(signal, this.operationTimeoutMs);
     try {
-      const cipher = createCipheriv(algorithm, dataEncryptionKey, nonce);
-      cipher.setAAD(associatedData);
-      const ciphertext = Buffer.concat([
-        cipher.update(Buffer.from(plaintext)),
-        cipher.final(),
-      ]);
-      const authenticationTag = cipher.getAuthTag();
-      const wrappedDataEncryptionKey = await this.keyring.wrapDataEncryptionKey(
-        {
+      deadline.signal.throwIfAborted();
+      const wrappedDataEncryptionKey = await deadline.run(
+        this.keyring.wrapDataEncryptionKey({
           dataEncryptionKey,
           associatedData,
           context: this.keyringContext(context),
-        },
+          signal: deadline.signal,
+        }),
       );
       if (wrappedDataEncryptionKey.keyId !== this.keyring.currentKeyId) {
         throw new Error("credential_keyring_current_key_mismatch");
       }
+      let destroyed = false;
       return {
-        schemaVersion,
-        encryptionAlgorithm: algorithm,
-        keyId: wrappedDataEncryptionKey.keyId,
-        nonce: nonce.toString("base64"),
-        ciphertext: ciphertext.toString("base64"),
-        authenticationTag: authenticationTag.toString("base64"),
-        wrappedDataEncryptionKey,
-        associatedDataHash: sha256(associatedData),
-        ciphertextHash: sha256(ciphertext),
+        capture: (plaintext) => {
+          if (destroyed) throw new Error("credential_capture_destroyed");
+          if (plaintext.byteLength === 0)
+            throw new Error("credential_plaintext_empty");
+          const nonce = randomBytes(12);
+          const plaintextCopy = Buffer.from(plaintext);
+          let ciphertext: Buffer | undefined;
+          let authenticationTag: Buffer | undefined;
+          try {
+            const cipher = createCipheriv(algorithm, dataEncryptionKey, nonce);
+            cipher.setAAD(associatedData);
+            ciphertext = Buffer.concat([
+              cipher.update(plaintextCopy),
+              cipher.final(),
+            ]);
+            authenticationTag = cipher.getAuthTag();
+            return {
+              schemaVersion,
+              encryptionAlgorithm: algorithm,
+              keyId: wrappedDataEncryptionKey.keyId,
+              nonce: nonce.toString("base64"),
+              ciphertext: ciphertext.toString("base64"),
+              authenticationTag: authenticationTag.toString("base64"),
+              wrappedDataEncryptionKey,
+              associatedDataHash: sha256(associatedData),
+              ciphertextHash: sha256(ciphertext),
+            };
+          } finally {
+            plaintextCopy.fill(0);
+            authenticationTag?.fill(0);
+            ciphertext?.fill(0);
+            nonce.fill(0);
+          }
+        },
+        destroy: () => {
+          if (destroyed) return;
+          destroyed = true;
+          dataEncryptionKey.fill(0);
+          associatedData.fill(0);
+        },
       };
-    } finally {
+    } catch (error) {
       dataEncryptionKey.fill(0);
+      associatedData.fill(0);
+      throw error;
+    } finally {
+      deadline.dispose();
     }
   }
 
   async decrypt(
     envelope: EncryptedCredentialEnvelope,
     context: CredentialEnvelopeContext,
+    signal?: AbortSignal,
   ): Promise<Uint8Array> {
     if (
       envelope.schemaVersion !== schemaVersion ||
@@ -123,37 +184,59 @@ export class CredentialEnvelopeVault {
       throw new Error("credential_envelope_unsupported");
     }
     const associatedData = encodeAssociatedData(context);
-    if (sha256(associatedData) !== envelope.associatedDataHash) {
-      throw new Error("credential_envelope_context_mismatch");
-    }
-    const ciphertext = decodeBase64(envelope.ciphertext);
-    if (sha256(ciphertext) !== envelope.ciphertextHash) {
-      throw new Error("credential_envelope_ciphertext_corrupt");
-    }
-    const dataEncryptionKey = Buffer.from(
-      await this.keyring.unwrapDataEncryptionKey({
-        wrappedKey: envelope.wrappedDataEncryptionKey,
-        associatedData,
-        context: this.keyringContext(context),
-      }),
-    );
-    if (dataEncryptionKey.byteLength !== 32) {
-      dataEncryptionKey.fill(0);
-      throw new Error("credential_data_key_invalid");
-    }
+    const deadline = createCustodyDeadline(signal, this.operationTimeoutMs);
+    let ciphertext: Buffer | undefined;
+    let nonce: Buffer | undefined;
+    let authenticationTag: Buffer | undefined;
+    let unwrappedDataEncryptionKey: Uint8Array | undefined;
+    let dataEncryptionKey: Buffer | undefined;
     try {
-      const decipher = createDecipheriv(
-        algorithm,
-        dataEncryptionKey,
-        decodeBase64(envelope.nonce),
+      deadline.signal.throwIfAborted();
+      if (sha256(associatedData) !== envelope.associatedDataHash)
+        throw new Error("credential_envelope_context_mismatch");
+      ciphertext = decodeBase64(envelope.ciphertext);
+      if (sha256(ciphertext) !== envelope.ciphertextHash)
+        throw new Error("credential_envelope_ciphertext_corrupt");
+      nonce = decodeBase64(envelope.nonce);
+      authenticationTag = decodeBase64(envelope.authenticationTag);
+      unwrappedDataEncryptionKey = await deadline.run(
+        this.keyring.unwrapDataEncryptionKey({
+          wrappedKey: envelope.wrappedDataEncryptionKey,
+          associatedData,
+          context: this.keyringContext(context),
+          signal: deadline.signal,
+        }),
+        (lateKey) => lateKey.fill(0),
       );
+      dataEncryptionKey = Buffer.from(unwrappedDataEncryptionKey);
+      if (dataEncryptionKey.byteLength !== 32)
+        throw new Error("credential_data_key_invalid");
+      const decipher = createDecipheriv(algorithm, dataEncryptionKey, nonce);
       decipher.setAAD(associatedData);
-      decipher.setAuthTag(decodeBase64(envelope.authenticationTag));
+      decipher.setAuthTag(authenticationTag);
       return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-    } catch {
-      throw new Error("credential_envelope_authentication_failed");
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        [
+          "credential_envelope_context_mismatch",
+          "credential_envelope_ciphertext_corrupt",
+          "credential_data_key_invalid",
+          "credential_envelope_base64_invalid",
+        ].includes(error.message)
+      )
+        throw error;
+      throw new Error("credential_envelope_authentication_failed", {
+        cause: error,
+      });
     } finally {
-      dataEncryptionKey.fill(0);
+      deadline.dispose();
+      dataEncryptionKey?.fill(0);
+      unwrappedDataEncryptionKey?.fill(0);
+      authenticationTag?.fill(0);
+      nonce?.fill(0);
+      ciphertext?.fill(0);
+      associatedData.fill(0);
     }
   }
 
@@ -161,29 +244,35 @@ export class CredentialEnvelopeVault {
   async rewrap(
     envelope: EncryptedCredentialEnvelope,
     context: CredentialEnvelopeContext,
+    signal?: AbortSignal,
   ): Promise<EncryptedCredentialEnvelope> {
     const associatedData = encodeAssociatedData(context);
-    if (sha256(associatedData) !== envelope.associatedDataHash) {
-      throw new Error("credential_envelope_context_mismatch");
-    }
-    const dataEncryptionKey = Buffer.from(
-      await this.keyring.unwrapDataEncryptionKey({
-        wrappedKey: envelope.wrappedDataEncryptionKey,
-        associatedData,
-        context: this.keyringContext(context),
-      }),
-    );
-    if (dataEncryptionKey.byteLength !== 32) {
-      dataEncryptionKey.fill(0);
-      throw new Error("credential_data_key_invalid");
-    }
+    const deadline = createCustodyDeadline(signal, this.operationTimeoutMs);
+    let unwrappedDataEncryptionKey: Uint8Array | undefined;
+    let dataEncryptionKey: Buffer | undefined;
     try {
-      const wrappedDataEncryptionKey = await this.keyring.wrapDataEncryptionKey(
-        {
+      deadline.signal.throwIfAborted();
+      if (sha256(associatedData) !== envelope.associatedDataHash)
+        throw new Error("credential_envelope_context_mismatch");
+      unwrappedDataEncryptionKey = await deadline.run(
+        this.keyring.unwrapDataEncryptionKey({
+          wrappedKey: envelope.wrappedDataEncryptionKey,
+          associatedData,
+          context: this.keyringContext(context),
+          signal: deadline.signal,
+        }),
+        (lateKey) => lateKey.fill(0),
+      );
+      dataEncryptionKey = Buffer.from(unwrappedDataEncryptionKey);
+      if (dataEncryptionKey.byteLength !== 32)
+        throw new Error("credential_data_key_invalid");
+      const wrappedDataEncryptionKey = await deadline.run(
+        this.keyring.wrapDataEncryptionKey({
           dataEncryptionKey,
           associatedData,
           context: this.keyringContext(context),
-        },
+          signal: deadline.signal,
+        }),
       );
       if (wrappedDataEncryptionKey.keyId !== this.keyring.currentKeyId) {
         throw new Error("credential_keyring_current_key_mismatch");
@@ -194,7 +283,10 @@ export class CredentialEnvelopeVault {
         wrappedDataEncryptionKey,
       };
     } finally {
-      dataEncryptionKey.fill(0);
+      deadline.dispose();
+      dataEncryptionKey?.fill(0);
+      unwrappedDataEncryptionKey?.fill(0);
+      associatedData.fill(0);
     }
   }
 
@@ -229,11 +321,17 @@ export class EnvCredentialKeyring implements CredentialKeyringPort {
     for (const [keyId, encoded] of Object.entries(parsed)) {
       if (!keyId || typeof encoded !== "string") continue;
       const key = decodeBase64(encoded);
-      if (key.byteLength !== 32) throw new Error("hosted_codex_kek_invalid");
+      if (key.byteLength !== 32) {
+        key.fill(0);
+        for (const retained of keys.values()) retained.fill(0);
+        throw new Error("hosted_codex_kek_invalid");
+      }
       keys.set(keyId, key);
     }
-    if (!keys.has(currentKeyId))
+    if (!keys.has(currentKeyId)) {
+      for (const retained of keys.values()) retained.fill(0);
       throw new Error("hosted_codex_current_kek_missing");
+    }
     this.currentKeyId = currentKeyId;
     this.keys = keys;
   }
@@ -244,38 +342,67 @@ export class EnvCredentialKeyring implements CredentialKeyringPort {
   }): Promise<WrappedDataEncryptionKey> {
     const key = this.requireKey(this.currentKeyId);
     const nonce = randomBytes(12);
-    const cipher = createCipheriv(algorithm, key, nonce);
-    cipher.setAAD(Buffer.from(input.associatedData));
-    const ciphertext = Buffer.concat([
-      cipher.update(Buffer.from(input.dataEncryptionKey)),
-      cipher.final(),
-    ]);
-    return {
-      keyId: this.currentKeyId,
-      nonce: nonce.toString("base64"),
-      ciphertext: ciphertext.toString("base64"),
-      authenticationTag: cipher.getAuthTag().toString("base64"),
-    };
+    const associatedData = Buffer.from(input.associatedData);
+    const dataEncryptionKey = Buffer.from(input.dataEncryptionKey);
+    let ciphertext: Buffer | undefined;
+    let authenticationTag: Buffer | undefined;
+    try {
+      const cipher = createCipheriv(algorithm, key, nonce);
+      cipher.setAAD(associatedData);
+      ciphertext = Buffer.concat([
+        cipher.update(dataEncryptionKey),
+        cipher.final(),
+      ]);
+      authenticationTag = cipher.getAuthTag();
+      return {
+        keyId: this.currentKeyId,
+        nonce: nonce.toString("base64"),
+        ciphertext: ciphertext.toString("base64"),
+        authenticationTag: authenticationTag.toString("base64"),
+      };
+    } finally {
+      authenticationTag?.fill(0);
+      ciphertext?.fill(0);
+      dataEncryptionKey.fill(0);
+      associatedData.fill(0);
+      nonce.fill(0);
+    }
   }
 
   async unwrapDataEncryptionKey(input: {
     readonly wrappedKey: WrappedDataEncryptionKey;
     readonly associatedData: Uint8Array;
   }): Promise<Uint8Array> {
-    const decipher = createDecipheriv(
-      algorithm,
-      this.requireKey(input.wrappedKey.keyId),
-      decodeBase64(input.wrappedKey.nonce),
-    );
-    decipher.setAAD(Buffer.from(input.associatedData));
-    decipher.setAuthTag(decodeBase64(input.wrappedKey.authenticationTag));
+    const associatedData = Buffer.from(input.associatedData);
+    let nonce: Buffer | undefined;
+    let authenticationTag: Buffer | undefined;
+    let ciphertext: Buffer | undefined;
     try {
-      return Buffer.concat([
-        decipher.update(decodeBase64(input.wrappedKey.ciphertext)),
-        decipher.final(),
-      ]);
-    } catch {
-      throw new Error("credential_wrapped_key_authentication_failed");
+      nonce = decodeBase64(input.wrappedKey.nonce);
+      authenticationTag = decodeBase64(input.wrappedKey.authenticationTag);
+      ciphertext = decodeBase64(input.wrappedKey.ciphertext);
+      const decipher = createDecipheriv(
+        algorithm,
+        this.requireKey(input.wrappedKey.keyId),
+        nonce,
+      );
+      decipher.setAAD(associatedData);
+      decipher.setAuthTag(authenticationTag);
+      return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "credential_envelope_base64_invalid"
+      )
+        throw error;
+      throw new Error("credential_wrapped_key_authentication_failed", {
+        cause: error,
+      });
+    } finally {
+      associatedData.fill(0);
+      ciphertext?.fill(0);
+      authenticationTag?.fill(0);
+      nonce?.fill(0);
     }
   }
 
@@ -320,6 +447,7 @@ function encodeAssociatedData(context: CredentialEnvelopeContext): Buffer {
 function decodeBase64(value: string): Buffer {
   const decoded = Buffer.from(value, "base64");
   if (!value || decoded.toString("base64") !== value) {
+    decoded.fill(0);
     throw new Error("credential_envelope_base64_invalid");
   }
   return decoded;

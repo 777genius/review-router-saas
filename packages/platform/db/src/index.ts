@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 
 export { resolveCodexOAuthDatabaseEffectAuthorityUrl } from "./codex-oauth-database-effect-authority.js";
+export { resolveCommentTokenCustodyDatabaseAuthorityUrl } from "./comment-token-custody-database-authority.js";
 export {
   PostgresTransactionClock,
   type PostgresTransactionClockClient,
@@ -23,6 +24,8 @@ export function createDatabaseHealth(
 export type CreatePrismaClientOptions = {
   readonly databaseUrl?: string;
   readonly poolMax?: number;
+  /** Retire authenticated backends even while periodically active. */
+  readonly poolMaxLifetimeSeconds?: number;
   readonly transactionMaxWaitMs?: number;
   readonly transactionTimeoutMs?: number;
 };
@@ -37,10 +40,13 @@ export function createPrismaClient(
   const poolMax =
     options.poolMax ??
     parseOptionalPositiveInteger("REVIEW_ROUTER_DB_POOL_MAX");
-  const adapterConfig =
-    typeof poolMax === "number"
-      ? { connectionString: databaseUrl, max: poolMax }
-      : { connectionString: databaseUrl };
+  const adapterConfig = {
+    connectionString: databaseUrl,
+    ...(typeof poolMax === "number" ? { max: poolMax } : {}),
+    ...(typeof options.poolMaxLifetimeSeconds === "number"
+      ? { maxLifetimeSeconds: options.poolMaxLifetimeSeconds }
+      : {}),
+  };
 
   return new PrismaClient({
     adapter: new PrismaPg(adapterConfig),

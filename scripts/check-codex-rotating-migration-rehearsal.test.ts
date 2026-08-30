@@ -27,8 +27,26 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ),
     "utf8",
   );
+  const productionRehearsalSource = readFileSync(
+    resolve(import.meta.dirname, "rehearse-private-pg17-rollout.mjs"),
+    "utf8",
+  );
   const prismaRetentionProofSource = readFileSync(
     resolve(import.meta.dirname, "prove-codex-rotating-evidence-prisma.ts"),
+    "utf8",
+  );
+  const prismaSchemaSource = readFileSync(
+    resolve(
+      import.meta.dirname,
+      "../packages/platform/db/prisma/schema.prisma",
+    ),
+    "utf8",
+  );
+  const migration84Source = readFileSync(
+    resolve(
+      import.meta.dirname,
+      "../packages/platform/db/prisma/migrations/000084_harden_comment_token_custody/migration.sql",
+    ),
     "utf8",
   );
   const setupAdapterSource = readFileSync(
@@ -46,7 +64,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
-  it("rehearses every canonical migration from 000060 through 000078 in order", () => {
+  it("rehearses the canonical sequence through 000086 in order", () => {
     const inventory =
       /JSON\.stringify\(\[([\s\S]+?)\]\),\n\s+"rehearsal migration inventory/u.exec(
         source,
@@ -78,6 +96,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "migration76Name",
       "migration77Name",
       "migration78Name",
+      "migration79Name",
+      "migration79ScopeName",
+      "migration80Name",
+      "migration81Name",
+      "migration82Name",
+      "migration83Name",
+      "migration84Name",
+      "migration85Name",
+      "migration86Name",
     ]);
     expect(source).toContain(
       'const migration67Name = "000067_review_live_progress"',
@@ -93,6 +120,33 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).toContain(
       'const migration71Name = "000071_transactional_service_transition"',
+    );
+    expect(source).toContain(
+      'const migration79Name = "000079_hosted_codex_output_limits"',
+    );
+    expect(source).toContain(
+      'const migration80Name = "000080_hosted_codex_attempt_generation"',
+    );
+    expect(source).toContain(
+      'const migration81Name = "000081_hosted_codex_runtime_gate"',
+    );
+    expect(source).toContain(
+      'const migration82Name = "000082_validate_hosted_codex_output_limits"',
+    );
+    expect(source).toContain(
+      'const migration83Name = "000083_hosted_codex_comment_token_mint_protocol"',
+    );
+    expect(source).toContain(
+      'const migration84Name = "000084_harden_comment_token_custody"',
+    );
+    expect(source).toContain(
+      'const migration85Name = "000085_comment_token_gate_lock_result"',
+    );
+    expect(source).toContain(
+      'const migration86Name = "000086_comment_token_custody_r18_remediation"',
+    );
+    expect(source).toContain(
+      '"000079_remove_account_wide_provider_lane_serialization"',
     );
     expect(source).toContain(
       'const migration72RetireName = "000072_retire_superseded_codex_setup_claims"',
@@ -115,12 +169,41 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).not.toContain("000067_release_rollout_ledger");
   });
 
+  it("keeps migration 000084 installable before the custody role is provisioned", () => {
+    expect(migration84Source).toContain(
+      "IF to_regrole('reviewrouter_comment_token_custody') IS NOT NULL THEN",
+    );
+    expect(migration84Source).toContain(
+      "FROM reviewrouter_comment_token_custody;",
+    );
+    expect(migration84Source).not.toContain(
+      "FROM PUBLIC, reviewrouter_comment_token_custody;",
+    );
+  });
+
+  it("keeps custody evidence and closure uniqueness represented in Prisma drift checks", () => {
+    const proofModel =
+      /model HostedCodexCommentTokenRevocationProof \{([\s\S]+?)\n\}/u.exec(
+        prismaSchemaSource,
+      )?.[1];
+    expect(proofModel).toBeDefined();
+    expect(proofModel).toContain("mintId           String   @id");
+    expect(proofModel).toContain("ownerIdHash");
+    expect(proofModel).toContain("fenceEpoch");
+    expect(proofModel).toContain("receiptAuthority");
+    expect(proofModel).toContain("receiptResult");
+    expect(proofModel).toContain("@@ignore");
+    expect(prismaSchemaSource).toContain(
+      '@unique(map: "HostedCodexRuntimeClosure_gate_revision_key")',
+    );
+  });
+
   it("retains ordinary migration 000074 in the pre-release source manifest", () => {
     expect(source).toContain("directory === migration74Name");
     expect(source).not.toContain("applyOrdinaryPostReleaseMigrations");
     expect(source).not.toContain("assertMigrationAbsentFromHistory");
     expect(source).toContain("proveMigrateDeployNoOp(providerAdmin)");
-    expect(source).toContain("combined 000060 through 000078 rehearsal passed");
+    expect(source).toContain("combined 000060 through 000086 rehearsal passed");
   });
 
   it("reproduces the trusted production pre-migration manifest", () => {
@@ -136,6 +219,52 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   });
 
   it("splits safe canonical fixtures from rollback-only legacy negatives", () => {
+    const negativeCases =
+      /function proveCanonicalLegacyReconciliationNegativeCases\(\) \{([\s\S]+?)\n\}\n\nfunction proveLateMigrationRollbackAndReplayMatrix/u.exec(
+        source,
+      )?.[1];
+    expect(negativeCases).toBeDefined();
+    const expectedFailures = [
+      ["unresolved", "database", "legacy_reconciliation_unresolved_intent"],
+      ["unexpired", "database", "legacy_reconciliation_lease_not_eligible"],
+      ["inventory_race", "database", "legacy_reconciliation_inventory_changed"],
+      ["ttl_crossing", "database", "legacy_reconciliation_lease_not_eligible"],
+      [
+        "unknown_status",
+        "preflight",
+        "legacy_reconciliation_intent_status_unclassified:new_state",
+      ],
+      [
+        "forged_digest",
+        "preflight",
+        "legacy_ambiguity_evidence_digest_invalid",
+      ],
+    ] as const;
+    const caseOffsets = expectedFailures.map(([name]) =>
+      negativeCases!.indexOf(`name: "${name}"`),
+    );
+    expect(caseOffsets).toEqual(
+      [...caseOffsets].sort((left, right) => left - right),
+    );
+    expect(caseOffsets.every((offset) => offset >= 0)).toBe(true);
+    for (const [
+      index,
+      [name, stage, expectedError],
+    ] of expectedFailures.entries()) {
+      const caseSource = negativeCases!.slice(
+        caseOffsets[index],
+        caseOffsets[index + 1] ?? negativeCases!.length,
+      );
+      expect(caseSource).toContain(`stage: "${stage}"`);
+      expect(caseSource).toContain(`error: "${expectedError}"`);
+      expect(caseSource).toContain(
+        `canonical_negative_${stage}_guard_observed:${name}:${expectedError}`,
+      );
+    }
+    expect(negativeCases?.match(/stage: "preflight"/gu)).toHaveLength(2);
+    expect(negativeCases?.match(/stage: "database"/gu)).toHaveLength(4);
+    expect(negativeCases?.match(/error: "/gu)).toHaveLength(6);
+    expect(negativeCases?.match(/^ {8}evidence:/gmu)).toHaveLength(6);
     expect(source).toContain("canonicalSuccess: true");
     expect(source).toContain("retainUnexpiredLease: true");
     expect(source).toContain('name: "inventory_race"');
@@ -155,8 +284,65 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toContain("transformSourceEvidence");
     expect(source).toContain("interval '100 milliseconds'");
     expect(source).toContain("SELECT pg_sleep(0.2)");
+    expect(negativeCases).toContain(
+      'error: "legacy_reconciliation_unresolved_intent"',
+    );
+    expect(negativeCases).toContain(
+      'error: "legacy_reconciliation_lease_not_eligible"',
+    );
+    expect(negativeCases).toContain(
+      'error: "legacy_reconciliation_inventory_changed"',
+    );
+    expect(negativeCases).toContain(
+      'error: "legacy_reconciliation_intent_status_unclassified:new_state"',
+    );
+    expect(negativeCases).toContain(
+      'error: "legacy_ambiguity_evidence_digest_invalid"',
+    );
+    expect(negativeCases).toContain(
+      'REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed"',
+    );
+    expect(negativeCases).not.toContain(
+      'REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open"',
+    );
+    expect(negativeCases).toContain(
+      'step === "deploy_migrations_and_converge_grants"',
+    );
+    expect(negativeCases).toContain(
+      'testCase.expectedFailure.stage === "database"',
+    );
+    expect(negativeCases).toContain("exactPreflightFailure");
+    expect(negativeCases).toContain("exactDatabaseFailure");
+    expect(negativeCases).toContain("error instanceof Error");
+    expect(negativeCases).toContain(
+      "error.message === testCase.expectedFailure.error",
+    );
+    expect(negativeCases).toContain(
+      "error.message === testCase.expectedFailure.evidence",
+    );
+    expect(negativeCases).toContain('rollback.permitState === "installed"');
+    expect(negativeCases).toContain("rollback.targetReceipt === null");
+    expect(negativeCases).toContain("rollback.committedTargetMigrations === 0");
     expect(source).toContain(
       "canonical replay did not return the immutable original receipt",
+    );
+  });
+
+  it("only accepts a negative subprocess failure with its exact guard evidence", () => {
+    const runner =
+      /function runRehearsalReleaseSubprocess\(step, command, args, options = \{\}\) \{([\s\S]+?)\n\}\n\nfunction markCanonicalRehearsalRoles/u.exec(
+        source,
+      )?.[1];
+    expect(runner).toBeDefined();
+    expect(runner).toContain("options.expectedFailure");
+    expect(runner).toContain("canonicalFailureSourceArgs");
+    expect(runner).toContain('["--file=-"]');
+    expect(runner).toContain("...canonicalFailureSourceArgs");
+    expect(runner).toContain("isExactPostgresGuardFailure(");
+    expect(runner).toContain("result,");
+    expect(runner).toContain("options.expectedFailure.guard");
+    expect(runner).toContain(
+      "throw new Error(options.expectedFailure.evidence)",
     );
   });
 
@@ -376,15 +562,37 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
-  it("proves runtime roles retain database access before cascade denial checks", () => {
-    expect(source).toContain('REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open"');
-    expect(source).toContain('releaseMigrationResult.aclGateState === "open"');
+  it("completes and replays against the trusted pre-activation catalog before runtime proofs", () => {
+    expect(
+      source.match(/REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed"/gu),
+    ).toHaveLength(3);
+    expect(source).toContain(
+      'releaseMigrationResult.aclGateState === "closed"',
+    );
+    expect(productionRehearsalSource).toMatch(
+      /const runReleaseMigrationPort[\s\S]+?REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed"/u,
+    );
+    expect(source).toContain(
+      "must complete against the trusted pre-activation catalog",
+    );
     expect(source).toContain(
       "must retain CONNECT before runtime cascade proofs",
     );
     expect(source).toContain(
       "has_database_privilege(${quoteLiteral(role)}, current_database(), 'CONNECT')",
     );
+    const replayIndex = source.indexOf(
+      "const replayMigrationResult = executeCanonicalReleaseMigration(",
+    );
+    const reopenIndex = source.indexOf(
+      "convergeRuntimePrivileges(providerAdmin);",
+    );
+    const runtimeProofIndex = source.indexOf(
+      "proveSuccessfulCombinedRelease(providerAdmin);",
+    );
+    expect(replayIndex).toBeGreaterThan(-1);
+    expect(reopenIndex).toBeGreaterThan(replayIndex);
+    expect(runtimeProofIndex).toBeGreaterThan(reopenIndex);
   });
 
   it("asserts the two locking guards' exact and distinct execution contracts", () => {
@@ -491,7 +699,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toContain(
       "discardRehearsalOnlyRolledBackMigrationHistory(providerAdmin)",
     );
-    expect(source).toContain('{ name: "unresolved"');
+    expect(source).toContain('name: "unresolved"');
     expect(source).toContain("retainUnexpiredLease: true");
     expect(source).toContain('rollback.permitState === "installed"');
     expect(source).toContain("rollback.committedTargetMigrations === 0");
@@ -534,11 +742,17 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(provisioning).toContain(
       "CREATE ROLE reviewrouter_release_migration LOGIN",
     );
+    expect(provisioning).toContain(
+      "CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
     expect(
       provisioning.indexOf("CREATE ROLE reviewrouter_release_migration LOGIN"),
-    ).toBeLessThan(
-      provisioning.indexOf('"external_activation_authority_provisioning"'),
-    );
+    ).toBeLessThan(provisioning.indexOf("installHistoricalSchema(bootstrap)"));
+    expect(
+      provisioning.indexOf(
+        "CREATE ROLE reviewrouter_release_schema_owner NOLOGIN",
+      ),
+    ).toBeLessThan(provisioning.indexOf("installHistoricalSchema(bootstrap)"));
     expect(provisioning).toContain(
       "GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
     );
@@ -691,6 +905,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         api: client("api"),
         web: client("web"),
         worker: client("worker"),
+        custody: client("custody"),
         effectAuthority: client("effect-authority"),
       },
     });
@@ -715,6 +930,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         runtime: {
           api: client("api"),
           web: client("web"),
+          custody: client("custody"),
           effectAuthority: client("effect-authority"),
         },
       }),

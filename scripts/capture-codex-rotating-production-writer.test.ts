@@ -153,7 +153,31 @@ describe("production-writer rollout observation capture", () => {
       functionsEnd,
     );
 
-    expect(codexRotatingFunctionBodyDigests).toHaveLength(22);
+    expect(codexRotatingFunctionBodyDigests.map(({ name }) => name)).toEqual([
+      "codex_oauth_authorize_runtime_completion",
+      "codex_oauth_authorize_runtime_confirmation",
+      "codex_oauth_authorize_setup_confirmation",
+      "codex_oauth_child_identity_fence_guard",
+      "codex_oauth_consume_database_authority",
+      "codex_oauth_database_authority_challenge",
+      "codex_oauth_database_authority_receipt_guard",
+      "codex_oauth_provider_identity_guard",
+      "codex_oauth_provider_identity_repair_challenge",
+      "codex_oauth_provider_identity_transition",
+      "codex_oauth_provider_mutation_transition_guard",
+      "codex_oauth_repair_quarantined_child",
+      "codex_oauth_repair_quarantined_provider",
+      "codex_oauth_repository_identity_guard",
+      "codex_oauth_runtime_referential_action_guard",
+      "codex_oauth_runtime_writeback_evidence_guard",
+      "codex_oauth_secret_namespace_tombstone_guard",
+      "codex_oauth_setup_attempt_evidence_guard",
+      "codex_oauth_setup_claim_evidence_guard",
+      "codex_oauth_setup_manifest_evidence_guard",
+      "codex_oauth_setup_recovery_evidence_guard",
+      "codex_oauth_sign_database_authority",
+      "hosted_codex_comment_token_authority_revoke_enqueue",
+    ]);
     expect(functionsSql).toContain("'bodySha256'");
     expect(functionsSql).toContain("'owner', owner.rolname");
     expect(functionsSql).toContain("p.prosrc");

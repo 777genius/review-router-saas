@@ -4,9 +4,12 @@ import type {
   ReviewExecutionQueryPort,
 } from "./review-execution-ports";
 import type { InvocationFlight } from "../../domain/invocation-flight";
+import type { ReviewExecutionScope } from "../../domain/review-execution";
 
 export interface InvocationFlightQueryPort {
-  observeActiveInvocationFlightByLane(input: {
+  observeActiveInvocationFlight(input: {
+    readonly scope: ReviewExecutionScope;
+    readonly providerInvocationKey: string;
     readonly providerVoteIdentityHash: string;
     readonly requestedAt: Date;
   }): Promise<

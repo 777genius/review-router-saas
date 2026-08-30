@@ -118,8 +118,12 @@ const serviceRoles = [
 ].sort();
 const reconnectRoles = [
   ...serviceRoles,
+  "reviewrouter_comment_token_custody",
   "reviewrouter_codex_effect_authority",
 ].sort();
+const targetCommentTokenCustodyUrl = required(
+  "REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL",
+);
 const targetEffectAuthorityUrl = required(
   "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
 );
@@ -149,6 +153,12 @@ const protectedSourceEnvironment = Object.fromEntries(
         ? {
             REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
               sourceUrls.reviewrouter_codex_effect_authority!,
+          }
+        : {}),
+      ...(item.databaseRole === "reviewrouter_api"
+        ? {
+            REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+              sourceUrls.reviewrouter_comment_token_custody!,
           }
         : {}),
     },
@@ -190,6 +200,12 @@ for (const expectation of serviceExpectations) {
       ? {
           REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
             targetEffectAuthorityUrl,
+        }
+      : {}),
+    ...(expectation.databaseRole === "reviewrouter_api"
+      ? {
+          REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+            targetCommentTokenCustodyUrl,
         }
       : {}),
     REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: rollout.expectedCommitSha,

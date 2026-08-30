@@ -90,6 +90,10 @@ type StreamRecord = {
   readonly startIdentityIndex: Map<string, string>;
 };
 
+export type InMemoryReviewExecutionStoreOptions = Readonly<{
+  providerScopeConcurrencyActivated?: boolean;
+}>;
+
 export class InMemoryReviewExecutionStore
   implements
     ReviewExecutionQueryPort,
@@ -154,6 +158,7 @@ export class InMemoryReviewExecutionStore
 
   constructor(
     private readonly fencingTokens: ReviewExecutionFencingTokenSourcePort = new MonotonicBigIntFencingTokenSource(),
+    private readonly options: InMemoryReviewExecutionStoreOptions = {},
   ) {}
 
   async findStream(
@@ -217,6 +222,47 @@ export class InMemoryReviewExecutionStore
       .sort((left, right) => left.leaseId.localeCompare(right.leaseId));
     if (incumbents.length > 1) {
       throw new Error("review_provider_lane_invariant_violated");
+    }
+    const lease = incumbents[0];
+    if (lease === undefined) {
+      return { flight: null, observedAt: new Date(input.requestedAt) };
+    }
+    const record = this.recordForExecution(lease.executionId);
+    const execution = record?.executions.get(lease.executionId);
+    const slot = execution?.workSlots.find(
+      (candidate) => candidate.workSlotId === lease.workSlotId,
+    );
+    if (execution === undefined || slot === undefined) {
+      throw new Error("invocation_flight_owner_aggregate_missing");
+    }
+    return {
+      flight: restoreInvocationFlight({ execution, slot, lease }),
+      observedAt: new Date(input.requestedAt),
+    };
+  }
+
+  async observeActiveInvocationFlight(input: {
+    readonly scope: ReviewExecutionScope;
+    readonly providerInvocationKey: string;
+    readonly providerVoteIdentityHash: string;
+    readonly requestedAt: Date;
+  }): Promise<Readonly<{ flight: InvocationFlight | null; observedAt: Date }>> {
+    if (!this.options.providerScopeConcurrencyActivated) {
+      return this.observeActiveInvocationFlightByLane(input);
+    }
+    await this.transactionTail;
+    const incumbents = [...this.leases.values()]
+      .filter(
+        (candidate) =>
+          scopeKey(candidate) === scopeKey(input.scope) &&
+          candidate.providerInvocationKey === input.providerInvocationKey &&
+          candidate.purpose ===
+            ReviewInvocationLeasePurpose.ProviderExecution &&
+          candidate.state === ReviewInvocationLeaseState.Active,
+      )
+      .sort((left, right) => left.leaseId.localeCompare(right.leaseId));
+    if (incumbents.length > 1) {
+      throw new Error("review_provider_invocation_invariant_violated");
     }
     const lease = incumbents[0];
     if (lease === undefined) {
@@ -453,12 +499,20 @@ export class InMemoryReviewExecutionStore
           (candidate) =>
             candidate.purpose ===
               ReviewInvocationLeasePurpose.ProviderExecution &&
-            candidate.providerVoteIdentityHash ===
-              command.providerVoteIdentityHash &&
+            (this.options.providerScopeConcurrencyActivated
+              ? scopeKey(candidate) === scopeKey(command.scope) &&
+                candidate.providerInvocationKey ===
+                  command.providerInvocationKey
+              : candidate.providerVoteIdentityHash ===
+                command.providerVoteIdentityHash) &&
             candidate.state === ReviewInvocationLeaseState.Active,
         );
         if (incumbents.length > 1) {
-          throw new Error("review_provider_lane_invariant_violated");
+          throw new Error(
+            this.options.providerScopeConcurrencyActivated
+              ? "review_provider_invocation_invariant_violated"
+              : "review_provider_lane_invariant_violated",
+          );
         }
         const incumbent = incumbents[0];
         const locallyExpiring =

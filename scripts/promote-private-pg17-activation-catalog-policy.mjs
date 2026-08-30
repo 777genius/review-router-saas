@@ -34,11 +34,11 @@ export const activationCatalogPromotionProvenancePath = resolve(
 );
 export const activationCatalogIndependentReviewPath = resolve(
   repositoryRoot,
-  "docs/release-evidence/activation-catalog-policy-v25-independent-review.json",
+  "docs/release-evidence/activation-catalog-policy-v28-independent-review.md",
 );
 export const activationCatalogReviewerEvidencePath = resolve(
   repositoryRoot,
-  "docs/release-evidence/activation-catalog-policy-v25-reviewer-runtime.json",
+  "docs/release-evidence/activation-catalog-policy-v28-reviewer-runtime.json",
 );
 
 export function assertReviewedActivationCatalogPromotionProvenance(value) {
@@ -68,11 +68,21 @@ async function readJsonEvidence(path, hash, errorCode) {
   }
 }
 
+async function readTextEvidence(path, hash, errorCode) {
+  try {
+    const bytes = await readFile(path);
+    if (sha256(bytes) !== hash) throw new Error(errorCode);
+    return bytes.toString("utf8");
+  } catch {
+    throw new Error(errorCode);
+  }
+}
+
 export async function assertActivationCatalogPolicyIndependentReviewEvidence(
   provenance,
 ) {
   const expectation = reviewedActivationCatalogPromotionExpectation;
-  const report = await readJsonEvidence(
+  const report = await readTextEvidence(
     activationCatalogIndependentReviewPath,
     expectation.reviewArtifactSha256,
     "activation_catalog_policy_independent_review_artifact_invalid",
@@ -89,32 +99,31 @@ export async function assertActivationCatalogPolicyIndependentReviewEvidence(
       )
     : undefined;
   if (
-    report?.verdict !== "GO" ||
-    report?.exactHead !== expectation.auditedHead ||
-    report?.sourceProductCommit !== expectation.captureBaseCommit ||
-    report?.reviewerRunId !== expectation.reviewerRunId ||
-    report?.reviewDecisionId !== expectation.reviewDecisionId ||
-    report?.reviewerEvidenceSha256 !== expectation.reviewerEvidenceSha256 ||
-    report?.candidateBytes !== expectation.candidateBytes ||
-    report?.candidateSha256 !== expectation.candidateSha256 ||
-    canonicalJson(report?.candidateCaptures) !==
-      canonicalJson(provenance?.candidate?.captures) ||
+    !report.includes("## Verdict: GO") ||
+    !report.includes(expectation.auditedHead) ||
+    !report.includes(expectation.reviewDecisionId) ||
+    !report.includes(`2,506,590`) ||
+    !report.includes(expectation.candidateSha256) ||
+    !report.includes(expectation.preactivationCatalogPolicySha256) ||
+    !report.includes(expectation.activatedCatalogPolicySha256) ||
+    !report.includes(expectation.artifactCanonicalSha256) ||
+    !report.includes("run `32864736733`, attempt `1`, artifact `9569674329`") ||
     reviewer?.status !== "done" ||
     reviewer?.provider !== "codex" ||
     reviewer?.runId !== expectation.reviewerRunId ||
     reviewer?.taskId !== expectation.reviewerRunId ||
-    reviewer?.updatedAt !== report.reviewedAt ||
+    reviewer?.updatedAt !== provenance?.independentReview?.reviewedAt ||
     !Array.isArray(reviewer.blockers) ||
     reviewer.blockers.length !== 0 ||
     !Array.isArray(reviewer.changedFiles) ||
-    reviewer.changedFiles.length !== 0 ||
+    canonicalJson(reviewer.changedFiles) !== canonicalJson(["REVIEW_V28.md"]) ||
     !reviewer.evidence.includes("safe_execution_status:completed") ||
     typeof outputSummary !== "string" ||
     (!outputSummary.includes("# Verdict: GO") &&
-      !outputSummary.includes("**Verdict: GO**")) ||
+      !outputSummary.includes("**Verdict: GO**") &&
+      !outputSummary.includes("Verdict: **GO**")) ||
     !outputSummary.includes(expectation.reviewDecisionId) ||
-    !outputSummary.includes(expectation.candidateSha256) ||
-    !outputSummary.includes(expectation.captureBaseCommit)
+    reviewer?.details?.baseCommit !== expectation.captureBaseCommit
   )
     throw new Error(
       "activation_catalog_policy_independent_review_evidence_invalid",

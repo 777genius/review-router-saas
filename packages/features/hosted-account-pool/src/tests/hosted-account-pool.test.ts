@@ -5,7 +5,6 @@ import {
   bindRepositoryToHostedPool,
   classifyFailoverEligibility,
   consumeCommentTokenRefreshCapability,
-  consumeHostedCommentTokenRefreshCapability,
   coolDownHostedAccount,
   createDefaultHostedAccountPool,
   enrollHostedPoolAccount,
@@ -18,6 +17,7 @@ import {
   importAndEnrollHostedCodexAccount,
   issueInvocationGrant,
   issueHostedPoolInvocationGrant,
+  normalizeExpiredHostedAccountCooldown,
   pauseHostedAccount,
   quarantineHostedAccount,
   recordProviderRequestFailure,
@@ -221,6 +221,31 @@ describe("hosted account pool domain", () => {
     });
     expect(cooled.availability.status).toBe("cooldown");
   });
+
+  it("normalizes only an expired cooldown and advances healthVersion once", () => {
+    const account = accountFixture("account-1", 1);
+    const cooled = coolDownHostedAccount(account, {
+      reason: "rate_limited",
+      now,
+      until: new Date(now.getTime() + 1_000),
+    });
+
+    expect(
+      normalizeExpiredHostedAccountCooldown(
+        cooled,
+        new Date(now.getTime() + 999),
+      ),
+    ).toBe(cooled);
+    expect(
+      normalizeExpiredHostedAccountCooldown(
+        cooled,
+        new Date(now.getTime() + 1_000),
+      ),
+    ).toMatchObject({
+      availability: { status: "healthy" },
+      healthVersion: cooled.healthVersion + 1,
+    });
+  });
 });
 
 describe("hosted credential enrollment boundary", () => {
@@ -284,11 +309,14 @@ describe("invocation-bounded relay grant", () => {
         repositoryId: repository,
         workspaceId: workspace,
         authority,
+        runtimeAuthzEpoch: 1n,
         budget: {
           expiresAt: new Date("2026-08-15T11:00:00.000Z"),
           maxRequests: 10,
           maxConcurrentRequests: 3,
           maxRequestBytes: 1024,
+          maxResponseBytes: 4096,
+          maxOutputTokens: 1024,
         },
         commentRefreshBudget: {
           expiresAt: new Date("2026-08-15T10:30:00.000Z"),
@@ -387,9 +415,6 @@ describe("invocation-bounded relay grant", () => {
               plaintextToken: "plaintext-comment-refresh-token",
               tokenHash: "sha256:comment-refresh-token-hash",
             };
-          },
-          async consume() {
-            throw new Error("not used");
           },
           async revoke() {
             throw new Error("not used");
@@ -594,47 +619,6 @@ describe("invocation-bounded relay grant", () => {
     ).toBe("revoked");
   });
 
-  it("replays a comment refresh idempotency key without consuming another use", async () => {
-    let stored = grantFixture([accountFixture("replay", 0)]);
-    const seen = new Set<string>();
-    const capabilities = {
-      async issue() {
-        throw new Error("not used");
-      },
-      async consume(
-        input: Parameters<
-          import("../index").CommentTokenRefreshCapabilityPort["consume"]
-        >[0],
-      ) {
-        if (seen.has(input.requestIdHash)) {
-          return { status: "replayed" as const, grant: stored };
-        }
-        seen.add(input.requestIdHash);
-        const result = input.transition(stored);
-        stored = result.grant;
-        return result;
-      },
-      async revoke() {
-        throw new Error("not used");
-      },
-    };
-    const input = {
-      grantId: stored.id,
-      presentedTokenHash: "a".repeat(64),
-      requestIdHash: "b".repeat(64),
-      now: new Date("2026-08-15T10:10:00.000Z"),
-    };
-    expect(
-      (await consumeHostedCommentTokenRefreshCapability(input, capabilities))
-        .status,
-    ).toBe("consumed");
-    expect(
-      (await consumeHostedCommentTokenRefreshCapability(input, capabilities))
-        .status,
-    ).toBe("replayed");
-    expect(stored.commentTokenRefreshCapability.useCount).toBe(1);
-  });
-
   it("makes repeated request admission idempotent", () => {
     const grant = grantFixture([accountFixture("shared", 0)]);
     const first = admitRelayRequest({
@@ -690,6 +674,7 @@ describe("invocation-bounded relay grant", () => {
         poolId,
         accounts: [accountFixture("scope", 0)],
         authority: grantAuthorityFixture(91),
+        runtimeAuthzEpoch: 1n,
         capabilityTokenHash: "sha256:scope-relay-capability",
         commentTokenRefreshCapability: {
           tokenHash: "sha256:scope-comment-capability",
@@ -706,6 +691,8 @@ describe("invocation-bounded relay grant", () => {
           maxRequests: 10,
           maxConcurrentRequests: 2,
           maxRequestBytes: 1024,
+          maxResponseBytes: 4096,
+          maxOutputTokens: 1024,
         },
         now,
       }),
@@ -1022,6 +1009,7 @@ function grantFixture(
     poolId,
     accounts,
     authority: grantAuthorityFixture(suffix),
+    runtimeAuthzEpoch: 1n,
     capabilityTokenHash: "sha256:fixture-capability-token-hash",
     commentTokenRefreshCapability: {
       tokenHash: "sha256:fixture-comment-refresh-hash",
@@ -1036,6 +1024,8 @@ function grantFixture(
     budget: {
       expiresAt: new Date("2026-08-15T11:00:00.000Z"),
       maxRequestBytes: 1024,
+      maxResponseBytes: 4096,
+      maxOutputTokens: 1024,
       ...budget,
     },
     now,

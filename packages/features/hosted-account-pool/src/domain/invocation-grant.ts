@@ -21,6 +21,8 @@ export type InvocationGrantBudget = {
   readonly maxRequests: number;
   readonly maxConcurrentRequests: number;
   readonly maxRequestBytes: number;
+  readonly maxResponseBytes: number;
+  readonly maxOutputTokens: number;
 };
 
 export type InvocationGrantAuthority = {
@@ -65,6 +67,7 @@ export type InvocationGrant = {
   readonly commentTokenRefreshCapability: CommentTokenRefreshCapability;
   /** Immutable trust-domain binding copied into the signed relay grant. */
   readonly authority: InvocationGrantAuthority;
+  readonly runtimeAuthzEpoch: bigint;
   readonly budget: InvocationGrantBudget;
   readonly admittedRequestIds: readonly RelayRequestId[];
   readonly inFlightRequestIds: readonly RelayRequestId[];
@@ -123,6 +126,12 @@ const budgetSchema = z
       .int()
       .min(1)
       .max(100 * 1024 * 1024),
+    maxResponseBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(100 * 1024 * 1024),
+    maxOutputTokens: z.number().int().min(1).max(100_000),
   })
   .strict();
 
@@ -149,6 +158,7 @@ export function issueInvocationGrant(input: {
   readonly poolId: HostedPoolId;
   readonly accounts: readonly HostedPoolAccount[];
   readonly authority: InvocationGrantAuthority;
+  readonly runtimeAuthzEpoch: bigint;
   readonly capabilityTokenHash: string;
   readonly commentTokenRefreshCapability: CommentTokenRefreshCapability;
   readonly budget: InvocationGrantBudget;
@@ -158,6 +168,10 @@ export function issueInvocationGrant(input: {
   const authority = authoritySchema.parse(
     input.authority,
   ) as InvocationGrantAuthority;
+  const runtimeAuthzEpoch = z
+    .bigint()
+    .positive()
+    .parse(input.runtimeAuthzEpoch);
   const capabilityTokenHash = z
     .string()
     .trim()
@@ -209,6 +223,7 @@ export function issueInvocationGrant(input: {
     capabilityTokenHash,
     commentTokenRefreshCapability,
     authority,
+    runtimeAuthzEpoch,
     budget,
     admittedRequestIds: [],
     inFlightRequestIds: [],
@@ -283,20 +298,29 @@ export type CommentTokenRefreshConsumption =
       readonly grant: InvocationGrant;
     };
 
+export function commentTokenRefreshCapabilityStatus(input: {
+  readonly expiresAt: Date;
+  readonly maxUses: number;
+  readonly useCount: number;
+  readonly revokedAt: Date | null;
+  readonly now: Date;
+}): "available" | "expired" | "revoked" | "budget_exhausted" {
+  if (input.revokedAt !== null) return "revoked";
+  if (input.now >= input.expiresAt) return "expired";
+  if (input.useCount >= input.maxUses) return "budget_exhausted";
+  return "available";
+}
+
 export function consumeCommentTokenRefreshCapability(input: {
   readonly grant: InvocationGrant;
   readonly now: Date;
 }): CommentTokenRefreshConsumption {
   const capability = input.grant.commentTokenRefreshCapability;
-  if (capability.revokedAt !== null) {
-    return { status: "revoked", grant: input.grant };
-  }
-  if (input.now >= capability.expiresAt) {
-    return { status: "expired", grant: input.grant };
-  }
-  if (capability.useCount >= capability.maxUses) {
-    return { status: "budget_exhausted", grant: input.grant };
-  }
+  const status = commentTokenRefreshCapabilityStatus({
+    ...capability,
+    now: input.now,
+  });
+  if (status !== "available") return { status, grant: input.grant };
   return {
     status: "consumed",
     grant: {

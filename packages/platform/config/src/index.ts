@@ -1,3 +1,4 @@
+import { createPublicKey } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isLoopbackHostname } from "@reviewrouter/shared";
 export { isLoopbackHostname } from "@reviewrouter/shared";
@@ -53,6 +54,14 @@ export const runtimeEnvSchema = z.object({
   REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: z.enum(["0", "1"]).default("0"),
+  REVIEW_ROUTER_HOSTED_CODEX_CANARY_FAULT_AUTHORITY_KEY_ID: z
+    .string()
+    .max(128)
+    .optional(),
+  REVIEW_ROUTER_HOSTED_CODEX_CANARY_FAULT_AUTHORITY_PUBLIC_KEY: z
+    .string()
+    .max(4_096)
+    .optional(),
   REVIEW_ROUTER_DEFAULT_MODEL: z.string().default("gpt-5.6-sol"),
   REVIEW_ROUTER_DEFAULT_EFFORT: z
     .enum(["low", "medium", "high", "xhigh", "max", "ultra"])
@@ -188,6 +197,30 @@ export function assertHostedCodexProductionReadiness(
     throw new Error("hosted_codex_runtime_role_invalid");
   }
   if (role === "worker") throw new Error("hosted_codex_worker_role_forbidden");
+  const canaryFaultConfig = [
+    input.REVIEW_ROUTER_HOSTED_CODEX_CANARY_FAULT_AUTHORITY_KEY_ID?.trim(),
+    input.REVIEW_ROUTER_HOSTED_CODEX_CANARY_FAULT_AUTHORITY_PUBLIC_KEY?.trim(),
+  ];
+  const [canaryFaultKeyId, canaryFaultPublicKey] = canaryFaultConfig;
+  if (Boolean(canaryFaultKeyId) !== Boolean(canaryFaultPublicKey))
+    throw new Error("hosted_codex_canary_fault_plan_config_incomplete");
+  if (canaryFaultConfig.some(Boolean)) {
+    if (role !== "api")
+      throw new Error("hosted_codex_canary_fault_plan_api_only");
+    if (
+      !canaryFaultKeyId ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.:-]{2,127}$/u.test(canaryFaultKeyId)
+    )
+      throw new Error("hosted_codex_canary_fault_authority_key_id_invalid");
+    try {
+      const key = createPublicKey(
+        canaryFaultPublicKey!.replaceAll("\\n", "\n"),
+      );
+      if (key.asymmetricKeyType !== "ed25519") throw new Error("wrong_type");
+    } catch {
+      throw new Error("hosted_codex_canary_fault_authority_public_key_invalid");
+    }
+  }
   resolveHostedPoolActionRelease(input);
   if (values[1] !== "1") return;
   if (

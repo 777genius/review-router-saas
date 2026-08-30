@@ -189,9 +189,9 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA release_authority FROM PUBLIC;`,
 
 export const rehearsalActivationCatalogPolicyAuthorization = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:36e6e4875c530beba1cb6bfc580a358d031895334e6af6a6bad193148e1beebe",
+    "sha256:b95cc2c1fdd94b64056f6d8cd9316d361dce87a8a6a8064c8db51db65a886e68",
   activatedCatalogPolicySha256:
-    "sha256:d0ccc9a760f69c467d3c9df56502704abb1f03116a2be156eb206100b35f5866",
+    "sha256:118834866426337911d13e47f2752f2f982c1393792668036e359b0062117c6f",
 });
 export const rehearsalReadinessPolicy = Object.freeze({
   poolWaitMilliseconds: 5_000,
@@ -288,6 +288,15 @@ const preReleaseMigrationBoundary = Object.freeze({
     "000076_hosted_codex_terminalization_restore_invariants",
     "000077_hosted_codex_r57_security_race_remediation",
     "000078_review_investigation_maintenance_checkpoint",
+    "000079_hosted_codex_output_limits",
+    "000079_remove_account_wide_provider_lane_serialization",
+    "000080_hosted_codex_attempt_generation",
+    "000081_hosted_codex_runtime_gate",
+    "000082_validate_hosted_codex_output_limits",
+    "000083_hosted_codex_comment_token_mint_protocol",
+    "000084_harden_comment_token_custody",
+    "000085_comment_token_gate_lock_result",
+    "000086_comment_token_custody_r18_remediation",
   ]),
 });
 
@@ -454,8 +463,16 @@ export async function runRehearsalReleaseMigration({
       migratedRollout.migrationTransition.postCatalogDigest
   )
     throw new Error("private_pg17_rehearsal_phase_transition_unproven");
+  if (captureOnly)
+    return Object.freeze({
+      mode: "capture-only",
+      candidate: await runStage(
+        "capture_activation_catalog_policy",
+        captureCandidate,
+      ),
+    });
   return routeRehearsalAfterReleaseMigration({
-    captureOnly,
+    captureOnly: undefined,
     captureCandidate,
     stageTargetServices: () => stageTargetServices(migratedRollout),
   });
@@ -544,7 +561,7 @@ function redactedErrorChain(error) {
 
 export function safeRehearsalStageErrorCode(error) {
   const message = error instanceof Error ? error.message : "";
-  return /^(?:private_pg17_rehearsal|release_rollout|runner_ledger|trusted_rollout)_[a-z0-9_]{2,160}$/u.test(
+  return /^(?:(?:private_pg17_rehearsal|release_rollout|runner_ledger|trusted_rollout)_[a-z0-9_]{2,160}|activation_catalog_policy_candidate_invalid:(?:preactivation|activated):(?:policy|roles|role-(?:shape|name|login|inherit|superuser|bypass-rls|replication|create-database|create-role|connection-limit|valid-until)|memberships|membership|reachability|row-security|row-security-policy|row-security-policy-order|row-security-order|extension|extension-order|grant|grant-order|effective-permissions|permission|permission-order|rehearsal-resource|unknown))$/u.test(
     message,
   )
     ? message
@@ -770,6 +787,11 @@ export const disposableSqlConfiguration = () => ({
       password: "disposable-worker",
     },
     {
+      role: "comment-token-custody",
+      username: "reviewrouter_comment_token_custody",
+      password: "disposable-custody",
+    },
+    {
       role: "effect-authority",
       username: "reviewrouter_codex_effect_authority",
       password: "disposable-effect",
@@ -788,6 +810,7 @@ export function disposablePg17TargetRoleFoundationSql({
 CREATE ROLE reviewrouter_api LOGIN PASSWORD 'disposable-api';
 CREATE ROLE reviewrouter_web LOGIN PASSWORD 'disposable-web';
 CREATE ROLE reviewrouter_worker LOGIN PASSWORD 'disposable-worker';
+CREATE ROLE reviewrouter_comment_token_custody LOGIN PASSWORD 'disposable-custody';
 CREATE ROLE reviewrouter_codex_effect_authority LOGIN PASSWORD 'disposable-effect';
 CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release';
 CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN;
@@ -816,6 +839,7 @@ ALTER SCHEMA public OWNER TO reviewrouter_role_bootstrap;
 GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 GRANT reviewrouter_web TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 GRANT reviewrouter_worker TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+GRANT reviewrouter_comment_token_custody TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 GRANT reviewrouter_codex_effect_authority TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 SET ROLE reviewrouter_role_bootstrap;
@@ -1606,9 +1630,13 @@ ROLLBACK;`,
         "reviewrouter_worker",
         configuration.roles[2].password,
       ),
+      REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL: url(
+        "reviewrouter_comment_token_custody",
+        configuration.roles[3].password,
+      ),
       REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: url(
         "reviewrouter_codex_effect_authority",
-        configuration.roles[3].password,
+        configuration.roles[4].password,
       ),
       REVIEW_ROUTER_RELEASE_COMMIT_SHA: "d".repeat(40),
       REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: sha256(sourceSnapshot),
@@ -2868,6 +2896,7 @@ COMMIT;
             "reviewrouter_api",
             "reviewrouter_web",
             "reviewrouter_worker",
+            "reviewrouter_comment_token_custody",
             "reviewrouter_codex_effect_authority",
           ],
           fence: {
@@ -3223,6 +3252,7 @@ COMMIT;
                 "reviewrouter_api",
                 "reviewrouter_web",
                 "reviewrouter_worker",
+                "reviewrouter_comment_token_custody",
                 "reviewrouter_codex_effect_authority",
               ],
               fence: {
@@ -3415,9 +3445,12 @@ COMMIT;
       const attestationNonce = rawSha256(
         `${identity}:${facts.targetSystemIdentifier}:${facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256}`,
       );
+      process.stderr.write("rehearsal_capture_substep_started:cleanup\n");
       cleanupCaptureOnlyRehearsalFixtures({
         executeSql: (statement) => facts.sql(facts.targetContainer, statement),
       });
+      process.stderr.write("rehearsal_capture_substep_completed:cleanup\n");
+      process.stderr.write("rehearsal_capture_substep_started:attestation\n");
       canonicalRun(
         "mark_disposable_activation_catalog_database",
         "psql",
@@ -3458,6 +3491,8 @@ END
 $attest_disposable_capture_database$;\n`,
         },
       );
+      process.stderr.write("rehearsal_capture_substep_completed:attestation\n");
+      process.stderr.write("rehearsal_capture_substep_started:projection\n");
       const stdout = canonicalRun(
         "capture_activation_catalog_policy_candidate",
         "psql",
@@ -3478,7 +3513,12 @@ $attest_disposable_capture_database$;\n`,
           ),
         },
       );
-      return parsePrivatePg17ActivationCatalogPolicyCandidate(stdout);
+      process.stderr.write("rehearsal_capture_substep_completed:projection\n");
+      process.stderr.write("rehearsal_capture_substep_started:validation\n");
+      const candidate =
+        parsePrivatePg17ActivationCatalogPolicyCandidate(stdout);
+      process.stderr.write("rehearsal_capture_substep_completed:validation\n");
+      return candidate;
     },
     stageTargetServices: (migratedRollout) =>
       runStage("stage_target_services", () =>

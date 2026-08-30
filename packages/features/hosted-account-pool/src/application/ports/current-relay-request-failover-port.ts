@@ -17,13 +17,24 @@ export interface CurrentRelayRequestFailoverPort {
     readonly grantId: InvocationGrantId;
     readonly requestId: RelayRequestId;
     readonly now: Date;
-    readonly effect?: {
-      readonly attemptId: string;
-      readonly ownerIdHash: string;
-      readonly fenceEpoch: bigint;
-      readonly terminalEvidenceHash: string;
-      readonly errorCode: string;
-    };
+    readonly effect?: Readonly<
+      {
+        attemptId: string;
+        ownerIdHash: string;
+        fenceEpoch: bigint;
+        terminalEvidenceHash: string;
+        errorCode: string;
+      } & (
+        | {
+            sourceState: "prepared";
+            terminalState: "failed_no_effect";
+          }
+        | {
+            sourceState: "response_started";
+            terminalState: "failed_classified";
+          }
+      )
+    >;
     readonly transition: (
       grant: InvocationGrant,
       failedAccount: HostedPoolAccount,
