@@ -145,7 +145,7 @@ candidate. Immutable capture, image, phase-digest, audited-HEAD, and final-revie
 evidence is recorded in the adjacent
 `activation-catalog-policy-provenance.json`. The immutable review report is
 stored under `docs/release-evidence/` and its byte SHA-256 is bound by provenance
-v3. The candidate's captured live-catalog digest is bound to the canonical
+v4. The candidate's captured live-catalog digest is bound to the canonical
 release-migration receipt. These files are the machine-readable source for the
 precise ready state; stale capture blockers are not retained after promotion.
 
@@ -172,10 +172,10 @@ size and SHA-256 before parsing, validates normalization, checks both reviewed
 phase digests and the canonical artifact digest, and writes only the fixed
 source-owned artifact path. Update both compact deployment digest
 authorizations and the disposable rehearsal authorization as part of the same
-release change. Promotion does not authorize deployment; the deployment state
-remains `HOLD` until a separate release decision. Never run candidate capture on
-a live database and never add capture, promotion, or drafting to the activation
-path.
+release change. Promotion does not by itself authorize deployment; deployment
+still requires the separately approved release process. Never run candidate
+capture on a live database and never add capture, promotion, or drafting to the
+activation path.
 
 Activation principal evidence uses a single-session staged transaction. The
 versioned `canonicalActivationCatalogPolicyArtifact` in the release-rollout

@@ -29,7 +29,7 @@ const expected: ActivationCatalogPolicyPromotionExpectation = {
 
 const ready = () => ({
   kind: "reviewrouter-activation-catalog-policy-promotion-provenance",
-  version: 3,
+  version: 4,
   status: "ready",
   readinessReason: expected.readinessReason,
   promotedAt: "2026-08-15T10:31:00.000Z",
@@ -67,6 +67,7 @@ const ready = () => ({
     preactivation: expected.preactivationCatalogPolicySha256,
     activated: expected.activatedCatalogPolicySha256,
     artifact: expected.artifactCanonicalSha256,
+    liveCatalogDigest: expected.liveCatalogDigest,
   },
   independentReview: {
     result: "GO",
@@ -79,7 +80,6 @@ const ready = () => ({
     reviewerEvidenceSha256: expected.reviewerEvidenceSha256,
     candidateBytes: expected.candidateBytes,
     candidateSha256: expected.candidateSha256,
-    liveCatalogDigest: expected.liveCatalogDigest,
     postgresImages: {
       sourcePg16: expected.sourcePg16Image,
       targetPg17: expected.targetPg17Image,
@@ -88,6 +88,7 @@ const ready = () => ({
       preactivation: expected.preactivationCatalogPolicySha256,
       activated: expected.activatedCatalogPolicySha256,
       artifact: expected.artifactCanonicalSha256,
+      liveCatalogDigest: expected.liveCatalogDigest,
     },
   },
 });
@@ -106,6 +107,48 @@ describe("activation catalog policy promotion provenance", () => {
   });
 
   it.each([
+    [
+      "legacy schema v3",
+      (value: ReturnType<typeof ready>) => {
+        value.version = 3;
+      },
+    ],
+    [
+      "candidate live catalog digest drift",
+      (value: ReturnType<typeof ready>) => {
+        value.candidate.liveCatalogDigest = `sha256:${"0".repeat(64)}`;
+      },
+    ],
+    [
+      "malformed candidate live catalog digest",
+      (value: ReturnType<typeof ready>) => {
+        value.candidate.liveCatalogDigest = "not-a-sha256";
+      },
+    ],
+    [
+      "top-level live catalog digest drift",
+      (value: ReturnType<typeof ready>) => {
+        value.canonicalDigests.liveCatalogDigest = `sha256:${"0".repeat(64)}`;
+      },
+    ],
+    [
+      "independent-review live catalog digest drift",
+      (value: ReturnType<typeof ready>) => {
+        value.independentReview.canonicalDigests.liveCatalogDigest = `sha256:${"0".repeat(64)}`;
+      },
+    ],
+    [
+      "malformed top-level live catalog digest",
+      (value: ReturnType<typeof ready>) => {
+        value.canonicalDigests.liveCatalogDigest = `sha256:${"A".repeat(64)}`;
+      },
+    ],
+    [
+      "malformed independent-review canonical digest",
+      (value: ReturnType<typeof ready>) => {
+        value.independentReview.canonicalDigests.artifact = "not-a-sha256";
+      },
+    ],
     [
       "audited head drift",
       (value: ReturnType<typeof ready>) => {
@@ -140,12 +183,6 @@ describe("activation catalog policy promotion provenance", () => {
       "candidate drift",
       (value: ReturnType<typeof ready>) => {
         value.independentReview.candidateSha256 = "0".repeat(64);
-      },
-    ],
-    [
-      "live catalog digest drift",
-      (value: ReturnType<typeof ready>) => {
-        value.independentReview.liveCatalogDigest = `sha256:${"0".repeat(64)}`;
       },
     ],
     [

@@ -10,6 +10,8 @@ import {
   reviewedActivationCatalogCandidate,
 } from "./promote-private-pg17-activation-catalog-policy.mjs";
 import canonicalActivationCatalogPolicyArtifact from "../packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js";
+import { assertActivationCatalogLiveDigestTransitionBinding } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation";
+import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
 
 describe("activation catalog policy promotion", () => {
   it("pins the exact reviewed v29 candidate and operator opt-in", () => {
@@ -101,6 +103,21 @@ describe("activation catalog policy promotion", () => {
         { ...reviewedActivationCatalogCandidate, liveCatalogDigest },
       ),
     ).not.toThrow();
+  });
+
+  it("fails closed when the candidate and migration transition digests diverge", () => {
+    expect(() =>
+      assertActivationCatalogLiveDigestTransitionBinding(
+        reviewedActivationCatalogCandidate.liveCatalogDigest,
+        canonicalReleaseMigrationArtifact.postCatalogDigest,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertActivationCatalogLiveDigestTransitionBinding(
+        reviewedActivationCatalogCandidate.liveCatalogDigest,
+        `sha256:${"f".repeat(64)}`,
+      ),
+    ).toThrow("activation_catalog_policy_live_digest_transition_drift");
   });
 
   it("refuses promotion without exact independent GO evidence", () => {

@@ -1675,26 +1675,113 @@ describePg17(
     );
 
     it(
-      "recomputes the live V70-V72 digest through the fenced installer connection",
-      isolatedCase(
-        "fenced-v70-v72-digest",
-        () => {},
-        ({ psqlAs: runAs }) => {
-          const canonicalDigest = runAs(
-            installerUsername,
-            fencedLiveV70V72CatalogDigestSql,
-          );
-          expect(canonicalDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
-          runAs(
-            adversarialAdminUsername,
-            `ALTER FUNCTION public.reviewrouter_answer_runtime_canary_challenge(
-             text,text,text,text,text,text) SECURITY INVOKER;`,
-          );
-          expect(
-            runAs(installerUsername, fencedLiveV70V72CatalogDigestSql),
-          ).not.toBe(canonicalDigest);
-        },
-      ),
+      "keeps forbidden witness writes visible while canonical ACL activation is digest-stable",
+      (() => {
+        let evidence:
+          | {
+              baselineDigest: string;
+              activatedDigest: string;
+              alternativeGrantorBaseline: string;
+              alternativeGrantorDigest: string;
+              alternativeGrantorEntry: string;
+              forbiddenWriteDigest: string;
+            }
+          | undefined;
+        return isolatedCase(
+          "fenced-v70-v72-digest",
+          () => {
+            expect(evidence?.baselineDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+            expect(evidence?.forbiddenWriteDigest).not.toBe(
+              evidence?.baselineDigest,
+            );
+            expect(evidence?.alternativeGrantorEntry).toBe(
+              "reviewrouter_api=a/rr_digest_alt_grantor",
+            );
+            expect(evidence?.alternativeGrantorDigest).not.toBe(
+              evidence?.alternativeGrantorBaseline,
+            );
+            expect(evidence?.activatedDigest).toBe(evidence?.baselineDigest);
+          },
+          (context) => {
+            const baselineDigest = context.psqlAs(
+              installerUsername,
+              fencedLiveV70V72CatalogDigestSql,
+            );
+            context.psqlAs(
+              adversarialAdminUsername,
+              `GRANT INSERT ON TABLE public."RuntimeGenerationWitnessProof"
+                 TO reviewrouter_api;`,
+            );
+            const forbiddenWriteDigest = context.psqlAs(
+              installerUsername,
+              fencedLiveV70V72CatalogDigestSql,
+            );
+            context.psqlAs(
+              adversarialAdminUsername,
+              `REVOKE INSERT ON TABLE public."RuntimeGenerationWitnessProof"
+                 FROM reviewrouter_api;
+               CREATE ROLE rr_digest_alt_grantor NOLOGIN;
+               GRANT INSERT ON TABLE public."HostedCodexCommentRefreshUse"
+                 TO rr_digest_alt_grantor WITH GRANT OPTION;`,
+            );
+            const alternativeGrantorBaseline = context.psqlAs(
+              installerUsername,
+              fencedLiveV70V72CatalogDigestSql,
+            );
+            context.psqlAs(
+              adversarialAdminUsername,
+              `SET ROLE rr_digest_alt_grantor;
+               GRANT INSERT ON TABLE public."HostedCodexCommentRefreshUse"
+                 TO reviewrouter_api;
+               RESET ROLE;`,
+            );
+            const alternativeGrantorDigest = context.psqlAs(
+              installerUsername,
+              fencedLiveV70V72CatalogDigestSql,
+            );
+            const alternativeGrantorEntry = context.psqlAs(
+              installerUsername,
+              `SELECT acl::text
+               FROM pg_class relation
+               CROSS JOIN LATERAL unnest(relation.relacl) acl
+               WHERE relation.oid='public."HostedCodexCommentRefreshUse"'::regclass
+                 AND acl::text='reviewrouter_api=a/rr_digest_alt_grantor';`,
+            );
+            context.psqlAs(
+              adversarialAdminUsername,
+              `SET ROLE rr_digest_alt_grantor;
+               REVOKE INSERT ON TABLE public."HostedCodexCommentRefreshUse"
+                 FROM reviewrouter_api;
+               RESET ROLE;
+               REVOKE INSERT ON TABLE public."HostedCodexCommentRefreshUse"
+                 FROM rr_digest_alt_grantor;
+               DROP ROLE rr_digest_alt_grantor;
+               GRANT EXECUTE ON FUNCTION reviewrouter_activation.apply_runtime_acl()
+                 TO reviewrouter_release_migration;`,
+            );
+            context.psqlAs(
+              releaseUsername,
+              "SELECT reviewrouter_activation.apply_runtime_acl();",
+            );
+            context.psqlAs(
+              adversarialAdminUsername,
+              `REVOKE EXECUTE ON FUNCTION reviewrouter_activation.apply_runtime_acl()
+                 FROM reviewrouter_release_migration;`,
+            );
+            evidence = {
+              alternativeGrantorBaseline,
+              alternativeGrantorDigest,
+              alternativeGrantorEntry,
+              activatedDigest: context.psqlAs(
+                installerUsername,
+                fencedLiveV70V72CatalogDigestSql,
+              ),
+              baselineDigest,
+              forbiddenWriteDigest,
+            };
+          },
+        );
+      })(),
       120_000,
     );
 
@@ -1870,6 +1957,10 @@ printf 'hostile_mutator_excluded\n'`,
     it(
       "applies runtime grants only inside a permit-guarded activation call",
       isolatedCase("permit-guarded-runtime-acl", (context) => {
+        const preactivationDigest = context.psqlAs(
+          installerUsername,
+          fencedLiveV70V72CatalogDigestSql,
+        );
         const before = context.psqlAs(
           adminUsername,
           runtimeAclAuthoritySnapshotSql,
@@ -1919,6 +2010,9 @@ printf 'hostile_mutator_excluded\n'`,
         ) as { firstWriteBoundary: boolean; rolloutId: string };
         expect(receipt.rolloutId).toBe("permit-guarded-runtime-acl");
         expect(receipt.firstWriteBoundary).toBe(true);
+        expect(
+          context.psqlAs(installerUsername, fencedLiveV70V72CatalogDigestSql),
+        ).toBe(preactivationDigest);
         expect(
           context.psqlAs(
             adminUsername,

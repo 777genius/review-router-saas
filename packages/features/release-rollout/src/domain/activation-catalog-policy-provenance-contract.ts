@@ -71,7 +71,7 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
       ]) ||
       value.kind !==
         "reviewrouter-activation-catalog-policy-promotion-provenance" ||
-      value.version !== 3 ||
+      value.version !== 4 ||
       value.status !== "ready" ||
       value.readinessReason !== expected.readinessReason ||
       !validTimestamp(value.promotedAt) ||
@@ -108,11 +108,22 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
       typeof images.targetPg17 !== "string" ||
       !image.test(images.sourcePg16) ||
       !image.test(images.targetPg17) ||
-      !exactRecord(digests, ["preactivation", "activated", "artifact"]) ||
+      !exactRecord(digests, [
+        "preactivation",
+        "activated",
+        "artifact",
+        "liveCatalogDigest",
+      ]) ||
       digests.preactivation !== expected.preactivationCatalogPolicySha256 ||
       digests.activated !== expected.activatedCatalogPolicySha256 ||
       digests.artifact !== expected.artifactCanonicalSha256 ||
-      ![digests.preactivation, digests.activated, digests.artifact].every(
+      digests.liveCatalogDigest !== candidate.liveCatalogDigest ||
+      ![
+        digests.preactivation,
+        digests.activated,
+        digests.artifact,
+        digests.liveCatalogDigest,
+      ].every(
         (digest) => typeof digest === "string" && prefixedSha256.test(digest),
       )
     )
@@ -162,7 +173,6 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
         "reviewerEvidenceSha256",
         "candidateBytes",
         "candidateSha256",
-        "liveCatalogDigest",
         "postgresImages",
         "canonicalDigests",
       ]) ||
@@ -183,7 +193,6 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
       !sha256.test(review.reviewerEvidenceSha256) ||
       review.candidateBytes !== candidate.bytes ||
       review.candidateSha256 !== candidate.sha256 ||
-      review.liveCatalogDigest !== candidate.liveCatalogDigest ||
       !exactRecord(review.postgresImages, ["sourcePg16", "targetPg17"]) ||
       review.postgresImages.sourcePg16 !== images.sourcePg16 ||
       review.postgresImages.targetPg17 !== images.targetPg17 ||
@@ -191,10 +200,20 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
         "preactivation",
         "activated",
         "artifact",
+        "liveCatalogDigest",
       ]) ||
       review.canonicalDigests.preactivation !== digests.preactivation ||
       review.canonicalDigests.activated !== digests.activated ||
-      review.canonicalDigests.artifact !== digests.artifact
+      review.canonicalDigests.artifact !== digests.artifact ||
+      review.canonicalDigests.liveCatalogDigest !== digests.liveCatalogDigest ||
+      ![
+        review.canonicalDigests.preactivation,
+        review.canonicalDigests.activated,
+        review.canonicalDigests.artifact,
+        review.canonicalDigests.liveCatalogDigest,
+      ].every(
+        (digest) => typeof digest === "string" && prefixedSha256.test(digest),
+      )
     )
       return blocked("activation-catalog-policy-independent-review-invalid");
 

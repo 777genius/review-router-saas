@@ -1,4 +1,13 @@
 import { type ActivationCatalogPolicyPromotionExpectation } from "./activation-catalog-policy-provenance-contract";
+import { canonicalReleaseMigrationArtifact } from "./release-migration-transition";
+
+export function assertActivationCatalogLiveDigestTransitionBinding(
+  candidateLiveCatalogDigest: string,
+  postCatalogDigest: string,
+): void {
+  if (candidateLiveCatalogDigest !== postCatalogDigest)
+    throw new Error("activation_catalog_policy_live_digest_transition_drift");
+}
 
 export const activationCatalogPromotionOptIn =
   "promote-reviewed-activation-catalog-v29";
@@ -15,6 +24,11 @@ export const reviewedActivationCatalogCandidate = Object.freeze({
   artifactCanonicalSha256:
     "sha256:5d7a98bf13e65ab8071691086efb792699b994961caadf435ee9fd4845c2f1cf",
 });
+
+assertActivationCatalogLiveDigestTransitionBinding(
+  reviewedActivationCatalogCandidate.liveCatalogDigest,
+  canonicalReleaseMigrationArtifact.postCatalogDigest,
+);
 
 export const reviewedActivationCatalogPromotionExpectation = Object.freeze({
   readinessReason:
