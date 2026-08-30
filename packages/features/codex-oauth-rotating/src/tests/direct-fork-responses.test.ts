@@ -486,6 +486,26 @@ describe("direct certified fork Responses client", () => {
         }),
       ).toThrow("certified_fork_model_output_path_invalid");
     }
+    for (const maliciousPath of [
+      "src/`mention`.ts",
+      "src/control\u0007.ts",
+      "src/delete\u007f.ts",
+      "src/bidi\u202e.ts",
+      "src/isolate\u2066.ts",
+    ]) {
+      expect(() =>
+        validateCertifiedForkModelOutputForPrompt({
+          modelOutput: {
+            ...output,
+            findings: [{ ...output.findings[0]!, path: maliciousPath }],
+          },
+          promptPacket: {
+            ...promptPacket(),
+            files: [{ ...promptPacket().files[0]!, path: maliciousPath }],
+          },
+        }),
+      ).toThrow("certified_fork_model_output_path_invalid");
+    }
   });
 
   it("enforces the 200000-byte per-file patch limit", () => {

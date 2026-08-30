@@ -254,6 +254,10 @@ function isSafeCertifiedForkPath(path: string): boolean {
   return (
     !path.startsWith("/") &&
     !path.includes("\\") &&
+    !path.includes("`") &&
+    // Exact server canonical deny-list for terminal/control and bidi controls.
+    // eslint-disable-next-line no-control-regex
+    !/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u.test(path) &&
     !path
       .split("/")
       .some((part) => part === "" || part === "." || part === "..")
