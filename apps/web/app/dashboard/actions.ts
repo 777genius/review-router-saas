@@ -65,6 +65,7 @@ import {
   OctokitWorkflowSetupGateway,
   preferredSetupBaseBranches,
   PrismaWorkflowProvisioningRepository,
+  PrismaWorkflowProvisioningStatusAuthority,
   PrismaWorkflowProvisioningTarget,
   provisionRepositoryReviewRouterWorkflow,
   provisionHostedPoolRepositoryWorkflow,
@@ -3290,36 +3291,9 @@ async function markRepositoryWorkflowConfigured(input: {
   readonly setupBranch: string | null;
   readonly pullRequestNumber: number | null;
 }): Promise<void> {
-  const provisioningWhere =
-    input.setupBranch || input.pullRequestNumber
-      ? {
-          repositoryId: input.repositoryId,
-          status: "setup_pr_open" as const,
-          OR: [
-            ...(input.setupBranch ? [{ branch: input.setupBranch }] : []),
-            ...(input.pullRequestNumber
-              ? [
-                  {
-                    pullRequestUrl: {
-                      endsWith: `/pull/${input.pullRequestNumber}`,
-                    },
-                  },
-                ]
-              : []),
-          ],
-        }
-      : {
-          repositoryId: input.repositoryId,
-          status: "setup_pr_open" as const,
-        };
-
-  await input.prisma.workflowProvisioning.updateMany({
-    where: provisioningWhere,
-    data: {
-      status: "configured",
-      errorMessage: null,
-    },
-  });
+  await new PrismaWorkflowProvisioningStatusAuthority(
+    input.prisma,
+  ).assertConfigured(input);
 }
 
 async function markRepositoryWorkflowSetupNeedsAttention(input: {
@@ -3332,36 +3306,9 @@ async function markRepositoryWorkflowSetupNeedsAttention(input: {
     | "setup_pr_branch_deleted"
     | "setup_pr_wrong_base_branch";
 }): Promise<void> {
-  const provisioningWhere =
-    input.setupBranch || input.pullRequestNumber
-      ? {
-          repositoryId: input.repositoryId,
-          status: "setup_pr_open" as const,
-          OR: [
-            ...(input.setupBranch ? [{ branch: input.setupBranch }] : []),
-            ...(input.pullRequestNumber
-              ? [
-                  {
-                    pullRequestUrl: {
-                      endsWith: `/pull/${input.pullRequestNumber}`,
-                    },
-                  },
-                ]
-              : []),
-          ],
-        }
-      : {
-          repositoryId: input.repositoryId,
-          status: "setup_pr_open" as const,
-        };
-
-  await input.prisma.workflowProvisioning.updateMany({
-    where: provisioningWhere,
-    data: {
-      status: "failed",
-      errorMessage: input.reason,
-    },
-  });
+  await new PrismaWorkflowProvisioningStatusAuthority(
+    input.prisma,
+  ).assertFailed(input);
 }
 
 function pullRequestNumberFromUrl(url: string): number | null {

@@ -1,5 +1,6 @@
 import type { GitHubPullRequestWebhookEnvelope } from "@reviewrouter/features-github-installations";
 import type { PrismaClient } from "@reviewrouter/platform-db";
+import { PrismaWorkflowProvisioningStatusAuthority } from "@reviewrouter/features-workflow-provisioning";
 
 export class PrismaSetupPullRequestMergeHandler {
   constructor(private readonly prisma: PrismaClient) {}
@@ -38,34 +39,15 @@ export class PrismaSetupPullRequestMergeHandler {
 
     const pullRequestNumber = payload.pull_request.number;
     const setupBranch = payload.pull_request.head.ref;
-    const result = await this.prisma.$transaction(async (tx) => {
-      const provisioning = await tx.workflowProvisioning.findFirst({
-        where: {
-          repositoryId: repository.id,
-          status: "setup_pr_open",
-          OR: [
-            { branch: setupBranch },
-            { pullRequestUrl: { endsWith: `/pull/${pullRequestNumber}` } },
-          ],
-        },
-        select: { id: true },
-      });
-
-      if (!provisioning) {
-        return { matched: false };
-      }
-
-      await tx.workflowProvisioning.update({
-        where: { id: provisioning.id },
-        data: {
-          status: "configured",
-          errorMessage: null,
-        },
-      });
-      return { matched: true };
+    const matched = await new PrismaWorkflowProvisioningStatusAuthority(
+      this.prisma,
+    ).markConfigured({
+      repositoryId: repository.id,
+      setupBranch,
+      pullRequestNumber,
     });
 
-    return result.matched
+    return matched
       ? {
           processed: true,
           repository: repository.fullName,
