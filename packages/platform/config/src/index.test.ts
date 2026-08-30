@@ -7,6 +7,7 @@ import {
   isCodexForkReviewV5AllowedForRepository,
   isCodexRotatingOAuthAllowedForWorkspaceDefault,
   isCodexRotatingOAuthEnabled,
+  isCodexZeroLoginRolloverPrepareEnabled,
   isConflictReviewFallbackAllowedForRepository,
   isConflictReviewFallbackEnabled,
   isClaudeCodeProviderEnabled,
@@ -511,6 +512,22 @@ describe("platform config", () => {
     expect(() =>
       parseCodexForkReviewV5RepositoryAllowlist("../bad/repo"),
     ).toThrow("invalid_env:REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES");
+  });
+
+  it("keeps zero-login rollover prepare behind an independent global kill switch", () => {
+    expect(
+      isCodexZeroLoginRolloverPrepareEnabled({} as NodeJS.ProcessEnv),
+    ).toBe(false);
+    expect(
+      isCodexZeroLoginRolloverPrepareEnabled({
+        REVIEW_ROUTER_ENABLE_CODEX_ZERO_LOGIN_ROLLOVER: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(
+      isCodexZeroLoginRolloverPrepareEnabled({
+        REVIEW_ROUTER_ENABLE_CODEX_ZERO_LOGIN_ROLLOVER: "0",
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
   });
 
   it("keeps hosted Codex pool behind an explicit rollback-safe gate", () => {

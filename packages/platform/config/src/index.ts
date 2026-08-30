@@ -49,6 +49,9 @@ export const runtimeEnvSchema = z.object({
   REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER: z.enum(["0", "1"]).default("1"),
   REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES: z.string().default(""),
+  REVIEW_ROUTER_ENABLE_CODEX_ZERO_LOGIN_ROLLOVER: z
+    .enum(["0", "1"])
+    .default("0"),
   REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES: z.string().default(""),
   REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: z.enum(["0", "1"]).default("0"),
@@ -569,6 +572,18 @@ export function parseCodexRotatingOAuthRepositoryAllowlist(
     value,
     "REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES",
   );
+}
+
+/**
+ * Global emergency brake for preparing a new zero-login namespace rollover.
+ * Durable post-PUT recovery and activation deliberately do not consult it:
+ * stopping those phases would strand a confirmed candidate and stale active
+ * auth behind an unreleased repository mutation fence.
+ */
+export function isCodexZeroLoginRolloverPrepareEnabled(
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return input.REVIEW_ROUTER_ENABLE_CODEX_ZERO_LOGIN_ROLLOVER === "1";
 }
 
 /**

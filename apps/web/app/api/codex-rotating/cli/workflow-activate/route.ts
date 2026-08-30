@@ -4,21 +4,43 @@ import {
   assertWorkspaceFeatureEntitlement,
   PrismaEntitlementRepository,
 } from "@reviewrouter/features-entitlements";
+import {
+  PrismaCodexRotatingOAuthRepository,
+  PrismaCodexZeroLoginRolloverLedger,
+} from "@reviewrouter/features-action-control-plane";
+import {
+  requireReviewRouterDatabaseRecoveryWitness,
+  resolveReviewRouterCodexRotatingActionRef,
+  resolveReviewRouterCodexRotatingTrustedActionRefs,
+  REVIEW_ROUTER_ACTION_REPOSITORY,
+} from "@reviewrouter/platform-config";
 import { activateConfirmedCodexNamespaceAfterWorkflowMerge } from "../../../../../src/server/codex-rotating-workflow-activation";
 import { createGitHubAppInstallationOctokit } from "../../../../../src/server/dashboard-mutations";
 import { createDashboardRateLimitPolicy } from "../../../../../src/server/dashboard-rate-limits";
 import { authorizeGitHubCliRepository } from "../../../../../src/server/github-cli-repository-authorization";
-import { getPrisma } from "../../../../../src/server/prisma";
+import {
+  getCodexEffectAuthorityPrisma,
+  getPrisma,
+} from "../../../../../src/server/prisma";
 import { resolveWorkflowPublicApiUrl } from "../../../../../src/server/workflow-public-api-url";
 
-const requestSchema = z
+const repositorySchema = z
   .object({
     repository: z
       .string()
       .max(256)
       .regex(/^(?!\.+\/)[A-Za-z0-9_.-]+\/(?!\.+$)[A-Za-z0-9_.-]+$/),
-  })
-  .strict();
+  });
+const requestSchema = z.union([
+  repositorySchema
+    .extend({
+      rolloverOperationId: z.string().min(1).max(256),
+      expectedNamespaceEpoch: z.string().regex(/^[1-9][0-9]*$/u),
+      expectedDefaultHeadSha: z.string().regex(/^[a-f0-9]{40}$/u),
+    })
+    .strict(),
+  repositorySchema.strict(),
+]);
 
 export async function POST(request: Request): Promise<NextResponse> {
   try {
@@ -79,6 +101,15 @@ export async function POST(request: Request): Promise<NextResponse> {
     const octokit = await createGitHubAppInstallationOctokit(
       repository.installation.githubInstallationId.toString(),
     );
+    const zeroLoginRollover =
+      "rolloverOperationId" in body
+        ? createZeroLoginRolloverActivation({
+            prisma,
+            operationId: body.rolloverOperationId,
+            expectedNamespaceEpoch: BigInt(body.expectedNamespaceEpoch),
+            expectedDefaultHeadSha: body.expectedDefaultHeadSha,
+          })
+        : undefined;
     const result = await activateConfirmedCodexNamespaceAfterWorkflowMerge({
       prisma,
       octokit,
@@ -90,6 +121,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       defaultBranch: repository.defaultBranch,
       expectedRepositoryFullName: repository.fullName,
       expectedApiUrl: resolveWorkflowPublicApiUrl(),
+      ...(zeroLoginRollover ? { zeroLoginRollover } : {}),
     });
     if (result.status === "not_configured") {
       throw new Error("codex_rotating_not_enabled");
@@ -107,6 +139,40 @@ export async function POST(request: Request): Promise<NextResponse> {
       },
     );
   }
+}
+
+function createZeroLoginRolloverActivation(input: {
+  prisma: ReturnType<typeof getPrisma>;
+  operationId: string;
+  expectedNamespaceEpoch: bigint;
+  expectedDefaultHeadSha: string;
+}) {
+  const databaseRecoveryWitness =
+    requireReviewRouterDatabaseRecoveryWitness();
+  const actionRef = resolveReviewRouterCodexRotatingActionRef();
+  const runtimeWritebacks = new PrismaCodexRotatingOAuthRepository(
+    input.prisma,
+    {
+      actionRef,
+      allowedActionRefs: resolveReviewRouterCodexRotatingTrustedActionRefs(),
+      actionOwnerRepo: REVIEW_ROUTER_ACTION_REPOSITORY,
+      databaseRecoveryWitness,
+      databaseEffectAuthority: getCodexEffectAuthorityPrisma(),
+    },
+  );
+  return {
+    operationId: input.operationId,
+    expectedNamespaceEpoch: input.expectedNamespaceEpoch,
+    expectedDefaultHeadSha: input.expectedDefaultHeadSha,
+    ledger: new PrismaCodexZeroLoginRolloverLedger(
+      input.prisma,
+      runtimeWritebacks,
+      {
+        actionOwnerRepo: REVIEW_ROUTER_ACTION_REPOSITORY,
+        databaseRecoveryWitness,
+      },
+    ),
+  };
 }
 
 function readBearerToken(request: Request): string {
@@ -148,6 +214,19 @@ function safeErrorCode(error: unknown): string {
     "codex_rotating_workflow_default_head_changed",
     "codex_rotating_setup_activation_mismatch",
     "codex_rotating_setup_activation_stale_epoch",
+    "zero_login_rollover_activation_request_invalid",
+    "zero_login_rollover_not_found",
+    "zero_login_rollover_repository_mismatch",
+    "zero_login_rollover_namespace_epoch_mismatch",
+    "zero_login_rollover_activation_not_ready",
+    "zero_login_rollover_setup_pr_evidence_missing",
+    "zero_login_rollover_expected_default_head_mismatch",
+    "zero_login_rollover_target_action_mismatch",
+    "zero_login_rollover_v5_disabled_for_repository",
+    "zero_login_rollover_setup_pr_not_exactly_merged",
+    "zero_login_rollover_activation_namespace_mismatch",
+    "zero_login_rollover_activation_state_invalid",
+    "zero_login_rollover_activation_stale_epoch",
   ]);
   if (allowed.has(code)) return code;
 
@@ -211,7 +290,11 @@ function statusForError(code: string): number {
   ) {
     return 502;
   }
-  if (code.startsWith("codex_rotating_") || code.startsWith("codex_oauth_")) {
+  if (
+    code.startsWith("codex_rotating_") ||
+    code.startsWith("codex_oauth_") ||
+    code.startsWith("zero_login_rollover_")
+  ) {
     return 409;
   }
   return 400;

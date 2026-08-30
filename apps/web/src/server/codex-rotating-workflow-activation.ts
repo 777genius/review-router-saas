@@ -7,6 +7,7 @@ import {
 import {
   assertTrustedCanonicalVersionedWorkflow,
   CodexRotatingT0WorkflowSchemaVersion,
+  createVersionedProviderSecretNamespace,
   createVersionedSecretWorkflowSourceAttestation,
   defaultCodexRotatingWorkflowPath,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
@@ -29,6 +30,36 @@ type GitHubRequester = {
   ): Promise<{ data: unknown }>;
 };
 
+type ZeroLoginRolloverActivationRecord = Readonly<{
+  operationId: string;
+  repositoryFullName: string;
+  providerInstanceId: string;
+  state:
+    | "provider_confirmed"
+    | "setup_pr_open"
+    | "activated"
+    | "prepared"
+    | "put_authorized"
+    | "aborted"
+    | "provider_outcome_unknown";
+  targetActionRef: string;
+  candidateNamespaceId: string;
+  candidateNamespaceEpoch: bigint;
+  candidateNamespaceName: string;
+  setupPullRequestNumber?: number | undefined;
+  setupPullRequestHeadSha?: string | undefined;
+  setupPullRequestBaseBranch?: string | undefined;
+}>;
+
+export type CodexZeroLoginRolloverActivationLedger = Readonly<{
+  status(operationId: string): Promise<ZeroLoginRolloverActivationRecord | null>;
+  activateAfterAttestation(input: {
+    operationId: string;
+    expectedNamespaceEpoch: bigint;
+    attestation: ReturnType<typeof createVersionedSecretWorkflowSourceAttestation>;
+  }): Promise<ZeroLoginRolloverActivationRecord>;
+}>;
+
 export type CodexRotatingWorkflowActivationResult =
   | { readonly status: "not_configured" }
   | {
@@ -48,6 +79,12 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
   readonly defaultBranch: string;
   readonly expectedRepositoryFullName: string;
   readonly expectedApiUrl: string;
+  readonly zeroLoginRollover?: Readonly<{
+    operationId: string;
+    expectedNamespaceEpoch: bigint;
+    expectedDefaultHeadSha: string;
+    ledger: CodexZeroLoginRolloverActivationLedger;
+  }>;
 }): Promise<CodexRotatingWorkflowActivationResult> {
   const rotatingProvider =
     await input.prisma.codexOAuthProviderInstance.findUnique({
@@ -58,8 +95,15 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
         },
       },
       select: { id: true },
-    });
+  });
   if (!rotatingProvider) return { status: "not_configured" };
+
+  if (input.zeroLoginRollover) {
+    return activateZeroLoginRolloverAfterWorkflowMerge({
+      ...input,
+      zeroLoginRollover: input.zeroLoginRollover,
+    });
+  }
 
   const providerInstanceId = canonicalCodexRotatingProviderId(
     input.githubRepositoryId,
@@ -175,6 +219,188 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     namespaceEpoch: namespace.epoch.toString(),
     workflowSourceCommitSha,
   };
+}
+
+async function activateZeroLoginRolloverAfterWorkflowMerge(
+  input: Parameters<
+    typeof activateConfirmedCodexNamespaceAfterWorkflowMerge
+  >[0] & {
+    readonly zeroLoginRollover: NonNullable<
+      Parameters<typeof activateConfirmedCodexNamespaceAfterWorkflowMerge>[0]["zeroLoginRollover"]
+    >;
+  },
+): Promise<CodexRotatingWorkflowActivationResult> {
+  const requested = input.zeroLoginRollover;
+  if (
+    !/^[A-Za-z0-9:_./-]{1,256}$/u.test(requested.operationId) ||
+    requested.expectedNamespaceEpoch <= 0n ||
+    !/^[a-f0-9]{40}$/u.test(requested.expectedDefaultHeadSha)
+  ) {
+    throw new Error("zero_login_rollover_activation_request_invalid");
+  }
+  const rollover = await requested.ledger.status(requested.operationId);
+  if (!rollover) throw new Error("zero_login_rollover_not_found");
+  if (
+    rollover.repositoryFullName.toLowerCase() !==
+      input.expectedRepositoryFullName.toLowerCase() ||
+    rollover.providerInstanceId !==
+      canonicalCodexRotatingProviderId(input.githubRepositoryId)
+  ) {
+    throw new Error("zero_login_rollover_repository_mismatch");
+  }
+  if (rollover.candidateNamespaceEpoch !== requested.expectedNamespaceEpoch) {
+    throw new Error("zero_login_rollover_namespace_epoch_mismatch");
+  }
+  if (
+    rollover.state !== "setup_pr_open" &&
+    rollover.state !== "activated"
+  ) {
+    throw new Error("zero_login_rollover_activation_not_ready");
+  }
+  if (
+    !rollover.setupPullRequestNumber ||
+    !rollover.setupPullRequestHeadSha ||
+    !rollover.setupPullRequestBaseBranch
+  ) {
+    throw new Error("zero_login_rollover_setup_pr_evidence_missing");
+  }
+
+  const repositoryResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}",
+    { owner: input.owner, repo: input.name },
+  );
+  const observedRepository = readGitHubRepositoryIdentity(
+    repositoryResponse.data,
+  );
+  if (observedRepository.defaultBranch !== input.defaultBranch) {
+    throw new Error("codex_rotating_workflow_default_branch_mismatch");
+  }
+  const pullRequestResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+    {
+      owner: input.owner,
+      repo: input.name,
+      pull_number: rollover.setupPullRequestNumber,
+    },
+  );
+  assertMergedRolloverPullRequest({
+    data: pullRequestResponse.data,
+    expectedHeadSha: rollover.setupPullRequestHeadSha,
+    expectedBaseBranch: rollover.setupPullRequestBaseBranch,
+    expectedDefaultBranch: input.defaultBranch,
+    expectedRepositoryId: input.githubRepositoryId,
+  });
+
+  const refParameters = {
+    owner: input.owner,
+    repo: input.name,
+    ref: `heads/${input.defaultBranch}`,
+  };
+  const firstRefResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}/git/ref/{ref}",
+    refParameters,
+  );
+  const workflowSourceCommitSha = readGitHubCommitSha(firstRefResponse.data);
+  if (workflowSourceCommitSha !== requested.expectedDefaultHeadSha) {
+    throw new Error("zero_login_rollover_expected_default_head_mismatch");
+  }
+  const workflowPath = defaultCodexRotatingWorkflowPath;
+  const contentResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}/contents/{path}",
+    {
+      owner: input.owner,
+      repo: input.name,
+      path: workflowPath,
+      ref: workflowSourceCommitSha,
+    },
+  );
+  const { source, blobSha } = readGitHubWorkflowBlob(contentResponse.data);
+  const metadata = readCanonicalCodexRotatingT0WorkflowSourceMetadata(source);
+  if (metadata.actionRef !== rollover.targetActionRef) {
+    throw new Error("zero_login_rollover_target_action_mismatch");
+  }
+  if (!isCodexForkReviewV5AllowedForRepository(input.expectedRepositoryFullName)) {
+    throw new Error("zero_login_rollover_v5_disabled_for_repository");
+  }
+  const namespace = createVersionedProviderSecretNamespace({
+    scope: {
+      repositoryId: input.githubRepositoryId,
+      providerInstanceId: rollover.providerInstanceId,
+    },
+    namespaceId: rollover.candidateNamespaceId,
+    name: rollover.candidateNamespaceName,
+    epoch: rollover.candidateNamespaceEpoch,
+  });
+  assertTrustedCanonicalVersionedWorkflow({
+    metadata,
+    observedRepositoryId: observedRepository.id,
+    observedRepositoryFullName: observedRepository.fullName,
+    expectedRepositoryId: input.githubRepositoryId,
+    expectedRepositoryFullName: input.expectedRepositoryFullName,
+    trustedActionRefs: [rollover.targetActionRef],
+    expectedApiUrl: input.expectedApiUrl,
+    expectedProviderInstanceId: rollover.providerInstanceId,
+    expectedSecretNamespace: namespace,
+    expectedWorkflowSchemaVersion:
+      CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5,
+  });
+  const attestation = createVersionedSecretWorkflowSourceAttestation({
+    repositoryId: input.githubRepositoryId,
+    workflowPath,
+    workflowSourceCommitSha,
+    workflowSourceBlobSha: blobSha,
+    workflowSourceSha256: createHash("sha256").update(source).digest("hex"),
+    workflowSemanticSha256: workflowDocumentSemanticSha256(source),
+    sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+    secretNamespace: namespace,
+  });
+  const finalRefResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}/git/ref/{ref}",
+    refParameters,
+  );
+  if (readGitHubCommitSha(finalRefResponse.data) !== workflowSourceCommitSha) {
+    throw new Error("codex_rotating_workflow_default_head_changed");
+  }
+  const wasAlreadyActive = rollover.state === "activated";
+  const activated = await requested.ledger.activateAfterAttestation({
+    operationId: requested.operationId,
+    expectedNamespaceEpoch: requested.expectedNamespaceEpoch,
+    attestation,
+  });
+  if (activated.state !== "activated") {
+    throw new Error("zero_login_rollover_activation_stale_epoch");
+  }
+  return {
+    status: wasAlreadyActive ? "already_active" : "activated",
+    namespaceEpoch: requested.expectedNamespaceEpoch.toString(),
+    workflowSourceCommitSha,
+  };
+}
+
+function assertMergedRolloverPullRequest(input: {
+  data: unknown;
+  expectedHeadSha: string;
+  expectedBaseBranch: string;
+  expectedDefaultBranch: string;
+  expectedRepositoryId: string;
+}): void {
+  const pullRequest = input.data as {
+    merged?: unknown;
+    merged_at?: unknown;
+    head?: { sha?: unknown };
+    base?: { ref?: unknown; repo?: { id?: unknown } };
+  } | null;
+  if (
+    pullRequest?.merged !== true ||
+    typeof pullRequest.merged_at !== "string" ||
+    !Number.isFinite(Date.parse(pullRequest.merged_at)) ||
+    pullRequest.head?.sha !== input.expectedHeadSha ||
+    pullRequest.base?.ref !== input.expectedBaseBranch ||
+    pullRequest.base.ref !== input.expectedDefaultBranch ||
+    String(pullRequest.base.repo?.id) !== input.expectedRepositoryId
+  ) {
+    throw new Error("zero_login_rollover_setup_pr_not_exactly_merged");
+  }
 }
 
 function readGitHubRepositoryIdentity(data: unknown): {

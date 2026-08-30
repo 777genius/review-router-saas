@@ -7,6 +7,31 @@ const mocks = vi.hoisted(() => ({
   authorize: vi.fn(),
   createOctokit: vi.fn(),
   findFirst: vi.fn(),
+  rolloverLedger: vi.fn(),
+  runtimeRepository: vi.fn(),
+}));
+
+vi.mock("@reviewrouter/features-action-control-plane", () => ({
+  PrismaCodexRotatingOAuthRepository: class {
+    constructor(...args: unknown[]) {
+      mocks.runtimeRepository(...args);
+    }
+  },
+  PrismaCodexZeroLoginRolloverLedger: class {
+    constructor(...args: unknown[]) {
+      mocks.rolloverLedger(...args);
+    }
+  },
+}));
+
+vi.mock("@reviewrouter/platform-config", () => ({
+  requireReviewRouterDatabaseRecoveryWitness: () => "test-witness",
+  resolveReviewRouterCodexRotatingActionRef: () =>
+    `777genius/review-router@${"d".repeat(40)}`,
+  resolveReviewRouterCodexRotatingTrustedActionRefs: () => [
+    `777genius/review-router@${"d".repeat(40)}`,
+  ],
+  REVIEW_ROUTER_ACTION_REPOSITORY: "777genius/review-router",
 }));
 
 vi.mock("@reviewrouter/features-entitlements", () => ({
@@ -31,6 +56,7 @@ vi.mock(
 );
 vi.mock("../../../../../src/server/prisma", () => ({
   getPrisma: () => ({ repositoryConnection: { findFirst: mocks.findFirst } }),
+  getCodexEffectAuthorityPrisma: () => ({ authority: true }),
 }));
 vi.mock("../../../../../src/server/workflow-public-api-url", () => ({
   resolveWorkflowPublicApiUrl: () => "https://api.reviewrouter.test",
@@ -88,6 +114,42 @@ describe("Codex rotating CLI workflow activation route", () => {
       workflowSourceCommitSha: "a".repeat(40),
     });
     expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("passes exact rollover activation evidence to the supported endpoint", async () => {
+    const response = await POST(
+      request("777genius/review-router-saas-e2e", {
+        rolloverOperationId: "campaign-1:repo-1",
+        expectedNamespaceEpoch: "8",
+        expectedDefaultHeadSha: "a".repeat(40),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.runtimeRepository).toHaveBeenCalledOnce();
+    expect(mocks.rolloverLedger).toHaveBeenCalledOnce();
+    expect(mocks.activate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        zeroLoginRollover: expect.objectContaining({
+          operationId: "campaign-1:repo-1",
+          expectedNamespaceEpoch: 8n,
+          expectedDefaultHeadSha: "a".repeat(40),
+          ledger: expect.any(Object),
+        }),
+      }),
+    );
+  });
+
+  it("rejects partial rollover evidence before authorization", async () => {
+    const response = await POST(
+      request("777genius/review-router-saas-e2e", {
+        rolloverOperationId: "campaign-1:repo-1",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.authorize).not.toHaveBeenCalled();
+    expect(mocks.activate).not.toHaveBeenCalled();
   });
 
   it("rejects missing bearer auth before repository access", async () => {
@@ -248,7 +310,10 @@ describe("Codex rotating CLI workflow activation route", () => {
   });
 });
 
-function request(repository = "777genius/review-router-saas-e2e"): Request {
+function request(
+  repository = "777genius/review-router-saas-e2e",
+  rollover?: Readonly<Record<string, string>>,
+): Request {
   return new Request("https://reviewrouter.test/activate", {
     method: "POST",
     headers: {
@@ -257,6 +322,7 @@ function request(repository = "777genius/review-router-saas-e2e"): Request {
     },
     body: JSON.stringify({
       repository,
+      ...rollover,
     }),
   });
 }

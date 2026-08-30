@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   activate: vi.fn(),
   assertTrusted: vi.fn(),
   createAttestation: vi.fn(),
+  createNamespace: vi.fn(),
   inspectNamespace: vi.fn(),
   readMetadata: vi.fn(),
   semanticSha: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock("@reviewrouter/features-provider-setup", () => ({
 }));
 vi.mock("@reviewrouter/features-workflow-provisioning", () => ({
   assertTrustedCanonicalVersionedWorkflow: mocks.assertTrusted,
+  createVersionedProviderSecretNamespace: mocks.createNamespace,
   createVersionedSecretWorkflowSourceAttestation: mocks.createAttestation,
   defaultCodexRotatingWorkflowPath: ".github/workflows/reviewrouter-codex.yml",
   readCanonicalCodexRotatingT0WorkflowSourceMetadata: mocks.readMetadata,
@@ -65,6 +67,10 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       },
     });
     mocks.v5Allowed.mockReturnValue(false);
+    mocks.createNamespace.mockImplementation((input) => ({
+      mode: "versioned_never_reused",
+      ...input,
+    }));
     mocks.readMetadata.mockReturnValue({
       actionRef: "action-sha",
       workflowSchemaVersion: 4,
@@ -256,6 +262,128 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
     ).resolves.toEqual({ status: "not_configured" });
     expect(request).not.toHaveBeenCalled();
     expect(mocks.inspectNamespace).not.toHaveBeenCalled();
+  });
+
+  it("activates a zero-login rollover only after the exact setup PR is merged at the requested default head", async () => {
+    const operationId = "campaign-1:repo-1";
+    const targetActionRef = `777genius/review-router@${"d".repeat(40)}`;
+    const rolloverRecord = {
+      operationId,
+      repositoryFullName: "777genius/review-router-saas-e2e",
+      providerInstanceId: "codex-rotating:1228051727",
+      state: "setup_pr_open" as const,
+      targetActionRef,
+      candidateNamespaceId: "namespace_8",
+      candidateNamespaceEpoch: 8n,
+      candidateNamespaceName:
+        "REVIEWROUTER_CODEX_AUTH_JSON_R1228051727_P1234567890abcdef_E8_1234567890abcdef1234567890abcdef",
+      setupPullRequestNumber: 17,
+      setupPullRequestHeadSha: "e".repeat(40),
+      setupPullRequestBaseBranch: "main",
+    };
+    const activateAfterAttestation = vi.fn(async () => ({
+      ...rolloverRecord,
+      state: "activated" as const,
+    }));
+    const status = vi.fn(async () => rolloverRecord);
+    mocks.v5Allowed.mockReturnValueOnce(true);
+    mocks.readMetadata.mockReturnValueOnce({
+      actionRef: targetActionRef,
+      workflowSchemaVersion: 5,
+    });
+    const { input, request } = fixture();
+    request
+      .mockReset()
+      .mockResolvedValueOnce(repositoryResponse())
+      .mockResolvedValueOnce({
+        data: {
+          merged: true,
+          merged_at: "2026-08-30T12:00:00.000Z",
+          head: { sha: "e".repeat(40) },
+          base: { ref: "main", repo: { id: 1228051727 } },
+        },
+      })
+      .mockResolvedValueOnce(refResponse(firstHead))
+      .mockResolvedValueOnce(contentResponse())
+      .mockResolvedValueOnce(refResponse(firstHead));
+
+    await expect(
+      activateConfirmedCodexNamespaceAfterWorkflowMerge({
+        ...input,
+        zeroLoginRollover: {
+          operationId,
+          expectedNamespaceEpoch: 8n,
+          expectedDefaultHeadSha: firstHead,
+          ledger: { status, activateAfterAttestation },
+        },
+      }),
+    ).resolves.toEqual({
+      status: "activated",
+      namespaceEpoch: "8",
+      workflowSourceCommitSha: firstHead,
+    });
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+      expect.objectContaining({ pull_number: 17 }),
+    );
+    expect(mocks.assertTrusted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        trustedActionRefs: [targetActionRef],
+        expectedWorkflowSchemaVersion: 5,
+      }),
+    );
+    expect(activateAfterAttestation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId,
+        expectedNamespaceEpoch: 8n,
+      }),
+    );
+  });
+
+  it("does not activate a rollover when the merged PR head differs from durable evidence", async () => {
+    const activateAfterAttestation = vi.fn();
+    const { input, request } = fixture();
+    request
+      .mockReset()
+      .mockResolvedValueOnce(repositoryResponse())
+      .mockResolvedValueOnce({
+        data: {
+          merged: true,
+          merged_at: "2026-08-30T12:00:00.000Z",
+          head: { sha: "f".repeat(40) },
+          base: { ref: "main", repo: { id: 1228051727 } },
+        },
+      });
+
+    await expect(
+      activateConfirmedCodexNamespaceAfterWorkflowMerge({
+        ...input,
+        zeroLoginRollover: {
+          operationId: "campaign-1:repo-1",
+          expectedNamespaceEpoch: 8n,
+          expectedDefaultHeadSha: firstHead,
+          ledger: {
+            status: async () => ({
+              operationId: "campaign-1:repo-1",
+              repositoryFullName: "777genius/review-router-saas-e2e",
+              providerInstanceId: "codex-rotating:1228051727",
+              state: "setup_pr_open",
+              targetActionRef: `777genius/review-router@${"d".repeat(40)}`,
+              candidateNamespaceId: "namespace_8",
+              candidateNamespaceEpoch: 8n,
+              candidateNamespaceName:
+                "REVIEWROUTER_CODEX_AUTH_JSON_R1228051727_P1234567890abcdef_E8_1234567890abcdef1234567890abcdef",
+              setupPullRequestNumber: 17,
+              setupPullRequestHeadSha: "e".repeat(40),
+              setupPullRequestBaseBranch: "main",
+            }),
+            activateAfterAttestation,
+          },
+        },
+      }),
+    ).rejects.toThrow("zero_login_rollover_setup_pr_not_exactly_merged");
+    expect(activateAfterAttestation).not.toHaveBeenCalled();
   });
 });
 
