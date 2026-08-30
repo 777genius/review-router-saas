@@ -21,15 +21,15 @@ const hashSchema = z.string().regex(/^[a-f0-9]{64}$/i);
 export const certifiedForkModelOutputSchema = z
   .object({
     protocolVersion: z.literal(1),
-    summaryMarkdown: z.string().min(1).max(60_000),
+    summaryMarkdown: z.string().trim().min(1).max(60_000),
     findings: z
       .array(
         z
           .object({
             severity: z.enum(["critical", "major", "minor", "info"]),
-            title: z.string().min(1).max(200),
-            body: z.string().min(1).max(8_000),
-            path: z.string().min(1).max(500).optional(),
+            title: z.string().trim().min(1).max(200),
+            body: z.string().trim().min(1).max(8_000),
+            path: z.string().trim().min(1).max(500).optional(),
             startLine: z.number().int().positive().max(1_000_000).optional(),
             endLine: z.number().int().positive().max(1_000_000).optional(),
           })
@@ -50,15 +50,7 @@ export const certifiedForkModelOutputSchema = z
       )
       .max(50),
   })
-  .strict()
-  .superRefine((output, context) => {
-    if (renderCertifiedForkOutputBytes(output) > 59_900) {
-      context.addIssue({
-        code: "custom",
-        message: "rendered review exceeds publication budget",
-      });
-    }
-  });
+  .strict();
 
 export type CertifiedForkModelOutput = z.infer<
   typeof certifiedForkModelOutputSchema
@@ -203,7 +195,10 @@ export async function requestDirectForkReview(
   if (!result.success) {
     throw new Error("certified_fork_model_output_invalid");
   }
-  return result.data;
+  return validateCertifiedForkModelOutputForPrompt({
+    modelOutput: result.data,
+    promptPacket,
+  });
 }
 
 const certifiedForkModelOutputJsonSchema = {
@@ -236,43 +231,33 @@ const certifiedForkModelOutputJsonSchema = {
   },
 } as const;
 
-function renderCertifiedForkOutputBytes(
-  output: Pick<CertifiedForkModelOutput, "summaryMarkdown" | "findings">,
-): number {
-  const lines = [
-    "## ReviewRouter certified fork review",
-    cleanCertifiedForkMarkdown(output.summaryMarkdown),
-  ];
-  if (output.findings.length) {
-    lines.push("### Findings");
-    for (const finding of output.findings) {
-      lines.push(
-        `**[${finding.severity}] ${escapeCertifiedForkMarkdown(cleanCertifiedForkMarkdown(finding.title))}**`,
-      );
-      if (finding.path && (finding.startLine ?? finding.endLine)) {
-        lines.push(
-          `\`${escapeCertifiedForkMarkdown(finding.path)}:${finding.startLine ?? finding.endLine}\``,
-        );
-      }
-      lines.push(cleanCertifiedForkMarkdown(finding.body));
+export function validateCertifiedForkModelOutputForPrompt(input: {
+  readonly modelOutput: CertifiedForkModelOutput;
+  readonly promptPacket: CertifiedForkPromptPacket;
+}): CertifiedForkModelOutput {
+  const allowedPaths = new Set(
+    input.promptPacket.files.map((file) => file.path),
+  );
+  for (const finding of input.modelOutput.findings) {
+    if (finding.path === undefined) continue;
+    if (
+      !isSafeCertifiedForkPath(finding.path) ||
+      !allowedPaths.has(finding.path)
+    ) {
+      throw new Error("certified_fork_model_output_path_invalid");
     }
   }
-  return Buffer.byteLength(lines.join("\n"), "utf8");
+  return input.modelOutput;
 }
 
-function cleanCertifiedForkMarkdown(value: string): string {
+function isSafeCertifiedForkPath(path: string): boolean {
   return (
-    value
-      .replace(/<!--[^]*?-->/gu, "")
-      // The server strips this exact C0 control range before publication.
-      // eslint-disable-next-line no-control-regex
-      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "")
-      .trim()
+    !path.startsWith("/") &&
+    !path.includes("\\") &&
+    !path
+      .split("/")
+      .some((part) => part === "" || part === "." || part === "..")
   );
-}
-
-function escapeCertifiedForkMarkdown(value: string): string {
-  return value.replaceAll("`", "\\`");
 }
 
 async function readBoundedJson(response: Response): Promise<unknown> {
@@ -334,6 +319,18 @@ async function readBoundedSseOutput(response: Response): Promise<string> {
         break;
       case "response.reasoning_summary_part.added":
         validateSafeIndex(record.summary_index);
+        break;
+      case "response.reasoning_summary_part.done":
+        validateSafeReasoningPartDone(record);
+        break;
+      case "response.reasoning_summary_text.done":
+        validateSafeReasoningTextDone(record, "summary_index");
+        break;
+      case "response.reasoning_text.done":
+        validateSafeReasoningTextDone(record, "content_index");
+        break;
+      case "response.metadata":
+        validateSafeResponseMetadata(record);
         break;
       case "response.content_part.added":
         validateSafeOutputTextPart(record.part);
@@ -487,6 +484,55 @@ function validateSafeReasoningDelta(
   }
   appendBoundedOutput("", event.delta);
   validateSafeIndex(event[indexKey]);
+}
+
+function validateSafeReasoningPartDone(event: Record<string, unknown>): void {
+  validateSafeIndex(event.summary_index);
+  if (event.part !== undefined) {
+    const part = asRecord(event.part);
+    if (part.type !== "summary_text" || typeof part.text !== "string") {
+      throw new Error("certified_fork_provider_sse_invalid");
+    }
+    appendBoundedOutput("", part.text);
+  }
+}
+
+function validateSafeReasoningTextDone(
+  event: Record<string, unknown>,
+  indexKey: "summary_index" | "content_index",
+): void {
+  validateSafeIndex(event[indexKey]);
+  if (typeof event.text !== "string") {
+    throw new Error("certified_fork_provider_sse_invalid");
+  }
+  appendBoundedOutput("", event.text);
+}
+
+function validateSafeResponseMetadata(event: Record<string, unknown>): void {
+  validateOnlyKeys(event, [
+    "type",
+    "sequence_number",
+    "response_id",
+    "metadata",
+    "headers",
+    "response",
+  ]);
+  if (
+    event.sequence_number !== undefined &&
+    (!Number.isSafeInteger(event.sequence_number) ||
+      (event.sequence_number as number) < 0)
+  ) {
+    throw new Error("certified_fork_provider_sse_invalid");
+  }
+  if (
+    event.response_id !== undefined &&
+    (typeof event.response_id !== "string" || event.response_id.length > 500)
+  ) {
+    throw new Error("certified_fork_provider_sse_invalid");
+  }
+  if (event.metadata !== undefined) asRecord(event.metadata);
+  if (event.headers !== undefined) asRecord(event.headers);
+  if (event.response !== undefined) asRecord(event.response);
 }
 
 function validateSafeIndex(value: unknown): void {

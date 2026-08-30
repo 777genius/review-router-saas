@@ -3,6 +3,7 @@ import {
   certifiedForkModelOutputSchema,
   certifiedForkPromptPacketSchema,
   requestDirectForkReview,
+  validateCertifiedForkModelOutputForPrompt,
   type CertifiedForkPromptPacket,
 } from "../action/direct-fork-responses";
 
@@ -89,10 +90,14 @@ describe("direct certified fork Responses client", () => {
         [
           `data: ${JSON.stringify({ type: "response.created", response: { id: "resp_1" } })}`,
           `data: ${JSON.stringify({ type: "response.in_progress", response: { id: "resp_1" } })}`,
+          `data: ${JSON.stringify({ type: "response.metadata", sequence_number: 1, response_id: "resp_1", metadata: { openai_verification_recommendation: [] }, headers: { "openai-model": "gpt-5.6-sol" } })}`,
           `data: ${JSON.stringify({ type: "response.output_item.added", item: { type: "reasoning", id: "rs_1", summary: [] } })}`,
           `data: ${JSON.stringify({ type: "response.reasoning_summary_part.added", summary_index: 0 })}`,
           `data: ${JSON.stringify({ type: "response.reasoning_summary_text.delta", summary_index: 0, delta: "Checked the diff." })}`,
+          `data: ${JSON.stringify({ type: "response.reasoning_summary_text.done", summary_index: 0, text: "Checked the diff." })}`,
+          `data: ${JSON.stringify({ type: "response.reasoning_summary_part.done", summary_index: 0, part: { type: "summary_text", text: "Checked the diff." } })}`,
           `data: ${JSON.stringify({ type: "response.reasoning_text.delta", content_index: 0, delta: "Internal reasoning." })}`,
+          `data: ${JSON.stringify({ type: "response.reasoning_text.done", content_index: 0, text: "Internal reasoning." })}`,
           `data: ${JSON.stringify({ type: "response.output_item.done", item: { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Checked the diff." }], content: [{ type: "reasoning_text", text: "Internal reasoning." }], encrypted_content: "encrypted" } })}`,
           `data: ${JSON.stringify({ type: "response.output_item.added", item: { type: "message", role: "assistant", content: [] } })}`,
           `data: ${JSON.stringify({ type: "response.content_part.added", part: { type: "output_text", text: "" } })}`,
@@ -358,7 +363,7 @@ describe("direct certified fork Responses client", () => {
         summaryMarkdown: "é".repeat(30_000),
         findings: [],
       }).success,
-    ).toBe(false);
+    ).toBe(true);
     expect(
       certifiedForkModelOutputSchema.safeParse({
         protocolVersion: 1,
@@ -366,6 +371,69 @@ describe("direct certified fork Responses client", () => {
         findings: [{ ...finding, startLine: 1_000_001 }],
       }).success,
     ).toBe(false);
+    for (const blank of ["", "   ", "\n\t"]) {
+      expect(
+        certifiedForkModelOutputSchema.safeParse({
+          protocolVersion: 1,
+          summaryMarkdown: blank,
+          findings: [],
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      certifiedForkModelOutputSchema.safeParse({
+        protocolVersion: 1,
+        summaryMarkdown:
+          "@reviewers <details><summary>review</summary></details>",
+        findings: [
+          {
+            severity: "info",
+            title: "@owner <b>title</b>",
+            body: "<img src=x> @team /cc @maintainers",
+            path: "src/index.ts",
+          },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires every finding path to be safe and present in the prompt diff", () => {
+    const output = certifiedForkModelOutputSchema.parse({
+      protocolVersion: 1,
+      summaryMarkdown: "Reviewed.",
+      findings: [
+        {
+          severity: "major",
+          title: "Issue",
+          body: "Body",
+          path: "src/index.ts",
+          startLine: 1,
+        },
+      ],
+    });
+    expect(
+      validateCertifiedForkModelOutputForPrompt({
+        modelOutput: output,
+        promptPacket: promptPacket(),
+      }),
+    ).toEqual(output);
+    for (const path of [
+      "src/other.ts",
+      "/src/index.ts",
+      "../src/index.ts",
+      "src\\index.ts",
+      "src//index.ts",
+    ]) {
+      expect(() =>
+        validateCertifiedForkModelOutputForPrompt({
+          modelOutput: {
+            ...output,
+            findings: [{ ...output.findings[0]!, path }],
+          },
+          promptPacket: promptPacket(),
+        }),
+      ).toThrow("certified_fork_model_output_path_invalid");
+    }
   });
 
   it("enforces the 200000-byte per-file patch limit", () => {
