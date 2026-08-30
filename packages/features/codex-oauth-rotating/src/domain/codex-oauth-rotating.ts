@@ -1556,6 +1556,60 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
   if (!workflowJobIdsExactly(workflow, expectedJobs)) {
     errors.push("t0_v5_job_inventory_invalid");
   }
+  for (const [job, expectedKeys, code] of [
+    [
+      sameRepoJob,
+      ["name", "if", "concurrency", "permissions", "uses", "with", "secrets"],
+      "t0_v5_same_repo_surface_invalid",
+    ],
+    [
+      forkJob,
+      [
+        "name",
+        "if",
+        "runs-on",
+        "timeout-minutes",
+        "concurrency",
+        "permissions",
+        "steps",
+      ],
+      "t0_v5_fork_surface_invalid",
+    ],
+    [
+      forkBackfillJob,
+      [
+        "name",
+        "if",
+        "runs-on",
+        "timeout-minutes",
+        "concurrency",
+        "permissions",
+        "steps",
+      ],
+      "t0_v5_fork_backfill_surface_invalid",
+    ],
+    ...(refreshEnabled
+      ? ([
+          [
+            refreshJob,
+            [
+              "name",
+              "runs-on",
+              "timeout-minutes",
+              "concurrency",
+              "if",
+              "permissions",
+              "steps",
+            ],
+            "t0_v5_refresh_surface_invalid",
+          ],
+        ] as const)
+      : []),
+  ] as const) {
+    if (!workflowJobHasExactTopLevelKeys(job, expectedKeys)) {
+      errors.push(code);
+    }
+  }
   if (
     source.workflowSchemaVersion !==
     CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
@@ -3252,6 +3306,25 @@ function extractWorkflowStepSection(
     .findIndex((line) => /^ {6}-\s/u.test(line));
   const end = relativeEnd < 0 ? lines.length : start + 1 + relativeEnd;
   return lines.slice(start, end).join("\n");
+}
+
+function workflowJobHasExactTopLevelKeys(
+  job: string,
+  expectedKeys: readonly string[],
+): boolean {
+  const keys: string[] = [];
+  for (const line of job.split("\n")) {
+    if (/^\s*(?:#.*)?$/u.test(line) || countLeadingSpaces(line) !== 4) {
+      continue;
+    }
+    const match = /^ {4}([A-Za-z0-9_-]+):(?:[ \t].*)?$/u.exec(line);
+    if (!match) return false;
+    keys.push(match[1]!);
+  }
+  return (
+    keys.length === expectedKeys.length &&
+    keys.every((key, index) => key === expectedKeys[index])
+  );
 }
 
 type WorkflowMappingEntry = {

@@ -143,6 +143,31 @@ describe("certified fork review workflow V5", () => {
       "        with:\n          mode: fork_prompt_only_v2",
       `        env:\n          STOLEN_AUTH: \${{ secrets.${namespace.name} }}\n        with:\n          mode: fork_prompt_only_v2`,
     ],
+    [
+      "backfill container",
+      "    timeout-minutes:",
+      "    container: attacker/image:latest\n    timeout-minutes:",
+    ],
+    [
+      "backfill services",
+      "    timeout-minutes:",
+      "    services:\n      attacker:\n        image: attacker/image:latest\n    timeout-minutes:",
+    ],
+    [
+      "backfill defaults",
+      "    timeout-minutes:",
+      "    defaults:\n      run:\n        shell: attacker-shell\n    timeout-minutes:",
+    ],
+    [
+      "backfill strategy",
+      "    timeout-minutes:",
+      "    strategy:\n      matrix:\n        image: [attacker/image:latest]\n    timeout-minutes:",
+    ],
+    [
+      "backfill reusable job",
+      "    timeout-minutes:",
+      "    uses: attacker/workflows/.github/workflows/pwn.yml@main\n    timeout-minutes:",
+    ],
   ])("rejects backfill tamper: %s", (_name, marker, replacement) => {
     const rendered = workflow();
     const backfillStart = rendered.indexOf("  fork-backfill-review:");
