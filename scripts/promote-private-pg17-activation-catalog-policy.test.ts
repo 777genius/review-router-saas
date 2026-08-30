@@ -3,11 +3,13 @@ import { readFile } from "node:fs/promises";
 import {
   activationCatalogPromotionOptIn,
   activationCatalogPromotionProvenancePath,
+  assertArtifactCandidate,
   assertActivationCatalogPolicyIndependentReviewEvidence,
   assertReviewedActivationCatalogPromotionProvenance,
   promotePrivatePg17ActivationCatalogPolicy,
   reviewedActivationCatalogCandidate,
 } from "./promote-private-pg17-activation-catalog-policy.mjs";
+import canonicalActivationCatalogPolicyArtifact from "../packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js";
 
 describe("activation catalog policy promotion", () => {
   it("pins the exact reviewed v28 candidate and operator opt-in", () => {
@@ -60,6 +62,43 @@ describe("activation catalog policy promotion", () => {
     ).rejects.toThrow(
       /activation_catalog_policy_promotion_candidate_(?:size|hash)_drift/u,
     );
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["wrong", `sha256:${"b".repeat(64)}`],
+  ])(
+    "rejects a %s reviewed live catalog digest",
+    (_name, liveCatalogDigest) => {
+      const candidate = {
+        kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+        version: 2,
+        ...(liveCatalogDigest === undefined ? {} : { liveCatalogDigest }),
+        policies: canonicalActivationCatalogPolicyArtifact.policies,
+      };
+
+      expect(() =>
+        assertArtifactCandidate(candidate, {
+          ...reviewedActivationCatalogCandidate,
+          liveCatalogDigest: `sha256:${"a".repeat(64)}`,
+        }),
+      ).toThrow("activation_catalog_policy_promotion_candidate_invalid");
+    },
+  );
+
+  it("accepts the exact reviewed live catalog digest", () => {
+    const liveCatalogDigest = `sha256:${"a".repeat(64)}`;
+    expect(() =>
+      assertArtifactCandidate(
+        {
+          kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+          version: 2,
+          liveCatalogDigest,
+          policies: canonicalActivationCatalogPolicyArtifact.policies,
+        },
+        { ...reviewedActivationCatalogCandidate, liveCatalogDigest },
+      ),
+    ).not.toThrow();
   });
 
   it("refuses promotion without exact independent GO evidence", () => {

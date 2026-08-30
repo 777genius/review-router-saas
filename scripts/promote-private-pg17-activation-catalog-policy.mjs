@@ -162,9 +162,12 @@ function parseArguments(argv) {
   return { candidatePath: resolve(candidatePath), write };
 }
 
-function assertArtifactCandidate(value) {
+export function assertArtifactCandidate(
+  value,
+  reviewedCandidate = reviewedActivationCatalogCandidate,
+) {
   const reviewedLiveCatalogDigest = Reflect.get(
-    reviewedActivationCatalogCandidate,
+    reviewedCandidate,
     "liveCatalogDigest",
   );
   const capturesLiveCatalogDigest =
