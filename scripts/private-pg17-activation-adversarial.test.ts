@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   activationAuthorityProvisioningSql,
@@ -67,6 +68,21 @@ const databaseName = "review_router";
 const applicationRelation = 'public."RepositoryConnection"';
 const configuration = disposableSqlConfiguration();
 const migrationPermitEligibilityCutoff = "2026-08-12T00:00:02.300Z";
+const canonicalReleaseAuthorityRoleFoundationSql = `CREATE ROLE reviewrouter_release_schema_owner
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+GRANT reviewrouter_release_schema_owner TO ${adminUsername}
+  WITH ADMIN TRUE, INHERIT FALSE, SET TRUE;
+UPDATE pg_catalog.pg_authid
+SET rolsuper=false, rolcanlogin=false, rolcreatedb=false,
+    rolcreaterole=false, rolreplication=false, rolbypassrls=false
+WHERE rolname='${providerAdminUsername}';`;
+const applyProductionMigrationBaseline = <Result>(
+  provisionCanonicalReleaseAuthorityRoles: () => void,
+  deployMigrations: () => Result,
+) => {
+  provisionCanonicalReleaseAuthorityRoles();
+  return deployMigrations();
+};
 type SourceLegacyAmbiguityEvidence = ReturnType<
   typeof sourceLegacyAmbiguityFixture
 >;
@@ -74,6 +90,57 @@ const migrationPermitEvidenceByRollout = new Map<
   string,
   SourceLegacyAmbiguityEvidence
 >();
+
+describe("PG17 production migration baseline fixture ordering", () => {
+  it("provisions canonical release authority before deploying migrations", () => {
+    const phases: string[] = [];
+    const result = applyProductionMigrationBaseline(
+      () => phases.push("provision-release-authority"),
+      () => {
+        phases.push("deploy-migrations");
+        return "deployed";
+      },
+    );
+
+    expect(result).toBe("deployed");
+    expect(phases).toEqual([
+      "provision-release-authority",
+      "deploy-migrations",
+    ]);
+    expect(canonicalReleaseAuthorityRoleFoundationSql).toContain(
+      "CREATE ROLE reviewrouter_release_schema_owner",
+    );
+    expect(canonicalReleaseAuthorityRoleFoundationSql).toContain(
+      `GRANT reviewrouter_release_schema_owner TO ${adminUsername}`,
+    );
+    expect(canonicalReleaseAuthorityRoleFoundationSql).toContain(
+      "WITH ADMIN TRUE, INHERIT FALSE, SET TRUE",
+    );
+    expect(canonicalReleaseAuthorityRoleFoundationSql).toContain(
+      `WHERE rolname='${providerAdminUsername}'`,
+    );
+  });
+
+  it("retains 000079 fail-closed rejection for either partial authority topology", () => {
+    const migrationSql = readFileSync(
+      new URL(
+        "../packages/platform/db/prisma/migrations/000079_remove_account_wide_provider_lane_serialization/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(migrationSql).toContain(
+      "IF schema_owner_exists <> release_migration_exists THEN",
+    );
+    expect(migrationSql).toContain(
+      "provider_scope_concurrency_authority_roles_partial:reviewrouter_release_schema_owner_missing",
+    );
+    expect(migrationSql).toContain(
+      "provider_scope_concurrency_authority_roles_partial:reviewrouter_release_migration_missing",
+    );
+  });
+});
 
 const persistAdditionalSourceOwnedReceipt = (
   context: CaseContext,
@@ -285,21 +352,31 @@ const initializeSeed = () => {
     providerAdminUsername,
     disposablePg17TargetRoleFoundationSql({
       providerAdminUsername,
+      demoteProvider: false,
     }),
   );
-  const migration = spawnSync(
-    "pnpm",
-    ["--filter", "@reviewrouter/platform-db", "db:migrate:deploy"],
-    {
-      cwd: new URL("..", import.meta.url),
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        DATABASE_URL: `postgresql://${adminUsername}:disposable-bootstrap@127.0.0.1:${publishedPort(seedContainer)}/${databaseName}?sslmode=disable`,
-      },
-      maxBuffer: 16 * 1024 * 1024,
-      timeout: 600_000,
-    },
+  const migration = applyProductionMigrationBaseline(
+    () =>
+      psqlAs(
+        seedContainer,
+        providerAdminUsername,
+        canonicalReleaseAuthorityRoleFoundationSql,
+      ),
+    () =>
+      spawnSync(
+        "pnpm",
+        ["--filter", "@reviewrouter/platform-db", "db:migrate:deploy"],
+        {
+          cwd: new URL("..", import.meta.url),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            DATABASE_URL: `postgresql://${adminUsername}:disposable-bootstrap@127.0.0.1:${publishedPort(seedContainer)}/${databaseName}?sslmode=disable`,
+          },
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: 600_000,
+        },
+      ),
   );
   expect(
     migration.status,
