@@ -335,6 +335,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       )?.[1];
     expect(runner).toBeDefined();
     expect(runner).toContain("options.expectedFailure");
+    expect(runner).toContain("canonicalFailureSourceArgs");
+    expect(runner).toContain('["--file=-"]');
+    expect(runner).toContain("...canonicalFailureSourceArgs");
     expect(runner).toContain("isExactPostgresGuardFailure(");
     expect(runner).toContain("result,");
     expect(runner).toContain("options.expectedFailure.guard");

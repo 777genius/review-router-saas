@@ -3134,9 +3134,15 @@ function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
         code: "private_pg17_rehearsal_command_failed",
         phase: "rehearsal",
       });
+    const canonicalFailureSourceArgs = options.expectedFailure
+      ? ["--file=-"]
+      : [];
     const postgres = createSecretSafePostgresInvocation({
       databaseUrl: args[urlIndex],
-      args: args.filter((_, index) => index !== urlIndex),
+      args: [
+        ...args.filter((_, index) => index !== urlIndex),
+        ...canonicalFailureSourceArgs,
+      ],
       input: options.input,
     });
     const credential = createDatabaseCredentialBoundary(args[urlIndex]);

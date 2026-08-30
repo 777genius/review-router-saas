@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { isExactPostgresGuardFailure } from "./postgres-guard-failure.mjs";
 
 const guard = "legacy_reconciliation_inventory_changed";
+const nestedGuard = "legacy_reconciliation_unresolved_intent";
 const directContext =
   "CONTEXT:  PL/pgSQL function reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean) line 81 at RAISE";
 const nestedContext = `CONTEXT:  PL/pgSQL function reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text,timestamp with time zone) line 47 at RAISE
@@ -20,73 +21,102 @@ const failure = (stderr: unknown, overrides = {}) => ({
   stderr,
   ...overrides,
 });
+const errorLine = (line: number | string, value = guard) =>
+  `psql:<stdin>:${line}: ERROR:  ${value}`;
 
 describe("exact PostgreSQL guard failure classification", () => {
   it.each([
-    [`ERROR:  ${guard}\n${directContext}\n`],
-    [`ERROR:  ${guard}\n${nestedContext}\n`],
-  ])("accepts a complete canonical psql error record", (stderr) => {
-    expect(isExactPostgresGuardFailure(failure(stderr), guard)).toBe(true);
-  });
+    [guard, `${errorLine(21)}\n${directContext}\n`],
+    [nestedGuard, `${errorLine(21, nestedGuard)}\n${nestedContext}\n`],
+  ])(
+    "accepts a complete canonical psql error record",
+    (expectedGuard, stderr) => {
+      expect(isExactPostgresGuardFailure(failure(stderr), expectedGuard)).toBe(
+        true,
+      );
+    },
+  );
 
   it.each([
     [
       "unrelated line before",
-      `NOTICE:  unrelated\nERROR:  ${guard}\n${directContext}\n`,
+      `NOTICE:  unrelated\n${errorLine(417)}\n${directContext}\n`,
     ],
-    ["same-line prefix", `psql: ERROR:  ${guard}\n${directContext}\n`],
+    ["missing source location", `ERROR:  ${guard}\n${directContext}\n`],
+    ["missing stdin source", `psql: ERROR:  ${guard}\n${directContext}\n`],
+    [
+      "fake path source",
+      `psql:/tmp/input.sql:417: ERROR:  ${guard}\n${directContext}\n`,
+    ],
+    [
+      "fake named source",
+      `psql:stdin:417: ERROR:  ${guard}\n${directContext}\n`,
+    ],
+    ["zero source line", `${errorLine(0)}\n${directContext}\n`],
+    ["signed source line", `${errorLine("+417")}\n${directContext}\n`],
+    ["leading-zero source line", `${errorLine("0417")}\n${directContext}\n`],
+    ["oversized source line", `${errorLine(1_000_000)}\n${directContext}\n`],
     [
       "same-line arbitrary prefix",
-      `unrelated ERROR:  ${guard}\n${directContext}\n`,
+      `unrelated ${errorLine(417)}\n${directContext}\n`,
     ],
-    ["same-line suffix", `ERROR:  ${guard} unrelated\n${directContext}\n`],
+    ["same-line suffix", `${errorLine(417)} unrelated\n${directContext}\n`],
     [
       "wrong guard",
-      `ERROR:  legacy_reconciliation_unresolved_intent\n${directContext}\n`,
+      `${errorLine(417, "legacy_reconciliation_unresolved_intent")}\n${directContext}\n`,
     ],
-    ["unrelated line after", `ERROR:  ${guard}\n${directContext}\nunrelated\n`],
+    [
+      "unrelated line after",
+      `${errorLine(417)}\n${directContext}\nunrelated\n`,
+    ],
     [
       "multiple errors",
-      `ERROR:  ${guard}\n${directContext}\nERROR:  ${guard}\n`,
+      `${errorLine(417)}\n${directContext}\n${errorLine(418)}\n`,
     ],
     [
       "extra NOTICE line",
-      `ERROR:  ${guard}\n${directContext}\nNOTICE:  unrelated\n`,
+      `${errorLine(417)}\n${directContext}\nNOTICE:  unrelated\n`,
     ],
     [
       "extra WARNING line",
-      `ERROR:  ${guard}\n${directContext}\nWARNING:  unrelated\n`,
+      `${errorLine(417)}\n${directContext}\nWARNING:  unrelated\n`,
     ],
-    ["missing context", `ERROR:  ${guard}\n`],
-    ["malformed context", `ERROR:  ${guard}\nCONTEXT:  unrelated\n`],
-    ["missing final newline", `ERROR:  ${guard}\n${directContext}`],
-    ["CRLF data", `ERROR:  ${guard}\r\n${directContext}\r\n`],
-    ["NUL data", `ERROR:  ${guard}\n${directContext}\0\n`],
+    ["missing context", `${errorLine(417)}\n`],
+    ["malformed context", `${errorLine(417)}\nCONTEXT:  unrelated\n`],
+    ["missing final newline", `${errorLine(417)}\n${directContext}`],
+    ["CRLF data", `${errorLine(417)}\r\n${directContext}\r\n`],
+    ["NUL data", `${errorLine(417)}\n${directContext}\0\n`],
     [
       "indented second ERROR",
-      `ERROR:  ${guard}\n${nestedContext.replace(
+      `${errorLine(417)}\n${nestedContext.replace(
         "    requested_inventory,",
         `    ERROR:  ${guard}\n    requested_inventory,`,
       )}\n`,
     ],
     [
       "unrelated NOTICE carrying error text",
-      `ERROR:  ${guard}\n${nestedContext.replace(
+      `${errorLine(417)}\n${nestedContext.replace(
         "    requested_inventory,",
         `NOTICE:  unrelated ERROR:  ${guard}\n    requested_inventory,`,
       )}\n`,
     ],
     [
       "Unicode line separator in signature",
-      `ERROR:  ${guard}\n${directContext.replace("migration(text", "migration\u2028(text")}\n`,
+      `${errorLine(417)}\n${directContext.replace(
+        "migration(text",
+        "migration\u2028(text",
+      )}\n`,
     ],
     [
       "non-ASCII diagnostic control character",
-      `ERROR:  ${guard}\n${directContext.replace("migration(text", "migration\u0085(text")}\n`,
+      `${errorLine(417)}\n${directContext.replace(
+        "migration(text",
+        "migration\u0085(text",
+      )}\n`,
     ],
     [
       "arbitrary procedure signature",
-      `ERROR:  ${guard}\n${directContext.replace(
+      `${errorLine(417)}\n${directContext.replace(
         "reviewrouter_execute_release_migration",
         "attacker_controlled_procedure",
       )}\n`,
@@ -98,7 +128,7 @@ describe("exact PostgreSQL guard failure classification", () => {
   it("rejects a successful process carrying forged guard stderr", () => {
     expect(
       isExactPostgresGuardFailure(
-        failure(`ERROR:  ${guard}\n${directContext}\n`, { status: 0 }),
+        failure(`${errorLine(417)}\n${directContext}\n`, { status: 0 }),
         guard,
       ),
     ).toBe(false);
@@ -120,7 +150,7 @@ describe("exact PostgreSQL guard failure classification", () => {
   ])("rejects a non-psql failure classification %#", (overrides) => {
     expect(
       isExactPostgresGuardFailure(
-        failure(`ERROR:  ${guard}\n${directContext}\n`, overrides),
+        failure(`${errorLine(417)}\n${directContext}\n`, overrides),
         guard,
       ),
     ).toBe(false);
@@ -128,7 +158,7 @@ describe("exact PostgreSQL guard failure classification", () => {
 
   it("rejects inherited spawn fields", () => {
     const inherited = Object.create(
-      failure(`ERROR:  ${guard}\n${directContext}\n`),
+      failure(`${errorLine(417)}\n${directContext}\n`),
     );
     expect(isExactPostgresGuardFailure(inherited, guard)).toBe(false);
   });
@@ -137,13 +167,15 @@ describe("exact PostgreSQL guard failure classification", () => {
     const regexLikeGuard = "legacy_reconciliation_guard[.*]";
     expect(
       isExactPostgresGuardFailure(
-        failure(`ERROR:  ${regexLikeGuard}\n${directContext}\n`),
+        failure(`${errorLine(417, regexLikeGuard)}\n${directContext}\n`),
         regexLikeGuard,
       ),
     ).toBe(true);
     expect(
       isExactPostgresGuardFailure(
-        failure(`ERROR:  legacy_reconciliation_guardx\n${directContext}\n`),
+        failure(
+          `${errorLine(417, "legacy_reconciliation_guardx")}\n${directContext}\n`,
+        ),
         regexLikeGuard,
       ),
     ).toBe(false);

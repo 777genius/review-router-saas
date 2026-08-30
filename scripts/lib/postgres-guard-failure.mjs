@@ -33,10 +33,20 @@ function isAsciiPsqlRecord(value) {
   return true;
 }
 
+function isExactStdinErrorLine(line, expectedGuard) {
+  const prefix = "psql:<stdin>:";
+  const suffix = `: ERROR:  ${expectedGuard}`;
+  if (!line.startsWith(prefix) || !line.endsWith(suffix)) return false;
+  const lineNumber = line.slice(prefix.length, -suffix.length);
+  return /^[1-9][0-9]{0,5}$/u.test(lineNumber);
+}
+
 /**
  * Classify the complete stderr record emitted by the rehearsal's direct psql
- * invocation. ON_ERROR_STOP makes a server error exit 3, and the default psql
- * verbosity includes the PL/pgSQL context for the guarded executor.
+ * invocation. The SQL is supplied through the explicit --file=- source, so
+ * psql identifies it as exactly <stdin> with its positive input line number.
+ * ON_ERROR_STOP makes a server error exit 3, and the default psql verbosity
+ * includes the PL/pgSQL context for the guarded executor.
  */
 export function isExactPostgresGuardFailure(result, expectedGuard) {
   if (
@@ -60,7 +70,7 @@ export function isExactPostgresGuardFailure(result, expectedGuard) {
     return false;
 
   const lines = result.stderr.slice(0, -1).split("\n");
-  if (lines[0] !== `ERROR:  ${expectedGuard}`) return false;
+  if (!isExactStdinErrorLine(lines[0], expectedGuard)) return false;
   if (lines.length === 2)
     return isExactContextLine(lines[1], executorSignature, "RAISE");
   if (lines.length !== 9) return false;
