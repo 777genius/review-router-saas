@@ -3313,19 +3313,13 @@ async function markRepositoryWorkflowConfigured(input: {
           status: "setup_pr_open" as const,
         };
 
-  await input.prisma.$transaction([
-    input.prisma.workflowProvisioning.updateMany({
-      where: provisioningWhere,
-      data: {
-        status: "configured",
-        errorMessage: null,
-      },
-    }),
-    input.prisma.repositoryConnection.update({
-      where: { id: input.repositoryId },
-      data: { setupStatus: "configured" },
-    }),
-  ]);
+  await input.prisma.workflowProvisioning.updateMany({
+    where: provisioningWhere,
+    data: {
+      status: "configured",
+      errorMessage: null,
+    },
+  });
 }
 
 async function markRepositoryWorkflowSetupNeedsAttention(input: {
@@ -3361,19 +3355,13 @@ async function markRepositoryWorkflowSetupNeedsAttention(input: {
           status: "setup_pr_open" as const,
         };
 
-  await input.prisma.$transaction([
-    input.prisma.workflowProvisioning.updateMany({
-      where: provisioningWhere,
-      data: {
-        status: "failed",
-        errorMessage: input.reason,
-      },
-    }),
-    input.prisma.repositoryConnection.update({
-      where: { id: input.repositoryId },
-      data: { setupStatus: "needs_attention" },
-    }),
-  ]);
+  await input.prisma.workflowProvisioning.updateMany({
+    where: provisioningWhere,
+    data: {
+      status: "failed",
+      errorMessage: input.reason,
+    },
+  });
 }
 
 function pullRequestNumberFromUrl(url: string): number | null {

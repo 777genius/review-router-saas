@@ -11,18 +11,10 @@ export class PrismaWorkflowProvisioningRepository implements WorkflowProvisionin
     record: WorkflowProvisioningRecord,
   ): Promise<void> {
     await this.upsert(record);
-    await this.prisma.repositoryConnection.update({
-      where: { id: record.repositoryId },
-      data: { setupStatus: "setup_pr_open" },
-    });
   }
 
   async markFailed(record: WorkflowProvisioningRecord): Promise<void> {
     await this.upsert(record);
-    await this.prisma.repositoryConnection.update({
-      where: { id: record.repositoryId },
-      data: { setupStatus: "needs_attention" },
-    });
   }
 
   private async upsert(record: WorkflowProvisioningRecord): Promise<void> {

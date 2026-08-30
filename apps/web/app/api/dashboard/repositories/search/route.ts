@@ -8,6 +8,7 @@ import {
   listWorkspaceRepositoryHealth,
   PrismaRepositoryHealthRepository,
 } from "@reviewrouter/features-repo-health";
+import { projectRepositorySetupStatus } from "@reviewrouter/features-workflow-provisioning";
 import {
   requireReviewRouterDatabaseRecoveryWitness,
   resolveReviewRouterActionRef,
@@ -125,6 +126,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       defaultBranch: true,
       visibility: true,
       setupStatus: true,
+      provisioning: {
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        take: 1,
+        select: { status: true },
+      },
       selected: true,
       archived: true,
       stargazersCount: true,
@@ -223,6 +229,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const tokens = tokenizeRepositorySearch(query);
   const repositoryIds = repositories
     .filter((repository) => {
+      const setupStatus = projectRepositorySetupStatus({
+        workflowProvisioningStatus: repository.provisioning[0]?.status ?? null,
+        legacySetupStatus: repository.setupStatus,
+      });
       const repositoryHealth = repositoryHealthById.get(repository.id);
       const effectiveHealthStatus =
         repositoryHealthStatusWithProviderSetupReadiness({
@@ -242,7 +252,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
           providerSetupConfirmedAt >=
             repositoryHealth.latestActionHealthReceivedAt);
       const setupProgressStep = repositorySetupProgressStep({
-        setupStatus: repository.setupStatus,
+        setupStatus,
         healthStatus: effectiveHealthStatus,
         workflowCurrent,
         providerSetupConfirmed,
@@ -264,7 +274,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         stargazersCount: repository.stargazersCount,
         archived: repository.archived,
         selected: repository.selected,
-        setupStatus: repository.setupStatus,
+        setupStatus,
         healthStatus: effectiveHealthStatus,
         healthSummary: repositoryHealth?.summary,
       });

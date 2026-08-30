@@ -20,7 +20,7 @@ export class PrismaWorkflowProvisioningQuery implements WorkflowProvisioningQuer
         workspaceId: input.workspaceId,
         repositoryId: { in: [...input.repositoryIds] },
       },
-      orderBy: [{ repositoryId: "asc" }, { updatedAt: "desc" }],
+      orderBy: [{ repositoryId: "asc" }, { updatedAt: "desc" }, { id: "desc" }],
     });
 
     const latestByRepository = new Map<

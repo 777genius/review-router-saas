@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { SupportDiagnosticsRepositoryPort } from "../../application/ports/support-diagnostics-repository-port";
 import type { SupportDiagnosticsInput } from "../../domain/support-diagnostics";
+import { projectRepositorySetupStatus } from "@reviewrouter/features-workflow-provisioning";
 
 export class PrismaSupportDiagnosticsRepository implements SupportDiagnosticsRepositoryPort {
   constructor(private readonly prisma: PrismaClient) {}
@@ -26,6 +27,11 @@ export class PrismaSupportDiagnosticsRepository implements SupportDiagnosticsRep
             selected: true,
             archived: true,
             setupStatus: true,
+            provisioning: {
+              orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+              take: 1,
+              select: { status: true },
+            },
             actionHealth: {
               orderBy: { receivedAt: "desc" },
               take: 1,
@@ -112,7 +118,11 @@ export class PrismaSupportDiagnosticsRepository implements SupportDiagnosticsRep
           id: repository.id,
           selected: repository.selected,
           archived: repository.archived,
-          setupStatus: repository.setupStatus,
+          setupStatus: projectRepositorySetupStatus({
+            workflowProvisioningStatus:
+              repository.provisioning[0]?.status ?? null,
+            legacySetupStatus: repository.setupStatus,
+          }),
           latestProviderSetupState: latestHealth?.providerSetupState ?? null,
           latestProviderHealth: latestHealth?.providerHealth ?? null,
           latestFindingCounts: latestHealth
