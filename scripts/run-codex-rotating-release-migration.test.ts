@@ -518,6 +518,71 @@ describe("canonical exclusive release migration caller", () => {
       configuration,
       { ownerAuthorizedInitialRuntimeGateClosed: true },
     );
+    const providerScopeBoundaryStart = provisioning.indexOf(
+      "-- A privilege-free dump preserves these routines",
+    );
+    const providerScopeBoundaryEnd = provisioning.indexOf(
+      "$provider_scope_concurrency_operator_boundary$;",
+    );
+    const providerScopeBoundary = provisioning.slice(
+      providerScopeBoundaryStart,
+      providerScopeBoundaryEnd,
+    );
+    expect(providerScopeBoundaryStart).toBeGreaterThan(
+      provisioning.indexOf("$transferred_public_routine_acl_gate$;"),
+    );
+    expect(providerScopeBoundaryEnd).toBeGreaterThan(
+      providerScopeBoundaryStart,
+    );
+    expect(providerScopeBoundaryEnd).toBeLessThan(
+      provisioning.indexOf("RESET ROLE;", providerScopeBoundaryEnd),
+    );
+    for (const routine of [
+      "snapshot",
+      "status",
+      "activate",
+      "close_for_rollback",
+      "verify_rollback",
+    ]) {
+      expect(providerScopeBoundary).toContain(
+        `ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_${routine}()\n  SECURITY DEFINER SET search_path TO pg_catalog, public;`,
+      );
+    }
+    expect(providerScopeBoundary).toContain(
+      "FROM PUBLIC, reviewrouter_release_migration, reviewrouter_api",
+    );
+    expect(providerScopeBoundary).toContain(
+      "reviewrouter_activation_permit_installer, reviewrouter_activation_receipt_reader",
+    );
+    expect(providerScopeBoundary).toContain("reviewrouter_role_bootstrap;");
+    const operatorGrant = providerScopeBoundary.slice(
+      providerScopeBoundary.indexOf("GRANT EXECUTE ON FUNCTION"),
+      providerScopeBoundary.indexOf(
+        "TO reviewrouter_release_migration;",
+        providerScopeBoundary.indexOf("GRANT EXECUTE ON FUNCTION"),
+      ),
+    );
+    expect(operatorGrant).toContain(
+      "reviewrouter_provider_scope_concurrency_status()",
+    );
+    expect(operatorGrant).toContain(
+      "reviewrouter_provider_scope_concurrency_activate()",
+    );
+    expect(operatorGrant).toContain(
+      "reviewrouter_provider_scope_concurrency_close_for_rollback()",
+    );
+    expect(operatorGrant).toContain(
+      "reviewrouter_provider_scope_concurrency_verify_rollback()",
+    );
+    expect(operatorGrant).not.toContain(
+      "reviewrouter_provider_scope_concurrency_snapshot()",
+    );
+    expect(providerScopeBoundary).toContain("routine_count <> 5");
+    expect(providerScopeBoundary).toContain("canonical_count <> 5");
+    expect(providerScopeBoundary).toContain("release_execute_count <> 4");
+    expect(providerScopeBoundary).toContain(
+      "routine.proconfig = ARRAY['search_path=pg_catalog, public']::text[]",
+    );
     const grants = runtimeGrantSql(configuration);
     expect(grants).toContain("BEGIN;");
     const activationAuthority = activationAuthorityProvisioningSql();

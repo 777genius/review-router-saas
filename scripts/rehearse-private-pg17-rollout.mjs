@@ -854,6 +854,116 @@ END
 $assert_live_authority_topology$;`;
 }
 
+export function assertDisposableProviderScopeConcurrencyAuthoritySql() {
+  return `DO $assert_provider_scope_concurrency_authority$
+DECLARE denied_role text;
+DECLARE routine_count integer;
+DECLARE canonical_count integer;
+DECLARE release_execute_count integer;
+BEGIN
+  SELECT count(*), count(*) FILTER (
+    WHERE owner.rolname = 'reviewrouter_release_schema_owner'
+      AND routine.prosecdef
+      AND routine.proconfig = ARRAY['search_path=pg_catalog, public']::text[]
+  )
+  INTO routine_count, canonical_count
+  FROM pg_proc routine
+  JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+  JOIN pg_roles owner ON owner.oid = routine.proowner
+  WHERE namespace.nspname = 'public'
+    AND routine.pronargs = 0
+    AND routine.proname = ANY (ARRAY[
+      'reviewrouter_provider_scope_concurrency_snapshot',
+      'reviewrouter_provider_scope_concurrency_status',
+      'reviewrouter_provider_scope_concurrency_activate',
+      'reviewrouter_provider_scope_concurrency_close_for_rollback',
+      'reviewrouter_provider_scope_concurrency_verify_rollback'
+    ]);
+  SELECT count(*) INTO release_execute_count
+  FROM pg_proc routine
+  JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+  WHERE namespace.nspname = 'public'
+    AND routine.pronargs = 0
+    AND routine.proname = ANY (ARRAY[
+      'reviewrouter_provider_scope_concurrency_snapshot',
+      'reviewrouter_provider_scope_concurrency_status',
+      'reviewrouter_provider_scope_concurrency_activate',
+      'reviewrouter_provider_scope_concurrency_close_for_rollback',
+      'reviewrouter_provider_scope_concurrency_verify_rollback'
+    ])
+    AND has_function_privilege(
+      'reviewrouter_release_migration', routine.oid, 'EXECUTE'
+    );
+  IF routine_count <> 5 OR canonical_count <> 5
+     OR release_execute_count <> 4
+     OR has_function_privilege(
+       'reviewrouter_release_migration',
+       'public.reviewrouter_provider_scope_concurrency_snapshot()',
+       'EXECUTE'
+     ) OR EXISTS (
+       SELECT 1
+       FROM pg_proc routine
+       JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+       CROSS JOIN LATERAL aclexplode(
+         coalesce(routine.proacl, acldefault('f', routine.proowner))
+       ) acl
+       WHERE namespace.nspname = 'public'
+         AND routine.pronargs = 0
+         AND routine.proname = ANY (ARRAY[
+           'reviewrouter_provider_scope_concurrency_snapshot',
+           'reviewrouter_provider_scope_concurrency_status',
+           'reviewrouter_provider_scope_concurrency_activate',
+           'reviewrouter_provider_scope_concurrency_close_for_rollback',
+           'reviewrouter_provider_scope_concurrency_verify_rollback'
+         ])
+         AND acl.grantee = 0
+         AND acl.privilege_type = 'EXECUTE'
+     ) THEN
+    RAISE EXCEPTION
+      'private_pg17_rehearsal_provider_scope_concurrency_authority_failed';
+  END IF;
+  FOREACH denied_role IN ARRAY ARRAY[
+    'reviewrouter_api', 'reviewrouter_web', 'reviewrouter_worker',
+    'reviewrouter_comment_token_custody',
+    'reviewrouter_codex_effect_authority',
+    'reviewrouter_activation_permit_installer',
+    'reviewrouter_activation_receipt_reader',
+    'reviewrouter_role_bootstrap'
+  ] LOOP
+    IF EXISTS (
+      SELECT 1
+      FROM pg_proc routine
+      JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+      WHERE namespace.nspname = 'public'
+        AND routine.pronargs = 0
+        AND routine.proname = ANY (ARRAY[
+          'reviewrouter_provider_scope_concurrency_snapshot',
+          'reviewrouter_provider_scope_concurrency_status',
+          'reviewrouter_provider_scope_concurrency_activate',
+          'reviewrouter_provider_scope_concurrency_close_for_rollback',
+          'reviewrouter_provider_scope_concurrency_verify_rollback'
+        ])
+        AND has_function_privilege(denied_role, routine.oid, 'EXECUTE')
+    ) THEN
+      RAISE EXCEPTION
+        'private_pg17_rehearsal_provider_scope_concurrency_denied_role:%',
+        denied_role;
+    END IF;
+  END LOOP;
+END
+$assert_provider_scope_concurrency_authority$;`;
+}
+
+export function disposableProviderScopeConcurrencyExerciseSql() {
+  return `\\set ON_ERROR_STOP on
+BEGIN;
+SELECT public.reviewrouter_provider_scope_concurrency_status();
+SELECT public.reviewrouter_provider_scope_concurrency_activate();
+SELECT public.reviewrouter_provider_scope_concurrency_close_for_rollback();
+SELECT public.reviewrouter_provider_scope_concurrency_verify_rollback();
+ROLLBACK;`;
+}
+
 export function disposablePg17TargetRoleFoundationSql({
   providerAdminUsername = "reviewrouter_provider_administrator",
   demoteProvider = true,
@@ -3019,6 +3129,32 @@ COMMIT;
         );
         facts.assertCanonicalBootstrapDemoted();
         facts.assertCanonicalPgcryptoAcl();
+        facts.sql(
+          facts.targetContainer,
+          assertDisposableProviderScopeConcurrencyAuthoritySql(),
+        );
+        canonicalRun(
+          "exercise_provider_scope_concurrency_authority",
+          "psql",
+          [
+            facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
+            "--no-psqlrc",
+            "--quiet",
+          ],
+          {
+            env: {
+              DATABASE_URL:
+                facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
+            },
+            input: disposableProviderScopeConcurrencyExerciseSql(),
+          },
+        );
+        // The four calls exercise activation and rollback management together
+        // but must leave the restored target at its pre-exercise state.
+        facts.sql(
+          facts.targetContainer,
+          assertDisposableProviderScopeConcurrencyAuthoritySql(),
+        );
         await assertTargetActivationReadiness("post_bootstrap", true);
         return observed(RolloutStep.BootstrapTargetRoles, result);
       },

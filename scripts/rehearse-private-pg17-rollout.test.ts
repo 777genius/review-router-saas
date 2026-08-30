@@ -15,8 +15,10 @@ import {
   cleanupDisposableRehearsalResources,
   captureOnlyRehearsalFixtureCleanupSql,
   assertDisposablePreReleaseAuthorityTopologySql,
+  assertDisposableProviderScopeConcurrencyAuthoritySql,
   disposablePg17CanonicalRoleBootstrapSetupSql,
   disposablePg17TargetRoleFoundationSql,
+  disposableProviderScopeConcurrencyExerciseSql,
   disposablePreReleaseAuthorityRoleTopologySql,
   disposableSqlConfiguration,
   disposableTargetPublicTableAclCanonicalizationSql,
@@ -339,8 +341,7 @@ describe("disposable dual-version rehearsal", () => {
     );
   });
   it("provisions the live authority pair before retained source migrations", () => {
-    const authorityTopology =
-      disposablePreReleaseAuthorityRoleTopologySql();
+    const authorityTopology = disposablePreReleaseAuthorityRoleTopologySql();
 
     expect(authorityTopology).toContain(
       "CREATE ROLE reviewrouter_release_migration LOGIN",
@@ -365,11 +366,9 @@ describe("disposable dual-version rehearsal", () => {
 
     const assertion = assertDisposablePreReleaseAuthorityTopologySql();
     expect(assertion).toContain(
-      'ReviewProviderScopeConcurrencyControl_baseline_closed',
+      "ReviewProviderScopeConcurrencyControl_baseline_closed",
     );
-    expect(assertion).toContain(
-      "rolname = 'reviewrouter_release_migration'",
-    );
+    expect(assertion).toContain("rolname = 'reviewrouter_release_migration'");
     expect(assertion).toContain(
       "rolname = 'reviewrouter_release_schema_owner'",
     );
@@ -394,6 +393,68 @@ describe("disposable dual-version rehearsal", () => {
         "sql(source, assertDisposablePreReleaseAuthorityTopologySql())",
       ),
     ).toBeLessThan(source.indexOf("const baselinePrincipalInventory"));
+  });
+  it("asserts and transactionally exercises the restored operator surface", () => {
+    const assertion = assertDisposableProviderScopeConcurrencyAuthoritySql();
+    expect(assertion).toContain("routine_count <> 5");
+    expect(assertion).toContain("canonical_count <> 5");
+    expect(assertion).toContain("release_execute_count <> 4");
+    expect(assertion).toContain(
+      "owner.rolname = 'reviewrouter_release_schema_owner'",
+    );
+    expect(assertion).toContain("routine.prosecdef");
+    expect(assertion).toContain(
+      "routine.proconfig = ARRAY['search_path=pg_catalog, public']::text[]",
+    );
+    expect(assertion).toContain("'reviewrouter_activation_permit_installer'");
+    expect(assertion).toContain("'reviewrouter_activation_receipt_reader'");
+    expect(assertion).toContain("'reviewrouter_role_bootstrap'");
+    expect(assertion).toContain("acl.grantee = 0");
+    expect(assertion).toContain(
+      "private_pg17_rehearsal_provider_scope_concurrency_authority_failed",
+    );
+
+    const exercise = disposableProviderScopeConcurrencyExerciseSql();
+    expect(exercise).toContain("\\set ON_ERROR_STOP on\nBEGIN;");
+    expect(exercise).toContain(
+      "reviewrouter_provider_scope_concurrency_status()",
+    );
+    expect(exercise).toContain(
+      "reviewrouter_provider_scope_concurrency_activate()",
+    );
+    expect(exercise).toContain(
+      "reviewrouter_provider_scope_concurrency_close_for_rollback()",
+    );
+    expect(exercise).toContain(
+      "reviewrouter_provider_scope_concurrency_verify_rollback()",
+    );
+    expect(exercise.trimEnd().endsWith("ROLLBACK;")).toBe(true);
+
+    const source = readFileSync(
+      new URL("./rehearse-private-pg17-rollout.mjs", import.meta.url),
+      "utf8",
+    );
+    const bootstrap = source.indexOf(
+      "executeCanonicalRoleBootstrap(\n          facts.canonicalEnv",
+    );
+    const exerciseCall = source.indexOf(
+      '"exercise_provider_scope_concurrency_authority"',
+    );
+    const postBootstrapReadiness = source.indexOf(
+      'assertTargetActivationReadiness("post_bootstrap", true)',
+    );
+    expect(exerciseCall).toBeGreaterThan(bootstrap);
+    expect(exerciseCall).toBeLessThan(postBootstrapReadiness);
+    expect(
+      source
+        .slice(exerciseCall, postBootstrapReadiness)
+        .match(/assertDisposableProviderScopeConcurrencyAuthoritySql\(\)/gu),
+    ).toHaveLength(1);
+    expect(
+      source
+        .slice(bootstrap, exerciseCall)
+        .match(/assertDisposableProviderScopeConcurrencyAuthoritySql\(\)/gu),
+    ).toHaveLength(1);
   });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
     const identity = "rr-disposable-production-shaped-capture";

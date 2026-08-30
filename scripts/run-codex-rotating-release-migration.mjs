@@ -4312,6 +4312,119 @@ BEGIN
   END IF;
 END
 $transferred_public_routine_acl_gate$;
+-- A privilege-free dump preserves these routines but intentionally omits the
+-- four operator grants installed by migration 000079. Re-establish that
+-- production contract at the canonical post-restore provisioning boundary,
+-- after ownership has converged to the final NOLOGIN schema owner.
+ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_snapshot()
+  SECURITY DEFINER SET search_path TO pg_catalog, public;
+ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_status()
+  SECURITY DEFINER SET search_path TO pg_catalog, public;
+ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_activate()
+  SECURITY DEFINER SET search_path TO pg_catalog, public;
+ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_close_for_rollback()
+  SECURITY DEFINER SET search_path TO pg_catalog, public;
+ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_verify_rollback()
+  SECURITY DEFINER SET search_path TO pg_catalog, public;
+REVOKE ALL ON FUNCTION
+  public.reviewrouter_provider_scope_concurrency_snapshot(),
+  public.reviewrouter_provider_scope_concurrency_status(),
+  public.reviewrouter_provider_scope_concurrency_activate(),
+  public.reviewrouter_provider_scope_concurrency_close_for_rollback(),
+  public.reviewrouter_provider_scope_concurrency_verify_rollback()
+FROM PUBLIC, reviewrouter_release_migration, reviewrouter_api,
+  reviewrouter_web, reviewrouter_worker, reviewrouter_comment_token_custody,
+  reviewrouter_codex_effect_authority,
+  ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName},
+  ${canonicalBootstrapRoleName};
+GRANT EXECUTE ON FUNCTION
+  public.reviewrouter_provider_scope_concurrency_status(),
+  public.reviewrouter_provider_scope_concurrency_activate(),
+  public.reviewrouter_provider_scope_concurrency_close_for_rollback(),
+  public.reviewrouter_provider_scope_concurrency_verify_rollback()
+TO reviewrouter_release_migration;
+DO $provider_scope_concurrency_operator_boundary$
+DECLARE routine_count integer;
+DECLARE canonical_count integer;
+DECLARE release_execute_count integer;
+BEGIN
+  SELECT count(*), count(*) FILTER (
+    WHERE owner.rolname = '${releaseSchemaOwnerRoleName}'
+      AND routine.prosecdef
+      AND routine.proconfig = ARRAY['search_path=pg_catalog, public']::text[]
+  )
+  INTO routine_count, canonical_count
+  FROM pg_proc routine
+  JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+  JOIN pg_roles owner ON owner.oid = routine.proowner
+  WHERE namespace.nspname = 'public'
+    AND routine.pronargs = 0
+    AND routine.proname = ANY (ARRAY[
+      'reviewrouter_provider_scope_concurrency_snapshot',
+      'reviewrouter_provider_scope_concurrency_status',
+      'reviewrouter_provider_scope_concurrency_activate',
+      'reviewrouter_provider_scope_concurrency_close_for_rollback',
+      'reviewrouter_provider_scope_concurrency_verify_rollback'
+    ]);
+  SELECT count(*) INTO release_execute_count
+  FROM pg_proc routine
+  JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+  CROSS JOIN LATERAL aclexplode(
+    coalesce(routine.proacl, acldefault('f', routine.proowner))
+  ) acl
+  WHERE namespace.nspname = 'public'
+    AND routine.pronargs = 0
+    AND routine.proname = ANY (ARRAY[
+      'reviewrouter_provider_scope_concurrency_snapshot',
+      'reviewrouter_provider_scope_concurrency_status',
+      'reviewrouter_provider_scope_concurrency_activate',
+      'reviewrouter_provider_scope_concurrency_close_for_rollback',
+      'reviewrouter_provider_scope_concurrency_verify_rollback'
+    ])
+    AND acl.grantee = 'reviewrouter_release_migration'::regrole
+    AND acl.privilege_type = 'EXECUTE';
+  IF routine_count <> 5 OR canonical_count <> 5
+     OR release_execute_count <> 4
+     OR has_function_privilege(
+       'reviewrouter_release_migration',
+       'public.reviewrouter_provider_scope_concurrency_snapshot()',
+       'EXECUTE'
+     )
+     OR EXISTS (
+       SELECT 1
+       FROM pg_proc routine
+       JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+       CROSS JOIN LATERAL aclexplode(
+         coalesce(routine.proacl, acldefault('f', routine.proowner))
+       ) acl
+       LEFT JOIN pg_roles grantee ON grantee.oid = acl.grantee
+       WHERE namespace.nspname = 'public'
+         AND routine.pronargs = 0
+         AND routine.proname = ANY (ARRAY[
+           'reviewrouter_provider_scope_concurrency_snapshot',
+           'reviewrouter_provider_scope_concurrency_status',
+           'reviewrouter_provider_scope_concurrency_activate',
+           'reviewrouter_provider_scope_concurrency_close_for_rollback',
+           'reviewrouter_provider_scope_concurrency_verify_rollback'
+         ])
+         AND acl.privilege_type = 'EXECUTE'
+         AND (
+           acl.grantee = 0
+           OR grantee.rolname IN (
+             'reviewrouter_api', 'reviewrouter_web', 'reviewrouter_worker',
+             'reviewrouter_comment_token_custody',
+             'reviewrouter_codex_effect_authority',
+             '${activationPermitInstallerRoleName}',
+             '${activationReceiptReaderRoleName}',
+             '${canonicalBootstrapRoleName}'
+           )
+         )
+     ) THEN
+    RAISE EXCEPTION
+      'provider scope concurrency operator boundary is non-canonical';
+  END IF;
+END
+$provider_scope_concurrency_operator_boundary$;
 ${
   ownerAuthorizedInitialRuntimeGateClosed
     ? `-- A fresh target may need its first canonical ACL projection before the
