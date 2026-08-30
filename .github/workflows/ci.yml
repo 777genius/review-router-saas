@@ -294,6 +294,9 @@ jobs:
     name: Quality Gates
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5433/review_router_ci_test?schema=public
+      REVIEW_ROUTER_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5433/review_router_ci_test?schema=public
 
     services:
       postgres:
@@ -347,12 +350,25 @@ jobs:
       - name: Review Action v2 handoff contract tests
         run: pnpm protocol:handoff:test
 
+      - name: Start isolated provider-scope transition test database
+        run: |
+          docker run --detach --name reviewrouter-quality-test-postgres \
+            --env POSTGRES_PASSWORD=postgres --publish 5433:5432 \
+            postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
+          for attempt in $(seq 1 30); do
+            if PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -c 'SELECT 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
       - name: Create CI databases
         env:
           PGPASSWORD: postgres
         run: |
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE review_router_ci'
-          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE review_router_ci_test'
+          psql -h 127.0.0.1 -p 5433 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE review_router_ci_test'
 
       - name: Rotating Codex PostgreSQL 17 combined migration rehearsal (no skips)
         env:
@@ -365,8 +381,54 @@ jobs:
       - name: Apply dev database migrations
         run: pnpm db:migrate:deploy
 
+      - name: Apply test database through the pre-000079 boundary
+        run: |
+          PROVIDER_SCOPE_FIXTURE="$RUNNER_TEMP/provider-scope-pre-000079"
+          export PROVIDER_SCOPE_FIXTURE
+          node --input-type=module <<'NODE'
+          import { cpSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+          import { join, resolve } from "node:path";
+
+          const target = resolve(process.env.PROVIDER_SCOPE_FIXTURE);
+          cpSync(resolve("packages/platform/db/prisma"), target, {
+            recursive: true,
+          });
+          const migrations = join(target, "migrations");
+          for (const entry of readdirSync(migrations, { withFileTypes: true })) {
+            if (entry.isDirectory() && entry.name >= "000079_") {
+              rmSync(join(migrations, entry.name), { recursive: true });
+            }
+          }
+          writeFileSync(
+            `${target}.config.mjs`,
+            `export default { schema: ${JSON.stringify(
+              join(target, "schema.prisma"),
+            )}, migrations: { path: ${JSON.stringify(
+              migrations,
+            )} }, datasource: { url: process.env.DATABASE_URL } };\n`,
+          );
+          NODE
+          DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @reviewrouter/platform-db exec prisma migrate deploy \
+            --config "$PROVIDER_SCOPE_FIXTURE.config.mjs"
+
+      - name: Provision provider-scope transition test roles
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -p 5433 -U postgres -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'postgres' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER DATABASE review_router_ci_test OWNER TO reviewrouter_release_schema_owner;
+          SQL
+
       - name: Apply test database migrations
-        run: DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir packages/platform/db db:migrate:deploy
+        env:
+          PGPASSWORD: postgres
+        run: |
+          DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir packages/platform/db db:migrate:deploy
+          psql -h 127.0.0.1 -p 5433 -U postgres -d review_router_ci_test \
+            -v ON_ERROR_STOP=1 -c \
+            'REASSIGN OWNED BY postgres TO reviewrouter_release_schema_owner'
 
       - name: Bind hosted certification input bytes
         env:

@@ -1034,26 +1034,30 @@ if (databaseUrl) {
       const released = new Promise<void>((resolve) => {
         releaseActivation = resolve;
       });
-      const activation = prisma.$transaction(async (transaction) => {
-        await transaction.$queryRaw`
-          SELECT pg_advisory_xact_lock(1381126735, 1381192279) IS NULL AS "locked"
-        `;
-        await transaction.$executeRawUnsafe(
-          'DROP INDEX IF EXISTS "ReviewInvocationLeaseV2_one_active_provider_vote_lane"',
+      const activation = prisma
+        .$transaction(async (transaction) => {
+          await setReleaseMigrationSessionAuthorization(transaction);
+          await transaction.$queryRaw`
+            SELECT public.reviewrouter_provider_scope_concurrency_activate()
+          `;
+          activationReady();
+          await released;
+        })
+        .then(
+          () => ({ error: null }),
+          (error: unknown) => {
+            activationReady();
+            return { error };
+          },
         );
-        await transaction.$executeRaw`
-          UPDATE "ReviewProviderScopeConcurrencyControl"
-          SET "activated" = true, "updatedAt" = statement_timestamp()
-          WHERE "singleton" = true
-        `;
-        activationReady();
-        await released;
-      });
+      let observation:
+        | ReturnType<typeof harness.executions.observeActiveInvocationFlight>
+        | undefined;
 
       try {
         await ready;
         const priorWaiterCount = await cutoverSharedLockWaiterCount();
-        const observation = harness.executions.observeActiveInvocationFlight({
+        observation = harness.executions.observeActiveInvocationFlight({
           scope: harness.scope,
           providerInvocationKey: hashFromText("activation-boundary-provider"),
           providerVoteIdentityHash: hashFromText("activation-boundary-vote"),
@@ -1062,7 +1066,8 @@ if (databaseUrl) {
 
         await waitForCutoverSharedLockWaiter(priorWaiterCount);
         releaseActivation();
-        await activation;
+        const activationResult = await activation;
+        if (activationResult.error !== null) throw activationResult.error;
         await expect(observation).resolves.toMatchObject({ flight: null });
         await expect(
           prisma.$queryRaw<Array<{ activated: boolean }>>`
@@ -1074,6 +1079,9 @@ if (databaseUrl) {
       } finally {
         releaseActivation();
         await activation;
+        if (observation !== undefined) {
+          await Promise.allSettled([observation]);
+        }
         await setProviderScopeConcurrency(false);
         await restoreLegacyProviderVoteIndex();
       }
@@ -1585,18 +1593,25 @@ async function settleConcurrent<T>(
 }
 
 async function setProviderScopeConcurrency(activated: boolean): Promise<void> {
-  if (activated) {
-    await prisma.$executeRawUnsafe(
-      'DROP INDEX CONCURRENTLY IF EXISTS "ReviewInvocationLeaseV2_one_active_provider_vote_lane"',
-    );
-  }
-  await serializableFixtureUpdate(
-    (transaction) =>
-      transaction.$executeRaw`
-      UPDATE "ReviewProviderScopeConcurrencyControl"
-      SET "activated" = ${activated}, "updatedAt" = statement_timestamp()
-      WHERE "singleton" = true
-    `,
+  await serializableFixtureUpdate(async (transaction) => {
+    await setReleaseMigrationSessionAuthorization(transaction);
+    if (activated) {
+      await transaction.$queryRaw`
+          SELECT public.reviewrouter_provider_scope_concurrency_activate()
+        `;
+    } else {
+      await transaction.$queryRaw`
+          SELECT public.reviewrouter_provider_scope_concurrency_close_for_rollback()
+        `;
+    }
+  });
+}
+
+async function setReleaseMigrationSessionAuthorization(
+  transaction: Prisma.TransactionClient,
+): Promise<void> {
+  await transaction.$executeRawUnsafe(
+    "SET LOCAL SESSION AUTHORIZATION reviewrouter_release_migration",
   );
 }
 
@@ -1614,11 +1629,22 @@ async function serializableFixtureUpdate(
 }
 
 async function restoreLegacyProviderVoteIndex(): Promise<void> {
-  await prisma.$executeRawUnsafe(`
-    CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "ReviewInvocationLeaseV2_one_active_provider_vote_lane"
-    ON "ReviewInvocationLeaseV2" ("providerVoteIdentityHash")
-    WHERE "state" = 'active' AND "purpose" = 'provider_execution'
-  `);
+  await prisma.$transaction(async (transaction) => {
+    await transaction.$executeRawUnsafe(
+      "SET LOCAL SESSION AUTHORIZATION reviewrouter_release_schema_owner",
+    );
+    await transaction.$executeRawUnsafe(`
+      CREATE UNIQUE INDEX IF NOT EXISTS "ReviewInvocationLeaseV2_one_active_provider_vote_lane"
+      ON "ReviewInvocationLeaseV2" ("providerVoteIdentityHash")
+      WHERE "state" = 'active' AND "purpose" = 'provider_execution'
+    `);
+  });
+  await serializableFixtureUpdate(async (transaction) => {
+    await setReleaseMigrationSessionAuthorization(transaction);
+    await transaction.$queryRaw`
+      SELECT public.reviewrouter_provider_scope_concurrency_verify_rollback()
+    `;
+  });
 }
 
 async function activeVoteLaneDuplicateCount(): Promise<number> {
