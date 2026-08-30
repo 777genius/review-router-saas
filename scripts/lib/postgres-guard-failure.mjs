@@ -8,8 +8,7 @@ const nestedStatementLines = Object.freeze([
   "    requested_rollout_id,requested_target_recovery_witness_sha256,",
   "    requested_inventory,",
   "    requested_source_legacy_ambiguity->>'inventorySha256',",
-  "    requested_eligibility_cutoff",
-  '  )"',
+  '    requested_eligibility_cutoff)"',
 ]);
 
 function isExactContextLine(
@@ -73,12 +72,12 @@ export function isExactPostgresGuardFailure(result, expectedGuard) {
   if (!isExactStdinErrorLine(lines[0], expectedGuard)) return false;
   if (lines.length === 2)
     return isExactContextLine(lines[1], executorSignature, "RAISE");
-  if (lines.length !== 9) return false;
+  if (lines.length !== 8) return false;
   return (
     isExactContextLine(lines[1], reconciliationSignature, "RAISE") &&
     nestedStatementLines.every((line, index) => lines[index + 2] === line) &&
     isExactContextLine(
-      lines[8],
+      lines[7],
       executorSignature,
       "CALL",
       "PL/pgSQL function ",

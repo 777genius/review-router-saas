@@ -6,14 +6,13 @@ const guard = "legacy_reconciliation_inventory_changed";
 const nestedGuard = "legacy_reconciliation_unresolved_intent";
 const directContext =
   "CONTEXT:  PL/pgSQL function reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean) line 81 at RAISE";
-const nestedContext = `CONTEXT:  PL/pgSQL function reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text,timestamp with time zone) line 47 at RAISE
+const nestedContext = `CONTEXT:  PL/pgSQL function reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text,timestamp with time zone) line 59 at RAISE
 SQL statement "CALL public.reviewrouter_reconcile_legacy_ambiguity(
     requested_rollout_id,requested_target_recovery_witness_sha256,
     requested_inventory,
     requested_source_legacy_ambiguity->>'inventorySha256',
-    requested_eligibility_cutoff
-  )"
-PL/pgSQL function reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean) line 87 at CALL`;
+    requested_eligibility_cutoff)"
+PL/pgSQL function reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean) line 2543 at CALL`;
 
 const failure = (stderr: unknown, overrides = {}) => ({
   status: 3,
@@ -123,6 +122,51 @@ describe("exact PostgreSQL guard failure classification", () => {
     ],
   ])("rejects %s", (_name, stderr) => {
     expect(isExactPostgresGuardFailure(failure(stderr), guard)).toBe(false);
+  });
+
+  it.each([
+    [
+      "separated closing parenthesis",
+      nestedContext.replace(
+        '    requested_eligibility_cutoff)"',
+        '    requested_eligibility_cutoff\n  )"',
+      ),
+    ],
+    [
+      "changed argument indentation",
+      nestedContext.replace(
+        "    requested_inventory,",
+        "   requested_inventory,",
+      ),
+    ],
+    [
+      "extra argument whitespace",
+      nestedContext.replace(
+        "    requested_inventory,",
+        "    requested_inventory, ",
+      ),
+    ],
+    [
+      "extra statement line",
+      nestedContext.replace(
+        "    requested_inventory,",
+        "    requested_inventory,\n    requested_extra,",
+      ),
+    ],
+    [
+      "missing closing parenthesis",
+      nestedContext.replace(
+        '    requested_eligibility_cutoff)"',
+        '    requested_eligibility_cutoff"',
+      ),
+    ],
+  ])("rejects nested context with %s", (_name, context) => {
+    expect(
+      isExactPostgresGuardFailure(
+        failure(`${errorLine(21, nestedGuard)}\n${context}\n`),
+        nestedGuard,
+      ),
+    ).toBe(false);
   });
 
   it("rejects a successful process carrying forged guard stderr", () => {
