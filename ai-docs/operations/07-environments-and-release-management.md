@@ -270,8 +270,8 @@ contract` and `Full private PG16 to PG17 rehearsal` jobs
 - the same exact CI run owns both unexpired, digest-addressed evidence
   artifacts; each artifact manifest binds the repository, commit, run ID, run
   attempt, exact job name, and SHA-derived artifact name
-- when `sync_production_action_ref=true`, production Render credentials can
-  dry-run the requested Action ref override
+- `sync_production_action_ref=true` is rejected before any immutable tag is
+  published; production rotation is a separate post-release operator action
 - one `linux/amd64` hosted runtime image containing web, API, and worker builds
   from the exact release commit and publishes to GHCR
 - GHCR resolves the published image to an immutable OCI manifest digest; the
@@ -300,8 +300,8 @@ version only when that exact tag already points to the same SaaS `GITHUB_SHA`.
 The workflow allows that recovery path and still fails closed if the tag points
 anywhere else.
 
-Set `sync_production_action_ref=true` only for a deliberate rollback or smoke
-override.
+Do not set `sync_production_action_ref=true`. It is retained only as a
+fail-before-publication compatibility input.
 
 The two PostgreSQL gates intentionally do not run for pull requests, including
 fork pull requests. They run together on the trusted push to `main`, so an
@@ -383,11 +383,14 @@ Useful variants:
 ```bash
 pnpm ops:sync-action-ref --dry-run
 pnpm ops:sync-action-ref --action-ref 777genius/review-router@main
-pnpm ops:sync-action-ref --action-ref 777genius/review-router@<40-char-sha>
 pnpm ops:sync-action-ref --no-deploy
 pnpm ops:sync-action-ref --wait
 pnpm ops:sync-action-ref --allowlist-window 3
 ```
+
+An immutable SHA cannot use the legacy one-pass command. The CLI rejects it
+unless an explicit rotation phase is selected. This prevents a web deployment
+from issuing B while an API or worker deployment still trusts only A.
 
 Post-sync production checks:
 
@@ -397,7 +400,52 @@ curl -fsS -o /dev/null -w '%{http_code}\n' https://reviewrouter.site
 pnpm ops:sync-action-ref --dry-run --no-deploy
 ```
 
-For a rotating A -> B release, use this fail-closed order:
+For a rotating A -> B release, use this fail-closed order. Export exact
+`RENDER_OWNER_ID`, `RENDER_PROJECT_ID`, `RENDER_ENVIRONMENT_ID`,
+`REVIEW_ROUTER_PROVIDER_AUTHORITY_URL`, and
+`REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN`. Every phase needs a new durable
+operator operation ID. The provider-mutation authority serializes the exact
+environment cohort. Any ambiguous PUT, GET, or deploy result records
+`ambiguous_forward_repair`; do not rerun or rollback until an operator
+reconciles that authority record.
+
+```bash
+# Phase 1: primary A remains unchanged; B becomes live trusted overlap everywhere.
+pnpm ops:sync-action-ref \
+  --action-ref 777genius/review-router@<B-40-char-sha> \
+  --release-tag v1.0.141 \
+  --operation-id action-ref-v1.0.141-stage-01 \
+  --rotation-phase stage \
+  --allowlist-window 4
+
+# Phase 2: promote only after the completed stage proves B overlap everywhere.
+pnpm ops:sync-action-ref \
+  --action-ref 777genius/review-router@<B-40-char-sha> \
+  --release-tag v1.0.141 \
+  --operation-id action-ref-v1.0.141-promote-01 \
+  --rotation-phase promote \
+  --allowlist-window 4
+```
+
+The published exact release descriptor is fetched through GitHub's authenticated
+API and must cryptographically bind B's tag, SHA, public `dist/index.js`
+SHA-256, seed, and reseed bytes. Arbitrary CLI digests are not accepted.
+`--no-deploy` is rejected
+for rotation phases because env convergence alone does not prove the running
+cohort trusts B. The command preflights every service before its first write and
+fails instead of evicting a trusted ref when the window is too small. At the
+current A138+A139+A140 production overlap, staging A141 requires a window of at
+least 4. Rotation phases also reject any `--services` subset, duplicate, or
+extra service: the exact `reviewrouter-web`, `reviewrouter-api`, and
+`reviewrouter-worker` production cohort is mandatory.
+
+Stage changes only both bounded overlap lists; it verifies that the active A
+primary, installer tuple, and hosted `TAG/SHA/DIST_SHA256` tuple remain exact.
+Promote writes the B primary, installer tuple, and hosted release tuple under
+one durable authority claim. A concurrent addition is never evicted. Once any
+provider mutation starts, uncertainty is recovery-only and is never interpreted
+as permission to roll back, resume, or deploy a partial tuple. Retire verifies
+the complete B tuple and changes only overlap lists.
 
 1. Keep primary A and deploy a trusted overlap containing B to every web/API
    instance. Wait for all exact deployments to be live.
@@ -418,6 +466,20 @@ For a rotating A -> B release, use this fail-closed order:
    verified ancestor and its exact workflow attestation still matches.
 5. Remove A only after two inventories show zero live references and the
    maximum queue/lease window has elapsed. Never prune by a fixed list length.
+
+Retirement is a separate explicit phase. It first requires every general and
+rotating primary to equal B, re-deploys A+B overlap as a resume fence, then
+removes only the named A ref while preserving every other trusted ref:
+
+```bash
+pnpm ops:sync-action-ref \
+  --action-ref 777genius/review-router@<B-40-char-sha> \
+  --retire-action-ref 777genius/review-router@<A-40-char-sha> \
+  --release-tag v1.0.141 \
+  --operation-id action-ref-v1.0.141-retire-a140-01 \
+  --rotation-phase retire \
+  --allowlist-window 4
+```
 
 The current namespace schema stores one exact active workflow attestation.
 Allowlisting A and B does not make an in-place A -> B rewrite safe: overwriting

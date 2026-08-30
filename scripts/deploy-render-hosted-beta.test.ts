@@ -232,6 +232,19 @@ function releaseDescriptor(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function actionReleaseDescriptor(overrides: Record<string, unknown> = {}) {
+  return {
+    ...releaseDescriptor(),
+    schemaVersion: "reviewrouter.codex-rotating-action-release-descriptor.v2",
+    actionRelease: {
+      tag: "v1.2.3",
+      sha: actionSha,
+      distSha256: "b".repeat(64),
+    },
+    ...overrides,
+  };
+}
+
 function descriptorFixture() {
   const directory = mkdtempSync(join(tmpdir(), "render-installer-descriptor-"));
   const file = join(directory, "descriptor.json");
@@ -416,6 +429,37 @@ describe("Render hosted deploy hardening", () => {
       ).toThrow("must be an exact lowercase SHA-256");
     } finally {
       rmSync(fixture.directory, { recursive: true, force: true });
+    }
+  });
+  it("binds the v2 descriptor to the hosted release tuple", () => {
+    const directory = mkdtempSync(join(tmpdir(), "render-release-v2-"));
+    const file = join(directory, "descriptor.json");
+    const bytes = `${JSON.stringify(actionReleaseDescriptor())}\n`;
+    writeFileSync(file, bytes);
+    const source = {
+      REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
+      REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_FILE: file,
+      REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_SHA256: createHash(
+        "sha256",
+      )
+        .update(bytes)
+        .digest("hex"),
+      REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: "v1.2.3",
+      REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA: actionSha,
+      REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256: "b".repeat(64),
+    };
+    try {
+      expect(readVerifiedInstallerReleaseDescriptor(source)).toMatchObject({
+        actionRef,
+      });
+      expect(() =>
+        readVerifiedInstallerReleaseDescriptor({
+          ...source,
+          REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA: "c".repeat(40),
+        }),
+      ).toThrow("hosted Action release tuple mismatch");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
   it("creates the hosted database on PostgreSQL 17", async () => {

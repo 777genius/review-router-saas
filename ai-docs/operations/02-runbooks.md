@@ -319,11 +319,31 @@ Why it happens:
    of bypassing owner, provider, or schema checks.
 
 Normal recovery is a phased exact-SHA configuration change, not a mutable ref
-sync. First expand `REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS` to trust
-both old A and new B on every web/API instance and wait for all deploys. Only
-then set `REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF` to B for new setup
-candidates. Keep active namespaces pinned to A until their queued/in-progress
-runs and mutation leases drain; migrate them through a fresh fenced setup.
+sync. Configure the exact Render owner/project/environment and the shared
+provider-mutation authority first. A partial or ambiguous provider result is
+not automatically resumable: reconcile its durable authority record before
+issuing a new operation ID.
+
+```bash
+pnpm ops:sync-action-ref \
+  --action-ref 777genius/review-router@<B-40-char-sha> \
+  --release-tag v1.0.141 \
+  --operation-id action-ref-v1.0.141-stage-01 \
+  --rotation-phase stage \
+  --allowlist-window 4
+
+pnpm ops:sync-action-ref \
+  --action-ref 777genius/review-router@<B-40-char-sha> \
+  --release-tag v1.0.141 \
+  --operation-id action-ref-v1.0.141-promote-01 \
+  --rotation-phase promote \
+  --allowlist-window 4
+```
+
+Both commands run under one durable authority per phase, re-read exact env
+values, and wait for all web/API/worker deploys. Keep active namespaces pinned
+to A until their queued/in-progress runs and
+mutation leases drain; migrate them through a fresh fenced setup.
 
 Post-sync verification:
 
@@ -333,9 +353,9 @@ curl -fsS -o /dev/null -w '%{http_code}\n' https://reviewrouter.site
 pnpm ops:sync-action-ref --dry-run --no-deploy
 ```
 
-The final general-ref dry-run does not prove rotating convergence. Inspect the
-rotating primary and overlap on every writer without printing unrelated secret
-values.
+The final general-ref dry-run does not prove rotating convergence. The phased
+command verifies only the Action ref keys it owns and never prints unrelated
+secret values.
 
 Rollback:
 
@@ -344,6 +364,18 @@ Rollback:
 2. Do not rewrite existing namespace attestations as a rollback shortcut.
 3. Remove B or A only after repeated inventory proves no active namespace,
    queued/in-progress workflow, or unexpired lease still references it.
+
+After those inventories and the maximum queue/lease window, retire A explicitly:
+
+```bash
+pnpm ops:sync-action-ref \
+  --action-ref 777genius/review-router@<B-40-char-sha> \
+  --retire-action-ref 777genius/review-router@<A-40-char-sha> \
+  --release-tag v1.0.141 \
+  --operation-id action-ref-v1.0.141-retire-a140-01 \
+  --rotation-phase retire \
+  --allowlist-window 4
+```
 
 Do not store provider auth JSON, API keys, PR diffs, prompts, or model output in
 Render env while debugging. Never print

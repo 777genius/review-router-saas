@@ -120,8 +120,10 @@ const stableSecretNames = Object.freeze([
   "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
 ]);
 
-const installerDescriptorSchema =
+const legacyInstallerDescriptorSchema =
   "reviewrouter.codex-rotating-installer-descriptor.v1";
+const actionReleaseDescriptorSchema =
+  "reviewrouter.codex-rotating-action-release-descriptor.v2";
 const installerDescriptorEnvironmentNames = Object.freeze([
   "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL",
   "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION",
@@ -179,9 +181,21 @@ export function readVerifiedInstallerReleaseDescriptor(source) {
       "immutable rotating installer release descriptor is not valid JSON",
     );
   }
+  const isActionReleaseDescriptor =
+    descriptor.schemaVersion === actionReleaseDescriptorSchema;
   assertExactObjectKeys(
     descriptor,
-    ["schemaVersion", "url", "version", "sha256", "actionRef", "reseed"],
+    isActionReleaseDescriptor
+      ? [
+          "schemaVersion",
+          "url",
+          "version",
+          "sha256",
+          "actionRef",
+          "actionRelease",
+          "reseed",
+        ]
+      : ["schemaVersion", "url", "version", "sha256", "actionRef", "reseed"],
     "immutable rotating installer release descriptor",
   );
   assertExactObjectKeys(
@@ -189,7 +203,10 @@ export function readVerifiedInstallerReleaseDescriptor(source) {
     ["url", "sha256"],
     "immutable rotating reseed descriptor",
   );
-  if (descriptor.schemaVersion !== installerDescriptorSchema) {
+  if (
+    descriptor.schemaVersion !== legacyInstallerDescriptorSchema &&
+    !isActionReleaseDescriptor
+  ) {
     throw new Error(
       "immutable rotating installer release descriptor schema mismatch",
     );
@@ -199,6 +216,23 @@ export function readVerifiedInstallerReleaseDescriptor(source) {
     throw new Error(
       "immutable rotating installer release descriptor Action ref mismatch",
     );
+  }
+  if (isActionReleaseDescriptor) {
+    assertExactObjectKeys(
+      descriptor.actionRelease,
+      ["tag", "sha", "distSha256"],
+      "immutable hosted Action release tuple",
+    );
+    if (
+      descriptor.actionRelease.tag !==
+        requiredEnv("REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG", source) ||
+      descriptor.actionRelease.sha !==
+        requiredEnv("REVIEW_ROUTER_HOSTED_POOL_ACTION_SHA", source) ||
+      descriptor.actionRelease.distSha256 !==
+        requiredEnv("REVIEW_ROUTER_HOSTED_POOL_ACTION_DIST_SHA256", source)
+    ) {
+      throw new Error("immutable hosted Action release tuple mismatch");
+    }
   }
   const tupleEnv = {
     ...source,
@@ -717,16 +751,34 @@ export class ForkReviewV5RolloutAuthority {
     ownerId,
     fingerprint,
   }) {
-    const request = {
+    return await this.acquireOperation({
       rolloutId,
       operation: `fork-review-v5-env:${phaseToken}`,
+      resourceId: `fork-review-v5:${environmentId}`,
+      ownerId,
+      fingerprint,
+      version: phaseToken,
+    });
+  }
+
+  async acquireOperation({
+    rolloutId,
+    operation,
+    resourceId,
+    ownerId,
+    fingerprint,
+    version,
+  }) {
+    const request = {
+      rolloutId,
+      operation,
       resource: {
         provider: "render",
         kind: "service_environment",
-        id: `fork-review-v5:${environmentId}`,
+        id: resourceId,
       },
       ownerId,
-      expected: { fingerprint, version: phaseToken },
+      expected: { fingerprint, version },
       leaseSeconds: 900,
     };
     const recovery = await this.command("recover", request);

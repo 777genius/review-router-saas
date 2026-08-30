@@ -244,8 +244,16 @@ describe("public Action runtime sync", () => {
       'cmp scripts/reseed-codex-rotating-auth.sh "$descriptor_dir/reseed.sh"',
     );
     expect(workflow).toContain(
-      "reviewrouter.codex-rotating-installer-descriptor.v1",
+      "reviewrouter.codex-rotating-action-release-descriptor.v2",
     );
+    expect(workflow).toContain("/dist/index.js");
+    expect(workflow).not.toContain("/action-dist/index.cjs");
+    expect(workflow).toContain(
+      "production Action ref rotation is a separate durable stage/promote operation",
+    );
+    expect(workflow).not.toContain("--rotation-phase stage");
+    expect(workflow).not.toContain("--rotation-phase promote");
+    expect(workflow).not.toContain("--installer-descriptor");
     expect(workflow).toContain(
       "Upload immutable rotating installer descriptor",
     );
