@@ -12,6 +12,10 @@ describe("provider scope concurrency rollout control", () => {
     join(import.meta.dirname, "run-hosted-pool-postgres-e2e.mjs"),
     "utf8",
   );
+  const qualityGatesWorkflow = readFileSync(
+    join(import.meta.dirname, "../.github/workflows/ci.yml"),
+    "utf8",
+  );
 
   it("requires an explicit old-fleet drain before activation", () => {
     expect(source).toContain("--confirm-old-replicas-drained");
@@ -111,5 +115,24 @@ describe("provider scope concurrency rollout control", () => {
       "provider_scope_concurrency_restricted_dml_present",
     );
     expect(pg17Proof).not.toContain("SET LOCAL ROLE");
+  });
+
+  it("gives the phased PG17 fixture only the provider-scope relation ownership it needs", () => {
+    expect(qualityGatesWorkflow).not.toContain("REASSIGN OWNED");
+    const applyTestMigrationsStep =
+      /- name: Apply test database migrations(?<step>[\s\S]+?)\n\s+- name:/u.exec(
+        qualityGatesWorkflow,
+      )?.groups?.step;
+    expect(applyTestMigrationsStep).toBeDefined();
+    expect(
+      [
+        ...(applyTestMigrationsStep?.matchAll(
+          /ALTER TABLE public\."(?<table>[^"]+)"\s+OWNER TO reviewrouter_release_schema_owner/gu,
+        ) ?? []),
+      ].map((match) => match.groups?.table),
+    ).toEqual([
+      "ReviewProviderScopeConcurrencyControl",
+      "ReviewInvocationLeaseV2",
+    ]);
   });
 });

@@ -427,8 +427,15 @@ jobs:
         run: |
           DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir packages/platform/db db:migrate:deploy
           psql -h 127.0.0.1 -p 5433 -U postgres -d review_router_ci_test \
-            -v ON_ERROR_STOP=1 -c \
-            'REASSIGN OWNED BY postgres TO reviewrouter_release_schema_owner'
+            -v ON_ERROR_STOP=1 <<'SQL'
+          -- The provider-scope SECURITY DEFINER routines update the rollout
+          -- control and drop/restore an index on the lease table. Those are
+          -- the only application relations they must own.
+          ALTER TABLE public."ReviewProviderScopeConcurrencyControl"
+            OWNER TO reviewrouter_release_schema_owner;
+          ALTER TABLE public."ReviewInvocationLeaseV2"
+            OWNER TO reviewrouter_release_schema_owner;
+          SQL
 
       - name: Bind hosted certification input bytes
         env:
