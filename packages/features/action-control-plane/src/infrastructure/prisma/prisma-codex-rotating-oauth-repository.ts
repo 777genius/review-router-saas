@@ -55,6 +55,18 @@ function isDefiniteRolledBackPreleaseFailure(error: unknown): boolean {
   );
 }
 
+export function isCertifiedForkLeaseResumable(input: {
+  lease: { id: string; status: string; expiresAt: Date };
+  activeLeaseId: string | null;
+  now: Date;
+}): boolean {
+  return (
+    input.lease.status === "preleased" &&
+    input.lease.expiresAt > input.now &&
+    input.activeLeaseId === input.lease.id
+  );
+}
+
 const codexRotatingRepositoryContextSelect = {
   id: true,
   workspaceId: true,
@@ -424,6 +436,43 @@ export class PrismaCodexRotatingOAuthRepository
           blockingSetup
         ) {
           throw new Error("codex_rotating_mutation_fence_conflict");
+        }
+        if (input.certifiedForkReviewBindingHash) {
+          const exactLease = await tx.codexOAuthLease.findUnique({
+            where: { leaseKey },
+            select: {
+              id: true,
+              githubRunId: true,
+              githubRunAttempt: true,
+              status: true,
+              expiresAt: true,
+              mutationEpoch: true,
+            },
+          });
+          if (
+            exactLease &&
+            !isCertifiedForkLeaseResumable({
+              lease: exactLease,
+              activeLeaseId: provider.activeLeaseId,
+              now,
+            })
+          )
+            return {
+              leaseId: exactLease.id,
+              providerInstanceId: input.providerInstanceId,
+              runId: exactLease.githubRunId,
+              runAttempt: exactLease.githubRunAttempt,
+              status: "conflict" as const,
+              expiresAt: exactLease.expiresAt,
+              repository: input.repository,
+              generationHashSalt: provider.generationHashSalt,
+              accountFingerprintSalt: provider.accountFingerprintSalt,
+              currentGeneration: provider.latestGeneration,
+              mutationEpoch: exactLease.mutationEpoch ?? provider.mutationEpoch,
+              ...(provider.latestGenerationHash
+                ? { currentGenerationHash: provider.latestGenerationHash }
+                : {}),
+            };
         }
         if (
           provider.activeLeaseId &&

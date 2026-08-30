@@ -91,6 +91,7 @@ export class PrismaCertifiedForkReviewClaims implements CertifiedForkReviewClaim
   async claimPrelease(input: {
     scope: CertifiedForkReviewClaimScope;
     reservationOwner: string;
+    expectedLeaseKey: string;
   }) {
     const scopeKey = claimScopeKey(input.scope);
     try {
@@ -99,7 +100,7 @@ export class PrismaCertifiedForkReviewClaims implements CertifiedForkReviewClaim
           scopeKey,
           ...input.scope,
           reservationOwner: input.reservationOwner,
-          reservationExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+          expectedLeaseKey: input.expectedLeaseKey,
         },
       });
       return { status: "ready" as const };
@@ -115,10 +116,35 @@ export class PrismaCertifiedForkReviewClaims implements CertifiedForkReviewClaim
         ...(existing.commentUrl ? { commentUrl: existing.commentUrl } : {}),
       };
     }
-    if (existing.status !== "pending")
+    if (existing.status !== "pending") {
+      if (
+        existing.status === "recovered" &&
+        existing.recoveryState === "recovered" &&
+        existing.expectedLeaseKey === input.expectedLeaseKey
+      ) {
+        const clock = await this.prisma.$queryRaw<readonly [{ now: Date }]>(
+          Prisma.sql`SELECT transaction_timestamp() AS now`,
+        );
+        const updated = await this.prisma.certifiedForkReviewClaim.updateMany({
+          where: { id: existing.id, status: "recovered" },
+          data: {
+            status: "pending",
+            recoveryState: "reserved",
+            reservationOwner: input.reservationOwner,
+            reservationExpiresAt: new Date(
+              clock[0]!.now.getTime() + 60 * 60 * 1000,
+            ),
+          },
+        });
+        return updated.count === 1
+          ? { status: "ready" as const }
+          : { status: "in_progress" as const };
+      }
       throw new Error("certified_fork_claim_conflict");
+    }
     if (
       existing.reservationOwner === input.reservationOwner &&
+      existing.expectedLeaseKey === input.expectedLeaseKey &&
       existing.executionId === null &&
       existing.recoveryState === "reserved"
     )
@@ -159,27 +185,52 @@ export class PrismaCertifiedForkReviewClaims implements CertifiedForkReviewClaim
   async recoverAmbiguousPrelease(input: {
     scope: CertifiedForkReviewClaimScope;
     reservationOwner: string;
-    noProviderEffectEvidenceHash: string;
+    expectedLeaseKey: string;
+    operatorAuthority: {
+      principal: string;
+      incidentId: string;
+      attestation: "provider_effect_absence_verified";
+    };
   }): Promise<void> {
-    assertDigest(input.noProviderEffectEvidenceHash);
     const scopeKey = claimScopeKey(input.scope);
-    const recovered = await this.prisma.certifiedForkReviewClaim.updateMany({
-      where: {
-        scopeKey,
-        status: "pending",
-        recoveryState: "ambiguous",
-        reservationOwner: input.reservationOwner,
-        executionId: null,
-        outputDigest: null,
-      },
-      data: {
-        status: "recovered",
-        recoveryEvidenceHash: input.noProviderEffectEvidenceHash,
-        scopeKey: `${scopeKey}:recovered:${input.noProviderEffectEvidenceHash}`,
-      },
+    await this.prisma.$transaction(async (transaction) => {
+      const clock = await transaction.$queryRaw<readonly [{ now: Date }]>(
+        Prisma.sql`SELECT transaction_timestamp() AS now`,
+      );
+      const claim = await transaction.certifiedForkReviewClaim.findUnique({
+        where: { scopeKey },
+      });
+      if (
+        !claim ||
+        !sameClaimScope(claim, input.scope) ||
+        claim.status !== "pending" ||
+        claim.recoveryState !== "ambiguous" ||
+        claim.reservationOwner !== input.reservationOwner ||
+        claim.expectedLeaseKey !== input.expectedLeaseKey ||
+        claim.reservationExpiresAt >= clock[0]!.now ||
+        claim.executionId !== null ||
+        claim.outputDigest !== null
+      )
+        throw new Error("certified_fork_claim_recovery_conflict");
+      const lease = await transaction.codexOAuthLease.findUnique({
+        where: { leaseKey: input.expectedLeaseKey },
+        select: { id: true },
+      });
+      if (lease) throw new Error("certified_fork_claim_recovery_uncertain");
+      const evidenceHash = createHash("sha256")
+        .update(JSON.stringify(input.operatorAuthority))
+        .digest("hex");
+      const recovered = await transaction.certifiedForkReviewClaim.updateMany({
+        where: { id: claim.id, status: "pending", recoveryState: "ambiguous" },
+        data: {
+          status: "recovered",
+          recoveryState: "recovered",
+          recoveryEvidenceHash: evidenceHash,
+        },
+      });
+      if (recovered.count !== 1)
+        throw new Error("certified_fork_claim_recovery_conflict");
     });
-    if (recovered.count !== 1)
-      throw new Error("certified_fork_claim_recovery_conflict");
   }
 
   async claimPrepare(input: {
@@ -540,7 +591,7 @@ function safePath(value: string) {
     !value.startsWith("/") &&
     !value.includes("\\") &&
     !value.includes("`") &&
-    !/[\u202a-\u202e\u2066-\u2069]/u.test(value) &&
+    !/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(value) &&
     ![...value].some((character) => {
       const code = character.charCodeAt(0);
       return code < 32 || code === 127;

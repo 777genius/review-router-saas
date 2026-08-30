@@ -1,9 +1,39 @@
 import { describe, expect, it, vi } from "vitest";
 import { fingerprintDatabaseRecoveryWitness } from "@reviewrouter/features-codex-oauth-rotating";
-import { PrismaCodexRotatingOAuthRepository } from "../infrastructure/prisma/prisma-codex-rotating-oauth-repository.js";
+import {
+  isCertifiedForkLeaseResumable,
+  PrismaCodexRotatingOAuthRepository,
+} from "../infrastructure/prisma/prisma-codex-rotating-oauth-repository.js";
 import { CodexRotatingPreleaseNotAcquiredError } from "../application/ports/codex-rotating-oauth-repository-port.js";
 
 describe("Prisma Codex rotating new-work barrier", () => {
+  it("resumes only the exact active preleased certified fork lease", () => {
+    const now = new Date("2026-08-09T00:00:00Z");
+    const lease = {
+      id: "lease-1",
+      status: "preleased",
+      expiresAt: new Date("2026-08-09T00:10:00Z"),
+    };
+    expect(
+      isCertifiedForkLeaseResumable({ lease, activeLeaseId: "lease-1", now }),
+    ).toBe(true);
+    for (const mutation of [
+      { status: "finalized" },
+      { status: "completed" },
+      { status: "expired" },
+      { expiresAt: new Date("2026-08-08T23:59:59Z") },
+    ])
+      expect(
+        isCertifiedForkLeaseResumable({
+          lease: { ...lease, ...mutation },
+          activeLeaseId: "lease-1",
+          now,
+        }),
+      ).toBe(false);
+    expect(
+      isCertifiedForkLeaseResumable({ lease, activeLeaseId: null, now }),
+    ).toBe(false);
+  });
   const databaseRecoveryWitness = "witness_generation_one_12345678901234567890";
   const databaseRecoveryWitnessFingerprint = fingerprintDatabaseRecoveryWitness(
     databaseRecoveryWitness,

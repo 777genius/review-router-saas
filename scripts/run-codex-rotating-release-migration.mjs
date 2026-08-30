@@ -483,6 +483,8 @@ export const runtimeAuthorityReadOnlyTables = Object.freeze([
 export const workerOwnedMaintenanceCheckpointTable =
   "ReviewInvestigationMaintenanceCheckpoint";
 
+export const apiOwnedCertifiedForkClaimTable = "CertifiedForkReviewClaim";
+
 export const providerRuntimeUpdateColumns = Object.freeze([
   "state",
   "latestGeneration",
@@ -2758,6 +2760,7 @@ BEGIN
         'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
         'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
         '${workerOwnedMaintenanceCheckpointTable}','HostedCodexRuntimeGate',
+        '${apiOwnedCertifiedForkClaimTable}',
         'HostedCodexRuntimeClosure','HostedCodexCommentTokenMint',
         'HostedCodexCommentTokenRevocationProof','HostedCodexCommentRefreshCapability',
         'HostedCodexCommentRefreshUse','ReviewProviderScopeConcurrencyControl'
@@ -2803,31 +2806,35 @@ BEGIN
            'HostedCodexRuntimeGate','GitHubInstallation','RepositoryConnection','HostedCodexPool',
            'HostedCodexRepositoryBinding','HostedCodexInvocationGrant',
            'HostedCodexCommentRefreshCapability','HostedCodexCommentRefreshUse','HostedCodexCommentTokenMint')
-         ELSE role_kind <> 'effect-authority' AND relname <> '_prisma_migrations'
+        ELSE role_kind <> 'effect-authority' AND relname <> '_prisma_migrations'
+          AND (relname <> '${apiOwnedCertifiedForkClaimTable}' OR role_kind = 'api')
            AND relname NOT IN ('CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
              'HostedCodexCommentTokenMint','HostedCodexCommentTokenRevocationProof','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker') END)
          OR can_insert IS DISTINCT FROM (CASE WHEN role_kind='custody' THEN relname='HostedCodexCommentRefreshUse'
-         ELSE role_kind <> 'effect-authority' AND relname NOT IN (
+        ELSE role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthDatabaseAuthorityKey',
            'CodexOAuthDatabaseAuthorityReceipt','RuntimeGenerationWitnessProof',
            'HostedCodexCommentTokenRevocationProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+           AND (relname <> '${apiOwnedCertifiedForkClaimTable}' OR role_kind = 'api')
            AND relname NOT IN ('HostedCodexRuntimeGate','HostedCodexRuntimeClosure',
              'ReviewProviderScopeConcurrencyControl')
            AND relname <> 'HostedCodexCommentTokenMint'
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker') END)
          OR can_update IS DISTINCT FROM (CASE WHEN role_kind='custody' THEN false
-         ELSE role_kind <> 'effect-authority' AND relname NOT IN (
+        ELSE role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance',
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
            'HostedCodexCommentTokenRevocationProof','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+           AND (relname <> '${apiOwnedCertifiedForkClaimTable}' OR role_kind = 'api')
            AND relname NOT IN ('HostedCodexRuntimeGate','HostedCodexRuntimeClosure',
              'ReviewProviderScopeConcurrencyControl')
            AND relname <> 'HostedCodexCommentTokenMint'
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker') END)
-         OR can_delete IS DISTINCT FROM (role_kind NOT IN ('effect-authority','custody') AND relname NOT IN (
+        OR can_delete IS DISTINCT FROM (role_kind NOT IN ('effect-authority','custody')
+          AND (relname <> '${apiOwnedCertifiedForkClaimTable}' OR role_kind = 'api') AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine','CodexOAuthLease',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
            'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
@@ -4881,6 +4888,7 @@ export function runtimeGrantStatements(
     ...fullyProtectedRuntimeTables,
     ...runtimeAuthorityReadOnlyTables,
     workerOwnedMaintenanceCheckpointTable,
+    apiOwnedCertifiedForkClaimTable,
   ]
     .map((table) => `'${table}'`)
     .join(",");
@@ -5004,6 +5012,12 @@ REVOKE ALL ON TABLE public."${workerOwnedMaintenanceCheckpointTable}" FROM ${use
 ${
   role === "worker"
     ? `GRANT SELECT, INSERT, UPDATE ON TABLE public."${workerOwnedMaintenanceCheckpointTable}" TO ${username};`
+    : ""
+}
+REVOKE ALL ON TABLE public."${apiOwnedCertifiedForkClaimTable}" FROM ${username};
+${
+  role === "api"
+    ? `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public."${apiOwnedCertifiedForkClaimTable}" TO ${username};`
     : ""
 }
 REVOKE TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public FROM ${username};

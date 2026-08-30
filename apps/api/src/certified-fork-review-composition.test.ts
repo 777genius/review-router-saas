@@ -39,6 +39,91 @@ const promptPacket = {
   ],
 };
 describe("certified fork composition", () => {
+  it("recovers an expired ambiguous claim only when the exact provider lease is absent", async () => {
+    const claim = {
+      id: "claim-1",
+      scopeKey: "ignored",
+      baseRepositoryId: "99",
+      pullRequestNumber: 42,
+      reviewHeadSha: binding.reviewHeadSha,
+      baseSha: binding.baseSha,
+      contextHash: "c".repeat(64),
+      promptPolicyVersion: 1,
+      reservationOwner: "owner-1",
+      expectedLeaseKey: `codex-rotating:99:500:1:fork:${"f".repeat(64)}`,
+      reservationExpiresAt: new Date("2026-08-30T09:00:00Z"),
+      recoveryState: "ambiguous",
+      recoveryEvidenceHash: null,
+      executionId: null,
+      status: "pending",
+      outputDigest: null,
+      commentId: null,
+      commentUrl: null,
+    };
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const transaction = {
+      $queryRaw: vi.fn(async () => [{ now: new Date("2026-08-30T10:00:00Z") }]),
+      certifiedForkReviewClaim: {
+        findUnique: vi.fn(async () => claim),
+        updateMany,
+      },
+      codexOAuthLease: { findUnique: vi.fn(async () => null) },
+    };
+    const claims = new PrismaCertifiedForkReviewClaims({
+      $transaction: vi.fn(async (run) => await run(transaction)),
+    } as never);
+    await expect(
+      claims.recoverAmbiguousPrelease({
+        scope: {
+          baseRepositoryId: "99",
+          pullRequestNumber: 42,
+          reviewHeadSha: binding.reviewHeadSha,
+          baseSha: binding.baseSha,
+          contextHash: "c".repeat(64),
+          promptPolicyVersion: 1,
+        },
+        reservationOwner: "owner-1",
+        expectedLeaseKey: claim.expectedLeaseKey,
+        operatorAuthority: {
+          principal: "reviewrouter-operator",
+          incidentId: "INC-42",
+          attestation: "provider_effect_absence_verified",
+        },
+      }),
+    ).resolves.toBeUndefined();
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "recovered",
+          recoveryState: "recovered",
+          recoveryEvidenceHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        }),
+      }),
+    );
+    transaction.codexOAuthLease.findUnique.mockResolvedValueOnce({
+      id: "lease-ambiguous",
+    });
+    await expect(
+      claims.recoverAmbiguousPrelease({
+        scope: {
+          baseRepositoryId: "99",
+          pullRequestNumber: 42,
+          reviewHeadSha: binding.reviewHeadSha,
+          baseSha: binding.baseSha,
+          contextHash: "c".repeat(64),
+          promptPolicyVersion: 1,
+        },
+        reservationOwner: "owner-1",
+        expectedLeaseKey: claim.expectedLeaseKey,
+        operatorAuthority: {
+          principal: "reviewrouter-operator",
+          incidentId: "INC-43",
+          attestation: "provider_effect_absence_verified",
+        },
+      }),
+    ).rejects.toThrow("certified_fork_claim_recovery_uncertain");
+  });
+
   it("uses the lock transaction delegate for claim mutations without a second pool checkout", async () => {
     const transactionDelegate = {
       $executeRaw: vi.fn(async () => 1),
@@ -136,16 +221,18 @@ describe("certified fork composition", () => {
       contextHash: "c".repeat(64),
       promptPolicyVersion: 1,
     };
-    await expect(
-      claims.recoverAmbiguousPrelease({
+    const expectedLeaseKey = "codex-rotating:99:500:1:fork:" + "f".repeat(64);
+    const [first, duplicate] = await Promise.all([
+      claims.claimPrelease({
         scope,
         reservationOwner: "owner-1",
-        noProviderEffectEvidenceHash: "bad",
+        expectedLeaseKey,
       }),
-    ).rejects.toThrow("certified_fork_publish_digest_invalid");
-    const [first, duplicate] = await Promise.all([
-      claims.claimPrelease({ scope, reservationOwner: "owner-1" }),
-      claims.claimPrelease({ scope, reservationOwner: "owner-2" }),
+      claims.claimPrelease({
+        scope,
+        reservationOwner: "owner-2",
+        expectedLeaseKey,
+      }),
     ]);
     expect([first.status, duplicate.status].sort()).toEqual([
       "in_progress",
@@ -155,12 +242,17 @@ describe("certified fork composition", () => {
       claims.claimPrelease({
         scope: { ...scope, contextHash: "f".repeat(64) },
         reservationOwner: "owner-3",
+        expectedLeaseKey,
       }),
     ).rejects.toThrow("certified_fork_claim_conflict");
     const winningOwner = first.status === "ready" ? "owner-1" : "owner-2";
     const losingOwner = first.status === "ready" ? "owner-2" : "owner-1";
     await expect(
-      claims.claimPrelease({ scope, reservationOwner: winningOwner }),
+      claims.claimPrelease({
+        scope,
+        reservationOwner: winningOwner,
+        expectedLeaseKey,
+      }),
     ).resolves.toEqual({ status: "resume" });
     await expect(
       claims.claimPrepare({
@@ -397,6 +489,9 @@ describe("certified fork composition", () => {
       "src/`escape`.ts",
       "src/a.ts\nattack",
       "src/safe\u2066evil.ts",
+      "src/safe\u061cevil.ts",
+      "src/safe\u200eevil.ts",
+      "src/safe\u200fevil.ts",
     ]) {
       expect(() =>
         output.render({

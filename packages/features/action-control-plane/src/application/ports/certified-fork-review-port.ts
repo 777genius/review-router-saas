@@ -85,6 +85,7 @@ export interface CertifiedForkReviewClaimPort {
   claimPrelease(input: {
     readonly scope: CertifiedForkReviewClaimScope;
     readonly reservationOwner: string;
+    readonly expectedLeaseKey: string;
   }): Promise<
     | { readonly status: "ready" | "resume" }
     | { readonly status: "in_progress" }
@@ -105,7 +106,12 @@ export interface CertifiedForkReviewClaimPort {
   recoverAmbiguousPrelease(input: {
     readonly scope: CertifiedForkReviewClaimScope;
     readonly reservationOwner: string;
-    readonly noProviderEffectEvidenceHash: string;
+    readonly expectedLeaseKey: string;
+    readonly operatorAuthority: Readonly<{
+      principal: string;
+      incidentId: string;
+      attestation: "provider_effect_absence_verified";
+    }>;
   }): Promise<void>;
   claimPrepare(input: {
     readonly scope: CertifiedForkReviewClaimScope;

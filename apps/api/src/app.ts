@@ -148,6 +148,7 @@ import {
   composeReviewActionV2ProductionRoutes,
 } from "./review-action-v2-production-composition.js";
 import { composeCertifiedForkReview } from "./certified-fork-review-composition.js";
+import { registerCertifiedForkReviewOperatorRoutes } from "./certified-fork-review-operator-routes.js";
 import {
   composePrismaReviewInvestigationOperations,
   type ReviewInvestigationTerminalTelemetrySamplePort,
@@ -750,6 +751,14 @@ export async function createApiApp(
 
   if (actionControlPlaneDependencies) {
     await registerActionControlPlaneRoutes(app, actionControlPlaneDependencies);
+    if (
+      operatorCredentialSha256 &&
+      actionControlPlaneDependencies.certifiedForkReviewClaims
+    )
+      await registerCertifiedForkReviewOperatorRoutes(app, {
+        claims: actionControlPlaneDependencies.certifiedForkReviewClaims,
+        operatorCredentialSha256,
+      });
   }
 
   const disabledReviewActionV2RuntimeDependencies = prisma

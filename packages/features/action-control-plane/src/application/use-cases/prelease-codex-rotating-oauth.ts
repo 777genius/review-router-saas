@@ -31,6 +31,7 @@ import type {
 } from "../ports/certified-fork-review-port.js";
 import {
   certifiedForkReviewBindingHash,
+  certifiedForkReviewLeaseBindingKey,
   certifiedForkReviewClaimScope,
   certifiedForkReviewReservationOwner,
   certifiedForkReviewWorkflowSchemaVersion,
@@ -284,6 +285,12 @@ export async function preleaseCodexRotatingOAuth(
       await dependencies.certifiedForkReviewClaims.claimPrelease({
         scope: certifiedForkReview.scope,
         reservationOwner: certifiedForkReview.reservationOwner,
+        expectedLeaseKey: [
+          canonicalProviderInstanceId,
+          claims.run_id,
+          claims.run_attempt,
+          certifiedForkReviewLeaseBindingKey(certifiedForkReview.bindingHash),
+        ].join(":"),
       });
     if (reservation.status === "in_progress")
       return { protocolVersion: 1, status: "in_progress" };

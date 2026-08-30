@@ -30,6 +30,7 @@ import {
   runtimeGrantSql,
   stripAtomicMigrationEnvelope,
   workerOwnedMaintenanceCheckpointTable,
+  apiOwnedCertifiedForkClaimTable,
 } from "./run-codex-rotating-release-migration.mjs";
 
 const legacyEvidenceUnsigned = {
@@ -1363,7 +1364,7 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).toContain(
       "reviewrouter_bootstrap.consume_migration_evidence",
     );
-    expect(grants.match(/SELECT, INSERT, UPDATE, DELETE/g)).toHaveLength(6);
+    expect(grants.match(/SELECT, INSERT, UPDATE, DELETE/g)).toHaveLength(7);
     expect(grants).toContain(
       "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC",
     );
@@ -1480,6 +1481,15 @@ describe("canonical exclusive release migration caller", () => {
         expect(grants).toContain(maintenanceGrant);
       } else {
         expect(grants).not.toContain(maintenanceGrant);
+      }
+      expect(grants).toContain(
+        `REVOKE ALL ON TABLE public."${apiOwnedCertifiedForkClaimTable}" FROM ${role}`,
+      );
+      const certifiedClaimGrant = `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public."${apiOwnedCertifiedForkClaimTable}" TO ${role}`;
+      if (role === "reviewrouter_api") {
+        expect(grants).toContain(certifiedClaimGrant);
+      } else {
+        expect(grants).not.toContain(certifiedClaimGrant);
       }
       for (const table of rotatingEvidenceTables) {
         expect(grants).toContain(`'${table}'`);

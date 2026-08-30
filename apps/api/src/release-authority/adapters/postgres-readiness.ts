@@ -554,6 +554,17 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
         WHERE bootstrap.rolname='reviewrouter_role_bootstrap'),false)
         AS "activationBootstrapRoleDemotedExact",
       coalesce((SELECT
+          bool_and(
+            CASE role.rolname
+              WHEN 'reviewrouter_api' THEN
+                has_table_privilege(role.oid,to_regclass('public."CertifiedForkReviewClaim"'),'SELECT,INSERT,UPDATE,DELETE')
+              ELSE NOT has_table_privilege(role.oid,to_regclass('public."CertifiedForkReviewClaim"'),'SELECT,INSERT,UPDATE,DELETE')
+            END)
+          FROM pg_roles role
+          WHERE role.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker')
+            AND to_regclass('public."CertifiedForkReviewClaim"') IS NOT NULL),false)
+        AS "certifiedForkReviewClaimRuntimeAclExact",
+      coalesce((SELECT
           has_table_privilege(guard.oid,
             to_regclass('public."_prisma_migrations"'),'SELECT')
           AND NOT has_database_privilege(guard.oid,current_database(),'CREATE')

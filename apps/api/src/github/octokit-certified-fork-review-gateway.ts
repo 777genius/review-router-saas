@@ -403,7 +403,7 @@ function safePath(value: string) {
     !value.startsWith("/") &&
     !value.includes("\\") &&
     !value.includes("`") &&
-    !/[\u202a-\u202e\u2066-\u2069]/u.test(value) &&
+    !/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(value) &&
     ![...value].some((character) => {
       const code = character.charCodeAt(0);
       return code < 32 || code === 127;

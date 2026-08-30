@@ -8,7 +8,8 @@ CREATE TABLE "CertifiedForkReviewClaim" (
   "contextHash" TEXT NOT NULL,
   "promptPolicyVersion" INTEGER NOT NULL,
   "reservationOwner" TEXT NOT NULL,
-  "reservationExpiresAt" TIMESTAMP(3) NOT NULL,
+  "expectedLeaseKey" TEXT NOT NULL,
+  "reservationExpiresAt" TIMESTAMP(3) NOT NULL DEFAULT (transaction_timestamp() + interval '1 hour'),
   "recoveryState" TEXT NOT NULL DEFAULT 'reserved',
   "recoveryEvidenceHash" TEXT,
   "executionId" TEXT,
@@ -25,7 +26,7 @@ CREATE TABLE "CertifiedForkReviewClaim" (
 
 ALTER TABLE "CertifiedForkReviewClaim"
   ADD CONSTRAINT "CertifiedForkReviewClaim_recovery_state_check"
-  CHECK ("recoveryState" IN ('reserved', 'ambiguous'));
+  CHECK ("recoveryState" IN ('reserved', 'ambiguous', 'recovered'));
 
 CREATE UNIQUE INDEX "CertifiedForkReviewClaim_scopeKey_key"
   ON "CertifiedForkReviewClaim"("scopeKey");

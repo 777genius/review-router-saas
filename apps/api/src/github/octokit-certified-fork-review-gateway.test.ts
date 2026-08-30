@@ -75,6 +75,9 @@ describe("OctokitCertifiedForkReviewGateway", () => {
     ["newline path", { path: "src/a.ts\n<!-- injected -->" }],
     ["backtick path", { path: "src/`injected`.ts" }],
     ["bidi path", { path: "src/safe\u202Etxt.ts" }],
+    ["Arabic letter mark path", { path: "src/safe\u061ctxt.ts" }],
+    ["left-to-right mark path", { path: "src/safe\u200etxt.ts" }],
+    ["right-to-left mark path", { path: "src/safe\u200ftxt.ts" }],
   ])("rejects %s files", async (_name, fileMutation) => {
     const gateway = fixture(async (route, parameters) =>
       response(route, parameters, {}, fileMutation),
