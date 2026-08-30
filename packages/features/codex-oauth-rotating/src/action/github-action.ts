@@ -160,7 +160,6 @@ type ActionRuntime = {
   readonly fullReviewRuntimeRunner: FullReviewRuntimeRunner;
   readonly now: () => number;
   readonly forkPromptOnlyV2Executor: ForkPromptOnlyV2Executor;
-  readonly certifiedForkResponsesUrlForTest: string;
 };
 
 type ActionInputs = {
@@ -262,7 +261,7 @@ type WritebackResponse = {
 const certifiedForkPrepareResponseSchema = z
   .object({
     protocolVersion: z.literal(1),
-    executionId: z.string().min(1).max(200),
+    executionId: z.string().min(1).max(8_192),
     contextHash: z.string().regex(/^[a-f0-9]{64}$/i),
     model: z.literal("gpt-5.6-sol"),
     maxOutputTokens: z.literal(12_000),
@@ -292,6 +291,16 @@ type ForkOidcCredentials = Readonly<{
   requestUrl: string;
   requestToken: string;
 }>;
+
+export function parseCertifiedForkPrepareResponse(
+  value: unknown,
+): z.infer<typeof certifiedForkPrepareResponseSchema> {
+  const parsed = certifiedForkPrepareResponseSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error("certified_fork_prepare_response_invalid");
+  }
+  return parsed.data;
+}
 
 type CommentTokenResponse = {
   readonly token: string;
@@ -545,7 +554,6 @@ export async function runCodexRotatingGitHubAction(
             io,
             fetchImpl,
             oidcCredentials,
-            responsesUrlForTest: runtime.certifiedForkResponsesUrlForTest,
           }),
       };
       if (runtime.forkPromptOnlyV2Executor) clearActionAuthEnv(env);
@@ -1000,7 +1008,6 @@ async function runDirectForkPromptOnlyV2Executor(input: {
   readonly io: ActionIO;
   readonly fetchImpl: FetchLike;
   readonly oidcCredentials: ForkOidcCredentials;
-  readonly responsesUrlForTest?: string | undefined;
 }): Promise<void> {
   const actionInputs: ActionInputs = {
     mode: codexForkPromptOnlyV2RuntimeMode,
@@ -1024,81 +1031,80 @@ async function runDirectForkPromptOnlyV2Executor(input: {
   });
 
   await assertSupportedRunnerEnvironment(input.env);
-  const codexBinaryPath = await resolveCodexBinary(input.env);
-  const authJson = readActionAuthJson(input.env);
-  maskCodexAuthJson(input.io, authJson);
-  clearActionAuthEnv(input.env);
-  validateCodexAuthJsonBytes({ authJsonBytes: authJson });
-  const restoredGenerationHash = computeCodexAuthGenerationHash({
-    authJsonBytes: authJson,
-    generationHashSalt: prelease.generationHashSalt,
-  });
-  const finalize = await postJson<FinalizeResponse>({
-    fetchImpl: input.fetchImpl,
-    label: "api_finalize",
-    url: `${input.input.apiUrl}/api/action/v1/codex-oauth/finalize`,
-    body: {
-      leaseId: prelease.leaseId,
-      providerInstanceId: input.input.providerInstanceId,
-      restoredGenerationHash,
-    },
-  });
-  if (finalize.status === "stale_queued_secret") {
-    notice(input.io, "ReviewRouter skipped a stale queued Codex OAuth secret.");
-    return;
-  }
-
-  mask(input.io, finalize.publicKeyReadToken);
-  const publicKey = await fetchGitHubRepositoryPublicKey({
-    fetchImpl: input.fetchImpl,
-    owner: finalize.repositoryOwner,
-    repo: finalize.repositoryName,
-    token: finalize.publicKeyReadToken,
-  });
-  await postJson({
-    fetchImpl: input.fetchImpl,
-    label: "api_writeback_preflight",
-    url: `${input.input.apiUrl}/api/action/v1/codex-oauth/writeback-preflight`,
-    body: {
-      leaseId: prelease.leaseId,
-      providerInstanceId: input.input.providerInstanceId,
-      githubKeyId: publicKey.key_id,
-    },
-  });
-
   let providerSession:
     | { readonly accessToken: string; readonly chatgptAccountId: string }
     | undefined;
-  const tempHome = await makeTempDirectory("reviewrouter-fork-auth-home-");
+  const privateRoot = await makeForkPromptOnlyPrivateRoot();
   try {
-    await chmod(tempHome, 0o700);
-    const tempCodexHome = await makeTempDirectory(
-      "reviewrouter-fork-codex-home-",
-    );
-    try {
-      await chmod(tempCodexHome, 0o700);
-      const refreshed = await refreshAndWritebackCodexAuthJson({
-        authJson,
-        inputs: actionInputs,
-        fetchImpl: input.fetchImpl,
-        prelease,
-        finalize,
-        publicKey,
-        codexBinaryPath,
-        env: input.env,
-        tempHome,
-        tempCodexHome,
-        forkPromptOnlyBootstrap: true,
-      });
-      maskCodexAuthJson(input.io, refreshed.authJson);
-      providerSession = extractForkProviderSession(refreshed.authJson);
-      mask(input.io, providerSession.accessToken);
-      await rm(join(tempCodexHome, "auth.json"), { force: true });
-    } finally {
-      await removeTree(tempCodexHome);
+    const codexBinaryPath = await resolveCodexBinary(input.env, privateRoot);
+    const authJson = readActionAuthJson(input.env);
+    maskCodexAuthJson(input.io, authJson);
+    clearActionAuthEnv(input.env);
+    validateCodexAuthJsonBytes({ authJsonBytes: authJson });
+    const restoredGenerationHash = computeCodexAuthGenerationHash({
+      authJsonBytes: authJson,
+      generationHashSalt: prelease.generationHashSalt,
+    });
+    const finalize = await postJson<FinalizeResponse>({
+      fetchImpl: input.fetchImpl,
+      label: "api_finalize",
+      url: `${input.input.apiUrl}/api/action/v1/codex-oauth/finalize`,
+      body: {
+        leaseId: prelease.leaseId,
+        providerInstanceId: input.input.providerInstanceId,
+        restoredGenerationHash,
+      },
+    });
+    if (finalize.status === "stale_queued_secret") {
+      notice(
+        input.io,
+        "ReviewRouter skipped a stale queued Codex OAuth secret.",
+      );
+      return;
     }
+
+    mask(input.io, finalize.publicKeyReadToken);
+    const publicKey = await fetchGitHubRepositoryPublicKey({
+      fetchImpl: input.fetchImpl,
+      owner: finalize.repositoryOwner,
+      repo: finalize.repositoryName,
+      token: finalize.publicKeyReadToken,
+    });
+    await postJson({
+      fetchImpl: input.fetchImpl,
+      label: "api_writeback_preflight",
+      url: `${input.input.apiUrl}/api/action/v1/codex-oauth/writeback-preflight`,
+      body: {
+        leaseId: prelease.leaseId,
+        providerInstanceId: input.input.providerInstanceId,
+        githubKeyId: publicKey.key_id,
+      },
+    });
+
+    const tempHome = join(privateRoot, "home");
+    const tempCodexHome = join(privateRoot, "codex-home");
+    await mkdir(tempHome, { mode: 0o700 });
+    await mkdir(tempCodexHome, { mode: 0o700 });
+    const refreshed = await refreshAndWritebackCodexAuthJson({
+      authJson,
+      inputs: actionInputs,
+      fetchImpl: input.fetchImpl,
+      prelease,
+      finalize,
+      publicKey,
+      codexBinaryPath,
+      env: input.env,
+      tempHome,
+      tempCodexHome,
+      forkPromptOnlyBootstrap: true,
+      forkPrivateRoot: privateRoot,
+    });
+    maskCodexAuthJson(input.io, refreshed.authJson);
+    providerSession = extractForkProviderSession(refreshed.authJson);
+    mask(input.io, providerSession.accessToken);
+    await rm(join(tempCodexHome, "auth.json"), { force: true });
   } finally {
-    await removeTree(tempHome);
+    await removeTree(privateRoot);
   }
   if (!providerSession) throw new Error("certified_fork_provider_auth_missing");
 
@@ -1118,12 +1124,9 @@ async function runDirectForkPromptOnlyV2Executor(input: {
     }),
     maxAttempts: 1,
   });
-  const prepare = certifiedForkPrepareResponseSchema.safeParse(prepareRaw);
-  if (!prepare.success) {
-    throw new Error("certified_fork_prepare_response_invalid");
-  }
+  const prepare = parseCertifiedForkPrepareResponse(prepareRaw);
   assertPreparedForkContextMatchesBinding({
-    promptPacket: prepare.data.promptPacket,
+    promptPacket: prepare.promptPacket,
     binding: input.input.binding,
   });
 
@@ -1131,12 +1134,9 @@ async function runDirectForkPromptOnlyV2Executor(input: {
     fetchImpl: input.fetchImpl,
     accessToken: providerSession.accessToken,
     chatgptAccountId: providerSession.chatgptAccountId,
-    model: prepare.data.model,
-    maxOutputTokens: prepare.data.maxOutputTokens,
-    promptPacket: prepare.data.promptPacket,
-    ...(input.responsesUrlForTest
-      ? { responsesUrl: input.responsesUrlForTest }
-      : {}),
+    model: prepare.model,
+    maxOutputTokens: prepare.maxOutputTokens,
+    promptPacket: prepare.promptPacket,
   });
 
   const publishOidcToken = await requestForkOidcToken({
@@ -1154,8 +1154,8 @@ async function runDirectForkPromptOnlyV2Executor(input: {
         leaseId: prelease.leaseId,
         input: input.input,
       }),
-      executionId: prepare.data.executionId,
-      contextHash: prepare.data.contextHash,
+      executionId: prepare.executionId,
+      contextHash: prepare.contextHash,
       modelOutput,
     },
     maxAttempts: 1,
@@ -3171,6 +3171,7 @@ function closeHttpServer(server: http.Server): Promise<void> {
 
 export async function resolveCodexBinary(
   env: NodeJS.ProcessEnv,
+  isolatedExtractionParent?: string | undefined,
 ): Promise<string> {
   const actionPath = resolveGitHubActionPath(env);
 
@@ -3224,7 +3225,10 @@ export async function resolveCodexBinary(
   }
 
   const extractionRoot = await mkdtemp(
-    join(env.RUNNER_TEMP ?? tmpdir(), "reviewrouter-codex-bundle-"),
+    join(
+      isolatedExtractionParent ?? env.RUNNER_TEMP ?? tmpdir(),
+      "reviewrouter-codex-bundle-",
+    ),
   );
   await runProcess({
     command: "tar",
@@ -3425,8 +3429,12 @@ async function runCodexBootstrap(input: {
   readonly tempHome: string;
   readonly tempCodexHome: string;
   readonly forkPromptOnlyBootstrap?: boolean | undefined;
+  readonly forkPrivateRoot?: string | undefined;
 }): Promise<void> {
-  const emptyCwd = await makeTempDirectory("reviewrouter-empty-");
+  const emptyCwd = input.forkPrivateRoot
+    ? join(input.forkPrivateRoot, "bootstrap-cwd")
+    : await makeTempDirectory("reviewrouter-empty-");
+  if (input.forkPrivateRoot) await mkdir(emptyCwd, { mode: 0o700 });
   try {
     const command = buildCodexCommand({
       codexBinaryPath: input.codexBinaryPath,
@@ -3469,6 +3477,7 @@ async function refreshCodexAuthJson(input: {
   readonly tempHome: string;
   readonly tempCodexHome: string;
   readonly forkPromptOnlyBootstrap?: boolean | undefined;
+  readonly forkPrivateRoot?: string | undefined;
 }): Promise<{
   readonly authJson: string;
   readonly writebackCommittedByRuntime: boolean;
@@ -4986,33 +4995,18 @@ function buildCodexChildEnv(
   };
 }
 
-const forkPromptOnlyBootstrapEnvKeys = [
-  "PATH",
-  "CI",
-  "NODE_EXTRA_CA_CERTS",
-  "SSL_CERT_FILE",
-  "SSL_CERT_DIR",
-  "TMPDIR",
-  "TEMP",
-  "TMP",
-  "RUNNER_OS",
-  "RUNNER_ARCH",
-  "RUNNER_TEMP",
-  "RUNNER_TOOL_CACHE",
-  "ImageOS",
-  "ImageVersion",
-] as const;
+const forkPromptOnlyBootstrapPath =
+  "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 export function buildForkPromptOnlyBootstrapEnv(
   sourceEnv: NodeJS.ProcessEnv,
   home: string,
   codexHome: string,
 ): Record<string, string> {
-  const childEnv: Record<string, string> = {};
-  for (const key of forkPromptOnlyBootstrapEnvKeys) {
-    const value = sourceEnv[key];
-    if (typeof value === "string" && value.length > 0) childEnv[key] = value;
-  }
+  const childEnv: Record<string, string> = {
+    PATH: forkPromptOnlyBootstrapPath,
+  };
+  void sourceEnv;
   childEnv.HOME = home;
   childEnv.CODEX_HOME = codexHome;
   childEnv.CI = "true";
@@ -5467,6 +5461,26 @@ async function removeTree(path: string): Promise<void> {
 
 async function makeTempDirectory(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
+}
+
+async function makeForkPromptOnlyPrivateRoot(): Promise<string> {
+  const trustedTempParent = await realpath("/tmp");
+  const root = await mkdtemp(join(trustedTempParent, "reviewrouter-fork-"));
+  try {
+    await chmod(root, 0o700);
+    const resolvedRoot = await realpath(root);
+    if (!resolvedRoot.startsWith(`${trustedTempParent}/reviewrouter-fork-`)) {
+      throw new Error("certified_fork_private_root_invalid");
+    }
+    const rootStat = await stat(resolvedRoot);
+    if (!rootStat.isDirectory() || (rootStat.mode & 0o077) !== 0) {
+      throw new Error("certified_fork_private_root_permissions_invalid");
+    }
+    return resolvedRoot;
+  } catch (error) {
+    await removeTree(root);
+    throw error;
+  }
 }
 
 function buildWritebackIdempotencyKey(

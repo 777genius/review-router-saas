@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildForkPromptOnlyBootstrapEnv,
+  parseCertifiedForkPrepareResponse,
   runCodexRotatingGitHubAction,
 } from "../action/github-action";
 
@@ -29,6 +30,7 @@ const binding = {
   trustDomain: "fork",
 } as const;
 const contextHash = "d".repeat(64);
+const productionSizedExecutionId = "ticket.".padEnd(982, "x");
 const idToken = `header.${Buffer.from(
   JSON.stringify({
     iss: "https://auth.openai.com",
@@ -134,7 +136,7 @@ async function fixture(): Promise<{
       "#!/usr/bin/env node",
       "const { readFileSync, readdirSync, writeFileSync } = require('node:fs');",
       "const { join } = require('node:path');",
-      `writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ cwd: process.cwd(), cwdEntries: readdirSync(process.cwd()), env: process.env }));`,
+      `writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ cwd: process.cwd(), cwdEntries: readdirSync(process.cwd()), scriptPath: process.argv[1], env: process.env }));`,
       "const authPath = join(process.env.CODEX_HOME, 'auth.json');",
       "readFileSync(authPath, 'utf8');",
       `writeFileSync(authPath, ${JSON.stringify(refreshedAuthJson)});`,
@@ -205,10 +207,13 @@ describe("certified fork V5 production executor", () => {
         const capture = JSON.parse(readFileSync(test.capturePath, "utf8")) as {
           readonly cwd: string;
           readonly cwdEntries: readonly string[];
+          readonly scriptPath: string;
           readonly env: Record<string, string>;
         };
         expect(capture.cwdEntries).toEqual([]);
         expect(existsSync(capture.cwd)).toBe(false);
+        expect(existsSync(capture.scriptPath)).toBe(false);
+        expect(capture.scriptPath.startsWith(`${test.root}/`)).toBe(false);
         expect(existsSync(capture.env.HOME!)).toBe(false);
         expect(existsSync(capture.env.CODEX_HOME!)).toBe(false);
         expect(capture.env).toMatchObject({
@@ -221,6 +226,14 @@ describe("certified fork V5 production executor", () => {
           "GITHUB_WORKSPACE",
           "ACTIONS_ID_TOKEN_REQUEST_URL",
           "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+          "RUNNER_TEMP",
+          "RUNNER_TOOL_CACHE",
+          "TMPDIR",
+          "TEMP",
+          "TMP",
+          "NODE_EXTRA_CA_CERTS",
+          "SSL_CERT_FILE",
+          "SSL_CERT_DIR",
           "INPUT_SOURCE-REPOSITORY",
           "INPUT_REVIEW-HEAD-SHA",
           "FORK_ATTACK_METADATA",
@@ -229,7 +242,7 @@ describe("certified fork V5 production executor", () => {
         }
         return jsonResponse({
           protocolVersion: 1,
-          executionId: "execution_1",
+          executionId: productionSizedExecutionId,
           contextHash,
           model: "gpt-5.6-sol",
           maxOutputTokens: 12_000,
@@ -255,7 +268,7 @@ describe("certified fork V5 production executor", () => {
           },
         });
       }
-      if (href === "https://provider.test/codex/responses") {
+      if (href === "https://chatgpt.com/backend-api/codex/responses") {
         calls.push("provider");
         expect(new Headers(init?.headers).get("chatgpt-account-id")).toBe(
           "account_test",
@@ -264,6 +277,7 @@ describe("certified fork V5 production executor", () => {
           "Bearer refreshed-access-token",
         );
         return jsonResponse({
+          status: "completed",
           output_text: JSON.stringify({
             protocolVersion: 1,
             summaryMarkdown: "Looks good.",
@@ -286,8 +300,6 @@ describe("certified fork V5 production executor", () => {
       await runCodexRotatingGitHubAction({
         env: runtimeEnv,
         fetchImpl,
-        certifiedForkResponsesUrlForTest:
-          "https://provider.test/codex/responses",
         io: {
           stdout: { write: vi.fn() },
           stderr: { write: vi.fn() },
@@ -335,7 +347,7 @@ describe("certified fork V5 production executor", () => {
         providerInstanceId: "codex-rotating:123456",
         workflowSchemaVersion: 5,
         forkReviewBinding: binding,
-        executionId: "execution_1",
+        executionId: productionSizedExecutionId,
         contextHash,
         modelOutput: {
           protocolVersion: 1,
@@ -358,6 +370,7 @@ describe("certified fork V5 production executor", () => {
           RUNNER_OS: "Linux",
           RUNNER_ARCH: "X64",
           RUNNER_TEMP: "/runner-temp",
+          TMPDIR: "/attacker/tmp",
           NODE_EXTRA_CA_CERTS: "/tls/ca.pem",
           GITHUB_EVENT_PATH: "/fork/event.json",
           GITHUB_WORKSPACE: "/fork/workspace",
@@ -369,11 +382,7 @@ describe("certified fork V5 production executor", () => {
         "/empty-codex-home",
       ),
     ).toEqual({
-      PATH: "/usr/bin",
-      RUNNER_OS: "Linux",
-      RUNNER_ARCH: "X64",
-      RUNNER_TEMP: "/runner-temp",
-      NODE_EXTRA_CA_CERTS: "/tls/ca.pem",
+      PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       HOME: "/empty-home",
       CODEX_HOME: "/empty-codex-home",
       CI: "true",
@@ -429,8 +438,6 @@ describe("certified fork V5 production executor", () => {
         runCodexRotatingGitHubAction({
           env: actionEnv(test.root, test.eventPath),
           fetchImpl,
-          certifiedForkResponsesUrlForTest:
-            "https://provider.test/codex/responses",
           io: {
             stdout: { write: vi.fn() },
             stderr: { write: vi.fn() },
@@ -440,7 +447,9 @@ describe("certified fork V5 production executor", () => {
       expect(urls.some((url) => url.includes("certified-fork-review"))).toBe(
         false,
       );
-      expect(urls).not.toContain("https://provider.test/codex/responses");
+      expect(urls).not.toContain(
+        "https://chatgpt.com/backend-api/codex/responses",
+      );
       expect(oidcCount).toBe(1);
     } finally {
       await rm(test.root, { recursive: true, force: true });
@@ -492,7 +501,7 @@ describe("certified fork V5 production executor", () => {
       if (href.endsWith("/certified-fork-review/prepare")) {
         return jsonResponse({
           protocolVersion: 1,
-          executionId: "execution_1",
+          executionId: productionSizedExecutionId,
           contextHash,
           model: "gpt-5.6-sol",
           maxOutputTokens: 12_000,
@@ -510,8 +519,11 @@ describe("certified fork V5 production executor", () => {
           },
         });
       }
-      if (href === "https://provider.test/codex/responses") {
-        return jsonResponse({ output_text: "not valid model JSON" });
+      if (href === "https://chatgpt.com/backend-api/codex/responses") {
+        return jsonResponse({
+          status: "completed",
+          output_text: "not valid model JSON",
+        });
       }
       throw new Error(`unexpected_fetch:${href}`);
     }) as typeof fetch;
@@ -520,8 +532,6 @@ describe("certified fork V5 production executor", () => {
         runCodexRotatingGitHubAction({
           env: actionEnv(test.root, test.eventPath),
           fetchImpl,
-          certifiedForkResponsesUrlForTest:
-            "https://provider.test/codex/responses",
           io: {
             stdout: { write: vi.fn() },
             stderr: { write: vi.fn() },
@@ -535,6 +545,43 @@ describe("certified fork V5 production executor", () => {
     } finally {
       await rm(test.root, { recursive: true, force: true });
     }
+  });
+
+  it("accepts production-sized execution tickets and rejects oversized ones", () => {
+    const response = {
+      protocolVersion: 1,
+      executionId: productionSizedExecutionId,
+      contextHash,
+      model: "gpt-5.6-sol",
+      maxOutputTokens: 12_000,
+      promptPacket: {
+        protocolVersion: 1,
+        contextHash,
+        repository: {
+          base: binding.baseRepository,
+          source: binding.sourceRepository,
+        },
+        pullRequestNumber: binding.pullRequestNumber,
+        baseSha: binding.baseSha,
+        headSha: binding.reviewHeadSha,
+        files: [],
+      },
+    };
+    expect(
+      parseCertifiedForkPrepareResponse(response).executionId,
+    ).toHaveLength(982);
+    expect(
+      parseCertifiedForkPrepareResponse({
+        ...response,
+        executionId: "x".repeat(8_192),
+      }).executionId,
+    ).toHaveLength(8_192);
+    expect(() =>
+      parseCertifiedForkPrepareResponse({
+        ...response,
+        executionId: "x".repeat(8_193),
+      }),
+    ).toThrow("certified_fork_prepare_response_invalid");
   });
 });
 

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  certifiedForkModelOutputSchema,
+  certifiedForkPromptPacketSchema,
   requestDirectForkReview,
   type CertifiedForkPromptPacket,
 } from "../action/direct-fork-responses";
@@ -45,13 +47,15 @@ function input(fetchImpl: typeof fetch) {
     model: "gpt-5.6-sol",
     maxOutputTokens: 12_000,
     promptPacket: promptPacket(),
-    responsesUrl: "https://provider.test/codex/responses",
   } as const;
 }
 
 describe("direct certified fork Responses client", () => {
   it("dispatches one exact tool-free request with account binding", async () => {
     const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      expect(String(_url)).toBe(
+        "https://chatgpt.com/backend-api/codex/responses",
+      );
       expect(init?.method).toBe("POST");
       expect(init?.redirect).toBe("error");
       const headers = new Headers(init?.headers);
@@ -82,7 +86,12 @@ describe("direct certified fork Responses client", () => {
         },
       ]);
       return new Response(
-        `data: ${JSON.stringify({ type: "response.output_text.delta", delta: modelOutput() })}\n\ndata: [DONE]\n\n`,
+        [
+          `data: ${JSON.stringify({ type: "response.output_text.delta", delta: modelOutput() })}`,
+          `data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", output_text: modelOutput() } })}`,
+          "data: [DONE]",
+          "",
+        ].join("\n\n"),
         { status: 200, headers: { "content-type": "text/event-stream" } },
       );
     }) as typeof fetch;
@@ -118,6 +127,7 @@ describe("direct certified fork Responses client", () => {
       "non-stream tool call",
       new Response(
         JSON.stringify({
+          status: "completed",
           output: [{ type: "function_call", name: "shell", arguments: "{}" }],
         }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -128,6 +138,7 @@ describe("direct certified fork Responses client", () => {
       "computer call",
       new Response(
         JSON.stringify({
+          status: "completed",
           output: [{ type: "computer_call", action: { type: "click" } }],
         }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -143,11 +154,38 @@ describe("direct certified fork Responses client", () => {
       "certified_fork_provider_stream_incomplete",
     ],
     [
+      "DONE without completed",
+      new Response(
+        `data: ${JSON.stringify({ type: "response.output_text.delta", delta: modelOutput() })}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ),
+      "certified_fork_provider_stream_incomplete",
+    ],
+    [
+      "explicit incomplete SSE",
+      new Response(
+        `data: ${JSON.stringify({ type: "response.incomplete", response: { status: "incomplete", output_text: modelOutput() } })}\n\n`,
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ),
+      "certified_fork_provider_failed",
+    ],
+    [
+      "valid-looking incomplete non-stream response",
+      new Response(
+        JSON.stringify({ status: "incomplete", output_text: modelOutput() }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+      "certified_fork_provider_response_incomplete",
+    ],
+    [
       "malformed model output",
-      new Response(JSON.stringify({ output_text: "not-json" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
+      new Response(
+        JSON.stringify({ status: "completed", output_text: "not-json" }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
       "certified_fork_model_output_invalid_json",
     ],
   ])("rejects %s", async (_name, response, error) => {
@@ -180,5 +218,105 @@ describe("direct certified fork Responses client", () => {
       requestDirectForkReview({ ...input(fetchImpl), maxOutputTokens: 12_001 }),
     ).rejects.toThrow("certified_fork_output_budget_not_approved");
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("enforces the exact model output wire limits", () => {
+    const finding = {
+      severity: "major" as const,
+      title: "t",
+      body: "b",
+      path: "p",
+    };
+    expect(
+      certifiedForkModelOutputSchema.safeParse({
+        protocolVersion: 1,
+        summaryMarkdown: "s".repeat(60_000),
+        findings: Array.from({ length: 50 }, () => finding),
+      }).success,
+    ).toBe(true);
+    for (const invalid of [
+      {
+        protocolVersion: 1,
+        summaryMarkdown: "s".repeat(60_001),
+        findings: [],
+      },
+      {
+        protocolVersion: 1,
+        summaryMarkdown: "s",
+        findings: Array.from({ length: 51 }, () => finding),
+      },
+      {
+        protocolVersion: 1,
+        summaryMarkdown: "s",
+        findings: [{ ...finding, title: "t".repeat(201) }],
+      },
+      {
+        protocolVersion: 1,
+        summaryMarkdown: "s",
+        findings: [{ ...finding, body: "b".repeat(8_001) }],
+      },
+      {
+        protocolVersion: 1,
+        summaryMarkdown: "s",
+        findings: [{ ...finding, path: "p".repeat(501) }],
+      },
+    ]) {
+      expect(certifiedForkModelOutputSchema.safeParse(invalid).success).toBe(
+        false,
+      );
+    }
+    expect(
+      certifiedForkModelOutputSchema.safeParse({
+        protocolVersion: 1,
+        summaryMarkdown: "s",
+        findings: [
+          {
+            ...finding,
+            title: "t".repeat(200),
+            body: "b".repeat(8_000),
+            path: "p".repeat(500),
+          },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("accepts a 300000-byte prompt packet and rejects one byte more", () => {
+    const packet = promptPacket();
+    const secondFile = {
+      ...packet.files[0]!,
+      path: "src/second.ts",
+      patch: "",
+    };
+    const base = {
+      ...packet,
+      files: [{ ...packet.files[0]!, patch: "" }, secondFile],
+    };
+    const emptyBytes = Buffer.byteLength(JSON.stringify(base), "utf8");
+    const remaining = 300_000 - emptyBytes;
+    const firstPatchBytes = Math.min(200_000, remaining);
+    const exact = {
+      ...base,
+      files: [
+        { ...base.files[0]!, patch: "x".repeat(firstPatchBytes) },
+        {
+          ...base.files[1]!,
+          patch: "y".repeat(remaining - firstPatchBytes),
+        },
+      ],
+    };
+    expect(Buffer.byteLength(JSON.stringify(exact), "utf8")).toBe(300_000);
+    expect(certifiedForkPromptPacketSchema.safeParse(exact).success).toBe(true);
+    const oversized = {
+      ...exact,
+      files: [
+        exact.files[0],
+        { ...exact.files[1]!, patch: `${exact.files[1]!.patch}y` },
+      ],
+    };
+    expect(Buffer.byteLength(JSON.stringify(oversized), "utf8")).toBe(300_001);
+    expect(certifiedForkPromptPacketSchema.safeParse(oversized).success).toBe(
+      false,
+    );
   });
 });
