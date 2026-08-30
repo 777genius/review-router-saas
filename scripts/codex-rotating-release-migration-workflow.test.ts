@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { canonicalPrismaMigrationCatalog } from "./lib/canonical-prisma-migration-catalog.mjs";
 
@@ -29,23 +31,73 @@ function extractRecoveryJqFilter(name: string): string {
   return recover.slice(bodyStart, bodyEnd);
 }
 
-const recoveryDeploymentObservationFilter = extractRecoveryJqFilter(
-  "recovery_deployment_observation_filter",
+function extractRecoveryBashFunction(name: string): string {
+  const declaration = `          ${name}() {`;
+  const start = recover.indexOf(declaration);
+  if (start < 0) throw new Error(`missing recovery bash function: ${name}`);
+  const end = recover.indexOf("\n          }", start);
+  if (end < 0) throw new Error(`unterminated recovery bash function: ${name}`);
+  return recover
+    .slice(start, end + "\n          }".length)
+    .replace(/^ {10}/gmu, "");
+}
+
+const recoveryDeploymentInventoryFilter = extractRecoveryJqFilter(
+  "recovery_deployment_inventory_filter",
+);
+const recoverySuspensionSetFilter = extractRecoveryJqFilter(
+  "recovery_suspension_set_filter",
 );
 const recoveryDeploymentSetFilter = extractRecoveryJqFilter(
   "recovery_deployment_set_filter",
 );
+const recoveryPredeployInventoryFilter = extractRecoveryJqFilter(
+  "recovery_predeploy_inventory_filter",
+);
+const recoveryReconciliationFilter = extractRecoveryJqFilter(
+  "recovery_reconciliation_filter",
+);
+const recoveryPendingDeploymentFilter = extractRecoveryJqFilter(
+  "recovery_pending_deployment_filter",
+);
+const recoveryExactDeploymentFilter = extractRecoveryJqFilter(
+  "recovery_exact_deployment_filter",
+);
+const recoveryBoundInventoryFilter = extractRecoveryJqFilter(
+  "recovery_bound_inventory_filter",
+);
+const recoveryServiceObservationFilter = extractRecoveryJqFilter(
+  "recovery_service_observation_filter",
+);
+const recoveryServiceSetFilter = extractRecoveryJqFilter(
+  "recovery_service_set_filter",
+);
+const compensateRecoveryFleet = extractRecoveryBashFunction(
+  "compensate_recovery_fleet",
+);
+const cleanupRecovery = extractRecoveryBashFunction("cleanup");
+const terminateRecovery = extractRecoveryBashFunction("terminate_recovery");
+const renderInventoryApi = extractRecoveryBashFunction("render_inventory_api");
+const fetchRecoveryDeploymentInventory = extractRecoveryBashFunction(
+  "fetch_recovery_deployment_inventory",
+);
 const releaseCommitSha = "a".repeat(40);
 const releaseImageDigest = `sha256:${"b".repeat(64)}`;
+const serviceId = "srv-api";
+const expectedDeployId = "dep-target";
 
 function runJq(
   filter: string,
   input: unknown,
   args: Readonly<Record<string, string>> = {},
+  jsonArgs: Readonly<Record<string, unknown>> = {},
 ) {
   const commandArgs = ["-ce"];
   for (const [name, value] of Object.entries(args)) {
     commandArgs.push("--arg", name, value);
+  }
+  for (const [name, value] of Object.entries(jsonArgs)) {
+    commandArgs.push("--argjson", name, JSON.stringify(value));
   }
   commandArgs.push(filter);
   const result = spawnSync("jq", commandArgs, {
@@ -56,26 +108,70 @@ function runJq(
   return result;
 }
 
-function observeDeployment(serviceId: string, deploy: unknown) {
-  const result = runJq(recoveryDeploymentObservationFilter, [{ deploy }], {
-    serviceId,
+function observeInventory(expectedServiceId: string, input: unknown) {
+  const result = runJq(recoveryDeploymentInventoryFilter, input, {
+    serviceId: expectedServiceId,
   });
   expect(result.stderr).toBe("");
   expect(result.status).toBe(0);
-  return JSON.parse(result.stdout) as {
+  return JSON.parse(result.stdout) as ReadonlyArray<{
+    readonly createdAt: string | null;
     readonly deploymentIdentityKind: string;
     readonly deployId: string;
     readonly observedCommitSha: string | null;
     readonly observedImageDigest: string | null;
     readonly observedStatus: string;
     readonly serviceId: string;
-  };
+    readonly statusClass: string;
+  }>;
+}
+
+function observeDeployment(expectedServiceId: string, deploy: unknown) {
+  const observations = observeInventory(expectedServiceId, [{ deploy }]);
+  expect(observations).toHaveLength(1);
+  return observations[0]!;
 }
 
 function recoveryDeploymentSetAccepts(observations: readonly unknown[]) {
   return (
     runJq(recoveryDeploymentSetFilter, observations, {
       releaseCommitSha,
+    }).status === 0
+  );
+}
+
+function exactDeploymentAccepts(
+  input: unknown,
+  expectedId = expectedDeployId,
+): boolean {
+  const observations = observeInventory(serviceId, input);
+  return (
+    runJq(recoveryExactDeploymentFilter, observations, {
+      expectedDeployId: expectedId,
+      releaseCommitSha,
+      serviceId,
+    }).status === 0
+  );
+}
+
+function pendingDeploymentAccepts(input: unknown): boolean {
+  const observations = observeInventory(serviceId, input);
+  return (
+    runJq(recoveryPendingDeploymentFilter, observations, {
+      expectedDeployId,
+      releaseCommitSha,
+      serviceId,
+    }).status === 0
+  );
+}
+
+function boundInventoryAccepts(input: unknown): boolean {
+  const observations = observeInventory(serviceId, input);
+  return (
+    runJq(recoveryBoundInventoryFilter, observations, {
+      expectedDeployId,
+      releaseCommitSha,
+      serviceId,
     }).status === 0
   );
 }
@@ -106,9 +202,7 @@ describe("Codex rotating release migration workflow", () => {
   });
 
   it("fails closed until every exact runtime service is suspended", () => {
-    const suspensionBarrier = workflow.indexOf(
-      'all(.suspended == "suspended")',
-    );
+    const suspensionBarrier = workflow.indexOf("suspension_guard_armed=1");
     const credentialRotation = workflow.indexOf("create-runtime-roles.sql");
     const migration = workflow.indexOf("pnpm db:migrate:deploy");
     expect(suspensionBarrier).toBeGreaterThan(-1);
@@ -121,7 +215,7 @@ describe("Codex rotating release migration workflow", () => {
     expect(workflow).toContain(
       'persist_recovery_phase "service_credentials_staged"',
     );
-    expect(workflow).toContain('persist_recovery_phase "ready_to_resume"');
+    expect(workflow).toContain('persist_recovery_phase "target_deploy_intent"');
     expect(workflow).toContain("recovery-resume-state.json");
   });
 
@@ -133,20 +227,67 @@ describe("Codex rotating release migration workflow", () => {
     expect(workflow).toContain("suspension_deadline=$((SECONDS + 600))");
   });
 
-  it("records mutually exclusive deployment identities before resuming", () => {
-    const revisionProof = workflow.indexOf(
-      "service-revision-observations.json",
+  it("binds every suspended response to the requested unique service ID", () => {
+    const valid = ["api", "worker", "web"].map((role) => ({
+      observedServiceId: `srv-${role}`,
+      serviceId: `srv-${role}`,
+      suspended: "suspended",
+    }));
+    const accepts = (input: unknown) =>
+      runJq(recoverySuspensionSetFilter, input).status === 0;
+
+    expect(accepts(valid)).toBe(true);
+    expect(
+      accepts([
+        valid[0],
+        { ...valid[1], observedServiceId: "srv-api" },
+        valid[2],
+      ]),
+    ).toBe(false);
+    expect(
+      accepts([
+        valid[0],
+        { ...valid[1], suspended: "not_suspended" },
+        valid[2],
+      ]),
+    ).toBe(false);
+    expect(recover).toContain("suspension_guard_armed=1");
+    expect(recover.indexOf("suspension_guard_armed=1")).toBeLessThan(
+      recover.indexOf("pnpm db:migrate:deploy"),
+    );
+  });
+
+  it("creates and binds the exact target deployment while the fleet remains suspended", () => {
+    const migration = recover.indexOf("pnpm db:migrate:deploy");
+    const lastEnvironmentMutation = recover.indexOf(
+      'persist_recovery_phase "target_deploy_intent"',
+    );
+    const create = recover.indexOf("render_deploy_mutation -X POST");
+    const exactPoll = recover.indexOf(
+      '"https://api.render.com/v1/services/$service_id/deploys/$deploy_id"',
+      create,
+    );
+    const preResumeProof = recover.indexOf(
+      "pre-resume-deployment-result.json",
+      exactPoll,
     );
     const resume = workflow.indexOf(
       '"https://api.render.com/v1/services/$service_id/resume"',
     );
-    expect(revisionProof).toBeGreaterThan(-1);
-    expect(resume).toBeGreaterThan(revisionProof);
-    expect(workflow).toContain("observedCommitSha");
-    expect(workflow).toContain("observedImageDigest");
-    expect(recoveryDeploymentObservationFilter).toContain('kind: "git"');
-    expect(recoveryDeploymentObservationFilter).toContain('kind: "image"');
-    expect(recoveryDeploymentObservationFilter).toContain('kind: "invalid"');
+
+    expect(lastEnvironmentMutation).toBeGreaterThan(migration);
+    expect(create).toBeGreaterThan(lastEnvironmentMutation);
+    expect(exactPoll).toBeGreaterThan(create);
+    expect(preResumeProof).toBeGreaterThan(exactPoll);
+    expect(resume).toBeGreaterThan(preResumeProof);
+    expect(recover.slice(create)).not.toContain("/env-vars/");
+    expect(recover).toMatch(
+      /assert_recovery_fleet_suspended \\\n\s+"\$work\/deploy-wait-suspension-result\.json"/u,
+    );
+    expect(recoveryDeploymentInventoryFilter).toContain('kind: "git"');
+    expect(recoveryDeploymentInventoryFilter).toContain('kind: "image"');
+    expect(recoveryDeploymentInventoryFilter).toContain('kind: "missing"');
+    expect(recoveryDeploymentInventoryFilter).toContain('kind: "invalid"');
     expect(recoveryDeploymentSetFilter).toContain(
       'all(.observedStatus == "live")',
     );
@@ -156,9 +297,26 @@ describe("Codex rotating release migration workflow", () => {
     expect(recoveryDeploymentSetFilter).toContain(
       ".observedImageDigest == null",
     );
-    expect(recover).toContain(
-      "Image-backed deployments require an immutable expected digest input",
+    expect(recoveryExactDeploymentFilter).toContain(
+      ".[0].deployId == $expectedDeployId",
     );
+  });
+
+  it("uses one non-retried deploy POST per service and bounded reconciliation", () => {
+    const deployClient = recover.slice(
+      recover.indexOf("render_deploy_mutation()"),
+      recover.indexOf("suspension_guard_armed=0"),
+    );
+    const createCalls = recover.match(/render_deploy_mutation -X POST/gu);
+
+    expect(deployClient).not.toContain("--retry");
+    expect(createCalls).toHaveLength(1);
+    expect(recover).toContain("before_deploy_ids=");
+    expect(recover).toContain("reconciliation_deadline=$((SECONDS + 120))");
+    expect(recover).toContain("stable_candidate_observations >= 2");
+    expect(recover).toContain("candidate_count > 1");
+    expect(recover).toContain("deployment_deadline=$((SECONDS + 900))");
+    expect(recover).toContain("timeout-minutes: 70");
   });
 
   it("accepts the current git-backed Render shape at the exact release commit", () => {
@@ -198,7 +356,7 @@ describe("Codex rotating release migration workflow", () => {
   });
 
   it.each([
-    ["missing", { id: "dep-api", status: "live" }, "invalid"],
+    ["missing", { id: "dep-api", status: "live" }, "missing"],
     [
       "ambiguous commit and image",
       {
@@ -237,6 +395,636 @@ describe("Codex rotating release migration workflow", () => {
     expect(
       recoveryDeploymentSetAccepts([observation, ...otherObservations]),
     ).toBe(false);
+  });
+
+  it("normalizes direct, wrapped, and list Render deployment shapes", () => {
+    const deploy = {
+      commit: { id: releaseCommitSha },
+      id: expectedDeployId,
+      status: "live",
+    };
+
+    expect(observeInventory(serviceId, deploy)).toHaveLength(1);
+    expect(observeInventory(serviceId, { deploy })).toHaveLength(1);
+    expect(observeInventory(serviceId, [{ deploy }])).toHaveLength(1);
+    expect(observeInventory(serviceId, { deploys: [{ deploy }] })).toHaveLength(
+      1,
+    );
+  });
+
+  it("binds an exact live response to both service ID and deploy ID", () => {
+    const exact = {
+      commit: { id: releaseCommitSha },
+      id: expectedDeployId,
+      status: "live",
+    };
+
+    expect(exactDeploymentAccepts({ deploy: exact })).toBe(true);
+    expect(
+      exactDeploymentAccepts({ deploy: { ...exact, id: "dep-other" } }),
+    ).toBe(false);
+    expect(
+      exactDeploymentAccepts({
+        deploy: {
+          ...exact,
+          commit: { id: releaseCommitSha, sha: "c".repeat(40) },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      exactDeploymentAccepts({
+        deploy: { ...exact, commit: null, image: { sha: releaseImageDigest } },
+      }),
+    ).toBe(false);
+    expect(
+      exactDeploymentAccepts({
+        deploy: { id: expectedDeployId, status: "live" },
+      }),
+    ).toBe(false);
+  });
+
+  it("allows missing identity only while an exact bound deployment is pending", () => {
+    expect(
+      pendingDeploymentAccepts({ id: expectedDeployId, status: "created" }),
+    ).toBe(true);
+    expect(
+      pendingDeploymentAccepts({
+        commit: { id: releaseCommitSha },
+        id: expectedDeployId,
+        status: "build_in_progress",
+      }),
+    ).toBe(true);
+    expect(
+      pendingDeploymentAccepts({ id: expectedDeployId, status: "live" }),
+    ).toBe(false);
+    expect(
+      pendingDeploymentAccepts({
+        commit: { id: "d".repeat(40) },
+        id: expectedDeployId,
+        status: "build_in_progress",
+      }),
+    ).toBe(false);
+  });
+
+  it("reconciles only a unique exact git deployment outside every pre-intent ID", () => {
+    const intentEpoch = Date.parse("2026-08-30T10:00:00Z") / 1_000;
+    const candidates = observeInventory(serviceId, [
+      {
+        commit: { id: releaseCommitSha },
+        createdAt: "2026-08-30T10:00:01.123Z",
+        id: expectedDeployId,
+        status: "build_in_progress",
+      },
+      {
+        commit: { id: releaseCommitSha },
+        createdAt: "2026-08-30T10:00:02Z",
+        id: "dep-before",
+        status: "deactivated",
+      },
+      {
+        commit: { id: releaseCommitSha },
+        createdAt: "2026-08-30T09:59:40Z",
+        id: "dep-too-old",
+        status: "deactivated",
+      },
+      {
+        commit: { id: releaseCommitSha },
+        createdAt: "2026-08-30T10:00:01Z",
+        id: "dep-ambiguous",
+        image: { sha: releaseImageDigest },
+        status: "created",
+      },
+      {
+        commit: { id: "d".repeat(40) },
+        createdAt: "2026-08-30T10:00:01Z",
+        id: "dep-wrong",
+        status: "created",
+      },
+    ]);
+    const result = runJq(
+      recoveryReconciliationFilter,
+      candidates,
+      { releaseCommitSha, serviceId },
+      {
+        beforeDeployIds: ["dep-before"],
+        intentEpoch,
+        observationEpoch: intentEpoch + 10,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      expect.objectContaining({ deployId: expectedDeployId }),
+    ]);
+
+    const duplicateIntent = [
+      ...candidates,
+      observeDeployment(serviceId, {
+        commit: { id: releaseCommitSha },
+        createdAt: "2026-08-30T10:00:03Z",
+        id: "dep-second-exact",
+        status: "created",
+      }),
+    ];
+    const ambiguous = runJq(
+      recoveryReconciliationFilter,
+      duplicateIntent,
+      { releaseCommitSha, serviceId },
+      {
+        beforeDeployIds: ["dep-before"],
+        intentEpoch,
+        observationEpoch: intentEpoch + 10,
+      },
+    );
+    expect(JSON.parse(ambiguous.stdout)).toHaveLength(2);
+  });
+
+  it("rejects a same-commit substitution or any concurrent active deployment", () => {
+    const exact = {
+      commit: { id: releaseCommitSha },
+      id: expectedDeployId,
+      status: "live",
+    };
+    const historical = {
+      commit: { id: releaseCommitSha },
+      id: "dep-old",
+      status: "deactivated",
+    };
+
+    expect(boundInventoryAccepts([exact, historical])).toBe(true);
+    expect(
+      boundInventoryAccepts([
+        { ...exact, id: "dep-same-commit-wrong-id" },
+        { ...historical, id: expectedDeployId },
+      ]),
+    ).toBe(false);
+    expect(
+      boundInventoryAccepts([
+        exact,
+        historical,
+        {
+          commit: { id: releaseCommitSha },
+          id: "dep-concurrent",
+          status: "build_in_progress",
+        },
+      ]),
+    ).toBe(false);
+    expect(
+      boundInventoryAccepts([
+        exact,
+        { ...historical, id: "dep-unknown", status: "mystery" },
+      ]),
+    ).toBe(false);
+
+    const firstPageHistory = Array.from({ length: 100 }, (_, index) => ({
+      commit: { id: releaseCommitSha },
+      id: `dep-history-${index}`,
+      status: "deactivated",
+    }));
+    expect(
+      boundInventoryAccepts([
+        exact,
+        ...firstPageHistory,
+        {
+          commit: { id: releaseCommitSha },
+          id: "dep-active-on-page-two",
+          status: "update_in_progress",
+        },
+      ]),
+    ).toBe(false);
+    expect(fetchRecoveryDeploymentInventory).toContain("deploys?limit=100");
+    expect(fetchRecoveryDeploymentInventory).toContain(
+      "&cursor=$encoded_cursor",
+    );
+    expect(fetchRecoveryDeploymentInventory).toContain("all_deployments");
+    expect(fetchRecoveryDeploymentInventory).toContain(
+      'absolute_deadline="$2"',
+    );
+    expect(fetchRecoveryDeploymentInventory).toContain(
+      'render_inventory_api "$absolute_deadline"',
+    );
+    expect(fetchRecoveryDeploymentInventory).toContain(
+      'if [[ "$final_snapshot" != "$first_page_snapshot" ]]',
+    );
+    expect(renderInventoryApi).toContain(
+      "remaining=$((absolute_deadline - SECONDS))",
+    );
+    expect(renderInventoryApi).toContain('--max-time "$request_timeout"');
+    expect(renderInventoryApi).not.toContain("--retry");
+    expect(recover).not.toContain("deploys?limit=20");
+
+    const paginationScript = `
+set -euo pipefail
+recovery_deployment_inventory_filter="$RECOVERY_DEPLOYMENT_FILTER"
+render_inventory_api() {
+  local absolute_deadline="$1"
+  local argument url=""
+  shift
+  (( absolute_deadline > SECONDS ))
+  for argument in "$@"; do
+    if [[ "$argument" == https://* ]]; then url="$argument"; fi
+  done
+  if [[ "$url" == *cursor=* ]]; then
+    jq -nc --arg commit "$RELEASE_COMMIT_SHA" '[{
+      cursor: "cursor-end",
+      deploy: {
+        commit: {id: $commit},
+        id: "dep-active-on-page-two",
+        status: "update_in_progress"
+      }
+    }]'
+    return 0
+  fi
+  jq -nc --arg commit "$RELEASE_COMMIT_SHA" '[
+    range(0; 100) as $index
+    | {
+        cursor: (if $index == 99 then "cursor-page-two" else "cursor-\\($index)" end),
+        deploy: {
+          commit: {id: $commit},
+          id: (if $index == 0 then "dep-target" else "dep-history-\\($index)" end),
+          status: (if $index == 0 then "live" else "deactivated" end)
+        }
+      }
+  ]'
+}
+${fetchRecoveryDeploymentInventory}
+fetch_recovery_deployment_inventory srv-api "$((SECONDS + 30))"
+`;
+    const pagination = spawnSync("bash", ["-ceu", paginationScript], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        RECOVERY_DEPLOYMENT_FILTER: recoveryDeploymentInventoryFilter,
+        RELEASE_COMMIT_SHA: releaseCommitSha,
+      },
+    });
+    expect(pagination.stderr).toBe("");
+    expect(pagination.status).toBe(0);
+    const exhaustiveInventory = JSON.parse(pagination.stdout) as unknown[];
+    expect(exhaustiveInventory).toHaveLength(101);
+    expect(
+      runJq(recoveryBoundInventoryFilter, exhaustiveInventory, {
+        expectedDeployId,
+        releaseCommitSha,
+        serviceId,
+      }).status,
+    ).not.toBe(0);
+  });
+
+  it("fails closed when the deployment head changes during pagination", () => {
+    const work = mkdtempSync(join(tmpdir(), "reviewrouter-pagination-test-"));
+    try {
+      const script = `
+set -euo pipefail
+request_count_file="$1/request-count"
+recovery_deployment_inventory_filter="$RECOVERY_DEPLOYMENT_FILTER"
+render_inventory_api() {
+  local absolute_deadline="$1"
+  local argument count url=""
+  shift
+  (( absolute_deadline > SECONDS ))
+  for argument in "$@"; do
+    if [[ "$argument" == https://* ]]; then url="$argument"; fi
+  done
+  if [[ "$url" == *cursor=* ]]; then
+    jq -nc --arg commit "$RELEASE_COMMIT_SHA" '[{
+      cursor: "cursor-end",
+      deploy: {
+        commit: {id: $commit},
+        id: "dep-page-two",
+        status: "deactivated"
+      }
+    }]'
+    return 0
+  fi
+  count=0
+  if [[ -f "$request_count_file" ]]; then read -r count < "$request_count_file"; fi
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$request_count_file"
+  jq -nc --arg commit "$RELEASE_COMMIT_SHA" --argjson count "$count" '[
+    range(0; 100) as $index
+    | {
+        cursor: (if $index == 99 then "cursor-page-two" else "cursor-\\($index)" end),
+        deploy: {
+          commit: {id: $commit},
+          id: (
+            if $count > 1 and $index == 0 then "dep-concurrent"
+            elif $count > 1 and $index == 1 then "dep-target"
+            elif $index == 0 then "dep-target"
+            else "dep-history-\\($index)"
+            end
+          ),
+          status: (if $index <= (if $count > 1 then 1 else 0 end) then "live" else "deactivated" end)
+        }
+      }
+  ]'
+}
+${fetchRecoveryDeploymentInventory}
+fetch_recovery_deployment_inventory srv-api "$((SECONDS + 30))"
+`;
+      const pagination = spawnSync("bash", ["-ceu", script, "bash", work], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          RECOVERY_DEPLOYMENT_FILTER: recoveryDeploymentInventoryFilter,
+          RELEASE_COMMIT_SHA: releaseCommitSha,
+        },
+      });
+      expect(pagination.status).not.toBe(0);
+      expect(pagination.stderr).toContain(
+        "deployment inventory head changed during pagination",
+      );
+    } finally {
+      rmSync(work, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects an expired inventory deadline before making a request", () => {
+    const script = `
+set -euo pipefail
+RENDER_API_KEY=test
+${renderInventoryApi}
+set +e
+render_inventory_api "$((SECONDS - 1))" https://api.render.com/v1/test
+status=$?
+set -e
+printf '%s\n' "$status"
+`;
+    const result = spawnSync("bash", ["-ceu", script], {
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("124");
+    expect(result.stderr).toContain("inventory deadline expired");
+  });
+
+  it("rejects a competing deploy before recovery creates its pinned target", () => {
+    const baseline = observeInventory(serviceId, [
+      {
+        commit: { id: "c".repeat(40) },
+        id: "dep-baseline",
+        status: "live",
+      },
+      {
+        commit: { id: "b".repeat(40) },
+        id: "dep-old",
+        status: "deactivated",
+      },
+    ]);
+    const gate = (input: unknown) =>
+      runJq(recoveryPredeployInventoryFilter, input, { serviceId }).status ===
+      0;
+
+    expect(gate(baseline)).toBe(true);
+    expect(
+      gate([
+        ...baseline,
+        {
+          ...baseline[0],
+          deployId: "dep-concurrent",
+          observedStatus: "update_in_progress",
+          statusClass: "active",
+        },
+      ]),
+    ).toBe(false);
+  });
+
+  it("requires role-specific online service shapes before public health checks", () => {
+    const services = [
+      [
+        "api",
+        "srv-api",
+        {
+          id: "srv-api",
+          serviceDetails: { url: "https://api.example.test" },
+          suspended: "not_suspended",
+          type: "web_service",
+        },
+      ],
+      [
+        "worker",
+        "srv-worker",
+        {
+          id: "srv-worker",
+          serviceDetails: {},
+          suspended: "not_suspended",
+          type: "background_worker",
+        },
+      ],
+      [
+        "web",
+        "srv-web",
+        {
+          id: "srv-web",
+          serviceDetails: { url: "https://web.example.test/" },
+          suspended: "not_suspended",
+          type: "web_service",
+        },
+      ],
+    ].map(([role, id, service]) => {
+      const result = runJq(
+        recoveryServiceObservationFilter,
+        { service },
+        { role: String(role), serviceId: String(id) },
+      );
+      expect(result.status).toBe(0);
+      return JSON.parse(result.stdout) as unknown;
+    });
+
+    expect(runJq(recoveryServiceSetFilter, services).status).toBe(0);
+    expect(
+      runJq(recoveryServiceSetFilter, [
+        services[0],
+        { ...(services[1] as object), suspended: "suspended" },
+        services[2],
+      ]).status,
+    ).not.toBe(0);
+    expect(recover).toContain('"$api_origin/health"');
+    expect(recover).toContain('"$web_origin/"');
+    expect(recover).toContain(
+      'healthSignal: "render_not_suspended_and_exact_live_deploy"',
+    );
+  });
+
+  it("compensates every exact service after a partial or uncertain resume", () => {
+    const work = mkdtempSync(join(tmpdir(), "reviewrouter-recovery-test-"));
+    try {
+      const script = `
+set -euo pipefail
+work="$1"
+API_SERVICE_ID=srv-api
+WORKER_SERVICE_ID=srv-worker
+WEB_SERVICE_ID=srv-web
+RECOVERY_COMPENSATION_TIMEOUT_SECONDS=5
+recovery_suspension_set_filter="$RECOVERY_SUSPENSION_FILTER"
+render_inventory_api() {
+  local absolute_deadline="$1"
+  local argument service_id url=""
+  shift
+  (( absolute_deadline > SECONDS ))
+  for argument in "$@"; do
+    if [[ "$argument" == https://* ]]; then url="$argument"; fi
+  done
+  service_id="\${url#*/services/}"
+  service_id="\${service_id%%/*}"
+  if [[ "$url" == */suspend ]]; then
+    printf '%s\\n' "$service_id" >> "$work/suspend-calls"
+    : > "$work/$service_id.suspended"
+    return 0
+  fi
+  if [[ -f "$work/$service_id.suspended" ]]; then
+    printf '{"id":"%s","suspended":"suspended"}\\n' "$service_id"
+  else
+    printf '{"id":"%s","suspended":"not_suspended"}\\n' "$service_id"
+  fi
+}
+${compensateRecoveryFleet}
+compensate_recovery_fleet
+`;
+      const result = spawnSync("bash", ["-ceu", script, "bash", work], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          RECOVERY_SUSPENSION_FILTER: recoverySuspensionSetFilter,
+        },
+      });
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+      expect(
+        readFileSync(join(work, "suspend-calls"), "utf8").trim().split("\n"),
+      ).toEqual(["srv-api", "srv-worker", "srv-web"]);
+      expect(
+        JSON.parse(
+          readFileSync(
+            join(work, "compensation-suspension-result.json"),
+            "utf8",
+          ),
+        ),
+      ).toEqual([
+        {
+          observedServiceId: "srv-api",
+          serviceId: "srv-api",
+          suspended: "suspended",
+        },
+        {
+          observedServiceId: "srv-worker",
+          serviceId: "srv-worker",
+          suspended: "suspended",
+        },
+        {
+          observedServiceId: "srv-web",
+          serviceId: "srv-web",
+          suspended: "suspended",
+        },
+      ]);
+    } finally {
+      rmSync(work, { force: true, recursive: true });
+    }
+
+    const activation = recover.indexOf("resume_result='[]'");
+    const firstResume = recover.indexOf(
+      '"https://api.render.com/v1/services/$service_id/resume"',
+    );
+    const health = recover.indexOf("health_deadline=$((SECONDS + 300))");
+    const finalIdentity = recover.indexOf(
+      '"$work/post-resume-deployment-result.json"',
+      health,
+    );
+    const finalServiceState = recover.indexOf(
+      "observe_recovery_services",
+      finalIdentity,
+    );
+    const completion = recover.indexOf("recovery_complete=1");
+
+    expect(activation).toBeLessThan(firstResume);
+    expect(firstResume).toBeLessThan(health);
+    expect(health).toBeLessThan(finalIdentity);
+    expect(finalIdentity).toBeLessThan(finalServiceState);
+    expect(finalServiceState).toBeLessThan(completion);
+    expect(recover).toContain(
+      'if [[ "$suspension_guard_armed" -eq 1 && "$recovery_complete" -eq 0 ]]',
+    );
+  });
+
+  it("runs fail-closed compensation for HUP, INT, and TERM exits", () => {
+    for (const [signal, expectedStatus] of [
+      ["HUP", 129],
+      ["INT", 130],
+      ["TERM", 143],
+    ] as const) {
+      const work = mkdtempSync(join(tmpdir(), "reviewrouter-signal-test-"));
+      try {
+        const script = `
+set -euo pipefail
+work="$1"
+signal="$2"
+firewall_open=0
+suspension_guard_armed=1
+recovery_complete=0
+compensate_recovery_fleet() {
+  printf '%s\n' "$signal" > "$work/compensated"
+}
+close_firewall() { :; }
+${cleanupRecovery}
+${terminateRecovery}
+trap cleanup EXIT
+trap 'terminate_recovery 129' HUP
+trap 'terminate_recovery 130' INT
+trap 'terminate_recovery 143' TERM
+kill -s "$signal" "$$"
+printf 'unreachable\n' > "$work/unreachable"
+`;
+        const result = spawnSync(
+          "bash",
+          ["-ceu", script, "bash", work, signal],
+          { encoding: "utf8" },
+        );
+        expect(result.status).toBe(expectedStatus);
+        expect(readFileSync(join(work, "compensated"), "utf8").trim()).toBe(
+          signal,
+        );
+        expect(() => readFileSync(join(work, "unreachable"), "utf8")).toThrow();
+      } finally {
+        rmSync(work, { force: true, recursive: true });
+      }
+    }
+
+    expect(cleanupRecovery).toContain("trap '' HUP INT TERM");
+    expect(terminateRecovery).toContain("trap '' HUP INT TERM");
+  });
+
+  it("does not let a repeated cancellation signal interrupt compensation", () => {
+    const work = mkdtempSync(join(tmpdir(), "reviewrouter-cleanup-test-"));
+    try {
+      const script = `
+set -euo pipefail
+work="$1"
+firewall_open=0
+suspension_guard_armed=1
+recovery_complete=0
+compensate_recovery_fleet() {
+  kill -TERM "$$"
+  printf 'complete\n' > "$work/compensated"
+}
+close_firewall() { :; }
+${cleanupRecovery}
+${terminateRecovery}
+trap cleanup EXIT
+trap 'terminate_recovery 129' HUP
+trap 'terminate_recovery 130' INT
+trap 'terminate_recovery 143' TERM
+false
+`;
+      const result = spawnSync("bash", ["-ceu", script, "bash", work], {
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(1);
+      expect(readFileSync(join(work, "compensated"), "utf8").trim()).toBe(
+        "complete",
+      );
+    } finally {
+      rmSync(work, { force: true, recursive: true });
+    }
   });
 
   it("keeps recovery and Action release identities separate", () => {

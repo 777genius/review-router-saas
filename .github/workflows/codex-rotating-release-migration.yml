@@ -140,7 +140,7 @@ jobs:
     needs: trust-bootstrap
     if: ${{ inputs.confirmation == 'RECOVER_EXISTING_PG17' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 70
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
@@ -204,6 +204,48 @@ jobs:
               -H "Authorization: Bearer $RENDER_API_KEY" \
               "$@"
           }
+          # A deploy creation has an uncertain side-effect boundary. Never retry
+          # this POST; reconcile an accepted-but-unobserved response instead.
+          render_deploy_mutation() {
+            curl --fail --silent --show-error \
+              --connect-timeout 15 --max-time 120 \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+          # Activation-sensitive reads must honor the caller's absolute
+          # deadline. Retrying a page here could make an outer deadline
+          # meaningless while the fleet is suspended or partly resumed.
+          render_inventory_api() {
+            local absolute_deadline="$1"
+            local remaining request_timeout
+            shift
+            remaining=$((absolute_deadline - SECONDS))
+            if (( remaining <= 0 )); then
+              echo "::error::Render inventory deadline expired before request" >&2
+              return 124
+            fi
+            request_timeout="$remaining"
+            if (( request_timeout > 20 )); then
+              request_timeout=20
+            fi
+            curl --fail --silent --show-error \
+              --connect-timeout 5 --max-time "$request_timeout" \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+          suspension_guard_armed=0
+          recovery_complete=0
+          recovery_suspension_set_filter='
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and ([.[].observedServiceId] | unique | length == 3)
+            and all(
+              .serviceId == .observedServiceId
+              and .suspended == "suspended"
+            )
+          '
           close_firewall() {
             if [[ "$firewall_open" -eq 1 ]]; then
               render_api -X PATCH \
@@ -213,17 +255,100 @@ jobs:
                 -o /dev/null || true
             fi
           }
+          compensate_recovery_fleet() {
+            local deadline observations observed_service_id service service_id state
+            deadline=$((SECONDS + ${RECOVERY_COMPENSATION_TIMEOUT_SECONDS:-300}))
+            observations='[]'
+            while (( SECONDS < deadline )); do
+              for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+                # A resume response may be uncertain or not visible yet. Retry
+                # the idempotent suspend for every exact ID within one absolute
+                # deadline, including one that still reads as suspended.
+                render_inventory_api "$deadline" -X POST \
+                  "https://api.render.com/v1/services/$service_id/suspend" \
+                  -o /dev/null || true
+              done
+              observations='[]'
+              for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+                service="$(
+                  render_inventory_api "$deadline" \
+                    "https://api.render.com/v1/services/$service_id" \
+                    2>/dev/null || true
+                )"
+                observed_service_id="$(
+                  jq -er '(.service // .).id' <<<"$service" 2>/dev/null || true
+                )"
+                state="$(
+                  jq -er '(.service // .).suspended' \
+                    <<<"$service" 2>/dev/null || true
+                )"
+                observations="$(
+                  jq -c \
+                    --arg serviceId "$service_id" \
+                    --arg observedServiceId "$observed_service_id" \
+                    --arg suspended "$state" '
+                      . + [{
+                        serviceId: $serviceId,
+                        observedServiceId: $observedServiceId,
+                        suspended: $suspended
+                      }]
+                    ' \
+                    <<<"$observations"
+                )"
+              done
+              if jq -e "$recovery_suspension_set_filter" \
+                <<<"$observations" >/dev/null; then
+                break
+              fi
+              sleep 10
+            done
+            printf '%s\n' "$observations" \
+              > "$work/compensation-suspension-result.json"
+            jq -e "$recovery_suspension_set_filter" \
+              <<<"$observations" >/dev/null
+          }
           cleanup() {
+            local cleanup_status=$?
+            trap - EXIT
+            trap '' HUP INT TERM
+            set +e
+            if [[ "$suspension_guard_armed" -eq 1 && "$recovery_complete" -eq 0 ]]; then
+              echo "::warning::Recovery exited after the suspension barrier; converging all runtime services back to suspended."
+              if ! compensate_recovery_fleet; then
+                echo "::error::Recovery compensation could not prove all runtime services suspended."
+                if [[ "$cleanup_status" -eq 0 ]]; then
+                  cleanup_status=1
+                fi
+              fi
+            fi
             close_firewall
             rm -f "$work"/*secret* "$work"/*url* "$work"/*env.json "$work/connection-info.json"
+            exit "$cleanup_status"
+          }
+          terminate_recovery() {
+            local signal_status="$1"
+            # Convert runner cancellation signals to a normal shell exit so
+            # the EXIT trap can converge the exact fleet back to suspended.
+            trap '' HUP INT TERM
+            exit "$signal_status"
           }
           trap cleanup EXIT
+          trap 'terminate_recovery 129' HUP
+          trap 'terminate_recovery 130' INT
+          trap 'terminate_recovery 143' TERM
 
           # Converge both an initially live set and a partially suspended set
           # to the same fail-closed barrier. No database or credential mutation
           # is permitted above the proof that all three exact IDs are stopped.
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-            state="$(render_api "https://api.render.com/v1/services/$service_id" | jq -er '.suspended')"
+            service="$(render_api "https://api.render.com/v1/services/$service_id")"
+            state="$(
+              jq -er --arg serviceId "$service_id" '
+                (.service // .)
+                | select(.id == $serviceId)
+                | .suspended
+              ' <<<"$service"
+            )"
             if [[ "$state" != "suspended" ]]; then
               render_api -X POST \
                 "https://api.render.com/v1/services/$service_id/suspend" \
@@ -238,19 +363,30 @@ jobs:
               suspension_observations="$(
                 jq -c \
                   --arg serviceId "$service_id" \
-                  --arg suspended "$(jq -er '.suspended' <<<"$service")" \
-                  '. + [{serviceId: $serviceId, suspended: $suspended}]' \
+                  --arg observedServiceId "$(
+                    jq -er '(.service // .).id' <<<"$service"
+                  )" \
+                  --arg suspended "$(
+                    jq -er '(.service // .).suspended' <<<"$service"
+                  )" '
+                    . + [{
+                      serviceId: $serviceId,
+                      observedServiceId: $observedServiceId,
+                      suspended: $suspended
+                    }]
+                  ' \
                   <<<"$suspension_observations"
               )"
             done
-            if jq -e 'length == 3 and all(.suspended == "suspended")' \
+            if jq -e "$recovery_suspension_set_filter" \
               <<<"$suspension_observations" >/dev/null; then
               break
             fi
             sleep 10
           done
-          jq -e 'length == 3 and all(.suspended == "suspended")' \
+          jq -e "$recovery_suspension_set_filter" \
             <<<"$suspension_observations" >/dev/null
+          suspension_guard_armed=1
           recovery_phase_key="REVIEW_ROUTER_PG17_RECOVERY_PHASE"
           read_recovery_phase() {
             local service_id="$1"
@@ -555,21 +691,19 @@ jobs:
           close_firewall
           firewall_open=0
 
-          recovery_deployment_observation_filter='
-            (if type == "array" then .[0] else (.deploys[0] // .[0]) end)
-            | (.deploy // .) as $deploy
-            | ([
-                $deploy.commit.id?,
-                $deploy.commit.sha?,
-                $deploy.commitId?
-              ] | map(select(. != null))) as $commitCandidates
-            | ([
-                $deploy.image.sha?,
-                $deploy.image.digest?,
-                $deploy.imageDigest?
-              ] | map(select(. != null))) as $imageCandidates
-            | (
-                if (
+          recovery_deployment_inventory_filter='
+            def recovery_deployment_identity($deploy):
+              ([
+                  $deploy.commit.id?,
+                  $deploy.commit.sha?,
+                  $deploy.commitId?
+                ] | map(select(. != null))) as $commitCandidates
+              | ([
+                  $deploy.image.sha?,
+                  $deploy.image.digest?,
+                  $deploy.imageDigest?
+                ] | map(select(. != null))) as $imageCandidates
+              | if (
                   ($commitCandidates | length) >= 1
                   and all(
                     $commitCandidates[];
@@ -593,22 +727,75 @@ jobs:
                   kind: "image",
                   imageDigest: $imageCandidates[0]
                 }
+                elif (
+                  ($commitCandidates | length) == 0
+                  and ($imageCandidates | length) == 0
+                ) then {kind: "missing"}
                 else {kind: "invalid"}
-                end
-              ) as $identity
-            | {
-                serviceId: $serviceId,
-                deployId: (
-                  $deploy.id
-                  | select(type == "string" and test("^dep-[a-z0-9-]+$"))
-                ),
-                observedStatus: (
-                  $deploy.status | select(type == "string" and length > 0)
-                ),
-                deploymentIdentityKind: $identity.kind,
-                observedCommitSha: ($identity.commitSha // null),
-                observedImageDigest: ($identity.imageDigest // null)
-              }
+                end;
+            def recovery_deployment_status_class($status):
+              if ([
+                "created",
+                "queued",
+                "build_in_progress",
+                "pre_deploy_in_progress",
+                "update_in_progress",
+                "live"
+              ] | index($status)) != null then "active"
+              elif ([
+                "build_failed",
+                "pre_deploy_failed",
+                "update_failed",
+                "canceled",
+                "deactivated",
+                "failed"
+              ] | index($status)) != null or ($status | endswith("_failed"))
+              then "terminal"
+              else "unknown"
+              end;
+            (if type == "array" then .
+             elif ((.deploys? | type) == "array") then .deploys
+             elif type == "object" then [.]
+             else error("recovery_deployment_shape")
+             end)
+            | map(.deploy // .)
+            | map(
+                . as $deploy
+                | recovery_deployment_identity($deploy) as $identity
+                | ($deploy.status
+                    | if type == "string" and length > 0 then .
+                      else error("recovery_deployment_status")
+                      end) as $status
+                | {
+                    serviceId: (
+                      ($deploy.serviceId // $serviceId) as $observedServiceId
+                      | if (
+                          ($observedServiceId | type) == "string"
+                          and $observedServiceId == $serviceId
+                        ) then $observedServiceId
+                        else error("recovery_deployment_service_identity")
+                        end
+                    ),
+                    deployId: (
+                      $deploy.id
+                      | if type == "string" and test("^dep-[a-z0-9-]+$")
+                        then .
+                        else error("recovery_deployment_id")
+                        end
+                    ),
+                    observedStatus: $status,
+                    statusClass: recovery_deployment_status_class($status),
+                    createdAt: (
+                      ($deploy.createdAt // null)
+                      | if . == null or type == "string" then .
+                        else error("recovery_deployment_created_at")
+                        end
+                    ),
+                    deploymentIdentityKind: $identity.kind,
+                    observedCommitSha: ($identity.commitSha // null),
+                    observedImageDigest: ($identity.imageDigest // null)
+                  }
+              )
           '
           recovery_deployment_set_filter='
             length == 3
@@ -621,55 +808,814 @@ jobs:
               and .observedImageDigest == null
             )
           '
-          service_revision_observations='[]'
-          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-            deploys="$(render_api "https://api.render.com/v1/services/$service_id/deploys?limit=1")"
-            observation="$(
+          recovery_predeploy_inventory_filter='
+            length >= 1
+            and (([.[].deployId] | length) == ([.[].deployId] | unique | length))
+            and all(.serviceId == $serviceId)
+            and all(.statusClass != "unknown")
+            and .[0].deploymentIdentityKind == "git"
+            and .[0].observedImageDigest == null
+            and ([.[] | select(
+              .statusClass == "active" and .observedStatus != "live"
+            )] | length) == 0
+            and ([.[] | select(.observedStatus == "live")] | length) <= 1
+          '
+          recovery_reconciliation_filter='
+            [
+              .[]
+              | select(
+                  (.deployId as $deployId
+                    | ($beforeDeployIds | index($deployId)) == null)
+                  and .serviceId == $serviceId
+                  and .deploymentIdentityKind == "git"
+                  and .observedCommitSha == $releaseCommitSha
+                  and .observedImageDigest == null
+                  and .statusClass != "unknown"
+                  and (.createdAt | type) == "string"
+                  and (try (
+                    (.createdAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
+                    >= ($intentEpoch - 5)
+                    and
+                    (.createdAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
+                    <= ($observationEpoch + 5)
+                  ) catch false)
+                )
+            ]
+          '
+          recovery_pending_deployment_filter='
+            length == 1
+            and .[0].serviceId == $serviceId
+            and .[0].deployId == $expectedDeployId
+            and (.[0].observedStatus as $observedStatus
+              | ([
+                  "created",
+                  "queued",
+                  "build_in_progress",
+                  "pre_deploy_in_progress",
+                  "update_in_progress"
+                ] | index($observedStatus)) != null)
+            and (
+              .[0].deploymentIdentityKind == "missing"
+              or (
+                .[0].deploymentIdentityKind == "git"
+                and .[0].observedCommitSha == $releaseCommitSha
+                and .[0].observedImageDigest == null
+              )
+            )
+          '
+          recovery_exact_deployment_filter='
+            length == 1
+            and .[0].serviceId == $serviceId
+            and .[0].deployId == $expectedDeployId
+            and .[0].observedStatus == "live"
+            and .[0].deploymentIdentityKind == "git"
+            and .[0].observedCommitSha == $releaseCommitSha
+            and .[0].observedImageDigest == null
+          '
+          recovery_bound_inventory_filter='
+            length >= 1
+            and (([.[].deployId] | length) == ([.[].deployId] | unique | length))
+            and all(.serviceId == $serviceId)
+            and all(.statusClass != "unknown")
+            and .[0].deployId == $expectedDeployId
+            and .[0].observedStatus == "live"
+            and .[0].deploymentIdentityKind == "git"
+            and .[0].observedCommitSha == $releaseCommitSha
+            and .[0].observedImageDigest == null
+            and ([.[] | select(.statusClass == "active") | .deployId]
+              == [$expectedDeployId])
+          '
+          recovery_service_observation_filter='
+            (.service // .) as $service
+            | {
+                role: $role,
+                serviceId: (
+                  $service.id
+                  | if type == "string" and . == $serviceId then .
+                    else error("recovery_service_identity")
+                    end
+                ),
+                suspended: (
+                  $service.suspended
+                  | if type == "string" then .
+                    else error("recovery_service_suspension")
+                    end
+                ),
+                type: (
+                  $service.type
+                  | if type == "string" then .
+                    else error("recovery_service_type")
+                    end
+                ),
+                url: ($service.serviceDetails.url // null)
+              }
+          '
+          recovery_service_set_filter='
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and ([.[].role] | sort == ["api", "web", "worker"])
+            and all(.suspended == "not_suspended")
+            and (map(select(.role == "api" or .role == "web"))
+              | all(
+                  .type == "web_service"
+                  and (.url | type) == "string"
+                  and (.url | test("^https://[^/]+/?$"))
+                ))
+            and (map(select(.role == "worker"))
+              | length == 1 and .[0].type == "background_worker")
+          '
+          observe_recovery_services() {
+            local absolute_deadline observation observations output_path
+            local role service service_id
+            output_path="$1"
+            absolute_deadline="${2:-}"
+            observations='[]'
+            while IFS=$'\t' read -r role service_id; do
+              if [[ -n "$absolute_deadline" ]]; then
+                service="$(
+                  render_inventory_api "$absolute_deadline" \
+                    "https://api.render.com/v1/services/$service_id"
+                )" || return 1
+              else
+                service="$(
+                  render_api \
+                    "https://api.render.com/v1/services/$service_id"
+                )" || return 1
+              fi
+              observation="$(
+                jq -ce --arg role "$role" --arg serviceId "$service_id" \
+                  "$recovery_service_observation_filter" <<<"$service"
+              )" || return 1
+              observations="$(
+                jq -c --argjson observation "$observation" \
+                  '. + [$observation]' <<<"$observations"
+              )" || return 1
+            done < <(
+              jq -nr \
+                --arg api "$API_SERVICE_ID" \
+                --arg worker "$WORKER_SERVICE_ID" \
+                --arg web "$WEB_SERVICE_ID" '
+                  ["api", $api], ["worker", $worker], ["web", $web] | @tsv
+                '
+            )
+            printf '%s\n' "$observations" > "$output_path"
+            jq -e "$recovery_service_set_filter" \
+              <<<"$observations" >/dev/null
+          }
+          assert_recovery_fleet_suspended() {
+            local absolute_deadline observations observed_service_id output_path
+            local service service_id
+            output_path="$1"
+            absolute_deadline="${2:-}"
+            observations='[]'
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              if [[ -n "$absolute_deadline" ]]; then
+                service="$(
+                  render_inventory_api "$absolute_deadline" \
+                    "https://api.render.com/v1/services/$service_id"
+                )"
+              else
+                service="$(
+                  render_api "https://api.render.com/v1/services/$service_id"
+                )"
+              fi
+              observed_service_id="$(
+                jq -er '(.service // .).id' <<<"$service"
+              )"
+              observations="$(
+                jq -c --arg serviceId "$service_id" \
+                  --arg observedServiceId "$observed_service_id" \
+                  --arg suspended "$(
+                    jq -er '(.service // .).suspended' <<<"$service"
+                  )" '
+                    . + [{
+                      serviceId: $serviceId,
+                      observedServiceId: $observedServiceId,
+                      suspended: $suspended
+                    }]
+                  ' \
+                  <<<"$observations"
+              )"
+            done
+            printf '%s\n' "$observations" > "$output_path"
+            jq -e "$recovery_suspension_set_filter" \
+              <<<"$observations" >/dev/null
+          }
+          assert_recovery_service_suspended() {
+            local absolute_deadline response service_id
+            service_id="$1"
+            absolute_deadline="${2:-}"
+            if [[ -n "$absolute_deadline" ]]; then
+              response="$(
+                render_inventory_api "$absolute_deadline" \
+                  "https://api.render.com/v1/services/$service_id"
+              )"
+            else
+              response="$(
+                render_api "https://api.render.com/v1/services/$service_id"
+              )"
+            fi
+            jq -e --arg serviceId "$service_id" '
+              (.service // .)
+              | .id == $serviceId and .suspended == "suspended"
+            ' <<<"$response" >/dev/null
+          }
+          fetch_recovery_deployment_inventory() {
+            local absolute_deadline all_deployments cursor encoded_cursor entries
+            local entry_count final_entries final_inventory final_snapshot
+            local first_page_snapshot next_cursor page page_inventory raw_page
+            local seen_cursors service_id url
+            service_id="$1"
+            absolute_deadline="$2"
+            all_deployments='[]'
+            cursor=""
+            page=0
+            seen_cursors='[]'
+            while true; do
+              page=$((page + 1))
+              if (( page > 50 )); then
+                echo "::error::Render deployment inventory exceeded 50 pages for $service_id" >&2
+                return 1
+              fi
+              url="https://api.render.com/v1/services/$service_id/deploys?limit=100"
+              if [[ -n "$cursor" ]]; then
+                encoded_cursor="$(
+                  node -e '
+                    process.stdout.write(encodeURIComponent(process.argv[1]));
+                  ' "$cursor"
+                )"
+                url="$url&cursor=$encoded_cursor"
+              fi
+              raw_page="$(render_inventory_api "$absolute_deadline" "$url")"
+              entries="$(
+                jq -ce '
+                  if type == "array" then .
+                  elif ((.deploys? | type) == "array") then .deploys
+                  else error("recovery_deployment_page_shape")
+                  end
+                ' <<<"$raw_page"
+              )"
+              entry_count="$(jq -er 'length' <<<"$entries")"
+              page_inventory="$(
+                jq -ce --arg serviceId "$service_id" \
+                  "$recovery_deployment_inventory_filter" <<<"$entries"
+              )"
+              if (( page == 1 )); then
+                first_page_snapshot="$(
+                  jq -c '
+                    map({
+                      serviceId,
+                      deployId,
+                      observedStatus,
+                      statusClass,
+                      createdAt,
+                      deploymentIdentityKind,
+                      observedCommitSha,
+                      observedImageDigest
+                    })
+                  ' <<<"$page_inventory"
+                )"
+              fi
+              all_deployments="$(
+                jq -c --argjson page "$page_inventory" '. + $page' \
+                  <<<"$all_deployments"
+              )"
+              if (( entry_count < 100 )); then
+                break
+              fi
+              next_cursor="$(
+                jq -er '
+                  if type == "array" then .[-1].cursor
+                  elif ((.nextCursor? | type) == "string") then .nextCursor
+                  elif ((.cursor? | type) == "string") then .cursor
+                  else .deploys[-1].cursor
+                  end
+                  | select(type == "string" and length > 0)
+                ' <<<"$raw_page"
+              )"
+              if jq -e --arg cursor "$next_cursor" \
+                'index($cursor) != null' <<<"$seen_cursors" >/dev/null; then
+                echo "::error::Render deployment inventory repeated cursor for $service_id" >&2
+                return 1
+              fi
+              seen_cursors="$(
+                jq -c --arg cursor "$next_cursor" '. + [$cursor]' \
+                  <<<"$seen_cursors"
+              )"
+              cursor="$next_cursor"
+            done
+            # Cursor pagination is not a point-in-time snapshot. A concurrent
+            # deployment would be inserted at the head, so require the entire
+            # normalized first page to remain byte-for-byte stable around the
+            # exhaustive traversal before trusting its active-deploy set.
+            raw_page="$(
+              render_inventory_api "$absolute_deadline" \
+                "https://api.render.com/v1/services/$service_id/deploys?limit=100"
+            )"
+            final_entries="$(
+              jq -ce '
+                if type == "array" then .
+                elif ((.deploys? | type) == "array") then .deploys
+                else error("recovery_deployment_page_shape")
+                end
+              ' <<<"$raw_page"
+            )"
+            final_inventory="$(
               jq -ce --arg serviceId "$service_id" \
-                "$recovery_deployment_observation_filter" <<<"$deploys"
+                "$recovery_deployment_inventory_filter" <<<"$final_entries"
             )"
-            service_revision_observations="$(
-              jq -c --argjson observation "$observation" '. + [$observation]' \
-                <<<"$service_revision_observations"
+            final_snapshot="$(
+              jq -c '
+                map({
+                  serviceId,
+                  deployId,
+                  observedStatus,
+                  statusClass,
+                  createdAt,
+                  deploymentIdentityKind,
+                  observedCommitSha,
+                  observedImageDigest
+                })
+              ' <<<"$final_inventory"
             )"
-          done
-          if ! jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
-            "$recovery_deployment_set_filter" \
-            <<<"$service_revision_observations" >/dev/null; then
-            echo "::error::Recovery requires three live git-backed deployments at the exact release_commit_sha with no image digest. Image-backed deployments require an immutable expected digest input and are not accepted by this workflow."
-            exit 1
-          fi
-          printf '%s\n' "$service_revision_observations" \
-            > "$work/service-revision-observations.json"
-          persist_recovery_phase "ready_to_resume"
+            if [[ "$final_snapshot" != "$first_page_snapshot" ]]; then
+              echo "::error::Render deployment inventory head changed during pagination for $service_id" >&2
+              return 1
+            fi
+            jq -e '
+              ([.[].deployId] | length) == ([.[].deployId] | unique | length)
+            ' <<<"$all_deployments" >/dev/null
+            printf '%s\n' "$all_deployments"
+          }
+          observe_bound_recovery_deployment() {
+            local absolute_deadline exact exact_observations expected_deploy_id
+            local inventory service_id
+            service_id="$1"
+            expected_deploy_id="$2"
+            absolute_deadline="$3"
+            exact="$(
+              render_inventory_api "$absolute_deadline" \
+                "https://api.render.com/v1/services/$service_id/deploys/$expected_deploy_id"
+            )"
+            exact_observations="$(
+              jq -ce --arg serviceId "$service_id" \
+                "$recovery_deployment_inventory_filter" <<<"$exact"
+            )"
+            jq -e \
+              --arg serviceId "$service_id" \
+              --arg expectedDeployId "$expected_deploy_id" \
+              --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+              "$recovery_exact_deployment_filter" \
+              <<<"$exact_observations" >/dev/null
+            inventory="$(
+              fetch_recovery_deployment_inventory \
+                "$service_id" "$absolute_deadline"
+            )"
+            jq -e \
+              --arg serviceId "$service_id" \
+              --arg expectedDeployId "$expected_deploy_id" \
+              --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+              "$recovery_bound_inventory_filter" \
+              <<<"$inventory" >/dev/null
+            jq -nc \
+              --argjson exact "$(jq -c '.[0]' <<<"$exact_observations")" \
+              --argjson inventory "$inventory" '
+                {
+                  deployment: ($exact + {
+                    latestDeployId: $inventory[0].deployId,
+                    activeDeployIds: [
+                      $inventory[]
+                      | select(.statusClass == "active")
+                      | .deployId
+                    ]
+                  }),
+                  inventory: $inventory
+                }
+              '
+          }
+          observe_bound_recovery_deployments() {
+            local absolute_deadline binding_observation bindings_json
+            local expected_deploy_id inventories inventory observation
+            local observations output_path service_id
+            bindings_json="$1"
+            output_path="$2"
+            absolute_deadline="$3"
+            observations='[]'
+            inventories='[]'
+            while IFS=$'\t' read -r service_id expected_deploy_id; do
+              binding_observation="$(
+                observe_bound_recovery_deployment \
+                  "$service_id" "$expected_deploy_id" "$absolute_deadline"
+              )"
+              observation="$(jq -c '.deployment' <<<"$binding_observation")"
+              inventory="$(jq -c '.inventory' <<<"$binding_observation")"
+              observations="$(
+                jq -c --argjson observation "$observation" \
+                  '. + [$observation]' <<<"$observations"
+              )"
+              inventories="$(
+                jq -c --arg serviceId "$service_id" \
+                  --argjson deployments "$inventory" \
+                  '. + [{serviceId: $serviceId, deployments: $deployments}]' \
+                  <<<"$inventories"
+              )"
+            done < <(jq -r '.[] | [.serviceId, .deployId] | @tsv' <<<"$bindings_json")
+            jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+              "$recovery_deployment_set_filter" <<<"$observations" >/dev/null
+            jq -n --argjson deployments "$observations" \
+              --argjson inventories "$inventories" \
+              '{deployments: $deployments, inventories: $inventories}' \
+              > "$output_path"
+          }
+
+          # This is the last environment mutation. The exact pinned deployment
+          # below must consume it; no environment value may change afterwards.
+          persist_recovery_phase "target_deploy_intent"
+          jq -n --arg phase "target_deploy_intent" --arg runId "$GITHUB_RUN_ID" \
+            '{phase: $phase, runId: $runId}' > "$work/recovery-phase.json"
+          assert_recovery_fleet_suspended "$work/pre-deploy-suspension-result.json"
+          deploy_bindings='[]'
+          deploy_creation_evidence='[]'
+          printf '%s\n' "$deploy_creation_evidence" \
+            > "$work/deploy-creation-evidence.json"
+          jq -n --arg commitId "$RELEASE_COMMIT_SHA" \
+            '{clearCache: "do_not_clear", commitId: $commitId}' \
+            > "$work/deploy-request.json"
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            assert_recovery_service_suspended "$service_id"
+            predeploy_inventory_deadline=$((SECONDS + 120))
+            before_inventory="$(
+              fetch_recovery_deployment_inventory \
+                "$service_id" "$predeploy_inventory_deadline"
+            )"
+            jq -e --arg serviceId "$service_id" \
+              "$recovery_predeploy_inventory_filter" \
+              <<<"$before_inventory" >/dev/null
+            printf '%s\n' "$before_inventory" \
+              > "$work/deploy-preintent-$service_id.json"
+            before_deploy_ids="$(jq -c '[.[].deployId]' <<<"$before_inventory")"
+            deploy_intent_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+            deploy_intent_epoch="$(date -u -d "$deploy_intent_at" +%s)"
+            set +e
+            deploy_response="$(
+              render_deploy_mutation -X POST -H "Content-Type: application/json" \
+                --data-binary @"$work/deploy-request.json" \
+                "https://api.render.com/v1/services/$service_id/deploys"
+            )"
+            deploy_mutation_status=$?
+            set -e
+            deploy_id=""
+            direct_observations=""
+            if [[ "$deploy_mutation_status" -eq 0 ]]; then
+              direct_observations="$(
+                jq -ce --arg serviceId "$service_id" \
+                  "$recovery_deployment_inventory_filter" \
+                  <<<"$deploy_response" 2>/dev/null || true
+              )"
+              deploy_id="$(
+                jq -r 'if length == 1 then .[0].deployId else empty end' \
+                  <<<"$direct_observations" 2>/dev/null || true
+              )"
+              if [[ -n "$deploy_id" ]]; then
+                if ! jq -e \
+                  --arg serviceId "$service_id" \
+                  --arg expectedDeployId "$deploy_id" \
+                  --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+                  "($recovery_pending_deployment_filter) or ($recovery_exact_deployment_filter)" \
+                  <<<"$direct_observations" >/dev/null; then
+                  echo "::error::Render returned an invalid deployment identity for $service_id"
+                  exit 1
+                fi
+                jq -e --arg deployId "$deploy_id" \
+                  --argjson beforeDeployIds "$before_deploy_ids" \
+                  '($beforeDeployIds | index($deployId)) == null' \
+                  <<<"{}" >/dev/null
+              fi
+            fi
+            reconciled=false
+            if [[ -z "$deploy_id" ]]; then
+              reconciled=true
+              reconciliation_deadline=$((SECONDS + 120))
+              reconciliation_candidates='[]'
+              stable_candidate_id=""
+              stable_candidate_observations=0
+              while (( SECONDS < reconciliation_deadline )); do
+                assert_recovery_service_suspended \
+                  "$service_id" "$reconciliation_deadline"
+                observation_epoch="$(date -u +%s)"
+                recent_inventory="$(
+                  fetch_recovery_deployment_inventory \
+                    "$service_id" "$reconciliation_deadline"
+                )"
+                jq -e '
+                  ([.[].deployId] | length) == ([.[].deployId] | unique | length)
+                ' <<<"$recent_inventory" >/dev/null
+                reconciliation_candidates="$(
+                  jq -ce \
+                    --arg serviceId "$service_id" \
+                    --argjson beforeDeployIds "$before_deploy_ids" \
+                    --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+                    --argjson intentEpoch "$deploy_intent_epoch" \
+                    --argjson observationEpoch "$observation_epoch" \
+                    "$recovery_reconciliation_filter" \
+                    <<<"$recent_inventory"
+                )"
+                jq -n \
+                  --arg serviceId "$service_id" \
+                  --arg intentAt "$deploy_intent_at" \
+                  --argjson mutationExitStatus "$deploy_mutation_status" \
+                  --argjson beforeDeployIds "$before_deploy_ids" \
+                  --argjson candidates "$reconciliation_candidates" '
+                    {
+                      serviceId: $serviceId,
+                      intentAt: $intentAt,
+                      mutationExitStatus: $mutationExitStatus,
+                      beforeDeployIds: $beforeDeployIds,
+                      candidates: $candidates
+                    }
+                  ' > "$work/deploy-reconciliation-$service_id.json"
+                candidate_count="$(jq -r 'length' <<<"$reconciliation_candidates")"
+                if (( candidate_count > 1 )); then
+                  echo "::error::Render deploy reconciliation is ambiguous for $service_id"
+                  exit 1
+                fi
+                if (( candidate_count == 1 )); then
+                  observed_candidate_id="$(
+                    jq -er '.[0].deployId' <<<"$reconciliation_candidates"
+                  )"
+                  if [[ "$observed_candidate_id" == "$stable_candidate_id" ]]; then
+                    stable_candidate_observations=$((stable_candidate_observations + 1))
+                  else
+                    stable_candidate_id="$observed_candidate_id"
+                    stable_candidate_observations=1
+                  fi
+                  if (( stable_candidate_observations >= 2 )); then
+                    deploy_id="$observed_candidate_id"
+                    break
+                  fi
+                else
+                  stable_candidate_id=""
+                  stable_candidate_observations=0
+                fi
+                sleep 5
+              done
+              if [[ -z "$deploy_id" ]]; then
+                echo "::error::Render deploy mutation could not be reconciled for $service_id"
+                exit 1
+              fi
+            fi
+            [[ "$deploy_id" =~ ^dep-[a-z0-9-]+$ ]]
+            jq -e --arg deployId "$deploy_id" \
+              --argjson beforeDeployIds "$before_deploy_ids" \
+              '($beforeDeployIds | index($deployId)) == null' \
+              <<<"{}" >/dev/null
+            deploy_bindings="$(
+              jq -c --arg serviceId "$service_id" --arg deployId "$deploy_id" \
+                '. + [{serviceId: $serviceId, deployId: $deployId}]' \
+                <<<"$deploy_bindings"
+            )"
+            deploy_creation_evidence="$(
+              jq -c \
+                --arg serviceId "$service_id" \
+                --argjson beforeDeployIds "$before_deploy_ids" \
+                --arg deployId "$deploy_id" \
+                --arg intentAt "$deploy_intent_at" \
+                --argjson mutationExitStatus "$deploy_mutation_status" \
+                --argjson reconciled "$reconciled" '
+                  . + [{
+                    serviceId: $serviceId,
+                    beforeDeployIds: $beforeDeployIds,
+                    deployId: $deployId,
+                    intentAt: $intentAt,
+                    mutationExitStatus: $mutationExitStatus,
+                    reconciled: $reconciled
+                  }]
+                ' <<<"$deploy_creation_evidence"
+            )"
+            printf '%s\n' "$deploy_creation_evidence" \
+              > "$work/deploy-creation-evidence.json"
+          done
+          jq -e '
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and ([.[].deployId] | unique | length == 3)
+          ' <<<"$deploy_bindings" >/dev/null
+          jq -n --arg phase "target_deploys_created" --arg runId "$GITHUB_RUN_ID" \
+            --argjson deploys "$deploy_bindings" \
+            '{phase: $phase, runId: $runId, deploys: $deploys}' \
+            > "$work/recovery-phase.json"
+
+          deployment_deadline=$((SECONDS + 900))
+          while (( SECONDS < deployment_deadline )); do
+            assert_recovery_fleet_suspended \
+              "$work/deploy-wait-suspension-result.json" \
+              "$deployment_deadline"
+            pending=0
+            failed=0
+            deployment_observations='[]'
+            while IFS=$'\t' read -r service_id deploy_id; do
+              deploy_response="$(
+                render_inventory_api "$deployment_deadline" \
+                  "https://api.render.com/v1/services/$service_id/deploys/$deploy_id"
+              )"
+              observations="$(
+                jq -ce --arg serviceId "$service_id" \
+                  "$recovery_deployment_inventory_filter" <<<"$deploy_response"
+              )"
+              observation="$(jq -ce 'if length == 1 then .[0] else error("recovery_exact_deploy_shape") end' <<<"$observations")"
+              deployment_observations="$(
+                jq -c --argjson observation "$observation" \
+                  '. + [$observation]' <<<"$deployment_observations"
+              )"
+              if jq -e \
+                --arg serviceId "$service_id" \
+                --arg expectedDeployId "$deploy_id" \
+                --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+                "$recovery_exact_deployment_filter" \
+                <<<"$observations" >/dev/null; then
+                continue
+              fi
+              if jq -e \
+                --arg serviceId "$service_id" \
+                --arg expectedDeployId "$deploy_id" \
+                --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+                "$recovery_pending_deployment_filter" \
+                <<<"$observations" >/dev/null; then
+                pending=1
+              else
+                failed=1
+              fi
+            done < <(jq -r '.[] | [.serviceId, .deployId] | @tsv' <<<"$deploy_bindings")
+            printf '%s\n' "$deployment_observations" \
+              > "$work/deployment-result.json"
+            if (( failed == 1 )); then
+              jq -c . "$work/deployment-result.json"
+              exit 1
+            fi
+            if (( pending == 0 )); then
+              break
+            fi
+            sleep 10
+          done
+          jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+            "$recovery_deployment_set_filter" \
+            "$work/deployment-result.json" >/dev/null
+          jq -n --arg phase "target_deploys_live" --arg runId "$GITHUB_RUN_ID" \
+            --slurpfile deploys "$work/deployment-result.json" \
+            '{phase: $phase, runId: $runId, deploys: $deploys[0]}' \
+            > "$work/recovery-phase.json"
+
+          pre_resume_observation_deadline=$((SECONDS + 240))
+          assert_recovery_fleet_suspended \
+            "$work/pre-resume-suspension-result.json" \
+            "$pre_resume_observation_deadline"
+          observe_bound_recovery_deployments "$deploy_bindings" \
+            "$work/pre-resume-deployment-result.json" \
+            "$pre_resume_observation_deadline"
+          jq -n --arg phase "ready_to_resume" --arg runId "$GITHUB_RUN_ID" \
+            --slurpfile deployment "$work/pre-resume-deployment-result.json" \
+            '{phase: $phase, runId: $runId, deployment: $deployment[0]}' \
+            > "$work/recovery-phase.json"
+
+          resume_result='[]'
+          while IFS=$'\t' read -r service_id deploy_id; do
+            service_resume_observation_deadline=$((SECONDS + 90))
+            assert_recovery_service_suspended \
+              "$service_id" "$service_resume_observation_deadline"
+            observe_bound_recovery_deployment \
+              "$service_id" "$deploy_id" \
+              "$service_resume_observation_deadline" \
+              > "$work/pre-resume-deployment-$service_id.json"
             render_api -X POST \
               "https://api.render.com/v1/services/$service_id/resume" -o /dev/null
+            resume_result="$(
+              jq -c --arg serviceId "$service_id" --arg deployId "$deploy_id" \
+                --arg requestedAt "$(node -e 'process.stdout.write(new Date().toISOString())')" '
+                  . + [{
+                    serviceId: $serviceId,
+                    deployId: $deployId,
+                    requestedAt: $requestedAt
+                  }]
+                ' <<<"$resume_result"
+            )"
+            printf '%s\n' "$resume_result" > "$work/resume-result.json"
+          done < <(jq -r '.[] | [.serviceId, .deployId] | @tsv' <<<"$deploy_bindings")
+
+          online_deadline=$((SECONDS + 600))
+          online_ready=0
+          while (( SECONDS < online_deadline )); do
+            if observe_recovery_services \
+              "$work/post-resume-service-result.json" \
+              "$online_deadline"; then
+              online_ready=1
+              break
+            fi
+            sleep 10
           done
+          [[ "$online_ready" -eq 1 ]]
+
+          api_origin="$(
+            jq -er '.[] | select(.role == "api") | .url | rtrimstr("/")' \
+              "$work/post-resume-service-result.json"
+          )"
+          web_origin="$(
+            jq -er '.[] | select(.role == "web") | .url | rtrimstr("/")' \
+              "$work/post-resume-service-result.json"
+          )"
+          health_deadline=$((SECONDS + 300))
+          health_ready=0
+          while (( SECONDS < health_deadline )); do
+            if curl --fail --silent --show-error --location \
+              --connect-timeout 10 --max-time 30 "$api_origin/health" \
+                -o /dev/null \
+              && curl --fail --silent --show-error --location \
+                --connect-timeout 10 --max-time 30 "$web_origin/" \
+                -o /dev/null; then
+              health_ready=1
+              break
+            fi
+            sleep 10
+          done
+          [[ "$health_ready" -eq 1 ]]
+          jq -n \
+            --arg apiUrl "$api_origin/health" \
+            --arg webUrl "$web_origin/" \
+            --arg workerServiceId "$WORKER_SERVICE_ID" '
+              {
+                api: {url: $apiUrl, healthy: true},
+                web: {url: $webUrl, healthy: true},
+                worker: {
+                  serviceId: $workerServiceId,
+                  healthSignal: "render_not_suspended_and_exact_live_deploy"
+                }
+              }
+            ' > "$work/health-result.json"
+          post_resume_observation_deadline=$((SECONDS + 240))
+          observe_bound_recovery_deployments "$deploy_bindings" \
+            "$work/post-resume-deployment-result.json" \
+            "$post_resume_observation_deadline"
+          # Bind service identity and online state again after the final
+          # deployment inventory proof, immediately before committing success.
+          final_service_observation_deadline=$((SECONDS + 90))
+          observe_recovery_services \
+            "$work/post-resume-service-result.json" \
+            "$final_service_observation_deadline"
+          jq -n --arg phase "recovery_complete" --arg runId "$GITHUB_RUN_ID" \
+            --slurpfile services "$work/post-resume-service-result.json" \
+            --slurpfile deployment "$work/post-resume-deployment-result.json" \
+            --slurpfile health "$work/health-result.json" '
+              {
+                phase: $phase,
+                runId: $runId,
+                services: $services[0],
+                deployment: $deployment[0],
+                health: $health[0]
+              }
+            ' > "$work/recovery-phase.json"
 
           jq -n \
             --arg targetDbId "$TARGET_DB_ID" \
             --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
             --arg recoveryRunId "$GITHUB_RUN_ID" \
             --arg observedSourceCommitSha "$(git rev-parse HEAD)" \
-            --slurpfile serviceRevisions "$work/service-revision-observations.json" \
+            --slurpfile deployCreation "$work/deploy-creation-evidence.json" \
+            --slurpfile serviceRevisions "$work/post-resume-deployment-result.json" \
+            --slurpfile resumedServices "$work/post-resume-service-result.json" \
+            --slurpfile health "$work/health-result.json" \
             --slurpfile targetStats "$work/target-stats.json" \
             '{
               targetDbId: $targetDbId,
               targetVersion: 17,
               releaseCommitSha: $observedSourceCommitSha,
               recoveryRunId: $recoveryRunId,
-              serviceRevisions: $serviceRevisions[0],
+              deployCreation: $deployCreation[0],
+              serviceRevisions: $serviceRevisions[0].deployments,
+              resumedServices: $resumedServices[0],
+              health: $health[0],
               targetStats: $targetStats[0]
             }' > "$work/recovery-manifest.json"
+          recovery_complete=1
           unset DATABASE_URL external_url
 
       - name: Upload recovery evidence
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: reviewrouter-pg17-recovery-${{ github.run_id }}
-          path: ${{ runner.temp }}/reviewrouter-pg17-recovery/recovery-manifest.json
-          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/recovery-manifest.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/recovery-phase.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/*suspension-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/deploy-creation-evidence.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/deploy-preintent-*.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/deploy-reconciliation-*.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/deployment-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/pre-resume-deployment-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/resume-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/post-resume-service-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/post-resume-deployment-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/health-result.json
+          if-no-files-found: warn
           retention-days: 30
           compression-level: 0
 
