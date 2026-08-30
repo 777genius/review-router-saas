@@ -1,4 +1,39 @@
 export * from "./domain/release-rollout";
+export {
+  actionRepositoryIdentity,
+  assertImmutableActionRef,
+  assertVerifiedActionReleaseV2,
+  assertVerifiedFixedTerminalCanaryReceiptV4,
+  assertWorkflowActionSelection,
+  commitSha,
+  exactActionInstallerIdentity,
+  fixedCanaryBinding,
+  fixedCanaryTargetIdentity,
+  fixedTerminalCanaryExpectation,
+  immutableActionRef,
+  immutableEvidenceArtifactLocator,
+  sameActionRef,
+  sameActionRepository,
+  sha256,
+  terminalCanaryReceiptIdentityDigest,
+  type ActionRepositoryIdentity,
+  type CommitSha,
+  type ExactActionReleaseIdentityV2,
+  type ExactActionInstallerIdentity,
+  type FixedCanaryBinding,
+  type FixedCanaryBindingInput,
+  type FixedCanaryTargetIdentity,
+  type FixedTerminalCanaryExpectation,
+  type ImmutableActionRef,
+  type ImmutableEvidenceArtifactLocator,
+  type Sha256,
+  type VerifiedActionReleaseV2,
+  type VerifiedFixedTerminalCanaryReceiptV4,
+  type WorkflowActionSelection,
+  type WorkflowSourceIdentity,
+} from "./domain/action-release-identity";
+export * from "./domain/action-release-rollout";
+export * from "./domain/live-action-reference-inventory";
 export * from "./domain/release-migration-transition";
 export * from "./domain/release-authority-contract";
 export * from "./domain/sanitized-diagnostic.js";
@@ -10,6 +45,8 @@ export * from "./domain/effective-principal-inventory";
 export * from "./domain/activation-catalog-policy-contract";
 export * from "./domain/service-transition";
 export * from "./application/ports";
+export * from "./application/action-release-rollout-ports";
+export * from "./application/action-release-rollout-use-cases";
 export * from "./application/service-transition-ports";
 export * from "./application/use-cases";
 export * from "./application/reconcile-compensation";
