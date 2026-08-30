@@ -279,11 +279,19 @@ describe("certified fork V5 action inputs", () => {
   it("accepts workflow_dispatch only when the base repository context is exact", async () => {
     const root = await mkdtemp(join(tmpdir(), "rr-fork-v5-backfill-"));
     const eventPath = join(root, "event.json");
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
     await writeFile(
       eventPath,
       JSON.stringify({
         repository: { id: 123456, full_name: "base/repository" },
-        inputs: { source_repository: "attacker/ignored" },
+        inputs: {
+          source_repository: "contributor/repository",
+          source_repository_id: "654321",
+          pull_request_number: "42",
+          review_head_sha: "b".repeat(40),
+          base_sha: "c".repeat(40),
+        },
       }),
     );
     const runtimeEnv = env({
@@ -292,6 +300,8 @@ describe("certified fork V5 action inputs", () => {
       GITHUB_EVENT_PATH: eventPath,
       GITHUB_REPOSITORY: "base/repository",
       GITHUB_REPOSITORY_ID: "123456",
+      GITHUB_WORKSPACE: workspace,
+      RUNNER_TEMP: root,
       ACTIONS_ID_TOKEN_REQUEST_URL:
         "https://vstoken.actions.githubusercontent.com/oidc/token",
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
@@ -299,7 +309,6 @@ describe("certified fork V5 action inputs", () => {
     try {
       const execute = vi.fn(async (input) => {
         expect(input.binding.sourceRepository).toBe("contributor/repository");
-        expect(input.binding.sourceRepository).not.toBe("attacker/ignored");
       });
       await expect(
         runCodexRotatingGitHubAction({
