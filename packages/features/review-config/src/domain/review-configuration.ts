@@ -1,6 +1,7 @@
 import {
   defaultCodexModel,
   defaultProviderReasoningEffort,
+  codexModelSupportsReasoningEffort,
   providerAuthModeBelongsToKind,
   providerAuthModeSchema,
   providerKindSchema,
@@ -13,7 +14,7 @@ export const reviewProviderConfigurationSchema = z
     authMode: providerAuthModeSchema,
     model: z.string().trim().min(1),
     reasoningEffort: z
-      .enum(["low", "medium", "high", "xhigh"])
+      .enum(["low", "medium", "high", "xhigh", "max", "ultra"])
       .default(defaultProviderReasoningEffort),
     agenticContext: z.boolean().default(true),
     fastMode: z.boolean().default(false),
@@ -259,6 +260,7 @@ function normalizeProductionCodexProviders(
 
   if (options.rejectDuplicateProviderRows) {
     assertUniqueProviderRows(normalizedProviders);
+    assertSupportedReasoningEfforts(normalizedProviders);
   }
 
   const uniqueProviders = dedupeProviderRows(normalizedProviders);
@@ -270,6 +272,21 @@ function normalizeProductionCodexProviders(
   }
 
   return uniqueProviders;
+}
+
+function assertSupportedReasoningEfforts(
+  providers: readonly ReviewProviderConfiguration[],
+): void {
+  for (const provider of providers) {
+    if (
+      !codexModelSupportsReasoningEffort(
+        provider.model,
+        provider.reasoningEffort,
+      )
+    ) {
+      throw new Error("review_reasoning_effort_unsupported_for_model");
+    }
+  }
 }
 
 function dedupeProviderRows(

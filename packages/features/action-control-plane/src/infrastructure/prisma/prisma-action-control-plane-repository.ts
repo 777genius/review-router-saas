@@ -433,6 +433,8 @@ function toReasoningEffort(value: string) {
     case "medium":
     case "high":
     case "xhigh":
+    case "max":
+    case "ultra":
       return value;
     default:
       return "medium";

@@ -1,5 +1,6 @@
 import {
   mapConfigToRuntimeEnv,
+  parseReviewConfigurationStrict,
   safeDefaultReviewConfiguration,
   type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
@@ -182,11 +183,11 @@ function buildDefaultReviewConfiguration(
     model: providerDefaults.model,
     reasoningEffort: providerDefaults.reasoningEffort,
   };
-  return {
+  return parseReviewConfigurationStrict({
     ...safeDefaultReviewConfiguration,
     provider,
     providers: [provider],
-  };
+  });
 }
 
 function assertStandardRuntimeProviderSupport(

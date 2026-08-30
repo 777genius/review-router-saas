@@ -1071,13 +1071,15 @@ function readCredentialSha256(
 
 function readDefaultReasoningEffort(
   value: string | undefined,
-): "low" | "medium" | "high" | "xhigh" {
+): "low" | "medium" | "high" | "xhigh" | "max" | "ultra" {
   const normalized = value?.trim() || "xhigh";
   if (
     normalized === "low" ||
     normalized === "medium" ||
     normalized === "high" ||
-    normalized === "xhigh"
+    normalized === "xhigh" ||
+    normalized === "max" ||
+    normalized === "ultra"
   ) {
     return normalized;
   }

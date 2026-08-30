@@ -49,6 +49,12 @@ const modelOptions = [
     description: "Codex default model.",
   },
   {
+    value: "gpt-5.5",
+    label: "gpt-5.5",
+    provider: "codex" as const,
+    description: "Codex model.",
+  },
+  {
     value: "poolside/laguna-m.1:free",
     label: "Poolside: Laguna M.1",
     provider: "openrouter" as const,
@@ -508,6 +514,41 @@ describe("ReviewConfigForm", () => {
       screen.queryByRole("option", { name: /Codex legacy OAuth/i }),
     ).toBeNull();
     expect(screen.queryByRole("option", { name: /Codex API key/i })).toBeNull();
+  });
+
+  it("offers max and ultra reasoning effort for Codex", () => {
+    renderReviewConfigForm();
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
+
+    expect(screen.getByRole("option", { name: /Max/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Ultra/ })).toBeTruthy();
+  });
+
+  it("hides max and ultra for an older Codex model", () => {
+    renderReviewConfigForm({
+      config: codexReviewConfiguration("codex_subscription_oauth_rotating"),
+    });
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
+
+    expect(screen.queryByRole("option", { name: /Max/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /Ultra/ })).toBeNull();
+    expect(screen.getByRole("option", { name: /XHigh/ })).toBeTruthy();
+  });
+
+  it("clamps ultra to xhigh when the model changes away from gpt-5.6-sol", () => {
+    renderReviewConfigForm();
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
+    fireEvent.click(screen.getByRole("option", { name: /Ultra/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Model" }), {
+      target: { value: "gpt-5.5" },
+    });
+
+    expect(
+      screen.getByRole("combobox", { name: "Reasoning effort" }).textContent,
+    ).toContain("XHigh");
   });
 
   it("checks the Claude Code OAuth secret for a saved Claude provider", async () => {

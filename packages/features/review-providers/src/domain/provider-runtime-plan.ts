@@ -8,8 +8,9 @@ import {
   type ProviderKind,
   type RuntimeAuthMode,
 } from "./provider-catalog";
+import type { CodexReasoningEffort } from "./provider-models";
 
-export type RuntimePlanReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type RuntimePlanReasoningEffort = CodexReasoningEffort;
 
 export type RuntimePlanProviderConfiguration = {
   readonly kind: ProviderKind;

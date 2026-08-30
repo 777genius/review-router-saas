@@ -1,5 +1,8 @@
 import type { ScmProvider } from "@reviewrouter/shared";
-import { isCodexBackedProvider } from "@reviewrouter/features-review-providers";
+import {
+  codexModelSupportsReasoningEffort,
+  isCodexBackedProvider,
+} from "@reviewrouter/features-review-providers";
 import type {
   ReviewConfiguration,
   ReviewInvestigationRolloutConfiguration,
@@ -31,6 +34,7 @@ export enum ReviewConfigurationOperatorErrorCode {
   InvalidRepository = "invalid_repository",
   RateLimited = "rate_limited",
   ReviewProviderNotFound = "review_provider_not_found",
+  UnsupportedReasoningEffort = "unsupported_reasoning_effort",
   ConfigurationChanged = "configuration_changed",
   InvalidInvestigationRollout = "invalid_investigation_rollout",
 }
@@ -418,6 +422,12 @@ function withReasoningEffort(
   if (providerIndex < 0) {
     throw new ReviewConfigurationOperatorError(
       ReviewConfigurationOperatorErrorCode.ReviewProviderNotFound,
+    );
+  }
+  const provider = config.providers[providerIndex]!;
+  if (!codexModelSupportsReasoningEffort(provider.model, effort)) {
+    throw new ReviewConfigurationOperatorError(
+      ReviewConfigurationOperatorErrorCode.UnsupportedReasoningEffort,
     );
   }
   const providers = config.providers.map((provider, index) =>

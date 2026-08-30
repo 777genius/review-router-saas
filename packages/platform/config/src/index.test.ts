@@ -310,6 +310,19 @@ describe("platform config", () => {
     );
   });
 
+  it.each(["max", "ultra"] as const)(
+    "accepts %s as a deployment reasoning effort",
+    (effort) => {
+      const env = loadRuntimeEnv({
+        DATABASE_URL: "postgres://user:pass@localhost:5432/reviewrouter",
+        AUTH_SECRET: "0123456789abcdef",
+        REVIEW_ROUTER_DEFAULT_EFFORT: effort,
+      } as NodeJS.ProcessEnv);
+
+      expect(env.REVIEW_ROUTER_DEFAULT_EFFORT).toBe(effort);
+    },
+  );
+
   it("requires explicit workflow provisioning enablement and lets disable win", () => {
     expect(isWorkflowProvisioningEnabled({} as NodeJS.ProcessEnv)).toBe(false);
     expect(
