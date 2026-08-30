@@ -11,6 +11,17 @@ import {
   createRehearsalAuthorityContext,
   rehearsalSchemaOwnerIdentity,
 } from "./codex-rotating-rehearsal-authority-context.mjs";
+import { codexRotatingFunctions } from "./codex-rotating-production-writer-schema.mjs";
+import {
+  hasExactPostgresAbortedTransactionEnvelope,
+  hasExactPostgresLockTimeoutEnvelope,
+  isExpectedPrismaLockTimeoutFailure,
+} from "./codex-rotating-lock-timeout-proof.mjs";
+import {
+  assertPsqlFailedWithExactMessage,
+  assertPsqlFailedWithOneOfExactMessages,
+  rehearsalProcessDiagnostic,
+} from "./codex-rotating-rehearsal-process-result.mjs";
 
 describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   const source = readFileSync(
@@ -64,7 +75,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
-  it("rehearses the canonical sequence through 000086 in order", () => {
+  it("rehearses every canonical migration from 000060 through 000089 in order", () => {
     const inventory =
       /JSON\.stringify\(\[([\s\S]+?)\]\),\n\s+"rehearsal migration inventory/u.exec(
         source,
@@ -105,6 +116,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "migration84Name",
       "migration85Name",
       "migration86Name",
+      "migration87Name",
+      "migration88Name",
+      "migration89Name",
     ]);
     expect(source).toContain(
       'const migration67Name = "000067_review_live_progress"',
@@ -161,6 +175,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       'const migration74Name = "000074_hosted_codex_account_pool"',
     );
     expect(source).toContain(
+      'const migration87Name = "000087_codex_oauth_v4_v5_workflow_reattestation"',
+    );
+    expect(source).toContain(
+      'const migration88Name = "000088_codex_oauth_reattestation_mutation_owner_fence"',
+    );
+    expect(source).toContain(
+      'const migration89Name = "000089_codex_oauth_v4_v5_staged_compatibility"',
+    );
+    expect(source).toContain(
       "for (const migrationName of rotatingMigrationNames)",
     );
     expect(source).toContain(
@@ -198,12 +221,130 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
+  it("derives the post-000089 exact function count from the canonical manifest", () => {
+    expect(new Set(codexRotatingFunctions).size).toBe(
+      codexRotatingFunctions.length,
+    );
+    expect(source).toContain(
+      "IF function_count <> ${codexRotatingFunctions.length} OR unsafe_function_count <> 0 THEN",
+    );
+    expect(source).not.toContain("IF function_count <> 24");
+  });
+
+  it("runs the exact migration89 SQL in two PG17 sessions for both lock orderings", () => {
+    expect(source).toContain("await proveMigration89TwoSessionBoundary()");
+    expect(source).toContain(
+      'for (const ordering of ["old_invocation_first", "migration_boundary_first"])',
+    );
+    expect(source).toContain('spawnPsql(migrationUrl, ["-f", migration89])');
+    expect(source).toContain(
+      'LOCK TABLE public."CodexOAuthSecretNamespace" IN ROW EXCLUSIVE MODE',
+    );
+    expect(source).toContain('"ShareRowExclusiveLock",\n              false');
+    expect(source).toContain(
+      "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
+    );
+    expect(source).toContain("oldLock.blockers.includes(migrationLock.pid)");
+    expect(source).toContain("migrationLock.blockers.includes(oldLock.pid)");
+    expect(source).toContain("PERFORM pg_advisory_xact_lock(810081, 1)");
+    expect(source).toContain(
+      'blocker.write("SELECT pg_advisory_lock(810081, 1);\\n")',
+    );
+    expect(source).toContain("const oldBarrierLock = advisoryBarrierLock(");
+    expect(source).toContain('"rr-m89-old-first",\n              false');
+    expect(source).toContain(
+      "oldBarrierLock.blockers.includes(holderLock.pid)",
+    );
+    expect(source).toContain('lock.mode === "ExclusiveLock"');
+    expect(source).toContain("lock.classId === 810081");
+    expect(source).toContain("lock.objectId === 1");
+    expect(source).toContain("lock.objectSubId === 2");
+    expect(source).toContain(
+      "migration89 queued old invocation failed with generic does-not-exist",
+    );
+    const proof =
+      /async function proveMigration89TwoSessionBoundary\(\) \{([\s\S]+?)\n\}\n\nasync function proveMigrationSpecificLegacyBehavior/u.exec(
+        source,
+      )?.[1];
+    expect(proof).toBeDefined();
+    expect(proof).not.toContain("pg_sleep");
+    expect(proof).not.toContain('"Migration89RaceLatch"');
+    expect(proof).not.toMatch(/predecessor_evidence_missing\|does not exist/u);
+    expect(proof).toContain("migration89_blocker_cleanup_failed");
+    expect(proof).toContain("migration89_database_cleanup_failed");
+    expect(proof).toContain('child.kill("SIGKILL")');
+    expect(proof).toContain('child.once("close", (status, signal)');
+    expect(proof).toContain(
+      "resolveChild({ status, signal, stdout, stderr, timedOut })",
+    );
+  });
+
+  it("exposes the disposable real-PG17 migration89 boundary phase", () => {
+    expect(source).toContain('"--migration89-boundary-only"');
+    expect(source).toContain(
+      "Codex rotating PostgreSQL 17 migration89 two-session boundary passed.",
+    );
+  });
+
+  it("silences command status for the lock snapshot JSON query", () => {
+    const lockSnapshot =
+      /const lockSnapshot = \(url\) =>([\s\S]+?)\n[ ]{2}const waitForLockState/u.exec(
+        source,
+      )?.[1];
+
+    expect(lockSnapshot).toBeDefined();
+    expect(lockSnapshot).toContain('psql(url, [\n        "-qAtc",');
+    expect(lockSnapshot).toContain("SET statement_timeout='2s';");
+    expect(lockSnapshot).toContain(
+      "SELECT COALESCE(json_agg(row_to_json(observation)), '[]'::json)::text",
+    );
+  });
+
+  it.each([{ timedOut: true }, { error: { code: "ETIMEDOUT" } }])(
+    "rejects timed-out failure evidence %#",
+    (timeoutState) => {
+      const result = {
+        status: null,
+        signal: "SIGKILL",
+        stdout: "expected_failure",
+        stderr: "",
+        ...timeoutState,
+      };
+
+      expect(() =>
+        assertPsqlFailedWithExactMessage(
+          result,
+          "expected_failure",
+          "exact timeout",
+        ),
+      ).toThrow(/exact timeout/u);
+      expect(() =>
+        assertPsqlFailedWithOneOfExactMessages(
+          result,
+          ["expected_failure"],
+          "one-of timeout",
+        ),
+      ).toThrow(/one-of timeout/u);
+      expect(rehearsalProcessDiagnostic(result).metadata.timedOut).toBe(true);
+    },
+  );
+
   it("retains ordinary migration 000074 in the pre-release source manifest", () => {
     expect(source).toContain("directory === migration74Name");
     expect(source).not.toContain("applyOrdinaryPostReleaseMigrations");
     expect(source).not.toContain("assertMigrationAbsentFromHistory");
     expect(source).toContain("proveMigrateDeployNoOp(providerAdmin)");
-    expect(source).toContain("combined 000060 through 000086 rehearsal passed");
+    expect(source).toContain("combined 000060 through 000089 rehearsal passed");
+  });
+
+  it("rehearses rejection of legacy active namespace schemas 1 through 3", () => {
+    expect(source).toContain("for (const rejectedSchemaVersion of [1, 2, 3])");
+    expect(source).toContain(
+      "codex_oauth_secret_namespace_workflow_schema_invalid",
+    );
+    expect(source).toContain(
+      "active namespace schema V${rejectedSchemaVersion} did not fail closed",
+    );
   });
 
   it("reproduces the trusted production pre-migration manifest", () => {
@@ -475,7 +616,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "'reviewrouter_release_migration', namespace.oid, 'CREATE'",
     );
     expect(privilegeProof).toContain(
-      "'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure",
+      "'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean)'::regprocedure",
     );
     expect(privilegeProof).toContain('public."_prisma_migrations"');
     expect(privilegeProof).toContain("attribute.attname IN ('id','status')");
@@ -691,10 +832,8 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toContain(
       "withApplicationName(fixtureAdminUrl, applicationName)",
     );
-    expect(source).toContain('output.includes("lock timeout")');
-    expect(source).toContain(
-      'output.includes("current transaction is aborted")',
-    );
+    expect(source).toContain("isExpectedPrismaLockTimeoutFailure({");
+    expect(source).toContain("runnerElapsedMs < 45_000");
     expect(prepareIndex).toBeLessThan(helperIndex);
     expect(source).toContain(
       "discardRehearsalOnlyRolledBackMigrationHistory(providerAdmin)",
@@ -816,6 +955,13 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       provisioning.indexOf("SELECT rolname INTO existing_role"),
     );
     expect(source).toContain("runRehearsalReleaseSubprocess");
+    expect(source).toContain("proveSelfHostedV4V5ReattestationOwnerInvocation");
+    expect(source).toContain(
+      "self-hosted canonical table/function owner session was not admitted",
+    );
+    expect(source).toContain(
+      "self-hosted non-owner session bypassed exact owner admission",
+    );
     expect(provisioning).toContain(
       "markCanonicalRehearsalRoles(url.toString())",
     );
@@ -851,6 +997,417 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         "rehearsal_database_removal_not_proven_before_role_cleanup",
       ),
     );
+  });
+
+  it("accepts the generic 000061 aborted-transaction wrapper with exact direct and history proof", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    const output = `Migration name: ${migrationName}\nERROR: current transaction is aborted`;
+    const exactEvidence = {
+      total: 1,
+      currentFailed: 1,
+      zeroStep: 1,
+      lockTimeoutLog: 0,
+      abortedTransactionLog: 0,
+      exactFailureLog: 0,
+      emptyLog: 1,
+    };
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof: {
+          migrationName,
+          observed: true,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    [
+      "aborted transaction",
+      "Migration runner note: current transaction is aborted after cleanup",
+    ],
+    ["lock timeout", "Migration runner note: lock timeout was expected"],
+  ])(
+    "rejects unrelated %s prose despite exact migration, history, and direct proof",
+    (_case, unrelatedProse) => {
+      const migrationName = "000061_codex_oauth_provider_mutation_fence";
+      expect(
+        isExpectedPrismaLockTimeoutFailure({
+          output: `P3018\nMigration name: ${migrationName}\n${unrelatedProse}`,
+          migrationName,
+          historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+          directLockTimeoutProof: { migrationName, observed: true },
+        }),
+      ).toBe(false);
+    },
+  );
+
+  it("requires a canonical ERROR line for the rehearsal aborted-transaction fallback", () => {
+    expect(
+      hasExactPostgresAbortedTransactionEnvelope(
+        "unrelated prose says current transaction is aborted",
+      ),
+    ).toBe(false);
+    expect(
+      hasExactPostgresAbortedTransactionEnvelope(
+        "\u001b[31mError: ERROR: current transaction is aborted, commands ignored until end of transaction block\u001b[0m",
+      ),
+    ).toBe(true);
+  });
+
+  it("requires a canonical ERROR line for direct lock-timeout proof", () => {
+    expect(
+      hasExactPostgresLockTimeoutEnvelope(
+        "unrelated prose says the lock timeout was expected",
+      ),
+    ).toBe(false);
+    expect(
+      hasExactPostgresLockTimeoutEnvelope(
+        "\u001b[31mERROR: canceling statement due to lock timeout\u001b[0m",
+      ),
+    ).toBe(true);
+    expect(
+      hasExactPostgresLockTimeoutEnvelope(
+        "psql:/workspace/migration.sql:42: ERROR: canceling statement due to lock timeout",
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts Prisma 7.8's empty-log aborted envelope only with exact DB and direct proof", () => {
+    const migrationName = "000060_codex_oauth_setup_serialization";
+    const exactEvidence = {
+      total: 1,
+      currentFailed: 1,
+      zeroStep: 1,
+      lockTimeoutLog: 0,
+      abortedTransactionLog: 0,
+      exactFailureLog: 0,
+      emptyLog: 1,
+    };
+    const directLockTimeoutProof = { migrationName, observed: true };
+
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "ERROR: current transaction is aborted",
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "ERROR: current transaction is aborted".toLowerCase(),
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "\u001b[31mERROR: current transaction is aborted\u001b[0m",
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output:
+          "\u001b[31mERROR: current transaction is aborted, commands ignored until end of transaction block\u001b[0m",
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output:
+          "\u001b[31mError: ERROR: current transaction is aborted, commands ignored until end of transaction block\u001b[0m",
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output:
+          "Schema engine migration failure: ERROR: current transaction is aborted; migration rolled back",
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "ERROR: permission denied",
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "ERROR: current transaction is aborted",
+        migrationName,
+        historyEvidence: { ...exactEvidence, emptyLog: 0 },
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+  });
+
+  it.each([
+    [
+      "permission denial",
+      "ERROR: permission denied for schema public\nERROR: current transaction is aborted",
+    ],
+    [
+      "a different Prisma failure",
+      "P1000\nERROR: current transaction is aborted",
+    ],
+    [
+      "a missing relation",
+      'ERROR: relation "private_table" does not exist\nERROR: current transaction is aborted',
+    ],
+    [
+      "a different migration-name field",
+      "Migration name: 000059_other_migration\nERROR: current transaction is aborted",
+    ],
+  ])("rejects empty-log fallback combined with %s", (_case, output) => {
+    const migrationName = "000060_codex_oauth_setup_serialization";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
+        historyEvidence: {
+          total: 1,
+          currentFailed: 1,
+          zeroStep: 1,
+          lockTimeoutLog: 0,
+          abortedTransactionLog: 0,
+          exactFailureLog: 0,
+          emptyLog: 1,
+        },
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps the stronger P3018 and migration-name lock-timeout path", () => {
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `P3018\nMigration name: 000061_codex_oauth_provider_mutation_fence\nERROR: lock timeout`,
+        migrationName: "000061_codex_oauth_provider_mutation_fence",
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: {
+          migrationName: "000061_codex_oauth_provider_mutation_fence",
+          observed: true,
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output:
+          `P3018\nMigration name: 000061_codex_oauth_provider_mutation_fence\nERROR: lock timeout`.toLowerCase(),
+        migrationName: "000061_codex_oauth_provider_mutation_fence",
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: {
+          migrationName: "000061_codex_oauth_provider_mutation_fence",
+          observed: true,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["permission failure", "ERROR: permission denied for schema public"],
+    ["authentication failure", "ERROR: password authentication failed"],
+    ["authentication SQLSTATE", "ERROR: 28P01: redacted"],
+    ["permission SQLSTATE", "ERROR: 42501: redacted"],
+    ["missing schema", 'ERROR: schema "private_data" does not exist'],
+    ["missing schema SQLSTATE", "ERROR: 3F000: redacted"],
+    ["missing object", 'ERROR: relation "private_table" does not exist'],
+    ["missing object SQLSTATE", "ERROR: 42P01: redacted"],
+  ])(
+    "rejects a P3018 lock-timeout envelope with a contradictory %s",
+    (_case, contradiction) => {
+      const migrationName = "000061_codex_oauth_provider_mutation_fence";
+      expect(
+        isExpectedPrismaLockTimeoutFailure({
+          output: `P3018\nMigration name: ${migrationName}\nERROR: lock timeout\n${contradiction}`,
+          migrationName,
+          historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+          directLockTimeoutProof: { migrationName, observed: true },
+        }),
+      ).toBe(false);
+    },
+  );
+
+  it("rejects mixed P1000 and P3018 codes with the correct migration field", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `P1000\nP3018\nMigration name: ${migrationName}\nERROR: lock timeout`,
+        migrationName,
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["prefix", "attacker_000061_codex_oauth_provider_mutation_fence"],
+    ["suffix", "000061_codex_oauth_provider_mutation_fence_attacker"],
+    ["substring", "codex_oauth_provider_mutation"],
+  ])("rejects a %s migration-name field", (_case, presentedName) => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `P3018\nMigration name: ${presentedName}\nERROR: lock timeout`,
+        migrationName,
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects multiple conflicting migration-name fields", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `P3018\nMigration name: ${migrationName}\nMigration name: ${migrationName}_attacker\nERROR: lock timeout`,
+        migrationName,
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a missing migration-name field", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "P3018\nERROR: lock timeout",
+        migrationName,
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects duplicate exact migration-name fields", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `P3018\nMigration name: ${migrationName}\nMigration name: ${migrationName}\nERROR: lock timeout`,
+        migrationName,
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts the exact real 000061 Prisma field with CRLF output", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `P3018\r\nMigration name: ${migrationName}\r\nERROR: current transaction is aborted\r\n`,
+        migrationName,
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(true);
+  });
+
+  it("fails a generic aborted-transaction wrapper closed without each required proof", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    const output = `Migration name: ${migrationName}\nERROR: current transaction is aborted`;
+    const exactEvidence = { total: 1, currentFailed: 1, zeroStep: 1 };
+    const directLockTimeoutProof = { migrationName, observed: true };
+
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof: undefined,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof: { ...directLockTimeoutProof, observed: false },
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof: {
+          migrationName: "000060_codex_oauth_setup_serialization",
+          observed: true,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
+        historyEvidence: { ...exactEvidence, currentFailed: 0 },
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
+        historyEvidence: { ...exactEvidence, total: 2 },
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output,
+        migrationName,
+        historyEvidence: { ...exactEvidence, zeroStep: 0 },
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: `Migration name: ${migrationName}\nERROR: permission denied`,
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "ERROR: current transaction is aborted",
+        migrationName,
+        historyEvidence: exactEvidence,
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not treat a bare 000061 lock-timeout string as a Prisma wrapper", () => {
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        output: "000061_codex_oauth_provider_mutation_fence: lock timeout",
+        migrationName: "000061_codex_oauth_provider_mutation_fence",
+        historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
+        directLockTimeoutProof: {
+          migrationName: "000061_codex_oauth_provider_mutation_fence",
+          observed: true,
+        },
+      }),
+    ).toBe(false);
   });
 
   it("restores source-owned evidence before installing a rehearsal migration permit", () => {
@@ -1227,73 +1784,32 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   });
 
   it("rejects unrelated permission-denied failures", () => {
-    const helperSource =
-      /function assertPsqlFailedWithExactMessage\(result, expectedFailure, message\) \{[\s\S]+?\n\}/u.exec(
-        source,
-      )?.[0];
-    expect(helperSource).toBeDefined();
-
-    const observedConditions: boolean[] = [];
-    const assertPsqlFailedWithExactMessage = runInNewContext(
-      `${helperSource}; assertPsqlFailedWithExactMessage`,
-      {
-        assert(condition: boolean) {
-          observedConditions.push(condition);
-        },
-        psqlResultDiagnostic() {
-          return "diagnostic";
-        },
-      },
-    ) as (
-      result: { status: number; stdout: string; stderr: string },
-      expectedFailure: string,
-      message: string,
-    ) => void;
-
     const exactFailures = [
       "codex_oauth_database_authority_signature_invalid",
       "permission denied for function codex_oauth_authorize_setup_confirmation",
       "permission denied for function codex_oauth_authorize_runtime_confirmation",
     ];
     for (const expectedFailure of exactFailures) {
-      assertPsqlFailedWithExactMessage(
-        { status: 1, stdout: "", stderr: `ERROR: ${expectedFailure}` },
-        expectedFailure,
-        "expected failure",
-      );
-      assertPsqlFailedWithExactMessage(
-        {
-          status: 1,
-          stdout: "",
-          stderr:
-            "ERROR: permission denied for table CodexOAuthProviderInstance",
-        },
-        expectedFailure,
-        "unrelated table failure",
-      );
-      assertPsqlFailedWithExactMessage(
-        {
-          status: 1,
-          stdout: "",
-          stderr:
-            "ERROR: permission denied for function codex_oauth_provider_identity_guard",
-        },
-        expectedFailure,
-        "unrelated function failure",
-      );
+      expect(() =>
+        assertPsqlFailedWithExactMessage(
+          { status: 1, stdout: "", stderr: `ERROR: ${expectedFailure}` },
+          expectedFailure,
+          "expected failure",
+        ),
+      ).not.toThrow();
+      for (const stderr of [
+        "ERROR: permission denied for table CodexOAuthProviderInstance",
+        "ERROR: permission denied for function codex_oauth_provider_identity_guard",
+      ]) {
+        expect(() =>
+          assertPsqlFailedWithExactMessage(
+            { status: 1, stdout: "", stderr },
+            expectedFailure,
+            "unrelated failure",
+          ),
+        ).toThrow(/unrelated failure/u);
+      }
     }
-
-    expect(observedConditions).toEqual([
-      true,
-      false,
-      false,
-      true,
-      false,
-      false,
-      true,
-      false,
-      false,
-    ]);
   });
 
   it("routes production Prisma terminal writers through database authority", () => {
@@ -1308,6 +1824,20 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         /SELECT "codex_oauth_authorize_runtime_completion"/gu,
       ),
     ).toHaveLength(2);
+  });
+
+  it("executes the void re-attestation routine without Prisma row decoding", () => {
+    const reattestation =
+      /async replaceActiveWorkflowSource\([\s\S]+?\n {2}\}\n\n {2}async retireProviderGeneration/u.exec(
+        setupAdapterSource,
+      )?.[0];
+    expect(reattestation).toBeDefined();
+    expect(reattestation).toContain("await tx.$executeRaw`");
+    expect(reattestation).not.toContain("await tx.$queryRaw`");
+    expect(reattestation).toContain(
+      'SELECT "codex_oauth_reattest_active_namespace_v4_to_v5"',
+    );
+    expect(runtimeProofSource).toContain("reattestCodexRotatingWorkflow(");
   });
 
   it("binds acknowledged W2 recovery issuance to the explicit proof witness", () => {
@@ -1341,6 +1871,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(witnessBoundary).toContain(
       'providerBeforeRejectedPrelease.state !== "active"',
     );
+    expect(witnessBoundary).toContain("verifiedWorkflowAttestation,");
     expect(witnessBoundary).toContain(
       '"codex_rotating_database_recovery_witness_mismatch"',
     );
@@ -1352,6 +1883,26 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(runtimeProofSource).not.toMatch(
       /process\.env\.REVIEW_ROUTER_(?:CODEX_ROTATING_SETUP_ISSUANCE_ENABLED|ENABLE_CODEX_ROTATING_OAUTH|CODEX_ROTATING_OAUTH_REPOSITORIES)\s*=/u,
+    );
+  });
+
+  it("passes and advances the exact verified workflow attestation through the real runtime proof", () => {
+    const runHelper = /const run = async \([\s\S]+?\n {2}\};/u.exec(
+      runtimeProofSource,
+    )?.[0];
+    expect(runHelper).toBeDefined();
+    expect(runHelper).toContain("verifiedWorkflowAttestation,");
+    expect(runtimeProofSource).toContain(
+      'verifiedWorkflowAttestation = attestationFor(definite.namespace, "2")',
+    );
+    expect(runtimeProofSource).toContain(
+      'verifiedWorkflowAttestation = attestationFor(recoveredNamespace, "4", 4)',
+    );
+    expect(runtimeProofSource).toContain(
+      "verifiedWorkflowAttestation = reattestedWorkflow",
+    );
+    expect(runtimeProofSource).toContain(
+      'verifiedWorkflowAttestation = attestationFor(rollbackClaim.namespace, "6")',
     );
   });
 
@@ -1569,6 +2120,22 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(rollbackProof).not.toMatch(
       /secretNamespace:\s*\{\s*select:\s*\{[^}]*updatedAt/u,
     );
+  });
+
+  it("rehearses retiredAt set, change, and clear as immutable direct updates", () => {
+    expect(source).toContain(
+      "direct ${runtimeRole} namespace retiredAt set bypassed the tombstone guard",
+    );
+    expect(source).toContain(
+      "direct ${runtimeRole} namespace retiredAt ${label} bypassed the tombstone guard",
+    );
+    expect(source).toContain("api: clients.api");
+    expect(source).toContain("web: clients.web");
+    expect(source).toContain("worker: clients.worker");
+    expect(source).toContain(
+      '["change", `"retiredAt" + interval \'1 second\'`]',
+    );
+    expect(source).toContain('["clear", "NULL"]');
   });
 
   it("reads ignored authority receipts with typed parameterized raw SQL", () => {

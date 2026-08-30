@@ -274,8 +274,11 @@ describe("source-bound provider provenance", () => {
   });
 
   it("paginates both exact GitHub statuses and derives schema versions from raw workflow blobs", async () => {
-    const workflowContent = Buffer.from(
+    const workflowV4Content = Buffer.from(
       "jobs:\n  review:\n    with:\n      workflow_schema_version: 4\n",
+    ).toString("base64");
+    const workflowV5Content = Buffer.from(
+      "jobs:\n  review:\n    with:\n      workflow_schema_version: 5\n",
     ).toString("base64");
     let queuedPage = 0;
     const fetchImpl = vi.fn(async (input: string | URL) => {
@@ -285,7 +288,13 @@ describe("source-bound provider provenance", () => {
       if (url.pathname === "/repos/acme/review")
         return response({ id: 99, full_name: "acme/review" });
       if (url.pathname.includes("/contents/"))
-        return response({ sha: "c".repeat(40), content: workflowContent });
+        return response({
+          sha: "c".repeat(40),
+          content:
+            url.searchParams.get("ref") === "a".repeat(40)
+              ? workflowV4Content
+              : workflowV5Content,
+        });
       const status = url.searchParams.get("status");
       if (status === "queued" && ++queuedPage % 2 === 1) {
         return response({
@@ -295,6 +304,14 @@ describe("source-bound provider provenance", () => {
               status: "queued",
               path: ".github/workflows/reviewrouter-codex.yml",
               head_sha: "a".repeat(40),
+              event: "pull_request",
+              repository: { id: 99 },
+            },
+            {
+              id: 11,
+              status: "queued",
+              path: ".github/workflows/reviewrouter-codex.yml",
+              head_sha: "b".repeat(40),
               event: "pull_request",
               repository: { id: 99 },
             },
@@ -321,6 +338,13 @@ describe("source-bound provider provenance", () => {
       workflowSchemaVersion: 4,
       repositoryId: "99",
     });
+    expect(observation.observations[0].runs[1]).toMatchObject({
+      workflowSchemaVersion: 5,
+      repositoryId: "99",
+    });
+    expect(observation.supportedWorkflowSchemaVersions).toEqual([
+      1, 2, 3, 4, 5,
+    ]);
     expect(
       fetchImpl.mock.calls.filter(
         ([input]) =>

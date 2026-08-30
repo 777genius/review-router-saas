@@ -10,7 +10,7 @@ import {
   releaseAuthorityProviderTerminalTopologyExactExpression,
   releaseAuthorityRuntimeAclExactExpression,
 } from "./acl-policy-postgres.mjs";
-import { fencedLiveV70V73CatalogDigestSql } from "@reviewrouter/features-release-rollout/adapters/live-v70-v72-catalog-digest";
+import { fencedLiveV70V87CatalogDigestSql } from "@reviewrouter/features-release-rollout/adapters/live-v70-v72-catalog-digest";
 
 export type ReleaseAuthorityReadinessConnection = Pick<
   Prisma.TransactionClient,
@@ -646,21 +646,21 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 AND routine.prokind='p' AND routine.proowner=owner.oid
                 AND routine.proconfig=CASE
                   WHEN routine.oid=to_regprocedure(
-                    'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)')
+                    'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean)')
                     THEN ARRAY['search_path=public, pg_temp']
                   ELSE ARRAY['search_path=pg_catalog, public, pg_temp'] END
                 AND NOT has_function_privilege('public',routine.oid,'EXECUTE')
                 AND has_function_privilege(migration.oid,routine.oid,'EXECUTE')
                   IS NOT DISTINCT FROM
                     (routine.oid=to_regprocedure(
-                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'))
+                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean)'))
                 AND (EXISTS (SELECT 1
                   FROM aclexplode(coalesce(routine.proacl,
                     acldefault('f',routine.proowner))) acl
                   WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
                     AND acl.grantee=migration.oid)) IS NOT DISTINCT FROM
                     (routine.oid=to_regprocedure(
-                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'))
+                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean)'))
                 AND NOT EXISTS (SELECT 1
                   FROM aclexplode(coalesce(routine.proacl,
                     acldefault('f',routine.proowner))) acl
@@ -669,11 +669,11 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                     AND acl.grantee<>routine.proowner
                     AND (acl.is_grantable OR grantee.oid IS DISTINCT FROM CASE
                       WHEN routine.oid=to_regprocedure(
-                        'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)')
+                        'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean)')
                         THEN migration.oid ELSE NULL END)))
             FROM pg_proc routine WHERE routine.oid IN (
               to_regprocedure(
-                'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'),
+                'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean)'),
               to_regprocedure(
                 'public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text,timestamptz)')))
           AND (SELECT count(*)=2 AND bool_and(routine.prosecdef
@@ -865,7 +865,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
     >(Prisma.sql`
       SELECT reviewrouter_activation.read_activation_migration_manifest_identity()
         AS "applicationMigrationManifestIdentity",
-        (${Prisma.raw(fencedLiveV70V73CatalogDigestSql)})
+        (${Prisma.raw(fencedLiveV70V87CatalogDigestSql)})
         AS "applicationPostCatalogDigest"
     `);
     signal?.throwIfAborted();

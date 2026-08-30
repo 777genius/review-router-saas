@@ -54,6 +54,17 @@ describe("dashboard rotating namespace activation contract", () => {
     );
     expect(helper).toContain("assertTrustedCanonicalVersionedWorkflow");
     expect(helper).toContain(
+      "isVersionedSecretNamespaceCodexWorkflowSchemaVersion",
+    );
+    expect(helper).toContain(
+      "expectedWorkflowSchemaVersion: expectedSource.workflowSchemaVersion",
+    );
+    expect(helper).toContain("workflowSchemaVersion: true");
+    expect(helper).toContain("expectedSource.workflowSchemaVersion === null");
+    expect(helper).not.toContain(
+      "expectedWorkflowSchemaVersion: metadata.workflowSchemaVersion",
+    );
+    expect(helper).toContain(
       "expectedSecretNamespace: input.inspection.namespace",
     );
     expect(helper).toContain("codexOAuthSecretNamespace.findUnique");
@@ -64,6 +75,22 @@ describe("dashboard rotating namespace activation contract", () => {
       helper.indexOf("assertActiveVersionedSecretWorkflowAttestation"),
     ).toBeLessThan(helper.indexOf("return metadata.actionRef"));
     expect(helper).not.toContain("resolveReviewRouterActionRef");
+  });
+
+  it("uses schema 5 for current rotating readiness, provisioning, and activation", () => {
+    const source = readFileSync(
+      new URL("./actions.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain(
+      "CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5",
+    );
+    expect(source).not.toContain(
+      "CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4",
+    );
+    expect(source).toContain("codexRotatingWorkflowSchemaVersion:");
+    expect(source).toContain("expectedWorkflowSchemaVersion:");
   });
 });
 

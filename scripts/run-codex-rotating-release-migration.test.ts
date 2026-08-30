@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  liveV70V72CatalogDigestSha256 as fencedLiveV70V72CatalogDigestSha256,
   fencedLiveV70V72CatalogDigestSql,
+  liveV70V73CatalogDigestSha256,
 } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
 import { sha256Canonical } from "../packages/features/release-rollout/src/domain/release-rollout";
@@ -15,11 +16,12 @@ import {
   canonicalActivationCatalogPolicyCandidateSql,
   canonicalRoleTopologyObservationSql,
   canonicalDatabaseGenerationObservationSql,
+  classifyActivationCatalogCaptureStateShape,
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
-  liveV70V72CatalogDigestSha256,
   liveV70V72CatalogDigestSql,
   isActivationPrincipalRoleCapabilityPermitted,
+  parseActivationCatalogCaptureState,
   resolveReleaseMigrationConfiguration,
   resolveRoleBootstrapConfiguration,
   roleProvisioningSql,
@@ -31,6 +33,11 @@ import {
   stripAtomicMigrationEnvelope,
   workerOwnedMaintenanceCheckpointTable,
 } from "./run-codex-rotating-release-migration.mjs";
+
+const executableSource = readFileSync(
+  new URL("./run-codex-rotating-release-migration.mjs", import.meta.url),
+  "utf8",
+);
 
 const legacyEvidenceUnsigned = {
   schemaVersion: 1 as const,
@@ -205,6 +212,155 @@ describe("application database release-authority isolation", () => {
     expect(authoritySql).toContain("nonce");
     expect(sql).not.toContain("install_activation_permit");
     expect(sql).not.toContain("activate_generation");
+    expect(executableSource).toContain(
+      "verify_catalog_capture_migration_state",
+    );
+    expect(executableSource).toContain(
+      'captureOnlyStatus: "catalog_candidate_ready"',
+    );
+    expect(executableSource).toContain(
+      "catalogDigestUnpromoted:\n        captureState.catalogDigest !==\n        canonicalReleaseMigrationArtifact.postCatalogDigest",
+    );
+    expect(executableSource).toContain(
+      "activation_catalog_policy_capture_state_invalid:${JSON.stringify(captureStateChecks)}",
+    );
+    const rawCheckpoint = executableSource.indexOf(
+      "activation_catalog_policy_capture_raw_state_received",
+    );
+    const parseCheckpoint = executableSource.indexOf(
+      "activation_catalog_policy_capture_json_parse_complete",
+    );
+    const checksCheckpoint = executableSource.indexOf(
+      "activation_catalog_policy_capture_checks_constructed",
+    );
+    expect(rawCheckpoint).toBeGreaterThan(-1);
+    expect(parseCheckpoint).toBeGreaterThan(rawCheckpoint);
+    expect(checksCheckpoint).toBeGreaterThan(parseCheckpoint);
+  });
+
+  it("parses capture state without reflecting malformed raw output", () => {
+    expect(
+      parseActivationCatalogCaptureState(
+        '  {"permitState":"consumed","unfinishedCount":0}\n',
+      ),
+    ).toEqual({ permitState: "consumed", unfinishedCount: 0 });
+
+    const attackerOutput =
+      "not-json postgresql://release:password_hunter2@db.internal/review_router";
+    let thrown: unknown;
+    try {
+      parseActivationCatalogCaptureState(attackerOutput);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe(
+      "activation_catalog_policy_capture_state_json_invalid",
+    );
+    expect((thrown as Error).message).not.toMatch(
+      /not-json|postgresql|password|hunter2|db\.internal/u,
+    );
+  });
+
+  it("classifies malformed capture output without retaining its contents", () => {
+    expect(classifyActivationCatalogCaptureStateShape(undefined)).toBe(
+      "not_string",
+    );
+    expect(classifyActivationCatalogCaptureStateShape("  \n")).toBe("empty");
+    expect(classifyActivationCatalogCaptureStateShape('{"a":1}')).toBe(
+      "single_line_object",
+    );
+    expect(classifyActivationCatalogCaptureStateShape('{"a":\n1}')).toBe(
+      "multi_line_object_boundary",
+    );
+    expect(classifyActivationCatalogCaptureStateShape("secret\nvalue")).toBe(
+      "multi_line_other",
+    );
+    expect(
+      classifyActivationCatalogCaptureStateShape("secret\u0000value"),
+    ).toBe("contains_nul");
+  });
+
+  it("emits the untrusted catalog candidate only from capture while production keeps the promoted digest", () => {
+    const candidateDigest =
+      "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68";
+    let captureArgs: readonly string[] | undefined;
+    let captureInput: string | undefined;
+    const run = (
+      step: string,
+      _command: string,
+      args: readonly string[],
+      options?: { input?: string },
+    ) => {
+      if (step === "verify_release_authority")
+        return JSON.stringify({
+          currentUser: "reviewrouter_release_migration",
+          sessionUser: "reviewrouter_release_migration",
+          login: true,
+          superuser: false,
+          createDatabase: false,
+          createRole: false,
+          replication: false,
+          bypassRls: false,
+        });
+      if (step.startsWith("legacy_ambiguity_inventory_"))
+        return JSON.stringify({
+          activeLeaseIds: [],
+          fetchedSetupIds: [],
+          pendingIntentIds: [],
+          intentStatuses: [],
+        });
+      if (step === "verify_catalog_capture_migration_state") {
+        captureArgs = args;
+        captureInput = options?.input;
+        return JSON.stringify({
+          manifestIdentity:
+            canonicalReleaseMigrationArtifact.postManifestIdentity,
+          catalogDigest: candidateDigest,
+          unfinishedCount: 0,
+        });
+      }
+      return step === "migration_history_preflight" ? "preflight" : "";
+    };
+    const result = executeCanonicalReleaseMigration(
+      {
+        ...environment(),
+        REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1",
+        REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+          "rr-disposable-candidate-test",
+      },
+      run as never,
+    );
+
+    expect(result).toEqual({
+      version: 1,
+      captureOnlyStatus: "catalog_candidate_ready",
+      candidate: {
+        commitSha: "a".repeat(40),
+        databaseIdentity: "db.internal:5432/review_router",
+        manifestIdentity:
+          canonicalReleaseMigrationArtifact.postManifestIdentity,
+        projectionSha256: `sha256:${createHash("sha256")
+          .update(fencedLiveV70V72CatalogDigestSql)
+          .digest("hex")}`,
+        catalogDigest: candidateDigest,
+      },
+    });
+    expect(candidateDigest).not.toBe(
+      canonicalReleaseMigrationArtifact.postCatalogDigest,
+    );
+    expect(captureArgs).toContain("--quiet");
+    expect(captureArgs).not.toContain("--command");
+    expect(captureInput).toMatch(
+      /^\\set ON_ERROR_STOP on\nCOPY \(SELECT jsonb_build_object\(/u,
+    );
+    expect(captureInput).toMatch(/\) TO STDOUT$/u);
+    expect(captureInput).not.toContain(
+      "reviewrouter_activation.migration_permit",
+    );
+    expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
+      "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
+    );
   });
 
   it("provisions only target-local activation capability", () => {
@@ -897,10 +1053,13 @@ describe("canonical exclusive release migration caller", () => {
     expect(activationAuthority).toContain(
       "JOIN table_facts USING (role_name,role_kind,relname)",
     );
-    expect(liveV70V72CatalogDigestSha256).toBe(
-      fencedLiveV70V72CatalogDigestSha256,
+    expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
+      "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
     );
-    expect(fencedLiveV70V72CatalogDigestSha256).toBe(
+    expect(executableSource).not.toContain(
+      "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68",
+    );
+    expect(liveV70V73CatalogDigestSha256).toBe(
       canonicalReleaseMigrationArtifact.postCatalogDigest,
     );
     expect(fencedLiveV70V72CatalogDigestSql).toContain(
@@ -1232,8 +1391,9 @@ describe("canonical exclusive release migration caller", () => {
       "PERFORM reviewrouter_activation.complete_migration_permit(",
     );
     expect(provisioning).toContain("requested_acl_gate_closed boolean");
+    expect(provisioning).toContain("requested_catalog_capture_only boolean");
     expect(provisioning).toContain(
-      "text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean",
+      "text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean",
     );
     expect(provisioning).toContain(
       "release migration executor ACL gate mode invalid",
@@ -1406,6 +1566,9 @@ describe("canonical exclusive release migration caller", () => {
       "RAISE EXCEPTION 'release migration target live completion mismatch';",
     );
     expect(provisioning).toContain(
+      "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(\n  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean) TO reviewrouter_release_migration;",
+    );
+    expect(provisioning).not.toContain(
       "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(\n  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) TO reviewrouter_release_migration;",
     );
     expect(provisioning).not.toContain(
@@ -1522,6 +1685,15 @@ describe("canonical exclusive release migration caller", () => {
       expect(runtimeAuthorityAcl).toContain(
         "'GRANT SELECT ON TABLE public.%I TO %I'",
       );
+      expect(grants).toContain(
+        `REVOKE ALL ON TABLE public."CodexOAuthWorkflowCompatibility" FROM ${role}`,
+      );
+      const compatibilitySelect = `GRANT SELECT ON TABLE public."CodexOAuthWorkflowCompatibility" TO ${role}`;
+      if (role === "reviewrouter_api" || role === "reviewrouter_web") {
+        expect(grants).toContain(compatibilitySelect);
+      } else {
+        expect(grants).not.toContain(compatibilitySelect);
+      }
       const genericGrant = grants.indexOf(
         `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
       );
@@ -1570,6 +1742,12 @@ describe("canonical exclusive release migration caller", () => {
           )}) ON TABLE public."CodexOAuthProviderInstance" TO ${role}`,
       );
     }
+    expect(grants).toContain(
+      'GRANT EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer) TO reviewrouter_web',
+    );
+    expect(grants).not.toContain(
+      'GRANT EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text) TO reviewrouter_web',
+    );
     expect(
       grants.indexOf(
         "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM reviewrouter_codex_effect_authority",

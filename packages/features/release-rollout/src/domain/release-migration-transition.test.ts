@@ -6,9 +6,16 @@ import {
   assertReleaseMigrationObservation,
   canonicalReleaseMigrationArtifact,
   canonicalReleaseMigrationEntries,
+  canonicalReleaseMigrationPostManifestIdentity,
   canonicalReleaseMigrationResumeManifestIdentities,
   createReleaseMigrationTransition,
+  deriveOrderedPendingEntriesSha256,
 } from "./release-migration-transition";
+import {
+  fencedLiveV70V73CatalogDigestSql,
+  liveV70V89CatalogProjectionRelations,
+  liveV70V89CatalogProjectionRoutines,
+} from "../adapters/live-v70-v72-catalog-digest.mjs";
 
 const migrationRoot = "packages/platform/db/prisma/migrations";
 const sha256 = (value: string | Buffer) =>
@@ -100,6 +107,117 @@ describe("canonical release migration transition", () => {
         trusted,
       ),
     ).toThrow("release_migration_transition_untrusted");
+  });
+
+  it("derives the ordered-pending digest and rejects an independently supplied value", () => {
+    const trusted = createReleaseMigrationTransition({
+      commitSha: "d".repeat(40),
+      releaseImageDigest: `sha256:${"e".repeat(64)}`,
+    });
+    expect(trusted.orderedPendingEntriesSha256).toBe(
+      "sha256:d34a007b96236919ca45e963d3c63f850e142dc090c4feaf3c8ce8ecf36d9e43",
+    );
+    expect(trusted.orderedPendingEntriesSha256).toBe(
+      deriveOrderedPendingEntriesSha256(trusted.orderedMigrationEntries),
+    );
+    expect(trusted.orderedPendingEntriesSha256).not.toBe(
+      trusted.migrationArtifactDigest,
+    );
+    expect(
+      deriveOrderedPendingEntriesSha256(
+        [...trusted.orderedMigrationEntries].reverse(),
+      ),
+    ).not.toBe(trusted.orderedPendingEntriesSha256);
+    expect(() =>
+      assertReleaseMigrationTransition(
+        {
+          ...trusted,
+          orderedPendingEntriesSha256: `sha256:${"f".repeat(64)}`,
+        },
+        trusted,
+      ),
+    ).toThrow("release_migration_transition_untrusted");
+  });
+
+  it("trusts only the last promoted production catalog digest", () => {
+    expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
+      "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
+    );
+    expect(canonicalReleaseMigrationArtifact.postCatalogDigest).not.toBe(
+      "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68",
+    );
+  });
+
+  it("binds the live history projection to the canonical post-manifest identity", () => {
+    expect(canonicalReleaseMigrationArtifact.postManifestIdentity).toBe(
+      canonicalReleaseMigrationPostManifestIdentity,
+    );
+    expect(fencedLiveV70V73CatalogDigestSql).toContain(
+      `= '${canonicalReleaseMigrationArtifact.postManifestIdentity}'`,
+    );
+    expect(fencedLiveV70V73CatalogDigestSql).not.toContain(
+      "sha256:28941cb847006d45d798db0a363f3ba8a63454b4255e95632b69e4767769eb8e",
+    );
+  });
+
+  it("projects the complete V89 authority, custody, ACL, and replay catalog", () => {
+    expect(liveV70V89CatalogProjectionRelations).toEqual([
+      "CodexOAuthWritebackIntent",
+      "CodexOAuthSecretNamespace",
+      "CodexOAuthProviderInstance",
+      "RepositoryConnection",
+      "CodexOAuthSetupDispatchAttempt",
+      "CodexOAuthSetupPayloadClaim",
+      "CodexOAuthDatabaseAuthorityReceipt",
+      "CodexOAuthWorkflowCompatibility",
+      "RuntimeGenerationWitnessProof",
+      "RuntimeCanaryChallenge",
+      "RuntimeCanaryChallengeProof",
+      "HostedCodexCommentTokenMint",
+      "HostedCodexCommentTokenRevocationProof",
+      "HostedCodexRuntimeClosure",
+      "HostedCodexCommentRefreshUse",
+      "HostedCodexRuntimeGate",
+      "HostedCodexRepositoryBinding",
+      "HostedCodexPool",
+      "GitHubInstallation",
+      "HostedCodexInvocationGrant",
+      "HostedCodexCommentRefreshCapability",
+    ]);
+    expect(liveV70V89CatalogProjectionRoutines).toEqual([
+      "reviewrouter_record_runtime_generation_witness_proof",
+      "reviewrouter_read_runtime_generation_witness_proofs",
+      "reviewrouter_runtime_generation_write_read_canary",
+      "reviewrouter_request_runtime_canary_challenge",
+      "reviewrouter_answer_runtime_canary_challenge",
+      "reviewrouter_read_runtime_canary_challenge_proofs",
+      "codex_oauth_v4_v5_reattestation_transition",
+      "codex_oauth_reattest_active_namespace_v4_to_v5",
+      "codex_oauth_secret_namespace_tombstone_guard",
+      "codex_oauth_consume_database_authority",
+      "codex_oauth_database_authority_receipt_guard",
+      "codex_oauth_workflow_compatibility_guard",
+      "hosted_codex_comment_refresh_use_mint_guard",
+      "hosted_codex_comment_token_mint_guard",
+      "hosted_codex_comment_token_prepare_authority_complete",
+      "hosted_codex_lock_comment_token_runtime_gate",
+      "hosted_codex_comment_token_authority_snapshot",
+      "hosted_codex_lock_comment_token_mint",
+      "hosted_codex_mutate_comment_token_mint",
+      "hosted_codex_mutate_comment_token_mint_v83",
+      "hosted_codex_mutate_comment_token_mint_v85",
+      "hosted_codex_claim_comment_token_delivery",
+      "hosted_codex_finalize_comment_token_revocation",
+      "hosted_codex_runtime_closure_guard",
+      "hosted_codex_runtime_gate_guard",
+      "hosted_codex_runtime_gate_activation_barrier",
+      "hosted_codex_comment_token_authority_revoke_enqueue",
+    ]);
+    expect(fencedLiveV70V73CatalogDigestSql).toContain("'acl',coalesce");
+    expect(fencedLiveV70V73CatalogDigestSql).toContain("'triggers',coalesce");
+    expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
+      "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
+    );
   });
 
   it("binds the target observation to the source inventory and fixed cutoff", () => {

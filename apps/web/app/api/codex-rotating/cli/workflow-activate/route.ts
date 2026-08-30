@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { CodexRotatingT0WorkflowSchemaVersion } from "@reviewrouter/features-workflow-provisioning";
 import {
   assertWorkspaceFeatureEntitlement,
   PrismaEntitlementRepository,
@@ -90,6 +91,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       defaultBranch: repository.defaultBranch,
       expectedRepositoryFullName: repository.fullName,
       expectedApiUrl: resolveWorkflowPublicApiUrl(),
+      expectedWorkflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
     });
     if (result.status === "not_configured") {
       throw new Error("codex_rotating_not_enabled");
@@ -148,6 +151,9 @@ function safeErrorCode(error: unknown): string {
     "codex_rotating_workflow_default_head_changed",
     "codex_rotating_setup_activation_mismatch",
     "codex_rotating_setup_activation_stale_epoch",
+    "codex_rotating_workflow_reattestation_stale",
+    "codex_rotating_workflow_reattestation_invalid",
+    "codex_rotating_workflow_reattestation_forbidden",
   ]);
   if (allowed.has(code)) return code;
 
@@ -172,6 +178,8 @@ function safeErrorCode(error: unknown): string {
     "codex_rotating_workflow_repository_id_invalid",
     "codex_rotating_workflow_repository_identity_mismatch",
     "codex_rotating_workflow_string_required",
+    "codex_rotating_workflow_schema_version_mismatch",
+    // Kept safe for responses from an older web/API package during rollout.
     "codex_rotating_workflow_v4_required",
     "codex_rotating_workflow_yaml_invalid",
     "provider_secret_namespace_epoch_mismatch",
@@ -197,6 +205,7 @@ function statusForError(code: string): number {
   }
   if (code === "github_cli_repository_forbidden") return 403;
   if (code === "entitlement_denied") return 403;
+  if (code === "codex_rotating_workflow_reattestation_forbidden") return 403;
   if (code === "rate_limited") return 429;
   if (
     code === "github_cli_repository_not_found" ||
@@ -211,6 +220,7 @@ function statusForError(code: string): number {
   ) {
     return 502;
   }
+  if (code === "codex_rotating_workflow_reattestation_invalid") return 400;
   if (code.startsWith("codex_rotating_") || code.startsWith("codex_oauth_")) {
     return 409;
   }

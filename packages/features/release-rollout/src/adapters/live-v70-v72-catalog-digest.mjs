@@ -1,5 +1,5 @@
 /**
- * Canonical PostgreSQL projection of the live V70-V73 application catalog.
+ * Canonical PostgreSQL projection of the live V70-V89 application catalog.
  * Keep this in the Postgres adapter layer: the domain receives only its digest.
  */
 import { canonicalReleaseMigrationArtifact } from "../domain/release-migration-transition.ts";
@@ -50,6 +50,67 @@ const phaseVaryingRelationPrivilegePatternSql = `CASE
               ELSE NULL
             END`;
 
+export const liveV70V89CatalogProjectionRelations = Object.freeze([
+  "CodexOAuthWritebackIntent",
+  "CodexOAuthSecretNamespace",
+  "CodexOAuthProviderInstance",
+  "RepositoryConnection",
+  "CodexOAuthSetupDispatchAttempt",
+  "CodexOAuthSetupPayloadClaim",
+  "CodexOAuthDatabaseAuthorityReceipt",
+  "CodexOAuthWorkflowCompatibility",
+  "RuntimeGenerationWitnessProof",
+  "RuntimeCanaryChallenge",
+  "RuntimeCanaryChallengeProof",
+  "HostedCodexCommentTokenMint",
+  "HostedCodexCommentTokenRevocationProof",
+  "HostedCodexRuntimeClosure",
+  "HostedCodexCommentRefreshUse",
+  "HostedCodexRuntimeGate",
+  "HostedCodexRepositoryBinding",
+  "HostedCodexPool",
+  "GitHubInstallation",
+  "HostedCodexInvocationGrant",
+  "HostedCodexCommentRefreshCapability",
+]);
+
+export const liveV70V89CatalogProjectionRoutines = Object.freeze([
+  "reviewrouter_record_runtime_generation_witness_proof",
+  "reviewrouter_read_runtime_generation_witness_proofs",
+  "reviewrouter_runtime_generation_write_read_canary",
+  "reviewrouter_request_runtime_canary_challenge",
+  "reviewrouter_answer_runtime_canary_challenge",
+  "reviewrouter_read_runtime_canary_challenge_proofs",
+  "codex_oauth_v4_v5_reattestation_transition",
+  "codex_oauth_reattest_active_namespace_v4_to_v5",
+  "codex_oauth_secret_namespace_tombstone_guard",
+  "codex_oauth_consume_database_authority",
+  "codex_oauth_database_authority_receipt_guard",
+  "codex_oauth_workflow_compatibility_guard",
+  "hosted_codex_comment_refresh_use_mint_guard",
+  "hosted_codex_comment_token_mint_guard",
+  "hosted_codex_comment_token_prepare_authority_complete",
+  "hosted_codex_lock_comment_token_runtime_gate",
+  "hosted_codex_comment_token_authority_snapshot",
+  "hosted_codex_lock_comment_token_mint",
+  "hosted_codex_mutate_comment_token_mint",
+  "hosted_codex_mutate_comment_token_mint_v83",
+  "hosted_codex_mutate_comment_token_mint_v85",
+  "hosted_codex_claim_comment_token_delivery",
+  "hosted_codex_finalize_comment_token_revocation",
+  "hosted_codex_runtime_closure_guard",
+  "hosted_codex_runtime_gate_guard",
+  "hosted_codex_runtime_gate_activation_barrier",
+  "hosted_codex_comment_token_authority_revoke_enqueue",
+]);
+
+const selectedRelationsSql = liveV70V89CatalogProjectionRelations
+  .map((relation) => `'${relation}'`)
+  .join(",");
+const selectedRoutinesSql = liveV70V89CatalogProjectionRoutines
+  .map((routine) => `'${routine}'`)
+  .join(",");
+
 export const fencedLiveV70V73CatalogDigestSql = `
 WITH selected_relations AS (
   SELECT c.oid, n.oid AS namespace_oid, n.nspname, c.relname, c.relkind,
@@ -58,11 +119,7 @@ WITH selected_relations AS (
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
   WHERE n.nspname='public' AND c.relname IN
-    ('CodexOAuthWritebackIntent','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof',
-     'HostedCodexCommentTokenMint','HostedCodexCommentTokenRevocationProof','HostedCodexRuntimeClosure',
-     'HostedCodexCommentRefreshUse','HostedCodexRuntimeGate','HostedCodexRepositoryBinding',
-     'HostedCodexPool','RepositoryConnection','GitHubInstallation','HostedCodexInvocationGrant',
-     'HostedCodexCommentRefreshCapability')
+    (${selectedRelationsSql})
 ), facts AS (
   SELECT jsonb_build_object(
     'columns',coalesce((SELECT jsonb_agg(jsonb_build_object(
@@ -187,28 +244,7 @@ WITH selected_relations AS (
       'acl',coalesce((SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
         FROM unnest(p.proacl) v),'[]'::jsonb)) ORDER BY p.oid::regprocedure::text COLLATE "C")
       FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-      WHERE n.nspname='public' AND p.proname IN (
-        'reviewrouter_record_runtime_generation_witness_proof',
-        'reviewrouter_read_runtime_generation_witness_proofs',
-        'reviewrouter_runtime_generation_write_read_canary',
-        'reviewrouter_request_runtime_canary_challenge',
-        'reviewrouter_answer_runtime_canary_challenge',
-        'reviewrouter_read_runtime_canary_challenge_proofs',
-        'hosted_codex_comment_refresh_use_mint_guard',
-        'hosted_codex_comment_token_mint_guard',
-        'hosted_codex_comment_token_prepare_authority_complete',
-        'hosted_codex_lock_comment_token_runtime_gate',
-        'hosted_codex_comment_token_authority_snapshot',
-        'hosted_codex_lock_comment_token_mint',
-        'hosted_codex_mutate_comment_token_mint',
-        'hosted_codex_mutate_comment_token_mint_v83',
-        'hosted_codex_mutate_comment_token_mint_v85',
-        'hosted_codex_claim_comment_token_delivery',
-        'hosted_codex_finalize_comment_token_revocation',
-        'hosted_codex_runtime_closure_guard',
-        'hosted_codex_runtime_gate_guard',
-        'hosted_codex_runtime_gate_activation_barrier',
-        'hosted_codex_comment_token_authority_revoke_enqueue')),'[]'::jsonb),
+      WHERE n.nspname='public' AND p.proname IN (${selectedRoutinesSql})),'[]'::jsonb),
     'defaultAcl',coalesce((SELECT jsonb_agg(jsonb_build_object(
       'owner',pg_catalog.pg_get_userbyid(d.defaclrole),'namespace',n.nspname,
       'kind',d.defaclobjtype,'acl',(SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
@@ -232,6 +268,15 @@ WITH selected_relations AS (
           'finished',true,'rolledBack',false),
         jsonb_build_object('name','000073_codex_oauth_active_namespace_refresh',
           'checksum','3e5b6606f22c8bec6f75f52f48b693806d597fa283155f6e033844c4f6be4de6',
+          'finished',true,'rolledBack',false),
+        jsonb_build_object('name','000087_codex_oauth_v4_v5_workflow_reattestation',
+          'checksum','d443e366de64879b1d6c32f4edba3648d8e8da160f804b6ec87bede581343109',
+          'finished',true,'rolledBack',false),
+        jsonb_build_object('name','000088_codex_oauth_reattestation_mutation_owner_fence',
+          'checksum','18a1e48953d1360d3661ea6753b7aa350fc7e28caeaeb65d42c9ac42569f1cf0',
+          'finished',true,'rolledBack',false),
+        jsonb_build_object('name','000089_codex_oauth_v4_v5_staged_compatibility',
+          'checksum','bd35157bc11c84dd181ba7f2edf589503d75cb359c12e9a93bf4a884f94c9db7',
           'finished',true,'rolledBack',false))
       ELSE '[]'::jsonb END,
     'unresolvedHistory',false,
@@ -250,7 +295,12 @@ FROM facts`;
 export const liveV70V73CatalogDigestSha256 =
   canonicalReleaseMigrationArtifact.postCatalogDigest;
 
-// Compatibility aliases for existing external consumers during the V73 rollout.
+// Compatibility aliases for existing external consumers through the V89 rollout.
 export const fencedLiveV70V72CatalogDigestSql =
   fencedLiveV70V73CatalogDigestSql;
-export const liveV70V72CatalogDigestSha256 = liveV70V73CatalogDigestSha256;
+export const fencedLiveV70V87CatalogDigestSql =
+  fencedLiveV70V73CatalogDigestSql;
+export const fencedLiveV70V88CatalogDigestSql =
+  fencedLiveV70V73CatalogDigestSql;
+export const fencedLiveV70V89CatalogDigestSql =
+  fencedLiveV70V73CatalogDigestSql;

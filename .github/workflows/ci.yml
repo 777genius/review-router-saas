@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      activation_catalog_policy_capture_base_sha:
+        description: Exact reviewed base commit for the activation catalog Git range
+        required: false
+        type: string
+        default: ""
       release_authority_contract_baseline_sha:
         description: Previous protected main SHA used as the immutable migration baseline
         required: false
@@ -143,6 +148,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -167,14 +173,28 @@ jobs:
         env:
           REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1"
           REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1"
+          REQUESTED_CAPTURE_BASE_COMMIT: ${{ inputs.activation_catalog_policy_capture_base_sha }}
           REVIEW_ROUTER_REHEARSAL_PG16_IMAGE: postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60
           REVIEW_ROUTER_REHEARSAL_PG17_IMAGE: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
         run: |
+          audited_head="$(git rev-parse HEAD)"
+          if [[ -z "$REQUESTED_CAPTURE_BASE_COMMIT" ]]; then
+            echo "activation catalog capture requires an explicit reviewed base commit" >&2
+            exit 1
+          fi
+          git cat-file -e "$REQUESTED_CAPTURE_BASE_COMMIT^{commit}"
+          capture_base="$(git merge-base "$REQUESTED_CAPTURE_BASE_COMMIT" "$audited_head")"
+          if [[ "$capture_base" != "$REQUESTED_CAPTURE_BASE_COMMIT" || "$capture_base" == "$audited_head" ]]; then
+            echo "activation catalog capture Git review range is invalid" >&2
+            exit 1
+          fi
+          export REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT="$capture_base"
+          export REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD="$audited_head"
           export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-a"
           node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-policy-candidate-1.json
           export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b"
           node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-policy-candidate-2.json
-          cmp activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json
+          node --input-type=module -e 'import fs from "node:fs"; const a=JSON.parse(fs.readFileSync("activation-catalog-policy-candidate-1.json","utf8")); const b=JSON.parse(fs.readFileSync("activation-catalog-policy-candidate-2.json","utf8")); if (JSON.stringify(a.policies)!==JSON.stringify(b.policies)) throw new Error("activation catalog policy captures differ")'
           sha256sum activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json
       - name: Upload activation catalog policy captures
         if: ${{ inputs.activation_catalog_policy_capture }}

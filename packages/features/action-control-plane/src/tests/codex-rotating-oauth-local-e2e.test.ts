@@ -6,6 +6,8 @@ import type {
 } from "@reviewrouter/features-review-snapshots";
 import {
   computeCodexAuthGenerationHash,
+  CodexRotatingReviewActionV2Mode,
+  allocateVersionedProviderSecretNamespace,
   encryptCodexRotatingAuthForGitHubSecret,
   readCodexRotatingWorkflowSourceMetadata,
   renderCodexRotatingAdvisoryWorkflow,
@@ -34,6 +36,26 @@ const generationHashSalt = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
 const allowNewWorkAdmission = {
   assertAdmitted: () => undefined,
 };
+
+const runtimeWorkflowAttestation = () =>
+  createVersionedSecretWorkflowSourceAttestation({
+    repositoryId: repository.githubRepositoryId,
+    workflowPath: ".github/workflows/reviewrouter-codex.yml",
+    workflowSourceCommitSha: workflowSha,
+    workflowSourceBlobSha: "b".repeat(40),
+    workflowSourceSha256: "c".repeat(64),
+    workflowSemanticSha256: "d".repeat(64),
+    workflowSchemaVersion: 5,
+    sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+    secretNamespace: allocateVersionedProviderSecretNamespace({
+      scope: {
+        repositoryId: repository.githubRepositoryId,
+        providerInstanceId,
+      },
+      epoch: 1n,
+      randomBytes: () => new Uint8Array(16),
+    }),
+  });
 
 const repository = {
   workspaceId: "workspace_1",
@@ -65,12 +87,130 @@ const refreshedAuthJson = JSON.stringify({
 });
 
 describe("Codex rotating OAuth local E2E", () => {
+  it("admits queued V4 only through the staged barrier and keeps V5 current", async () => {
+    let now = new Date("2026-08-29T00:00:00.000Z");
+    const v5 = runtimeWorkflowAttestation();
+    const v4 = createVersionedSecretWorkflowSourceAttestation({
+      ...v5,
+      workflowSourceCommitSha: "4".repeat(40),
+      workflowSourceBlobSha: "4".repeat(40),
+      workflowSourceSha256: "4".repeat(64),
+      workflowSemanticSha256: "4".repeat(64),
+      workflowSchemaVersion: 4,
+    });
+    const binding = {
+      providerInstanceId,
+      repositoryFullName: repository.fullName,
+      githubRepositoryId: repository.githubRepositoryId,
+      actionRef,
+      workflowPath: v5.workflowPath,
+      workflowSchemaVersion: 5,
+      activeSecretNamespace: v5.secretNamespace,
+      activeWorkflowSource: {
+        workflowPath: v5.workflowPath,
+        workflowSourceCommitSha: v5.workflowSourceCommitSha,
+        workflowSourceBlobSha: v5.workflowSourceBlobSha,
+        workflowSourceSha256: v5.workflowSourceSha256,
+        workflowSemanticSha256: v5.workflowSemanticSha256,
+        sourceTrust: "trusted_default_branch_revision" as const,
+        repositoryId: v5.repositoryId,
+      },
+      retiringWorkflowSource: {
+        workflowPath: v4.workflowPath,
+        workflowSourceCommitSha: v4.workflowSourceCommitSha,
+        workflowSourceBlobSha: v4.workflowSourceBlobSha,
+        workflowSourceSha256: v4.workflowSourceSha256,
+        workflowSemanticSha256: v4.workflowSemanticSha256,
+        sourceTrust: "trusted_default_branch_revision" as const,
+        repositoryId: v4.repositoryId,
+        workflowSchemaVersion: 4 as const,
+        retireAt: new Date(now.getTime() + 90_000 * 1000),
+      },
+    } as const;
+    const runtime = new InMemoryCodexRotatingOAuthRepository([binding], {
+      clock: { now: () => new Date(now.getTime()) },
+    });
+
+    await expect(
+      runtime.findProviderBinding({
+        repository,
+        providerInstanceId,
+        workflowSha: v4.workflowSourceCommitSha,
+        workflowSchemaVersion: 4,
+      }),
+    ).resolves.toMatchObject({
+      workflowSchemaVersion: 4,
+      activeWorkflowSource: {
+        workflowSourceSha256: v4.workflowSourceSha256,
+      },
+    });
+    await expect(
+      runtime.acquirePrelease({
+        repository,
+        providerInstanceId,
+        githubRunId: "queued-before-v5",
+        githubRunAttempt: "1",
+        verifiedWorkflowAttestation: v4,
+        newWorkAdmissionBarrier: allowNewWorkAdmission,
+      }),
+    ).resolves.toMatchObject({ status: "preleased" });
+
+    const currentRuntime = new InMemoryCodexRotatingOAuthRepository([binding], {
+      clock: { now: () => new Date(now.getTime()) },
+    });
+    await expect(
+      currentRuntime.acquirePrelease({
+        repository,
+        providerInstanceId,
+        githubRunId: "post-activation-v5",
+        githubRunAttempt: "1",
+        verifiedWorkflowAttestation: v5,
+        newWorkAdmissionBarrier: allowNewWorkAdmission,
+      }),
+    ).resolves.toMatchObject({ status: "preleased" });
+
+    const crossNamespace = createVersionedSecretWorkflowSourceAttestation({
+      ...v4,
+      secretNamespace: allocateVersionedProviderSecretNamespace({
+        scope: v4.secretNamespace.scope,
+        epoch: 2n,
+        randomBytes: () => new Uint8Array(16).fill(2),
+      }),
+    });
+    const crossRuntime = new InMemoryCodexRotatingOAuthRepository([binding], {
+      clock: { now: () => new Date(now.getTime()) },
+    });
+    await expect(
+      crossRuntime.acquirePrelease({
+        repository,
+        providerInstanceId,
+        githubRunId: "cross-generation-v4",
+        githubRunAttempt: "1",
+        verifiedWorkflowAttestation: crossNamespace,
+        newWorkAdmissionBarrier: allowNewWorkAdmission,
+      }),
+    ).rejects.toThrow("codex_rotating_workflow_attestation_stale");
+
+    now = new Date(now.getTime() + 90_000 * 1000);
+    await expect(
+      runtime.findProviderBinding({
+        repository,
+        providerInstanceId,
+        workflowSha: v4.workflowSourceCommitSha,
+        workflowSchemaVersion: 4,
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("proves setup workflow -> first writeback -> next-run restore without plaintext SaaS", async () => {
     const githubPublicKeyBase64 = Buffer.alloc(32, 1).toString("base64");
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef,
       apiUrl: "https://reviewrouter.site",
       providerInstanceId,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      workflowSchemaVersion: 5,
+      activeSecretNamespace: runtimeWorkflowAttestation().secretNamespace,
     });
     expect(scanCodexRotatingAdvisoryWorkflow(workflow)).toEqual({
       valid: true,
@@ -85,7 +225,7 @@ describe("Codex rotating OAuth local E2E", () => {
         githubRepositoryId: repository.githubRepositoryId,
         actionRef,
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 5,
       },
     ]);
     const tokens = buildTokenFakes(codexRotatingOAuth);
@@ -128,8 +268,7 @@ describe("Codex rotating OAuth local E2E", () => {
               workflowPath: ".github/workflows/reviewrouter-codex.yml",
               workflowSchemaVersion: workflowMetadata.workflowSchemaVersion,
             },
-            workflowSourceSha256:
-              "workflow-source-sha256-012345678901234567890123456789",
+            attestation: runtimeWorkflowAttestation(),
           };
         }),
       },
@@ -148,7 +287,7 @@ describe("Codex rotating OAuth local E2E", () => {
           oidcToken: "first-oidc-jwt",
           audience: "reviewrouter",
           providerInstanceId,
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 5,
         },
         dependencies,
       ),
@@ -257,7 +396,7 @@ describe("Codex rotating OAuth local E2E", () => {
           oidcToken: "second-oidc-jwt",
           audience: "reviewrouter",
           providerInstanceId,
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 5,
         },
         dependencies,
       ),
@@ -289,7 +428,7 @@ describe("Codex rotating OAuth local E2E", () => {
         githubRepositoryId: repository.githubRepositoryId,
         actionRef,
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 5,
       },
     ]);
     const tokenFakes = buildTokenFakes(codexRotatingOAuth);
@@ -299,6 +438,9 @@ describe("Codex rotating OAuth local E2E", () => {
       actionRef,
       apiUrl: "https://reviewrouter.site",
       providerInstanceId,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      workflowSchemaVersion: 5,
+      activeSecretNamespace: runtimeWorkflowAttestation().secretNamespace,
     });
     const workflowMetadata = readCodexRotatingWorkflowSourceMetadata(workflow);
     const dependencies = {
@@ -330,8 +472,7 @@ describe("Codex rotating OAuth local E2E", () => {
             workflowPath: ".github/workflows/reviewrouter-codex.yml",
             workflowSchemaVersion: workflowMetadata.workflowSchemaVersion,
           },
-          workflowSourceSha256:
-            "workflow-source-sha256-012345678901234567890123456789",
+          attestation: runtimeWorkflowAttestation(),
         }),
       },
       codexRotatingNewWorkAdmission: allowNewWorkAdmission,
@@ -363,7 +504,7 @@ describe("Codex rotating OAuth local E2E", () => {
         oidcToken: "otherwise-valid-wrong-audience-token",
         audience: "another-relying-party",
         providerInstanceId,
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 5,
       },
     });
     expect(wrongAudiencePrelease.statusCode).toBe(401);
@@ -383,7 +524,7 @@ describe("Codex rotating OAuth local E2E", () => {
       payload: {
         oidcToken: "oidc-jwt",
         providerInstanceId,
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 5,
       },
     });
     expect(prelease.statusCode).toBe(200);
@@ -404,6 +545,7 @@ describe("Codex rotating OAuth local E2E", () => {
       githubRunId: "9004",
       githubRunAttempt: "1",
       now: firstRunAt,
+      verifiedWorkflowAttestation: runtimeWorkflowAttestation(),
       newWorkAdmissionBarrier: allowNewWorkAdmission,
     });
     expect(conflictingLease).toMatchObject({
@@ -674,7 +816,7 @@ describe("Codex rotating OAuth local E2E", () => {
         oidcToken: "oidc-jwt-replay",
         audience: "reviewrouter",
         providerInstanceId,
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 5,
       },
     });
     expect(replay.statusCode).toBe(401);
@@ -714,7 +856,7 @@ describe("Codex rotating OAuth local E2E", () => {
         githubRepositoryId: repository.githubRepositoryId,
         actionRef,
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 5,
       },
     ]);
     const dependencies = {
@@ -768,7 +910,7 @@ describe("Codex rotating OAuth local E2E", () => {
         oidcToken: "oidc-jwt",
         audience: "reviewrouter",
         providerInstanceId,
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 5,
       },
     });
     expect(response.statusCode).toBe(403);
@@ -813,7 +955,7 @@ describe("Codex rotating OAuth local E2E", () => {
           githubRepositoryId: repository.githubRepositoryId,
           actionRef,
           workflowPath: ".github/workflows/reviewrouter-codex.yml",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 5,
         },
       ]);
       const dependencies = {
@@ -842,8 +984,9 @@ describe("Codex rotating OAuth local E2E", () => {
               githubRepositoryId: repository.githubRepositoryId,
               actionRef,
               workflowPath: ".github/workflows/reviewrouter-codex.yml",
-              workflowSchemaVersion: 1,
+              workflowSchemaVersion: 5,
             },
+            attestation: runtimeWorkflowAttestation(),
           }),
         },
         codexRotatingNewWorkAdmission: {
@@ -874,7 +1017,7 @@ describe("Codex rotating OAuth local E2E", () => {
           oidcToken: "oidc-jwt",
           audience: "reviewrouter",
           providerInstanceId,
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 5,
         },
       });
       expect(response.statusCode).toBe(statusCode);
@@ -895,13 +1038,16 @@ describe("Codex rotating OAuth local E2E", () => {
         githubRepositoryId: repository.githubRepositoryId,
         actionRef,
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 5,
       },
     ]);
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef,
       apiUrl: "https://reviewrouter.site",
       providerInstanceId,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      workflowSchemaVersion: 5,
+      activeSecretNamespace: runtimeWorkflowAttestation().secretNamespace,
     });
     const workflowMetadata = readCodexRotatingWorkflowSourceMetadata(workflow);
     const replayNonces = {
@@ -934,8 +1080,7 @@ describe("Codex rotating OAuth local E2E", () => {
             workflowPath: ".github/workflows/reviewrouter-codex.yml",
             workflowSchemaVersion: workflowMetadata.workflowSchemaVersion,
           },
-          workflowSourceSha256:
-            "workflow-source-sha256-012345678901234567890123456789",
+          attestation: runtimeWorkflowAttestation(),
         }),
       },
       replayNonces,
@@ -968,7 +1113,7 @@ describe("Codex rotating OAuth local E2E", () => {
         oidcToken: "oidc-jwt",
         audience: "reviewrouter",
         providerInstanceId,
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 5,
       },
     });
     expect(response.statusCode).toBe(409);
@@ -992,7 +1137,7 @@ describe("Codex rotating OAuth local E2E", () => {
         githubRepositoryId: repository.githubRepositoryId,
         actionRef,
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 5,
       },
     ]);
     const dependencies = {
@@ -1028,10 +1173,9 @@ describe("Codex rotating OAuth local E2E", () => {
             githubRepositoryId: repository.githubRepositoryId,
             actionRef,
             workflowPath: ".github/workflows/reviewrouter-codex.yml",
-            workflowSchemaVersion: 1,
+            workflowSchemaVersion: 5,
           },
-          workflowSourceSha256:
-            "workflow-source-sha256-012345678901234567890123456789",
+          attestation: runtimeWorkflowAttestation(),
         }),
       },
       codexRotatingNewWorkAdmission: allowNewWorkAdmission,
@@ -1049,7 +1193,7 @@ describe("Codex rotating OAuth local E2E", () => {
           oidcToken: "first-oidc-jwt",
           audience: "reviewrouter",
           providerInstanceId,
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 5,
         },
         dependencies,
       ),
@@ -1095,7 +1239,7 @@ describe("Codex rotating OAuth local E2E", () => {
           oidcToken: "stale-oidc-jwt",
           audience: "reviewrouter",
           providerInstanceId,
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 5,
         },
         dependencies,
       ),
@@ -1211,6 +1355,7 @@ function buildTokenFakes(ledger?: InMemoryCodexRotatingOAuthRepository) {
               workflowSourceBlobSha: "b".repeat(40),
               workflowSourceSha256: "c".repeat(64),
               workflowSemanticSha256: "d".repeat(64),
+              workflowSchemaVersion: 5,
               sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
               secretNamespace: namespace,
             }),

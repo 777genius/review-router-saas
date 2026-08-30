@@ -259,6 +259,7 @@ export const codexRotatingActivationSchema = z
     workflowSourceSha256: sha256,
     workflowSemanticSha256: sha256,
     sourceTrust: z.literal("trusted_default_branch_revision"),
+    workflowSchemaVersion: z.union([z.literal(4), z.literal(5)]),
   })
   .strict();
 

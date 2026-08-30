@@ -3,14 +3,17 @@ import {
   canonicalCodexRotatingProviderId,
   codexRotatingAuthMode,
   inspectCodexRotatingWorkflowNamespace,
+  type CodexRotatingDefaultWorkflowSourcePort,
 } from "@reviewrouter/features-provider-setup";
 import {
   assertTrustedCanonicalVersionedWorkflow,
+  CodexRotatingT0WorkflowSchemaVersion,
   createVersionedSecretWorkflowSourceAttestation,
   defaultCodexRotatingWorkflowPath,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
   workflowDocumentSemanticSha256,
   WorkflowSourceTrust,
+  type VersionedProviderSecretNamespace,
 } from "@reviewrouter/features-workflow-provisioning";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
@@ -46,6 +49,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
   readonly defaultBranch: string;
   readonly expectedRepositoryFullName: string;
   readonly expectedApiUrl: string;
+  readonly expectedWorkflowSchemaVersion: CodexRotatingT0WorkflowSchemaVersion;
 }): Promise<CodexRotatingWorkflowActivationResult> {
   const rotatingProvider =
     await input.prisma.codexOAuthProviderInstance.findUnique({
@@ -55,7 +59,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
           authMode: codexRotatingAuthMode,
         },
       },
-      select: { id: true },
+      select: { id: true, latestGenerationHash: true },
     });
   if (!rotatingProvider) return { status: "not_configured" };
 
@@ -77,6 +81,28 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     },
   );
   const namespace = inspection.namespace;
+  if (inspection.source === "active") {
+    if (!rotatingProvider.latestGenerationHash) {
+      throw new Error("codex_rotating_workflow_generation_missing");
+    }
+    const result = await codexRotatingSetupLedger.replaceActiveWorkflowSource(
+      {
+        claimId: inspection.claimId,
+        attemptId: inspection.attemptId,
+        expectedGenerationHash: rotatingProvider.latestGenerationHash,
+        repositoryId: input.githubRepositoryId,
+        workflowPath: defaultCodexRotatingWorkflowPath,
+        namespace,
+      },
+      defaultWorkflowSourcePort(input, providerInstanceId, namespace),
+    );
+    return {
+      status:
+        result.status === "already_active" ? "already_active" : "activated",
+      namespaceEpoch: namespace.epoch.toString(),
+      workflowSourceCommitSha: result.workflowSourceCommitSha,
+    };
+  }
   const repositoryResponse = await input.octokit.request(
     "GET /repos/{owner}/{repo}",
     { owner: input.owner, repo: input.name },
@@ -119,6 +145,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     expectedApiUrl: input.expectedApiUrl,
     expectedProviderInstanceId: providerInstanceId,
     expectedSecretNamespace: namespace,
+    expectedWorkflowSchemaVersion: input.expectedWorkflowSchemaVersion,
   });
   const attestation = createVersionedSecretWorkflowSourceAttestation({
     repositoryId: input.githubRepositoryId,
@@ -127,22 +154,34 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     workflowSourceBlobSha: blobSha,
     workflowSourceSha256: createHash("sha256").update(source).digest("hex"),
     workflowSemanticSha256: workflowDocumentSemanticSha256(source),
+    workflowSchemaVersion: metadata.workflowSchemaVersion,
     sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
     secretNamespace: namespace,
   });
+  const finalRepositoryResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}",
+    { owner: input.owner, repo: input.name },
+  );
+  const finalRepository = readGitHubRepositoryIdentity(
+    finalRepositoryResponse.data,
+  );
+  if (
+    finalRepository.id !== observedRepository.id ||
+    finalRepository.fullName !== observedRepository.fullName ||
+    finalRepository.defaultBranch !== observedRepository.defaultBranch
+  ) {
+    throw new Error("codex_rotating_workflow_repository_identity_changed");
+  }
   const finalRefResponse = await input.octokit.request(
     "GET /repos/{owner}/{repo}/git/ref/{ref}",
-    refParameters,
+    {
+      owner: input.owner,
+      repo: input.name,
+      ref: `heads/${finalRepository.defaultBranch}`,
+    },
   );
   if (readGitHubCommitSha(finalRefResponse.data) !== workflowSourceCommitSha) {
     throw new Error("codex_rotating_workflow_default_head_changed");
-  }
-  if (inspection.source === "active") {
-    return {
-      status: "already_active",
-      namespaceEpoch: namespace.epoch.toString(),
-      workflowSourceCommitSha,
-    };
   }
   await codexRotatingSetupLedger.activate({
     claimId: inspection.claimId,
@@ -157,11 +196,99 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     workflowSourceSha256: attestation.workflowSourceSha256,
     workflowSemanticSha256: attestation.workflowSemanticSha256,
     sourceTrust: attestation.sourceTrust,
+    workflowSchemaVersion: attestation.workflowSchemaVersion,
   });
   return {
     status: "activated",
     namespaceEpoch: namespace.epoch.toString(),
     workflowSourceCommitSha,
+  };
+}
+
+function defaultWorkflowSourcePort(
+  input: Pick<
+    Parameters<typeof activateConfirmedCodexNamespaceAfterWorkflowMerge>[0],
+    | "octokit"
+    | "owner"
+    | "name"
+    | "defaultBranch"
+    | "githubRepositoryId"
+    | "expectedRepositoryFullName"
+    | "expectedApiUrl"
+  >,
+  providerInstanceId: string,
+  namespace: VersionedProviderSecretNamespace,
+): CodexRotatingDefaultWorkflowSourcePort {
+  let observedRepository:
+    | Readonly<{ id: string; fullName: string; defaultBranch: string }>
+    | undefined;
+  return {
+    async readDefaultSourceIdentity() {
+      const repositoryResponse = await input.octokit.request(
+        "GET /repos/{owner}/{repo}",
+        { owner: input.owner, repo: input.name },
+      );
+      const repository = readGitHubRepositoryIdentity(repositoryResponse.data);
+      if (repository.defaultBranch !== input.defaultBranch) {
+        throw new Error("codex_rotating_workflow_default_branch_mismatch");
+      }
+      observedRepository = repository;
+      const response = await input.octokit.request(
+        "GET /repos/{owner}/{repo}/git/ref/{ref}",
+        {
+          owner: input.owner,
+          repo: input.name,
+          ref: `heads/${repository.defaultBranch}`,
+        },
+      );
+      return {
+        repositoryId: repository.id,
+        repositoryFullName: repository.fullName,
+        defaultBranch: repository.defaultBranch,
+        headCommitSha: readGitHubCommitSha(response.data),
+      };
+    },
+    async readVerifiedWorkflowAt({ commitSha, expectedSchemaVersion }) {
+      if (!observedRepository) {
+        throw new Error("codex_rotating_workflow_repository_identity_missing");
+      }
+      const workflowPath = defaultCodexRotatingWorkflowPath;
+      const response = await input.octokit.request(
+        "GET /repos/{owner}/{repo}/contents/{path}",
+        {
+          owner: input.owner,
+          repo: input.name,
+          path: workflowPath,
+          ref: commitSha,
+        },
+      );
+      const { source, blobSha } = readGitHubWorkflowBlob(response.data);
+      const metadata =
+        readCanonicalCodexRotatingT0WorkflowSourceMetadata(source);
+      assertTrustedCanonicalVersionedWorkflow({
+        metadata,
+        observedRepositoryId: observedRepository.id,
+        observedRepositoryFullName: observedRepository.fullName,
+        expectedRepositoryId: input.githubRepositoryId,
+        expectedRepositoryFullName: input.expectedRepositoryFullName,
+        trustedActionRefs: resolveReviewRouterCodexRotatingTrustedActionRefs(),
+        expectedApiUrl: input.expectedApiUrl,
+        expectedProviderInstanceId: providerInstanceId,
+        expectedSecretNamespace: namespace,
+        expectedWorkflowSchemaVersion: expectedSchemaVersion,
+      });
+      return createVersionedSecretWorkflowSourceAttestation({
+        repositoryId: input.githubRepositoryId,
+        workflowPath,
+        workflowSourceCommitSha: commitSha,
+        workflowSourceBlobSha: blobSha,
+        workflowSourceSha256: createHash("sha256").update(source).digest("hex"),
+        workflowSemanticSha256: workflowDocumentSemanticSha256(source),
+        workflowSchemaVersion: metadata.workflowSchemaVersion,
+        sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+        secretNamespace: namespace,
+      });
+    },
   };
 }
 
