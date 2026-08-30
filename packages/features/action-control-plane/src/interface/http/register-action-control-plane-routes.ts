@@ -225,11 +225,28 @@ const certifiedForkIdentitySchema = z.object({
   forkReviewBinding: certifiedForkBindingSchema,
 });
 const certifiedForkPrepareSchema = certifiedForkIdentitySchema.strict();
+const certifiedForkModelFindingSchema = z
+  .object({
+    severity: z.enum(["critical", "major", "minor", "info"]),
+    title: z.string().trim().min(1).max(200),
+    body: z.string().trim().min(1).max(8_000),
+    path: z.string().trim().min(1).max(500).nullable().optional(),
+    startLine: z.number().int().positive().max(1_000_000).nullable().optional(),
+    endLine: z.number().int().positive().max(1_000_000).nullable().optional(),
+  })
+  .strict();
+const certifiedForkModelOutputSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    summaryMarkdown: z.string().trim().min(1).max(60_000),
+    findings: z.array(certifiedForkModelFindingSchema).max(50),
+  })
+  .strict();
 const certifiedForkPublishSchema = certifiedForkIdentitySchema
   .extend({
     executionId: z.string().min(32).max(8_192),
     contextHash: z.string().regex(/^[a-f0-9]{64}$/),
-    modelOutput: z.unknown(),
+    modelOutput: certifiedForkModelOutputSchema,
   })
   .strict();
 

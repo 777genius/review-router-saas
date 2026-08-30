@@ -239,6 +239,21 @@ describe("certified fork review use cases", () => {
       payload: { ...request, reviewRequestId: "attacker-controlled" },
     });
     expect(rejected.statusCode).toBe(400);
+    const prepared = accepted.json() as {
+      executionId: string;
+      contextHash: string;
+    };
+    const missingOutput = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/certified-fork-review/publish",
+      payload: {
+        ...request,
+        oidcToken: "publish",
+        executionId: prepared.executionId,
+        contextHash: prepared.contextHash,
+      },
+    });
+    expect(missingOutput.statusCode).toBe(400);
     await app.close();
   });
 
