@@ -7,6 +7,7 @@ import {
   assertArtifactCandidate,
   assertActivationCatalogPolicyIndependentReviewEvidence,
   assertReviewedActivationCatalogPromotionProvenance,
+  canonicalActivationCatalogArtifactSource,
   promotePrivatePg17ActivationCatalogPolicy,
   reviewedActivationCatalogCandidate,
 } from "./promote-private-pg17-activation-catalog-policy.mjs";
@@ -17,7 +18,7 @@ import { canonicalReleaseMigrationArtifact } from "../packages/features/release-
 describe("activation catalog policy promotion", () => {
   it("pins the exact reviewed v29 candidate and operator opt-in", () => {
     expect(activationCatalogPromotionOptIn).toBe(
-      "promote-reviewed-activation-catalog-v29",
+      "promote-reviewed-activation-catalog-v29-schema-v5-pr245",
     );
     expect(reviewedActivationCatalogCandidate).toEqual({
       sha256:
@@ -140,17 +141,31 @@ describe("activation catalog policy promotion", () => {
     ).toThrow("activation_catalog_policy_promotion_provenance_invalid");
   });
 
-  it("refuses the invalidated independent review provenance", async () => {
+  it("accepts the exact ready provenance and both materialized reviews", async () => {
     const provenance = JSON.parse(
       await readFile(activationCatalogPromotionProvenancePath, "utf8"),
     );
     expect(() =>
       assertReviewedActivationCatalogPromotionProvenance(provenance),
-    ).toThrow("activation_catalog_policy_promotion_provenance_invalid");
+    ).not.toThrow();
     await expect(
       assertActivationCatalogPolicyIndependentReviewEvidence(provenance),
-    ).rejects.toThrow(
-      "activation_catalog_policy_independent_review_evidence_invalid",
-    );
+    ).resolves.toBeUndefined();
   });
+
+  it("reproduces the exact immutable generated source bytes and hash", async () => {
+    const candidate = await readFile(
+      "/mnt/volume_ams3_1784742570542/evidence/rr-pr245-79c8496d-schema-v5-candidate/activation-catalog-policy-candidate-1.json",
+    );
+    const generated = canonicalActivationCatalogArtifactSource(candidate);
+    expect(generated.byteLength).toBe(2_651_797);
+    expect(generated).toEqual(
+      await readFile(
+        new URL(
+          "../packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js",
+          import.meta.url,
+        ),
+      ),
+    );
+  }, 60_000);
 });

@@ -289,7 +289,7 @@ describe("disposable dual-version rehearsal", () => {
       }),
     ).rejects.toThrow("private_pg17_rehearsal_control_readiness_timeout");
   });
-  it("blocks normal rehearsal while the catalog review evidence is stale", () => {
+  it("authorizes normal rehearsal under the promoted schema-v5 trust root", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual({
       preactivationCatalogPolicySha256:
         "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
@@ -303,9 +303,7 @@ describe("disposable dual-version rehearsal", () => {
       authorizeCanonicalActivationCatalogPolicies(
         rehearsalActivationCatalogPolicyAuthorization,
       ),
-    ).toThrow(
-      "activation_catalog_policy_trust_root_blocked:independent-review-required-after-catalog-projection-change",
-    );
+    ).not.toThrow();
   });
   it("allows loaded disposable catalog observations without changing production timing", () => {
     expect(rehearsalReadinessPolicy).toEqual({

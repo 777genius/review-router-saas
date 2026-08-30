@@ -10,7 +10,7 @@ import {
 } from "./activation-catalog-policy-contract";
 
 describe("promoted activation catalog policy trust root", () => {
-  it("blocks the stale v29 review after the catalog projection changed", () => {
+  it("admits the exact reviewed schema-v5 PR245 trust root", () => {
     const provenance = JSON.parse(
       readFileSync(
         new URL("activation-catalog-policy-provenance.json", import.meta.url),
@@ -21,13 +21,17 @@ describe("promoted activation catalog policy trust root", () => {
       reviewedActivationCatalogPolicyDigests,
     );
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
-      status: "blocked",
-      reason: "independent-review-required-after-catalog-projection-change",
+      status: "ready",
+      reason: "reviewed-v29-schema-v5-pr245-promoted-with-evidence-contract-v2",
     });
-    expect(provenance.invalidatedReview).toEqual({
-      reviewDecisionId: "RR-V29-CODEX-GO-7459B6D4-B138EB3E-20260830",
-      auditedHead: "7459b6d4fd8aab5c377547246292faf3376d98cb",
-      invalidatedByCommit: "54520f050c61e88356ea0376964ac25a38700bc8",
+    expect(provenance).toMatchObject({
+      version: 5,
+      status: "ready",
+      evidenceContractVersion: 2,
+      capture: {
+        baseCommit: "79c8496d64b63c129e19331ee328666f714d82b1",
+        auditedTree: "1cdb05db1f73eb2bf294d774d517fff533ca24bc",
+      },
     });
     expect(
       canonicalActivationCatalogPolicies.preactivation.policy.grants,
@@ -46,12 +50,12 @@ describe("promoted activation catalog policy trust root", () => {
     visit(canonicalActivationCatalogPolicyArtifact);
   });
 
-  it("refuses compact digest authorization while review is stale", () => {
+  it("authorizes only the exact compact digests under the ready trust root", () => {
     expect(() =>
       authorizeCanonicalActivationCatalogPolicies(
         canonicalActivationCatalogPolicyDigests,
       ),
-    ).toThrow("activation_catalog_policy_trust_root_blocked");
+    ).not.toThrow();
     expect(() =>
       authorizeCanonicalActivationCatalogPolicies({
         ...reviewedActivationCatalogPolicyDigests,
