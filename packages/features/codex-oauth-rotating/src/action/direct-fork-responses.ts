@@ -433,11 +433,20 @@ function validateSafeReasoningItem(item: Record<string, unknown>): void {
     "summary",
     "content",
     "encrypted_content",
+    "status",
   ]);
   if (typeof item.id !== "string" || item.id.length > 500) {
     throw new Error("certified_fork_provider_item_rejected");
   }
   validateSafeReasoningParts(item.summary, "summary_text");
+  if (
+    item.status !== undefined &&
+    item.status !== "in_progress" &&
+    item.status !== "completed" &&
+    item.status !== "incomplete"
+  ) {
+    throw new Error("certified_fork_provider_item_rejected");
+  }
   if (item.content !== undefined) {
     if (!Array.isArray(item.content) || item.content.length > 100) {
       throw new Error("certified_fork_provider_item_rejected");

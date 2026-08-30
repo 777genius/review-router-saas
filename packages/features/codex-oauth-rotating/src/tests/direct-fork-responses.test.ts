@@ -91,14 +91,14 @@ describe("direct certified fork Responses client", () => {
           `data: ${JSON.stringify({ type: "response.created", response: { id: "resp_1" } })}`,
           `data: ${JSON.stringify({ type: "response.in_progress", response: { id: "resp_1" } })}`,
           `data: ${JSON.stringify({ type: "response.metadata", sequence_number: 1, response_id: "resp_1", metadata: { openai_verification_recommendation: [] }, headers: { "openai-model": "gpt-5.6-sol" } })}`,
-          `data: ${JSON.stringify({ type: "response.output_item.added", item: { type: "reasoning", id: "rs_1", summary: [] } })}`,
+          `data: ${JSON.stringify({ type: "response.output_item.added", item: { type: "reasoning", id: "rs_1", summary: [], status: "in_progress" } })}`,
           `data: ${JSON.stringify({ type: "response.reasoning_summary_part.added", summary_index: 0 })}`,
           `data: ${JSON.stringify({ type: "response.reasoning_summary_text.delta", summary_index: 0, delta: "Checked the diff." })}`,
           `data: ${JSON.stringify({ type: "response.reasoning_summary_text.done", summary_index: 0, text: "Checked the diff." })}`,
           `data: ${JSON.stringify({ type: "response.reasoning_summary_part.done", summary_index: 0, part: { type: "summary_text", text: "Checked the diff." } })}`,
           `data: ${JSON.stringify({ type: "response.reasoning_text.delta", content_index: 0, delta: "Internal reasoning." })}`,
           `data: ${JSON.stringify({ type: "response.reasoning_text.done", content_index: 0, text: "Internal reasoning." })}`,
-          `data: ${JSON.stringify({ type: "response.output_item.done", item: { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Checked the diff." }], content: [{ type: "reasoning_text", text: "Internal reasoning." }], encrypted_content: "encrypted" } })}`,
+          `data: ${JSON.stringify({ type: "response.output_item.done", item: { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Checked the diff." }], content: [{ type: "reasoning_text", text: "Internal reasoning." }], encrypted_content: "encrypted", status: "completed" } })}`,
           `data: ${JSON.stringify({ type: "response.output_item.added", item: { type: "message", role: "assistant", content: [] } })}`,
           `data: ${JSON.stringify({ type: "response.content_part.added", part: { type: "output_text", text: "" } })}`,
           `data: ${JSON.stringify({ type: "response.output_text.delta", delta: modelOutput() })}`,
@@ -151,6 +151,40 @@ describe("direct certified fork Responses client", () => {
     });
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
+
+  it.each(["in_progress", "completed", "incomplete"] as const)(
+    "accepts official reasoning status %s",
+    async (status) => {
+      const fetchImpl = vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              status: "completed",
+              output: [
+                {
+                  type: "reasoning",
+                  id: "rs_1",
+                  status,
+                  summary: [],
+                },
+                {
+                  type: "message",
+                  role: "assistant",
+                  content: [{ type: "output_text", text: modelOutput() }],
+                },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+      ) as typeof fetch;
+      await expect(requestDirectForkReview(input(fetchImpl))).resolves.toEqual({
+        protocolVersion: 1,
+        summaryMarkdown: "No blocking findings.",
+        findings: [],
+      });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
 
   it("does not retry an ambiguous provider dispatch", async () => {
     const fetchImpl = vi.fn(async () => {
@@ -217,6 +251,24 @@ describe("direct certified fork Responses client", () => {
           output: [
             { type: "reasoning", id: "rs_1", summary: [] },
             { type: "tool_search_call", query: "secrets" },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+      "certified_fork_provider_item_rejected",
+    ],
+    [
+      "invalid reasoning status",
+      new Response(
+        JSON.stringify({
+          status: "completed",
+          output: [
+            {
+              type: "reasoning",
+              id: "rs_1",
+              status: "running_tools",
+              summary: [],
+            },
           ],
         }),
         { status: 200, headers: { "content-type": "application/json" } },
