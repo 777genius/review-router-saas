@@ -1,6 +1,7 @@
 import type {
   ActionRepositoryIdentity,
   ExactActionReleaseIdentityV2Input,
+  FixedCanaryBinding,
   FixedCanaryBindingInput,
   FixedCanaryTargetIdentity,
   FixedTerminalCanaryExpectation,
@@ -45,6 +46,10 @@ export type ActionReleaseRepositoryWriteResult =
   (typeof ActionReleaseRepositoryWriteResult)[keyof typeof ActionReleaseRepositoryWriteResult];
 
 export interface ActionReleaseRolloutRepositoryPort {
+  /**
+   * Persistence adapters must call hydrateActionReleaseRollout after every
+   * trusted DB/JSON read; serialized aggregates do not retain runtime brands.
+   */
   load(channel: "production-schema-v5"): Promise<ActionReleaseRollout>;
 
   /** CAS plus one-active-candidate and globally unique attempt enforcement. */
@@ -119,6 +124,12 @@ export type CandidateWorkflowProvisioningReconciliation =
   | Readonly<{ status: "exact"; expectationDigest: Sha256 }>
   | Readonly<{
       status: "pending" | "definite_no_effect";
+      /**
+       * `definite_no_effect` is an authoritative observation for the exact
+       * persisted effect tuple and its canonically bound request. It proves
+       * that resubmitting only that same tuple/request is safe; `pending`
+       * never grants dispatch authority.
+       */
       observationDigest: Sha256;
     }>;
 
@@ -136,13 +147,22 @@ export interface CandidateWorkflowProvisioningPort {
     readonly candidateRelease: VerifiedActionReleaseV2;
   }): Promise<FixedCanaryBindingInput>;
 
+  /**
+   * Durably and linearizably idempotent for the complete immutable
+   * effectId/effectEpoch tuple. The first call permanently binds the tuple to
+   * the complete canonical request before provider I/O. Concurrent calls and
+   * retries after any process/adapter restart coalesce to at most one provider
+   * effect and the same terminal result. A reused tuple with any conflicting
+   * request field fails before mutation; in-memory-only deduplication does not
+   * satisfy this contract.
+   */
   provision(input: {
     readonly selection: Extract<
       WorkflowActionSelection,
       { readonly kind: "isolated_candidate" }
     >;
     readonly schemaVersion: 5;
-    readonly binding: FixedCanaryBindingInput;
+    readonly binding: Readonly<FixedCanaryBinding>;
     readonly eligibility: RepositoryActionEligibilityDecision;
     readonly effectId: Sha256;
     readonly effectEpoch: bigint;
@@ -155,7 +175,7 @@ export interface CandidateWorkflowProvisioningPort {
       { readonly kind: "isolated_candidate" }
     >;
     readonly schemaVersion: 5;
-    readonly binding: FixedCanaryBindingInput;
+    readonly binding: Readonly<FixedCanaryBinding>;
     readonly eligibility: RepositoryActionEligibilityDecision;
     readonly effectId: Sha256;
     readonly effectEpoch: bigint;
@@ -198,6 +218,11 @@ export interface NamespaceLeaseReferencePort {
 }
 
 export interface GitHubWorkflowRunReferencePort {
+  /**
+   * The observation time and snapshot identity must be issued by the provider
+   * for the exact complete page set. Adapters must not relabel cached pages
+   * with a local timestamp or derive a new identity from stale content.
+   */
   captureCompletePaginated(input: {
     readonly repositoryCohortRevision: bigint;
     readonly policyRevision: bigint;
@@ -205,6 +230,8 @@ export interface GitHubWorkflowRunReferencePort {
     Readonly<{
       complete: true;
       appId: string;
+      providerObservedAt: string;
+      snapshotIdentity: string;
       pageCount: number;
       paginationDigest: Sha256;
     }>

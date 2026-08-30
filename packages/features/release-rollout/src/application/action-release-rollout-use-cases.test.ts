@@ -22,6 +22,7 @@ import {
   completeActionReleasePromotion,
   confirmFixedActionReleaseCanaryProvisioned,
   createSteadyActionReleaseRollout,
+  enterActionReleaseRecoveryOnly,
   exactProductionActionConfiguration,
   markActionReleasePromotionUncertain,
   prepareActionReleasePromotion,
@@ -31,6 +32,7 @@ import {
   stageActionReleaseOverlap,
   type ActionReleaseRollout,
 } from "../domain/action-release-rollout";
+import { hydrateActionReleaseRollout } from "../domain/action-release-rollout-hydration";
 import {
   completeLiveActionReferenceInventory,
   LiveActionDatabaseCoverage,
@@ -41,6 +43,7 @@ import {
 } from "../domain/live-action-reference-inventory";
 import {
   ActionReleaseRepositoryWriteResult,
+  type CandidateWorkflowProvisioningPort,
   type ActionReleaseDigestPort,
   type ActionReleaseRolloutRepositoryPort,
   type PredecessorAdmissionCloseCommand,
@@ -71,6 +74,26 @@ const digest = (character: string) => sha256(`sha256:${character.repeat(64)}`);
 const sha = (character: string) => character.repeat(40);
 const at = (seconds: number) =>
   new Date(Date.UTC(2026, 7, 30, 9, 0, seconds)).toISOString();
+
+function persistenceRoundTrip(value: unknown): unknown {
+  return JSON.parse(
+    JSON.stringify(value, (_key, item: unknown) =>
+      typeof item === "bigint" ? { $bigint: item.toString() } : item,
+    ),
+    (_key, item: unknown) => {
+      if (
+        item !== null &&
+        typeof item === "object" &&
+        !Array.isArray(item) &&
+        Object.keys(item).length === 1 &&
+        "$bigint" in item &&
+        typeof (item as { $bigint: unknown }).$bigint === "string"
+      )
+        return BigInt((item as { $bigint: string }).$bigint);
+      return item;
+    },
+  );
+}
 const repositoryIdentity = {
   repositoryId: "101",
   fullName: "acme/action",
@@ -238,6 +261,9 @@ function armed(attempt = "attempt-1") {
   });
   const state = authorizeFixedActionReleaseCanaryProvisioning(prepared, {
     eligibility: {
+      aggregateVersion: prepared.aggregateVersion,
+      phase: prepared.phase,
+      admissionMode: prepared.admissionMode,
       policyRevision: 11n,
       channelVersion: 3n,
       selectionDigest: digest("7"),
@@ -293,18 +319,21 @@ function inventory(
     references?: LiveActionReferenceInventoryCaptureV1["references"];
     productionRelease?: VerifiedActionReleaseV2;
     databaseServerTime?: string;
+    githubProviderObservedAt?: string;
+    githubSnapshot?: string;
     githubAppLogin?: string;
     githubWorkflows?: readonly string[];
     repositoryIds?: readonly string[];
     repositoryCohortRevision?: bigint;
     repositoryCohortDigest?: ReturnType<typeof digest>;
     policyRevision?: bigint;
+    deploymentIds?: readonly string[];
   } = {},
 ) {
   const productionRelease = input.productionRelease ?? A;
   const production = {
     serviceIds: ["api", "web"],
-    deploymentIds: ["deploy-api", "deploy-web"],
+    deploymentIds: input.deploymentIds ?? ["deploy-api", "deploy-web"],
     primaryRef: productionRelease.actionRef,
     installerRef: productionRelease.actionRef,
     installer: productionRelease.installer,
@@ -345,6 +374,10 @@ function inventory(
       complete: true,
       appId: "99",
       appLogin: input.githubAppLogin ?? "reviewrouter-test[bot]",
+      providerObservedAt:
+        input.githubProviderObservedAt ?? input.capturedAt ?? at(5),
+      snapshotIdentity:
+        input.githubSnapshot ?? input.snapshot ?? "github-snapshot-1",
       workflows,
       statuses,
       pages: repositoryIds.flatMap((repositoryId) =>
@@ -354,6 +387,10 @@ function inventory(
             workflow,
             status,
             page: 1,
+            providerObservedAt:
+              input.githubProviderObservedAt ?? input.capturedAt ?? at(5),
+            snapshotIdentity:
+              input.githubSnapshot ?? input.snapshot ?? "github-snapshot-1",
             responseDigest: digest(status === "queued" ? "3" : "6"),
             nextPage: null,
           })),
@@ -671,6 +708,47 @@ const allowEligibility = {
     } as const;
   },
 };
+
+async function dispatchingCanaryAfterProvisioningCrash() {
+  const initial = staged();
+  const repository = new MemoryRepository(initial);
+  const originalCompareAndSet = repository.compareAndSet.bind(repository);
+  const provision = vi.fn();
+  vi.spyOn(repository, "compareAndSet").mockImplementation(async (input) => {
+    const result = await originalCompareAndSet(input);
+    if (
+      result === ActionReleaseRepositoryWriteResult.Committed &&
+      input.next.phase === "canary_armed" &&
+      input.next.provisioning.state === "dispatching"
+    )
+      throw new Error("simulated_process_crash_before_provision");
+    return result;
+  });
+  await expect(
+    new ArmAndProvisionFixedCanary({
+      repository,
+      clock: fixedClock(at(3)),
+      digest: digestPort,
+      eligibility: allowEligibility,
+      target: { getFixedTarget: async () => binding().target },
+      provisioning: {
+        prepareFixedBinding: async () => binding(),
+        provision,
+        reconcile: vi.fn(),
+      },
+    }).execute({
+      expectedAggregateVersion: initial.aggregateVersion,
+      attemptId: "attempt-1",
+    }),
+  ).rejects.toThrow("simulated_process_crash_before_provision");
+  expect(provision).not.toHaveBeenCalled();
+  if (
+    repository.state.phase !== "canary_armed" ||
+    repository.state.provisioning.state !== "dispatching"
+  )
+    throw new Error("test_dispatching_checkpoint_missing");
+  return repository.state;
+}
 
 describe("Action release application CAS and receipt protocol", () => {
   it("allows exactly one candidate registration CAS winner and reports the stale loser", async () => {
@@ -1323,19 +1401,29 @@ describe("Action release application CAS and receipt protocol", () => {
   it("persists the armed intent and exact eligibility snapshot before provisioning", async () => {
     const state = staged();
     const repository = new MemoryRepository(state);
-    const provision = vi.fn(async (input: { eligibility: unknown }) => {
-      expect(repository.state.phase).toBe("canary_armed");
-      if (repository.state.phase !== "canary_armed")
-        throw new Error("armed_state_missing");
-      expect(repository.state.provisioning.state).toBe("dispatching");
-      expect(input.eligibility).toEqual({
-        allowed: true,
-        ...repository.state.provisioning.eligibility,
-      });
-      return {
-        expectationDigest: repository.state.expectation.expectationDigest,
-      };
-    });
+    const provision = vi.fn(
+      async (input: { eligibility: unknown; binding: unknown }) => {
+        expect(repository.state.phase).toBe("canary_armed");
+        if (repository.state.phase !== "canary_armed")
+          throw new Error("armed_state_missing");
+        expect(repository.state.provisioning.state).toBe("dispatching");
+        const eligibility = repository.state.provisioning.eligibility;
+        if (eligibility === null)
+          throw new Error("eligibility_snapshot_missing");
+        expect(input.binding).toEqual(repository.state.canary);
+        expect(input.eligibility).toEqual({
+          allowed: true,
+          policyRevision: eligibility.policyRevision,
+          channelVersion: eligibility.channelVersion,
+          selectionDigest: eligibility.selectionDigest,
+          contextDigest: eligibility.contextDigest,
+          decisionDigest: eligibility.decisionDigest,
+        });
+        return {
+          expectationDigest: repository.state.expectation.expectationDigest,
+        };
+      },
+    );
     const arm = new ArmAndProvisionFixedCanary({
       repository,
       clock: fixedClock(at(3)),
@@ -1415,6 +1503,212 @@ describe("Action release application CAS and receipt protocol", () => {
       }),
     ).rejects.toMatchObject({ code: "action_release_rollout_stale_version" });
     expect(staleProvision).not.toHaveBeenCalled();
+  });
+
+  it("redispatches the same durable provisioning effect after definite no effect", async () => {
+    const dispatching = await dispatchingCanaryAfterProvisioningCrash();
+    const repository = new MemoryRepository(dispatching);
+    const reconcile = vi.fn(async () => ({
+      status: "definite_no_effect" as const,
+      observationDigest: digest("f"),
+    }));
+    const provision = vi.fn(
+      async (input: { effectId: Sha256; effectEpoch: bigint }) => {
+        expect(input).toMatchObject({
+          effectId: dispatching.provisioning.effectId,
+          effectEpoch: dispatching.provisioning.epoch,
+        });
+        return {
+          expectationDigest: dispatching.expectation.expectationDigest,
+        };
+      },
+    );
+    const result = await new ReconcileFixedCanaryProvisioning({
+      repository,
+      clock: fixedClock(at(4)),
+      digest: digestPort,
+      eligibility: allowEligibility,
+      provisioning: {
+        prepareFixedBinding: async () => binding(),
+        provision,
+        reconcile,
+      },
+    }).execute({
+      expectedAggregateVersion: dispatching.aggregateVersion,
+      attemptId: dispatching.candidate.attemptId,
+    });
+    expect(result.provisioning.state).toBe("verified");
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(provision).toHaveBeenCalledTimes(1);
+  });
+
+  it("coalesces a delayed original dispatch with restart redispatch and never dispatches pending effects", async () => {
+    type ProvisionInput = Parameters<
+      CandidateWorkflowProvisioningPort["provision"]
+    >[0];
+    type ProvisionResult = Awaited<
+      ReturnType<CandidateWorkflowProvisioningPort["provision"]>
+    >;
+
+    const initial = staged();
+    const repository = new MemoryRepository(initial);
+    const compareAndSet = repository.compareAndSet.bind(repository);
+    let markDispatchingPersisted: () => void = () => undefined;
+    let releaseOriginalDispatchCas: () => void = () => undefined;
+    const dispatchingPersisted = new Promise<void>((resolve) => {
+      markDispatchingPersisted = resolve;
+    });
+    const originalDispatchCasGate = new Promise<void>((resolve) => {
+      releaseOriginalDispatchCas = resolve;
+    });
+    vi.spyOn(repository, "compareAndSet").mockImplementation(async (input) => {
+      const result = await compareAndSet(input);
+      if (
+        result === ActionReleaseRepositoryWriteResult.Committed &&
+        input.next.phase === "canary_armed" &&
+        input.next.provisioning.state === "dispatching"
+      ) {
+        markDispatchingPersisted();
+        await originalDispatchCasGate;
+      }
+      return result;
+    });
+    let markRestartProvisionStarted: () => void = () => undefined;
+    let markOriginalJoined: () => void = () => undefined;
+    let releaseProvision: (result: ProvisionResult) => void = () => undefined;
+    const restartProvisionStarted = new Promise<void>((resolve) => {
+      markRestartProvisionStarted = resolve;
+    });
+    const originalJoined = new Promise<void>((resolve) => {
+      markOriginalJoined = resolve;
+    });
+    const sharedProvisionResult = new Promise<ProvisionResult>((resolve) => {
+      releaseProvision = resolve;
+    });
+    const durableEffects = new Map<
+      string,
+      Readonly<{
+        canonicalRequest: string;
+        result: Promise<ProvisionResult>;
+      }>
+    >();
+    const observedInputs: ProvisionInput[] = [];
+    const observedRequests: string[] = [];
+    let logicalEffects = 0;
+    const provision = vi.fn((input: ProvisionInput) => {
+      const key = `${input.effectId}:${input.effectEpoch}`;
+      const canonicalRequest = JSON.stringify(input, (_key, item: unknown) =>
+        typeof item === "bigint" ? { $bigint: item.toString() } : item,
+      );
+      observedInputs.push(input);
+      observedRequests.push(canonicalRequest);
+      const existing = durableEffects.get(key);
+      if (existing) {
+        markOriginalJoined();
+        if (existing.canonicalRequest !== canonicalRequest)
+          return Promise.reject(
+            new Error("durable_provisioning_effect_binding_conflict"),
+          );
+        return existing.result;
+      }
+      logicalEffects += 1;
+      durableEffects.set(key, {
+        canonicalRequest,
+        result: sharedProvisionResult,
+      });
+      markRestartProvisionStarted();
+      return sharedProvisionResult;
+    });
+    const reconcile = vi.fn(async () => ({
+      status: "definite_no_effect" as const,
+      observationDigest: digest("e"),
+    }));
+    const provisioning: CandidateWorkflowProvisioningPort = {
+      prepareFixedBinding: async () => binding(),
+      provision,
+      reconcile,
+    };
+    const original = new ArmAndProvisionFixedCanary({
+      repository,
+      clock: fixedClock(at(3)),
+      digest: digestPort,
+      eligibility: allowEligibility,
+      target: { getFixedTarget: async () => binding().target },
+      provisioning,
+    }).execute({
+      expectedAggregateVersion: initial.aggregateVersion,
+      attemptId: initial.candidate.attemptId,
+    });
+    await dispatchingPersisted;
+    expect(provision).not.toHaveBeenCalled();
+    const restartedState = hydrateActionReleaseRollout(
+      persistenceRoundTrip(repository.state),
+    );
+    if (
+      restartedState.phase !== "canary_armed" ||
+      restartedState.provisioning.state !== "dispatching"
+    )
+      throw new Error("test_restarted_dispatching_checkpoint_missing");
+    repository.state = restartedState;
+    const restarted = new ReconcileFixedCanaryProvisioning({
+      repository,
+      clock: fixedClock(at(4)),
+      digest: digestPort,
+      eligibility: allowEligibility,
+      provisioning,
+    }).execute({
+      expectedAggregateVersion: restartedState.aggregateVersion,
+      attemptId: restartedState.candidate.attemptId,
+    });
+    await restartProvisionStarted;
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    releaseOriginalDispatchCas();
+    await originalJoined;
+    releaseProvision({
+      expectationDigest: restartedState.expectation.expectationDigest,
+    });
+    const settled = await Promise.allSettled([original, restarted]);
+    expect(
+      settled.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      settled.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
+    const rejected = settled.find((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({
+      status: "rejected",
+      reason: { code: "action_release_rollout_stale_version" },
+    });
+    expect(durableEffects.size).toBe(1);
+    expect(logicalEffects).toBe(1);
+    expect(provision).toHaveBeenCalledTimes(2);
+    expect(new Set(observedRequests).size).toBe(1);
+    expect(observedInputs[1]).toEqual(observedInputs[0]);
+    expect(repository.state).toMatchObject({
+      provisioning: { state: "verified" },
+    });
+
+    const pendingRepository = new MemoryRepository(restartedState);
+    const pendingProvision = vi.fn();
+    const pending = await new ReconcileFixedCanaryProvisioning({
+      repository: pendingRepository,
+      clock: fixedClock(at(4)),
+      digest: digestPort,
+      eligibility: allowEligibility,
+      provisioning: {
+        prepareFixedBinding: async () => binding(),
+        provision: pendingProvision,
+        reconcile: async () => ({
+          status: "pending" as const,
+          observationDigest: digest("d"),
+        }),
+      },
+    }).execute({
+      expectedAggregateVersion: restartedState.aggregateVersion,
+      attemptId: restartedState.candidate.attemptId,
+    });
+    expect(pending.provisioning.state).toBe("uncertain");
+    expect(pendingProvision).not.toHaveBeenCalled();
   });
 
   it("reconciles an uncertain fixed-canary provisioning effect without another write", async () => {
@@ -1547,6 +1841,11 @@ describe("Action release application CAS and receipt protocol", () => {
       kind: "production_primary",
       actionRef: A.actionRef,
     });
+    expect(production).toMatchObject({
+      aggregateVersion: state.aggregateVersion,
+      phase: state.phase,
+      admissionMode: state.admissionMode,
+    });
 
     const attestation = {
       actionRef: A.actionRef,
@@ -1581,6 +1880,91 @@ describe("Action release application CAS and receipt protocol", () => {
       }),
     ).rejects.toThrow("action_release_selection_rejected");
     expect(authorizeExactSelection).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects delayed eligibility after aggregate phase or admission changes", async () => {
+    const context = {
+      githubRepositoryId: "777",
+      repositoryFullName: "777genius/review-router-saas-e2e",
+      providerInstanceId: "provider-fixed",
+      namespaceId: null,
+      namespaceEpoch: null,
+      workflowSourceDigest: digest("a"),
+    } as const;
+
+    async function expectDelayedAuthorizationFenced(
+      initial: ActionReleaseRollout,
+      next: ActionReleaseRollout,
+    ) {
+      const repository = new MemoryRepository(initial);
+      let allow: (() => void) | undefined;
+      let markStarted: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        allow = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const resolver = new ResolveActionReleaseSelection({
+        repository,
+        digest: digestPort,
+        eligibility: {
+          authorizeExactSelection: async (input) => {
+            markStarted?.();
+            await gate;
+            return await allowEligibility.authorizeExactSelection(input);
+          },
+        },
+      });
+      const pending = resolver.production({
+        expectedAggregateVersion: initial.aggregateVersion,
+        expectedPolicyRevision: 11n,
+        context,
+      });
+      await started;
+      repository.state = next;
+      allow?.();
+      await expect(pending).rejects.toMatchObject({
+        code: "action_release_rollout_stale_version",
+      });
+    }
+
+    const steady = steadyAfterPromotion();
+    await expectDelayedAuthorizationFenced(
+      steady,
+      enterActionReleaseRecoveryOnly(steady, {
+        effectId: "selection-recovery-fence",
+        effectEpoch: steady.aggregateVersion + 1n,
+        recoveryFenceId: "selection-recovery-fence",
+        recoveryFenceEpoch: 1n,
+        failureDigest: digest("f"),
+        enteredAt: at(10),
+      }),
+    );
+
+    const ready = prepared();
+    await expectDelayedAuthorizationFenced(
+      ready,
+      beginActionReleasePromotion(ready, {
+        attemptId: ready.candidate.attemptId,
+        reservation: {
+          reservationId: "selection-promotion-reservation",
+          ownerAttemptId: ready.candidate.attemptId,
+          receiptId: ready.receipt.receiptId,
+          artifactId: ready.receipt.artifactId,
+          canonicalPayloadDigest: ready.receipt.canonicalPayloadDigest,
+          artifactSha256: ready.receipt.artifactSha256,
+          expectationDigest: ready.receipt.expectationDigest,
+          receiptIdentityDigest: terminalCanaryReceiptIdentityDigest(
+            ready.receipt,
+          ),
+          reservedAt: at(7),
+          epoch: ready.aggregateVersion + 1n,
+        },
+        effectId: "selection-promotion-effect",
+        now: at(7),
+      }),
+    );
   });
 
   it("fails closed on partial inventory and stale complete captures without advancing state", async () => {
@@ -1655,6 +2039,32 @@ describe("Action release application CAS and receipt protocol", () => {
     ).rejects.toMatchObject({
       code: "live_action_reference_inventory_stale",
     });
+
+    const staleGithubSnapshot = new PreparePromotion({
+      repository,
+      clock: fixedClock(at(20)),
+      maximumCaptureAgeMs: 2_000,
+      preparationTtlMs: 10_000,
+      inventory: {
+        captureComplete: async () =>
+          inventory({
+            capturedAt: at(19),
+            githubProviderObservedAt: at(5),
+          }),
+      },
+      production: {
+        readExact: async () =>
+          overlapConfig(at(19), state.expectation.expectationDigest),
+      } as never,
+    });
+    await expect(
+      staleGithubSnapshot.execute({
+        expectedAggregateVersion: state.aggregateVersion,
+        attemptId: "attempt-1",
+      }),
+    ).rejects.toMatchObject({
+      code: "live_action_reference_inventory_stale",
+    });
     expect(repository.state).toBe(state);
   });
 
@@ -1665,7 +2075,9 @@ describe("Action release application CAS and receipt protocol", () => {
       receipt: receipt(canary),
     });
     const repository = new MemoryRepository(state);
-    const captureComplete = vi.fn(async () => inventory({ capturedAt: at(5) }));
+    const captureComplete = vi.fn(async () =>
+      inventory({ capturedAt: at(5), githubProviderObservedAt: at(4) }),
+    );
     const readExact = vi.fn(async () =>
       overlapConfig(at(5), state.expectation.expectationDigest),
     );
@@ -2026,6 +2438,127 @@ describe("Action release application CAS and receipt protocol", () => {
     expect(repository.state).toBe(state);
   });
 
+  it("continues the two-capture drain after a durable JSON restart", async () => {
+    const beforeRestart = retainedAfterFirstZeroCapture();
+    const persisted = persistenceRoundTrip(beforeRestart);
+    const restarted = hydrateActionReleaseRollout(persisted);
+    if (
+      restarted.phase !== "steady" ||
+      !restarted.predecessorRetention?.firstZeroCapture
+    )
+      throw new Error("hydrated_predecessor_capture_missing");
+    const repository = new MemoryRepository(restarted);
+    const removePredecessor = vi.fn(async () => ({
+      status: "exact" as const,
+      configuration: promotedConfig([B.actionRef], at(24), 12n),
+    }));
+    const complete = await new ReconcilePredecessorRetention({
+      repository,
+      clock: fixedClock(at(22)),
+      id: { nextId: () => "hydrated-removal-effect" },
+      digest: digestPort,
+      maximumCaptureAgeMs: 30_000,
+      inventory: {
+        captureComplete: async () =>
+          inventory({
+            capturedAt: at(21),
+            snapshot: "snapshot-after-json-restart",
+            productionRelease: B,
+          }),
+      },
+      admission: {
+        assertPredecessorAdmissionClosed: async () => true,
+      } as never,
+      production: { removePredecessor } as never,
+    }).execute({ expectedAggregateVersion: restarted.aggregateVersion });
+    expect(complete.predecessorRetention).toBeNull();
+    expect(removePredecessor).toHaveBeenCalledTimes(1);
+
+    const captureTamper = persistenceRoundTrip(beforeRestart) as {
+      predecessorRetention: {
+        firstZeroCapture: { captureDigest: Sha256 };
+      };
+    };
+    captureTamper.predecessorRetention.firstZeroCapture.captureDigest =
+      digest("f");
+    expect(() => hydrateActionReleaseRollout(captureTamper)).toThrow(
+      "predecessor_zero_capture_persisted_digest_mismatch",
+    );
+  });
+
+  it("restarts the drain window on deployment authority drift without sliding on early evidence", async () => {
+    const original = retainedAfterFirstZeroCapture();
+    const originalFirst = original.predecessorRetention?.firstZeroCapture;
+    if (!originalFirst) throw new Error("test_first_zero_capture_missing");
+    const repository = new MemoryRepository(original);
+    const removePredecessor = vi.fn(async () => ({
+      status: "exact" as const,
+      configuration: promotedConfig([B.actionRef], at(34), 12n),
+    }));
+    const replacementDeployments = ["deploy-api-next", "deploy-web-next"];
+
+    const reconcile = async (
+      capturedAt: string,
+      snapshot: string,
+      now: string,
+    ) =>
+      await new ReconcilePredecessorRetention({
+        repository,
+        clock: fixedClock(now),
+        id: { nextId: () => "deployment-drift-removal-effect" },
+        digest: digestPort,
+        maximumCaptureAgeMs: 30_000,
+        inventory: {
+          captureComplete: async () =>
+            inventory({
+              capturedAt,
+              snapshot,
+              productionRelease: B,
+              deploymentIds: replacementDeployments,
+            }),
+        },
+        admission: {
+          assertPredecessorAdmissionClosed: async () => true,
+        } as never,
+        production: { removePredecessor } as never,
+      }).execute({
+        expectedAggregateVersion: repository.state.aggregateVersion,
+      });
+
+    const rotated = await reconcile(
+      at(21),
+      "snapshot-deployments-rotated",
+      at(22),
+    );
+    const rotatedFirst = rotated.predecessorRetention?.firstZeroCapture;
+    if (!rotatedFirst) throw new Error("test_rotated_zero_capture_missing");
+    expect(rotated.aggregateVersion).toBe(original.aggregateVersion + 1n);
+    expect(rotatedFirst.captureDigest).not.toBe(originalFirst.captureDigest);
+    expect(rotatedFirst.productionDeploymentIds).toEqual(
+      replacementDeployments,
+    );
+    expect(removePredecessor).not.toHaveBeenCalled();
+
+    const tooEarly = await reconcile(
+      at(25),
+      "snapshot-deployments-too-early",
+      at(26),
+    );
+    expect(tooEarly).toBe(rotated);
+    expect(tooEarly.predecessorRetention?.firstZeroCapture?.captureDigest).toBe(
+      rotatedFirst.captureDigest,
+    );
+    expect(removePredecessor).not.toHaveBeenCalled();
+
+    const complete = await reconcile(
+      at(32),
+      "snapshot-deployments-stable",
+      at(33),
+    );
+    expect(complete.predecessorRetention).toBeNull();
+    expect(removePredecessor).toHaveBeenCalledTimes(1);
+  });
+
   it("continues predecessor retention after aborting a fresh A reintroduction", async () => {
     const promoted = steadyAfterPromotion();
     const reintroduction = registerActionReleaseCandidate(promoted, {
@@ -2334,6 +2867,21 @@ describe("Action release application CAS and receipt protocol", () => {
       observationDigest: removalEffect.proof.proofDigest,
     });
     expect(removalCommand).toBeDefined();
+
+    const proofTamper = persistenceRoundTrip(uncertain) as {
+      predecessorRetention: {
+        removalEffect: { proof: { proofDigest: Sha256 } };
+      };
+    };
+    proofTamper.predecessorRetention.removalEffect.proof.proofDigest =
+      digest("f");
+    expect(() => hydrateActionReleaseRollout(proofTamper)).toThrow(
+      "predecessor_removal_persisted_digest_mismatch",
+    );
+
+    repository.state = hydrateActionReleaseRollout(
+      persistenceRoundTrip(uncertain),
+    );
 
     const reconcilePredecessorRemoval = vi.fn(
       async (

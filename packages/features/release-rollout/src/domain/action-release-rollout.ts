@@ -460,6 +460,9 @@ export interface OverlapStagedActionReleaseRollout extends CandidateBearingActio
 }
 
 export interface CandidateProvisioningEligibilitySnapshot {
+  readonly aggregateVersion: bigint;
+  readonly phase: typeof ActionReleaseRolloutPhase.CanaryArmed;
+  readonly admissionMode: "normal" | "recovery_only";
   readonly policyRevision: bigint;
   readonly channelVersion: bigint;
   readonly selectionDigest: Sha256;
@@ -1096,6 +1099,9 @@ export function authorizeFixedActionReleaseCanaryProvisioning(
   )
     fail(ActionReleaseRolloutTransitionErrorCode.CanaryBindingInvalid);
   if (
+    input.eligibility.aggregateVersion !== rollout.aggregateVersion ||
+    input.eligibility.phase !== rollout.phase ||
+    input.eligibility.admissionMode !== rollout.admissionMode ||
     input.eligibility.policyRevision !== rollout.candidate.policyRevision ||
     input.eligibility.channelVersion !== rollout.channelVersion
   )
@@ -1384,6 +1390,9 @@ export function prepareActionReleasePromotion(
   const validUntil = timestamp(input.validUntil);
   const inventoryCapturedAt = timestamp(inventory.capturedAt);
   const inventoryDatabaseServerTime = timestamp(inventory.database.serverTime);
+  const inventoryGithubProviderObservedAt = timestamp(
+    inventory.github.providerObservedAt,
+  );
   const configurationObservedAt = timestamp(configuration.observedAt);
   const receiptCompletedAt = timestamp(rollout.receipt.completedAt);
   const production = inventory.production;
@@ -1416,9 +1425,11 @@ export function prepareActionReleasePromotion(
     preparedAt >= validUntil ||
     inventoryCapturedAt > preparedAt ||
     inventoryDatabaseServerTime > preparedAt ||
+    inventoryGithubProviderObservedAt > preparedAt ||
     configurationObservedAt > preparedAt ||
     inventoryCapturedAt < receiptCompletedAt ||
     inventoryDatabaseServerTime < receiptCompletedAt ||
+    inventoryGithubProviderObservedAt < receiptCompletedAt ||
     configurationObservedAt < receiptCompletedAt ||
     inventory.policyRevision !== rollout.candidate.policyRevision ||
     !inventory.repositoryCohort.githubRepositoryIds.includes(

@@ -574,7 +574,12 @@ function eligibilityDecisionFromAuthorization(
 function provisioningEligibilityFromAuthorization(
   authorization: AuthorizedActionReleaseSelection,
 ) {
+  if (authorization.phase !== ActionReleaseRolloutPhase.CanaryArmed)
+    applicationFail(ActionReleaseApplicationErrorCode.EligibilityRejected);
   return Object.freeze({
+    aggregateVersion: authorization.aggregateVersion,
+    phase: authorization.phase,
+    admissionMode: authorization.admissionMode,
     policyRevision: authorization.policyRevision,
     channelVersion: authorization.channelVersion,
     selectionDigest: authorization.selectionDigest,
@@ -643,6 +648,9 @@ function persistedProvisioningAuthorization(
     contextDigest,
   });
   if (
+    eligibility.aggregateVersion + 1n !== rollout.provisioning.epoch ||
+    eligibility.phase !== ActionReleaseRolloutPhase.CanaryArmed ||
+    eligibility.admissionMode !== rollout.admissionMode ||
     eligibility.policyRevision !== rollout.candidate.policyRevision ||
     eligibility.channelVersion !== rollout.channelVersion ||
     eligibility.selectionDigest !== selectionDigest ||
@@ -728,7 +736,7 @@ export class ArmAndProvisionFixedCanary {
           { readonly kind: "isolated_candidate" }
         >,
         schemaVersion: 5,
-        binding,
+        binding: dispatching.canary,
         eligibility: eligibilityDecisionFromAuthorization(authorization),
         effectId: dispatching.provisioning.effectId,
         effectEpoch: dispatching.provisioning.epoch,
@@ -878,6 +886,20 @@ export class ReconcileFixedCanaryProvisioning {
           effectId: current.provisioning.effectId,
           effectEpoch: current.provisioning.epoch,
         });
+        if (outcome.status === "definite_no_effect") {
+          const provisioned = await this.ports.provisioning.provision({
+            selection: authorization.selection as Extract<
+              WorkflowActionSelection,
+              { readonly kind: "isolated_candidate" }
+            >,
+            schemaVersion: 5,
+            binding: working.canary,
+            eligibility: eligibilityDecisionFromAuthorization(authorization),
+            effectId: working.provisioning.effectId,
+            effectEpoch: working.provisioning.epoch,
+          });
+          outcome = { ...provisioned, status: "exact" };
+        }
       }
     } catch {
       outcome = {
@@ -1169,6 +1191,8 @@ export class PreparePromotion {
     const inventoryAge = nowMilliseconds - Date.parse(inventory.capturedAt);
     const databaseSnapshotAge =
       nowMilliseconds - Date.parse(inventory.database.serverTime);
+    const githubProviderObservationAge =
+      nowMilliseconds - Date.parse(inventory.github.providerObservedAt);
     const configurationAge =
       nowMilliseconds - Date.parse(configuration.observedAt);
     if (
@@ -1178,9 +1202,11 @@ export class PreparePromotion {
       this.ports.preparationTtlMs < 1 ||
       inventoryAge < 0 ||
       databaseSnapshotAge < 0 ||
+      githubProviderObservationAge < 0 ||
       configurationAge < 0 ||
       inventoryAge > this.ports.maximumCaptureAgeMs ||
       databaseSnapshotAge > this.ports.maximumCaptureAgeMs ||
+      githubProviderObservationAge > this.ports.maximumCaptureAgeMs ||
       configurationAge > this.ports.maximumCaptureAgeMs
     )
       applicationFail(ActionReleaseApplicationErrorCode.InventoryStale);
@@ -1945,6 +1971,16 @@ export class ReconcilePredecessorRetention {
         second: zeroCapture,
       });
     } catch {
+      const productionAuthorityDrifted =
+        retention.firstZeroCapture.productionConsensusDigest !==
+          zeroCapture.productionConsensusDigest ||
+        retention.firstZeroCapture.productionDeploymentIds.join("\n") !==
+          zeroCapture.productionDeploymentIds.join("\n");
+      if (productionAuthorityDrifted)
+        return await this.cas(
+          current,
+          recordPredecessorZeroCapture(current, zeroCapture, inventory),
+        );
       return current;
     }
     const started = beginPredecessorRemoval(current, {
@@ -1986,6 +2022,15 @@ const authorizedSelectionBrand: unique symbol = Symbol(
 );
 
 export interface AuthorizedActionReleaseSelection {
+  /**
+   * Snapshot token, not standalone I/O authority. It is valid only for this
+   * exact aggregate version, phase, and admission mode. A side-effecting
+   * consumer must atomically consume/fence these fields before provider I/O;
+   * the fixed-canary path does so with its aggregate CAS.
+   */
+  readonly aggregateVersion: bigint;
+  readonly phase: ActionReleaseRollout["phase"];
+  readonly admissionMode: ActionReleaseRollout["admissionMode"];
   readonly selection: WorkflowActionSelection;
   readonly policyRevision: bigint;
   readonly channelVersion: bigint;
@@ -2019,7 +2064,7 @@ export class ResolveActionReleaseSelection {
   private async authorize(
     selection: WorkflowActionSelection,
     context: RepositoryActionSelectionContext,
-    channelVersion: bigint,
+    rollout: ActionReleaseRollout,
     expectedPolicyRevision: bigint,
   ): Promise<AuthorizedActionReleaseSelection> {
     if (expectedPolicyRevision < 1n)
@@ -2039,7 +2084,7 @@ export class ResolveActionReleaseSelection {
       expectedChannelVersion:
         selection.kind === "production_primary"
           ? selection.channelVersion
-          : channelVersion,
+          : rollout.channelVersion,
       expectedPolicyRevision,
     });
     const expectedDecisionDigest = this.ports.digest.digestCanonical({
@@ -2051,14 +2096,25 @@ export class ResolveActionReleaseSelection {
     });
     if (
       !decision.allowed ||
-      decision.channelVersion !== channelVersion ||
+      decision.channelVersion !== rollout.channelVersion ||
       decision.policyRevision !== expectedPolicyRevision ||
       decision.selectionDigest !== selectionDigest ||
       decision.contextDigest !== contextDigest ||
       decision.decisionDigest !== expectedDecisionDigest
     )
       applicationFail(ActionReleaseApplicationErrorCode.EligibilityRejected);
+    const current = await this.ports.repository.load("production-schema-v5");
+    if (current.aggregateVersion !== rollout.aggregateVersion)
+      applicationFail(ActionReleaseApplicationErrorCode.StaleVersion);
+    if (
+      current.phase !== rollout.phase ||
+      current.admissionMode !== rollout.admissionMode
+    )
+      applicationFail(ActionReleaseApplicationErrorCode.EligibilityRejected);
     return authorizedActionReleaseSelection({
+      aggregateVersion: rollout.aggregateVersion,
+      phase: rollout.phase,
+      admissionMode: rollout.admissionMode,
       selection,
       policyRevision: decision.policyRevision,
       channelVersion: decision.channelVersion,
@@ -2078,7 +2134,7 @@ export class ResolveActionReleaseSelection {
     return await this.authorize(
       resolveProductionPrimarySelection(rollout),
       input.context,
-      rollout.channelVersion,
+      rollout,
       input.expectedPolicyRevision,
     );
   }
@@ -2112,7 +2168,7 @@ export class ResolveActionReleaseSelection {
     return await this.authorize(
       selection,
       input.eligibilityContext,
-      rollout.channelVersion,
+      rollout,
       selection.policyRevision,
     );
   }
@@ -2141,7 +2197,7 @@ export class ResolveActionReleaseSelection {
     return await this.authorize(
       resolveAttestedLiveNamespaceSelection(rollout, input.attestation),
       input.eligibilityContext,
-      rollout.channelVersion,
+      rollout,
       input.expectedPolicyRevision,
     );
   }

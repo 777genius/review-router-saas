@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sha256Canonical } from "./canonical-json";
 import {
   assertWorkflowActionSelection,
   commitSha,
@@ -7,6 +8,8 @@ import {
   terminalCanaryReceiptIdentityDigest,
   verifiedActionReleaseV2,
   type FixedCanaryBindingInput,
+  type ImmutableActionRef,
+  type Sha256,
   type VerifiedActionReleaseV2,
   type VerifiedFixedTerminalCanaryReceiptV4,
 } from "./action-release-identity";
@@ -54,9 +57,11 @@ import {
   type PromotionPreparedActionReleaseRollout,
   type SteadyActionReleaseRollout,
 } from "./action-release-rollout";
+import { hydrateActionReleaseRollout } from "./action-release-rollout-hydration";
 import {
   assertZeroPredecessorReferenceCapture,
   completeLiveActionReferenceInventory,
+  hydrateZeroPredecessorReferenceCapture,
   liveActionReferenceInventoryScopeDigest,
   LiveActionDatabaseCoverage,
   LiveActionReferenceKind,
@@ -71,6 +76,54 @@ const digest = (character: string) => sha256(`sha256:${character.repeat(64)}`);
 const sha = (character: string) => character.repeat(40);
 const at = (seconds: number) =>
   new Date(Date.UTC(2026, 7, 30, 8, 0, seconds)).toISOString();
+
+function persistenceRoundTrip(value: unknown): unknown {
+  return JSON.parse(
+    JSON.stringify(value, (_key, item: unknown) =>
+      typeof item === "bigint" ? { $bigint: item.toString() } : item,
+    ),
+    (_key, item: unknown) => {
+      if (
+        item !== null &&
+        typeof item === "object" &&
+        !Array.isArray(item) &&
+        Object.keys(item).length === 1 &&
+        "$bigint" in item &&
+        typeof (item as { $bigint: unknown }).$bigint === "string"
+      )
+        return BigInt((item as { $bigint: string }).$bigint);
+      return item;
+    },
+  );
+}
+
+function recomputePersistedZeroCaptureDigest(capture: {
+  readonly [key: string]: unknown;
+  captureDigest: Sha256;
+  fenceEpoch: bigint;
+  repositoryCohortRevision: bigint;
+  policyRevision: bigint;
+  successorRef: ImmutableActionRef;
+  exactRefs: readonly ImmutableActionRef[];
+}): Sha256 {
+  const { captureDigest: persistedDigest, ...unsigned } = capture;
+  void persistedDigest;
+  const canonicalRef = (ref: ImmutableActionRef) => ({
+    repositoryId: ref.repository.repositoryId,
+    repositoryFullName: ref.repository.fullName,
+    commitSha: ref.commitSha,
+  });
+  return sha256(
+    `sha256:${sha256Canonical({
+      ...unsigned,
+      fenceEpoch: capture.fenceEpoch.toString(),
+      repositoryCohortRevision: capture.repositoryCohortRevision.toString(),
+      policyRevision: capture.policyRevision.toString(),
+      successorRef: canonicalRef(capture.successorRef),
+      exactRefs: capture.exactRefs.map(canonicalRef),
+    })}`,
+  );
+}
 
 const repository = { repositoryId: "101", fullName: "acme/action" };
 
@@ -245,6 +298,9 @@ function armed() {
   });
   const state = authorizeFixedActionReleaseCanaryProvisioning(prepared, {
     eligibility: {
+      aggregateVersion: prepared.aggregateVersion,
+      phase: prepared.phase,
+      admissionMode: prepared.admissionMode,
       policyRevision: 11n,
       channelVersion: 7n,
       selectionDigest: digest("7"),
@@ -311,17 +367,24 @@ function rawInventory(
     references?: LiveActionReferenceInventoryCaptureV1["references"];
     completeness?: "complete" | "partial" | "unknown";
     databaseServerTime?: string;
+    githubProviderObservedAt?: string;
+    githubSnapshot?: string;
     githubAppLogin?: string;
     githubWorkflows?: readonly string[];
     repositoryIds?: readonly string[];
     repositoryCohortRevision?: bigint;
     repositoryCohortDigest?: ReturnType<typeof digest>;
     policyRevision?: bigint;
+    deploymentIds?: readonly string[];
   } = {},
 ): LiveActionReferenceInventoryCaptureV1 {
   const production = {
     serviceIds: ["api", "web", "worker"],
-    deploymentIds: ["deploy-api", "deploy-web", "deploy-worker"],
+    deploymentIds: input.deploymentIds ?? [
+      "deploy-api",
+      "deploy-web",
+      "deploy-worker",
+    ],
     primaryRef: A.actionRef,
     installerRef: A.actionRef,
     installer: A.installer,
@@ -362,6 +425,10 @@ function rawInventory(
       complete: true,
       appId: "99",
       appLogin: input.githubAppLogin ?? "reviewrouter-test[bot]",
+      providerObservedAt:
+        input.githubProviderObservedAt ?? input.capturedAt ?? at(5),
+      snapshotIdentity:
+        input.githubSnapshot ?? input.snapshot ?? "github-snapshot-1",
       workflows,
       statuses,
       pages: repositoryIds.flatMap((repositoryId) =>
@@ -371,6 +438,10 @@ function rawInventory(
             workflow,
             status,
             page: 1,
+            providerObservedAt:
+              input.githubProviderObservedAt ?? input.capturedAt ?? at(5),
+            snapshotIdentity:
+              input.githubSnapshot ?? input.snapshot ?? "github-snapshot-1",
             responseDigest: digest(status === "queued" ? "3" : "6"),
             nextPage: null,
           })),
@@ -562,6 +633,245 @@ describe("ActionReleaseRollout state machine", () => {
     expect(complete.channelVersion).toBe(8n);
     expect(complete.primaryRef).toEqual(B.actionRef);
     expect(complete.predecessorRetention?.predecessorRef).toEqual(A.actionRef);
+  });
+
+  it("rehydrates candidate trust brands after a JSON restart and rejects tampering", () => {
+    const state = armed();
+    const persisted = persistenceRoundTrip(state);
+    expect(() =>
+      resolveIsolatedCandidateSelection(
+        persisted as CanaryArmedActionReleaseRollout,
+        {
+          schemaVersion: 5,
+          rolloutAttemptId: state.candidate.attemptId,
+          policyRevision: state.candidate.policyRevision,
+          githubRepositoryId: state.canary.target.githubRepositoryId,
+          githubRepositoryNodeId: state.canary.target.githubRepositoryNodeId,
+          repositoryFullName: state.canary.target.repositoryFullName,
+          providerInstanceId: state.canary.target.providerInstanceId,
+          pullRequestNumber: state.canary.target.pullRequestNumber,
+          reviewedHeadSha: state.canary.reviewedHeadSha,
+          namespaceId: state.canary.namespaceId,
+          namespaceEpoch: state.canary.namespaceEpoch,
+          challengeSha256: state.canary.challengeSha256,
+          reviewWorkflowPath: state.canary.target.reviewWorkflowPath,
+          interactionWorkflowPath: state.canary.target.interactionWorkflowPath,
+          reviewSource: state.canary.reviewSource,
+          interactionSource: state.canary.interactionSource,
+          bindingDigest: state.canary.bindingDigest,
+        },
+      ),
+    ).toThrow("verified_action_release_proof_digest_mismatch");
+    const hydrated = hydrateActionReleaseRollout(persisted);
+    if (hydrated.phase !== ActionReleaseRolloutPhase.CanaryArmed)
+      throw new Error("hydrated_candidate_phase_mismatch");
+    expect(
+      resolveIsolatedCandidateSelection(hydrated, {
+        schemaVersion: 5,
+        rolloutAttemptId: state.candidate.attemptId,
+        policyRevision: state.candidate.policyRevision,
+        githubRepositoryId: state.canary.target.githubRepositoryId,
+        githubRepositoryNodeId: state.canary.target.githubRepositoryNodeId,
+        repositoryFullName: state.canary.target.repositoryFullName,
+        providerInstanceId: state.canary.target.providerInstanceId,
+        pullRequestNumber: state.canary.target.pullRequestNumber,
+        reviewedHeadSha: state.canary.reviewedHeadSha,
+        namespaceId: state.canary.namespaceId,
+        namespaceEpoch: state.canary.namespaceEpoch,
+        challengeSha256: state.canary.challengeSha256,
+        reviewWorkflowPath: state.canary.target.reviewWorkflowPath,
+        interactionWorkflowPath: state.canary.target.interactionWorkflowPath,
+        reviewSource: state.canary.reviewSource,
+        interactionSource: state.canary.interactionSource,
+        bindingDigest: state.canary.bindingDigest,
+      }).kind,
+    ).toBe("isolated_candidate");
+    expect(Object.isFrozen(hydrated)).toBe(true);
+    expect(Object.isFrozen(hydrated.candidate.candidateRelease.actionRef)).toBe(
+      true,
+    );
+
+    const releaseTamper = persistenceRoundTrip(state) as {
+      candidate: { candidateRelease: { proofDigest: Sha256 } };
+    };
+    releaseTamper.candidate.candidateRelease.proofDigest = digest("f");
+    expect(() => hydrateActionReleaseRollout(releaseTamper)).toThrow(
+      "verified_action_release_persisted_identity_mismatch",
+    );
+    const refTamper = persistenceRoundTrip(state) as {
+      primaryRef: { canonical: string };
+    };
+    refTamper.primaryRef.canonical = "101:acme/action@invalid";
+    expect(() => hydrateActionReleaseRollout(refTamper)).toThrow(
+      "immutable_action_ref_persisted_identity_mismatch",
+    );
+  });
+
+  it("reconstitutes every rollout phase from a durable snapshot", () => {
+    const promotionDispatch = promoting();
+    const promotionUncertain = markActionReleasePromotionUncertain(
+      promotionDispatch,
+      {
+        attemptId: promotionDispatch.candidate.attemptId,
+        observationDigest: digest("f"),
+        observedAt: at(8),
+      },
+    );
+    const completed = promotedSteady();
+    const recovery = verifiedRecovery(completed, {
+      recoveryFenceId: "hydration-recovery-fence",
+      recoveryFenceEpoch: 1n,
+      failureDigest: digest("e"),
+      enteredAt: at(10),
+    });
+    const aborted = abortActionReleaseCandidate(registered(), {
+      attemptId: "attempt-1",
+      abortedAt: at(1),
+      reasonDigest: digest("d"),
+    });
+    const states: readonly ActionReleaseRollout[] = [
+      createSteadyActionReleaseRollout({
+        primaryRef: A.actionRef,
+        channelVersion: 7n,
+      }),
+      registered(),
+      staged(),
+      armed(),
+      verified(),
+      prepared(),
+      promotionDispatch,
+      promotionUncertain,
+      aborted,
+      completed,
+      recovery,
+    ];
+    for (const state of states) {
+      const hydrated = hydrateActionReleaseRollout(persistenceRoundTrip(state));
+      expect(hydrated.phase).toBe(state.phase);
+      expect(hydrated.aggregateVersion).toBe(state.aggregateVersion);
+      expect(hydrated.primaryRef).toEqual(state.primaryRef);
+      expect(Object.isFrozen(hydrated)).toBe(true);
+    }
+  });
+
+  it("rejects persisted phase and durable-effect tuples no transition can produce", () => {
+    const candidate = registered();
+    const overlapIntent = beginActionReleaseOverlapStaging(candidate, {
+      attemptId: candidate.candidate.attemptId,
+      expectedConfiguration: preOverlapConfiguration(),
+      effectId: "overlap-effect-1",
+      effectEpoch: candidate.aggregateVersion + 1n,
+      startedAt: at(1),
+    });
+    const candidateWithVerifiedOverlap = persistenceRoundTrip(
+      overlapIntent,
+    ) as {
+      overlapEffect: {
+        state: string;
+        observationDigest: Sha256 | null;
+        expectedConfiguration: { configurationDigest: Sha256 };
+      };
+    };
+    candidateWithVerifiedOverlap.overlapEffect.state = "verified";
+    candidateWithVerifiedOverlap.overlapEffect.observationDigest =
+      candidateWithVerifiedOverlap.overlapEffect.expectedConfiguration.configurationDigest;
+    expect(() =>
+      hydrateActionReleaseRollout(candidateWithVerifiedOverlap),
+    ).toThrow("persisted_candidate_overlap_effect_state_invalid");
+
+    const stagedWithDispatchingOverlap = persistenceRoundTrip(staged()) as {
+      overlapEffect: { state: string; observationDigest: Sha256 | null };
+    };
+    stagedWithDispatchingOverlap.overlapEffect.state = "dispatching";
+    stagedWithDispatchingOverlap.overlapEffect.observationDigest = null;
+    expect(() =>
+      hydrateActionReleaseRollout(stagedWithDispatchingOverlap),
+    ).toThrow("persisted_overlap_configuration_candidate_mismatch");
+
+    const provisioningEffectTamper = persistenceRoundTrip(armed()) as {
+      provisioning: { effectId: Sha256 };
+    };
+    provisioningEffectTamper.provisioning.effectId = digest("f");
+    expect(() => hydrateActionReleaseRollout(provisioningEffectTamper)).toThrow(
+      "persisted_provisioning_authorization_fence_mismatch",
+    );
+
+    const receiptEpochTamper = persistenceRoundTrip(verificationStarted()) as {
+      aggregateVersion: bigint;
+      receiptVerification: { epoch: bigint; leaseExpiresAt: string };
+    };
+    receiptEpochTamper.receiptVerification.epoch =
+      receiptEpochTamper.aggregateVersion + 1n;
+    expect(() => hydrateActionReleaseRollout(receiptEpochTamper)).toThrow(
+      "persisted_receipt_verification_binding_mismatch",
+    );
+    const receiptLeaseTamper = persistenceRoundTrip(verificationStarted()) as {
+      receiptVerification: { leaseExpiresAt: string; updatedAt: string };
+    };
+    receiptLeaseTamper.receiptVerification.leaseExpiresAt =
+      receiptLeaseTamper.receiptVerification.updatedAt;
+    expect(() => hydrateActionReleaseRollout(receiptLeaseTamper)).toThrow(
+      "persisted_receipt_verification_binding_mismatch",
+    );
+
+    const preparationTimeTamper = persistenceRoundTrip(prepared()) as {
+      preparation: { preparedAt: string };
+    };
+    preparationTimeTamper.preparation.preparedAt = at(4);
+    expect(() => hydrateActionReleaseRollout(preparationTimeTamper)).toThrow(
+      "persisted_promotion_preparation_binding_invalid",
+    );
+
+    const reservationTamper = persistenceRoundTrip(promoting()) as {
+      reservation: { canonicalPayloadDigest: Sha256 };
+    };
+    reservationTamper.reservation.canonicalPayloadDigest = digest("f");
+    expect(() => hydrateActionReleaseRollout(reservationTamper)).toThrow(
+      "persisted_promotion_effect_binding_invalid",
+    );
+    const promotionObservationTamper = persistenceRoundTrip(promoting()) as {
+      effect: { observationDigest: Sha256 | null };
+    };
+    promotionObservationTamper.effect.observationDigest = digest("f");
+    expect(() =>
+      hydrateActionReleaseRollout(promotionObservationTamper),
+    ).toThrow("persisted_promotion_effect_binding_invalid");
+
+    const recovery = verifiedRecovery(promotedSteady(), {
+      recoveryFenceId: "hydration-effect-fence",
+      recoveryFenceEpoch: 2n,
+      failureDigest: digest("e"),
+      enteredAt: at(10),
+    });
+    const recoveryStateTamper = persistenceRoundTrip(recovery) as {
+      recoveryAdmissionEffect: {
+        state: string;
+        observationDigest: Sha256 | null;
+      };
+    };
+    recoveryStateTamper.recoveryAdmissionEffect.state = "dispatching";
+    recoveryStateTamper.recoveryAdmissionEffect.observationDigest = digest("f");
+    expect(() => hydrateActionReleaseRollout(recoveryStateTamper)).toThrow(
+      "persisted_recovery_effect_binding_invalid",
+    );
+
+    const retained = promotedSteady();
+    const predecessorIntent = beginPredecessorAdmissionClose(retained, {
+      effectId: "hydration-predecessor-fence",
+      effectEpoch: retained.aggregateVersion + 1n,
+      fenceId: "hydration-predecessor-fence",
+      fenceEpoch: 3n,
+      startedAt: at(10),
+    });
+    const predecessorEpochTamper = persistenceRoundTrip(predecessorIntent) as {
+      aggregateVersion: bigint;
+      predecessorRetention: { admissionEffect: { epoch: bigint } };
+    };
+    predecessorEpochTamper.predecessorRetention.admissionEffect.epoch =
+      predecessorEpochTamper.aggregateVersion + 1n;
+    expect(() => hydrateActionReleaseRollout(predecessorEpochTamper)).toThrow(
+      "persisted_predecessor_admission_binding_invalid",
+    );
   });
 
   it("keeps A primary for ordinary setup while B is staged and selects B only for the exact armed tuple", () => {
@@ -944,6 +1254,9 @@ describe("ActionReleaseRollout state machine", () => {
       prepared,
       {
         eligibility: {
+          aggregateVersion: prepared.aggregateVersion,
+          phase: prepared.phase,
+          admissionMode: prepared.admissionMode,
           policyRevision: 11n,
           channelVersion: 7n,
           selectionDigest: digest("c"),
@@ -1085,6 +1398,10 @@ describe("ActionReleaseRollout state machine", () => {
         databaseServerTime: at(3),
       }),
       rawInventory({
+        capturedAt: at(5),
+        githubProviderObservedAt: at(3),
+      }),
+      rawInventory({
         githubWorkflows: [".github/workflows/reviewrouter-codex.yml"],
       }),
       rawInventory({ githubAppLogin: "different-app[bot]" }),
@@ -1099,6 +1416,18 @@ describe("ActionReleaseRollout state machine", () => {
           validUntil: at(20),
         }),
       ).toThrow("action_release_promotion_preparation_invalid");
+
+    expect(
+      prepareActionReleasePromotion(state, {
+        attemptId: "attempt-1",
+        inventory: completeLiveActionReferenceInventory(
+          rawInventory({ githubProviderObservedAt: at(4) }),
+        ),
+        configuration: exactConfiguration,
+        preparedAt: at(6),
+        validUntil: at(20),
+      }).phase,
+    ).toBe(ActionReleaseRolloutPhase.PromotionPrepared);
 
     const foreignRef = immutableActionRef({
       repository: { repositoryId: "202", fullName: "other/action" },
@@ -1633,6 +1962,17 @@ describe("complete live Action inventory and predecessor retention", () => {
     expect(() =>
       completeLiveActionReferenceInventory({
         ...capture,
+        github: {
+          ...capture.github,
+          pages: capture.github.pages.map((page, index) =>
+            index === 0 ? { ...page, providerObservedAt: at(4) } : page,
+          ),
+        },
+      }),
+    ).toThrow("inventory_github_page_invalid");
+    expect(() =>
+      completeLiveActionReferenceInventory({
+        ...capture,
         database: { ...capture.database, serverTime: at(6) },
       }),
     ).toThrow("inventory_database_snapshot_after_capture");
@@ -1724,6 +2064,32 @@ describe("complete live Action inventory and predecessor retention", () => {
     ).toThrow("live_action_workflow_run_reference_invalid");
   });
 
+  it("keeps inventory scope stable across deployment replacement while binding authority", () => {
+    const before = completeLiveActionReferenceInventory(rawInventory());
+    const replacement = rawInventory({
+      deploymentIds: [
+        "deploy-api-next",
+        "deploy-web-next",
+        "deploy-worker-next",
+      ],
+    });
+    const after = completeLiveActionReferenceInventory(replacement);
+    expect(liveActionReferenceInventoryScopeDigest(after)).toBe(
+      liveActionReferenceInventoryScopeDigest(before),
+    );
+    expect(after.inventoryDigest).not.toBe(before.inventoryDigest);
+    expect(after.production.consensusDigest).not.toBe(
+      before.production.consensusDigest,
+    );
+
+    const appAuthorityChanged = completeLiveActionReferenceInventory(
+      rawInventory({ githubAppLogin: "other-reviewrouter[bot]" }),
+    );
+    expect(
+      liveActionReferenceInventoryScopeDigest(appAuthorityChanged),
+    ).not.toBe(liveActionReferenceInventoryScopeDigest(before));
+  });
+
   it("requires two independent zero captures after the fence and the complete queue/lease window", () => {
     let state = promotedSteady();
     const fence = {
@@ -1800,6 +2166,55 @@ describe("complete live Action inventory and predecessor retention", () => {
         maximumCaptureAgeMs: 30_000,
       }),
     ).toThrow("predecessor_inventory_capture_stale");
+    const preFenceGithubSnapshot = rawRetainedInventory({
+      capturedAt: at(11),
+      snapshot: "snapshot-github-pre-fence",
+      githubProviderObservedAt: at(9),
+    });
+    expect(() =>
+      zeroPredecessorReferenceCapture({
+        inventory: completeLiveActionReferenceInventory(preFenceGithubSnapshot),
+        predecessorRef: A.actionRef,
+        successorRef: B.actionRef,
+        expectedInstaller: B.installer,
+        expectedServiceIds: ["api", "web", "worker"],
+        fence,
+        observedNow: at(12),
+        maximumCaptureAgeMs: 30_000,
+      }),
+    ).toThrow("predecessor_inventory_capture_stale");
+    const futureGithubSnapshot = rawRetainedInventory({
+      capturedAt: at(11),
+      snapshot: "snapshot-github-future",
+      githubProviderObservedAt: at(12),
+    });
+    expect(() =>
+      completeLiveActionReferenceInventory(futureGithubSnapshot),
+    ).toThrow("inventory_github_snapshot_after_capture");
+
+    const replacementDeploymentInventory = completeLiveActionReferenceInventory(
+      rawRetainedInventory({
+        capturedAt: at(11),
+        snapshot: "snapshot-replaced-deployments",
+        deploymentIds: [
+          "deploy-api-next",
+          "deploy-web-next",
+          "deploy-worker-next",
+        ],
+      }),
+    );
+    expect(
+      zeroPredecessorReferenceCapture({
+        inventory: replacementDeploymentInventory,
+        predecessorRef: A.actionRef,
+        successorRef: B.actionRef,
+        expectedInstaller: B.installer,
+        expectedServiceIds: ["api", "web", "worker"],
+        fence,
+        observedNow: at(12),
+        maximumCaptureAgeMs: 30_000,
+      }),
+    ).not.toBeNull();
     const firstInventory = completeLiveActionReferenceInventory(
       rawRetainedInventory({ capturedAt: at(11), snapshot: "snapshot-first" }),
     );
@@ -1814,6 +2229,65 @@ describe("complete live Action inventory and predecessor retention", () => {
       maximumCaptureAgeMs: 30_000,
     });
     expect(first).not.toBeNull();
+    const persistedWindowTamper = persistenceRoundTrip(first) as {
+      [key: string]: unknown;
+      captureDigest: Sha256;
+      fenceEpoch: bigint;
+      repositoryCohortRevision: bigint;
+      policyRevision: bigint;
+      successorRef: ImmutableActionRef;
+      exactRefs: readonly ImmutableActionRef[];
+      maximumQueueLeaseWindowMs: number;
+    };
+    persistedWindowTamper.maximumQueueLeaseWindowMs = 20_000;
+    persistedWindowTamper.captureDigest = recomputePersistedZeroCaptureDigest(
+      persistedWindowTamper,
+    );
+    expect(() =>
+      hydrateZeroPredecessorReferenceCapture(
+        persistedWindowTamper as never,
+        fence,
+      ),
+    ).toThrow("predecessor_zero_capture_binding_invalid");
+
+    const persistedPredecessorRefTamper = persistenceRoundTrip(first) as {
+      [key: string]: unknown;
+      captureDigest: Sha256;
+      fenceEpoch: bigint;
+      repositoryCohortRevision: bigint;
+      policyRevision: bigint;
+      successorRef: ImmutableActionRef;
+      exactRefs: readonly ImmutableActionRef[];
+    };
+    persistedPredecessorRefTamper.exactRefs = [A.actionRef];
+    persistedPredecessorRefTamper.captureDigest =
+      recomputePersistedZeroCaptureDigest(persistedPredecessorRefTamper);
+    expect(() =>
+      hydrateZeroPredecessorReferenceCapture(
+        persistedPredecessorRefTamper as never,
+        fence,
+      ),
+    ).toThrow("predecessor_zero_capture_successor_invalid");
+
+    const persistedScopeTamper = persistenceRoundTrip(first) as {
+      [key: string]: unknown;
+      captureDigest: Sha256;
+      fenceEpoch: bigint;
+      repositoryCohortRevision: bigint;
+      policyRevision: bigint;
+      successorRef: ImmutableActionRef;
+      exactRefs: readonly ImmutableActionRef[];
+      productionServiceIds: string[];
+    };
+    persistedScopeTamper.productionServiceIds = ["api", "api", "worker"];
+    persistedScopeTamper.captureDigest =
+      recomputePersistedZeroCaptureDigest(persistedScopeTamper);
+    expect(() =>
+      hydrateZeroPredecessorReferenceCapture(
+        persistedScopeTamper as never,
+        fence,
+      ),
+    ).toThrow("predecessor_zero_capture_scope_invalid");
     const contradictoryInventory = completeLiveActionReferenceInventory(
       rawRetainedInventory({
         capturedAt: at(11),
@@ -1853,6 +2327,58 @@ describe("complete live Action inventory and predecessor retention", () => {
         fence,
         first: first!,
         second: early!,
+      }),
+    ).toThrow("predecessor_two_capture_window_unproven");
+    const cachedGithubInventory = completeLiveActionReferenceInventory(
+      rawRetainedInventory({
+        capturedAt: at(21),
+        snapshot: "snapshot-fresh-db-cached-github",
+        githubProviderObservedAt: at(12),
+      }),
+    );
+    const cachedGithub = zeroPredecessorReferenceCapture({
+      inventory: cachedGithubInventory,
+      predecessorRef: A.actionRef,
+      successorRef: B.actionRef,
+      expectedInstaller: B.installer,
+      expectedServiceIds: ["api", "web", "worker"],
+      fence,
+      observedNow: at(22),
+      maximumCaptureAgeMs: 30_000,
+    });
+    expect(() =>
+      predecessorRemovalProof({
+        predecessorRef: A.actionRef,
+        successorRef: B.actionRef,
+        fence,
+        first: first!,
+        second: cachedGithub!,
+      }),
+    ).toThrow("predecessor_two_capture_window_unproven");
+    const reusedGithubSnapshotInventory = completeLiveActionReferenceInventory(
+      rawRetainedInventory({
+        capturedAt: at(21),
+        snapshot: "snapshot-distinct-database",
+        githubSnapshot: firstInventory.github.snapshotIdentity,
+      }),
+    );
+    const reusedGithubSnapshot = zeroPredecessorReferenceCapture({
+      inventory: reusedGithubSnapshotInventory,
+      predecessorRef: A.actionRef,
+      successorRef: B.actionRef,
+      expectedInstaller: B.installer,
+      expectedServiceIds: ["api", "web", "worker"],
+      fence,
+      observedNow: at(22),
+      maximumCaptureAgeMs: 30_000,
+    });
+    expect(() =>
+      predecessorRemovalProof({
+        predecessorRef: A.actionRef,
+        successorRef: B.actionRef,
+        fence,
+        first: first!,
+        second: reusedGithubSnapshot!,
       }),
     ).toThrow("predecessor_two_capture_window_unproven");
     const earlyDatabaseSnapshot = rawRetainedInventory({

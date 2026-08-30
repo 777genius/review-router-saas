@@ -122,6 +122,19 @@ export function assertImmutableActionRef(
   return value;
 }
 
+/** @internal Reconstitutes a trusted persisted ref without trusting its brand. */
+export function hydrateImmutableActionRef(
+  value: ImmutableActionRef,
+): ImmutableActionRef {
+  const rebuilt = immutableActionRef({
+    repository: value.repository,
+    commitSha: value.commitSha,
+  });
+  if (value.canonical !== rebuilt.canonical)
+    throw new Error("immutable_action_ref_persisted_identity_mismatch");
+  return rebuilt;
+}
+
 export function sameActionRepository(
   left: ImmutableActionRef,
   right: ImmutableActionRef,
@@ -418,6 +431,39 @@ export function assertVerifiedActionReleaseV2(
     throw new Error("verified_action_release_proof_digest_mismatch");
   assertImmutableActionRef(value.actionRef);
   return value;
+}
+
+/** @internal Revalidates and rebrands a trusted persisted release snapshot. */
+export function hydrateVerifiedActionReleaseV2(
+  value: VerifiedActionReleaseV2,
+): VerifiedActionReleaseV2 {
+  const persistedActionRef = hydrateImmutableActionRef(value.actionRef);
+  const rebuilt = verifiedActionReleaseV2({
+    repository: persistedActionRef.repository,
+    tag: value.tag,
+    tagRef: value.tagRef,
+    commitTreeSha: value.commitTreeSha,
+    actionManifest: value.actionManifest,
+    executable: value.executable,
+    taggedSourceTreeSha256: value.taggedSourceTreeSha256,
+    buildRecipeSha256: value.buildRecipeSha256,
+    lockfileSha256: value.lockfileSha256,
+    toolchainSha256: value.toolchainSha256,
+    dependencyInstallationSha256: value.dependencyInstallationSha256,
+    rebuiltExecutableSha256: value.rebuiltExecutableSha256,
+    publishedBundle: value.publishedBundle,
+    release: value.release,
+    attestation: value.attestation,
+    trustedWorkflow: value.trustedWorkflow,
+    installer: value.installer,
+  });
+  if (
+    value.schemaVersion !== rebuilt.schemaVersion ||
+    value.proofDigest !== rebuilt.proofDigest ||
+    !sameActionRef(persistedActionRef, rebuilt.actionRef)
+  )
+    throw new Error("verified_action_release_persisted_identity_mismatch");
+  return rebuilt;
 }
 
 export interface WorkflowSourceIdentity {

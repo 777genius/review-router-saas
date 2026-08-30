@@ -33,7 +33,29 @@ export {
   type WorkflowSourceIdentity,
 } from "./domain/action-release-identity";
 export * from "./domain/action-release-rollout";
-export * from "./domain/live-action-reference-inventory";
+export { hydrateActionReleaseRollout } from "./domain/action-release-rollout-hydration";
+export {
+  assertCompleteLiveActionReferenceInventory,
+  assertPredecessorRemovalProof,
+  assertZeroPredecessorReferenceCapture,
+  completeLiveActionReferenceInventory,
+  exactInventoryActionRefs,
+  inventoryReferencesAction,
+  liveActionReferenceInventoryScopeDigest,
+  LiveActionDatabaseCoverage,
+  LiveActionDurableSourceSchema,
+  LiveActionReferenceKind,
+  predecessorAdmissionFence,
+  predecessorRemovalProof,
+  productionActionConfigurationConsensusDigest,
+  zeroPredecessorReferenceCapture,
+  type CompleteLiveActionReferenceInventoryV1,
+  type LiveActionReference,
+  type LiveActionReferenceInventoryCaptureV1,
+  type PredecessorAdmissionFence,
+  type PredecessorRemovalProof,
+  type ZeroPredecessorReferenceCapture,
+} from "./domain/live-action-reference-inventory";
 export * from "./domain/release-migration-transition";
 export * from "./domain/release-authority-contract";
 export * from "./domain/sanitized-diagnostic.js";

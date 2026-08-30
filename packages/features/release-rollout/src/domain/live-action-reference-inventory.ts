@@ -3,6 +3,7 @@ import {
   assertImmutableActionRef,
   commitSha,
   exactActionInstallerIdentity,
+  hydrateImmutableActionRef,
   sameActionRef,
   sameActionRepository,
   sha256,
@@ -268,6 +269,10 @@ export interface LiveActionReferenceInventoryCaptureV1 {
     complete: boolean;
     appId: string;
     appLogin: string;
+    /** Provider-issued observation boundary for every page in this snapshot. */
+    providerObservedAt: string;
+    /** Immutable provider snapshot shared by every page in this capture. */
+    snapshotIdentity: string;
     workflows: readonly string[];
     statuses: readonly ("queued" | "in_progress")[];
     pages: readonly Readonly<{
@@ -275,6 +280,8 @@ export interface LiveActionReferenceInventoryCaptureV1 {
       workflow: string;
       status: "queued" | "in_progress";
       page: number;
+      providerObservedAt: string;
+      snapshotIdentity: string;
       responseDigest: Sha256;
       nextPage: number | null;
     }>[];
@@ -446,6 +453,8 @@ export function completeLiveActionReferenceInventory(
       "complete",
       "appId",
       "appLogin",
+      "providerObservedAt",
+      "snapshotIdentity",
       "workflows",
       "statuses",
       "pages",
@@ -536,6 +545,14 @@ export function completeLiveActionReferenceInventory(
     throw new Error("inventory_github_app_id_invalid");
   if (!GITHUB_APP_LOGIN_PATTERN.test(input.github.appLogin))
     throw new Error("inventory_github_app_login_invalid");
+  const githubProviderObservedAt = validTimestamp(
+    input.github.providerObservedAt,
+    "inventory_github_provider_observed_at",
+  );
+  identifier(
+    input.github.snapshotIdentity,
+    "inventory_github_snapshot_identity",
+  );
   const workflows = exactUniqueSorted(
     input.github.workflows,
     "inventory_github_workflow",
@@ -565,6 +582,8 @@ export function completeLiveActionReferenceInventory(
         "workflow",
         "status",
         "page",
+        "providerObservedAt",
+        "snapshotIdentity",
         "responseDigest",
         "nextPage",
       ],
@@ -576,11 +595,17 @@ export function completeLiveActionReferenceInventory(
       !statuses.includes(page.status) ||
       !Number.isSafeInteger(page.page) ||
       page.page < 1 ||
+      page.snapshotIdentity !== input.github.snapshotIdentity ||
+      page.providerObservedAt !== input.github.providerObservedAt ||
       (page.nextPage !== null &&
         (!Number.isSafeInteger(page.nextPage) ||
           page.nextPage !== page.page + 1))
     )
       throw new Error("inventory_github_page_invalid");
+    validTimestamp(
+      page.providerObservedAt,
+      "inventory_github_page_provider_observed_at",
+    );
     sha256(page.responseDigest, "inventory_github_page_digest");
     const key = `${page.repositoryId}:${page.workflow}:${page.status}:${page.page}`;
     if (pageKeys.has(key)) throw new Error("inventory_github_page_duplicate");
@@ -825,6 +850,17 @@ export function completeLiveActionReferenceInventory(
   )
     throw new Error("inventory_database_snapshot_after_capture");
   if (
+    githubProviderObservedAt > capturedAt ||
+    input.github.pages.some(
+      (page) =>
+        validTimestamp(
+          page.providerObservedAt,
+          "inventory_github_page_provider_observed_at",
+        ) > capturedAt,
+    )
+  )
+    throw new Error("inventory_github_snapshot_after_capture");
+  if (
     !Number.isSafeInteger(input.maximumQueueLeaseWindowMs) ||
     input.maximumQueueLeaseWindowMs < 1
   )
@@ -937,7 +973,6 @@ function completeInventoryScopeDigest(
       },
       production: {
         serviceIds: inventory.production.serviceIds,
-        deploymentIds: inventory.production.deploymentIds,
       },
       maximumQueueLeaseWindowMs: inventory.maximumQueueLeaseWindowMs,
     })}`,
@@ -1044,6 +1079,8 @@ export interface ZeroPredecessorReferenceCapture {
   readonly capturedAt: string;
   readonly databaseSnapshotIdentity: string;
   readonly databaseServerTime: string;
+  readonly githubSnapshotIdentity: string;
+  readonly githubProviderObservedAt: string;
   readonly successorRef: ImmutableActionRef;
   readonly repositoryCohortRevision: bigint;
   readonly repositoryCohortDigest: Sha256;
@@ -1102,15 +1139,21 @@ export function zeroPredecessorReferenceCapture(input: {
     inventory.database.serverTime,
     "predecessor_database_snapshot_time",
   );
+  const githubProviderObservedAt = validTimestamp(
+    inventory.github.providerObservedAt,
+    "predecessor_github_provider_observation_time",
+  );
   const inventoryScopeDigest = completeInventoryScopeDigest(inventory);
   if (
     !Number.isSafeInteger(input.maximumCaptureAgeMs) ||
     input.maximumCaptureAgeMs < 1 ||
     capturedAt < closedAt ||
     databaseServerTime < closedAt ||
+    githubProviderObservedAt < closedAt ||
     capturedAt > now ||
     now - capturedAt > input.maximumCaptureAgeMs ||
-    now - databaseServerTime > input.maximumCaptureAgeMs
+    now - databaseServerTime > input.maximumCaptureAgeMs ||
+    now - githubProviderObservedAt > input.maximumCaptureAgeMs
   )
     throw new Error("predecessor_inventory_capture_stale");
   if (
@@ -1178,6 +1221,8 @@ export function zeroPredecessorReferenceCapture(input: {
     capturedAt: inventory.capturedAt,
     databaseSnapshotIdentity: inventory.database.snapshotIdentity,
     databaseServerTime: inventory.database.serverTime,
+    githubSnapshotIdentity: inventory.github.snapshotIdentity,
+    githubProviderObservedAt: inventory.github.providerObservedAt,
     successorRef,
     repositoryCohortRevision: inventory.repositoryCohort.revision,
     repositoryCohortDigest: inventory.repositoryCohort.digest,
@@ -1233,7 +1278,14 @@ export function assertZeroPredecessorReferenceCapture(
       exactFence.githubRepositoryIds.join("\n") ||
     capture.policyRevision !== exactFence.policyRevision ||
     capture.inventoryScopeDigest !== exactFence.inventoryScopeDigest ||
-    capture.requiredWindowMs < exactFence.requiredWindowMs ||
+    !Number.isSafeInteger(capture.maximumQueueLeaseWindowMs) ||
+    capture.maximumQueueLeaseWindowMs < 1 ||
+    !Number.isSafeInteger(capture.requiredWindowMs) ||
+    capture.requiredWindowMs !==
+      Math.max(
+        exactFence.requiredWindowMs,
+        capture.maximumQueueLeaseWindowMs,
+      ) ||
     validTimestamp(capture.capturedAt, "predecessor_capture_time") <
       validTimestamp(exactFence.closedAt, "predecessor_fence_time") ||
     validTimestamp(
@@ -1243,6 +1295,14 @@ export function assertZeroPredecessorReferenceCapture(
     validTimestamp(
       capture.databaseServerTime,
       "predecessor_database_snapshot_time",
+    ) > validTimestamp(capture.capturedAt, "predecessor_capture_time") ||
+    validTimestamp(
+      capture.githubProviderObservedAt,
+      "predecessor_github_provider_observation_time",
+    ) < validTimestamp(exactFence.closedAt, "predecessor_fence_time") ||
+    validTimestamp(
+      capture.githubProviderObservedAt,
+      "predecessor_github_provider_observation_time",
     ) > validTimestamp(capture.capturedAt, "predecessor_capture_time")
   )
     throw new Error("predecessor_zero_capture_binding_invalid");
@@ -1255,6 +1315,19 @@ export function assertZeroPredecessorReferenceCapture(
     capture.inventoryScopeDigest,
     "predecessor_capture_inventory_scope_digest",
   );
+  sha256(
+    capture.productionConsensusDigest,
+    "predecessor_capture_production_consensus_digest",
+  );
+  identifier(
+    capture.databaseSnapshotIdentity,
+    "predecessor_database_snapshot_identity",
+  );
+  identifier(
+    capture.githubSnapshotIdentity,
+    "predecessor_github_snapshot_identity",
+  );
+  const exactCanonicalRefs = capture.exactRefs.map((ref) => ref.canonical);
   if (
     capture.githubRepositoryIds.length === 0 ||
     new Set(capture.githubRepositoryIds).size !==
@@ -1264,14 +1337,33 @@ export function assertZeroPredecessorReferenceCapture(
     ) ||
     capture.productionServiceIds.length === 0 ||
     capture.productionServiceIds.length !==
-      capture.productionDeploymentIds.length
+      capture.productionDeploymentIds.length ||
+    new Set(capture.productionServiceIds).size !==
+      capture.productionServiceIds.length ||
+    new Set(capture.productionDeploymentIds).size !==
+      capture.productionDeploymentIds.length ||
+    capture.productionServiceIds.some(
+      (serviceId) => !IDENTIFIER_PATTERN.test(serviceId),
+    ) ||
+    capture.productionDeploymentIds.some(
+      (deploymentId) => !IDENTIFIER_PATTERN.test(deploymentId),
+    ) ||
+    capture.productionServiceIds.join("\n") !==
+      [...capture.productionServiceIds].sort().join("\n") ||
+    capture.productionDeploymentIds.join("\n") !==
+      [...capture.productionDeploymentIds].sort().join("\n") ||
+    new Set(exactCanonicalRefs).size !== exactCanonicalRefs.length ||
+    exactCanonicalRefs.join("\n") !== [...exactCanonicalRefs].sort().join("\n")
   )
     throw new Error("predecessor_zero_capture_scope_invalid");
   capture.exactRefs.forEach(assertImmutableActionRef);
   assertImmutableActionRef(capture.successorRef);
   if (
     sameActionRef(capture.successorRef, exactFence.predecessorRef) ||
-    !sameActionRepository(capture.successorRef, exactFence.predecessorRef)
+    !sameActionRepository(capture.successorRef, exactFence.predecessorRef) ||
+    capture.exactRefs.some((ref) =>
+      sameActionRef(ref, exactFence.predecessorRef),
+    )
   )
     throw new Error("predecessor_zero_capture_successor_invalid");
   exactActionInstallerIdentity(
@@ -1279,6 +1371,54 @@ export function assertZeroPredecessorReferenceCapture(
     capture.successorRef,
   );
   return capture;
+}
+
+/** @internal Revalidates and rebrands a trusted persisted zero capture. */
+export function hydrateZeroPredecessorReferenceCapture(
+  snapshot: ZeroPredecessorReferenceCapture,
+  fence: PredecessorAdmissionFence,
+): ZeroPredecessorReferenceCapture {
+  const successorRef = hydrateImmutableActionRef(snapshot.successorRef);
+  const exactRefs = Object.freeze(
+    snapshot.exactRefs.map(hydrateImmutableActionRef),
+  );
+  const productionInstaller = exactActionInstallerIdentity(
+    snapshot.productionInstaller,
+    successorRef,
+  );
+  const unsigned = Object.freeze({
+    fenceId: snapshot.fenceId,
+    fenceEpoch: snapshot.fenceEpoch,
+    inventoryDigest: snapshot.inventoryDigest,
+    capturedAt: snapshot.capturedAt,
+    databaseSnapshotIdentity: snapshot.databaseSnapshotIdentity,
+    databaseServerTime: snapshot.databaseServerTime,
+    githubSnapshotIdentity: snapshot.githubSnapshotIdentity,
+    githubProviderObservedAt: snapshot.githubProviderObservedAt,
+    successorRef,
+    repositoryCohortRevision: snapshot.repositoryCohortRevision,
+    repositoryCohortDigest: snapshot.repositoryCohortDigest,
+    githubRepositoryIds: Object.freeze([...snapshot.githubRepositoryIds]),
+    policyRevision: snapshot.policyRevision,
+    inventoryScopeDigest: snapshot.inventoryScopeDigest,
+    exactRefs,
+    productionServiceIds: Object.freeze([...snapshot.productionServiceIds]),
+    productionDeploymentIds: Object.freeze([
+      ...snapshot.productionDeploymentIds,
+    ]),
+    productionConsensusDigest: snapshot.productionConsensusDigest,
+    productionInstaller,
+    maximumQueueLeaseWindowMs: snapshot.maximumQueueLeaseWindowMs,
+    requiredWindowMs: snapshot.requiredWindowMs,
+  });
+  const expectedCaptureDigest = zeroPredecessorCaptureDigest(unsigned);
+  if (snapshot.captureDigest !== expectedCaptureDigest)
+    throw new Error("predecessor_zero_capture_persisted_digest_mismatch");
+  const hydrated = freezeWithRuntimeBrand(
+    { ...unsigned, captureDigest: expectedCaptureDigest },
+    zeroPredecessorCaptureBrand,
+  ) as ZeroPredecessorReferenceCapture;
+  return assertZeroPredecessorReferenceCapture(hydrated, fence);
 }
 
 export function predecessorRemovalProof(input: {
@@ -1298,13 +1438,25 @@ export function predecessorRemovalProof(input: {
     !sameActionRef(input.second.successorRef, input.successorRef)
   )
     throw new Error("predecessor_removal_successor_ref_mismatch");
-  const firstTime = validTimestamp(
-    input.first.capturedAt,
-    "predecessor_first_capture_time",
+  const firstObservationBoundary = Math.max(
+    validTimestamp(
+      input.first.databaseServerTime,
+      "predecessor_first_database_snapshot_time",
+    ),
+    validTimestamp(
+      input.first.githubProviderObservedAt,
+      "predecessor_first_github_provider_observation_time",
+    ),
   );
-  const secondObservationBoundary = validTimestamp(
-    input.second.databaseServerTime,
-    "predecessor_second_database_snapshot_time",
+  const secondObservationBoundary = Math.min(
+    validTimestamp(
+      input.second.databaseServerTime,
+      "predecessor_second_database_snapshot_time",
+    ),
+    validTimestamp(
+      input.second.githubProviderObservedAt,
+      "predecessor_second_github_provider_observation_time",
+    ),
   );
   const requiredWindowMs = Math.max(
     fence.requiredWindowMs,
@@ -1321,6 +1473,8 @@ export function predecessorRemovalProof(input: {
     input.first.inventoryDigest === input.second.inventoryDigest ||
     input.first.databaseSnapshotIdentity ===
       input.second.databaseSnapshotIdentity ||
+    input.first.githubSnapshotIdentity ===
+      input.second.githubSnapshotIdentity ||
     input.first.repositoryCohortRevision !==
       input.second.repositoryCohortRevision ||
     input.first.repositoryCohortDigest !==
@@ -1341,7 +1495,7 @@ export function predecessorRemovalProof(input: {
     ) ||
     input.first.repositoryCohortRevision !== fence.repositoryCohortRevision ||
     input.first.policyRevision !== fence.policyRevision ||
-    secondObservationBoundary - firstTime < requiredWindowMs
+    secondObservationBoundary - firstObservationBoundary < requiredWindowMs
   )
     throw new Error("predecessor_two_capture_window_unproven");
   const digestInput = {
@@ -1407,4 +1561,39 @@ export function assertPredecessorRemovalProof(
     proof.proofDigest !== rebuilt.proofDigest
   )
     throw new Error("predecessor_removal_proof_digest_mismatch");
+}
+
+/** @internal Revalidates and rebrands a trusted persisted removal proof. */
+export function hydratePredecessorRemovalProof(
+  snapshot: PredecessorRemovalProof,
+  predecessorRef: ImmutableActionRef,
+  successorRef: ImmutableActionRef,
+  fence: PredecessorAdmissionFence,
+): PredecessorRemovalProof {
+  const persistedPredecessor = hydrateImmutableActionRef(
+    snapshot.predecessorRef,
+  );
+  const persistedSuccessor = hydrateImmutableActionRef(snapshot.successorRef);
+  if (
+    !sameActionRef(persistedPredecessor, predecessorRef) ||
+    !sameActionRef(persistedSuccessor, successorRef)
+  )
+    throw new Error("predecessor_removal_persisted_ref_mismatch");
+  const first = hydrateZeroPredecessorReferenceCapture(snapshot.first, fence);
+  const second = hydrateZeroPredecessorReferenceCapture(snapshot.second, fence);
+  const rebuilt = predecessorRemovalProof({
+    predecessorRef,
+    successorRef,
+    fence,
+    first,
+    second,
+  });
+  if (
+    snapshot.proofDigest !== rebuilt.proofDigest ||
+    snapshot.requiredWindowMs !== rebuilt.requiredWindowMs ||
+    snapshot.fenceId !== rebuilt.fenceId ||
+    snapshot.fenceEpoch !== rebuilt.fenceEpoch
+  )
+    throw new Error("predecessor_removal_persisted_digest_mismatch");
+  return rebuilt;
 }
