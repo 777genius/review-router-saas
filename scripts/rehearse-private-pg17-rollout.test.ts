@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.js";
+import { canonicalActivationCatalogPolicyDigests } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-contract.ts";
 import {
   assertDisposableCaptureTarget,
   createRehearsalRunnerJobBinding,
@@ -284,10 +285,13 @@ describe("disposable dual-version rehearsal", () => {
   it("uses the exact reviewed compact digest authorization in normal rehearsal", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual({
       preactivationCatalogPolicySha256:
-        "sha256:b95cc2c1fdd94b64056f6d8cd9316d361dce87a8a6a8064c8db51db65a886e68",
+        "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
       activatedCatalogPolicySha256:
-        "sha256:118834866426337911d13e47f2752f2f982c1393792668036e359b0062117c6f",
+        "sha256:cc35c6b43fe8b117a492705eeaf2ab9a9ac0e05f98546fa32ac9d340df89867b",
     });
+    expect(rehearsalActivationCatalogPolicyAuthorization).toEqual(
+      canonicalActivationCatalogPolicyDigests,
+    );
   });
   it("allows loaded disposable catalog observations without changing production timing", () => {
     expect(rehearsalReadinessPolicy).toEqual({

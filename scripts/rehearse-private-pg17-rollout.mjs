@@ -189,10 +189,17 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA release_authority FROM PUBLIC;`,
 
 export const rehearsalActivationCatalogPolicyAuthorization = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:b95cc2c1fdd94b64056f6d8cd9316d361dce87a8a6a8064c8db51db65a886e68",
+    "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
   activatedCatalogPolicySha256:
-    "sha256:118834866426337911d13e47f2752f2f982c1393792668036e359b0062117c6f",
+    "sha256:cc35c6b43fe8b117a492705eeaf2ab9a9ac0e05f98546fa32ac9d340df89867b",
 });
+if (
+  rehearsalActivationCatalogPolicyAuthorization.preactivationCatalogPolicySha256 !==
+    canonicalActivationCatalogPolicyDigests.preactivationCatalogPolicySha256 ||
+  rehearsalActivationCatalogPolicyAuthorization.activatedCatalogPolicySha256 !==
+    canonicalActivationCatalogPolicyDigests.activatedCatalogPolicySha256
+)
+  throw new Error("rehearsal_activation_catalog_policy_authorization_drift");
 export const rehearsalReadinessPolicy = Object.freeze({
   poolWaitMilliseconds: 5_000,
   lockTimeoutMilliseconds: 5_000,

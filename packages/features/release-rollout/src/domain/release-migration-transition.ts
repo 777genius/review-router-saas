@@ -147,8 +147,8 @@ export const canonicalReleaseMigrationArtifact = Object.freeze({
     "sha256:b98968fc30e81ab1af1d5e0c47004e158e281b1a690c41c4f2b74eec6400d73a",
   postManifestIdentity:
     "sha256:13acb121fbc5bbdebef197d58d5e8dcfca99815e005acc0aae7988bc86d33ef2",
-  // Last reviewed digest; the scoped-concurrency projection remains HOLD
-  // pending exact disposable-PG17 capture and reviewed artifact promotion.
+  // Exact reviewed v29 disposable-PG17 capture. Deployment remains HOLD
+  // pending a separate release authorization.
   postCatalogDigest:
     "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
 });

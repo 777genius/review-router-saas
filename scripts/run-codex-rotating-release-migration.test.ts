@@ -857,7 +857,7 @@ describe("canonical exclusive release migration caller", () => {
       expect(liveV70V72CatalogDigestSql).toContain(`'${custodyRoutine}'`);
     expect(liveV70V86CatalogDigestCaptureHold).toEqual({
       decision: "HOLD",
-      reason: "pg17_exact_catalog_capture_required_after_v86_projection_change",
+      reason: "v29_catalog_promoted_deployment_authorization_required",
     });
     expect(liveV70V72CatalogDigestSql).toContain(
       "relname='CodexOAuthWritebackIntent'",

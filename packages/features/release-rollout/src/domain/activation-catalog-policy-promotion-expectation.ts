@@ -1,38 +1,41 @@
 import { type ActivationCatalogPolicyPromotionExpectation } from "./activation-catalog-policy-provenance-contract";
 
 export const activationCatalogPromotionOptIn =
-  "promote-reviewed-activation-catalog-v28";
+  "promote-reviewed-activation-catalog-v29";
 
 export const reviewedActivationCatalogCandidate = Object.freeze({
-  sha256: "ba51051d9407b4ca7b6b9c6ce74210f9ef70556e5df23512c4364024ef0800a9",
-  bytes: 2_506_590,
+  sha256: "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28",
+  bytes: 2_651_682,
+  liveCatalogDigest:
+    "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
   preactivationCatalogPolicySha256:
-    "sha256:95591a9df4dd88afe9a9a10118bf11b7e5ec4694748f8262de124d5f7ba7fd59",
+    "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
   activatedCatalogPolicySha256:
-    "sha256:6c8f40abc68b063b835289d3d42f7ee07d9769baf269c5b05fb85db72c8cb3a0",
+    "sha256:cc35c6b43fe8b117a492705eeaf2ab9a9ac0e05f98546fa32ac9d340df89867b",
   artifactCanonicalSha256:
-    "sha256:bb528f22b531f212641ecebdb5ea8d0b851f0291a8c830d5bb41c88b348ccb57",
+    "sha256:5d7a98bf13e65ab8071691086efb792699b994961caadf435ee9fd4845c2f1cf",
 });
 
 export const reviewedActivationCatalogPromotionExpectation = Object.freeze({
   readinessReason:
-    "reviewed-v28-runtime-authority-gate-promoted-with-exact-go-evidence",
-  captureBaseCommit: "14774ef58ad81ac72890f96590102ac6d3dba328",
-  auditedHead: "14774ef58ad81ac72890f96590102ac6d3dba328",
-  captureArtifactBytes: 2_506_590,
+    "reviewed-v29-comment-token-custody-promoted-with-exact-go-evidence",
+  captureBaseCommit: "7459b6d4fd8aab5c377547246292faf3376d98cb",
+  auditedHead: "7459b6d4fd8aab5c377547246292faf3376d98cb",
+  captureArtifactBytes: 2_651_682,
   captureArtifactSha256:
-    "ba51051d9407b4ca7b6b9c6ce74210f9ef70556e5df23512c4364024ef0800a9",
+    "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28",
   capturePayloadOffsetBytes: 0,
   capturePrefixSha256:
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   reviewArtifactSha256:
-    "050b952c3566c8b8792de874a4d2223e5d35ef01d28d0db74d01bfe4e0a6ac56",
+    "08df458e97033dae692f04153285f9c68a6d6f3d11dea5f2e626fb687cebcd6f",
   reviewerEvidenceSha256:
-    "0057254b74da940ca9394d9449700d603cd6eee79090be34b8df2261f5179604",
-  reviewerRunId: "rrpr227v27-review-v28-r1",
-  reviewDecisionId: "codex:activation-policy-v28:14774ef58ad8:ba51051d9407:go",
+    "4620e71b3ea9369fda0396d506e0d9d0984123d0d5d28af6b237fc0f6042a3a8",
+  reviewerRunId: "rrv140policy3-review-r1",
+  reviewDecisionId: "RR-V29-CODEX-GO-7459B6D4-B138EB3E-20260830",
   candidateBytes: reviewedActivationCatalogCandidate.bytes,
   candidateSha256: reviewedActivationCatalogCandidate.sha256,
+  liveCatalogDigest: reviewedActivationCatalogCandidate.liveCatalogDigest,
   sourcePg16Image:
     "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
   targetPg17Image:

@@ -12,6 +12,7 @@ export type ActivationCatalogPolicyPromotionExpectation = Readonly<{
   reviewDecisionId: string;
   candidateBytes: number;
   candidateSha256: string;
+  liveCatalogDigest: string;
   sourcePg16Image: string;
   targetPg17Image: string;
   preactivationCatalogPolicySha256: string;
@@ -85,11 +86,19 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
     const digests = value.canonicalDigests;
     const review = value.independentReview;
     if (
-      !exactRecord(candidate, ["bytes", "sha256", "captures"]) ||
+      !exactRecord(candidate, [
+        "bytes",
+        "sha256",
+        "liveCatalogDigest",
+        "captures",
+      ]) ||
       candidate.bytes !== expected.candidateBytes ||
       candidate.sha256 !== expected.candidateSha256 ||
       typeof candidate.sha256 !== "string" ||
       !sha256.test(candidate.sha256) ||
+      candidate.liveCatalogDigest !== expected.liveCatalogDigest ||
+      typeof candidate.liveCatalogDigest !== "string" ||
+      !prefixedSha256.test(candidate.liveCatalogDigest) ||
       !Array.isArray(candidate.captures) ||
       candidate.captures.length < 2 ||
       !exactRecord(images, ["sourcePg16", "targetPg17"]) ||
@@ -153,6 +162,7 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
         "reviewerEvidenceSha256",
         "candidateBytes",
         "candidateSha256",
+        "liveCatalogDigest",
         "postgresImages",
         "canonicalDigests",
       ]) ||
@@ -173,6 +183,7 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
       !sha256.test(review.reviewerEvidenceSha256) ||
       review.candidateBytes !== candidate.bytes ||
       review.candidateSha256 !== candidate.sha256 ||
+      review.liveCatalogDigest !== candidate.liveCatalogDigest ||
       !exactRecord(review.postgresImages, ["sourcePg16", "targetPg17"]) ||
       review.postgresImages.sourcePg16 !== images.sourcePg16 ||
       review.postgresImages.targetPg17 !== images.targetPg17 ||

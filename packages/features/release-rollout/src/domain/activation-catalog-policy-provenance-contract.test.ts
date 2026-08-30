@@ -19,6 +19,7 @@ const expected: ActivationCatalogPolicyPromotionExpectation = {
   reviewDecisionId: "rr-policy-review-v21:go",
   candidateBytes: 42,
   candidateSha256: "b".repeat(64),
+  liveCatalogDigest: `sha256:${"7".repeat(64)}`,
   sourcePg16Image: `postgres:16.13-bookworm@sha256:${"c".repeat(64)}`,
   targetPg17Image: `postgres:17.5-bookworm@sha256:${"d".repeat(64)}`,
   preactivationCatalogPolicySha256: `sha256:${"e".repeat(64)}`,
@@ -36,6 +37,7 @@ const ready = () => ({
   candidate: {
     bytes: expected.candidateBytes,
     sha256: expected.candidateSha256,
+    liveCatalogDigest: expected.liveCatalogDigest,
     captures: [
       {
         label: "capture-a",
@@ -77,6 +79,7 @@ const ready = () => ({
     reviewerEvidenceSha256: expected.reviewerEvidenceSha256,
     candidateBytes: expected.candidateBytes,
     candidateSha256: expected.candidateSha256,
+    liveCatalogDigest: expected.liveCatalogDigest,
     postgresImages: {
       sourcePg16: expected.sourcePg16Image,
       targetPg17: expected.targetPg17Image,
@@ -137,6 +140,12 @@ describe("activation catalog policy promotion provenance", () => {
       "candidate drift",
       (value: ReturnType<typeof ready>) => {
         value.independentReview.candidateSha256 = "0".repeat(64);
+      },
+    ],
+    [
+      "live catalog digest drift",
+      (value: ReturnType<typeof ready>) => {
+        value.independentReview.liveCatalogDigest = `sha256:${"0".repeat(64)}`;
       },
     ],
     [

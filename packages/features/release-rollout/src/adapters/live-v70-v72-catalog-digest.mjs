@@ -194,13 +194,13 @@ WITH selected_relations AS (
 SELECT 'sha256:'||encode(pg_catalog.sha256(convert_to(value::text,'UTF8')),'hex')
 FROM facts`;
 
-// This remains the last independently captured value. The projection now
-// includes the V86 custody routines, so release promotion stays on HOLD until
-// the trusted PG17 capture path replaces this value and the transition receipt
-// in one reviewed evidence batch. Do not derive a catalog digest from SQL text.
+// This is the independently captured v29 value bound to the reviewed V86
+// custody projection and transition receipt. Deployment remains on HOLD until
+// a separate release decision authorizes it. Do not derive a catalog digest
+// from SQL text.
 export const liveV70V86CatalogDigestCaptureHold = Object.freeze({
   decision: "HOLD",
-  reason: "pg17_exact_catalog_capture_required_after_v86_projection_change",
+  reason: "v29_catalog_promoted_deployment_authorization_required",
 });
 export const liveV70V73CatalogDigestSha256 =
   "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d";
