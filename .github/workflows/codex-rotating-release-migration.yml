@@ -79,8 +79,65 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  trust-bootstrap:
+    name: Verify protected main dispatch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      trusted_main_sha: ${{ steps.trust.outputs.trusted_main_sha }}
+    steps:
+      - name: Establish immutable workflow trust before repository execution
+        id: trust
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { appendFileSync } = await import("node:fs");
+          const required = (name) => {
+            const value = process.env[name];
+            if (!value) throw new Error(`registration_trust_missing:${name}`);
+            return value;
+          };
+          const fail = (reason) => {
+            throw new Error(`registration_trust_rejected:${reason}`);
+          };
+          const repository = required("GITHUB_REPOSITORY");
+          const dispatchSha = required("GITHUB_SHA").toLowerCase();
+          if (required("GITHUB_EVENT_NAME") !== "workflow_dispatch") fail("event");
+          if (required("GITHUB_REF") !== "refs/heads/main") fail("workflow_ref");
+          if (!/^[a-f0-9]{40}$/.test(dispatchSha)) fail("dispatch_sha");
+          const response = await fetch(
+            `https://api.github.com/repos/${repository}/branches/main`,
+            {
+              headers: {
+                Authorization: `Bearer ${required("GH_TOKEN")}`,
+                Accept: "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+            },
+          );
+          if (!response.ok) fail(`github_api_${response.status}`);
+          const branch = await response.json();
+          if (
+            branch.protected !== true ||
+            branch.commit?.sha?.toLowerCase() !== dispatchSha
+          ) {
+            fail("stale_or_unprotected_main");
+          }
+          appendFileSync(
+            required("GITHUB_OUTPUT"),
+            `trusted_main_sha=${dispatchSha}\n`,
+            "utf8",
+          );
+          NODE
+
   recover:
     name: Complete restored PG17 cutover
+    needs: trust-bootstrap
     if: ${{ inputs.confirmation == 'RECOVER_EXISTING_PG17' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -99,8 +156,9 @@ jobs:
       - name: Checkout immutable recovery tooling
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.release_commit_sha }}
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_main_sha }}
 
       - name: Install and validate recovery tooling
         shell: bash
@@ -111,6 +169,12 @@ jobs:
           [[ "$RENDER_OWNER_ID" =~ ^tea-[a-z0-9-]+$ ]]
           [[ "$RENDER_ENVIRONMENT_ID" =~ ^evm-[a-z0-9-]+$ ]]
           [[ "$RELEASE_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          TRUSTED_MAIN_SHA="${{ needs.trust-bootstrap.outputs.trusted_main_sha }}"
+          [[ "$TRUSTED_MAIN_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$(git cat-file -t "$RELEASE_COMMIT_SHA")" == "commit" ]]
+          [[ "$(git cat-file -t "$TRUSTED_MAIN_SHA")" == "commit" ]]
+          git merge-base --is-ancestor "$RELEASE_COMMIT_SHA" "$TRUSTED_MAIN_SHA"
+          git switch --detach "$RELEASE_COMMIT_SHA"
           observed_source_sha="$(git rev-parse HEAD)"
           [[ "$observed_source_sha" == "$RELEASE_COMMIT_SHA" ]]
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
@@ -561,6 +625,7 @@ jobs:
 
   register-release:
     name: Register verified Review Action release
+    needs: trust-bootstrap
     if: ${{ inputs.confirmation == 'REGISTER_VERIFIED_REVIEW_ACTION_RELEASE' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -585,8 +650,9 @@ jobs:
       - name: Checkout immutable registration tooling
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.release_commit_sha }}
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_main_sha }}
 
       - name: Install registration tooling
         shell: bash
@@ -596,6 +662,12 @@ jobs:
           [[ "$RENDER_OWNER_ID" =~ ^tea-[a-z0-9-]+$ ]]
           [[ "$RENDER_ENVIRONMENT_ID" =~ ^evm-[a-z0-9-]+$ ]]
           [[ "$RELEASE_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          TRUSTED_MAIN_SHA="${{ needs.trust-bootstrap.outputs.trusted_main_sha }}"
+          [[ "$TRUSTED_MAIN_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$(git cat-file -t "$RELEASE_COMMIT_SHA")" == "commit" ]]
+          [[ "$(git cat-file -t "$TRUSTED_MAIN_SHA")" == "commit" ]]
+          git merge-base --is-ancestor "$RELEASE_COMMIT_SHA" "$TRUSTED_MAIN_SHA"
+          git switch --detach "$RELEASE_COMMIT_SHA"
           observed_source_sha="$(git rev-parse HEAD)"
           [[ "$observed_source_sha" == "$RELEASE_COMMIT_SHA" ]]
           [[ "$ACTION_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
@@ -1411,8 +1483,11 @@ jobs:
               observed_commit_sha="$(
                 jq -er '
                   (.deploy // .)
-                  | (.commit.id // .commit.sha // .commitId)
-                  | select(type == "string" and test("^[a-f0-9]{40}$"))
+                  | (.commit.id // .commit.sha // .commitId // "")
+                  | select(
+                      type == "string"
+                      and (. == "" or test("^[a-f0-9]{40}$"))
+                    )
                 ' <<<"$deploy"
               )"
               statuses="$(
@@ -1429,11 +1504,15 @@ jobs:
                   }]' \
                   <<<"$statuses"
               )"
-              if [[ "$observed_commit_sha" != "$RELEASE_COMMIT_SHA" ]]; then
+              if [[ -n "$observed_commit_sha" && "$observed_commit_sha" != "$RELEASE_COMMIT_SHA" ]]; then
                 failed=1
               fi
               case "$status" in
-                live) ;;
+                live)
+                  if [[ "$observed_commit_sha" != "$RELEASE_COMMIT_SHA" ]]; then
+                    failed=1
+                  fi
+                  ;;
                 build_failed|update_failed|pre_deploy_failed|canceled|deactivated|failed|*_failed)
                   failed=1
                   ;;
@@ -1457,6 +1536,50 @@ jobs:
             and all(.observedCommitSha == $releaseCommitSha)
           ' \
             "$work/deployment-result.json" >/dev/null
+
+          current_deployments='[]'
+          while IFS=$'\t' read -r service_id expected_deploy_id; do
+            latest_deploys="$(
+              render_api \
+                "https://api.render.com/v1/services/$service_id/deploys?limit=1"
+            )"
+            current_deployment="$(
+              jq -ce --arg serviceId "$service_id" '
+                (if type == "array" then .[0] else (.deploys[0] // .[0]) end)
+                | (.deploy // .) as $deploy
+                | {
+                    serviceId: $serviceId,
+                    deployId: ($deploy.id | select(type == "string" and length > 0)),
+                    status: ($deploy.status | select(type == "string")),
+                    observedCommitSha: (
+                      ($deploy.commit.id // $deploy.commit.sha // $deploy.commitId // "")
+                      | select(
+                          type == "string"
+                          and (. == "" or test("^[a-f0-9]{40}$"))
+                        )
+                    )
+                  }
+              ' <<<"$latest_deploys"
+            )"
+            current_deployments="$(
+              jq -c --argjson observation "$current_deployment" \
+                '. + [$observation]' <<<"$current_deployments"
+            )"
+            printf '%s\n' "$current_deployments" \
+              > "$work/current-deployment-result.json"
+            jq -e \
+              --arg expectedDeployId "$expected_deploy_id" \
+              --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
+                .deployId == $expectedDeployId
+                and .status == "live"
+                and .observedCommitSha == $releaseCommitSha
+              ' <<<"$current_deployment" >/dev/null
+          done < <(jq -r '.[] | [.serviceId, .deployId] | @tsv' <<<"$deploys")
+          jq -e '
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and ([.[].deployId] | unique | length == 3)
+          ' "$work/current-deployment-result.json" >/dev/null
           close_firewall
           firewall_open=0
 
@@ -1481,6 +1604,7 @@ jobs:
             ${{ runner.temp }}/reviewrouter-release-registration/investigation-env-proof.json
             ${{ runner.temp }}/reviewrouter-release-registration/live-service-preflight.json
             ${{ runner.temp }}/reviewrouter-release-registration/deployment-result.json
+            ${{ runner.temp }}/reviewrouter-release-registration/current-deployment-result.json
           if-no-files-found: warn
           retention-days: 30
           compression-level: 0

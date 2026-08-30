@@ -305,23 +305,33 @@ cannot overlap. Bootstrap alone receives its protected external direct URL; the
 release workflow never receives it.
 
 The release workflow is the only supported migration initiator. From its
-checkout at exact `github.sha`, it runs the checked-in canonical migration
-application service against the release role's protected Render Postgres
-external direct URL. Render one-off jobs are not migration authority: the
-create-job mutation cannot bind a deploy ID and instead snapshots the base
-service's latest successful build, leaving a pre-mutation image race. The
-obsolete Render migration launchers have therefore been removed.
+checkout at exact `release_commit_sha`, it runs the checked-in canonical
+migration application service against the release role's protected Render
+Postgres external direct URL. Before any checkout or repository execution, a
+production-secret-free trust job proves that the dispatch SHA is current protected
+`main`. The privileged job fetches full history, requires the requested release
+commit to be an ancestor of that trusted SHA, switches to it detached, and
+verifies `HEAD`. Render one-off jobs are not migration authority: the create-job
+mutation cannot bind a deploy ID and instead snapshots the base service's latest
+successful build, leaving a pre-mutation image race. The obsolete Render
+migration launchers have therefore been removed.
 
 The recovery and Action-registration modes use distinct immutable identities:
-`release_commit_sha` is the ReviewRouter SaaS commit used only by PG17 recovery,
-while `action_commit_sha` is the Review Action commit used only by verified
-producer-release registration. Registration updates the attestation environment
-on API, worker, and web, then explicitly deploys all three services and waits
-until each exact deploy is `live`; an environment update by itself is not rollout
-evidence. Keep `open_global_emergency` disabled by default. Set it only during an
-explicit cutover to open the database-backed Review v2 kill switch through the
-same ephemeral authenticated maintenance process. The workflow records the
-sanitized control result and never persists the plaintext operator credential.
+`release_commit_sha` is the trusted ReviewRouter SaaS tooling and deployment
+commit for both modes, while `action_commit_sha` is the Review Action commit used
+only by verified producer-release registration. Registration first requires the
+current live API, worker, and web deploy identities to equal the SaaS release
+commit. It updates the attestation environment, then deploys all three services
+with explicit `commitId: release_commit_sha`. Pending Render responses may omit
+commit metadata, but a `live` response must report the exact commit. After all
+three exact deploy IDs reach `live`, the workflow re-reads each service's latest
+deploy and requires it to still be that same deploy ID and commit; a newer
+queued, running, or live deploy fails the gate. An environment update by itself
+is not rollout evidence. Keep `open_global_emergency` disabled by default. Set it
+only during an explicit cutover to open the database-backed Review v2 kill switch
+through the same ephemeral authenticated maintenance process. The workflow
+records the sanitized control result and never persists the plaintext operator
+credential.
 
 The bootstrap caller creates or converges login roles
 `reviewrouter_web`, `reviewrouter_api`, and `reviewrouter_worker`, then verifies
