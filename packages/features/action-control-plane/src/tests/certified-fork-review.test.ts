@@ -1,8 +1,10 @@
+import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import type { CertifiedForkReviewDependencies } from "../application/use-cases/prepare-certified-fork-review.js";
 import { prepareCertifiedForkReview } from "../application/use-cases/prepare-certified-fork-review.js";
 import { publishCertifiedForkReview } from "../application/use-cases/publish-certified-fork-review.js";
 import type { CertifiedForkReviewTicket } from "../application/ports/certified-fork-review-port.js";
+import { registerActionControlPlaneRoutes } from "../interface/http/register-action-control-plane-routes.js";
 
 const sha = "a".repeat(40);
 const head = "b".repeat(40);
@@ -90,6 +92,10 @@ describe("certified fork review use cases", () => {
       {},
       { workflow_ref: `owner/example/.github/workflows/other.yml@${sha}` },
     ],
+    ["workflow SHA", {}, { workflow_sha: undefined }],
+    ["run attempt", {}, { run_attempt: "bad" }],
+    ["repository name", {}, { repository: "owner/other" }],
+    ["ref", {}, { ref: "refs/pull/42/merge" }],
   ])("rejects mutated %s identity", async (_name, change, claimChange) => {
     const { dependencies } = fixture(
       (claimChange ?? {}) as Record<string, unknown>,
@@ -108,6 +114,26 @@ describe("certified fork review use cases", () => {
         dependencies,
       ),
     ).rejects.toThrow(/certified_fork_(schema|identity)_invalid/);
+  });
+
+  it("accepts a workflow_dispatch backfill with the same live fork binding", async () => {
+    const { dependencies } = fixture({ event_name: "workflow_dispatch" });
+    await expect(
+      prepareCertifiedForkReview(
+        {
+          oidcToken: "dispatch",
+          audience: "reviewrouter",
+          leaseId: "lease-123",
+          providerInstanceId: "provider-123",
+          workflowSchemaVersion: 5,
+          forkReviewBinding: binding,
+        },
+        dependencies,
+      ),
+    ).resolves.toMatchObject({
+      protocolVersion: 1,
+      promptPacket: { pullRequestNumber: 42 },
+    });
   });
 
   it("rejects context replay before publication", async () => {
@@ -142,6 +168,121 @@ describe("certified fork review use cases", () => {
         },
       ),
     ).rejects.toThrow("certified_fork_context_mismatch");
+    expect(published).toHaveLength(0);
+  });
+
+  it("does not publish when the provider returns no valid output", async () => {
+    const { dependencies, published } = fixture();
+    const prepared = await prepareCertifiedForkReview(
+      {
+        oidcToken: "prepare",
+        audience: "reviewrouter",
+        leaseId: "lease-123",
+        providerInstanceId: "provider-123",
+        workflowSchemaVersion: 5,
+        forkReviewBinding: binding,
+      },
+      dependencies,
+    );
+    await expect(
+      publishCertifiedForkReview(
+        {
+          oidcToken: "publish",
+          audience: "reviewrouter",
+          leaseId: "lease-123",
+          providerInstanceId: "provider-123",
+          workflowSchemaVersion: 5,
+          forkReviewBinding: binding,
+          executionId: prepared.executionId,
+          contextHash: prepared.contextHash,
+          modelOutput: undefined,
+        },
+        {
+          ...dependencies,
+          certifiedForkReviewOutput: {
+            render: () => {
+              throw new Error("certified_fork_model_output_invalid");
+            },
+          },
+        },
+      ),
+    ).rejects.toThrow("certified_fork_model_output_invalid");
+    expect(published).toHaveLength(0);
+  });
+
+  it("exposes strict prepare HTTP input and rejects unknown fields", async () => {
+    const { dependencies } = fixture();
+    const app = Fastify({ logger: false });
+    await registerActionControlPlaneRoutes(app, {
+      oidcAudience: "reviewrouter",
+      certifiedForkReview: {
+        ...dependencies,
+        certifiedForkReviewOutput: { render: () => ({ body: "safe" }) },
+      },
+    } as unknown as Parameters<typeof registerActionControlPlaneRoutes>[1]);
+    const request = {
+      oidcToken: "prepare",
+      leaseId: "lease-123",
+      providerInstanceId: "provider-123",
+      workflowSchemaVersion: 5,
+      forkReviewBinding: binding,
+    };
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/certified-fork-review/prepare",
+      payload: request,
+    });
+    expect(accepted.statusCode).toBe(200);
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/certified-fork-review/prepare",
+      payload: { ...request, reviewRequestId: "attacker-controlled" },
+    });
+    expect(rejected.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it.each([
+    ["sourceRepository", { sourceRepository: "other/example" }],
+    ["sourceRepositoryId", { sourceRepositoryId: "102" }],
+    ["baseRepository", { baseRepository: "owner/other" }],
+    ["baseRepositoryId", { baseRepositoryId: "98" }],
+    ["pullRequestNumber", { pullRequestNumber: 43 }],
+    ["reviewHeadSha", { reviewHeadSha: "d".repeat(40) }],
+    ["baseSha", { baseSha: "e".repeat(40) }],
+    ["trustDomain", { trustDomain: "fork-other" }],
+  ])("rejects publish when ticket %s is mutated", async (_name, mutation) => {
+    const { dependencies, published } = fixture();
+    const prepared = await prepareCertifiedForkReview(
+      {
+        oidcToken: "prepare",
+        audience: "reviewrouter",
+        leaseId: "lease-123",
+        providerInstanceId: "provider-123",
+        workflowSchemaVersion: 5,
+        forkReviewBinding: binding,
+      },
+      dependencies,
+    );
+    await expect(
+      publishCertifiedForkReview(
+        {
+          oidcToken: "publish",
+          audience: "reviewrouter",
+          leaseId: "lease-123",
+          providerInstanceId: "provider-123",
+          workflowSchemaVersion: 5,
+          forkReviewBinding: { ...binding, ...mutation } as typeof binding,
+          executionId: prepared.executionId,
+          contextHash: prepared.contextHash,
+          modelOutput: {},
+        },
+        {
+          ...dependencies,
+          certifiedForkReviewOutput: { render: () => ({ body: "x" }) },
+        },
+      ),
+    ).rejects.toThrow(/certified_fork_(context_mismatch|identity_invalid)/);
     expect(published).toHaveLength(0);
   });
 });

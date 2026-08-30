@@ -86,7 +86,7 @@ export async function verifyCertifiedForkClaims(
   });
   const expectedPrefix = `${input.forkReviewBinding.baseRepository}/${managedCodexWorkflowPath}@`;
   if (
-    claims.event_name !== "pull_request_target" ||
+    !["pull_request_target", "workflow_dispatch"].includes(claims.event_name) ||
     claims.repository_id !== input.forkReviewBinding.baseRepositoryId ||
     claims.repository.toLowerCase() !==
       input.forkReviewBinding.baseRepository.toLowerCase() ||

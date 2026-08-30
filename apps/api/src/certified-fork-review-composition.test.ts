@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   HmacCertifiedForkReviewTickets,
+  PrismaCertifiedForkReviewLease,
   StrictCertifiedForkReviewOutput,
 } from "./certified-fork-review-composition.js";
 const binding = {
@@ -34,6 +35,57 @@ const promptPacket = {
   ],
 };
 describe("certified fork composition", () => {
+  it("accepts only a completed recent lease with its finalized V5 provider binding", async () => {
+    const findProviderBinding = vi.fn(async () => ({
+      workflowPath: ".github/workflows/reviewrouter-codex.yml",
+    }));
+    const lease = new PrismaCertifiedForkReviewLease(
+      {
+        codexOAuthLease: {
+          findUnique: async () => ({
+            providerInstanceId: "provider-123",
+            githubRunId: "8",
+            githubRunAttempt: "1",
+            pullRequestNumber: 42,
+            status: "completed",
+            finalizedAt: new Date("2026-08-30T09:30:00.000Z"),
+            completedAt: new Date("2026-08-30T09:30:00.000Z"),
+            repository: {
+              githubRepositoryId: 99n,
+              fullName: "owner/example",
+              selected: true,
+              archived: false,
+              visibility: "public",
+              installation: {
+                status: "active",
+                githubInstallationId: 7n,
+              },
+            },
+          }),
+        },
+      } as never,
+      {
+        findSelectedRepositoryByGithubId: async () => ({ id: "repo" }),
+      } as never,
+      { findProviderBinding } as never,
+      { now: () => new Date("2026-08-30T10:00:00.000Z") },
+    );
+    await expect(
+      lease.assertFinalizedV5ForkLease({
+        leaseId: "lease-123",
+        providerInstanceId: "provider-123",
+        claims: {
+          run_id: "8",
+          run_attempt: "1",
+          workflow_sha: "a".repeat(40),
+        } as never,
+        binding,
+      }),
+    ).resolves.toEqual({ githubInstallationId: "7" });
+    expect(findProviderBinding).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowSchemaVersion: 5 }),
+    );
+  });
   it("signs opaque execution tickets and rejects tampering", async () => {
     const tickets = new HmacCertifiedForkReviewTickets("s".repeat(32));
     const issued = await tickets.issue({

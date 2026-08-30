@@ -175,6 +175,10 @@ async function validateTuple(
 ) {
   if (
     b.trustDomain !== "fork" ||
+    !/^[a-f0-9]{40}$/i.test(b.baseSha) ||
+    !/^[a-f0-9]{40}$/i.test(b.reviewHeadSha) ||
+    !Number.isSafeInteger(b.pullRequestNumber) ||
+    b.pullRequestNumber < 1 ||
     b.baseRepositoryId === b.sourceRepositoryId ||
     b.baseRepository.toLowerCase() === b.sourceRepository.toLowerCase()
   )
@@ -199,14 +203,17 @@ async function validateTuple(
   if (
     base.id !== b.baseRepositoryId ||
     source.id !== b.sourceRepositoryId ||
-    base.fullName !== b.baseRepository.toLowerCase() ||
-    source.fullName !== b.sourceRepository.toLowerCase() ||
+    base.fullName !== b.baseRepository ||
+    source.fullName !== b.sourceRepository ||
     base.private ||
     source.private ||
+    base.visibility !== "public" ||
+    source.visibility !== "public" ||
     pr.state !== "open" ||
     pr.draft ||
     pr.merged ||
     pr.authorType === "Bot" ||
+    pr.number !== b.pullRequestNumber ||
     pr.baseId !== base.id ||
     pr.headId !== source.id ||
     pr.baseName !== base.fullName ||
@@ -221,13 +228,15 @@ function parseRepository(value: unknown) {
     !record(value) ||
     !id(value.id) ||
     typeof value.full_name !== "string" ||
-    typeof value.private !== "boolean"
+    typeof value.private !== "boolean" ||
+    typeof value.visibility !== "string"
   )
     throw new Error("certified_fork_repository_invalid");
   return {
     id: String(value.id),
-    fullName: value.full_name.toLowerCase(),
+    fullName: value.full_name,
     private: value.private,
+    visibility: value.visibility,
   };
 }
 function parsePullRequest(value: unknown) {
@@ -246,11 +255,13 @@ function parsePullRequest(value: unknown) {
     typeof value.head.repo.full_name !== "string" ||
     typeof value.draft !== "boolean" ||
     typeof value.merged !== "boolean" ||
-    typeof value.user.type !== "string"
+    typeof value.user.type !== "string" ||
+    !positiveInteger(value.number)
   )
     throw new Error("certified_fork_pull_request_invalid");
   return {
     state: value.state,
+    number: value.number,
     draft: value.draft,
     merged: value.merged,
     authorType: value.user.type,
@@ -258,8 +269,8 @@ function parsePullRequest(value: unknown) {
     headSha: value.head.sha.toLowerCase(),
     baseId: String(value.base.repo.id),
     headId: String(value.head.repo.id),
-    baseName: value.base.repo.full_name.toLowerCase(),
-    headName: value.head.repo.full_name.toLowerCase(),
+    baseName: value.base.repo.full_name,
+    headName: value.head.repo.full_name,
   };
 }
 function parseFile(value: unknown): CertifiedForkReviewFile {
@@ -324,7 +335,7 @@ function safePath(value: string) {
       .some((part) => part === "" || part === "." || part === "..")
   );
 }
-function record(value: unknown): value is Record<string, any> {
+function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function id(value: unknown) {
@@ -336,10 +347,13 @@ function id(value: unknown) {
 function nonnegative(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
+function positiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
 function canonical(value: unknown): string {
   return JSON.stringify(sort(value));
 }
-function sort(value: any): any {
+function sort(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sort);
   if (record(value))
     return Object.fromEntries(

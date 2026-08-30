@@ -1,13 +1,14 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import type {
-  CertifiedForkReviewBinding,
   CertifiedForkReviewLeasePort,
   CertifiedForkReviewOutputPort,
   CertifiedForkReviewTicket,
   CertifiedForkReviewTicketPort,
   ActionControlPlaneRepositoryPort,
+  ActionOidcReplayNonceStorePort,
   CodexRotatingOAuthRepositoryPort,
+  GitHubActionsOidcTokenVerifierPort,
 } from "@reviewrouter/features-action-control-plane";
 import { createReviewFindingsArtifactFromModelOutput } from "@reviewrouter/features-review-publishing";
 import { OctokitCertifiedForkReviewGateway } from "./github/octokit-certified-fork-review-gateway.js";
@@ -18,8 +19,8 @@ export function composeCertifiedForkReview(input: {
   privateKey: string;
   appSlug: string;
   ticketSecret: string;
-  oidcVerifier: any;
-  replayNonces: any;
+  oidcVerifier: GitHubActionsOidcTokenVerifierPort;
+  replayNonces: ActionOidcReplayNonceStorePort;
   clock: { now(): Date };
   repositories: ActionControlPlaneRepositoryPort;
   codexRotatingOAuth: CodexRotatingOAuthRepositoryPort;
@@ -146,13 +147,13 @@ export class HmacCertifiedForkReviewTickets implements CertifiedForkReviewTicket
       !safeEqual(signature, this.sign(payload))
     )
       throw new Error("certified_fork_context_mismatch");
-    let value: any;
+    let value: unknown;
     try {
       value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
     } catch {
       throw new Error("certified_fork_context_mismatch");
     }
-    if (value && typeof value === "object" && value.executionId === undefined)
+    if (record(value) && value.executionId === undefined)
       return { ...value, executionId } as CertifiedForkReviewTicket;
     throw new Error("certified_fork_context_mismatch");
   }
@@ -227,6 +228,18 @@ function escape(value: string) {
 function cleanMarkdown(value: string) {
   return value
     .replace(/<!--[^]*?-->/gu, "")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "")
+    .split("")
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code === 9 || code === 10 || code === 13 || code > 31;
+    })
+    .join("")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("@", "@\u200b")
     .trim();
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

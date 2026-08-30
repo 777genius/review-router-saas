@@ -33,9 +33,24 @@ describe("OctokitCertifiedForkReviewGateway", () => {
     ).toHaveLength(3);
   });
   it.each([
-    ["private", { sourcePrivate: true }],
+    ["base private", { basePrivate: true }],
+    ["source private", { sourcePrivate: true }],
+    ["base internal", { baseVisibility: "internal" }],
+    ["source internal", { sourceVisibility: "internal" }],
+    ["base id", { baseId: 98 }],
+    ["source id", { sourceId: 100 }],
+    ["base name", { baseName: "owner/renamed" }],
+    ["source name", { sourceName: "contributor/renamed" }],
+    ["PR number", { pullRequestNumber: 43 }],
+    ["closed", { state: "closed" }],
     ["draft", { draft: true }],
+    ["merged", { merged: true }],
     ["bot", { authorType: "Bot" }],
+    ["PR base id", { prBaseId: 98 }],
+    ["PR source id", { prSourceId: 100 }],
+    ["PR base name", { prBaseName: "owner/renamed" }],
+    ["PR source name", { prSourceName: "contributor/renamed" }],
+    ["base SHA", { baseSha: "c".repeat(40) }],
     ["head", { headSha: "d".repeat(40) }],
   ])("rejects %s tuple mutation", async (_name, mutation) => {
     const gateway = fixture(async (route, parameters) =>
@@ -87,6 +102,73 @@ describe("OctokitCertifiedForkReviewGateway", () => {
     expect(writes).toEqual([
       "PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}",
     ]);
+  });
+
+  it("creates a separate App comment when only an attacker owns the marker", async () => {
+    const writes: string[] = [];
+    const marker = `<!-- reviewrouter:certified-fork:${headSha} -->`;
+    const gateway = fixture(async (route, parameters) => {
+      if (route.includes("/comments") && route.startsWith("GET"))
+        return {
+          data: [{ id: 1, body: marker, user: { login: "attacker" } }],
+        };
+      if (route.startsWith("POST")) {
+        writes.push(route);
+        return {
+          data: { id: 3, body: marker, user: { login: "reviewrouter[bot]" } },
+        };
+      }
+      return response(route, parameters);
+    });
+    await expect(
+      gateway.upsertOwnedComment({
+        githubInstallationId: "7",
+        binding,
+        marker,
+        body: `${marker}\nsafe`,
+      }),
+    ).resolves.toMatchObject({ status: "created", commentId: "3" });
+    expect(writes).toEqual([
+      "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
+    ]);
+  });
+
+  it("fails closed when the PR head moves immediately before a write", async () => {
+    let pullReads = 0;
+    let writes = 0;
+    const gateway = fixture(async (route, parameters) => {
+      if (route.endsWith("/pulls/{pull_number}")) {
+        pullReads += 1;
+        return response(route, parameters, {
+          headSha: pullReads >= 2 ? "d".repeat(40) : headSha,
+        });
+      }
+      if (route.startsWith("POST") || route.startsWith("PATCH")) writes += 1;
+      if (route.includes("/comments") && route.startsWith("GET"))
+        return { data: [] };
+      return response(route, parameters);
+    });
+    await expect(
+      gateway.upsertOwnedComment({
+        githubInstallationId: "7",
+        binding,
+        marker: `<!-- reviewrouter:certified-fork:${headSha} -->`,
+        body: "safe",
+      }),
+    ).rejects.toThrow("certified_fork_tuple_mismatch");
+    expect(writes).toBe(0);
+  });
+
+  it.each([
+    ["byte", { patch: "x".repeat(240_001), additions: 1, deletions: 0 }],
+    ["line", { patch: "@@", additions: 20_001, deletions: 0 }],
+  ])("enforces the %s budget", async (_name, fileMutation) => {
+    const gateway = fixture(async (route, parameters) =>
+      response(route, parameters, {}, fileMutation),
+    );
+    await expect(
+      gateway.prepareContext({ githubInstallationId: "7", binding }),
+    ).rejects.toThrow("certified_fork_diff_budget_exceeded");
   });
 
   it("fails closed when the head moves between file pages", async () => {
@@ -154,9 +236,16 @@ function response(
     const source = parameters?.owner === "contributor";
     return {
       data: {
-        id: source ? 101 : 99,
-        full_name: source ? "contributor/example" : "owner/example",
-        private: source ? (mutation.sourcePrivate ?? false) : false,
+        id: source ? (mutation.sourceId ?? 101) : (mutation.baseId ?? 99),
+        full_name: source
+          ? (mutation.sourceName ?? "contributor/example")
+          : (mutation.baseName ?? "owner/example"),
+        private: source
+          ? (mutation.sourcePrivate ?? false)
+          : (mutation.basePrivate ?? false),
+        visibility: source
+          ? (mutation.sourceVisibility ?? "public")
+          : (mutation.baseVisibility ?? "public"),
       },
     };
   }
@@ -166,8 +255,8 @@ function response(
         {
           filename: fileMutation.path ?? "src/a.ts",
           status: "modified",
-          additions: 1,
-          deletions: 1,
+          additions: fileMutation.additions ?? 1,
+          deletions: fileMutation.deletions ?? 1,
           patch: Object.hasOwn(fileMutation, "patch")
             ? fileMutation.patch
             : "@@ -1 +1 @@",
@@ -177,14 +266,24 @@ function response(
   if (route.endsWith("/pulls/{pull_number}"))
     return {
       data: {
-        state: "open",
+        number: mutation.pullRequestNumber ?? 42,
+        state: mutation.state ?? "open",
         draft: mutation.draft ?? false,
-        merged: false,
+        merged: mutation.merged ?? false,
         user: { type: mutation.authorType ?? "User" },
-        base: { sha: baseSha, repo: { id: 99, full_name: "owner/example" } },
+        base: {
+          sha: mutation.baseSha ?? baseSha,
+          repo: {
+            id: mutation.prBaseId ?? 99,
+            full_name: mutation.prBaseName ?? "owner/example",
+          },
+        },
         head: {
           sha: mutation.headSha ?? headSha,
-          repo: { id: 101, full_name: "contributor/example" },
+          repo: {
+            id: mutation.prSourceId ?? 101,
+            full_name: mutation.prSourceName ?? "contributor/example",
+          },
         },
       },
     };
