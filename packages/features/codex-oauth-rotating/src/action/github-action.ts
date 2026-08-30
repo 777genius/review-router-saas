@@ -41,6 +41,8 @@ import {
   statfs,
   symlink,
   opendir,
+  open,
+  unlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -222,6 +224,41 @@ type PreleaseResponse = {
   readonly accountFingerprintSalt: string;
 };
 
+const certifiedForkReadyPreleaseResponseSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    status: z.literal("ready"),
+    leaseId: z.string().min(1).max(200),
+    providerInstanceId: z.string().min(1).max(200),
+    repository: z.string().min(3).max(200),
+    generationHashSalt: z.string().min(1).max(1_000),
+    accountFingerprintSalt: z.string().min(1).max(1_000),
+    currentGeneration: z.number().int().nonnegative(),
+    currentGenerationHash: z.string().min(1).max(200).optional(),
+    expiresAt: z.string().datetime(),
+    certifiedForkReviewContextHash: z.string().regex(/^[a-f0-9]{64}$/i),
+  })
+  .strict();
+
+const certifiedForkPreleaseResponseSchema = z.discriminatedUnion("status", [
+  certifiedForkReadyPreleaseResponseSchema,
+  z
+    .object({ protocolVersion: z.literal(1), status: z.literal("in_progress") })
+    .strict(),
+  z
+    .object({
+      protocolVersion: z.literal(1),
+      status: z.literal("already_published"),
+      commentId: z.string().min(1).max(200),
+      commentUrl: z.string().url().optional(),
+    })
+    .strict(),
+]);
+
+type CertifiedForkPreleaseResponse = z.infer<
+  typeof certifiedForkPreleaseResponseSchema
+>;
+
 type FinalizeResponse =
   | {
       readonly status: "finalized";
@@ -258,9 +295,10 @@ type WritebackResponse = {
     | "writeback_idempotency_conflict";
 };
 
-const certifiedForkPrepareResponseSchema = z
+const certifiedForkReadyPrepareResponseSchema = z
   .object({
     protocolVersion: z.literal(1),
+    status: z.literal("ready"),
     executionId: z.string().min(1).max(8_192),
     contextHash: z.string().regex(/^[a-f0-9]{64}$/i),
     model: z.literal("gpt-5.6-sol"),
@@ -278,6 +316,30 @@ const certifiedForkPrepareResponseSchema = z
     }
   });
 
+const certifiedForkPrepareResponseSchema = z.discriminatedUnion("status", [
+  certifiedForkReadyPrepareResponseSchema,
+  z
+    .object({
+      protocolVersion: z.literal(1),
+      status: z.literal("in_progress"),
+    })
+    .strict(),
+  z
+    .object({
+      protocolVersion: z.literal(1),
+      status: z.literal("conflict"),
+    })
+    .strict(),
+  z
+    .object({
+      protocolVersion: z.literal(1),
+      status: z.literal("already_published"),
+      commentId: z.string().min(1).max(200),
+      commentUrl: z.string().url().optional(),
+    })
+    .strict(),
+]);
+
 const certifiedForkPublishResponseSchema = z
   .object({
     protocolVersion: z.literal(1),
@@ -292,6 +354,11 @@ type ForkOidcCredentials = Readonly<{
   requestToken: string;
 }>;
 
+type CertifiedForkEventMaterial = Readonly<{
+  event: PullRequestEvent;
+  erase: () => Promise<void>;
+}>;
+
 export function parseCertifiedForkPrepareResponse(
   value: unknown,
 ): z.infer<typeof certifiedForkPrepareResponseSchema> {
@@ -300,6 +367,22 @@ export function parseCertifiedForkPrepareResponse(
     throw new Error("certified_fork_prepare_response_invalid");
   }
   return parsed.data;
+}
+
+export function resolveCertifiedForkPrepareDisposition(value: unknown):
+  | {
+      readonly status: "ready";
+      readonly prepare: z.infer<typeof certifiedForkReadyPrepareResponseSchema>;
+    }
+  | { readonly status: "already_published" } {
+  const prepare = parseCertifiedForkPrepareResponse(value);
+  if (prepare.status === "already_published") {
+    return { status: "already_published" };
+  }
+  if (prepare.status === "in_progress" || prepare.status === "conflict") {
+    throw new Error(`certified_fork_prepare_${prepare.status}`);
+  }
+  return { status: "ready", prepare };
 }
 
 type CommentTokenResponse = {
@@ -537,14 +620,19 @@ export async function runCodexRotatingGitHubAction(
   clearActionProviderSecretEnv(env);
 
   if (inputs.mode === codexForkPromptOnlyV2RuntimeMode) {
+    let eventMaterial: CertifiedForkEventMaterial | undefined;
     try {
-      const event = await readCertifiedForkReviewEvent(
+      const forkBinding = inputs.forkReviewBinding;
+      if (!forkBinding) throw new Error("fork_review_binding_required");
+      eventMaterial = await readCertifiedForkEventMaterial(
         env,
         inputs.workflowSchemaVersion,
-        inputs.forkReviewBinding,
+        forkBinding,
       );
+      const event = eventMaterial.event;
       assertSameRepositoryPullRequest(event, env);
-      assertForkReviewBindingMatchesEvent(inputs.forkReviewBinding, event);
+      assertForkReviewBindingMatchesEvent(forkBinding, event);
+      await assertCertifiedForkWorkspaceEmpty(env);
       const oidcCredentials = captureForkOidcCredentials(env);
       const executor = runtime.forkPromptOnlyV2Executor ?? {
         execute: (input: ForkPromptOnlyV2ExecutorInput) =>
@@ -554,17 +642,22 @@ export async function runCodexRotatingGitHubAction(
             io,
             fetchImpl,
             oidcCredentials,
+            eraseForkMaterial: eventMaterial!.erase,
           }),
       };
-      if (runtime.forkPromptOnlyV2Executor) clearActionAuthEnv(env);
+      if (runtime.forkPromptOnlyV2Executor) {
+        await eventMaterial.erase();
+        clearActionAuthEnv(env);
+      }
       await executor.execute({
         apiUrl: inputs.apiUrl,
         providerInstanceId: inputs.providerInstanceId,
         workflowSchemaVersion: inputs.workflowSchemaVersion,
-        binding: inputs.forkReviewBinding,
+        binding: forkBinding,
       });
       return;
     } finally {
+      await eventMaterial?.erase();
       clearActionAuthEnv(env);
       clearOidcRequestEnv(env);
     }
@@ -1008,6 +1101,7 @@ async function runDirectForkPromptOnlyV2Executor(input: {
   readonly io: ActionIO;
   readonly fetchImpl: FetchLike;
   readonly oidcCredentials: ForkOidcCredentials;
+  readonly eraseForkMaterial: () => Promise<void>;
 }): Promise<void> {
   const actionInputs: ActionInputs = {
     mode: codexForkPromptOnlyV2RuntimeMode,
@@ -1020,7 +1114,7 @@ async function runDirectForkPromptOnlyV2Executor(input: {
     providerSecrets: {},
     forkReviewBinding: input.input.binding,
   };
-  const prelease = await requestCodexRotatingPreleaseWithFreshOidc({
+  const preleaseResponse = await requestCodexRotatingPreleaseWithFreshOidc({
     env: forkOidcEnv(input.oidcCredentials),
     io: input.io,
     fetchImpl: input.fetchImpl,
@@ -1029,6 +1123,22 @@ async function runDirectForkPromptOnlyV2Executor(input: {
     workflowSchemaVersion: input.input.workflowSchemaVersion,
     forkReviewBinding: input.input.binding,
   });
+  await input.eraseForkMaterial();
+  if (preleaseResponse.status === "already_published") {
+    notice(input.io, "ReviewRouter fork review was already published.");
+    return;
+  }
+  if (preleaseResponse.status === "in_progress") {
+    notice(input.io, "ReviewRouter fork review is already in progress.");
+    return;
+  }
+  const prelease = preleaseResponse;
+  if (
+    prelease.providerInstanceId !== input.input.providerInstanceId ||
+    prelease.repository !== input.input.binding.baseRepository
+  ) {
+    throw new Error("certified_fork_prelease_identity_mismatch");
+  }
 
   await assertSupportedRunnerEnvironment(input.env);
   let providerSession:
@@ -1040,6 +1150,7 @@ async function runDirectForkPromptOnlyV2Executor(input: {
     const authJson = readActionAuthJson(input.env);
     maskCodexAuthJson(input.io, authJson);
     clearActionAuthEnv(input.env);
+    pruneForkParentEnvForBootstrap(input.env);
     validateCodexAuthJsonBytes({ authJsonBytes: authJson });
     const restoredGenerationHash = computeCodexAuthGenerationHash({
       authJsonBytes: authJson,
@@ -1124,7 +1235,16 @@ async function runDirectForkPromptOnlyV2Executor(input: {
     }),
     maxAttempts: 1,
   });
-  const prepare = parseCertifiedForkPrepareResponse(prepareRaw);
+  const prepareDisposition = resolveCertifiedForkPrepareDisposition(prepareRaw);
+  if (prepareDisposition.status === "already_published") {
+    notice(input.io, "ReviewRouter fork review was already published.");
+    return;
+  }
+  const prepare = prepareDisposition.prepare;
+  assertCertifiedForkPreleaseContextMatchesPrepare({
+    preleaseContextHash: prelease.certifiedForkReviewContextHash,
+    prepareContextHash: prepare.contextHash,
+  });
   assertPreparedForkContextMatchesBinding({
     promptPacket: prepare.promptPacket,
     binding: input.input.binding,
@@ -1139,31 +1259,107 @@ async function runDirectForkPromptOnlyV2Executor(input: {
     promptPacket: prepare.promptPacket,
   });
 
-  const publishOidcToken = await requestForkOidcToken({
-    credentials: input.oidcCredentials,
+  const publishRaw = await publishCertifiedForkReviewWithFreshOidc({
     fetchImpl: input.fetchImpl,
     io: input.io,
-  });
-  const publishRaw = await postJson<unknown>({
-    fetchImpl: input.fetchImpl,
-    label: "certified_fork_publish",
-    url: `${input.input.apiUrl}/api/action/v1/certified-fork-review/publish`,
-    body: {
+    oidcCredentials: input.oidcCredentials,
+    apiUrl: input.input.apiUrl,
+    bodyForOidcToken: (oidcToken) => ({
       ...certifiedForkControlPlaneIdentity({
-        oidcToken: publishOidcToken,
+        oidcToken,
         leaseId: prelease.leaseId,
         input: input.input,
       }),
       executionId: prepare.executionId,
       contextHash: prepare.contextHash,
       modelOutput,
-    },
-    maxAttempts: 1,
+    }),
   });
   if (!certifiedForkPublishResponseSchema.safeParse(publishRaw).success) {
     throw new Error("certified_fork_publish_response_invalid");
   }
   notice(input.io, "ReviewRouter certified fork review completed.");
+}
+
+export function assertCertifiedForkPreleaseContextMatchesPrepare(input: {
+  readonly preleaseContextHash: string;
+  readonly prepareContextHash: string;
+}): void {
+  if (input.preleaseContextHash !== input.prepareContextHash) {
+    throw new Error("certified_fork_prelease_context_mismatch");
+  }
+}
+
+async function publishCertifiedForkReviewWithFreshOidc(input: {
+  readonly fetchImpl: FetchLike;
+  readonly io: ActionIO;
+  readonly oidcCredentials: ForkOidcCredentials;
+  readonly apiUrl: string;
+  readonly bodyForOidcToken: (oidcToken: string) => unknown;
+}): Promise<unknown> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= networkRetryMaxAttempts; attempt += 1) {
+    const oidcToken = await requestForkOidcToken({
+      credentials: input.oidcCredentials,
+      fetchImpl: input.fetchImpl,
+      io: input.io,
+    });
+    try {
+      const { response, text } = await fetchWithRetry({
+        fetchImpl: input.fetchImpl,
+        label: "certified_fork_publish",
+        timeoutMs: controlPlaneRequestTimeoutMs,
+        maxAttempts: 1,
+        url: `${input.apiUrl}/api/action/v1/certified-fork-review/publish`,
+        init: {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input.bodyForOidcToken(oidcToken)),
+        },
+        consume: async (response) => ({
+          response,
+          text: await response.text(),
+        }),
+      });
+      let parsed: unknown = {};
+      try {
+        parsed = text ? (JSON.parse(text) as unknown) : {};
+      } catch (error) {
+        if (attempt < networkRetryMaxAttempts) {
+          lastError = error;
+          await sleep(networkRetryDelayMs(attempt));
+          continue;
+        }
+        throw new Error("certified_fork_publish_response_invalid", {
+          cause: error,
+        });
+      }
+      if (!response.ok) {
+        if (
+          shouldRetryHttpStatus(response.status) &&
+          attempt < networkRetryMaxAttempts
+        ) {
+          await sleep(networkRetryDelayMs(attempt));
+          continue;
+        }
+        throw new Error(safeRemoteError(parsed, response.status));
+      }
+      return parsed;
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        attempt < networkRetryMaxAttempts &&
+        (message.startsWith("network_request_failed:certified_fork_publish") ||
+          message.startsWith("network_request_timeout:certified_fork_publish"))
+      ) {
+        await sleep(networkRetryDelayMs(attempt));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("certified_fork_publication_failed", { cause: lastError });
 }
 
 function extractForkProviderSession(authJson: string): {
@@ -2097,7 +2293,192 @@ async function readForkPullRequestTargetEvent(
   if (!eventPath) {
     throw new Error("missing_github_event_path");
   }
-  const event = JSON.parse(await readFile(eventPath, "utf8")) as {
+  return parseForkPullRequestTargetEvent(
+    await readFile(eventPath, "utf8"),
+    workflowSchemaVersion,
+  );
+}
+
+async function readCertifiedForkEventMaterial(
+  env: NodeJS.ProcessEnv,
+  workflowSchemaVersion: number,
+  binding: ForkReviewBinding,
+): Promise<CertifiedForkEventMaterial> {
+  const eventName = env.GITHUB_EVENT_NAME;
+  if (
+    eventName !== "pull_request_target" &&
+    eventName !== "workflow_dispatch"
+  ) {
+    throw new Error("unsupported_event");
+  }
+  const eventPath = env.GITHUB_EVENT_PATH;
+  const runnerTemp = env.RUNNER_TEMP;
+  if (!eventPath) throw new Error("missing_github_event_path");
+  if (!runnerTemp) throw new Error("certified_fork_runner_temp_required");
+  const runnerTempLinkStat = await lstat(runnerTemp);
+  if (
+    runnerTempLinkStat.isSymbolicLink() ||
+    !runnerTempLinkStat.isDirectory()
+  ) {
+    throw new Error("certified_fork_runner_temp_invalid");
+  }
+  const canonicalRunnerTemp = await realpath(runnerTemp);
+  const runnerTempStat = await stat(canonicalRunnerTemp);
+  if (!runnerTempStat.isDirectory()) {
+    throw new Error("certified_fork_runner_temp_invalid");
+  }
+  const eventLinkStat = await lstat(eventPath);
+  if (eventLinkStat.isSymbolicLink() || !eventLinkStat.isFile()) {
+    throw new Error("certified_fork_event_file_invalid");
+  }
+  const canonicalEventPath = await realpath(eventPath);
+  if (!canonicalEventPath.startsWith(`${canonicalRunnerTemp}/`)) {
+    throw new Error("certified_fork_event_path_outside_runner_temp");
+  }
+  const handle = await open(
+    eventPath,
+    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+  );
+  let openedStat: Awaited<ReturnType<typeof handle.stat>>;
+  let eventJson: string;
+  try {
+    openedStat = await handle.stat();
+    if (
+      !openedStat.isFile() ||
+      openedStat.dev !== eventLinkStat.dev ||
+      openedStat.ino !== eventLinkStat.ino ||
+      openedStat.size <= 0 ||
+      openedStat.size > 1_000_000
+    ) {
+      throw new Error("certified_fork_event_file_invalid");
+    }
+    eventJson = await handle.readFile("utf8");
+  } finally {
+    await handle.close();
+  }
+  let erased = false;
+  const erase = async (): Promise<void> => {
+    if (erased) return;
+    const current = await lstat(eventPath);
+    if (
+      current.isSymbolicLink() ||
+      !current.isFile() ||
+      current.dev !== openedStat.dev ||
+      current.ino !== openedStat.ino
+    ) {
+      throw new Error("certified_fork_event_identity_changed");
+    }
+    await unlink(eventPath);
+    try {
+      await lstat(eventPath);
+    } catch (error) {
+      if (isFileNotFoundError(error)) {
+        erased = true;
+        delete env.GITHUB_EVENT_PATH;
+        delete env.GITHUB_WORKSPACE;
+        return;
+      }
+      throw error;
+    }
+    throw new Error("certified_fork_event_erase_failed");
+  };
+  try {
+    return {
+      event:
+        eventName === "pull_request_target"
+          ? parseForkPullRequestTargetEvent(eventJson, workflowSchemaVersion)
+          : parseCertifiedForkWorkflowDispatchEvent(eventJson, binding),
+      erase,
+    };
+  } catch (error) {
+    await erase();
+    throw error;
+  }
+}
+
+function parseCertifiedForkWorkflowDispatchEvent(
+  eventJson: string,
+  binding: ForkReviewBinding,
+): PullRequestEvent {
+  const event = JSON.parse(eventJson) as {
+    readonly repository?: {
+      readonly id?: unknown;
+      readonly full_name?: unknown;
+    };
+    readonly inputs?: Readonly<Record<string, unknown>>;
+  };
+  const repository = requireString(event.repository?.full_name, "event_repo");
+  const repositoryId = event.repository?.id;
+  if (
+    repository !== binding.baseRepository ||
+    !isSafeGitHubNumericId(repositoryId) ||
+    String(repositoryId) !== binding.baseRepositoryId
+  ) {
+    throw new Error("fork_review_binding_event_mismatch");
+  }
+  const dispatchInputs = event.inputs;
+  if (!dispatchInputs) {
+    throw new Error("certified_fork_dispatch_inputs_required");
+  }
+  const expectedInputs: Readonly<Record<string, string>> = {
+    source_repository: binding.sourceRepository,
+    source_repository_id: binding.sourceRepositoryId,
+    pull_request_number: String(binding.pullRequestNumber),
+    review_head_sha: binding.reviewHeadSha,
+    base_sha: binding.baseSha,
+  };
+  for (const [key, expected] of Object.entries(expectedInputs)) {
+    if (dispatchInputs[key] !== expected) {
+      throw new Error("fork_review_binding_event_mismatch");
+    }
+  }
+  const [owner, repo] = repository.split("/");
+  if (!owner || !repo) throw new Error("invalid_github_repository");
+  return {
+    number: binding.pullRequestNumber,
+    repositoryId: binding.baseRepositoryId,
+    repository,
+    owner,
+    repo,
+    headSha: binding.reviewHeadSha,
+    baseSha: binding.baseSha,
+    sourceRepository: binding.sourceRepository,
+    sourceRepositoryId: binding.sourceRepositoryId,
+  };
+}
+
+async function assertCertifiedForkWorkspaceEmpty(
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const workspace = env.GITHUB_WORKSPACE;
+  if (!workspace) throw new Error("certified_fork_workspace_required");
+  const linkStat = await lstat(workspace);
+  if (linkStat.isSymbolicLink() || !linkStat.isDirectory()) {
+    throw new Error("certified_fork_workspace_invalid");
+  }
+  const directory = await opendir(workspace);
+  try {
+    if ((await directory.read()) !== null) {
+      throw new Error("certified_fork_workspace_not_empty");
+    }
+  } finally {
+    await directory.close();
+  }
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
+}
+
+function parseForkPullRequestTargetEvent(
+  eventJson: string,
+  workflowSchemaVersion: number,
+): PullRequestEvent {
+  const event = JSON.parse(eventJson) as {
     readonly number?: unknown;
     readonly repository?: {
       readonly id?: unknown;
@@ -2158,56 +2539,6 @@ async function readForkPullRequestTargetEvent(
           sourceRepositoryId: String(sourceRepositoryId),
         }
       : {}),
-  };
-}
-
-async function readCertifiedForkReviewEvent(
-  env: NodeJS.ProcessEnv,
-  workflowSchemaVersion: number,
-  binding: ForkReviewBinding | undefined,
-): Promise<PullRequestEvent> {
-  if (env.GITHUB_EVENT_NAME === "pull_request_target") {
-    return readForkPullRequestTargetEvent(env, workflowSchemaVersion);
-  }
-  if (
-    env.GITHUB_EVENT_NAME !== "workflow_dispatch" ||
-    workflowSchemaVersion !==
-      CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
-  ) {
-    throw new Error("unsupported_event");
-  }
-  if (!binding) throw new Error("fork_review_binding_required");
-  const eventPath = env.GITHUB_EVENT_PATH;
-  if (!eventPath) throw new Error("missing_github_event_path");
-  const event = JSON.parse(await readFile(eventPath, "utf8")) as {
-    readonly repository?: {
-      readonly id?: unknown;
-      readonly full_name?: unknown;
-    };
-  };
-  const repository = requireString(event.repository?.full_name, "event_repo");
-  const repositoryId = event.repository?.id;
-  if (!isSafeGitHubNumericId(repositoryId)) {
-    throw new Error("base_repository_identity_required");
-  }
-  if (
-    env.GITHUB_REPOSITORY !== repository ||
-    env.GITHUB_REPOSITORY_ID !== String(repositoryId)
-  ) {
-    throw new Error("github_repository_mismatch");
-  }
-  const [owner, repo] = repository.split("/");
-  if (!owner || !repo) throw new Error("invalid_github_repository");
-  return {
-    number: binding.pullRequestNumber,
-    repositoryId: String(repositoryId),
-    repository,
-    owner,
-    repo,
-    headSha: binding.reviewHeadSha,
-    baseSha: binding.baseSha,
-    sourceRepository: binding.sourceRepository,
-    sourceRepositoryId: binding.sourceRepositoryId,
   };
 }
 
@@ -2329,7 +2660,7 @@ async function requestGitHubActionsOidcToken(input: {
   return body.value;
 }
 
-async function requestCodexRotatingPreleaseWithFreshOidc(input: {
+type CodexRotatingPreleaseInput = {
   readonly env: NodeJS.ProcessEnv;
   readonly io: ActionIO;
   readonly fetchImpl: FetchLike;
@@ -2337,7 +2668,21 @@ async function requestCodexRotatingPreleaseWithFreshOidc(input: {
   readonly providerInstanceId: string;
   readonly workflowSchemaVersion: number;
   readonly forkReviewBinding?: ForkReviewBinding | undefined;
-}): Promise<PreleaseResponse> {
+};
+
+async function requestCodexRotatingPreleaseWithFreshOidc(
+  input: CodexRotatingPreleaseInput & {
+    readonly forkReviewBinding: ForkReviewBinding;
+  },
+): Promise<CertifiedForkPreleaseResponse>;
+async function requestCodexRotatingPreleaseWithFreshOidc(
+  input: CodexRotatingPreleaseInput & {
+    readonly forkReviewBinding?: undefined;
+  },
+): Promise<PreleaseResponse>;
+async function requestCodexRotatingPreleaseWithFreshOidc(
+  input: CodexRotatingPreleaseInput,
+): Promise<PreleaseResponse | CertifiedForkPreleaseResponse> {
   let lastError: unknown;
   try {
     for (let attempt = 1; attempt <= networkRetryMaxAttempts; attempt += 1) {
@@ -2348,7 +2693,7 @@ async function requestCodexRotatingPreleaseWithFreshOidc(input: {
       });
       mask(input.io, oidcToken);
       try {
-        return await postJson<PreleaseResponse>({
+        const response = await postJson<unknown>({
           fetchImpl: input.fetchImpl,
           label: "api_prelease",
           url: `${input.apiUrl}/api/action/v1/codex-oauth/prelease`,
@@ -2362,6 +2707,14 @@ async function requestCodexRotatingPreleaseWithFreshOidc(input: {
           },
           maxAttempts: 1,
         });
+        if (!input.forkReviewBinding) {
+          return response as PreleaseResponse;
+        }
+        const parsed = certifiedForkPreleaseResponseSchema.safeParse(response);
+        if (!parsed.success) {
+          throw new Error("certified_fork_prelease_response_invalid");
+        }
+        return parsed.data;
       } catch (error) {
         lastError = error;
         if (
@@ -3336,6 +3689,7 @@ async function getAvailableDiskBytes(path: string): Promise<number> {
 async function writeCodexAuthSnapshot(
   codexHome: string,
   authJson: string,
+  forkPromptOnlyBootstrap = false,
 ): Promise<void> {
   await mkdir(codexHome, { recursive: true, mode: 0o700 });
   const config = [
@@ -3345,6 +3699,20 @@ async function writeCodexAuthSnapshot(
     'web_search = "disabled"',
     "disable_response_storage = true",
     'model_verbosity = "low"',
+    ...(forkPromptOnlyBootstrap
+      ? [
+          'model_provider = "reviewrouter_fork_bootstrap"',
+          "",
+          "[model_providers.reviewrouter_fork_bootstrap]",
+          'name = "OpenAI"',
+          'base_url = "https://chatgpt.com/backend-api/codex"',
+          'wire_api = "responses"',
+          "requires_openai_auth = true",
+          "supports_websockets = false",
+          "request_max_retries = 0",
+          "stream_max_retries = 0",
+        ]
+      : []),
     "",
     "[features]",
     "apps = false",
@@ -3444,6 +3812,7 @@ async function runCodexBootstrap(input: {
     try {
       await runProcess({
         ...command,
+        cwd: emptyCwd,
         stdin: "Respond with OK only.",
         env: input.forkPromptOnlyBootstrap
           ? buildForkPromptOnlyBootstrapEnv(
@@ -3482,8 +3851,15 @@ async function refreshCodexAuthJson(input: {
   readonly authJson: string;
   readonly writebackCommittedByRuntime: boolean;
 }> {
-  if (!shouldUseSubscriptionRuntimeCodex(input.env)) {
-    await writeCodexAuthSnapshot(input.tempCodexHome, input.authJson);
+  if (
+    input.forkPromptOnlyBootstrap ||
+    !shouldUseSubscriptionRuntimeCodex(input.env)
+  ) {
+    await writeCodexAuthSnapshot(
+      input.tempCodexHome,
+      input.authJson,
+      input.forkPromptOnlyBootstrap,
+    );
     await runCodexBootstrap(input);
     return {
       authJson: await readFile(join(input.tempCodexHome, "auth.json"), "utf8"),
@@ -3565,7 +3941,11 @@ async function refreshCodexAuthJson(input: {
   }
 
   const refreshedAuthJson = Buffer.from(artifact.bytes).toString("utf8");
-  await writeCodexAuthSnapshot(input.tempCodexHome, refreshedAuthJson);
+  await writeCodexAuthSnapshot(
+    input.tempCodexHome,
+    refreshedAuthJson,
+    input.forkPromptOnlyBootstrap,
+  );
   return {
     authJson: refreshedAuthJson,
     writebackCommittedByRuntime: refresh.status === "ready",
@@ -5011,6 +5391,13 @@ export function buildForkPromptOnlyBootstrapEnv(
   childEnv.CODEX_HOME = codexHome;
   childEnv.CI = "true";
   return childEnv;
+}
+
+function pruneForkParentEnvForBootstrap(env: NodeJS.ProcessEnv): void {
+  const allowed = new Set(["GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"]);
+  for (const key of Object.keys(env)) {
+    if (!allowed.has(key)) delete env[key];
+  }
 }
 
 function runGit(

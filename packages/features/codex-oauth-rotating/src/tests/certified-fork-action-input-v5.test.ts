@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -22,6 +23,25 @@ function env(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     "INPUT_BASE-SHA": "c".repeat(40),
     "INPUT_TRUST-DOMAIN": "fork",
     ...overrides,
+  };
+}
+
+function forkEvent(): Record<string, unknown> {
+  return {
+    number: 42,
+    repository: { id: 123456, full_name: "base/repository" },
+    pull_request: {
+      draft: false,
+      head: {
+        sha: "b".repeat(40),
+        repo: {
+          id: 654321,
+          full_name: "contributor/repository",
+          private: false,
+        },
+      },
+      base: { sha: "c".repeat(40) },
+    },
   };
 }
 
@@ -68,30 +88,16 @@ describe("certified fork V5 action inputs", () => {
   it("validates the event and passes no workspace or auth to an injected executor", async () => {
     const root = await mkdtemp(join(tmpdir(), "rr-fork-v5-input-"));
     const eventPath = join(root, "event.json");
-    await writeFile(
-      eventPath,
-      JSON.stringify({
-        number: 42,
-        repository: { id: 123456, full_name: "base/repository" },
-        pull_request: {
-          draft: false,
-          head: {
-            sha: "b".repeat(40),
-            repo: {
-              id: 654321,
-              full_name: "contributor/repository",
-              private: false,
-            },
-          },
-          base: { sha: "c".repeat(40) },
-        },
-      }),
-    );
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await writeFile(eventPath, JSON.stringify(forkEvent()));
     const runtimeEnv = env({
       "INPUT_AUTH-JSON": "must-never-be-read",
       GITHUB_EVENT_NAME: "pull_request_target",
       GITHUB_EVENT_PATH: eventPath,
       GITHUB_REPOSITORY: "base/repository",
+      GITHUB_WORKSPACE: workspace,
+      RUNNER_TEMP: root,
       ACTIONS_ID_TOKEN_REQUEST_URL:
         "https://vstoken.actions.githubusercontent.com/oidc/token",
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
@@ -123,6 +129,148 @@ describe("certified fork V5 action inputs", () => {
         }),
       ).resolves.toBeUndefined();
       expect(execute).toHaveBeenCalledOnce();
+      expect(existsSync(eventPath)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects symlinked, out-of-temp, and nonempty fork material", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rr-fork-v5-material-"));
+    const runnerTemp = join(root, "runner-temp");
+    const workspace = join(root, "workspace");
+    await mkdir(runnerTemp);
+    await mkdir(workspace);
+    const actionRuntime = (eventPath: string, overrides = {}) => ({
+      env: env({
+        GITHUB_EVENT_NAME: "pull_request_target",
+        GITHUB_EVENT_PATH: eventPath,
+        GITHUB_REPOSITORY: "base/repository",
+        GITHUB_WORKSPACE: workspace,
+        RUNNER_TEMP: runnerTemp,
+        ACTIONS_ID_TOKEN_REQUEST_URL:
+          "https://vstoken.actions.githubusercontent.com/oidc/token",
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
+        ...overrides,
+      }),
+      forkPromptOnlyV2Executor: { execute: vi.fn() },
+    });
+    try {
+      const target = join(runnerTemp, "target.json");
+      const link = join(runnerTemp, "event-link.json");
+      await writeFile(target, JSON.stringify(forkEvent()));
+      await symlink(target, link);
+      await expect(
+        runCodexRotatingGitHubAction(actionRuntime(link)),
+      ).rejects.toThrow("certified_fork_event_file_invalid");
+
+      const outside = join(root, "outside.json");
+      await writeFile(outside, JSON.stringify(forkEvent()));
+      await expect(
+        runCodexRotatingGitHubAction(actionRuntime(outside)),
+      ).rejects.toThrow("certified_fork_event_path_outside_runner_temp");
+
+      const eventPath = join(runnerTemp, "event.json");
+      await writeFile(eventPath, JSON.stringify(forkEvent()));
+      await writeFile(join(workspace, "attacker-checkout.txt"), "fork bytes");
+      await expect(
+        runCodexRotatingGitHubAction(actionRuntime(eventPath)),
+      ).rejects.toThrow("certified_fork_workspace_not_empty");
+      expect(existsSync(eventPath)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("securely consumes a workflow_dispatch exact binding event", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rr-fork-v5-dispatch-"));
+    const eventPath = join(root, "event.json");
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await writeFile(
+      eventPath,
+      JSON.stringify({
+        repository: { id: 123456, full_name: "base/repository" },
+        inputs: {
+          source_repository: "contributor/repository",
+          source_repository_id: "654321",
+          pull_request_number: "42",
+          review_head_sha: "b".repeat(40),
+          base_sha: "c".repeat(40),
+        },
+      }),
+    );
+    const execute = vi.fn(async () => undefined);
+    try {
+      await expect(
+        runCodexRotatingGitHubAction({
+          env: env({
+            GITHUB_EVENT_NAME: "workflow_dispatch",
+            GITHUB_EVENT_PATH: eventPath,
+            GITHUB_REPOSITORY: "base/repository",
+            GITHUB_WORKSPACE: workspace,
+            RUNNER_TEMP: root,
+            ACTIONS_ID_TOKEN_REQUEST_URL:
+              "https://vstoken.actions.githubusercontent.com/oidc/token",
+            ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
+          }),
+          forkPromptOnlyV2Executor: { execute },
+        }),
+      ).resolves.toBeUndefined();
+      expect(execute).toHaveBeenCalledOnce();
+      expect(existsSync(eventPath)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [
+      "source input",
+      {
+        repository: { id: 123456, full_name: "base/repository" },
+        inputs: {
+          source_repository: "attacker/repository",
+          source_repository_id: "654321",
+          pull_request_number: "42",
+          review_head_sha: "b".repeat(40),
+          base_sha: "c".repeat(40),
+        },
+      },
+    ],
+    [
+      "trusted base repository id",
+      {
+        repository: { id: 999999, full_name: "base/repository" },
+        inputs: {
+          source_repository: "contributor/repository",
+          source_repository_id: "654321",
+          pull_request_number: "42",
+          review_head_sha: "b".repeat(40),
+          base_sha: "c".repeat(40),
+        },
+      },
+    ],
+  ])("rejects tampered workflow_dispatch %s", async (_name, event) => {
+    const root = await mkdtemp(join(tmpdir(), "rr-fork-v5-dispatch-bad-"));
+    const eventPath = join(root, "event.json");
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await writeFile(eventPath, JSON.stringify(event));
+    try {
+      await expect(
+        runCodexRotatingGitHubAction({
+          env: env({
+            GITHUB_EVENT_NAME: "workflow_dispatch",
+            GITHUB_EVENT_PATH: eventPath,
+            GITHUB_REPOSITORY: "base/repository",
+            GITHUB_WORKSPACE: workspace,
+            RUNNER_TEMP: root,
+          }),
+          forkPromptOnlyV2Executor: { execute: vi.fn() },
+        }),
+      ).rejects.toThrow("fork_review_binding_event_mismatch");
+      expect(existsSync(eventPath)).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

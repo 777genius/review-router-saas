@@ -87,8 +87,20 @@ describe("direct certified fork Responses client", () => {
       ]);
       return new Response(
         [
+          `data: ${JSON.stringify({ type: "response.created", response: { id: "resp_1" } })}`,
+          `data: ${JSON.stringify({ type: "response.in_progress", response: { id: "resp_1" } })}`,
+          `data: ${JSON.stringify({ type: "response.output_item.added", item: { type: "reasoning", id: "rs_1", summary: [] } })}`,
+          `data: ${JSON.stringify({ type: "response.reasoning_summary_part.added", summary_index: 0 })}`,
+          `data: ${JSON.stringify({ type: "response.reasoning_summary_text.delta", summary_index: 0, delta: "Checked the diff." })}`,
+          `data: ${JSON.stringify({ type: "response.reasoning_text.delta", content_index: 0, delta: "Internal reasoning." })}`,
+          `data: ${JSON.stringify({ type: "response.output_item.done", item: { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Checked the diff." }], content: [{ type: "reasoning_text", text: "Internal reasoning." }], encrypted_content: "encrypted" } })}`,
+          `data: ${JSON.stringify({ type: "response.output_item.added", item: { type: "message", role: "assistant", content: [] } })}`,
+          `data: ${JSON.stringify({ type: "response.content_part.added", part: { type: "output_text", text: "" } })}`,
           `data: ${JSON.stringify({ type: "response.output_text.delta", delta: modelOutput() })}`,
-          `data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", output_text: modelOutput() } })}`,
+          `data: ${JSON.stringify({ type: "response.output_text.done", text: modelOutput() })}`,
+          `data: ${JSON.stringify({ type: "response.content_part.done", part: { type: "output_text", text: modelOutput() } })}`,
+          `data: ${JSON.stringify({ type: "response.output_item.done", item: { type: "message", role: "assistant", content: [{ type: "output_text", text: modelOutput() }] } })}`,
+          `data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_1" } })}`,
           "data: [DONE]",
           "",
         ].join("\n\n"),
@@ -96,6 +108,37 @@ describe("direct certified fork Responses client", () => {
       );
     }) as typeof fetch;
 
+    await expect(requestDirectForkReview(input(fetchImpl))).resolves.toEqual({
+      protocolVersion: 1,
+      summaryMarkdown: "No blocking findings.",
+      findings: [],
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("accepts validated reasoning before non-stream assistant output", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            status: "completed",
+            output: [
+              {
+                type: "reasoning",
+                id: "rs_1",
+                summary: [{ type: "summary_text", text: "Reviewed." }],
+                encrypted_content: "encrypted",
+              },
+              {
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: modelOutput() }],
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    ) as typeof fetch;
     await expect(requestDirectForkReview(input(fetchImpl))).resolves.toEqual({
       protocolVersion: 1,
       summaryMarkdown: "No blocking findings.",
@@ -121,7 +164,7 @@ describe("direct certified fork Responses client", () => {
         `data: ${JSON.stringify({ type: "response.function_call_arguments.delta", delta: "{}" })}\n\n`,
         { status: 200, headers: { "content-type": "text/event-stream" } },
       ),
-      "certified_fork_provider_tool_call_rejected",
+      "certified_fork_provider_event_rejected",
     ],
     [
       "non-stream tool call",
@@ -132,7 +175,7 @@ describe("direct certified fork Responses client", () => {
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       ),
-      "certified_fork_provider_tool_call_rejected",
+      "certified_fork_provider_item_rejected",
     ],
     [
       "computer call",
@@ -143,7 +186,37 @@ describe("direct certified fork Responses client", () => {
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       ),
-      "certified_fork_provider_tool_call_rejected",
+      "certified_fork_provider_item_rejected",
+    ],
+    [
+      "tool search output item",
+      new Response(
+        `data: ${JSON.stringify({ type: "response.output_item.added", item: { type: "tool_search_call", query: "secrets" } })}\n\n`,
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ),
+      "certified_fork_provider_item_rejected",
+    ],
+    [
+      "tool search event",
+      new Response(
+        `data: ${JSON.stringify({ type: "response.tool_search_call.completed", item: { type: "message", content: [] } })}\n\n`,
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ),
+      "certified_fork_provider_event_rejected",
+    ],
+    [
+      "reasoning followed by non-stream tool search",
+      new Response(
+        JSON.stringify({
+          status: "completed",
+          output: [
+            { type: "reasoning", id: "rs_1", summary: [] },
+            { type: "tool_search_call", query: "secrets" },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+      "certified_fork_provider_item_rejected",
     ],
     [
       "incomplete SSE",
@@ -230,7 +303,7 @@ describe("direct certified fork Responses client", () => {
     expect(
       certifiedForkModelOutputSchema.safeParse({
         protocolVersion: 1,
-        summaryMarkdown: "s".repeat(60_000),
+        summaryMarkdown: "s".repeat(50_000),
         findings: Array.from({ length: 50 }, () => finding),
       }).success,
     ).toBe(true);
@@ -279,9 +352,49 @@ describe("direct certified fork Responses client", () => {
         ],
       }).success,
     ).toBe(true);
+    expect(
+      certifiedForkModelOutputSchema.safeParse({
+        protocolVersion: 1,
+        summaryMarkdown: "é".repeat(30_000),
+        findings: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      certifiedForkModelOutputSchema.safeParse({
+        protocolVersion: 1,
+        summaryMarkdown: "s",
+        findings: [{ ...finding, startLine: 1_000_001 }],
+      }).success,
+    ).toBe(false);
   });
 
-  it("accepts a 300000-byte prompt packet and rejects one byte more", () => {
+  it("enforces the 200000-byte per-file patch limit", () => {
+    const packet = promptPacket();
+    const withPatch = (patch: string) => ({
+      ...packet,
+      files: [{ ...packet.files[0]!, patch }],
+    });
+    expect(
+      certifiedForkPromptPacketSchema.safeParse(withPatch("x".repeat(200_000)))
+        .success,
+    ).toBe(true);
+    expect(
+      certifiedForkPromptPacketSchema.safeParse(
+        withPatch(`${"x".repeat(199_998)}é`),
+      ).success,
+    ).toBe(true);
+    expect(
+      certifiedForkPromptPacketSchema.safeParse(
+        withPatch(`${"x".repeat(199_999)}é`),
+      ).success,
+    ).toBe(false);
+    expect(
+      certifiedForkPromptPacketSchema.safeParse(withPatch("x".repeat(200_001)))
+        .success,
+    ).toBe(false);
+  });
+
+  it("accepts a 300000-byte prompt packet and rejects larger UTF-8", () => {
     const packet = promptPacket();
     const secondFile = {
       ...packet.files[0]!,
@@ -292,16 +405,16 @@ describe("direct certified fork Responses client", () => {
       ...packet,
       files: [{ ...packet.files[0]!, patch: "" }, secondFile],
     };
-    const emptyBytes = Buffer.byteLength(JSON.stringify(base), "utf8");
-    const remaining = 300_000 - emptyBytes;
-    const firstPatchBytes = Math.min(200_000, remaining);
+    const emptyCharacters = JSON.stringify(base).length;
+    const remaining = 300_000 - emptyCharacters;
+    const firstPatchCharacters = Math.min(200_000, remaining);
     const exact = {
       ...base,
       files: [
-        { ...base.files[0]!, patch: "x".repeat(firstPatchBytes) },
+        { ...base.files[0]!, patch: "x".repeat(firstPatchCharacters) },
         {
           ...base.files[1]!,
-          patch: "y".repeat(remaining - firstPatchBytes),
+          patch: "y".repeat(remaining - firstPatchCharacters),
         },
       ],
     };
@@ -318,5 +431,23 @@ describe("direct certified fork Responses client", () => {
     expect(certifiedForkPromptPacketSchema.safeParse(oversized).success).toBe(
       false,
     );
+    const lastPatch = exact.files[1]!.patch;
+    const multibyteOversized = {
+      ...exact,
+      files: [
+        exact.files[0],
+        {
+          ...exact.files[1]!,
+          patch: `${lastPatch.slice(0, -1)}é`,
+        },
+      ],
+    };
+    expect(JSON.stringify(multibyteOversized)).toHaveLength(300_000);
+    expect(Buffer.byteLength(JSON.stringify(multibyteOversized), "utf8")).toBe(
+      300_001,
+    );
+    expect(
+      certifiedForkPromptPacketSchema.safeParse(multibyteOversized).success,
+    ).toBe(false);
   });
 });

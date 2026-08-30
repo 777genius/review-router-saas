@@ -30,8 +30,8 @@ export const certifiedForkModelOutputSchema = z
             title: z.string().min(1).max(200),
             body: z.string().min(1).max(8_000),
             path: z.string().min(1).max(500).optional(),
-            startLine: z.number().int().positive().optional(),
-            endLine: z.number().int().positive().optional(),
+            startLine: z.number().int().positive().max(1_000_000).optional(),
+            endLine: z.number().int().positive().max(1_000_000).optional(),
           })
           .strict()
           .superRefine((finding, context) => {
@@ -50,7 +50,15 @@ export const certifiedForkModelOutputSchema = z
       )
       .max(50),
   })
-  .strict();
+  .strict()
+  .superRefine((output, context) => {
+    if (renderCertifiedForkOutputBytes(output) > 59_900) {
+      context.addIssue({
+        code: "custom",
+        message: "rendered review exceeds publication budget",
+      });
+    }
+  });
 
 export type CertifiedForkModelOutput = z.infer<
   typeof certifiedForkModelOutputSchema
@@ -77,7 +85,14 @@ export const certifiedForkPromptPacketSchema = z
             status: z.string().min(1).max(100),
             additions: z.number().int().nonnegative(),
             deletions: z.number().int().nonnegative(),
-            patch: z.string().max(200_000),
+            patch: z.string().superRefine((patch, context) => {
+              if (Buffer.byteLength(patch, "utf8") > 200_000) {
+                context.addIssue({
+                  code: "custom",
+                  message: "patch exceeds byte budget",
+                });
+              }
+            }),
           })
           .strict(),
       )
@@ -213,13 +228,52 @@ const certifiedForkModelOutputJsonSchema = {
           title: { type: "string", minLength: 1, maxLength: 200 },
           body: { type: "string", minLength: 1, maxLength: 8_000 },
           path: { type: "string", minLength: 1, maxLength: 500 },
-          startLine: { type: "integer", minimum: 1 },
-          endLine: { type: "integer", minimum: 1 },
+          startLine: { type: "integer", minimum: 1, maximum: 1_000_000 },
+          endLine: { type: "integer", minimum: 1, maximum: 1_000_000 },
         },
       },
     },
   },
 } as const;
+
+function renderCertifiedForkOutputBytes(
+  output: Pick<CertifiedForkModelOutput, "summaryMarkdown" | "findings">,
+): number {
+  const lines = [
+    "## ReviewRouter certified fork review",
+    cleanCertifiedForkMarkdown(output.summaryMarkdown),
+  ];
+  if (output.findings.length) {
+    lines.push("### Findings");
+    for (const finding of output.findings) {
+      lines.push(
+        `**[${finding.severity}] ${escapeCertifiedForkMarkdown(cleanCertifiedForkMarkdown(finding.title))}**`,
+      );
+      if (finding.path && (finding.startLine ?? finding.endLine)) {
+        lines.push(
+          `\`${escapeCertifiedForkMarkdown(finding.path)}:${finding.startLine ?? finding.endLine}\``,
+        );
+      }
+      lines.push(cleanCertifiedForkMarkdown(finding.body));
+    }
+  }
+  return Buffer.byteLength(lines.join("\n"), "utf8");
+}
+
+function cleanCertifiedForkMarkdown(value: string): string {
+  return (
+    value
+      .replace(/<!--[^]*?-->/gu, "")
+      // The server strips this exact C0 control range before publication.
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "")
+      .trim()
+  );
+}
+
+function escapeCertifiedForkMarkdown(value: string): string {
+  return value.replaceAll("`", "\\`");
+}
 
 async function readBoundedJson(response: Response): Promise<unknown> {
   const text = await readBoundedText(response, maxProviderResponseBytes);
@@ -235,7 +289,7 @@ async function readBoundedJson(response: Response): Promise<unknown> {
 async function readBoundedSseOutput(response: Response): Promise<string> {
   const text = await readBoundedText(response, maxProviderResponseBytes);
   let output = "";
-  let completedOutput: string | undefined;
+  let finalOutput: string | undefined;
   let eventCount = 0;
   let completedEventSeen = false;
   for (const frame of text.split(/\r?\n\r?\n/)) {
@@ -256,29 +310,78 @@ async function readBoundedSseOutput(response: Response): Promise<string> {
     } catch (error) {
       throw new Error("certified_fork_provider_sse_invalid", { cause: error });
     }
-    assertNoToolCall(event);
     const record = asRecord(event);
     const type = typeof record.type === "string" ? record.type : "";
-    if (type === "response.output_text.delta") {
-      if (typeof record.delta !== "string") {
-        throw new Error("certified_fork_provider_sse_invalid");
+    switch (type) {
+      case "response.created":
+      case "response.in_progress":
+      case "response.queued":
+        validateOptionalSafeResponse(record.response);
+        break;
+      case "response.output_item.added":
+        validateSafeOutputItem(record.item);
+        break;
+      case "response.output_item.done": {
+        const itemText = validateSafeOutputItem(record.item);
+        if (itemText) finalOutput = itemText;
+        break;
       }
-      output = appendBoundedOutput(output, record.delta);
-    } else if (type === "response.completed") {
-      completedOutput = extractCompletedResponseOutput(record.response);
-      completedEventSeen = true;
-    } else if (
-      type === "response.incomplete" ||
-      type === "response.failed" ||
-      type === "error"
-    ) {
-      throw new Error("certified_fork_provider_failed");
+      case "response.reasoning_summary_text.delta":
+        validateSafeReasoningDelta(record, "summary_index");
+        break;
+      case "response.reasoning_text.delta":
+        validateSafeReasoningDelta(record, "content_index");
+        break;
+      case "response.reasoning_summary_part.added":
+        validateSafeIndex(record.summary_index);
+        break;
+      case "response.content_part.added":
+        validateSafeOutputTextPart(record.part);
+        break;
+      case "response.content_part.done": {
+        const partText = validateSafeOutputTextPart(record.part);
+        if (partText) finalOutput = partText;
+        break;
+      }
+      case "response.output_text.delta":
+        if (typeof record.delta !== "string") {
+          throw new Error("certified_fork_provider_sse_invalid");
+        }
+        output = appendBoundedOutput(output, record.delta);
+        break;
+      case "response.output_text.done":
+        if (typeof record.text !== "string") {
+          throw new Error("certified_fork_provider_sse_invalid");
+        }
+        finalOutput = appendBoundedOutput("", record.text);
+        break;
+      case "response.completed": {
+        const completed = asRecord(record.response);
+        if (
+          typeof completed.id !== "string" ||
+          completed.id.length === 0 ||
+          completed.id.length > 500 ||
+          (completed.status !== undefined && completed.status !== "completed")
+        ) {
+          throw new Error("certified_fork_provider_response_incomplete");
+        }
+        finalOutput =
+          extractOptionalSafeResponseOutput(completed) ?? finalOutput;
+        completedEventSeen = true;
+        break;
+      }
+      case "response.incomplete":
+      case "response.failed":
+      case "error":
+        throw new Error("certified_fork_provider_failed");
+      default:
+        throw new Error("certified_fork_provider_event_rejected");
     }
   }
   if (!completedEventSeen) {
     throw new Error("certified_fork_provider_stream_incomplete");
   }
-  const selected = completedOutput ?? output;
+  const selected = finalOutput ?? output;
   if (!selected) throw new Error("certified_fork_provider_output_missing");
   return selected;
 }
@@ -288,59 +391,149 @@ function extractCompletedResponseOutput(payload: unknown): string {
   if (response.status !== "completed") {
     throw new Error("certified_fork_provider_response_incomplete");
   }
-  return extractOutputText(response);
+  const output = extractOptionalSafeResponseOutput(response);
+  if (!output) throw new Error("certified_fork_provider_output_missing");
+  return output;
 }
 
-function extractOutputText(payload: unknown): string {
-  assertNoToolCall(payload);
+function validateOptionalSafeResponse(payload: unknown): void {
   const response = asRecord(payload);
-  if (typeof response.output_text === "string" && response.output_text) {
-    return response.output_text;
-  }
-  if (!Array.isArray(response.output)) {
-    throw new Error("certified_fork_provider_output_missing");
-  }
-  let text = "";
-  for (const item of response.output) {
-    const itemRecord = asRecord(item);
-    if (!Array.isArray(itemRecord.content)) continue;
-    for (const content of itemRecord.content) {
-      const contentRecord = asRecord(content);
-      if (
-        contentRecord.type === "output_text" &&
-        typeof contentRecord.text === "string"
-      ) {
-        text = appendBoundedOutput(text, contentRecord.text);
-      }
+  extractOptionalSafeResponseOutput(response);
+}
+
+function extractOptionalSafeResponseOutput(
+  response: Record<string, unknown>,
+): string | undefined {
+  let itemText = "";
+  if (response.output !== undefined) {
+    if (!Array.isArray(response.output)) {
+      throw new Error("certified_fork_provider_shape_invalid");
+    }
+    for (const item of response.output) {
+      itemText = appendBoundedOutput(itemText, validateSafeOutputItem(item));
     }
   }
-  if (!text) throw new Error("certified_fork_provider_output_missing");
+  if (typeof response.output_text === "string" && response.output_text) {
+    return appendBoundedOutput("", response.output_text);
+  }
+  return itemText || undefined;
+}
+
+function validateSafeOutputItem(value: unknown): string {
+  const item = asRecord(value);
+  if (item.type === "message") return validateSafeMessageItem(item);
+  if (item.type === "reasoning") {
+    validateSafeReasoningItem(item);
+    return "";
+  }
+  throw new Error("certified_fork_provider_item_rejected");
+}
+
+function validateSafeReasoningItem(item: Record<string, unknown>): void {
+  validateOnlyKeys(item, [
+    "type",
+    "id",
+    "summary",
+    "content",
+    "encrypted_content",
+  ]);
+  if (typeof item.id !== "string" || item.id.length > 500) {
+    throw new Error("certified_fork_provider_item_rejected");
+  }
+  validateSafeReasoningParts(item.summary, "summary_text");
+  if (item.content !== undefined) {
+    if (!Array.isArray(item.content) || item.content.length > 100) {
+      throw new Error("certified_fork_provider_item_rejected");
+    }
+    for (const part of item.content) {
+      const record = asRecord(part);
+      if (
+        (record.type !== "reasoning_text" && record.type !== "text") ||
+        typeof record.text !== "string"
+      ) {
+        throw new Error("certified_fork_provider_item_rejected");
+      }
+      appendBoundedOutput("", record.text);
+    }
+  }
+  if (
+    item.encrypted_content !== undefined &&
+    item.encrypted_content !== null &&
+    typeof item.encrypted_content !== "string"
+  ) {
+    throw new Error("certified_fork_provider_item_rejected");
+  }
+}
+
+function validateSafeReasoningParts(value: unknown, type: string): void {
+  if (!Array.isArray(value) || value.length > 100) {
+    throw new Error("certified_fork_provider_item_rejected");
+  }
+  for (const part of value) {
+    const record = asRecord(part);
+    if (record.type !== type || typeof record.text !== "string") {
+      throw new Error("certified_fork_provider_item_rejected");
+    }
+    appendBoundedOutput("", record.text);
+  }
+}
+
+function validateSafeReasoningDelta(
+  event: Record<string, unknown>,
+  indexKey: "summary_index" | "content_index",
+): void {
+  if (typeof event.delta !== "string") {
+    throw new Error("certified_fork_provider_sse_invalid");
+  }
+  appendBoundedOutput("", event.delta);
+  validateSafeIndex(event[indexKey]);
+}
+
+function validateSafeIndex(value: unknown): void {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error("certified_fork_provider_sse_invalid");
+  }
+}
+
+function validateSafeMessageItem(value: unknown): string {
+  const item = asRecord(value);
+  validateOnlyKeys(item, ["type", "id", "role", "content", "phase", "status"]);
+  if (item.type !== "message" || !Array.isArray(item.content)) {
+    throw new Error("certified_fork_provider_item_rejected");
+  }
+  if (item.role !== undefined && item.role !== "assistant") {
+    throw new Error("certified_fork_provider_item_rejected");
+  }
+  if (
+    item.status !== undefined &&
+    item.status !== "in_progress" &&
+    item.status !== "completed"
+  ) {
+    throw new Error("certified_fork_provider_item_rejected");
+  }
+  let text = "";
+  for (const part of item.content) {
+    text = appendBoundedOutput(text, validateSafeOutputTextPart(part));
+  }
   return text;
 }
 
-function assertNoToolCall(value: unknown, depth = 0): void {
-  if (depth > 20) throw new Error("certified_fork_provider_shape_invalid");
-  if (Array.isArray(value)) {
-    for (const item of value) assertNoToolCall(item, depth + 1);
-    return;
+function validateOnlyKeys(
+  record: Record<string, unknown>,
+  allowed: readonly string[],
+): void {
+  const allowedKeys = new Set(allowed);
+  if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
+    throw new Error("certified_fork_provider_item_rejected");
   }
-  if (!value || typeof value !== "object") return;
-  const record = value as Record<string, unknown>;
-  const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
-  if (
-    type.includes("tool_call") ||
-    type.includes("function_call") ||
-    type.includes("computer_call") ||
-    type.includes("web_search_call") ||
-    type.includes("mcp_call") ||
-    type.includes("shell_call") ||
-    type.includes("custom_call")
-  ) {
-    throw new Error("certified_fork_provider_tool_call_rejected");
+}
+
+function validateSafeOutputTextPart(value: unknown): string {
+  const part = asRecord(value);
+  if (part.type !== "output_text" || typeof part.text !== "string") {
+    throw new Error("certified_fork_provider_item_rejected");
   }
-  for (const nested of Object.values(record)) {
-    assertNoToolCall(nested, depth + 1);
-  }
+  return part.text;
 }
 
 async function readBoundedText(
