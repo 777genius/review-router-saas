@@ -850,7 +850,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
     });
   }
 
-  async resolveWorkflowRunForkPullRequest(input: {
+  async resolveWorkflowRunPullRequestBinding(input: {
     readonly repository: {
       readonly githubInstallationId: string;
       readonly githubRepositoryId: string;
@@ -894,11 +894,25 @@ export class OctokitCodexRotatingGitHubSecretGateway
         headers: { authorization: `Bearer ${token.token}` },
       },
     )) as PullRequestResponse;
-    return decodeForkPullRequestBinding(pullResponse.data, {
+    return decodeWorkflowRunPullRequestBinding(pullResponse.data, {
       baseRepository: input.repository.fullName,
       baseRepositoryId: input.repository.githubRepositoryId,
       pullRequestNumber,
     });
+  }
+
+  async resolveWorkflowRunForkPullRequest(input: {
+    readonly repository: {
+      readonly githubInstallationId: string;
+      readonly githubRepositoryId: string;
+      readonly fullName: string;
+      readonly owner: string;
+    };
+    readonly githubRunId: string;
+    readonly githubRunAttempt: string;
+    readonly eventName: "pull_request_target";
+  }) {
+    return this.resolveWorkflowRunPullRequestBinding(input);
   }
 
   async resolve(input: {
@@ -1635,7 +1649,7 @@ function decodePullRequestReviewFacts(
   };
 }
 
-function decodeForkPullRequestBinding(
+function decodeWorkflowRunPullRequestBinding(
   data: unknown,
   expected: {
     readonly baseRepository: string;
@@ -1678,13 +1692,12 @@ function decodeForkPullRequestBinding(
     (pullRequest.head?.repo?.private === false ? "public" : "private");
   if (
     pullRequest.number !== expected.pullRequestNumber ||
-    pullRequest.draft !== false ||
+    typeof pullRequest.draft !== "boolean" ||
     typeof pullRequest.user?.type !== "string" ||
     baseRepository !== expected.baseRepository ||
     baseRepositoryId !== expected.baseRepositoryId ||
     typeof sourceRepository !== "string" ||
     !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(sourceRepository) ||
-    sourceRepository === baseRepository ||
     !/^[1-9][0-9]*$/.test(sourceRepositoryId) ||
     !baseSha ||
     !reviewHeadSha ||
@@ -1701,7 +1714,7 @@ function decodeForkPullRequestBinding(
     pullRequestNumber: expected.pullRequestNumber,
     reviewHeadSha,
     baseSha,
-    draft: false,
+    draft: pullRequest.draft,
     authorType: pullRequest.user.type,
   };
 }

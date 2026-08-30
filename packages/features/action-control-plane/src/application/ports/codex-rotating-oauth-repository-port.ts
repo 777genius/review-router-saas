@@ -269,21 +269,30 @@ export interface CodexRotatingWorkflowSourceVerifierPort {
     readonly eventName: "pull_request_target";
   }): Promise<number>;
 
+  resolveWorkflowRunPullRequestBinding?(input: {
+    readonly repository: ActionRepositoryContext;
+    readonly githubRunId: string;
+    readonly githubRunAttempt: string;
+    readonly eventName: "pull_request_target";
+  }): Promise<CodexRotatingWorkflowRunPullRequestBinding>;
+
   resolveWorkflowRunForkPullRequest?(input: {
     readonly repository: ActionRepositoryContext;
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
     readonly eventName: "pull_request_target";
-  }): Promise<{
-    readonly baseRepository: string;
-    readonly baseRepositoryId: string;
-    readonly sourceRepository: string;
-    readonly sourceRepositoryId: string;
-    readonly sourceVisibility: "public" | "private" | "internal";
-    readonly pullRequestNumber: number;
-    readonly reviewHeadSha: string;
-    readonly baseSha: string;
-    readonly draft: boolean;
-    readonly authorType: string;
-  }>;
+  }): Promise<CodexRotatingWorkflowRunPullRequestBinding>;
 }
+
+export type CodexRotatingWorkflowRunPullRequestBinding = Readonly<{
+  baseRepository: string;
+  baseRepositoryId: string;
+  sourceRepository: string;
+  sourceRepositoryId: string;
+  sourceVisibility: "public" | "private" | "internal";
+  pullRequestNumber: number;
+  reviewHeadSha: string;
+  baseSha: string;
+  draft: boolean;
+  authorType: string;
+}>;

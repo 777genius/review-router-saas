@@ -44,7 +44,7 @@ function dependencies(
     workflowPath: ".github/workflows/reviewrouter-codex.yml",
     workflowSchemaVersion: 5,
   } as const;
-  const resolveWorkflowRunForkPullRequest = vi.fn().mockResolvedValue({
+  const resolveWorkflowRunPullRequestBinding = vi.fn().mockResolvedValue({
     baseRepository: repository.fullName,
     baseRepositoryId: repository.githubRepositoryId,
     sourceRepository: forkReviewBinding.sourceRepository,
@@ -108,12 +108,12 @@ function dependencies(
     },
     codexRotatingWorkflowSourceVerifier: {
       verifyWorkflowSource: vi.fn().mockResolvedValue({ binding }),
-      resolveWorkflowRunForkPullRequest,
+      resolveWorkflowRunPullRequestBinding,
     },
     replayNonces: { tryConsumeNonce: vi.fn().mockResolvedValue(true) },
     codexRotatingNewWorkAdmission: { assertAdmitted: vi.fn() },
     clock: { now: () => now },
-    resolveWorkflowRunForkPullRequest,
+    resolveWorkflowRunPullRequestBinding,
     acquirePrelease,
   };
 }
@@ -138,7 +138,7 @@ describe("certified fork V5 prelease", () => {
       leaseId: "lease:certified-fork-v5",
       repository: repository.fullName,
     });
-    expect(deps.resolveWorkflowRunForkPullRequest).toHaveBeenCalledWith({
+    expect(deps.resolveWorkflowRunPullRequestBinding).toHaveBeenCalledWith({
       repository,
       githubRunId: "9001",
       githubRunAttempt: "1",
@@ -147,6 +147,82 @@ describe("certified fork V5 prelease", () => {
     expect(deps.acquirePrelease).toHaveBeenCalledWith(
       expect.objectContaining({ pullRequestNumber: 42 }),
     );
+  });
+
+  it("admits a V5 same-repository lane only after live source identity verification", async () => {
+    const deps = dependencies({
+      sourceRepository: repository.fullName,
+      sourceRepositoryId: repository.githubRepositoryId,
+    });
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 5,
+        },
+        deps,
+      ),
+    ).resolves.toMatchObject({ leaseId: "lease:certified-fork-v5" });
+    expect(deps.resolveWorkflowRunPullRequestBinding).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a V5 fork lane when its binding is missing", async () => {
+    const deps = dependencies();
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 5,
+        },
+        deps,
+      ),
+    ).rejects.toThrow("codex_rotating_v5_fork_binding_required");
+    expect(deps.acquirePrelease).not.toHaveBeenCalled();
+  });
+
+  it("rejects a partial V5 fork binding", async () => {
+    const deps = dependencies();
+    const partial = {
+      ...forkReviewBinding,
+      sourceRepositoryId: undefined,
+    } as unknown as typeof forkReviewBinding;
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 5,
+          forkReviewBinding: partial,
+        },
+        deps,
+      ),
+    ).rejects.toThrow("codex_rotating_fork_pull_request_identity_mismatch");
+    expect(deps.acquirePrelease).not.toHaveBeenCalled();
+  });
+
+  it("rejects a spoofed V5 fork binding even when the live PR is valid", async () => {
+    const deps = dependencies();
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 5,
+          forkReviewBinding: {
+            ...forkReviewBinding,
+            sourceRepository: "attacker/spoof",
+          },
+        },
+        deps,
+      ),
+    ).rejects.toThrow("codex_rotating_fork_pull_request_identity_mismatch");
+    expect(deps.acquirePrelease).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -158,7 +234,7 @@ describe("certified fork V5 prelease", () => {
     ["bot", { authorType: "Bot" }],
   ])("fails closed for %s", async (_name, liveOverrides) => {
     const deps = dependencies(liveOverrides);
-    await expect(prelease(deps)).rejects.toThrow(/fork_pull_request/);
+    await expect(prelease(deps)).rejects.toThrow(/pull_request/);
     expect(deps.acquirePrelease).not.toHaveBeenCalled();
   });
 
@@ -176,6 +252,6 @@ describe("certified fork V5 prelease", () => {
         deps,
       ),
     ).rejects.toThrow("fork_review_binding_schema_invalid");
-    expect(deps.resolveWorkflowRunForkPullRequest).not.toHaveBeenCalled();
+    expect(deps.resolveWorkflowRunPullRequestBinding).not.toHaveBeenCalled();
   });
 });

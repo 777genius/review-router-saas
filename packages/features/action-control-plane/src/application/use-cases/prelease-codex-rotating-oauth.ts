@@ -197,6 +197,7 @@ export async function preleaseCodexRotatingOAuth(
   const pullRequestNumber = await resolvePullRequestNumber({
     claims,
     repository,
+    workflowSchemaVersion: input.workflowSchemaVersion,
     workflowSourceVerifier: dependencies.codexRotatingWorkflowSourceVerifier,
     ...(input.forkReviewBinding
       ? { forkReviewBinding: input.forkReviewBinding }
@@ -313,6 +314,7 @@ function reviewIntentRequired(input: {
 async function resolvePullRequestNumber(input: {
   readonly claims: CodexRotatingOidcClaims;
   readonly repository: ActionRepositoryContext;
+  readonly workflowSchemaVersion: number;
   readonly workflowSourceVerifier: CodexRotatingWorkflowSourceVerifierPort;
   readonly forkReviewBinding?: ForkReviewBinding | undefined;
 }): Promise<number | undefined> {
@@ -328,6 +330,26 @@ async function resolvePullRequestNumber(input: {
     return pullRequestNumber;
   }
   if (input.claims.event_name !== "pull_request_target") return undefined;
+  if (isCertifiedForkReviewWorkflowSchemaVersion(input.workflowSchemaVersion)) {
+    const resolveBinding =
+      input.workflowSourceVerifier.resolveWorkflowRunPullRequestBinding;
+    if (!resolveBinding) {
+      throw new Error("codex_rotating_v5_pull_request_resolver_unavailable");
+    }
+    const live = await resolveBinding.call(input.workflowSourceVerifier, {
+      repository: input.repository,
+      githubRunId: input.claims.run_id,
+      githubRunAttempt: input.claims.run_attempt,
+      eventName: input.claims.event_name,
+    });
+    assertLiveBaseRepositoryIdentity(live, input.repository);
+    if (input.forkReviewBinding) {
+      assertLiveForkReviewBinding(live, input.forkReviewBinding);
+    } else {
+      assertLiveSameRepositoryReviewBinding(live, input.repository);
+    }
+    return live.pullRequestNumber;
+  }
   if (input.forkReviewBinding) {
     const resolveFork =
       input.workflowSourceVerifier.resolveWorkflowRunForkPullRequest;
@@ -375,6 +397,62 @@ async function resolvePullRequestNumber(input: {
     githubRunAttempt: input.claims.run_attempt,
     eventName: input.claims.event_name,
   });
+}
+
+type LivePullRequestBinding = Awaited<
+  ReturnType<
+    NonNullable<
+      CodexRotatingWorkflowSourceVerifierPort["resolveWorkflowRunPullRequestBinding"]
+    >
+  >
+>;
+
+function assertLiveBaseRepositoryIdentity(
+  live: LivePullRequestBinding,
+  repository: ActionRepositoryContext,
+): void {
+  if (
+    live.baseRepository !== repository.fullName ||
+    live.baseRepositoryId !== repository.githubRepositoryId ||
+    live.draft ||
+    live.authorType === "Bot"
+  ) {
+    throw new Error("codex_rotating_v5_pull_request_identity_mismatch");
+  }
+}
+
+function assertLiveSameRepositoryReviewBinding(
+  live: LivePullRequestBinding,
+  repository: ActionRepositoryContext,
+): void {
+  if (
+    live.sourceRepository !== repository.fullName ||
+    live.sourceRepositoryId !== repository.githubRepositoryId
+  ) {
+    throw new Error("codex_rotating_v5_fork_binding_required");
+  }
+}
+
+function assertLiveForkReviewBinding(
+  live: LivePullRequestBinding,
+  expected: ForkReviewBinding,
+): void {
+  if (
+    expected.trustDomain !== "fork" ||
+    live.baseRepository !== expected.baseRepository ||
+    live.baseRepositoryId !== expected.baseRepositoryId ||
+    live.sourceRepository !== expected.sourceRepository ||
+    live.sourceRepositoryId !== expected.sourceRepositoryId ||
+    live.sourceRepository === live.baseRepository ||
+    live.pullRequestNumber !== expected.pullRequestNumber ||
+    live.reviewHeadSha !== expected.reviewHeadSha.toLowerCase() ||
+    live.baseSha !== expected.baseSha.toLowerCase()
+  ) {
+    throw new Error("codex_rotating_fork_pull_request_identity_mismatch");
+  }
+  if (live.sourceVisibility !== "public") {
+    throw new Error("codex_rotating_fork_pull_request_not_admitted");
+  }
 }
 
 async function consumeCodexRotatingOidcReplayNonce(input: {
