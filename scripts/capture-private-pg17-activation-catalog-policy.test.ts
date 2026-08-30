@@ -186,6 +186,29 @@ describe("activation catalog policy candidate capture", () => {
     ).toThrow("activation_catalog_policy_candidate_invalid:preactivation");
   });
 
+  it("preserves the sanitized validation error as the cause", () => {
+    const malformed = policy("preactivation");
+    malformed.roles[0]!.name = "secret-canary";
+
+    let caught: unknown;
+    try {
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        envelope(malformed, policy("activated")),
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    const error = caught as Error;
+    expect(error.message).toBe(
+      "activation_catalog_policy_candidate_invalid:preactivation:role-name",
+    );
+    expect(error.cause).toBeInstanceOf(Error);
+    expect((error.cause as Error).message).toBe("role-name");
+    expect(String(error)).not.toContain("secret-canary");
+  });
+
   it("exports the same pure, secret-safe parser used by the CLI adapter", () => {
     const stdout = envelope(policy("preactivation"), policy("activated"));
 

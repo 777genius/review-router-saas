@@ -11,6 +11,7 @@ const assertCandidate = (value, phase) => {
         : "unknown";
     throw new Error(
       `activation_catalog_policy_candidate_invalid:${phase}:${reason}`,
+      { cause: error },
     );
   }
 };
