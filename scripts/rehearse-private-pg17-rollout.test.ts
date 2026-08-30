@@ -322,6 +322,9 @@ describe("disposable dual-version rehearsal", () => {
     expect(foundation).toContain(
       "GRANT reviewrouter_comment_token_custody TO reviewrouter_role_bootstrap WITH ADMIN TRUE",
     );
+    expect(foundation).toContain(
+      "CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
   });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
     const identity = "rr-disposable-production-shaped-capture";

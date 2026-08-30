@@ -813,6 +813,7 @@ CREATE ROLE reviewrouter_worker LOGIN PASSWORD 'disposable-worker';
 CREATE ROLE reviewrouter_comment_token_custody LOGIN PASSWORD 'disposable-custody';
 CREATE ROLE reviewrouter_codex_effect_authority LOGIN PASSWORD 'disposable-effect';
 CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release';
+CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN;
 CREATE ROLE reviewrouter_activation_permit_installer LOGIN PASSWORD 'disposable-installer';
 CREATE ROLE reviewrouter_activation_receipt_reader LOGIN PASSWORD 'disposable-receipt-reader';
