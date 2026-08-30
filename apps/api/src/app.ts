@@ -147,6 +147,7 @@ import {
   assertReviewIntentRolloutConfiguration,
   composeReviewActionV2ProductionRoutes,
 } from "./review-action-v2-production-composition.js";
+import { composeCertifiedForkReview } from "./certified-fork-review-composition.js";
 import {
   composePrismaReviewInvestigationOperations,
   type ReviewInvestigationTerminalTelemetrySamplePort,
@@ -530,8 +531,11 @@ export async function createApiApp(
             options.actionSessionSecret;
           const reviewRunControlRepositories =
             createPrismaReviewRunControlRepositories(prisma);
+          const actionRepositories = new PrismaActionControlPlaneRepository(
+            prisma,
+          );
           return {
-            repositories: new PrismaActionControlPlaneRepository(prisma),
+            repositories: actionRepositories,
             defaultProvider: {
               model:
                 process.env.REVIEW_ROUTER_DEFAULT_MODEL?.trim() ||
@@ -702,6 +706,24 @@ export async function createApiApp(
               : {}),
             ...(options.actionControlPlaneEnabled === false
               ? { controlPlaneEnabled: false }
+              : {}),
+            ...(process.env.GITHUB_APP_ID &&
+            githubAppPrivateKey &&
+            process.env.GITHUB_APP_SLUG
+              ? {
+                  certifiedForkReview: composeCertifiedForkReview({
+                    prisma,
+                    appId: process.env.GITHUB_APP_ID,
+                    privateKey: githubAppPrivateKey,
+                    appSlug: process.env.GITHUB_APP_SLUG,
+                    ticketSecret: ledgerSecret,
+                    oidcVerifier: new JoseGitHubActionsOidcTokenVerifier(),
+                    replayNonces: new PrismaActionOidcReplayNonceStore(prisma),
+                    clock,
+                    repositories: actionRepositories,
+                    codexRotatingOAuth,
+                  }),
+                }
               : {}),
           };
         })()

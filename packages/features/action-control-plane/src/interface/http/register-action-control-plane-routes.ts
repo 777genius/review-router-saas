@@ -95,6 +95,12 @@ import {
   registerCodexRotatingReviewExecutionCheckpointRoutes,
   type RegisterCodexRotatingReviewExecutionCheckpointRoutesDependencies,
 } from "./register-codex-rotating-review-execution-checkpoint-routes.js";
+import {
+  prepareCertifiedForkReview,
+  type CertifiedForkReviewDependencies,
+} from "../../application/use-cases/prepare-certified-fork-review.js";
+import { publishCertifiedForkReview } from "../../application/use-cases/publish-certified-fork-review.js";
+import type { CertifiedForkReviewOutputPort } from "../../application/ports/certified-fork-review-port.js";
 
 export type RegisterActionControlPlaneRoutesDependencies =
   ExchangeGitHubOidcTokenDependencies &
@@ -121,6 +127,11 @@ export type RegisterActionControlPlaneRoutesDependencies =
       readonly codexRotatingMutationAdmission?: {
         assertEnabled(): void;
       };
+      readonly certifiedForkReview?:
+        | (CertifiedForkReviewDependencies & {
+            readonly certifiedForkReviewOutput: CertifiedForkReviewOutputPort;
+          })
+        | undefined;
     };
 
 const exchangeBodySchema = z
@@ -193,6 +204,34 @@ const codexRotatingCommentTokenBodySchema = codexRotatingLeaseBodySchema
   .strict();
 
 const gitShaSchema = z.string().regex(/^[a-f0-9]{40}$/i);
+const certifiedForkBindingSchema = z
+  .object({
+    sourceRepository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+    sourceRepositoryId: z.string().regex(/^[1-9][0-9]*$/),
+    baseRepository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+    baseRepositoryId: z.string().regex(/^[1-9][0-9]*$/),
+    pullRequestNumber: z.number().int().positive(),
+    reviewHeadSha: gitShaSchema,
+    baseSha: gitShaSchema,
+    trustDomain: z.literal("fork"),
+  })
+  .strict();
+const certifiedForkIdentitySchema = z.object({
+  oidcToken: z.string().min(1).max(16_384),
+  audience: z.string().min(1).max(256).optional(),
+  leaseId: z.string().min(8).max(160),
+  providerInstanceId: z.string().min(8).max(160),
+  workflowSchemaVersion: z.literal(5),
+  forkReviewBinding: certifiedForkBindingSchema,
+});
+const certifiedForkPrepareSchema = certifiedForkIdentitySchema.strict();
+const certifiedForkPublishSchema = certifiedForkIdentitySchema
+  .extend({
+    executionId: z.string().min(32).max(8_192),
+    contextHash: z.string().regex(/^[a-f0-9]{64}$/),
+    modelOutput: z.unknown(),
+  })
+  .strict();
 
 const codexRotatingReviewSnapshotRestoreBodySchema =
   codexRotatingLeaseBodySchema
@@ -269,6 +308,39 @@ export async function registerActionControlPlaneRoutes(
   app: FastifyInstance,
   dependencies: RegisterActionControlPlaneRoutesDependencies,
 ): Promise<void> {
+  const certifiedForkHandler =
+    (kind: "prepare" | "publish") =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (!dependencies.certifiedForkReview)
+        return sendActionErrorCode(
+          reply,
+          "certified_fork_unavailable",
+          503,
+          "v1",
+        );
+      try {
+        const audienceFrom = (value: string | undefined) =>
+          resolveServerOwnedOidcAudience(value, dependencies.oidcAudience);
+        if (kind === "prepare") {
+          const body = certifiedForkPrepareSchema.parse(request.body);
+          return reply.send(
+            await prepareCertifiedForkReview(
+              { ...body, audience: audienceFrom(body.audience) },
+              dependencies.certifiedForkReview,
+            ),
+          );
+        }
+        const body = certifiedForkPublishSchema.parse(request.body);
+        return reply.send(
+          await publishCertifiedForkReview(
+            { ...body, audience: audienceFrom(body.audience) },
+            dependencies.certifiedForkReview,
+          ),
+        );
+      } catch (error) {
+        return sendActionError(reply, error, "v1");
+      }
+    };
   const createExchangeHandler =
     (errorFormat: ActionErrorFormat) =>
     async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
@@ -937,6 +1009,16 @@ export async function registerActionControlPlaneRoutes(
   app.post("/api/action/exchange-token", createExchangeHandler("legacy"));
   app.post("/api/action/v1/session/exchange", createExchangeHandler("v1"));
   app.post(
+    "/api/action/v1/certified-fork-review/prepare",
+    { bodyLimit: 64 * 1024 },
+    certifiedForkHandler("prepare"),
+  );
+  app.post(
+    "/api/action/v1/certified-fork-review/publish",
+    { bodyLimit: 256 * 1024 },
+    certifiedForkHandler("publish"),
+  );
+  app.post(
     "/api/action/v1/codex-oauth/prelease",
     { bodyLimit: 16_384 },
     createCodexRotatingPreleaseHandler("v1"),
@@ -1107,6 +1189,21 @@ function sendActionErrorCode(
 }
 
 function statusCodeForActionError(message: string): number {
+  if (message.includes("certified_fork_unavailable")) return 503;
+  if (message.includes("certified_fork_oidc_replay")) return 409;
+  if (
+    message.includes("certified_fork_diff_budget") ||
+    message.includes("certified_fork_diff_pagination")
+  )
+    return 413;
+  if (
+    message.includes("certified_fork_context_mismatch") ||
+    message.includes("certified_fork_tuple_mismatch")
+  )
+    return 412;
+  if (message.includes("certified_fork_lease_not_finalized")) return 409;
+  if (message.includes("certified_fork_identity_invalid")) return 403;
+  if (message.includes("certified_fork_")) return 400;
   if (
     message.includes("codex_rotating_new_work_admission_closed") ||
     message.includes("codex_rotating_new_work_cohort_required")
@@ -1218,6 +1315,7 @@ function statusCodeForActionError(message: string): number {
 }
 
 function safeActionErrorCode(message: string): string {
+  if (/^certified_fork_[a-z0-9_]+$/u.test(message)) return message;
   if (message.includes("codex_rotating_new_work_admission_closed")) {
     return "codex_rotating_new_work_admission_closed";
   }
