@@ -164,6 +164,7 @@ function handleOperatorError(error: unknown, reply: FastifyReply) {
       return sendOperatorError(reply, 409, error.code);
     case ReviewConfigurationOperatorErrorCode.InvalidRepository:
     case ReviewConfigurationOperatorErrorCode.InvalidInvestigationRollout:
+    case ReviewConfigurationOperatorErrorCode.UnsupportedReasoningEffort:
       return sendOperatorError(reply, 400, error.code);
     case ReviewConfigurationOperatorErrorCode.RateLimited:
       return sendOperatorError(reply, 429, error.code);

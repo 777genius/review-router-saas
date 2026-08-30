@@ -239,6 +239,43 @@ describe("operator review configuration", () => {
     expect(JSON.stringify(auditLog.events)).not.toContain(credential);
   });
 
+  it.each([ReviewReasoningEffort.Max, ReviewReasoningEffort.Ultra])(
+    "rejects %s for an inherited Codex model that does not support it",
+    async (effort) => {
+      const { dependencies, configurations } = createDependencies();
+      const provider = {
+        ...safeDefaultReviewConfiguration.provider,
+        model: "gpt-5.5",
+      };
+      await configurations.saveNextVersion({
+        target: {
+          scope: "workspace",
+          workspaceId: repository.workspaceId,
+        },
+        config: {
+          ...safeDefaultReviewConfiguration,
+          provider,
+          providers: [provider],
+        },
+      });
+
+      await expect(
+        setOperatorReviewReasoningEffort(
+          {
+            credential,
+            repositoryFullName: repository.fullName,
+            provider: "github",
+            effort,
+          },
+          dependencies,
+        ),
+      ).rejects.toMatchObject({
+        code: ReviewConfigurationOperatorErrorCode.UnsupportedReasoningEffort,
+      });
+      expect(configurations.saveCount).toBe(1);
+    },
+  );
+
   it("updates only the runtime-selected Codex-backed provider and is idempotent", async () => {
     const { dependencies, configurations, auditLog } = createDependencies();
     const workspaceTarget = {

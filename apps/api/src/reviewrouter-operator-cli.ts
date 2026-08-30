@@ -381,7 +381,7 @@ function usageText(): string {
     "ReviewRouter operator CLI",
     "",
     "  reviewrouter config get --repo OWNER/REPO [--workspace SLUG] [--provider github|gitlab] [--source-base-url URL] [--profile PATH]",
-    "  reviewrouter config set --repo OWNER/REPO --effort low|medium|high|xhigh [--reason TEXT] [--workspace SLUG] [--provider github|gitlab] [--source-base-url URL] [--profile PATH]",
+    "  reviewrouter config set --repo OWNER/REPO --effort low|medium|high|xhigh|max|ultra [--reason TEXT] [--workspace SLUG] [--provider github|gitlab] [--source-base-url URL] [--profile PATH]",
     "  reviewrouter investigation status --investigation-id ID [--profile PATH]",
     "  reviewrouter investigation promotion-report --producer-release ID --promotion-profile-id ID --promotion-profile-version VERSION [--profile PATH]",
   ].join("\n");

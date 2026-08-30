@@ -319,7 +319,7 @@ const actionRuntimeProviderSchema = z
     kind: providerKindSchema,
     authMode: providerAuthModeSchema,
     model: z.string().min(1),
-    reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]),
+    reasoningEffort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]),
     agenticContext: z.boolean(),
     fastMode: z.boolean(),
     requiredHealthy: z.boolean().default(false),

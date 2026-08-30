@@ -1662,6 +1662,35 @@ describe("action control plane", () => {
     expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);
   });
 
+  it("returns persisted ultra reasoning effort in OIDC runtime config", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.runtimeConfig = parseReviewConfiguration({
+      ...defaultOpenRouterRuntimeConfig,
+      provider: {
+        ...defaultOpenRouterRuntimeConfig.provider,
+        reasoningEffort: "ultra",
+      },
+      providers: [
+        {
+          ...defaultOpenRouterRuntimeConfig.provider,
+          reasoningEffort: "ultra",
+        },
+      ],
+    });
+
+    const config = await getActionRuntimeConfig(
+      { sessionToken: "session" },
+      {
+        repositories,
+        sessions: new StaticSessionTokenService(),
+        clock,
+      },
+    );
+
+    expect(config.provider.reasoningEffort).toBe("ultra");
+    expect(config.runtimeEnv.CODEX_REASONING_EFFORT).toBe("ultra");
+  });
+
   it("uses deployment defaults only when no persisted review config exists", async () => {
     const repositories = new InMemoryActionControlPlaneRepository();
     repositories.runtimeConfig = null;
@@ -1676,7 +1705,7 @@ describe("action control plane", () => {
         }),
         defaultProvider: {
           model: "gpt-5.6-sol",
-          reasoningEffort: "high",
+          reasoningEffort: "ultra",
         },
         clock,
       },
@@ -1688,14 +1717,40 @@ describe("action control plane", () => {
         kind: "codex",
         authMode: "codex_subscription_oauth_rotating",
         model: "gpt-5.6-sol",
-        reasoningEffort: "high",
+        reasoningEffort: "ultra",
       },
       runtimeEnv: {
         CODEX_MODEL: "gpt-5.6-sol",
-        CODEX_REASONING_EFFORT: "high",
+        CODEX_REASONING_EFFORT: "ultra",
       },
     });
   });
+
+  it.each(["max", "ultra"] as const)(
+    "rejects unsupported %s deployment defaults before building runtime config",
+    async (reasoningEffort) => {
+      const repositories = new InMemoryActionControlPlaneRepository();
+      repositories.runtimeConfig = null;
+
+      await expect(
+        getActionRuntimeConfig(
+          { sessionToken: "session" },
+          {
+            repositories,
+            sessions: new StaticSessionTokenService({
+              ...sessionClaims,
+              workflowPath: ".github/workflows/reviewrouter-codex.yml",
+            }),
+            defaultProvider: {
+              model: "gpt-5.5",
+              reasoningEffort,
+            },
+            clock,
+          },
+        ),
+      ).rejects.toThrow("review_reasoning_effort_unsupported_for_model");
+    },
+  );
 
   it("checks the conflict runtime gate before rejecting unsupported production providers", async () => {
     const conflictReviewRuntimeGate =

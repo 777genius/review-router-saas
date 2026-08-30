@@ -5,6 +5,7 @@ import {
   reviewConfigurationTargetKey,
   resolveReviewConfiguration,
   ReviewConfigurationWriteConflictError,
+  safeDefaultReviewConfiguration,
   type OperatorReviewConfigurationDependencies,
   type PersistedReviewConfiguration,
   type ReviewInvestigationRolloutConfiguration,
@@ -165,7 +166,7 @@ describe("operator review config routes", () => {
       headers: { authorization: `Bearer ${credential}` },
       payload: {
         repository: "777genius/example",
-        effort: "high",
+        effort: "ultra",
       },
     });
     const get = await app.inject({
@@ -178,12 +179,46 @@ describe("operator review config routes", () => {
     expect(patch.json().result).toMatchObject({
       changed: true,
       source: "repository",
-      reasoningEffort: "high",
+      reasoningEffort: "ultra",
     });
     expect(get.statusCode).toBe(200);
     expect(get.json().result).toMatchObject({
       source: "repository",
-      reasoningEffort: "high",
+      reasoningEffort: "ultra",
+    });
+  });
+
+  it("rejects ultra for a Codex model that does not support it", async () => {
+    const app = Fastify({ logger: false });
+    apps.push(app);
+    const harness = createHarness();
+    const provider = {
+      ...safeDefaultReviewConfiguration.provider,
+      model: "gpt-5.5",
+    };
+    await harness.dependencies.configurations.saveNextVersion({
+      target: { scope: "workspace", workspaceId: "workspace_1" },
+      config: {
+        ...safeDefaultReviewConfiguration,
+        provider,
+        providers: [provider],
+      },
+    });
+    await registerOperatorReviewConfigRoutes(app, harness.dependencies);
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/operator/v1/review-config",
+      headers: { authorization: `Bearer ${credential}` },
+      payload: {
+        repository: "777genius/example",
+        effort: "ultra",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: { code: "unsupported_reasoning_effort" },
     });
   });
 
@@ -386,7 +421,7 @@ describe("operator review config routes", () => {
       headers: { authorization: `Bearer ${credential}` },
       payload: {
         repository: "777genius/example",
-        effort: "ultra",
+        effort: "extreme",
       },
     });
     const missing = await app.inject({
