@@ -555,40 +555,90 @@ jobs:
           close_firewall
           firewall_open=0
 
+          recovery_deployment_observation_filter='
+            (if type == "array" then .[0] else (.deploys[0] // .[0]) end)
+            | (.deploy // .) as $deploy
+            | ([
+                $deploy.commit.id?,
+                $deploy.commit.sha?,
+                $deploy.commitId?
+              ] | map(select(. != null))) as $commitCandidates
+            | ([
+                $deploy.image.sha?,
+                $deploy.image.digest?,
+                $deploy.imageDigest?
+              ] | map(select(. != null))) as $imageCandidates
+            | (
+                if (
+                  ($commitCandidates | length) >= 1
+                  and all(
+                    $commitCandidates[];
+                    type == "string" and test("^[a-f0-9]{40}$")
+                  )
+                  and (($commitCandidates | unique | length) == 1)
+                  and (($imageCandidates | length) == 0)
+                ) then {
+                  kind: "git",
+                  commitSha: $commitCandidates[0]
+                }
+                elif (
+                  ($commitCandidates | length) == 0
+                  and ($imageCandidates | length) >= 1
+                  and all(
+                    $imageCandidates[];
+                    type == "string" and test("^sha256:[a-f0-9]{64}$")
+                  )
+                  and (($imageCandidates | unique | length) == 1)
+                ) then {
+                  kind: "image",
+                  imageDigest: $imageCandidates[0]
+                }
+                else {kind: "invalid"}
+                end
+              ) as $identity
+            | {
+                serviceId: $serviceId,
+                deployId: (
+                  $deploy.id
+                  | select(type == "string" and test("^dep-[a-z0-9-]+$"))
+                ),
+                observedStatus: (
+                  $deploy.status | select(type == "string" and length > 0)
+                ),
+                deploymentIdentityKind: $identity.kind,
+                observedCommitSha: ($identity.commitSha // null),
+                observedImageDigest: ($identity.imageDigest // null)
+              }
+          '
+          recovery_deployment_set_filter='
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and ([.[].deployId] | unique | length == 3)
+            and all(.observedStatus == "live")
+            and all(
+              .deploymentIdentityKind == "git"
+              and .observedCommitSha == $releaseCommitSha
+              and .observedImageDigest == null
+            )
+          '
           service_revision_observations='[]'
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
             deploys="$(render_api "https://api.render.com/v1/services/$service_id/deploys?limit=1")"
             observation="$(
-              jq -ce --arg serviceId "$service_id" '
-                (if type == "array" then .[0] else (.deploys[0] // .[0]) end)
-                | (.deploy // .) as $deploy
-                | {
-                    serviceId: $serviceId,
-                    deployId: ($deploy.id | select(type == "string" and length > 0)),
-                    observedStatus: ($deploy.status | select(type == "string")),
-                    observedCommitSha: (
-                      ($deploy.commit.id // $deploy.commit.sha // $deploy.commitId)
-                      | select(type == "string" and test("^[a-f0-9]{40}$"))
-                    ),
-                    observedImageDigest: (
-                      ($deploy.image.sha // $deploy.image.digest // $deploy.imageDigest)
-                      | select(type == "string" and test("^sha256:[a-f0-9]{64}$"))
-                    )
-                  }
-              ' <<<"$deploys"
+              jq -ce --arg serviceId "$service_id" \
+                "$recovery_deployment_observation_filter" <<<"$deploys"
             )"
             service_revision_observations="$(
               jq -c --argjson observation "$observation" '. + [$observation]' \
                 <<<"$service_revision_observations"
             )"
           done
-          jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
-            length == 3
-            and all(.observedCommitSha == $releaseCommitSha)
-            and all(.observedStatus == "live")
-            and ([.[].serviceId] | unique | length == 3)
-            and all(.observedImageDigest | test("^sha256:[a-f0-9]{64}$"))
-          ' <<<"$service_revision_observations" >/dev/null
+          if ! jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+            "$recovery_deployment_set_filter" \
+            <<<"$service_revision_observations" >/dev/null; then
+            echo "::error::Recovery requires three live git-backed deployments at the exact release_commit_sha with no image digest. Image-backed deployments require an immutable expected digest input and are not accepted by this workflow."
+            exit 1
+          fi
           printf '%s\n' "$service_revision_observations" \
             > "$work/service-revision-observations.json"
           persist_recovery_phase "ready_to_resume"

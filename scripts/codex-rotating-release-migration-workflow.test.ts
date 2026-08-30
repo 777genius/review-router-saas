@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { canonicalPrismaMigrationCatalog } from "./lib/canonical-prisma-migration-catalog.mjs";
@@ -10,9 +11,74 @@ const trustBootstrap = workflow.slice(
   workflow.indexOf("\n  trust-bootstrap:"),
   workflow.indexOf("\n  recover:"),
 );
+const recover = workflow.slice(
+  workflow.indexOf("\n  recover:"),
+  workflow.indexOf("\n  register-release:"),
+);
 const registerRelease = workflow.slice(
   workflow.indexOf("\n  register-release:"),
 );
+
+function extractRecoveryJqFilter(name: string): string {
+  const assignment = `          ${name}='`;
+  const start = recover.indexOf(assignment);
+  if (start < 0) throw new Error(`missing recovery jq filter: ${name}`);
+  const bodyStart = start + assignment.length;
+  const bodyEnd = recover.indexOf("\n          '", bodyStart);
+  if (bodyEnd < 0) throw new Error(`unterminated recovery jq filter: ${name}`);
+  return recover.slice(bodyStart, bodyEnd);
+}
+
+const recoveryDeploymentObservationFilter = extractRecoveryJqFilter(
+  "recovery_deployment_observation_filter",
+);
+const recoveryDeploymentSetFilter = extractRecoveryJqFilter(
+  "recovery_deployment_set_filter",
+);
+const releaseCommitSha = "a".repeat(40);
+const releaseImageDigest = `sha256:${"b".repeat(64)}`;
+
+function runJq(
+  filter: string,
+  input: unknown,
+  args: Readonly<Record<string, string>> = {},
+) {
+  const commandArgs = ["-ce"];
+  for (const [name, value] of Object.entries(args)) {
+    commandArgs.push("--arg", name, value);
+  }
+  commandArgs.push(filter);
+  const result = spawnSync("jq", commandArgs, {
+    encoding: "utf8",
+    input: JSON.stringify(input),
+  });
+  if (result.error) throw result.error;
+  return result;
+}
+
+function observeDeployment(serviceId: string, deploy: unknown) {
+  const result = runJq(recoveryDeploymentObservationFilter, [{ deploy }], {
+    serviceId,
+  });
+  expect(result.stderr).toBe("");
+  expect(result.status).toBe(0);
+  return JSON.parse(result.stdout) as {
+    readonly deploymentIdentityKind: string;
+    readonly deployId: string;
+    readonly observedCommitSha: string | null;
+    readonly observedImageDigest: string | null;
+    readonly observedStatus: string;
+    readonly serviceId: string;
+  };
+}
+
+function recoveryDeploymentSetAccepts(observations: readonly unknown[]) {
+  return (
+    runJq(recoveryDeploymentSetFilter, observations, {
+      releaseCommitSha,
+    }).status === 0
+  );
+}
 
 describe("Codex rotating release migration workflow", () => {
   it("establishes current protected main before any repository checkout", () => {
@@ -67,7 +133,7 @@ describe("Codex rotating release migration workflow", () => {
     expect(workflow).toContain("suspension_deadline=$((SECONDS + 600))");
   });
 
-  it("records observed revisions and image digests before resuming", () => {
+  it("records mutually exclusive deployment identities before resuming", () => {
     const revisionProof = workflow.indexOf(
       "service-revision-observations.json",
     );
@@ -78,8 +144,99 @@ describe("Codex rotating release migration workflow", () => {
     expect(resume).toBeGreaterThan(revisionProof);
     expect(workflow).toContain("observedCommitSha");
     expect(workflow).toContain("observedImageDigest");
-    expect(workflow).toContain('all(.observedStatus == "live")');
-    expect(workflow).toContain("all(.observedCommitSha == $releaseCommitSha)");
+    expect(recoveryDeploymentObservationFilter).toContain('kind: "git"');
+    expect(recoveryDeploymentObservationFilter).toContain('kind: "image"');
+    expect(recoveryDeploymentObservationFilter).toContain('kind: "invalid"');
+    expect(recoveryDeploymentSetFilter).toContain(
+      'all(.observedStatus == "live")',
+    );
+    expect(recoveryDeploymentSetFilter).toContain(
+      ".observedCommitSha == $releaseCommitSha",
+    );
+    expect(recoveryDeploymentSetFilter).toContain(
+      ".observedImageDigest == null",
+    );
+    expect(recover).toContain(
+      "Image-backed deployments require an immutable expected digest input",
+    );
+  });
+
+  it("accepts the current git-backed Render shape at the exact release commit", () => {
+    const observations = ["api", "worker", "web"].map((role) =>
+      observeDeployment(`srv-${role}`, {
+        commit: { id: releaseCommitSha },
+        id: `dep-${role}`,
+        image: null,
+        status: "live",
+      }),
+    );
+
+    expect(observations[0]).toMatchObject({
+      deploymentIdentityKind: "git",
+      observedCommitSha: releaseCommitSha,
+      observedImageDigest: null,
+    });
+    expect(recoveryDeploymentSetAccepts(observations)).toBe(true);
+  });
+
+  it("classifies Render image provenance but rejects it without an expected immutable digest input", () => {
+    const observations = ["api", "worker", "web"].map((role) =>
+      observeDeployment(`srv-${role}`, {
+        commit: null,
+        id: `dep-${role}`,
+        image: { sha: releaseImageDigest },
+        status: "live",
+      }),
+    );
+
+    expect(observations[0]).toMatchObject({
+      deploymentIdentityKind: "image",
+      observedCommitSha: null,
+      observedImageDigest: releaseImageDigest,
+    });
+    expect(recoveryDeploymentSetAccepts(observations)).toBe(false);
+  });
+
+  it.each([
+    ["missing", { id: "dep-api", status: "live" }, "invalid"],
+    [
+      "ambiguous commit and image",
+      {
+        commit: { id: releaseCommitSha },
+        id: "dep-api",
+        image: { sha: releaseImageDigest },
+        status: "live",
+      },
+      "invalid",
+    ],
+    [
+      "conflicting commit aliases",
+      {
+        commit: { id: releaseCommitSha, sha: "c".repeat(40) },
+        id: "dep-api",
+        status: "live",
+      },
+      "invalid",
+    ],
+    [
+      "wrong commit",
+      { commit: { id: "d".repeat(40) }, id: "dep-api", status: "live" },
+      "git",
+    ],
+  ])("rejects a %s deployment identity", (_name, deploy, identityKind) => {
+    const observation = observeDeployment("srv-api", deploy);
+    const otherObservations = ["worker", "web"].map((role) =>
+      observeDeployment(`srv-${role}`, {
+        commit: { id: releaseCommitSha },
+        id: `dep-${role}`,
+        status: "live",
+      }),
+    );
+
+    expect(observation.deploymentIdentityKind).toBe(identityKind);
+    expect(
+      recoveryDeploymentSetAccepts([observation, ...otherObservations]),
+    ).toBe(false);
   });
 
   it("keeps recovery and Action release identities separate", () => {
