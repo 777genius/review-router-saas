@@ -1,0 +1,129 @@
+name: Codex zero-login namespace rollover
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: Bounded operator command
+        required: true
+        type: choice
+        options: [campaign, prepare, publish, status, abort]
+      repository:
+        description: Target owner/repository (prepare only)
+        required: false
+        type: string
+      provider_instance_id:
+        description: Exact provider instance ID (prepare only)
+        required: false
+        type: string
+      operation_id:
+        description: Stable operation ID
+        required: false
+        type: string
+      source_run_id:
+        description: Latest successful scheduled run ID (prepare only)
+        required: false
+        type: string
+      source_run_attempt:
+        description: Exact successful scheduled run attempt (prepare only)
+        required: false
+        type: string
+      action_commit_sha:
+        description: Exact staged public Action B commit (prepare only)
+        required: false
+        type: string
+      release_commit_sha:
+        description: Exact ReviewRouter release commit live on all three services
+        required: true
+        type: string
+      reason:
+        description: Non-secret abort reason
+        required: false
+        type: string
+      execute:
+        description: Execute the single prepare/abort mutation
+        required: true
+        default: false
+        type: boolean
+      confirmation:
+        description: Exact command-specific confirmation phrase
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: codex-zero-login-rollover-production
+  cancel-in-progress: false
+
+jobs:
+  operator:
+    name: protected-main-operator
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      REVIEW_ROUTER_ZERO_LOGIN_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
+      REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS }}
+      REVIEW_ROUTER_LIVE_CANARY_TOKEN: ${{ secrets.REVIEW_ROUTER_LIVE_CANARY_TOKEN }}
+      GITHUB_APP_ID: ${{ vars.GITHUB_APP_ID }}
+      GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+      REVIEW_ROUTER_PUBLIC_API_URL: ${{ vars.REVIEW_ROUTER_PUBLIC_API_URL }}
+      REVIEW_ROUTER_ENABLE_CODEX_ZERO_LOGIN_ROLLOVER: ${{ vars.REVIEW_ROUTER_ENABLE_CODEX_ZERO_LOGIN_ROLLOVER }}
+      REVIEW_ROUTER_RENDER_WEB_SERVICE_ID: ${{ vars.REVIEW_ROUTER_RENDER_WEB_SERVICE_ID }}
+      REVIEW_ROUTER_RENDER_API_SERVICE_ID: ${{ vars.REVIEW_ROUTER_RENDER_API_SERVICE_ID }}
+      REVIEW_ROUTER_RENDER_WORKER_SERVICE_ID: ${{ vars.REVIEW_ROUTER_RENDER_WORKER_SERVICE_ID }}
+    steps:
+      - name: Checkout the exact requested release
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Prove protected main and immutable release identity
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF}" = "refs/heads/main"
+          test "${{ inputs.release_commit_sha }}" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq .protected)" = "true"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)" = "${GITHUB_SHA}"
+          echo "REVIEW_ROUTER_ZERO_LOGIN_PROTECTED_MAIN_VERIFIED=1" >> "$GITHUB_ENV"
+
+      - name: Install locked operator dependencies
+        run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+
+      - name: Run bounded operator command
+        env:
+          OPERATOR_COMMAND: ${{ inputs.command }}
+          TARGET_REPOSITORY: ${{ inputs.repository }}
+          PROVIDER_INSTANCE_ID: ${{ inputs.provider_instance_id }}
+          OPERATION_ID: ${{ inputs.operation_id }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          ACTION_COMMIT_SHA: ${{ inputs.action_commit_sha }}
+          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+          ABORT_REASON: ${{ inputs.reason }}
+          EXECUTE_MUTATION: ${{ inputs.execute }}
+          MUTATION_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          args=("$OPERATOR_COMMAND" --release-commit-sha "$RELEASE_COMMIT_SHA")
+          case "$OPERATOR_COMMAND" in
+            campaign) args=(campaign) ;;
+            status) args+=(--operation-id "$OPERATION_ID") ;;
+            publish) args+=(--operation-id "$OPERATION_ID") ;;
+            prepare)
+              args+=(--repo "$TARGET_REPOSITORY" --provider-instance-id "$PROVIDER_INSTANCE_ID" --operation-id "$OPERATION_ID" --run-id "$SOURCE_RUN_ID" --run-attempt "$SOURCE_RUN_ATTEMPT" --action-commit-sha "$ACTION_COMMIT_SHA")
+              ;;
+            abort) args+=(--operation-id "$OPERATION_ID" --reason "$ABORT_REASON") ;;
+            *) echo "unsupported command" >&2; exit 2 ;;
+          esac
+          if [[ "$EXECUTE_MUTATION" == "true" ]]; then
+            args+=(--execute --confirm "$MUTATION_CONFIRMATION")
+          fi
+          pnpm exec tsx scripts/codex-zero-login-rollover-operator.ts "${args[@]}"

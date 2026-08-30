@@ -596,6 +596,7 @@ REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED
 REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES
 REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5
 REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES
+REVIEW_ROUTER_ENABLE_CODEX_ZERO_LOGIN_ROLLOVER
 REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK
 REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED
 REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED
@@ -651,3 +652,54 @@ rotating-auth write path.
 full-SHA overlap used only for rotating namespace releases. It never authorizes
 a branch/tag and never changes the exact Action SHA pinned in an active
 namespace.
+
+### Zero-login namespace rollover
+
+Use `.github/workflows/codex-zero-login-rollover.yml` as the only supported
+production operator entry point. It runs from the protected `main` head, pins
+the requested ReviewRouter release commit to that exact head, uses the
+production environment, and serializes the whole campaign. Tokens, the release
+database credential, and the recovery witness stay in environment/secrets; the
+workflow does not put them in arguments, logs, or artifacts.
+
+Start with `campaign` and `execute=false`. The built-in 11-repository campaign
+is strictly sequential: do not prepare the next repository until the current
+intent is activated or safely aborted before dispatch. For one repository:
+
+1. Run `prepare` with `execute=false`. Supply the exact provider ID, latest
+   successful scheduled run ID and attempt, public Action B SHA, and the SaaS
+   release SHA currently live on web, API, and worker.
+2. Inspect the dry-run evidence. The operator reads GitHub only through `gh`,
+   verifies both the scheduled workflow and current default-head workflow bind
+   the same active namespace/provider/action, and re-reads all three Render
+   services and their staged full-SHA Action overlap. It then runs the existing
+   authenticated runtime-generation challenge against web, API, and worker,
+   binding the release commit, rollout, service/deploy identity, and canonical
+   schema-5 environment digest. Finally it re-reads every latest live deploy;
+   a pending or changed deploy fails closed.
+3. Enable `REVIEW_ROUTER_ENABLE_CODEX_ZERO_LOGIN_ROLLOVER=1`, repeat with
+   `execute=true`, and enter exactly
+   `PREPARE ZERO LOGIN ROLLOVER <operation-id>`. Prepare is idempotent for the
+   same operation ID.
+4. If the result is `rerun_required`, run the single printed command
+   `gh run rerun <run-id> --repo <owner/repo>`. Never let the operator rerun it
+   automatically and never rerun again after an unknown GitHub outcome. Confirm
+   the expected incremented attempt in Actions before continuing.
+5. If the result is `reuse_candidate`, no rerun or secret write is allowed. The
+   state remains `provider_confirmed` until `publish` uses the GitHub App to
+   open and re-read the exact one-file schema-5 setup PR. The prepare result
+   reports `requires_hosted_publication`; this is not completed activation.
+   Run `publish` first as a dry-run, then with `execute=true` and exactly
+   `PUBLISH ZERO LOGIN ROLLOVER <operation-id>`. Publication recovery does not
+   consult the prepare kill switch because it must resolve an already-confirmed
+   candidate. It is idempotent by durable operation, branch, and PR identity.
+6. Use `status` for recovery. A publication with an unknown GitHub outcome must
+   be reconciled by status before a manual `publish` recovery; there is no
+   automatic retry. Only the activation endpoint may activate after
+   the exact setup PR is merged and the default-head attestation succeeds.
+
+Before provider dispatch, `abort` requires `execute=true` and exactly
+`ABORT ZERO LOGIN ROLLOVER <operation-id>`. After dispatch authorization or an
+unknown provider PUT outcome, abort fails closed: do not retry, allocate another
+namespace, or copy auth between repositories. Escalate using the persisted
+status and exact operation ID.
