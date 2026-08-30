@@ -549,12 +549,20 @@ describe("canonical exclusive release migration caller", () => {
       );
     }
     expect(providerScopeBoundary).toContain(
-      "FROM PUBLIC, reviewrouter_release_migration, reviewrouter_api",
+      "DO $provider_scope_concurrency_acl_convergence$",
     );
     expect(providerScopeBoundary).toContain(
-      "reviewrouter_activation_permit_installer, reviewrouter_activation_receipt_reader",
+      "AND acl.grantee <> routine_row.proowner",
     );
-    expect(providerScopeBoundary).toContain("reviewrouter_role_bootstrap;");
+    expect(providerScopeBoundary).toContain(
+      "REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC CASCADE",
+    );
+    expect(providerScopeBoundary).toContain(
+      "REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I CASCADE",
+    );
+    expect(providerScopeBoundary).toContain(
+      "pg_get_userbyid(grantee_row.grantee)",
+    );
     const operatorGrant = providerScopeBoundary.slice(
       providerScopeBoundary.indexOf("GRANT EXECUTE ON FUNCTION"),
       providerScopeBoundary.indexOf(
@@ -579,7 +587,13 @@ describe("canonical exclusive release migration caller", () => {
     );
     expect(providerScopeBoundary).toContain("routine_count <> 5");
     expect(providerScopeBoundary).toContain("canonical_count <> 5");
+    expect(providerScopeBoundary).toContain("explicit_execute_count <> 9");
+    expect(providerScopeBoundary).toContain("owner_execute_count <> 5");
     expect(providerScopeBoundary).toContain("release_execute_count <> 4");
+    expect(providerScopeBoundary).toContain("canonical_execute_count <> 9");
+    expect(providerScopeBoundary).toContain("acl.grantor = routine.proowner");
+    expect(providerScopeBoundary).toContain("AND NOT acl.is_grantable");
+    expect(providerScopeBoundary).not.toContain("AND acl.is_grantable");
     expect(providerScopeBoundary).toContain(
       "routine.proconfig = ARRAY['search_path=pg_catalog, public']::text[]",
     );

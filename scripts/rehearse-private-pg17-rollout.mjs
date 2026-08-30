@@ -859,7 +859,10 @@ export function assertDisposableProviderScopeConcurrencyAuthoritySql() {
 DECLARE denied_role text;
 DECLARE routine_count integer;
 DECLARE canonical_count integer;
+DECLARE explicit_execute_count integer;
+DECLARE owner_execute_count integer;
 DECLARE release_execute_count integer;
+DECLARE canonical_execute_count integer;
 BEGIN
   SELECT count(*), count(*) FILTER (
     WHERE owner.rolname = 'reviewrouter_release_schema_owner'
@@ -879,9 +882,33 @@ BEGIN
       'reviewrouter_provider_scope_concurrency_close_for_rollback',
       'reviewrouter_provider_scope_concurrency_verify_rollback'
     ]);
-  SELECT count(*) INTO release_execute_count
+  SELECT count(*),
+         count(*) FILTER (
+           WHERE acl.grantee = routine.proowner
+         ),
+         count(*) FILTER (
+           WHERE acl.grantee = 'reviewrouter_release_migration'::regrole
+         ),
+         count(*) FILTER (
+           WHERE (
+             acl.grantee = routine.proowner
+             AND acl.grantor = routine.proowner
+             AND NOT acl.is_grantable
+           ) OR (
+             acl.grantee = 'reviewrouter_release_migration'::regrole
+             AND routine.proname <>
+               'reviewrouter_provider_scope_concurrency_snapshot'
+             AND acl.grantor = routine.proowner
+             AND NOT acl.is_grantable
+           )
+         )
+  INTO explicit_execute_count, owner_execute_count, release_execute_count,
+       canonical_execute_count
   FROM pg_proc routine
   JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+  CROSS JOIN LATERAL aclexplode(
+    coalesce(routine.proacl, acldefault('f', routine.proowner))
+  ) acl
   WHERE namespace.nspname = 'public'
     AND routine.pronargs = 0
     AND routine.proname = ANY (ARRAY[
@@ -891,33 +918,16 @@ BEGIN
       'reviewrouter_provider_scope_concurrency_close_for_rollback',
       'reviewrouter_provider_scope_concurrency_verify_rollback'
     ])
-    AND has_function_privilege(
-      'reviewrouter_release_migration', routine.oid, 'EXECUTE'
-    );
+    AND acl.privilege_type = 'EXECUTE';
   IF routine_count <> 5 OR canonical_count <> 5
+     OR explicit_execute_count <> 9
+     OR owner_execute_count <> 5
      OR release_execute_count <> 4
+     OR canonical_execute_count <> 9
      OR has_function_privilege(
        'reviewrouter_release_migration',
        'public.reviewrouter_provider_scope_concurrency_snapshot()',
        'EXECUTE'
-     ) OR EXISTS (
-       SELECT 1
-       FROM pg_proc routine
-       JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
-       CROSS JOIN LATERAL aclexplode(
-         coalesce(routine.proacl, acldefault('f', routine.proowner))
-       ) acl
-       WHERE namespace.nspname = 'public'
-         AND routine.pronargs = 0
-         AND routine.proname = ANY (ARRAY[
-           'reviewrouter_provider_scope_concurrency_snapshot',
-           'reviewrouter_provider_scope_concurrency_status',
-           'reviewrouter_provider_scope_concurrency_activate',
-           'reviewrouter_provider_scope_concurrency_close_for_rollback',
-           'reviewrouter_provider_scope_concurrency_verify_rollback'
-         ])
-         AND acl.grantee = 0
-         AND acl.privilege_type = 'EXECUTE'
      ) THEN
     RAISE EXCEPTION
       'private_pg17_rehearsal_provider_scope_concurrency_authority_failed';
@@ -952,6 +962,59 @@ BEGIN
   END LOOP;
 END
 $assert_provider_scope_concurrency_authority$;`;
+}
+
+export function disposableProviderScopeConcurrencyAdversarialAclSql() {
+  return `GRANT EXECUTE ON FUNCTION
+  public.reviewrouter_provider_scope_concurrency_snapshot(),
+  public.reviewrouter_provider_scope_concurrency_status()
+TO reviewrouter_provider_administrator WITH GRANT OPTION;
+SET ROLE reviewrouter_provider_administrator;
+GRANT EXECUTE ON FUNCTION
+  public.reviewrouter_provider_scope_concurrency_snapshot(),
+  public.reviewrouter_provider_scope_concurrency_status()
+TO reviewrouter_api;
+RESET ROLE;
+DO $assert_adversarial_provider_scope_concurrency_acl$
+BEGIN
+  IF (SELECT count(*)
+      FROM pg_proc routine
+      JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+      CROSS JOIN LATERAL aclexplode(
+        coalesce(routine.proacl, acldefault('f', routine.proowner))
+      ) acl
+      WHERE namespace.nspname = 'public'
+        AND routine.pronargs = 0
+        AND routine.proname IN (
+          'reviewrouter_provider_scope_concurrency_snapshot',
+          'reviewrouter_provider_scope_concurrency_status'
+        )
+        AND acl.grantee = 'reviewrouter_provider_administrator'::regrole
+        AND acl.grantor = routine.proowner
+        AND acl.privilege_type = 'EXECUTE'
+        AND acl.is_grantable) <> 2
+     OR (SELECT count(*)
+         FROM pg_proc routine
+         JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+         CROSS JOIN LATERAL aclexplode(
+           coalesce(routine.proacl, acldefault('f', routine.proowner))
+         ) acl
+         WHERE namespace.nspname = 'public'
+           AND routine.pronargs = 0
+           AND routine.proname IN (
+             'reviewrouter_provider_scope_concurrency_snapshot',
+             'reviewrouter_provider_scope_concurrency_status'
+           )
+           AND acl.grantee = 'reviewrouter_api'::regrole
+           AND acl.grantor =
+             'reviewrouter_provider_administrator'::regrole
+           AND acl.privilege_type = 'EXECUTE'
+           AND NOT acl.is_grantable) <> 2 THEN
+    RAISE EXCEPTION
+      'private_pg17_rehearsal_adversarial_operator_acl_setup_failed';
+  END IF;
+END
+$assert_adversarial_provider_scope_concurrency_acl$;`;
 }
 
 export function disposableProviderScopeConcurrencyExerciseSql() {
@@ -3123,6 +3186,12 @@ COMMIT;
         // before roleProvisioningSql runs, then prove its transactional
         // self-demotion completed before any release migration or permit work.
         facts.assertCanonicalBootstrapPrivileged();
+        // Seed an unrelated WITH GRANT OPTION root and a delegated child on the
+        // restored routines. Canonical provisioning must remove both edges.
+        facts.sql(
+          facts.targetContainer,
+          disposableProviderScopeConcurrencyAdversarialAclSql(),
+        );
         const result = executeCanonicalRoleBootstrap(
           facts.canonicalEnv,
           canonicalRun,

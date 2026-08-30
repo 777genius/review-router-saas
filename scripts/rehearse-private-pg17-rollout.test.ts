@@ -16,6 +16,7 @@ import {
   captureOnlyRehearsalFixtureCleanupSql,
   assertDisposablePreReleaseAuthorityTopologySql,
   assertDisposableProviderScopeConcurrencyAuthoritySql,
+  disposableProviderScopeConcurrencyAdversarialAclSql,
   disposablePg17CanonicalRoleBootstrapSetupSql,
   disposablePg17TargetRoleFoundationSql,
   disposableProviderScopeConcurrencyExerciseSql,
@@ -398,7 +399,10 @@ describe("disposable dual-version rehearsal", () => {
     const assertion = assertDisposableProviderScopeConcurrencyAuthoritySql();
     expect(assertion).toContain("routine_count <> 5");
     expect(assertion).toContain("canonical_count <> 5");
+    expect(assertion).toContain("explicit_execute_count <> 9");
+    expect(assertion).toContain("owner_execute_count <> 5");
     expect(assertion).toContain("release_execute_count <> 4");
+    expect(assertion).toContain("canonical_execute_count <> 9");
     expect(assertion).toContain(
       "owner.rolname = 'reviewrouter_release_schema_owner'",
     );
@@ -409,7 +413,9 @@ describe("disposable dual-version rehearsal", () => {
     expect(assertion).toContain("'reviewrouter_activation_permit_installer'");
     expect(assertion).toContain("'reviewrouter_activation_receipt_reader'");
     expect(assertion).toContain("'reviewrouter_role_bootstrap'");
-    expect(assertion).toContain("acl.grantee = 0");
+    expect(assertion).toContain("acl.grantor = routine.proowner");
+    expect(assertion).toContain("AND NOT acl.is_grantable");
+    expect(assertion).not.toContain("AND acl.is_grantable");
     expect(assertion).toContain(
       "private_pg17_rehearsal_provider_scope_concurrency_authority_failed",
     );
@@ -437,12 +443,20 @@ describe("disposable dual-version rehearsal", () => {
     const bootstrap = source.indexOf(
       "executeCanonicalRoleBootstrap(\n          facts.canonicalEnv",
     );
+    const adversarialSetup = source.indexOf(
+      "disposableProviderScopeConcurrencyAdversarialAclSql()",
+      source.indexOf("bootstrapTargetRoles: async () =>"),
+    );
     const exerciseCall = source.indexOf(
       '"exercise_provider_scope_concurrency_authority"',
     );
     const postBootstrapReadiness = source.indexOf(
       'assertTargetActivationReadiness("post_bootstrap", true)',
     );
+    expect(adversarialSetup).toBeGreaterThan(
+      source.indexOf("facts.assertCanonicalBootstrapPrivileged()"),
+    );
+    expect(adversarialSetup).toBeLessThan(bootstrap);
     expect(exerciseCall).toBeGreaterThan(bootstrap);
     expect(exerciseCall).toBeLessThan(postBootstrapReadiness);
     expect(
@@ -455,6 +469,23 @@ describe("disposable dual-version rehearsal", () => {
         .slice(bootstrap, exerciseCall)
         .match(/assertDisposableProviderScopeConcurrencyAuthoritySql\(\)/gu),
     ).toHaveLength(1);
+
+    const adversarial = disposableProviderScopeConcurrencyAdversarialAclSql();
+    expect(adversarial).toContain(
+      "TO reviewrouter_provider_administrator WITH GRANT OPTION",
+    );
+    expect(adversarial).toContain(
+      "SET ROLE reviewrouter_provider_administrator",
+    );
+    expect(adversarial).toContain("TO reviewrouter_api;");
+    expect(adversarial).toContain(
+      "acl.grantor =\n             'reviewrouter_provider_administrator'::regrole",
+    );
+    expect(adversarial).toContain("AND acl.is_grantable");
+    expect(adversarial).toContain("AND NOT acl.is_grantable");
+    expect(adversarial).toContain(
+      "private_pg17_rehearsal_adversarial_operator_acl_setup_failed",
+    );
   });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
     const identity = "rr-disposable-production-shaped-capture";

@@ -4326,17 +4326,57 @@ ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_close_for_rollback
   SECURITY DEFINER SET search_path TO pg_catalog, public;
 ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_verify_rollback()
   SECURITY DEFINER SET search_path TO pg_catalog, public;
-REVOKE ALL ON FUNCTION
-  public.reviewrouter_provider_scope_concurrency_snapshot(),
-  public.reviewrouter_provider_scope_concurrency_status(),
-  public.reviewrouter_provider_scope_concurrency_activate(),
-  public.reviewrouter_provider_scope_concurrency_close_for_rollback(),
-  public.reviewrouter_provider_scope_concurrency_verify_rollback()
-FROM PUBLIC, reviewrouter_release_migration, reviewrouter_api,
-  reviewrouter_web, reviewrouter_worker, reviewrouter_comment_token_custody,
-  reviewrouter_codex_effect_authority,
-  ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName},
-  ${canonicalBootstrapRoleName};
+-- Remove every explicit non-owner EXECUTE ACL, including principals unknown to
+-- this release and privileges they delegated.  CASCADE makes the convergence
+-- close the complete grant chain rather than only its first known edge.
+DO $provider_scope_concurrency_acl_convergence$
+DECLARE routine_row record;
+DECLARE grantee_row record;
+BEGIN
+  FOR routine_row IN
+    SELECT routine.oid, routine.proowner
+    FROM pg_proc routine
+    JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+    WHERE namespace.nspname = 'public'
+      AND routine.pronargs = 0
+      AND routine.proname = ANY (ARRAY[
+        'reviewrouter_provider_scope_concurrency_snapshot',
+        'reviewrouter_provider_scope_concurrency_status',
+        'reviewrouter_provider_scope_concurrency_activate',
+        'reviewrouter_provider_scope_concurrency_close_for_rollback',
+        'reviewrouter_provider_scope_concurrency_verify_rollback'
+      ])
+    ORDER BY routine.oid
+  LOOP
+    FOR grantee_row IN
+      SELECT DISTINCT acl.grantee
+      FROM aclexplode(
+        coalesce(
+          (SELECT selected.proacl FROM pg_proc selected
+           WHERE selected.oid = routine_row.oid),
+          acldefault('f', routine_row.proowner)
+        )
+      ) acl
+      WHERE acl.privilege_type = 'EXECUTE'
+        AND acl.grantee <> routine_row.proowner
+      ORDER BY acl.grantee
+    LOOP
+      IF grantee_row.grantee = 0 THEN
+        EXECUTE format(
+          'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC CASCADE',
+          routine_row.oid::regprocedure
+        );
+      ELSE
+        EXECUTE format(
+          'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I CASCADE',
+          routine_row.oid::regprocedure,
+          pg_get_userbyid(grantee_row.grantee)
+        );
+      END IF;
+    END LOOP;
+  END LOOP;
+END
+$provider_scope_concurrency_acl_convergence$;
 GRANT EXECUTE ON FUNCTION
   public.reviewrouter_provider_scope_concurrency_status(),
   public.reviewrouter_provider_scope_concurrency_activate(),
@@ -4346,7 +4386,10 @@ TO reviewrouter_release_migration;
 DO $provider_scope_concurrency_operator_boundary$
 DECLARE routine_count integer;
 DECLARE canonical_count integer;
+DECLARE explicit_execute_count integer;
+DECLARE owner_execute_count integer;
 DECLARE release_execute_count integer;
+DECLARE canonical_execute_count integer;
 BEGIN
   SELECT count(*), count(*) FILTER (
     WHERE owner.rolname = '${releaseSchemaOwnerRoleName}'
@@ -4366,7 +4409,28 @@ BEGIN
       'reviewrouter_provider_scope_concurrency_close_for_rollback',
       'reviewrouter_provider_scope_concurrency_verify_rollback'
     ]);
-  SELECT count(*) INTO release_execute_count
+  SELECT count(*),
+         count(*) FILTER (
+           WHERE acl.grantee = routine.proowner
+         ),
+         count(*) FILTER (
+           WHERE acl.grantee = 'reviewrouter_release_migration'::regrole
+         ),
+         count(*) FILTER (
+           WHERE (
+             acl.grantee = routine.proowner
+             AND acl.grantor = routine.proowner
+             AND NOT acl.is_grantable
+           ) OR (
+             acl.grantee = 'reviewrouter_release_migration'::regrole
+             AND routine.proname <>
+               'reviewrouter_provider_scope_concurrency_snapshot'
+             AND acl.grantor = routine.proowner
+             AND NOT acl.is_grantable
+           )
+         )
+  INTO explicit_execute_count, owner_execute_count, release_execute_count,
+       canonical_execute_count
   FROM pg_proc routine
   JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
   CROSS JOIN LATERAL aclexplode(
@@ -4381,44 +4445,16 @@ BEGIN
       'reviewrouter_provider_scope_concurrency_close_for_rollback',
       'reviewrouter_provider_scope_concurrency_verify_rollback'
     ])
-    AND acl.grantee = 'reviewrouter_release_migration'::regrole
     AND acl.privilege_type = 'EXECUTE';
   IF routine_count <> 5 OR canonical_count <> 5
+     OR explicit_execute_count <> 9
+     OR owner_execute_count <> 5
      OR release_execute_count <> 4
+     OR canonical_execute_count <> 9
      OR has_function_privilege(
        'reviewrouter_release_migration',
        'public.reviewrouter_provider_scope_concurrency_snapshot()',
        'EXECUTE'
-     )
-     OR EXISTS (
-       SELECT 1
-       FROM pg_proc routine
-       JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
-       CROSS JOIN LATERAL aclexplode(
-         coalesce(routine.proacl, acldefault('f', routine.proowner))
-       ) acl
-       LEFT JOIN pg_roles grantee ON grantee.oid = acl.grantee
-       WHERE namespace.nspname = 'public'
-         AND routine.pronargs = 0
-         AND routine.proname = ANY (ARRAY[
-           'reviewrouter_provider_scope_concurrency_snapshot',
-           'reviewrouter_provider_scope_concurrency_status',
-           'reviewrouter_provider_scope_concurrency_activate',
-           'reviewrouter_provider_scope_concurrency_close_for_rollback',
-           'reviewrouter_provider_scope_concurrency_verify_rollback'
-         ])
-         AND acl.privilege_type = 'EXECUTE'
-         AND (
-           acl.grantee = 0
-           OR grantee.rolname IN (
-             'reviewrouter_api', 'reviewrouter_web', 'reviewrouter_worker',
-             'reviewrouter_comment_token_custody',
-             'reviewrouter_codex_effect_authority',
-             '${activationPermitInstallerRoleName}',
-             '${activationReceiptReaderRoleName}',
-             '${canonicalBootstrapRoleName}'
-           )
-         )
      ) THEN
     RAISE EXCEPTION
       'provider scope concurrency operator boundary is non-canonical';
