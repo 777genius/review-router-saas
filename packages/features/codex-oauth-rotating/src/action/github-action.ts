@@ -657,9 +657,7 @@ export async function runCodexRotatingGitHubAction(
       });
       return;
     } finally {
-      await eventMaterial?.erase();
-      clearActionAuthEnv(env);
-      clearOidcRequestEnv(env);
+      await cleanupCertifiedForkActionEnvironment(env, eventMaterial?.erase);
     }
   }
 
@@ -995,6 +993,18 @@ export async function runCodexRotatingGitHubAction(
     } finally {
       await removeTree(workspace);
     }
+  } finally {
+    clearActionAuthEnv(env);
+    clearOidcRequestEnv(env);
+  }
+}
+
+export async function cleanupCertifiedForkActionEnvironment(
+  env: NodeJS.ProcessEnv,
+  eraseForkMaterial?: (() => Promise<void>) | undefined,
+): Promise<void> {
+  try {
+    await eraseForkMaterial?.();
   } finally {
     clearActionAuthEnv(env);
     clearOidcRequestEnv(env);

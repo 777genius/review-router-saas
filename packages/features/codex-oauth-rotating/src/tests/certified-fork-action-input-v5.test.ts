@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  cleanupCertifiedForkActionEnvironment,
   readActionInputs,
   runCodexRotatingGitHubAction,
 } from "../action/github-action";
@@ -46,6 +47,26 @@ function forkEvent(): Record<string, unknown> {
 }
 
 describe("certified fork V5 action inputs", () => {
+  it("clears auth and OIDC even when secure event erasure fails", async () => {
+    const runtimeEnv: NodeJS.ProcessEnv = {
+      "INPUT_AUTH-JSON": "raw-auth",
+      INPUT_AUTH_JSON: "raw-auth-alias",
+      CODEX_AUTH_JSON: "raw-auth-env",
+      REVIEWROUTER_CODEX_AUTH_JSON: "raw-auth-reviewrouter",
+      ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.example/token",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-secret",
+    };
+    const erase = vi.fn(async () => {
+      throw new Error("certified_fork_event_erase_failed");
+    });
+
+    await expect(
+      cleanupCertifiedForkActionEnvironment(runtimeEnv, erase),
+    ).rejects.toThrow("certified_fork_event_erase_failed");
+    expect(erase).toHaveBeenCalledOnce();
+    expect(runtimeEnv).toEqual({});
+  });
+
   it("parses the complete immutable fork tuple", () => {
     expect(readActionInputs(env()).forkReviewBinding).toEqual({
       sourceRepository: "contributor/repository",
