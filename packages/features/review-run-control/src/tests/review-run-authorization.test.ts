@@ -5,6 +5,7 @@ import {
   CapabilityVerificationErrorCode,
 } from "@reviewrouter/platform-signed-capabilities";
 import {
+  ManageReviewRunAuthorizations,
   ReviewRunAuthorizationDenialReason,
   ReviewRunAuthorizationTokenResolutionStatus,
   ReviewRunAuthorizationUseCaseStatus,
@@ -352,6 +353,51 @@ describe("ReviewRunAuthorization", () => {
     expect(renewalRetry.status).toBe(
       ReviewRunAuthorizationUseCaseStatus.Restored,
     );
+  });
+
+  it("recovers renewal only after two matching safety fence confirmations", async () => {
+    const kit = createReviewRunControlTestKit();
+    const fixture = await provisionV2AuthorizationContext(kit);
+    let safetyReads = 0;
+    const authorizations = new ManageReviewRunAuthorizations({
+      clock: kit.clock,
+      identifiers: kit.identifiers,
+      digest: kit.digest,
+      identities: kit.store,
+      authorities: kit.store,
+      releases: kit.store,
+      limits: kit.store,
+      slos: kit.store,
+      safetyDecisions: {
+        async resolveReviewSafetyPolicy(input) {
+          safetyReads += 1;
+          const resolved =
+            await kit.control.safetyResolver.resolveReviewSafetyPolicy(input);
+          return safetyReads === 2
+            ? { ...resolved, safetyDecisionHash: hashC }
+            : resolved;
+        },
+      },
+      authorizationQueries: kit.store,
+      authorizationCommands: kit.store,
+      tokens: kit.tokens,
+    });
+    const first = await authorizations.authorizeReviewRun(
+      fixture.authorizeInput,
+    );
+    if (!("authorization" in first)) {
+      throw new Error("authorization_fixture_failed");
+    }
+
+    const renewed = await authorizations.renewReviewRunAuthorization({
+      authorizationId: first.authorization.authorizationId,
+      verifiedIdentity: fixture.verifiedIdentity,
+      renewalReplayKeyHash: hashC,
+      requestedTtlMs: 20 * 60_000,
+    });
+
+    expect(renewed.status).toBe(ReviewRunAuthorizationUseCaseStatus.Renewed);
+    expect(safetyReads).toBe(4);
   });
 
   it("rejects renewal after identity drift, safety fence change, pause, or release revocation", async () => {

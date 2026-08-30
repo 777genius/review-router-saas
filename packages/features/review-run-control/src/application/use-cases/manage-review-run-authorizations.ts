@@ -304,7 +304,7 @@ export class ManageReviewRunAuthorizations {
     if (!verifiedIdentityMatches(authorization, input.verifiedIdentity)) {
       return denied(ReviewRunAuthorizationDenialReason.VerifiedIdentityDrift);
     }
-    const eligibility = await this.loadEligibility(
+    let eligibility = await this.loadEligibility(
       input.verifiedIdentity,
       authorization.producerReleaseId,
       authorization.providerVoteLanes,
@@ -312,12 +312,25 @@ export class ManageReviewRunAuthorizations {
     if ("denied" in eligibility) {
       return denied(eligibility.denied);
     }
-    if (
-      eligibility.authority.epoch !== authorization.mutationEpoch ||
-      eligibility.safety.safetyDecisionHash !==
-        authorization.authorizationSafetyDecisionHash
-    ) {
+    if (eligibility.authority.epoch !== authorization.mutationEpoch) {
       return denied(ReviewRunAuthorizationDenialReason.SafetyDecisionChanged);
+    }
+    if (
+      eligibility.safety.safetyDecisionHash !==
+      authorization.authorizationSafetyDecisionHash
+    ) {
+      const confirmed = await this.confirmRenewalFence({
+        identity: input.verifiedIdentity,
+        producerReleaseId: authorization.producerReleaseId,
+        providerVoteLanes: authorization.providerVoteLanes,
+        expectedMutationEpoch: authorization.mutationEpoch,
+        expectedSafetyDecisionHash:
+          authorization.authorizationSafetyDecisionHash,
+      });
+      if ("denied" in confirmed) {
+        return denied(confirmed.denied);
+      }
+      eligibility = confirmed;
     }
     const expiresAt = new Date(
       Math.min(
@@ -492,6 +505,42 @@ export class ManageReviewRunAuthorizations {
       } as const;
     }
     return { repository, authority, release, safety, limits, slo } as const;
+  }
+
+  private async confirmRenewalFence(input: {
+    readonly identity: VerifiedScmRunIdentity;
+    readonly producerReleaseId: string;
+    readonly providerVoteLanes: readonly ProviderVoteLane[];
+    readonly expectedMutationEpoch: bigint;
+    readonly expectedSafetyDecisionHash: string;
+  }) {
+    for (
+      let confirmationRead = 0;
+      confirmationRead < 2;
+      confirmationRead += 1
+    ) {
+      const confirmation = await this.loadEligibility(
+        input.identity,
+        input.producerReleaseId,
+        input.providerVoteLanes,
+      );
+      if ("denied" in confirmation) {
+        return confirmation;
+      }
+      if (
+        confirmation.authority.epoch !== input.expectedMutationEpoch ||
+        confirmation.safety.safetyDecisionHash !==
+          input.expectedSafetyDecisionHash
+      ) {
+        return {
+          denied: ReviewRunAuthorizationDenialReason.SafetyDecisionChanged,
+        } as const;
+      }
+      if (confirmationRead === 1) {
+        return confirmation;
+      }
+    }
+    throw new Error("review_run_authorization_fence_confirmation_unreachable");
   }
 
   private async tokenClaimsMatchAuthorization(
