@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   isCodexRotatingOAuthAllowedForRepository,
+  isCodexForkReviewV5AllowedForRepository,
   isCodexRotatingOAuthAllowedForWorkspaceDefault,
   isCodexRotatingOAuthEnabled,
   isConflictReviewFallbackAllowedForRepository,
@@ -17,6 +18,7 @@ import {
   isWorkflowProvisioningEnabled,
   loadRuntimeEnv,
   parseCodexRotatingOAuthRepositoryAllowlist,
+  parseCodexForkReviewV5RepositoryAllowlist,
   parseConflictReviewFallbackRepositoryAllowlist,
   parseReviewRouterActionRefList,
   readGitHubAppPrivateKey,
@@ -465,6 +467,50 @@ describe("platform config", () => {
     expect(() =>
       parseCodexRotatingOAuthRepositoryAllowlist("../bad/repo"),
     ).toThrow("invalid_env:REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES");
+  });
+
+  it("keeps fork review V5 behind executor readiness and a non-empty repository cohort", () => {
+    const enabledEnv = {
+      REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: "1",
+      REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES:
+        "777genius/review-router-saas-e2e, Other-Org/Repo.Name",
+    } as NodeJS.ProcessEnv;
+
+    expect(
+      isCodexForkReviewV5AllowedForRepository(
+        "777genius/review-router-saas-e2e",
+        {} as NodeJS.ProcessEnv,
+      ),
+    ).toBe(false);
+    expect(
+      isCodexForkReviewV5AllowedForRepository(
+        "777genius/review-router-saas-e2e",
+        {
+          REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: "1",
+          REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES: "",
+        } as NodeJS.ProcessEnv,
+      ),
+    ).toBe(false);
+    expect(
+      parseCodexForkReviewV5RepositoryAllowlist(
+        enabledEnv.REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES,
+      ),
+    ).toEqual(["777genius/review-router-saas-e2e", "other-org/repo.name"]);
+    expect(
+      isCodexForkReviewV5AllowedForRepository(
+        "777genius/review-router-saas-e2e",
+        enabledEnv,
+      ),
+    ).toBe(true);
+    expect(
+      isCodexForkReviewV5AllowedForRepository(
+        "777genius/not-enabled",
+        enabledEnv,
+      ),
+    ).toBe(false);
+    expect(() =>
+      parseCodexForkReviewV5RepositoryAllowlist("../bad/repo"),
+    ).toThrow("invalid_env:REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES");
   });
 
   it("keeps hosted Codex pool behind an explicit rollback-safe gate", () => {

@@ -11,6 +11,7 @@ import {
   workflowDocumentSemanticSha256,
   WorkflowSourceTrust,
   renderCanonicalCodexRotatingT0WorkflowV4,
+  renderCanonicalCodexRotatingT0WorkflowV5,
   CodexRotatingT0WorkflowSchemaVersion,
   type VersionedProviderSecretNamespace,
 } from "@reviewrouter/features-codex-oauth-rotating";
@@ -342,24 +343,42 @@ export class OctokitCodexRotatingGitHubSecretGateway
       throw new Error("codex_rotating_workflow_publish_source_untrusted");
     }
     const refreshScheduleCron = extractCanonicalRefreshCron(currentSource);
-    const nextSource = renderCanonicalCodexRotatingT0WorkflowV4({
-      actionRef: metadata.actionRef,
-      apiUrl: metadata.apiUrl,
-      providerInstanceId: input.providerInstanceId,
-      refreshScheduleCron,
-      claudeCodeOAuthTokenSecret: currentSource.includes(
-        "CLAUDE_CODE_OAUTH_TOKEN:",
-      ),
-      openRouterApiKeySecret: currentSource.includes("OPENROUTER_API_KEY:"),
-      activeSecretNamespace: input.namespace,
-    });
+    const nextSource =
+      metadata.workflowSchemaVersion ===
+      CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
+        ? renderCanonicalCodexRotatingT0WorkflowV5({
+            actionRef: metadata.actionRef,
+            apiUrl: metadata.apiUrl,
+            providerInstanceId: input.providerInstanceId,
+            refreshScheduleCron,
+            activeSecretNamespace: input.namespace,
+          })
+        : metadata.workflowSchemaVersion ===
+            CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+          ? renderCanonicalCodexRotatingT0WorkflowV4({
+              actionRef: metadata.actionRef,
+              apiUrl: metadata.apiUrl,
+              providerInstanceId: input.providerInstanceId,
+              refreshScheduleCron,
+              claudeCodeOAuthTokenSecret: currentSource.includes(
+                "CLAUDE_CODE_OAUTH_TOKEN:",
+              ),
+              openRouterApiKeySecret: currentSource.includes(
+                "OPENROUTER_API_KEY:",
+              ),
+              activeSecretNamespace: input.namespace,
+            })
+          : (() => {
+              throw new Error(
+                "codex_rotating_workflow_publish_versioned_source_required",
+              );
+            })();
     // Reparse before publication so malformed rendering can never reach the
     // trusted branch even if a future template change regresses.
     const nextMetadata =
       readCanonicalCodexRotatingT0WorkflowSourceMetadata(nextSource);
     if (
-      nextMetadata.workflowSchemaVersion !==
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+      nextMetadata.workflowSchemaVersion !== metadata.workflowSchemaVersion ||
       !nextMetadata.secretNamespace
     ) {
       throw new Error("codex_rotating_workflow_publish_render_invalid");
@@ -391,8 +410,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
       workflowPath: managedCodexWorkflowPath,
       expectedActionOwnerRepo: metadata.actionRef.split("@")[0]!,
       expectedProviderInstanceId: input.providerInstanceId,
-      expectedWorkflowSchemaVersion:
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+      expectedWorkflowSchemaVersion: metadata.workflowSchemaVersion,
     });
     if (!verified.attestation) {
       throw new Error("codex_rotating_workflow_publish_attestation_missing");

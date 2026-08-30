@@ -42,7 +42,7 @@ describe("dashboard rotating namespace activation contract", () => {
     );
     const helper = sliceBetween(
       source,
-      "async function resolveCodexRotatingProvisioningActionRef",
+      "async function resolveCodexRotatingProvisioningContract",
       "function readGitHubRepositoryIdentity",
     );
 
@@ -50,7 +50,7 @@ describe("dashboard rotating namespace activation contract", () => {
       'input.inspection.source === "confirmed_setup_candidate"',
     );
     expect(helper).toContain(
-      "return resolveReviewRouterCodexRotatingActionRef()",
+      "actionRef: resolveReviewRouterCodexRotatingActionRef()",
     );
     expect(helper).toContain("assertTrustedCanonicalVersionedWorkflow");
     expect(helper).toContain(
@@ -59,10 +59,13 @@ describe("dashboard rotating namespace activation contract", () => {
     expect(helper).toContain("codexOAuthSecretNamespace.findUnique");
     expect(helper).toContain("ref: expectedSource.workflowSourceCommitSha");
     expect(helper).toContain("assertActiveVersionedSecretWorkflowAttestation");
-    expect(helper).toContain("return metadata.actionRef");
+    expect(helper).toContain("actionRef: metadata.actionRef");
+    expect(helper).toContain("metadata.workflowSchemaVersion");
+    expect(helper).toContain("resolveFreshCodexRotatingWorkflowContract");
+    expect(helper).toContain("isCodexForkReviewV5AllowedForRepository");
     expect(
       helper.indexOf("assertActiveVersionedSecretWorkflowAttestation"),
-    ).toBeLessThan(helper.indexOf("return metadata.actionRef"));
+    ).toBeLessThan(helper.indexOf("actionRef: metadata.actionRef"));
     expect(helper).not.toContain("resolveReviewRouterActionRef");
   });
 });

@@ -6,6 +6,7 @@ import {
   renderCanonicalCodexRotatingT0WorkflowV2,
   renderCanonicalCodexRotatingT0WorkflowV3,
   renderCanonicalCodexRotatingT0WorkflowV4,
+  renderCanonicalCodexRotatingT0WorkflowV5,
   type CodexRotatingWorkflowSourceMetadata,
 } from "./codex-oauth-rotating";
 import {
@@ -151,7 +152,9 @@ export function readCanonicalCodexRotatingT0WorkflowSourceMetadata(
     workflowSchemaVersion !==
       CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3 &&
     workflowSchemaVersion !==
-      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 &&
+    workflowSchemaVersion !==
+      CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
   ) {
     throw new Error("codex_rotating_t0_workflow_metadata_missing");
   }
@@ -163,7 +166,9 @@ export function readCanonicalCodexRotatingT0WorkflowSourceMetadata(
   );
   const secretNamespace =
     workflowSchemaVersion ===
-    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+    workflowSchemaVersion ===
+      CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
       ? readVersionedSecretNamespace(root.name, providerInstanceId)
       : undefined;
   const refreshScheduleCron =
@@ -192,10 +197,19 @@ export function readCanonicalCodexRotatingT0WorkflowSourceMetadata(
         : workflowSchemaVersion ===
             CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3
           ? renderCanonicalCodexRotatingT0WorkflowV3(commonRenderInput)
-          : renderCanonicalCodexRotatingT0WorkflowV4({
-              ...commonRenderInput,
-              activeSecretNamespace: secretNamespace!,
-            });
+          : workflowSchemaVersion ===
+              CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+            ? renderCanonicalCodexRotatingT0WorkflowV4({
+                ...commonRenderInput,
+                activeSecretNamespace: secretNamespace!,
+              })
+            : renderCanonicalCodexRotatingT0WorkflowV5({
+                actionRef,
+                apiUrl,
+                providerInstanceId,
+                refreshScheduleCron,
+                activeSecretNamespace: secretNamespace!,
+              });
   if (!areWorkflowDocumentsSemanticallyEqual(workflow, expectedWorkflow)) {
     throw new Error("codex_rotating_t0_workflow_source_not_canonical");
   }
@@ -219,6 +233,9 @@ export function assertTrustedCanonicalVersionedWorkflow(input: {
   readonly expectedApiUrl: string;
   readonly expectedProviderInstanceId: string;
   readonly expectedSecretNamespace: VersionedProviderSecretNamespace;
+  readonly expectedWorkflowSchemaVersion?:
+    | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+    | CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5;
 }): void {
   if (!/^[1-9][0-9]*$/u.test(input.observedRepositoryId)) {
     throw new Error("codex_rotating_workflow_repository_id_invalid");
@@ -246,12 +263,22 @@ export function assertTrustedCanonicalVersionedWorkflow(input: {
   if (input.metadata.providerInstanceId !== input.expectedProviderInstanceId) {
     throw new Error("codex_rotating_workflow_provider_instance_mismatch");
   }
+  if (!input.metadata.secretNamespace) {
+    throw new Error("codex_rotating_versioned_workflow_required");
+  }
   if (
     input.metadata.workflowSchemaVersion !==
-      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
-    !input.metadata.secretNamespace
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 &&
+    input.metadata.workflowSchemaVersion !==
+      CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
   ) {
-    throw new Error("codex_rotating_workflow_v4_required");
+    throw new Error("codex_rotating_versioned_workflow_required");
+  }
+  if (
+    input.expectedWorkflowSchemaVersion !== undefined &&
+    input.metadata.workflowSchemaVersion !== input.expectedWorkflowSchemaVersion
+  ) {
+    throw new Error("codex_rotating_workflow_schema_mismatch");
   }
   assertSameVersionedProviderSecretNamespace({
     expected: input.expectedSecretNamespace,

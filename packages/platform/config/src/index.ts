@@ -49,6 +49,8 @@ export const runtimeEnvSchema = z.object({
   REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER: z.enum(["0", "1"]).default("1"),
   REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES: z.string().default(""),
+  REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: z.enum(["0", "1"]).default("0"),
+  REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES: z.string().default(""),
   REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_ENABLE_HOSTED_CODEX_CUSTODY: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: z.enum(["0", "1"]).default("0"),
@@ -566,6 +568,40 @@ export function parseCodexRotatingOAuthRepositoryAllowlist(
   return parseRepositoryAllowlist(
     value,
     "REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES",
+  );
+}
+
+/**
+ * Selects the certified fork-review workflow only after the production V5
+ * executor has been enabled and the repository is in an explicit cohort.
+ * An empty cohort deliberately means nobody, never everybody.
+ */
+export function isCodexForkReviewV5AllowedForRepository(
+  repositoryFullName: string,
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (input.REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5 !== "1") {
+    return false;
+  }
+  const allowlist = parseCodexForkReviewV5RepositoryAllowlist(
+    input.REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES,
+  );
+  if (allowlist.length === 0) {
+    return false;
+  }
+  const normalizedRepository = normalizeRepositoryFullName(
+    repositoryFullName,
+    "REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES",
+  );
+  return allowlist.includes(normalizedRepository);
+}
+
+export function parseCodexForkReviewV5RepositoryAllowlist(
+  value: string | undefined,
+): readonly string[] {
+  return parseRepositoryAllowlist(
+    value,
+    "REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES",
   );
 }
 

@@ -46,6 +46,7 @@ import type { ProviderKind } from "@reviewrouter/features-review-providers";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
   isCodexRotatingOAuthAllowedForRepository,
+  isCodexForkReviewV5AllowedForRepository,
   isCodexRotatingOAuthAllowedForWorkspaceDefault,
   isConflictReviewFallbackAllowedForRepository,
   isWorkflowProvisioningEnabled,
@@ -490,7 +491,7 @@ async function provisionPendingRepositoryOwnedWorkflow(input: {
     octokit,
     repository: githubRepository,
   });
-  const actionRef = await resolveCodexRotatingProvisioningActionRef({
+  const provisioningContract = await resolveCodexRotatingProvisioningContract({
     prisma,
     inspection: namespaceInspection,
     octokit,
@@ -519,14 +520,17 @@ async function provisionPendingRepositoryOwnedWorkflow(input: {
       provisionRepositoryReviewRouterWorkflow(
         {
           repositoryId: input.repositoryId,
-          actionRef,
+          actionRef: provisioningContract.actionRef,
           apiUrl: resolveWorkflowPublicApiUrl(),
           runtimeConfigMode: "oidc",
           staticRuntimeEnv: resolvedRuntime.runtimeEnv,
           codexRotatingProviderInstanceId: providerInstanceId,
           codexRotatingWorkflowSecretNamespace: namespaceInspection.namespace,
           codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
-          forkAgenticSandboxEnabled: false,
+          codexRotatingWorkflowSchemaVersion:
+            provisioningContract.workflowSchemaVersion,
+          forkAgenticSandboxEnabled:
+            provisioningContract.forkAgenticSandboxEnabled,
           actor: actor.actor,
         },
         {
@@ -1054,7 +1058,6 @@ async function createSetupPullRequestMutation(
           codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
         }
       : null;
-    const forkAgenticSandboxEnabled = false;
     const octokit = await createGitHubAppInstallationOctokit(
       githubRepository.installation.githubInstallationId.toString(),
     );
@@ -1064,8 +1067,8 @@ async function createSetupPullRequestMutation(
       name: repository.name,
       defaultBranch: repository.defaultBranch,
     });
-    const actionRef = codexRotatingProviderInstanceId
-      ? await resolveCodexRotatingProvisioningActionRef({
+    const codexRotatingProvisioningContract = codexRotatingProviderInstanceId
+      ? await resolveCodexRotatingProvisioningContract({
           prisma,
           inspection: codexRotatingWorkflowNamespaceInspection!,
           octokit,
@@ -1076,7 +1079,10 @@ async function createSetupPullRequestMutation(
           expectedRepositoryFullName: repository.fullName,
           expectedProviderInstanceId: codexRotatingProviderInstanceId,
         })
-      : resolveReviewRouterActionRef();
+      : null;
+    const actionRef =
+      codexRotatingProvisioningContract?.actionRef ??
+      resolveReviewRouterActionRef();
     const conflictReviewFallbackAllowed = codexRotatingProviderInstanceId
       ? false
       : isConflictReviewFallbackAllowedForRepository(repository.fullName);
@@ -1096,8 +1102,9 @@ async function createSetupPullRequestMutation(
               codexRotatingWorkflowSecretNamespace:
                 codexRotatingWorkflowSecretNamespace!,
               codexRotatingWorkflowSchemaVersion:
-                CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
-              forkAgenticSandboxEnabled,
+                codexRotatingProvisioningContract!.workflowSchemaVersion,
+              forkAgenticSandboxEnabled:
+                codexRotatingProvisioningContract!.forkAgenticSandboxEnabled,
               ...(codexRotatingSecretInputs ?? {}),
               ...(codexRotatingV2Provisioning ?? {}),
             }
@@ -1184,7 +1191,11 @@ async function createSetupPullRequestMutation(
                     codexRotatingProviderInstanceId,
                     codexRotatingWorkflowSecretNamespace:
                       codexRotatingWorkflowSecretNamespace!,
-                    forkAgenticSandboxEnabled,
+                    codexRotatingWorkflowSchemaVersion:
+                      codexRotatingProvisioningContract!.workflowSchemaVersion,
+                    forkAgenticSandboxEnabled:
+                      codexRotatingProvisioningContract!
+                        .forkAgenticSandboxEnabled,
                     ...(codexRotatingV2Provisioning ?? {}),
                   }
                 : {}),
@@ -1375,7 +1386,19 @@ async function confirmSetupPullRequestMergedMutation(
           codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
         }
       : null;
-    const forkAgenticSandboxEnabled = false;
+    const codexRotatingProvisioningContract = codexRotatingProviderInstanceId
+      ? await resolveCodexRotatingProvisioningContract({
+          prisma,
+          inspection: codexRotatingWorkflowNamespaceInspection!,
+          octokit,
+          owner: repository.owner,
+          name: repository.name,
+          defaultBranch: repository.defaultBranch,
+          expectedRepositoryId: githubRepository.githubRepositoryId.toString(),
+          expectedRepositoryFullName: repository.fullName,
+          expectedProviderInstanceId: codexRotatingProviderInstanceId,
+        })
+      : null;
     const conflictReviewFallbackAllowed = codexRotatingProviderInstanceId
       ? false
       : isConflictReviewFallbackAllowedForRepository(repository.fullName);
@@ -1388,20 +1411,9 @@ async function confirmSetupPullRequestMergedMutation(
             owner: repository.owner,
             name: repository.name,
             defaultBranch: setupBaseBranch,
-            actionRef: codexRotatingProviderInstanceId
-              ? await resolveCodexRotatingProvisioningActionRef({
-                  prisma,
-                  inspection: codexRotatingWorkflowNamespaceInspection!,
-                  octokit,
-                  owner: repository.owner,
-                  name: repository.name,
-                  defaultBranch: repository.defaultBranch,
-                  expectedRepositoryId:
-                    githubRepository.githubRepositoryId.toString(),
-                  expectedRepositoryFullName: repository.fullName,
-                  expectedProviderInstanceId: codexRotatingProviderInstanceId,
-                })
-              : resolveReviewRouterActionRef(),
+            actionRef:
+              codexRotatingProvisioningContract?.actionRef ??
+              resolveReviewRouterActionRef(),
             conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
             ...(codexRotatingProviderInstanceId
               ? {
@@ -1409,8 +1421,10 @@ async function confirmSetupPullRequestMergedMutation(
                   codexRotatingWorkflowSecretNamespace:
                     codexRotatingWorkflowSecretNamespace!,
                   codexRotatingWorkflowSchemaVersion:
-                    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
-                  forkAgenticSandboxEnabled,
+                    codexRotatingProvisioningContract!.workflowSchemaVersion,
+                  forkAgenticSandboxEnabled:
+                    codexRotatingProvisioningContract!
+                      .forkAgenticSandboxEnabled,
                   ...(codexRotatingSecretInputs ?? {}),
                   ...(codexRotatingV2Provisioning ?? {}),
                 }
@@ -2997,7 +3011,7 @@ async function resolveCodexWorkflowSecretNamespace(input: {
   return inspection;
 }
 
-async function resolveCodexRotatingProvisioningActionRef(input: {
+async function resolveCodexRotatingProvisioningContract(input: {
   readonly prisma: PrismaClient;
   readonly inspection: CodexRotatingWorkflowNamespaceInspection;
   readonly octokit: {
@@ -3012,9 +3026,20 @@ async function resolveCodexRotatingProvisioningActionRef(input: {
   readonly expectedRepositoryId: string;
   readonly expectedRepositoryFullName: string;
   readonly expectedProviderInstanceId: string;
-}): Promise<string> {
+}): Promise<{
+  readonly actionRef: string;
+  readonly workflowSchemaVersion:
+    | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+    | CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5;
+  readonly forkAgenticSandboxEnabled: boolean;
+}> {
   if (input.inspection.source === "confirmed_setup_candidate") {
-    return resolveReviewRouterCodexRotatingActionRef();
+    return {
+      actionRef: resolveReviewRouterCodexRotatingActionRef(),
+      ...resolveFreshCodexRotatingWorkflowContract(
+        input.expectedRepositoryFullName,
+      ),
+    };
   }
 
   // An active namespace is durably attested to the workflow already on the
@@ -3104,7 +3129,39 @@ async function resolveCodexRotatingProvisioningActionRef(input: {
       repositoryId: expectedSource.attestedRepositoryId,
     },
   });
-  return metadata.actionRef;
+  if (
+    metadata.workflowSchemaVersion !==
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 &&
+    metadata.workflowSchemaVersion !==
+      CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
+  ) {
+    throw new Error("codex_rotating_versioned_workflow_required");
+  }
+  return {
+    actionRef: metadata.actionRef,
+    workflowSchemaVersion: metadata.workflowSchemaVersion,
+    forkAgenticSandboxEnabled:
+      metadata.workflowSchemaVersion ===
+      CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5,
+  };
+}
+
+function resolveFreshCodexRotatingWorkflowContract(
+  repositoryFullName: string,
+): {
+  readonly workflowSchemaVersion:
+    | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+    | CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5;
+  readonly forkAgenticSandboxEnabled: boolean;
+} {
+  const forkAgenticSandboxEnabled =
+    isCodexForkReviewV5AllowedForRepository(repositoryFullName);
+  return {
+    workflowSchemaVersion: forkAgenticSandboxEnabled
+      ? CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
+      : CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+    forkAgenticSandboxEnabled,
+  };
 }
 
 function readGitHubRepositoryIdentity(data: unknown): {

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   inspectNamespace: vi.fn(),
   readMetadata: vi.fn(),
   semanticSha: vi.fn(),
+  v5Allowed: vi.fn(),
 }));
 
 vi.mock("@reviewrouter/features-provider-setup", () => ({
@@ -25,8 +26,13 @@ vi.mock("@reviewrouter/features-workflow-provisioning", () => ({
   WorkflowSourceTrust: {
     TrustedDefaultBranchRevision: "trusted_default_branch_revision",
   },
+  CodexRotatingT0WorkflowSchemaVersion: {
+    VersionedSecretNamespaceV4: 4,
+    CertifiedForkReviewV5: 5,
+  },
 }));
 vi.mock("@reviewrouter/platform-config", () => ({
+  isCodexForkReviewV5AllowedForRepository: mocks.v5Allowed,
   requireReviewRouterDatabaseRecoveryWitness: () => ({ generation: "test" }),
   resolveReviewRouterCodexRotatingTrustedActionRefs: () => [
     "777genius/review-router@action-sha",
@@ -58,7 +64,11 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
         name: "REVIEWROUTER_CODEX_AUTH_JSON_TEST_E2",
       },
     });
-    mocks.readMetadata.mockReturnValue({ actionRef: "action-sha" });
+    mocks.v5Allowed.mockReturnValue(false);
+    mocks.readMetadata.mockReturnValue({
+      actionRef: "action-sha",
+      workflowSchemaVersion: 4,
+    });
     mocks.semanticSha.mockReturnValue("b".repeat(64));
     mocks.createAttestation.mockReturnValue({
       repositoryId: "1228051727",
@@ -95,6 +105,7 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       expect.objectContaining({
         expectedRepositoryId: "1228051727",
         expectedApiUrl: "https://api.reviewrouter.test",
+        expectedWorkflowSchemaVersion: 4,
       }),
     );
     expect(mocks.activate).toHaveBeenCalledWith(
@@ -126,6 +137,64 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
       workflowSourceCommitSha: firstHead,
     });
     expect(mocks.activate).not.toHaveBeenCalled();
+    expect(mocks.assertTrusted).toHaveBeenCalledWith(
+      expect.not.objectContaining({ expectedWorkflowSchemaVersion: 4 }),
+    );
+  });
+
+  it("requires the V5 cohort to still be enabled before candidate activation", async () => {
+    mocks.readMetadata.mockReturnValueOnce({
+      actionRef: "action-sha",
+      workflowSchemaVersion: 5,
+    });
+    mocks.assertTrusted.mockImplementationOnce((input) => {
+      if (
+        input.expectedWorkflowSchemaVersion !==
+        input.metadata.workflowSchemaVersion
+      ) {
+        throw new Error("codex_rotating_workflow_schema_mismatch");
+      }
+    });
+    const { input } = fixture();
+
+    await expect(
+      activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
+    ).rejects.toThrow("codex_rotating_workflow_schema_mismatch");
+    expect(mocks.activate).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    mocks.inspectNamespace.mockResolvedValue({
+      source: "confirmed_setup_candidate",
+      claimId: "claim_1",
+      attemptId: "attempt_1",
+      namespace: {
+        namespaceId: "namespace_2",
+        epoch: 2n,
+        name: "REVIEWROUTER_CODEX_AUTH_JSON_TEST_E2",
+      },
+    });
+    mocks.v5Allowed.mockReturnValue(true);
+    mocks.readMetadata.mockReturnValue({
+      actionRef: "action-sha",
+      workflowSchemaVersion: 5,
+    });
+    mocks.semanticSha.mockReturnValue("b".repeat(64));
+    mocks.createAttestation.mockReturnValue({
+      repositoryId: "1228051727",
+      workflowPath: ".github/workflows/reviewrouter-codex.yml",
+      workflowSourceCommitSha: firstHead,
+      workflowSourceBlobSha: blobSha,
+      workflowSourceSha256: "c".repeat(64),
+      workflowSemanticSha256: "b".repeat(64),
+      sourceTrust: "trusted_default_branch_revision",
+    });
+    const enabled = fixture();
+    await expect(
+      activateConfirmedCodexNamespaceAfterWorkflowMerge(enabled.input),
+    ).resolves.toMatchObject({ status: "activated" });
+    expect(mocks.assertTrusted).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedWorkflowSchemaVersion: 5 }),
+    );
   });
 
   it("fails closed when the default branch changes during attestation", async () => {

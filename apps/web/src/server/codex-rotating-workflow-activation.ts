@@ -6,6 +6,7 @@ import {
 } from "@reviewrouter/features-provider-setup";
 import {
   assertTrustedCanonicalVersionedWorkflow,
+  CodexRotatingT0WorkflowSchemaVersion,
   createVersionedSecretWorkflowSourceAttestation,
   defaultCodexRotatingWorkflowPath,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
@@ -14,6 +15,7 @@ import {
 } from "@reviewrouter/features-workflow-provisioning";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
+  isCodexForkReviewV5AllowedForRepository,
   requireReviewRouterDatabaseRecoveryWitness,
   resolveReviewRouterCodexRotatingTrustedActionRefs,
 } from "@reviewrouter/platform-config";
@@ -119,6 +121,16 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     expectedApiUrl: input.expectedApiUrl,
     expectedProviderInstanceId: providerInstanceId,
     expectedSecretNamespace: namespace,
+    ...(inspection.source === "confirmed_setup_candidate"
+      ? {
+          expectedWorkflowSchemaVersion:
+            isCodexForkReviewV5AllowedForRepository(
+              input.expectedRepositoryFullName,
+            )
+              ? CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
+              : CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+        }
+      : {}),
   });
   const attestation = createVersionedSecretWorkflowSourceAttestation({
     repositoryId: input.githubRepositoryId,

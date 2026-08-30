@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { allocateVersionedProviderSecretNamespace } from "@reviewrouter/features-codex-oauth-rotating";
+import {
+  allocateVersionedProviderSecretNamespace,
+  CodexRotatingReviewActionV2Mode,
+  CodexRotatingT0WorkflowSchemaVersion,
+} from "@reviewrouter/features-codex-oauth-rotating";
 import type {
   AuditEventInput,
   AuditLogRepositoryPort,
@@ -635,6 +639,46 @@ describe("provisionReviewRouterWorkflow", () => {
     expect(workflow && "content" in workflow ? workflow.content : "").toContain(
       `secrets.${namespace.name}`,
     );
+  });
+
+  it("provisions certified V5 only when the caller explicitly selects the fork lane", async () => {
+    const gateway = new CapturingSetupGateway();
+    const namespace = allocateVersionedProviderSecretNamespace({
+      scope: {
+        repositoryId: "123456",
+        providerInstanceId: "codex-rotating:123456",
+      },
+      epoch: 8n,
+      randomBytes: (size) => new Uint8Array(size).fill(8),
+    });
+
+    await provisionRepositoryReviewRouterWorkflow(
+      {
+        repositoryId: "repo-1",
+        actionRef: `777genius/review-router@${"a".repeat(40)}`,
+        apiUrl: "https://app.reviewrouter.dev",
+        runtimeConfigMode: "oidc",
+        staticRuntimeEnv: { REVIEW_AUTH_MODE: "codex-oauth-rotating" },
+        codexRotatingProviderInstanceId: "codex-rotating:123456",
+        codexRotatingWorkflowSecretNamespace: namespace,
+        codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+        codexRotatingWorkflowSchemaVersion:
+          CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5,
+        forkAgenticSandboxEnabled: true,
+      },
+      {
+        targets: new StaticWorkflowProvisioningTarget(activeTarget),
+        setupGateway: gateway,
+        provisioning: new CapturingProvisioningRepository(),
+      },
+    );
+
+    const workflow = gateway.input?.workflowFiles.find(
+      (file) => file.path === ".github/workflows/reviewrouter-codex.yml",
+    );
+    const content = workflow && "content" in workflow ? workflow.content : "";
+    expect(content).toContain("workflow_schema_version: 5");
+    expect(content).toContain("fork-sandbox-review:");
   });
 
   it("does not call GitHub without an exact workflow namespace", async () => {

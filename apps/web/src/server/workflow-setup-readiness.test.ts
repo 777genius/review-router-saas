@@ -62,6 +62,20 @@ function canonicalV4Workflow(): string {
 }
 
 function checkV4WorkflowReadiness(workflow: string): Promise<boolean> {
+  return checkVersionedWorkflowReadiness(
+    workflow,
+    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+    false,
+  );
+}
+
+function checkVersionedWorkflowReadiness(
+  workflow: string,
+  schemaVersion:
+    | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+    | CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5,
+  forkAgenticSandboxEnabled: boolean,
+): Promise<boolean> {
   const probe = new OctokitRepositoryWorkflowProbe({
     createRequester: async () => ({
       request: async () => ({
@@ -80,8 +94,8 @@ function checkV4WorkflowReadiness(workflow: string): Promise<boolean> {
       actionRef: v4ActionRef,
       codexRotatingProviderInstanceId: v4ProviderInstanceId,
       codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
-      codexRotatingWorkflowSchemaVersion:
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+      codexRotatingWorkflowSchemaVersion: schemaVersion,
+      forkAgenticSandboxEnabled,
       codexRotatingWorkflowSecretNamespace: v4SecretNamespace,
     },
     { workflowProbe: probe },
@@ -396,6 +410,45 @@ describe("workflow setup readiness", () => {
     await expect(checkV4WorkflowReadiness(canonicalV4Workflow())).resolves.toBe(
       true,
     );
+  });
+
+  it("accepts only the exact canonical schema-v5 fork workflow", async () => {
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: v4ActionRef,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: v4ProviderInstanceId,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      workflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5,
+      forkAgenticSandboxEnabled: true,
+      refreshScheduleCron: null,
+      activeSecretNamespace: v4SecretNamespace,
+    });
+
+    await expect(
+      checkVersionedWorkflowReadiness(
+        workflow,
+        CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5,
+        true,
+      ),
+    ).resolves.toBe(true);
+    await expect(
+      checkVersionedWorkflowReadiness(
+        workflow.replace(
+          "        env:\n          REVIEW_ROUTER_PR_WORKSPACE:",
+          "        env:\n          NODE_OPTIONS: --require /tmp/attacker.cjs\n          REVIEW_ROUTER_PR_WORKSPACE:",
+        ),
+        CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5,
+        true,
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      checkVersionedWorkflowReadiness(
+        workflow,
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+        false,
+      ),
+    ).resolves.toBe(false);
   });
 
   it.each([

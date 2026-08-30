@@ -4,8 +4,10 @@ import {
   assertActiveVersionedSecretWorkflowAttestation,
   assertTrustedCanonicalVersionedWorkflow,
   createVersionedSecretWorkflowSourceAttestation,
+  CodexRotatingT0WorkflowSchemaVersion,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
   renderCanonicalCodexRotatingT0WorkflowV4,
+  renderCanonicalCodexRotatingT0WorkflowV5,
   WorkflowSourceTrust,
 } from "../index.js";
 
@@ -169,5 +171,53 @@ describe("exact active workflow attestation", () => {
         observedRepositoryId: "999999",
       }),
     ).toThrow("codex_rotating_workflow_repository_identity_mismatch");
+  });
+
+  it("parses and trusts canonical V5 only when the expected schema matches", () => {
+    const actionRef =
+      "777genius/review-router@0123456789abcdef0123456789abcdef01234567";
+    const apiUrl = "https://api.reviewrouter.site";
+    const workflow = renderCanonicalCodexRotatingT0WorkflowV5({
+      actionRef,
+      apiUrl,
+      providerInstanceId: "codex-rotating:123456",
+      refreshScheduleCron: null,
+      activeSecretNamespace: namespace,
+    });
+    const metadata =
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(workflow);
+    const trusted = {
+      metadata,
+      observedRepositoryId: "123456",
+      observedRepositoryFullName: "777genius/example",
+      expectedRepositoryId: "123456",
+      expectedRepositoryFullName: "777genius/example",
+      trustedActionRefs: [actionRef],
+      expectedApiUrl: apiUrl,
+      expectedProviderInstanceId: "codex-rotating:123456",
+      expectedSecretNamespace: namespace,
+      expectedWorkflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5,
+    } as const;
+
+    expect(metadata.workflowSchemaVersion).toBe(5);
+    expect(() =>
+      assertTrustedCanonicalVersionedWorkflow(trusted),
+    ).not.toThrow();
+    expect(() =>
+      assertTrustedCanonicalVersionedWorkflow({
+        ...trusted,
+        expectedWorkflowSchemaVersion:
+          CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+      }),
+    ).toThrow("codex_rotating_workflow_schema_mismatch");
+    expect(() =>
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+        workflow.replace(
+          "        env:\n          REVIEW_ROUTER_PR_WORKSPACE:",
+          "        env:\n          NODE_OPTIONS: --require /tmp/attacker.cjs\n          REVIEW_ROUTER_PR_WORKSPACE:",
+        ),
+      ),
+    ).toThrow("codex_rotating_t0_workflow_source_not_canonical");
   });
 });

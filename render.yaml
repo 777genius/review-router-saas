@@ -324,6 +324,10 @@ envVarGroups:
         value: "0"
       - key: REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED
         value: "0"
+      - key: REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5
+        value: "0"
+      - key: REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES
+        value: ""
       # Revision-aware review v2 deploys additively. Writer capabilities are
       # enabled only after release attestation and an explicit cohort cutover.
       - key: REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED

@@ -1384,6 +1384,105 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
     ? ["codex-review", "fork-sandbox-review", "codex-refresh"]
     : ["codex-review", "fork-sandbox-review"];
 
+  const sameRepoWith = parseWorkflowFlatMapping(sameRepoJob, "with", 4);
+  const sameRepoSecrets = parseWorkflowFlatMapping(sameRepoJob, "secrets", 4);
+  if (
+    !workflowMappingHasExactNames(sameRepoWith, [
+      "runtime_ref",
+      "api_url",
+      "runtime_config_mode",
+      "pr_number",
+      "review_head_sha",
+      "provider_instance_id",
+      "workflow_schema_version",
+      "max_changed_lines",
+      "review_timeout_minutes",
+    ])
+  ) {
+    errors.push("t0_v5_same_repo_with_invalid");
+  }
+  if (!workflowMappingHasExactNames(sameRepoSecrets, ["CODEX_AUTH_JSON"])) {
+    errors.push("t0_v5_same_repo_secrets_invalid");
+  }
+
+  const checkoutStep = extractWorkflowStepSection(
+    forkJob,
+    "Checkout exact public fork head",
+  );
+  const forkActionStep = extractWorkflowStepSection(
+    forkJob,
+    "ReviewRouter certified fork review",
+  );
+  const checkoutWith = parseWorkflowFlatMapping(checkoutStep ?? "", "with", 8);
+  const forkActionWith = parseWorkflowFlatMapping(
+    forkActionStep ?? "",
+    "with",
+    8,
+  );
+  const forkActionEnv = parseWorkflowFlatMapping(
+    forkActionStep ?? "",
+    "env",
+    8,
+  );
+  if (
+    !workflowMappingHasExactNames(checkoutWith, [
+      "repository",
+      "ref",
+      "path",
+      "persist-credentials",
+      "token",
+      "fetch-depth",
+      "submodules",
+      "lfs",
+      "clean",
+      "set-safe-directory",
+    ])
+  ) {
+    errors.push("t0_v5_checkout_with_invalid");
+  }
+  if (
+    !workflowMappingHasExactNames(forkActionWith, [
+      "mode",
+      "api-url",
+      "provider-instance-id",
+      "workflow-schema-version",
+      "review-timeout-minutes",
+      "source-repository",
+      "source-repository-id",
+      "base-repository",
+      "base-repository-id",
+      "pull-request-number",
+      "review-head-sha",
+      "base-sha",
+      "trust-domain",
+    ])
+  ) {
+    errors.push("t0_v5_fork_action_with_invalid");
+  }
+  if (
+    !workflowMappingHasExactNames(forkActionEnv, ["REVIEW_ROUTER_PR_WORKSPACE"])
+  ) {
+    errors.push("t0_v5_fork_env_inventory_invalid");
+  }
+  if (refreshEnabled) {
+    const refreshStep = extractWorkflowStepSection(
+      refreshJob,
+      "ReviewRouter Codex OAuth refresh",
+    );
+    const refreshWith = parseWorkflowFlatMapping(refreshStep ?? "", "with", 8);
+    if (
+      !workflowMappingHasExactNames(refreshWith, [
+        "mode",
+        "api-url",
+        "provider-instance-id",
+        "workflow-schema-version",
+        "auth-json",
+      ])
+    ) {
+      errors.push("t0_v5_refresh_with_invalid");
+    }
+  }
+
   if (!workflowJobIdsExactly(workflow, expectedJobs)) {
     errors.push("t0_v5_job_inventory_invalid");
   }
@@ -2934,6 +3033,20 @@ function extractWorkflowJobSection(
     ? afterStart + nextPeerMatch.index
     : workflow.length;
   return workflow.slice(start, end);
+}
+
+function extractWorkflowStepSection(
+  job: string,
+  stepName: string,
+): string | undefined {
+  const lines = job.split("\n");
+  const start = lines.findIndex((line) => line === `      - name: ${stepName}`);
+  if (start < 0) return undefined;
+  const relativeEnd = lines
+    .slice(start + 1)
+    .findIndex((line) => /^ {6}-\s/u.test(line));
+  const end = relativeEnd < 0 ? lines.length : start + 1 + relativeEnd;
+  return lines.slice(start, end).join("\n");
 }
 
 type WorkflowMappingEntry = {

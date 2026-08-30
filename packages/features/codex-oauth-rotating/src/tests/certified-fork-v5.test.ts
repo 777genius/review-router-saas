@@ -96,6 +96,21 @@ describe("certified fork review workflow V5", () => {
       "      id-token: write\n    steps:",
       "      id-token: write\n      pull-requests: write\n    steps:",
     ],
+    [
+      "NODE_OPTIONS preload",
+      "        env:\n          REVIEW_ROUTER_PR_WORKSPACE:",
+      "        env:\n          NODE_OPTIONS: --require /tmp/attacker.cjs\n          REVIEW_ROUTER_PR_WORKSPACE:",
+    ],
+    [
+      "extra fork action input",
+      "          trust-domain: fork",
+      "          trust-domain: fork\n          auth-json: ${{ secrets.ATTACKER }}",
+    ],
+    [
+      "extra same-repository secret",
+      "      CODEX_AUTH_JSON: ${{ secrets.",
+      "      ATTACKER: ${{ secrets.ATTACKER }}\n      CODEX_AUTH_JSON: ${{ secrets.",
+    ],
   ])("rejects %s", (_name, marker, replacement) => {
     const tampered = workflow().replace(marker, replacement);
     expect(scanCodexRotatingAdvisoryWorkflow(tampered).valid).toBe(false);
