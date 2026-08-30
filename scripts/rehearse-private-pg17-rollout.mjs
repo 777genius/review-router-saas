@@ -463,14 +463,29 @@ export async function runRehearsalReleaseMigration({
       migratedRollout.migrationTransition.postCatalogDigest
   )
     throw new Error("private_pg17_rehearsal_phase_transition_unproven");
-  if (captureOnly)
+  if (captureOnly) {
+    const policyCandidate = await runStage(
+      "capture_activation_catalog_policy",
+      captureCandidate,
+    );
+    if (
+      policyCandidate?.kind !==
+        "reviewrouter-activation-catalog-policy-artifact-candidate" ||
+      policyCandidate.version !== 1 ||
+      !/^sha256:[a-f0-9]{64}$/u.test(migrationReceipt.postCatalogDigest)
+    )
+      throw new Error(
+        "activation_catalog_policy_candidate_migration_binding_invalid",
+      );
     return Object.freeze({
       mode: "capture-only",
-      candidate: await runStage(
-        "capture_activation_catalog_policy",
-        captureCandidate,
-      ),
+      candidate: Object.freeze({
+        ...policyCandidate,
+        version: 2,
+        liveCatalogDigest: migrationReceipt.postCatalogDigest,
+      }),
     });
+  }
   return routeRehearsalAfterReleaseMigration({
     captureOnly: undefined,
     captureCandidate,
@@ -799,6 +814,11 @@ export const disposableSqlConfiguration = () => ({
   ],
   releasePassword: "disposable-release",
 });
+
+export function disposablePg16SourceAuthorityRoleFoundationSql() {
+  return `CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;`;
+}
 
 export function disposablePg17TargetRoleFoundationSql({
   providerAdminUsername = "reviewrouter_provider_administrator",
@@ -1271,6 +1291,7 @@ export async function executeDisposableRehearsal(
       `import { readFileSync } from "node:fs"; export default { schema: ${JSON.stringify(join(preReleasePrisma, "schema.prisma"))}, migrations: { path: ${JSON.stringify(join(preReleasePrisma, "migrations"))} }, datasource: { url: readFileSync(process.env.REVIEW_ROUTER_DATABASE_URL_FILE, "utf8").trim() } };\n`,
       { mode: 0o600 },
     );
+    sql(source, disposablePg16SourceAuthorityRoleFoundationSql());
     const sourceMigration = spawnSync(
       "pnpm",
       [

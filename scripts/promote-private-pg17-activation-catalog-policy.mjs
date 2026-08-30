@@ -163,14 +163,25 @@ function parseArguments(argv) {
 }
 
 function assertArtifactCandidate(value) {
+  const reviewedLiveCatalogDigest = Reflect.get(
+    reviewedActivationCatalogCandidate,
+    "liveCatalogDigest",
+  );
+  const capturesLiveCatalogDigest =
+    typeof reviewedLiveCatalogDigest === "string";
+  const expectedFields = capturesLiveCatalogDigest
+    ? "kind,liveCatalogDigest,policies,version"
+    : "kind,policies,version";
   if (
     value === null ||
     typeof value !== "object" ||
     Array.isArray(value) ||
-    Object.keys(value).sort().join(",") !== "kind,policies,version" ||
+    Object.keys(value).sort().join(",") !== expectedFields ||
     value.kind !==
       "reviewrouter-activation-catalog-policy-artifact-candidate" ||
-    value.version !== 1 ||
+    value.version !== (capturesLiveCatalogDigest ? 2 : 1) ||
+    (capturesLiveCatalogDigest &&
+      value.liveCatalogDigest !== reviewedLiveCatalogDigest) ||
     value.policies === null ||
     typeof value.policies !== "object" ||
     Array.isArray(value.policies) ||

@@ -933,6 +933,24 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).toContain(
       "transferred public routine ACL is non-canonical",
     );
+    expect(provisioning).toContain(
+      "DO $provider_scope_concurrency_operator_acl$",
+    );
+    expect(provisioning).toContain(
+      "provider scope concurrency operator topology is partial",
+    );
+    for (const routine of [
+      "status",
+      "activate",
+      "close_for_rollback",
+      "verify_rollback",
+    ])
+      expect(provisioning).toContain(
+        `GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_${routine}()`,
+      );
+    expect(provisioning).toContain(
+      "REVOKE ALL ON FUNCTION public.reviewrouter_provider_scope_concurrency_snapshot()",
+    );
     expect(provisioning.indexOf("DO $transfer_public_ownership$")).toBeLessThan(
       provisioning.indexOf("DO $transferred_public_routine_acl$"),
     );

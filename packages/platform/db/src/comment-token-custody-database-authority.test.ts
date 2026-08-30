@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { resolveCommentTokenCustodyDatabaseAuthorityUrl } from "./comment-token-custody-database-authority";
 
@@ -6,7 +7,7 @@ describe("comment-token custody database authority URL", () => {
   const runtimeDatabaseUrl =
     "postgresql://reviewrouter_api:runtime@db.internal/review_router";
 
-  it("installs output budget metadata without scanning until 000082", () => {
+  it("preserves the published output-budget migration before 000082", () => {
     const metadataMigration = readFileSync(
       "packages/platform/db/prisma/migrations/000079_hosted_codex_output_limits/migration.sql",
       "utf8",
@@ -16,7 +17,11 @@ describe("comment-token custody database authority URL", () => {
       "utf8",
     );
     expect(metadataMigration).toMatch(
-      /ADD CONSTRAINT "HostedCodexInvocationGrant_output_budget_check"[\s\S]*?\) NOT VALID;/u,
+      /ADD CONSTRAINT "HostedCodexInvocationGrant_output_budget_check"[\s\S]*?\);/u,
+    );
+    expect(metadataMigration).not.toContain("NOT VALID");
+    expect(createHash("sha256").update(metadataMigration).digest("hex")).toBe(
+      "5c8d6f5257c17fad0799ada3c23fcbec87689588bd026d4c7d7baf6328bbccef",
     );
     expect(metadataMigration).not.toContain("VALIDATE CONSTRAINT");
     expect(validationMigration).toContain(

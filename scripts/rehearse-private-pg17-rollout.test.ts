@@ -9,6 +9,7 @@ import {
   cleanupCaptureOnlyRehearsalFixtures,
   cleanupDisposableRehearsalResources,
   captureOnlyRehearsalFixtureCleanupSql,
+  disposablePg16SourceAuthorityRoleFoundationSql,
   disposablePg17CanonicalRoleBootstrapSetupSql,
   disposablePg17TargetRoleFoundationSql,
   disposableSqlConfiguration,
@@ -326,6 +327,16 @@ describe("disposable dual-version rehearsal", () => {
       "CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
     );
   });
+  it("models the published authority roles before source migrations", () => {
+    const foundation = disposablePg16SourceAuthorityRoleFoundationSql();
+
+    expect(foundation).toContain(
+      "CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
+    expect(foundation).toContain(
+      "CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
+  });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
     const identity = "rr-disposable-production-shaped-capture";
     expect(
@@ -456,7 +467,11 @@ describe("disposable dual-version rehearsal", () => {
   });
   it("runs capture-only through the authoritative migration use case without staging", async () => {
     const calls: string[] = [];
-    const candidate = Object.freeze({ kind: "candidate", version: 1 });
+    const candidate = Object.freeze({
+      kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+      version: 1,
+      policies: Object.freeze({}),
+    });
     const transition = Object.freeze({
       transitionSha256: `sha256:${"1".repeat(64)}`,
       migrationArtifactDigest: `sha256:${"2".repeat(64)}`,
@@ -500,7 +515,14 @@ describe("disposable dual-version rehearsal", () => {
         captureCandidate,
         stageTargetServices,
       }),
-    ).resolves.toEqual({ mode: "capture-only", candidate });
+    ).resolves.toEqual({
+      mode: "capture-only",
+      candidate: {
+        ...candidate,
+        version: 2,
+        liveCatalogDigest: transition.postCatalogDigest,
+      },
+    });
     expect(calls).toEqual([
       "stage:run_release_migration",
       "rollout-use-case-cas",

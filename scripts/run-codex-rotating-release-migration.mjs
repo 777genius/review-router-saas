@@ -4312,6 +4312,36 @@ BEGIN
   END IF;
 END
 $transferred_public_routine_acl_gate$;
+DO $provider_scope_concurrency_operator_acl$
+DECLARE operator_routine_count integer;
+BEGIN
+  SELECT count(*) INTO operator_routine_count
+  FROM unnest(ARRAY[
+    to_regprocedure('public.reviewrouter_provider_scope_concurrency_snapshot()'),
+    to_regprocedure('public.reviewrouter_provider_scope_concurrency_status()'),
+    to_regprocedure('public.reviewrouter_provider_scope_concurrency_activate()'),
+    to_regprocedure('public.reviewrouter_provider_scope_concurrency_close_for_rollback()'),
+    to_regprocedure('public.reviewrouter_provider_scope_concurrency_verify_rollback()')
+  ]) routine_oid
+  WHERE routine_oid IS NOT NULL;
+  IF operator_routine_count = 0 THEN
+    RETURN;
+  END IF;
+  IF operator_routine_count <> 5 THEN
+    RAISE EXCEPTION 'provider scope concurrency operator topology is partial';
+  END IF;
+  GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_status()
+    TO reviewrouter_release_migration;
+  GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_activate()
+    TO reviewrouter_release_migration;
+  GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_close_for_rollback()
+    TO reviewrouter_release_migration;
+  GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_verify_rollback()
+    TO reviewrouter_release_migration;
+  REVOKE ALL ON FUNCTION public.reviewrouter_provider_scope_concurrency_snapshot()
+    FROM reviewrouter_release_migration;
+END
+$provider_scope_concurrency_operator_acl$;
 ${
   ownerAuthorizedInitialRuntimeGateClosed
     ? `-- A fresh target may need its first canonical ACL projection before the
