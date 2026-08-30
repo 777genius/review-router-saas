@@ -1,15 +1,26 @@
-import { describe, expect, it } from "vitest";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import {
+  copyFile,
+  mkdtemp,
+  readFile,
+  rm,
+  truncate,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import {
+  activationCatalogArtifactPath,
   activationCatalogPromotionOptIn,
   activationCatalogPromotionProvenancePath,
   assertActivationCatalogPolicyReviewedSourceBindings,
   assertArtifactCandidate,
   assertActivationCatalogPolicyIndependentReviewEvidence,
   assertReviewedActivationCatalogPromotionProvenance,
-  canonicalActivationCatalogArtifactSource,
   promotePrivatePg17ActivationCatalogPolicy,
   reviewedActivationCatalogCandidate,
+  reviewedActivationCatalogCandidatePath,
 } from "./promote-private-pg17-activation-catalog-policy.mjs";
 import canonicalActivationCatalogPolicyArtifact from "../packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js";
 import { assertActivationCatalogLiveDigestTransitionBinding } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation";
@@ -153,19 +164,75 @@ describe("activation catalog policy promotion", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("reproduces the exact immutable generated source bytes and hash", async () => {
-    const candidate = await readFile(
-      "/mnt/volume_ams3_1784742570542/evidence/rr-pr245-79c8496d-schema-v5-candidate/activation-catalog-policy-candidate-1.json",
-    );
-    const generated = canonicalActivationCatalogArtifactSource(candidate);
-    expect(generated.byteLength).toBe(2_651_797);
-    expect(generated).toEqual(
-      await readFile(
-        new URL(
-          "../packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js",
-          import.meta.url,
-        ),
-      ),
+  it("verifies the complete opt-in orchestration without writing", async () => {
+    const artifactBefore = await readFile(activationCatalogArtifactPath);
+    const result = await promotePrivatePg17ActivationCatalogPolicy({
+      env: {
+        REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION:
+          activationCatalogPromotionOptIn,
+      },
+      argv: ["--candidate", reviewedActivationCatalogCandidatePath],
+    });
+    const artifactAfter = await readFile(activationCatalogArtifactPath);
+
+    expect(result).toMatchObject({
+      mode: "verified",
+      candidatePath: reviewedActivationCatalogCandidatePath,
+      candidateSha256:
+        "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28",
+      artifactPath: activationCatalogArtifactPath,
+      artifactSourceSha256:
+        "cc9be40be941b6291013cdf921afa6db84ad9e615b988fe8ff7a24a387566fc3",
+      artifactCanonicalSha256:
+        "sha256:5d7a98bf13e65ab8071691086efb792699b994961caadf435ee9fd4845c2f1cf",
+    });
+    expect(artifactAfter).toEqual(artifactBefore);
+    expect(createHash("sha256").update(artifactAfter).digest("hex")).toBe(
+      "cc9be40be941b6291013cdf921afa6db84ad9e615b988fe8ff7a24a387566fc3",
     );
   }, 60_000);
+
+  it.each(["missing", "truncated", "modified"] as const)(
+    "fails closed for %s repository evidence without writing",
+    async (failure) => {
+      const temporaryDirectory = await mkdtemp(
+        join(tmpdir(), "reviewrouter-pr245-candidate-"),
+      );
+      const candidatePath = join(temporaryDirectory, "candidate.json");
+      const artifactBefore = await readFile(activationCatalogArtifactPath);
+      try {
+        if (failure !== "missing") {
+          await copyFile(reviewedActivationCatalogCandidatePath, candidatePath);
+          if (failure === "truncated") await truncate(candidatePath, 2_651_681);
+          else {
+            const modified = await readFile(candidatePath);
+            modified[Math.floor(modified.byteLength / 2)] ^= 1;
+            await writeFile(candidatePath, modified);
+          }
+        }
+
+        const attempt = promotePrivatePg17ActivationCatalogPolicy({
+          env: {
+            REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION:
+              activationCatalogPromotionOptIn,
+          },
+          argv: ["--candidate", candidatePath],
+        });
+        if (failure === "missing")
+          await expect(attempt).rejects.toMatchObject({ code: "ENOENT" });
+        else
+          await expect(attempt).rejects.toThrow(
+            `activation_catalog_policy_promotion_candidate_${
+              failure === "truncated" ? "size" : "hash"
+            }_drift`,
+          );
+        expect(await readFile(activationCatalogArtifactPath)).toEqual(
+          artifactBefore,
+        );
+      } finally {
+        await rm(temporaryDirectory, { recursive: true, force: true });
+      }
+    },
+    180_000,
+  );
 });

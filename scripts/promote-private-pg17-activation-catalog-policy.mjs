@@ -17,11 +17,17 @@ import {
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation.ts";
 import { assertActivationCatalogPolicyPromotionProvenance } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
 import { assertActivationCatalogPolicyReviewEvidence } from "../packages/features/release-rollout/src/adapters/activation-catalog-policy-review-evidence.ts";
+import {
+  reviewedActivationCatalogCandidatePath,
+  reviewedActivationCatalogCandidateRepositoryPath,
+} from "./lib/reviewed-activation-catalog-candidate.mjs";
 
 export {
   activationCatalogPromotionOptIn,
   reviewedActivationCatalogCandidate,
   reviewedActivationCatalogPromotionExpectation,
+  reviewedActivationCatalogCandidatePath,
+  reviewedActivationCatalogCandidateRepositoryPath,
 };
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));

@@ -168,10 +168,13 @@ present, then promote only the reviewed bytes with the exact operator opt-in:
 ```bash
 REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v29-schema-v5-pr245 \
   pnpm release-rollout:promote-activation-catalog-policy \
-  --candidate /secure/evidence/activation-catalog-policy-candidate-1.json --write
+  --candidate docs/release-evidence/activation-catalog-policy-v29-schema-v5-pr245-candidate.json
 ```
 
-Omit `--write` to verify that the checked-in generated module is byte-exact.
+This repository-owned no-write command is the clean-checkout verification gate.
+Append `--write` only for the separately authorized mechanical promotion. The
+checked-in candidate is the immutable, exact-byte copy of the reviewed capture;
+do not reserialize it.
 The command accepts no runtime policy path, verifies the reviewed whole-file
 size and SHA-256 before parsing, validates normalization, checks both reviewed
 phase digests and the canonical artifact digest, and writes only the fixed
