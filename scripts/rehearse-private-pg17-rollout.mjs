@@ -822,9 +822,231 @@ export const disposableSqlConfiguration = () => ({
   releasePassword: "disposable-release",
 });
 
+/**
+ * The pre-release source models an already provisioned SaaS database. Some
+ * retained migrations deliberately choose a baseline/self-hosted path only
+ * when both release-authority roles are absent, so those roles must exist
+ * before Prisma applies the retained baseline. Target role bootstrap remains
+ * a separate, post-copy operation.
+ */
 export function disposablePg16SourceAuthorityRoleFoundationSql() {
-  return `CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;`;
+  return `CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE reviewrouter_release_schema_owner
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;`;
+}
+
+export function assertDisposablePreReleaseAuthorityTopologySql() {
+  return `DO $assert_live_authority_topology$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_roles
+    WHERE rolname = 'reviewrouter_release_migration'
+      AND rolcanlogin AND rolinherit
+      AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole
+      AND NOT rolreplication AND NOT rolbypassrls
+      AND rolconnlimit = -1 AND rolvaliduntil IS NULL
+  ) OR NOT EXISTS (
+    SELECT 1
+    FROM pg_roles
+    WHERE rolname = 'reviewrouter_release_schema_owner'
+      AND NOT rolcanlogin AND rolinherit
+      AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole
+      AND NOT rolreplication AND NOT rolbypassrls
+      AND rolconnlimit = -1 AND rolvaliduntil IS NULL
+  ) OR EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'ReviewProviderScopeConcurrencyControl_baseline_closed'
+  ) OR to_regprocedure(
+    'public.reviewrouter_provider_scope_concurrency_snapshot()'
+  ) IS NULL OR (
+    SELECT owner.rolname
+    FROM pg_proc routine
+    JOIN pg_roles owner ON owner.oid = routine.proowner
+    WHERE routine.oid = to_regprocedure(
+      'public.reviewrouter_provider_scope_concurrency_snapshot()'
+    )
+  ) IS DISTINCT FROM 'reviewrouter_release_schema_owner' THEN
+    RAISE EXCEPTION
+      'private_pg17_rehearsal_source_authority_topology_drift';
+  END IF;
+END
+$assert_live_authority_topology$;`;
+}
+
+export function assertDisposableProviderScopeConcurrencyAuthoritySql() {
+  return `DO $assert_provider_scope_concurrency_authority$
+DECLARE denied_role text;
+DECLARE routine_count integer;
+DECLARE canonical_count integer;
+DECLARE explicit_execute_count integer;
+DECLARE owner_execute_count integer;
+DECLARE release_execute_count integer;
+DECLARE canonical_execute_count integer;
+BEGIN
+  SELECT count(*), count(*) FILTER (
+    WHERE owner.rolname = 'reviewrouter_release_schema_owner'
+      AND routine.prosecdef
+      AND routine.proconfig = ARRAY['search_path=pg_catalog, public']::text[]
+  )
+  INTO routine_count, canonical_count
+  FROM pg_proc routine
+  JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+  JOIN pg_roles owner ON owner.oid = routine.proowner
+  WHERE namespace.nspname = 'public'
+    AND routine.pronargs = 0
+    AND routine.proname = ANY (ARRAY[
+      'reviewrouter_provider_scope_concurrency_snapshot',
+      'reviewrouter_provider_scope_concurrency_status',
+      'reviewrouter_provider_scope_concurrency_activate',
+      'reviewrouter_provider_scope_concurrency_close_for_rollback',
+      'reviewrouter_provider_scope_concurrency_verify_rollback'
+    ]);
+  SELECT count(*),
+         count(*) FILTER (
+           WHERE acl.grantee = routine.proowner
+         ),
+         count(*) FILTER (
+           WHERE acl.grantee = 'reviewrouter_release_migration'::regrole
+         ),
+         count(*) FILTER (
+           WHERE (
+             acl.grantee = routine.proowner
+             AND acl.grantor = routine.proowner
+             AND NOT acl.is_grantable
+           ) OR (
+             acl.grantee = 'reviewrouter_release_migration'::regrole
+             AND routine.proname <>
+               'reviewrouter_provider_scope_concurrency_snapshot'
+             AND acl.grantor = routine.proowner
+             AND NOT acl.is_grantable
+           )
+         )
+  INTO explicit_execute_count, owner_execute_count, release_execute_count,
+       canonical_execute_count
+  FROM pg_proc routine
+  JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+  CROSS JOIN LATERAL aclexplode(
+    coalesce(routine.proacl, acldefault('f', routine.proowner))
+  ) acl
+  WHERE namespace.nspname = 'public'
+    AND routine.pronargs = 0
+    AND routine.proname = ANY (ARRAY[
+      'reviewrouter_provider_scope_concurrency_snapshot',
+      'reviewrouter_provider_scope_concurrency_status',
+      'reviewrouter_provider_scope_concurrency_activate',
+      'reviewrouter_provider_scope_concurrency_close_for_rollback',
+      'reviewrouter_provider_scope_concurrency_verify_rollback'
+    ])
+    AND acl.privilege_type = 'EXECUTE';
+  IF routine_count <> 5 OR canonical_count <> 5
+     OR explicit_execute_count <> 9
+     OR owner_execute_count <> 5
+     OR release_execute_count <> 4
+     OR canonical_execute_count <> 9
+     OR has_function_privilege(
+       'reviewrouter_release_migration',
+       'public.reviewrouter_provider_scope_concurrency_snapshot()',
+       'EXECUTE'
+     ) THEN
+    RAISE EXCEPTION
+      'private_pg17_rehearsal_provider_scope_concurrency_authority_failed';
+  END IF;
+  FOREACH denied_role IN ARRAY ARRAY[
+    'reviewrouter_api', 'reviewrouter_web', 'reviewrouter_worker',
+    'reviewrouter_comment_token_custody',
+    'reviewrouter_codex_effect_authority',
+    'reviewrouter_activation_permit_installer',
+    'reviewrouter_activation_receipt_reader',
+    'reviewrouter_role_bootstrap'
+  ] LOOP
+    IF EXISTS (
+      SELECT 1
+      FROM pg_proc routine
+      JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+      WHERE namespace.nspname = 'public'
+        AND routine.pronargs = 0
+        AND routine.proname = ANY (ARRAY[
+          'reviewrouter_provider_scope_concurrency_snapshot',
+          'reviewrouter_provider_scope_concurrency_status',
+          'reviewrouter_provider_scope_concurrency_activate',
+          'reviewrouter_provider_scope_concurrency_close_for_rollback',
+          'reviewrouter_provider_scope_concurrency_verify_rollback'
+        ])
+        AND has_function_privilege(denied_role, routine.oid, 'EXECUTE')
+    ) THEN
+      RAISE EXCEPTION
+        'private_pg17_rehearsal_provider_scope_concurrency_denied_role:%',
+        denied_role;
+    END IF;
+  END LOOP;
+END
+$assert_provider_scope_concurrency_authority$;`;
+}
+
+export function disposableProviderScopeConcurrencyAdversarialAclSql() {
+  return `GRANT EXECUTE ON FUNCTION
+  public.reviewrouter_provider_scope_concurrency_snapshot(),
+  public.reviewrouter_provider_scope_concurrency_status()
+TO reviewrouter_provider_administrator WITH GRANT OPTION;
+SET ROLE reviewrouter_provider_administrator;
+GRANT EXECUTE ON FUNCTION
+  public.reviewrouter_provider_scope_concurrency_snapshot(),
+  public.reviewrouter_provider_scope_concurrency_status()
+TO reviewrouter_api;
+RESET ROLE;
+DO $assert_adversarial_provider_scope_concurrency_acl$
+BEGIN
+  IF (SELECT count(*)
+      FROM pg_proc routine
+      JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+      CROSS JOIN LATERAL aclexplode(
+        coalesce(routine.proacl, acldefault('f', routine.proowner))
+      ) acl
+      WHERE namespace.nspname = 'public'
+        AND routine.pronargs = 0
+        AND routine.proname IN (
+          'reviewrouter_provider_scope_concurrency_snapshot',
+          'reviewrouter_provider_scope_concurrency_status'
+        )
+        AND acl.grantee = 'reviewrouter_provider_administrator'::regrole
+        AND acl.grantor = routine.proowner
+        AND acl.privilege_type = 'EXECUTE'
+        AND acl.is_grantable) <> 2
+     OR (SELECT count(*)
+         FROM pg_proc routine
+         JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+         CROSS JOIN LATERAL aclexplode(
+           coalesce(routine.proacl, acldefault('f', routine.proowner))
+         ) acl
+         WHERE namespace.nspname = 'public'
+           AND routine.pronargs = 0
+           AND routine.proname IN (
+             'reviewrouter_provider_scope_concurrency_snapshot',
+             'reviewrouter_provider_scope_concurrency_status'
+           )
+           AND acl.grantee = 'reviewrouter_api'::regrole
+           AND acl.grantor =
+             'reviewrouter_provider_administrator'::regrole
+           AND acl.privilege_type = 'EXECUTE'
+           AND NOT acl.is_grantable) <> 2 THEN
+    RAISE EXCEPTION
+      'private_pg17_rehearsal_adversarial_operator_acl_setup_failed';
+  END IF;
+END
+$assert_adversarial_provider_scope_concurrency_acl$;`;
+}
+
+export function disposableProviderScopeConcurrencyExerciseSql() {
+  return `\\set ON_ERROR_STOP on
+BEGIN;
+SELECT public.reviewrouter_provider_scope_concurrency_status();
+SELECT public.reviewrouter_provider_scope_concurrency_activate();
+SELECT public.reviewrouter_provider_scope_concurrency_close_for_rollback();
+SELECT public.reviewrouter_provider_scope_concurrency_verify_rollback();
+ROLLBACK;`;
 }
 
 export function disposablePg17TargetRoleFoundationSql({
@@ -1298,6 +1520,9 @@ export async function executeDisposableRehearsal(
       `import { readFileSync } from "node:fs"; export default { schema: ${JSON.stringify(join(preReleasePrisma, "schema.prisma"))}, migrations: { path: ${JSON.stringify(join(preReleasePrisma, "migrations"))} }, datasource: { url: readFileSync(process.env.REVIEW_ROUTER_DATABASE_URL_FILE, "utf8").trim() } };\n`,
       { mode: 0o600 },
     );
+    // Retained migrations observe the live SaaS authority pair. Provision it
+    // before migration deployment so the disposable source cannot silently
+    // take a baseline/self-hosted branch that production would never take.
     sql(source, disposablePg16SourceAuthorityRoleFoundationSql());
     const sourceMigration = spawnSync(
       "pnpm",
@@ -1331,6 +1556,10 @@ export async function executeDisposableRehearsal(
         signal: sourceMigration.signal,
         timedOut: sourceMigration.error?.code === "ETIMEDOUT",
       });
+    // Prove the retained baseline selected the SaaS authority branch. Merely
+    // creating both role names is insufficient if a future migration changes
+    // the branch predicate or ownership handoff.
+    sql(source, assertDisposablePreReleaseAuthorityTopologySql());
     sql(
       source,
       `COMMENT ON DATABASE review_router IS '{"recoveryWitnessSha256":"${"a".repeat(64)}"}'; CREATE ROLE rehearsal_writer LOGIN; GRANT CONNECT ON DATABASE review_router TO rehearsal_writer; CREATE TABLE rehearsal_items(id bigserial PRIMARY KEY, value text NOT NULL UNIQUE); INSERT INTO rehearsal_items(value) VALUES ('one'),('two'),('three'); CREATE SCHEMA app_private; CREATE TABLE app_private.rehearsal_private(id integer PRIMARY KEY, value text); INSERT INTO app_private.rehearsal_private VALUES (1,'private'); CREATE SEQUENCE app_private.called_sequence; SELECT nextval('app_private.called_sequence'); CREATE SEQUENCE app_private.uncalled_sequence; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO PUBLIC;`,
@@ -2980,12 +3209,44 @@ COMMIT;
         // before roleProvisioningSql runs, then prove its transactional
         // self-demotion completed before any release migration or permit work.
         facts.assertCanonicalBootstrapPrivileged();
+        // Seed an unrelated WITH GRANT OPTION root and a delegated child on the
+        // restored routines. Canonical provisioning must remove both edges.
+        facts.sql(
+          facts.targetContainer,
+          disposableProviderScopeConcurrencyAdversarialAclSql(),
+        );
         const result = executeCanonicalRoleBootstrap(
           facts.canonicalEnv,
           canonicalRun,
         );
         facts.assertCanonicalBootstrapDemoted();
         facts.assertCanonicalPgcryptoAcl();
+        facts.sql(
+          facts.targetContainer,
+          assertDisposableProviderScopeConcurrencyAuthoritySql(),
+        );
+        canonicalRun(
+          "exercise_provider_scope_concurrency_authority",
+          "psql",
+          [
+            facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
+            "--no-psqlrc",
+            "--quiet",
+          ],
+          {
+            env: {
+              DATABASE_URL:
+                facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
+            },
+            input: disposableProviderScopeConcurrencyExerciseSql(),
+          },
+        );
+        // The four calls exercise activation and rollback management together
+        // but must leave the restored target at its pre-exercise state.
+        facts.sql(
+          facts.targetContainer,
+          assertDisposableProviderScopeConcurrencyAuthoritySql(),
+        );
         await assertTargetActivationReadiness("post_bootstrap", true);
         return observed(RolloutStep.BootstrapTargetRoles, result);
       },

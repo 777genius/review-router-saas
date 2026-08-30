@@ -141,13 +141,18 @@ accepted only in their immutable default shape. No catalog-local OID is admitted
 to the artifact.
 
 The promoted trust root is generated from the independently reviewed v29
-candidate. Immutable capture, image, phase-digest, audited-HEAD, and final-review
-evidence is recorded in the adjacent
+schema-v5 PR245 candidate. Immutable capture locator, image, phase-digest,
+audited commit/tree, generated-source, authoritative-review, and supplemental
+security-review evidence is recorded in the adjacent
 `activation-catalog-policy-provenance.json`. The immutable review report is
-stored under `docs/release-evidence/` and its byte SHA-256 is bound by provenance
-v4. The candidate's captured live-catalog digest is bound to the canonical
-release-migration receipt. These files are the machine-readable source for the
-precise ready state; stale capture blockers are not retained after promotion.
+stored under `docs/release-evidence/` beside both reviewer runtime records. The
+active evidence contract is exactly version 2: it hashes the raw materialized
+files before strict UTF-8 decoding, requires the authoritative runtime summary
+to equal the Markdown bytes, and independently validates the supplemental
+review. Provenance remains schema version 5. The candidate's captured
+live-catalog digest is bound to the canonical release-migration receipt. These
+files are the machine-readable source for the precise ready state; stale
+capture blockers are not retained after promotion.
 
 The command has no permit-installation or activation capability. It reads the
 preactivation candidate only after a capture-only transaction drops the exact
@@ -161,12 +166,15 @@ for the other. Review the complete diff, verify that no provider identity is
 present, then promote only the reviewed bytes with the exact operator opt-in:
 
 ```bash
-REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v29 \
+REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v29-schema-v5-pr245 \
   pnpm release-rollout:promote-activation-catalog-policy \
-  --candidate /secure/evidence/rr-activation-catalog-candidate-v29.json --write
+  --candidate docs/release-evidence/activation-catalog-policy-v29-schema-v5-pr245-candidate.json
 ```
 
-Omit `--write` to verify that the checked-in generated module is byte-exact.
+This repository-owned no-write command is the clean-checkout verification gate.
+Append `--write` only for the separately authorized mechanical promotion. The
+checked-in candidate is the immutable, exact-byte copy of the reviewed capture;
+do not reserialize it.
 The command accepts no runtime policy path, verifies the reviewed whole-file
 size and SHA-256 before parsing, validates normalization, checks both reviewed
 phase digests and the canonical artifact digest, and writes only the fixed

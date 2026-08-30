@@ -16,11 +16,18 @@ import {
   reviewedActivationCatalogPromotionExpectation,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation.ts";
 import { assertActivationCatalogPolicyPromotionProvenance } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
+import { assertActivationCatalogPolicyReviewEvidence } from "../packages/features/release-rollout/src/adapters/activation-catalog-policy-review-evidence.ts";
+import {
+  reviewedActivationCatalogCandidatePath,
+  reviewedActivationCatalogCandidateRepositoryPath,
+} from "./lib/reviewed-activation-catalog-candidate.mjs";
 
 export {
   activationCatalogPromotionOptIn,
   reviewedActivationCatalogCandidate,
   reviewedActivationCatalogPromotionExpectation,
+  reviewedActivationCatalogCandidatePath,
+  reviewedActivationCatalogCandidateRepositoryPath,
 };
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -34,11 +41,15 @@ export const activationCatalogPromotionProvenancePath = resolve(
 );
 export const activationCatalogIndependentReviewPath = resolve(
   repositoryRoot,
-  "docs/release-evidence/activation-catalog-policy-v29-independent-review.md",
+  "docs/release-evidence/activation-catalog-policy-v29-schema-v5-independent-review.md",
 );
 export const activationCatalogReviewerEvidencePath = resolve(
   repositoryRoot,
-  "docs/release-evidence/activation-catalog-policy-v29-reviewer-runtime.json",
+  "docs/release-evidence/activation-catalog-policy-v29-schema-v5-reviewer-runtime.json",
+);
+export const activationCatalogSupplementalReviewerEvidencePath = resolve(
+  repositoryRoot,
+  "docs/release-evidence/activation-catalog-policy-v29-schema-v5-security-reviewer-runtime.json",
 );
 export const activationCatalogLiveProjectionSourcePath = resolve(
   repositoryRoot,
@@ -66,96 +77,17 @@ async function readPromotionProvenance() {
   }
 }
 
-async function readJsonEvidence(path, hash, errorCode) {
-  try {
-    const bytes = await readFile(path);
-    if (sha256(bytes) !== hash) throw new Error(errorCode);
-    return JSON.parse(bytes.toString("utf8"));
-  } catch {
-    throw new Error(errorCode);
-  }
-}
-
-async function readTextEvidence(path, hash, errorCode) {
-  try {
-    const bytes = await readFile(path);
-    if (sha256(bytes) !== hash) throw new Error(errorCode);
-    return bytes.toString("utf8");
-  } catch {
-    throw new Error(errorCode);
-  }
-}
-
-export async function assertActivationCatalogPolicyIndependentReviewEvidence(
-  provenance,
-) {
-  const expectation = reviewedActivationCatalogPromotionExpectation;
-  const report = await readTextEvidence(
-    activationCatalogIndependentReviewPath,
-    expectation.reviewArtifactSha256,
-    "activation_catalog_policy_independent_review_artifact_invalid",
+export async function assertActivationCatalogPolicyIndependentReviewEvidence() {
+  const [reviewArtifact, reviewerRuntime, supplementalRuntime] =
+    await Promise.all([
+      readFile(activationCatalogIndependentReviewPath),
+      readFile(activationCatalogReviewerEvidencePath),
+      readFile(activationCatalogSupplementalReviewerEvidencePath),
+    ]);
+  assertActivationCatalogPolicyReviewEvidence(
+    { reviewArtifact, reviewerRuntime, supplementalRuntime },
+    reviewedActivationCatalogPromotionExpectation,
   );
-  const reviewer = await readJsonEvidence(
-    activationCatalogReviewerEvidencePath,
-    expectation.reviewerEvidenceSha256,
-    "activation_catalog_policy_reviewer_runtime_evidence_invalid",
-  );
-  const outputSummary = Array.isArray(reviewer.evidence)
-    ? reviewer.evidence.find(
-        (entry) =>
-          typeof entry === "string" && entry.startsWith("output_summary:"),
-      )
-    : undefined;
-  let runtimeSummary;
-  try {
-    runtimeSummary = JSON.parse(outputSummary?.slice("output_summary:".length));
-  } catch {
-    runtimeSummary = undefined;
-  }
-  const expectedInputHashes = [1, 2].map((candidateNumber) => ({
-    path: `/reviewrouter-v140-input-20260830/activation-catalog-policy-candidate-${candidateNumber}.json`,
-    bytes: expectation.candidateBytes,
-    sha256: expectation.candidateSha256,
-  }));
-  if (
-    !report.includes("**Verdict: GO**") ||
-    !report.includes(expectation.auditedHead) ||
-    !report.includes(expectation.reviewDecisionId) ||
-    !report.includes(String(expectation.candidateBytes)) ||
-    !report.includes(expectation.candidateSha256) ||
-    !report.includes(expectation.liveCatalogDigest) ||
-    !report.includes(expectation.liveCatalogProjectionSourceSha256) ||
-    !report.includes(expectation.normalizationSourceSha256) ||
-    !report.includes(expectation.preactivationCatalogPolicySha256) ||
-    !report.includes(expectation.activatedCatalogPolicySha256) ||
-    !report.includes(expectation.artifactCanonicalSha256) ||
-    !report.includes("run `33303681159`, attempt `1`, artifact `9729775403`") ||
-    reviewer?.status !== "done" ||
-    reviewer?.provider !== "codex" ||
-    reviewer?.runId !== expectation.reviewerRunId ||
-    reviewer?.taskId !== expectation.reviewerRunId ||
-    reviewer?.updatedAt !== provenance?.independentReview?.reviewedAt ||
-    !Array.isArray(reviewer.blockers) ||
-    reviewer.blockers.length !== 0 ||
-    !Array.isArray(reviewer.changedFiles) ||
-    canonicalJson(reviewer.changedFiles) !== canonicalJson(["REVIEW_V29.md"]) ||
-    !Array.isArray(reviewer.evidence) ||
-    !reviewer.evidence.includes("safe_execution_status:completed") ||
-    runtimeSummary?.status !== "done" ||
-    runtimeSummary?.provider !== "codex" ||
-    runtimeSummary?.auditedSha !== expectation.auditedHead ||
-    canonicalJson(runtimeSummary?.inputHashes) !==
-      canonicalJson(expectedInputHashes) ||
-    canonicalJson(runtimeSummary?.changedFiles) !==
-      canonicalJson(["REVIEW_V29.md"]) ||
-    canonicalJson(runtimeSummary?.blockers) !== canonicalJson([]) ||
-    typeof runtimeSummary?.outputSummary !== "string" ||
-    !runtimeSummary.outputSummary.includes(expectation.reviewDecisionId) ||
-    reviewer?.details?.baseCommit !== expectation.captureBaseCommit
-  )
-    throw new Error(
-      "activation_catalog_policy_independent_review_evidence_invalid",
-    );
 }
 
 async function writeArtifactAtomically(generated) {
@@ -294,13 +226,21 @@ export function canonicalActivationCatalogArtifactSource(candidateBytes) {
     reviewedActivationCatalogCandidate.artifactCanonicalSha256
   )
     throw new Error("activation_catalog_policy_promotion_artifact_drift");
-  return Buffer.from(
+  const generated = Buffer.from(
     `// Generated by scripts/promote-private-pg17-activation-catalog-policy.mjs. Do not edit.\n` +
       `/** @type {unknown} */\n` +
       `const canonicalActivationCatalogPolicyArtifact = ${canonicalArtifact};\n` +
       `export default canonicalActivationCatalogPolicyArtifact;\n`,
     "utf8",
   );
+  if (
+    generated.byteLength !==
+      reviewedActivationCatalogPromotionExpectation.generatedArtifactSourceBytes ||
+    sha256(generated) !==
+      reviewedActivationCatalogPromotionExpectation.generatedArtifactSourceSha256
+  )
+    throw new Error("activation_catalog_policy_generated_source_drift");
+  return generated;
 }
 
 export async function promotePrivatePg17ActivationCatalogPolicy({
@@ -319,7 +259,7 @@ export async function promotePrivatePg17ActivationCatalogPolicy({
   );
   const provenance = await readPromotionProvenance();
   assertReviewedActivationCatalogPromotionProvenance(provenance);
-  await assertActivationCatalogPolicyIndependentReviewEvidence(provenance);
+  await assertActivationCatalogPolicyIndependentReviewEvidence();
   if (write) await writeArtifactAtomically(generated);
   else {
     let existing;

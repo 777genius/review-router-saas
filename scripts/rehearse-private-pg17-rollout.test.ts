@@ -13,9 +13,13 @@ import {
   cleanupCaptureOnlyRehearsalFixtures,
   cleanupDisposableRehearsalResources,
   captureOnlyRehearsalFixtureCleanupSql,
+  assertDisposablePreReleaseAuthorityTopologySql,
+  assertDisposableProviderScopeConcurrencyAuthoritySql,
+  disposableProviderScopeConcurrencyAdversarialAclSql,
   disposablePg16SourceAuthorityRoleFoundationSql,
   disposablePg17CanonicalRoleBootstrapSetupSql,
   disposablePg17TargetRoleFoundationSql,
+  disposableProviderScopeConcurrencyExerciseSql,
   disposableSqlConfiguration,
   disposableTargetPublicTableAclCanonicalizationSql,
   normalizeRehearsalDockerInvocation,
@@ -285,7 +289,7 @@ describe("disposable dual-version rehearsal", () => {
       }),
     ).rejects.toThrow("private_pg17_rehearsal_control_readiness_timeout");
   });
-  it("blocks normal rehearsal while the catalog review evidence is stale", () => {
+  it("authorizes normal rehearsal under the promoted schema-v5 trust root", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual({
       preactivationCatalogPolicySha256:
         "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
@@ -299,9 +303,7 @@ describe("disposable dual-version rehearsal", () => {
       authorizeCanonicalActivationCatalogPolicies(
         rehearsalActivationCatalogPolicyAuthorization,
       ),
-    ).toThrow(
-      "activation_catalog_policy_trust_root_blocked:independent-review-required-after-catalog-projection-change",
-    );
+    ).not.toThrow();
   });
   it("allows loaded disposable catalog observations without changing production timing", () => {
     expect(rehearsalReadinessPolicy).toEqual({
@@ -344,11 +346,159 @@ describe("disposable dual-version rehearsal", () => {
   it("models the published authority roles before source migrations", () => {
     const foundation = disposablePg16SourceAuthorityRoleFoundationSql();
 
-    expect(foundation).toContain(
-      "CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    expect(
+      foundation
+        .match(/CREATE\s+ROLE\s+[^;]+;/gu)
+        ?.map((statement) => statement.replace(/\s+/gu, " ")),
+    ).toEqual([
+      "CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;",
+      "CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;",
+    ]);
+  });
+  it("provisions the live authority pair before retained source migrations", () => {
+    const authorityTopology = disposablePg16SourceAuthorityRoleFoundationSql();
+
+    expect(authorityTopology).toContain(
+      "CREATE ROLE reviewrouter_release_migration LOGIN",
     );
-    expect(foundation).toContain(
-      "CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    expect(authorityTopology).toContain(
+      "CREATE ROLE reviewrouter_release_schema_owner",
+    );
+    expect(authorityTopology).toContain(
+      "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
+    expect(authorityTopology).not.toContain("GRANT ");
+
+    const source = readFileSync(
+      new URL("./rehearse-private-pg17-rollout.mjs", import.meta.url),
+      "utf8",
+    );
+    expect(
+      source.indexOf(
+        "sql(source, disposablePg16SourceAuthorityRoleFoundationSql())",
+      ),
+    ).toBeLessThan(source.indexOf("const sourceMigration = spawnSync("));
+
+    const assertion = assertDisposablePreReleaseAuthorityTopologySql();
+    expect(assertion).toContain(
+      "ReviewProviderScopeConcurrencyControl_baseline_closed",
+    );
+    expect(assertion).toContain("rolname = 'reviewrouter_release_migration'");
+    expect(assertion).toContain(
+      "rolname = 'reviewrouter_release_schema_owner'",
+    );
+    expect(assertion).toContain("AND rolcanlogin AND rolinherit");
+    expect(assertion).toContain("AND NOT rolcanlogin AND rolinherit");
+    expect(assertion).toContain(
+      "public.reviewrouter_provider_scope_concurrency_snapshot()",
+    );
+    expect(assertion).toContain(
+      "IS DISTINCT FROM 'reviewrouter_release_schema_owner'",
+    );
+    expect(assertion).toContain(
+      "private_pg17_rehearsal_source_authority_topology_drift",
+    );
+    expect(
+      source.indexOf(
+        "sql(source, assertDisposablePreReleaseAuthorityTopologySql())",
+      ),
+    ).toBeGreaterThan(source.indexOf("if (sourceMigration.status !== 0"));
+    expect(
+      source.indexOf(
+        "sql(source, assertDisposablePreReleaseAuthorityTopologySql())",
+      ),
+    ).toBeLessThan(source.indexOf("const baselinePrincipalInventory"));
+  });
+  it("asserts and transactionally exercises the restored operator surface", () => {
+    const assertion = assertDisposableProviderScopeConcurrencyAuthoritySql();
+    expect(assertion).toContain("routine_count <> 5");
+    expect(assertion).toContain("canonical_count <> 5");
+    expect(assertion).toContain("explicit_execute_count <> 9");
+    expect(assertion).toContain("owner_execute_count <> 5");
+    expect(assertion).toContain("release_execute_count <> 4");
+    expect(assertion).toContain("canonical_execute_count <> 9");
+    expect(assertion).toContain(
+      "owner.rolname = 'reviewrouter_release_schema_owner'",
+    );
+    expect(assertion).toContain("routine.prosecdef");
+    expect(assertion).toContain(
+      "routine.proconfig = ARRAY['search_path=pg_catalog, public']::text[]",
+    );
+    expect(assertion).toContain("'reviewrouter_activation_permit_installer'");
+    expect(assertion).toContain("'reviewrouter_activation_receipt_reader'");
+    expect(assertion).toContain("'reviewrouter_role_bootstrap'");
+    expect(assertion).toContain("acl.grantor = routine.proowner");
+    expect(assertion).toContain("AND NOT acl.is_grantable");
+    expect(assertion).not.toContain("AND acl.is_grantable");
+    expect(assertion).toContain(
+      "private_pg17_rehearsal_provider_scope_concurrency_authority_failed",
+    );
+
+    const exercise = disposableProviderScopeConcurrencyExerciseSql();
+    expect(exercise).toContain("\\set ON_ERROR_STOP on\nBEGIN;");
+    expect(exercise).toContain(
+      "reviewrouter_provider_scope_concurrency_status()",
+    );
+    expect(exercise).toContain(
+      "reviewrouter_provider_scope_concurrency_activate()",
+    );
+    expect(exercise).toContain(
+      "reviewrouter_provider_scope_concurrency_close_for_rollback()",
+    );
+    expect(exercise).toContain(
+      "reviewrouter_provider_scope_concurrency_verify_rollback()",
+    );
+    expect(exercise.trimEnd().endsWith("ROLLBACK;")).toBe(true);
+
+    const source = readFileSync(
+      new URL("./rehearse-private-pg17-rollout.mjs", import.meta.url),
+      "utf8",
+    );
+    const bootstrap = source.indexOf(
+      "executeCanonicalRoleBootstrap(\n          facts.canonicalEnv",
+    );
+    const adversarialSetup = source.indexOf(
+      "disposableProviderScopeConcurrencyAdversarialAclSql()",
+      source.indexOf("bootstrapTargetRoles: async () =>"),
+    );
+    const exerciseCall = source.indexOf(
+      '"exercise_provider_scope_concurrency_authority"',
+    );
+    const postBootstrapReadiness = source.indexOf(
+      'assertTargetActivationReadiness("post_bootstrap", true)',
+    );
+    expect(adversarialSetup).toBeGreaterThan(
+      source.indexOf("facts.assertCanonicalBootstrapPrivileged()"),
+    );
+    expect(adversarialSetup).toBeLessThan(bootstrap);
+    expect(exerciseCall).toBeGreaterThan(bootstrap);
+    expect(exerciseCall).toBeLessThan(postBootstrapReadiness);
+    expect(
+      source
+        .slice(exerciseCall, postBootstrapReadiness)
+        .match(/assertDisposableProviderScopeConcurrencyAuthoritySql\(\)/gu),
+    ).toHaveLength(1);
+    expect(
+      source
+        .slice(bootstrap, exerciseCall)
+        .match(/assertDisposableProviderScopeConcurrencyAuthoritySql\(\)/gu),
+    ).toHaveLength(1);
+
+    const adversarial = disposableProviderScopeConcurrencyAdversarialAclSql();
+    expect(adversarial).toContain(
+      "TO reviewrouter_provider_administrator WITH GRANT OPTION",
+    );
+    expect(adversarial).toContain(
+      "SET ROLE reviewrouter_provider_administrator",
+    );
+    expect(adversarial).toContain("TO reviewrouter_api;");
+    expect(adversarial).toContain(
+      "acl.grantor =\n             'reviewrouter_provider_administrator'::regrole",
+    );
+    expect(adversarial).toContain("AND acl.is_grantable");
+    expect(adversarial).toContain("AND NOT acl.is_grantable");
+    expect(adversarial).toContain(
+      "private_pg17_rehearsal_adversarial_operator_acl_setup_failed",
     );
   });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {

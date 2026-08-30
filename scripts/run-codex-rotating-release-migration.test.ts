@@ -517,6 +517,81 @@ describe("canonical exclusive release migration caller", () => {
       configuration,
       { ownerAuthorizedInitialRuntimeGateClosed: true },
     );
+    const providerScopeBoundaryStart = provisioning.indexOf(
+      "-- A privilege-free dump preserves these routines",
+    );
+    const providerScopeBoundaryEnd = provisioning.indexOf(
+      "$provider_scope_concurrency_operator_boundary$;",
+    );
+    const providerScopeBoundary = provisioning.slice(
+      providerScopeBoundaryStart,
+      providerScopeBoundaryEnd,
+    );
+    expect(providerScopeBoundaryStart).toBeGreaterThan(
+      provisioning.indexOf("$transferred_public_routine_acl_gate$;"),
+    );
+    expect(providerScopeBoundaryEnd).toBeGreaterThan(
+      providerScopeBoundaryStart,
+    );
+    expect(providerScopeBoundaryEnd).toBeLessThan(
+      provisioning.indexOf("RESET ROLE;", providerScopeBoundaryEnd),
+    );
+    for (const routine of [
+      "snapshot",
+      "status",
+      "activate",
+      "close_for_rollback",
+      "verify_rollback",
+    ]) {
+      expect(providerScopeBoundary).toContain(
+        `ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_${routine}()\n  SECURITY DEFINER SET search_path TO pg_catalog, public;`,
+      );
+    }
+    expect(providerScopeBoundary).toContain(
+      "DO $provider_scope_concurrency_acl_convergence$",
+    );
+    expect(providerScopeBoundary).toContain(
+      "AND acl.grantee <> routine_row.proowner",
+    );
+    expect(providerScopeBoundary).toContain(
+      "REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC CASCADE",
+    );
+    expect(providerScopeBoundary).toContain(
+      "REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I CASCADE",
+    );
+    expect(providerScopeBoundary).toContain(
+      "pg_get_userbyid(grantee_row.grantee)",
+    );
+    const operatorGrant = providerScopeBoundary.match(
+      /GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+([\s\S]*?)\s+TO\s+([a-z_][a-z0-9_]*)\s*;/i,
+    );
+    expect(operatorGrant).not.toBeNull();
+    expect(
+      operatorGrant?.[1].split(",").map((routine) => routine.trim()),
+    ).toEqual([
+      "public.reviewrouter_provider_scope_concurrency_status()",
+      "public.reviewrouter_provider_scope_concurrency_activate()",
+      "public.reviewrouter_provider_scope_concurrency_close_for_rollback()",
+      "public.reviewrouter_provider_scope_concurrency_verify_rollback()",
+    ]);
+    expect(operatorGrant?.[2]).toBe("reviewrouter_release_migration");
+    expect(operatorGrant?.index).toBeGreaterThan(
+      providerScopeBoundary.indexOf(
+        "$provider_scope_concurrency_acl_convergence$;",
+      ),
+    );
+    expect(providerScopeBoundary).toContain("routine_count <> 5");
+    expect(providerScopeBoundary).toContain("canonical_count <> 5");
+    expect(providerScopeBoundary).toContain("explicit_execute_count <> 9");
+    expect(providerScopeBoundary).toContain("owner_execute_count <> 5");
+    expect(providerScopeBoundary).toContain("release_execute_count <> 4");
+    expect(providerScopeBoundary).toContain("canonical_execute_count <> 9");
+    expect(providerScopeBoundary).toContain("acl.grantor = routine.proowner");
+    expect(providerScopeBoundary).toContain("AND NOT acl.is_grantable");
+    expect(providerScopeBoundary).not.toContain("AND acl.is_grantable");
+    expect(providerScopeBoundary).toContain(
+      "routine.proconfig = ARRAY['search_path=pg_catalog, public']::text[]",
+    );
     const grants = runtimeGrantSql(configuration);
     expect(grants).toContain("BEGIN;");
     const activationAuthority = activationAuthorityProvisioningSql();
@@ -958,22 +1033,16 @@ describe("canonical exclusive release migration caller", () => {
       "transferred public routine ACL is non-canonical",
     );
     expect(provisioning).toContain(
-      "DO $provider_scope_concurrency_operator_acl$",
+      "DO $provider_scope_concurrency_acl_convergence$",
     );
     expect(provisioning).toContain(
-      "provider scope concurrency operator topology is partial",
+      "DO $provider_scope_concurrency_operator_boundary$",
     );
-    for (const routine of [
-      "status",
-      "activate",
-      "close_for_rollback",
-      "verify_rollback",
-    ])
-      expect(provisioning).toContain(
-        `GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_${routine}()`,
-      );
     expect(provisioning).toContain(
-      "REVOKE ALL ON FUNCTION public.reviewrouter_provider_scope_concurrency_snapshot()",
+      "REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC CASCADE",
+    );
+    expect(provisioning).toContain(
+      "provider scope concurrency operator boundary is non-canonical",
     );
     expect(provisioning.indexOf("DO $transfer_public_ownership$")).toBeLessThan(
       provisioning.indexOf("DO $transferred_public_routine_acl$"),
