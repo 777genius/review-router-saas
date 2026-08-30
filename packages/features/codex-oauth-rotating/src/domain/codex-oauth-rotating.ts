@@ -14,6 +14,7 @@ import {
 import {
   legacyCodexRotatingSecretName,
   ProviderSecretNamespaceMode,
+  parseVersionedProviderSecretNamespaceMetadata,
   parseVersionedProviderSecretName,
   serializeVersionedProviderSecretNamespaceMetadata,
   type VersionedProviderSecretNamespace,
@@ -1383,6 +1384,24 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
   const expectedJobs = refreshEnabled
     ? ["codex-review", "fork-sandbox-review", "codex-refresh"]
     : ["codex-review", "fork-sandbox-review"];
+  const secretNamespaceMetadata = workflow.match(
+    /^name: ReviewRouter Codex OAuth \[(namespace=[^\]]+)\]$/m,
+  )?.[1];
+  let expectedSecretName: string | undefined;
+  try {
+    expectedSecretName =
+      secretNamespaceMetadata && source.providerInstanceId
+        ? parseVersionedProviderSecretNamespaceMetadata({
+            metadata: secretNamespaceMetadata,
+            providerInstanceId: source.providerInstanceId,
+          }).name
+        : undefined;
+  } catch {
+    expectedSecretName = undefined;
+  }
+  if (expectedSecretName === undefined) {
+    errors.push("t0_v5_secret_namespace_metadata_missing");
+  }
 
   const sameRepoWith = parseWorkflowFlatMapping(sameRepoJob, "with", 4);
   const sameRepoSecrets = parseWorkflowFlatMapping(sameRepoJob, "secrets", 4);
@@ -1403,17 +1422,17 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
   }
   if (!workflowMappingHasExactNames(sameRepoSecrets, ["CODEX_AUTH_JSON"])) {
     errors.push("t0_v5_same_repo_secrets_invalid");
+  } else if (
+    workflowMappingValue(sameRepoSecrets, "CODEX_AUTH_JSON") !==
+    `\${{ secrets.${expectedSecretName} }}`
+  ) {
+    errors.push("t0_v5_same_repo_secret_binding_invalid");
   }
 
-  const checkoutStep = extractWorkflowStepSection(
-    forkJob,
-    "Checkout exact public fork head",
-  );
   const forkActionStep = extractWorkflowStepSection(
     forkJob,
     "ReviewRouter certified fork review",
   );
-  const checkoutWith = parseWorkflowFlatMapping(checkoutStep ?? "", "with", 8);
   const forkActionWith = parseWorkflowFlatMapping(
     forkActionStep ?? "",
     "with",
@@ -1424,22 +1443,6 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
     "env",
     8,
   );
-  if (
-    !workflowMappingHasExactNames(checkoutWith, [
-      "repository",
-      "ref",
-      "path",
-      "persist-credentials",
-      "token",
-      "fetch-depth",
-      "submodules",
-      "lfs",
-      "clean",
-      "set-safe-directory",
-    ])
-  ) {
-    errors.push("t0_v5_checkout_with_invalid");
-  }
   if (
     !workflowMappingHasExactNames(forkActionWith, [
       "mode",
@@ -1455,14 +1458,21 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
       "review-head-sha",
       "base-sha",
       "trust-domain",
+      "auth-json",
     ])
   ) {
     errors.push("t0_v5_fork_action_with_invalid");
-  }
-  if (
-    !workflowMappingHasExactNames(forkActionEnv, ["REVIEW_ROUTER_PR_WORKSPACE"])
+  } else if (
+    workflowMappingValue(forkActionWith, "auth-json") !==
+    `\${{ secrets.${expectedSecretName} }}`
   ) {
-    errors.push("t0_v5_fork_env_inventory_invalid");
+    errors.push("t0_v5_fork_secret_binding_invalid");
+  }
+  if (forkActionEnv.kind !== "missing" || /^\s+env\s*:/mu.test(forkJob)) {
+    errors.push("t0_v5_fork_env_not_allowed");
+  }
+  if ((forkJob.match(/^ {6}-\s+/gmu)?.length ?? 0) !== 1) {
+    errors.push("t0_v5_fork_step_inventory_invalid");
   }
   if (refreshEnabled) {
     const refreshStep = extractWorkflowStepSection(
@@ -1480,6 +1490,11 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
       ])
     ) {
       errors.push("t0_v5_refresh_with_invalid");
+    } else if (
+      workflowMappingValue(refreshWith, "auth-json") !==
+      `\${{ secrets.${expectedSecretName} }}`
+    ) {
+      errors.push("t0_v5_refresh_secret_binding_invalid");
     }
   }
 
@@ -1574,7 +1589,6 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
   }
   if (
     !permissionsExactly(parseWorkflowPermissions(forkJob, 4), [
-      { name: "contents", value: "read" },
       { name: "id-token", value: "write" },
     ])
   ) {
@@ -1582,17 +1596,6 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
   }
 
   const forkMarkers = [
-    "uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
-    "repository: ${{ github.event.pull_request.head.repo.full_name }}",
-    "ref: ${{ github.event.pull_request.head.sha }}",
-    "path: safe-workspace",
-    "persist-credentials: false",
-    'token: ""',
-    "fetch-depth: 1",
-    "submodules: false",
-    "lfs: false",
-    "clean: true",
-    "set-safe-directory: false",
     `mode: ${codexForkPromptOnlyV2RuntimeMode}`,
     "source-repository: ${{ github.event.pull_request.head.repo.full_name }}",
     "source-repository-id: ${{ format('{0}', github.event.pull_request.head.repo.id) }}",
@@ -1602,7 +1605,7 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
     "review-head-sha: ${{ github.event.pull_request.head.sha }}",
     "base-sha: ${{ github.event.pull_request.base.sha }}",
     "trust-domain: fork",
-    "REVIEW_ROUTER_PR_WORKSPACE: ${{ github.workspace }}/safe-workspace",
+    `auth-json: \${{ secrets.${expectedSecretName} }}`,
   ];
   for (const marker of forkMarkers) {
     if (!forkJob.includes(marker)) {
@@ -1614,7 +1617,10 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
     "OPENROUTER_API_KEY",
     "GITHUB_TOKEN:",
     "CODEX_HOME:",
-    "auth-json:",
+    "NODE_OPTIONS",
+    "actions/checkout@",
+    "safe-workspace",
+    "REVIEW_ROUTER_PR_WORKSPACE",
     "run:",
     "uses: ./",
   ]) {
@@ -1622,11 +1628,16 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
       errors.push(`t0_v5_fork_surface_forbidden:${forbidden}`);
     }
   }
-  if ((forkJob.match(/^ {10}token:\s*""\s*$/gm)?.length ?? 0) !== 1) {
-    errors.push("t0_v5_fork_anonymous_checkout_required");
-  }
-  if ((forkJob.match(/^ {8}env:\s*$/gm)?.length ?? 0) !== 1) {
-    errors.push("t0_v5_fork_env_inventory_invalid");
+  const forkSecretReferences = [
+    ...forkJob.matchAll(/\bsecrets\.([A-Za-z0-9_]+)\b/gmu),
+  ].map((match) => match[1]);
+  if (
+    forkSecretReferences.length !== 1 ||
+    forkSecretReferences[0] !== expectedSecretName ||
+    /\bsecrets\s*\[/u.test(forkJob) ||
+    /toJSON\s*\(\s*secrets\s*\)/u.test(forkJob)
+  ) {
+    errors.push("t0_v5_fork_secret_inventory_invalid");
   }
 
   const usesRefs = [...workflow.matchAll(/^\s*uses:\s*([^\s]+)$/gm)].map(
@@ -1635,7 +1646,6 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
   const expectedRefs = release
     ? [
         `${release.repository}/.github/workflows/reviewrouter-t0-reusable.yml@${release.commitSha}`,
-        "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
         source.actionRef!,
         ...(refreshEnabled ? [source.actionRef!] : []),
       ]
@@ -2270,23 +2280,8 @@ jobs:
       group: ${concurrencyGroup}
       cancel-in-progress: false
     permissions:
-      contents: read
       id-token: write
     steps:
-      - name: Checkout exact public fork head
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          repository: \${{ github.event.pull_request.head.repo.full_name }}
-          ref: \${{ github.event.pull_request.head.sha }}
-          path: safe-workspace
-          persist-credentials: false
-          token: ""
-          fetch-depth: 1
-          submodules: false
-          lfs: false
-          clean: true
-          set-safe-directory: false
-
       - name: ReviewRouter certified fork review
         id: run_fork_sandbox
         uses: ${input.actionRef}
@@ -2304,8 +2299,7 @@ jobs:
           review-head-sha: \${{ github.event.pull_request.head.sha }}
           base-sha: \${{ github.event.pull_request.base.sha }}
           trust-domain: fork
-        env:
-          REVIEW_ROUTER_PR_WORKSPACE: \${{ github.workspace }}/safe-workspace
+          auth-json: \${{ secrets.${secretName} }}
 ${
   refreshScheduleCron
     ? `

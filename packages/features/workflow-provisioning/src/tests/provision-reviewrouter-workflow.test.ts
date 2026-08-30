@@ -679,6 +679,13 @@ describe("provisionReviewRouterWorkflow", () => {
     const content = workflow && "content" in workflow ? workflow.content : "";
     expect(content).toContain("workflow_schema_version: 5");
     expect(content).toContain("fork-sandbox-review:");
+    expect(content).toContain(`auth-json: \${{ secrets.${namespace.name} }}`);
+    const forkJob = content.slice(content.indexOf("  fork-sandbox-review:"));
+    expect(forkJob).not.toContain("actions/checkout@");
+    expect(forkJob).not.toContain("safe-workspace");
+    expect(forkJob).not.toContain("REVIEW_ROUTER_PR_WORKSPACE");
+    expect(forkJob).toContain("    permissions:\n      id-token: write");
+    expect(forkJob).not.toContain("contents: read");
   });
 
   it("does not call GitHub without an exact workflow namespace", async () => {

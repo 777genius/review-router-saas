@@ -435,8 +435,18 @@ describe("workflow setup readiness", () => {
     await expect(
       checkVersionedWorkflowReadiness(
         workflow.replace(
-          "        env:\n          REVIEW_ROUTER_PR_WORKSPACE:",
-          "        env:\n          NODE_OPTIONS: --require /tmp/attacker.cjs\n          REVIEW_ROUTER_PR_WORKSPACE:",
+          "        with:\n          mode: fork_prompt_only_v2",
+          "        env:\n          NODE_OPTIONS: --require /tmp/attacker.cjs\n        with:\n          mode: fork_prompt_only_v2",
+        ),
+        CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5,
+        true,
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      checkVersionedWorkflowReadiness(
+        workflow.replace(
+          `auth-json: \${{ secrets.${v4SecretNamespace.name} }}`,
+          "auth-json: ${{ secrets.ATTACKER }}",
         ),
         CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5,
         true,

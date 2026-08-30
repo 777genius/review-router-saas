@@ -951,13 +951,11 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
         "github.event.pull_request.head.repo.full_name != github.repository",
         "github.event.pull_request.head.repo.private == false",
         "vars.REVIEW_ROUTER_FORK_AGENTIC_SANDBOX == 'certified'",
-        "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
-        "persist-credentials: false",
-        'token: ""',
         "mode: fork_prompt_only_v2",
         "source-repository-id:",
         "base-repository-id:",
         "trust-domain: fork",
+        `auth-json: \${{ secrets.${input.activeSecretNamespace!.name} }}`,
       );
     }
 

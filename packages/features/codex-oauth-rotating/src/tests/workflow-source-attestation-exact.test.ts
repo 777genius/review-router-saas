@@ -214,8 +214,16 @@ describe("exact active workflow attestation", () => {
     expect(() =>
       readCanonicalCodexRotatingT0WorkflowSourceMetadata(
         workflow.replace(
-          "        env:\n          REVIEW_ROUTER_PR_WORKSPACE:",
-          "        env:\n          NODE_OPTIONS: --require /tmp/attacker.cjs\n          REVIEW_ROUTER_PR_WORKSPACE:",
+          "        with:\n          mode: fork_prompt_only_v2",
+          "        env:\n          NODE_OPTIONS: --require /tmp/attacker.cjs\n        with:\n          mode: fork_prompt_only_v2",
+        ),
+      ),
+    ).toThrow("codex_rotating_t0_workflow_source_not_canonical");
+    expect(() =>
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+        workflow.replace(
+          `auth-json: \${{ secrets.${namespace.name} }}`,
+          "auth-json: ${{ secrets.ATTACKER }}",
         ),
       ),
     ).toThrow("codex_rotating_t0_workflow_source_not_canonical");
