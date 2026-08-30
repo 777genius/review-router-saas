@@ -25600,6 +25600,7 @@ function isPermanentPullRequestHeadPollFailure(error51) {
 function buildFullReviewRuntimeEnv(input) {
   const inherited = pruneCodexRotatingChildEnv(input.sourceEnv);
   const runtimeEnv = normalizeFullReviewRuntimeEnv(input.runtimeEnv);
+  const ultraRuntimeTimeoutCompatibilityEnv = !Object.hasOwn(runtimeEnv, "RUN_TIMEOUT_SECONDS") && !input.sourceEnv.RUN_TIMEOUT_SECONDS?.trim() && runtimeEnv.CODEX_MODEL === "gpt-5.6-sol" && runtimeEnv.CODEX_REASONING_EFFORT === "ultra" ? { RUN_TIMEOUT_SECONDS: "1800" } : {};
   const reviewAuthMode = runtimeEnv.REVIEW_AUTH_MODE === codexRotatingRuntimeAuthMode ? "codex-oauth" : runtimeEnv.REVIEW_AUTH_MODE ?? "codex-oauth";
   const providerSecretEnv = buildProviderSecretEnvForRuntime({
     runtimeEnv,
@@ -25614,6 +25615,7 @@ function buildFullReviewRuntimeEnv(input) {
   });
   return {
     ...inherited,
+    ...ultraRuntimeTimeoutCompatibilityEnv,
     ...runtimeEnv,
     ...providerSecretEnv,
     ...reviewThreadLifecycleResolveEnv,

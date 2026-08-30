@@ -460,6 +460,85 @@ describe("Codex rotating GitHub Action runtime", () => {
     );
   });
 
+  it("defaults gpt-5.6-sol ultra runtime timeout without overriding explicit values", () => {
+    const buildRuntimeEnv = (input?: {
+      sourceTimeout?: string | undefined;
+      runtimeEnv?: Record<string, string> | undefined;
+    }) =>
+      buildFullReviewRuntimeEnv({
+        sourceEnv: {
+          PATH: "/usr/bin",
+          ...(input?.sourceTimeout === undefined
+            ? {}
+            : { RUN_TIMEOUT_SECONDS: input.sourceTimeout }),
+        },
+        inputs: {
+          mode: "fork-agentic-sandbox",
+          apiUrl: "https://api.reviewrouter.site",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+          reviewDrafts: false,
+          maxChangedLines: 0,
+          reviewTimeoutMinutes: 60,
+          providerSecrets: {},
+        },
+        leaseId: "lease-123",
+        event: {
+          number: 118,
+          repository: "777genius/agent-teams-ai",
+          owner: "777genius",
+          repo: "agent-teams-ai",
+          headSha: "head-sha",
+          baseSha: "base-sha",
+        },
+        workspace: "/tmp/workspace",
+        tempHome: "/tmp/home",
+        tempCodexHome: "/tmp/codex-home",
+        codexBinDir: "/tmp/codex-bin",
+        commentToken: "comment-token",
+        runtimeConfigVersion: 7,
+        runtimeEnv: input?.runtimeEnv ?? {
+          CODEX_MODEL: "gpt-5.6-sol",
+          CODEX_REASONING_EFFORT: "ultra",
+        },
+        executionDeadlineEpochMs: 1_800_000_000_000,
+      });
+
+    expect(buildRuntimeEnv().RUN_TIMEOUT_SECONDS).toBe("1800");
+    expect(buildRuntimeEnv({ sourceTimeout: "   " }).RUN_TIMEOUT_SECONDS).toBe(
+      "1800",
+    );
+    expect(buildRuntimeEnv({ sourceTimeout: "1200" }).RUN_TIMEOUT_SECONDS).toBe(
+      "1200",
+    );
+    expect(
+      buildRuntimeEnv({
+        sourceTimeout: "1200",
+        runtimeEnv: {
+          CODEX_MODEL: "gpt-5.6-sol",
+          CODEX_REASONING_EFFORT: "ultra",
+          RUN_TIMEOUT_SECONDS: "900",
+        },
+      }).RUN_TIMEOUT_SECONDS,
+    ).toBe("900");
+    expect(
+      buildRuntimeEnv({
+        runtimeEnv: {
+          CODEX_MODEL: "gpt-5.6-sol",
+          CODEX_REASONING_EFFORT: "high",
+        },
+      }).RUN_TIMEOUT_SECONDS,
+    ).toBeUndefined();
+    expect(
+      buildRuntimeEnv({
+        runtimeEnv: {
+          CODEX_MODEL: "gpt-5.5",
+          CODEX_REASONING_EFFORT: "ultra",
+        },
+      }).RUN_TIMEOUT_SECONDS,
+    ).toBeUndefined();
+  });
+
   it("does not auto-run when imported by CI tooling under GitHub Actions", () => {
     expect(
       shouldAutoRunCodexRotatingAction({

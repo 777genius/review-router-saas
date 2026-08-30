@@ -3831,6 +3831,13 @@ export function buildFullReviewRuntimeEnv(input: {
 }): Record<string, string> {
   const inherited = pruneCodexRotatingChildEnv(input.sourceEnv);
   const runtimeEnv = normalizeFullReviewRuntimeEnv(input.runtimeEnv);
+  const ultraRuntimeTimeoutCompatibilityEnv =
+    !Object.hasOwn(runtimeEnv, "RUN_TIMEOUT_SECONDS") &&
+    !input.sourceEnv.RUN_TIMEOUT_SECONDS?.trim() &&
+    runtimeEnv.CODEX_MODEL === "gpt-5.6-sol" &&
+    runtimeEnv.CODEX_REASONING_EFFORT === "ultra"
+      ? { RUN_TIMEOUT_SECONDS: "1800" }
+      : {};
   const reviewAuthMode =
     runtimeEnv.REVIEW_AUTH_MODE === codexRotatingRuntimeAuthMode
       ? "codex-oauth"
@@ -3854,6 +3861,7 @@ export function buildFullReviewRuntimeEnv(input: {
     });
   return {
     ...inherited,
+    ...ultraRuntimeTimeoutCompatibilityEnv,
     ...runtimeEnv,
     ...providerSecretEnv,
     ...reviewThreadLifecycleResolveEnv,
