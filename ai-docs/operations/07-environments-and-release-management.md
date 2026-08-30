@@ -596,6 +596,7 @@ REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED
 REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES
 REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5
 REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES
+REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_ROLLOUT_PHASE_TOKEN
 REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK
 REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED
 REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED
@@ -608,6 +609,28 @@ REVIEW_ROUTER_REVIEW_V2_INTENT_MAX_DISPATCH_ATTEMPTS
 ```
 
 Flags must fail closed for security-sensitive features.
+
+Fork-review V5 deploy input is an atomic pair:
+`REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5` and
+`REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES`. Enabling requires a nonempty
+canonical lowercase `owner/repository` cohort. Preserve both values explicitly
+during an active canary. The exact rollback is `0` plus an empty cohort.
+
+Runtime deployment mutates environment variables only through Render's
+single-key endpoint. It snapshots and immediately re-reads every target key,
+then changes that key alone; unrelated variables, including environments with
+more than 100 keys, are never rewritten. A durable provider-mutation-authority
+claim serializes all V5 mutations for the Render environment and binds the exact
+rollout phase token. Migration evidence is consumed after descriptors and all
+read-only preflight checks, immediately before the first key PUT.
+
+A deterministic later failure rolls back already-applied keys in reverse order
+only when their current values still equal this operation's written values.
+Concurrent drift is never overwritten. A network timeout or other unknown PUT
+outcome is not inferred from an early GET and is recorded as
+`ambiguous_forward_repair` in provider mutation authority for operator recovery.
+Do not retry until the durable operation is reconciled. If migration evidence
+was already consumed, recovery requires new trusted evidence.
 
 Hosted release convergence keeps all three rotating OAuth flags at exact `0`.
 Setup issuance and new-work admission enable only on exact `1`. New-work also

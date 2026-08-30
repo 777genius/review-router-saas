@@ -681,6 +681,91 @@ export function assertCodexForkReviewV5EnvConvergence(...roleEnvironments) {
   }
 }
 
+export class ForkReviewV5RolloutAuthority {
+  constructor(origin, token, request = fetch) {
+    if (!/^https:\/\//u.test(origin) || !token) {
+      throw new Error("fork review V5 rollout authority configuration invalid");
+    }
+    this.origin = origin.replace(/\/$/u, "");
+    this.token = token;
+    this.request = request;
+  }
+
+  async command(operation, body) {
+    const response = await this.request(
+      `${this.origin}/v1/provider-mutations/${operation}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`fork review V5 rollout authority ${operation} failed`);
+    }
+    return response.status === 204 ? null : await response.json();
+  }
+
+  async acquire({
+    rolloutId,
+    phaseToken,
+    environmentId,
+    ownerId,
+    fingerprint,
+  }) {
+    const request = {
+      rolloutId,
+      operation: `fork-review-v5-env:${phaseToken}`,
+      resource: {
+        provider: "render",
+        kind: "service_environment",
+        id: `fork-review-v5:${environmentId}`,
+      },
+      ownerId,
+      expected: { fingerprint, version: phaseToken },
+      leaseSeconds: 900,
+    };
+    const recovery = await this.command("recover", request);
+    if (recovery?.status !== "absent") {
+      throw new Error("fork review V5 rollout operation already claimed");
+    }
+    const permit = await this.command("issue", request);
+    const receipt = await this.command("consume", permit);
+    const validation = await this.command("validate-execution", receipt);
+    if (validation?.authorized !== true) {
+      throw new Error("fork review V5 rollout operation was not authorized");
+    }
+    return { request, receipt };
+  }
+
+  async complete(claim, fingerprint) {
+    await this.command("complete", {
+      receipt: claim.receipt,
+      observation: {
+        resource: claim.request.resource,
+        state: { fingerprint, version: claim.request.expected.version },
+        observedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  async markRecoveryRequired(claim, fingerprint) {
+    await this.command("reconcile", {
+      result: "ambiguous_forward_repair",
+      receipt: claim.receipt,
+      observation: {
+        resource: claim.request.resource,
+        state: { fingerprint, version: claim.request.expected.version },
+        observedAt: new Date().toISOString(),
+      },
+    });
+  }
+}
+
 export function hostedPoolRuntimeEnvForRole(env, role) {
   const release = {
     REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: requiredEnv(
@@ -950,15 +1035,22 @@ export class RenderClient {
   }
 
   async request(method, endpoint, body) {
-    const response = await fetch(`${renderApi}${endpoint}`, {
-      method,
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    let response;
+    try {
+      response = await fetch(`${renderApi}${endpoint}`, {
+        method,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (error) {
+      throw new Error(`Render request outcome unknown:${method}:${endpoint}`, {
+        cause: error,
+      });
+    }
     const text = await response.text();
     let data;
     try {
@@ -967,9 +1059,46 @@ export class RenderClient {
       data = text;
     }
     if (!response.ok) {
-      throw new Error(`${method} ${endpoint} failed ${response.status}`);
+      throw new RenderDeterministicError(
+        `${method} ${endpoint} failed ${response.status}`,
+      );
     }
     return data;
+  }
+
+  async getEnvVar(serviceId, key) {
+    let data;
+    try {
+      data = await this.request(
+        "GET",
+        `/services/${serviceId}/env-vars/${encodeURIComponent(key)}`,
+      );
+    } catch (error) {
+      if (
+        error instanceof RenderDeterministicError &&
+        /failed 404$/u.test(error.message)
+      ) {
+        return "";
+      }
+      throw error;
+    }
+    const value =
+      data?.value ??
+      data?.envVar?.value ??
+      data?.envVarValue?.value ??
+      data?.envVar?.envVarValue?.value;
+    if (typeof value !== "string") {
+      throw new Error(`Render environment key read is invalid:${key}`);
+    }
+    return value;
+  }
+
+  async setEnvVar(serviceId, key, value) {
+    await this.request(
+      "PUT",
+      `/services/${serviceId}/env-vars/${encodeURIComponent(key)}`,
+      { value: String(value) },
+    );
   }
 
   async list(endpoint) {
@@ -980,6 +1109,8 @@ export class RenderClient {
     return Array.isArray(data) ? data : [];
   }
 }
+
+export class RenderDeterministicError extends Error {}
 
 export function serviceDetails({ type, healthCheckPath }) {
   const details = {
@@ -1374,12 +1505,105 @@ export async function verifyResourceScope(
 
 export async function syncService(client, service, spec, common) {
   console.log(`syncing env for ${spec.name}`);
-  await verifyControlPlaneScope(client, common);
-  await addToEnvironment(client, common.environmentId, [service.id]);
-  await verifyResourceScope(client, "services", service.id, common, spec.name);
-  // Re-read the digest-pinned release descriptor after all scope reads and
-  // immediately before constructing the secret-bearing PUT. A path swap or
-  // local edit fails closed unless the bytes still match the release digest.
+  if (!common.prevalidatedServiceScope) {
+    await verifyControlPlaneScope(client, common);
+    await addToEnvironment(client, common.environmentId, [service.id]);
+    await verifyResourceScope(
+      client,
+      "services",
+      service.id,
+      common,
+      spec.name,
+    );
+  }
+  const expectedEnv =
+    common.preparedEnvironment ?? prepareServiceEnvironmentSync(spec, common);
+  await applyServiceEnvironmentKeyPlan(
+    client,
+    service,
+    expectedEnv,
+    common.beforeFirstEnvironmentMutation,
+    common.appliedEnvironmentKeyLedger,
+  );
+  return verifyServiceEnvConvergence(client, service, expectedEnv);
+}
+
+export async function applyServiceEnvironmentKeyPlan(
+  client,
+  service,
+  expectedEnv,
+  beforeFirstEnvironmentMutation,
+  appliedLedger = [],
+) {
+  const originalByKey = new Map();
+  for (const { key } of expectedEnv) {
+    originalByKey.set(key, await client.getEnvVar(service.id, key));
+  }
+  let mutationStarted = false;
+  try {
+    for (const { key, value } of expectedEnv) {
+      const current = await client.getEnvVar(service.id, key);
+      if (current !== originalByKey.get(key)) {
+        throw new RenderDeterministicError(
+          `Render environment key changed concurrently:${key}`,
+        );
+      }
+      if (!mutationStarted) {
+        beforeFirstEnvironmentMutation?.();
+        mutationStarted = true;
+      }
+      await client.setEnvVar(service.id, key, value);
+      const observed = await client.getEnvVar(service.id, key);
+      if (observed !== String(value)) {
+        throw new Error(`Render environment key readback mismatch:${key}`);
+      }
+      appliedLedger.push({
+        service,
+        key,
+        originalValue: originalByKey.get(key),
+        writtenValue: String(value),
+      });
+    }
+  } catch (error) {
+    if (!(error instanceof RenderDeterministicError)) {
+      throw new Error(
+        `Render environment mutation outcome requires operator recovery:${service.name}`,
+        { cause: error },
+      );
+    }
+    await rollbackAppliedEnvironmentKeys(client, appliedLedger, error);
+    throw error;
+  }
+}
+
+export async function rollbackAppliedEnvironmentKeys(
+  client,
+  appliedLedger,
+  cause,
+) {
+  for (const entry of [...appliedLedger].reverse()) {
+    const current = await client.getEnvVar(entry.service.id, entry.key);
+    if (current !== entry.writtenValue) {
+      throw new Error(
+        `Render environment rollback conflict requires operator recovery:${entry.service.name}:${entry.key}`,
+        { cause },
+      );
+    }
+    await client.setEnvVar(entry.service.id, entry.key, entry.originalValue);
+    if (
+      (await client.getEnvVar(entry.service.id, entry.key)) !==
+      entry.originalValue
+    ) {
+      throw new Error(
+        `Render environment rollback readback requires operator recovery:${entry.service.name}:${entry.key}`,
+        { cause },
+      );
+    }
+  }
+  appliedLedger.splice(0, appliedLedger.length);
+}
+
+export function prepareServiceEnvironmentSync(spec, common) {
   const rereadDescriptor = readVerifiedInstallerReleaseDescriptor(common.env);
   if (
     installerDescriptorIdentity(rereadDescriptor) !==
@@ -1389,43 +1613,12 @@ export async function syncService(client, service, spec, common) {
       "immutable rotating installer release descriptor changed before mutation",
     );
   }
-  const expectedEnv = buildServiceEnv({
+  return buildServiceEnv({
     ...common,
     env: applyInstallerTuple(common.env, rereadDescriptor),
     databaseUrl: common.databaseUrls[spec.role],
     role: spec.role,
   });
-  const observedEnvBeforePut = renderEnvVars(
-    await client.request("GET", `/services/${service.id}/env-vars?limit=100`),
-  );
-  assertCodexForkReviewV5CanaryNotImplicitlyReset(
-    common.env,
-    observedEnvBeforePut,
-  );
-  await client.request("PUT", `/services/${service.id}/env-vars`, expectedEnv);
-  return verifyServiceEnvConvergence(client, service, expectedEnv);
-}
-
-function renderEnvVars(value) {
-  const candidate = Array.isArray(value)
-    ? value
-    : (value?.envVars ??
-      value?.environmentVariables ??
-      value?.service?.envVars);
-  if (!Array.isArray(candidate)) {
-    throw new Error(
-      "Render service environment convergence response is invalid",
-    );
-  }
-  return Object.fromEntries(
-    candidate.map((item) => {
-      const envVar = item?.envVar ?? item;
-      return [
-        envVar?.key,
-        String(envVar?.value ?? envVar?.envVarValue?.value ?? ""),
-      ];
-    }),
-  );
 }
 
 export async function preflightCodexForkReviewV5CanaryConvergence(
@@ -1433,12 +1626,33 @@ export async function preflightCodexForkReviewV5CanaryConvergence(
   services,
   source,
 ) {
+  const snapshots = [];
   for (const { service } of services) {
-    const observed = renderEnvVars(
-      await client.request("GET", `/services/${service.id}/env-vars?limit=100`),
+    const observed = Object.fromEntries(
+      await Promise.all(
+        codexForkReviewV5RuntimeEnvNames.map(async (key) => [
+          key,
+          await client.getEnvVar(service.id, key),
+        ]),
+      ),
     );
     assertCodexForkReviewV5CanaryNotImplicitlyReset(source, observed);
+    snapshots.push({
+      serviceId: service.id,
+      tuple: codexForkReviewV5RuntimeEnv(observed),
+    });
   }
+  return snapshots;
+}
+
+function forkReviewV5SnapshotsFingerprint(snapshots) {
+  return `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify(
+        [...snapshots].sort((a, b) => a.serviceId.localeCompare(b.serviceId)),
+      ),
+    )
+    .digest("hex")}`;
 }
 
 export async function verifyServiceEnvConvergence(
@@ -1446,9 +1660,25 @@ export async function verifyServiceEnvConvergence(
   service,
   expectedEnv,
 ) {
-  const observed = renderEnvVars(
-    await client.request("GET", `/services/${service.id}/env-vars?limit=100`),
+  const observed = Object.fromEntries(
+    await Promise.all(
+      expectedEnv.map(async ({ key }) => [
+        key,
+        await client.getEnvVar(service.id, key),
+      ]),
+    ),
   );
+  const role = Object.fromEntries(
+    expectedEnv.map(({ key, value }) => [key, String(value)]),
+  ).REVIEW_ROUTER_RUNTIME_ROLE;
+  if (role === "worker") {
+    const operatorKey = "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256";
+    const unexpectedOperatorHash = await client.getEnvVar(
+      service.id,
+      operatorKey,
+    );
+    if (unexpectedOperatorHash) observed[operatorKey] = unexpectedOperatorHash;
+  }
   for (const { key, value } of expectedEnv) {
     if (observed[key] !== String(value)) {
       throw new Error(
@@ -1467,9 +1697,6 @@ export async function verifyServiceEnvConvergence(
       );
     }
   }
-  const role = Object.fromEntries(
-    expectedEnv.map(({ key, value }) => [key, String(value)]),
-  ).REVIEW_ROUTER_RUNTIME_ROLE;
   if (role === "worker") {
     assertReviewV2ApiWorkerEnvConvergence(observed, observed);
   }
@@ -2167,26 +2394,96 @@ export async function main() {
     return;
   }
 
-  // Read every role before the first full environment PUT. This prevents an
-  // omitted canary tuple from partially resetting web before API reveals that
-  // the currently deployed cohort is active. syncService repeats the check
-  // immediately before each mutation to close the read/write window.
-  await preflightCodexForkReviewV5CanaryConvergence(client, services, env);
-
-  claimTrustedMigrationEvidence(
-    databaseUrls.releaseMigration,
-    trustedMigrationEvidence,
+  const snapshots = await preflightCodexForkReviewV5CanaryConvergence(
+    client,
+    services,
+    env,
   );
-
-  // Scope is fetched again immediately before each complete secret-bearing PUT.
-  const convergedEnvByRole = {};
-  for (const { service, spec } of services) {
-    convergedEnvByRole[spec.role] = await syncService(
-      client,
-      service,
-      spec,
-      common,
+  const preparedByServiceId = new Map(
+    services.map(({ service, spec }) => [
+      service.id,
+      prepareServiceEnvironmentSync(spec, common),
+    ]),
+  );
+  const phaseToken = requiredEnv(
+    "REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_ROLLOUT_PHASE_TOKEN",
+    env,
+  );
+  if (!/^[a-z0-9][a-z0-9_.:-]{7,127}$/u.test(phaseToken)) {
+    throw new Error("fork review V5 rollout phase token is invalid");
+  }
+  const authority = new ForkReviewV5RolloutAuthority(
+    requiredEnv("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL", env),
+    requiredEnv("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN", env),
+  );
+  const beforeFingerprint = forkReviewV5SnapshotsFingerprint(snapshots);
+  const authorityClaim = await authority.acquire({
+    rolloutId: requiredEnv("REVIEW_ROUTER_RUNTIME_ROLLOUT_ID", env),
+    phaseToken,
+    environmentId,
+    ownerId: `render-env:${commit}`,
+    fingerprint: beforeFingerprint,
+  });
+  const finalPrewriteSnapshots =
+    await preflightCodexForkReviewV5CanaryConvergence(client, services, env);
+  if (
+    forkReviewV5SnapshotsFingerprint(finalPrewriteSnapshots) !==
+    beforeFingerprint
+  ) {
+    await authority.markRecoveryRequired(
+      authorityClaim,
+      forkReviewV5SnapshotsFingerprint(finalPrewriteSnapshots),
     );
+    throw new Error(
+      "fork review V5 tuple changed before migration evidence claim",
+    );
+  }
+  let migrationEvidenceClaimed = false;
+  const claimImmediatelyBeforeFirstKeyMutation = () => {
+    if (migrationEvidenceClaimed) return;
+    claimTrustedMigrationEvidence(
+      databaseUrls.releaseMigration,
+      trustedMigrationEvidence,
+    );
+    migrationEvidenceClaimed = true;
+  };
+
+  const convergedEnvByRole = {};
+  const appliedEnvironmentKeyLedger = [];
+  try {
+    for (const { service, spec } of services) {
+      convergedEnvByRole[spec.role] = await syncService(client, service, spec, {
+        ...common,
+        preparedEnvironment: preparedByServiceId.get(service.id),
+        beforeFirstEnvironmentMutation: claimImmediatelyBeforeFirstKeyMutation,
+        appliedEnvironmentKeyLedger,
+        prevalidatedServiceScope: true,
+      });
+    }
+    const afterSnapshots = await preflightCodexForkReviewV5CanaryConvergence(
+      client,
+      services,
+      env,
+    );
+    await authority.complete(
+      authorityClaim,
+      forkReviewV5SnapshotsFingerprint(afterSnapshots),
+    );
+  } catch (error) {
+    let recoveryFingerprint = beforeFingerprint;
+    try {
+      const recoverySnapshots =
+        await preflightCodexForkReviewV5CanaryConvergence(
+          client,
+          services,
+          env,
+        );
+      recoveryFingerprint = forkReviewV5SnapshotsFingerprint(recoverySnapshots);
+    } catch {
+      // The durable authority remains recovery-required when provider reads fail.
+    }
+    await authority.markRecoveryRequired(authorityClaim, recoveryFingerprint);
+    throw error;
   }
   assertReviewV2ApiWorkerEnvConvergence(
     convergedEnvByRole.api,

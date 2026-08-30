@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs";
 import {
   addToEnvironment,
+  applyServiceEnvironmentKeyPlan,
   assertCodexForkReviewV5CanaryNotImplicitlyReset,
   assertCodexForkReviewV5EnvConvergence,
   assertReviewV2ApiWorkerEnvConvergence,
@@ -26,9 +27,11 @@ import {
   disableAndVerifyPreDeployCommand,
   ensureDatabase,
   ensureService,
+  ForkReviewV5RolloutAuthority,
   main,
   parseHostedDeployDotenv,
   preflightCodexForkReviewV5CanaryConvergence,
+  RenderDeterministicError,
   readVerifiedInstallerReleaseDescriptor,
   reviewV2SharedRuntimeEnvNames,
   resolveDistinctDatabaseRoleUrls,
@@ -949,31 +952,16 @@ describe("Render hosted deploy hardening", () => {
   });
 
   it("preflights every service before an omitted canary tuple can reach a full PUT", async () => {
-    const request = vi
+    const request = vi.fn();
+    const getEnvVar = vi
       .fn()
-      .mockResolvedValueOnce([
-        {
-          key: "REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5",
-          value: "0",
-        },
-        {
-          key: "REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES",
-          value: "",
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          key: "REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5",
-          value: "1",
-        },
-        {
-          key: "REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES",
-          value: "owner/repo",
-        },
-      ]);
+      .mockResolvedValueOnce("0")
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce("1")
+      .mockResolvedValueOnce("owner/repo");
     await expect(
       preflightCodexForkReviewV5CanaryConvergence(
-        { request } as never,
+        { request, getEnvVar } as never,
         [
           { service: { id: "srv-web" } },
           { service: { id: "srv-api" } },
@@ -982,7 +970,7 @@ describe("Render hosted deploy hardening", () => {
         {},
       ),
     ).rejects.toThrow("requires an explicit gate and repository cohort");
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(getEnvVar).toHaveBeenCalledTimes(4);
     expect(request).not.toHaveBeenCalledWith(
       "PUT",
       expect.anything(),
@@ -1001,6 +989,196 @@ describe("Render hosted deploy hardening", () => {
         REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES: "",
       }),
     ).toThrow("API/worker/web environment drift");
+  });
+
+  it("updates only planned keys while preserving more than 100 unrelated variables", async () => {
+    const environment = new Map(
+      Array.from({ length: 150 }, (_, index) => [
+        `UNRELATED_${index}`,
+        `secret-${index}`,
+      ]),
+    );
+    environment.set("REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5", "0");
+    environment.set("REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES", "");
+    const setEnvVar = vi.fn(
+      async (_serviceId: string, key: string, value: string) => {
+        environment.set(key, value);
+      },
+    );
+    const client = {
+      getEnvVar: vi.fn(async (_serviceId: string, key: string) =>
+        environment.get(key),
+      ),
+      setEnvVar,
+    };
+    await applyServiceEnvironmentKeyPlan(
+      client,
+      { id: "srv-api", name: "reviewrouter-api" },
+      [
+        { key: "REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5", value: "1" },
+        {
+          key: "REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES",
+          value: "owner/repo",
+        },
+      ],
+    );
+    expect(setEnvVar).toHaveBeenCalledTimes(2);
+    expect(environment.get("UNRELATED_149")).toBe("secret-149");
+    expect(environment.size).toBe(152);
+  });
+
+  it("leaves an unknown PUT outcome in operator recovery even if it applies later", async () => {
+    const environment = new Map([
+      ["REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5", "0"],
+    ]);
+    const client = {
+      getEnvVar: vi.fn(async (_serviceId: string, key: string) =>
+        environment.get(key),
+      ),
+      setEnvVar: vi.fn(
+        async (_serviceId: string, key: string, value: string) => {
+          setTimeout(() => environment.set(key, value), 0);
+          throw new Error("timeout with unknown outcome");
+        },
+      ),
+    };
+    await expect(
+      applyServiceEnvironmentKeyPlan(
+        client,
+        { id: "srv-api", name: "reviewrouter-api" },
+        [{ key: "REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5", value: "1" }],
+      ),
+    ).rejects.toThrow("outcome requires operator recovery");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(environment.get("REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5")).toBe(
+      "1",
+    );
+    expect(client.setEnvVar).toHaveBeenCalledTimes(1);
+    expect(client.getEnvVar).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not touch a concurrently changed unrelated secret", async () => {
+    const environment = new Map([
+      ["REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5", "0"],
+      ["UNRELATED_SECRET", "before"],
+    ]);
+    const client = {
+      getEnvVar: vi.fn(async (_serviceId: string, key: string) =>
+        environment.get(key),
+      ),
+      setEnvVar: vi.fn(
+        async (_serviceId: string, key: string, value: string) => {
+          environment.set("UNRELATED_SECRET", "concurrent");
+          environment.set(key, value);
+        },
+      ),
+    };
+    await applyServiceEnvironmentKeyPlan(
+      client,
+      { id: "srv-api", name: "reviewrouter-api" },
+      [{ key: "REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5", value: "1" }],
+    );
+    expect(environment.get("UNRELATED_SECRET")).toBe("concurrent");
+    expect(client.setEnvVar).not.toHaveBeenCalledWith(
+      "srv-api",
+      "UNRELATED_SECRET",
+      expect.anything(),
+    );
+  });
+
+  it("reverse-rolls applied keys across services after a deterministic failure", async () => {
+    const environments = new Map([
+      ["srv-web:V5_GATE", "0"],
+      ["srv-api:V5_GATE", "0"],
+    ]);
+    const client = {
+      getEnvVar: vi.fn(async (serviceId: string, key: string) =>
+        environments.get(`${serviceId}:${key}`),
+      ),
+      setEnvVar: vi.fn(
+        async (serviceId: string, key: string, value: string) => {
+          if (serviceId === "srv-api") {
+            throw new RenderDeterministicError("PUT failed 409");
+          }
+          environments.set(`${serviceId}:${key}`, value);
+        },
+      ),
+    };
+    const ledger: unknown[] = [];
+    await applyServiceEnvironmentKeyPlan(
+      client,
+      { id: "srv-web", name: "reviewrouter-web" },
+      [{ key: "V5_GATE", value: "1" }],
+      undefined,
+      ledger,
+    );
+    await expect(
+      applyServiceEnvironmentKeyPlan(
+        client,
+        { id: "srv-api", name: "reviewrouter-api" },
+        [{ key: "V5_GATE", value: "1" }],
+        undefined,
+        ledger,
+      ),
+    ).rejects.toThrow("PUT failed 409");
+    expect(environments.get("srv-web:V5_GATE")).toBe("0");
+    expect(ledger).toEqual([]);
+  });
+
+  it("rejects a concurrent V5 key change before PUT and before claim", async () => {
+    const beforeMutation = vi.fn();
+    const client = {
+      getEnvVar: vi.fn().mockResolvedValueOnce("0").mockResolvedValueOnce("1"),
+      setEnvVar: vi.fn(),
+    };
+    await expect(
+      applyServiceEnvironmentKeyPlan(
+        client,
+        { id: "srv-api", name: "reviewrouter-api" },
+        [{ key: "REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5", value: "1" }],
+        beforeMutation,
+      ),
+    ).rejects.toThrow("changed concurrently");
+    expect(beforeMutation).not.toHaveBeenCalled();
+    expect(client.setEnvVar).not.toHaveBeenCalled();
+  });
+
+  it("binds a durable single-writer claim to the exact rollout phase", async () => {
+    const responses = [
+      { status: "absent" },
+      { permitId: "permit-1" },
+      { receiptId: "receipt-1" },
+      { authorized: true },
+    ];
+    const request = vi.fn(
+      async () =>
+        new Response(JSON.stringify(responses.shift()), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const authority = new ForkReviewV5RolloutAuthority(
+      "https://authority.example.test",
+      "authority-token",
+      request,
+    );
+    const claim = await authority.acquire({
+      rolloutId: "rollout-1",
+      phaseToken: "fork-v5-canary-enable",
+      environmentId: "production",
+      ownerId: "render-env:commit",
+      fingerprint: `sha256:${"a".repeat(64)}`,
+    });
+    expect(claim.request).toMatchObject({
+      operation: "fork-review-v5-env:fork-v5-canary-enable",
+      resource: {
+        provider: "render",
+        kind: "service_environment",
+        id: "fork-review-v5:production",
+      },
+      expected: { version: "fork-v5-canary-enable" },
+    });
+    expect(request).toHaveBeenCalledTimes(4);
   });
 
   it("preserves the explicit active review v2 tuple without copying unknown env", () => {
@@ -1410,10 +1588,15 @@ describe("Render hosted deploy hardening", () => {
         ...dormantReviewV2Env,
       },
     });
+    const expectedByKey = Object.fromEntries(
+      expected.map(({ key, value }) => [key, value]),
+    );
     const client = {
-      request: vi
-        .fn()
-        .mockResolvedValue(expected.map((envVar) => ({ envVar }))),
+      getEnvVar: vi.fn(async (_serviceId: string, key: string) =>
+        key === "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256"
+          ? ""
+          : expectedByKey[key],
+      ),
     };
     await expect(
       verifyServiceEnvConvergence(
@@ -1424,12 +1607,13 @@ describe("Render hosted deploy hardening", () => {
     ).resolves.toEqual(
       Object.fromEntries(expected.map(({ key, value }) => [key, value])),
     );
-    client.request.mockResolvedValueOnce(
-      expected.map((item) =>
-        item.key === "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256"
-          ? { ...item, value: "e".repeat(64) }
-          : item,
-      ),
+    client.getEnvVar.mockImplementation(
+      async (_serviceId: string, key: string) =>
+        key === "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256"
+          ? "e".repeat(64)
+          : key === "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256"
+            ? ""
+            : expectedByKey[key],
     );
     await expect(
       verifyServiceEnvConvergence(
@@ -1465,17 +1649,15 @@ describe("Render hosted deploy hardening", () => {
         ...activeReviewV2Env(),
       },
     });
-    const observed = [
-      ...expected,
-      {
-        key: "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256",
-        value: "f".repeat(64),
-      },
-    ];
+    const expectedByKey = Object.fromEntries(
+      expected.map(({ key, value }) => [key, value]),
+    );
     const client = {
-      request: vi
-        .fn()
-        .mockResolvedValue(observed.map((envVar) => ({ envVar }))),
+      getEnvVar: vi.fn(async (_serviceId: string, key: string) =>
+        key === "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256"
+          ? "f".repeat(64)
+          : expectedByKey[key],
+      ),
     };
 
     await expect(
