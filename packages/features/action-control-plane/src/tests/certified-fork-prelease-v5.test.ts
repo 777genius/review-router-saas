@@ -163,6 +163,8 @@ function dependencies(
     certifiedForkReviewClaims: {
       claimPrelease: vi.fn().mockResolvedValue({ status: "ready" }),
       abandonPrelease: vi.fn(),
+      markPreleaseAmbiguous: vi.fn(),
+      recoverAmbiguousPrelease: vi.fn(),
       claimPrepare: vi.fn(),
       beginPublish: vi.fn(),
       completePublished: vi.fn(),
