@@ -1379,11 +1379,18 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
   const sameRepoJob = extractWorkflowJobSection(workflow, "codex-review") ?? "";
   const forkJob =
     extractWorkflowJobSection(workflow, "fork-sandbox-review") ?? "";
+  const forkBackfillJob =
+    extractWorkflowJobSection(workflow, "fork-backfill-review") ?? "";
   const refreshJob = extractWorkflowJobSection(workflow, "codex-refresh") ?? "";
   const refreshEnabled = refreshJob.length > 0;
   const expectedJobs = refreshEnabled
-    ? ["codex-review", "fork-sandbox-review", "codex-refresh"]
-    : ["codex-review", "fork-sandbox-review"];
+    ? [
+        "codex-review",
+        "fork-sandbox-review",
+        "fork-backfill-review",
+        "codex-refresh",
+      ]
+    : ["codex-review", "fork-sandbox-review", "fork-backfill-review"];
   const secretNamespaceMetadata = workflow.match(
     /^name: ReviewRouter Codex OAuth \[(namespace=[^\]]+)\]$/m,
   )?.[1];
@@ -1443,6 +1450,20 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
     "env",
     8,
   );
+  const forkBackfillActionStep = extractWorkflowStepSection(
+    forkBackfillJob,
+    "ReviewRouter certified fork backfill review",
+  );
+  const forkBackfillActionWith = parseWorkflowFlatMapping(
+    forkBackfillActionStep ?? "",
+    "with",
+    8,
+  );
+  const forkBackfillActionEnv = parseWorkflowFlatMapping(
+    forkBackfillActionStep ?? "",
+    "env",
+    8,
+  );
   if (
     !workflowMappingHasExactNames(forkActionWith, [
       "mode",
@@ -1473,6 +1494,40 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
   }
   if ((forkJob.match(/^ {6}-\s+/gmu)?.length ?? 0) !== 1) {
     errors.push("t0_v5_fork_step_inventory_invalid");
+  }
+  if (
+    !workflowMappingHasExactNames(forkBackfillActionWith, [
+      "mode",
+      "api-url",
+      "provider-instance-id",
+      "workflow-schema-version",
+      "review-timeout-minutes",
+      "source-repository",
+      "source-repository-id",
+      "base-repository",
+      "base-repository-id",
+      "pull-request-number",
+      "review-head-sha",
+      "base-sha",
+      "trust-domain",
+      "auth-json",
+    ])
+  ) {
+    errors.push("t0_v5_fork_backfill_action_with_invalid");
+  } else if (
+    workflowMappingValue(forkBackfillActionWith, "auth-json") !==
+    `\${{ secrets.${expectedSecretName} }}`
+  ) {
+    errors.push("t0_v5_fork_backfill_secret_binding_invalid");
+  }
+  if (
+    forkBackfillActionEnv.kind !== "missing" ||
+    /^\s+env\s*:/mu.test(forkBackfillJob)
+  ) {
+    errors.push("t0_v5_fork_backfill_env_not_allowed");
+  }
+  if ((forkBackfillJob.match(/^ {6}-\s+/gmu)?.length ?? 0) !== 1) {
+    errors.push("t0_v5_fork_backfill_step_inventory_invalid");
   }
   if (refreshEnabled) {
     const refreshStep = extractWorkflowStepSection(
@@ -1527,6 +1582,7 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
   for (const [job, code] of [
     [sameRepoJob, "t0_v5_same_repo_concurrency_invalid"],
     [forkJob, "t0_v5_fork_concurrency_invalid"],
+    [forkBackfillJob, "t0_v5_fork_backfill_concurrency_invalid"],
     ...(refreshEnabled
       ? ([[refreshJob, "t0_v5_refresh_concurrency_invalid"]] as const)
       : []),
@@ -1568,10 +1624,74 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
   if (forkJob.includes(sameRepoGuard)) {
     errors.push("t0_v5_fork_guard_invalid");
   }
+  for (const marker of [
+    "github.event_name == 'workflow_dispatch'",
+    `vars.${codexForkAgenticSandboxCertificationVariable} == '${codexForkAgenticSandboxCertificationValue}'`,
+  ]) {
+    if (!forkBackfillJob.includes(marker)) {
+      errors.push(`t0_v5_fork_backfill_guard_missing:${marker}`);
+    }
+  }
+  for (const forbidden of [
+    "github.event.pull_request",
+    "inputs.base_repository",
+    "inputs.base_repository_id",
+  ]) {
+    if (forkBackfillJob.includes(forbidden)) {
+      errors.push(`t0_v5_fork_backfill_guard_invalid:${forbidden}`);
+    }
+  }
 
+  const expectedWorkflowDispatch = `  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: Public fork repository in owner/name form
+        required: true
+        type: string
+      source_repository_id:
+        description: Public fork repository numeric ID
+        required: true
+        type: string
+      pull_request_number:
+        description: Pull request number in the base repository
+        required: true
+        type: string
+      review_head_sha:
+        description: Exact fork head commit SHA to review
+        required: true
+        type: string
+      base_sha:
+        description: Exact base commit SHA for the review
+        required: true
+        type: string`;
+  const workflowDispatchStart = workflow.indexOf("  workflow_dispatch:\n");
+  const workflowDispatchScheduleEnd = workflow.indexOf(
+    "\n  schedule:\n",
+    workflowDispatchStart,
+  );
+  const workflowDispatchPermissionsEnd = workflow.indexOf(
+    "\n\npermissions:",
+    workflowDispatchStart,
+  );
+  const workflowDispatchEnd =
+    workflowDispatchScheduleEnd >= 0
+      ? workflowDispatchScheduleEnd
+      : workflowDispatchPermissionsEnd;
+  const workflowDispatch =
+    workflowDispatchStart >= 0 && workflowDispatchEnd > workflowDispatchStart
+      ? workflow.slice(workflowDispatchStart, workflowDispatchEnd)
+      : undefined;
+  const pullRequestTargetTriggerCount = (
+    workflow.match(/^ {2}pull_request_target:[ \t]*$/gmu) ?? []
+  ).length;
+  const workflowDispatchTriggerCount = (
+    workflow.match(/^ {2}workflow_dispatch:[ \t]*$/gmu) ?? []
+  ).length;
   if (
-    !/^ {2}pull_request_target:\s*$/m.test(workflow) ||
-    /^ {2}(?:pull_request|workflow_dispatch):\s*$/m.test(workflow)
+    pullRequestTargetTriggerCount !== 1 ||
+    workflowDispatchTriggerCount !== 1 ||
+    /^ {2}(?:pull_request|repository_dispatch):\s*$/m.test(workflow) ||
+    workflowDispatch !== expectedWorkflowDispatch
   ) {
     errors.push("t0_v5_trusted_ingress_invalid");
   }
@@ -1594,6 +1714,13 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
   ) {
     errors.push("t0_v5_fork_permissions_invalid");
   }
+  if (
+    !permissionsExactly(parseWorkflowPermissions(forkBackfillJob, 4), [
+      { name: "id-token", value: "write" },
+    ])
+  ) {
+    errors.push("t0_v5_fork_backfill_permissions_invalid");
+  }
 
   const forkMarkers = [
     `mode: ${codexForkPromptOnlyV2RuntimeMode}`,
@@ -1612,6 +1739,23 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
       errors.push(`t0_v5_fork_marker_missing:${marker}`);
     }
   }
+  const forkBackfillMarkers = [
+    `mode: ${codexForkPromptOnlyV2RuntimeMode}`,
+    "source-repository: ${{ inputs.source_repository }}",
+    "source-repository-id: ${{ inputs.source_repository_id }}",
+    "base-repository: ${{ github.repository }}",
+    "base-repository-id: ${{ github.repository_id }}",
+    "pull-request-number: ${{ inputs.pull_request_number }}",
+    "review-head-sha: ${{ inputs.review_head_sha }}",
+    "base-sha: ${{ inputs.base_sha }}",
+    "trust-domain: fork",
+    `auth-json: \${{ secrets.${expectedSecretName} }}`,
+  ];
+  for (const marker of forkBackfillMarkers) {
+    if (!forkBackfillJob.includes(marker)) {
+      errors.push(`t0_v5_fork_backfill_marker_missing:${marker}`);
+    }
+  }
   for (const forbidden of [
     "CLAUDE_CODE_OAUTH_TOKEN",
     "OPENROUTER_API_KEY",
@@ -1627,6 +1771,9 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
     if (forkJob.includes(forbidden)) {
       errors.push(`t0_v5_fork_surface_forbidden:${forbidden}`);
     }
+    if (forkBackfillJob.includes(forbidden)) {
+      errors.push(`t0_v5_fork_backfill_surface_forbidden:${forbidden}`);
+    }
   }
   const forkSecretReferences = [
     ...forkJob.matchAll(/\bsecrets\.([A-Za-z0-9_]+)\b/gmu),
@@ -1639,6 +1786,17 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
   ) {
     errors.push("t0_v5_fork_secret_inventory_invalid");
   }
+  const forkBackfillSecretReferences = [
+    ...forkBackfillJob.matchAll(/\bsecrets\.([A-Za-z0-9_]+)\b/gmu),
+  ].map((match) => match[1]);
+  if (
+    forkBackfillSecretReferences.length !== 1 ||
+    forkBackfillSecretReferences[0] !== expectedSecretName ||
+    /\bsecrets\s*\[/u.test(forkBackfillJob) ||
+    /toJSON\s*\(\s*secrets\s*\)/u.test(forkBackfillJob)
+  ) {
+    errors.push("t0_v5_fork_backfill_secret_inventory_invalid");
+  }
 
   const usesRefs = [...workflow.matchAll(/^\s*uses:\s*([^\s]+)$/gm)].map(
     (match) => match[1]!,
@@ -1646,6 +1804,7 @@ function scanCanonicalCodexRotatingT0WorkflowV5(
   const expectedRefs = release
     ? [
         `${release.repository}/.github/workflows/reviewrouter-t0-reusable.yml@${release.commitSha}`,
+        source.actionRef!,
         source.actionRef!,
         ...(refreshEnabled ? [source.actionRef!] : []),
       ]
@@ -2232,7 +2391,7 @@ export function renderCanonicalCodexRotatingT0WorkflowV5(
 
   return `name: ${workflowName}
 
-run-name: \${{ format('ReviewRouter review PR {0} at {1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
+run-name: \${{ format('ReviewRouter review PR {0} at {1}', github.event.pull_request.number || inputs.pull_request_number, github.event.pull_request.head.sha || inputs.review_head_sha) }}
 
 on:
   pull_request_target:
@@ -2243,6 +2402,28 @@ on:
     - cron: ${JSON.stringify(refreshScheduleCron)}`
         : ""
     }
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: Public fork repository in owner/name form
+        required: true
+        type: string
+      source_repository_id:
+        description: Public fork repository numeric ID
+        required: true
+        type: string
+      pull_request_number:
+        description: Pull request number in the base repository
+        required: true
+        type: string
+      review_head_sha:
+        description: Exact fork head commit SHA to review
+        required: true
+        type: string
+      base_sha:
+        description: Exact base commit SHA for the review
+        required: true
+        type: string
 
 permissions: {}
 
@@ -2298,6 +2479,36 @@ jobs:
           pull-request-number: \${{ format('{0}', github.event.pull_request.number) }}
           review-head-sha: \${{ github.event.pull_request.head.sha }}
           base-sha: \${{ github.event.pull_request.base.sha }}
+          trust-domain: fork
+          auth-json: \${{ secrets.${secretName} }}
+
+  fork-backfill-review:
+    name: fork-backfill-review
+    if: \${{ github.event_name == 'workflow_dispatch' && vars.${codexForkAgenticSandboxCertificationVariable} == '${codexForkAgenticSandboxCertificationValue}' }}
+    runs-on: ${codexRotatingDefaultRunner}
+    timeout-minutes: \${{ fromJSON(vars.${codexRotatingTimeoutMinutesVariableName} || '${timeoutMinutes}') }}
+    concurrency:
+      group: ${concurrencyGroup}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+    steps:
+      - name: ReviewRouter certified fork backfill review
+        id: run_fork_backfill
+        uses: ${input.actionRef}
+        with:
+          mode: ${codexForkPromptOnlyV2RuntimeMode}
+          api-url: ${JSON.stringify(input.apiUrl)}
+          provider-instance-id: ${JSON.stringify(input.providerInstanceId)}
+          workflow-schema-version: "${schemaVersion}"
+          review-timeout-minutes: \${{ vars.${codexRotatingTimeoutMinutesVariableName} || '${timeoutMinutes}' }}
+          source-repository: \${{ inputs.source_repository }}
+          source-repository-id: \${{ inputs.source_repository_id }}
+          base-repository: \${{ github.repository }}
+          base-repository-id: \${{ github.repository_id }}
+          pull-request-number: \${{ inputs.pull_request_number }}
+          review-head-sha: \${{ inputs.review_head_sha }}
+          base-sha: \${{ inputs.base_sha }}
           trust-domain: fork
           auth-json: \${{ secrets.${secretName} }}
 ${

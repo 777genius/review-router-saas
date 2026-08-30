@@ -127,4 +127,74 @@ describe("certified fork V5 action inputs", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("accepts workflow_dispatch only when the base repository context is exact", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rr-fork-v5-backfill-"));
+    const eventPath = join(root, "event.json");
+    await writeFile(
+      eventPath,
+      JSON.stringify({
+        repository: { id: 123456, full_name: "base/repository" },
+        inputs: { source_repository: "attacker/ignored" },
+      }),
+    );
+    const runtimeEnv = env({
+      "INPUT_AUTH-JSON": "must-never-be-read",
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      GITHUB_EVENT_PATH: eventPath,
+      GITHUB_REPOSITORY: "base/repository",
+      GITHUB_REPOSITORY_ID: "123456",
+      ACTIONS_ID_TOKEN_REQUEST_URL:
+        "https://vstoken.actions.githubusercontent.com/oidc/token",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
+    });
+    try {
+      const execute = vi.fn(async (input) => {
+        expect(input.binding.sourceRepository).toBe("contributor/repository");
+        expect(input.binding.sourceRepository).not.toBe("attacker/ignored");
+      });
+      await expect(
+        runCodexRotatingGitHubAction({
+          env: runtimeEnv,
+          forkPromptOnlyV2Executor: { execute },
+        }),
+      ).resolves.toBeUndefined();
+      expect(execute).toHaveBeenCalledOnce();
+      expect(runtimeEnv).not.toHaveProperty("INPUT_AUTH-JSON");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["another event", { GITHUB_EVENT_NAME: "repository_dispatch" }],
+    ["missing base id", { GITHUB_REPOSITORY_ID: "" }],
+    ["spoofed base name", { GITHUB_REPOSITORY: "attacker/repository" }],
+    ["spoofed base id", { GITHUB_REPOSITORY_ID: "999999" }],
+  ])("rejects workflow dispatch with %s", async (_name, overrides) => {
+    const root = await mkdtemp(join(tmpdir(), "rr-fork-v5-backfill-reject-"));
+    const eventPath = join(root, "event.json");
+    await writeFile(
+      eventPath,
+      JSON.stringify({
+        repository: { id: 123456, full_name: "base/repository" },
+      }),
+    );
+    try {
+      await expect(
+        runCodexRotatingGitHubAction({
+          env: env({
+            GITHUB_EVENT_NAME: "workflow_dispatch",
+            GITHUB_EVENT_PATH: eventPath,
+            GITHUB_REPOSITORY: "base/repository",
+            GITHUB_REPOSITORY_ID: "123456",
+            ...overrides,
+          }),
+          forkPromptOnlyV2Executor: { execute: vi.fn() },
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

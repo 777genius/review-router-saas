@@ -50,7 +50,10 @@ describe("certified fork review workflow V5", () => {
     );
     expect(rendered).toContain("trust-domain: fork");
     expect(rendered).toContain("mode: fork_prompt_only_v2");
-    const forkJob = rendered.slice(rendered.indexOf("  fork-sandbox-review:"));
+    const forkJob = rendered.slice(
+      rendered.indexOf("  fork-sandbox-review:"),
+      rendered.indexOf("  fork-backfill-review:"),
+    );
     expect(forkJob).toContain(`auth-json: \${{ secrets.${namespace.name} }}`);
     expect(forkJob).toContain("    permissions:\n      id-token: write");
     expect(forkJob).not.toContain("contents: read");
@@ -66,6 +69,94 @@ describe("certified fork review workflow V5", () => {
       actionRef: `777genius/review-router@${actionSha}`,
       workflowSchemaVersion: 5,
     });
+  });
+
+  it("renders a dispatch-only exact-head fork backfill lane", () => {
+    const rendered = workflow();
+    expect(rendered).toContain("  workflow_dispatch:\n    inputs:");
+    for (const input of [
+      "source_repository",
+      "source_repository_id",
+      "pull_request_number",
+      "review_head_sha",
+      "base_sha",
+    ]) {
+      expect(rendered).toContain(`      ${input}:\n        description:`);
+    }
+    const backfillJob = rendered.slice(
+      rendered.indexOf("  fork-backfill-review:"),
+    );
+    expect(backfillJob).toContain("github.event_name == 'workflow_dispatch'");
+    expect(backfillJob).toContain(
+      "source-repository: ${{ inputs.source_repository }}",
+    );
+    expect(backfillJob).toContain("base-repository: ${{ github.repository }}");
+    expect(backfillJob).toContain(
+      "base-repository-id: ${{ github.repository_id }}",
+    );
+    expect(backfillJob).not.toContain("inputs.base_repository");
+    expect(backfillJob).not.toContain("inputs.base_repository_id");
+    expect(backfillJob).not.toContain("github.event.pull_request");
+    expect(backfillJob).toContain("    permissions:\n      id-token: write");
+    expect(backfillJob).not.toContain("contents: read");
+    expect(backfillJob).not.toContain("GITHUB_TOKEN");
+    expect(backfillJob).not.toContain("run:");
+    expect(backfillJob).not.toContain("env:");
+    expect(backfillJob.match(/^ {6}- name:/gm)).toHaveLength(1);
+    expect(backfillJob.match(/\$\{\{ secrets\./g)).toHaveLength(1);
+  });
+
+  it.each([
+    ["optional input", "        required: true", "        required: false"],
+    [
+      "extra dispatch input",
+      "      base_sha:\n",
+      "      attacker_input:\n        required: true\n        type: string\n      base_sha:\n",
+    ],
+    [
+      "repository dispatch",
+      "  workflow_dispatch:\n",
+      "  repository_dispatch:\n  workflow_dispatch:\n",
+    ],
+    [
+      "duplicate dispatch",
+      "  workflow_dispatch:\n",
+      "  workflow_dispatch:\n  workflow_dispatch:\n",
+    ],
+    [
+      "source from event payload",
+      "source-repository: ${{ inputs.source_repository }}",
+      "source-repository: ${{ github.event.inputs.source_repository }}",
+    ],
+    [
+      "base from user input",
+      "base-repository: ${{ github.repository }}",
+      "base-repository: ${{ inputs.base_repository }}",
+    ],
+    [
+      "backfill checkout",
+      "      - name: ReviewRouter certified fork backfill review",
+      "      - name: Checkout\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803\n\n      - name: ReviewRouter certified fork backfill review",
+    ],
+    [
+      "backfill secret exfiltration",
+      "        with:\n          mode: fork_prompt_only_v2",
+      `        env:\n          STOLEN_AUTH: \${{ secrets.${namespace.name} }}\n        with:\n          mode: fork_prompt_only_v2`,
+    ],
+  ])("rejects backfill tamper: %s", (_name, marker, replacement) => {
+    const rendered = workflow();
+    const backfillStart = rendered.indexOf("  fork-backfill-review:");
+    const prefix = rendered.slice(0, backfillStart);
+    const backfill = rendered.slice(backfillStart).replace(marker, replacement);
+    const tampered = [
+      "optional input",
+      "extra dispatch input",
+      "repository dispatch",
+      "duplicate dispatch",
+    ].includes(_name)
+      ? rendered.replace(marker, replacement)
+      : `${prefix}${backfill}`;
+    expect(scanCodexRotatingAdvisoryWorkflow(tampered).valid).toBe(false);
   });
 
   it.each([

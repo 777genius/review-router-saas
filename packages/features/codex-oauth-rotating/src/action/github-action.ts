@@ -529,9 +529,10 @@ export async function runCodexRotatingGitHubAction(
 
   if (inputs.mode === codexForkPromptOnlyV2RuntimeMode) {
     try {
-      const event = await readForkPullRequestTargetEvent(
+      const event = await readCertifiedForkReviewEvent(
         env,
         inputs.workflowSchemaVersion,
+        inputs.forkReviewBinding,
       );
       assertSameRepositoryPullRequest(event, env);
       assertForkReviewBindingMatchesEvent(inputs.forkReviewBinding, event);
@@ -2157,6 +2158,56 @@ async function readForkPullRequestTargetEvent(
           sourceRepositoryId: String(sourceRepositoryId),
         }
       : {}),
+  };
+}
+
+async function readCertifiedForkReviewEvent(
+  env: NodeJS.ProcessEnv,
+  workflowSchemaVersion: number,
+  binding: ForkReviewBinding | undefined,
+): Promise<PullRequestEvent> {
+  if (env.GITHUB_EVENT_NAME === "pull_request_target") {
+    return readForkPullRequestTargetEvent(env, workflowSchemaVersion);
+  }
+  if (
+    env.GITHUB_EVENT_NAME !== "workflow_dispatch" ||
+    workflowSchemaVersion !==
+      CodexRotatingT0WorkflowSchemaVersion.CertifiedForkReviewV5
+  ) {
+    throw new Error("unsupported_event");
+  }
+  if (!binding) throw new Error("fork_review_binding_required");
+  const eventPath = env.GITHUB_EVENT_PATH;
+  if (!eventPath) throw new Error("missing_github_event_path");
+  const event = JSON.parse(await readFile(eventPath, "utf8")) as {
+    readonly repository?: {
+      readonly id?: unknown;
+      readonly full_name?: unknown;
+    };
+  };
+  const repository = requireString(event.repository?.full_name, "event_repo");
+  const repositoryId = event.repository?.id;
+  if (!isSafeGitHubNumericId(repositoryId)) {
+    throw new Error("base_repository_identity_required");
+  }
+  if (
+    env.GITHUB_REPOSITORY !== repository ||
+    env.GITHUB_REPOSITORY_ID !== String(repositoryId)
+  ) {
+    throw new Error("github_repository_mismatch");
+  }
+  const [owner, repo] = repository.split("/");
+  if (!owner || !repo) throw new Error("invalid_github_repository");
+  return {
+    number: binding.pullRequestNumber,
+    repositoryId: String(repositoryId),
+    repository,
+    owner,
+    repo,
+    headSha: binding.reviewHeadSha,
+    baseSha: binding.baseSha,
+    sourceRepository: binding.sourceRepository,
+    sourceRepositoryId: binding.sourceRepositoryId,
   };
 }
 
