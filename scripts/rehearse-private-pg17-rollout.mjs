@@ -800,6 +800,60 @@ export const disposableSqlConfiguration = () => ({
   releasePassword: "disposable-release",
 });
 
+/**
+ * The pre-release source models an already provisioned SaaS database. Some
+ * retained migrations deliberately choose a baseline/self-hosted path only
+ * when both release-authority roles are absent, so those roles must exist
+ * before Prisma applies the retained baseline. Target role bootstrap remains
+ * a separate, post-copy operation.
+ */
+export function disposablePreReleaseAuthorityRoleTopologySql() {
+  return `CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE reviewrouter_release_schema_owner
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;`;
+}
+
+export function assertDisposablePreReleaseAuthorityTopologySql() {
+  return `DO $assert_live_authority_topology$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_roles
+    WHERE rolname = 'reviewrouter_release_migration'
+      AND rolcanlogin AND rolinherit
+      AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole
+      AND NOT rolreplication AND NOT rolbypassrls
+      AND rolconnlimit = -1 AND rolvaliduntil IS NULL
+  ) OR NOT EXISTS (
+    SELECT 1
+    FROM pg_roles
+    WHERE rolname = 'reviewrouter_release_schema_owner'
+      AND NOT rolcanlogin AND rolinherit
+      AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole
+      AND NOT rolreplication AND NOT rolbypassrls
+      AND rolconnlimit = -1 AND rolvaliduntil IS NULL
+  ) OR EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'ReviewProviderScopeConcurrencyControl_baseline_closed'
+  ) OR to_regprocedure(
+    'public.reviewrouter_provider_scope_concurrency_snapshot()'
+  ) IS NULL OR (
+    SELECT owner.rolname
+    FROM pg_proc routine
+    JOIN pg_roles owner ON owner.oid = routine.proowner
+    WHERE routine.oid = to_regprocedure(
+      'public.reviewrouter_provider_scope_concurrency_snapshot()'
+    )
+  ) IS DISTINCT FROM 'reviewrouter_release_schema_owner' THEN
+    RAISE EXCEPTION
+      'private_pg17_rehearsal_source_authority_topology_drift';
+  END IF;
+END
+$assert_live_authority_topology$;`;
+}
+
 export function disposablePg17TargetRoleFoundationSql({
   providerAdminUsername = "reviewrouter_provider_administrator",
   demoteProvider = true,
@@ -1270,6 +1324,10 @@ export async function executeDisposableRehearsal(
       `import { readFileSync } from "node:fs"; export default { schema: ${JSON.stringify(join(preReleasePrisma, "schema.prisma"))}, migrations: { path: ${JSON.stringify(join(preReleasePrisma, "migrations"))} }, datasource: { url: readFileSync(process.env.REVIEW_ROUTER_DATABASE_URL_FILE, "utf8").trim() } };\n`,
       { mode: 0o600 },
     );
+    // Retained migrations observe the live SaaS authority pair. Provision it
+    // before migration deployment so the disposable source cannot silently
+    // take a baseline/self-hosted branch that production would never take.
+    sql(source, disposablePreReleaseAuthorityRoleTopologySql());
     const sourceMigration = spawnSync(
       "pnpm",
       [
@@ -1302,6 +1360,10 @@ export async function executeDisposableRehearsal(
         signal: sourceMigration.signal,
         timedOut: sourceMigration.error?.code === "ETIMEDOUT",
       });
+    // Prove the retained baseline selected the SaaS authority branch. Merely
+    // creating both role names is insufficient if a future migration changes
+    // the branch predicate or ownership handoff.
+    sql(source, assertDisposablePreReleaseAuthorityTopologySql());
     sql(
       source,
       `COMMENT ON DATABASE review_router IS '{"recoveryWitnessSha256":"${"a".repeat(64)}"}'; CREATE ROLE rehearsal_writer LOGIN; GRANT CONNECT ON DATABASE review_router TO rehearsal_writer; CREATE TABLE rehearsal_items(id bigserial PRIMARY KEY, value text NOT NULL UNIQUE); INSERT INTO rehearsal_items(value) VALUES ('one'),('two'),('three'); CREATE SCHEMA app_private; CREATE TABLE app_private.rehearsal_private(id integer PRIMARY KEY, value text); INSERT INTO app_private.rehearsal_private VALUES (1,'private'); CREATE SEQUENCE app_private.called_sequence; SELECT nextval('app_private.called_sequence'); CREATE SEQUENCE app_private.uncalled_sequence; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO PUBLIC;`,

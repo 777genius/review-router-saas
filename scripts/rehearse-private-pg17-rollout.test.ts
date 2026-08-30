@@ -14,8 +14,10 @@ import {
   cleanupCaptureOnlyRehearsalFixtures,
   cleanupDisposableRehearsalResources,
   captureOnlyRehearsalFixtureCleanupSql,
+  assertDisposablePreReleaseAuthorityTopologySql,
   disposablePg17CanonicalRoleBootstrapSetupSql,
   disposablePg17TargetRoleFoundationSql,
+  disposablePreReleaseAuthorityRoleTopologySql,
   disposableSqlConfiguration,
   disposableTargetPublicTableAclCanonicalizationSql,
   normalizeRehearsalDockerInvocation,
@@ -335,6 +337,63 @@ describe("disposable dual-version rehearsal", () => {
     expect(foundation).toContain(
       "GRANT reviewrouter_comment_token_custody TO reviewrouter_role_bootstrap WITH ADMIN TRUE",
     );
+  });
+  it("provisions the live authority pair before retained source migrations", () => {
+    const authorityTopology =
+      disposablePreReleaseAuthorityRoleTopologySql();
+
+    expect(authorityTopology).toContain(
+      "CREATE ROLE reviewrouter_release_migration LOGIN",
+    );
+    expect(authorityTopology).toContain(
+      "CREATE ROLE reviewrouter_release_schema_owner",
+    );
+    expect(authorityTopology).toContain(
+      "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
+    expect(authorityTopology).not.toContain("GRANT ");
+
+    const source = readFileSync(
+      new URL("./rehearse-private-pg17-rollout.mjs", import.meta.url),
+      "utf8",
+    );
+    expect(
+      source.indexOf(
+        "sql(source, disposablePreReleaseAuthorityRoleTopologySql())",
+      ),
+    ).toBeLessThan(source.indexOf("const sourceMigration = spawnSync("));
+
+    const assertion = assertDisposablePreReleaseAuthorityTopologySql();
+    expect(assertion).toContain(
+      'ReviewProviderScopeConcurrencyControl_baseline_closed',
+    );
+    expect(assertion).toContain(
+      "rolname = 'reviewrouter_release_migration'",
+    );
+    expect(assertion).toContain(
+      "rolname = 'reviewrouter_release_schema_owner'",
+    );
+    expect(assertion).toContain("AND rolcanlogin AND rolinherit");
+    expect(assertion).toContain("AND NOT rolcanlogin AND rolinherit");
+    expect(assertion).toContain(
+      "public.reviewrouter_provider_scope_concurrency_snapshot()",
+    );
+    expect(assertion).toContain(
+      "IS DISTINCT FROM 'reviewrouter_release_schema_owner'",
+    );
+    expect(assertion).toContain(
+      "private_pg17_rehearsal_source_authority_topology_drift",
+    );
+    expect(
+      source.indexOf(
+        "sql(source, assertDisposablePreReleaseAuthorityTopologySql())",
+      ),
+    ).toBeGreaterThan(source.indexOf("if (sourceMigration.status !== 0"));
+    expect(
+      source.indexOf(
+        "sql(source, assertDisposablePreReleaseAuthorityTopologySql())",
+      ),
+    ).toBeLessThan(source.indexOf("const baselinePrincipalInventory"));
   });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
     const identity = "rr-disposable-production-shaped-capture";
