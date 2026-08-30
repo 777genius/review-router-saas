@@ -13,18 +13,22 @@ import { join } from "node:path";
 import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs";
 import {
   addToEnvironment,
+  assertCodexForkReviewV5CanaryNotImplicitlyReset,
+  assertCodexForkReviewV5EnvConvergence,
   assertReviewV2ApiWorkerEnvConvergence,
   assertHostedDeployEnv,
   assertMigrationEvidence,
   assertMigrationEvidencePayload,
   assertSelectedDatabaseIdentity,
   buildServiceEnv,
+  codexForkReviewV5RuntimeEnv,
   convergeImmutableRuntimeImage,
   disableAndVerifyPreDeployCommand,
   ensureDatabase,
   ensureService,
   main,
   parseHostedDeployDotenv,
+  preflightCodexForkReviewV5CanaryConvergence,
   readVerifiedInstallerReleaseDescriptor,
   reviewV2SharedRuntimeEnvNames,
   resolveDistinctDatabaseRoleUrls,
@@ -840,6 +844,163 @@ describe("Render hosted deploy hardening", () => {
     expect(
       serviceDetails({ type: "web_service", startCommand: "start" }),
     ).toHaveProperty("preDeployCommand", null);
+  });
+
+  it("keeps fork review V5 off by default in every runtime role", () => {
+    const common = {
+      GITHUB_APP_CLIENT_ID: "client",
+      GITHUB_APP_CLIENT_SECRET: "secret",
+      GITHUB_APP_ID: "1",
+      GITHUB_APP_SLUG: "reviewrouter",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      AUTH_SECRET: "a".repeat(32),
+      REVIEW_ROUTER_ACTION_SESSION_SECRET: "s".repeat(32),
+      REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY: "t".repeat(32),
+      REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
+      REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
+      ...installerTuple,
+      ...hostedPoolEnv,
+      ...dormantReviewV2Env,
+    };
+    const environments = ["api", "worker", "web"].map((role) =>
+      Object.fromEntries(
+        buildServiceEnv({
+          databaseUrl: "postgres://internal/db",
+          privateKey: "private-key-not-logged",
+          role,
+          webUrl: "https://reviewrouter.example",
+          apiUrl: "https://api.reviewrouter.example",
+          env: common,
+        }).map(({ key, value }) => [key, value]),
+      ),
+    );
+
+    for (const environment of environments) {
+      expect(environment.REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5).toBe("0");
+      expect(environment.REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES).toBe(
+        "",
+      );
+    }
+    expect(() =>
+      assertCodexForkReviewV5EnvConvergence(...environments),
+    ).not.toThrow();
+  });
+
+  it("canonicalizes and validates the explicit fork review V5 canary tuple", () => {
+    expect(
+      codexForkReviewV5RuntimeEnv({
+        REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: "1",
+        REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES:
+          "Other-Org/Repo.Name,777genius/review-router-saas-e2e other-org/repo.name",
+      }),
+    ).toEqual({
+      REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: "1",
+      REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES:
+        "777genius/review-router-saas-e2e,other-org/repo.name",
+    });
+    expect(() =>
+      codexForkReviewV5RuntimeEnv({
+        REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: "1",
+      }),
+    ).toThrow("must be supplied together");
+    expect(() =>
+      codexForkReviewV5RuntimeEnv({
+        REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: "1",
+        REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES: "",
+      }),
+    ).toThrow("must be non-empty");
+    expect(() =>
+      codexForkReviewV5RuntimeEnv({
+        REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: "yes",
+        REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES: "owner/repo",
+      }),
+    ).toThrow("must be exactly 0 or 1");
+    expect(() =>
+      codexForkReviewV5RuntimeEnv({
+        REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: "0",
+        REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES: "../bad/repo",
+      }),
+    ).toThrow("canonical GitHub owner/repository names");
+  });
+
+  it("requires an explicit atomic reset when a full PUT sees an active fork canary", () => {
+    const active = {
+      REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: "1",
+      REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES: "owner/repo",
+    };
+    expect(() =>
+      assertCodexForkReviewV5CanaryNotImplicitlyReset({}, active),
+    ).toThrow("requires an explicit gate and repository cohort");
+    expect(() =>
+      assertCodexForkReviewV5CanaryNotImplicitlyReset(
+        { REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: "0" },
+        active,
+      ),
+    ).toThrow("requires an explicit gate and repository cohort");
+    expect(() =>
+      assertCodexForkReviewV5CanaryNotImplicitlyReset(
+        {
+          REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: "0",
+          REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES: "",
+        },
+        active,
+      ),
+    ).not.toThrow();
+  });
+
+  it("preflights every service before an omitted canary tuple can reach a full PUT", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          key: "REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5",
+          value: "0",
+        },
+        {
+          key: "REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES",
+          value: "",
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          key: "REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5",
+          value: "1",
+        },
+        {
+          key: "REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES",
+          value: "owner/repo",
+        },
+      ]);
+    await expect(
+      preflightCodexForkReviewV5CanaryConvergence(
+        { request } as never,
+        [
+          { service: { id: "srv-web" } },
+          { service: { id: "srv-api" } },
+          { service: { id: "srv-worker" } },
+        ],
+        {},
+      ),
+    ).rejects.toThrow("requires an explicit gate and repository cohort");
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).not.toHaveBeenCalledWith(
+      "PUT",
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("detects fork review V5 drift across API, worker, and web", () => {
+    const active = {
+      REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: "1",
+      REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES: "owner/repo",
+    };
+    expect(() =>
+      assertCodexForkReviewV5EnvConvergence(active, active, {
+        REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: "0",
+        REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES: "",
+      }),
+    ).toThrow("API/worker/web environment drift");
   });
 
   it("preserves the explicit active review v2 tuple without copying unknown env", () => {
