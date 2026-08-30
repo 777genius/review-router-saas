@@ -31,6 +31,7 @@ import {
   createSecretSafePostgresInvocation,
   runSecretSafePostgresCommand,
 } from "./lib/secret-safe-command-boundary.mjs";
+import { isExactPostgresGuardFailure } from "./lib/postgres-guard-failure.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const dbDirectory = join(root, "packages/platform/db");
@@ -151,14 +152,14 @@ try {
     {
       ...rehearsalRelease.environment,
       ...migrationPermitEnvironment,
-      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
+      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
     },
     runRehearsalReleaseSubprocess,
     loopbackRehearsalDatabaseIdentity,
   );
   assert(
-    releaseMigrationResult.aclGateState === "open",
-    "combined migration rehearsal must exercise the open runtime ACL state",
+    releaseMigrationResult.aclGateState === "closed",
+    "combined migration rehearsal must complete against the trusted pre-activation catalog",
   );
   const targetMigrationReceipt = releaseMigrationResult.targetMigrationReceipt;
   const expectedEffectFingerprint = `sha256:${createHash("sha256")
@@ -183,7 +184,7 @@ try {
     {
       ...rehearsalRelease.environment,
       ...migrationPermitEnvironment,
-      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
+      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
     },
     runRehearsalReleaseSubprocess,
     loopbackRehearsalDatabaseIdentity,
@@ -195,6 +196,10 @@ try {
         JSON.stringify(releaseMigrationResult.legacyReconciliation.inventory),
     "canonical replay did not return the immutable original receipt",
   );
+  // The trusted post-migration digest is the production pre-activation state.
+  // Reopen only after receipt replay so the remaining runtime behavior proofs
+  // can exercise the activated ACL without changing completion authority.
+  convergeRuntimePrivileges(providerAdmin);
 
   proveSuccessfulCombinedRelease(providerAdmin);
   proveDatabasePrivileges(providerAdmin);
@@ -295,29 +300,68 @@ async function proveMigrationSpecificLegacyBehavior() {
 
 function proveCanonicalLegacyReconciliationNegativeCases() {
   for (const testCase of [
-    { name: "unresolved", options: { canonicalSuccess: false } },
+    {
+      name: "unresolved",
+      options: { canonicalSuccess: false },
+      expectedFailure: {
+        stage: "database",
+        error: "legacy_reconciliation_unresolved_intent",
+        evidence:
+          "canonical_negative_database_guard_observed:unresolved:legacy_reconciliation_unresolved_intent",
+      },
+    },
     {
       name: "unexpired",
       options: { canonicalSuccess: true, retainUnexpiredLease: true },
+      expectedFailure: {
+        stage: "database",
+        error: "legacy_reconciliation_lease_not_eligible",
+        evidence:
+          "canonical_negative_database_guard_observed:unexpired:legacy_reconciliation_lease_not_eligible",
+      },
     },
     {
       name: "inventory_race",
       options: { canonicalSuccess: true },
       injectInventoryRace: true,
+      expectedFailure: {
+        stage: "database",
+        error: "legacy_reconciliation_inventory_changed",
+        evidence:
+          "canonical_negative_database_guard_observed:inventory_race:legacy_reconciliation_inventory_changed",
+      },
     },
     {
       name: "ttl_crossing",
       options: { canonicalSuccess: true },
       injectTtlCrossing: true,
+      expectedFailure: {
+        stage: "database",
+        error: "legacy_reconciliation_lease_not_eligible",
+        evidence:
+          "canonical_negative_database_guard_observed:ttl_crossing:legacy_reconciliation_lease_not_eligible",
+      },
     },
     {
       name: "unknown_status",
       options: { canonicalSuccess: true },
       injectUnknownStatus: true,
+      expectedFailure: {
+        stage: "preflight",
+        error: "legacy_reconciliation_intent_status_unclassified:new_state",
+        evidence:
+          "canonical_negative_preflight_guard_observed:unknown_status:legacy_reconciliation_intent_status_unclassified:new_state",
+      },
     },
     {
       name: "forged_digest",
       options: { canonicalSuccess: true },
+      expectedFailure: {
+        stage: "preflight",
+        error: "legacy_ambiguity_evidence_digest_invalid",
+        evidence:
+          "canonical_negative_preflight_guard_observed:forged_digest:legacy_ambiguity_evidence_digest_invalid",
+      },
       transformSourceEvidence: (evidence) => ({
         ...evidence,
         inventorySha256: `sha256:${"0".repeat(64)}`,
@@ -374,18 +418,40 @@ function proveCanonicalLegacyReconciliationNegativeCases() {
               `UPDATE "CodexOAuthLease" SET status='expired' WHERE id='lease-expired'`,
             ]);
           }
-          return runRehearsalReleaseSubprocess(step, command, args, options);
+          return runRehearsalReleaseSubprocess(step, command, args, {
+            ...options,
+            expectedFailure:
+              testCase.expectedFailure.stage === "database" &&
+              step === "deploy_migrations_and_converge_grants"
+                ? {
+                    guard: testCase.expectedFailure.error,
+                    evidence: testCase.expectedFailure.evidence,
+                  }
+                : undefined,
+          });
         };
         executeCanonicalReleaseMigration(
           {
             ...release.environment,
             ...permit,
-            REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
+            REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
           },
           releaseRun,
           loopbackRehearsalDatabaseIdentity,
         );
-      } catch {
+      } catch (error) {
+        const exactPreflightFailure =
+          testCase.expectedFailure.stage === "preflight" &&
+          error instanceof Error &&
+          error.message === testCase.expectedFailure.error;
+        const exactDatabaseFailure =
+          testCase.expectedFailure.stage === "database" &&
+          error instanceof Error &&
+          error.message === testCase.expectedFailure.evidence;
+        assert(
+          exactPreflightFailure || exactDatabaseFailure,
+          `canonical ${testCase.name} fixture did not produce ${testCase.expectedFailure.evidence}`,
+        );
         rejected = true;
       }
       assert(rejected, `canonical ${testCase.name} fixture was not rejected`);
@@ -3114,6 +3180,11 @@ function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
       maxBuffer: 16 * 1024 * 1024,
       timeout: 600_000,
     });
+    if (
+      options.expectedFailure &&
+      isExactPostgresGuardFailure(result, options.expectedFailure.guard)
+    )
+      throw new Error(options.expectedFailure.evidence);
     if (result.status !== 0 || result.error)
       throw sanitizedDiagnosticError({
         code: "private_pg17_rehearsal_command_failed",

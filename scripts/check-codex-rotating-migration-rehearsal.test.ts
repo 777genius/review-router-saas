@@ -27,6 +27,10 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ),
     "utf8",
   );
+  const productionRehearsalSource = readFileSync(
+    resolve(import.meta.dirname, "rehearse-private-pg17-rollout.mjs"),
+    "utf8",
+  );
   const prismaRetentionProofSource = readFileSync(
     resolve(import.meta.dirname, "prove-codex-rotating-evidence-prisma.ts"),
     "utf8",
@@ -215,6 +219,52 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   });
 
   it("splits safe canonical fixtures from rollback-only legacy negatives", () => {
+    const negativeCases =
+      /function proveCanonicalLegacyReconciliationNegativeCases\(\) \{([\s\S]+?)\n\}\n\nfunction proveLateMigrationRollbackAndReplayMatrix/u.exec(
+        source,
+      )?.[1];
+    expect(negativeCases).toBeDefined();
+    const expectedFailures = [
+      ["unresolved", "database", "legacy_reconciliation_unresolved_intent"],
+      ["unexpired", "database", "legacy_reconciliation_lease_not_eligible"],
+      ["inventory_race", "database", "legacy_reconciliation_inventory_changed"],
+      ["ttl_crossing", "database", "legacy_reconciliation_lease_not_eligible"],
+      [
+        "unknown_status",
+        "preflight",
+        "legacy_reconciliation_intent_status_unclassified:new_state",
+      ],
+      [
+        "forged_digest",
+        "preflight",
+        "legacy_ambiguity_evidence_digest_invalid",
+      ],
+    ] as const;
+    const caseOffsets = expectedFailures.map(([name]) =>
+      negativeCases!.indexOf(`name: "${name}"`),
+    );
+    expect(caseOffsets).toEqual(
+      [...caseOffsets].sort((left, right) => left - right),
+    );
+    expect(caseOffsets.every((offset) => offset >= 0)).toBe(true);
+    for (const [
+      index,
+      [name, stage, expectedError],
+    ] of expectedFailures.entries()) {
+      const caseSource = negativeCases!.slice(
+        caseOffsets[index],
+        caseOffsets[index + 1] ?? negativeCases!.length,
+      );
+      expect(caseSource).toContain(`stage: "${stage}"`);
+      expect(caseSource).toContain(`error: "${expectedError}"`);
+      expect(caseSource).toContain(
+        `canonical_negative_${stage}_guard_observed:${name}:${expectedError}`,
+      );
+    }
+    expect(negativeCases?.match(/stage: "preflight"/gu)).toHaveLength(2);
+    expect(negativeCases?.match(/stage: "database"/gu)).toHaveLength(4);
+    expect(negativeCases?.match(/error: "/gu)).toHaveLength(6);
+    expect(negativeCases?.match(/^ {8}evidence:/gmu)).toHaveLength(6);
     expect(source).toContain("canonicalSuccess: true");
     expect(source).toContain("retainUnexpiredLease: true");
     expect(source).toContain('name: "inventory_race"');
@@ -234,8 +284,62 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toContain("transformSourceEvidence");
     expect(source).toContain("interval '100 milliseconds'");
     expect(source).toContain("SELECT pg_sleep(0.2)");
+    expect(negativeCases).toContain(
+      'error: "legacy_reconciliation_unresolved_intent"',
+    );
+    expect(negativeCases).toContain(
+      'error: "legacy_reconciliation_lease_not_eligible"',
+    );
+    expect(negativeCases).toContain(
+      'error: "legacy_reconciliation_inventory_changed"',
+    );
+    expect(negativeCases).toContain(
+      'error: "legacy_reconciliation_intent_status_unclassified:new_state"',
+    );
+    expect(negativeCases).toContain(
+      'error: "legacy_ambiguity_evidence_digest_invalid"',
+    );
+    expect(negativeCases).toContain(
+      'REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed"',
+    );
+    expect(negativeCases).not.toContain(
+      'REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open"',
+    );
+    expect(negativeCases).toContain(
+      'step === "deploy_migrations_and_converge_grants"',
+    );
+    expect(negativeCases).toContain(
+      'testCase.expectedFailure.stage === "database"',
+    );
+    expect(negativeCases).toContain("exactPreflightFailure");
+    expect(negativeCases).toContain("exactDatabaseFailure");
+    expect(negativeCases).toContain("error instanceof Error");
+    expect(negativeCases).toContain(
+      "error.message === testCase.expectedFailure.error",
+    );
+    expect(negativeCases).toContain(
+      "error.message === testCase.expectedFailure.evidence",
+    );
+    expect(negativeCases).toContain('rollback.permitState === "installed"');
+    expect(negativeCases).toContain("rollback.targetReceipt === null");
+    expect(negativeCases).toContain("rollback.committedTargetMigrations === 0");
     expect(source).toContain(
       "canonical replay did not return the immutable original receipt",
+    );
+  });
+
+  it("only accepts a negative subprocess failure with its exact guard evidence", () => {
+    const runner =
+      /function runRehearsalReleaseSubprocess\(step, command, args, options = \{\}\) \{([\s\S]+?)\n\}\n\nfunction markCanonicalRehearsalRoles/u.exec(
+        source,
+      )?.[1];
+    expect(runner).toBeDefined();
+    expect(runner).toContain("options.expectedFailure");
+    expect(runner).toContain("isExactPostgresGuardFailure(");
+    expect(runner).toContain("result,");
+    expect(runner).toContain("options.expectedFailure.guard");
+    expect(runner).toContain(
+      "throw new Error(options.expectedFailure.evidence)",
     );
   });
 
@@ -455,15 +559,37 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
-  it("proves runtime roles retain database access before cascade denial checks", () => {
-    expect(source).toContain('REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open"');
-    expect(source).toContain('releaseMigrationResult.aclGateState === "open"');
+  it("completes and replays against the trusted pre-activation catalog before runtime proofs", () => {
+    expect(
+      source.match(/REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed"/gu),
+    ).toHaveLength(3);
+    expect(source).toContain(
+      'releaseMigrationResult.aclGateState === "closed"',
+    );
+    expect(productionRehearsalSource).toMatch(
+      /const runReleaseMigrationPort[\s\S]+?REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed"/u,
+    );
+    expect(source).toContain(
+      "must complete against the trusted pre-activation catalog",
+    );
     expect(source).toContain(
       "must retain CONNECT before runtime cascade proofs",
     );
     expect(source).toContain(
       "has_database_privilege(${quoteLiteral(role)}, current_database(), 'CONNECT')",
     );
+    const replayIndex = source.indexOf(
+      "const replayMigrationResult = executeCanonicalReleaseMigration(",
+    );
+    const reopenIndex = source.indexOf(
+      "convergeRuntimePrivileges(providerAdmin);",
+    );
+    const runtimeProofIndex = source.indexOf(
+      "proveSuccessfulCombinedRelease(providerAdmin);",
+    );
+    expect(replayIndex).toBeGreaterThan(-1);
+    expect(reopenIndex).toBeGreaterThan(replayIndex);
+    expect(runtimeProofIndex).toBeGreaterThan(reopenIndex);
   });
 
   it("asserts the two locking guards' exact and distinct execution contracts", () => {
@@ -570,7 +696,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toContain(
       "discardRehearsalOnlyRolledBackMigrationHistory(providerAdmin)",
     );
-    expect(source).toContain('{ name: "unresolved"');
+    expect(source).toContain('name: "unresolved"');
     expect(source).toContain("retainUnexpiredLease: true");
     expect(source).toContain('rollback.permitState === "installed"');
     expect(source).toContain("rollback.committedTargetMigrations === 0");
