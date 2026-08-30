@@ -355,4 +355,60 @@ describe("certified fork composition", () => {
       ).toThrow("certified_fork_model_output_invalid");
     }
   });
+
+  it("deterministically truncates multibyte output to the GitHub comment budget", () => {
+    const output = new StrictCertifiedForkReviewOutput();
+    const input = {
+      generatedAt: new Date("2026-08-30T10:00:00.000Z"),
+      binding,
+      promptPacket,
+      modelOutput: {
+        protocolVersion: 1,
+        summaryMarkdown: "é".repeat(30_000),
+        findings: [
+          {
+            severity: "major",
+            title: "bug",
+            body: "é".repeat(4_000),
+            path: "src/a.ts",
+            startLine: 1,
+          },
+        ],
+      },
+    } as const;
+    const first = output.render(input);
+    const second = output.render(input);
+    expect(first).toEqual(second);
+    expect(Buffer.byteLength(first.body, "utf8")).toBeLessThanOrEqual(59_500);
+    expect(first.body).toContain("Output truncated to GitHub comment budget");
+    expect(first.body).not.toContain("�");
+  });
+
+  it.each(["startLine", "endLine"] as const)(
+    "rejects %s beyond the shared line budget",
+    (key) => {
+      const output = new StrictCertifiedForkReviewOutput();
+      expect(() =>
+        output.render({
+          generatedAt: new Date("2026-08-30T10:00:00.000Z"),
+          binding,
+          promptPacket,
+          modelOutput: {
+            protocolVersion: 1,
+            summaryMarkdown: "ok",
+            findings: [
+              {
+                severity: "major",
+                title: "bug",
+                body: "body",
+                path: "src/a.ts",
+                startLine: 1,
+                [key]: 1_000_001,
+              },
+            ],
+          },
+        }),
+      ).toThrow("certified_fork_model_output_invalid");
+    },
+  );
 });

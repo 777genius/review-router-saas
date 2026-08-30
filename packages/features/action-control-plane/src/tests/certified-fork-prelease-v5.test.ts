@@ -44,7 +44,7 @@ function dependencies(
     workflowPath: ".github/workflows/reviewrouter-codex.yml",
     workflowSchemaVersion: 5,
   } as const;
-  const resolveWorkflowRunPullRequestBinding = vi.fn().mockResolvedValue({
+  const livePullRequest = {
     baseRepository: repository.fullName,
     baseRepositoryId: repository.githubRepositoryId,
     sourceRepository: forkReviewBinding.sourceRepository,
@@ -56,7 +56,13 @@ function dependencies(
     draft: false,
     authorType: "User",
     ...liveOverrides,
-  });
+  };
+  const resolveWorkflowRunPullRequestBinding = vi
+    .fn()
+    .mockResolvedValue(livePullRequest);
+  const resolveWorkflowRunPullRequest = vi
+    .fn()
+    .mockResolvedValue(livePullRequest.pullRequestNumber);
   const acquirePrelease = vi.fn().mockResolvedValue({
     status: "preleased",
     leaseId: "lease:certified-fork-v5",
@@ -70,6 +76,26 @@ function dependencies(
     currentGeneration: 1,
     mutationEpoch: 1n,
   });
+  const promptPacket = {
+    protocolVersion: 1 as const,
+    contextHash: "d".repeat(64),
+    repository: {
+      base: repository.fullName,
+      source: forkReviewBinding.sourceRepository,
+    },
+    pullRequestNumber: 42,
+    baseSha,
+    headSha,
+    files: [
+      {
+        path: "src/a.ts",
+        status: "modified" as const,
+        additions: 1,
+        deletions: 0,
+        patch: "@@",
+      },
+    ],
+  };
   return {
     oidcVerifier: {
       verify: vi.fn().mockResolvedValue({
@@ -109,11 +135,42 @@ function dependencies(
     codexRotatingWorkflowSourceVerifier: {
       verifyWorkflowSource: vi.fn().mockResolvedValue({ binding }),
       resolveWorkflowRunPullRequestBinding,
+      resolveWorkflowRunPullRequest,
     },
     replayNonces: { tryConsumeNonce: vi.fn().mockResolvedValue(true) },
+    certifiedForkReviewAdmission: { assertEnabled: vi.fn() },
+    certifiedForkReviewPreleaseGateway: {
+      prepareContext: vi.fn().mockImplementation(async ({ binding }) => {
+        if (
+          livePullRequest.baseRepository !== binding.baseRepository ||
+          livePullRequest.baseRepositoryId !== binding.baseRepositoryId ||
+          livePullRequest.sourceRepository !== binding.sourceRepository ||
+          livePullRequest.sourceRepositoryId !== binding.sourceRepositoryId ||
+          livePullRequest.sourceVisibility !== "public" ||
+          livePullRequest.pullRequestNumber !== binding.pullRequestNumber ||
+          livePullRequest.reviewHeadSha !== binding.reviewHeadSha ||
+          livePullRequest.baseSha !== binding.baseSha ||
+          livePullRequest.draft ||
+          livePullRequest.authorType === "Bot"
+        )
+          throw new Error("codex_rotating_fork_pull_request_identity_mismatch");
+        return {
+          contextHash: promptPacket.contextHash,
+          promptPacket,
+        };
+      }),
+    },
+    certifiedForkReviewClaims: {
+      claimPrelease: vi.fn().mockResolvedValue({ status: "ready" }),
+      abandonPrelease: vi.fn(),
+      claimPrepare: vi.fn(),
+      beginPublish: vi.fn(),
+      completePublished: vi.fn(),
+    },
     codexRotatingNewWorkAdmission: { assertAdmitted: vi.fn() },
     clock: { now: () => now },
     resolveWorkflowRunPullRequestBinding,
+    resolveWorkflowRunPullRequest,
     acquirePrelease,
   };
 }
@@ -138,7 +195,7 @@ describe("certified fork V5 prelease", () => {
       leaseId: "lease:certified-fork-v5",
       repository: repository.fullName,
     });
-    expect(deps.resolveWorkflowRunPullRequestBinding).toHaveBeenCalledWith({
+    expect(deps.resolveWorkflowRunPullRequest).toHaveBeenCalledWith({
       repository,
       githubRunId: "9001",
       githubRunAttempt: "1",

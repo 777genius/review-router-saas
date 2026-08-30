@@ -242,6 +242,7 @@ export async function preleaseCodexRotatingOAuth(
     (await resolvePullRequestNumber({
       claims,
       repository,
+      workflowSchemaVersion: input.workflowSchemaVersion,
       workflowSourceVerifier: dependencies.codexRotatingWorkflowSourceVerifier,
     }));
   const intentRequired =
@@ -381,10 +382,14 @@ async function resolveCertifiedForkReviewPrelease(input: {
   if (!input.gateway)
     throw new Error("certified_fork_prelease_gateway_unavailable");
   if (input.claims.event_name === "pull_request_target") {
-    const resolved = await resolvePullRequestNumber({
-      claims: input.claims,
+    const resolve = input.workflowSourceVerifier.resolveWorkflowRunPullRequest;
+    if (!resolve)
+      throw new Error("codex_rotating_workflow_run_resolver_unavailable");
+    const resolved = await resolve.call(input.workflowSourceVerifier, {
       repository: input.repository,
-      workflowSourceVerifier: input.workflowSourceVerifier,
+      githubRunId: input.claims.run_id,
+      githubRunAttempt: input.claims.run_attempt,
+      eventName: input.claims.event_name,
     });
     if (resolved !== input.binding.pullRequestNumber)
       throw new Error("certified_fork_prelease_identity_mismatch");

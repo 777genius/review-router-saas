@@ -398,6 +398,7 @@ export class HmacCertifiedForkReviewTickets implements CertifiedForkReviewTicket
 
 export class StrictCertifiedForkReviewOutput implements CertifiedForkReviewOutputPort {
   render(input: Parameters<CertifiedForkReviewOutputPort["render"]>[0]) {
+    assertCertifiedForkLineBudget(input.modelOutput);
     const artifact = createReviewFindingsArtifactFromModelOutput({
       generatedAt: input.generatedAt,
       modelOutput: input.modelOutput,
@@ -435,10 +436,43 @@ export class StrictCertifiedForkReviewOutput implements CertifiedForkReviewOutpu
         );
     }
     const body = lines.filter((line) => line !== "").join("\n");
-    if (Buffer.byteLength(body, "utf8") > 60_000)
-      throw new Error("certified_fork_model_output_invalid");
-    return { body };
+    return { body: boundRenderedReviewBody(body) };
   }
+}
+
+function assertCertifiedForkLineBudget(modelOutput: unknown): void {
+  if (!record(modelOutput) || !Array.isArray(modelOutput.findings)) return;
+  for (const finding of modelOutput.findings) {
+    if (!record(finding)) continue;
+    for (const key of ["startLine", "endLine"] as const) {
+      const line = finding[key];
+      if (line !== undefined && line !== null && Number(line) > 1_000_000)
+        throw new Error("certified_fork_model_output_invalid");
+    }
+  }
+}
+
+const certifiedForkRenderedBodyMaxBytes = 59_500;
+const certifiedForkTruncationNotice =
+  "\n\n_Output truncated to GitHub comment budget._";
+
+function boundRenderedReviewBody(value: string): string {
+  if (Buffer.byteLength(value, "utf8") <= certifiedForkRenderedBodyMaxBytes)
+    return value;
+  const noticeBytes = Buffer.byteLength(certifiedForkTruncationNotice, "utf8");
+  return `${truncateUtf8(value, certifiedForkRenderedBodyMaxBytes - noticeBytes)}${certifiedForkTruncationNotice}`;
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  let bytes = 0;
+  let result = "";
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (bytes + characterBytes > maxBytes) break;
+    result += character;
+    bytes += characterBytes;
+  }
+  return result.trimEnd();
 }
 function safeEqual(left: string, right: string) {
   const a = Buffer.from(left);
