@@ -1,0 +1,44 @@
+{
+  "status": "done",
+  "changedFiles": [
+    "REVIEW_V29.md"
+  ],
+  "evidence": [
+    "safe_execution_status:completed",
+    "output_summary:{\n  \"status\": \"done\",\n  \"provider\": \"codex\",\n  \"auditedSha\": \"7459b6d4fd8aab5c377547246292faf3376d98cb\",\n  \"inputHashes\": [\n    {\n      \"path\": \"/reviewrouter-v140-input-20260830/activation-catalog-policy-candidate-1.json\",\n      \"bytes\": 2651682,\n      \"sha256\": \"b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28\"\n    },\n    {\n      \"path\": \"/reviewrouter-v140-input-20260830/activation-catalog-policy-candidate-2.json\",\n      \"bytes\": 2651682,\n      \"sha256\": \"b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28\"\n    }\n  ],\n  \"changedFiles\": [\n    \"REVIEW_V29.md\"\n  ],\n  \"blockers\": [],\n  \"outputSummary\": \"Verdict GO under decision RR-V29-CODEX-GO-7459B6D4-B138EB3E-20260830, limited exclusively to exact-byte mechanical promotion. Two nonblocking P2 convergence requirements must be completed atomically before rehearsal or release.\",\n  \"goalUsage\": {\n    \"tokensUsed\": 370843,\n    \"elapsedSeconds\": 1114\n  }\n}",
+    "attempt_count:1",
+    "patch_preserved:/root/.cache/subscription-runtime/rrv140policy3-review-r1/rrv140policy3-review-r1.b29b77e1dc73e0ae4298494c797e61fa1c94552b512897e99a46f849ba404e5b.handoff.patch",
+    "patch_preserved:/root/.cache/subscription-runtime/rrv140policy3-review-r1/rrv140policy3-review-r1.b29b77e1dc73e0ae4298494c797e61fa1c94552b512897e99a46f849ba404e5b.handoff.summary.json",
+    "patch_preserved:/root/.cache/subscription-runtime/rrv140policy3-review-r1/rrv140policy3-review-r1.b29b77e1dc73e0ae4298494c797e61fa1c94552b512897e99a46f849ba404e5b.handoff.manifest.json"
+  ],
+  "blockers": [],
+  "nextAction": "review_completed",
+  "schemaVersion": 1,
+  "provider": "codex",
+  "runId": "rrv140policy3-review-r1",
+  "taskId": "rrv140policy3-review-r1",
+  "details": {
+    "baseCommit": "7459b6d4fd8aab5c377547246292faf3376d98cb"
+  },
+  "artifacts": [
+    {
+      "kind": "patch",
+      "path": "/root/.cache/subscription-runtime/rrv140policy3-review-r1/rrv140policy3-review-r1.b29b77e1dc73e0ae4298494c797e61fa1c94552b512897e99a46f849ba404e5b.handoff.patch",
+      "byteLength": 24337,
+      "sha256": "b29b77e1dc73e0ae4298494c797e61fa1c94552b512897e99a46f849ba404e5b"
+    },
+    {
+      "kind": "summary",
+      "path": "/root/.cache/subscription-runtime/rrv140policy3-review-r1/rrv140policy3-review-r1.b29b77e1dc73e0ae4298494c797e61fa1c94552b512897e99a46f849ba404e5b.handoff.summary.json",
+      "byteLength": 688,
+      "sha256": "9363f8c26d75f4708d058858524cc09b301332ab28a220d14e565aa8b2e7d3e9"
+    },
+    {
+      "kind": "manifest",
+      "path": "/root/.cache/subscription-runtime/rrv140policy3-review-r1/rrv140policy3-review-r1.b29b77e1dc73e0ae4298494c797e61fa1c94552b512897e99a46f849ba404e5b.handoff.manifest.json",
+      "byteLength": 1221,
+      "sha256": "05755c701861e209cc03e50aa98503baa6a7c367ab8df4477f3444155b07b4fa"
+    }
+  ],
+  "updatedAt": "2026-08-30T09:58:12.982Z"
+}

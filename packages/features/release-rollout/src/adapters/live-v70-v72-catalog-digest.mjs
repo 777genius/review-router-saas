@@ -4,15 +4,51 @@
  */
 import { canonicalReleaseMigrationArtifact } from "../domain/release-migration-transition.ts";
 
-const dynamicWriteAclPrincipals = Object.freeze([
+const phaseVaryingApplicationAclPrincipals = Object.freeze([
   "reviewrouter_api",
   "reviewrouter_web",
   "reviewrouter_worker",
 ]);
-// Runtime write bits vary with the ACL gate and are attested by its policy proof.
-const dynamicWriteAclPrincipalSql = dynamicWriteAclPrincipals
-  .map((principal) => `'${principal}'`)
-  .join(",");
+const phaseVaryingApplicationAclPrincipalSql =
+  phaseVaryingApplicationAclPrincipals
+    .map((principal) => `'${principal}'`)
+    .join(",");
+const phaseVaryingApplicationInsertUpdateRelations = Object.freeze([
+  "CodexOAuthWritebackIntent",
+  "GitHubInstallation",
+  "HostedCodexCommentRefreshCapability",
+  "HostedCodexCommentRefreshUse",
+  "HostedCodexInvocationGrant",
+  "HostedCodexPool",
+  "HostedCodexRepositoryBinding",
+]);
+const phaseVaryingApplicationInsertUpdateRelationSql =
+  phaseVaryingApplicationInsertUpdateRelations
+    .map((relation) => `'${relation}'`)
+    .join(",");
+const phaseVaryingApplicationDeleteRelationSql =
+  phaseVaryingApplicationInsertUpdateRelations
+    .filter((relation) => relation !== "CodexOAuthWritebackIntent")
+    .map((relation) => `'${relation}'`)
+    .join(",");
+
+// Only these reviewed ACL tuples vary between preactivation and activated.
+// Every other write bit is phase-stable and therefore remains digest-visible.
+const phaseVaryingRelationPrivilegePatternSql = `CASE
+              WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'
+                AND split_part(v::text,'=',1) IN (${phaseVaryingApplicationAclPrincipalSql})
+                AND relname IN (${phaseVaryingApplicationDeleteRelationSql})
+              THEN '[awd]'
+              WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'
+                AND split_part(v::text,'=',1) IN (${phaseVaryingApplicationAclPrincipalSql})
+                AND relname IN (${phaseVaryingApplicationInsertUpdateRelationSql})
+              THEN '[aw]'
+              WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'
+                AND split_part(v::text,'=',1)='reviewrouter_comment_token_custody'
+                AND relname='HostedCodexCommentRefreshUse'
+              THEN '[a]'
+              ELSE NULL
+            END`;
 
 export const fencedLiveV70V73CatalogDigestSql = `
 WITH selected_relations AS (
@@ -34,8 +70,23 @@ WITH selected_relations AS (
       'type',pg_catalog.format_type(a.atttypid,a.atttypmod),
       'nullable',NOT a.attnotnull,
       'default',pg_catalog.pg_get_expr(d.adbin,d.adrelid),
-      'acl',coalesce((SELECT jsonb_agg(v::text ORDER BY v::text COLLATE "C")
-        FROM unnest(a.attacl) v),'[]'::jsonb),
+      'acl',coalesce((SELECT jsonb_agg(
+        normalized_acl.entry ORDER BY normalized_acl.entry COLLATE "C")
+        FROM (
+          SELECT CASE
+            WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'
+              AND split_part(v::text,'=',1)='reviewrouter_comment_token_custody'
+              AND r.relname='HostedCodexCommentRefreshCapability'
+              AND a.attname IN ('useCount','lastUsedAt','revision','updatedAt')
+            THEN split_part(v::text,'=',1)||'='||pg_catalog.regexp_replace(
+              split_part(split_part(v::text,'/',1),'=',2),'[w]','','g'
+            )||'/'||split_part(v::text,'/',2)
+            ELSE v::text
+          END AS entry
+          FROM unnest(a.attacl) v
+        ) normalized_acl
+        WHERE split_part(split_part(normalized_acl.entry,'/',1),'=',2)<>''
+      ),'[]'::jsonb),
       'collation',CASE WHEN a.attcollation=0 THEN NULL
         ELSE a.attcollation::regcollation::text END,
       'identity',a.attidentity,'generated',a.attgenerated,
@@ -76,15 +127,17 @@ WITH selected_relations AS (
         normalized_acl.entry ORDER BY normalized_acl.entry COLLATE "C")
         FROM (
           SELECT CASE
-            WHEN relname='CodexOAuthWritebackIntent'
-              AND split_part(v::text,'=',1) IN (${dynamicWriteAclPrincipalSql})
+            WHEN (${phaseVaryingRelationPrivilegePatternSql}) IS NOT NULL
             THEN split_part(v::text,'=',1)||'='||pg_catalog.regexp_replace(
-              split_part(split_part(v::text,'/',1),'=',2),'[awdD]','','g'
+              split_part(split_part(v::text,'/',1),'=',2),
+              (${phaseVaryingRelationPrivilegePatternSql}),'','g'
             )||'/'||split_part(v::text,'/',2)
             ELSE v::text
           END AS entry
           FROM unnest(relacl) v
-        ) normalized_acl),'[]'::jsonb)) ORDER BY relname COLLATE "C")
+        ) normalized_acl
+        WHERE split_part(split_part(normalized_acl.entry,'/',1),'=',2)<>''
+      ),'[]'::jsonb)) ORDER BY relname COLLATE "C")
       FROM selected_relations),'[]'::jsonb),
     'schemas',coalesce((SELECT jsonb_agg(jsonb_build_object(
       'name',n.nspname,'owner',pg_catalog.pg_get_userbyid(n.nspowner),
@@ -194,16 +247,8 @@ WITH selected_relations AS (
 SELECT 'sha256:'||encode(pg_catalog.sha256(convert_to(value::text,'UTF8')),'hex')
 FROM facts`;
 
-// This remains the last independently captured value. The projection now
-// includes the V86 custody routines, so release promotion stays on HOLD until
-// the trusted PG17 capture path replaces this value and the transition receipt
-// in one reviewed evidence batch. Do not derive a catalog digest from SQL text.
-export const liveV70V86CatalogDigestCaptureHold = Object.freeze({
-  decision: "HOLD",
-  reason: "pg17_exact_catalog_capture_required_after_v86_projection_change",
-});
 export const liveV70V73CatalogDigestSha256 =
-  "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d";
+  canonicalReleaseMigrationArtifact.postCatalogDigest;
 
 // Compatibility aliases for existing external consumers during the V73 rollout.
 export const fencedLiveV70V72CatalogDigestSql =

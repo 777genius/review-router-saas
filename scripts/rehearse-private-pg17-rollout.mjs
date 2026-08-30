@@ -189,10 +189,17 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA release_authority FROM PUBLIC;`,
 
 export const rehearsalActivationCatalogPolicyAuthorization = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:95591a9df4dd88afe9a9a10118bf11b7e5ec4694748f8262de124d5f7ba7fd59",
+    "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
   activatedCatalogPolicySha256:
-    "sha256:6c8f40abc68b063b835289d3d42f7ee07d9769baf269c5b05fb85db72c8cb3a0",
+    "sha256:cc35c6b43fe8b117a492705eeaf2ab9a9ac0e05f98546fa32ac9d340df89867b",
 });
+if (
+  rehearsalActivationCatalogPolicyAuthorization.preactivationCatalogPolicySha256 !==
+    canonicalActivationCatalogPolicyDigests.preactivationCatalogPolicySha256 ||
+  rehearsalActivationCatalogPolicyAuthorization.activatedCatalogPolicySha256 !==
+    canonicalActivationCatalogPolicyDigests.activatedCatalogPolicySha256
+)
+  throw new Error("rehearsal_activation_catalog_policy_authorization_drift");
 export const rehearsalReadinessPolicy = Object.freeze({
   poolWaitMilliseconds: 5_000,
   lockTimeoutMilliseconds: 5_000,
@@ -463,14 +470,29 @@ export async function runRehearsalReleaseMigration({
       migratedRollout.migrationTransition.postCatalogDigest
   )
     throw new Error("private_pg17_rehearsal_phase_transition_unproven");
-  if (captureOnly)
+  if (captureOnly) {
+    const policyCandidate = await runStage(
+      "capture_activation_catalog_policy",
+      captureCandidate,
+    );
+    if (
+      policyCandidate?.kind !==
+        "reviewrouter-activation-catalog-policy-artifact-candidate" ||
+      policyCandidate.version !== 1 ||
+      !/^sha256:[a-f0-9]{64}$/u.test(migrationReceipt.postCatalogDigest)
+    )
+      throw new Error(
+        "activation_catalog_policy_candidate_migration_binding_invalid",
+      );
     return Object.freeze({
       mode: "capture-only",
-      candidate: await runStage(
-        "capture_activation_catalog_policy",
-        captureCandidate,
-      ),
+      candidate: Object.freeze({
+        ...policyCandidate,
+        version: 2,
+        liveCatalogDigest: migrationReceipt.postCatalogDigest,
+      }),
     });
+  }
   return routeRehearsalAfterReleaseMigration({
     captureOnly: undefined,
     captureCandidate,
@@ -807,7 +829,7 @@ export const disposableSqlConfiguration = () => ({
  * before Prisma applies the retained baseline. Target role bootstrap remains
  * a separate, post-copy operation.
  */
-export function disposablePreReleaseAuthorityRoleTopologySql() {
+export function disposablePg16SourceAuthorityRoleFoundationSql() {
   return `CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE reviewrouter_release_schema_owner
@@ -1040,6 +1062,7 @@ CREATE ROLE reviewrouter_worker LOGIN PASSWORD 'disposable-worker';
 CREATE ROLE reviewrouter_comment_token_custody LOGIN PASSWORD 'disposable-custody';
 CREATE ROLE reviewrouter_codex_effect_authority LOGIN PASSWORD 'disposable-effect';
 CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release';
+CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN;
 CREATE ROLE reviewrouter_activation_permit_installer LOGIN PASSWORD 'disposable-installer';
 CREATE ROLE reviewrouter_activation_receipt_reader LOGIN PASSWORD 'disposable-receipt-reader';
@@ -1500,7 +1523,7 @@ export async function executeDisposableRehearsal(
     // Retained migrations observe the live SaaS authority pair. Provision it
     // before migration deployment so the disposable source cannot silently
     // take a baseline/self-hosted branch that production would never take.
-    sql(source, disposablePreReleaseAuthorityRoleTopologySql());
+    sql(source, disposablePg16SourceAuthorityRoleFoundationSql());
     const sourceMigration = spawnSync(
       "pnpm",
       [

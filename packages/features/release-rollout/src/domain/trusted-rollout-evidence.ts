@@ -350,6 +350,8 @@ export interface TrustedRolloutEvidence {
 
 const digest = /^sha256:[a-f0-9]{64}$/u;
 const sha = /^[a-f0-9]{40}$/u;
+const secretValue =
+  /(?:\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|rediss):\/\/)|(?:-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----)|(?:\bbearer\s+[A-Za-z0-9._~+/=-]+)|(?:\b(?:password|passwd|pwd|token|access[_ -]?token|refresh[_ -]?token|id[_ -]?token|client[_ -]?secret|api[_ -]?key)\s*[:=]\s*[^\s,;]+)|(?:\bgh[pousr]_[A-Za-z0-9]{20,}\b)|(?:\bgithub_pat_[A-Za-z0-9_]{20,}\b)|(?:\bsk-[A-Za-z0-9_-]{20,}\b)/iu;
 const timestamp = (value: string): boolean => {
   try {
     return new Date(value).toISOString() === value;
@@ -360,6 +362,59 @@ const timestamp = (value: string): boolean => {
 const exact = (value: object, keys: readonly string[]): boolean =>
   Object.keys(value).length === keys.length &&
   keys.every((key) => Object.hasOwn(value, key));
+
+const secretBearingKey = (key: string): boolean => {
+  const words = key
+    .replace(/([A-Z]+)([A-Z][a-z])/gu, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter(Boolean);
+  const hasPair = (left: string, right: string): boolean =>
+    words.some((word, index) => word === left && words[index + 1] === right);
+  return (
+    words.some((word) =>
+      [
+        "password",
+        "passwd",
+        "pwd",
+        "token",
+        "secret",
+        "authorization",
+        "credential",
+        "credentials",
+        "dsn",
+      ].includes(word),
+    ) ||
+    hasPair("api", "key") ||
+    hasPair("private", "key") ||
+    hasPair("database", "url") ||
+    hasPair("connection", "string")
+  );
+};
+
+const containsSecret = (
+  value: unknown,
+  path: readonly (string | number)[] = [],
+): boolean => {
+  if (typeof value === "string") return secretValue.test(value);
+  if (Array.isArray(value))
+    return value.some((entry, index) =>
+      containsSecret(entry, [...path, index]),
+    );
+  if (value === null || typeof value !== "object") return false;
+  return Object.entries(value).some(
+    ([key, entry]) =>
+      !(
+        key === "credentialProcessGone" &&
+        entry === true &&
+        path.length === 2 &&
+        path[0] === "cleanups" &&
+        typeof path[1] === "number"
+      ) &&
+      (secretBearingKey(key) || containsSecret(entry, [...path, key])),
+  );
+};
 
 export function assembleTrustedRolloutEvidence(
   value: Omit<TrustedRolloutEvidence, "schemaVersion" | "evidenceSha256">,
@@ -383,6 +438,8 @@ export function assertTrustedRolloutEvidence(
   trustedImagePolicy: TrustedReleaseImagePolicy,
   trustedWitnessPolicy: TrustedReleaseWitnessVerificationPolicy,
 ): TrustedRolloutEvidence {
+  if (containsSecret(value))
+    throw new Error("trusted_rollout_evidence_contains_secret");
   assertLegacyAmbiguityEvidence(value.quiescence.legacyAmbiguity);
   if (
     !exact(value, [
@@ -826,11 +883,5 @@ export function assertTrustedRolloutEvidence(
   const { evidenceSha256, ...unsigned } = value;
   if (evidenceSha256 !== `sha256:${sha256Canonical(unsigned)}`)
     throw new Error("trusted_rollout_evidence_digest_mismatch");
-  if (
-    /postgres(?:ql)?:\/\/|BEGIN [A-Z ]*PRIVATE KEY|password|token/iu.test(
-      canonicalJson(value),
-    )
-  )
-    throw new Error("trusted_rollout_evidence_contains_secret");
   return value;
 }

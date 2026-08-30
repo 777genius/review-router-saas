@@ -2849,8 +2849,8 @@ BEGIN
                AND column_facts.relname='HostedCodexCommentRefreshCapability'
                AND column_facts.attname=ANY(ARRAY['useCount','lastUsedAt','revision','updatedAt'])
              THEN true
-             WHEN column_facts.role_kind <> 'effect-authority'
-               AND column_facts.relname='CodexOAuthProviderInstance'
+            WHEN column_facts.role_kind NOT IN ('effect-authority','custody')
+              AND column_facts.relname='CodexOAuthProviderInstance'
                AND column_facts.attname=ANY(ARRAY[${providerRuntimeUpdateColumns.map((column) => `'${column}'`).join(",")}])
              THEN true
              ELSE table_facts.can_update
@@ -2918,6 +2918,14 @@ BEGIN
          LATERAL aclexplode(coalesce((SELECT relacl FROM pg_class WHERE oid=tables.oid),
            acldefault('r',(SELECT relowner FROM pg_class WHERE oid=tables.oid)))) acl
          WHERE acl.is_grantable
+           AND acl.grantee IN (SELECT oid FROM pg_roles WHERE rolname=ANY(ARRAY[
+             'reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority'])))
+       OR EXISTS (SELECT 1 FROM pg_attribute attribute
+         CROSS JOIN LATERAL aclexplode(attribute.attacl) acl
+         WHERE attribute.attacl IS NOT NULL
+           AND attribute.attrelid IN (SELECT oid FROM tables)
+           AND attribute.attnum>0 AND NOT attribute.attisdropped
+           AND acl.is_grantable
            AND acl.grantee IN (SELECT oid FROM pg_roles WHERE rolname=ANY(ARRAY[
              'reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority'])))
        OR EXISTS (SELECT 1 FROM routines,

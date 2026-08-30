@@ -19,6 +19,9 @@ const expected: ActivationCatalogPolicyPromotionExpectation = {
   reviewDecisionId: "rr-policy-review-v21:go",
   candidateBytes: 42,
   candidateSha256: "b".repeat(64),
+  liveCatalogDigest: `sha256:${"7".repeat(64)}`,
+  liveCatalogProjectionSourceSha256: "8".repeat(64),
+  normalizationSourceSha256: "9".repeat(64),
   sourcePg16Image: `postgres:16.13-bookworm@sha256:${"c".repeat(64)}`,
   targetPg17Image: `postgres:17.5-bookworm@sha256:${"d".repeat(64)}`,
   preactivationCatalogPolicySha256: `sha256:${"e".repeat(64)}`,
@@ -28,7 +31,7 @@ const expected: ActivationCatalogPolicyPromotionExpectation = {
 
 const ready = () => ({
   kind: "reviewrouter-activation-catalog-policy-promotion-provenance",
-  version: 3,
+  version: 5,
   status: "ready",
   readinessReason: expected.readinessReason,
   promotedAt: "2026-08-15T10:31:00.000Z",
@@ -36,6 +39,7 @@ const ready = () => ({
   candidate: {
     bytes: expected.candidateBytes,
     sha256: expected.candidateSha256,
+    liveCatalogDigest: expected.liveCatalogDigest,
     captures: [
       {
         label: "capture-a",
@@ -65,6 +69,12 @@ const ready = () => ({
     preactivation: expected.preactivationCatalogPolicySha256,
     activated: expected.activatedCatalogPolicySha256,
     artifact: expected.artifactCanonicalSha256,
+    liveCatalogDigest: expected.liveCatalogDigest,
+  },
+  reviewedSources: {
+    liveCatalogProjectionSourceSha256:
+      expected.liveCatalogProjectionSourceSha256,
+    normalizationSourceSha256: expected.normalizationSourceSha256,
   },
   independentReview: {
     result: "GO",
@@ -85,6 +95,12 @@ const ready = () => ({
       preactivation: expected.preactivationCatalogPolicySha256,
       activated: expected.activatedCatalogPolicySha256,
       artifact: expected.artifactCanonicalSha256,
+      liveCatalogDigest: expected.liveCatalogDigest,
+    },
+    reviewedSources: {
+      liveCatalogProjectionSourceSha256:
+        expected.liveCatalogProjectionSourceSha256,
+      normalizationSourceSha256: expected.normalizationSourceSha256,
     },
   },
 });
@@ -103,6 +119,63 @@ describe("activation catalog policy promotion provenance", () => {
   });
 
   it.each([
+    [
+      "legacy schema v4",
+      (value: ReturnType<typeof ready>) => {
+        value.version = 4;
+      },
+    ],
+    [
+      "candidate live catalog digest drift",
+      (value: ReturnType<typeof ready>) => {
+        value.candidate.liveCatalogDigest = `sha256:${"0".repeat(64)}`;
+      },
+    ],
+    [
+      "malformed candidate live catalog digest",
+      (value: ReturnType<typeof ready>) => {
+        value.candidate.liveCatalogDigest = "not-a-sha256";
+      },
+    ],
+    [
+      "top-level live catalog digest drift",
+      (value: ReturnType<typeof ready>) => {
+        value.canonicalDigests.liveCatalogDigest = `sha256:${"0".repeat(64)}`;
+      },
+    ],
+    [
+      "independent-review live catalog digest drift",
+      (value: ReturnType<typeof ready>) => {
+        value.independentReview.canonicalDigests.liveCatalogDigest = `sha256:${"0".repeat(64)}`;
+      },
+    ],
+    [
+      "malformed top-level live catalog digest",
+      (value: ReturnType<typeof ready>) => {
+        value.canonicalDigests.liveCatalogDigest = `sha256:${"A".repeat(64)}`;
+      },
+    ],
+    [
+      "malformed independent-review canonical digest",
+      (value: ReturnType<typeof ready>) => {
+        value.independentReview.canonicalDigests.artifact = "not-a-sha256";
+      },
+    ],
+    [
+      "reviewed projection source drift",
+      (value: ReturnType<typeof ready>) => {
+        value.reviewedSources.liveCatalogProjectionSourceSha256 = "0".repeat(
+          64,
+        );
+      },
+    ],
+    [
+      "independent-review normalization source drift",
+      (value: ReturnType<typeof ready>) => {
+        value.independentReview.reviewedSources.normalizationSourceSha256 =
+          "0".repeat(64);
+      },
+    ],
     [
       "audited head drift",
       (value: ReturnType<typeof ready>) => {

@@ -178,6 +178,7 @@ export const canonicalActivationPrincipalNames = Object.freeze([
   "reviewrouter_activation_receipt_reader",
   "reviewrouter_api",
   "reviewrouter_codex_effect_authority",
+  "reviewrouter_comment_token_custody",
   "reviewrouter_release_migration",
   "reviewrouter_release_schema_owner",
   "reviewrouter_role_bootstrap",
@@ -189,6 +190,7 @@ export const canonicalActivationPrincipalNames = Object.freeze([
 export const canonicalBootstrapMembershipRoleNames = Object.freeze([
   "reviewrouter_api",
   "reviewrouter_codex_effect_authority",
+  "reviewrouter_comment_token_custody",
   "reviewrouter_release_migration",
   "reviewrouter_web",
   "reviewrouter_worker",
