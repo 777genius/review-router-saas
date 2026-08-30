@@ -177,6 +177,41 @@ describe("Codex rotating release migration workflow", () => {
     expect(registerRelease).toContain("deployment-result.json");
   });
 
+  it("reconciles an accepted deploy without blindly repeating the mutation", () => {
+    const deployMutation = registerRelease.slice(
+      registerRelease.indexOf("render_deploy_mutation()"),
+      registerRelease.indexOf("close_firewall()"),
+    );
+    const createCalls = registerRelease.match(
+      /render_deploy_mutation -X POST/gu,
+    );
+
+    expect(deployMutation).not.toContain("--retry");
+    expect(createCalls).toHaveLength(1);
+    expect(registerRelease).toContain(
+      'before_deploy_id="$(\n              jq -er --arg serviceId "$service_id"',
+    );
+    expect(registerRelease).toContain(
+      "deploy_intent_at=\"$(node -e 'process.stdout.write(new Date().toISOString())')\"",
+    );
+    expect(registerRelease).toContain("deploys?limit=20");
+    expect(registerRelease).toContain('[[ "$deploy_id" =~ ^dep-[a-z0-9-]+$ ]]');
+    expect(registerRelease).toContain(".[0].deployId == $beforeDeployId");
+    expect(registerRelease).toContain(
+      "($beforeDeployIds | index($id)) == null",
+    );
+    expect(registerRelease).toContain(
+      "== $releaseCommitSha\n                          )",
+    );
+    expect(registerRelease).toContain(">= ($intentEpoch - 5)");
+    expect(registerRelease).toContain("candidate_count > 1");
+    expect(registerRelease).toContain(
+      "reconciliation_deadline=$((SECONDS + 120))",
+    );
+    expect(registerRelease).toContain("deploy-creation-evidence.json");
+    expect(registerRelease).toContain("deploy-reconciliation-$service_id.json");
+  });
+
   it("allows absent pending commit metadata but requires exact live metadata", () => {
     expect(registerRelease).toContain(
       '(.commit.id // .commit.sha // .commitId // "")',

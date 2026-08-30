@@ -298,11 +298,12 @@ The Blueprint creates the database container with
 dispatch the protected
 `.github/workflows/codex-rotating-role-bootstrap.yml` workflow when role
 provisioning is required, then dispatch the checked-in
-`.github/workflows/codex-rotating-release-migration.yml` workflow at the exact
-release commit with a new, never-reused rollout ID. Both workflows use the same
-repository-wide, non-cancelling concurrency group, so their database mutations
-cannot overlap. Bootstrap alone receives its protected external direct URL; the
-release workflow never receives it.
+`.github/workflows/codex-rotating-release-migration.yml` workflow from current
+protected `main`, passing the older exact SaaS tooling/deployment commit through
+`release_commit_sha`. Both workflows use the same repository-wide,
+non-cancelling concurrency group, so their database mutations cannot overlap.
+Bootstrap alone receives its protected external direct URL; the release workflow
+never receives it.
 
 The release workflow is the only supported migration initiator. From its
 checkout at exact `release_commit_sha`, it runs the checked-in canonical
@@ -323,15 +324,18 @@ only by verified producer-release registration. Registration first requires the
 current live API, worker, and web deploy identities to equal the SaaS release
 commit. It updates the attestation environment, then deploys all three services
 with explicit `commitId: release_commit_sha`. Pending Render responses may omit
-commit metadata, but a `live` response must report the exact commit. After all
-three exact deploy IDs reach `live`, the workflow re-reads each service's latest
-deploy and requires it to still be that same deploy ID and commit; a newer
-queued, running, or live deploy fails the gate. An environment update by itself
-is not rollout evidence. Keep `open_global_emergency` disabled by default. Set it
-only during an explicit cutover to open the database-backed Review v2 kill switch
-through the same ephemeral authenticated maintenance process. The workflow
-records the sanitized control result and never persists the plaintext operator
-credential.
+commit metadata, but a `live` response must report the exact commit. A successful
+deploy mutation response without an ID is never replayed: the workflow performs
+a bounded read-only reconciliation against the prior deploy ID, mutation time,
+service identity, and exact commit, and fails on zero or multiple candidates.
+After all three exact deploy IDs reach `live`, the workflow re-reads each
+service's latest deploy and requires it to still be that same deploy ID and
+commit; a newer queued, running, or live deploy fails the gate. An environment
+update by itself is not rollout evidence. Keep `open_global_emergency` disabled
+by default. Set it only during an explicit cutover to open the database-backed
+Review v2 kill switch through the same ephemeral authenticated maintenance
+process. The workflow records the sanitized control result and never persists
+the plaintext operator credential.
 
 The bootstrap caller creates or converges login roles
 `reviewrouter_web`, `reviewrouter_api`, and `reviewrouter_worker`, then verifies
