@@ -590,6 +590,97 @@ const hostedPoolFlags = Object.freeze([
   "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER",
 ]);
 
+export const codexForkReviewV5RuntimeEnvNames = Object.freeze([
+  "REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5",
+  "REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES",
+]);
+
+function normalizeForkReviewV5Repository(value) {
+  const normalized = String(value).trim().toLowerCase();
+  if (
+    !/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9_.-]{1,100}$/u.test(
+      normalized,
+    )
+  ) {
+    throw new Error(
+      "REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES must contain canonical GitHub owner/repository names",
+    );
+  }
+  return normalized;
+}
+
+export function codexForkReviewV5RuntimeEnv(env) {
+  const hasEnabled = Object.hasOwn(
+    env,
+    "REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5",
+  );
+  const hasRepositories = Object.hasOwn(
+    env,
+    "REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES",
+  );
+  if (hasEnabled !== hasRepositories) {
+    throw new Error(
+      "fork review V5 gate and repository cohort must be supplied together",
+    );
+  }
+  const enabled =
+    env.REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5 === undefined
+      ? "0"
+      : String(env.REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5);
+  if (enabled !== "0" && enabled !== "1") {
+    throw new Error(
+      "REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5 must be exactly 0 or 1",
+    );
+  }
+  const repositories = [
+    ...new Set(
+      String(env.REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES ?? "")
+        .trim()
+        .split(/[\s,]+/u)
+        .filter(Boolean)
+        .map(normalizeForkReviewV5Repository),
+    ),
+  ].sort();
+  if (enabled === "1" && repositories.length === 0) {
+    throw new Error(
+      "REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES must be non-empty when fork review V5 is enabled",
+    );
+  }
+  return {
+    REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5: enabled,
+    REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES: repositories.join(","),
+  };
+}
+
+export function assertCodexForkReviewV5CanaryNotImplicitlyReset(
+  source,
+  observed,
+) {
+  const current = codexForkReviewV5RuntimeEnv(observed);
+  if (current.REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5 !== "1") return;
+  if (
+    !Object.hasOwn(source, "REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5") ||
+    !Object.hasOwn(source, "REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES")
+  ) {
+    throw new Error(
+      "active fork review V5 canary requires an explicit gate and repository cohort for full Render environment convergence",
+    );
+  }
+}
+
+export function assertCodexForkReviewV5EnvConvergence(...roleEnvironments) {
+  const expected = JSON.stringify(
+    codexForkReviewV5RuntimeEnv(roleEnvironments[0] ?? {}),
+  );
+  for (const roleEnvironment of roleEnvironments.slice(1)) {
+    if (
+      JSON.stringify(codexForkReviewV5RuntimeEnv(roleEnvironment)) !== expected
+    ) {
+      throw new Error("fork review V5 API/worker/web environment drift");
+    }
+  }
+}
+
 export function hostedPoolRuntimeEnvForRole(env, role) {
   const release = {
     REVIEW_ROUTER_HOSTED_POOL_ACTION_TAG: requiredEnv(
@@ -977,6 +1068,7 @@ export function buildServiceEnv({
     REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES:
       env.REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES ?? "",
     REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED: "0",
+    ...codexForkReviewV5RuntimeEnv(env),
     REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES:
       env.REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES ?? "",
     REVIEW_ROUTER_MAX_REPOSITORIES_PER_SYNC: "250",
@@ -1303,6 +1395,13 @@ export async function syncService(client, service, spec, common) {
     databaseUrl: common.databaseUrls[spec.role],
     role: spec.role,
   });
+  const observedEnvBeforePut = renderEnvVars(
+    await client.request("GET", `/services/${service.id}/env-vars?limit=100`),
+  );
+  assertCodexForkReviewV5CanaryNotImplicitlyReset(
+    common.env,
+    observedEnvBeforePut,
+  );
   await client.request("PUT", `/services/${service.id}/env-vars`, expectedEnv);
   return verifyServiceEnvConvergence(client, service, expectedEnv);
 }
@@ -1327,6 +1426,19 @@ function renderEnvVars(value) {
       ];
     }),
   );
+}
+
+export async function preflightCodexForkReviewV5CanaryConvergence(
+  client,
+  services,
+  source,
+) {
+  for (const { service } of services) {
+    const observed = renderEnvVars(
+      await client.request("GET", `/services/${service.id}/env-vars?limit=100`),
+    );
+    assertCodexForkReviewV5CanaryNotImplicitlyReset(source, observed);
+  }
 }
 
 export async function verifyServiceEnvConvergence(
@@ -2055,6 +2167,12 @@ export async function main() {
     return;
   }
 
+  // Read every role before the first full environment PUT. This prevents an
+  // omitted canary tuple from partially resetting web before API reveals that
+  // the currently deployed cohort is active. syncService repeats the check
+  // immediately before each mutation to close the read/write window.
+  await preflightCodexForkReviewV5CanaryConvergence(client, services, env);
+
   claimTrustedMigrationEvidence(
     databaseUrls.releaseMigration,
     trustedMigrationEvidence,
@@ -2073,6 +2191,11 @@ export async function main() {
   assertReviewV2ApiWorkerEnvConvergence(
     convergedEnvByRole.api,
     convergedEnvByRole.worker,
+  );
+  assertCodexForkReviewV5EnvConvergence(
+    convergedEnvByRole.api,
+    convergedEnvByRole.worker,
+    convergedEnvByRole.web,
   );
   for (const { service, spec } of services)
     await convergeImmutableRuntimeImage(client, service, spec, imageUrl);
