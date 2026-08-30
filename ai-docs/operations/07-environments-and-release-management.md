@@ -616,18 +616,22 @@ Fork-review V5 deploy input is an atomic pair:
 canonical lowercase `owner/repository` cohort. Preserve both values explicitly
 during an active canary. The exact rollback is `0` plus an empty cohort.
 
-Runtime deployment mutates environment variables only through Render's
+The V5 mutation plan contains exactly those two keys and uses only Render's
 single-key endpoint. It snapshots and immediately re-reads every target key,
 then changes that key alone; unrelated variables, including environments with
 more than 100 keys, are never rewritten. A durable provider-mutation-authority
-claim serializes all V5 mutations for the Render environment and binds the exact
-rollout phase token. Migration evidence is consumed after descriptors and all
-read-only preflight checks, immediately before the first key PUT.
+claim with a maximum 300-second lease serializes every direct V5 Render writer
+for the environment and binds the exact rollout phase token. A direct V5 writer
+that cannot validate the same authority receipt must stop for operator recovery.
+Migration evidence is consumed after descriptors and all read-only preflight
+checks, immediately before the first key PUT.
 
-A deterministic later failure rolls back already-applied keys in reverse order
-only when their current values still equal this operation's written values.
-Concurrent drift is never overwritten. A network timeout or other unknown PUT
-outcome is not inferred from an early GET and is recorded as
+A fresh exact read of both keys from API, worker, and web must match the requested
+tuple and each other immediately before authority completion. Any deterministic
+mismatch before completion rolls back already-applied keys in reverse order,
+only while the authority receipt remains valid and two adjacent exact reads still
+equal this operation's written value. Concurrent drift is never overwritten. A
+network timeout or other unknown PUT outcome is not inferred from an early GET and is recorded as
 `ambiguous_forward_repair` in provider mutation authority for operator recovery.
 Do not retry until the durable operation is reconciled. If migration evidence
 was already consumed, recovery requires new trusted evidence.

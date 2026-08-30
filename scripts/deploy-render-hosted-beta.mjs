@@ -682,32 +682,48 @@ export function assertCodexForkReviewV5EnvConvergence(...roleEnvironments) {
 }
 
 export class ForkReviewV5RolloutAuthority {
-  constructor(origin, token, request = fetch) {
+  constructor(origin, token, request = fetch, timeoutMs = 10_000) {
     if (!/^https:\/\//u.test(origin) || !token) {
       throw new Error("fork review V5 rollout authority configuration invalid");
+    }
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
+      throw new Error("fork review V5 rollout authority timeout invalid");
     }
     this.origin = origin.replace(/\/$/u, "");
     this.token = token;
     this.request = request;
+    this.timeoutMs = timeoutMs;
   }
 
   async command(operation, body) {
-    const response = await this.request(
-      `${this.origin}/v1/provider-mutations/${operation}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          Accept: "application/json",
-          "Content-Type": "application/json",
+    const controller = new globalThis.AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.request(
+        `${this.origin}/v1/provider-mutations/${operation}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
         },
-        body: JSON.stringify(body),
-      },
-    );
-    if (!response.ok) {
-      throw new Error(`fork review V5 rollout authority ${operation} failed`);
+      );
+      if (!response.ok) {
+        throw new Error(`fork review V5 rollout authority ${operation} failed`);
+      }
+      return response.status === 204 ? null : await response.json();
+    } catch (error) {
+      throw new Error(
+        `fork review V5 rollout authority ${operation} request failed`,
+        { cause: error },
+      );
+    } finally {
+      clearTimeout(timeout);
     }
-    return response.status === 204 ? null : await response.json();
   }
 
   async acquire({
@@ -727,7 +743,7 @@ export class ForkReviewV5RolloutAuthority {
       },
       ownerId,
       expected: { fingerprint, version: phaseToken },
-      leaseSeconds: 900,
+      leaseSeconds: 300,
     };
     const recovery = await this.command("recover", request);
     if (recovery?.status !== "absent") {
@@ -735,11 +751,16 @@ export class ForkReviewV5RolloutAuthority {
     }
     const permit = await this.command("issue", request);
     const receipt = await this.command("consume", permit);
-    const validation = await this.command("validate-execution", receipt);
+    const claim = { request, receipt };
+    await this.validate(claim);
+    return claim;
+  }
+
+  async validate(claim) {
+    const validation = await this.command("validate-execution", claim.receipt);
     if (validation?.authorized !== true) {
       throw new Error("fork review V5 rollout operation was not authorized");
     }
-    return { request, receipt };
   }
 
   async complete(claim, fingerprint) {
@@ -1524,8 +1545,9 @@ export async function syncService(client, service, spec, common) {
     expectedEnv,
     common.beforeFirstEnvironmentMutation,
     common.appliedEnvironmentKeyLedger,
+    common.rollbackFence,
   );
-  return verifyServiceEnvConvergence(client, service, expectedEnv);
+  return verifyForkReviewV5ServiceEnvConvergence(client, service, expectedEnv);
 }
 
 export async function applyServiceEnvironmentKeyPlan(
@@ -1534,7 +1556,9 @@ export async function applyServiceEnvironmentKeyPlan(
   expectedEnv,
   beforeFirstEnvironmentMutation,
   appliedLedger = [],
+  rollbackFence,
 ) {
+  assertExactForkReviewV5MutationPlan(expectedEnv);
   const originalByKey = new Map();
   for (const { key } of expectedEnv) {
     originalByKey.set(key, await client.getEnvVar(service.id, key));
@@ -1553,16 +1577,18 @@ export async function applyServiceEnvironmentKeyPlan(
         mutationStarted = true;
       }
       await client.setEnvVar(service.id, key, value);
-      const observed = await client.getEnvVar(service.id, key);
-      if (observed !== String(value)) {
-        throw new Error(`Render environment key readback mismatch:${key}`);
-      }
       appliedLedger.push({
         service,
         key,
         originalValue: originalByKey.get(key),
         writtenValue: String(value),
       });
+      const observed = await client.getEnvVar(service.id, key);
+      if (observed !== String(value)) {
+        throw new RenderDeterministicError(
+          `Render environment key readback mismatch:${key}`,
+        );
+      }
     }
   } catch (error) {
     if (!(error instanceof RenderDeterministicError)) {
@@ -1571,7 +1597,12 @@ export async function applyServiceEnvironmentKeyPlan(
         { cause: error },
       );
     }
-    await rollbackAppliedEnvironmentKeys(client, appliedLedger, error);
+    await rollbackAppliedEnvironmentKeys(
+      client,
+      appliedLedger,
+      error,
+      rollbackFence,
+    );
     throw error;
   }
 }
@@ -1580,8 +1611,15 @@ export async function rollbackAppliedEnvironmentKeys(
   client,
   appliedLedger,
   cause,
+  rollbackFence,
 ) {
   for (const entry of [...appliedLedger].reverse()) {
+    if (!rollbackFence) {
+      throw new Error(
+        `Render environment rollback lacks authority fence:${entry.service.name}:${entry.key}`,
+        { cause },
+      );
+    }
     const current = await client.getEnvVar(entry.service.id, entry.key);
     if (current !== entry.writtenValue) {
       throw new Error(
@@ -1589,6 +1627,15 @@ export async function rollbackAppliedEnvironmentKeys(
         { cause },
       );
     }
+    await rollbackFence(entry, current);
+    const fencedCurrent = await client.getEnvVar(entry.service.id, entry.key);
+    if (fencedCurrent !== current) {
+      throw new Error(
+        `Render environment rollback drift requires operator recovery:${entry.service.name}:${entry.key}`,
+        { cause },
+      );
+    }
+    await rollbackFence(entry, fencedCurrent);
     await client.setEnvVar(entry.service.id, entry.key, entry.originalValue);
     if (
       (await client.getEnvVar(entry.service.id, entry.key)) !==
@@ -1613,12 +1660,41 @@ export function prepareServiceEnvironmentSync(spec, common) {
       "immutable rotating installer release descriptor changed before mutation",
     );
   }
-  return buildServiceEnv({
+  const completeEnvironment = buildServiceEnv({
     ...common,
     env: applyInstallerTuple(common.env, rereadDescriptor),
     databaseUrl: common.databaseUrls[spec.role],
     role: spec.role,
   });
+  const v5Plan = completeEnvironment.filter(({ key }) =>
+    codexForkReviewV5RuntimeEnvNames.includes(key),
+  );
+  assertExactForkReviewV5MutationPlan(v5Plan);
+  return v5Plan;
+}
+
+export function assertExactForkReviewV5MutationPlan(plan) {
+  if (
+    plan.length !== codexForkReviewV5RuntimeEnvNames.length ||
+    new Set(plan.map(({ key }) => key)).size !==
+      codexForkReviewV5RuntimeEnvNames.length ||
+    plan.some(({ key }) => !codexForkReviewV5RuntimeEnvNames.includes(key))
+  ) {
+    throw new Error(
+      "fork review V5 mutation plan must contain exactly two keys",
+    );
+  }
+  const supplied = Object.fromEntries(
+    plan.map(({ key, value }) => [key, String(value)]),
+  );
+  const canonical = codexForkReviewV5RuntimeEnv(supplied);
+  if (
+    codexForkReviewV5RuntimeEnvNames.some(
+      (key) => supplied[key] !== canonical[key],
+    )
+  ) {
+    throw new Error("fork review V5 mutation plan must be canonical");
+  }
 }
 
 export async function preflightCodexForkReviewV5CanaryConvergence(
@@ -1655,6 +1731,50 @@ function forkReviewV5SnapshotsFingerprint(snapshots) {
     .digest("hex")}`;
 }
 
+export function assertRequestedForkReviewV5Snapshots(
+  snapshots,
+  requestedTuple,
+  expectedServiceIds,
+) {
+  const expectedIds = [...expectedServiceIds].sort();
+  const observedIds = snapshots.map(({ serviceId }) => serviceId).sort();
+  const expected = JSON.stringify(codexForkReviewV5RuntimeEnv(requestedTuple));
+  if (
+    new Set(observedIds).size !== expectedIds.length ||
+    JSON.stringify(observedIds) !== JSON.stringify(expectedIds) ||
+    snapshots.some(({ tuple }) => JSON.stringify(tuple) !== expected)
+  ) {
+    throw new RenderDeterministicError(
+      "fork review V5 all-service final tuple mismatch",
+    );
+  }
+}
+
+export async function verifyForkReviewV5ServiceEnvConvergence(
+  client,
+  service,
+  expectedEnv,
+) {
+  assertExactForkReviewV5MutationPlan(expectedEnv);
+  const observed = Object.fromEntries(
+    await Promise.all(
+      expectedEnv.map(async ({ key }) => [
+        key,
+        await client.getEnvVar(service.id, key),
+      ]),
+    ),
+  );
+  for (const { key, value } of expectedEnv) {
+    if (observed[key] !== String(value)) {
+      throw new RenderDeterministicError(
+        `Render service ${service.name} environment did not converge for ${key}`,
+      );
+    }
+  }
+  codexForkReviewV5RuntimeEnv(observed);
+  return observed;
+}
+
 export async function verifyServiceEnvConvergence(
   client,
   service,
@@ -1686,8 +1806,6 @@ export async function verifyServiceEnvConvergence(
       );
     }
   }
-  // Exercise the same hosted readiness contracts against the provider read,
-  // including exact tuple shape and the stable encryption/recovery secrets.
   resolveCodexRotatingInstallerDescriptor(observed);
   resolveStableSecuritySecrets(observed);
   for (const key of installerDescriptorEnvironmentNames) {
@@ -2240,6 +2358,7 @@ export async function main() {
     ...readRuntimeDeployDotenv(envFile),
     ...process.env,
   };
+  const requestedForkReviewV5Tuple = codexForkReviewV5RuntimeEnv(env);
   const ownerId = requiredEnv("RENDER_OWNER_ID", env);
   const projectId = requiredEnv("RENDER_PROJECT_ID", env);
   const environmentId = requiredEnv("RENDER_ENVIRONMENT_ID", env);
@@ -2448,28 +2567,68 @@ export async function main() {
     migrationEvidenceClaimed = true;
   };
 
-  const convergedEnvByRole = {};
   const appliedEnvironmentKeyLedger = [];
+  const rollbackFence = async () => authority.validate(authorityClaim);
   try {
     for (const { service, spec } of services) {
-      convergedEnvByRole[spec.role] = await syncService(client, service, spec, {
+      await syncService(client, service, spec, {
         ...common,
         preparedEnvironment: preparedByServiceId.get(service.id),
         beforeFirstEnvironmentMutation: claimImmediatelyBeforeFirstKeyMutation,
         appliedEnvironmentKeyLedger,
+        rollbackFence,
         prevalidatedServiceScope: true,
       });
     }
-    const afterSnapshots = await preflightCodexForkReviewV5CanaryConvergence(
+    const finalSnapshots = await preflightCodexForkReviewV5CanaryConvergence(
       client,
       services,
       env,
     );
+    assertRequestedForkReviewV5Snapshots(
+      finalSnapshots,
+      requestedForkReviewV5Tuple,
+      services.map(({ service }) => service.id),
+    );
     await authority.complete(
       authorityClaim,
-      forkReviewV5SnapshotsFingerprint(afterSnapshots),
+      forkReviewV5SnapshotsFingerprint(finalSnapshots),
     );
   } catch (error) {
+    let failure = error;
+    if (
+      error instanceof RenderDeterministicError &&
+      appliedEnvironmentKeyLedger.length > 0
+    ) {
+      try {
+        await rollbackAppliedEnvironmentKeys(
+          client,
+          appliedEnvironmentKeyLedger,
+          error,
+          rollbackFence,
+        );
+        const restoredSnapshots =
+          await preflightCodexForkReviewV5CanaryConvergence(
+            client,
+            services,
+            env,
+          );
+        if (
+          forkReviewV5SnapshotsFingerprint(restoredSnapshots) !==
+          beforeFingerprint
+        ) {
+          failure = new Error(
+            "fork review V5 deterministic rollback requires operator recovery",
+            { cause: error },
+          );
+        }
+      } catch (rollbackError) {
+        failure = new Error(
+          "fork review V5 deterministic rollback requires operator recovery",
+          { cause: rollbackError },
+        );
+      }
+    }
     let recoveryFingerprint = beforeFingerprint;
     try {
       const recoverySnapshots =
@@ -2483,17 +2642,8 @@ export async function main() {
       // The durable authority remains recovery-required when provider reads fail.
     }
     await authority.markRecoveryRequired(authorityClaim, recoveryFingerprint);
-    throw error;
+    throw failure;
   }
-  assertReviewV2ApiWorkerEnvConvergence(
-    convergedEnvByRole.api,
-    convergedEnvByRole.worker,
-  );
-  assertCodexForkReviewV5EnvConvergence(
-    convergedEnvByRole.api,
-    convergedEnvByRole.worker,
-    convergedEnvByRole.web,
-  );
   for (const { service, spec } of services)
     await convergeImmutableRuntimeImage(client, service, spec, imageUrl);
   const resolvedDeploys = [];

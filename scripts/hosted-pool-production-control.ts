@@ -912,12 +912,11 @@ export function createRenderHostedPoolControlPort(input: {
           if (!changed) continue;
           const priorDeployId = await latestDeployId(request, id);
           for (const [key, value] of Object.entries(patch))
-            current[key] = value;
-          await request(
-            "PUT",
-            `/services/${id}/env-vars`,
-            Object.entries(current).map(([key, value]) => ({ key, value })),
-          );
+            await request(
+              "PUT",
+              `/services/${id}/env-vars/${encodeURIComponent(key)}`,
+              { value },
+            );
           await waitForNewLiveDeploy(request, id, priorDeployId);
           const observed = await readService(id);
           for (const [key, value] of Object.entries(patch)) {
