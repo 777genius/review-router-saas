@@ -450,6 +450,7 @@ $runtime_acl_routine_boundary$;`;
 export const rotatingEvidenceTables = Object.freeze([
   "CodexOAuthChildIdentityQuarantine",
   "CodexOAuthLease",
+  "CodexOAuthNamespaceRolloverIntent",
   "CodexOAuthProviderIdentityQuarantine",
   "CodexOAuthProviderInstance",
   "CodexOAuthSecretNamespace",
@@ -2799,7 +2800,8 @@ BEGIN
          OR NOT has_schema_privilege(role_name,'public','USAGE')
          OR has_schema_privilege(role_name,'public','CREATE'))
        OR EXISTS (SELECT 1 FROM table_facts WHERE
-         can_select IS DISTINCT FROM (CASE WHEN role_kind='custody' THEN relname IN (
+         can_select IS DISTINCT FROM (CASE WHEN relname='CodexOAuthNamespaceRolloverIntent' THEN role_kind IN ('api','web')
+         WHEN role_kind='custody' THEN relname IN (
            'HostedCodexRuntimeGate','GitHubInstallation','RepositoryConnection','HostedCodexPool',
            'HostedCodexRepositoryBinding','HostedCodexInvocationGrant',
            'HostedCodexCommentRefreshCapability','HostedCodexCommentRefreshUse','HostedCodexCommentTokenMint')
@@ -2807,7 +2809,8 @@ BEGIN
            AND relname NOT IN ('CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
              'HostedCodexCommentTokenMint','HostedCodexCommentTokenRevocationProof','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker') END)
-         OR can_insert IS DISTINCT FROM (CASE WHEN role_kind='custody' THEN relname='HostedCodexCommentRefreshUse'
+         OR can_insert IS DISTINCT FROM (CASE WHEN relname='CodexOAuthNamespaceRolloverIntent' THEN role_kind='api'
+         WHEN role_kind='custody' THEN relname='HostedCodexCommentRefreshUse'
          ELSE role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthDatabaseAuthorityKey',
@@ -2817,7 +2820,8 @@ BEGIN
              'ReviewProviderScopeConcurrencyControl')
            AND relname <> 'HostedCodexCommentTokenMint'
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker') END)
-         OR can_update IS DISTINCT FROM (CASE WHEN role_kind='custody' THEN false
+         OR can_update IS DISTINCT FROM (CASE WHEN relname='CodexOAuthNamespaceRolloverIntent' THEN role_kind IN ('api','web')
+         WHEN role_kind='custody' THEN false
          ELSE role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance',
@@ -2829,7 +2833,7 @@ BEGIN
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker') END)
          OR can_delete IS DISTINCT FROM (role_kind NOT IN ('effect-authority','custody') AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine','CodexOAuthLease',
-           'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
+           'CodexOAuthNamespaceRolloverIntent','CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
            'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
            'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
            'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
@@ -2889,6 +2893,7 @@ BEGIN
          WHEN proname='codex_oauth_consume_database_authority' THEN argument_types='text, text, integer'
          WHEN role_kind='api' AND proname='codex_oauth_authorize_runtime_confirmation' THEN argument_types='text, text, integer, text'
          WHEN role_kind='api' AND proname='codex_oauth_authorize_runtime_completion' THEN argument_types='text, text'
+         WHEN role_kind='web' AND proname='codex_oauth_authorize_rollover_completion' THEN argument_types='text, text, text'
          WHEN role_kind='web' AND proname='codex_oauth_authorize_setup_confirmation' THEN argument_types='text, integer, text'
          WHEN role_kind='web' AND proname='codex_oauth_provider_identity_repair_challenge' THEN argument_types='text, text, text, text, text, text, text, bigint, text, text, text, text, text, text, bigint'
          WHEN role_kind='web' AND proname='codex_oauth_repair_quarantined_provider' THEN argument_types='text, text, text, text, text, text, text, bigint, text, text, text, text, text, text, bigint, text'
@@ -4908,6 +4913,13 @@ GRANT EXECUTE ON FUNCTION public."codex_oauth_consume_database_authority"(text, 
 ${
   role === "web"
     ? `GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_setup_confirmation"(text, integer, text) TO ${username};
+DO $rollover_function_acl$
+BEGIN
+  IF to_regprocedure('public.codex_oauth_authorize_rollover_completion(text,text,text)') IS NOT NULL THEN
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_rollover_completion"(text,text,text) TO ${username}';
+  END IF;
+END
+$rollover_function_acl$;
 GRANT EXECUTE ON FUNCTION public."codex_oauth_provider_identity_repair_challenge"(text,text,text,text,text,text,text,bigint,text,text,text,text,text,text,bigint) TO ${username};
 GRANT EXECUTE ON FUNCTION public."codex_oauth_repair_quarantined_provider"(text,text,text,text,text,text,text,bigint,text,text,text,text,text,text,bigint,text) TO ${username};`
     : role === "api"
@@ -4978,11 +4990,13 @@ DO $runtime_evidence_acl$
 DECLARE protected_table text;
 BEGIN
   FOREACH protected_table IN ARRAY ARRAY[${rotatingEvidenceLiterals}] LOOP
-    EXECUTE format(
-      'REVOKE DELETE ON TABLE public.%I FROM %I',
-      protected_table,
-      '${username}'
-    );
+    IF to_regclass(format('public.%I', protected_table)) IS NOT NULL THEN
+      EXECUTE format(
+        'REVOKE DELETE ON TABLE public.%I FROM %I',
+        protected_table,
+        '${username}'
+      );
+    END IF;
   END LOOP;
   FOREACH protected_table IN ARRAY ARRAY[${quarantineLiterals}] LOOP
     EXECUTE format(
@@ -4997,6 +5011,20 @@ REVOKE UPDATE ON TABLE public."CodexOAuthProviderInstance" FROM ${username};
 GRANT UPDATE (${providerUpdateColumnList}) ON TABLE public."CodexOAuthProviderInstance" TO ${username};
 REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityKey" FROM ${username};
 REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityReceipt" FROM ${username};
+DO $rollover_table_acl$
+BEGIN
+  IF to_regclass('public."CodexOAuthNamespaceRolloverIntent"') IS NOT NULL THEN
+    REVOKE ALL ON TABLE public."CodexOAuthNamespaceRolloverIntent" FROM ${username};
+    ${
+      role === "api"
+        ? `GRANT SELECT, INSERT, UPDATE ON TABLE public."CodexOAuthNamespaceRolloverIntent" TO ${username};`
+        : role === "web"
+          ? `GRANT SELECT, UPDATE ON TABLE public."CodexOAuthNamespaceRolloverIntent" TO ${username};`
+          : ""
+    }
+  END IF;
+END
+$rollover_table_acl$;
 REVOKE ALL ON TABLE public."RuntimeGenerationWitnessProof" FROM ${username};
 REVOKE ALL ON TABLE public."RuntimeCanaryChallenge" FROM ${username};
 REVOKE ALL ON TABLE public."RuntimeCanaryChallengeProof" FROM ${username};

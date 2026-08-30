@@ -35,6 +35,9 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       },
     );
     const sha = parseGitRefSha(ref);
+    if (input.expectedBaseSha && sha !== input.expectedBaseSha) {
+      throw new Error("workflow_setup_expected_base_sha_mismatch");
+    }
     let existingOpenPullRequest: GitHubPullRequest | null | undefined;
 
     try {
@@ -50,7 +53,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
         ...input,
         baseBranch,
       });
-      if (!existingOpenPullRequest) {
+      if (input.resetSetupBranch || !existingOpenPullRequest) {
         await this.resetSetupBranch(input, sha);
       }
     }
@@ -76,6 +79,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       number: pullRequest.number,
       branch: input.setupBranch,
       baseBranch,
+      ...(pullRequest.headSha ? { headSha: pullRequest.headSha } : {}),
     };
   }
 
@@ -343,6 +347,7 @@ type GitHubPullRequest = {
   readonly html_url: string;
   readonly number: number;
   readonly mergedAt: string | null;
+  readonly headSha: string | null;
 };
 
 const setupPullRequestTitle = "chore: add ReviewRouter workflow";
@@ -438,6 +443,7 @@ function parsePullRequest(data: unknown): GitHubPullRequest {
     readonly html_url?: unknown;
     readonly number?: unknown;
     readonly merged_at?: unknown;
+    readonly head?: { readonly sha?: unknown };
   };
   if (
     typeof pullRequest.html_url !== "string" ||
@@ -450,6 +456,11 @@ function parsePullRequest(data: unknown): GitHubPullRequest {
     number: pullRequest.number,
     mergedAt:
       typeof pullRequest.merged_at === "string" ? pullRequest.merged_at : null,
+    headSha:
+      typeof pullRequest.head?.sha === "string" &&
+      /^[a-f0-9]{40}$/iu.test(pullRequest.head.sha)
+        ? pullRequest.head.sha.toLowerCase()
+        : null,
   };
 }
 

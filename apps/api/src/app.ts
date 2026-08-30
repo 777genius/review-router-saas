@@ -11,6 +11,7 @@ import {
   PrismaActionControlPlaneRepository,
   PrismaActionOidcReplayNonceStore,
   PrismaCodexRotatingOAuthRepository,
+  PrismaCodexZeroLoginRolloverLedger,
   CodexRotatingVersionedWritebackDispatcher,
   registerActionControlPlaneRoutes,
   StaticActionRuntimeCompatibilityPolicy,
@@ -95,6 +96,7 @@ import {
   resolveReviewRouterCodexRotatingActionRef,
   resolveReviewRouterCodexRotatingTrustedActionRefs,
   resolveReviewRouterPublicApiUrl,
+  isCodexZeroLoginRolloverPrepareEnabled,
 } from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
 import {
@@ -119,6 +121,7 @@ import {
 } from "./github/composite-github-webhook-handlers.js";
 import { OctokitConflictReviewPostingGateway } from "./github/octokit-conflict-review-posting-gateway.js";
 import { OctokitCodexRotatingGitHubSecretGateway } from "./github/octokit-codex-rotating-github-secret-gateway.js";
+import { CodexZeroLoginRolloverSetupPullRequestPublisher } from "./github/codex-zero-login-rollover-setup-pr-publisher.js";
 import { OctokitGitHubAppCommentTokenIssuer } from "./github/octokit-github-app-comment-token-issuer.js";
 import { PrismaGitHubUserReviewThreadResolver } from "./github/prisma-github-user-review-thread-resolver.js";
 import { PrismaGitHubAppAuthorizationWebhookHandler } from "./github/prisma-github-app-authorization-webhook-handler.js";
@@ -509,6 +512,8 @@ export async function createApiApp(
               allowedActionRefs: codexRotatingTrustedActionRefs,
               actionOwnerRepo: resolveActionOwnerRepo(codexRotatingActionRef),
               databaseRecoveryWitness,
+              zeroLoginRolloverPrepareEnabled:
+                isCodexZeroLoginRolloverPrepareEnabled(reviewActionV2Env),
               ...(codexEffectAuthorityPrisma
                 ? { databaseEffectAuthority: codexEffectAuthorityPrisma }
                 : {}),
@@ -516,12 +521,38 @@ export async function createApiApp(
           );
           const codexRotatingVersionedWriteback =
             codexRotatingGitHubSecretGateway
-              ? new CodexRotatingVersionedWritebackDispatcher(
-                  codexRotatingOAuth,
-                  codexRotatingGitHubSecretGateway,
-                  codexRotatingGitHubSecretGateway,
-                  clock,
-                )
+              ? (() => {
+                  const rolloverLedger =
+                    new PrismaCodexZeroLoginRolloverLedger(
+                      prisma,
+                      codexRotatingOAuth,
+                      {
+                        actionOwnerRepo:
+                          resolveActionOwnerRepo(codexRotatingActionRef),
+                        databaseRecoveryWitness,
+                      },
+                    );
+                  const setupPullRequests =
+                    new CodexZeroLoginRolloverSetupPullRequestPublisher(
+                      (repository) =>
+                        codexRotatingGitHubSecretGateway.createZeroLoginWorkflowSetupGateway(
+                          repository,
+                        ),
+                      codexRotatingGitHubSecretGateway,
+                      publicApiUrl,
+                    );
+                  return new CodexRotatingVersionedWritebackDispatcher(
+                    codexRotatingOAuth,
+                    codexRotatingGitHubSecretGateway,
+                    codexRotatingGitHubSecretGateway,
+                    clock,
+                    {
+                      enabled: true,
+                      ledger: rolloverLedger,
+                      setupPullRequests,
+                    },
+                  );
+                })()
               : undefined;
           const requestedIntentStore = new PrismaReviewRequestedIntentStore(
             prisma,

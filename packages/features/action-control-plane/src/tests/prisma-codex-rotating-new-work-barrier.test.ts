@@ -50,6 +50,7 @@ describe("Prisma Codex rotating new-work barrier", () => {
       },
       codexOAuthWritebackIntent: { findFirst: vi.fn() },
       codexOAuthSetupManifest: { findFirst: vi.fn() },
+      codexOAuthNamespaceRolloverIntent: { findFirst: vi.fn() },
       codexOAuthLease: { upsert: leaseUpsert },
     };
     const transaction = vi.fn(async (callback) => callback(tx));
@@ -85,7 +86,7 @@ describe("Prisma Codex rotating new-work barrier", () => {
       }),
     ).rejects.toThrow("codex_rotating_new_work_admission_closed");
     expect(transaction).toHaveBeenCalledOnce();
-    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(queryRaw).toHaveBeenCalledTimes(3);
     expect(
       (
         queryRaw.mock.calls[0]?.[0] as { strings: readonly string[] }
@@ -142,6 +143,9 @@ describe("Prisma Codex rotating new-work barrier", () => {
         },
         codexOAuthWritebackIntent: { findFirst: vi.fn(async () => null) },
         codexOAuthSetupManifest: { findFirst: vi.fn(async () => null) },
+        codexOAuthNamespaceRolloverIntent: {
+          findFirst: vi.fn(async () => null),
+        },
         codexOAuthLease: { upsert: leaseUpsert },
       };
       const repository = new PrismaCodexRotatingOAuthRepository(
@@ -235,6 +239,7 @@ describe("Prisma Codex rotating new-work barrier", () => {
       },
       codexOAuthWritebackIntent: { findFirst: vi.fn(async () => null) },
       codexOAuthSetupManifest: { findFirst: vi.fn(async () => null) },
+      codexOAuthNamespaceRolloverIntent: { findFirst: vi.fn(async () => null) },
       codexOAuthLease: { upsert: leaseUpsert },
     };
     const repository = new PrismaCodexRotatingOAuthRepository(

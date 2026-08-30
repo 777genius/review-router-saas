@@ -239,6 +239,14 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly providerInstanceId: string;
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
+    readonly eventName?:
+      | "pull_request"
+      | "pull_request_target"
+      | "workflow_dispatch"
+      | "schedule"
+      | undefined;
+    readonly verifiedWorkflowCommitSha?: string | undefined;
+    readonly verifiedActionRef?: string | undefined;
     readonly pullRequestNumber?: number | undefined;
     readonly now?: Date;
     readonly newWorkAdmissionBarrier: Readonly<{

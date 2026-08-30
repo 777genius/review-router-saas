@@ -5,6 +5,7 @@ import type {
   CodexRotatingVersionedWritebackLedgerPort,
 } from "../application/ports/codex-rotating-oauth-repository-port.js";
 import { CodexRotatingSecretPutPreDispatchError } from "../application/ports/codex-rotating-oauth-repository-port.js";
+import type { ZeroLoginRolloverLedgerPort } from "../application/ports/codex-zero-login-rollover-port.js";
 import {
   allocateVersionedProviderSecretNamespace,
   createVersionedSecretWorkflowSourceAttestation,
@@ -118,6 +119,143 @@ function harness() {
 }
 
 describe("versioned rotating runtime writeback dispatcher", () => {
+  it("writes the old scheduled rerun only to the preauthorized candidate and opens a setup PR without activation", async () => {
+    const h = harness();
+    const rolloverLedger = {
+      prepare: vi.fn(),
+      status: vi.fn(),
+      loadSetupPullRequestPlan: vi.fn(),
+      abort: vi.fn(),
+      claimWriteback: vi.fn(async () => ({
+        status: "ready_put" as const,
+        intentId: "rollover-1",
+        executorOwner: "rollover-executor-1",
+        repository,
+        writeTarget: {
+          expectedProviderInstanceId: request.providerInstanceId,
+          githubInstallationId: "789",
+          githubRepositoryId: "123456",
+          repositoryFullName: "owner/repo",
+          owner: "owner",
+          repo: "repo",
+          secretName: namespace.name,
+        },
+        candidate: namespace,
+        targetActionRef: `777genius/review-router@${"b".repeat(40)}`,
+        targetWorkflowSchemaVersion: 5 as const,
+        sourceActionRef: `777genius/review-router@${"a".repeat(40)}`,
+        expectedBaseSha: "b".repeat(40),
+        sourceActiveNamespaceId: "active-namespace-1",
+      })),
+      confirmProviderWrite: vi.fn(async () => undefined),
+      retirePreDispatch: vi.fn(async () => undefined),
+      retireAmbiguous: vi.fn(async () => undefined),
+      markSetupPullRequest: vi.fn(async () => ({ generation: 2 })),
+      activateAfterAttestation: vi.fn(),
+    } satisfies ZeroLoginRolloverLedgerPort;
+    const setupPullRequests = {
+      createOrUpdateExactSetupPullRequest: vi.fn(async () => ({
+        url: "https://github.com/owner/repo/pull/42",
+        number: 42,
+        headSha: "e".repeat(40),
+        baseBranch: "main",
+      })),
+    };
+    const dispatcher = new CodexRotatingVersionedWritebackDispatcher(
+      h.ledger,
+      h.provider,
+      h.workflows,
+      undefined,
+      { enabled: true, ledger: rolloverLedger, setupPullRequests },
+    );
+
+    await expect(
+      dispatcher.dispatchOneShot({
+        request,
+        encryptedPayloadDigest: "digest-012345678901234567890123456789",
+      }),
+    ).resolves.toEqual({ status: "accepted", generation: 2 });
+
+    expect(h.provider.putEncryptedRepositorySecret).toHaveBeenCalledWith(
+      expect.objectContaining({ secretName: namespace.name }),
+    );
+    expect(setupPullRequests.createOrUpdateExactSetupPullRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidate: namespace,
+        targetWorkflowSchemaVersion: 5,
+      }),
+    );
+    expect(h.ledger.prepareVersionedWriteback).not.toHaveBeenCalled();
+    expect(h.ledger.activateVersionedWriteback).not.toHaveBeenCalled();
+    expect(h.workflows.publishAndVerifyVersionedWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("permanently retires the candidate after an ambiguous rollover PUT and never retries through normal writeback", async () => {
+    const h = harness();
+    h.provider.putEncryptedRepositorySecret.mockRejectedValueOnce(
+      new Error("socket_closed_after_write"),
+    );
+    const claim = {
+      status: "ready_put" as const,
+      intentId: "rollover-1",
+      executorOwner: "rollover-executor-1",
+      repository,
+      writeTarget: {
+        githubInstallationId: "789",
+        githubRepositoryId: "123456",
+        repositoryFullName: "owner/repo",
+        owner: "owner",
+        repo: "repo",
+        secretName: namespace.name,
+      },
+      candidate: namespace,
+      targetActionRef: `777genius/review-router@${"b".repeat(40)}`,
+      targetWorkflowSchemaVersion: 5 as const,
+      sourceActionRef: `777genius/review-router@${"a".repeat(40)}`,
+      expectedBaseSha: "b".repeat(40),
+      sourceActiveNamespaceId: "active-namespace-1",
+    };
+    const rolloverLedger = {
+      prepare: vi.fn(),
+      status: vi.fn(),
+      loadSetupPullRequestPlan: vi.fn(),
+      abort: vi.fn(),
+      claimWriteback: vi
+        .fn()
+        .mockResolvedValueOnce(claim)
+        .mockResolvedValueOnce({ status: "writeback_recovery_required" }),
+      confirmProviderWrite: vi.fn(),
+      retirePreDispatch: vi.fn(),
+      retireAmbiguous: vi.fn(async () => undefined),
+      markSetupPullRequest: vi.fn(),
+      activateAfterAttestation: vi.fn(),
+    } satisfies ZeroLoginRolloverLedgerPort;
+    const dispatcher = new CodexRotatingVersionedWritebackDispatcher(
+      h.ledger,
+      h.provider,
+      h.workflows,
+      undefined,
+      {
+        enabled: true,
+        ledger: rolloverLedger,
+        setupPullRequests: { createOrUpdateExactSetupPullRequest: vi.fn() },
+      },
+    );
+    const input = {
+      request,
+      encryptedPayloadDigest: "digest-012345678901234567890123456789",
+    };
+
+    await expect(dispatcher.dispatchOneShot(input)).resolves.toEqual({
+      status: "writeback_recovery_required",
+    });
+    await expect(dispatcher.dispatchOneShot(input)).resolves.toEqual({
+      status: "writeback_recovery_required",
+    });
+    expect(rolloverLedger.retireAmbiguous).toHaveBeenCalledOnce();
+    expect(h.provider.putEncryptedRepositorySecret).toHaveBeenCalledOnce();
+    expect(h.ledger.prepareVersionedWriteback).not.toHaveBeenCalled();
+  });
   it("returns in-progress without a second provider mutation while the executor lease is live", async () => {
     const h = harness();
     let releasePut!: () => void;

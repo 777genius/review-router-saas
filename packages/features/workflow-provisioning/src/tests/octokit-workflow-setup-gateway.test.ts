@@ -224,6 +224,37 @@ describe("OctokitWorkflowSetupGateway", () => {
     });
   });
 
+  it("force-resets a preexisting open setup branch to the exact prepared base", async () => {
+    const requester = new FakeRequester("name: Extra commit\n", {
+      existingBranches: ["main", "reviewrouter/setup"],
+      pullRequestResponses: [[{
+        html_url: "https://github.com/777genius/example/pull/10",
+        number: 10,
+      }]],
+    });
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await gateway.createOrUpdateSetupPullRequest({
+      ...setupInput,
+      expectedBaseSha: "main-sha",
+      resetSetupBranch: true,
+    });
+
+    const reset = requester.calls.find(
+      (call) => call.route === "PATCH /repos/{owner}/{repo}/git/refs/{ref}",
+    );
+    expect(reset?.parameters).toMatchObject({
+      ref: "heads/reviewrouter/setup",
+      sha: "main-sha",
+      force: true,
+    });
+    expect(requester.calls.findIndex((call) => call === reset)).toBeLessThan(
+      requester.calls.findIndex(
+        (call) => call.route === "PUT /repos/{owner}/{repo}/contents/{path}",
+      ),
+    );
+  });
+
   it("deletes a legacy ReviewRouter workflow only when trusted markers match", async () => {
     const requester = new FakeRequester(
       "name: ReviewRouter\njobs:\n  review:\n    uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@v1\n",

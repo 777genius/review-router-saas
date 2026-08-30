@@ -3,6 +3,7 @@ export type WorkflowSetupPullRequest = {
   readonly number: number;
   readonly branch: string;
   readonly baseBranch?: string;
+  readonly headSha?: string;
 };
 
 export type WorkflowSetupFile = {
@@ -23,6 +24,8 @@ export type WorkflowSetupGatewayInput = {
   readonly repo: string;
   readonly baseBranch: string;
   readonly setupBranch: string;
+  readonly expectedBaseSha?: string;
+  readonly resetSetupBranch?: boolean;
   readonly setupMode?: "repository_owned" | "hosted_pool";
   readonly workflowFiles: readonly WorkflowSetupFile[];
 };

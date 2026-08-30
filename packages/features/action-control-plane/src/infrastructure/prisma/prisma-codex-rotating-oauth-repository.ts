@@ -39,6 +39,7 @@ import type {
 } from "../../application/ports/codex-rotating-oauth-repository-port.js";
 import type { CodexRotatingReviewSnapshotAccessPort } from "../../application/ports/codex-rotating-review-snapshot-access-port.js";
 import type { CodexRotatingReviewExecutionCheckpointAccessPort } from "../../application/ports/codex-rotating-review-execution-checkpoint-access-port.js";
+import { assertZeroLoginRolloverPreleaseAdmission } from "../../application/use-cases/manage-codex-zero-login-rollover.js";
 
 const codexRotatingRepositoryContextSelect = {
   id: true,
@@ -102,6 +103,7 @@ export class PrismaCodexRotatingOAuthRepository
       readonly databaseRecoveryWitness?: string;
       readonly databaseEffectAuthority?: Pick<PrismaClient, "$queryRaw">;
       readonly transactionClock?: TransactionClock;
+      readonly zeroLoginRolloverPrepareEnabled?: boolean;
     },
   ) {}
 
@@ -273,6 +275,14 @@ export class PrismaCodexRotatingOAuthRepository
     readonly providerInstanceId: string;
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
+    readonly eventName?:
+      | "pull_request"
+      | "pull_request_target"
+      | "workflow_dispatch"
+      | "schedule"
+      | undefined;
+    readonly verifiedWorkflowCommitSha?: string | undefined;
+    readonly verifiedActionRef?: string | undefined;
     readonly pullRequestNumber?: number | undefined;
     readonly newWorkAdmissionBarrier: Readonly<{
       assertAdmitted(): void;
@@ -292,6 +302,12 @@ export class PrismaCodexRotatingOAuthRepository
       // to establish a hard zero-in-flight barrier.
       await tx.$queryRaw<Array<{ locked: boolean }>>(Prisma.sql`
         SELECT pg_advisory_xact_lock_shared(1381126735, 1129271119) IS NULL AS "locked"
+      `);
+      // Zero-login rollover prepare takes the matching exclusive transaction
+      // lock before creating the single global slot. This shared lock closes
+      // the last-check/lease-insert race for every ordinary repository.
+      await tx.$queryRaw<Array<{ locked: boolean }>>(Prisma.sql`
+        SELECT pg_advisory_xact_lock_shared(1381126735, 1515015247) IS NULL AS "locked"
       `);
       await tx.$queryRaw(Prisma.sql`
         SELECT "id" FROM "CodexOAuthProviderInstance"
@@ -355,6 +371,27 @@ export class PrismaCodexRotatingOAuthRepository
       // locked and in the same transaction that creates the lease. This is the
       // admission barrier: a closed or malformed fence cannot race a lease.
       input.newWorkAdmissionBarrier.assertAdmitted();
+      const activeRollover = await tx.codexOAuthNamespaceRolloverIntent.findFirst({
+        where: { activeGlobalSlot: 1, providerInstanceRowId: provider.id },
+        select: {
+          providerInstanceRowId: true,
+          sourceRunId: true,
+          expectedRerunAttempt: true,
+          state: true,
+          sourceWorkflowCommitSha: true,
+          sourceActionCommitSha: true,
+        },
+      });
+      if (activeRollover) {
+        assertZeroLoginRolloverPreleaseAdmission(activeRollover, {
+          enabled: this.options.zeroLoginRolloverPrepareEnabled === true,
+          eventName: input.eventName,
+          runId: input.githubRunId,
+          runAttempt: input.githubRunAttempt,
+          workflowCommitSha: input.verifiedWorkflowCommitSha,
+          actionRef: input.verifiedActionRef,
+        });
+      }
       if (
         provider.state === "unknown_auth_state" ||
         provider.state === "needs_reconnect" ||
@@ -1775,6 +1812,7 @@ export class PrismaCodexRotatingOAuthRepository
     readonly attemptId: string;
     readonly executorOwner: string;
     readonly attestation: VersionedSecretWorkflowSourceAttestation;
+    readonly rolloverOperationId?: string | undefined;
   }): Promise<{ readonly generation: number }> {
     return this.prisma.$transaction(async (tx) => {
       const locator = await tx.codexOAuthWritebackIntent.findUniqueOrThrow({
@@ -1820,6 +1858,19 @@ export class PrismaCodexRotatingOAuthRepository
         },
       });
       const namespace = intent.secretNamespace;
+      const rollover = input.rolloverOperationId
+        ? await tx.codexOAuthNamespaceRolloverIntent.findUnique({
+            where: { operationId: input.rolloverOperationId },
+          })
+        : null;
+      const rolloverAuthorized =
+        rollover?.id === intent.id &&
+        rollover.state === "setup_pr_open" &&
+        rollover.activeGlobalSlot === 1 &&
+        rollover.providerInstanceRowId === locator.providerInstanceRowId &&
+        rollover.candidateNamespaceId === namespace?.id &&
+        rollover.candidateNamespaceEpoch === namespace?.namespaceEpoch &&
+        rollover.executorOwner === input.executorOwner;
       await assertDatabaseIncarnation(
         tx,
         intent.databaseIncarnation,
@@ -1829,13 +1880,15 @@ export class PrismaCodexRotatingOAuthRepository
       if (
         intent.mutationEpoch === null ||
         intent.executorOwner !== input.executorOwner ||
-        !intent.executorLeaseExpiresAt ||
-        intent.executorLeaseExpiresAt <= now ||
+        (!rolloverAuthorized &&
+          (!intent.executorLeaseExpiresAt ||
+            intent.executorLeaseExpiresAt <= now)) ||
         intent.lease.status !== "finalized"
       ) {
         throw new Error("codex_rotating_versioned_activation_stale_epoch");
       }
       try {
+        if (rolloverAuthorized) throw new RolloverAuthorizationAccepted();
         assertProviderSecretTransitionAuthorized({
           expectedOwner: "runtime",
           expectedOwnerId: intent.leaseId,
@@ -1858,8 +1911,13 @@ export class PrismaCodexRotatingOAuthRepository
               : intent.lease.expiresAt,
           now,
         });
-      } catch {
-        throw new Error("codex_rotating_versioned_activation_stale_epoch");
+      } catch (error) {
+        if (error instanceof RolloverAuthorizationAccepted) {
+          // Durable setup_pr_open evidence replaces only the short executor
+          // timeout; exact provider/lease/epoch ownership is checked below.
+        } else {
+          throw new Error("codex_rotating_versioned_activation_stale_epoch");
+        }
       }
       if (
         intent.dispatchAttemptId !== input.attemptId ||
@@ -1909,11 +1967,19 @@ export class PrismaCodexRotatingOAuthRepository
         ownerId: intent.id,
         effectCode: 0,
       });
-      await tx.$executeRaw`
-        SELECT "codex_oauth_authorize_runtime_completion"(
-          ${intent.id}, ${databaseAuthoritySignature}
-        )
-      `;
+      if (rolloverAuthorized) {
+        await tx.$executeRaw`
+          SELECT "codex_oauth_authorize_rollover_completion"(
+            ${intent.id}, ${rollover!.id}, ${databaseAuthoritySignature}
+          )
+        `;
+      } else {
+        await tx.$executeRaw`
+          SELECT "codex_oauth_authorize_runtime_completion"(
+            ${intent.id}, ${databaseAuthoritySignature}
+          )
+        `;
+      }
       const reusesActiveNamespace =
         intent.providerInstance.activeSecretNamespaceId === namespace.id;
       if (!reusesActiveNamespace) {
@@ -1993,6 +2059,16 @@ export class PrismaCodexRotatingOAuthRepository
         where: { id: intent.id },
         data: { status: "completed", completedAt: now },
       });
+      if (rolloverAuthorized) {
+        await tx.codexOAuthNamespaceRolloverIntent.update({
+          where: { id: rollover!.id },
+          data: {
+            state: "activated",
+            activeGlobalSlot: null,
+            activatedAt: now,
+          },
+        });
+      }
       return { generation: intent.generation };
     });
   }
@@ -2161,6 +2237,8 @@ export class PrismaCodexRotatingOAuthRepository
     };
   }
 }
+
+class RolloverAuthorizationAccepted extends Error {}
 
 type CodexRotatingRepositoryContextRow = Prisma.RepositoryConnectionGetPayload<{
   select: typeof codexRotatingRepositoryContextSelect;

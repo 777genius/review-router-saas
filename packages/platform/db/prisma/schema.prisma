@@ -32,6 +32,7 @@ model Workspace {
   codexOAuthLeases             CodexOAuthLease[]
   codexOAuthSetupManifests     CodexOAuthSetupManifest[]
   codexOAuthSetupPayloadClaims CodexOAuthSetupPayloadClaim[]
+  codexOAuthNamespaceRollovers CodexOAuthNamespaceRolloverIntent[]
   reviewSnapshots              ReviewSnapshot[]
   reviewExecutionCheckpoints   ReviewExecutionCheckpoint[]
   hostedCodexPools             HostedCodexPool[]
@@ -196,6 +197,7 @@ model RepositoryConnection {
   codexOAuthLeases             CodexOAuthLease[]
   codexOAuthSetupManifests     CodexOAuthSetupManifest[]
   codexOAuthSetupPayloadClaims CodexOAuthSetupPayloadClaim[]
+  codexOAuthNamespaceRollovers CodexOAuthNamespaceRolloverIntent[]
   reviewSnapshots              ReviewSnapshot[]
   reviewExecutionCheckpoints   ReviewExecutionCheckpoint[]
   hostedCodexBindings          HostedCodexRepositoryBinding[]
@@ -349,6 +351,7 @@ model CodexOAuthProviderInstance {
   setupRecoveryRequests CodexOAuthSetupRecoveryRequest[]
   payloadClaims         CodexOAuthSetupPayloadClaim[]
   secretNamespaces      CodexOAuthSecretNamespace[]
+  namespaceRollovers    CodexOAuthNamespaceRolloverIntent[]
   activeSecretNamespace CodexOAuthSecretNamespace?       @relation("CodexOAuthActiveSecretNamespace", fields: [activeSecretNamespaceId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthProviderInstance_active_namespace_fkey")
 
   @@unique([repositoryId, authMode])
@@ -427,6 +430,7 @@ model CodexOAuthSecretNamespace {
   activeForProvider CodexOAuthProviderInstance?     @relation("CodexOAuthActiveSecretNamespace")
   dispatchAttempt   CodexOAuthSetupDispatchAttempt?
   runtimeWritebacks CodexOAuthWritebackIntent[]
+  rolloverIntent    CodexOAuthNamespaceRolloverIntent?
 
   @@unique([providerInstanceRowId, namespaceEpoch], map: "CodexOAuthSecretNamespace_provider_epoch_key")
   @@index([providerInstanceRowId, status], map: "CodexOAuthSecretNamespace_provider_status_idx")
@@ -454,6 +458,61 @@ model CodexOAuthSetupDispatchAttempt {
   @@unique([claimId, idempotencyKey], map: "CodexOAuthSetupDispatchAttempt_claim_idempotency_key")
   @@unique([claimId, ordinal], map: "CodexOAuthSetupDispatchAttempt_claim_ordinal_key")
   @@index([claimId, status], map: "CodexOAuthSetupDispatchAttempt_claim_status_idx")
+}
+
+model CodexOAuthNamespaceRolloverIntent {
+  id                          String    @id
+  operationId                 String    @unique
+  activeGlobalSlot            Int?      @unique
+  workspaceId                 String
+  repositoryId                String
+  providerInstanceRowId       String
+  providerInstanceId          String
+  githubRepositoryId          String
+  repositoryFullName          String
+  state                       String
+  sourceRunId                 String
+  sourceRunAttempt            String
+  expectedRerunAttempt        String
+  sourceActionCommitSha       String
+  sourceWorkflowCommitSha     String
+  sourceDefaultHeadSha        String
+  sourceActiveNamespaceId     String?
+  verifiedScheduleCompletedAt DateTime  @db.Timestamptz(3)
+  releaseEvidenceId           String
+  releaseEvidenceDigest       String
+  targetActionCommitSha       String
+  targetWorkflowSchemaVersion Int
+  renderOverlapEvidenceJson   Json
+  candidateNamespaceId        String    @unique
+  candidateNamespaceEpoch     BigInt
+  encryptedPayloadDigest      String?
+  writebackIdempotencyKey     String?
+  writebackGeneration         Int?
+  writebackGenerationHash     String?
+  writebackAccountIdentityHash String?
+  executorOwner               String?
+  executorLeaseExpiresAt      DateTime? @db.Timestamptz(3)
+  providerResponseCode        Int?
+  setupPullRequestUrl         String?
+  setupPullRequestNumber      Int?
+  setupPullRequestHeadSha     String?
+  setupPullRequestBaseBranch  String?
+  safeErrorCode               String?
+  createdAt                   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt                   DateTime  @updatedAt @db.Timestamptz(3)
+  providerConfirmedAt         DateTime? @db.Timestamptz(3)
+  setupPullRequestOpenedAt    DateTime? @db.Timestamptz(3)
+  abortedAt                   DateTime? @db.Timestamptz(3)
+  activatedAt                 DateTime? @db.Timestamptz(3)
+
+  workspace         Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  repository        RepositoryConnection       @relation(fields: [repositoryId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  providerInstance  CodexOAuthProviderInstance @relation(fields: [providerInstanceRowId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  candidateNamespace CodexOAuthSecretNamespace @relation(fields: [candidateNamespaceId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([providerInstanceRowId, sourceRunId, expectedRerunAttempt], map: "CodexOAuthNamespaceRolloverIntent_exact_rerun_key")
+  @@index([providerInstanceRowId, state], map: "CodexOAuthNamespaceRolloverIntent_provider_state_idx")
 }
 
 /// Private database-authority receipts are minted and consumed only by the

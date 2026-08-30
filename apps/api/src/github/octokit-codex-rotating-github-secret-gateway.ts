@@ -18,7 +18,10 @@ import {
 import {
   renderCanonicalCodexRotatingInteractionWorkflowV1,
   renderCanonicalCodexRotatingInteractionWorkflowV2,
+  OctokitWorkflowSetupGateway,
+  type WorkflowSetupGatewayPort,
 } from "@reviewrouter/features-workflow-provisioning";
+import type { ZeroLoginDefaultBranchHeadPort } from "./codex-zero-login-rollover-setup-pr-publisher.js";
 import {
   isLoopbackHostname,
   REVIEW_ROUTER_ACTION_REPOSITORY,
@@ -58,7 +61,7 @@ type InstallationPermission = {
   readonly actions?: "read";
   readonly secrets?: SecretPermission;
   readonly contents?: "read" | "write";
-  readonly pull_requests?: "read";
+    readonly pull_requests?: "read" | "write";
 };
 
 type ContentsResponse = {
@@ -147,6 +150,111 @@ export class OctokitCodexRotatingGitHubSecretGateway
     CodexRotatingVersionedWorkflowPublisherPort,
     HostedReviewPullRequestFactsPort
 {
+  async createZeroLoginWorkflowSetupGateway(
+    repository: ActionRepositoryContext,
+  ): Promise<WorkflowSetupGatewayPort> {
+    const token = await this.mintRepositoryToken({
+      githubInstallationId: repository.githubInstallationId,
+      githubRepositoryId: repository.githubRepositoryId,
+      permissions: { contents: "write", pull_requests: "write" },
+    });
+    return new OctokitWorkflowSetupGateway({
+      request: async (route, parameters = {}) =>
+        githubRequest(route as never, {
+          ...parameters,
+          headers: { authorization: `Bearer ${token.token}` },
+        } as never) as never,
+    });
+  }
+
+  async readDefaultBranch(
+    input: Parameters<ZeroLoginDefaultBranchHeadPort["readDefaultBranch"]>[0],
+  ) {
+    const token = await this.mintRepositoryToken({
+      githubInstallationId: input.repository.githubInstallationId,
+      githubRepositoryId: input.repository.githubRepositoryId,
+      permissions: { contents: "read" },
+    });
+    const repo = repoNameFromFullName(input.repository.fullName);
+    const repositoryResponse = await githubRequest("GET /repos/{owner}/{repo}", {
+      owner: input.repository.owner,
+      repo,
+      headers: { authorization: `Bearer ${token.token}` },
+    });
+    const name = decodeRepositoryDefaultBranch(
+      repositoryResponse.data,
+      input.repository.githubRepositoryId,
+      input.repository.fullName,
+    );
+    const headSha = await this.readBranchHead({
+      token: token.token,
+      owner: input.repository.owner,
+      repo,
+      branch: name,
+    });
+    const workflowSource = await this.readWorkflowAtRef({
+      token: token.token,
+      owner: input.repository.owner,
+      repo,
+      path: managedCodexWorkflowPath,
+      ref: headSha,
+    });
+    if (workflowSource === null) {
+      throw new Error("zero_login_rollover_current_workflow_missing");
+    }
+    return { name, headSha, workflowSource };
+  }
+
+  async verifySetupPullRequest(
+    input: Parameters<ZeroLoginDefaultBranchHeadPort["verifySetupPullRequest"]>[0],
+  ) {
+    const token = await this.mintRepositoryToken({
+      githubInstallationId: input.repository.githubInstallationId,
+      githubRepositoryId: input.repository.githubRepositoryId,
+      permissions: { contents: "read", pull_requests: "read" },
+    });
+    const repo = repoNameFromFullName(input.repository.fullName);
+    const headers = { authorization: `Bearer ${token.token}` };
+    const pull = await githubRequest("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+      owner: input.repository.owner,
+      repo,
+      pull_number: input.number,
+      headers,
+    });
+    const facts = pull.data as {
+      base?: { ref?: unknown; sha?: unknown; repo?: { id?: unknown } };
+      head?: { sha?: unknown };
+    };
+    const headSha = normalizeCommitSha(facts.head?.sha);
+    if (
+      facts.base?.ref !== input.expectedBaseBranch ||
+      normalizeCommitSha(facts.base?.sha) !== input.expectedBaseSha ||
+      String(facts.base?.repo?.id ?? "") !== input.repository.githubRepositoryId ||
+      headSha === null
+    ) throw new Error("zero_login_rollover_setup_pr_identity_mismatch");
+    const files = await githubRequest(
+      "GET /repos/{owner}/{repo}/pulls/{pull_number}/files",
+      { owner: input.repository.owner, repo, pull_number: input.number, per_page: 100, headers },
+    );
+    const changed = files.data as readonly { filename?: unknown; status?: unknown }[];
+    if (
+      !Array.isArray(changed) ||
+      changed.length !== 1 ||
+      changed[0]?.filename !== input.expectedWorkflowPath ||
+      !["added", "modified"].includes(String(changed[0]?.status))
+    ) throw new Error("zero_login_rollover_setup_pr_diff_mismatch");
+    const source = await this.readWorkflowAtRef({
+      token: token.token,
+      owner: input.repository.owner,
+      repo,
+      path: input.expectedWorkflowPath,
+      ref: headSha,
+    });
+    if (source !== input.expectedWorkflowSource) {
+      throw new Error("zero_login_rollover_setup_pr_source_mismatch");
+    }
+    return { headSha };
+  }
   private readonly app: App;
   private readonly expectedApiUrl: string;
   private readonly trustedActionRefs: ReadonlySet<string>;
