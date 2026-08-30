@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 
 export type WorkflowProvisioningPullRequestIdentity = {
   readonly repositoryId: string;
@@ -12,11 +12,36 @@ export class PrismaWorkflowProvisioningStatusAuthority {
   async markConfigured(
     input: WorkflowProvisioningPullRequestIdentity,
   ): Promise<boolean> {
-    return this.updateExpected(
-      input,
-      {},
-      { status: "configured", errorMessage: null },
-    );
+    return this.prisma.$transaction(async (tx) => {
+      const candidate = await findLatestProvisioningCandidate(tx, input);
+      if (!candidate || !matchesPullRequestIdentity(candidate, input)) {
+        return false;
+      }
+      if (candidate.status === "configured") return true;
+      if (
+        candidate.status !== "setup_pr_open" &&
+        candidate.status !== "failed"
+      ) {
+        return false;
+      }
+
+      const updated = await tx.workflowProvisioning.updateMany({
+        where: {
+          id: candidate.id,
+          status: { in: ["setup_pr_open", "failed"] },
+          ...candidateIdentityWhere(candidate),
+        },
+        data: { status: "configured", errorMessage: null },
+      });
+      if (updated.count === 1) return true;
+
+      const raced = await tx.workflowProvisioning.findUnique({
+        where: { id: candidate.id },
+        select: { status: true },
+      });
+      if (raced?.status === "configured") return true;
+      throw new Error("workflow_provisioning_concurrent_transition");
+    }, serializableTransactionOptions);
   }
 
   async assertConfigured(
@@ -35,11 +60,46 @@ export class PrismaWorkflowProvisioningStatusAuthority {
         | "setup_pr_wrong_base_branch";
     },
   ): Promise<boolean> {
-    return this.updateExpected(
-      input,
-      { status: { in: ["setup_pr_open", "failed"] } },
-      { status: "failed", errorMessage: input.reason },
-    );
+    return this.prisma.$transaction(async (tx) => {
+      const candidate = await findLatestProvisioningCandidate(tx, input);
+      if (!candidate || !matchesPullRequestIdentity(candidate, input)) {
+        return false;
+      }
+      if (candidate.status === "configured") {
+        throw new Error("workflow_provisioning_already_configured");
+      }
+      if (
+        candidate.status !== "setup_pr_open" &&
+        candidate.status !== "failed"
+      ) {
+        return false;
+      }
+      if (
+        candidate.status === "failed" &&
+        candidate.errorMessage === input.reason
+      ) {
+        return true;
+      }
+
+      const updated = await tx.workflowProvisioning.updateMany({
+        where: {
+          id: candidate.id,
+          status: { in: ["setup_pr_open", "failed"] },
+          ...candidateIdentityWhere(candidate),
+        },
+        data: { status: "failed", errorMessage: input.reason },
+      });
+      if (updated.count === 1) return true;
+
+      const raced = await tx.workflowProvisioning.findUnique({
+        where: { id: candidate.id },
+        select: { status: true },
+      });
+      if (raced?.status === "configured") {
+        throw new Error("workflow_provisioning_already_configured");
+      }
+      throw new Error("workflow_provisioning_concurrent_transition");
+    }, serializableTransactionOptions);
   }
 
   async assertFailed(
@@ -54,56 +114,68 @@ export class PrismaWorkflowProvisioningStatusAuthority {
       throw new Error("workflow_provisioning_match_not_found");
     }
   }
-
-  private async updateExpected(
-    input: WorkflowProvisioningPullRequestIdentity,
-    additionalWhere: Prisma.WorkflowProvisioningWhereInput,
-    data: Prisma.WorkflowProvisioningUpdateInput,
-  ): Promise<boolean> {
-    const identityWhere = workflowProvisioningPullRequestWhere(input);
-
-    return this.prisma.$transaction(async (tx) => {
-      const matches = await tx.workflowProvisioning.findMany({
-        where: { ...identityWhere, ...additionalWhere },
-        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-        take: 2,
-        select: { id: true },
-      });
-      if (matches.length === 0) return false;
-      if (matches.length !== 1) {
-        throw new Error("workflow_provisioning_match_ambiguous");
-      }
-
-      await tx.workflowProvisioning.update({
-        where: { id: matches[0]!.id },
-        data,
-      });
-      return true;
-    });
-  }
 }
 
-function workflowProvisioningPullRequestWhere(
+type ProvisioningCandidate = {
+  readonly id: string;
+  readonly status: "not_started" | "setup_pr_open" | "configured" | "failed";
+  readonly branch: string;
+  readonly pullRequestUrl: string | null;
+  readonly errorMessage: string | null;
+};
+
+async function findLatestProvisioningCandidate(
+  tx: Prisma.TransactionClient,
   input: WorkflowProvisioningPullRequestIdentity,
-): Prisma.WorkflowProvisioningWhereInput {
-  const identities: Prisma.WorkflowProvisioningWhereInput[] = [
-    ...(input.setupBranch ? [{ branch: input.setupBranch }] : []),
-    ...(input.pullRequestNumber
-      ? [
-          {
-            pullRequestUrl: {
-              endsWith: `/pull/${input.pullRequestNumber}`,
-            },
-          },
-        ]
-      : []),
-  ];
-  if (identities.length === 0) {
+): Promise<ProvisioningCandidate | null> {
+  if (!input.setupBranch && !input.pullRequestNumber) {
     throw new Error("workflow_provisioning_identity_required");
   }
 
-  return {
-    repositoryId: input.repositoryId,
-    OR: identities,
-  };
+  return tx.workflowProvisioning.findFirst({
+    where: { repositoryId: input.repositoryId },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    select: {
+      id: true,
+      status: true,
+      branch: true,
+      pullRequestUrl: true,
+      errorMessage: true,
+    },
+  });
 }
+
+function matchesPullRequestIdentity(
+  candidate: ProvisioningCandidate,
+  input: WorkflowProvisioningPullRequestIdentity,
+): boolean {
+  if (candidate.pullRequestUrl) {
+    const recordedPullRequestNumber = pullRequestNumberFromUrl(
+      candidate.pullRequestUrl,
+    );
+    return (
+      recordedPullRequestNumber !== null &&
+      recordedPullRequestNumber === input.pullRequestNumber
+    );
+  }
+  return input.setupBranch !== null && candidate.branch === input.setupBranch;
+}
+
+function candidateIdentityWhere(
+  candidate: ProvisioningCandidate,
+): Prisma.WorkflowProvisioningWhereInput {
+  return candidate.pullRequestUrl
+    ? { pullRequestUrl: candidate.pullRequestUrl }
+    : { branch: candidate.branch, pullRequestUrl: null };
+}
+
+function pullRequestNumberFromUrl(url: string): number | null {
+  const match = /\/pull\/(\d+)(?:$|[?#])/.exec(url);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+const serializableTransactionOptions = {
+  isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+} as const;
