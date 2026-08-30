@@ -50,6 +50,7 @@ export * from "./application/ports/legacy-review-mutation-admission-port.js";
 export * from "./application/ports/certified-fork-review-port.js";
 export * from "./application/use-cases/prepare-certified-fork-review.js";
 export * from "./application/use-cases/publish-certified-fork-review.js";
+export * from "./application/use-cases/certified-fork-review-binding.js";
 export * from "./infrastructure/oidc/jose-github-actions-oidc-token-verifier.js";
 export * from "./infrastructure/crypto/hmac-action-ledger-key.js";
 export * from "./infrastructure/prisma/prisma-action-control-plane-repository.js";

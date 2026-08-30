@@ -30,6 +30,10 @@ export type CertifiedForkReviewPromptPacket = Readonly<{
 }>;
 
 export interface CertifiedForkReviewGatewayPort {
+  assertBindingCurrent(input: {
+    readonly githubInstallationId: string;
+    readonly binding: CertifiedForkReviewBinding;
+  }): Promise<void>;
   prepareContext(input: {
     readonly githubInstallationId: string;
     readonly binding: CertifiedForkReviewBinding;
@@ -45,13 +49,84 @@ export interface CertifiedForkReviewGatewayPort {
   upsertOwnedComment(input: {
     readonly githubInstallationId: string;
     readonly binding: CertifiedForkReviewBinding;
+    readonly markerPrefix: string;
     readonly marker: string;
+    readonly executionDigest: string;
+    readonly outputDigest: string;
     readonly body: string;
   }): Promise<{
     readonly status: "created" | "updated";
     readonly commentId: string;
     readonly commentUrl?: string;
   }>;
+}
+
+export interface CertifiedForkReviewPublishLockPort {
+  withLock<T>(key: string, run: () => Promise<T>): Promise<T>;
+}
+
+export interface CertifiedForkReviewAdmissionPort {
+  assertEnabled(binding: CertifiedForkReviewBinding): void;
+}
+
+export type CertifiedForkReviewClaimScope = Readonly<{
+  baseRepositoryId: string;
+  pullRequestNumber: number;
+  reviewHeadSha: string;
+  baseSha: string;
+  contextHash: string;
+  promptPolicyVersion: number;
+}>;
+
+export interface CertifiedForkReviewClaimPort {
+  claimPrelease(input: {
+    readonly scope: CertifiedForkReviewClaimScope;
+    readonly reservationOwner: string;
+  }): Promise<
+    | { readonly status: "ready" }
+    | { readonly status: "in_progress" }
+    | {
+        readonly status: "already_published";
+        readonly commentId: string;
+        readonly commentUrl?: string;
+      }
+  >;
+  abandonPrelease(input: {
+    readonly scope: CertifiedForkReviewClaimScope;
+    readonly reservationOwner: string;
+  }): Promise<void>;
+  claimPrepare(input: {
+    readonly scope: CertifiedForkReviewClaimScope;
+    readonly reservationOwner: string;
+    readonly executionId: string;
+  }): Promise<
+    | { readonly status: "ready" }
+    | { readonly status: "in_progress" }
+    | {
+        readonly status: "already_published";
+        readonly commentId: string;
+        readonly commentUrl?: string;
+      }
+  >;
+  beginPublish(input: {
+    readonly scope: CertifiedForkReviewClaimScope;
+    readonly executionId: string;
+    readonly outputDigest: string;
+  }): Promise<
+    | { readonly status: "ready" }
+    | {
+        readonly status: "already_published";
+        readonly commentId: string;
+        readonly commentUrl?: string;
+      }
+  >;
+  completePublished(input: {
+    readonly scope: CertifiedForkReviewClaimScope;
+    readonly executionId: string;
+    readonly outputDigest: string;
+    readonly commentId: string;
+    readonly commentUrl?: string;
+  }): Promise<void>;
 }
 
 export interface CertifiedForkReviewLeasePort {
@@ -81,12 +156,15 @@ export interface CertifiedForkReviewTicketPort {
     input: Omit<CertifiedForkReviewTicket, "executionId">,
   ): Promise<CertifiedForkReviewTicket>;
   verify(executionId: string): Promise<CertifiedForkReviewTicket>;
+  signPublication(input: {
+    readonly executionDigest: string;
+    readonly outputDigest: string;
+  }): Promise<string>;
 }
 
 export interface CertifiedForkReviewOutputPort {
   render(input: {
     readonly modelOutput: unknown;
-    readonly marker: string;
     readonly binding: CertifiedForkReviewBinding;
     readonly generatedAt: Date;
     readonly promptPacket: CertifiedForkReviewPromptPacket;

@@ -11,9 +11,10 @@ import {
 import type { Clock } from "@reviewrouter/shared";
 import type { ActionControlPlaneRepositoryPort } from "../ports/action-control-plane-repository-port.js";
 import type { ActionOidcReplayNonceStorePort } from "../ports/action-oidc-replay-nonce-store-port.js";
-import type {
-  CodexRotatingOAuthRepositoryPort,
-  CodexRotatingWorkflowSourceVerifierPort,
+import {
+  CodexRotatingPreleaseNotAcquiredError,
+  type CodexRotatingOAuthRepositoryPort,
+  type CodexRotatingWorkflowSourceVerifierPort,
 } from "../ports/codex-rotating-oauth-repository-port.js";
 import type { GitHubActionsOidcTokenVerifierPort } from "../ports/github-actions-oidc-token-verifier-port.js";
 import {
@@ -22,6 +23,19 @@ import {
   type ActionRepositoryContext,
 } from "../../domain/action-control-plane.js";
 import type { HostedReviewPreleaseGatePort } from "../ports/hosted-review-prelease-gate-port.js";
+import type {
+  CertifiedForkReviewBinding,
+  CertifiedForkReviewAdmissionPort,
+  CertifiedForkReviewClaimPort,
+  CertifiedForkReviewGatewayPort,
+} from "../ports/certified-fork-review-port.js";
+import {
+  certifiedForkReviewBindingHash,
+  certifiedForkReviewClaimScope,
+  certifiedForkReviewReservationOwner,
+  certifiedForkReviewWorkflowSchemaVersion,
+  assertCertifiedForkReviewPromptPacketSize,
+} from "./certified-fork-review-binding.js";
 
 export type PreleaseCodexRotatingOAuthDependencies = {
   readonly oidcVerifier: GitHubActionsOidcTokenVerifierPort;
@@ -36,6 +50,12 @@ export type PreleaseCodexRotatingOAuthDependencies = {
   readonly replayNonces: ActionOidcReplayNonceStorePort;
   readonly hostedReviewPreleaseGate?: HostedReviewPreleaseGatePort;
   readonly reviewIntentAdmissionRequired?: boolean;
+  readonly certifiedForkReviewPreleaseGateway?: Pick<
+    CertifiedForkReviewGatewayPort,
+    "prepareContext"
+  >;
+  readonly certifiedForkReviewAdmission?: CertifiedForkReviewAdmissionPort;
+  readonly certifiedForkReviewClaims?: CertifiedForkReviewClaimPort;
   readonly codexRotatingNewWorkAdmission: {
     assertAdmitted(input: { readonly repositoryFullName: string }): void;
   };
@@ -47,19 +67,8 @@ type CodexRotatingPreleaseInput = {
   readonly audience: string;
   readonly providerInstanceId: string;
   readonly workflowSchemaVersion: number;
-  readonly forkReviewBinding?: ForkReviewBinding | undefined;
+  readonly forkReviewBinding?: CertifiedForkReviewBinding | undefined;
 };
-
-export type ForkReviewBinding = Readonly<{
-  sourceRepository: string;
-  sourceRepositoryId: string;
-  baseRepository: string;
-  baseRepositoryId: string;
-  pullRequestNumber: number;
-  reviewHeadSha: string;
-  baseSha: string;
-  trustDomain: "fork";
-}>;
 
 export type CodexRotatingPreleaseLeaseResponse = {
   readonly protocolVersion: 1;
@@ -71,7 +80,18 @@ export type CodexRotatingPreleaseLeaseResponse = {
   readonly currentGeneration: number;
   readonly currentGenerationHash?: string | undefined;
   readonly expiresAt: string;
+  readonly status?: "ready" | undefined;
+  readonly certifiedForkReviewContextHash?: string | undefined;
 };
+
+export type CodexRotatingCertifiedForkPreleaseDispositionResponse =
+  | { readonly protocolVersion: 1; readonly status: "in_progress" }
+  | {
+      readonly protocolVersion: 1;
+      readonly status: "already_published";
+      readonly commentId: string;
+      readonly commentUrl?: string;
+    };
 
 export type CodexRotatingPreleaseSkipResponse = {
   readonly protocolVersion: 1;
@@ -86,7 +106,9 @@ export async function preleaseCodexRotatingOAuth(
   input: CodexRotatingPreleaseInput,
   dependencies: PreleaseCodexRotatingOAuthDependencies,
 ): Promise<
-  CodexRotatingPreleaseLeaseResponse | CodexRotatingPreleaseSkipResponse
+  | CodexRotatingPreleaseLeaseResponse
+  | CodexRotatingPreleaseSkipResponse
+  | CodexRotatingCertifiedForkPreleaseDispositionResponse
 > {
   const claims = codexRotatingOidcClaimsSchema.parse(
     await dependencies.oidcVerifier.verify({
@@ -109,6 +131,19 @@ export async function preleaseCodexRotatingOAuth(
   }
   if (!repository.selected || repository.installationStatus !== "active") {
     throw new Error("repository_not_selected");
+  }
+  if (input.forkReviewBinding) {
+    assertCertifiedForkPreleaseIdentity({
+      claims,
+      repository,
+      workflowSchemaVersion: input.workflowSchemaVersion,
+      binding: input.forkReviewBinding,
+    });
+    if (!dependencies.certifiedForkReviewAdmission)
+      throw new Error("certified_fork_v5_not_enabled");
+    dependencies.certifiedForkReviewAdmission.assertEnabled(
+      input.forkReviewBinding,
+    );
   }
   const canonicalProviderInstanceId = canonicalCodexRotatingProviderId(
     repository.githubRepositoryId,
@@ -194,15 +229,21 @@ export async function preleaseCodexRotatingOAuth(
     repository,
     binding: verifiedWorkflow.binding,
   });
-  const pullRequestNumber = await resolvePullRequestNumber({
+  const certifiedForkReview = await resolveCertifiedForkReviewPrelease({
     claims,
     repository,
     workflowSchemaVersion: input.workflowSchemaVersion,
+    binding: input.forkReviewBinding,
     workflowSourceVerifier: dependencies.codexRotatingWorkflowSourceVerifier,
-    ...(input.forkReviewBinding
-      ? { forkReviewBinding: input.forkReviewBinding }
-      : {}),
+    gateway: dependencies.certifiedForkReviewPreleaseGateway,
   });
+  const pullRequestNumber =
+    certifiedForkReview?.binding.pullRequestNumber ??
+    (await resolvePullRequestNumber({
+      claims,
+      repository,
+      workflowSourceVerifier: dependencies.codexRotatingWorkflowSourceVerifier,
+    }));
   const intentRequired =
     reviewIntentRequired({
       claims,
@@ -210,7 +251,7 @@ export async function preleaseCodexRotatingOAuth(
       workflowPath: verifiedWorkflow.binding.workflowPath,
       pullRequestNumber,
     }) && dependencies.reviewIntentAdmissionRequired !== false;
-  if (dependencies.hostedReviewPreleaseGate) {
+  if (!certifiedForkReview && dependencies.hostedReviewPreleaseGate) {
     const admission = await dependencies.hostedReviewPreleaseGate.evaluate({
       repository,
       sourceRunId: claims.run_id,
@@ -235,17 +276,60 @@ export async function preleaseCodexRotatingOAuth(
     now: dependencies.clock.now(),
     replayNonces: dependencies.replayNonces,
   });
-  const lease = await dependencies.codexRotatingOAuth.acquirePrelease({
-    repository,
-    providerInstanceId: canonicalProviderInstanceId,
-    githubRunId: claims.run_id,
-    githubRunAttempt: claims.run_attempt,
-    ...(pullRequestNumber ? { pullRequestNumber } : {}),
-    newWorkAdmissionBarrier: {
-      assertAdmitted: assertNewWorkAdmitted,
-    },
-  });
+  if (certifiedForkReview) {
+    if (!dependencies.certifiedForkReviewClaims)
+      throw new Error("certified_fork_v5_not_enabled");
+    const reservation =
+      await dependencies.certifiedForkReviewClaims.claimPrelease({
+        scope: certifiedForkReview.scope,
+        reservationOwner: certifiedForkReview.reservationOwner,
+      });
+    if (reservation.status === "in_progress")
+      return { protocolVersion: 1, status: "in_progress" };
+    if (reservation.status === "already_published")
+      return {
+        protocolVersion: 1,
+        status: "already_published",
+        commentId: reservation.commentId,
+        ...(reservation.commentUrl
+          ? { commentUrl: reservation.commentUrl }
+          : {}),
+      };
+  }
+  let lease;
+  try {
+    lease = await dependencies.codexRotatingOAuth.acquirePrelease({
+      repository,
+      providerInstanceId: canonicalProviderInstanceId,
+      githubRunId: claims.run_id,
+      githubRunAttempt: claims.run_attempt,
+      ...(pullRequestNumber ? { pullRequestNumber } : {}),
+      ...(certifiedForkReview
+        ? {
+            certifiedForkReviewBindingHash: certifiedForkReview.bindingHash,
+          }
+        : {}),
+      newWorkAdmissionBarrier: {
+        assertAdmitted: assertNewWorkAdmitted,
+      },
+    });
+  } catch (error) {
+    if (
+      certifiedForkReview &&
+      error instanceof CodexRotatingPreleaseNotAcquiredError
+    )
+      await dependencies.certifiedForkReviewClaims!.abandonPrelease({
+        scope: certifiedForkReview.scope,
+        reservationOwner: certifiedForkReview.reservationOwner,
+      });
+    throw error;
+  }
   if (lease.status === "conflict") {
+    if (certifiedForkReview)
+      await dependencies.certifiedForkReviewClaims!.abandonPrelease({
+        scope: certifiedForkReview.scope,
+        reservationOwner: certifiedForkReview.reservationOwner,
+      });
     throw new Error("codex_rotating_lease_conflict");
   }
   return {
@@ -260,7 +344,87 @@ export async function preleaseCodexRotatingOAuth(
       ? { currentGenerationHash: lease.currentGenerationHash }
       : {}),
     expiresAt: lease.expiresAt.toISOString(),
+    ...(certifiedForkReview
+      ? {
+          status: "ready" as const,
+          certifiedForkReviewContextHash: certifiedForkReview.scope.contextHash,
+        }
+      : {}),
   };
+}
+
+async function resolveCertifiedForkReviewPrelease(input: {
+  readonly claims: CodexRotatingOidcClaims;
+  readonly repository: ActionRepositoryContext;
+  readonly workflowSchemaVersion: number;
+  readonly binding: CertifiedForkReviewBinding | undefined;
+  readonly workflowSourceVerifier: CodexRotatingWorkflowSourceVerifierPort;
+  readonly gateway:
+    | Pick<CertifiedForkReviewGatewayPort, "prepareContext">
+    | undefined;
+}): Promise<
+  | {
+      readonly binding: CertifiedForkReviewBinding;
+      readonly bindingHash: string;
+      readonly scope: ReturnType<typeof certifiedForkReviewClaimScope>;
+      readonly reservationOwner: string;
+    }
+  | undefined
+> {
+  if (!input.binding) return undefined;
+  assertCertifiedForkPreleaseIdentity({
+    claims: input.claims,
+    repository: input.repository,
+    workflowSchemaVersion: input.workflowSchemaVersion,
+    binding: input.binding,
+  });
+  if (!input.gateway)
+    throw new Error("certified_fork_prelease_gateway_unavailable");
+  if (input.claims.event_name === "pull_request_target") {
+    const resolved = await resolvePullRequestNumber({
+      claims: input.claims,
+      repository: input.repository,
+      workflowSourceVerifier: input.workflowSourceVerifier,
+    });
+    if (resolved !== input.binding.pullRequestNumber)
+      throw new Error("certified_fork_prelease_identity_mismatch");
+  }
+  const prepared = await input.gateway.prepareContext({
+    githubInstallationId: input.repository.githubInstallationId,
+    binding: input.binding,
+  });
+  assertCertifiedForkReviewPromptPacketSize(prepared.promptPacket);
+  return {
+    binding: input.binding,
+    bindingHash: certifiedForkReviewBindingHash(input.binding),
+    scope: certifiedForkReviewClaimScope(input.binding, prepared.contextHash),
+    reservationOwner: certifiedForkReviewReservationOwner({
+      repositoryId: input.claims.repository_id,
+      runId: input.claims.run_id,
+      runAttempt: input.claims.run_attempt,
+      workflowSha: input.claims.workflow_sha,
+    }),
+  };
+}
+
+function assertCertifiedForkPreleaseIdentity(input: {
+  readonly claims: CodexRotatingOidcClaims;
+  readonly repository: ActionRepositoryContext;
+  readonly workflowSchemaVersion: number;
+  readonly binding: CertifiedForkReviewBinding;
+}): void {
+  if (
+    input.workflowSchemaVersion !== certifiedForkReviewWorkflowSchemaVersion ||
+    !["pull_request_target", "workflow_dispatch"].includes(
+      input.claims.event_name,
+    ) ||
+    input.binding.trustDomain !== "fork" ||
+    input.claims.repository_id !== input.binding.baseRepositoryId ||
+    input.claims.repository !== input.binding.baseRepository ||
+    input.repository.githubRepositoryId !== input.binding.baseRepositoryId ||
+    input.repository.fullName !== input.binding.baseRepository
+  )
+    throw new Error("certified_fork_prelease_identity_mismatch");
 }
 
 function isImmutableActionRef(value: string): boolean {
@@ -316,7 +480,7 @@ async function resolvePullRequestNumber(input: {
   readonly repository: ActionRepositoryContext;
   readonly workflowSchemaVersion: number;
   readonly workflowSourceVerifier: CodexRotatingWorkflowSourceVerifierPort;
-  readonly forkReviewBinding?: ForkReviewBinding | undefined;
+  readonly forkReviewBinding?: CertifiedForkReviewBinding | undefined;
 }): Promise<number | undefined> {
   if (input.claims.event_name === "pull_request") {
     const match = /^refs\/pull\/([1-9][0-9]*)\/(?:merge|head)$/.exec(
@@ -435,7 +599,7 @@ function assertLiveSameRepositoryReviewBinding(
 
 function assertLiveForkReviewBinding(
   live: LivePullRequestBinding,
-  expected: ForkReviewBinding,
+  expected: CertifiedForkReviewBinding,
 ): void {
   if (
     expected.trustDomain !== "fork" ||

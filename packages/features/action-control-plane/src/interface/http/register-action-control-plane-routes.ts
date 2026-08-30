@@ -100,7 +100,11 @@ import {
   type CertifiedForkReviewDependencies,
 } from "../../application/use-cases/prepare-certified-fork-review.js";
 import { publishCertifiedForkReview } from "../../application/use-cases/publish-certified-fork-review.js";
-import type { CertifiedForkReviewOutputPort } from "../../application/ports/certified-fork-review-port.js";
+import type {
+  CertifiedForkReviewOutputPort,
+  CertifiedForkReviewPublishLockPort,
+} from "../../application/ports/certified-fork-review-port.js";
+import { certifiedForkReviewMaxExecutionIdChars } from "../../application/use-cases/certified-fork-review-binding.js";
 
 export type RegisterActionControlPlaneRoutesDependencies =
   ExchangeGitHubOidcTokenDependencies &
@@ -130,6 +134,7 @@ export type RegisterActionControlPlaneRoutesDependencies =
       readonly certifiedForkReview?:
         | (CertifiedForkReviewDependencies & {
             readonly certifiedForkReviewOutput: CertifiedForkReviewOutputPort;
+            readonly certifiedForkReviewPublishLock: CertifiedForkReviewPublishLockPort;
           })
         | undefined;
     };
@@ -142,27 +147,27 @@ const exchangeBodySchema = z
   })
   .strict();
 
+const gitShaSchema = z.string().regex(/^[a-f0-9]{40}$/i);
+const certifiedForkBindingSchema = z
+  .object({
+    sourceRepository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+    sourceRepositoryId: z.string().regex(/^[1-9][0-9]*$/),
+    baseRepository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+    baseRepositoryId: z.string().regex(/^[1-9][0-9]*$/),
+    pullRequestNumber: z.number().int().positive(),
+    reviewHeadSha: gitShaSchema,
+    baseSha: gitShaSchema,
+    trustDomain: z.literal("fork"),
+  })
+  .strict();
+
 const codexRotatingPreleaseBodySchema = z
   .object({
     oidcToken: z.string().min(1),
     audience: z.string().min(1).optional(),
     providerInstanceId: z.string().min(8).max(160),
     workflowSchemaVersion: z.number().int().positive(),
-    forkReviewBinding: z
-      .object({
-        sourceRepository: z
-          .string()
-          .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
-        sourceRepositoryId: z.string().regex(/^[1-9][0-9]*$/),
-        baseRepository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
-        baseRepositoryId: z.string().regex(/^[1-9][0-9]*$/),
-        pullRequestNumber: z.number().int().positive(),
-        reviewHeadSha: z.string().regex(/^[a-fA-F0-9]{40}$/),
-        baseSha: z.string().regex(/^[a-fA-F0-9]{40}$/),
-        trustDomain: z.literal("fork"),
-      })
-      .strict()
-      .optional(),
+    forkReviewBinding: certifiedForkBindingSchema.optional(),
   })
   .strict();
 
@@ -203,19 +208,6 @@ const codexRotatingCommentTokenBodySchema = codexRotatingLeaseBodySchema
   })
   .strict();
 
-const gitShaSchema = z.string().regex(/^[a-f0-9]{40}$/i);
-const certifiedForkBindingSchema = z
-  .object({
-    sourceRepository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
-    sourceRepositoryId: z.string().regex(/^[1-9][0-9]*$/),
-    baseRepository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
-    baseRepositoryId: z.string().regex(/^[1-9][0-9]*$/),
-    pullRequestNumber: z.number().int().positive(),
-    reviewHeadSha: gitShaSchema,
-    baseSha: gitShaSchema,
-    trustDomain: z.literal("fork"),
-  })
-  .strict();
 const certifiedForkIdentitySchema = z.object({
   oidcToken: z.string().min(1).max(16_384),
   audience: z.string().min(1).max(256).optional(),
@@ -244,7 +236,7 @@ const certifiedForkModelOutputSchema = z
   .strict();
 const certifiedForkPublishSchema = certifiedForkIdentitySchema
   .extend({
-    executionId: z.string().min(32).max(8_192),
+    executionId: z.string().min(32).max(certifiedForkReviewMaxExecutionIdChars),
     contextHash: z.string().regex(/^[a-f0-9]{64}$/),
     modelOutput: certifiedForkModelOutputSchema,
   })
@@ -328,6 +320,13 @@ export async function registerActionControlPlaneRoutes(
   const certifiedForkHandler =
     (kind: "prepare" | "publish") =>
     async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false)
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          "v1",
+        );
       if (!dependencies.certifiedForkReview)
         return sendActionErrorCode(
           reply,
@@ -1207,10 +1206,12 @@ function sendActionErrorCode(
 
 function statusCodeForActionError(message: string): number {
   if (message.includes("certified_fork_unavailable")) return 503;
+  if (message.includes("certified_fork_v5_not_enabled")) return 503;
   if (message.includes("certified_fork_oidc_replay")) return 409;
   if (
     message.includes("certified_fork_diff_budget") ||
-    message.includes("certified_fork_diff_pagination")
+    message.includes("certified_fork_diff_pagination") ||
+    message.includes("certified_fork_prompt_packet_too_large")
   )
     return 413;
   if (
@@ -1219,6 +1220,11 @@ function statusCodeForActionError(message: string): number {
   )
     return 412;
   if (message.includes("certified_fork_lease_not_finalized")) return 409;
+  if (
+    message.includes("certified_fork_claim_") ||
+    message.includes("certified_fork_publish_digest_conflict")
+  )
+    return 409;
   if (message.includes("certified_fork_identity_invalid")) return 403;
   if (message.includes("certified_fork_")) return 400;
   if (

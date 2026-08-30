@@ -27,6 +27,11 @@ export type CodexRotatingSecretWriteTarget = {
   readonly secretName: string;
 };
 
+/** A failure proven to have happened before a prelease could be persisted. */
+export class CodexRotatingPreleaseNotAcquiredError extends Error {
+  readonly preleaseNotAcquired = true;
+}
+
 export interface CodexRotatingOAuthRepositoryPort {
   findProviderBinding(input: {
     readonly repository: ActionRepositoryContext;
@@ -46,6 +51,7 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
+    readonly certifiedForkReviewBindingHash?: string | undefined;
     readonly newWorkAdmissionBarrier: Readonly<{
       assertAdmitted(): void;
     }>;

@@ -39,6 +39,7 @@ import type {
 } from "../../application/ports/codex-rotating-oauth-repository-port.js";
 import type { CodexRotatingReviewSnapshotAccessPort } from "../../application/ports/codex-rotating-review-snapshot-access-port.js";
 import type { CodexRotatingReviewExecutionCheckpointAccessPort } from "../../application/ports/codex-rotating-review-execution-checkpoint-access-port.js";
+import { certifiedForkReviewLeaseBindingKey } from "../../application/use-cases/certified-fork-review-binding.js";
 
 const codexRotatingRepositoryContextSelect = {
   id: true,
@@ -274,6 +275,7 @@ export class PrismaCodexRotatingOAuthRepository
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
+    readonly certifiedForkReviewBindingHash?: string | undefined;
     readonly newWorkAdmissionBarrier: Readonly<{
       assertAdmitted(): void;
     }>;
@@ -282,7 +284,18 @@ export class PrismaCodexRotatingOAuthRepository
       providerInstanceId: input.providerInstanceId,
       githubRepositoryId: input.repository.githubRepositoryId,
     });
-    const leaseKey = `${input.providerInstanceId}:${input.githubRunId}:${input.githubRunAttempt}`;
+    const leaseKey = [
+      input.providerInstanceId,
+      input.githubRunId,
+      input.githubRunAttempt,
+      ...(input.certifiedForkReviewBindingHash
+        ? [
+            certifiedForkReviewLeaseBindingKey(
+              input.certifiedForkReviewBindingHash,
+            ),
+          ]
+        : []),
+    ].join(":");
 
     return this.prisma.$transaction(async (tx) => {
       await setBoundedProviderRowWaits(tx);
@@ -405,6 +418,7 @@ export class PrismaCodexRotatingOAuthRepository
             githubRunId: true,
             githubRunAttempt: true,
             pullRequestNumber: true,
+            leaseKey: true,
             status: true,
             expiresAt: true,
             mutationEpoch: true,
@@ -420,6 +434,7 @@ export class PrismaCodexRotatingOAuthRepository
           if (
             activeLease.githubRunId === input.githubRunId &&
             activeLease.githubRunAttempt === input.githubRunAttempt &&
+            activeLease.leaseKey === leaseKey &&
             activeLease.status === "preleased" &&
             (activeNamespace.id === null ||
               (activeLease.secretNamespaceId === activeNamespace.id &&

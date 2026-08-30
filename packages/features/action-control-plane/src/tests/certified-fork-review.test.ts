@@ -3,8 +3,15 @@ import { describe, expect, it } from "vitest";
 import type { CertifiedForkReviewDependencies } from "../application/use-cases/prepare-certified-fork-review.js";
 import { prepareCertifiedForkReview } from "../application/use-cases/prepare-certified-fork-review.js";
 import { publishCertifiedForkReview } from "../application/use-cases/publish-certified-fork-review.js";
-import type { CertifiedForkReviewTicket } from "../application/ports/certified-fork-review-port.js";
+import type {
+  CertifiedForkReviewPublishLockPort,
+  CertifiedForkReviewTicket,
+} from "../application/ports/certified-fork-review-port.js";
 import { registerActionControlPlaneRoutes } from "../interface/http/register-action-control-plane-routes.js";
+import {
+  assertCertifiedForkReviewPromptPacketSize,
+  certifiedForkReviewMaxPromptPacketBytes,
+} from "../application/use-cases/certified-fork-review-binding.js";
 
 const sha = "a".repeat(40);
 const head = "b".repeat(40);
@@ -38,18 +45,50 @@ const claims = {
 };
 
 describe("certified fork review use cases", () => {
+  it("enforces the prompt packet limit in UTF-8 bytes", () => {
+    const wrapperBytes = Buffer.byteLength(
+      JSON.stringify({ value: "" }),
+      "utf8",
+    );
+    expect(() =>
+      assertCertifiedForkReviewPromptPacketSize({
+        value: "x".repeat(
+          certifiedForkReviewMaxPromptPacketBytes - wrapperBytes,
+        ),
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertCertifiedForkReviewPromptPacketSize({
+        value: "x".repeat(
+          certifiedForkReviewMaxPromptPacketBytes - wrapperBytes + 1,
+        ),
+      }),
+    ).toThrow("certified_fork_prompt_packet_too_large");
+    expect(() =>
+      assertCertifiedForkReviewPromptPacketSize({
+        value: "é".repeat(
+          Math.floor(
+            (certifiedForkReviewMaxPromptPacketBytes - wrapperBytes) / 2,
+          ) + 1,
+        ),
+      }),
+    ).toThrow("certified_fork_prompt_packet_too_large");
+  });
+
   it("binds prepare and publish to fresh OIDC, lease, workflow, context and tuple", async () => {
     const { dependencies, consumed, published } = fixture();
-    const prepared = await prepareCertifiedForkReview(
-      {
-        oidcToken: "prepare",
-        audience: "reviewrouter",
-        leaseId: "lease-123",
-        providerInstanceId: "provider-123",
-        workflowSchemaVersion: 5,
-        forkReviewBinding: binding,
-      },
-      dependencies,
+    const prepared = requireReady(
+      await prepareCertifiedForkReview(
+        {
+          oidcToken: "prepare",
+          audience: "reviewrouter",
+          leaseId: "lease-123",
+          providerInstanceId: "provider-123",
+          workflowSchemaVersion: 5,
+          forkReviewBinding: binding,
+        },
+        dependencies,
+      ),
     );
     expect(prepared).toMatchObject({
       protocolVersion: 1,
@@ -80,6 +119,85 @@ describe("certified fork review use cases", () => {
     );
     expect(consumed).toEqual(["fresh", "publish"]);
     expect(published).toHaveLength(1);
+  });
+
+  it("serializes concurrent same-ticket publishes into one external comment", async () => {
+    const { dependencies } = fixture();
+    const prepared = requireReady(
+      await prepareCertifiedForkReview(
+        {
+          oidcToken: "prepare",
+          audience: "reviewrouter",
+          leaseId: "lease-123",
+          providerInstanceId: "provider-123",
+          workflowSchemaVersion: 5,
+          forkReviewBinding: binding,
+        },
+        dependencies,
+      ),
+    );
+    let tail = Promise.resolve();
+    dependencies.certifiedForkReviewPublishLock = {
+      withLock: async (_key, run) => {
+        const previous = tail;
+        let release!: () => void;
+        tail = new Promise<void>((resolve) => (release = resolve));
+        await previous;
+        try {
+          return await run();
+        } finally {
+          release();
+        }
+      },
+    };
+    let commentCreated = false;
+    let creates = 0;
+    let publishedDigest: string | null = null;
+    dependencies.certifiedForkReviewClaims.beginPublish = async ({
+      outputDigest,
+    }) =>
+      publishedDigest === outputDigest
+        ? { status: "already_published", commentId: "10" }
+        : { status: "ready" };
+    dependencies.certifiedForkReviewClaims.completePublished = async ({
+      outputDigest,
+    }) => {
+      publishedDigest = outputDigest;
+    };
+    dependencies.certifiedForkReviewGateway.upsertOwnedComment = async () => {
+      if (!commentCreated) {
+        await Promise.resolve();
+        commentCreated = true;
+        creates += 1;
+      }
+      return { status: "created", commentId: "10" };
+    };
+    const publish = (oidcToken: string) =>
+      publishCertifiedForkReview(
+        {
+          oidcToken,
+          audience: "reviewrouter",
+          leaseId: "lease-123",
+          providerInstanceId: "provider-123",
+          workflowSchemaVersion: 5,
+          forkReviewBinding: binding,
+          executionId: prepared.executionId,
+          contextHash: prepared.contextHash,
+          modelOutput: {
+            protocolVersion: 1,
+            summaryMarkdown: "ok",
+            findings: [],
+          },
+        },
+        {
+          ...dependencies,
+          certifiedForkReviewOutput: { render: () => ({ body: "safe" }) },
+        },
+      );
+    await expect(
+      Promise.all([publish("publish-1"), publish("publish-2")]),
+    ).resolves.toHaveLength(2);
+    expect(creates).toBe(1);
   });
 
   it.each([
@@ -136,11 +254,22 @@ describe("certified fork review use cases", () => {
     });
   });
 
-  it("rejects context replay before publication", async () => {
-    const { dependencies, published } = fixture();
-    const prepared = await prepareCertifiedForkReview(
+  it.each([
+    ["in_progress", { status: "in_progress" as const }],
+    [
+      "already_published",
       {
-        oidcToken: "x",
+        status: "already_published" as const,
+        commentId: "10",
+        commentUrl: "https://example.test/comment/10",
+      },
+    ],
+  ])("returns provider-free %s duplicate prepare", async (status, claim) => {
+    const { dependencies } = fixture();
+    dependencies.certifiedForkReviewClaims.claimPrepare = async () => claim;
+    const result = await prepareCertifiedForkReview(
+      {
+        oidcToken: "prepare",
         audience: "reviewrouter",
         leaseId: "lease-123",
         providerInstanceId: "provider-123",
@@ -148,6 +277,26 @@ describe("certified fork review use cases", () => {
         forkReviewBinding: binding,
       },
       dependencies,
+    );
+    expect(result).toMatchObject({ protocolVersion: 1, status });
+    expect(result).not.toHaveProperty("model");
+    expect(result).not.toHaveProperty("promptPacket");
+  });
+
+  it("rejects context replay before publication", async () => {
+    const { dependencies, published } = fixture();
+    const prepared = requireReady(
+      await prepareCertifiedForkReview(
+        {
+          oidcToken: "x",
+          audience: "reviewrouter",
+          leaseId: "lease-123",
+          providerInstanceId: "provider-123",
+          workflowSchemaVersion: 5,
+          forkReviewBinding: binding,
+        },
+        dependencies,
+      ),
     );
     await expect(
       publishCertifiedForkReview(
@@ -173,16 +322,18 @@ describe("certified fork review use cases", () => {
 
   it("does not publish when the provider returns no valid output", async () => {
     const { dependencies, published } = fixture();
-    const prepared = await prepareCertifiedForkReview(
-      {
-        oidcToken: "prepare",
-        audience: "reviewrouter",
-        leaseId: "lease-123",
-        providerInstanceId: "provider-123",
-        workflowSchemaVersion: 5,
-        forkReviewBinding: binding,
-      },
-      dependencies,
+    const prepared = requireReady(
+      await prepareCertifiedForkReview(
+        {
+          oidcToken: "prepare",
+          audience: "reviewrouter",
+          leaseId: "lease-123",
+          providerInstanceId: "provider-123",
+          workflowSchemaVersion: 5,
+          forkReviewBinding: binding,
+        },
+        dependencies,
+      ),
     );
     await expect(
       publishCertifiedForkReview(
@@ -257,6 +408,71 @@ describe("certified fork review use cases", () => {
     await app.close();
   });
 
+  it("honors the global emergency disable for prepare and publish", async () => {
+    const { dependencies, consumed } = fixture();
+    const app = Fastify({ logger: false });
+    await registerActionControlPlaneRoutes(app, {
+      controlPlaneEnabled: false,
+      certifiedForkReview: {
+        ...dependencies,
+        certifiedForkReviewOutput: { render: () => ({ body: "safe" }) },
+      },
+    } as unknown as Parameters<typeof registerActionControlPlaneRoutes>[1]);
+    for (const operation of ["prepare", "publish"] as const) {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/action/v1/certified-fork-review/${operation}`,
+        payload: {},
+      });
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toMatchObject({
+        error: { code: "action_control_plane_disabled" },
+      });
+    }
+    expect(consumed).toHaveLength(0);
+    await app.close();
+  });
+
+  it("fails closed before issuing a ticket when the prompt packet exceeds 300000 chars", async () => {
+    const { dependencies } = fixture();
+    dependencies.certifiedForkReviewGateway.prepareContext = async () => ({
+      contextHash: "c".repeat(64),
+      promptPacket: {
+        protocolVersion: 1,
+        contextHash: "c".repeat(64),
+        repository: {
+          base: binding.baseRepository,
+          source: binding.sourceRepository,
+        },
+        pullRequestNumber: binding.pullRequestNumber,
+        baseSha: binding.baseSha,
+        headSha: binding.reviewHeadSha,
+        files: [
+          {
+            path: "src/a.ts",
+            status: "modified",
+            additions: 1,
+            deletions: 1,
+            patch: "x".repeat(certifiedForkReviewMaxPromptPacketBytes),
+          },
+        ],
+      },
+    });
+    await expect(
+      prepareCertifiedForkReview(
+        {
+          oidcToken: "prepare",
+          audience: "reviewrouter",
+          leaseId: "lease-123",
+          providerInstanceId: "provider-123",
+          workflowSchemaVersion: 5,
+          forkReviewBinding: binding,
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow("certified_fork_prompt_packet_too_large");
+  });
+
   it.each([
     ["sourceRepository", { sourceRepository: "other/example" }],
     ["sourceRepositoryId", { sourceRepositoryId: "102" }],
@@ -268,16 +484,18 @@ describe("certified fork review use cases", () => {
     ["trustDomain", { trustDomain: "fork-other" }],
   ])("rejects publish when ticket %s is mutated", async (_name, mutation) => {
     const { dependencies, published } = fixture();
-    const prepared = await prepareCertifiedForkReview(
-      {
-        oidcToken: "prepare",
-        audience: "reviewrouter",
-        leaseId: "lease-123",
-        providerInstanceId: "provider-123",
-        workflowSchemaVersion: 5,
-        forkReviewBinding: binding,
-      },
-      dependencies,
+    const prepared = requireReady(
+      await prepareCertifiedForkReview(
+        {
+          oidcToken: "prepare",
+          audience: "reviewrouter",
+          leaseId: "lease-123",
+          providerInstanceId: "provider-123",
+          workflowSchemaVersion: 5,
+          forkReviewBinding: binding,
+        },
+        dependencies,
+      ),
     );
     await expect(
       publishCertifiedForkReview(
@@ -306,7 +524,10 @@ function fixture(claimChange: Record<string, unknown> = {}) {
   const consumed: string[] = [];
   const published: unknown[] = [];
   let ticket: CertifiedForkReviewTicket | null = null;
-  const dependencies: CertifiedForkReviewDependencies = {
+  let claimedOutputDigest: string | null = null;
+  const dependencies: CertifiedForkReviewDependencies & {
+    certifiedForkReviewPublishLock: CertifiedForkReviewPublishLockPort;
+  } = {
     oidcVerifier: {
       verify: async ({ token }) =>
         ({
@@ -326,6 +547,7 @@ function fixture(claimChange: Record<string, unknown> = {}) {
       assertFinalizedV5ForkLease: async () => ({ githubInstallationId: "7" }),
     },
     certifiedForkReviewGateway: {
+      assertBindingCurrent: async () => undefined,
       prepareContext: async () => ({
         contextHash: "c".repeat(64),
         promptPacket: {
@@ -363,7 +585,34 @@ function fixture(claimChange: Record<string, unknown> = {}) {
     certifiedForkReviewTickets: {
       issue: async (value) => (ticket = { ...value, executionId: "execution" }),
       verify: async () => ticket!,
+      signPublication: async () => "9".repeat(64),
+    },
+    certifiedForkReviewClaims: {
+      claimPrelease: async () => ({ status: "ready" }),
+      abandonPrelease: async () => undefined,
+      claimPrepare: async () => ({ status: "ready" }),
+      beginPublish: async ({ outputDigest }) => {
+        if (claimedOutputDigest && claimedOutputDigest !== outputDigest)
+          throw new Error("certified_fork_publish_digest_conflict");
+        claimedOutputDigest = outputDigest;
+        return { status: "ready" };
+      },
+      completePublished: async () => undefined,
+    },
+    certifiedForkReviewAdmission: { assertEnabled: () => undefined },
+    certifiedForkReviewPublishLock: {
+      withLock: async (_key, run) => await run(),
     },
   };
   return { dependencies, consumed, published };
+}
+
+function requireReady(
+  result: Awaited<ReturnType<typeof prepareCertifiedForkReview>>,
+): Extract<
+  Awaited<ReturnType<typeof prepareCertifiedForkReview>>,
+  { status: "ready" }
+> {
+  if (result.status !== "ready") throw new Error("expected_ready_prepare");
+  return result;
 }

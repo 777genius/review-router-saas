@@ -106,6 +106,10 @@ export class InMemoryCodexRotatingOAuthRepository
     VersionedProviderSecretNamespace
   >();
   private readonly restoredGenerationHashByLeaseId = new Map<string, string>();
+  private readonly certifiedForkBindingHashByLeaseId = new Map<
+    string,
+    string
+  >();
   private readonly leaseSourceById = new Map<
     string,
     {
@@ -240,6 +244,7 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
+    readonly certifiedForkReviewBindingHash?: string | undefined;
     readonly now?: Date;
     readonly newWorkAdmissionBarrier: Readonly<{
       assertAdmitted(): void;
@@ -274,6 +279,17 @@ export class InMemoryCodexRotatingOAuthRepository
       ttlSeconds: 15 * 60,
     });
     if (lease.status !== "conflict") {
+      if (
+        this.leaseSourceById.has(lease.leaseId) &&
+        this.certifiedForkBindingHashByLeaseId.get(lease.leaseId) !==
+          input.certifiedForkReviewBindingHash
+      )
+        throw new Error("codex_rotating_lease_binding_mismatch");
+      if (input.certifiedForkReviewBindingHash)
+        this.certifiedForkBindingHashByLeaseId.set(
+          lease.leaseId,
+          input.certifiedForkReviewBindingHash,
+        );
       this.leaseExpiresAtById.set(lease.leaseId, lease.expiresAt);
       this.leaseSourceById.set(lease.leaseId, {
         providerInstanceId: input.providerInstanceId,

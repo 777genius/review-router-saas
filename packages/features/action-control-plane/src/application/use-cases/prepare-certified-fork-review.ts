@@ -8,10 +8,19 @@ import type { ActionOidcReplayNonceStorePort } from "../ports/action-oidc-replay
 import type { GitHubActionsOidcTokenVerifierPort } from "../ports/github-actions-oidc-token-verifier-port.js";
 import type {
   CertifiedForkReviewBinding,
+  CertifiedForkReviewClaimPort,
+  CertifiedForkReviewAdmissionPort,
   CertifiedForkReviewGatewayPort,
   CertifiedForkReviewLeasePort,
   CertifiedForkReviewTicketPort,
 } from "../ports/certified-fork-review-port.js";
+import {
+  assertCertifiedForkReviewPromptPacketSize,
+  certifiedForkReviewMaxExecutionIdChars,
+  certifiedForkReviewWorkflowSchemaVersion,
+  certifiedForkReviewClaimScope,
+  certifiedForkReviewReservationOwner,
+} from "./certified-fork-review-binding.js";
 
 export const certifiedForkReviewModel = "gpt-5.6-sol";
 export const certifiedForkReviewMaxOutputTokens = 12_000;
@@ -22,6 +31,8 @@ export type CertifiedForkReviewDependencies = Readonly<{
   certifiedForkReviewLeases: CertifiedForkReviewLeasePort;
   certifiedForkReviewGateway: CertifiedForkReviewGatewayPort;
   certifiedForkReviewTickets: CertifiedForkReviewTicketPort;
+  certifiedForkReviewClaims: CertifiedForkReviewClaimPort;
+  certifiedForkReviewAdmission: CertifiedForkReviewAdmissionPort;
   clock: { now(): Date };
 }>;
 
@@ -37,6 +48,7 @@ export async function prepareCertifiedForkReview(
   d: CertifiedForkReviewDependencies,
 ) {
   const claims = await verifyCertifiedForkClaims(input, d);
+  d.certifiedForkReviewAdmission.assertEnabled(input.forkReviewBinding);
   const lease = await d.certifiedForkReviewLeases.assertFinalizedV5ForkLease({
     leaseId: input.leaseId,
     providerInstanceId: input.providerInstanceId,
@@ -48,6 +60,7 @@ export async function prepareCertifiedForkReview(
     githubInstallationId: lease.githubInstallationId,
     binding: input.forkReviewBinding,
   });
+  assertCertifiedForkReviewPromptPacketSize(prepared.promptPacket);
   const ticket = await d.certifiedForkReviewTickets.issue({
     contextHash: prepared.contextHash,
     leaseId: input.leaseId,
@@ -59,8 +72,33 @@ export async function prepareCertifiedForkReview(
     workflowSha: claims.workflow_sha!,
     binding: input.forkReviewBinding,
   });
+  if (ticket.executionId.length > certifiedForkReviewMaxExecutionIdChars)
+    throw new Error("certified_fork_execution_id_too_large");
+  const claim = await d.certifiedForkReviewClaims.claimPrepare({
+    scope: certifiedForkReviewClaimScope(
+      input.forkReviewBinding,
+      prepared.contextHash,
+    ),
+    reservationOwner: certifiedForkReviewReservationOwner({
+      repositoryId: claims.repository_id,
+      runId: claims.run_id,
+      runAttempt: claims.run_attempt,
+      workflowSha: claims.workflow_sha!,
+    }),
+    executionId: ticket.executionId,
+  });
+  if (claim.status === "in_progress")
+    return { protocolVersion: 1 as const, status: "in_progress" as const };
+  if (claim.status === "already_published")
+    return {
+      protocolVersion: 1 as const,
+      status: "already_published" as const,
+      commentId: claim.commentId,
+      ...(claim.commentUrl ? { commentUrl: claim.commentUrl } : {}),
+    };
   return {
     protocolVersion: 1 as const,
+    status: "ready" as const,
     executionId: ticket.executionId,
     contextHash: prepared.contextHash,
     model: certifiedForkReviewModel,
@@ -78,7 +116,7 @@ export async function verifyCertifiedForkClaims(
   },
   d: Pick<CertifiedForkReviewDependencies, "oidcVerifier">,
 ): Promise<GitHubActionsOidcClaims> {
-  if (input.workflowSchemaVersion !== 5)
+  if (input.workflowSchemaVersion !== certifiedForkReviewWorkflowSchemaVersion)
     throw new Error("certified_fork_schema_invalid");
   const claims = await d.oidcVerifier.verify({
     token: input.oidcToken,

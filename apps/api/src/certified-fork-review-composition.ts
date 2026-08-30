@@ -1,5 +1,6 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { PrismaClient } from "@reviewrouter/platform-db";
+import { Prisma } from "@prisma/client";
 import type {
   CertifiedForkReviewLeasePort,
   CertifiedForkReviewOutputPort,
@@ -9,6 +10,15 @@ import type {
   ActionOidcReplayNonceStorePort,
   CodexRotatingOAuthRepositoryPort,
   GitHubActionsOidcTokenVerifierPort,
+  CertifiedForkReviewPublishLockPort,
+  CertifiedForkReviewClaimPort,
+  CertifiedForkReviewClaimScope,
+  CertifiedForkReviewAdmissionPort,
+  CertifiedForkReviewBinding,
+} from "@reviewrouter/features-action-control-plane";
+import {
+  certifiedForkReviewBindingHash,
+  certifiedForkReviewLeaseBindingKey,
 } from "@reviewrouter/features-action-control-plane";
 import { createReviewFindingsArtifactFromModelOutput } from "@reviewrouter/features-review-publishing";
 import { OctokitCertifiedForkReviewGateway } from "./github/octokit-certified-fork-review-gateway.js";
@@ -24,7 +34,14 @@ export function composeCertifiedForkReview(input: {
   clock: { now(): Date };
   repositories: ActionControlPlaneRepositoryPort;
   codexRotatingOAuth: CodexRotatingOAuthRepositoryPort;
+  enabled: boolean;
+  approvedRepositories: readonly string[];
 }) {
+  const certifiedForkReviewGateway = new OctokitCertifiedForkReviewGateway({
+    appId: input.appId,
+    privateKey: input.privateKey,
+    appSlug: input.appSlug,
+  });
   return {
     oidcVerifier: input.oidcVerifier,
     replayNonces: input.replayNonces,
@@ -35,16 +52,215 @@ export function composeCertifiedForkReview(input: {
       input.codexRotatingOAuth,
       input.clock,
     ),
-    certifiedForkReviewGateway: new OctokitCertifiedForkReviewGateway({
-      appId: input.appId,
-      privateKey: input.privateKey,
-      appSlug: input.appSlug,
-    }),
+    certifiedForkReviewGateway,
     certifiedForkReviewTickets: new HmacCertifiedForkReviewTickets(
       input.ticketSecret,
     ),
     certifiedForkReviewOutput: new StrictCertifiedForkReviewOutput(),
+    certifiedForkReviewPublishLock: new PrismaCertifiedForkReviewPublishLock(
+      input.prisma,
+    ),
+    certifiedForkReviewClaims: new PrismaCertifiedForkReviewClaims(
+      input.prisma,
+    ),
+    certifiedForkReviewAdmission: new StaticCertifiedForkReviewAdmission(
+      input.enabled,
+      new Set(input.approvedRepositories),
+    ),
   };
+}
+
+export class StaticCertifiedForkReviewAdmission implements CertifiedForkReviewAdmissionPort {
+  constructor(
+    private readonly enabled: boolean,
+    private readonly approvedRepositories: ReadonlySet<string>,
+  ) {}
+
+  assertEnabled(binding: CertifiedForkReviewBinding): void {
+    if (
+      !this.enabled ||
+      !this.approvedRepositories.has(binding.baseRepository.toLowerCase())
+    )
+      throw new Error("certified_fork_v5_not_enabled");
+  }
+}
+
+export class PrismaCertifiedForkReviewClaims implements CertifiedForkReviewClaimPort {
+  constructor(private readonly prisma: PrismaClient) {}
+
+  async claimPrelease(input: {
+    scope: CertifiedForkReviewClaimScope;
+    reservationOwner: string;
+  }) {
+    const scopeKey = claimScopeKey(input.scope);
+    try {
+      await this.prisma.certifiedForkReviewClaim.create({
+        data: {
+          scopeKey,
+          ...input.scope,
+          reservationOwner: input.reservationOwner,
+        },
+      });
+      return { status: "ready" as const };
+    } catch (error) {
+      if (!isUniqueConflict(error)) throw error;
+    }
+    const existing = await this.readExact(scopeKey, input.scope);
+    if (existing.status === "published") {
+      if (!existing.commentId) throw new Error("certified_fork_claim_invalid");
+      return {
+        status: "already_published" as const,
+        commentId: existing.commentId,
+        ...(existing.commentUrl ? { commentUrl: existing.commentUrl } : {}),
+      };
+    }
+    if (existing.status !== "pending")
+      throw new Error("certified_fork_claim_conflict");
+    return { status: "in_progress" as const };
+  }
+
+  async abandonPrelease(input: {
+    scope: CertifiedForkReviewClaimScope;
+    reservationOwner: string;
+  }): Promise<void> {
+    await this.prisma.certifiedForkReviewClaim.deleteMany({
+      where: {
+        scopeKey: claimScopeKey(input.scope),
+        status: "pending",
+        reservationOwner: input.reservationOwner,
+        executionId: null,
+        outputDigest: null,
+      },
+    });
+  }
+
+  async claimPrepare(input: {
+    scope: CertifiedForkReviewClaimScope;
+    reservationOwner: string;
+    executionId: string;
+  }) {
+    const scopeKey = claimScopeKey(input.scope);
+    const existing = await this.readExact(scopeKey, input.scope);
+    if (existing.status === "published") {
+      if (!existing.commentId) throw new Error("certified_fork_claim_invalid");
+      return {
+        status: "already_published" as const,
+        commentId: existing.commentId,
+        ...(existing.commentUrl ? { commentUrl: existing.commentUrl } : {}),
+      };
+    }
+    if (
+      existing.status !== "pending" ||
+      existing.reservationOwner !== input.reservationOwner
+    )
+      throw new Error("certified_fork_claim_reservation_mismatch");
+    if (existing.executionId !== null)
+      return { status: "in_progress" as const };
+    const updated = await this.prisma.certifiedForkReviewClaim.updateMany({
+      where: {
+        id: existing.id,
+        status: "pending",
+        reservationOwner: input.reservationOwner,
+        executionId: null,
+      },
+      data: { executionId: input.executionId },
+    });
+    if (updated.count !== 1) return { status: "in_progress" as const };
+    return { status: "ready" as const };
+  }
+
+  async beginPublish(input: {
+    scope: CertifiedForkReviewClaimScope;
+    executionId: string;
+    outputDigest: string;
+  }) {
+    assertDigest(input.outputDigest);
+    const scopeKey = claimScopeKey(input.scope);
+    const existing = await this.readExact(scopeKey, input.scope);
+    if (existing.executionId !== input.executionId)
+      throw new Error("certified_fork_claim_execution_mismatch");
+    if (existing.status === "published") {
+      if (existing.outputDigest !== input.outputDigest || !existing.commentId)
+        throw new Error("certified_fork_publish_digest_conflict");
+      return {
+        status: "already_published" as const,
+        commentId: existing.commentId,
+        ...(existing.commentUrl ? { commentUrl: existing.commentUrl } : {}),
+      };
+    }
+    if (
+      existing.status !== "pending" ||
+      (existing.outputDigest !== null &&
+        existing.outputDigest !== input.outputDigest)
+    )
+      throw new Error("certified_fork_publish_digest_conflict");
+    const updated = await this.prisma.certifiedForkReviewClaim.updateMany({
+      where: {
+        id: existing.id,
+        status: "pending",
+        OR: [{ outputDigest: null }, { outputDigest: input.outputDigest }],
+      },
+      data: { outputDigest: input.outputDigest },
+    });
+    if (updated.count !== 1) throw new Error("certified_fork_claim_conflict");
+    return { status: "ready" as const };
+  }
+
+  async completePublished(input: {
+    scope: CertifiedForkReviewClaimScope;
+    executionId: string;
+    outputDigest: string;
+    commentId: string;
+    commentUrl?: string;
+  }): Promise<void> {
+    assertDigest(input.outputDigest);
+    const updated = await this.prisma.certifiedForkReviewClaim.updateMany({
+      where: {
+        scopeKey: claimScopeKey(input.scope),
+        executionId: input.executionId,
+        status: "pending",
+        outputDigest: input.outputDigest,
+      },
+      data: {
+        status: "published",
+        commentId: input.commentId,
+        ...(input.commentUrl ? { commentUrl: input.commentUrl } : {}),
+        publishedAt: new Date(),
+      },
+    });
+    if (updated.count !== 1)
+      throw new Error("certified_fork_claim_completion_conflict");
+  }
+
+  private async readExact(
+    scopeKey: string,
+    scope: CertifiedForkReviewClaimScope,
+  ) {
+    const row = await this.prisma.certifiedForkReviewClaim.findUnique({
+      where: { scopeKey },
+    });
+    if (!row || !sameClaimScope(row, scope))
+      throw new Error("certified_fork_claim_conflict");
+    return row;
+  }
+}
+
+export class PrismaCertifiedForkReviewPublishLock implements CertifiedForkReviewPublishLockPort {
+  constructor(private readonly prisma: PrismaClient) {}
+
+  async withLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+    if (!key || key.length > 500)
+      throw new Error("certified_fork_publish_lock_invalid");
+    return await this.prisma.$transaction(
+      async (transaction) => {
+        await transaction.$queryRaw(
+          Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
+        );
+        return await run();
+      },
+      { maxWait: 60_000, timeout: 300_000 },
+    );
+  }
 }
 
 export class PrismaCertifiedForkReviewLease implements CertifiedForkReviewLeasePort {
@@ -66,6 +282,7 @@ export class PrismaCertifiedForkReviewLease implements CertifiedForkReviewLeaseP
         githubRunId: true,
         githubRunAttempt: true,
         pullRequestNumber: true,
+        leaseKey: true,
         status: true,
         finalizedAt: true,
         completedAt: true,
@@ -89,6 +306,11 @@ export class PrismaCertifiedForkReviewLease implements CertifiedForkReviewLeaseP
       lease.githubRunId !== input.claims.run_id ||
       lease.githubRunAttempt !== input.claims.run_attempt ||
       lease.pullRequestNumber !== input.binding.pullRequestNumber ||
+      !lease.leaseKey.endsWith(
+        `:${certifiedForkReviewLeaseBindingKey(
+          certifiedForkReviewBindingHash(input.binding),
+        )}`,
+      ) ||
       lease.status !== "completed" ||
       !lease.finalizedAt ||
       !lease.completedAt ||
@@ -157,6 +379,18 @@ export class HmacCertifiedForkReviewTickets implements CertifiedForkReviewTicket
       return { ...value, executionId } as CertifiedForkReviewTicket;
     throw new Error("certified_fork_context_mismatch");
   }
+  async signPublication(input: {
+    executionDigest: string;
+    outputDigest: string;
+  }): Promise<string> {
+    assertDigest(input.executionDigest);
+    assertDigest(input.outputDigest);
+    return createHmac("sha256", this.secret)
+      .update(
+        `certified-fork-publication:${input.executionDigest}:${input.outputDigest}`,
+      )
+      .digest("hex");
+  }
   private sign(value: string) {
     return createHmac("sha256", this.secret).update(value).digest("base64url");
   }
@@ -184,7 +418,6 @@ export class StrictCertifiedForkReviewOutput implements CertifiedForkReviewOutpu
           throw new Error("certified_fork_model_output_invalid");
       }
     const lines = [
-      input.marker,
       "## ReviewRouter certified fork review",
       "",
       cleanMarkdown(artifact.summaryMarkdown ?? "Review complete."),
@@ -196,7 +429,7 @@ export class StrictCertifiedForkReviewOutput implements CertifiedForkReviewOutpu
           "",
           `**[${finding.severity}] ${escape(cleanMarkdown(finding.title))}**`,
           finding.location
-            ? `\`${escape(finding.location.filePath)}:${finding.location.newLine ?? finding.location.oldLine}\``
+            ? `<code>${escapeHtml(finding.location.filePath)}:${finding.location.newLine ?? finding.location.oldLine}</code>`
             : "",
           cleanMarkdown(finding.body),
         );
@@ -217,6 +450,11 @@ function safePath(value: string) {
     value.length <= 500 &&
     !value.startsWith("/") &&
     !value.includes("\\") &&
+    !value.includes("`") &&
+    ![...value].some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    }) &&
     !value
       .split("/")
       .some((part) => part === "" || part === "." || part === "..")
@@ -224,6 +462,14 @@ function safePath(value: string) {
 }
 function escape(value: string) {
   return value.replaceAll("`", "\\`");
+}
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 function cleanMarkdown(value: string) {
   return value
@@ -242,4 +488,45 @@ function cleanMarkdown(value: string) {
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function claimScopeKey(scope: CertifiedForkReviewClaimScope): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        baseRepositoryId: scope.baseRepositoryId,
+        pullRequestNumber: scope.pullRequestNumber,
+        reviewHeadSha: scope.reviewHeadSha,
+        baseSha: scope.baseSha,
+        promptPolicyVersion: scope.promptPolicyVersion,
+      }),
+    )
+    .digest("hex");
+}
+
+function sameClaimScope(
+  row: CertifiedForkReviewClaimScope,
+  scope: CertifiedForkReviewClaimScope,
+): boolean {
+  return (
+    row.baseRepositoryId === scope.baseRepositoryId &&
+    row.pullRequestNumber === scope.pullRequestNumber &&
+    row.reviewHeadSha === scope.reviewHeadSha &&
+    row.baseSha === scope.baseSha &&
+    row.contextHash === scope.contextHash &&
+    row.promptPolicyVersion === scope.promptPolicyVersion
+  );
+}
+
+function assertDigest(value: string): void {
+  if (!/^[a-f0-9]{64}$/.test(value))
+    throw new Error("certified_fork_publish_digest_invalid");
+}
+
+function isUniqueConflict(error: unknown): boolean {
+  return (
+    (error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002") ||
+    (record(error) && error.code === "P2002")
+  );
 }

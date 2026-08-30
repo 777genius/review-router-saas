@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { certifiedForkReviewBindingHash } from "@reviewrouter/features-action-control-plane";
 import {
   HmacCertifiedForkReviewTickets,
   PrismaCertifiedForkReviewLease,
+  PrismaCertifiedForkReviewClaims,
+  StaticCertifiedForkReviewAdmission,
   StrictCertifiedForkReviewOutput,
 } from "./certified-fork-review-composition.js";
 const binding = {
@@ -35,6 +38,143 @@ const promptPacket = {
   ],
 };
 describe("certified fork composition", () => {
+  it("atomically admits one pre-provider claim and fences publish execution/digest", async () => {
+    let row: Record<string, unknown> | null = null;
+    const delegate = {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        await Promise.resolve();
+        if (row) throw { code: "P2002" };
+        row = {
+          id: "claim-1",
+          status: "pending",
+          executionId: null,
+          outputDigest: null,
+          commentId: null,
+          commentUrl: null,
+          ...data,
+        };
+        return row;
+      }),
+      findUnique: vi.fn(async () => row),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          if (!row || row.status !== where.status) return { count: 0 };
+          if (where.executionId && row.executionId !== where.executionId)
+            return { count: 0 };
+          if (where.outputDigest && row.outputDigest !== where.outputDigest)
+            return { count: 0 };
+          row = { ...row, ...data };
+          return { count: 1 };
+        },
+      ),
+      deleteMany: vi.fn(async () => {
+        row = null;
+        return { count: 1 };
+      }),
+    };
+    const claims = new PrismaCertifiedForkReviewClaims({
+      certifiedForkReviewClaim: delegate,
+    } as never);
+    const scope = {
+      baseRepositoryId: "99",
+      pullRequestNumber: 42,
+      reviewHeadSha: binding.reviewHeadSha,
+      baseSha: binding.baseSha,
+      contextHash: "c".repeat(64),
+      promptPolicyVersion: 1,
+    };
+    const [first, duplicate] = await Promise.all([
+      claims.claimPrelease({ scope, reservationOwner: "owner-1" }),
+      claims.claimPrelease({ scope, reservationOwner: "owner-2" }),
+    ]);
+    expect([first.status, duplicate.status].sort()).toEqual([
+      "in_progress",
+      "ready",
+    ]);
+    await expect(
+      claims.claimPrelease({
+        scope: { ...scope, contextHash: "f".repeat(64) },
+        reservationOwner: "owner-3",
+      }),
+    ).rejects.toThrow("certified_fork_claim_conflict");
+    const winningOwner = first.status === "ready" ? "owner-1" : "owner-2";
+    const losingOwner = first.status === "ready" ? "owner-2" : "owner-1";
+    await expect(
+      claims.claimPrepare({
+        scope,
+        reservationOwner: losingOwner,
+        executionId: "losing-execution",
+      }),
+    ).rejects.toThrow("certified_fork_claim_reservation_mismatch");
+    await expect(
+      claims.claimPrepare({
+        scope,
+        reservationOwner: winningOwner,
+        executionId: "execution-1",
+      }),
+    ).resolves.toEqual({ status: "ready" });
+    await expect(
+      claims.beginPublish({
+        scope,
+        executionId: "losing-execution",
+        outputDigest: "d".repeat(64),
+      }),
+    ).rejects.toThrow("certified_fork_claim_execution_mismatch");
+    await expect(
+      claims.beginPublish({
+        scope,
+        executionId: "execution-1",
+        outputDigest: "d".repeat(64),
+      }),
+    ).resolves.toEqual({ status: "ready" });
+    await expect(
+      claims.beginPublish({
+        scope,
+        executionId: "execution-1",
+        outputDigest: "e".repeat(64),
+      }),
+    ).rejects.toThrow("certified_fork_publish_digest_conflict");
+    await claims.completePublished({
+      scope,
+      executionId: "execution-1",
+      outputDigest: "d".repeat(64),
+      commentId: "10",
+    });
+    await expect(
+      claims.claimPrepare({
+        scope,
+        reservationOwner: "owner-3",
+        executionId: "execution-3",
+      }),
+    ).resolves.toEqual({ status: "already_published", commentId: "10" });
+  });
+  it.each([
+    ["feature off", false, ["owner/example"]],
+    ["empty cohort", true, []],
+    ["wrong cohort", true, ["owner/other"]],
+  ])("fails closed when %s", (_name, enabled, repositories) => {
+    const admission = new StaticCertifiedForkReviewAdmission(
+      enabled,
+      new Set(repositories),
+    );
+    expect(() => admission.assertEnabled(binding)).toThrow(
+      "certified_fork_v5_not_enabled",
+    );
+  });
+
+  it("admits only the canonical base repository in the enabled cohort", () => {
+    const admission = new StaticCertifiedForkReviewAdmission(
+      true,
+      new Set(["owner/example"]),
+    );
+    expect(() => admission.assertEnabled(binding)).not.toThrow();
+  });
   it("accepts only a completed recent lease with its finalized V5 provider binding", async () => {
     const findProviderBinding = vi.fn(async () => ({
       workflowPath: ".github/workflows/reviewrouter-codex.yml",
@@ -47,6 +187,9 @@ describe("certified fork composition", () => {
             githubRunId: "8",
             githubRunAttempt: "1",
             pullRequestNumber: 42,
+            leaseKey: `provider-123:8:1:fork:${certifiedForkReviewBindingHash(
+              binding,
+            )}`,
             status: "completed",
             finalizedAt: new Date("2026-08-30T09:30:00.000Z"),
             completedAt: new Date("2026-08-30T09:30:00.000Z"),
@@ -107,12 +250,17 @@ describe("certified fork composition", () => {
     await expect(tickets.verify(`${issued.executionId}x`)).rejects.toThrow(
       "certified_fork_context_mismatch",
     );
+    await expect(
+      tickets.signPublication({
+        executionDigest: "d".repeat(64),
+        outputDigest: "e".repeat(64),
+      }),
+    ).resolves.toMatch(/^[a-f0-9]{64}$/);
   });
   it("strictly parses output, strips model markers, and rejects non-diff paths", () => {
     const output = new StrictCertifiedForkReviewOutput();
     const rendered = output.render({
       generatedAt: new Date("2026-08-30T10:00:00.000Z"),
-      marker: "<!-- owned -->",
       binding,
       promptPacket,
       modelOutput: {
@@ -129,12 +277,10 @@ describe("certified fork composition", () => {
         ],
       },
     });
-    expect(rendered.body).toContain("<!-- owned -->");
     expect(rendered.body).not.toContain("attacker");
     expect(() =>
       output.render({
         generatedAt: new Date(),
-        marker: "<!-- owned -->",
         binding,
         promptPacket,
         modelOutput: {
@@ -152,5 +298,61 @@ describe("certified fork composition", () => {
         },
       }),
     ).toThrow(/review_model_output|certified_fork_model_output/);
+  });
+
+  it("HTML-escapes exact diff paths and rejects Markdown/control path injection", () => {
+    const output = new StrictCertifiedForkReviewOutput();
+    const htmlPath = "src/<img src=x>.ts";
+    const packet = {
+      ...promptPacket,
+      files: [{ ...promptPacket.files[0]!, path: htmlPath }],
+    };
+    const rendered = output.render({
+      generatedAt: new Date(),
+      binding,
+      promptPacket: packet,
+      modelOutput: {
+        protocolVersion: 1,
+        summaryMarkdown: "@maintainer <!-- marker --> <script>x</script>",
+        findings: [
+          {
+            severity: "major",
+            title: "bug",
+            body: "body",
+            path: htmlPath,
+            startLine: 1,
+          },
+        ],
+      },
+    });
+    expect(rendered.body).toContain("src/&lt;img src=x&gt;.ts");
+    expect(rendered.body).not.toContain("<img");
+    expect(rendered.body).not.toContain("<script>");
+    expect(rendered.body).toContain("@\u200bmaintainer");
+    for (const path of ["src/`escape`.ts", "src/a.ts\nattack"]) {
+      expect(() =>
+        output.render({
+          generatedAt: new Date(),
+          binding,
+          promptPacket: {
+            ...promptPacket,
+            files: [{ ...promptPacket.files[0]!, path }],
+          },
+          modelOutput: {
+            protocolVersion: 1,
+            summaryMarkdown: "ok",
+            findings: [
+              {
+                severity: "major",
+                title: "bug",
+                body: "body",
+                path,
+                startLine: 1,
+              },
+            ],
+          },
+        }),
+      ).toThrow("certified_fork_model_output_invalid");
+    }
   });
 });

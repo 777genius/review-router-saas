@@ -534,6 +534,32 @@ export async function createApiApp(
           const actionRepositories = new PrismaActionControlPlaneRepository(
             prisma,
           );
+          const certifiedForkReview =
+            process.env.GITHUB_APP_ID &&
+            githubAppPrivateKey &&
+            process.env.GITHUB_APP_SLUG
+              ? composeCertifiedForkReview({
+                  prisma,
+                  appId: process.env.GITHUB_APP_ID,
+                  privateKey: githubAppPrivateKey,
+                  appSlug: process.env.GITHUB_APP_SLUG,
+                  ticketSecret: ledgerSecret,
+                  oidcVerifier: new JoseGitHubActionsOidcTokenVerifier(),
+                  replayNonces: new PrismaActionOidcReplayNonceStore(prisma),
+                  clock,
+                  repositories: actionRepositories,
+                  codexRotatingOAuth,
+                  enabled:
+                    process.env.REVIEW_ROUTER_ENABLE_CODEX_FORK_REVIEW_V5 ===
+                    "1",
+                  approvedRepositories: normalizeApprovedRepositories(
+                    parseCommaSeparatedEnv(
+                      process.env
+                        .REVIEW_ROUTER_CODEX_FORK_REVIEW_V5_REPOSITORIES,
+                    ),
+                  ),
+                })
+              : undefined;
           return {
             repositories: actionRepositories,
             defaultProvider: {
@@ -707,22 +733,15 @@ export async function createApiApp(
             ...(options.actionControlPlaneEnabled === false
               ? { controlPlaneEnabled: false }
               : {}),
-            ...(process.env.GITHUB_APP_ID &&
-            githubAppPrivateKey &&
-            process.env.GITHUB_APP_SLUG
+            ...(certifiedForkReview
               ? {
-                  certifiedForkReview: composeCertifiedForkReview({
-                    prisma,
-                    appId: process.env.GITHUB_APP_ID,
-                    privateKey: githubAppPrivateKey,
-                    appSlug: process.env.GITHUB_APP_SLUG,
-                    ticketSecret: ledgerSecret,
-                    oidcVerifier: new JoseGitHubActionsOidcTokenVerifier(),
-                    replayNonces: new PrismaActionOidcReplayNonceStore(prisma),
-                    clock,
-                    repositories: actionRepositories,
-                    codexRotatingOAuth,
-                  }),
+                  certifiedForkReview,
+                  certifiedForkReviewPreleaseGateway:
+                    certifiedForkReview.certifiedForkReviewGateway,
+                  certifiedForkReviewAdmission:
+                    certifiedForkReview.certifiedForkReviewAdmission,
+                  certifiedForkReviewClaims:
+                    certifiedForkReview.certifiedForkReviewClaims,
                 }
               : {}),
           };

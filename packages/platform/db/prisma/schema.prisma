@@ -605,6 +605,28 @@ model CodexOAuthLease {
   @@index([providerInstanceRowId, mutationEpoch], map: "CodexOAuthLease_provider_epoch_idx")
 }
 
+model CertifiedForkReviewClaim {
+  id                  String    @id @default(cuid())
+  scopeKey            String    @unique
+  baseRepositoryId    String
+  pullRequestNumber   Int
+  reviewHeadSha       String
+  baseSha             String
+  contextHash         String
+  promptPolicyVersion Int
+  reservationOwner    String
+  executionId         String?
+  status              String    @default("pending")
+  outputDigest        String?
+  commentId           String?
+  commentUrl          String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  publishedAt         DateTime?
+
+  @@index([baseRepositoryId, pullRequestNumber, reviewHeadSha])
+}
+
 model CodexOAuthWritebackIntent {
   /// Migration 000064 enforces one V4 intent per lease with the partial unique
   /// index CodexOAuthWritebackIntent_versioned_lease_key. Prisma cannot model

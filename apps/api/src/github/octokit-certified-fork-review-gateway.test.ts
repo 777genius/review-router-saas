@@ -12,6 +12,11 @@ const binding = {
   reviewHeadSha: headSha,
   trustDomain: "fork" as const,
 };
+const executionDigest = "e".repeat(64);
+const outputDigest = "f".repeat(64);
+const markerSignature = "9".repeat(64);
+const markerPrefix = `<!-- reviewrouter:certified-fork:${headSha}:`;
+const marker = `${markerPrefix}execution=${executionDigest}:output=${outputDigest}:signature=${markerSignature} -->`;
 
 describe("OctokitCertifiedForkReviewGateway", () => {
   it("builds a bounded canonical context and rechecks the tuple", async () => {
@@ -64,6 +69,8 @@ describe("OctokitCertifiedForkReviewGateway", () => {
     ["binary", { patch: "Binary files differ" }],
     ["truncated", { patch: undefined }],
     ["unsafe path", { path: "../secret" }],
+    ["newline path", { path: "src/a.ts\n<!-- injected -->" }],
+    ["backtick path", { path: "src/`injected`.ts" }],
   ])("rejects %s files", async (_name, fileMutation) => {
     const gateway = fixture(async (route, parameters) =>
       response(route, parameters, {}, fileMutation),
@@ -74,13 +81,17 @@ describe("OctokitCertifiedForkReviewGateway", () => {
   });
   it("ignores attacker-owned markers and updates only the App bot comment", async () => {
     const writes: string[] = [];
-    const marker = `<!-- reviewrouter:certified-fork:${headSha} -->`;
+    const existingMarker = `${markerPrefix}execution=${"c".repeat(64)}:output=${"d".repeat(64)}:signature=${"8".repeat(64)} -->`;
     const gateway = fixture(async (route, parameters) => {
       if (route.includes("/comments") && route.startsWith("GET"))
         return {
           data: [
-            { id: 1, body: marker, user: { login: "attacker" } },
-            { id: 2, body: marker, user: { login: "reviewrouter[bot]" } },
+            { id: 1, body: existingMarker, user: { login: "attacker" } },
+            {
+              id: 2,
+              body: existingMarker,
+              user: { login: "reviewrouter[bot]" },
+            },
           ],
         };
       if (route.startsWith("PATCH")) {
@@ -95,7 +106,10 @@ describe("OctokitCertifiedForkReviewGateway", () => {
       gateway.upsertOwnedComment({
         githubInstallationId: "7",
         binding,
+        markerPrefix,
         marker,
+        executionDigest,
+        outputDigest,
         body: `${marker}\nsafe`,
       }),
     ).resolves.toMatchObject({ status: "updated", commentId: "2" });
@@ -106,7 +120,6 @@ describe("OctokitCertifiedForkReviewGateway", () => {
 
   it("creates a separate App comment when only an attacker owns the marker", async () => {
     const writes: string[] = [];
-    const marker = `<!-- reviewrouter:certified-fork:${headSha} -->`;
     const gateway = fixture(async (route, parameters) => {
       if (route.includes("/comments") && route.startsWith("GET"))
         return {
@@ -124,13 +137,148 @@ describe("OctokitCertifiedForkReviewGateway", () => {
       gateway.upsertOwnedComment({
         githubInstallationId: "7",
         binding,
+        markerPrefix,
         marker,
+        executionDigest,
+        outputDigest,
         body: `${marker}\nsafe`,
       }),
     ).resolves.toMatchObject({ status: "created", commentId: "3" });
     expect(writes).toEqual([
       "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
     ]);
+  });
+
+  it("returns the same bot comment without a write for the same execution/output digest", async () => {
+    let writes = 0;
+    const gateway = fixture(async (route, parameters) => {
+      if (route.includes("/comments") && route.startsWith("GET"))
+        return {
+          data: [
+            {
+              id: 10,
+              body: `${marker}\nsafe`,
+              html_url: "https://example.test/comment/10",
+              user: { login: "reviewrouter[bot]" },
+            },
+          ],
+        };
+      if (route.startsWith("POST") || route.startsWith("PATCH")) writes += 1;
+      return response(route, parameters);
+    });
+    await expect(
+      gateway.upsertOwnedComment({
+        githubInstallationId: "7",
+        binding,
+        markerPrefix,
+        marker,
+        executionDigest,
+        outputDigest,
+        body: `${marker}\nsafe`,
+      }),
+    ).resolves.toEqual({
+      status: "updated",
+      commentId: "10",
+      commentUrl: "https://example.test/comment/10",
+    });
+    expect(writes).toBe(0);
+  });
+
+  it("rejects a different output digest for the same execution", async () => {
+    const conflictingMarker = `${markerPrefix}execution=${executionDigest}:output=${"0".repeat(64)}:signature=${"7".repeat(64)} -->`;
+    const gateway = fixture(async (route, parameters) => {
+      if (route.includes("/comments") && route.startsWith("GET"))
+        return {
+          data: [
+            {
+              id: 10,
+              body: conflictingMarker,
+              user: { login: "reviewrouter[bot]" },
+            },
+          ],
+        };
+      return response(route, parameters);
+    });
+    await expect(
+      gateway.upsertOwnedComment({
+        githubInstallationId: "7",
+        binding,
+        markerPrefix,
+        marker,
+        executionDigest,
+        outputDigest,
+        body: `${marker}\nsafe`,
+      }),
+    ).rejects.toThrow("certified_fork_publish_digest_conflict");
+  });
+
+  it("finds an App marker after page 3 and proves pagination completion", async () => {
+    let writes = 0;
+    const gateway = fixture(async (route, parameters) => {
+      if (route.includes("/comments") && route.startsWith("GET")) {
+        const page = Number(parameters?.page);
+        if (page < 4)
+          return {
+            data: Array.from({ length: 100 }, (_, index) => ({
+              id: page * 100 + index,
+              body: "ordinary",
+              user: { login: "user" },
+            })),
+          };
+        if (page === 4)
+          return {
+            data: [
+              {
+                id: 401,
+                body: `${marker}\nsafe`,
+                user: { login: "reviewrouter[bot]" },
+              },
+            ],
+          };
+      }
+      if (route.startsWith("POST") || route.startsWith("PATCH")) writes += 1;
+      return response(route, parameters);
+    });
+    await expect(
+      gateway.upsertOwnedComment({
+        githubInstallationId: "7",
+        binding,
+        markerPrefix,
+        marker,
+        executionDigest,
+        outputDigest,
+        body: `${marker}\nsafe`,
+      }),
+    ).resolves.toMatchObject({ commentId: "401" });
+    expect(writes).toBe(0);
+  });
+
+  it("fails closed when bounded comment pagination cannot prove completion", async () => {
+    let writes = 0;
+    const gateway = fixture(async (route, parameters) => {
+      if (route.includes("/comments") && route.startsWith("GET"))
+        return {
+          data: Array.from({ length: 100 }, (_, index) => ({
+            id: Number(parameters?.page) * 100 + index,
+            body: "ordinary",
+            user: { login: "user" },
+          })),
+        };
+      if (route.startsWith("POST") || route.startsWith("PATCH")) writes += 1;
+      return response(route, parameters);
+    });
+    await expect(
+      gateway.upsertOwnedComment({
+        githubInstallationId: "7",
+        binding,
+        markerPrefix,
+        marker,
+        executionDigest,
+        outputDigest,
+        body: `${marker}\nsafe`,
+      }),
+    ).rejects.toThrow("certified_fork_comment_pagination_exceeded");
+    expect(writes).toBe(0);
   });
 
   it("fails closed when the PR head moves immediately before a write", async () => {
@@ -152,7 +300,10 @@ describe("OctokitCertifiedForkReviewGateway", () => {
       gateway.upsertOwnedComment({
         githubInstallationId: "7",
         binding,
-        marker: `<!-- reviewrouter:certified-fork:${headSha} -->`,
+        markerPrefix,
+        marker,
+        executionDigest,
+        outputDigest,
         body: "safe",
       }),
     ).rejects.toThrow("certified_fork_tuple_mismatch");

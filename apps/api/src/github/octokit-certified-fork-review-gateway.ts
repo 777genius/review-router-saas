@@ -18,6 +18,8 @@ type InstallationApp = {
 const maxFiles = 300;
 const maxPatchBytes = 240_000;
 const maxChangedLines = 20_000;
+const maxCommentPages = 10;
+const githubRequestTimeoutMs = 15_000;
 
 export class OctokitCertifiedForkReviewGateway implements CertifiedForkReviewGatewayPort {
   private readonly app: InstallationApp;
@@ -39,6 +41,15 @@ export class OctokitCertifiedForkReviewGateway implements CertifiedForkReviewGat
     ).toLowerCase();
     if (!/^[a-z0-9][a-z0-9-]*(?:\[bot\])$/.test(this.botLogin))
       throw new Error("certified_fork_bot_login_invalid");
+  }
+  async assertBindingCurrent(input: {
+    githubInstallationId: string;
+    binding: CertifiedForkReviewBinding;
+  }): Promise<void> {
+    await validateTuple(
+      await this.client(input.githubInstallationId),
+      input.binding,
+    );
   }
   async prepareContext(input: {
     githubInstallationId: string;
@@ -108,14 +119,23 @@ export class OctokitCertifiedForkReviewGateway implements CertifiedForkReviewGat
   async upsertOwnedComment(input: {
     githubInstallationId: string;
     binding: CertifiedForkReviewBinding;
+    markerPrefix: string;
     marker: string;
+    executionDigest: string;
+    outputDigest: string;
     body: string;
   }) {
     const octokit = await this.client(input.githubInstallationId);
     await validateTuple(octokit, input.binding);
     const [owner, repo] = split(input.binding.baseRepository);
-    let owned: { id: number } | null = null;
-    for (let page = 1; page <= 3; page += 1) {
+    let owned: {
+      id: number;
+      executionDigest: string;
+      outputDigest: string;
+      marker: string;
+      url?: string;
+    } | null = null;
+    for (let page = 1; page <= maxCommentPages; page += 1) {
       const response = await octokit.request(
         "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
         {
@@ -131,16 +151,40 @@ export class OctokitCertifiedForkReviewGateway implements CertifiedForkReviewGat
       for (const raw of response.data) {
         const comment = parseComment(raw);
         if (
-          comment.body.startsWith(input.marker) &&
+          comment.body.startsWith(input.markerPrefix) &&
           comment.author === this.botLogin
         ) {
           if (owned) throw new Error("certified_fork_owned_marker_ambiguous");
-          owned = { id: comment.id };
+          const identity = parseOwnedMarker(comment.body, input.markerPrefix);
+          owned = {
+            id: comment.id,
+            ...identity,
+            ...(comment.url ? { url: comment.url } : {}),
+          };
         }
       }
       if (response.data.length < 100) break;
+      if (page === maxCommentPages)
+        throw new Error("certified_fork_comment_pagination_exceeded");
     }
     await validateTuple(octokit, input.binding);
+    if (
+      owned?.executionDigest === input.executionDigest &&
+      owned.outputDigest !== input.outputDigest
+    )
+      throw new Error("certified_fork_publish_digest_conflict");
+    if (
+      owned?.executionDigest === input.executionDigest &&
+      owned.outputDigest === input.outputDigest
+    ) {
+      if (owned.marker !== input.marker)
+        throw new Error("certified_fork_owned_marker_invalid");
+      return {
+        status: "updated" as const,
+        commentId: String(owned.id),
+        ...(owned.url ? { commentUrl: owned.url } : {}),
+      };
+    }
     const response = owned
       ? await octokit.request(
           "PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}",
@@ -165,8 +209,32 @@ export class OctokitCertifiedForkReviewGateway implements CertifiedForkReviewGat
   private async client(value: string) {
     if (!/^[1-9][0-9]*$/.test(value))
       throw new Error("certified_fork_installation_invalid");
-    return this.app.getInstallationOctokit(Number(value));
+    const octokit = await this.app.getInstallationOctokit(Number(value));
+    return {
+      request: (route: string, parameters: Record<string, unknown> = {}) =>
+        octokit.request(route, {
+          ...parameters,
+          request: { timeout: githubRequestTimeoutMs },
+        }),
+    } satisfies Requester;
   }
+}
+
+function parseOwnedMarker(body: string, prefix: string) {
+  const firstLine = body.split("\n", 1)[0];
+  if (!firstLine?.startsWith(prefix) || !firstLine.endsWith(" -->"))
+    throw new Error("certified_fork_owned_marker_invalid");
+  const suffix = firstLine.slice(prefix.length, -4);
+  const match =
+    /^execution=([a-f0-9]{64}):output=([a-f0-9]{64}):signature=([a-f0-9]{64})$/.exec(
+      suffix,
+    );
+  if (!match) throw new Error("certified_fork_owned_marker_invalid");
+  return {
+    executionDigest: match[1]!,
+    outputDigest: match[2]!,
+    marker: firstLine,
+  };
 }
 
 async function validateTuple(
@@ -330,6 +398,11 @@ function safePath(value: string) {
     value.length <= 500 &&
     !value.startsWith("/") &&
     !value.includes("\\") &&
+    !value.includes("`") &&
+    ![...value].some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    }) &&
     !value
       .split("/")
       .some((part) => part === "" || part === "." || part === "..")
