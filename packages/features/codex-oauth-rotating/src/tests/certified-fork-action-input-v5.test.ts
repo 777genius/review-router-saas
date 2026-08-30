@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -65,16 +65,9 @@ describe("certified fork V5 action inputs", () => {
     expect(readActionInputs(legacy).forkReviewBinding).toBeUndefined();
   });
 
-  it("fails closed before reading auth while the prompt-only executor is unavailable", async () => {
-    const root = await mkdtemp(join(tmpdir(), "rr-fork-v5-unavailable-"));
-    const workspace = join(root, "workspace");
-    const source = join(workspace, "safe-workspace");
+  it("validates the event and passes no workspace or auth to an injected executor", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rr-fork-v5-input-"));
     const eventPath = join(root, "event.json");
-    await mkdir(join(source, ".git"), { recursive: true });
-    await writeFile(
-      join(source, ".git", "config"),
-      "[core]\n\trepositoryformatversion = 0\n",
-    );
     await writeFile(
       eventPath,
       JSON.stringify({
@@ -99,24 +92,16 @@ describe("certified fork V5 action inputs", () => {
       GITHUB_EVENT_NAME: "pull_request_target",
       GITHUB_EVENT_PATH: eventPath,
       GITHUB_REPOSITORY: "base/repository",
-      GITHUB_WORKSPACE: workspace,
-      REVIEW_ROUTER_PR_WORKSPACE: source,
+      ACTIONS_ID_TOKEN_REQUEST_URL:
+        "https://vstoken.actions.githubusercontent.com/oidc/token",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
     });
     try {
-      await expect(
-        runCodexRotatingGitHubAction({ env: runtimeEnv }),
-      ).rejects.toThrow("fork_prompt_only_executor_unavailable");
-      expect(runtimeEnv).not.toHaveProperty("INPUT_AUTH_JSON");
-      expect(runtimeEnv).not.toHaveProperty("INPUT_AUTH-JSON");
-
-      runtimeEnv["INPUT_AUTH-JSON"] = "must-still-never-reach-executor";
-      const resolvedSource = await realpath(source);
       const execute = vi.fn(async (input) => {
         expect(input).toEqual({
           apiUrl: "https://api.reviewrouter.site",
           providerInstanceId: "codex-rotating:123456",
           workflowSchemaVersion: 5,
-          workspace: resolvedSource,
           binding: {
             sourceRepository: "contributor/repository",
             sourceRepositoryId: "654321",
@@ -129,6 +114,7 @@ describe("certified fork V5 action inputs", () => {
           },
         });
         expect(runtimeEnv).not.toHaveProperty("INPUT_AUTH-JSON");
+        expect(runtimeEnv).not.toHaveProperty("GITHUB_WORKSPACE");
       });
       await expect(
         runCodexRotatingGitHubAction({

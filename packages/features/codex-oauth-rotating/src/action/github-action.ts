@@ -52,6 +52,7 @@ import {
   compactCodexAuthJson,
   computeCodexAuthGenerationHash,
   computeCodexRotatingAccountIdentityHash,
+  deriveCodexStableAccountIdentityFromIdToken,
   encryptCodexRotatingAuthForGitHubSecret,
   classifyCodexRuntimeFailure,
   CodexRotatingT0WorkflowSchemaVersion,
@@ -76,6 +77,11 @@ import {
   parseTrustedGitHubActionsOidcUrl,
   runHostedCodexRelayTransport,
 } from "./hosted-codex-relay";
+import {
+  certifiedForkPromptPacketSchema,
+  requestDirectForkReview,
+  type CertifiedForkPromptPacket,
+} from "./direct-fork-responses";
 
 export {
   requestHostedRelayGrantWithFreshGitHubOidc,
@@ -154,6 +160,7 @@ type ActionRuntime = {
   readonly fullReviewRuntimeRunner: FullReviewRuntimeRunner;
   readonly now: () => number;
   readonly forkPromptOnlyV2Executor: ForkPromptOnlyV2Executor;
+  readonly certifiedForkResponsesUrlForTest: string;
 };
 
 type ActionInputs = {
@@ -185,19 +192,12 @@ export type ForkPromptOnlyV2ExecutorInput = Readonly<{
   apiUrl: string;
   providerInstanceId: string;
   workflowSchemaVersion: number;
-  workspace: string;
   binding: ForkReviewBinding;
 }>;
 
 export interface ForkPromptOnlyV2Executor {
   execute(input: ForkPromptOnlyV2ExecutorInput): Promise<void>;
 }
-
-const unavailableForkPromptOnlyV2Executor: ForkPromptOnlyV2Executor = {
-  async execute(): Promise<void> {
-    throw new Error("fork_prompt_only_executor_unavailable");
-  },
-};
 
 type ProviderSecretInputs = {
   readonly claudeCodeOAuthToken?: string;
@@ -258,6 +258,40 @@ type WritebackResponse = {
     | "writeback_recovery_required"
     | "writeback_idempotency_conflict";
 };
+
+const certifiedForkPrepareResponseSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    executionId: z.string().min(1).max(200),
+    contextHash: z.string().regex(/^[a-f0-9]{64}$/i),
+    model: z.literal("gpt-5.6-sol"),
+    maxOutputTokens: z.literal(12_000),
+    promptPacket: certifiedForkPromptPacketSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.contextHash !== value.promptPacket.contextHash) {
+      context.addIssue({
+        code: "custom",
+        message: "prompt packet context hash mismatch",
+        path: ["promptPacket", "contextHash"],
+      });
+    }
+  });
+
+const certifiedForkPublishResponseSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    status: z.enum(["created", "updated"]),
+    commentId: z.string().min(1).max(200),
+    commentUrl: z.string().url().optional(),
+  })
+  .strict();
+
+type ForkOidcCredentials = Readonly<{
+  requestUrl: string;
+  requestToken: string;
+}>;
 
 type CommentTokenResponse = {
   readonly token: string;
@@ -501,16 +535,23 @@ export async function runCodexRotatingGitHubAction(
       );
       assertSameRepositoryPullRequest(event, env);
       assertForkReviewBindingMatchesEvent(inputs.forkReviewBinding, event);
-      const workspace = await resolveForkSandboxWorkspace(env);
-      await assertForkSandboxWorkspace(workspace);
-      clearActionAuthEnv(env);
-      await (
-        runtime.forkPromptOnlyV2Executor ?? unavailableForkPromptOnlyV2Executor
-      ).execute({
+      const oidcCredentials = captureForkOidcCredentials(env);
+      const executor = runtime.forkPromptOnlyV2Executor ?? {
+        execute: (input: ForkPromptOnlyV2ExecutorInput) =>
+          runDirectForkPromptOnlyV2Executor({
+            input,
+            env,
+            io,
+            fetchImpl,
+            oidcCredentials,
+            responsesUrlForTest: runtime.certifiedForkResponsesUrlForTest,
+          }),
+      };
+      if (runtime.forkPromptOnlyV2Executor) clearActionAuthEnv(env);
+      await executor.execute({
         apiUrl: inputs.apiUrl,
         providerInstanceId: inputs.providerInstanceId,
         workflowSchemaVersion: inputs.workflowSchemaVersion,
-        workspace,
         binding: inputs.forkReviewBinding,
       });
       return;
@@ -950,6 +991,267 @@ async function runCodexRefreshOnlyGitHubAction(input: {
     clearActionAuthEnv(input.env);
     clearOidcRequestEnv(input.env);
   }
+}
+
+async function runDirectForkPromptOnlyV2Executor(input: {
+  readonly input: ForkPromptOnlyV2ExecutorInput;
+  readonly env: NodeJS.ProcessEnv;
+  readonly io: ActionIO;
+  readonly fetchImpl: FetchLike;
+  readonly oidcCredentials: ForkOidcCredentials;
+  readonly responsesUrlForTest?: string | undefined;
+}): Promise<void> {
+  const actionInputs: ActionInputs = {
+    mode: codexForkPromptOnlyV2RuntimeMode,
+    apiUrl: input.input.apiUrl,
+    providerInstanceId: input.input.providerInstanceId,
+    workflowSchemaVersion: input.input.workflowSchemaVersion,
+    reviewDrafts: false,
+    maxChangedLines: 0,
+    reviewTimeoutMinutes: defaultReviewJobTimeoutMinutes,
+    providerSecrets: {},
+    forkReviewBinding: input.input.binding,
+  };
+  const prelease = await requestCodexRotatingPreleaseWithFreshOidc({
+    env: forkOidcEnv(input.oidcCredentials),
+    io: input.io,
+    fetchImpl: input.fetchImpl,
+    apiUrl: input.input.apiUrl,
+    providerInstanceId: input.input.providerInstanceId,
+    workflowSchemaVersion: input.input.workflowSchemaVersion,
+    forkReviewBinding: input.input.binding,
+  });
+
+  await assertSupportedRunnerEnvironment(input.env);
+  const codexBinaryPath = await resolveCodexBinary(input.env);
+  const authJson = readActionAuthJson(input.env);
+  maskCodexAuthJson(input.io, authJson);
+  clearActionAuthEnv(input.env);
+  validateCodexAuthJsonBytes({ authJsonBytes: authJson });
+  const restoredGenerationHash = computeCodexAuthGenerationHash({
+    authJsonBytes: authJson,
+    generationHashSalt: prelease.generationHashSalt,
+  });
+  const finalize = await postJson<FinalizeResponse>({
+    fetchImpl: input.fetchImpl,
+    label: "api_finalize",
+    url: `${input.input.apiUrl}/api/action/v1/codex-oauth/finalize`,
+    body: {
+      leaseId: prelease.leaseId,
+      providerInstanceId: input.input.providerInstanceId,
+      restoredGenerationHash,
+    },
+  });
+  if (finalize.status === "stale_queued_secret") {
+    notice(input.io, "ReviewRouter skipped a stale queued Codex OAuth secret.");
+    return;
+  }
+
+  mask(input.io, finalize.publicKeyReadToken);
+  const publicKey = await fetchGitHubRepositoryPublicKey({
+    fetchImpl: input.fetchImpl,
+    owner: finalize.repositoryOwner,
+    repo: finalize.repositoryName,
+    token: finalize.publicKeyReadToken,
+  });
+  await postJson({
+    fetchImpl: input.fetchImpl,
+    label: "api_writeback_preflight",
+    url: `${input.input.apiUrl}/api/action/v1/codex-oauth/writeback-preflight`,
+    body: {
+      leaseId: prelease.leaseId,
+      providerInstanceId: input.input.providerInstanceId,
+      githubKeyId: publicKey.key_id,
+    },
+  });
+
+  let providerSession:
+    | { readonly accessToken: string; readonly chatgptAccountId: string }
+    | undefined;
+  const tempHome = await makeTempDirectory("reviewrouter-fork-auth-home-");
+  try {
+    await chmod(tempHome, 0o700);
+    const tempCodexHome = await makeTempDirectory(
+      "reviewrouter-fork-codex-home-",
+    );
+    try {
+      await chmod(tempCodexHome, 0o700);
+      const refreshed = await refreshAndWritebackCodexAuthJson({
+        authJson,
+        inputs: actionInputs,
+        fetchImpl: input.fetchImpl,
+        prelease,
+        finalize,
+        publicKey,
+        codexBinaryPath,
+        env: input.env,
+        tempHome,
+        tempCodexHome,
+        forkPromptOnlyBootstrap: true,
+      });
+      maskCodexAuthJson(input.io, refreshed.authJson);
+      providerSession = extractForkProviderSession(refreshed.authJson);
+      mask(input.io, providerSession.accessToken);
+      await rm(join(tempCodexHome, "auth.json"), { force: true });
+    } finally {
+      await removeTree(tempCodexHome);
+    }
+  } finally {
+    await removeTree(tempHome);
+  }
+  if (!providerSession) throw new Error("certified_fork_provider_auth_missing");
+
+  const prepareOidcToken = await requestForkOidcToken({
+    credentials: input.oidcCredentials,
+    fetchImpl: input.fetchImpl,
+    io: input.io,
+  });
+  const prepareRaw = await postJson<unknown>({
+    fetchImpl: input.fetchImpl,
+    label: "certified_fork_prepare",
+    url: `${input.input.apiUrl}/api/action/v1/certified-fork-review/prepare`,
+    body: certifiedForkControlPlaneIdentity({
+      oidcToken: prepareOidcToken,
+      leaseId: prelease.leaseId,
+      input: input.input,
+    }),
+    maxAttempts: 1,
+  });
+  const prepare = certifiedForkPrepareResponseSchema.safeParse(prepareRaw);
+  if (!prepare.success) {
+    throw new Error("certified_fork_prepare_response_invalid");
+  }
+  assertPreparedForkContextMatchesBinding({
+    promptPacket: prepare.data.promptPacket,
+    binding: input.input.binding,
+  });
+
+  const modelOutput = await requestDirectForkReview({
+    fetchImpl: input.fetchImpl,
+    accessToken: providerSession.accessToken,
+    chatgptAccountId: providerSession.chatgptAccountId,
+    model: prepare.data.model,
+    maxOutputTokens: prepare.data.maxOutputTokens,
+    promptPacket: prepare.data.promptPacket,
+    ...(input.responsesUrlForTest
+      ? { responsesUrl: input.responsesUrlForTest }
+      : {}),
+  });
+
+  const publishOidcToken = await requestForkOidcToken({
+    credentials: input.oidcCredentials,
+    fetchImpl: input.fetchImpl,
+    io: input.io,
+  });
+  const publishRaw = await postJson<unknown>({
+    fetchImpl: input.fetchImpl,
+    label: "certified_fork_publish",
+    url: `${input.input.apiUrl}/api/action/v1/certified-fork-review/publish`,
+    body: {
+      ...certifiedForkControlPlaneIdentity({
+        oidcToken: publishOidcToken,
+        leaseId: prelease.leaseId,
+        input: input.input,
+      }),
+      executionId: prepare.data.executionId,
+      contextHash: prepare.data.contextHash,
+      modelOutput,
+    },
+    maxAttempts: 1,
+  });
+  if (!certifiedForkPublishResponseSchema.safeParse(publishRaw).success) {
+    throw new Error("certified_fork_publish_response_invalid");
+  }
+  notice(input.io, "ReviewRouter certified fork review completed.");
+}
+
+function extractForkProviderSession(authJson: string): {
+  readonly accessToken: string;
+  readonly chatgptAccountId: string;
+} {
+  const parsed = validateCodexAuthJsonBytes({ authJsonBytes: authJson }).parsed;
+  if (!parsed.tokens.access_token) {
+    throw new Error("codex_access_token_missing");
+  }
+  if (!parsed.tokens.id_token) throw new Error("codex_id_token_missing");
+  return {
+    accessToken: parsed.tokens.access_token,
+    chatgptAccountId: deriveCodexStableAccountIdentityFromIdToken(
+      parsed.tokens.id_token,
+    ).chatgptAccountId,
+  };
+}
+
+function maskCodexAuthJson(io: ActionIO, authJson: string): void {
+  mask(io, authJson);
+  const parsed = validateCodexAuthJsonBytes({ authJsonBytes: authJson }).parsed;
+  for (const token of [
+    parsed.tokens.refresh_token,
+    parsed.tokens.access_token,
+    parsed.tokens.id_token,
+  ]) {
+    if (token) mask(io, token);
+  }
+}
+
+function certifiedForkControlPlaneIdentity(input: {
+  readonly oidcToken: string;
+  readonly leaseId: string;
+  readonly input: ForkPromptOnlyV2ExecutorInput;
+}): Readonly<Record<string, unknown>> {
+  return {
+    oidcToken: input.oidcToken,
+    leaseId: input.leaseId,
+    providerInstanceId: input.input.providerInstanceId,
+    workflowSchemaVersion: input.input.workflowSchemaVersion,
+    forkReviewBinding: input.input.binding,
+  };
+}
+
+function assertPreparedForkContextMatchesBinding(input: {
+  readonly promptPacket: CertifiedForkPromptPacket;
+  readonly binding: ForkReviewBinding;
+}): void {
+  if (
+    input.promptPacket.repository.base !== input.binding.baseRepository ||
+    input.promptPacket.repository.source !== input.binding.sourceRepository ||
+    input.promptPacket.pullRequestNumber !== input.binding.pullRequestNumber ||
+    input.promptPacket.baseSha !== input.binding.baseSha ||
+    input.promptPacket.headSha !== input.binding.reviewHeadSha
+  ) {
+    throw new Error("certified_fork_prepare_tuple_mismatch");
+  }
+}
+
+async function requestForkOidcToken(input: {
+  readonly credentials: ForkOidcCredentials;
+  readonly fetchImpl: FetchLike;
+  readonly io: ActionIO;
+}): Promise<string> {
+  const oidcToken = await requestGitHubActionsOidcToken({
+    env: forkOidcEnv(input.credentials),
+    fetchImpl: input.fetchImpl,
+    audience: defaultOidcAudience,
+  });
+  mask(input.io, oidcToken);
+  return oidcToken;
+}
+
+function captureForkOidcCredentials(
+  env: NodeJS.ProcessEnv,
+): ForkOidcCredentials {
+  const requestUrl = env.ACTIONS_ID_TOKEN_REQUEST_URL;
+  const requestToken = env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+  if (!requestUrl || !requestToken) throw new Error("github_oidc_unavailable");
+  clearOidcRequestEnv(env);
+  return { requestUrl, requestToken };
+}
+
+function forkOidcEnv(credentials: ForkOidcCredentials): NodeJS.ProcessEnv {
+  return {
+    ACTIONS_ID_TOKEN_REQUEST_URL: credentials.requestUrl,
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: credentials.requestToken,
+  };
 }
 
 async function runForkAgenticSandboxGitHubAction(input: {
@@ -3071,6 +3373,7 @@ async function runCodexBootstrap(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly tempHome: string;
   readonly tempCodexHome: string;
+  readonly forkPromptOnlyBootstrap?: boolean | undefined;
 }): Promise<void> {
   const emptyCwd = await makeTempDirectory("reviewrouter-empty-");
   try {
@@ -3083,7 +3386,13 @@ async function runCodexBootstrap(input: {
       await runProcess({
         ...command,
         stdin: "Respond with OK only.",
-        env: buildCodexChildEnv(input.env, input.tempHome, input.tempCodexHome),
+        env: input.forkPromptOnlyBootstrap
+          ? buildForkPromptOnlyBootstrapEnv(
+              input.env,
+              input.tempHome,
+              input.tempCodexHome,
+            )
+          : buildCodexChildEnv(input.env, input.tempHome, input.tempCodexHome),
         timeoutMs: 5 * 60 * 1000,
       });
     } catch (error) {
@@ -3108,6 +3417,7 @@ async function refreshCodexAuthJson(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly tempHome: string;
   readonly tempCodexHome: string;
+  readonly forkPromptOnlyBootstrap?: boolean | undefined;
 }): Promise<{
   readonly authJson: string;
   readonly writebackCommittedByRuntime: boolean;
@@ -3122,7 +3432,13 @@ async function refreshCodexAuthJson(input: {
   }
 
   const subscriptionRuntimeSourceEnv = {
-    ...input.env,
+    ...(input.forkPromptOnlyBootstrap
+      ? buildForkPromptOnlyBootstrapEnv(
+          input.env,
+          input.tempHome,
+          input.tempCodexHome,
+        )
+      : input.env),
     SUBSCRIPTION_RUNTIME_TMPDIR: input.tempCodexHome,
   };
   const sessionDriver = new CodexCliSessionDriver({
@@ -4617,6 +4933,39 @@ function buildCodexChildEnv(
     CODEX_HOME: codexHome,
     CI: "true",
   };
+}
+
+const forkPromptOnlyBootstrapEnvKeys = [
+  "PATH",
+  "CI",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "RUNNER_OS",
+  "RUNNER_ARCH",
+  "RUNNER_TEMP",
+  "RUNNER_TOOL_CACHE",
+  "ImageOS",
+  "ImageVersion",
+] as const;
+
+export function buildForkPromptOnlyBootstrapEnv(
+  sourceEnv: NodeJS.ProcessEnv,
+  home: string,
+  codexHome: string,
+): Record<string, string> {
+  const childEnv: Record<string, string> = {};
+  for (const key of forkPromptOnlyBootstrapEnvKeys) {
+    const value = sourceEnv[key];
+    if (typeof value === "string" && value.length > 0) childEnv[key] = value;
+  }
+  childEnv.HOME = home;
+  childEnv.CODEX_HOME = codexHome;
+  childEnv.CI = "true";
+  return childEnv;
 }
 
 function runGit(
