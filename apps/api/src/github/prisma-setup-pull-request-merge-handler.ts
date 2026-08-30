@@ -62,11 +62,6 @@ export class PrismaSetupPullRequestMergeHandler {
           errorMessage: null,
         },
       });
-      await tx.repositoryConnection.update({
-        where: { id: repository.id },
-        data: { setupStatus: "configured" },
-      });
-
       return { matched: true };
     });
 

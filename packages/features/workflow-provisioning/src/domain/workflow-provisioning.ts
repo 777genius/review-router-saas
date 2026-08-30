@@ -17,6 +17,30 @@ export type WorkflowProvisioningStatus =
   | "configured"
   | "failed";
 
+export type ProjectedRepositorySetupStatus =
+  | "not_configured"
+  | "setup_pr_open"
+  | "configured"
+  | "needs_attention";
+
+export function projectRepositorySetupStatus(input: {
+  readonly workflowProvisioningStatus: WorkflowProvisioningStatus | null;
+  readonly legacySetupStatus: ProjectedRepositorySetupStatus;
+}): ProjectedRepositorySetupStatus {
+  switch (input.workflowProvisioningStatus) {
+    case "not_started":
+      return "not_configured";
+    case "setup_pr_open":
+      return "setup_pr_open";
+    case "configured":
+      return "configured";
+    case "failed":
+      return "needs_attention";
+    case null:
+      return input.legacySetupStatus;
+  }
+}
+
 export type ProvisionWorkflowInput = {
   readonly workspaceId: string;
   readonly repositoryId: string;
