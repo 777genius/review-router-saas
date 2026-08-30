@@ -6,6 +6,9 @@ const workflow = readFileSync(
   ".github/workflows/codex-rotating-release-migration.yml",
   "utf8",
 );
+const registerRelease = workflow.slice(
+  workflow.indexOf("\n  register-release:"),
+);
 
 describe("Codex rotating release migration workflow", () => {
   it("checks out and verifies the requested immutable migration source", () => {
@@ -70,13 +73,70 @@ describe("Codex rotating release migration workflow", () => {
     );
   });
 
-  it("redeploys every runtime service and waits for live status", () => {
-    expect(workflow).toContain(
+  it("requires and verifies the exact registration source commit", () => {
+    const releaseCommitInput = workflow.slice(
+      workflow.indexOf("      release_commit_sha:"),
+      workflow.indexOf("      action_commit_sha:"),
+    );
+
+    expect(releaseCommitInput).toContain("required: true");
+    expect(registerRelease).toContain(
+      "RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}",
+    );
+    expect(registerRelease).toContain("ref: ${{ inputs.release_commit_sha }}");
+    expect(registerRelease).toContain(
+      '[[ "$RELEASE_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]',
+    );
+    expect(registerRelease).toContain(
+      'observed_source_sha="$(git rev-parse HEAD)"',
+    );
+    expect(registerRelease).toContain(
+      '[[ "$observed_source_sha" == "$RELEASE_COMMIT_SHA" ]]',
+    );
+    expect(registerRelease).not.toContain("ref: ${{ github.sha }}");
+  });
+
+  it("fails closed unless all current live services run the release commit", () => {
+    const preflight = registerRelease.indexOf("live_service_preflight='[]'");
+    const firstRenderMutation = registerRelease.indexOf("render_api -X PUT");
+    const firewallMutation = registerRelease.indexOf(
+      'runner_ip="$(curl --fail',
+    );
+
+    expect(preflight).toBeGreaterThan(-1);
+    expect(firstRenderMutation).toBeGreaterThan(preflight);
+    expect(firewallMutation).toBeGreaterThan(preflight);
+    expect(registerRelease).toContain(
+      '"https://api.render.com/v1/services/$service_id/deploys?limit=1"',
+    );
+    expect(registerRelease).toContain('all(.observedStatus == "live")');
+    expect(registerRelease).toContain(
+      "all(.observedCommitSha == $releaseCommitSha)",
+    );
+    expect(registerRelease).toContain("live-service-preflight.json");
+  });
+
+  it("pins every redeploy and verifies its observed live commit", () => {
+    expect(registerRelease).toContain(
       '"https://api.render.com/v1/services/$service_id/deploys"',
     );
-    expect(workflow).toContain("deadline=$((SECONDS + 900))");
-    expect(workflow).toContain('length == 3 and all(.status == "live")');
-    expect(workflow).toContain("deployment-result.json");
+    expect(registerRelease).toContain(
+      "'{clearCache: \"do_not_clear\", commitId: $commitId}'",
+    );
+    expect(registerRelease).toContain(
+      '--data-binary @"$work/deploy-request.json"',
+    );
+    expect(registerRelease).not.toContain(
+      '--data-binary \'{"clearCache":"do_not_clear"}\'',
+    );
+    expect(registerRelease).toContain("deadline=$((SECONDS + 900))");
+    expect(registerRelease).toContain(
+      'if [[ "$observed_commit_sha" != "$RELEASE_COMMIT_SHA" ]]',
+    );
+    expect(registerRelease).toContain(
+      "all(.observedCommitSha == $releaseCommitSha)",
+    );
+    expect(registerRelease).toContain("deployment-result.json");
   });
 
   it("provisions custody through migration 000086 without exposing credentials", () => {

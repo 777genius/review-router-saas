@@ -17,7 +17,7 @@ on:
         type: string
       release_commit_sha:
         description: Exact review-router-saas main commit
-        required: false
+        required: true
         type: string
       action_commit_sha:
         description: Exact review-router Action commit to register
@@ -570,6 +570,7 @@ jobs:
       TARGET_DB_ID: ${{ inputs.target_db_id }}
       RENDER_OWNER_ID: ${{ inputs.owner_id }}
       RENDER_ENVIRONMENT_ID: ${{ inputs.environment_id }}
+      RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
       ACTION_COMMIT_SHA: ${{ inputs.action_commit_sha }}
       OPEN_GLOBAL_EMERGENCY: ${{ inputs.open_global_emergency }}
       OPERATOR_REPOSITORY: ${{ inputs.operator_repository }}
@@ -585,7 +586,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.release_commit_sha }}
 
       - name: Install registration tooling
         shell: bash
@@ -594,6 +595,9 @@ jobs:
           [[ "$TARGET_DB_ID" =~ ^dpg-[a-z0-9-]+$ ]]
           [[ "$RENDER_OWNER_ID" =~ ^tea-[a-z0-9-]+$ ]]
           [[ "$RENDER_ENVIRONMENT_ID" =~ ^evm-[a-z0-9-]+$ ]]
+          [[ "$RELEASE_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          observed_source_sha="$(git rev-parse HEAD)"
+          [[ "$observed_source_sha" == "$RELEASE_COMMIT_SHA" ]]
           [[ "$ACTION_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$API_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
           [[ "$WORKER_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
@@ -673,6 +677,38 @@ jobs:
               and .environmentId == $environmentId
               and ((.ownerId // .owner.id) == $ownerId)
             ' "$work/target.json" >/dev/null
+
+          live_service_preflight='[]'
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            deploys="$(render_api "https://api.render.com/v1/services/$service_id/deploys?limit=1")"
+            observation="$(
+              jq -ce --arg serviceId "$service_id" '
+                (if type == "array" then .[0] else (.deploys[0] // .[0]) end)
+                | (.deploy // .) as $deploy
+                | {
+                    serviceId: $serviceId,
+                    deployId: ($deploy.id | select(type == "string" and length > 0)),
+                    observedStatus: ($deploy.status | select(type == "string")),
+                    observedCommitSha: (
+                      ($deploy.commit.id // $deploy.commit.sha // $deploy.commitId)
+                      | select(type == "string" and test("^[a-f0-9]{40}$"))
+                    )
+                  }
+              ' <<<"$deploys"
+            )"
+            live_service_preflight="$(
+              jq -c --argjson observation "$observation" '. + [$observation]' \
+                <<<"$live_service_preflight"
+            )"
+          done
+          printf '%s\n' "$live_service_preflight" \
+            > "$work/live-service-preflight.json"
+          jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and all(.observedStatus == "live")
+            and all(.observedCommitSha == $releaseCommitSha)
+          ' "$work/live-service-preflight.json" >/dev/null
 
           render_api "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars" \
             > "$work/api-env.json"
@@ -1342,10 +1378,13 @@ jobs:
           done
 
           deploys='[]'
+          jq -n --arg commitId "$RELEASE_COMMIT_SHA" \
+            '{clearCache: "do_not_clear", commitId: $commitId}' \
+            > "$work/deploy-request.json"
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
             deploy="$(
               render_api -X POST -H "Content-Type: application/json" \
-                --data-binary '{"clearCache":"do_not_clear"}' \
+                --data-binary @"$work/deploy-request.json" \
                 "https://api.render.com/v1/services/$service_id/deploys"
             )"
             deploy_id="$(jq -er '.id // .deploy.id' <<<"$deploy")"
@@ -1368,15 +1407,31 @@ jobs:
                 render_api \
                   "https://api.render.com/v1/services/$service_id/deploys/$deploy_id"
               )"
-              status="$(jq -er '.status // .deploy.status' <<<"$deploy")"
+              status="$(jq -er '(.deploy // .).status' <<<"$deploy")"
+              observed_commit_sha="$(
+                jq -er '
+                  (.deploy // .)
+                  | (.commit.id // .commit.sha // .commitId)
+                  | select(type == "string" and test("^[a-f0-9]{40}$"))
+                ' <<<"$deploy"
+              )"
               statuses="$(
                 jq -c \
                   --arg serviceId "$service_id" \
                   --arg deployId "$deploy_id" \
                   --arg status "$status" \
-                  '. + [{serviceId: $serviceId, deployId: $deployId, status: $status}]' \
+                  --arg observedCommitSha "$observed_commit_sha" \
+                  '. + [{
+                    serviceId: $serviceId,
+                    deployId: $deployId,
+                    status: $status,
+                    observedCommitSha: $observedCommitSha
+                  }]' \
                   <<<"$statuses"
               )"
+              if [[ "$observed_commit_sha" != "$RELEASE_COMMIT_SHA" ]]; then
+                failed=1
+              fi
               case "$status" in
                 live) ;;
                 build_failed|update_failed|pre_deploy_failed|canceled|deactivated|failed|*_failed)
@@ -1395,7 +1450,12 @@ jobs:
             fi
             sleep 10
           done
-          jq -e 'length == 3 and all(.status == "live")' \
+          jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and all(.status == "live")
+            and all(.observedCommitSha == $releaseCommitSha)
+          ' \
             "$work/deployment-result.json" >/dev/null
           close_firewall
           firewall_open=0
@@ -1419,6 +1479,7 @@ jobs:
             ${{ runner.temp }}/reviewrouter-release-registration/investigation-rollout-status-result.json
             ${{ runner.temp }}/reviewrouter-release-registration/investigation-rollout-status-diagnostic.json
             ${{ runner.temp }}/reviewrouter-release-registration/investigation-env-proof.json
+            ${{ runner.temp }}/reviewrouter-release-registration/live-service-preflight.json
             ${{ runner.temp }}/reviewrouter-release-registration/deployment-result.json
           if-no-files-found: warn
           retention-days: 30
