@@ -3,7 +3,11 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.js";
-import { canonicalActivationCatalogPolicyDigests } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-contract.ts";
+import {
+  authorizeCanonicalActivationCatalogPolicies,
+  canonicalActivationCatalogPolicies,
+  canonicalActivationCatalogPolicyDigests,
+} from "../packages/features/release-rollout/src/domain/activation-catalog-policy-contract.js";
 import {
   assertDisposableCaptureTarget,
   createRehearsalRunnerJobBinding,
@@ -292,6 +296,11 @@ describe("disposable dual-version rehearsal", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual(
       canonicalActivationCatalogPolicyDigests,
     );
+    expect(
+      authorizeCanonicalActivationCatalogPolicies(
+        rehearsalActivationCatalogPolicyAuthorization,
+      ),
+    ).toBe(canonicalActivationCatalogPolicies);
   });
   it("allows loaded disposable catalog observations without changing production timing", () => {
     expect(rehearsalReadinessPolicy).toEqual({
