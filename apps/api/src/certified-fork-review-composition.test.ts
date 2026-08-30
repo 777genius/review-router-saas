@@ -41,7 +41,10 @@ const promptPacket = {
 describe("certified fork composition", () => {
   it("uses the lock transaction delegate for claim mutations without a second pool checkout", async () => {
     const transactionDelegate = {
-      $queryRaw: vi.fn(async () => []),
+      $executeRaw: vi.fn(async () => 1),
+      $queryRaw: vi.fn(async () => {
+        throw new Error("P2010 UnsupportedNativeDataType type=void");
+      }),
       certifiedForkReviewClaim: {
         findUnique: vi.fn(async () => null),
       },
@@ -74,6 +77,8 @@ describe("certified fork composition", () => {
       }),
     ).resolves.toBe("done");
     expect(topLevelClaim.findUnique).not.toHaveBeenCalled();
+    expect(transactionDelegate.$executeRaw).toHaveBeenCalledOnce();
+    expect(transactionDelegate.$queryRaw).not.toHaveBeenCalled();
     expect(
       transactionDelegate.certifiedForkReviewClaim.findUnique,
     ).toHaveBeenCalledOnce();

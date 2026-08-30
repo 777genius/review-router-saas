@@ -306,7 +306,7 @@ export class PrismaCertifiedForkReviewPublishLock implements CertifiedForkReview
       throw new Error("certified_fork_publish_lock_invalid");
     return await this.prisma.$transaction(
       async (transaction) => {
-        await transaction.$queryRaw(
+        await transaction.$executeRaw(
           Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
         );
         return await run(
