@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import type { LegacyAmbiguityEvidence } from "./trusted-rollout-evidence";
+import { canonicalReleaseMigrationPostManifestIdentity } from "./release-migration-artifact-identity.js";
 
-export const canonicalReleaseMigrationPostManifestIdentity =
-  "sha256:cee679546e371333896ba312c3a80010cfdbbe026ffa4b18e1063c06c78a2dff";
+export { canonicalReleaseMigrationPostManifestIdentity };
 
 export const TargetManifestPhase = Object.freeze({
   PreMigration: "pre_migration",
@@ -167,14 +167,14 @@ export const deriveOrderedPendingEntriesSha256 = (
 
 export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
-    "sha256:47db256bf9358ad5e46e3352766846a1dfd9cf43833903534598b59033869329",
+    "sha256:f994bfe9979e948723ef4684e219c1e23868f1a1b5daea6e637cb775bff4c47d",
   preManifestIdentity:
     "sha256:c0ab0520ee922e695b2954f0a0af81ffd0ad6fb57f41ec3ddc124fe7c8a781eb",
   orderedPendingEntriesSha256: deriveOrderedPendingEntriesSha256(
     canonicalReleaseMigrationEntries,
   ),
   migrationBundleSha256:
-    "sha256:3276bd314710fdf929e6bb88f228aea9cabbbdc064ac21f55fd8a0a957e68546",
+    "sha256:e7a39e8231b6edd2952b42aa6f6d8aab9ed5a606f608c9941d3240d8aa374f01",
   postManifestIdentity: canonicalReleaseMigrationPostManifestIdentity,
   // Last independently reviewed and promoted production catalog trust root.
   // A newer observation may only be emitted by the disposable capture path;
