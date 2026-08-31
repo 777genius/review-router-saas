@@ -1,4 +1,5 @@
 import {
+  hasCanonicalPrismaGenericAbortedTransactionError,
   hasCanonicalPrismaMigrationPostgresErrorEvidence,
   hasExactPostgresErrorEnvelope,
 } from "./lib/postgres-error-evidence.mjs";
@@ -18,16 +19,20 @@ export function isExpectedPrismaLockTimeoutFailure({
     historyEvidence,
     directLockTimeoutProof,
   });
-  const strongPrismaEnvelope =
+  const structuredPrismaEnvelope =
     markers.prismaMigrationFailure &&
     markers.migrationNamed &&
     !markers.contradictoryFailure &&
     (markers.exactLockTimeoutEnvelope ||
       markers.exactAbortedTransactionEnvelope);
+  const genericPrismaEnvelope =
+    markers.genericAbortedTransactionEnvelope &&
+    !markers.contradictoryFailure &&
+    markers.emptyLogRows === 1;
   return (
     markers.exactCurrentFailure &&
     markers.directLockTimeoutProof &&
-    strongPrismaEnvelope
+    (structuredPrismaEnvelope || genericPrismaEnvelope)
   );
 }
 
@@ -47,12 +52,16 @@ export function hasExactPostgresAbortedTransactionEnvelope(
     "exec_execute_message",
     "exec_simple_query",
   ].some((routine) =>
-    hasExactPostgresErrorEnvelope(output, {
-      sqlState: "25P02",
-      message:
-        "current transaction is aborted, commands ignored until end of transaction block",
-      routine,
-    }, postgresInputSource),
+    hasExactPostgresErrorEnvelope(
+      output,
+      {
+        sqlState: "25P02",
+        message:
+          "current transaction is aborted, commands ignored until end of transaction block",
+        routine,
+      },
+      postgresInputSource,
+    ),
   );
 }
 
@@ -60,11 +69,15 @@ export function hasExactPostgresLockTimeoutEnvelope(
   output,
   postgresInputSource,
 ) {
-  return hasExactPostgresErrorEnvelope(output, {
-    sqlState: "55P03",
-    message: "canceling statement due to lock timeout",
-    routine: "ProcessInterrupts",
-  }, postgresInputSource);
+  return hasExactPostgresErrorEnvelope(
+    output,
+    {
+      sqlState: "55P03",
+      message: "canceling statement due to lock timeout",
+      routine: "ProcessInterrupts",
+    },
+    postgresInputSource,
+  );
 }
 
 function hasPrismaMigrationEnvelope(result, expected, routines) {
@@ -122,6 +135,9 @@ export function prismaLockTimeoutFailureMarkers({
             },
             ["exec_bind_message", "exec_execute_message", "exec_simple_query"],
           ),
+    genericAbortedTransactionEnvelope:
+      result !== undefined &&
+      hasCanonicalPrismaGenericAbortedTransactionError(result, migrationName),
     prismaMigrationFailure:
       prismaFailureCodes.length === 1 && prismaFailureCodes[0] === "P3018",
     prismaFailureCodePresent: prismaFailureCodes.length > 0,

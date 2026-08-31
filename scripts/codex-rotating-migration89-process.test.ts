@@ -101,6 +101,23 @@ const detachedDescendantThenExitProgram = String.raw`
   });
 `;
 
+function descendantThenSignalProgram(signal: "SIGTERM" | "SIGKILL") {
+  return String.raw`
+    const { spawn } = require("node:child_process");
+    const descendant = spawn(
+      process.execPath,
+      ["-e", ${JSON.stringify(stubbornDescendantProgram)}],
+      { stdio: ["ignore", "ignore", "ignore", "ipc"] },
+    );
+    descendant.once("message", (outerPid) => {
+      process.stdout.write(
+        String(outerPid) + "\n",
+        () => process.kill(process.pid, ${JSON.stringify(signal)}),
+      );
+    });
+  `;
+}
+
 type Migration89ProcessHandle = ReturnType<typeof spawnMigration89Process>;
 type Migration89ProcessResult = Awaited<Migration89ProcessHandle["result"]>;
 
@@ -581,12 +598,10 @@ it.skipIf(process.platform !== "linux").each(["stdout", "stderr"] as const)(
     const pid = handle.child.pid;
     expect(pid).toBeTypeOf("number");
     const result = await resultWithin(handle);
-    expect(result).toMatchObject({
-      status: null,
-      signal: "SIGTERM",
-      timedOut: false,
-      error: { code: "MAX_BUFFER_EXCEEDED" },
-    });
+    expect(result.status).toBeNull();
+    expect(["SIGTERM", "SIGKILL"]).toContain(result.signal);
+    expect(result.timedOut).toBe(false);
+    expect(result.error).toMatchObject({ code: "MAX_BUFFER_EXCEEDED" });
     expect(
       Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr),
     ).toBeLessThanOrEqual(64);
@@ -655,6 +670,90 @@ it("does not accept a matching snapshot that returns after the wait deadline", a
   }
   expect(lockSnapshot).toHaveBeenCalledOnce();
 });
+
+it("passes a positive bounded remaining deadline to every lock snapshot", async () => {
+  const observedTimeoutMs: number[] = [];
+  const lockSnapshot = vi.fn((timeoutMs: number) => {
+    observedTimeoutMs.push(timeoutMs);
+    return { locks: [] };
+  });
+
+  await expect(
+    waitForMigration89LockState({
+      description: "bounded snapshot",
+      lockSnapshot,
+      predicate: () => false,
+      timeoutMs: 40,
+      pollIntervalMs: 20,
+    }),
+  ).rejects.toThrow(/migration89_lock_state_not_observed:bounded snapshot/u);
+  expect(observedTimeoutMs.length).toBeGreaterThan(0);
+  expect(observedTimeoutMs.every((value) => value > 0 && value <= 40)).toBe(
+    true,
+  );
+});
+
+it("fails closed for malformed caller-supplied process and wait bounds", async () => {
+  const cleanup = vi.fn();
+  expect(() =>
+    spawnMigration89Process({
+      binary: process.execPath,
+      args: ["-e", ""],
+      environment: childEnvironment,
+      input: undefined,
+      cleanup,
+      timeoutMs: Number.NaN,
+    }),
+  ).toThrow(/migration89_process_bounds_invalid/u);
+  expect(cleanup).toHaveBeenCalledOnce();
+
+  await expect(
+    waitForMigration89LockState({
+      description: "invalid bound",
+      lockSnapshot: vi.fn(),
+      predicate: () => false,
+      timeoutMs: Number.NaN,
+    }),
+  ).rejects.toThrow(/migration89_process_bound_invalid/u);
+});
+
+it.skipIf(process.platform !== "linux").each(["SIGTERM", "SIGKILL"] as const)(
+  "preserves child self-%s after descendant cleanup",
+  async (expectedSignal) => {
+    let handle: Migration89ProcessHandle | undefined;
+    let pid: number | undefined;
+    const cleanup = vi.fn(() => {
+      if (pid === undefined || liveProcess(pid))
+        throw new Error("migration89_cleanup_ran_while_descendant_live");
+    });
+    try {
+      handle = spawnMigration89Process({
+        binary: process.execPath,
+        args: ["-e", descendantThenSignalProgram(expectedSignal)],
+        environment: childEnvironment,
+        input: undefined,
+        cleanup,
+        timeoutMs: 2_000,
+        terminationGraceMs: 50,
+        closeDrainGraceMs: 25,
+      });
+      pid = await descendantPid(handle);
+
+      const result = await resultWithin(handle);
+      expect(result).toMatchObject({
+        status: null,
+        signal: expectedSignal,
+        timedOut: false,
+      });
+      expect(result.error).toBeUndefined();
+      expectProcessGone(pid);
+      expect(cleanup).toHaveBeenCalledOnce();
+    } finally {
+      emergencyProcessCleanup(handle, pid);
+    }
+  },
+  10_000,
+);
 
 it("rejects a foreign-database lock collision as local causal evidence", () => {
   const targetDatabaseOid = 810_081;

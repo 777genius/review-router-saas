@@ -17,6 +17,7 @@ import {
   hasExactPostgresLockTimeoutEnvelope,
   isExpectedPrismaLockTimeoutFailure,
 } from "./codex-rotating-lock-timeout-proof.mjs";
+import { hasCanonicalPrismaGenericAbortedTransactionError } from "./lib/postgres-error-evidence.mjs";
 import {
   assertPsqlFailedWithExactMessage,
   assertPsqlFailedWithOneOfExactMessages,
@@ -80,6 +81,33 @@ function prismaLockTimeoutResult(
     lineEnding: options.lineEnding,
     stdout: options.stdout,
   });
+}
+
+function prismaGenericAbortedTransactionResult(
+  migrationName: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    status: 1,
+    signal: null,
+    error: null,
+    timedOut: false,
+    stdout: "The following migration has failed:\n",
+    stderr: [
+      "Loaded Prisma config from prisma.config.ts.",
+      "",
+      "Prisma schema loaded from prisma/schema.prisma.",
+      "Error: ERROR: current transaction is aborted, commands ignored until end of transaction block",
+      "   0: schema_commands::commands::apply_migrations::Applying migration",
+      `           with migration_name="${migrationName}"`,
+      "             at schema-engine/commands/src/commands/apply_migrations.rs:95",
+      "   1: schema_core::state::ApplyMigrations",
+      "             at schema-engine/core/src/state.rs:255",
+      "",
+      "",
+    ].join("\n"),
+    ...overrides,
+  };
 }
 
 describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
@@ -345,12 +373,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
 
   it("takes one database-bound lock snapshot with exact object identities", () => {
     const lockSnapshot =
-      /const lockSnapshot = \(url\) =>([\s\S]+?)\n[ ]{2}const releaseBlocker/u.exec(
+      /const lockSnapshot = \(url, timeoutMs\) =>([\s\S]+?)\n[ ]{2}const releaseBlocker/u.exec(
         source,
       )?.[1];
 
     expect(lockSnapshot).toBeDefined();
-    expect(lockSnapshot).toContain('psql(url, [\n        "-qAtc",');
+    expect(lockSnapshot).toMatch(/psql\(\s*url,\s*\[\s*"-qAtc",/u);
+    expect(lockSnapshot).toMatch(
+      /\],\s*true,\s*timeoutMs,\s*\)\.stdout\.trim\(\)/u,
+    );
     expect(lockSnapshot).toContain("SET statement_timeout='2s';");
     expect(lockSnapshot).toContain("SELECT json_build_object(");
     expect(lockSnapshot).toContain(
@@ -1104,6 +1135,45 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(true);
   });
 
+  it("accepts the observed Prisma 7.8 generic abort only with same-migration DB and direct proof", () => {
+    const migrationName = "000060_codex_oauth_setup_serialization";
+    const result = prismaGenericAbortedTransactionResult(migrationName);
+    const historyEvidence = {
+      total: 1,
+      currentFailed: 1,
+      zeroStep: 1,
+      lockTimeoutLog: 0,
+      abortedTransactionLog: 0,
+      exactFailureLog: 0,
+      emptyLog: 1,
+    };
+
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(result, migrationName),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        result,
+        output: String(result.stderr),
+        migrationName,
+        historyEvidence,
+        directLockTimeoutProof: { migrationName, observed: true },
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        result,
+        output: String(result.stderr),
+        migrationName,
+        historyEvidence,
+        directLockTimeoutProof: {
+          migrationName: "000061_codex_oauth_provider_mutation_fence",
+          observed: true,
+        },
+      }),
+    ).toBe(false);
+  });
+
   it.each([
     [
       "aborted transaction",
@@ -1263,6 +1333,252 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(false);
   });
 
+  it("accepts only normalized ANSI in the observed generic Prisma envelope", () => {
+    const migrationName = "000060_codex_oauth_setup_serialization";
+    const canonical = prismaGenericAbortedTransactionResult(migrationName);
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(
+        {
+          ...canonical,
+          stderr: `\u001b[31m${String(canonical.stderr)}\u001b[0m`,
+        },
+        migrationName,
+      ),
+    ).toBe(true);
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(
+        {
+          ...canonical,
+          stderr: `\u001b[2J${String(canonical.stderr)}`,
+        },
+        migrationName,
+      ),
+    ).toBe(false);
+  });
+
+  it.each([
+    "ERROR: permission denied",
+    "FATAL: permission denied",
+    "PANIC: permission denied",
+    "DETAIL: spoofed detail",
+    "HINT: spoofed hint",
+    "CONTEXT: spoofed context",
+    "LOCATION: spoofed_routine, postgres.c:1234",
+    "SCHEMA NAME: public",
+    "TABLE NAME: private_table",
+    "COLUMN NAME: private_column",
+    "DATA TYPE NAME: private_type",
+    "CONSTRAINT NAME: private_constraint",
+    "psql: spoofed failure",
+  ])("rejects PostgreSQL diagnostic stdout after blanks: %s", (diagnostic) => {
+    const migrationName = "000060_codex_oauth_setup_serialization";
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(
+        prismaGenericAbortedTransactionResult(migrationName, {
+          stdout: `The following migration has failed:\n\n${diagnostic}\n\n`,
+        }),
+        migrationName,
+      ),
+    ).toBe(false);
+  });
+
+  it.each([
+    {
+      name: "duplicate canonical error",
+      mutate: (stderr: string) =>
+        stderr.replace(
+          "Error: ERROR: current transaction is aborted, commands ignored until end of transaction block",
+          "Error: ERROR: current transaction is aborted, commands ignored until end of transaction block\nError: ERROR: current transaction is aborted, commands ignored until end of transaction block",
+        ),
+    },
+    {
+      name: "contradictory error",
+      mutate: (stderr: string) =>
+        stderr.replace(
+          "Error: ERROR: current transaction is aborted",
+          "Error: ERROR: permission denied\nError: ERROR: current transaction is aborted",
+        ),
+    },
+    {
+      name: "malformed frame",
+      mutate: (stderr: string) =>
+        stderr.replace(
+          "   1: schema_core::state::ApplyMigrations",
+          "   1: schema_core::state::ApplyMigrations spoof",
+        ),
+    },
+    {
+      name: "extra trailing prose",
+      mutate: (stderr: string) => `${stderr}spoof\n`,
+    },
+  ])("rejects generic Prisma envelope spoof: $name", ({ mutate }) => {
+    const migrationName = "000060_codex_oauth_setup_serialization";
+    const canonical = prismaGenericAbortedTransactionResult(migrationName);
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(
+        { ...canonical, stderr: mutate(String(canonical.stderr)) },
+        migrationName,
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects frame and expected migration-name mismatches", () => {
+    const migrationName = "000060_codex_oauth_setup_serialization";
+    const result = prismaGenericAbortedTransactionResult(migrationName);
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(
+        result,
+        "000061_codex_oauth_provider_mutation_fence",
+      ),
+    ).toBe(false);
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(
+        {
+          ...result,
+          stderr: String(result.stderr).replace(
+            `migration_name="${migrationName}"`,
+            'migration_name="000061_codex_oauth_provider_mutation_fence"',
+          ),
+        },
+        migrationName,
+      ),
+    ).toBe(false);
+  });
+
+  it.each([
+    "",
+    "\n",
+    "\n\n",
+    "\r\n\r\n",
+    " \t\n\n",
+    "The following migration has failed:",
+    "The following migration has failed:\n",
+    "The following migration has failed:\n\n",
+    "The following migration has failed:\r\n\r\n",
+  ])("accepts bounded benign generic Prisma stdout %#", (stdout) => {
+    const migrationName = "000060_codex_oauth_setup_serialization";
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(
+        prismaGenericAbortedTransactionResult(migrationName, { stdout }),
+        migrationName,
+      ),
+    ).toBe(true);
+  });
+
+  it.each(["\u0000", "\u001b[2J", "progress\rspoof", `${"x".repeat(16_385)}`])(
+    "rejects unsafe generic Prisma stdout %#",
+    (stdout) => {
+      const migrationName = "000060_codex_oauth_setup_serialization";
+      expect(
+        hasCanonicalPrismaGenericAbortedTransactionError(
+          prismaGenericAbortedTransactionResult(migrationName, { stdout }),
+          migrationName,
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("counts only unresolved same-migration history and still rejects duplicate current failures", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    const historyReader =
+      /function readPrismaLockTimeoutHistoryEvidence\([\s\S]+?\n\}/u.exec(
+        source,
+      )?.[0];
+    const result = prismaLockTimeoutResult(migrationName);
+    const directLockTimeoutProof = { migrationName, observed: true };
+    const oneCurrentAttempt = {
+      total: 1,
+      currentFailed: 1,
+      zeroStep: 1,
+      lockTimeoutLog: 1,
+      abortedTransactionLog: 0,
+      exactFailureLog: 1,
+      emptyLog: 0,
+    };
+
+    expect(historyReader).toBeDefined();
+    expect(historyReader).toContain(
+      "WHERE migration_name = ${quoteLiteral(migrationName)}\n        AND rolled_back_at IS NULL",
+    );
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        result,
+        output: String(result.stderr),
+        migrationName,
+        historyEvidence: oneCurrentAttempt,
+        directLockTimeoutProof,
+      }),
+    ).toBe(true);
+    expect(
+      isExpectedPrismaLockTimeoutFailure({
+        result,
+        output: String(result.stderr),
+        migrationName,
+        historyEvidence: {
+          ...oneCurrentAttempt,
+          total: 2,
+          currentFailed: 2,
+          zeroStep: 2,
+        },
+        directLockTimeoutProof,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects stdout substitution or spoofing for a generic abort", () => {
+    const migrationName = "000060_codex_oauth_setup_serialization";
+    const result = prismaGenericAbortedTransactionResult(migrationName);
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(
+        { ...result, stdout: String(result.stderr), stderr: "" },
+        migrationName,
+      ),
+    ).toBe(false);
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(
+        { ...result, stdout: "Error: ERROR: permission denied\n" },
+        migrationName,
+      ),
+    ).toBe(false);
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(
+        {
+          ...result,
+          stdout: "Error: ERROR: permission denied\n\n",
+        },
+        migrationName,
+      ),
+    ).toBe(false);
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(
+        {
+          ...result,
+          stdout:
+            "   0: schema_commands::commands::apply_migrations::Applying migration\n\n",
+        },
+        migrationName,
+      ),
+    ).toBe(false);
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(
+        {
+          ...result,
+          stdout: "   1: schema_core::state::ApplyMigrations\n\n",
+        },
+        migrationName,
+      ),
+    ).toBe(false);
+    expect(
+      hasCanonicalPrismaGenericAbortedTransactionError(
+        {
+          ...result,
+          stdout: `           with migration_name="${migrationName}"\n\n`,
+        },
+        migrationName,
+      ),
+    ).toBe(false);
+  });
+
   it.each([
     [
       "permission denial",
@@ -1397,6 +1713,19 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(false);
   });
 
+  it("threads the lock-state deadline into the real psql child timeout", () => {
+    expect(source).toContain(
+      "lockSnapshot: (timeoutMs) => lockSnapshot(url, timeoutMs)",
+    );
+    expect(source).toMatch(
+      /psql\(\s*url,\s*\[\s*"-qAtc",[\s\S]*?\],\s*true,\s*timeoutMs,\s*\)\.stdout\.trim\(\)/u,
+    );
+    expect(source).toContain("timeout: timeoutMs");
+    expect(source).toContain("rehearsal_psql_timeout_invalid");
+    expect(source).not.toMatch(
+      /WHERE target_database\.datname=current_database\(\)`,\s*true,\s*timeoutMs,\s*\]/u,
+    );
+  });
   it("rejects a missing migration-name field", () => {
     const migrationName = "000061_codex_oauth_provider_mutation_fence";
     expect(

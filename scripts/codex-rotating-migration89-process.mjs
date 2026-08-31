@@ -135,8 +135,12 @@ if termination_signal is not None:
     os._exit(128 + final_signal)
 
 if return_code < 0:
-    return_code = 128 - return_code
-if return_code < 0 or return_code > 255:
+    final_signal = -return_code
+    if final_signal not in (signal.SIGKILL, signal.SIGSTOP):
+        signal.signal(final_signal, signal.SIG_DFL)
+    os.kill(supervisor_pid, final_signal)
+    os._exit(128 + final_signal)
+if return_code > 255:
     os._exit(125)
 os._exit(return_code)
 `;
@@ -169,22 +173,18 @@ const allowedSignals = new Set([
 ]);
 const maximumMigration89InputBytes = 8 * 1024 * 1024;
 
-function boundedMilliseconds(value, fallback, maximum) {
-  return Number.isSafeInteger(value) && value > 0
-    ? Math.min(value, maximum)
-    : fallback;
+function boundedMilliseconds(value, maximum) {
+  if (!Number.isSafeInteger(value) || value <= 0)
+    throw new Error("migration89_process_bound_invalid");
+  return Math.min(value, maximum);
 }
 
 function containedSupervisorInvocation(
   command,
   { terminationGraceMs = 250, settleGraceMs = 1_000 } = {},
 ) {
-  const termGraceMs = boundedMilliseconds(terminationGraceMs, 250, 10_000);
-  const boundedSettleGraceMs = boundedMilliseconds(
-    settleGraceMs,
-    1_000,
-    10_000,
-  );
+  const termGraceMs = boundedMilliseconds(terminationGraceMs, 10_000);
+  const boundedSettleGraceMs = boundedMilliseconds(settleGraceMs, 10_000);
   return Object.freeze({
     kind: "subreaper",
     binary: linuxSubreaperSupervisor,
@@ -307,18 +307,6 @@ export function spawnMigration89Process({
   maxBuffer = 8 * 1024 * 1024,
   maxInputBytes = maximumMigration89InputBytes,
 }) {
-  const executionTimeoutMs = boundedMilliseconds(timeoutMs, 30_000, 600_000);
-  const killGraceMs = boundedMilliseconds(terminationGraceMs, 2_000, 10_000);
-  const forcedSettleGraceMs = Math.max(killGraceMs, 1_000);
-  const drainGraceMs = boundedMilliseconds(closeDrainGraceMs, 100, 1_000);
-  const outputLimitBytes =
-    Number.isSafeInteger(maxBuffer) && maxBuffer > 0
-      ? Math.min(maxBuffer, 16 * 1024 * 1024)
-      : 8 * 1024 * 1024;
-  const inputLimitBytes =
-    Number.isSafeInteger(maxInputBytes) && maxInputBytes > 0
-      ? Math.min(maxInputBytes, 16 * 1024 * 1024)
-      : maximumMigration89InputBytes;
   let cleanupAttempted = false;
   const cleanupOnce = () => {
     if (cleanupAttempted) return;
@@ -344,6 +332,27 @@ export function spawnMigration89Process({
     typeof environment !== "object"
   )
     rejectBeforeSpawn("migration89_process_invocation_invalid");
+
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    !Number.isSafeInteger(terminationGraceMs) ||
+    terminationGraceMs <= 0 ||
+    !Number.isSafeInteger(closeDrainGraceMs) ||
+    closeDrainGraceMs <= 0 ||
+    !Number.isSafeInteger(maxBuffer) ||
+    maxBuffer <= 0 ||
+    !Number.isSafeInteger(maxInputBytes) ||
+    maxInputBytes <= 0
+  )
+    rejectBeforeSpawn("migration89_process_bounds_invalid");
+
+  const executionTimeoutMs = boundedMilliseconds(timeoutMs, 600_000);
+  const killGraceMs = boundedMilliseconds(terminationGraceMs, 10_000);
+  const forcedSettleGraceMs = Math.max(killGraceMs, 1_000);
+  const drainGraceMs = boundedMilliseconds(closeDrainGraceMs, 1_000);
+  const outputLimitBytes = Math.min(maxBuffer, 16 * 1024 * 1024);
+  const inputLimitBytes = Math.min(maxInputBytes, 16 * 1024 * 1024);
 
   if (input !== undefined && typeof input !== "string")
     rejectBeforeSpawn("migration89_process_input_invalid");
@@ -801,14 +810,19 @@ export async function waitForMigration89LockState({
   timeoutMs = 15_000,
   pollIntervalMs = 20,
 }) {
-  const waitTimeoutMs = boundedMilliseconds(timeoutMs, 15_000, 600_000);
-  const intervalMs = boundedMilliseconds(pollIntervalMs, 20, waitTimeoutMs);
+  const waitTimeoutMs = boundedMilliseconds(timeoutMs, 600_000);
+  const intervalMs = boundedMilliseconds(pollIntervalMs, waitTimeoutMs);
   const deadline = performance.now() + waitTimeoutMs;
   let snapshot = Object.freeze({ locks: Object.freeze([]) });
   while (performance.now() < deadline) {
     assertProcessesLive(description, watchedProcesses);
-    snapshot = lockSnapshot();
+    const snapshotTimeoutMs = Math.max(
+      1,
+      Math.ceil(deadline - performance.now()),
+    );
+    snapshot = lockSnapshot(snapshotTimeoutMs);
     assertProcessesLive(description, watchedProcesses);
+    if (performance.now() >= deadline) break;
     const matched = predicate(snapshot);
     assertProcessesLive(description, watchedProcesses);
     if (matched) {

@@ -35,7 +35,10 @@ import {
   isExpectedPrismaLockTimeoutFailure,
   prismaLockTimeoutFailureMarkers,
 } from "./codex-rotating-lock-timeout-proof.mjs";
-import { hasCanonicalPrismaMigrationPostgresErrorEvidence } from "./lib/postgres-error-evidence.mjs";
+import {
+  hasCanonicalPrismaGenericAbortedTransactionError,
+  hasCanonicalPrismaMigrationPostgresErrorEvidence,
+} from "./lib/postgres-error-evidence.mjs";
 import {
   assertPsqlFailedWithExactMessage,
   assertPsqlFailedWithOneOfExactMessages,
@@ -101,7 +104,7 @@ function duplicateRelationFailure(relation) {
   return Object.freeze({
     sqlState: "42P07",
     message: `relation "${relation}" already exists`,
-    routine: "heap_create_with_catalog",
+    routine: "index_create",
   });
 }
 
@@ -463,11 +466,13 @@ async function proveMigration89TwoSessionBoundary() {
     void handle.result.then(() => spawned.delete(handle));
     return handle;
   };
-  const lockSnapshot = (url) =>
+  const lockSnapshot = (url, timeoutMs) =>
     JSON.parse(
-      psql(url, [
-        "-qAtc",
-        String.raw`SET statement_timeout='2s';
+      psql(
+        url,
+        [
+          "-qAtc",
+          String.raw`SET statement_timeout='2s';
           SELECT json_build_object(
             'databaseOid', target_database.oid::bigint,
             'relationOid', target_relation.oid::bigint,
@@ -520,7 +525,10 @@ async function proveMigration89TwoSessionBoundary() {
             ON target_relation.relnamespace=target_namespace.oid
            AND target_relation.relname='CodexOAuthSecretNamespace'
           WHERE target_database.datname=current_database()`,
-      ]).stdout.trim(),
+        ],
+        true,
+        timeoutMs,
+      ).stdout.trim(),
     );
   const releaseBlocker = async (blocker) => {
     if (!blocker) return;
@@ -551,7 +559,7 @@ async function proveMigration89TwoSessionBoundary() {
         blocker.write("SELECT pg_advisory_lock(810081, 1);\n");
         await waitForMigration89LockState({
           description: "old barrier held",
-          lockSnapshot: () => lockSnapshot(url),
+          lockSnapshot: (timeoutMs) => lockSnapshot(url, timeoutMs),
           predicate: (snapshot) =>
             Boolean(
               findMigration89AdvisoryLock(snapshot, "rr-m89-old-barrier", true),
@@ -563,7 +571,7 @@ async function proveMigration89TwoSessionBoundary() {
         const old = spawnPsql(oldUrl, ["-c", oldCall]);
         await waitForMigration89LockState({
           description: "old invocation crossed update",
-          lockSnapshot: () => lockSnapshot(url),
+          lockSnapshot: (timeoutMs) => lockSnapshot(url, timeoutMs),
           predicate: (snapshot) => {
             const holderLock = findMigration89AdvisoryLock(
               snapshot,
@@ -602,7 +610,7 @@ async function proveMigration89TwoSessionBoundary() {
         const migration = spawnPsql(migrationUrl, ["-f", migration89]);
         await waitForMigration89LockState({
           description: "migration queued behind old update",
-          lockSnapshot: () => lockSnapshot(url),
+          lockSnapshot: (timeoutMs) => lockSnapshot(url, timeoutMs),
           predicate: (snapshot) => {
             const oldLock = findMigration89RelationLock(
               snapshot,
@@ -666,7 +674,7 @@ async function proveMigration89TwoSessionBoundary() {
         );
         await waitForMigration89LockState({
           description: "migration ordering blocker held",
-          lockSnapshot: () => lockSnapshot(url),
+          lockSnapshot: (timeoutMs) => lockSnapshot(url, timeoutMs),
           predicate: (snapshot) =>
             Boolean(
               findMigration89RelationLock(
@@ -687,7 +695,7 @@ async function proveMigration89TwoSessionBoundary() {
         const migration = spawnPsql(migrationUrl, ["-f", migration89]);
         await waitForMigration89LockState({
           description: "migration boundary queued",
-          lockSnapshot: () => lockSnapshot(url),
+          lockSnapshot: (timeoutMs) => lockSnapshot(url, timeoutMs),
           predicate: (snapshot) => {
             const blockerLock = findMigration89RelationLock(
               snapshot,
@@ -722,7 +730,7 @@ async function proveMigration89TwoSessionBoundary() {
         const old = spawnPsql(oldUrl, ["-c", oldCall]);
         await waitForMigration89LockState({
           description: "old invocation queued behind migration boundary",
-          lockSnapshot: () => lockSnapshot(url),
+          lockSnapshot: (timeoutMs) => lockSnapshot(url, timeoutMs),
           predicate: (snapshot) => {
             const migrationLock = findMigration89RelationLock(
               snapshot,
@@ -1128,12 +1136,6 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       applyCanonicalPreMigrationBaseline(url);
       psql(url, ["-c", testCase.decoy]);
       const failed = migrateDeploy(url, false);
-      assertPrismaMigrationFailureEnvelope(
-        failed,
-        testCase.name,
-        testCase.failureEvidence,
-        `${testCase.name} injected failure did not report its decoy collision`,
-      );
       for (const [migrationName] of testCase.prior) {
         proveMigrationRunnerHistory(url, migrationName, true);
       }
@@ -1148,9 +1150,29 @@ function proveLateMigrationRollbackAndReplayMatrix() {
         testCase.failureEvidence,
         `${testCase.name} direct replay did not prove its decoy collision`,
       );
+      const rollbackUnchanged =
+        psql(url, ["-Atc", testCase.leaked]).stdout.trim() === "0";
       assert(
-        psql(url, ["-Atc", testCase.leaked]).stdout.trim() === "0",
+        rollbackUnchanged,
         `${testCase.name} leaked partial catalog state after rollback`,
+      );
+      assertPrismaMigrationFailureEnvelope(
+        failed,
+        testCase.name,
+        testCase.failureEvidence,
+        `${testCase.name} injected failure did not report its decoy collision`,
+        {
+          historyEvidence: readPrismaLockTimeoutHistoryEvidence(
+            url,
+            testCase.name,
+          ),
+          directFailureProof: {
+            migrationName: testCase.name,
+            expectedFailure: testCase.failureEvidence,
+            observed: true,
+          },
+          rollbackUnchanged,
+        },
       );
       psql(url, ["-c", testCase.cleanup]);
       migrateResolve(url, "--rolled-back", testCase.name);
@@ -1587,15 +1609,28 @@ function proveInjected61Rollback(url) {
   );
 
   const failed = migrateDeploy(url, false);
+  const rollbackUnchanged = databaseFingerprintBefore61(url) === before;
+  assert(
+    rollbackUnchanged,
+    "Prisma 000061 transaction did not roll back atomically",
+  );
   assertPrismaMigrationFailureEnvelope(
     failed,
     migration61Name,
     injectedFailure,
     "decoy 000061 index must inject a runner failure",
-  );
-  assert(
-    databaseFingerprintBefore61(url) === before,
-    "Prisma 000061 transaction did not roll back atomically",
+    {
+      historyEvidence: readPrismaLockTimeoutHistoryEvidence(
+        url,
+        migration61Name,
+      ),
+      directFailureProof: {
+        migrationName: migration61Name,
+        expectedFailure: injectedFailure,
+        observed: true,
+      },
+      rollbackUnchanged,
+    },
   );
   psql(url, [
     "-c",
@@ -5553,7 +5588,8 @@ function readPrismaLockTimeoutHistoryEvidence(url, migrationName) {
         )
       )
       FROM "_prisma_migrations"
-      WHERE migration_name = ${quoteLiteral(migrationName)}`,
+      WHERE migration_name = ${quoteLiteral(migrationName)}
+        AND rolled_back_at IS NULL`,
     ]).stdout,
   );
 }
@@ -5595,12 +5631,50 @@ function assertPrismaMigrationFailureEnvelope(
   migrationName,
   expectedFailure,
   message,
+  independentProof,
 ) {
-  assert(
-    hasCanonicalPrismaMigrationPostgresErrorEvidence(result, {
+  const structuredExpected = hasCanonicalPrismaMigrationPostgresErrorEvidence(
+    result,
+    {
       ...expectedFailure,
       migrationName,
+    },
+  );
+  const structuredAborted = [
+    "exec_bind_message",
+    "exec_execute_message",
+    "exec_simple_query",
+  ].some((routine) =>
+    hasCanonicalPrismaMigrationPostgresErrorEvidence(result, {
+      sqlState: "25P02",
+      message:
+        "current transaction is aborted, commands ignored until end of transaction block",
+      migrationName,
+      routine,
     }),
+  );
+  const genericAborted = hasCanonicalPrismaGenericAbortedTransactionError(
+    result,
+    migrationName,
+  );
+  const historyEvidence = independentProof?.historyEvidence;
+  const directFailureProof = independentProof?.directFailureProof;
+  const expectedDirectFailure = directFailureProof?.expectedFailure;
+  const exactIndependentProof =
+    historyEvidence?.total === 1 &&
+    historyEvidence?.currentFailed === 1 &&
+    historyEvidence?.zeroStep === 1 &&
+    directFailureProof?.observed === true &&
+    directFailureProof?.migrationName === migrationName &&
+    expectedDirectFailure?.sqlState === expectedFailure.sqlState &&
+    expectedDirectFailure?.message === expectedFailure.message &&
+    expectedDirectFailure?.routine === expectedFailure.routine &&
+    independentProof?.rollbackUnchanged === true;
+  assert(
+    exactIndependentProof &&
+      (structuredExpected ||
+        structuredAborted ||
+        (genericAborted && historyEvidence?.emptyLog === 1)),
     message,
   );
 }
@@ -5722,7 +5796,9 @@ function requirePostgres17() {
   });
 }
 
-function psql(url, args, requireSuccess = true) {
+function psql(url, args, requireSuccess = true, timeoutMs = 600_000) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 600_000)
+    throw new Error("rehearsal_psql_timeout_invalid");
   const invocation = createSecretSafePostgresInvocation({
     databaseUrl: url,
     args: ["-X", "-v", "ON_ERROR_STOP=1", ...args],
@@ -5733,7 +5809,7 @@ function psql(url, args, requireSuccess = true) {
       env: invocation.environment,
       input: invocation.input,
       maxBuffer: 16 * 1024 * 1024,
-      timeout: 600_000,
+      timeout: timeoutMs,
     });
     if (requireSuccess && (result.status !== 0 || result.error))
       throw sanitizedDiagnosticError({

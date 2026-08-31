@@ -924,6 +924,94 @@ function parsePrismaMigrationPostgresEnvelope(stderr) {
   });
 }
 
+const prismaGenericAbortedTransactionMessage =
+  "current transaction is aborted, commands ignored until end of transaction block";
+
+function parsePrismaGenericAbortedTransactionEnvelope(stderr) {
+  const source = String(stderr ?? "");
+  if (source.length === 0 || source.length > 16_384) return null;
+  let normalized = ansiNormalized(source);
+  if (hasUnsafeControl(normalized)) return null;
+  normalized = normalized.replaceAll("\r\n", "\n");
+  if (normalized.includes("\r")) return null;
+
+  const lines = normalized.split("\n");
+  if (
+    lines.length !== 11 ||
+    lines[0] !== "Loaded Prisma config from prisma.config.ts." ||
+    lines[1] !== "" ||
+    lines[2] !== "Prisma schema loaded from prisma/schema.prisma." ||
+    lines[3] !== `Error: ERROR: ${prismaGenericAbortedTransactionMessage}` ||
+    lines[4] !==
+      "   0: schema_commands::commands::apply_migrations::Applying migration" ||
+    lines[7] !== "   1: schema_core::state::ApplyMigrations" ||
+    lines[8] !== "             at schema-engine/core/src/state.rs:255" ||
+    lines[9] !== "" ||
+    lines[10] !== ""
+  )
+    return null;
+
+  const migration =
+    /^[ ]{11}with migration_name="(?<migrationName>[0-9]{6}_[a-z0-9_]{1,200})"$/u.exec(
+      lines[5],
+    );
+  if (
+    !migration?.groups ||
+    lines[6] !==
+      "             at schema-engine/commands/src/commands/apply_migrations.rs:95"
+  )
+    return null;
+
+  return Object.freeze({
+    message: prismaGenericAbortedTransactionMessage,
+    migrationName: migration.groups.migrationName,
+  });
+}
+
+function normalizePrismaGenericStdout(stdout) {
+  const source = String(stdout ?? "");
+  if (source.length > 16_384) return null;
+  let normalized = ansiNormalized(source);
+  if (hasUnsafeControl(normalized)) return null;
+  normalized = normalized.replaceAll("\r\n", "\n");
+  if (normalized.includes("\r")) return null;
+  if (/^[\t\n ]*$/u.test(normalized)) return "";
+  return normalized.replace(/(?:\n[\t ]*)+$/u, "");
+}
+
+function hasPrismaFailureSpoofOnStdout(stdout) {
+  const source = String(stdout ?? "");
+  if (!source) return false;
+  const normalized = ansiNormalized(source);
+  if (hasUnsafeControl(normalized)) return true;
+  return /(?:^|\r?\n)[\t ]*(?:Loaded Prisma config from|Prisma schema loaded from|(?:Error:[\t ]+)?P[0-9]{4}(?:$|[\t ])|Error:[\t ]+ERROR:|Migration name:|Database error(?: code)?:|ERROR:|FATAL:|PANIC:|DbError\b|[0-9]+:[\t ]*(?:schema_commands|schema_core)::|with[\t ]+migration_name=|[0-9]+:.*migration_name=)/mu.test(
+    normalized,
+  );
+}
+
+export function hasCanonicalPrismaGenericAbortedTransactionError(
+  result,
+  migrationName,
+) {
+  const stdout = normalizePrismaGenericStdout(result?.stdout);
+  if (
+    stdout === null ||
+    !validFailureProcess({
+      ...result,
+      stdout,
+    }) ||
+    hasPrismaFailureSpoofOnStdout(stdout) ||
+    !/^[0-9]{6}_[a-z0-9_]{1,200}$/u.test(migrationName ?? "")
+  )
+    return false;
+  const envelope = parsePrismaGenericAbortedTransactionEnvelope(result.stderr);
+  return Boolean(
+    envelope &&
+    envelope.message === prismaGenericAbortedTransactionMessage &&
+    envelope.migrationName === migrationName,
+  );
+}
+
 export function hasCanonicalPrismaMigrationPostgresErrorEvidence(
   result,
   expected,
