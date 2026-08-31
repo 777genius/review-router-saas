@@ -915,6 +915,34 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
+  it("proves the workflow compatibility ACL for every runtime role", () => {
+    const runtimeAcl =
+      /FOREACH role_name IN ARRAY ARRAY\['reviewrouter_api','reviewrouter_web','reviewrouter_worker'\] LOOP([\s\S]+?)\n {8}END LOOP;/u.exec(
+        source,
+      )?.[1];
+    expect(runtimeAcl).toBeDefined();
+    expect(runtimeAcl).toMatch(
+      /relation\.relname NOT IN \([\s\S]+?'CodexOAuthWorkflowCompatibility'/u,
+    );
+    expect(runtimeAcl).toContain(
+      `'public."CodexOAuthWorkflowCompatibility"',\n               'SELECT'`,
+    );
+    expect(
+      runtimeAcl?.match(
+        /role_name IN \('reviewrouter_api', 'reviewrouter_web'\)/gu,
+      ),
+    ).toHaveLength(2);
+    expect(runtimeAcl).toContain(
+      `'public."CodexOAuthWorkflowCompatibility"',\n               'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'`,
+    );
+    expect(runtimeAcl).toContain(
+      `'public."CodexOAuthWorkflowCompatibility"',\n               'INSERT,UPDATE,REFERENCES'`,
+    );
+    expect(runtimeAcl?.match(/CodexOAuthWorkflowCompatibility/gu)).toHaveLength(
+      5,
+    );
+  });
+
   it("routes rehearsal work through explicit authority clients", () => {
     const orchestration = source.slice(
       source.indexOf("try {"),

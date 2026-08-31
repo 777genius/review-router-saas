@@ -3275,11 +3275,36 @@ function proveDatabasePrivileges(url) {
                    'CodexOAuthSetupManifest',
                    'CodexOAuthSetupPayloadClaim',
                    'CodexOAuthSetupRecoveryRequest',
-                   'CodexOAuthWritebackIntent'
+                   'CodexOAuthWritebackIntent',
+                   'CodexOAuthWorkflowCompatibility'
                  )
                  AND NOT has_table_privilege(
                    role_name, relation.oid, 'SELECT,INSERT,UPDATE,DELETE'
                  )
+             )
+             OR has_table_privilege(
+               role_name,
+               'public."CodexOAuthWorkflowCompatibility"',
+               'SELECT'
+             ) IS DISTINCT FROM (
+               role_name IN ('reviewrouter_api', 'reviewrouter_web')
+             )
+             OR has_table_privilege(
+               role_name,
+               'public."CodexOAuthWorkflowCompatibility"',
+               'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+             )
+             OR has_any_column_privilege(
+               role_name,
+               'public."CodexOAuthWorkflowCompatibility"',
+               'SELECT'
+             ) IS DISTINCT FROM (
+               role_name IN ('reviewrouter_api', 'reviewrouter_web')
+             )
+             OR has_any_column_privilege(
+               role_name,
+               'public."CodexOAuthWorkflowCompatibility"',
+               'INSERT,UPDATE,REFERENCES'
              )
              OR NOT has_table_privilege(
                role_name,
