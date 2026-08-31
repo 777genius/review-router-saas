@@ -3,7 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertActivationCatalogGitCustody } from "./activation-catalog-git-custody.mjs";
+import {
+  assertActivationCatalogCaptureSurfaceIdentity,
+  assertActivationCatalogGitCustody,
+} from "./activation-catalog-git-custody.mjs";
 
 const repositories: string[] = [];
 
@@ -95,5 +98,27 @@ describe("activation catalog Git custody", () => {
         auditedHead: fixture.auditedHead,
       }),
     ).toThrow("activation_catalog_policy_git_audited_head_not_in_checkout");
+  });
+
+  it("allows evidence descendants and rejects capture drift", () => {
+    const fixture = repository();
+    writeFileSync(join(fixture.root, "evidence.md"), "evidence\n");
+    fixture.git("add", "evidence.md");
+    fixture.git("commit", "-qm", "evidence");
+    expect(() =>
+      assertActivationCatalogCaptureSurfaceIdentity({
+        repositoryRoot: fixture.root,
+        auditedHead: fixture.auditedHead,
+        captureSurface: ["catalog.txt"],
+      }),
+    ).not.toThrow();
+    writeFileSync(join(fixture.root, "catalog.txt"), "drift\n");
+    expect(() =>
+      assertActivationCatalogCaptureSurfaceIdentity({
+        repositoryRoot: fixture.root,
+        auditedHead: fixture.auditedHead,
+        captureSurface: ["catalog.txt"],
+      }),
+    ).toThrow("activation_catalog_policy_git_capture_surface_drift");
   });
 });
