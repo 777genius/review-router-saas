@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { TextDecoder } from "node:util";
 import { type ActivationCatalogPolicyPromotionExpectation } from "../domain/activation-catalog-policy-provenance-contract";
-import { type ActivationCatalogRawPromotionTrustRootReady } from "../domain/activation-catalog-policy-promotion-expectation";
+import { type ActivationCatalogRawPromotionTrustRootReady } from "../domain/activation-catalog-policy-raw-promotion-trust-root";
 
 export type ActivationCatalogPolicyReviewEvidenceBuffers = Readonly<{
   reviewArtifact: Buffer;

@@ -7,8 +7,10 @@ import {
   activationCatalogRawReviewerRuntimeRepositoryPath,
   activationCatalogRawTrustRootReadiness,
   assertActivationCatalogRawPromotionTrustRootReady,
+  loadActivationCatalogRawPromotionTrustRoot,
   type ActivationCatalogRawPromotionTrustRootReady,
-} from "../domain/activation-catalog-policy-promotion-expectation";
+} from "../domain/activation-catalog-policy-raw-promotion-trust-root";
+import { canonicalReleaseMigrationPostManifestIdentity } from "../domain/release-migration-transition";
 import {
   activationCatalogRawReviewArtifact,
   assertActivationCatalogPolicyReviewEvidence,
@@ -68,7 +70,7 @@ function rawEvidence() {
     reviewDecisionId: "RR-RAW-GO",
     projectionSha256: `sha256:${"5".repeat(64)}`,
     liveCatalogDigest: `sha256:${"6".repeat(64)}`,
-    postManifestIdentity: `sha256:${"7".repeat(64)}`,
+    postManifestIdentity: canonicalReleaseMigrationPostManifestIdentity,
     recoveryWitnessSha256: "8".repeat(64),
     canonicalDigests: {
       preactivation: `sha256:${"9".repeat(64)}`,
@@ -214,6 +216,35 @@ describe("activation catalog raw review trust root", () => {
     ).toThrow("activation_catalog_policy_raw_trust_root_invalid");
   });
 
+  it("loads only the exact pending sentinel and deeply freezes it", () => {
+    const pending = loadActivationCatalogRawPromotionTrustRoot({
+      status: "pending",
+      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
+    });
+    expect(pending).toEqual({
+      status: "pending",
+      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
+    });
+    expect(Object.isFrozen(pending)).toBe(true);
+    expect(() =>
+      assertActivationCatalogRawPromotionTrustRootReady(pending),
+    ).toThrow("activation_catalog_policy_raw_trust_root_pending");
+  });
+
+  it.each([
+    { status: "pending" },
+    { status: "pending", reason: "wrong-reason" },
+    {
+      status: "pending",
+      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
+      evidence: {},
+    },
+  ])("rejects malformed pending-like roots at load time", (value) => {
+    expect(() => loadActivationCatalogRawPromotionTrustRoot(value)).toThrow(
+      "activation_catalog_policy_raw_trust_root_invalid",
+    );
+  });
+
   it.each([
     [
       "raw hash",
@@ -255,6 +286,12 @@ describe("activation catalog raw review trust root", () => {
       "review path",
       (root: any) => {
         root.independentReview.reviewArtifact.repositoryPath = "../review.md";
+      },
+    ],
+    [
+      "post-manifest identity",
+      (root: any) => {
+        root.evidence.postManifestIdentity = `sha256:${"7".repeat(64)}`;
       },
     ],
   ])(

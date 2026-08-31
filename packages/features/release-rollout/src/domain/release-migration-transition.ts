@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { LegacyAmbiguityEvidence } from "./trusted-rollout-evidence";
 import { canonicalReleaseMigrationPostManifestIdentity } from "./release-migration-artifact-identity.js";
+import { activationCatalogRawPromotionTrustRoot } from "./activation-catalog-policy-raw-promotion-trust-root";
 
 export { canonicalReleaseMigrationPostManifestIdentity };
 
@@ -165,6 +166,15 @@ export const deriveOrderedPendingEntriesSha256 = (
     )
     .digest("hex")}`;
 
+export const historicalReleaseMigrationPostCatalogDigest =
+  "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d";
+
+const canonicalReleaseMigrationPostCatalogDigest = (() => {
+  if (activationCatalogRawPromotionTrustRoot.status === "ready")
+    return activationCatalogRawPromotionTrustRoot.evidence.liveCatalogDigest;
+  return historicalReleaseMigrationPostCatalogDigest;
+})();
+
 export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
     "sha256:f994bfe9979e948723ef4684e219c1e23868f1a1b5daea6e637cb775bff4c47d",
@@ -176,11 +186,7 @@ export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationBundleSha256:
     "sha256:e7a39e8231b6edd2952b42aa6f6d8aab9ed5a606f608c9941d3240d8aa374f01",
   postManifestIdentity: canonicalReleaseMigrationPostManifestIdentity,
-  // Last independently reviewed and promoted production catalog trust root.
-  // A newer observation may only be emitted by the disposable capture path;
-  // it is deliberately not accepted here until separately promoted.
-  postCatalogDigest:
-    "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
+  postCatalogDigest: canonicalReleaseMigrationPostCatalogDigest,
 });
 
 export const canonicalReleaseMigrationResumeManifestIdentities = Object.freeze([

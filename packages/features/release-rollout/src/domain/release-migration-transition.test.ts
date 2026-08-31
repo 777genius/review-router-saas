@@ -10,7 +10,9 @@ import {
   canonicalReleaseMigrationResumeManifestIdentities,
   createReleaseMigrationTransition,
   deriveOrderedPendingEntriesSha256,
+  historicalReleaseMigrationPostCatalogDigest,
 } from "./release-migration-transition";
+import { activationCatalogRawPromotionTrustRoot } from "./activation-catalog-policy-raw-promotion-trust-root";
 import {
   fencedLiveV70V73CatalogDigestSql,
   liveV70V89CatalogProjectionRelations,
@@ -139,13 +141,16 @@ describe("canonical release migration transition", () => {
     ).toThrow("release_migration_transition_untrusted");
   });
 
-  it("trusts only the last promoted production catalog digest", () => {
+  it("derives catalog trust from the production root with only the historical pending fallback", () => {
     expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
-      "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
+      activationCatalogRawPromotionTrustRoot.status === "ready"
+        ? activationCatalogRawPromotionTrustRoot.evidence.liveCatalogDigest
+        : historicalReleaseMigrationPostCatalogDigest,
     );
-    expect(canonicalReleaseMigrationArtifact.postCatalogDigest).not.toBe(
-      "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68",
-    );
+    if (activationCatalogRawPromotionTrustRoot.status === "pending")
+      expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
+        "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
+      );
   });
 
   it("binds the live history projection to the canonical post-manifest identity", () => {
@@ -216,7 +221,9 @@ describe("canonical release migration transition", () => {
     expect(fencedLiveV70V73CatalogDigestSql).toContain("'acl',coalesce");
     expect(fencedLiveV70V73CatalogDigestSql).toContain("'triggers',coalesce");
     expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
-      "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
+      activationCatalogRawPromotionTrustRoot.status === "ready"
+        ? activationCatalogRawPromotionTrustRoot.evidence.liveCatalogDigest
+        : historicalReleaseMigrationPostCatalogDigest,
     );
   });
 

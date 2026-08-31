@@ -15,6 +15,7 @@ import {
   authorizeCanonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-contract.js";
+import { assertActivationCatalogCapturePair } from "./lib/activation-catalog-capture-pair.mjs";
 import {
   assertDisposableCaptureTarget,
   createRehearsalRunnerJobBinding,
@@ -766,6 +767,7 @@ describe("disposable dual-version rehearsal", () => {
       createActivationCatalogCaptureCheckpoint({
         artifact,
         candidate,
+        configuredDatabaseIdentity: candidate.databaseIdentity,
         disposableIdentity: "rr-disposable-candidate-test",
         systemIdentifier: "7612345678901234567",
         recoveryWitnessSha256: "d".repeat(64),
@@ -803,11 +805,48 @@ describe("disposable dual-version rehearsal", () => {
       createActivationCatalogCaptureCheckpoint({
         artifact,
         candidate,
+        configuredDatabaseIdentity: candidate.databaseIdentity,
         disposableIdentity: "production",
         systemIdentifier: "7612345678901234567",
         recoveryWitnessSha256: "d".repeat(64),
         captureBaseCommit: "9".repeat(40),
         auditedHead: candidate.commitSha,
+      }),
+    ).toThrow("activation_catalog_policy_capture_binding_invalid");
+    expect(() =>
+      createActivationCatalogCaptureCheckpoint({
+        artifact,
+        candidate,
+        configuredDatabaseIdentity: "127.0.0.1:6432/cross_run_review_router",
+        disposableIdentity: "rr-disposable-candidate-test",
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "d".repeat(64),
+        captureBaseCommit: "9".repeat(40),
+        auditedHead: candidate.commitSha,
+      }),
+    ).toThrow("activation_catalog_policy_capture_binding_invalid");
+    expect(() =>
+      createActivationCatalogCaptureCheckpoint({
+        artifact,
+        candidate: undefined,
+        configuredDatabaseIdentity: candidate.databaseIdentity,
+        disposableIdentity: "rr-disposable-candidate-test",
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "d".repeat(64),
+        captureBaseCommit: "9".repeat(40),
+        auditedHead: candidate.commitSha,
+      }),
+    ).toThrow("activation_catalog_policy_capture_binding_invalid");
+    expect(() =>
+      createActivationCatalogCaptureCheckpoint({
+        artifact,
+        candidate,
+        configuredDatabaseIdentity: candidate.databaseIdentity,
+        disposableIdentity: "rr-disposable-candidate-test",
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "d".repeat(64),
+        captureBaseCommit: "9".repeat(40),
+        auditedHead: "e".repeat(40),
       }),
     ).toThrow("activation_catalog_policy_capture_binding_invalid");
   });
@@ -887,7 +926,7 @@ describe("disposable dual-version rehearsal", () => {
   });
   it("runs capture-only through the authoritative migration use case without staging", async () => {
     const calls: string[] = [];
-    const candidate = Object.freeze({
+    const artifact = Object.freeze({
       kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
       version: 1,
       policies: Object.freeze({}),
@@ -897,6 +936,22 @@ describe("disposable dual-version rehearsal", () => {
       migrationArtifactDigest: `sha256:${"2".repeat(64)}`,
       postManifestIdentity: `sha256:${"3".repeat(64)}`,
       postCatalogDigest: `sha256:${"4".repeat(64)}`,
+    });
+    const candidate = createActivationCatalogCaptureCheckpoint({
+      artifact,
+      candidate: {
+        commitSha: "a".repeat(40),
+        databaseIdentity: "127.0.0.1:5432/review_router",
+        manifestIdentity: transition.postManifestIdentity,
+        projectionSha256: `sha256:${"5".repeat(64)}`,
+        catalogDigest: transition.postCatalogDigest,
+      },
+      configuredDatabaseIdentity: "127.0.0.1:5432/review_router",
+      disposableIdentity: "rr-disposable-authoritative-test",
+      systemIdentifier: "7612345678901234567",
+      recoveryWitnessSha256: "6".repeat(64),
+      captureBaseCommit: "9".repeat(40),
+      auditedHead: "a".repeat(40),
     });
     const migratedRollout = Object.freeze({
       targetManifestPhase: "post_migration",
@@ -941,11 +996,7 @@ describe("disposable dual-version rehearsal", () => {
       }),
     ).resolves.toEqual({
       mode: "capture-only",
-      candidate: {
-        ...candidate,
-        version: 2,
-        liveCatalogDigest: transition.postCatalogDigest,
-      },
+      candidate,
     });
     expect(calls).toEqual([
       "stage:prepare_activation_catalog_capture",
@@ -960,7 +1011,26 @@ describe("disposable dual-version rehearsal", () => {
     expect(stageTargetServices).not.toHaveBeenCalled();
   });
   it("captures after an exact disposable catalog-digest mismatch without staging or promotion", async () => {
-    const candidate = Object.freeze({ kind: "candidate", version: 1 });
+    const candidate = createActivationCatalogCaptureCheckpoint({
+      artifact: {
+        kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+        version: 1,
+        policies: {},
+      },
+      candidate: {
+        commitSha: "a".repeat(40),
+        databaseIdentity: "127.0.0.1:5432/review_router",
+        manifestIdentity: `sha256:${"1".repeat(64)}`,
+        projectionSha256: `sha256:${"2".repeat(64)}`,
+        catalogDigest: `sha256:${"3".repeat(64)}`,
+      },
+      configuredDatabaseIdentity: "127.0.0.1:5432/review_router",
+      disposableIdentity: "rr-disposable-sentinel-test",
+      systemIdentifier: "7612345678901234567",
+      recoveryWitnessSha256: "4".repeat(64),
+      captureBaseCommit: "9".repeat(40),
+      auditedHead: "a".repeat(40),
+    });
     const captureCandidate = vi.fn(async () => candidate);
     const stageTargetServices = vi.fn();
     const prepareCapture = vi.fn();
@@ -982,6 +1052,88 @@ describe("disposable dual-version rehearsal", () => {
     expect(prepareCapture).toHaveBeenCalledOnce();
     expect(captureCandidate).toHaveBeenCalledOnce();
     expect(stageTargetServices).not.toHaveBeenCalled();
+  });
+  it("returns real-flow checkpoints accepted as an independent capture pair", async () => {
+    const artifact = Object.freeze({
+      kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+      version: 1,
+      policies: Object.freeze({
+        preactivation: Object.freeze({}),
+        activated: Object.freeze({}),
+      }),
+    });
+    const produce = async (
+      configuredDatabaseIdentity: string,
+      disposableIdentity: string,
+      systemIdentifier: string,
+    ) => {
+      const migrationCandidate = Object.freeze({
+        commitSha: "a".repeat(40),
+        databaseIdentity: configuredDatabaseIdentity,
+        manifestIdentity: `sha256:${"1".repeat(64)}`,
+        projectionSha256: `sha256:${"2".repeat(64)}`,
+        catalogDigest: `sha256:${"3".repeat(64)}`,
+      });
+      const result = await runRehearsalReleaseMigration({
+        captureOnly: { disposableDatabaseIdentity: disposableIdentity },
+        rollout: { phase: "pre-migration" },
+        runStage: async (_name, operation) => operation(),
+        prepareCapture: async () => undefined,
+        runReleaseMigration: async () => {
+          expect(migrationCandidate.databaseIdentity).toBe(
+            configuredDatabaseIdentity,
+          );
+          throw new Error("activation_catalog_policy_capture_ready");
+        },
+        captureCandidate: async () =>
+          createActivationCatalogCaptureCheckpoint({
+            artifact,
+            candidate: migrationCandidate,
+            configuredDatabaseIdentity,
+            disposableIdentity,
+            systemIdentifier,
+            recoveryWitnessSha256: "4".repeat(64),
+            captureBaseCommit: "9".repeat(40),
+            auditedHead: migrationCandidate.commitSha,
+          }),
+        stageTargetServices: vi.fn(),
+      });
+      return result.candidate;
+    };
+
+    const first = await produce(
+      "127.0.0.1:5432/review_router",
+      "rr-disposable-pair-first",
+      "7612345678901234567",
+    );
+    const second = await produce(
+      "127.0.0.1:6432/review_router",
+      "rr-disposable-pair-second",
+      "7612345678901234568",
+    );
+    expect(
+      assertActivationCatalogCapturePair(
+        { value: first, bytes: 1, sha256: "first" },
+        { value: second, bytes: 1, sha256: "second" },
+      ).selected,
+    ).toBe(first);
+    expect(first).toMatchObject({
+      version: 2,
+      capture: {
+        commitSha: "a".repeat(40),
+        postManifestIdentity: `sha256:${"1".repeat(64)}`,
+        projection: {
+          sha256: `sha256:${"2".repeat(64)}`,
+          observedDigest: `sha256:${"3".repeat(64)}`,
+        },
+        database: {
+          configuredIdentity: "127.0.0.1:5432/review_router",
+          disposableIdentity: "rr-disposable-pair-first",
+          systemIdentifier: "7612345678901234567",
+          recoveryWitnessSha256: "4".repeat(64),
+        },
+      },
+    });
   });
   it("fails closed before migration when capture attestation preparation fails", async () => {
     const failure = new Error("capture_attestation_preparation_failed");

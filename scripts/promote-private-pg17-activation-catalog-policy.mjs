@@ -12,17 +12,22 @@ import {
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts";
 import {
   assertActivationCatalogLiveDigestTransitionBinding,
-  assertActivationCatalogRawPromotionTrustRootReady,
-  activationCatalogRawPromotionTrustRoot,
   activationCatalogPromotionOptIn,
   reviewedActivationCatalogCandidate,
   reviewedActivationCatalogPromotionExpectation,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation.ts";
 import {
+  assertActivationCatalogRawPromotionTrustRootReady,
+  activationCatalogRawPromotionTrustRoot,
+} from "../packages/features/release-rollout/src/domain/activation-catalog-policy-raw-promotion-trust-root.ts";
+import {
   assertActivationCatalogPolicyPromotionProvenance,
   assertActivationCatalogRawCaptureEvidence,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
-import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
+import {
+  canonicalReleaseMigrationArtifact,
+  historicalReleaseMigrationPostCatalogDigest,
+} from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
 import { assertActivationCatalogPolicyReviewEvidence } from "../packages/features/release-rollout/src/adapters/activation-catalog-policy-review-evidence.ts";
 import {
   reviewedActivationCatalogCandidatePath,
@@ -420,6 +425,14 @@ export async function promotePrivatePg17ActivationCatalogPolicy({
   const argumentsValue = parseArguments(argv);
   if (argumentsValue.mode === "raw")
     return promoteRawActivationCatalogPolicy(argumentsValue);
+
+  if (activationCatalogRawPromotionTrustRoot.status === "ready")
+    throw new Error("activation_catalog_policy_legacy_promotion_superseded");
+
+  assertActivationCatalogLiveDigestTransitionBinding(
+    reviewedActivationCatalogCandidate.liveCatalogDigest,
+    historicalReleaseMigrationPostCatalogDigest,
+  );
 
   const optIn = env.REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION;
   if (optIn !== activationCatalogPromotionOptIn)

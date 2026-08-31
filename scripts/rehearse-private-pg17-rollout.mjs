@@ -20,6 +20,7 @@ import {
   isSanitizedDiagnosticError,
   sanitizedDiagnosticError,
 } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
+import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
 import {
   assembleTrustedRolloutEvidence,
   assertPromotionAllowed,
@@ -459,6 +460,7 @@ export function assertDisposableCaptureTarget({
 export function createActivationCatalogCaptureCheckpoint({
   artifact,
   candidate,
+  configuredDatabaseIdentity,
   disposableIdentity,
   systemIdentifier,
   recoveryWitnessSha256,
@@ -475,6 +477,8 @@ export function createActivationCatalogCaptureCheckpoint({
     !/^sha256:[a-f0-9]{64}$/u.test(candidate?.catalogDigest ?? "") ||
     typeof candidate?.databaseIdentity !== "string" ||
     candidate.databaseIdentity.length < 3 ||
+    typeof configuredDatabaseIdentity !== "string" ||
+    candidate.databaseIdentity !== configuredDatabaseIdentity ||
     !/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(
       disposableIdentity ?? "",
     ) ||
@@ -561,13 +565,24 @@ export async function runRehearsalReleaseMigration({
       error.message !== "activation_catalog_policy_capture_ready"
     )
       throw error;
-    return routeRehearsalAfterReleaseMigration({
+    const routed = await routeRehearsalAfterReleaseMigration({
       captureOnly,
       captureCandidate,
       stageTargetServices: () => {
         throw new Error("activation_catalog_policy_capture_rollout_forbidden");
       },
     });
+    if (
+      routed.candidate?.kind !==
+        "reviewrouter-activation-catalog-policy-artifact-candidate" ||
+      routed.candidate.version !== 2 ||
+      routed.candidate.capture == null
+    )
+      throw new Error(
+        "activation_catalog_policy_candidate_migration_binding_invalid",
+        { cause: error },
+      );
+    return routed;
   }
   const migrationReceipt = migratedRollout.receipts.at(-1);
   if (
@@ -593,19 +608,18 @@ export async function runRehearsalReleaseMigration({
     if (
       policyCandidate?.kind !==
         "reviewrouter-activation-catalog-policy-artifact-candidate" ||
-      policyCandidate.version !== 1 ||
-      !/^sha256:[a-f0-9]{64}$/u.test(migrationReceipt.postCatalogDigest)
+      policyCandidate.version !== 2 ||
+      policyCandidate.capture?.postManifestIdentity !==
+        migrationReceipt.postManifestIdentity ||
+      policyCandidate.capture?.projection?.observedDigest !==
+        migrationReceipt.postCatalogDigest
     )
       throw new Error(
         "activation_catalog_policy_candidate_migration_binding_invalid",
       );
     return Object.freeze({
       mode: "capture-only",
-      candidate: Object.freeze({
-        ...policyCandidate,
-        version: 2,
-        liveCatalogDigest: migrationReceipt.postCatalogDigest,
-      }),
+      candidate: policyCandidate,
     });
   }
   return routeRehearsalAfterReleaseMigration({
@@ -3043,6 +3057,7 @@ async function verifyProductionPathRehearsal(facts) {
   };
   let evidence;
   let legacyReconciliation;
+  let activationCatalogMigrationCandidate;
   const sourceLegacyAmbiguity = facts.sourceLegacyAmbiguity;
   const runReleaseMigrationPort = async (_target, transition, permit) => {
     const migrationEnv = {
@@ -3065,7 +3080,8 @@ async function verifyProductionPathRehearsal(facts) {
         permit.eligibilityCutoff,
     };
     process.stderr.write("rehearsal_migration_substep_started:configuration\n");
-    resolveReleaseMigrationConfiguration(migrationEnv);
+    const migrationConfiguration =
+      resolveReleaseMigrationConfiguration(migrationEnv);
     process.stderr.write(
       "rehearsal_migration_substep_completed:configuration\n",
     );
@@ -3080,10 +3096,22 @@ async function verifyProductionPathRehearsal(facts) {
       canonicalRun,
     );
     if (migration.captureOnlyStatus === "catalog_candidate_ready") {
-      if (!facts.captureOnly)
+      const candidate = migration.candidate;
+      if (
+        !facts.captureOnly ||
+        !candidate ||
+        candidate.commitSha !== facts.captureOnly.auditedHead ||
+        candidate.databaseIdentity !==
+          migrationConfiguration.databaseIdentity ||
+        candidate.manifestIdentity !==
+          canonicalReleaseMigrationArtifact.postManifestIdentity ||
+        !/^sha256:[a-f0-9]{64}$/u.test(candidate.projectionSha256 ?? "") ||
+        !/^sha256:[a-f0-9]{64}$/u.test(candidate.catalogDigest ?? "")
+      )
         throw new Error("activation_catalog_policy_capture_mode_invalid");
+      activationCatalogMigrationCandidate = candidate;
       process.stderr.write(
-        `activation_catalog_policy_observed_catalog_digest:${migration.candidate.catalogDigest}\n`,
+        `activation_catalog_policy_observed_catalog_digest:${candidate.catalogDigest}\n`,
       );
       throw new Error("activation_catalog_policy_capture_ready");
     }
@@ -4006,7 +4034,20 @@ $attest_disposable_capture_database$;\n`,
       const candidate =
         parsePrivatePg17ActivationCatalogPolicyCandidate(stdout);
       process.stderr.write("rehearsal_capture_substep_completed:validation\n");
-      return candidate;
+      const migrationCandidate = activationCatalogMigrationCandidate;
+      return createActivationCatalogCaptureCheckpoint({
+        artifact: candidate,
+        candidate: migrationCandidate,
+        configuredDatabaseIdentity: resolveReleaseMigrationConfiguration(
+          facts.canonicalEnv,
+        ).databaseIdentity,
+        disposableIdentity: captureIdentity,
+        systemIdentifier: facts.targetSystemIdentifier,
+        recoveryWitnessSha256:
+          facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256,
+        captureBaseCommit: facts.captureOnly?.captureBaseCommit,
+        auditedHead: facts.captureOnly?.auditedHead,
+      });
     },
     stageTargetServices: (migratedRollout) =>
       runStage("stage_target_services", () =>
