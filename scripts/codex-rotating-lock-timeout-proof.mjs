@@ -1,10 +1,18 @@
+import {
+  hasCanonicalPrismaMigrationPostgresErrorEvidence,
+  hasExactPostgresErrorEnvelope,
+} from "./lib/postgres-error-evidence.mjs";
+
 export function isExpectedPrismaLockTimeoutFailure({
+  result,
   output,
   migrationName,
   historyEvidence,
   directLockTimeoutProof,
 }) {
+  if (result === undefined) return false;
   const markers = prismaLockTimeoutFailureMarkers({
+    result,
     output,
     migrationName,
     historyEvidence,
@@ -16,80 +24,107 @@ export function isExpectedPrismaLockTimeoutFailure({
     !markers.contradictoryFailure &&
     (markers.exactLockTimeoutEnvelope ||
       markers.exactAbortedTransactionEnvelope);
-  const genericAbortedTransactionEnvelope =
-    markers.migrationNamed &&
-    !markers.contradictoryFailure &&
-    markers.exactAbortedTransactionEnvelope;
-  const emptyDatabaseRecordedEnvelope =
-    markers.exactAbortedTransactionEnvelope &&
-    !markers.contradictoryFailure &&
-    !markers.prismaFailureCodePresent &&
-    !markers.migrationNameFieldPresent &&
-    markers.emptyLogRows === 1 &&
-    markers.exactFailureLogRows === 0;
   return (
     markers.exactCurrentFailure &&
     markers.directLockTimeoutProof &&
-    (strongPrismaEnvelope ||
-      genericAbortedTransactionEnvelope ||
-      emptyDatabaseRecordedEnvelope)
+    strongPrismaEnvelope
   );
 }
 
 function ansiNormalized(output) {
-  let normalized = "";
-  for (let index = 0; index < output.length; index += 1) {
-    if (output.charCodeAt(index) !== 27 || output[index + 1] !== "[") {
-      normalized += output[index];
-      continue;
-    }
-    let end = index + 2;
-    while (end < output.length) {
-      const code = output.charCodeAt(end);
-      if (code >= 0x40 && code <= 0x7e) break;
-      end += 1;
-    }
-    if (end >= output.length) {
-      normalized += output[index];
-      continue;
-    }
-    index = end;
-  }
-  return normalized;
-}
-
-export function hasExactPostgresAbortedTransactionEnvelope(output) {
-  return /(?:^|\r?\n)(?:ERROR:[\t ]*){1,2}current transaction is aborted(?:,[\t ]*commands ignored until end of transaction block)?(?=\r?\n|$)/iu.test(
-    ansiNormalized(output),
+  return output.replace(
+    new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, "gu"),
+    "",
   );
 }
 
-export function hasExactPostgresLockTimeoutEnvelope(output) {
-  return /(?:^|\r?\n)(?:psql:[^\r\n]+?:\d+:[\t ]*)?(?:ERROR:[\t ]*){1,2}(?:canceling statement due to lock timeout|lock timeout)(?=\r?\n|$)/iu.test(
-    ansiNormalized(output),
+export function hasExactPostgresAbortedTransactionEnvelope(
+  output,
+  postgresInputSource,
+) {
+  return [
+    "exec_bind_message",
+    "exec_execute_message",
+    "exec_simple_query",
+  ].some((routine) =>
+    hasExactPostgresErrorEnvelope(output, {
+      sqlState: "25P02",
+      message:
+        "current transaction is aborted, commands ignored until end of transaction block",
+      routine,
+    }, postgresInputSource),
+  );
+}
+
+export function hasExactPostgresLockTimeoutEnvelope(
+  output,
+  postgresInputSource,
+) {
+  return hasExactPostgresErrorEnvelope(output, {
+    sqlState: "55P03",
+    message: "canceling statement due to lock timeout",
+    routine: "ProcessInterrupts",
+  }, postgresInputSource);
+}
+
+function hasPrismaMigrationEnvelope(result, expected, routines) {
+  return routines.some((routine) =>
+    hasCanonicalPrismaMigrationPostgresErrorEvidence(result, {
+      ...expected,
+      routine,
+    }),
   );
 }
 
 export function prismaLockTimeoutFailureMarkers({
+  result,
   output,
   migrationName,
   historyEvidence,
   directLockTimeoutProof,
 }) {
-  const normalizedOutput = ansiNormalized(output);
-  const normalized = normalizedOutput.toLowerCase();
+  const normalizedOutput = ansiNormalized(
+    result ? String(result.stderr ?? "") : output,
+  );
   const migrationNames = [
     ...normalizedOutput.matchAll(
       /^[\t ]*Migration name:[\t ]*([^\r\n]+?)[\t ]*\r?$/gimu,
     ),
   ].map((match) => match[1]);
+  const prismaFailureCodes = [
+    ...normalizedOutput.matchAll(
+      /^[\t ]*(?:Error:[\t ]*)?(P\d{4})[\t ]*\r?$/gimu,
+    ),
+  ].map((match) => match[1]?.toUpperCase());
   return Object.freeze({
     exactLockTimeoutEnvelope:
-      hasExactPostgresLockTimeoutEnvelope(normalizedOutput),
+      result === undefined
+        ? hasExactPostgresLockTimeoutEnvelope(normalizedOutput)
+        : hasPrismaMigrationEnvelope(
+            result,
+            {
+              sqlState: "55P03",
+              message: "canceling statement due to lock timeout",
+              migrationName,
+            },
+            ["ProcessInterrupts"],
+          ),
     exactAbortedTransactionEnvelope:
-      hasExactPostgresAbortedTransactionEnvelope(normalizedOutput),
-    prismaMigrationFailure: normalized.includes("p3018"),
-    prismaFailureCodePresent: /\bP\d{4}\b/iu.test(normalizedOutput),
+      result === undefined
+        ? hasExactPostgresAbortedTransactionEnvelope(normalizedOutput)
+        : hasPrismaMigrationEnvelope(
+            result,
+            {
+              sqlState: "25P02",
+              message:
+                "current transaction is aborted, commands ignored until end of transaction block",
+              migrationName,
+            },
+            ["exec_bind_message", "exec_execute_message", "exec_simple_query"],
+          ),
+    prismaMigrationFailure:
+      prismaFailureCodes.length === 1 && prismaFailureCodes[0] === "P3018",
+    prismaFailureCodePresent: prismaFailureCodes.length > 0,
     migrationNameFieldPresent: migrationNames.length > 0,
     migrationNamed:
       migrationNames.length === 1 && migrationNames[0] === migrationName,
@@ -101,9 +136,8 @@ export function prismaLockTimeoutFailureMarkers({
     emptyLogRows: historyEvidence?.emptyLog ?? null,
     exactFailureLogRows: historyEvidence?.exactFailureLog ?? null,
     contradictoryFailure:
-      [...normalizedOutput.matchAll(/\b(P\d{4})\b/giu)].some(
-        (match) => match[1]?.toUpperCase() !== "P3018",
-      ) ||
+      prismaFailureCodes.length > 1 ||
+      prismaFailureCodes.some((code) => code !== "P3018") ||
       /(?:ERROR:\s*)?(?:28P01|3D000|3F000|42501|42703|42704|42883|42P01)\b/iu.test(
         normalizedOutput,
       ) ||

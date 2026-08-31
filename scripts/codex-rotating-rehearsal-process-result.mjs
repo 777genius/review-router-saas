@@ -1,7 +1,14 @@
 import { createSanitizedDiagnostic } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
+import {
+  hasExactPostgresErrorEnvelope,
+  isPostgresFailureWithOneOfExactMessages,
+  postgresProcessTimedOut,
+} from "./lib/postgres-error-evidence.mjs";
+
+export { hasExactPostgresErrorEnvelope };
 
 export function rehearsalProcessTimedOut(result) {
-  return result.timedOut === true || result.error?.code === "ETIMEDOUT";
+  return postgresProcessTimedOut(result);
 }
 
 export function rehearsalProcessDiagnostic(result) {
@@ -35,20 +42,39 @@ export function assertPsqlFailedWithOneOfExactMessages(
 }
 
 function assertFailedResult(result, expectedFailures, message, expectation) {
-  const output = `${result.stdout}${result.stderr}`;
+  const structuredEvidence =
+    Array.isArray(expectedFailures) &&
+    expectedFailures.length > 0 &&
+    expectedFailures.every(
+      (failure) => failure && typeof failure === "object",
+    );
+  const legacyMessages =
+    Array.isArray(expectedFailures) &&
+    expectedFailures.length > 0 &&
+    expectedFailures.every(
+      (failure) => typeof failure === "string" && failure.length > 0,
+    );
+  const legacyFailure = Boolean(
+    legacyMessages &&
+      !rehearsalProcessTimedOut(result) &&
+      Number.isSafeInteger(result?.status) &&
+      result.status > 0 &&
+      result.status <= 255 &&
+      result.signal == null &&
+      result.error == null &&
+      expectedFailures.some((failure) =>
+        `${String(result.stdout ?? "")}${String(result.stderr ?? "")}`.includes(
+          failure,
+        ),
+      ),
+  );
   if (
-    rehearsalProcessTimedOut(result) ||
-    result.status === 0 ||
-    !expectedFailures.some((expectedFailure) =>
-      output.includes(expectedFailure),
-    )
+    !(structuredEvidence
+      ? isPostgresFailureWithOneOfExactMessages(result, expectedFailures)
+      : legacyFailure)
   ) {
-    const expected =
-      expectation === "expected"
-        ? JSON.stringify(expectedFailures[0])
-        : JSON.stringify(expectedFailures);
     throw new Error(
-      `${message}: ${expectation}=${expected}; ${psqlResultDiagnostic(result)}`,
+      `${message}: ${expectation}; ${psqlResultDiagnostic(result)}`,
     );
   }
 }
