@@ -6,6 +6,7 @@ import {
   activationCatalogRawReviewArtifactRepositoryPath,
   activationCatalogRawReviewerRuntimeRepositoryPath,
   activationCatalogRawTrustRootReadiness,
+  assertActivationCatalogRawPromotionTrustRootReady,
   type ActivationCatalogRawPromotionTrustRootReady,
 } from "../domain/activation-catalog-policy-promotion-expectation";
 import {
@@ -15,6 +16,19 @@ import {
 
 const digest = (value: Buffer): string =>
   createHash("sha256").update(value).digest("hex");
+
+function deepFreeze<T>(
+  value: T,
+  seen: WeakSet<object> = new WeakSet<object>(),
+): T {
+  if (value === null || typeof value !== "object" || seen.has(value))
+    return value;
+  seen.add(value);
+  for (const key of Reflect.ownKeys(value))
+    deepFreeze(Reflect.get(value, key), seen);
+  Object.freeze(value);
+  return value;
+}
 
 const capture = {
   baseCommit: "a".repeat(40),
@@ -45,7 +59,7 @@ function rawEvidence() {
         sha256: "2".repeat(64),
       },
     ] as const,
-    capture,
+    capture: { ...capture },
     postgresImages: {
       sourcePg16: `postgres:16@sha256:${"3".repeat(64)}`,
       targetPg17: `postgres:17@sha256:${"4".repeat(64)}`,
@@ -100,7 +114,7 @@ function unboundRoot(): ActivationCatalogRawPromotionTrustRootReady {
   };
 }
 
-function fixture() {
+function fixture(frozen = true) {
   let root = unboundRoot();
   const reviewArtifact = Buffer.from(
     activationCatalogRawReviewArtifact(root),
@@ -143,7 +157,10 @@ function fixture() {
       },
     },
   };
-  return { root, buffers: { reviewArtifact, reviewerRuntime } };
+  return {
+    root: frozen ? deepFreeze(root) : root,
+    buffers: { reviewArtifact, reviewerRuntime },
+  };
 }
 
 function bindReviewerRuntime(
@@ -170,6 +187,31 @@ describe("activation catalog raw review trust root", () => {
     expect(() =>
       assertActivationCatalogPolicyReviewEvidence(buffers, root),
     ).not.toThrow();
+  });
+
+  it("accepts only deeply immutable ready roots", () => {
+    const { root } = fixture();
+    expect(() =>
+      assertActivationCatalogRawPromotionTrustRootReady(root),
+    ).not.toThrow();
+    expect(() => {
+      (root.evidence.captures as unknown as unknown[]).push({});
+    }).toThrow(TypeError);
+    expect(() => {
+      (
+        root.independentReview.reviewArtifact as {
+          sha256: string;
+        }
+      ).sha256 = "f".repeat(64);
+    }).toThrow(TypeError);
+  });
+
+  it("rejects a structurally ready but caller-mutable root", () => {
+    const { root } = fixture(false);
+    expect(activationCatalogRawTrustRootReadiness(root).status).toBe("ready");
+    expect(() =>
+      assertActivationCatalogRawPromotionTrustRootReady(root),
+    ).toThrow("activation_catalog_policy_raw_trust_root_invalid");
   });
 
   it.each([
@@ -218,7 +260,7 @@ describe("activation catalog raw review trust root", () => {
   ])(
     "rejects %s tampering on the pure ready-validator path",
     (_name, mutate) => {
-      const { root } = fixture();
+      const { root } = fixture(false);
       mutate(root);
       expect(activationCatalogRawTrustRootReadiness(root).status).toBe(
         "pending",

@@ -13,7 +13,7 @@ export const activationCatalogCaptureSurface = Object.freeze([
   "packages/features/release-rollout/src",
   ":(exclude)packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js",
   ":(exclude)packages/features/release-rollout/src/domain/activation-catalog-policy-provenance.json",
-  ":(exclude)packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation.ts",
+  ":(exclude)packages/features/release-rollout/src/domain/activation-catalog-policy-raw-promotion-trust-root.json",
   "apps/api/src/release-authority",
   "apps/api/src/release-control-composition.ts",
   "apps/api/src/release-witness-adapters.ts",
@@ -30,6 +30,10 @@ export const activationCatalogCaptureSurface = Object.freeze([
   "scripts/lib/release-authority-postgres-url.mjs",
   "scripts/lib/reviewed-activation-catalog-candidate.mjs",
   "scripts/lib/secret-safe-command-boundary.mjs",
+]);
+
+export const activationCatalogCheckoutTrustSurface = Object.freeze([
+  "packages/features/release-rollout/src/domain/activation-catalog-policy-raw-promotion-trust-root.json",
 ]);
 
 const commitSha = /^[a-f0-9]{40}$/u;
@@ -99,21 +103,60 @@ export function assertActivationCatalogCaptureSurfaceIdentity({
   auditedHead,
   auditedTree,
   captureSurface = activationCatalogCaptureSurface,
+  checkoutTrustSurface = activationCatalogCheckoutTrustSurface,
 }) {
+  const captureSelectors = parseCaptureSurface(captureSurface);
   if (
     !commitSha.test(auditedHead ?? "") ||
-    !Array.isArray(captureSurface) ||
-    captureSurface.length === 0 ||
-    captureSurface.some(
-      (path) =>
-        typeof path !== "string" || path.startsWith("/") || path.includes(".."),
-    )
+    captureSelectors === undefined ||
+    !Array.isArray(checkoutTrustSurface) ||
+    checkoutTrustSurface.length === 0 ||
+    checkoutTrustSurface.some((path) => !isLiteralRepositoryPath(path)) ||
+    new Set(checkoutTrustSurface).size !== checkoutTrustSurface.length
   )
     throw new Error("activation_catalog_policy_git_capture_surface_invalid");
   const root = git(repositoryRoot, ["rev-parse", "--show-toplevel"]);
   if (realpathSync(root) !== realpathSync(repositoryRoot))
     throw new Error("activation_catalog_policy_git_checkout_invalid");
   const checkoutHead = git(repositoryRoot, ["rev-parse", "HEAD"]);
+  const checkoutTrustInventory = boundedGit(repositoryRoot, [
+    "ls-tree",
+    "-r",
+    checkoutHead,
+    "--",
+    ...checkoutTrustSurface,
+  ]);
+  const checkoutTrustEntries =
+    checkoutTrustInventory.status === 0
+      ? checkoutTrustInventory.stdout
+          .trimEnd()
+          .split("\n")
+          .filter((line) => line.length > 0)
+          .map((line) => {
+            const match = /^100644 blob [a-f0-9]+\t(.+)$/u.exec(line);
+            return match?.[1];
+          })
+      : [];
+  if (
+    checkoutTrustEntries.length !== checkoutTrustSurface.length ||
+    checkoutTrustEntries.some((path) => path === undefined) ||
+    checkoutTrustSurface.some((path) => !checkoutTrustEntries.includes(path))
+  )
+    throw new Error(
+      "activation_catalog_policy_git_checkout_trust_surface_invalid",
+    );
+  const checkoutTrustDirty = boundedGit(repositoryRoot, [
+    "status",
+    "--porcelain=v1",
+    "--untracked-files=all",
+    "--",
+    ...checkoutTrustSurface,
+  ]);
+  if (checkoutTrustDirty.status !== 0 || checkoutTrustDirty.stdout.length !== 0)
+    throw new Error(
+      "activation_catalog_policy_git_checkout_trust_surface_dirty",
+    );
+
   const resolvedAuditedTree = git(repositoryRoot, [
     "rev-parse",
     auditedHead + "^{tree}",
@@ -136,9 +179,22 @@ export function assertActivationCatalogCaptureSurfaceIdentity({
     "--name-only",
     auditedHead,
     "--",
-    ...captureSurface,
+    ...captureSelectors.inclusions,
   ]);
-  if (auditedInventory.status !== 0 || auditedInventory.stdout.length === 0)
+  const auditedEntries =
+    auditedInventory.status === 0
+      ? auditedInventory.stdout
+          .trimEnd()
+          .split("\n")
+          .filter(
+            (path) =>
+              path.length > 0 &&
+              !captureSelectors.exclusions.some((excluded) =>
+                isPathWithin(path, excluded),
+              ),
+          )
+      : [];
+  if (auditedEntries.length === 0)
     throw new Error("activation_catalog_policy_git_capture_surface_invalid");
   const drift = boundedGit(repositoryRoot, [
     "diff",
@@ -164,6 +220,56 @@ export function assertActivationCatalogCaptureSurfaceIdentity({
     checkoutHead,
     captureSurface: Object.freeze([...captureSurface]),
   });
+}
+
+function parseCaptureSurface(captureSurface) {
+  if (!Array.isArray(captureSurface) || captureSurface.length === 0)
+    return undefined;
+  const inclusions = [];
+  const exclusions = [];
+  for (const selector of captureSurface) {
+    if (typeof selector !== "string") return undefined;
+    if (selector.startsWith(":(exclude)")) {
+      const path = selector.slice(":(exclude)".length);
+      if (!isLiteralRepositoryPath(path)) return undefined;
+      exclusions.push(path);
+    } else {
+      if (!isLiteralRepositoryPath(selector)) return undefined;
+      inclusions.push(selector);
+    }
+  }
+  if (
+    inclusions.length === 0 ||
+    new Set(captureSurface).size !== captureSurface.length ||
+    exclusions.some(
+      (excluded) =>
+        !inclusions.some((included) => isPathWithin(excluded, included)),
+    )
+  )
+    return undefined;
+  return { inclusions, exclusions };
+}
+
+function isLiteralRepositoryPath(path) {
+  return (
+    typeof path === "string" &&
+    path.length > 0 &&
+    !path.startsWith("/") &&
+    !path.endsWith("/") &&
+    path
+      .split("/")
+      .every(
+        (segment) =>
+          segment.length > 0 &&
+          segment !== "." &&
+          segment !== ".." &&
+          /^[A-Za-z0-9._-]+$/u.test(segment),
+      )
+  );
+}
+
+function isPathWithin(path, boundary) {
+  return path === boundary || path.startsWith(`${boundary}/`);
 }
 
 function boundedGit(repositoryRoot, args) {

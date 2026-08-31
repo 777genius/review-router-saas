@@ -4,6 +4,7 @@ import {
   type ActivationCatalogRawCaptureEvidence,
 } from "./activation-catalog-policy-provenance-contract";
 import { canonicalReleaseMigrationArtifact } from "./release-migration-transition";
+import activationCatalogRawPromotionTrustRootData from "./activation-catalog-policy-raw-promotion-trust-root.json";
 
 export function assertActivationCatalogLiveDigestTransitionBinding(
   candidateLiveCatalogDigest: string,
@@ -70,6 +71,34 @@ const exactRawRootRecord = (
   !Array.isArray(value) &&
   Object.keys(value).length === fields.length &&
   fields.every((field) => Object.hasOwn(value, field));
+
+const deepFreeze = <T>(
+  value: T,
+  seen: WeakSet<object> = new WeakSet<object>(),
+): T => {
+  if (value === null || typeof value !== "object" || seen.has(value))
+    return value;
+  seen.add(value);
+  for (const key of Reflect.ownKeys(value))
+    deepFreeze(Reflect.get(value, key), seen);
+  Object.freeze(value);
+  return value;
+};
+
+const deeplyFrozen = (
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet<object>(),
+): boolean => {
+  if (value === null || typeof value !== "object") return true;
+  if (seen.has(value)) return true;
+  seen.add(value);
+  return (
+    Object.isFrozen(value) &&
+    Reflect.ownKeys(value).every((key) =>
+      deeplyFrozen(Reflect.get(value, key), seen),
+    )
+  );
+};
 
 const validRawTimestamp = (value: unknown): value is string =>
   typeof value === "string" &&
@@ -175,7 +204,7 @@ export function assertActivationCatalogRawPromotionTrustRootReady(
   value: unknown,
 ): asserts value is ActivationCatalogRawPromotionTrustRootReady {
   const readiness = activationCatalogRawTrustRootReadiness(value);
-  if (readiness.status !== "ready")
+  if (readiness.status !== "ready" || !deeplyFrozen(value))
     throw new Error(
       `activation_catalog_policy_raw_trust_root_${
         exactRawRootRecord(value, ["status", "reason"]) &&
@@ -186,12 +215,28 @@ export function assertActivationCatalogRawPromotionTrustRootReady(
     );
 }
 
-// Residuals before this may become ready: fresh immutable capture/review pins,
-// independent GO materialization, and a complete transitive capture audit.
-export const activationCatalogRawPromotionTrustRoot = Object.freeze({
-  status: "pending",
-  reason: "fresh-authenticated-raw-capture-and-independent-review-required",
-} satisfies ActivationCatalogRawPromotionTrustRoot);
+const loadActivationCatalogRawPromotionTrustRoot = (
+  value: unknown,
+): ActivationCatalogRawPromotionTrustRoot => {
+  const frozen = deepFreeze(value);
+  if (
+    exactRawRootRecord(frozen, ["status", "reason"]) &&
+    frozen.status === "pending" &&
+    frozen.reason ===
+      "fresh-authenticated-raw-capture-and-independent-review-required"
+  )
+    return frozen as ActivationCatalogRawPromotionTrustRoot;
+
+  assertActivationCatalogRawPromotionTrustRootReady(frozen);
+  return frozen;
+};
+
+// The JSON file is the sole post-capture trust-data surface. Loading,
+// validation, and deep immutability remain in this audited module.
+export const activationCatalogRawPromotionTrustRoot =
+  loadActivationCatalogRawPromotionTrustRoot(
+    activationCatalogRawPromotionTrustRootData,
+  );
 
 export const reviewedActivationCatalogCandidate = Object.freeze({
   sha256: "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28",
