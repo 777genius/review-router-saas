@@ -165,9 +165,10 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           (9,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.activate_generation(text)')),'')),
           (10,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)')),'')),
           (11,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)')),'')),
-          (12,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)')),'')),
-          (13,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)')),'')),
-          (14,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)')),''))
+          (12,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.observe_live_migration_catalog_digest()')),'')),
+          (13,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)')),'')),
+          (14,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)')),'')),
+          (15,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)')),''))
         ) bodies(ordinal,body_sha256)),'')
         AS "installerRoutineBodySha256",
       coalesce((SELECT encode(sha256(convert_to(string_agg(body_sha256, ':' ORDER BY ordinal),'UTF8')),'hex')

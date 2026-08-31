@@ -475,7 +475,7 @@ export function createActivationCatalogCaptureCheckpoint({
     !/^[a-f0-9]{40}$/u.test(candidate?.commitSha ?? "") ||
     !/^sha256:[a-f0-9]{64}$/u.test(candidate?.manifestIdentity ?? "") ||
     !/^sha256:[a-f0-9]{64}$/u.test(candidate?.projectionSha256 ?? "") ||
-    !/^sha256:[a-f0-9]{64}$/u.test(candidate?.catalogDigest ?? "") ||
+    !/^sha256:[a-f0-9]{64}$/u.test(artifact?.liveCatalogDigest ?? "") ||
     typeof candidate?.databaseIdentity !== "string" ||
     candidate.databaseIdentity.length < 3 ||
     typeof configuredDatabaseIdentity !== "string" ||
@@ -498,7 +498,7 @@ export function createActivationCatalogCaptureCheckpoint({
   });
   const projection = Object.freeze({
     sha256: candidate.projectionSha256,
-    observedDigest: candidate.catalogDigest,
+    observedDigest: artifact.liveCatalogDigest,
   });
   const immutableEvidence = {
     auditedHead,
@@ -3106,14 +3106,10 @@ async function verifyProductionPathRehearsal(facts) {
           migrationConfiguration.databaseIdentity ||
         candidate.manifestIdentity !==
           canonicalReleaseMigrationArtifact.postManifestIdentity ||
-        !/^sha256:[a-f0-9]{64}$/u.test(candidate.projectionSha256 ?? "") ||
-        !/^sha256:[a-f0-9]{64}$/u.test(candidate.catalogDigest ?? "")
+        !/^sha256:[a-f0-9]{64}$/u.test(candidate.projectionSha256 ?? "")
       )
         throw new Error("activation_catalog_policy_capture_mode_invalid");
       activationCatalogMigrationCandidate = candidate;
-      process.stderr.write(
-        `activation_catalog_policy_observed_catalog_digest:${candidate.catalogDigest}\n`,
-      );
       throw new Error("activation_catalog_policy_capture_ready");
     }
     process.stderr.write(
@@ -4035,6 +4031,9 @@ $attest_disposable_capture_database$;\n`,
       const candidate =
         parsePrivatePg17ActivationCatalogPolicyCandidate(stdout);
       process.stderr.write("rehearsal_capture_substep_completed:validation\n");
+      process.stderr.write(
+        `activation_catalog_policy_observed_catalog_digest:${candidate.liveCatalogDigest}\n`,
+      );
       const migrationCandidate = activationCatalogMigrationCandidate;
       return createActivationCatalogCaptureCheckpoint({
         artifact: candidate,

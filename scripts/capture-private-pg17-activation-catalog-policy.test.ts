@@ -78,8 +78,13 @@ const policy = (phase: "preactivation" | "activated") => ({
   })),
 });
 
-const envelope = (preactivation: unknown, activated: unknown) =>
-  `${JSON.stringify({ preactivation, activated })}\n`;
+const liveCatalogDigest = `sha256:${"f".repeat(64)}`;
+const envelope = (
+  preactivation: unknown,
+  activated: unknown,
+  catalogDigest = liveCatalogDigest,
+) =>
+  `${JSON.stringify({ preactivation, activated, liveCatalogDigest: catalogDigest })}\n`;
 
 describe("activation catalog policy candidate capture", () => {
   it("accepts the exact production topology", () => {
@@ -211,6 +216,7 @@ describe("activation catalog policy candidate capture", () => {
     expect(parsePrivatePg17ActivationCatalogPolicyCandidate(stdout)).toEqual({
       kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
       version: 1,
+      liveCatalogDigest,
       policies: {
         preactivation: policy("preactivation"),
         activated: policy("activated"),
@@ -246,6 +252,22 @@ describe("activation catalog policy candidate capture", () => {
           preactivation: policy("preactivation"),
           activated: policy("activated"),
           duplicate: policy("activated"),
+        })}\n`,
+      ),
+    ).toThrow("activation_catalog_policy_candidate_envelope_invalid");
+  });
+
+  it("requires one exact trusted live catalog digest", () => {
+    expect(() =>
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        envelope(policy("preactivation"), policy("activated"), "sha256:bad"),
+      ),
+    ).toThrow("activation_catalog_policy_candidate_catalog_digest_invalid");
+    expect(() =>
+      parsePrivatePg17ActivationCatalogPolicyCandidate(
+        `${JSON.stringify({
+          preactivation: policy("preactivation"),
+          activated: policy("activated"),
         })}\n`,
       ),
     ).toThrow("activation_catalog_policy_candidate_envelope_invalid");

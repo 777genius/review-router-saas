@@ -1569,8 +1569,8 @@ BEGIN
     migration_name||':'||checksum,',' ORDER BY migration_name),''),'UTF8')),'hex')
   INTO STRICT observed_manifest_identity FROM public._prisma_migrations
   WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL;
-  SELECT digest INTO STRICT observed_catalog_digest
-  FROM (${fencedLiveV70V73CatalogDigestSql}) live(digest);
+  SELECT reviewrouter_activation.observe_live_migration_catalog_digest()
+  INTO STRICT observed_catalog_digest;
   IF observed_manifest_identity IS DISTINCT FROM
        current_permit.expected_post_manifest_identity THEN
     RAISE EXCEPTION
@@ -2232,7 +2232,11 @@ BEGIN
   IF session_user <> 'reviewrouter_release_migration' THEN
     RAISE EXCEPTION 'activation catalog policy candidate pair caller invalid';
   END IF;
-  RETURN reviewrouter_activation.capture_runtime_acl_policy_pair();
+  RETURN reviewrouter_activation.capture_runtime_acl_policy_pair() ||
+    jsonb_build_object(
+      'liveCatalogDigest',
+      reviewrouter_activation.observe_live_migration_catalog_digest()
+    );
 END
 $capture_catalog_policy_candidate_pair$;
 ALTER FUNCTION reviewrouter_activation.capture_catalog_policy_candidate_pair()
@@ -3188,6 +3192,20 @@ REVOKE ALL ON FUNCTION reviewrouter_activation.read_activation_migration_manifes
 GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()
   TO ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName},
      reviewrouter_release_migration;
+CREATE OR REPLACE FUNCTION reviewrouter_activation.observe_live_migration_catalog_digest()
+RETURNS text LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp AS $observe_live_migration_catalog_digest$
+  SELECT digest FROM (${fencedLiveV70V73CatalogDigestSql}) live(digest)
+$observe_live_migration_catalog_digest$;
+ALTER FUNCTION reviewrouter_activation.observe_live_migration_catalog_digest()
+  OWNER TO ${activationReceiptGuardRoleName};
+REVOKE ALL ON FUNCTION reviewrouter_activation.observe_live_migration_catalog_digest()
+  FROM PUBLIC;
+REVOKE ALL ON FUNCTION reviewrouter_activation.observe_live_migration_catalog_digest()
+  FROM ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName},
+    ${canonicalBootstrapRoleName}, ${releaseSchemaOwnerRoleName};
+GRANT EXECUTE ON FUNCTION reviewrouter_activation.observe_live_migration_catalog_digest()
+  TO reviewrouter_release_migration;
 -- Install the schema-owner ACL projectors before the activation namespace is
 -- fingerprinted. Role bootstrap may validate them, but must not mutate this
 -- trusted namespace after release-control readiness has been attested.
@@ -3230,6 +3248,7 @@ export function activationRoutineBodyTrustRoots() {
           digestBody("activate"),
           digestBody("install_migration_permit"),
           digestBody("consume_migration_permit"),
+          digestBody("observe_live_migration_catalog_digest"),
           digestBody("complete_migration_permit"),
           digestBody("terminalize_migration_permit"),
           digestBody("read_migration_receipt"),
@@ -4609,6 +4628,8 @@ BEGIN
       failed_invariant := 'install_migration_permit_routine_missing';
     WHEN to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)') IS NULL THEN
       failed_invariant := 'consume_migration_permit_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.observe_live_migration_catalog_digest()') IS NULL THEN
+      failed_invariant := 'observe_live_migration_catalog_digest_routine_missing';
     WHEN to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)') IS NULL THEN
       failed_invariant := 'complete_migration_permit_routine_missing';
     WHEN to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)') IS NULL THEN
@@ -4699,6 +4720,14 @@ BEGIN
         failed_invariant := 'permit_installer_terminalize_migration_permit_execute_missing';
       WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)','EXECUTE') THEN
         failed_invariant := 'release_migration_consume_migration_permit_execute_present';
+      WHEN NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.observe_live_migration_catalog_digest()','EXECUTE') THEN
+        failed_invariant := 'release_migration_observe_live_migration_catalog_digest_execute_missing';
+      WHEN has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.observe_live_migration_catalog_digest()','EXECUTE') THEN
+        failed_invariant := 'permit_installer_observe_live_migration_catalog_digest_execute_present';
+      WHEN has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.observe_live_migration_catalog_digest()','EXECUTE') THEN
+        failed_invariant := 'receipt_reader_observe_live_migration_catalog_digest_execute_present';
+      WHEN has_function_privilege('${releaseSchemaOwnerRoleName}','reviewrouter_activation.observe_live_migration_catalog_digest()','EXECUTE') THEN
+        failed_invariant := 'schema_owner_observe_live_migration_catalog_digest_execute_present';
       WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)','EXECUTE') THEN
         failed_invariant := 'release_migration_complete_migration_permit_execute_present';
       WHEN NOT has_function_privilege('${releaseSchemaOwnerRoleName}','reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)','EXECUTE') THEN
@@ -5397,7 +5426,8 @@ BEGIN
       'public.reviewrouter_answer_runtime_canary_challenge(text,text,text,text,text,text)'::regprocedure
     ) AND NOT prosecdef
   ) THEN RAISE EXCEPTION 'release migration V72 routine security invalid'; END IF;
-  SELECT digest INTO STRICT catalog_digest FROM (${liveV70V73CatalogDigestSql}) live(digest);
+  SELECT reviewrouter_activation.observe_live_migration_catalog_digest()
+  INTO STRICT catalog_digest;
   ${
     catalogCaptureOnly
       ? ""
@@ -5787,7 +5817,6 @@ export function executeCanonicalReleaseMigration(
 COPY (SELECT jsonb_build_object(
             'manifestIdentity','sha256:'||encode(pg_catalog.sha256(convert_to(coalesce(string_agg(
               migration_name||':'||checksum,',' ORDER BY migration_name),''),'UTF8')),'hex'),
-            'catalogDigest',(SELECT digest FROM (${fencedLiveV70V73CatalogDigestSql}) live(digest)),
             'unfinishedCount',(SELECT count(*) FROM public._prisma_migrations
               WHERE finished_at IS NULL AND rolled_back_at IS NULL)
           ) FROM public._prisma_migrations
@@ -5805,12 +5834,6 @@ COPY (SELECT jsonb_build_object(
       manifestIdentityExact:
         captureState.manifestIdentity ===
         canonicalReleaseMigrationArtifact.postManifestIdentity,
-      catalogDigestValid: /^sha256:[a-f0-9]{64}$/u.test(
-        captureState.catalogDigest ?? "",
-      ),
-      catalogDigestUnpromoted:
-        captureState.catalogDigest !==
-        canonicalReleaseMigrationArtifact.postCatalogDigest,
       noUnfinishedMigrations: Number(captureState.unfinishedCount) === 0,
     });
     process.stderr.write(
@@ -5832,7 +5855,6 @@ COPY (SELECT jsonb_build_object(
         projectionSha256: `sha256:${createHash("sha256")
           .update(fencedLiveV70V73CatalogDigestSql)
           .digest("hex")}`,
-        catalogDigest: captureState.catalogDigest,
       }),
     });
   }

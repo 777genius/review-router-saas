@@ -218,9 +218,13 @@ describe("application database release-authority isolation", () => {
     expect(executableSource).toContain(
       'captureOnlyStatus: "catalog_candidate_ready"',
     );
-    expect(executableSource).toContain(
-      "catalogDigestUnpromoted:\n        captureState.catalogDigest !==\n        canonicalReleaseMigrationArtifact.postCatalogDigest",
+    expect(authoritySql).toContain(
+      "reviewrouter_activation.observe_live_migration_catalog_digest()",
     );
+    expect(authoritySql).toContain(
+      "reviewrouter_activation.capture_runtime_acl_policy_pair() ||",
+    );
+    expect(executableSource).not.toContain("captureState.catalogDigest");
     expect(executableSource).toContain(
       "activation_catalog_policy_capture_state_invalid:${JSON.stringify(captureStateChecks)}",
     );
@@ -281,9 +285,7 @@ describe("application database release-authority isolation", () => {
     ).toBe("contains_nul");
   });
 
-  it("emits the untrusted catalog candidate only from capture while production keeps the promoted digest", () => {
-    const candidateDigest =
-      "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68";
+  it("binds the catalog digest only to the trusted capture envelope", () => {
     let captureArgs: readonly string[] | undefined;
     let captureInput: string | undefined;
     const run = (
@@ -316,7 +318,6 @@ describe("application database release-authority isolation", () => {
         return JSON.stringify({
           manifestIdentity:
             canonicalReleaseMigrationArtifact.postManifestIdentity,
-          catalogDigest: candidateDigest,
           unfinishedCount: 0,
         });
       }
@@ -343,12 +344,8 @@ describe("application database release-authority isolation", () => {
         projectionSha256: `sha256:${createHash("sha256")
           .update(fencedLiveV70V72CatalogDigestSql)
           .digest("hex")}`,
-        catalogDigest: candidateDigest,
       },
     });
-    expect(candidateDigest).not.toBe(
-      canonicalReleaseMigrationArtifact.postCatalogDigest,
-    );
     expect(captureArgs).toContain("--quiet");
     expect(captureArgs).not.toContain("--command");
     expect(captureInput).toMatch(
@@ -358,6 +355,7 @@ describe("application database release-authority isolation", () => {
     expect(captureInput).not.toContain(
       "reviewrouter_activation.migration_permit",
     );
+    expect(captureInput).not.toContain("observe_live_migration_catalog_digest");
     expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
       liveV70V73CatalogDigestSha256,
     );
@@ -832,10 +830,12 @@ describe("canonical exclusive release migration caller", () => {
     expect(
       activationAuthority.lastIndexOf(manifestIdentityRevoke),
     ).toBeLessThan(activationAuthority.lastIndexOf(manifestIdentityGrant));
+    const liveCatalogDigestRoutine =
+      "CREATE OR REPLACE FUNCTION reviewrouter_activation.observe_live_migration_catalog_digest()";
     const finalManifestIdentityGrant = activationAuthority.slice(
       activationAuthority.lastIndexOf(manifestIdentityGrant),
       activationAuthority.indexOf(
-        "-- Install the schema-owner ACL projectors",
+        liveCatalogDigestRoutine,
         activationAuthority.lastIndexOf(manifestIdentityGrant),
       ),
     );
@@ -844,6 +844,11 @@ describe("canonical exclusive release migration caller", () => {
     );
     expect(finalManifestIdentityGrant).toContain(
       "reviewrouter_activation_permit_installer",
+    );
+    const manifestIdentityRoutine =
+      "CREATE OR REPLACE FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()";
+    expect(activationAuthority.indexOf(manifestIdentityRoutine)).toBeLessThan(
+      activationAuthority.indexOf(liveCatalogDigestRoutine),
     );
     expect(finalManifestIdentityGrant).toContain(
       "reviewrouter_activation_receipt_reader",
@@ -913,7 +918,7 @@ describe("canonical exclusive release migration caller", () => {
       activationBoundary.matchAll(/failed_invariant := '([a-z_]+)'/gu),
       (match) => match[1],
     );
-    expect(stableBoundaryReasons).toHaveLength(54);
+    expect(stableBoundaryReasons).toHaveLength(59);
     expect(new Set(stableBoundaryReasons).size).toBe(
       stableBoundaryReasons.length,
     );
@@ -1026,7 +1031,11 @@ describe("canonical exclusive release migration caller", () => {
         3,
       );
     expect(atomicMigration.trim().endsWith("COMMIT;")).toBe(true);
-    expect(atomicMigration).toContain(liveV70V72CatalogDigestSql);
+    expect(activationAuthority).toContain(liveV70V72CatalogDigestSql);
+    expect(atomicMigration).toContain(
+      "reviewrouter_activation.observe_live_migration_catalog_digest()",
+    );
+    expect(atomicMigration).not.toContain(liveV70V72CatalogDigestSql);
     for (const catalogSemantic of [
       "attacl",
       "attcollation",

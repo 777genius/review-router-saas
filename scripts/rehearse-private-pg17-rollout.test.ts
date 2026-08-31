@@ -752,6 +752,7 @@ describe("disposable dual-version rehearsal", () => {
     const artifact = {
       kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
       version: 1,
+      liveCatalogDigest: `sha256:${"c".repeat(64)}`,
       policies: {},
     };
     const candidate = {
@@ -759,7 +760,6 @@ describe("disposable dual-version rehearsal", () => {
       databaseIdentity: "127.0.0.1:5432/review_router",
       manifestIdentity: canonicalReleaseMigrationArtifact.postManifestIdentity,
       projectionSha256: `sha256:${"b".repeat(64)}`,
-      catalogDigest: `sha256:${"c".repeat(64)}`,
     };
     expect(
       createActivationCatalogCaptureCheckpoint({
@@ -787,7 +787,7 @@ describe("disposable dual-version rehearsal", () => {
         },
         projection: {
           sha256: candidate.projectionSha256,
-          observedDigest: candidate.catalogDigest,
+          observedDigest: artifact.liveCatalogDigest,
         },
         custody: {
           captureBaseCommit: "9".repeat(40),
@@ -796,7 +796,7 @@ describe("disposable dual-version rehearsal", () => {
         },
       },
     });
-    expect(candidate.catalogDigest).not.toBe(
+    expect(artifact.liveCatalogDigest).not.toBe(
       canonicalReleaseMigrationArtifact.postCatalogDigest,
     );
     expect(() =>
@@ -924,16 +924,17 @@ describe("disposable dual-version rehearsal", () => {
   });
   it("runs capture-only through the authoritative migration use case without staging", async () => {
     const calls: string[] = [];
-    const artifact = Object.freeze({
-      kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
-      version: 1,
-      policies: Object.freeze({}),
-    });
     const transition = Object.freeze({
       transitionSha256: `sha256:${"1".repeat(64)}`,
       migrationArtifactDigest: `sha256:${"2".repeat(64)}`,
       postManifestIdentity: `sha256:${"3".repeat(64)}`,
       postCatalogDigest: `sha256:${"4".repeat(64)}`,
+    });
+    const artifact = Object.freeze({
+      kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+      version: 1,
+      liveCatalogDigest: transition.postCatalogDigest,
+      policies: Object.freeze({}),
     });
     const candidate = createActivationCatalogCaptureCheckpoint({
       artifact,
@@ -942,7 +943,6 @@ describe("disposable dual-version rehearsal", () => {
         databaseIdentity: "127.0.0.1:5432/review_router",
         manifestIdentity: transition.postManifestIdentity,
         projectionSha256: `sha256:${"5".repeat(64)}`,
-        catalogDigest: transition.postCatalogDigest,
       },
       configuredDatabaseIdentity: "127.0.0.1:5432/review_router",
       disposableIdentity: "rr-disposable-authoritative-test",
@@ -1013,6 +1013,7 @@ describe("disposable dual-version rehearsal", () => {
       artifact: {
         kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
         version: 1,
+        liveCatalogDigest: `sha256:${"3".repeat(64)}`,
         policies: {},
       },
       candidate: {
@@ -1020,7 +1021,6 @@ describe("disposable dual-version rehearsal", () => {
         databaseIdentity: "127.0.0.1:5432/review_router",
         manifestIdentity: `sha256:${"1".repeat(64)}`,
         projectionSha256: `sha256:${"2".repeat(64)}`,
-        catalogDigest: `sha256:${"3".repeat(64)}`,
       },
       configuredDatabaseIdentity: "127.0.0.1:5432/review_router",
       disposableIdentity: "rr-disposable-sentinel-test",
@@ -1055,6 +1055,7 @@ describe("disposable dual-version rehearsal", () => {
     const artifact = Object.freeze({
       kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
       version: 1,
+      liveCatalogDigest: `sha256:${"3".repeat(64)}`,
       policies: Object.freeze({
         preactivation: Object.freeze({}),
         activated: Object.freeze({}),
@@ -1070,7 +1071,6 @@ describe("disposable dual-version rehearsal", () => {
         databaseIdentity: configuredDatabaseIdentity,
         manifestIdentity: `sha256:${"1".repeat(64)}`,
         projectionSha256: `sha256:${"2".repeat(64)}`,
-        catalogDigest: `sha256:${"3".repeat(64)}`,
       });
       const result = await runRehearsalReleaseMigration({
         captureOnly: { disposableDatabaseIdentity: disposableIdentity },
