@@ -1,6 +1,6 @@
 const contextPrefix = "CONTEXT:  PL/pgSQL function ";
 const executorSignature =
-  "reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean)";
+  "reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean,boolean)";
 const reconciliationSignature =
   "reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text,timestamp with time zone)";
 const nestedStatementLines = Object.freeze([

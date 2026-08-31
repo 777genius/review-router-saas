@@ -1,18 +1,23 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { isExactPostgresGuardFailure } from "./postgres-guard-failure.mjs";
 
 const guard = "legacy_reconciliation_inventory_changed";
 const nestedGuard = "legacy_reconciliation_unresolved_intent";
-const directContext =
-  "CONTEXT:  PL/pgSQL function reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean) line 81 at RAISE";
+const executorSignature =
+  "reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean,boolean)";
+const staleExecutorSignature =
+  "reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean)";
+const directContext = `CONTEXT:  PL/pgSQL function ${executorSignature} line 81 at RAISE`;
 const nestedContext = `CONTEXT:  PL/pgSQL function reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text,timestamp with time zone) line 59 at RAISE
 SQL statement "CALL public.reviewrouter_reconcile_legacy_ambiguity(
     requested_rollout_id,requested_target_recovery_witness_sha256,
     requested_inventory,
     requested_source_legacy_ambiguity->>'inventorySha256',
     requested_eligibility_cutoff)"
-PL/pgSQL function reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean) line 2543 at CALL`;
+PL/pgSQL function ${executorSignature} line 2543 at CALL`;
 
 const failure = (stderr: unknown, overrides = {}) => ({
   status: 3,
@@ -35,6 +40,80 @@ describe("exact PostgreSQL guard failure classification", () => {
       );
     },
   );
+
+  it("accepts contexts derived from the canonical executor declaration", () => {
+    const source = readFileSync(
+      new URL("../run-codex-rotating-release-migration.mjs", import.meta.url),
+      "utf8",
+    );
+    const declarations = [
+      ...source.matchAll(
+        /^CREATE OR REPLACE PROCEDURE public\.reviewrouter_execute_release_migration\(\n(?<parameters>[\s\S]*?)\n\)\nLANGUAGE plpgsql$/gmu,
+      ),
+    ];
+    expect(declarations).toHaveLength(1);
+
+    const parameterLines = declarations[0].groups!.parameters.split("\n");
+    const parameterTypes = parameterLines.map((line, index) => {
+      const parameter =
+        /^ {2}requested_[a-z0-9_]+ ([a-z]+(?: [a-z]+)*)(,?)$/u.exec(line);
+      expect(parameter).not.toBeNull();
+      expect(parameter![2]).toBe(
+        index === parameterLines.length - 1 ? "" : ",",
+      );
+      return parameter![1] === "timestamptz"
+        ? "timestamp with time zone"
+        : parameter![1];
+    });
+    const sourceSignature = `reviewrouter_execute_release_migration(${parameterTypes.join(",")})`;
+    const sourceDirectContext = directContext.replace(
+      executorSignature,
+      sourceSignature,
+    );
+    const sourceNestedContext = nestedContext.replace(
+      executorSignature,
+      sourceSignature,
+    );
+
+    expect(
+      isExactPostgresGuardFailure(
+        failure(`${errorLine(21)}\n${sourceDirectContext}\n`),
+        guard,
+      ),
+    ).toBe(true);
+    expect(
+      isExactPostgresGuardFailure(
+        failure(`${errorLine(21, nestedGuard)}\n${sourceNestedContext}\n`),
+        nestedGuard,
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects the stale direct executor signature", () => {
+    const context = directContext.replace(
+      executorSignature,
+      staleExecutorSignature,
+    );
+    expect(
+      isExactPostgresGuardFailure(
+        failure(`${errorLine(21)}\n${context}\n`),
+        guard,
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects the stale nested executor signature", () => {
+    const context = nestedContext.replace(
+      executorSignature,
+      staleExecutorSignature,
+    );
+    expect(
+      isExactPostgresGuardFailure(
+        failure(`${errorLine(21, nestedGuard)}\n${context}\n`),
+        nestedGuard,
+      ),
+    ).toBe(false);
+  });
 
   it.each([
     [
