@@ -467,6 +467,23 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
+  it("acquires setup and recovery mutation ownership through the epoch fence", () => {
+    const reattestationProof =
+      /async function proveActiveNamespaceV4V5Reattestation\([\s\S]+?\n\}\n\nfunction assertVersionedNamespaceEvidenceRetained/u.exec(
+        source,
+      )?.[0];
+    expect(reattestationProof).toBeDefined();
+    expect(reattestationProof).toContain(
+      'for (const mutationOwner of ["setup", "recovery"])',
+    );
+    expect(reattestationProof).toMatch(
+      /UPDATE "CodexOAuthProviderInstance"\s+SET "mutationEpoch"="mutationEpoch"\+1,\s+"mutationOwner"=\$\{quoteLiteral\(mutationOwner\)\},\s+"mutationOwnerId"=\$\{quoteLiteral\(mutationOwnerId\)\}/u,
+    );
+    expect(reattestationProof).toContain(
+      "codex_oauth_active_namespace_reattestation_stale",
+    );
+  });
+
   it("reproduces the trusted production pre-migration manifest", () => {
     expect(source).toContain("applyCanonicalPreMigrationBaseline");
     expect(source).toContain("directory === migration67Name");

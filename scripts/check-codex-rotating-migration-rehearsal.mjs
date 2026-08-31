@@ -2370,7 +2370,8 @@ async function proveActiveNamespaceV4V5Reattestation(
         "-c",
         `BEGIN;
          UPDATE "CodexOAuthProviderInstance"
-         SET "mutationOwner"=${quoteLiteral(mutationOwner)},
+         SET "mutationEpoch"="mutationEpoch"+1,
+             "mutationOwner"=${quoteLiteral(mutationOwner)},
              "mutationOwnerId"=${quoteLiteral(mutationOwnerId)}
          WHERE "id"=${quoteLiteral(target.providerId)};
          SELECT ${call(target, winner)};
