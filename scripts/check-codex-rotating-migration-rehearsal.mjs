@@ -32,11 +32,10 @@ import {
 } from "./lib/secret-safe-command-boundary.mjs";
 import { isExactPostgresGuardFailure } from "./lib/postgres-guard-failure.mjs";
 import {
-  hasExactPostgresAbortedTransactionEnvelope,
-  hasExactPostgresLockTimeoutEnvelope,
   isExpectedPrismaLockTimeoutFailure,
   prismaLockTimeoutFailureMarkers,
 } from "./codex-rotating-lock-timeout-proof.mjs";
+import { hasCanonicalPrismaMigrationPostgresErrorEvidence } from "./lib/postgres-error-evidence.mjs";
 import {
   assertPsqlFailedWithExactMessage,
   assertPsqlFailedWithOneOfExactMessages,
@@ -92,6 +91,27 @@ const migration86Name = "000086_comment_token_custody_r18_remediation";
 const migration87Name = "000087_codex_oauth_v4_v5_workflow_reattestation";
 const migration88Name = "000088_codex_oauth_reattestation_mutation_owner_fence";
 const migration89Name = "000089_codex_oauth_v4_v5_staged_compatibility";
+const postgresLockTimeoutFailure = Object.freeze({
+  sqlState: "55P03",
+  message: "canceling statement due to lock timeout",
+  routine: "ProcessInterrupts",
+});
+
+function duplicateRelationFailure(relation) {
+  return Object.freeze({
+    sqlState: "42P07",
+    message: `relation "${relation}" already exists`,
+    routine: "heap_create_with_catalog",
+  });
+}
+
+function duplicateFunctionFailure(routine) {
+  return Object.freeze({
+    sqlState: "42723",
+    message: `function "${routine}" already exists with same argument types`,
+    routine: "ProcedureCreate",
+  });
+}
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -169,107 +189,111 @@ try {
       "Codex rotating PostgreSQL 17 migration89 two-session boundary passed.\n",
     );
   } else {
-  await proveMigrationSpecificLegacyBehavior();
-  proveCanonicalLegacyReconciliationNegativeCases();
-  await proveMigration89TwoSessionBoundary();
-  const rehearsalRelease = prepareCanonicalReleaseRoles(
-    rehearsalProviderAdminUrl,
-    applyCanonicalPreMigrationBaseline,
-  );
-  rehearsalAuthority = rehearsalRelease.authority;
-  const providerAdmin = rehearsalAuthority.providerAdmin;
-  const runtimeClients = rehearsalAuthority.runtime;
-  seedDirtyFixtures(providerAdmin, { canonicalSuccess: true });
-  const migrationPermitEnvironment =
-    installRehearsalMigrationPermit(rehearsalAuthority);
-  const releaseMigrationResult = executeCanonicalReleaseMigration(
-    {
-      ...rehearsalRelease.environment,
-      ...migrationPermitEnvironment,
-      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
-    },
-    runRehearsalReleaseSubprocess,
-    loopbackRehearsalDatabaseIdentity,
-  );
-  assert(
-    releaseMigrationResult.aclGateState === "closed",
-    "combined migration rehearsal must complete against the trusted pre-activation catalog",
-  );
-  const targetMigrationReceipt = releaseMigrationResult.targetMigrationReceipt;
-  const expectedEffectFingerprint = `sha256:${createHash("sha256")
-    .update(
-      [
-        targetMigrationReceipt.rolloutId,
-        targetMigrationReceipt.transitionSha256,
-        targetMigrationReceipt.permitEpoch,
-        targetMigrationReceipt.permitNonce,
-        targetMigrationReceipt.sourceLegacyAmbiguity.inventorySha256,
-        targetMigrationReceipt.eligibilityCutoff,
-        targetMigrationReceipt.postManifestIdentity,
-        targetMigrationReceipt.postCatalogDigest,
-      ].join(":"),
-    )
-    .digest("hex")}`;
-  assert(
-    targetMigrationReceipt.effectFingerprint === expectedEffectFingerprint,
-    "target migration effect fingerprint must match independently observed receipt facts",
-  );
-  const replayMigrationResult = executeCanonicalReleaseMigration(
-    {
-      ...rehearsalRelease.environment,
-      ...migrationPermitEnvironment,
-      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
-    },
-    runRehearsalReleaseSubprocess,
-    loopbackRehearsalDatabaseIdentity,
-  );
-  assert(
-    JSON.stringify(replayMigrationResult.targetMigrationReceipt) ===
-      JSON.stringify(releaseMigrationResult.targetMigrationReceipt) &&
-      JSON.stringify(replayMigrationResult.legacyReconciliation.inventory) ===
-        JSON.stringify(releaseMigrationResult.legacyReconciliation.inventory),
-    "canonical replay did not return the immutable original receipt",
-  );
-  // The trusted post-migration digest is the production pre-activation state.
-  // Reopen only after receipt replay so the remaining runtime behavior proofs
-  // can exercise the activated ACL without changing completion authority.
-  convergeRuntimePrivileges(providerAdmin);
+    await proveMigrationSpecificLegacyBehavior();
+    proveCanonicalLegacyReconciliationNegativeCases();
+    await proveMigration89TwoSessionBoundary();
+    const rehearsalRelease = prepareCanonicalReleaseRoles(
+      rehearsalProviderAdminUrl,
+      applyCanonicalPreMigrationBaseline,
+    );
+    rehearsalAuthority = rehearsalRelease.authority;
+    const providerAdmin = rehearsalAuthority.providerAdmin;
+    const runtimeClients = rehearsalAuthority.runtime;
+    seedDirtyFixtures(providerAdmin, { canonicalSuccess: true });
+    const migrationPermitEnvironment =
+      installRehearsalMigrationPermit(rehearsalAuthority);
+    const releaseMigrationResult = executeCanonicalReleaseMigration(
+      {
+        ...rehearsalRelease.environment,
+        ...migrationPermitEnvironment,
+        REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+      },
+      runRehearsalReleaseSubprocess,
+      loopbackRehearsalDatabaseIdentity,
+    );
+    assert(
+      releaseMigrationResult.aclGateState === "closed",
+      "combined migration rehearsal must complete against the trusted pre-activation catalog",
+    );
+    const targetMigrationReceipt =
+      releaseMigrationResult.targetMigrationReceipt;
+    const expectedEffectFingerprint = `sha256:${createHash("sha256")
+      .update(
+        [
+          targetMigrationReceipt.rolloutId,
+          targetMigrationReceipt.transitionSha256,
+          targetMigrationReceipt.permitEpoch,
+          targetMigrationReceipt.permitNonce,
+          targetMigrationReceipt.sourceLegacyAmbiguity.inventorySha256,
+          targetMigrationReceipt.eligibilityCutoff,
+          targetMigrationReceipt.postManifestIdentity,
+          targetMigrationReceipt.postCatalogDigest,
+        ].join(":"),
+      )
+      .digest("hex")}`;
+    assert(
+      targetMigrationReceipt.effectFingerprint === expectedEffectFingerprint,
+      "target migration effect fingerprint must match independently observed receipt facts",
+    );
+    const replayMigrationResult = executeCanonicalReleaseMigration(
+      {
+        ...rehearsalRelease.environment,
+        ...migrationPermitEnvironment,
+        REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+      },
+      runRehearsalReleaseSubprocess,
+      loopbackRehearsalDatabaseIdentity,
+    );
+    assert(
+      JSON.stringify(replayMigrationResult.targetMigrationReceipt) ===
+        JSON.stringify(releaseMigrationResult.targetMigrationReceipt) &&
+        JSON.stringify(replayMigrationResult.legacyReconciliation.inventory) ===
+          JSON.stringify(releaseMigrationResult.legacyReconciliation.inventory),
+      "canonical replay did not return the immutable original receipt",
+    );
+    // The trusted post-migration digest is the production pre-activation state.
+    // Reopen only after receipt replay so the remaining runtime behavior proofs
+    // can exercise the activated ACL without changing completion authority.
+    convergeRuntimePrivileges(providerAdmin);
 
-  proveSuccessfulCombinedRelease(providerAdmin);
-  proveDatabasePrivileges(providerAdmin);
-  proveRuntimeParentCascadesDenied(providerAdmin, runtimeClients);
-  proveStaleAclProviderIdentityEscalationDenied(providerAdmin, runtimeClients);
-  proveMaintenanceCheckpointColumnAclConvergence(providerAdmin);
-  proveTerminalInsertGuards(providerAdmin);
-  proveSequentialFabricationDeniedForEveryRuntimeRole(runtimeClients);
-  proveRuntimeVersionedWriteback(providerAdmin, runtimeClients);
-  proveAccountSwitchRecoveryContract(providerAdmin);
-  proveCompletedRecoveryEvidenceRetention(providerAdmin);
-  const versionedNamespaceEvidence =
-    proveVersionedNamespaceLedger(providerAdmin);
-  await proveActiveNamespaceV4V5Reattestation(
-    providerAdmin,
-    runtimeClients,
-    versionedNamespaceEvidence,
-  );
-  proveSelfHostedV4V5ReattestationOwnerInvocation(
-    providerAdmin,
-    runtimeClients.web,
-  );
-  provePrismaCleanupRetention(providerAdmin, versionedNamespaceEvidence);
-  proveLegacyChildWritesRejected(providerAdmin);
-  proveParentIdentityWriteRejected(providerAdmin);
-  await proveProviderRepairAuthorityV2(providerAdmin, runtimeClients);
-  await proveQuarantineCleanupPathV2(providerAdmin, runtimeClients);
-  proveExactProductionCatalogContract(providerAdmin);
-  proveMigrateDeployNoOp(providerAdmin);
-  proveLateMigrationRollbackAndReplayMatrix();
-  proveReleaseAuthorityMarkerIsolation(providerAdmin);
-  const observation = collectObservation(providerAdmin);
-  process.stdout.write(`${JSON.stringify(observation)}\n`);
-  process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000089 rehearsal passed.\n",
-  );
+    proveSuccessfulCombinedRelease(providerAdmin);
+    proveDatabasePrivileges(providerAdmin);
+    proveRuntimeParentCascadesDenied(providerAdmin, runtimeClients);
+    proveStaleAclProviderIdentityEscalationDenied(
+      providerAdmin,
+      runtimeClients,
+    );
+    proveMaintenanceCheckpointColumnAclConvergence(providerAdmin);
+    proveTerminalInsertGuards(providerAdmin);
+    proveSequentialFabricationDeniedForEveryRuntimeRole(runtimeClients);
+    proveRuntimeVersionedWriteback(providerAdmin, runtimeClients);
+    proveAccountSwitchRecoveryContract(providerAdmin);
+    proveCompletedRecoveryEvidenceRetention(providerAdmin);
+    const versionedNamespaceEvidence =
+      proveVersionedNamespaceLedger(providerAdmin);
+    await proveActiveNamespaceV4V5Reattestation(
+      providerAdmin,
+      runtimeClients,
+      versionedNamespaceEvidence,
+    );
+    proveSelfHostedV4V5ReattestationOwnerInvocation(
+      providerAdmin,
+      runtimeClients.web,
+    );
+    provePrismaCleanupRetention(providerAdmin, versionedNamespaceEvidence);
+    proveLegacyChildWritesRejected(providerAdmin);
+    proveParentIdentityWriteRejected(providerAdmin);
+    await proveProviderRepairAuthorityV2(providerAdmin, runtimeClients);
+    await proveQuarantineCleanupPathV2(providerAdmin, runtimeClients);
+    proveExactProductionCatalogContract(providerAdmin);
+    proveMigrateDeployNoOp(providerAdmin);
+    proveLateMigrationRollbackAndReplayMatrix();
+    proveReleaseAuthorityMarkerIsolation(providerAdmin);
+    const observation = collectObservation(providerAdmin);
+    process.stdout.write(`${JSON.stringify(observation)}\n`);
+    process.stderr.write(
+      "Codex rotating PostgreSQL 17 combined 000060 through 000089 rehearsal passed.\n",
+    );
   }
 } finally {
   const databaseDrop = psql(
@@ -530,11 +554,7 @@ async function proveMigration89TwoSessionBoundary() {
           lockSnapshot: () => lockSnapshot(url),
           predicate: (snapshot) =>
             Boolean(
-              findMigration89AdvisoryLock(
-                snapshot,
-                "rr-m89-old-barrier",
-                true,
-              ),
+              findMigration89AdvisoryLock(snapshot, "rr-m89-old-barrier", true),
             ),
           watchedProcesses: [{ name: "old_barrier", handle: blocker }],
         });
@@ -566,11 +586,7 @@ async function proveMigration89TwoSessionBoundary() {
               holderLock &&
               oldRelationLock &&
               oldBarrierLock &&
-              migration89LockBlockedBy(
-                snapshot,
-                oldBarrierLock,
-                holderLock,
-              ),
+              migration89LockBlockedBy(snapshot, oldBarrierLock, holderLock),
             );
           },
           watchedProcesses: [
@@ -753,9 +769,7 @@ async function proveMigration89TwoSessionBoundary() {
       }
     } finally {
       const unsettled = [...spawned];
-      await Promise.all(
-        unsettled.map((handle) => handle.terminateAndWait()),
-      );
+      await Promise.all(unsettled.map((handle) => handle.terminateAndWait()));
       const dropResult = psql(
         adminUrl,
         ["-c", `DROP DATABASE IF EXISTS ${quoteIdentifier(name)} WITH (FORCE)`],
@@ -1039,6 +1053,9 @@ function proveLateMigrationRollbackAndReplayMatrix() {
         'CREATE INDEX "CodexOAuthSetupManifest_recovery_expiry_idx" ON "CodexOAuthSetupManifest"("status")',
       cleanup: 'DROP INDEX "CodexOAuthSetupManifest_recovery_expiry_idx"',
       failureMarker: "CodexOAuthSetupManifest_recovery_expiry_idx",
+      failureEvidence: duplicateRelationFailure(
+        "CodexOAuthSetupManifest_recovery_expiry_idx",
+      ),
       leaked:
         "SELECT count(*) FROM information_schema.columns WHERE table_name='CodexOAuthSetupManifest' AND column_name='payloadVersion'",
     },
@@ -1055,6 +1072,9 @@ function proveLateMigrationRollbackAndReplayMatrix() {
         'CREATE INDEX "CodexOAuthSecretNamespace_secretName_key" ON "CodexOAuthProviderInstance"("id")',
       cleanup: 'DROP INDEX "CodexOAuthSecretNamespace_secretName_key"',
       failureMarker: "CodexOAuthSecretNamespace_secretName_key",
+      failureEvidence: duplicateRelationFailure(
+        "CodexOAuthSecretNamespace_secretName_key",
+      ),
       leaked:
         "SELECT count(*) FROM information_schema.tables WHERE table_name='CodexOAuthSecretNamespace'",
     },
@@ -1072,6 +1092,9 @@ function proveLateMigrationRollbackAndReplayMatrix() {
         'CREATE FUNCTION "codex_oauth_database_authority_receipt_guard"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$',
       cleanup: 'DROP FUNCTION "codex_oauth_database_authority_receipt_guard"()',
       failureMarker: "codex_oauth_database_authority_receipt_guard",
+      failureEvidence: duplicateFunctionFailure(
+        "codex_oauth_database_authority_receipt_guard",
+      ),
       leaked:
         "SELECT count(*) FROM pg_proc WHERE proname='codex_oauth_authorize_provider_identity_repair'",
     },
@@ -1090,6 +1113,9 @@ function proveLateMigrationRollbackAndReplayMatrix() {
         'CREATE FUNCTION "codex_oauth_runtime_referential_action_guard"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN OLD; END $$',
       cleanup: 'DROP FUNCTION "codex_oauth_runtime_referential_action_guard"()',
       failureMarker: "codex_oauth_runtime_referential_action_guard",
+      failureEvidence: duplicateFunctionFailure(
+        "codex_oauth_runtime_referential_action_guard",
+      ),
       leaked:
         "SELECT count(*) FROM pg_proc WHERE proname='codex_oauth_provider_identity_repair_challenge'",
     },
@@ -1104,22 +1130,22 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       const failed = migrateDeploy(url, false);
       assertPrismaMigrationFailureEnvelope(
         failed,
-        testCase.failureMarker,
+        testCase.name,
+        testCase.failureEvidence,
         `${testCase.name} injected failure did not report its decoy collision`,
       );
       for (const [migrationName] of testCase.prior) {
         proveMigrationRunnerHistory(url, migrationName, true);
       }
       proveMigrationRunnerHistory(url, testCase.name, false);
-      const directFailure = psql(url, ["-f", testCase.source], false);
-      assert(
-        directFailure.status !== 0 &&
-          `${directFailure.stdout}${directFailure.stderr}`.includes(
-            testCase.failureMarker,
-          ) &&
-          `${directFailure.stdout}${directFailure.stderr}`
-            .toLowerCase()
-            .includes("already exists"),
+      const directFailure = psql(
+        url,
+        ["-v", "VERBOSITY=verbose", "-f", testCase.source],
+        false,
+      );
+      assertPsqlFailedWithExactMessage(
+        { ...directFailure, postgresInputSource: testCase.source },
+        testCase.failureEvidence,
         `${testCase.name} direct replay did not prove its decoy collision`,
       );
       assert(
@@ -1387,15 +1413,15 @@ async function proveMigration60LockTimeout(url, fixtureAdminUrl) {
       '"CodexOAuthSetupManifest"',
     );
     const directStartedAt = Date.now();
-    const directFailure = psql(url, ["-f", migration60], false);
-    const directElapsedMs = Date.now() - directStartedAt;
-    const directOutput = `${directFailure.stdout}${directFailure.stderr}`;
-    assert(
-      directFailure.status !== 0,
-      "held manifest lock must reject direct 000060",
+    const directFailure = psql(
+      url,
+      ["-v", "VERBOSITY=verbose", "-f", migration60],
+      false,
     );
-    assert(
-      hasExactPostgresLockTimeoutEnvelope(directOutput),
+    const directElapsedMs = Date.now() - directStartedAt;
+    assertPsqlFailedWithExactMessage(
+      { ...directFailure, postgresInputSource: migration60 },
+      postgresLockTimeoutFailure,
       "direct_000060_lock_timeout_not_observed",
     );
     assert(
@@ -1471,15 +1497,15 @@ async function proveCombinedLockTimeout(url, fixtureAdminUrl) {
       '"CodexOAuthProviderInstance"',
     );
     const directStartedAt = Date.now();
-    const directFailure = psql(url, ["-f", migration61], false);
-    const directElapsedMs = Date.now() - directStartedAt;
-    const directFailureOutput = `${directFailure.stdout}${directFailure.stderr}`;
-    assert(
-      directFailure.status !== 0,
-      "held provider lock must reject direct 000061 execution",
+    const directFailure = psql(
+      url,
+      ["-v", "VERBOSITY=verbose", "-f", migration61],
+      false,
     );
-    assert(
-      hasExactPostgresLockTimeoutEnvelope(directFailureOutput),
+    const directElapsedMs = Date.now() - directStartedAt;
+    assertPsqlFailedWithExactMessage(
+      { ...directFailure, postgresInputSource: migration61 },
+      postgresLockTimeoutFailure,
       "direct_000061_lock_timeout_not_observed",
     );
     assert(
@@ -1542,14 +1568,17 @@ function proveInjected61Rollback(url) {
     'CREATE INDEX "CodexOAuthProviderInstance_mutation_owner_idx" ON "CodexOAuthProviderInstance"("id")',
   ]);
   const before = databaseFingerprintBefore61(url);
-  const directFailure = psql(url, ["-f", migration61], false);
-  const directFailureOutput = `${directFailure.stdout}${directFailure.stderr}`;
-  assert(
-    directFailure.status !== 0,
-    "decoy 000061 index must reject direct migration execution",
+  const directFailure = psql(
+    url,
+    ["-v", "VERBOSITY=verbose", "-f", migration61],
+    false,
   );
-  assert(
-    directFailureOutput.toLowerCase().includes("already exists"),
+  const injectedFailure = duplicateRelationFailure(
+    "CodexOAuthProviderInstance_mutation_owner_idx",
+  );
+  assertPsqlFailedWithExactMessage(
+    { ...directFailure, postgresInputSource: migration61 },
+    injectedFailure,
     "direct_000061_injected_failure_not_observed",
   );
   assert(
@@ -1560,7 +1589,8 @@ function proveInjected61Rollback(url) {
   const failed = migrateDeploy(url, false);
   assertPrismaMigrationFailureEnvelope(
     failed,
-    "CodexOAuthProviderInstance_mutation_owner_idx",
+    migration61Name,
+    injectedFailure,
     "decoy 000061 index must inject a runner failure",
   );
   assert(
@@ -5535,13 +5565,14 @@ function assertPrismaLockTimeoutEnvelope(
   message,
   directLockTimeoutProof,
 ) {
-  const output = `${result.stdout}${result.stderr}`.toLowerCase();
+  const output = String(result.stderr ?? "");
   // Prisma's schema engine can replace the inner PostgreSQL lock-timeout error
   // with the transaction-aborted envelope after the migration rolls back.  Do
   // not accept that generic envelope unless the exact zero-step failed row and
   // the direct psql attempt against this same held-lock fixture prove it.
   assert(
     isExpectedPrismaLockTimeoutFailure({
+      result,
       output,
       migrationName,
       historyEvidence,
@@ -5549,6 +5580,7 @@ function assertPrismaLockTimeoutEnvelope(
     }),
     `${message}:${JSON.stringify(
       prismaLockTimeoutFailureMarkers({
+        result,
         output,
         migrationName,
         historyEvidence,
@@ -5558,14 +5590,17 @@ function assertPrismaLockTimeoutEnvelope(
   );
 }
 
-function assertPrismaMigrationFailureEnvelope(result, marker, message) {
-  const rawOutput = `${result.stdout}${result.stderr}`;
-  const output = rawOutput.toLowerCase();
-  const exactFailure =
-    output.includes(marker.toLowerCase()) && output.includes("already exists");
+function assertPrismaMigrationFailureEnvelope(
+  result,
+  migrationName,
+  expectedFailure,
+  message,
+) {
   assert(
-    result.status !== 0 &&
-      (exactFailure || hasExactPostgresAbortedTransactionEnvelope(rawOutput)),
+    hasCanonicalPrismaMigrationPostgresErrorEvidence(result, {
+      ...expectedFailure,
+      migrationName,
+    }),
     message,
   );
 }

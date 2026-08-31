@@ -578,16 +578,19 @@ it.skipIf(process.platform !== "linux").each(["stdout", "stderr"] as const)(
       maxBuffer: 64,
     });
 
+    const pid = handle.child.pid;
+    expect(pid).toBeTypeOf("number");
     const result = await resultWithin(handle);
     expect(result).toMatchObject({
       status: null,
-      signal: "SIGKILL",
+      signal: "SIGTERM",
       timedOut: false,
       error: { code: "MAX_BUFFER_EXCEEDED" },
     });
     expect(
       Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr),
     ).toBeLessThanOrEqual(64);
+    expectProcessGone(pid as number);
     expect(cleanup).toHaveBeenCalledOnce();
   },
   10_000,

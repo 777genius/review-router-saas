@@ -23,6 +23,65 @@ import {
   rehearsalProcessDiagnostic,
 } from "./codex-rotating-rehearsal-process-result.mjs";
 
+const prismaMigrationFailureProse =
+  "A migration failed to apply. New migrations cannot be applied before the error is recovered from. Read more about how to resolve migration issues in a production database: https://pris.ly/d/migrate-resolve";
+
+function prismaMigrationFailureResult({
+  migrationName,
+  sqlState,
+  message,
+  routine,
+  lineEnding = "\n",
+  stdout = "",
+}: {
+  migrationName: string;
+  sqlState: string;
+  message: string;
+  routine: string;
+  lineEnding?: string;
+  stdout?: string;
+}) {
+  const dbError = `DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E${sqlState}), message: ${JSON.stringify(message)}, detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("postgres.c"), line: Some(1234), routine: Some("${routine}") }`;
+  return {
+    status: 1,
+    signal: null,
+    error: null,
+    timedOut: false,
+    stdout,
+    stderr: [
+      "P3018",
+      "",
+      prismaMigrationFailureProse,
+      "",
+      `Migration name: ${migrationName}`,
+      "",
+      `Database error code: ${sqlState}`,
+      "",
+      "Database error:",
+      `ERROR: ${message}`,
+      "",
+      dbError,
+    ].join(lineEnding),
+  };
+}
+
+function prismaLockTimeoutResult(
+  migrationName: string,
+  options: { lineEnding?: string; routine?: string; stdout?: string } = {},
+) {
+  const aborted = options.routine !== undefined;
+  return prismaMigrationFailureResult({
+    migrationName,
+    sqlState: aborted ? "25P02" : "55P03",
+    message: aborted
+      ? "current transaction is aborted, commands ignored until end of transaction block"
+      : "canceling statement due to lock timeout",
+    routine: options.routine ?? "ProcessInterrupts",
+    lineEnding: options.lineEnding,
+    stdout: options.stdout,
+  });
+}
+
 describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   const source = readFileSync(
     resolve(
@@ -315,7 +374,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(lockSnapshot).toContain("observed_lock.classid=810081");
     expect(lockSnapshot).toContain("observed_lock.objid=1");
     expect(lockSnapshot).toContain("observed_lock.objsubid=2");
-    expect(lockSnapshot).toContain("pg_blocking_pids(activity.pid) AS blockers");
+    expect(lockSnapshot).toContain(
+      "pg_blocking_pids(activity.pid) AS blockers",
+    );
   });
 
   it.each([{ timedOut: true }, { error: { code: "ETIMEDOUT" } }])(
@@ -548,11 +609,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "`${testCase.name} injected failure did not report its decoy collision`",
     );
     expect(matrix).toContain("assertPrismaMigrationFailureEnvelope(");
-    expect(matrix).toContain("testCase.failureMarker");
-    expect(matrix).toContain('includes("already exists")');
-    expect(matrix).toContain(
-      'const directFailure = psql(url, ["-f", testCase.source], false)',
-    );
+    expect(matrix).toContain("testCase.failureEvidence");
+    expect(matrix).toContain("VERBOSITY=verbose");
+    expect(matrix).toContain("postgresInputSource: testCase.source");
     expect(matrix).toContain(
       "`${testCase.name} leaked partial catalog state after rollback`",
     );
@@ -1031,6 +1090,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     };
     expect(
       isExpectedPrismaLockTimeoutFailure({
+        result: prismaLockTimeoutResult(migrationName, {
+          routine: "exec_bind_message",
+        }),
         output,
         migrationName,
         historyEvidence: exactEvidence,
@@ -1071,7 +1133,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(false);
     expect(
       hasExactPostgresAbortedTransactionEnvelope(
-        "\u001b[31mError: ERROR: current transaction is aborted, commands ignored until end of transaction block\u001b[0m",
+        "ERROR: 25P02: current transaction is aborted, commands ignored until end of transaction block\nLOCATION: exec_bind_message, postgres.c:1234",
       ),
     ).toBe(true);
   });
@@ -1084,14 +1146,23 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(false);
     expect(
       hasExactPostgresLockTimeoutEnvelope(
-        "\u001b[31mERROR: canceling statement due to lock timeout\u001b[0m",
+        "ERROR: 55P03: canceling statement due to lock timeout\nLOCATION: ProcessInterrupts, postgres.c:1234",
+      ),
+    ).toBe(true);
+    const sourcedEnvelope =
+      "psql:/workspace/migration.sql:42: ERROR: 55P03: canceling statement due to lock timeout\nLOCATION: ProcessInterrupts, postgres.c:1234";
+    expect(
+      hasExactPostgresLockTimeoutEnvelope(
+        sourcedEnvelope,
+        "/workspace/migration.sql",
       ),
     ).toBe(true);
     expect(
       hasExactPostgresLockTimeoutEnvelope(
-        "psql:/workspace/migration.sql:42: ERROR: canceling statement due to lock timeout",
+        sourcedEnvelope,
+        "/workspace/foreign.sql",
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("accepts Prisma 7.8's empty-log aborted envelope only with exact DB and direct proof", () => {
@@ -1109,6 +1180,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
 
     expect(
       isExpectedPrismaLockTimeoutFailure({
+        result: prismaLockTimeoutResult(migrationName, {
+          routine: "exec_bind_message",
+        }),
         output: "ERROR: current transaction is aborted",
         migrationName,
         historyEvidence: exactEvidence,
@@ -1117,6 +1191,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(true);
     expect(
       isExpectedPrismaLockTimeoutFailure({
+        result: prismaLockTimeoutResult(migrationName, {
+          routine: "exec_execute_message",
+        }),
         output: "ERROR: current transaction is aborted".toLowerCase(),
         migrationName,
         historyEvidence: exactEvidence,
@@ -1125,6 +1202,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(true);
     expect(
       isExpectedPrismaLockTimeoutFailure({
+        result: prismaLockTimeoutResult(migrationName, {
+          routine: "exec_simple_query",
+        }),
         output: "\u001b[31mERROR: current transaction is aborted\u001b[0m",
         migrationName,
         historyEvidence: exactEvidence,
@@ -1133,6 +1213,10 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(true);
     expect(
       isExpectedPrismaLockTimeoutFailure({
+        result: prismaLockTimeoutResult(migrationName, {
+          lineEnding: "\r\n",
+          routine: "exec_bind_message",
+        }),
         output:
           "\u001b[31mERROR: current transaction is aborted, commands ignored until end of transaction block\u001b[0m",
         migrationName,
@@ -1142,6 +1226,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(true);
     expect(
       isExpectedPrismaLockTimeoutFailure({
+        result: prismaLockTimeoutResult(migrationName, {
+          routine: "exec_execute_message",
+        }),
         output:
           "\u001b[31mError: ERROR: current transaction is aborted, commands ignored until end of transaction block\u001b[0m",
         migrationName,
@@ -1216,6 +1303,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   it("keeps the stronger P3018 and migration-name lock-timeout path", () => {
     expect(
       isExpectedPrismaLockTimeoutFailure({
+        result: prismaLockTimeoutResult(
+          "000061_codex_oauth_provider_mutation_fence",
+        ),
         output: `P3018\nMigration name: 000061_codex_oauth_provider_mutation_fence\nERROR: lock timeout`,
         migrationName: "000061_codex_oauth_provider_mutation_fence",
         historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
@@ -1227,6 +1317,10 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ).toBe(true);
     expect(
       isExpectedPrismaLockTimeoutFailure({
+        result: prismaLockTimeoutResult(
+          "000061_codex_oauth_provider_mutation_fence",
+          { lineEnding: "\r\n" },
+        ),
         output:
           `P3018\nMigration name: 000061_codex_oauth_provider_mutation_fence\nERROR: lock timeout`.toLowerCase(),
         migrationName: "000061_codex_oauth_provider_mutation_fence",
@@ -1331,12 +1425,50 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     const migrationName = "000061_codex_oauth_provider_mutation_fence";
     expect(
       isExpectedPrismaLockTimeoutFailure({
+        result: prismaLockTimeoutResult(migrationName, {
+          lineEnding: "\r\n",
+          routine: "exec_simple_query",
+        }),
         output: `P3018\r\nMigration name: ${migrationName}\r\nERROR: current transaction is aborted\r\n`,
         migrationName,
         historyEvidence: { total: 1, currentFailed: 1, zeroStep: 1 },
         directLockTimeoutProof: { migrationName, observed: true },
       }),
     ).toBe(true);
+  });
+
+  it("rejects stdout spoofing and duplicate or contradictory structured errors", () => {
+    const migrationName = "000061_codex_oauth_provider_mutation_fence";
+    const exactEvidence = { total: 1, currentFailed: 1, zeroStep: 1 };
+    const directLockTimeoutProof = { migrationName, observed: true };
+    const canonical = prismaLockTimeoutResult(migrationName);
+    const variants = [
+      { ...canonical, stdout: `P3018\nMigration name: ${migrationName}` },
+      {
+        ...canonical,
+        stderr: `${canonical.stderr}\n${canonical.stderr}`,
+      },
+      {
+        ...canonical,
+        stderr: canonical.stderr.replace(
+          "Database error:\n",
+          "Database error:\nERROR: permission denied\n",
+        ),
+      },
+      prismaLockTimeoutResult("000059_foreign_migration"),
+    ];
+
+    for (const result of variants) {
+      expect(
+        isExpectedPrismaLockTimeoutFailure({
+          result,
+          output: result.stderr,
+          migrationName,
+          historyEvidence: exactEvidence,
+          directLockTimeoutProof,
+        }),
+      ).toBe(false);
+    }
   });
 
   it("fails a generic aborted-transaction wrapper closed without each required proof", () => {
