@@ -244,23 +244,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toContain(
       "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
     );
-    expect(source).toContain("oldLock.blockers.includes(migrationLock.pid)");
-    expect(source).toContain("migrationLock.blockers.includes(oldLock.pid)");
     expect(source).toContain("PERFORM pg_advisory_xact_lock(810081, 1)");
     expect(source).toContain(
       'blocker.write("SELECT pg_advisory_lock(810081, 1);\\n")',
-    );
-    expect(source).toContain("const oldBarrierLock = advisoryBarrierLock(");
-    expect(source).toContain('"rr-m89-old-first",\n              false');
-    expect(source).toContain(
-      "oldBarrierLock.blockers.includes(holderLock.pid)",
-    );
-    expect(source).toContain('lock.mode === "ExclusiveLock"');
-    expect(source).toContain("lock.classId === 810081");
-    expect(source).toContain("lock.objectId === 1");
-    expect(source).toContain("lock.objectSubId === 2");
-    expect(source).toContain(
-      "migration89 queued old invocation failed with generic does-not-exist",
     );
     const proof =
       /async function proveMigration89TwoSessionBoundary\(\) \{([\s\S]+?)\n\}\n\nasync function proveMigrationSpecificLegacyBehavior/u.exec(
@@ -270,13 +256,25 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(proof).not.toContain("pg_sleep");
     expect(proof).not.toContain('"Migration89RaceLatch"');
     expect(proof).not.toMatch(/predecessor_evidence_missing\|does not exist/u);
+    expect(proof).toContain("spawnMigration89Process({");
+    expect(proof).toContain("waitForMigration89LockState({");
+    expect(proof).toContain("findMigration89RelationLock(");
+    expect(proof).toContain("findMigration89AdvisoryLock(");
+    expect(proof).toContain("migration89LockBlockedBy(");
+    expect(proof).toContain('sqlState: "55000"');
+    expect(proof).toContain('routine: "exec_stmt_raise"');
+    expect(proof).toContain("postgresInputSource: migration89");
+    expect(proof).toContain('"VERBOSITY=verbose"');
+    expect(proof).toContain('"SHOW_CONTEXT=never"');
+    expect(proof).toContain("watchedProcesses:");
+    expect(proof).toContain("handle.terminateAndWait()");
     expect(proof).toContain("migration89_blocker_cleanup_failed");
     expect(proof).toContain("migration89_database_cleanup_failed");
-    expect(proof).toContain('child.kill("SIGKILL")');
-    expect(proof).toContain('child.once("close", (status, signal)');
-    expect(proof).toContain(
-      "resolveChild({ status, signal, stdout, stderr, timedOut })",
-    );
+    expect(proof).not.toContain("spawn(psqlBinary");
+    expect(proof).not.toContain("child.kill(");
+    expect(proof).not.toContain("child.stdin");
+    expect(proof).not.toContain(".blockers.includes(");
+    expect(proof).not.toContain('.includes("does not exist")');
   });
 
   it("exposes the disposable real-PG17 migration89 boundary phase", () => {
@@ -286,18 +284,38 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
-  it("silences command status for the lock snapshot JSON query", () => {
+  it("takes one database-bound lock snapshot with exact object identities", () => {
     const lockSnapshot =
-      /const lockSnapshot = \(url\) =>([\s\S]+?)\n[ ]{2}const waitForLockState/u.exec(
+      /const lockSnapshot = \(url\) =>([\s\S]+?)\n[ ]{2}const releaseBlocker/u.exec(
         source,
       )?.[1];
 
     expect(lockSnapshot).toBeDefined();
     expect(lockSnapshot).toContain('psql(url, [\n        "-qAtc",');
     expect(lockSnapshot).toContain("SET statement_timeout='2s';");
+    expect(lockSnapshot).toContain("SELECT json_build_object(");
     expect(lockSnapshot).toContain(
-      "SELECT COALESCE(json_agg(row_to_json(observation)), '[]'::json)::text",
+      "'databaseOid', target_database.oid::bigint",
     );
+    expect(lockSnapshot).toContain(
+      "'relationOid', target_relation.oid::bigint",
+    );
+    expect(lockSnapshot).toContain(
+      'observed_lock.database::bigint AS "lockDatabaseOid"',
+    );
+    expect(lockSnapshot).toContain(
+      'observed_lock.relation::bigint AS "relationOid"',
+    );
+    expect(lockSnapshot).toContain(
+      "observed_lock.database=target_database.oid",
+    );
+    expect(lockSnapshot).toContain(
+      "observed_lock.relation=target_relation.oid",
+    );
+    expect(lockSnapshot).toContain("observed_lock.classid=810081");
+    expect(lockSnapshot).toContain("observed_lock.objid=1");
+    expect(lockSnapshot).toContain("observed_lock.objsubid=2");
+    expect(lockSnapshot).toContain("pg_blocking_pids(activity.pid) AS blockers");
   });
 
   it.each([{ timedOut: true }, { error: { code: "ETIMEDOUT" } }])(

@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { expect, it, vi } from "vitest";
 import {
@@ -628,7 +629,9 @@ it("rechecks liveness after a matching lock snapshot", async () => {
 
 it("does not accept a matching snapshot that returns after the wait deadline", async () => {
   let now = 0;
-  const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+  const performanceNow = vi
+    .spyOn(performance, "now")
+    .mockImplementation(() => now);
   const lockSnapshot = vi.fn(() => {
     now = 101;
     return [{ tooLate: true }];
@@ -645,7 +648,7 @@ it("does not accept a matching snapshot that returns after the wait deadline", a
       /migration89_lock_state_not_observed:late matching snapshot/u,
     );
   } finally {
-    dateNow.mockRestore();
+    performanceNow.mockRestore();
   }
   expect(lockSnapshot).toHaveBeenCalledOnce();
 });
@@ -653,11 +656,14 @@ it("does not accept a matching snapshot that returns after the wait deadline", a
 it("rejects a foreign-database lock collision as local causal evidence", () => {
   const targetDatabaseOid = 810_081;
   const foreignDatabaseOid = 810_082;
+  const targetRelationOid = 81_089;
   const foreignHolder = {
     application: "rr-m89-old-barrier",
     pid: 10,
     databaseOid: foreignDatabaseOid,
     lockDatabaseOid: foreignDatabaseOid,
+    lockType: "advisory",
+    relationOid: null,
     mode: "ExclusiveLock",
     granted: true,
     classId: 810081,
@@ -670,6 +676,8 @@ it("rejects a foreign-database lock collision as local causal evidence", () => {
     pid: 11,
     databaseOid: foreignDatabaseOid,
     lockDatabaseOid: foreignDatabaseOid,
+    lockType: "advisory",
+    relationOid: null,
     mode: "ExclusiveLock",
     granted: false,
     classId: 810081,
@@ -682,14 +690,24 @@ it("rejects a foreign-database lock collision as local causal evidence", () => {
     pid: 12,
     databaseOid: targetDatabaseOid,
     lockDatabaseOid: targetDatabaseOid,
+    lockType: "relation",
+    relationOid: targetRelationOid,
     relation: '"CodexOAuthSecretNamespace"',
     mode: "RowExclusiveLock",
     granted: true,
     blockers: [],
   };
+  const foreignRelation = {
+    ...localRelation,
+    application: "rr-m89-foreign-relation",
+    pid: 13,
+    databaseOid: foreignDatabaseOid,
+    lockDatabaseOid: foreignDatabaseOid,
+  };
   const snapshot = {
     databaseOid: targetDatabaseOid,
-    locks: [foreignHolder, foreignWaiter, localRelation],
+    relationOid: targetRelationOid,
+    locks: [foreignHolder, foreignWaiter, localRelation, foreignRelation],
   };
 
   expect(
@@ -707,6 +725,15 @@ it("rejects a foreign-database lock collision as local causal evidence", () => {
       true,
     ),
   ).toBe(localRelation);
+  expect(
+    findMigration89RelationLock(
+      snapshot,
+      "rr-m89-foreign-relation",
+      '"CodexOAuthSecretNamespace"',
+      "RowExclusiveLock",
+      true,
+    ),
+  ).toBeUndefined();
   expect(migration89LockBlockedBy(snapshot, localRelation, foreignHolder)).toBe(
     false,
   );

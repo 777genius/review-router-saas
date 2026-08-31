@@ -43,6 +43,13 @@ import {
   psqlResultDiagnostic,
   rehearsalProcessDiagnostic,
 } from "./codex-rotating-rehearsal-process-result.mjs";
+import {
+  findMigration89AdvisoryLock,
+  findMigration89RelationLock,
+  migration89LockBlockedBy,
+  spawnMigration89Process,
+  waitForMigration89LockState,
+} from "./codex-rotating-migration89-process.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const dbDirectory = join(root, "packages/platform/db");
@@ -409,37 +416,27 @@ async function proveMigration89TwoSessionBoundary() {
   const spawnPsql = (url, args = [], keepStdinOpen = false) => {
     const invocation = createSecretSafePostgresInvocation({
       databaseUrl: url,
-      args: ["-X", "-v", "ON_ERROR_STOP=1", ...args],
+      args: [
+        "-X",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-v",
+        "VERBOSITY=verbose",
+        "-v",
+        "SHOW_CONTEXT=never",
+        ...args,
+      ],
     });
-    const child = spawn(psqlBinary, invocation.args, {
-      env: invocation.environment,
-      stdio: [keepStdinOpen ? "pipe" : "ignore", "pipe", "pipe"],
+    const handle = spawnMigration89Process({
+      binary: psqlBinary,
+      args: invocation.args,
+      environment: invocation.environment,
+      input: invocation.input,
+      keepStdinOpen,
+      cleanup: invocation.cleanup,
     });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => (stdout += chunk));
-    child.stderr.on("data", (chunk) => (stderr += chunk));
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null)
-          child.kill("SIGKILL");
-      }, 2_000).unref();
-    }, 30_000);
-    timeout.unref();
-    const handle = { child, stdout: () => stdout, stderr: () => stderr };
-    handle.result = new Promise((resolveChild) =>
-      child.once("close", (status, signal) => {
-        clearTimeout(timeout);
-        invocation.cleanup();
-        spawned.delete(handle);
-        resolveChild({ status, signal, stdout, stderr, timedOut });
-      }),
-    );
-    handle.write = (sql) => child.stdin.write(sql);
     spawned.add(handle);
+    void handle.result.then(() => spawned.delete(handle));
     return handle;
   };
   const lockSnapshot = (url) =>
@@ -447,80 +444,75 @@ async function proveMigration89TwoSessionBoundary() {
       psql(url, [
         "-qAtc",
         String.raw`SET statement_timeout='2s';
-          SELECT COALESCE(json_agg(row_to_json(observation)), '[]'::json)::text
-          FROM (
-            SELECT activity.application_name AS application,
-                   activity.pid,
-                   activity.state,
-                   activity.wait_event_type AS "waitEventType",
-                   activity.wait_event AS "waitEvent",
-                   observed_lock.mode,
-                   observed_lock.granted,
-                   CASE WHEN observed_lock.locktype='relation'
-                     THEN observed_lock.relation::regclass::text
-                   END AS relation,
-                   observed_lock.classid::bigint AS "classId",
-                   observed_lock.objid::bigint AS "objectId",
-                   observed_lock.objsubid AS "objectSubId",
-                   pg_blocking_pids(activity.pid) AS blockers
-            FROM pg_stat_activity activity
-            JOIN pg_locks observed_lock ON observed_lock.pid=activity.pid
-            WHERE activity.application_name LIKE 'rr-m89-%'
-              AND (
-                (observed_lock.locktype='relation'
-                 AND observed_lock.relation =
-                   'public."CodexOAuthSecretNamespace"'::regclass)
-                OR
-                (observed_lock.locktype='advisory'
-                 AND observed_lock.classid=810081
-                 AND observed_lock.objid=1
-                 AND observed_lock.objsubid=2)
-              )
-            ORDER BY activity.application_name, observed_lock.locktype,
-                     observed_lock.relation, observed_lock.mode
-          ) observation`,
+          SELECT json_build_object(
+            'databaseOid', target_database.oid::bigint,
+            'relationOid', target_relation.oid::bigint,
+            'locks', COALESCE((
+              SELECT json_agg(row_to_json(observation))
+              FROM (
+                SELECT activity.application_name AS application,
+                       activity.pid,
+                       activity.datid::bigint AS "databaseOid",
+                       activity.state,
+                       activity.wait_event_type AS "waitEventType",
+                       activity.wait_event AS "waitEvent",
+                       observed_lock.locktype AS "lockType",
+                       observed_lock.database::bigint AS "lockDatabaseOid",
+                       observed_lock.relation::bigint AS "relationOid",
+                       CASE
+                         WHEN observed_lock.locktype='relation'
+                          AND observed_lock.database=target_database.oid
+                          AND observed_lock.relation=target_relation.oid
+                         THEN target_relation.oid::regclass::text
+                       END AS relation,
+                       observed_lock.mode,
+                       observed_lock.granted,
+                       observed_lock.classid::bigint AS "classId",
+                       observed_lock.objid::bigint AS "objectId",
+                       observed_lock.objsubid AS "objectSubId",
+                       pg_blocking_pids(activity.pid) AS blockers
+                FROM pg_stat_activity activity
+                JOIN pg_locks observed_lock ON observed_lock.pid=activity.pid
+                WHERE activity.application_name LIKE 'rr-m89-%'
+                  AND (
+                    (observed_lock.locktype='relation'
+                     AND observed_lock.database=target_database.oid
+                     AND observed_lock.relation=target_relation.oid)
+                    OR
+                    (observed_lock.locktype='advisory'
+                     AND observed_lock.classid=810081
+                     AND observed_lock.objid=1
+                     AND observed_lock.objsubid=2)
+                  )
+                ORDER BY activity.application_name, observed_lock.locktype,
+                         observed_lock.relation, observed_lock.mode
+              ) observation
+            ), '[]'::json)
+          )::text
+          FROM pg_database target_database
+          JOIN pg_namespace target_namespace
+            ON target_namespace.nspname='public'
+          JOIN pg_class target_relation
+            ON target_relation.relnamespace=target_namespace.oid
+           AND target_relation.relname='CodexOAuthSecretNamespace'
+          WHERE target_database.datname=current_database()`,
       ]).stdout.trim(),
     );
-  const waitForLockState = async (url, description, predicate) => {
-    const deadline = Date.now() + 15_000;
-    let snapshot = [];
-    while (Date.now() < deadline) {
-      snapshot = lockSnapshot(url);
-      if (predicate(snapshot)) return snapshot;
-      await delay(20);
-    }
-    throw new Error(
-      `migration89_lock_state_not_observed:${description}:${JSON.stringify(snapshot)}`,
-    );
-  };
-  const relationLock = (snapshot, application, relation, mode, granted) =>
-    snapshot.find(
-      (lock) =>
-        lock.application === application &&
-        lock.relation === relation &&
-        lock.mode === mode &&
-        lock.granted === granted,
-    );
-  const advisoryBarrierLock = (snapshot, application, granted) =>
-    snapshot.find(
-      (lock) =>
-        lock.application === application &&
-        lock.mode === "ExclusiveLock" &&
-        lock.granted === granted &&
-        lock.classId === 810081 &&
-        lock.objectId === 1 &&
-        lock.objectSubId === 2,
-    );
   const releaseBlocker = async (blocker) => {
-    if (!blocker || blocker.child.exitCode !== null) return;
-    blocker.write("COMMIT;\n\\q\n");
-    blocker.child.stdin.end();
+    if (!blocker) return;
+    if (blocker.unavailableResult() === undefined)
+      blocker.end("COMMIT;\n\\q\n");
     const result = await blocker.result;
     assert(
-      result.status === 0 && !result.timedOut,
+      result.status === 0 && !result.timedOut && result.error == null,
       `migration89_blocker_cleanup_failed:${psqlResultDiagnostic(result)}`,
     );
   };
+  const compatibilityPredecessorFailure = Object.freeze({
+    sqlState: "55000",
+    message: "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
+    routine: "exec_stmt_raise",
+  });
 
   for (const ordering of ["old_invocation_first", "migration_boundary_first"]) {
     const name = `${databaseName}_migration89_${ordering}`;
@@ -531,60 +523,79 @@ async function proveMigration89TwoSessionBoundary() {
       if (ordering === "old_invocation_first") {
         const blockerUrl = new URL(String(url));
         blockerUrl.searchParams.set("application_name", "rr-m89-old-barrier");
-        const blocker = spawnPsql(blockerUrl, [], true);
+        const blocker = spawnPsql(blockerUrl, ["-qAt"], true);
         blocker.write("SELECT pg_advisory_lock(810081, 1);\n");
-        await waitForLockState(url, "old barrier held", (snapshot) =>
-          Boolean(advisoryBarrierLock(snapshot, "rr-m89-old-barrier", true)),
-        );
+        await waitForMigration89LockState({
+          description: "old barrier held",
+          lockSnapshot: () => lockSnapshot(url),
+          predicate: (snapshot) =>
+            Boolean(
+              findMigration89AdvisoryLock(
+                snapshot,
+                "rr-m89-old-barrier",
+                true,
+              ),
+            ),
+          watchedProcesses: [{ name: "old_barrier", handle: blocker }],
+        });
         const oldUrl = new URL(String(url));
         oldUrl.searchParams.set("application_name", "rr-m89-old-first");
         const old = spawnPsql(oldUrl, ["-c", oldCall]);
-        await waitForLockState(
-          url,
-          "old invocation crossed update",
-          (snapshot) => {
-            const holderLock = advisoryBarrierLock(
+        await waitForMigration89LockState({
+          description: "old invocation crossed update",
+          lockSnapshot: () => lockSnapshot(url),
+          predicate: (snapshot) => {
+            const holderLock = findMigration89AdvisoryLock(
               snapshot,
               "rr-m89-old-barrier",
               true,
             );
-            const oldBarrierLock = advisoryBarrierLock(
+            const oldBarrierLock = findMigration89AdvisoryLock(
               snapshot,
               "rr-m89-old-first",
               false,
             );
-            return Boolean(
-              holderLock &&
-              relationLock(
-                snapshot,
-                "rr-m89-old-first",
-                '"CodexOAuthSecretNamespace"',
-                "RowExclusiveLock",
-                true,
-              ) &&
-              oldBarrierLock &&
-              oldBarrierLock.blockers.includes(holderLock.pid),
-            );
-          },
-        );
-        const migrationUrl = new URL(String(url));
-        migrationUrl.searchParams.set(
-          "application_name",
-          "rr-m89-old-first-migration",
-        );
-        const migration = spawnPsql(migrationUrl, ["-f", migration89]);
-        await waitForLockState(
-          url,
-          "migration queued behind old update",
-          (snapshot) => {
-            const oldLock = relationLock(
+            const oldRelationLock = findMigration89RelationLock(
               snapshot,
               "rr-m89-old-first",
               '"CodexOAuthSecretNamespace"',
               "RowExclusiveLock",
               true,
             );
-            const migrationLock = relationLock(
+            return Boolean(
+              holderLock &&
+              oldRelationLock &&
+              oldBarrierLock &&
+              migration89LockBlockedBy(
+                snapshot,
+                oldBarrierLock,
+                holderLock,
+              ),
+            );
+          },
+          watchedProcesses: [
+            { name: "old_barrier", handle: blocker },
+            { name: "old_invocation", handle: old },
+          ],
+        });
+        const migrationUrl = new URL(String(url));
+        migrationUrl.searchParams.set(
+          "application_name",
+          "rr-m89-old-first-migration",
+        );
+        const migration = spawnPsql(migrationUrl, ["-f", migration89]);
+        await waitForMigration89LockState({
+          description: "migration queued behind old update",
+          lockSnapshot: () => lockSnapshot(url),
+          predicate: (snapshot) => {
+            const oldLock = findMigration89RelationLock(
+              snapshot,
+              "rr-m89-old-first",
+              '"CodexOAuthSecretNamespace"',
+              "RowExclusiveLock",
+              true,
+            );
+            const migrationLock = findMigration89RelationLock(
               snapshot,
               "rr-m89-old-first-migration",
               '"CodexOAuthSecretNamespace"',
@@ -594,20 +605,25 @@ async function proveMigration89TwoSessionBoundary() {
             return Boolean(
               oldLock &&
               migrationLock &&
-              migrationLock.blockers.includes(oldLock.pid),
+              migration89LockBlockedBy(snapshot, migrationLock, oldLock),
             );
           },
-        );
-        blocker.write(
+          watchedProcesses: [
+            { name: "old_barrier", handle: blocker },
+            { name: "old_invocation", handle: old },
+            { name: "migration", handle: migration },
+          ],
+        });
+        blocker.end(
           "SELECT CASE WHEN pg_advisory_unlock(810081, 1) " +
             "THEN 'migration89_barrier_released' ELSE 'migration89_barrier_missing' END;\n\\q\n",
         );
-        blocker.child.stdin.end();
         const blockerResult = await blocker.result;
         assert(
           blockerResult.status === 0 &&
             !blockerResult.timedOut &&
-            blockerResult.stdout.includes("migration89_barrier_released"),
+            blockerResult.error == null &&
+            blockerResult.stdout.trim() === "migration89_barrier_released",
           `migration89_blocker_cleanup_failed:${psqlResultDiagnostic(blockerResult)}`,
         );
         const [oldResult, migrationResult] = await Promise.all([
@@ -615,27 +631,29 @@ async function proveMigration89TwoSessionBoundary() {
           migration.result,
         ]);
         assert(
-          oldResult.status === 0 && !oldResult.timedOut,
+          oldResult.status === 0 &&
+            !oldResult.timedOut &&
+            oldResult.error == null,
           `migration89_old_first_invocation_failed:${psqlResultDiagnostic(oldResult)}`,
         );
         assertPsqlFailedWithExactMessage(
-          migrationResult,
-          "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
+          { ...migrationResult, postgresInputSource: migration89 },
+          compatibilityPredecessorFailure,
           "migration89 did not wait for and reject the old invocation V5 result",
         );
       } else {
         const blockerUrl = new URL(String(url));
         blockerUrl.searchParams.set("application_name", "rr-m89-blocker");
-        const blocker = spawnPsql(blockerUrl, [], true);
+        const blocker = spawnPsql(blockerUrl, ["-qAt"], true);
         blocker.write(
           'BEGIN; LOCK TABLE public."CodexOAuthSecretNamespace" IN ROW EXCLUSIVE MODE;\n',
         );
-        await waitForLockState(
-          url,
-          "migration ordering blocker held",
-          (snapshot) =>
+        await waitForMigration89LockState({
+          description: "migration ordering blocker held",
+          lockSnapshot: () => lockSnapshot(url),
+          predicate: (snapshot) =>
             Boolean(
-              relationLock(
+              findMigration89RelationLock(
                 snapshot,
                 "rr-m89-blocker",
                 '"CodexOAuthSecretNamespace"',
@@ -643,42 +661,61 @@ async function proveMigration89TwoSessionBoundary() {
                 true,
               ),
             ),
-        );
+          watchedProcesses: [{ name: "migration_blocker", handle: blocker }],
+        });
         const migrationUrl = new URL(String(url));
         migrationUrl.searchParams.set(
           "application_name",
           "rr-m89-migration-first",
         );
         const migration = spawnPsql(migrationUrl, ["-f", migration89]);
-        await waitForLockState(url, "migration boundary queued", (snapshot) =>
-          Boolean(
-            relationLock(
+        await waitForMigration89LockState({
+          description: "migration boundary queued",
+          lockSnapshot: () => lockSnapshot(url),
+          predicate: (snapshot) => {
+            const blockerLock = findMigration89RelationLock(
               snapshot,
-              "rr-m89-migration-first",
+              "rr-m89-blocker",
               '"CodexOAuthSecretNamespace"',
-              "ShareRowExclusiveLock",
-              false,
-            ),
-          ),
-        );
-        const oldUrl = new URL(String(url));
-        oldUrl.searchParams.set(
-          "application_name",
-          "rr-m89-migration-first-old",
-        );
-        const old = spawnPsql(oldUrl, ["-c", oldCall]);
-        await waitForLockState(
-          url,
-          "old invocation queued behind migration boundary",
-          (snapshot) => {
-            const migrationLock = relationLock(
+              "RowExclusiveLock",
+              true,
+            );
+            const migrationLock = findMigration89RelationLock(
               snapshot,
               "rr-m89-migration-first",
               '"CodexOAuthSecretNamespace"',
               "ShareRowExclusiveLock",
               false,
             );
-            const oldLock = relationLock(
+            return Boolean(
+              blockerLock &&
+              migrationLock &&
+              migration89LockBlockedBy(snapshot, migrationLock, blockerLock),
+            );
+          },
+          watchedProcesses: [
+            { name: "migration_blocker", handle: blocker },
+            { name: "migration", handle: migration },
+          ],
+        });
+        const oldUrl = new URL(String(url));
+        oldUrl.searchParams.set(
+          "application_name",
+          "rr-m89-migration-first-old",
+        );
+        const old = spawnPsql(oldUrl, ["-c", oldCall]);
+        await waitForMigration89LockState({
+          description: "old invocation queued behind migration boundary",
+          lockSnapshot: () => lockSnapshot(url),
+          predicate: (snapshot) => {
+            const migrationLock = findMigration89RelationLock(
+              snapshot,
+              "rr-m89-migration-first",
+              '"CodexOAuthSecretNamespace"',
+              "ShareRowExclusiveLock",
+              false,
+            );
+            const oldLock = findMigration89RelationLock(
               snapshot,
               "rr-m89-migration-first-old",
               '"CodexOAuthSecretNamespace"',
@@ -688,37 +725,36 @@ async function proveMigration89TwoSessionBoundary() {
             return Boolean(
               migrationLock &&
               oldLock &&
-              oldLock.blockers.includes(migrationLock.pid),
+              migration89LockBlockedBy(snapshot, oldLock, migrationLock),
             );
           },
-        );
+          watchedProcesses: [
+            { name: "migration_blocker", handle: blocker },
+            { name: "migration", handle: migration },
+            { name: "old_invocation", handle: old },
+          ],
+        });
         await releaseBlocker(blocker);
         const [migrationResult, oldResult] = await Promise.all([
           migration.result,
           old.result,
         ]);
         assert(
-          migrationResult.status === 0 && !migrationResult.timedOut,
+          migrationResult.status === 0 &&
+            !migrationResult.timedOut &&
+            migrationResult.error == null,
           `migration89_boundary_first_failed:${psqlResultDiagnostic(migrationResult)}`,
         );
         assertPsqlFailedWithExactMessage(
           oldResult,
-          "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
+          compatibilityPredecessorFailure,
           "old invocation crossed the committed migration89 boundary",
-        );
-        assert(
-          !`${oldResult.stdout}${oldResult.stderr}`.includes("does not exist"),
-          "migration89 queued old invocation failed with generic does-not-exist",
         );
       }
     } finally {
       const unsettled = [...spawned];
       await Promise.all(
-        unsettled.map(async (handle) => {
-          if (handle.child.exitCode === null)
-            await terminateChild(handle.child);
-          return handle.result;
-        }),
+        unsettled.map((handle) => handle.terminateAndWait()),
       );
       const dropResult = psql(
         adminUrl,
