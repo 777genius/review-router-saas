@@ -2403,14 +2403,20 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
-  it("passes and advances the exact verified workflow attestation through the real runtime proof", () => {
+  it("reuses the exact verified workflow attestation and advances only after re-attestation", () => {
     const runHelper = /const run = async \([\s\S]+?\n {2}\};/u.exec(
       runtimeProofSource,
     )?.[0];
     expect(runHelper).toBeDefined();
     expect(runHelper).toContain("verifiedWorkflowAttestation,");
-    expect(runtimeProofSource).toContain(
+    expect(
+      runtimeProofSource.match(/attestation: verifiedWorkflowAttestation,/gu),
+    ).toHaveLength(2);
+    expect(runtimeProofSource).not.toContain(
       'verifiedWorkflowAttestation = attestationFor(definite.namespace, "2")',
+    );
+    expect(runtimeProofSource).not.toContain(
+      'attestation: attestationFor(definite.namespace, "2")',
     );
     expect(runtimeProofSource).toContain(
       'verifiedWorkflowAttestation = attestationFor(recoveredNamespace, "4", 4)',
@@ -2418,8 +2424,11 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(runtimeProofSource).toContain(
       "verifiedWorkflowAttestation = reattestedWorkflow",
     );
-    expect(runtimeProofSource).toContain(
+    expect(runtimeProofSource).not.toContain(
       'verifiedWorkflowAttestation = attestationFor(rollbackClaim.namespace, "6")',
+    );
+    expect(runtimeProofSource).not.toContain(
+      'attestation: attestationFor(rollbackClaim.namespace, "6")',
     );
   });
 

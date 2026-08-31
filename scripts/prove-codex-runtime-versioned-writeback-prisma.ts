@@ -597,9 +597,8 @@ try {
     intentId: definite.intentId,
     attemptId: definite.attemptId,
     executorOwner: definite.executorOwner,
-    attestation: attestationFor(definite.namespace, "2"),
+    attestation: verifiedWorkflowAttestation,
   });
-  verifiedWorkflowAttestation = attestationFor(definite.namespace, "2");
   await assertConsumedReceipt(adminPrisma, {
     ownerId: definite.intentId,
     effect: "runtime_completion",
@@ -1203,9 +1202,8 @@ try {
     intentId: rollbackClaim.intentId,
     attemptId: rollbackClaim.attemptId,
     executorOwner: rollbackClaim.executorOwner,
-    attestation: attestationFor(rollbackClaim.namespace, "6"),
+    attestation: verifiedWorkflowAttestation,
   });
-  verifiedWorkflowAttestation = attestationFor(rollbackClaim.namespace, "6");
 
   const confirmedRestart = await run(
     "runtime-proof-confirmed-restart",
