@@ -9,10 +9,13 @@ import {
   assertArtifactCandidate,
   assertActivationCatalogPolicyIndependentReviewEvidence,
   assertReviewedActivationCatalogPromotionProvenance,
+  canonicalActivationCatalogArtifactSourceFromRawCapture,
   promotePrivatePg17ActivationCatalogPolicy,
   reviewedActivationCatalogCandidate,
 } from "./promote-private-pg17-activation-catalog-policy.mjs";
 import canonicalActivationCatalogPolicyArtifact from "../packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js";
+import { assertActivationCatalogLiveDigestTransitionBinding } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation";
+import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
 
 describe("activation catalog policy promotion", () => {
   it("pins the exact reviewed v29 candidate and operator opt-in", () => {
@@ -66,6 +69,91 @@ describe("activation catalog policy promotion", () => {
         status: "ready",
         evidence: { reviewResult: "GO" },
       });
+  });
+
+  it("binds the exact raw evidence to the checked-in generated artifact", async () => {
+    expect(activationCatalogRawPromotionTrustRoot.status).toBe("ready");
+    if (activationCatalogRawPromotionTrustRoot.status !== "ready") return;
+    const generated = canonicalActivationCatalogArtifactSourceFromRawCapture(
+      { policies: canonicalActivationCatalogPolicyArtifact.policies },
+      activationCatalogRawPromotionTrustRoot.evidence,
+    );
+
+    expect(
+      generated.equals(await readFile(activationCatalogArtifactPath)),
+    ).toBe(true);
+  });
+
+  it("fails closed for independently drifted raw artifact bindings", () => {
+    expect(activationCatalogRawPromotionTrustRoot.status).toBe("ready");
+    if (activationCatalogRawPromotionTrustRoot.status !== "ready") return;
+    const evidence = activationCatalogRawPromotionTrustRoot.evidence;
+    const mismatch = `sha256:${"0".repeat(64)}`;
+    const driftedBindings = [
+      [
+        "canonicalDigests",
+        "preactivation",
+        mismatch,
+        "activation_catalog_policy_promotion_phase_digest_drift",
+      ],
+      [
+        "canonicalDigests",
+        "activated",
+        mismatch,
+        "activation_catalog_policy_promotion_phase_digest_drift",
+      ],
+      [
+        "canonicalDigests",
+        "artifact",
+        mismatch,
+        "activation_catalog_policy_promotion_artifact_drift",
+      ],
+      [
+        "generatedArtifactSource",
+        "bytes",
+        evidence.generatedArtifactSource.bytes + 1,
+        "activation_catalog_policy_generated_source_drift",
+      ],
+      [
+        "generatedArtifactSource",
+        "sha256",
+        "0".repeat(64),
+        "activation_catalog_policy_generated_source_drift",
+      ],
+    ] as const;
+
+    for (const [section, key, value, error] of driftedBindings) {
+      const driftedEvidence = structuredClone(evidence);
+      Object.assign(driftedEvidence[section], { [key]: value });
+      expect(
+        () =>
+          canonicalActivationCatalogArtifactSourceFromRawCapture(
+            { policies: canonicalActivationCatalogPolicyArtifact.policies },
+            driftedEvidence,
+          ),
+        `${section}.${key}`,
+      ).toThrow(error);
+    }
+  });
+
+  it("binds the reviewed raw live digest to the canonical release transition", () => {
+    expect(activationCatalogRawPromotionTrustRoot.status).toBe("ready");
+    if (activationCatalogRawPromotionTrustRoot.status !== "ready") return;
+    const liveCatalogDigest =
+      activationCatalogRawPromotionTrustRoot.evidence.liveCatalogDigest;
+
+    expect(() =>
+      assertActivationCatalogLiveDigestTransitionBinding(
+        liveCatalogDigest,
+        canonicalReleaseMigrationArtifact.postCatalogDigest,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertActivationCatalogLiveDigestTransitionBinding(
+        `sha256:${"0".repeat(64)}`,
+        canonicalReleaseMigrationArtifact.postCatalogDigest,
+      ),
+    ).toThrow("activation_catalog_policy_live_digest_transition_drift");
   });
 
   it("rejects caller-supplied raw authority at the CLI gate without writing", async () => {
