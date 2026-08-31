@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   activationCatalogCaptureMaxBytes,
   assertActivationCatalogCapturePair,
+  readBoundedActivationCatalogBytes,
   readBoundedActivationCatalogCapture,
 } from "./activation-catalog-capture-pair.mjs";
 
@@ -200,14 +201,27 @@ describe("activation catalog raw capture pair", () => {
     }
   });
 
-  it("caps a capture before reading or parsing it", async () => {
+  it("rejects oversized review bytes before reading the file", async () => {
     const directory = await mkdtemp(join(tmpdir(), "rr-capture-pair-"));
     directories.push(directory);
-    const path = join(directory, "oversized.json");
+    const path = join(directory, "oversized-review.json");
     await writeFile(path, "");
     await truncate(path, activationCatalogCaptureMaxBytes + 1);
+    await expect(
+      readBoundedActivationCatalogBytes(path, {
+        bytes: activationCatalogCaptureMaxBytes + 1,
+        sha256: "0".repeat(64),
+      }),
+    ).rejects.toThrow("activation_catalog_capture_pair_size_invalid");
+  });
+
+  it("rejects invalid UTF-8 before parsing capture JSON", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rr-capture-pair-"));
+    directories.push(directory);
+    const path = join(directory, "invalid-utf8.json");
+    await writeFile(path, Buffer.from([0xff]));
     await expect(readBoundedActivationCatalogCapture(path)).rejects.toThrow(
-      "activation_catalog_capture_pair_size_invalid",
+      "activation_catalog_capture_pair_invalid",
     );
   });
 

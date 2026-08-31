@@ -1,4 +1,8 @@
-import { type ActivationCatalogPolicyPromotionExpectation } from "./activation-catalog-policy-provenance-contract";
+import {
+  assertActivationCatalogRawCaptureEvidence,
+  type ActivationCatalogPolicyPromotionExpectation,
+  type ActivationCatalogRawCaptureEvidence,
+} from "./activation-catalog-policy-provenance-contract";
 import { canonicalReleaseMigrationArtifact } from "./release-migration-transition";
 
 export function assertActivationCatalogLiveDigestTransitionBinding(
@@ -12,11 +16,178 @@ export function assertActivationCatalogLiveDigestTransitionBinding(
 export const activationCatalogPromotionOptIn =
   "promote-reviewed-activation-catalog-v29-schema-v5-pr245";
 
-export type ActivationCatalogRawPromotionTrustRoot = Readonly<{
+export const activationCatalogRawPromotionOptIn =
+  "promote-reviewed-activation-catalog-raw-v1";
+
+export const activationCatalogRawReviewArtifactRepositoryPath =
+  "docs/release-evidence/activation-catalog-policy-raw-independent-review.md";
+export const activationCatalogRawReviewerRuntimeRepositoryPath =
+  "docs/release-evidence/activation-catalog-policy-raw-reviewer-runtime.json";
+
+type ActivationCatalogRawPromotionTrustRootPending = Readonly<{
   status: "pending";
   reason: "fresh-authenticated-raw-capture-and-independent-review-required";
 }>;
 
+export type ActivationCatalogRawPromotionTrustRootReady = Readonly<{
+  status: "ready";
+  optIn: typeof activationCatalogRawPromotionOptIn;
+  evidence: ActivationCatalogRawCaptureEvidence;
+  independentReview: Readonly<{
+    contractVersion: 1;
+    reviewArtifact: Readonly<{
+      repositoryPath: typeof activationCatalogRawReviewArtifactRepositoryPath;
+      bytes: number;
+      sha256: string;
+    }>;
+    reviewerRuntime: Readonly<{
+      repositoryPath: typeof activationCatalogRawReviewerRuntimeRepositoryPath;
+      bytes: number;
+      sha256: string;
+    }>;
+    reviewerRunId: string;
+    reviewerTaskId: string;
+    reviewedAt: string;
+    completedAt: string;
+  }>;
+}>;
+
+export type ActivationCatalogRawPromotionTrustRoot =
+  | ActivationCatalogRawPromotionTrustRootPending
+  | ActivationCatalogRawPromotionTrustRootReady;
+
+const rawSha256 = /^[a-f0-9]{64}$/u;
+const rawLabel = /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u;
+const rawTimestamp =
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?Z$/u;
+
+const exactRawRootRecord = (
+  value: unknown,
+  fields: readonly string[],
+): value is Record<string, unknown> =>
+  value !== null &&
+  typeof value === "object" &&
+  !Array.isArray(value) &&
+  Object.keys(value).length === fields.length &&
+  fields.every((field) => Object.hasOwn(value, field));
+
+const validRawTimestamp = (value: unknown): value is string =>
+  typeof value === "string" &&
+  rawTimestamp.test(value) &&
+  Number.isFinite(Date.parse(value)) &&
+  new Date(Date.parse(value)).toISOString() ===
+    (value.includes(".") ? value : value.replace(/Z$/u, ".000Z"));
+
+export function activationCatalogRawTrustRootReadiness(
+  value: unknown,
+): Readonly<{ status: "pending" | "ready"; reason: string }> {
+  if (
+    exactRawRootRecord(value, ["status", "reason"]) &&
+    value.status === "pending" &&
+    value.reason ===
+      "fresh-authenticated-raw-capture-and-independent-review-required"
+  )
+    return Object.freeze({ status: "pending", reason: value.reason });
+
+  try {
+    if (
+      !exactRawRootRecord(value, [
+        "status",
+        "optIn",
+        "evidence",
+        "independentReview",
+      ]) ||
+      value.status !== "ready" ||
+      value.optIn !== activationCatalogRawPromotionOptIn
+    )
+      throw new Error("invalid");
+
+    assertActivationCatalogRawCaptureEvidence(value.evidence);
+    const evidence = value.evidence;
+    if (
+      evidence.captures[0].label !==
+        "activation-catalog-policy-candidate-1.json" ||
+      evidence.captures[1].label !==
+        "activation-catalog-policy-candidate-2.json" ||
+      evidence.selectedCaptureId !== evidence.captures[0].label ||
+      evidence.captures[0].sha256 === evidence.captures[1].sha256
+    )
+      throw new Error("invalid");
+
+    const review = value.independentReview;
+    if (
+      !exactRawRootRecord(review, [
+        "contractVersion",
+        "reviewArtifact",
+        "reviewerRuntime",
+        "reviewerRunId",
+        "reviewerTaskId",
+        "reviewedAt",
+        "completedAt",
+      ]) ||
+      review.contractVersion !== 1 ||
+      !exactRawRootRecord(review.reviewArtifact, [
+        "repositoryPath",
+        "bytes",
+        "sha256",
+      ]) ||
+      review.reviewArtifact.repositoryPath !==
+        activationCatalogRawReviewArtifactRepositoryPath ||
+      !exactRawRootRecord(review.reviewerRuntime, [
+        "repositoryPath",
+        "bytes",
+        "sha256",
+      ]) ||
+      review.reviewerRuntime.repositoryPath !==
+        activationCatalogRawReviewerRuntimeRepositoryPath ||
+      ![review.reviewArtifact, review.reviewerRuntime].every(
+        (file) =>
+          typeof file.bytes === "number" &&
+          Number.isSafeInteger(file.bytes) &&
+          file.bytes > 0 &&
+          file.bytes <= 16 * 1024 * 1024 &&
+          typeof file.sha256 === "string" &&
+          rawSha256.test(file.sha256),
+      ) ||
+      typeof review.reviewerRunId !== "string" ||
+      !rawLabel.test(review.reviewerRunId) ||
+      typeof review.reviewerTaskId !== "string" ||
+      !rawLabel.test(review.reviewerTaskId) ||
+      !validRawTimestamp(review.reviewedAt) ||
+      !validRawTimestamp(review.completedAt) ||
+      Date.parse(review.reviewedAt) >= Date.parse(review.completedAt)
+    )
+      throw new Error("invalid");
+
+    return Object.freeze({
+      status: "ready",
+      reason: "authenticated-raw-capture-and-independent-review-bound",
+    });
+  } catch {
+    return Object.freeze({
+      status: "pending",
+      reason: "activation-catalog-policy-raw-trust-root-invalid",
+    });
+  }
+}
+
+export function assertActivationCatalogRawPromotionTrustRootReady(
+  value: unknown,
+): asserts value is ActivationCatalogRawPromotionTrustRootReady {
+  const readiness = activationCatalogRawTrustRootReadiness(value);
+  if (readiness.status !== "ready")
+    throw new Error(
+      `activation_catalog_policy_raw_trust_root_${
+        exactRawRootRecord(value, ["status", "reason"]) &&
+        value.status === "pending"
+          ? "pending"
+          : "invalid"
+      }`,
+    );
+}
+
+// Residuals before this may become ready: fresh immutable capture/review pins,
+// independent GO materialization, and a complete transitive capture audit.
 export const activationCatalogRawPromotionTrustRoot = Object.freeze({
   status: "pending",
   reason: "fresh-authenticated-raw-capture-and-independent-review-required",

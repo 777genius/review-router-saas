@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
+import { TextDecoder } from "node:util";
 import { pathToFileURL } from "node:url";
 
 export const activationCatalogCaptureMaxBytes = 16 * 1024 * 1024;
@@ -23,9 +24,9 @@ function canonical(v) {
   return JSON.stringify(v);
 }
 
-export async function readBoundedActivationCatalogCapture(path, expected) {
+export async function readBoundedActivationCatalogBytes(path, expected) {
   const handle = await open(path, "r");
-  let bytes;
+  let contents;
   try {
     const before = await handle.stat({ bigint: true });
     if (
@@ -60,20 +61,38 @@ export async function readBoundedActivationCatalogCapture(path, expected) {
       after.size !== BigInt(offset)
     )
       fail("size_invalid");
-    bytes = bounded.subarray(0, offset);
+    contents = bounded.subarray(0, offset);
   } finally {
     await handle.close();
   }
 
-  const hash = sha256(bytes);
+  const hash = sha256(contents);
   if (expected && hash !== expected.sha256) fail("hash_invalid");
+  return Object.freeze({
+    path,
+    contents,
+    bytes: contents.byteLength,
+    sha256: hash,
+  });
+}
+
+export async function readBoundedActivationCatalogCapture(path, expected) {
+  const file = await readBoundedActivationCatalogBytes(path, expected);
   let value;
   try {
-    value = JSON.parse(bytes.toString("utf8"));
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(
+      file.contents,
+    );
+    value = JSON.parse(text);
   } catch {
     fail();
   }
-  return Object.freeze({ path, bytes: bytes.byteLength, sha256: hash, value });
+  return Object.freeze({
+    path: file.path,
+    bytes: file.bytes,
+    sha256: file.sha256,
+    value,
+  });
 }
 
 function raw(v) {

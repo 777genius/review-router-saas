@@ -11,17 +11,31 @@ import {
   productionActivationCatalogPolicyNormalizationProfile,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts";
 import {
+  assertActivationCatalogLiveDigestTransitionBinding,
+  assertActivationCatalogRawPromotionTrustRootReady,
   activationCatalogRawPromotionTrustRoot,
   activationCatalogPromotionOptIn,
   reviewedActivationCatalogCandidate,
   reviewedActivationCatalogPromotionExpectation,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation.ts";
-import { assertActivationCatalogPolicyPromotionProvenance } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
+import {
+  assertActivationCatalogPolicyPromotionProvenance,
+  assertActivationCatalogRawCaptureEvidence,
+} from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
+import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
 import { assertActivationCatalogPolicyReviewEvidence } from "../packages/features/release-rollout/src/adapters/activation-catalog-policy-review-evidence.ts";
 import {
   reviewedActivationCatalogCandidatePath,
   reviewedActivationCatalogCandidateRepositoryPath,
 } from "./lib/reviewed-activation-catalog-candidate.mjs";
+import {
+  readAndAssertActivationCatalogCapturePair,
+  readBoundedActivationCatalogBytes,
+} from "./lib/activation-catalog-capture-pair.mjs";
+import {
+  assertActivationCatalogCaptureSurfaceIdentity,
+  assertActivationCatalogGitCustody,
+} from "./lib/activation-catalog-git-custody.mjs";
 
 export {
   activationCatalogRawPromotionTrustRoot,
@@ -122,6 +136,7 @@ export async function assertActivationCatalogPolicyReviewedSourceBindings() {
 function parseArguments(argv) {
   const paths = {};
   let write = false;
+  let rawOptIn;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     const key = {
@@ -134,6 +149,13 @@ function parseArguments(argv) {
       index += 1;
     } else if (argument === "--write" && !write) {
       write = true;
+    } else if (
+      argument === "--raw-opt-in" &&
+      rawOptIn === undefined &&
+      argv[index + 1]
+    ) {
+      rawOptIn = argv[index + 1];
+      index += 1;
     } else {
       throw new Error("activation_catalog_policy_promotion_arguments_invalid");
     }
@@ -149,6 +171,7 @@ function parseArguments(argv) {
     return {
       mode: "raw",
       capturePaths: [paths.capture1Path, paths.capture2Path],
+      rawOptIn,
       write,
     };
   if (Object.keys(paths).length === 0)
@@ -304,15 +327,99 @@ export function canonicalActivationCatalogArtifactSourceFromRawCapture(
   return generated;
 }
 
+function assertRawGitCustody(root) {
+  const custody = assertActivationCatalogGitCustody({
+    repositoryRoot,
+    captureBaseCommit: root.evidence.capture.baseCommit,
+    auditedHead: root.evidence.capture.auditedHead,
+  });
+  assertActivationCatalogCaptureSurfaceIdentity({
+    repositoryRoot,
+    auditedHead: root.evidence.capture.auditedHead,
+    auditedTree: root.evidence.capture.auditedTree,
+  });
+  return custody;
+}
+
+async function promoteRawActivationCatalogPolicy(argumentsValue) {
+  assertActivationCatalogRawPromotionTrustRootReady(
+    activationCatalogRawPromotionTrustRoot,
+  );
+  const root = activationCatalogRawPromotionTrustRoot;
+  if (argumentsValue.rawOptIn !== root.optIn)
+    throw new Error("activation_catalog_policy_raw_opt_in_required");
+
+  assertActivationCatalogRawCaptureEvidence(root.evidence);
+  assertRawGitCustody(root);
+
+  const [reviewArtifactFile, reviewerRuntimeFile] = await Promise.all([
+    readBoundedActivationCatalogBytes(
+      resolve(
+        repositoryRoot,
+        root.independentReview.reviewArtifact.repositoryPath,
+      ),
+      root.independentReview.reviewArtifact,
+    ),
+    readBoundedActivationCatalogBytes(
+      resolve(
+        repositoryRoot,
+        root.independentReview.reviewerRuntime.repositoryPath,
+      ),
+      root.independentReview.reviewerRuntime,
+    ),
+  ]);
+  assertActivationCatalogPolicyReviewEvidence(
+    {
+      reviewArtifact: reviewArtifactFile.contents,
+      reviewerRuntime: reviewerRuntimeFile.contents,
+    },
+    root,
+  );
+
+  const pair = await readAndAssertActivationCatalogCapturePair(
+    argumentsValue.capturePaths,
+    root.evidence,
+  );
+  assertActivationCatalogLiveDigestTransitionBinding(
+    root.evidence.liveCatalogDigest,
+    canonicalReleaseMigrationArtifact.postCatalogDigest,
+  );
+  const generated = canonicalActivationCatalogArtifactSourceFromRawCapture(
+    pair.selected,
+    root.evidence,
+  );
+
+  assertRawGitCustody(root);
+  if (argumentsValue.write) await writeArtifactAtomically(generated);
+  else {
+    let existing;
+    try {
+      existing = await readFile(activationCatalogArtifactPath);
+    } catch {
+      throw new Error("activation_catalog_policy_promotion_artifact_missing");
+    }
+    if (!existing.equals(generated))
+      throw new Error("activation_catalog_policy_promotion_artifact_drift");
+  }
+
+  return Object.freeze({
+    artifactPath: activationCatalogArtifactPath,
+    artifactSourceSha256: sha256(generated),
+    candidatePath: argumentsValue.capturePaths[0],
+    candidateSha256: root.evidence.captures[0].sha256,
+    liveCatalogDigest: root.evidence.liveCatalogDigest,
+    mode: argumentsValue.write ? "promoted" : "verified",
+    provenance: "raw-v1",
+  });
+}
+
 export async function promotePrivatePg17ActivationCatalogPolicy({
   env = process.env,
   argv = process.argv.slice(2),
 } = {}) {
   const argumentsValue = parseArguments(argv);
   if (argumentsValue.mode === "raw")
-    throw new Error(
-      `activation_catalog_policy_raw_trust_root_${activationCatalogRawPromotionTrustRoot.status}`,
-    );
+    return promoteRawActivationCatalogPolicy(argumentsValue);
 
   const optIn = env.REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION;
   if (optIn !== activationCatalogPromotionOptIn)

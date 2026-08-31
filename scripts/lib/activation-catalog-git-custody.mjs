@@ -24,8 +24,11 @@ export const activationCatalogCaptureSurface = Object.freeze([
   "scripts/run-codex-rotating-release-migration.mjs",
   "scripts/activate-private-pg17-generation.mjs",
   "scripts/private-pg17-secure-canonical.ts",
+  "scripts/promote-private-pg17-activation-catalog-policy.mjs",
+  "scripts/lib/activation-catalog-capture-pair.mjs",
   "scripts/lib/activation-catalog-git-custody.mjs",
   "scripts/lib/release-authority-postgres-url.mjs",
+  "scripts/lib/reviewed-activation-catalog-candidate.mjs",
   "scripts/lib/secret-safe-command-boundary.mjs",
 ]);
 
