@@ -27,22 +27,44 @@ export async function readBoundedActivationCatalogCapture(path, expected) {
   const handle = await open(path, "r");
   let bytes;
   try {
-    const info = await handle.stat();
+    const before = await handle.stat({ bigint: true });
     if (
-      !info.isFile() ||
-      info.size < 1 ||
-      info.size > activationCatalogCaptureMaxBytes ||
-      (expected && info.size !== expected.bytes)
+      !before.isFile() ||
+      before.size < 1n ||
+      before.size > BigInt(activationCatalogCaptureMaxBytes) ||
+      (expected && Number(before.size) !== expected.bytes)
     )
       fail("size_invalid");
-    bytes = Buffer.alloc(info.size);
-    const read = await handle.read(bytes, 0, info.size, 0);
-    const overflow = await handle.read(Buffer.alloc(1), 0, 1, info.size);
-    if (read.bytesRead !== info.size || overflow.bytesRead !== 0)
+
+    const bounded = Buffer.alloc(activationCatalogCaptureMaxBytes + 1);
+    let offset = 0;
+    while (offset < bounded.byteLength) {
+      const read = await handle.read(
+        bounded,
+        offset,
+        bounded.byteLength - offset,
+        offset,
+      );
+      if (read.bytesRead === 0) break;
+      offset += read.bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    if (
+      offset < 1 ||
+      offset > activationCatalogCaptureMaxBytes ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs ||
+      after.size !== BigInt(offset)
+    )
       fail("size_invalid");
+    bytes = bounded.subarray(0, offset);
   } finally {
     await handle.close();
   }
+
   const hash = sha256(bytes);
   if (expected && hash !== expected.sha256) fail("hash_invalid");
   let value;
@@ -156,12 +178,11 @@ export function assertActivationCatalogCapturePair(first, second, expected) {
       bytes: entry.bytes,
       sha256: entry.sha256,
     }));
-    const {
-      kind: _kind,
-      version: _version,
-      captureSetSha256: _captureSet,
-      ...captureSetMaterial
-    } = expected;
+    const captureSetMaterial = Object.fromEntries(
+      Object.entries(expected).filter(
+        ([key]) => !["kind", "version", "captureSetSha256"].includes(key),
+      ),
+    );
     if (
       canonical(actual) !== canonical(expected.captures) ||
       expected.captureSetSha256 !==

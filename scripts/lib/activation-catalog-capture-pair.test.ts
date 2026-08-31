@@ -126,12 +126,11 @@ function expectation(first: any, second: any) {
     postManifestIdentity: `sha256:${"d".repeat(64)}`,
     recoveryWitnessSha256: "a".repeat(64),
   };
-  const {
-    kind: _kind,
-    version: _version,
-    captureSetSha256: _set,
-    ...material
-  } = value;
+  const material = Object.fromEntries(
+    Object.entries(value).filter(
+      ([key]) => !["kind", "version", "captureSetSha256"].includes(key),
+    ),
+  );
   value.captureSetSha256 = `sha256:${sha256(canonical(material))}`;
   return value;
 }
@@ -210,5 +209,22 @@ describe("activation catalog raw capture pair", () => {
     await expect(readBoundedActivationCatalogCapture(path)).rejects.toThrow(
       "activation_catalog_capture_pair_size_invalid",
     );
+  });
+
+  it("hashes the same-handle bytes before parsing a pinned capture", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rr-capture-pair-"));
+    directories.push(directory);
+    const path = join(directory, "capture.json");
+    const reviewed = '{"ok":true}';
+    const modified = '{"ok":null}';
+    expect(Buffer.byteLength(modified)).toBe(Buffer.byteLength(reviewed));
+    await writeFile(path, modified);
+
+    await expect(
+      readBoundedActivationCatalogCapture(path, {
+        bytes: Buffer.byteLength(reviewed),
+        sha256: sha256(reviewed),
+      }),
+    ).rejects.toThrow("activation_catalog_capture_pair_hash_invalid");
   });
 });

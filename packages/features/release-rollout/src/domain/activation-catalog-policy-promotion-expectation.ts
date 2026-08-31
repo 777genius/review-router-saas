@@ -12,6 +12,16 @@ export function assertActivationCatalogLiveDigestTransitionBinding(
 export const activationCatalogPromotionOptIn =
   "promote-reviewed-activation-catalog-v29-schema-v5-pr245";
 
+export type ActivationCatalogRawPromotionTrustRoot = Readonly<{
+  status: "pending";
+  reason: "fresh-authenticated-raw-capture-and-independent-review-required";
+}>;
+
+export const activationCatalogRawPromotionTrustRoot = Object.freeze({
+  status: "pending",
+  reason: "fresh-authenticated-raw-capture-and-independent-review-required",
+} satisfies ActivationCatalogRawPromotionTrustRoot);
+
 export const reviewedActivationCatalogCandidate = Object.freeze({
   sha256: "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28",
   bytes: 2_651_682,

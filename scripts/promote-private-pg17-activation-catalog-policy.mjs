@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -11,19 +11,12 @@ import {
   productionActivationCatalogPolicyNormalizationProfile,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts";
 import {
+  activationCatalogRawPromotionTrustRoot,
   activationCatalogPromotionOptIn,
   reviewedActivationCatalogCandidate,
   reviewedActivationCatalogPromotionExpectation,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation.ts";
-import {
-  assertActivationCatalogPolicyPromotionProvenance,
-  assertActivationCatalogRawCaptureEvidence,
-} from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
-import { readAndAssertActivationCatalogCapturePair } from "./lib/activation-catalog-capture-pair.mjs";
-import {
-  assertActivationCatalogCaptureSurfaceIdentity,
-  assertActivationCatalogGitCustody,
-} from "./lib/activation-catalog-git-custody.mjs";
+import { assertActivationCatalogPolicyPromotionProvenance } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
 import { assertActivationCatalogPolicyReviewEvidence } from "../packages/features/release-rollout/src/adapters/activation-catalog-policy-review-evidence.ts";
 import {
   reviewedActivationCatalogCandidatePath,
@@ -31,6 +24,7 @@ import {
 } from "./lib/reviewed-activation-catalog-candidate.mjs";
 
 export {
+  activationCatalogRawPromotionTrustRoot,
   activationCatalogPromotionOptIn,
   reviewedActivationCatalogCandidate,
   reviewedActivationCatalogPromotionExpectation,
@@ -134,7 +128,6 @@ function parseArguments(argv) {
       "--candidate": "candidatePath",
       "--capture-1": "capture1Path",
       "--capture-2": "capture2Path",
-      "--authenticated-evidence": "evidencePath",
     }[argument];
     if (key && paths[key] === undefined && argv[index + 1]) {
       paths[key] = resolve(argv[index + 1]);
@@ -151,13 +144,11 @@ function parseArguments(argv) {
     !paths.candidatePath &&
     paths.capture1Path &&
     paths.capture2Path &&
-    paths.evidencePath &&
-    Object.keys(paths).length === 3
+    Object.keys(paths).length === 2
   )
     return {
       mode: "raw",
       capturePaths: [paths.capture1Path, paths.capture2Path],
-      evidencePath: paths.evidencePath,
       write,
     };
   if (Object.keys(paths).length === 0)
@@ -313,86 +304,32 @@ export function canonicalActivationCatalogArtifactSourceFromRawCapture(
   return generated;
 }
 
-async function readAuthenticatedRawEvidence(path) {
-  const metadata = await stat(path);
-  if (!metadata.isFile() || metadata.size < 1 || metadata.size > 1024 * 1024)
-    throw new Error("activation_catalog_policy_raw_capture_evidence_invalid");
-  const bytes = await readFile(path);
-  let value;
-  try {
-    value = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    throw new Error("activation_catalog_policy_raw_capture_evidence_invalid");
-  }
-  assertActivationCatalogRawCaptureEvidence(value);
-  return value;
-}
-
 export async function promotePrivatePg17ActivationCatalogPolicy({
   env = process.env,
   argv = process.argv.slice(2),
 } = {}) {
+  const argumentsValue = parseArguments(argv);
+  if (argumentsValue.mode === "raw")
+    throw new Error(
+      `activation_catalog_policy_raw_trust_root_${activationCatalogRawPromotionTrustRoot.status}`,
+    );
+
   const optIn = env.REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION;
-  if (
-    optIn !== activationCatalogPromotionOptIn &&
-    !/^promote-authenticated-[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u.test(
-      optIn ?? "",
-    )
-  )
+  if (optIn !== activationCatalogPromotionOptIn)
     throw new Error("activation_catalog_policy_promotion_opt_in_required");
 
-  const argumentsValue = parseArguments(argv);
-  let generated;
-  let result;
-  if (argumentsValue.mode === "legacy") {
-    if (optIn !== activationCatalogPromotionOptIn)
-      throw new Error("activation_catalog_policy_promotion_opt_in_required");
-    generated = canonicalActivationCatalogArtifactSource(
-      await readFile(argumentsValue.candidatePath),
-    );
-    await assertActivationCatalogPolicyReviewedSourceBindings();
-    const provenance = await readPromotionProvenance();
-    assertReviewedActivationCatalogPromotionProvenance(provenance);
-    await assertActivationCatalogPolicyIndependentReviewEvidence();
-    result = {
-      candidatePath: argumentsValue.candidatePath,
-      candidateSha256: reviewedActivationCatalogCandidate.sha256,
-      ...reviewedActivationCatalogCandidate,
-    };
-  } else {
-    const evidence = await readAuthenticatedRawEvidence(
-      argumentsValue.evidencePath,
-    );
-    if (optIn !== `promote-authenticated-${evidence.reviewDecisionId}`)
-      throw new Error("activation_catalog_policy_promotion_opt_in_required");
-    assertActivationCatalogGitCustody({
-      repositoryRoot,
-      captureBaseCommit: evidence.capture.baseCommit,
-      auditedHead: evidence.capture.auditedHead,
-    });
-    assertActivationCatalogCaptureSurfaceIdentity({
-      repositoryRoot,
-      auditedHead: evidence.capture.auditedHead,
-      auditedTree: evidence.capture.auditedTree,
-    });
-    const pair = await readAndAssertActivationCatalogCapturePair(
-      argumentsValue.capturePaths,
-      evidence,
-    );
-    generated = canonicalActivationCatalogArtifactSourceFromRawCapture(
-      pair.selected,
-      evidence,
-    );
-    result = {
-      candidatePath: argumentsValue.capturePaths[0],
-      candidateSha256: pair.captures[0].sha256,
-      captureSetSha256: evidence.captureSetSha256,
-      selectedCaptureId: evidence.selectedCaptureId,
-      reviewDecisionId: evidence.reviewDecisionId,
-      liveCatalogDigest: evidence.liveCatalogDigest,
-      artifactCanonicalSha256: evidence.canonicalDigests.artifact,
-    };
-  }
+  const generated = canonicalActivationCatalogArtifactSource(
+    await readFile(argumentsValue.candidatePath),
+  );
+  await assertActivationCatalogPolicyReviewedSourceBindings();
+  const provenance = await readPromotionProvenance();
+  assertReviewedActivationCatalogPromotionProvenance(provenance);
+  await assertActivationCatalogPolicyIndependentReviewEvidence();
+  const result = {
+    candidatePath: argumentsValue.candidatePath,
+    candidateSha256: reviewedActivationCatalogCandidate.sha256,
+    ...reviewedActivationCatalogCandidate,
+  };
 
   if (argumentsValue.write) await writeArtifactAtomically(generated);
   else {

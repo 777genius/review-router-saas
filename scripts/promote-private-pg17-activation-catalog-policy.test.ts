@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   copyFile,
   mkdtemp,
@@ -12,6 +11,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   activationCatalogArtifactPath,
+  activationCatalogRawPromotionTrustRoot,
   activationCatalogPromotionOptIn,
   activationCatalogPromotionProvenancePath,
   assertActivationCatalogPolicyReviewedSourceBindings,
@@ -58,6 +58,56 @@ describe("activation catalog policy promotion", () => {
         argv: ["--candidate", "/does/not/exist"],
       }),
     ).rejects.toThrow("activation_catalog_policy_promotion_opt_in_required");
+  });
+
+  it("records the fresh raw promotion trust root as pending", () => {
+    expect(activationCatalogRawPromotionTrustRoot).toEqual({
+      status: "pending",
+      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
+    });
+  });
+
+  it("rejects caller-supplied raw authority at the CLI gate without writing", async () => {
+    const artifactBefore = await readFile(activationCatalogArtifactPath);
+    await expect(
+      promotePrivatePg17ActivationCatalogPolicy({
+        env: {
+          REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION:
+            "promote-authenticated-CALLER-FORGED-GO",
+        },
+        argv: [
+          "--capture-1",
+          "/does/not/exist-1",
+          "--capture-2",
+          "/does/not/exist-2",
+          "--authenticated-evidence",
+          "/caller/forged.json",
+          "--write",
+        ],
+      }),
+    ).rejects.toThrow("activation_catalog_policy_promotion_arguments_invalid");
+    expect(
+      (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
+    ).toBe(true);
+  });
+
+  it("fails closed at the pending code-owned raw root before reading captures", async () => {
+    const artifactBefore = await readFile(activationCatalogArtifactPath);
+    await expect(
+      promotePrivatePg17ActivationCatalogPolicy({
+        env: {},
+        argv: [
+          "--capture-1",
+          "/does/not/exist-1",
+          "--capture-2",
+          "/does/not/exist-2",
+          "--write",
+        ],
+      }),
+    ).rejects.toThrow("activation_catalog_policy_raw_trust_root_pending");
+    expect(
+      (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
+    ).toBe(true);
   });
 
   it("requires an explicit candidate path under the exact opt-in", async () => {
@@ -142,7 +192,9 @@ describe("activation catalog policy promotion", () => {
       { policies: canonicalActivationCatalogPolicyArtifact.policies },
       evidence,
     );
-    expect(generated).toEqual(await readFile(activationCatalogArtifactPath));
+    expect(
+      generated.equals(await readFile(activationCatalogArtifactPath)),
+    ).toBe(true);
     expect(() =>
       canonicalActivationCatalogArtifactSourceFromRawCapture(
         { policies: canonicalActivationCatalogPolicyArtifact.policies },
@@ -210,11 +262,10 @@ describe("activation catalog policy promotion", () => {
         argv: ["--candidate", reviewedActivationCatalogCandidatePath],
       }),
     ).rejects.toThrow("activation_catalog_policy_reviewed_source_drift");
-    expect(await readFile(activationCatalogArtifactPath)).toEqual(
-      artifactBefore,
-    );
+    expect(
+      (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
+    ).toBe(true);
   }, 60_000);
-
 
   it.each(["missing", "truncated", "modified"] as const)(
     "fails closed for %s repository evidence without writing",
@@ -250,9 +301,11 @@ describe("activation catalog policy promotion", () => {
               failure === "truncated" ? "size" : "hash"
             }_drift`,
           );
-        expect(await readFile(activationCatalogArtifactPath)).toEqual(
-          artifactBefore,
-        );
+        expect(
+          (await readFile(activationCatalogArtifactPath)).equals(
+            artifactBefore,
+          ),
+        ).toBe(true);
       } finally {
         await rm(temporaryDirectory, { recursive: true, force: true });
       }
