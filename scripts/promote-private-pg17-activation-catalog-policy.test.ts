@@ -60,11 +60,18 @@ describe("activation catalog policy promotion", () => {
     ).rejects.toThrow("activation_catalog_policy_promotion_opt_in_required");
   });
 
-  it("records the fresh raw promotion trust root as pending", () => {
-    expect(activationCatalogRawPromotionTrustRoot).toEqual({
-      status: "pending",
-      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
-    });
+  it("loads the exact code-owned raw promotion mode", () => {
+    if (activationCatalogRawPromotionTrustRoot.status === "pending")
+      expect(activationCatalogRawPromotionTrustRoot).toEqual({
+        status: "pending",
+        reason:
+          "fresh-authenticated-raw-capture-and-independent-review-required",
+      });
+    else
+      expect(activationCatalogRawPromotionTrustRoot).toMatchObject({
+        status: "ready",
+        evidence: { reviewResult: "GO" },
+      });
   });
 
   it("rejects caller-supplied raw authority at the CLI gate without writing", async () => {
@@ -91,20 +98,26 @@ describe("activation catalog policy promotion", () => {
     ).toBe(true);
   });
 
-  it("fails closed at the pending code-owned raw root before reading captures", async () => {
+  it("uses the loaded code-owned raw root before reading captures", async () => {
     const artifactBefore = await readFile(activationCatalogArtifactPath);
-    await expect(
-      promotePrivatePg17ActivationCatalogPolicy({
-        env: {},
-        argv: [
-          "--capture-1",
-          "/does/not/exist-1",
-          "--capture-2",
-          "/does/not/exist-2",
-          "--write",
-        ],
-      }),
-    ).rejects.toThrow("activation_catalog_policy_raw_trust_root_pending");
+    const attempt = promotePrivatePg17ActivationCatalogPolicy({
+      env: {},
+      argv: [
+        "--capture-1",
+        "/does/not/exist-1",
+        "--capture-2",
+        "/does/not/exist-2",
+        ...(activationCatalogRawPromotionTrustRoot.status === "ready"
+          ? ["--raw-opt-in", activationCatalogRawPromotionTrustRoot.optIn]
+          : []),
+        "--write",
+      ],
+    });
+    if (activationCatalogRawPromotionTrustRoot.status === "pending")
+      await expect(attempt).rejects.toThrow(
+        "activation_catalog_policy_raw_trust_root_pending",
+      );
+    else await expect(attempt).rejects.toMatchObject({ code: "ENOENT" });
     expect(
       (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
     ).toBe(true);

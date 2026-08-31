@@ -184,6 +184,18 @@ describe("raw activation catalog READY production integration", () => {
     const baseCommit = git(root, "rev-parse", "HEAD");
 
     await copyProductionCaptureSurface(root);
+    await writeFile(
+      join(root, trustRootPath),
+      `${JSON.stringify(
+        {
+          status: "pending",
+          reason:
+            "fresh-authenticated-raw-capture-and-independent-review-required",
+        },
+        null,
+        2,
+      )}\n`,
+    );
     git(root, "add", ".");
     git(root, "commit", "-qm", "audited production capture surface");
     const auditedHead = git(root, "rev-parse", "HEAD");
@@ -445,6 +457,60 @@ describe("raw activation catalog READY production integration", () => {
       mode: "verified",
       provenance: "raw-v1",
     });
+
+    const runtimeContractUrl = pathToFileURL(
+      join(
+        root,
+        "packages/features/release-rollout/src/domain/activation-catalog-policy-contract.ts",
+      ),
+    ).href;
+    const runtimeProbe = runTsx(root, [
+      "--eval",
+      `import(${JSON.stringify(runtimeContractUrl)}).then((m)=>process.stdout.write(JSON.stringify({readiness:m.canonicalActivationCatalogPolicyTrustRootReadiness,digests:m.reviewedActivationCatalogPolicyDigests,authorized:m.authorizeCanonicalActivationCatalogPolicies(m.reviewedActivationCatalogPolicyDigests)===m.canonicalActivationCatalogPolicies})))`,
+    ]);
+    expect(runtimeProbe.status, runtimeProbe.stderr).toBe(0);
+    expect(JSON.parse(runtimeProbe.stdout)).toEqual({
+      readiness: { status: "ready", reason: "reviewed-raw" },
+      digests: {
+        preactivationCatalogPolicySha256:
+          readyRoot.evidence.canonicalDigests.preactivation,
+        activatedCatalogPolicySha256:
+          readyRoot.evidence.canonicalDigests.activated,
+      },
+      authorized: true,
+    });
+
+    const reboundEvidence = {
+      ...readyRoot.evidence,
+      canonicalDigests: {
+        preactivation: `sha256:${"1".repeat(64)}`,
+        activated: `sha256:${"2".repeat(64)}`,
+        artifact: `sha256:${"3".repeat(64)}`,
+      },
+    };
+    reboundEvidence.captureSetSha256 = `sha256:${sha256Canonical(
+      Object.fromEntries(
+        Object.entries(reboundEvidence).filter(
+          ([key]) => !["kind", "version", "captureSetSha256"].includes(key),
+        ),
+      ),
+    )}`;
+    await writeFile(
+      join(root, trustRootPath),
+      `${JSON.stringify(
+        { ...readyRoot, evidence: reboundEvidence },
+        null,
+        2,
+      )}\n`,
+    );
+    const reboundProbe = runTsx(root, [
+      "--eval",
+      `import(${JSON.stringify(runtimeContractUrl)})`,
+    ]);
+    expect(reboundProbe.status, reboundProbe.stderr).not.toBe(0);
+    expect(reboundProbe.stderr).toContain(
+      "activation_catalog_policy_reviewed_digest_drift",
+    );
 
     const transitionUrl = pathToFileURL(
       join(

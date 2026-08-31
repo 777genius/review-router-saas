@@ -359,7 +359,7 @@ describe("application database release-authority isolation", () => {
       "reviewrouter_activation.migration_permit",
     );
     expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
-      "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
+      liveV70V73CatalogDigestSha256,
     );
   });
 
@@ -1054,7 +1054,7 @@ describe("canonical exclusive release migration caller", () => {
       "JOIN table_facts USING (role_name,role_kind,relname)",
     );
     expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
-      "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
+      liveV70V73CatalogDigestSha256,
     );
     expect(executableSource).not.toContain(
       "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68",

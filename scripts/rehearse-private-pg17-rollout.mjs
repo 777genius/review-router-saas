@@ -50,6 +50,7 @@ import {
   evaluateEffectivePrincipalInventory,
   canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
+  reviewedActivationCatalogPolicyDigests,
   canonicalActivationCatalogPolicyTrustRootReadiness,
   assertCanonicalActivationCatalogPolicyTrustRootReady,
   authorizeCanonicalActivationCatalogPolicies,
@@ -195,9 +196,9 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA release_authority FROM PUBLIC;`,
 
 export const rehearsalActivationCatalogPolicyAuthorization = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
+    reviewedActivationCatalogPolicyDigests.preactivationCatalogPolicySha256,
   activatedCatalogPolicySha256:
-    "sha256:cc35c6b43fe8b117a492705eeaf2ab9a9ac0e05f98546fa32ac9d340df89867b",
+    reviewedActivationCatalogPolicyDigests.activatedCatalogPolicySha256,
 });
 if (
   rehearsalActivationCatalogPolicyAuthorization.preactivationCatalogPolicySha256 !==

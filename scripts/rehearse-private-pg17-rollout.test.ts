@@ -14,6 +14,7 @@ import { canonicalReleaseMigrationArtifact } from "../packages/features/release-
 import {
   authorizeCanonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
+  reviewedActivationCatalogPolicyDigests,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-contract.js";
 import { assertActivationCatalogCapturePair } from "./lib/activation-catalog-capture-pair.mjs";
 import {
@@ -440,12 +441,9 @@ describe("disposable dual-version rehearsal", () => {
     ).rejects.toThrow("private_pg17_rehearsal_control_readiness_timeout");
   });
   it("authorizes normal rehearsal under the promoted schema-v5 trust root", () => {
-    expect(rehearsalActivationCatalogPolicyAuthorization).toEqual({
-      preactivationCatalogPolicySha256:
-        "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
-      activatedCatalogPolicySha256:
-        "sha256:cc35c6b43fe8b117a492705eeaf2ab9a9ac0e05f98546fa32ac9d340df89867b",
-    });
+    expect(rehearsalActivationCatalogPolicyAuthorization).toEqual(
+      reviewedActivationCatalogPolicyDigests,
+    );
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual(
       canonicalActivationCatalogPolicyDigests,
     );
