@@ -2278,7 +2278,8 @@ async function proveActiveNamespaceV4V5Reattestation(
           namespace."workflowSourceCommitSha" AS "commitSha",
           namespace."workflowSourceBlobSha" AS "blobSha",
           namespace."workflowSourceSha256" AS "sourceSha256",
-          namespace."workflowSemanticSha256" AS "semanticSha256"
+          namespace."workflowSemanticSha256" AS "semanticSha256",
+          namespace."workflowSchemaVersion" AS "schemaVersion"
         FROM "CodexOAuthProviderInstance" provider
         JOIN "CodexOAuthSecretNamespace" namespace
           ON namespace."id" = provider."activeSecretNamespaceId"
@@ -2292,18 +2293,29 @@ async function proveActiveNamespaceV4V5Reattestation(
       ? (digit === "a" ? "b" : "a").repeat(length)
       : candidate;
   };
-  const winner = {
-    commitSha: nextHex(40, target.commitSha, "1"),
-    blobSha: nextHex(40, target.blobSha, "2"),
-    sourceSha256: nextHex(64, target.sourceSha256, "3"),
-    semanticSha256: nextHex(64, target.semanticSha256, "4"),
+  const prior = {
+    commitSha: "4".repeat(40),
+    blobSha: "4".repeat(40),
+    sourceSha256: "4".repeat(64),
+    semanticSha256: "4".repeat(64),
+  };
+  const reattested = {
+    commitSha: "5".repeat(40),
+    blobSha: "5".repeat(40),
+    sourceSha256: "5".repeat(64),
+    semanticSha256: "5".repeat(64),
   };
   const competitor = {
-    commitSha: nextHex(40, target.commitSha, "5"),
-    blobSha: nextHex(40, target.blobSha, "6"),
-    sourceSha256: nextHex(64, target.sourceSha256, "7"),
-    semanticSha256: nextHex(64, target.semanticSha256, "8"),
+    commitSha: nextHex(40, target.commitSha, "6"),
+    blobSha: nextHex(40, target.blobSha, "7"),
+    sourceSha256: nextHex(64, target.sourceSha256, "8"),
+    semanticSha256: nextHex(64, target.semanticSha256, "9"),
   };
+  assert(
+    target.schemaVersion === 5 &&
+      Object.entries(reattested).every(([key, value]) => target[key] === value),
+    "production-path V4-to-V5 re-attestation result missing",
+  );
   const call = (oldEvidence, newEvidence, overrides = {}) => {
     const exact = {
       ...target,
@@ -2349,7 +2361,7 @@ async function proveActiveNamespaceV4V5Reattestation(
   ]) {
     const rejectedNull = psql(
       clients.web,
-      ["-c", `SELECT ${call(target, winner, versionOverride)}`],
+      ["-c", `SELECT ${call(prior, reattested, versionOverride)}`],
       false,
     );
     assertPsqlFailedWithExactMessage(
@@ -2374,7 +2386,7 @@ async function proveActiveNamespaceV4V5Reattestation(
              "mutationOwner"=${quoteLiteral(mutationOwner)},
              "mutationOwnerId"=${quoteLiteral(mutationOwnerId)}
          WHERE "id"=${quoteLiteral(target.providerId)};
-         SELECT ${call(target, winner)};
+         SELECT ${call(prior, reattested)};
          ROLLBACK;`,
       ],
       false,
@@ -2386,60 +2398,12 @@ async function proveActiveNamespaceV4V5Reattestation(
     );
   }
 
-  const winnerInvocation = createSecretSafePostgresInvocation({
-    databaseUrl: clients.web,
-    args: ["-X", "-qAt", "-v", "ON_ERROR_STOP=1"],
-  });
-  const winnerProcess = spawn(psqlBinary, winnerInvocation.args, {
-    stdio: ["pipe", "pipe", "pipe"],
-    env: winnerInvocation.environment,
-  });
-  const winnerClose = new Promise((resolveClose) =>
-    winnerProcess.once("close", resolveClose),
-  );
-  const winnerLines = createInterface({ input: winnerProcess.stdout })[
-    Symbol.asyncIterator
-  ]();
-  let winnerError = "";
-  winnerProcess.stderr.on("data", (chunk) => {
-    winnerError += String(chunk);
-  });
-  try {
-    winnerProcess.stdin.end(
-      `BEGIN; SELECT ${call(target, winner)}; SELECT 'winner-updated'; SELECT pg_sleep(0.5); COMMIT;\n`,
-    );
-    let marker;
-    do {
-      marker = await winnerLines.next();
-    } while (!marker.done && marker.value !== "winner-updated");
-    assert(
-      !marker.done,
-      "active_namespace_reattestation_winner_did_not_update",
-    );
-
-    const loser = psql(
-      clients.web,
-      ["-c", `SELECT ${call(target, competitor)}`],
-      false,
-    );
-    assertPsqlFailedWithExactMessage(
-      loser,
-      "codex_oauth_active_namespace_reattestation_stale",
-      "concurrent active namespace re-attestation did not fail closed",
-    );
-    const winnerStatus = await winnerClose;
-    assert(
-      winnerStatus === 0,
-      `authorized active namespace re-attestation failed:${winnerError}`,
-    );
-  } finally {
-    await terminateChild(winnerProcess);
-    winnerInvocation.cleanup();
-  }
-
   const stale = psql(
     clients.web,
-    ["-c", `SELECT ${call(target, competitor)}`],
+    [
+      "-c",
+      `SELECT ${call({ ...prior, commitSha: competitor.commitSha }, reattested)}`,
+    ],
     false,
   );
   assertPsqlFailedWithExactMessage(
@@ -2449,7 +2413,7 @@ async function proveActiveNamespaceV4V5Reattestation(
   );
   const replay = psql(
     clients.web,
-    ["-c", `SELECT ${call(target, winner)}`],
+    ["-c", `SELECT ${call(prior, reattested)}`],
     false,
   );
   assertPsqlFailedWithExactMessage(
@@ -2458,7 +2422,6 @@ async function proveActiveNamespaceV4V5Reattestation(
     "completed V4-to-V5 receipt replay did not fail closed",
   );
 
-  const postWinner = { ...target, ...winner };
   for (const [label, overrides, expectedError] of [
     [
       "repository",
@@ -2488,7 +2451,7 @@ async function proveActiveNamespaceV4V5Reattestation(
   ]) {
     const rejected = psql(
       clients.web,
-      ["-c", `SELECT ${call(postWinner, competitor, overrides)}`],
+      ["-c", `SELECT ${call(prior, competitor, overrides)}`],
       false,
     );
     assertPsqlFailedWithExactMessage(
@@ -2588,18 +2551,64 @@ async function proveActiveNamespaceV4V5Reattestation(
       );
     }
   }
+  for (const [label, statement] of [
+    [
+      "update",
+      `UPDATE "CodexOAuthWorkflowCompatibility"
+       SET "retireAt"="retireAt" + interval '1 second'
+       WHERE "namespaceId"=${quoteLiteral(target.namespaceId)}`,
+    ],
+    [
+      "delete",
+      `DELETE FROM "CodexOAuthWorkflowCompatibility"
+       WHERE "namespaceId"=${quoteLiteral(target.namespaceId)}`,
+    ],
+  ]) {
+    const rejected = psql(adminUrl, ["-c", statement], false);
+    assertPsqlFailedWithExactMessage(
+      rejected,
+      "codex_oauth_workflow_compatibility_immutable",
+      `trusted V4 compatibility evidence ${label} did not fail closed`,
+    );
+  }
   assert(
     psql(adminUrl, [
       "-Atc",
-      `SELECT count(*) FROM "CodexOAuthSecretNamespace"
-       WHERE "id"=${quoteLiteral(target.namespaceId)}
-         AND "workflowSourceCommitSha"=${quoteLiteral(winner.commitSha)}
-         AND "workflowSourceBlobSha"=${quoteLiteral(winner.blobSha)}
-         AND "workflowSourceSha256"=${quoteLiteral(winner.sourceSha256)}
-         AND "workflowSemanticSha256"=${quoteLiteral(winner.semanticSha256)}
-         AND "workflowSchemaVersion"=5`,
-    ]).stdout.trim() === "1",
-    "failed re-attestation attempt changed active namespace evidence",
+      `SELECT concat_ws(':',
+        (SELECT count(*) FROM "CodexOAuthSecretNamespace"
+         WHERE "id"=${quoteLiteral(target.namespaceId)}
+           AND "workflowSourceCommitSha"=${quoteLiteral(reattested.commitSha)}
+           AND "workflowSourceBlobSha"=${quoteLiteral(reattested.blobSha)}
+           AND "workflowSourceSha256"=${quoteLiteral(reattested.sourceSha256)}
+           AND "workflowSemanticSha256"=${quoteLiteral(reattested.semanticSha256)}
+           AND "workflowSchemaVersion"=5),
+        (SELECT count(*) FROM "CodexOAuthWorkflowCompatibility"
+         WHERE "namespaceId"=${quoteLiteral(target.namespaceId)}
+           AND "workflowPath"=${quoteLiteral(target.workflowPath)}
+           AND "workflowSourceCommitSha"=${quoteLiteral(prior.commitSha)}
+           AND "workflowSourceBlobSha"=${quoteLiteral(prior.blobSha)}
+           AND "workflowSourceSha256"=${quoteLiteral(prior.sourceSha256)}
+           AND "workflowSemanticSha256"=${quoteLiteral(prior.semanticSha256)}
+           AND "workflowSourceTrust"='trusted_default_branch_revision'
+           AND "workflowSchemaVersion"=4
+           AND "attestedRepositoryId"=${quoteLiteral(target.repositoryId)}
+           AND "retireAt"="createdAt" + interval '25 hours'),
+        (SELECT count(*) FROM "CodexOAuthDatabaseAuthorityReceipt"
+         WHERE "databaseRole"='reviewrouter_web'
+           AND "effect"='active_namespace_v4_v5_reattestation'
+           AND "ownerId"=jsonb_build_array(
+             ${quoteLiteral(target.providerId)},${quoteLiteral(target.namespaceId)},
+             ${target.namespaceEpoch}::bigint,${quoteLiteral(target.secretName)},
+             ${quoteLiteral(target.repositoryId)},${quoteLiteral(target.workflowPath)},
+             ${quoteLiteral(target.sourceTrust)},4,5,
+             ${quoteLiteral(prior.commitSha)},${quoteLiteral(prior.blobSha)},
+             ${quoteLiteral(prior.sourceSha256)},${quoteLiteral(prior.semanticSha256)},
+             ${quoteLiteral(reattested.commitSha)},${quoteLiteral(reattested.blobSha)},
+             ${quoteLiteral(reattested.sourceSha256)},${quoteLiteral(reattested.semanticSha256)}
+           )::text
+           AND "effectCode"=0 AND "consumedAt" IS NOT NULL))`,
+    ]).stdout.trim() === "1:1:1",
+    "production-path V4-to-V5 transition evidence mismatch",
   );
   assert(
     psql(adminUrl, [

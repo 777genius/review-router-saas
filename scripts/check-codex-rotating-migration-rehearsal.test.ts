@@ -484,6 +484,38 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
+  it("binds the completed production-path one-shot re-attestation evidence", () => {
+    const reattestationProof =
+      /async function proveActiveNamespaceV4V5Reattestation\([\s\S]+?\n\}\n\nfunction assertVersionedNamespaceEvidenceRetained/u.exec(
+        source,
+      )?.[0];
+    expect(reattestationProof).toBeDefined();
+    expect(
+      runtimeProofSource.match(/await reattestCodexRotatingWorkflow\(/gu),
+    ).toHaveLength(1);
+    expect(reattestationProof).toContain('commitSha: "4".repeat(40)');
+    expect(reattestationProof).toContain('commitSha: "5".repeat(40)');
+    expect(reattestationProof).toContain(
+      "production-path V4-to-V5 re-attestation result missing",
+    );
+    expect(reattestationProof).toContain(
+      "\"effect\"='active_namespace_v4_v5_reattestation'",
+    );
+    expect(reattestationProof).toContain(
+      "production-path V4-to-V5 transition evidence mismatch",
+    );
+    expect(reattestationProof).toContain(
+      "codex_oauth_workflow_compatibility_immutable",
+    );
+    expect(reattestationProof).toContain(
+      "completed V4-to-V5 receipt replay did not fail closed",
+    );
+    expect(reattestationProof).not.toContain("winner-updated");
+    expect(reattestationProof).not.toContain(
+      "active_namespace_reattestation_winner_did_not_update",
+    );
+  });
+
   it("reproduces the trusted production pre-migration manifest", () => {
     expect(source).toContain("applyCanonicalPreMigrationBaseline");
     expect(source).toContain("directory === migration67Name");
