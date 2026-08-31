@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   copyFile,
   mkdtemp,
@@ -12,12 +11,14 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   activationCatalogArtifactPath,
+  activationCatalogRawPromotionTrustRoot,
   activationCatalogPromotionOptIn,
   activationCatalogPromotionProvenancePath,
   assertActivationCatalogPolicyReviewedSourceBindings,
   assertArtifactCandidate,
   assertActivationCatalogPolicyIndependentReviewEvidence,
   assertReviewedActivationCatalogPromotionProvenance,
+  canonicalActivationCatalogArtifactSourceFromRawCapture,
   promotePrivatePg17ActivationCatalogPolicy,
   reviewedActivationCatalogCandidate,
   reviewedActivationCatalogCandidatePath,
@@ -57,6 +58,56 @@ describe("activation catalog policy promotion", () => {
         argv: ["--candidate", "/does/not/exist"],
       }),
     ).rejects.toThrow("activation_catalog_policy_promotion_opt_in_required");
+  });
+
+  it("records the fresh raw promotion trust root as pending", () => {
+    expect(activationCatalogRawPromotionTrustRoot).toEqual({
+      status: "pending",
+      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
+    });
+  });
+
+  it("rejects caller-supplied raw authority at the CLI gate without writing", async () => {
+    const artifactBefore = await readFile(activationCatalogArtifactPath);
+    await expect(
+      promotePrivatePg17ActivationCatalogPolicy({
+        env: {
+          REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION:
+            "promote-authenticated-CALLER-FORGED-GO",
+        },
+        argv: [
+          "--capture-1",
+          "/does/not/exist-1",
+          "--capture-2",
+          "/does/not/exist-2",
+          "--authenticated-evidence",
+          "/caller/forged.json",
+          "--write",
+        ],
+      }),
+    ).rejects.toThrow("activation_catalog_policy_promotion_arguments_invalid");
+    expect(
+      (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
+    ).toBe(true);
+  });
+
+  it("fails closed at the pending code-owned raw root before reading captures", async () => {
+    const artifactBefore = await readFile(activationCatalogArtifactPath);
+    await expect(
+      promotePrivatePg17ActivationCatalogPolicy({
+        env: {},
+        argv: [
+          "--capture-1",
+          "/does/not/exist-1",
+          "--capture-2",
+          "/does/not/exist-2",
+          "--write",
+        ],
+      }),
+    ).rejects.toThrow("activation_catalog_policy_raw_trust_root_pending");
+    expect(
+      (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
+    ).toBe(true);
   });
 
   it("requires an explicit candidate path under the exact opt-in", async () => {
@@ -122,6 +173,42 @@ describe("activation catalog policy promotion", () => {
     ).not.toThrow();
   });
 
+  it("derives a fresh artifact only from externally bound raw policies", async () => {
+    const evidence = {
+      canonicalDigests: {
+        preactivation:
+          reviewedActivationCatalogCandidate.preactivationCatalogPolicySha256,
+        activated:
+          reviewedActivationCatalogCandidate.activatedCatalogPolicySha256,
+        artifact: reviewedActivationCatalogCandidate.artifactCanonicalSha256,
+      },
+      generatedArtifactSource: {
+        bytes: 2_651_797,
+        sha256:
+          "cc9be40be941b6291013cdf921afa6db84ad9e615b988fe8ff7a24a387566fc3",
+      },
+    };
+    const generated = canonicalActivationCatalogArtifactSourceFromRawCapture(
+      { policies: canonicalActivationCatalogPolicyArtifact.policies },
+      evidence,
+    );
+    expect(
+      generated.equals(await readFile(activationCatalogArtifactPath)),
+    ).toBe(true);
+    expect(() =>
+      canonicalActivationCatalogArtifactSourceFromRawCapture(
+        { policies: canonicalActivationCatalogPolicyArtifact.policies },
+        {
+          ...evidence,
+          canonicalDigests: {
+            ...evidence.canonicalDigests,
+            artifact: `sha256:${"0".repeat(64)}`,
+          },
+        },
+      ),
+    ).toThrow("activation_catalog_policy_promotion_artifact_drift");
+  }, 60_000);
+
   it("fails closed when the candidate and migration transition digests diverge", () => {
     expect(() =>
       assertActivationCatalogLiveDigestTransitionBinding(
@@ -137,10 +224,10 @@ describe("activation catalog policy promotion", () => {
     ).toThrow("activation_catalog_policy_live_digest_transition_drift");
   });
 
-  it("binds review authorization to the exact projection and normalization sources", async () => {
+  it("fails closed when reviewed projection source bindings drift", async () => {
     await expect(
       assertActivationCatalogPolicyReviewedSourceBindings(),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow("activation_catalog_policy_reviewed_source_drift");
   });
 
   it("refuses promotion without exact independent GO evidence", () => {
@@ -164,45 +251,20 @@ describe("activation catalog policy promotion", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("verifies the complete opt-in orchestration without writing", async () => {
+  it("preserves the historical candidate but requires recapture after source drift", async () => {
     const artifactBefore = await readFile(activationCatalogArtifactPath);
-    const result = await promotePrivatePg17ActivationCatalogPolicy({
-      env: {
-        REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION:
-          activationCatalogPromotionOptIn,
-      },
-      argv: ["--candidate", reviewedActivationCatalogCandidatePath],
-    });
-    const artifactAfter = await readFile(activationCatalogArtifactPath);
-
-    expect(result).toEqual({
-      mode: "verified",
-      candidatePath: reviewedActivationCatalogCandidatePath,
-      candidateSha256:
-        "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28",
-      sha256:
-        "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28",
-      bytes: 2_651_682,
-      liveCatalogDigest:
-        "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
-      liveCatalogProjectionSourceSha256:
-        "39e855060bfc186c6fb92fe1cd5c72410f8f72802200da49d6c1fe45eb6ed5f4",
-      normalizationSourceSha256:
-        "7b23d64a1f2160398cdeb9194b0a3f3583e5566a1b20a0b2009caaf7ddbe0da1",
-      preactivationCatalogPolicySha256:
-        "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
-      activatedCatalogPolicySha256:
-        "sha256:cc35c6b43fe8b117a492705eeaf2ab9a9ac0e05f98546fa32ac9d340df89867b",
-      artifactPath: activationCatalogArtifactPath,
-      artifactSourceSha256:
-        "cc9be40be941b6291013cdf921afa6db84ad9e615b988fe8ff7a24a387566fc3",
-      artifactCanonicalSha256:
-        "sha256:5d7a98bf13e65ab8071691086efb792699b994961caadf435ee9fd4845c2f1cf",
-    });
-    expect(artifactAfter).toEqual(artifactBefore);
-    expect(createHash("sha256").update(artifactAfter).digest("hex")).toBe(
-      "cc9be40be941b6291013cdf921afa6db84ad9e615b988fe8ff7a24a387566fc3",
-    );
+    await expect(
+      promotePrivatePg17ActivationCatalogPolicy({
+        env: {
+          REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION:
+            activationCatalogPromotionOptIn,
+        },
+        argv: ["--candidate", reviewedActivationCatalogCandidatePath],
+      }),
+    ).rejects.toThrow("activation_catalog_policy_reviewed_source_drift");
+    expect(
+      (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
+    ).toBe(true);
   }, 60_000);
 
   it.each(["missing", "truncated", "modified"] as const)(
@@ -239,9 +301,11 @@ describe("activation catalog policy promotion", () => {
               failure === "truncated" ? "size" : "hash"
             }_drift`,
           );
-        expect(await readFile(activationCatalogArtifactPath)).toEqual(
-          artifactBefore,
-        );
+        expect(
+          (await readFile(activationCatalogArtifactPath)).equals(
+            artifactBefore,
+          ),
+        ).toBe(true);
       } finally {
         await rm(temporaryDirectory, { recursive: true, force: true });
       }

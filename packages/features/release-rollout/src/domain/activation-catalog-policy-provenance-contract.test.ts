@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { sha256Canonical } from "./canonical-json";
 import { reviewedActivationCatalogPromotionExpectation as expected } from "./activation-catalog-policy-promotion-expectation";
 import {
   activationCatalogPolicyTrustRootReadinessFromProvenance,
+  assertActivationCatalogRawCaptureEvidence,
   assertActivationCatalogPolicyPromotionProvenance,
 } from "./activation-catalog-policy-provenance-contract";
 
@@ -180,7 +182,7 @@ describe("activation catalog policy promotion provenance v5", () => {
 
   it("requires the exact two expected capture labels, not merely distinct labels", () => {
     const value = ready();
-    value.candidate.captures[0].label = "capture-a";
+    value.candidate.captures[0]!.label = "capture-a";
     value.candidate.captures[1].label = "capture-b";
     expect(
       activationCatalogPolicyTrustRootReadinessFromProvenance(value, expected)
@@ -214,5 +216,59 @@ describe("activation catalog policy promotion provenance v5", () => {
       activationCatalogPolicyTrustRootReadinessFromProvenance(null, expected)
         .status,
     ).toBe("blocked");
+  });
+
+  it("accepts strict raw evidence v1 and never treats malformed raw as legacy", () => {
+    const captures = [
+      { label: "candidate-1.json", bytes: 100, sha256: "a".repeat(64) },
+      { label: "candidate-2.json", bytes: 101, sha256: "b".repeat(64) },
+    ];
+    const raw = {
+      kind: "reviewrouter-activation-catalog-raw-capture-evidence",
+      version: 1,
+      selectedCaptureId: captures[0]!.label,
+      captureSetSha256: "",
+      captures,
+      capture: {
+        baseCommit: "1".repeat(40),
+        auditedHead: "2".repeat(40),
+        auditedTree: "3".repeat(40),
+        workflowRunId: "10",
+        runAttempt: 1,
+        jobId: "11",
+        artifactId: "12",
+        artifactName: "activation-catalog-capture",
+      },
+      postgresImages: {
+        sourcePg16: `postgres:16@sha256:${"4".repeat(64)}`,
+        targetPg17: `postgres:17@sha256:${"5".repeat(64)}`,
+      },
+      reviewResult: "GO",
+      reviewDecisionId: "RR-RAW-GO",
+      projectionSha256: `sha256:${"6".repeat(64)}`,
+      liveCatalogDigest: `sha256:${"7".repeat(64)}`,
+      postManifestIdentity: `sha256:${"8".repeat(64)}`,
+      recoveryWitnessSha256: "9".repeat(64),
+      canonicalDigests: {
+        preactivation: `sha256:${"a".repeat(64)}`,
+        activated: `sha256:${"b".repeat(64)}`,
+        artifact: `sha256:${"c".repeat(64)}`,
+      },
+      generatedArtifactSource: { bytes: 1000, sha256: "d".repeat(64) },
+    };
+    const {
+      kind: _kind,
+      version: _version,
+      captureSetSha256: _set,
+      ...material
+    } = raw;
+    raw.captureSetSha256 = `sha256:${sha256Canonical(material)}`;
+    expect(() => assertActivationCatalogRawCaptureEvidence(raw)).not.toThrow();
+    expect(() =>
+      assertActivationCatalogRawCaptureEvidence({ ...raw, version: 2 }),
+    ).toThrow("activation_catalog_policy_raw_capture_evidence_invalid");
+    expect(() =>
+      assertActivationCatalogPolicyPromotionProvenance(raw, expected),
+    ).toThrow("activation_catalog_policy_promotion_provenance_invalid");
   });
 });

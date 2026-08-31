@@ -1,3 +1,5 @@
+import { sha256Canonical } from "./canonical-json";
+
 export type ActivationCatalogPolicyPromotionExpectation = Readonly<{
   readinessReason: string;
   evidenceContractVersion: 2;
@@ -39,6 +41,40 @@ export type ActivationCatalogPolicyPromotionExpectation = Readonly<{
   artifactCanonicalSha256: string;
   generatedArtifactSourceBytes: number;
   generatedArtifactSourceSha256: string;
+}>;
+
+export type ActivationCatalogRawCaptureEvidence = Readonly<{
+  kind: "reviewrouter-activation-catalog-raw-capture-evidence";
+  version: 1;
+  selectedCaptureId: string;
+  captureSetSha256: string;
+  captures: readonly [
+    Readonly<{ label: string; bytes: number; sha256: string }>,
+    Readonly<{ label: string; bytes: number; sha256: string }>,
+  ];
+  capture: Readonly<{
+    baseCommit: string;
+    auditedHead: string;
+    auditedTree: string;
+    workflowRunId: string;
+    runAttempt: number;
+    jobId: string;
+    artifactId: string;
+    artifactName: string;
+  }>;
+  postgresImages: Readonly<{ sourcePg16: string; targetPg17: string }>;
+  reviewResult: "GO";
+  reviewDecisionId: string;
+  projectionSha256: string;
+  liveCatalogDigest: string;
+  postManifestIdentity: string;
+  recoveryWitnessSha256: string;
+  canonicalDigests: Readonly<{
+    preactivation: string;
+    activated: string;
+    artifact: string;
+  }>;
+  generatedArtifactSource: Readonly<{ bytes: number; sha256: string }>;
 }>;
 
 export type ActivationCatalogPolicyTrustRootReadiness = Readonly<{
@@ -348,6 +384,129 @@ export function activationCatalogPolicyTrustRootReadinessFromProvenance(
   } catch {
     return blocked("activation-catalog-policy-provenance-invalid");
   }
+}
+
+export function assertActivationCatalogRawCaptureEvidence(
+  value: unknown,
+): asserts value is ActivationCatalogRawCaptureEvidence {
+  if (
+    !exactRecord(value, [
+      "kind",
+      "version",
+      "selectedCaptureId",
+      "captureSetSha256",
+      "captures",
+      "capture",
+      "postgresImages",
+      "reviewResult",
+      "reviewDecisionId",
+      "projectionSha256",
+      "liveCatalogDigest",
+      "postManifestIdentity",
+      "recoveryWitnessSha256",
+      "canonicalDigests",
+      "generatedArtifactSource",
+    ]) ||
+    value.kind !== "reviewrouter-activation-catalog-raw-capture-evidence" ||
+    value.version !== 1 ||
+    !Array.isArray(value.captures) ||
+    value.captures.length !== 2
+  )
+    throw new Error("activation_catalog_policy_raw_capture_evidence_invalid");
+
+  const captures = value.captures;
+  const {
+    kind: _kind,
+    version: _version,
+    captureSetSha256: _captureSet,
+    ...captureSetMaterial
+  } = value;
+  if (
+    captures.some(
+      (capture) =>
+        !exactRecord(capture, ["label", "bytes", "sha256"]) ||
+        typeof capture.label !== "string" ||
+        !label.test(capture.label) ||
+        typeof capture.bytes !== "number" ||
+        !Number.isSafeInteger(capture.bytes) ||
+        capture.bytes < 1 ||
+        capture.bytes > 16 * 1024 * 1024 ||
+        typeof capture.sha256 !== "string" ||
+        !sha256.test(capture.sha256),
+    ) ||
+    captures[0].label === captures[1].label ||
+    value.selectedCaptureId !== captures[0].label ||
+    value.captureSetSha256 !== `sha256:${sha256Canonical(captureSetMaterial)}`
+  )
+    throw new Error("activation_catalog_policy_raw_capture_evidence_invalid");
+
+  const capture = value.capture;
+  if (
+    !exactRecord(capture, [
+      "baseCommit",
+      "auditedHead",
+      "auditedTree",
+      "workflowRunId",
+      "runAttempt",
+      "jobId",
+      "artifactId",
+      "artifactName",
+    ]) ||
+    typeof capture.baseCommit !== "string" ||
+    !commitSha.test(capture.baseCommit) ||
+    typeof capture.auditedHead !== "string" ||
+    !commitSha.test(capture.auditedHead) ||
+    capture.baseCommit === capture.auditedHead ||
+    typeof capture.auditedTree !== "string" ||
+    !treeSha.test(capture.auditedTree) ||
+    typeof capture.workflowRunId !== "string" ||
+    !decimalId.test(capture.workflowRunId) ||
+    typeof capture.runAttempt !== "number" ||
+    !Number.isSafeInteger(capture.runAttempt) ||
+    capture.runAttempt < 1 ||
+    typeof capture.jobId !== "string" ||
+    !decimalId.test(capture.jobId) ||
+    typeof capture.artifactId !== "string" ||
+    !decimalId.test(capture.artifactId) ||
+    typeof capture.artifactName !== "string" ||
+    !label.test(capture.artifactName) ||
+    !exactRecord(value.postgresImages, ["sourcePg16", "targetPg17"]) ||
+    typeof value.postgresImages.sourcePg16 !== "string" ||
+    !image.test(value.postgresImages.sourcePg16) ||
+    typeof value.postgresImages.targetPg17 !== "string" ||
+    !image.test(value.postgresImages.targetPg17) ||
+    value.reviewResult !== "GO" ||
+    typeof value.reviewDecisionId !== "string" ||
+    !label.test(value.reviewDecisionId)
+  )
+    throw new Error("activation_catalog_policy_raw_capture_evidence_invalid");
+
+  if (
+    ![
+      value.projectionSha256,
+      value.liveCatalogDigest,
+      value.postManifestIdentity,
+    ].every(
+      (entry) => typeof entry === "string" && prefixedSha256.test(entry),
+    ) ||
+    typeof value.recoveryWitnessSha256 !== "string" ||
+    !sha256.test(value.recoveryWitnessSha256) ||
+    !exactRecord(value.canonicalDigests, [
+      "preactivation",
+      "activated",
+      "artifact",
+    ]) ||
+    !Object.values(value.canonicalDigests).every(
+      (entry) => typeof entry === "string" && prefixedSha256.test(entry),
+    ) ||
+    !exactRecord(value.generatedArtifactSource, ["bytes", "sha256"]) ||
+    typeof value.generatedArtifactSource.bytes !== "number" ||
+    !Number.isSafeInteger(value.generatedArtifactSource.bytes) ||
+    value.generatedArtifactSource.bytes < 1 ||
+    typeof value.generatedArtifactSource.sha256 !== "string" ||
+    !sha256.test(value.generatedArtifactSource.sha256)
+  )
+    throw new Error("activation_catalog_policy_raw_capture_evidence_invalid");
 }
 
 export function assertActivationCatalogPolicyPromotionProvenance(

@@ -194,7 +194,9 @@ jobs:
           node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-policy-candidate-1.json
           export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b"
           node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-policy-candidate-2.json
-          node --input-type=module -e 'import fs from "node:fs"; const a=JSON.parse(fs.readFileSync("activation-catalog-policy-candidate-1.json","utf8")); const b=JSON.parse(fs.readFileSync("activation-catalog-policy-candidate-2.json","utf8")); if (JSON.stringify(a.policies)!==JSON.stringify(b.policies)) throw new Error("activation catalog policy captures differ")'
+          node scripts/lib/activation-catalog-capture-pair.mjs \
+            activation-catalog-policy-candidate-1.json \
+            activation-catalog-policy-candidate-2.json
           sha256sum activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json
       - name: Upload activation catalog policy captures
         if: ${{ inputs.activation_catalog_policy_capture }}
