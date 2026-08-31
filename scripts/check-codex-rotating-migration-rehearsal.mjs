@@ -2847,7 +2847,10 @@ function proveDatabasePrivileges(url) {
         ) INTO function_count, unsafe_function_count
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname = current_schema() AND p.proname LIKE 'codex_oauth_%';
+        WHERE n.nspname = current_schema()
+          AND p.proname = ANY (
+            ARRAY[${codexRotatingFunctions.map(quoteLiteral).join(", ")}]::text[]
+          );
         IF function_count <> ${codexRotatingFunctions.length} OR unsafe_function_count <> 0 THEN
           RAISE EXCEPTION 'Codex OAuth function privilege mismatch: %, %', function_count, unsafe_function_count;
         END IF;

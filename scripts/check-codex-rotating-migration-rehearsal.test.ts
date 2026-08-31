@@ -312,6 +312,16 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(new Set(codexRotatingFunctions).size).toBe(
       codexRotatingFunctions.length,
     );
+    expect(
+      codexRotatingFunctions.filter((name) => name.startsWith("codex_oauth_")),
+    ).toHaveLength(25);
+    expect(codexRotatingFunctions).toContain(
+      "hosted_codex_comment_token_authority_revoke_enqueue",
+    );
+    expect(source).toContain(
+      'ARRAY[${codexRotatingFunctions.map(quoteLiteral).join(", ")}]::text[]',
+    );
+    expect(source).not.toContain("p.proname LIKE 'codex_oauth_%'");
     expect(source).toContain(
       "IF function_count <> ${codexRotatingFunctions.length} OR unsafe_function_count <> 0 THEN",
     );
