@@ -913,6 +913,9 @@ describe("disposable dual-version rehearsal", () => {
       calls.push("rollout-use-case-cas");
       return migratedRollout;
     });
+    const prepareCapture = vi.fn(async () => {
+      calls.push("prepare-capture");
+    });
     const captureCandidate = vi.fn(async () => {
       calls.push("capture-candidate");
       return candidate;
@@ -932,6 +935,7 @@ describe("disposable dual-version rehearsal", () => {
         rollout: { phase: "pre-migration" },
         runStage,
         runReleaseMigration,
+        prepareCapture,
         captureCandidate,
         stageTargetServices,
       }),
@@ -944,11 +948,14 @@ describe("disposable dual-version rehearsal", () => {
       },
     });
     expect(calls).toEqual([
+      "stage:prepare_activation_catalog_capture",
+      "prepare-capture",
       "stage:run_release_migration",
       "rollout-use-case-cas",
       "stage:capture_activation_catalog_policy",
       "capture-candidate",
     ]);
+    expect(prepareCapture).toHaveBeenCalledOnce();
     expect(runReleaseMigration).toHaveBeenCalledOnce();
     expect(stageTargetServices).not.toHaveBeenCalled();
   });
@@ -956,6 +963,7 @@ describe("disposable dual-version rehearsal", () => {
     const candidate = Object.freeze({ kind: "candidate", version: 1 });
     const captureCandidate = vi.fn(async () => candidate);
     const stageTargetServices = vi.fn();
+    const prepareCapture = vi.fn();
     const runReleaseMigration = vi.fn(async () => {
       throw new Error("activation_catalog_policy_capture_ready");
     });
@@ -966,12 +974,35 @@ describe("disposable dual-version rehearsal", () => {
         rollout: { phase: "pre-migration" },
         runStage: vi.fn(async (_name, operation) => operation()),
         runReleaseMigration,
+        prepareCapture,
         captureCandidate,
         stageTargetServices,
       }),
     ).resolves.toEqual({ mode: "capture-only", candidate });
+    expect(prepareCapture).toHaveBeenCalledOnce();
     expect(captureCandidate).toHaveBeenCalledOnce();
     expect(stageTargetServices).not.toHaveBeenCalled();
+  });
+  it("fails closed before migration when capture attestation preparation fails", async () => {
+    const failure = new Error("capture_attestation_preparation_failed");
+    const runReleaseMigration = vi.fn();
+    const captureCandidate = vi.fn();
+
+    await expect(
+      runRehearsalReleaseMigration({
+        captureOnly: { disposableDatabaseIdentity: "rr-disposable-test" },
+        rollout: { phase: "pre-migration" },
+        runStage: vi.fn(async (_name, operation) => operation()),
+        runReleaseMigration,
+        prepareCapture: vi.fn(async () => {
+          throw failure;
+        }),
+        captureCandidate,
+        stageTargetServices: vi.fn(),
+      }),
+    ).rejects.toBe(failure);
+    expect(runReleaseMigration).not.toHaveBeenCalled();
+    expect(captureCandidate).not.toHaveBeenCalled();
   });
   it("keeps normal migration in the rollout use case and stages its result", async () => {
     const preMigrationRollout = Object.freeze({ phase: "pre-migration" });
@@ -995,6 +1026,7 @@ describe("disposable dual-version rehearsal", () => {
     });
     const stagedRollout = Object.freeze({ phase: "staged" });
     const runReleaseMigration = vi.fn(async () => migratedRollout);
+    const prepareCapture = vi.fn();
     const captureCandidate = vi.fn();
     const stageTargetServices = vi.fn(async () => stagedRollout);
     const runStage = vi.fn(async (_name, operation) => operation());
@@ -1005,6 +1037,7 @@ describe("disposable dual-version rehearsal", () => {
         rollout: preMigrationRollout,
         runStage,
         runReleaseMigration,
+        prepareCapture,
         captureCandidate,
         stageTargetServices,
       }),
@@ -1014,6 +1047,7 @@ describe("disposable dual-version rehearsal", () => {
       runReleaseMigration,
     );
     expect(runReleaseMigration).toHaveBeenCalledOnce();
+    expect(prepareCapture).not.toHaveBeenCalled();
     expect(captureCandidate).not.toHaveBeenCalled();
     expect(stageTargetServices).toHaveBeenCalledWith(migratedRollout);
   });
@@ -1717,6 +1751,9 @@ describe("disposable dual-version rehearsal", () => {
     const releaseMigration = source.indexOf(
       "migratedRollout = await runStage(",
     );
+    const capturePreparation = source.indexOf(
+      '"prepare_activation_catalog_capture"',
+    );
     const capture = source.indexOf(
       '"capture_activation_catalog_policy_candidate"',
     );
@@ -1745,12 +1782,13 @@ describe("disposable dual-version rehearsal", () => {
     );
     const activate = source.indexOf('runStage("activate_target_generation"');
     expect(releaseMigration).toBeGreaterThan(-1);
-    expect(releaseMigration).toBeLessThan(marker);
-    expect(releaseMigration).toBeLessThan(fixtureCleanup);
+    expect(capturePreparation).toBeGreaterThan(-1);
+    expect(capturePreparation).toBeLessThan(releaseMigration);
     expect(marker).toBeLessThan(fixtureCleanup);
     expect(fixtureCleanup).toBeLessThan(capture);
     expect(capture).toBeLessThan(stageTarget);
     expect(stageTarget).toBeLessThan(activate);
+    expect(marker).toBeLessThan(capture);
     const fixtureCleanupBranch = source.slice(
       fixtureCleanup,
       source.indexOf("const stdout = canonicalRun(", fixtureCleanup),
@@ -1776,6 +1814,11 @@ describe("disposable dual-version rehearsal", () => {
     );
     expect(captureBranch).not.toContain("install_activation_permit");
     expect(captureBranch).not.toContain("executePrivateGenerationActivation");
+    expect(
+      source.match(
+        /canonicalRun\(\s*"mark_disposable_activation_catalog_database"/gu,
+      ),
+    ).toHaveLength(1);
     expect(source).not.toContain("rehearsal_capture_debug_");
   });
 });

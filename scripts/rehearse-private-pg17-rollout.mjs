@@ -542,10 +542,13 @@ export async function runRehearsalReleaseMigration({
   captureOnly,
   runStage,
   runReleaseMigration,
+  prepareCapture,
   captureCandidate,
   stageTargetServices,
 }) {
   let migratedRollout;
+  if (captureOnly)
+    await runStage("prepare_activation_catalog_capture", prepareCapture);
   try {
     migratedRollout = await runStage(
       "run_release_migration",
@@ -3907,6 +3910,7 @@ COMMIT;
   ({ rollout } = await runStage("provision_cutover_runner", () =>
     useCases.provisionCutoverRunner(rollout),
   ));
+  const captureIdentity = facts.captureOnly?.disposableDatabaseIdentity;
   const postMigration = await runRehearsalReleaseMigration({
     captureOnly: facts.captureOnly,
     rollout,
@@ -3918,21 +3922,15 @@ COMMIT;
         );
       return useCases.runReleaseMigration(rollout, sourceLegacyAmbiguity);
     },
-    captureCandidate: () => {
-      const identity = facts.captureOnly.disposableDatabaseIdentity;
+    prepareCapture: () => {
       assertDisposableCaptureTarget({
         createdContainers: facts.createdContainers,
         sourceContainer: facts.sourceContainer,
         targetContainer: facts.targetContainer,
       });
       const attestationNonce = rawSha256(
-        `${identity}:${facts.targetSystemIdentifier}:${facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256}`,
+        `${captureIdentity}:${facts.targetSystemIdentifier}:${facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256}`,
       );
-      process.stderr.write("rehearsal_capture_substep_started:cleanup\n");
-      cleanupCaptureOnlyRehearsalFixtures({
-        executeSql: (statement) => facts.sql(facts.targetContainer, statement),
-      });
-      process.stderr.write("rehearsal_capture_substep_completed:cleanup\n");
       process.stderr.write("rehearsal_capture_substep_started:attestation\n");
       canonicalRun(
         "mark_disposable_activation_catalog_database",
@@ -3963,7 +3961,7 @@ BEGIN
   END IF;
   binding := jsonb_set(binding,'{disposableCaptureAttestation}',jsonb_build_object(
     'kind','reviewrouter-disposable-database-attestation-v1',
-    'identity','${identity}',
+    'identity','${captureIdentity}',
     'systemIdentifier',binding->>'systemIdentifier',
     'databaseOid',(SELECT oid::text FROM pg_database WHERE datname=current_database()),
     'recoveryWitnessSha256',binding->>'recoveryWitnessSha256',
@@ -3975,6 +3973,13 @@ $attest_disposable_capture_database$;\n`,
         },
       );
       process.stderr.write("rehearsal_capture_substep_completed:attestation\n");
+    },
+    captureCandidate: () => {
+      process.stderr.write("rehearsal_capture_substep_started:cleanup\n");
+      cleanupCaptureOnlyRehearsalFixtures({
+        executeSql: (statement) => facts.sql(facts.targetContainer, statement),
+      });
+      process.stderr.write("rehearsal_capture_substep_completed:cleanup\n");
       process.stderr.write("rehearsal_capture_substep_started:projection\n");
       const stdout = canonicalRun(
         "capture_activation_catalog_policy_candidate",
@@ -3992,7 +3997,7 @@ $attest_disposable_capture_database$;\n`,
           },
           input: canonicalActivationCatalogPolicyCandidateSql(
             disposableSqlConfiguration(),
-            identity,
+            captureIdentity,
           ),
         },
       );
