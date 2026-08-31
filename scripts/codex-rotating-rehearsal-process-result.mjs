@@ -45,9 +45,7 @@ function assertFailedResult(result, expectedFailures, message, expectation) {
   const structuredEvidence =
     Array.isArray(expectedFailures) &&
     expectedFailures.length > 0 &&
-    expectedFailures.every(
-      (failure) => failure && typeof failure === "object",
-    );
+    expectedFailures.every((failure) => failure && typeof failure === "object");
   const legacyMessages =
     Array.isArray(expectedFailures) &&
     expectedFailures.length > 0 &&
@@ -56,17 +54,17 @@ function assertFailedResult(result, expectedFailures, message, expectation) {
     );
   const legacyFailure = Boolean(
     legacyMessages &&
-      !rehearsalProcessTimedOut(result) &&
-      Number.isSafeInteger(result?.status) &&
-      result.status > 0 &&
-      result.status <= 255 &&
-      result.signal == null &&
-      result.error == null &&
-      expectedFailures.some((failure) =>
-        `${String(result.stdout ?? "")}${String(result.stderr ?? "")}`.includes(
-          failure,
-        ),
+    !rehearsalProcessTimedOut(result) &&
+    Number.isSafeInteger(result?.status) &&
+    result.status > 0 &&
+    result.status <= 255 &&
+    result.signal == null &&
+    result.error == null &&
+    expectedFailures.some((failure) =>
+      `${String(result.stdout ?? "")}${String(result.stderr ?? "")}`.includes(
+        failure,
       ),
+    ),
   );
   if (
     !(structuredEvidence

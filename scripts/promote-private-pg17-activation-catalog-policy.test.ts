@@ -1,13 +1,4 @@
-import {
-  copyFile,
-  mkdtemp,
-  readFile,
-  rm,
-  truncate,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   activationCatalogArtifactPath,
@@ -18,14 +9,10 @@ import {
   assertArtifactCandidate,
   assertActivationCatalogPolicyIndependentReviewEvidence,
   assertReviewedActivationCatalogPromotionProvenance,
-  canonicalActivationCatalogArtifactSourceFromRawCapture,
   promotePrivatePg17ActivationCatalogPolicy,
   reviewedActivationCatalogCandidate,
-  reviewedActivationCatalogCandidatePath,
 } from "./promote-private-pg17-activation-catalog-policy.mjs";
 import canonicalActivationCatalogPolicyArtifact from "../packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js";
-import { assertActivationCatalogLiveDigestTransitionBinding } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation";
-import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
 
 describe("activation catalog policy promotion", () => {
   it("pins the exact reviewed v29 candidate and operator opt-in", () => {
@@ -51,13 +38,20 @@ describe("activation catalog policy promotion", () => {
     });
   });
 
-  it("requires the exact operator promotion opt-in before reading input", async () => {
+  it("supersedes the legacy entrypoint before candidate reads or writes", async () => {
+    const artifactBefore = await readFile(activationCatalogArtifactPath);
     await expect(
       promotePrivatePg17ActivationCatalogPolicy({
-        env: {},
-        argv: ["--candidate", "/does/not/exist"],
+        env: {
+          REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION:
+            activationCatalogPromotionOptIn,
+        },
+        argv: ["--candidate", "/does/not/exist", "--write"],
       }),
-    ).rejects.toThrow("activation_catalog_policy_promotion_opt_in_required");
+    ).rejects.toThrow("activation_catalog_policy_legacy_promotion_superseded");
+    expect(
+      (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
+    ).toBe(true);
   });
 
   it("loads the exact code-owned raw promotion mode", () => {
@@ -135,20 +129,6 @@ describe("activation catalog policy promotion", () => {
     ).rejects.toThrow("activation_catalog_policy_promotion_candidate_required");
   });
 
-  it("refuses unreviewed candidate bytes", async () => {
-    await expect(
-      promotePrivatePg17ActivationCatalogPolicy({
-        env: {
-          REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION:
-            activationCatalogPromotionOptIn,
-        },
-        argv: ["--candidate", import.meta.filename],
-      }),
-    ).rejects.toThrow(
-      /activation_catalog_policy_promotion_candidate_(?:size|hash)_drift/u,
-    );
-  });
-
   it.each([
     ["missing", undefined],
     ["wrong", `sha256:${"b".repeat(64)}`],
@@ -186,57 +166,6 @@ describe("activation catalog policy promotion", () => {
     ).not.toThrow();
   });
 
-  it("derives a fresh artifact only from externally bound raw policies", async () => {
-    const evidence = {
-      canonicalDigests: {
-        preactivation:
-          reviewedActivationCatalogCandidate.preactivationCatalogPolicySha256,
-        activated:
-          reviewedActivationCatalogCandidate.activatedCatalogPolicySha256,
-        artifact: reviewedActivationCatalogCandidate.artifactCanonicalSha256,
-      },
-      generatedArtifactSource: {
-        bytes: 2_651_797,
-        sha256:
-          "cc9be40be941b6291013cdf921afa6db84ad9e615b988fe8ff7a24a387566fc3",
-      },
-    };
-    const generated = canonicalActivationCatalogArtifactSourceFromRawCapture(
-      { policies: canonicalActivationCatalogPolicyArtifact.policies },
-      evidence,
-    );
-    expect(
-      generated.equals(await readFile(activationCatalogArtifactPath)),
-    ).toBe(true);
-    expect(() =>
-      canonicalActivationCatalogArtifactSourceFromRawCapture(
-        { policies: canonicalActivationCatalogPolicyArtifact.policies },
-        {
-          ...evidence,
-          canonicalDigests: {
-            ...evidence.canonicalDigests,
-            artifact: `sha256:${"0".repeat(64)}`,
-          },
-        },
-      ),
-    ).toThrow("activation_catalog_policy_promotion_artifact_drift");
-  }, 60_000);
-
-  it("fails closed when the candidate and migration transition digests diverge", () => {
-    expect(() =>
-      assertActivationCatalogLiveDigestTransitionBinding(
-        reviewedActivationCatalogCandidate.liveCatalogDigest,
-        canonicalReleaseMigrationArtifact.postCatalogDigest,
-      ),
-    ).not.toThrow();
-    expect(() =>
-      assertActivationCatalogLiveDigestTransitionBinding(
-        reviewedActivationCatalogCandidate.liveCatalogDigest,
-        `sha256:${"f".repeat(64)}`,
-      ),
-    ).toThrow("activation_catalog_policy_live_digest_transition_drift");
-  });
-
   it("fails closed when reviewed projection source bindings drift", async () => {
     await expect(
       assertActivationCatalogPolicyReviewedSourceBindings(),
@@ -263,66 +192,4 @@ describe("activation catalog policy promotion", () => {
       assertActivationCatalogPolicyIndependentReviewEvidence(provenance),
     ).resolves.toBeUndefined();
   });
-
-  it("preserves the historical candidate but requires recapture after source drift", async () => {
-    const artifactBefore = await readFile(activationCatalogArtifactPath);
-    await expect(
-      promotePrivatePg17ActivationCatalogPolicy({
-        env: {
-          REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION:
-            activationCatalogPromotionOptIn,
-        },
-        argv: ["--candidate", reviewedActivationCatalogCandidatePath],
-      }),
-    ).rejects.toThrow("activation_catalog_policy_reviewed_source_drift");
-    expect(
-      (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
-    ).toBe(true);
-  }, 60_000);
-
-  it.each(["missing", "truncated", "modified"] as const)(
-    "fails closed for %s repository evidence without writing",
-    async (failure) => {
-      const temporaryDirectory = await mkdtemp(
-        join(tmpdir(), "reviewrouter-pr245-candidate-"),
-      );
-      const candidatePath = join(temporaryDirectory, "candidate.json");
-      const artifactBefore = await readFile(activationCatalogArtifactPath);
-      try {
-        if (failure !== "missing") {
-          await copyFile(reviewedActivationCatalogCandidatePath, candidatePath);
-          if (failure === "truncated") await truncate(candidatePath, 2_651_681);
-          else {
-            const modified = await readFile(candidatePath);
-            modified[Math.floor(modified.byteLength / 2)] ^= 1;
-            await writeFile(candidatePath, modified);
-          }
-        }
-
-        const attempt = promotePrivatePg17ActivationCatalogPolicy({
-          env: {
-            REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION:
-              activationCatalogPromotionOptIn,
-          },
-          argv: ["--candidate", candidatePath],
-        });
-        if (failure === "missing")
-          await expect(attempt).rejects.toMatchObject({ code: "ENOENT" });
-        else
-          await expect(attempt).rejects.toThrow(
-            `activation_catalog_policy_promotion_candidate_${
-              failure === "truncated" ? "size" : "hash"
-            }_drift`,
-          );
-        expect(
-          (await readFile(activationCatalogArtifactPath)).equals(
-            artifactBefore,
-          ),
-        ).toBe(true);
-      } finally {
-        await rm(temporaryDirectory, { recursive: true, force: true });
-      }
-    },
-    180_000,
-  );
 });
