@@ -70,6 +70,70 @@ export function assertExactPullRequestHead(
     throw new Error(input.errorCode);
 }
 
+export function assertExactReleasePullRequestRevision(
+  value: unknown,
+  input: {
+    pullRequestNumber: number;
+    releaseHeadSha: string;
+    repositoryFullName: string;
+    errorCode: string;
+  },
+) {
+  const pullRequest = value as any;
+  const headSha = pullRequest?.head?.sha;
+  const mergeCommitSha = pullRequest?.merge_commit_sha;
+  const repositoryFullName = pullRequest?.base?.repo?.full_name;
+  const shaPattern = /^[a-f0-9]{40}$/iu;
+  const expectedSha =
+    typeof input.releaseHeadSha === "string"
+      ? input.releaseHeadSha.toLowerCase()
+      : "";
+  const normalizedHeadSha =
+    typeof headSha === "string" ? headSha.toLowerCase() : "";
+  const normalizedMergeCommitSha =
+    typeof mergeCommitSha === "string" ? mergeCommitSha.toLowerCase() : "";
+  const identityMatches =
+    Number.isSafeInteger(input.pullRequestNumber) &&
+    input.pullRequestNumber > 0 &&
+    shaPattern.test(input.releaseHeadSha) &&
+    typeof input.repositoryFullName === "string" &&
+    input.repositoryFullName.length > 0 &&
+    pullRequest?.number === input.pullRequestNumber &&
+    typeof repositoryFullName === "string" &&
+    repositoryFullName.toLowerCase() ===
+      input.repositoryFullName.toLowerCase() &&
+    typeof headSha === "string" &&
+    shaPattern.test(headSha) &&
+    (mergeCommitSha === null ||
+      (typeof mergeCommitSha === "string" && shaPattern.test(mergeCommitSha)));
+  const isExactOpenHead =
+    pullRequest?.state === "open" &&
+    pullRequest?.merged === false &&
+    pullRequest?.merged_at === null &&
+    normalizedHeadSha === expectedSha &&
+    normalizedMergeCommitSha !== expectedSha;
+  const mergedAtValue = pullRequest?.merged_at;
+  const mergedAt =
+    typeof mergedAtValue === "string" ? new Date(mergedAtValue) : null;
+  const canonicalMergedAtValue =
+    typeof mergedAtValue === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(mergedAtValue)
+      ? `${mergedAtValue.slice(0, -1)}.000Z`
+      : mergedAtValue;
+  const isExactMergedRevision =
+    pullRequest?.state === "closed" &&
+    pullRequest?.merged === true &&
+    typeof mergedAtValue === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(mergedAtValue) &&
+    mergedAt !== null &&
+    Number.isFinite(mergedAt.getTime()) &&
+    mergedAt.toISOString() === canonicalMergedAtValue &&
+    typeof mergeCommitSha === "string" &&
+    normalizedMergeCommitSha === expectedSha;
+  if (!identityMatches || (!isExactOpenHead && !isExactMergedRevision))
+    throw new Error(input.errorCode);
+}
+
 export function assertFreshAttemptTwoRun(
   value: unknown,
   input: {
@@ -732,9 +796,9 @@ export function createGitHubHostedPoolCanaryPort(input: {
         "GET",
         `/repos/777genius/review-router-saas/pulls/${config.releasePullRequestNumber}`,
       );
-      assertExactPullRequestHead(releasePullRequest, {
+      assertExactReleasePullRequestRevision(releasePullRequest, {
         pullRequestNumber: config.releasePullRequestNumber,
-        headSha: config.releaseHeadSha,
+        releaseHeadSha: config.releaseHeadSha,
         repositoryFullName: "777genius/review-router-saas",
         errorCode: "hosted_pool_canary_release_pr_head_mismatch",
       });
