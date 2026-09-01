@@ -403,6 +403,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(proof).toContain(
       'admissionContract.stdout.trim() === "reviewrouter_web:1:1"',
     );
+    expect(proof).toMatch(
+      /const admissionContract = psql\(url, \[\s*"-qAtc",/u,
+    );
+    expect(proof).toMatch(
+      /const webAdmission = psql\(adminUrl, \[\s*"-qAtc",/u,
+    );
+    expect(proof).toMatch(
+      /const ownerHeld = psql\(\s*url,\s*\[\s*"-v",\s*"VERBOSITY=verbose",\s*"-v",\s*"SHOW_CONTEXT=never",\s*"-c",/u,
+    );
     expect(proof).toContain("migration89_exact_web_admission_unavailable");
     expect(proof).toContain(
       "CREATE ROLE reviewrouter_web NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",

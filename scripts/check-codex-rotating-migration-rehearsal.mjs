@@ -654,7 +654,7 @@ async function proveMigration89TwoSessionBoundary() {
     "public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer)";
   const proveCausalV4OwnershipFence = async (url) => {
     const admissionContract = psql(url, [
-      "-Atc",
+      "-qAtc",
       `${exactWebAdmission}
        SELECT concat_ws(':', session_user,
          (to_regprocedure(${quoteLiteral(migration89RoutineSignature)}) IS NOT NULL)::int,
@@ -677,6 +677,10 @@ async function proveMigration89TwoSessionBoundary() {
       const ownerHeld = psql(
         url,
         [
+          "-v",
+          "VERBOSITY=verbose",
+          "-v",
+          "SHOW_CONTEXT=never",
           "-c",
           `BEGIN;
            UPDATE public."CodexOAuthProviderInstance"
@@ -808,7 +812,7 @@ async function proveMigration89TwoSessionBoundary() {
         disposableWebRoleCreated = true;
       }
       const webAdmission = psql(adminUrl, [
-        "-Atc",
+        "-qAtc",
         `${exactWebAdmission} SELECT session_user`,
       ]);
       assert(
