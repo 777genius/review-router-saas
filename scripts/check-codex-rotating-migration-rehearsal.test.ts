@@ -372,6 +372,37 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(proof).not.toContain("child.stdin");
     expect(proof).not.toContain(".blockers.includes(");
     expect(proof).not.toContain('.includes("does not exist")');
+    expect(proof).toContain("await proveCausalV4OwnershipFence(url)");
+  });
+
+  it("causally distinguishes genuine V4 ownership from an ownership-clear control", () => {
+    const proof =
+      /async function proveMigration89TwoSessionBoundary\(\) \{([\s\S]+?)\n\}\n\nasync function proveMigrationSpecificLegacyBehavior/u.exec(
+        source,
+      )?.[1];
+    expect(proof).toBeDefined();
+    expect(proof).toContain(
+      'for (const mutationOwner of ["setup", "recovery"])',
+    );
+    expect(proof).toContain("installCausalV4Fixture(url, mutationOwner)");
+    expect(proof).toContain("'trusted_default_branch_revision',4,'900001'");
+    expect(proof).toContain('"mutationOwner"=${quoteLiteral(mutationOwner)}');
+    expect(proof).toContain(
+      "genuine V4 ${mutationOwner} ownership did not distinguish",
+    );
+    expect(proof).toContain('installCausalV4Fixture(url, "clear")');
+    expect(proof).toContain(
+      "migration89_genuine_v4_ownership_clear_control_failed",
+    );
+    expect(proof).toContain('stdout.trim() === "5:1:1"');
+    expect(proof).toContain("migration89-causal-winner-ready");
+    expect(proof).toContain(
+      "migration89_causal_loser_did_not_serialize_behind_winner",
+    );
+    expect(proof).toContain(
+      "same-current-routine concurrent loser did not fail exact stale",
+    );
+    expect(proof).not.toContain("pg_sleep");
   });
 
   it("exposes the disposable real-PG17 migration89 boundary phase", () => {
@@ -467,7 +498,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
-  it("acquires setup and recovery mutation ownership through the epoch fence", () => {
+  it("retains canonical post-transition setup and recovery stale probes", () => {
     const reattestationProof =
       /async function proveActiveNamespaceV4V5Reattestation\([\s\S]+?\n\}\n\nfunction assertVersionedNamespaceEvidenceRetained/u.exec(
         source,

@@ -377,7 +377,8 @@ async function proveMigration89TwoSessionBoundary() {
           "state" text NOT NULL, "activeSecretNamespaceId" text,
           "activeSecretNamespaceEpoch" bigint, "activeSecretNamespaceName" text,
           "latestGenerationHash" text, "mutationOwner" text,
-          "mutationOwnerId" text, "activeLeaseId" text
+          "mutationOwnerId" text, "mutationEpoch" bigint NOT NULL DEFAULT 0,
+          "activeLeaseId" text
         );
         CREATE TABLE public."CodexOAuthSecretNamespace" (
           "id" text PRIMARY KEY, "providerInstanceRowId" text NOT NULL,
@@ -420,12 +421,70 @@ async function proveMigration89TwoSessionBoundary() {
         );
         CREATE FUNCTION public."codex_oauth_v4_v5_reattestation_transition"(
           text,text,bigint,text,text,text,text,text,text,text,text,text,text,text,text
-        ) RETURNS text LANGUAGE sql IMMUTABLE AS 'SELECT ''transition''::text';
+        ) RETURNS text LANGUAGE sql IMMUTABLE AS $transition$
+          SELECT jsonb_build_array($1,$2,$3,$4,$5,$6,$7,4,5,$8,$9,$10,$11,
+                                   $12,$13,$14,$15)::text
+        $transition$;
+        CREATE FUNCTION public."codex_oauth_consume_database_authority"(
+          target_effect text, target_owner_id text, target_effect_code integer
+        ) RETURNS boolean LANGUAGE plpgsql AS $consume$
+        DECLARE affected_count integer;
+        BEGIN
+          UPDATE public."CodexOAuthDatabaseAuthorityReceipt"
+          SET "consumedAt"=clock_timestamp()
+          WHERE "databaseRole"=session_user
+            AND "backendPid"=pg_backend_pid()
+            AND "transactionId"=txid_current()
+            AND "effect"=target_effect AND "ownerId"=target_owner_id
+            AND "effectCode"=target_effect_code AND "consumedAt" IS NULL;
+          GET DIAGNOSTICS affected_count = ROW_COUNT;
+          RETURN affected_count = 1;
+        END $consume$;
+        CREATE FUNCTION public."codex_oauth_secret_namespace_tombstone_guard"()
+        RETURNS trigger LANGUAGE plpgsql AS $guard$
+        BEGIN
+          IF OLD."status"='active' AND NEW."status"='active'
+             AND OLD."workflowSchemaVersion"=4
+             AND NEW."workflowSchemaVersion"=5
+             AND NOT public."codex_oauth_consume_database_authority"(
+               'active_namespace_v4_v5_reattestation',
+               public."codex_oauth_v4_v5_reattestation_transition"(
+                 OLD."providerInstanceRowId",OLD."id",OLD."namespaceEpoch",
+                 OLD."secretName",OLD."githubRepositoryId",OLD."workflowPath",
+                 OLD."workflowSourceTrust",OLD."workflowSourceCommitSha",
+                 OLD."workflowSourceBlobSha",OLD."workflowSourceSha256",
+                 OLD."workflowSemanticSha256",NEW."workflowSourceCommitSha",
+                 NEW."workflowSourceBlobSha",NEW."workflowSourceSha256",
+                 NEW."workflowSemanticSha256"), 0)
+          THEN
+            RAISE EXCEPTION 'codex_oauth_secret_namespace_identity_immutable'
+              USING ERRCODE='23514';
+          END IF;
+          RETURN NEW;
+        END $guard$;
+        CREATE TRIGGER "CodexOAuthSecretNamespace_tombstone_guard"
+        BEFORE UPDATE ON public."CodexOAuthSecretNamespace"
+        FOR EACH ROW EXECUTE FUNCTION public."codex_oauth_secret_namespace_tombstone_guard"();
         CREATE FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(
           text,text,text,text,bigint,text,text,text,text,text,integer,integer,
           text,text,text,text,text,text,text,text
         ) RETURNS void LANGUAGE plpgsql AS $old$
         BEGIN
+          INSERT INTO public."CodexOAuthDatabaseAuthorityReceipt" (
+            "databaseRole","backendPid","transactionId","effect","ownerId","effectCode"
+          )
+          SELECT session_user,pg_backend_pid(),txid_current(),
+            'active_namespace_v4_v5_reattestation',
+            public."codex_oauth_v4_v5_reattestation_transition"(
+              namespace."providerInstanceRowId",namespace."id",namespace."namespaceEpoch",
+              namespace."secretName",namespace."githubRepositoryId",namespace."workflowPath",
+              namespace."workflowSourceTrust",namespace."workflowSourceCommitSha",
+              namespace."workflowSourceBlobSha",namespace."workflowSourceSha256",
+              namespace."workflowSemanticSha256",namespace."workflowSourceCommitSha",
+              namespace."workflowSourceBlobSha",namespace."workflowSourceSha256",
+              namespace."workflowSemanticSha256"),0
+          FROM public."CodexOAuthSecretNamespace" namespace
+          WHERE namespace."id"='namespace';
           UPDATE public."CodexOAuthSecretNamespace"
           SET "workflowSchemaVersion"=5 WHERE "id"='namespace';
           -- A relation-backed latch is not an execution barrier here: routine
@@ -545,6 +604,165 @@ async function proveMigration89TwoSessionBoundary() {
     message: "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
     routine: "exec_stmt_raise",
   });
+  const exactStaleFailure = Object.freeze({
+    sqlState: "40001",
+    message: "codex_oauth_active_namespace_reattestation_stale",
+    routine: "exec_stmt_raise",
+  });
+  const installCausalV4Fixture = (url, suffix) => {
+    const result = psql(url, [
+      "-c",
+      `INSERT INTO public."CodexOAuthProviderInstance" (
+         "id","repositoryId","state","activeSecretNamespaceId",
+         "activeSecretNamespaceEpoch","activeSecretNamespaceName",
+         "latestGenerationHash","mutationEpoch"
+       ) VALUES ('provider-${suffix}','repository','active','namespace-${suffix}',
+         2,'secret-${suffix}',repeat('e',64),1);
+       INSERT INTO public."CodexOAuthSecretNamespace" (
+         "id","providerInstanceRowId","githubRepositoryId","namespaceEpoch",
+         "secretName","status","workflowPath","workflowSourceCommitSha",
+         "workflowSourceBlobSha","workflowSourceSha256","workflowSemanticSha256",
+         "workflowSourceTrust","workflowSchemaVersion","attestedRepositoryId"
+       ) VALUES ('namespace-${suffix}','provider-${suffix}','900001',2,
+         'secret-${suffix}','active','.github/workflows/reviewrouter-codex.yml',
+         repeat('a',40),repeat('b',40),repeat('c',64),repeat('d',64),
+         'trusted_default_branch_revision',4,'900001');
+       INSERT INTO public."CodexOAuthSetupPayloadClaim" (
+         "id","providerInstanceRowId","githubRepositoryId","generationHash",
+         "status","confirmedAttemptId"
+       ) VALUES ('claim-${suffix}','provider-${suffix}','900001',repeat('e',64),
+         'active','attempt-${suffix}');
+       INSERT INTO public."CodexOAuthSetupDispatchAttempt" (
+         "id","claimId","namespaceId","status"
+       ) VALUES ('attempt-${suffix}','claim-${suffix}','namespace-${suffix}','confirmed');`,
+    ]);
+    assert(
+      result.status === 0 && !result.error,
+      `migration89_causal_fixture_install_failed:${psqlResultDiagnostic(result)}`,
+    );
+  };
+  const causalCall = (suffix, digit) =>
+    `public."codex_oauth_reattest_active_namespace_v4_to_v5"(
+      'provider-${suffix}','claim-${suffix}','attempt-${suffix}',
+      'namespace-${suffix}',2::bigint,'secret-${suffix}','900001',repeat('e',64),
+      '.github/workflows/reviewrouter-codex.yml','trusted_default_branch_revision',
+      4,5,repeat('a',40),repeat('b',40),repeat('c',64),repeat('d',64),
+      repeat('${digit}',40),repeat('${digit}',40),repeat('${digit}',64),
+      repeat('${digit}',64),90000)`;
+  const admittedSessionPrefix = (url) =>
+    psql(url, [
+      "-Atc",
+      "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='reviewrouter_web')::int",
+    ]).stdout.trim() === "1"
+      ? "SET SESSION AUTHORIZATION reviewrouter_web;"
+      : "";
+  const proveCausalV4OwnershipFence = async (url) => {
+    const admission = admittedSessionPrefix(url);
+    for (const mutationOwner of ["setup", "recovery"]) {
+      installCausalV4Fixture(url, mutationOwner);
+      const mutationOwnerId =
+        mutationOwner === "setup"
+          ? `claim-${mutationOwner}`
+          : `setup-recovery:causal-${mutationOwner}`;
+      const ownerHeld = psql(
+        url,
+        [
+          "-c",
+          `BEGIN;
+           UPDATE public."CodexOAuthProviderInstance"
+           SET "mutationEpoch"="mutationEpoch"+1,
+               "mutationOwner"=${quoteLiteral(mutationOwner)},
+               "mutationOwnerId"=${quoteLiteral(mutationOwnerId)}
+           WHERE "id"='provider-${mutationOwner}';
+           ${admission}
+           SELECT ${causalCall(mutationOwner, "f")};`,
+        ],
+        false,
+      );
+      assertPsqlFailedWithExactMessage(
+        ownerHeld,
+        exactStaleFailure,
+        `genuine V4 ${mutationOwner} ownership did not distinguish and fence re-attestation`,
+      );
+    }
+
+    installCausalV4Fixture(url, "clear");
+    const clearControl = psql(url, [
+      "-c",
+      `${admission} SELECT ${causalCall("clear", "f")}`,
+    ]);
+    assert(
+      clearControl.status === 0 && !clearControl.error,
+      `migration89_genuine_v4_ownership_clear_control_failed:${psqlResultDiagnostic(clearControl)}`,
+    );
+    assert(
+      psql(url, [
+        "-Atc",
+        `SELECT concat_ws(':', namespace."workflowSchemaVersion",
+          (compatibility."namespaceId" IS NOT NULL)::int,
+          (receipt."consumedAt" IS NOT NULL)::int)
+         FROM public."CodexOAuthSecretNamespace" namespace
+         LEFT JOIN public."CodexOAuthWorkflowCompatibility" compatibility
+           ON compatibility."namespaceId"=namespace."id"
+         LEFT JOIN public."CodexOAuthDatabaseAuthorityReceipt" receipt
+           ON receipt."ownerId" LIKE '%provider-clear%'
+         WHERE namespace."id"='namespace-clear'`,
+      ]).stdout.trim() === "5:1:1",
+      "migration89 genuine V4 ownership-clear control did not retain exact transition evidence",
+    );
+
+    installCausalV4Fixture(url, "concurrent");
+    const winnerUrl = new URL(String(url));
+    winnerUrl.searchParams.set("application_name", "rr-m89-causal-winner");
+    const winner = spawnPsql(winnerUrl, ["-qAt"], true);
+    winner.write(
+      `BEGIN; ${admission} SELECT ${causalCall("concurrent", "7")}; SELECT 'migration89-causal-winner-ready';\n`,
+    );
+    const winnerDeadline = Date.now() + 5_000;
+    while (!winner.stdout().includes("migration89-causal-winner-ready")) {
+      assert(
+        winner.unavailableResult() === undefined && Date.now() < winnerDeadline,
+        "migration89_causal_winner_did_not_reach_transaction_hold",
+      );
+      await delay(25);
+    }
+    const loserUrl = new URL(String(url));
+    loserUrl.searchParams.set("application_name", "rr-m89-causal-loser");
+    const loser = spawnPsql(loserUrl, [
+      "-c",
+      `${admission} SELECT ${causalCall("concurrent", "8")}`,
+    ]);
+    const loserDeadline = Date.now() + 5_000;
+    while (
+      psql(url, [
+        "-Atc",
+        `SELECT count(*) FROM pg_stat_activity
+         WHERE application_name='rr-m89-causal-loser'
+           AND wait_event_type='Lock'
+           AND cardinality(pg_blocking_pids(pid)) > 0`,
+      ]).stdout.trim() !== "1"
+    ) {
+      assert(
+        loser.unavailableResult() === undefined && Date.now() < loserDeadline,
+        "migration89_causal_loser_did_not_serialize_behind_winner",
+      );
+      await delay(25);
+    }
+    winner.end("COMMIT;\n\\q\n");
+    const [winnerResult, loserResult] = await Promise.all([
+      winner.result,
+      loser.result,
+    ]);
+    assert(
+      winnerResult.status === 0 && !winnerResult.error,
+      `migration89_causal_winner_failed:${psqlResultDiagnostic(winnerResult)}`,
+    );
+    assertPsqlFailedWithExactMessage(
+      loserResult,
+      exactStaleFailure,
+      "same-current-routine concurrent loser did not fail exact stale",
+    );
+  };
 
   for (const ordering of ["old_invocation_first", "migration_boundary_first"]) {
     const name = `${databaseName}_migration89_${ordering}`;
@@ -774,6 +992,7 @@ async function proveMigration89TwoSessionBoundary() {
           compatibilityPredecessorFailure,
           "old invocation crossed the committed migration89 boundary",
         );
+        await proveCausalV4OwnershipFence(url);
       }
     } finally {
       const unsettled = [...spawned];
