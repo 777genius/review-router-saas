@@ -330,14 +330,14 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
 
   it("runs the exact migration89 SQL in two PG17 sessions for both lock orderings", () => {
     expect(source).toContain("await proveMigration89TwoSessionBoundary()");
-    expect(source).toContain(
-      'for (const ordering of ["old_invocation_first", "migration_boundary_first"])',
+    expect(source).toMatch(
+      /for \(const ordering of \[\s*"old_invocation_first",\s*"migration_boundary_first",?\s*\]\)/u,
     );
     expect(source).toContain('spawnPsql(migrationUrl, ["-f", migration89])');
     expect(source).toContain(
       'LOCK TABLE public."CodexOAuthSecretNamespace" IN ROW EXCLUSIVE MODE',
     );
-    expect(source).toContain('"ShareRowExclusiveLock",\n              false');
+    expect(source).toMatch(/"ShareRowExclusiveLock",\s*false/u);
     expect(source).toContain(
       "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
     );
@@ -375,12 +375,40 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(proof).toContain("await proveCausalV4OwnershipFence(url)");
   });
 
-  it("causally distinguishes genuine V4 ownership from an ownership-clear control", () => {
+  it("causally distinguishes genuine V4 ownership through exact web admission", () => {
     const proof =
       /async function proveMigration89TwoSessionBoundary\(\) \{([\s\S]+?)\n\}\n\nasync function proveMigrationSpecificLegacyBehavior/u.exec(
         source,
       )?.[1];
     expect(proof).toBeDefined();
+    expect(proof).toContain(
+      'const exactWebAdmission = "SET SESSION AUTHORIZATION reviewrouter_web;"',
+    );
+    expect(proof).not.toContain("admittedSessionPrefix");
+    expect(proof).not.toMatch(
+      /SET SESSION AUTHORIZATION reviewrouter_web;["'`]\s*:\s*["'`]["'`]/u,
+    );
+    expect(proof?.match(/\$\{exactWebAdmission\}/gu)).toHaveLength(6);
+    expect(proof).toContain(
+      '"public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer)"',
+    );
+    const causalCall =
+      /const causalCall = \(suffix, digit\) =>([\s\S]+?)\n[ ]{2}const exactWebAdmission/u.exec(
+        proof ?? "",
+      )?.[1];
+    expect(causalCall).toBeDefined();
+    expect(causalCall).toMatch(
+      /'provider-\$\{suffix\}','claim-\$\{suffix\}','attempt-\$\{suffix\}',\s*'namespace-\$\{suffix\}',2::bigint,'secret-\$\{suffix\}','900001',repeat\('e',64\),\s*'\.github\/workflows\/reviewrouter-codex\.yml','trusted_default_branch_revision',\s*4,5,repeat\('a',40\),repeat\('b',40\),repeat\('c',64\),repeat\('d',64\),\s*repeat\('\$\{digit\}',40\),repeat\('\$\{digit\}',40\),repeat\('\$\{digit\}',64\),\s*repeat\('\$\{digit\}',64\),90000\)/u,
+    );
+    expect(proof).toContain(
+      'admissionContract.stdout.trim() === "reviewrouter_web:1:1"',
+    );
+    expect(proof).toContain("migration89_exact_web_admission_unavailable");
+    expect(proof).toContain(
+      "CREATE ROLE reviewrouter_web NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
+    expect(proof).toContain("DROP ROLE reviewrouter_web");
+    expect(proof).toContain("const dropWebRole = disposableWebRoleCreated");
     expect(proof).toContain(
       'for (const mutationOwner of ["setup", "recovery"])',
     );
@@ -395,6 +423,14 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "migration89_genuine_v4_ownership_clear_control_failed",
     );
     expect(proof).toContain('stdout.trim() === "5:1:1"');
+    expect(proof).toContain("\"databaseRole\"='reviewrouter_web'");
+    expect(proof).toContain(
+      "\"effect\"='active_namespace_v4_v5_reattestation'",
+    );
+    expect(proof).toContain(
+      "\"ownerId\"=jsonb_build_array(\n               'provider-clear','namespace-clear',2::bigint",
+    );
+    expect(proof).toContain('AND "effectCode"=0 AND "consumedAt" IS NOT NULL');
     expect(proof).toContain("migration89-causal-winner-ready");
     expect(proof).toContain(
       "migration89_causal_loser_did_not_serialize_behind_winner",

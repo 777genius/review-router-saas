@@ -649,15 +649,25 @@ async function proveMigration89TwoSessionBoundary() {
       4,5,repeat('a',40),repeat('b',40),repeat('c',64),repeat('d',64),
       repeat('${digit}',40),repeat('${digit}',40),repeat('${digit}',64),
       repeat('${digit}',64),90000)`;
-  const admittedSessionPrefix = (url) =>
-    psql(url, [
-      "-Atc",
-      "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='reviewrouter_web')::int",
-    ]).stdout.trim() === "1"
-      ? "SET SESSION AUTHORIZATION reviewrouter_web;"
-      : "";
+  const exactWebAdmission = "SET SESSION AUTHORIZATION reviewrouter_web;";
+  const migration89RoutineSignature =
+    "public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer)";
   const proveCausalV4OwnershipFence = async (url) => {
-    const admission = admittedSessionPrefix(url);
+    const admissionContract = psql(url, [
+      "-Atc",
+      `${exactWebAdmission}
+       SELECT concat_ws(':', session_user,
+         (to_regprocedure(${quoteLiteral(migration89RoutineSignature)}) IS NOT NULL)::int,
+         has_function_privilege(
+           'reviewrouter_web',${quoteLiteral(migration89RoutineSignature)},'EXECUTE'
+         )::int)`,
+    ]);
+    assert(
+      admissionContract.status === 0 &&
+        !admissionContract.error &&
+        admissionContract.stdout.trim() === "reviewrouter_web:1:1",
+      `migration89_exact_web_admission_unavailable:${psqlResultDiagnostic(admissionContract)}`,
+    );
     for (const mutationOwner of ["setup", "recovery"]) {
       installCausalV4Fixture(url, mutationOwner);
       const mutationOwnerId =
@@ -674,7 +684,7 @@ async function proveMigration89TwoSessionBoundary() {
                "mutationOwner"=${quoteLiteral(mutationOwner)},
                "mutationOwnerId"=${quoteLiteral(mutationOwnerId)}
            WHERE "id"='provider-${mutationOwner}';
-           ${admission}
+           ${exactWebAdmission}
            SELECT ${causalCall(mutationOwner, "f")};`,
         ],
         false,
@@ -689,7 +699,7 @@ async function proveMigration89TwoSessionBoundary() {
     installCausalV4Fixture(url, "clear");
     const clearControl = psql(url, [
       "-c",
-      `${admission} SELECT ${causalCall("clear", "f")}`,
+      `${exactWebAdmission} SELECT ${causalCall("clear", "f")}`,
     ]);
     assert(
       clearControl.status === 0 && !clearControl.error,
@@ -698,15 +708,21 @@ async function proveMigration89TwoSessionBoundary() {
     assert(
       psql(url, [
         "-Atc",
-        `SELECT concat_ws(':', namespace."workflowSchemaVersion",
-          (compatibility."namespaceId" IS NOT NULL)::int,
-          (receipt."consumedAt" IS NOT NULL)::int)
-         FROM public."CodexOAuthSecretNamespace" namespace
-         LEFT JOIN public."CodexOAuthWorkflowCompatibility" compatibility
-           ON compatibility."namespaceId"=namespace."id"
-         LEFT JOIN public."CodexOAuthDatabaseAuthorityReceipt" receipt
-           ON receipt."ownerId" LIKE '%provider-clear%'
-         WHERE namespace."id"='namespace-clear'`,
+        `SELECT concat_ws(':',
+          (SELECT count(*) FROM public."CodexOAuthSecretNamespace"
+           WHERE "id"='namespace-clear' AND "workflowSchemaVersion"=5),
+          (SELECT count(*) FROM public."CodexOAuthWorkflowCompatibility"
+           WHERE "namespaceId"='namespace-clear'),
+          (SELECT count(*) FROM public."CodexOAuthDatabaseAuthorityReceipt"
+           WHERE "databaseRole"='reviewrouter_web'
+             AND "effect"='active_namespace_v4_v5_reattestation'
+             AND "ownerId"=jsonb_build_array(
+               'provider-clear','namespace-clear',2::bigint,'secret-clear','900001',
+               '.github/workflows/reviewrouter-codex.yml',
+               'trusted_default_branch_revision',4,5,repeat('a',40),repeat('b',40),
+               repeat('c',64),repeat('d',64),repeat('f',40),repeat('f',40),
+               repeat('f',64),repeat('f',64))::text
+             AND "effectCode"=0 AND "consumedAt" IS NOT NULL))`,
       ]).stdout.trim() === "5:1:1",
       "migration89 genuine V4 ownership-clear control did not retain exact transition evidence",
     );
@@ -716,7 +732,7 @@ async function proveMigration89TwoSessionBoundary() {
     winnerUrl.searchParams.set("application_name", "rr-m89-causal-winner");
     const winner = spawnPsql(winnerUrl, ["-qAt"], true);
     winner.write(
-      `BEGIN; ${admission} SELECT ${causalCall("concurrent", "7")}; SELECT 'migration89-causal-winner-ready';\n`,
+      `BEGIN; ${exactWebAdmission} SELECT ${causalCall("concurrent", "7")}; SELECT 'migration89-causal-winner-ready';\n`,
     );
     const winnerDeadline = Date.now() + 5_000;
     while (!winner.stdout().includes("migration89-causal-winner-ready")) {
@@ -730,7 +746,7 @@ async function proveMigration89TwoSessionBoundary() {
     loserUrl.searchParams.set("application_name", "rr-m89-causal-loser");
     const loser = spawnPsql(loserUrl, [
       "-c",
-      `${admission} SELECT ${causalCall("concurrent", "8")}`,
+      `${exactWebAdmission} SELECT ${causalCall("concurrent", "8")}`,
     ]);
     const loserDeadline = Date.now() + 5_000;
     while (
@@ -765,10 +781,43 @@ async function proveMigration89TwoSessionBoundary() {
   };
 
   for (const ordering of ["old_invocation_first", "migration_boundary_first"]) {
+    let disposableWebRoleCreated = false;
     const name = `${databaseName}_migration89_${ordering}`;
     const url = databaseUrl(baseUrl, name);
-    psql(adminUrl, ["-c", `CREATE DATABASE ${quoteIdentifier(name)}`]);
     try {
+      psql(adminUrl, ["-c", `CREATE DATABASE ${quoteIdentifier(name)}`]);
+      const webRoleExists = psql(adminUrl, [
+        "-Atc",
+        "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='reviewrouter_web')::int",
+      ]);
+      assert(
+        webRoleExists.status === 0 &&
+          !webRoleExists.error &&
+          ["0", "1"].includes(webRoleExists.stdout.trim()),
+        `migration89_web_role_inventory_failed:${psqlResultDiagnostic(webRoleExists)}`,
+      );
+      if (webRoleExists.stdout.trim() === "0") {
+        const createWebRole = psql(adminUrl, [
+          "-c",
+          "CREATE ROLE reviewrouter_web NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+        ]);
+        assert(
+          createWebRole.status === 0 && !createWebRole.error,
+          `migration89_disposable_web_role_create_failed:${psqlResultDiagnostic(createWebRole)}`,
+        );
+        disposableWebRoleCreated = true;
+      }
+      const webAdmission = psql(adminUrl, [
+        "-Atc",
+        `${exactWebAdmission} SELECT session_user`,
+      ]);
+      assert(
+        webAdmission.status === 0 &&
+          !webAdmission.error &&
+          webAdmission.stdout.trim() === "reviewrouter_web",
+        `migration89_exact_web_session_admission_failed:${psqlResultDiagnostic(webAdmission)}`,
+      );
+
       installPre89BoundaryFixture(url);
       if (ordering === "old_invocation_first") {
         const blockerUrl = new URL(String(url));
@@ -1002,10 +1051,18 @@ async function proveMigration89TwoSessionBoundary() {
         ["-c", `DROP DATABASE IF EXISTS ${quoteIdentifier(name)} WITH (FORCE)`],
         false,
       );
+      const dropWebRole = disposableWebRoleCreated
+        ? psql(adminUrl, ["-c", "DROP ROLE reviewrouter_web"], false)
+        : undefined;
       assert(
         dropResult.status === 0 && !dropResult.error,
         `migration89_database_cleanup_failed:${psqlResultDiagnostic(dropResult)}`,
       );
+      if (dropWebRole)
+        assert(
+          dropWebRole.status === 0 && !dropWebRole.error,
+          `migration89_disposable_web_role_cleanup_failed:${psqlResultDiagnostic(dropWebRole)}`,
+        );
     }
   }
 }
