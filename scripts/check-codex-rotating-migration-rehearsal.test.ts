@@ -422,15 +422,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(proof).toContain(
       "migration89_genuine_v4_ownership_clear_control_failed",
     );
-    expect(proof).toContain('stdout.trim() === "5:1:1"');
-    expect(proof).toContain("\"databaseRole\"='reviewrouter_web'");
-    expect(proof).toContain(
-      "\"effect\"='active_namespace_v4_v5_reattestation'",
+    const clearEvidence =
+      /assert\(\s*psql\(url, \[\s*"-Atc",\s*`(SELECT concat_ws\(':',[\s\S]+?\))`,\s*\]\)\.stdout\.trim\(\) === "([0-9]+:[0-9]+:[0-9]+)",\s*"migration89 genuine V4 ownership-clear control did not retain exact transition evidence",\s*\)/u.exec(
+        proof ?? "",
+      );
+    expect(clearEvidence).toBeDefined();
+    expect(clearEvidence?.[1]).toMatch(
+      /^SELECT concat_ws\(':',\s*\(SELECT count\(\*\) FROM public\."CodexOAuthSecretNamespace"\s*WHERE "id"='namespace-clear' AND "workflowSchemaVersion"=5\),\s*\(SELECT count\(\*\) FROM public\."CodexOAuthWorkflowCompatibility"\s*WHERE "namespaceId"='namespace-clear'\),\s*\(SELECT count\(\*\) FROM public\."CodexOAuthDatabaseAuthorityReceipt"\s*WHERE "databaseRole"='reviewrouter_web'\s*AND "effect"='active_namespace_v4_v5_reattestation'\s*AND "ownerId"=jsonb_build_array\(\s*'provider-clear','namespace-clear',2::bigint,'secret-clear','900001',\s*'\.github\/workflows\/reviewrouter-codex\.yml',\s*'trusted_default_branch_revision',4,5,repeat\('a',40\),repeat\('b',40\),\s*repeat\('c',64\),repeat\('d',64\),repeat\('f',40\),repeat\('f',40\),\s*repeat\('f',64\),repeat\('f',64\)\)::text\s*AND "effectCode"=0 AND "consumedAt" IS NOT NULL\)\)$/u,
     );
-    expect(proof).toContain(
-      "\"ownerId\"=jsonb_build_array(\n               'provider-clear','namespace-clear',2::bigint",
-    );
-    expect(proof).toContain('AND "effectCode"=0 AND "consumedAt" IS NOT NULL');
+    expect(clearEvidence?.[2]).toBe("1:1:1");
     expect(proof).toContain("migration89-causal-winner-ready");
     expect(proof).toContain(
       "migration89_causal_loser_did_not_serialize_behind_winner",

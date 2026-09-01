@@ -723,7 +723,7 @@ async function proveMigration89TwoSessionBoundary() {
                repeat('c',64),repeat('d',64),repeat('f',40),repeat('f',40),
                repeat('f',64),repeat('f',64))::text
              AND "effectCode"=0 AND "consumedAt" IS NOT NULL))`,
-      ]).stdout.trim() === "5:1:1",
+      ]).stdout.trim() === "1:1:1",
       "migration89 genuine V4 ownership-clear control did not retain exact transition evidence",
     );
 
