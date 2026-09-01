@@ -1432,6 +1432,15 @@ function exactTriggerBinding(entry) {
     ],
   };
   const updateColumns = {
+    RepositoryConnection_comment_token_revoke: [
+      "provider",
+      "selected",
+      "archived",
+      "visibility",
+      "githubRepositoryId",
+      "fullName",
+      "installationId",
+    ],
     RepositoryConnection_runtime_referential_action_guard: [
       "id",
       "workspaceId",

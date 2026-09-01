@@ -991,6 +991,17 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "database trigger bindings are not exact",
     ],
     [
+      "comment-token revocation trigger loses an update column",
+      (catalog: any) =>
+        catalog.triggers
+          .find(
+            (entry: any) =>
+              entry.name === "RepositoryConnection_comment_token_revoke",
+          )
+          .updateColumns.pop(),
+      "database trigger bindings are not exact",
+    ],
+    [
       "trigger definition gains a conditional bypass",
       (catalog: any) => {
         catalog.triggers[0].definition += " WHEN (false)";
@@ -1897,15 +1908,25 @@ function observedFixture(): any {
           enabled: "O",
           definition: `CREATE ${name === "RepositoryConnection_codex_oauth_identity_guard" ? "CONSTRAINT " : ""}TRIGGER "${name}" ON ${table}`,
           updateColumns:
-            name === "RepositoryConnection_runtime_referential_action_guard"
+            name === "RepositoryConnection_comment_token_revoke"
               ? [
-                  "id",
-                  "workspaceId",
+                  "provider",
+                  "selected",
+                  "archived",
+                  "visibility",
+                  "githubRepositoryId",
+                  "fullName",
                   "installationId",
-                  "gitlabInstallationId",
-                  "scmRepositoryIdentityId",
                 ]
-              : [],
+              : name === "RepositoryConnection_runtime_referential_action_guard"
+                ? [
+                    "id",
+                    "workspaceId",
+                    "installationId",
+                    "gitlabInstallationId",
+                    "scmRepositoryIdentityId",
+                  ]
+                : [],
           whenExpression: null,
           arguments: "",
           constraint:
