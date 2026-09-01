@@ -1068,7 +1068,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
-  it("routes rehearsal work through explicit authority clients", () => {
+  it("routes the rollback matrix before role creation and later work through explicit authority clients", () => {
     const orchestration = source.slice(
       source.indexOf("try {"),
       source.indexOf("function proveLateMigrationRollbackAndReplayMatrix"),
@@ -1089,11 +1089,25 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     const negativeCasesIndex = orchestration.indexOf(
       "proveCanonicalLegacyReconciliationNegativeCases()",
     );
+    const migration89BoundaryIndex = orchestration.indexOf(
+      "await proveMigration89TwoSessionBoundary()",
+    );
+    const rollbackMatrixIndex = orchestration.indexOf(
+      "proveLateMigrationRollbackAndReplayMatrix()",
+    );
     expect(prepareIndex).toBeGreaterThan(-1);
     expect(authorityIndex).toBeGreaterThan(prepareIndex);
     expect(fixtureSeedIndex).toBeGreaterThan(authorityIndex);
     expect(migrationSpecificIndex).toBeLessThan(prepareIndex);
     expect(negativeCasesIndex).toBeLessThan(prepareIndex);
+    expect(rollbackMatrixIndex).toBeGreaterThan(migration89BoundaryIndex);
+    expect(rollbackMatrixIndex).toBeLessThan(prepareIndex);
+    expect(orchestration).toContain(
+      "await proveMigration89TwoSessionBoundary();\n    proveLateMigrationRollbackAndReplayMatrix();\n    const rehearsalRelease = prepareCanonicalReleaseRoles(",
+    );
+    expect(
+      source.match(/proveLateMigrationRollbackAndReplayMatrix\(\);/gu),
+    ).toHaveLength(1);
     expect(source).toContain(
       "proveMigration60LockTimeout(providerAdmin, providerAdmin)",
     );

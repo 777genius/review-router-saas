@@ -195,6 +195,7 @@ try {
     await proveMigrationSpecificLegacyBehavior();
     proveCanonicalLegacyReconciliationNegativeCases();
     await proveMigration89TwoSessionBoundary();
+    proveLateMigrationRollbackAndReplayMatrix();
     const rehearsalRelease = prepareCanonicalReleaseRoles(
       rehearsalProviderAdminUrl,
       applyCanonicalPreMigrationBaseline,
@@ -290,7 +291,6 @@ try {
     await proveQuarantineCleanupPathV2(providerAdmin, runtimeClients);
     proveExactProductionCatalogContract(providerAdmin);
     proveMigrateDeployNoOp(providerAdmin);
-    proveLateMigrationRollbackAndReplayMatrix();
     proveReleaseAuthorityMarkerIsolation(providerAdmin);
     const observation = collectObservation(providerAdmin);
     process.stdout.write(`${JSON.stringify(observation)}\n`);
