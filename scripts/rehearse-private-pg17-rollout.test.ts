@@ -442,36 +442,22 @@ describe("disposable dual-version rehearsal", () => {
       }),
     ).rejects.toThrow("private_pg17_rehearsal_control_readiness_timeout");
   });
-  it("keeps a pending schema-v5 trust root importable but blocks execution", async () => {
+  it("authorizes the reviewed schema-v5 trust root", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual(
       reviewedActivationCatalogPolicyDigests,
     );
-    expect(rehearsalActivationCatalogPolicyAuthorization).not.toEqual(
+    expect(rehearsalActivationCatalogPolicyAuthorization).toEqual(
       canonicalActivationCatalogPolicyDigests,
     );
-    expect(canonicalActivationCatalogPolicyTrustRootReadiness.status).toBe(
-      "blocked",
-    );
+    expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
+      status: "ready",
+      reason: "reviewed-raw",
+    });
     expect(() =>
       authorizeCanonicalActivationCatalogPolicies(
         rehearsalActivationCatalogPolicyAuthorization,
       ),
-    ).toThrow("activation_catalog_policy_digest_mismatch");
-
-    const execute = vi.fn();
-    await expect(
-      executeDisposableRehearsal(
-        {
-          REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1",
-          REVIEW_ROUTER_REHEARSAL_PG16_IMAGE: `postgres:16.13-bookworm@sha256:${digest}`,
-          REVIEW_ROUTER_REHEARSAL_PG17_IMAGE: `postgres:17.5-bookworm@sha256:${digest}`,
-        },
-        execute,
-      ),
-    ).rejects.toThrow(
-      "private_pg17_rehearsal_activation_catalog_policy_trust_root_blocked",
-    );
-    expect(execute).not.toHaveBeenCalled();
+    ).not.toThrow();
   });
   it("allows loaded disposable catalog observations without changing production timing", () => {
     expect(rehearsalReadinessPolicy).toEqual({

@@ -190,7 +190,7 @@ describe("activation catalog policy promotion", () => {
         "--capture-2",
         "/does/not/exist-2",
         ...(activationCatalogRawPromotionTrustRoot.status === "ready"
-          ? ["--raw-opt-in", activationCatalogRawPromotionTrustRoot.optIn]
+          ? ["--raw-opt-in", "wrong-opt-in"]
           : []),
         "--write",
       ],
@@ -199,7 +199,10 @@ describe("activation catalog policy promotion", () => {
       await expect(attempt).rejects.toThrow(
         "activation_catalog_policy_raw_trust_root_pending",
       );
-    else await expect(attempt).rejects.toMatchObject({ code: "ENOENT" });
+    else
+      await expect(attempt).rejects.toThrow(
+        "activation_catalog_policy_raw_opt_in_required",
+      );
     expect(
       (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
     ).toBe(true);
