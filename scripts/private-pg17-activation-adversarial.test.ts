@@ -32,6 +32,7 @@ import {
 import {
   canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyTrustRootReadiness,
+  canonicalReleaseMigrationArtifact,
 } from "../packages/features/release-rollout/src/index.js";
 import { sourceLegacyAmbiguityFixture } from "../test/fixtures/source-legacy-ambiguity";
 
@@ -557,7 +558,7 @@ const initializeSeed = () => {
     seedContainer,
     adminUsername,
     roleProvisioningSql(configuration, {
-      ownerAuthorizedInitialRuntimeGateClosed: true,
+      ownerAuthorizedInitialRuntimeGateClosed: false,
     }),
   );
   expect(
@@ -710,19 +711,11 @@ const initializeSeed = () => {
     installerUsername,
     "SELECT system_identifier::text FROM pg_catalog.pg_control_system();",
   );
-  const migrationChecksum = psqlAs(
-    seedContainer,
-    installerUsername,
-    "SELECT reviewrouter_activation.read_activation_migration_manifest_identity();",
-  );
-  const expectedPostCatalogDigest = psqlAs(
-    seedContainer,
-    installerUsername,
-    `SET search_path = pg_catalog, pg_temp;
-     ${fencedLiveV70V72CatalogDigestSql}`,
-  )
-    .split("\n")
-    .at(-1);
+  const expectedPostManifestIdentity =
+    canonicalReleaseMigrationArtifact.postManifestIdentity;
+  const expectedPostCatalogDigest =
+    canonicalReleaseMigrationArtifact.postCatalogDigest;
+  expect(expectedPostManifestIdentity).toMatch(/^sha256:[a-f0-9]{64}$/u);
   expect(expectedPostCatalogDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
   const transitionSha256 = `sha256:${"1".repeat(64)}`;
   const previousReceiptSha256 = `sha256:${"2".repeat(64)}`;
@@ -734,7 +727,7 @@ const initializeSeed = () => {
       `SELECT reviewrouter_activation.install_migration_permit(
         '${rolloutId}','1','${systemIdentifier}','${"c".repeat(64)}',
         '${transitionSha256}','${previousReceiptSha256}',
-        '${migrationChecksum}','${expectedPostCatalogDigest}',
+        '${expectedPostManifestIdentity}','${expectedPostCatalogDigest}',
         '${JSON.stringify(sourceLegacyAmbiguity).replaceAll("'", "''")}'::jsonb,
         '${eligibilityCutoff}'::timestamptz,1,'${nonce}');`,
     ),
