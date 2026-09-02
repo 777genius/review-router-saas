@@ -1166,11 +1166,11 @@ function proveMigration87LegacyBackfill(url) {
       END $$;
 
       ALTER TABLE public."CodexOAuthProviderInstance"
-        DISABLE TRIGGER USER;
+        DISABLE TRIGGER ALL;
       ALTER TABLE public."CodexOAuthSecretNamespace"
-        DISABLE TRIGGER USER;
+        DISABLE TRIGGER ALL;
 
-      UPDATE public."CodexOAuthProviderInstance"
+      UPDATE public."CodexOAuthProviderInstance" AS provider
       SET "state" = fixture."state",
           "activeSecretNamespaceId" = fixture."namespaceId",
           "activeSecretNamespaceEpoch" = fixture."pointerEpoch",
@@ -1237,22 +1237,15 @@ function proveMigration87LegacyBackfill(url) {
         );
 
       ALTER TABLE public."CodexOAuthSecretNamespace"
-        ENABLE TRIGGER USER;
+        ENABLE TRIGGER ALL;
       ALTER TABLE public."CodexOAuthProviderInstance"
-        ENABLE TRIGGER USER;
+        ENABLE TRIGGER ALL;
     `,
   ]);
 
   const stalePointer = psql(
     url,
-    [
-      "-v",
-      "VERBOSITY=verbose",
-      "-v",
-      "SHOW_CONTEXT=never",
-      "-f",
-      migration87,
-    ],
+    ["-v", "VERBOSITY=verbose", "-v", "SHOW_CONTEXT=never", "-f", migration87],
     false,
   );
   assertPsqlFailedWithExactMessage(

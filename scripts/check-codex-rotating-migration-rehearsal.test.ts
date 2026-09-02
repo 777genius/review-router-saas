@@ -760,9 +760,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       )?.[1];
 
     expect(proof).toBeDefined();
-    expect(source).toContain(
-      "proveMigration87LegacyBackfill(providerAdmin)",
-    );
+    expect(source).toContain("proveMigration87LegacyBackfill(providerAdmin)");
     for (const migration of [
       "migration63",
       "migration64",
@@ -780,9 +778,14 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(proof).toContain("'unknown_auth_state'");
     expect(proof).toContain("'stale_queued_secret'");
     expect(proof).toContain("'migration87-stale-pointer'");
-    expect(proof).toContain('7004::bigint');
+    expect(proof).toContain("7004::bigint");
     expect(proof).toContain('"namespaceEpoch",');
     expect(proof).toContain("7003");
+    expect(proof).toContain(
+      'UPDATE public."CodexOAuthProviderInstance" AS provider',
+    );
+    expect(proof).toContain("DISABLE TRIGGER ALL");
+    expect(proof).toContain("ENABLE TRIGGER ALL");
     expect(proof).toContain('psql(url, ["-f", migration87])');
     expect(proof).toContain(
       "codex_oauth_active_namespace_schema_version_ambiguous",
