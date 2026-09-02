@@ -451,9 +451,10 @@ describe("provisionReviewRouterWorkflow", () => {
     });
   });
 
-  it("allows rotating Codex workflow provisioning on the live main action ref", async () => {
+  it("rejects rotating Codex workflow provisioning on a mutable main action ref", async () => {
     const gateway = new CapturingSetupGateway();
     const provisioning = new CapturingProvisioningRepository();
+    const auditLog = new CapturingAuditLog();
 
     await expect(
       provisionReviewRouterWorkflow(
@@ -468,26 +469,15 @@ describe("provisionReviewRouterWorkflow", () => {
           runtimeConfigMode: "oidc",
           codexRotatingProviderInstanceId: "codex-rotating:123456",
         },
-        { setupGateway: gateway, provisioning },
+        { setupGateway: gateway, provisioning, auditLog },
       ),
-    ).resolves.toMatchObject({
-      url: "https://github.com/777genius/example/pull/1",
-    });
-
-    const codexWorkflow = gateway.input?.workflowFiles.find(
-      (file) => file.path === ".github/workflows/reviewrouter-codex.yml",
+    ).rejects.toThrow(
+      "invalid_app_first_interaction_reusable_workflow_runtime_ref",
     );
-    expect(codexWorkflow).toBeDefined();
-    expect(codexWorkflow?.operation).not.toBe("delete");
-    if (!codexWorkflow || codexWorkflow.operation === "delete") {
-      throw new Error("expected codex workflow upsert");
-    }
-    expect(codexWorkflow.content).toContain(
-      "uses: 777genius/review-router@main",
-    );
-    expect(provisioning.opened?.actionVersion).toBe(
-      "777genius/review-router@main",
-    );
+    expect(gateway.input).toBeNull();
+    expect(provisioning.opened).toBeNull();
+    expect(provisioning.failed).toBeNull();
+    expect(auditLog.events).toEqual([]);
   });
 
   it("persists safe GitHub failure summaries without raw adapter details", async () => {
