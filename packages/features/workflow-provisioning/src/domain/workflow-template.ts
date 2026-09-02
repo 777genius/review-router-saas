@@ -380,8 +380,9 @@ export function renderCanonicalCodexRotatingInteractionWorkflowV1(
 }
 
 /**
- * App-first interaction authority with immutable third-party actions and a
- * read-only GitHub token. Repository writes are issued only through App OIDC.
+ * App-first interaction authority with immutable third-party actions and
+ * narrow Actions rerun authority. Repository writes are issued only through
+ * App OIDC.
  */
 export function renderCanonicalCodexRotatingInteractionWorkflowV2(
   options: ReviewRouterWorkflowOptions,
@@ -423,6 +424,7 @@ jobs:
       appFirstV2
         ? `
     permissions:
+      actions: write
       contents: read
       issues: read
       pull-requests: read
