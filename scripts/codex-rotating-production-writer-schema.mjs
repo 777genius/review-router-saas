@@ -1086,10 +1086,10 @@ export const codexRotatingLegacyForeignKeys = Object.freeze([
   ),
 ]);
 
-// pg_get_constraintdef output for every recovery-ledger FK owned or replaced
-// by migration 000064. Source table and the complete deparsed definition are
-// both part of the contract so a same-name constraint cannot be repointed or
-// weakened without failing production capture and the PostgreSQL rehearsal.
+// pg_get_constraintdef output for every recovery-ledger FK owned by the
+// versioned namespace migrations. Source table and the complete deparsed
+// definition are both part of the contract so a same-name constraint cannot be
+// repointed or weakened without failing capture and the PostgreSQL rehearsal.
 export const codexRotatingRecoveryLedgerForeignKeys = Object.freeze([
   fk(
     "CodexOAuthSetupRecoveryRequest_providerInstanceRowId_fkey",

@@ -199,7 +199,10 @@ describe("activation catalog policy promotion", () => {
       await expect(attempt).rejects.toThrow(
         "activation_catalog_policy_raw_trust_root_pending",
       );
-    else await expect(attempt).rejects.toMatchObject({ code: "ENOENT" });
+    else
+      await expect(attempt).rejects.toThrow(
+        "activation_catalog_policy_git_capture_base_missing",
+      );
     expect(
       (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
     ).toBe(true);

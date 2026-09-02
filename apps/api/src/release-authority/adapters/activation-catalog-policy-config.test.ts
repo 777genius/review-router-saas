@@ -58,7 +58,7 @@ describe("activation catalog policy deployment authorization", () => {
   it("authorizes exact configured digests under the promoted schema-v5 trust root", () => {
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
       status: "ready",
-      reason: "reviewed-v29-schema-v5-pr245-promoted-with-evidence-contract-v2",
+      reason: "reviewed-raw",
     });
     expect(() =>
       trustedActivationCatalogPoliciesFromEnvironment(configured),

@@ -55,6 +55,7 @@ describe("persisted workflow schema admission", () => {
         },
       };
       const prisma = {
+        $queryRaw: vi.fn(async () => []),
         codexOAuthProviderInstance: {
           findUnique: vi.fn(async () => provider),
         },
