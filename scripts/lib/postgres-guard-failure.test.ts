@@ -1,18 +1,26 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
-import { isExactPostgresGuardFailure } from "./postgres-guard-failure.mjs";
+import {
+  isExactPostgresCatalogDigestMismatchFailure,
+  isExactPostgresGuardFailure,
+} from "./postgres-guard-failure.mjs";
 
 const guard = "legacy_reconciliation_inventory_changed";
 const nestedGuard = "legacy_reconciliation_unresolved_intent";
-const directContext =
-  "CONTEXT:  PL/pgSQL function reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean) line 81 at RAISE";
+const executorSignature =
+  "reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean,boolean)";
+const staleExecutorSignature =
+  "reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean)";
+const directContext = `CONTEXT:  PL/pgSQL function ${executorSignature} line 81 at RAISE`;
 const nestedContext = `CONTEXT:  PL/pgSQL function reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text,timestamp with time zone) line 59 at RAISE
 SQL statement "CALL public.reviewrouter_reconcile_legacy_ambiguity(
     requested_rollout_id,requested_target_recovery_witness_sha256,
     requested_inventory,
     requested_source_legacy_ambiguity->>'inventorySha256',
     requested_eligibility_cutoff)"
-PL/pgSQL function reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamp with time zone,boolean) line 2543 at CALL`;
+PL/pgSQL function ${executorSignature} line 2543 at CALL`;
 
 const failure = (stderr: unknown, overrides = {}) => ({
   status: 3,
@@ -22,6 +30,103 @@ const failure = (stderr: unknown, overrides = {}) => ({
 });
 const errorLine = (line: number | string, value = guard) =>
   `psql:<stdin>:${line}: ERROR:  ${value}`;
+
+const catalogGuard =
+  "release migration target live completion mismatch:catalog_digest_observed";
+const catalogDetail = `DETAIL:  expected=sha256:${"1".repeat(64)} observed=sha256:${"2".repeat(64)}`;
+const catalogInnerContext =
+  "CONTEXT:  PL/pgSQL function reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb) line 30 at RAISE";
+const catalogStatement = `SQL statement "SELECT reviewrouter_activation.complete_migration_permit(
+      requested_rollout_id,requested_permit_epoch,requested_permit_nonce,
+      '{}'::jsonb)"`;
+const catalogOuterContext = `PL/pgSQL function ${executorSignature} line 5513 at PERFORM`;
+const catalogRecord = `${errorLine(417, catalogGuard)}\n${catalogDetail}\n${catalogInnerContext}\n${catalogStatement}\n${catalogOuterContext}\n`;
+
+describe("exact PostgreSQL catalog digest mismatch classification", () => {
+  it("accepts the complete bounded psql record", () => {
+    expect(
+      isExactPostgresCatalogDigestMismatchFailure(
+        failure(catalogRecord),
+        catalogGuard,
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["wrong guard", guard, catalogRecord],
+    ["wrong status", catalogGuard, catalogRecord, { status: 1 }],
+    ["signal", catalogGuard, catalogRecord, { signal: "SIGTERM" }],
+    ["spawn error", catalogGuard, catalogRecord, { error: undefined }],
+    [
+      "missing detail",
+      catalogGuard,
+      `${errorLine(417, catalogGuard)}\n${catalogInnerContext}\n${catalogStatement}\n${catalogOuterContext}\n`,
+    ],
+    [
+      "malformed expected hash",
+      catalogGuard,
+      catalogRecord.replace("1".repeat(64), "g".repeat(64)),
+    ],
+    [
+      "malformed observed hash",
+      catalogGuard,
+      catalogRecord.replace("2".repeat(64), "2".repeat(63)),
+    ],
+    [
+      "reordered detail",
+      catalogGuard,
+      `${catalogDetail}\n${errorLine(417, catalogGuard)}\n${catalogInnerContext}\n${catalogStatement}\n${catalogOuterContext}\n`,
+    ],
+    [
+      "duplicate detail",
+      catalogGuard,
+      `${errorLine(417, catalogGuard)}\n${catalogDetail}\n${catalogDetail}\n${catalogInnerContext}\n${catalogStatement}\n${catalogOuterContext}\n`,
+    ],
+    ["extra line", catalogGuard, `${catalogRecord}NOTICE:  unrelated\n`],
+    [
+      "wrong context",
+      catalogGuard,
+      catalogRecord.replace(" line 30 at RAISE", " line 30 at CALL"),
+    ],
+    [
+      "wrong outer context",
+      catalogGuard,
+      catalogRecord.replace(" line 5513 at PERFORM", " line 5513 at CALL"),
+    ],
+    [
+      "repeated context prefix",
+      catalogGuard,
+      catalogRecord.replace(
+        catalogOuterContext,
+        `CONTEXT:  ${catalogOuterContext}`,
+      ),
+    ],
+    [
+      "changed statement whitespace",
+      catalogGuard,
+      catalogRecord.replace(
+        "      requested_rollout_id",
+        "     requested_rollout_id",
+      ),
+    ],
+    [
+      "missing statement line",
+      catalogGuard,
+      catalogRecord.replace(
+        "      requested_rollout_id,requested_permit_epoch,requested_permit_nonce,\n",
+        "",
+      ),
+    ],
+    ["non-ASCII", catalogGuard, catalogRecord.replace("DETAIL", "DÉTAIL")],
+  ])("rejects %s", (_name, expectedGuard, stderr, overrides = {}) => {
+    expect(
+      isExactPostgresCatalogDigestMismatchFailure(
+        failure(stderr, overrides),
+        expectedGuard,
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("exact PostgreSQL guard failure classification", () => {
   it.each([
@@ -35,6 +140,80 @@ describe("exact PostgreSQL guard failure classification", () => {
       );
     },
   );
+
+  it("accepts contexts derived from the canonical executor declaration", () => {
+    const source = readFileSync(
+      new URL("../run-codex-rotating-release-migration.mjs", import.meta.url),
+      "utf8",
+    );
+    const declarations = [
+      ...source.matchAll(
+        /^CREATE OR REPLACE PROCEDURE public\.reviewrouter_execute_release_migration\(\n(?<parameters>[\s\S]*?)\n\)\nLANGUAGE plpgsql$/gmu,
+      ),
+    ];
+    expect(declarations).toHaveLength(1);
+
+    const parameterLines = declarations[0].groups!.parameters.split("\n");
+    const parameterTypes = parameterLines.map((line, index) => {
+      const parameter =
+        /^ {2}requested_[a-z0-9_]+ ([a-z]+(?: [a-z]+)*)(,?)$/u.exec(line);
+      expect(parameter).not.toBeNull();
+      expect(parameter![2]).toBe(
+        index === parameterLines.length - 1 ? "" : ",",
+      );
+      return parameter![1] === "timestamptz"
+        ? "timestamp with time zone"
+        : parameter![1];
+    });
+    const sourceSignature = `reviewrouter_execute_release_migration(${parameterTypes.join(",")})`;
+    const sourceDirectContext = directContext.replace(
+      executorSignature,
+      sourceSignature,
+    );
+    const sourceNestedContext = nestedContext.replace(
+      executorSignature,
+      sourceSignature,
+    );
+
+    expect(
+      isExactPostgresGuardFailure(
+        failure(`${errorLine(21)}\n${sourceDirectContext}\n`),
+        guard,
+      ),
+    ).toBe(true);
+    expect(
+      isExactPostgresGuardFailure(
+        failure(`${errorLine(21, nestedGuard)}\n${sourceNestedContext}\n`),
+        nestedGuard,
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects the stale direct executor signature", () => {
+    const context = directContext.replace(
+      executorSignature,
+      staleExecutorSignature,
+    );
+    expect(
+      isExactPostgresGuardFailure(
+        failure(`${errorLine(21)}\n${context}\n`),
+        guard,
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects the stale nested executor signature", () => {
+    const context = nestedContext.replace(
+      executorSignature,
+      staleExecutorSignature,
+    );
+    expect(
+      isExactPostgresGuardFailure(
+        failure(`${errorLine(21, nestedGuard)}\n${context}\n`),
+        nestedGuard,
+      ),
+    ).toBe(false);
+  });
 
   it.each([
     [

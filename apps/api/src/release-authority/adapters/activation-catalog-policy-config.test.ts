@@ -55,13 +55,15 @@ describe("activation catalog policy deployment authorization", () => {
     ).toThrow("activation_catalog_policy_digest_mismatch");
   });
 
-  it("authorizes exact configured digests under the promoted schema-v5 trust root", () => {
+  it("keeps exact configured digests blocked while the schema-v5 trust root is pending", () => {
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
-      status: "ready",
-      reason: "reviewed-v29-schema-v5-pr245-promoted-with-evidence-contract-v2",
+      status: "blocked",
+      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
     });
     expect(() =>
       trustedActivationCatalogPoliciesFromEnvironment(configured),
-    ).not.toThrow();
+    ).toThrow(
+      "activation_catalog_policy_trust_root_blocked:fresh-authenticated-raw-capture-and-independent-review-required",
+    );
   });
 });

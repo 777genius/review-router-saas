@@ -53,6 +53,13 @@ describe("safeDashboardErrorCode", () => {
     expect(
       safeDashboardErrorCode(new Error("codex_legacy_auth_requires_reconnect")),
     ).toBe("codex_legacy_auth_requires_reconnect");
+    for (const code of [
+      "codex_rotating_workflow_reattestation_stale",
+      "codex_rotating_workflow_reattestation_invalid",
+      "codex_rotating_workflow_reattestation_forbidden",
+    ]) {
+      expect(safeDashboardErrorCode(new Error(code))).toBe(code);
+    }
     expect(safeDashboardErrorCode(new Error("rate_limit_exceeded:setup"))).toBe(
       "rate_limited",
     );

@@ -62,6 +62,7 @@ function harness() {
     workflowSourceBlobSha: "b".repeat(40),
     workflowSourceSha256: "c".repeat(64),
     workflowSemanticSha256: "d".repeat(64),
+    workflowSchemaVersion: 5,
     sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
     secretNamespace: namespace,
   });
@@ -377,6 +378,7 @@ describe("versioned rotating runtime writeback dispatcher", () => {
               workflowSourceBlobSha: "b".repeat(40),
               workflowSourceSha256: "c".repeat(64),
               workflowSemanticSha256: "d".repeat(64),
+              workflowSchemaVersion: 5,
               sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
               secretNamespace: namespace,
             });

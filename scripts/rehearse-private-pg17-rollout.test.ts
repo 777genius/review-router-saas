@@ -1,15 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.js";
 import {
   authorizeCanonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
+  canonicalActivationCatalogPolicyTrustRootReadiness,
+  reviewedActivationCatalogPolicyDigests,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-contract.js";
+import { assertActivationCatalogCapturePair } from "./lib/activation-catalog-capture-pair.mjs";
 import {
   assertDisposableCaptureTarget,
   createRehearsalRunnerJobBinding,
+  createActivationCatalogCaptureCheckpoint,
   cleanupCaptureOnlyRehearsalFixtures,
   cleanupDisposableRehearsalResources,
   captureOnlyRehearsalFixtureCleanupSql,
@@ -22,11 +34,13 @@ import {
   disposableProviderScopeConcurrencyExerciseSql,
   disposableSqlConfiguration,
   disposableTargetPublicTableAclCanonicalizationSql,
+  executeDisposableRehearsal,
   normalizeRehearsalDockerInvocation,
   resolveRehearsalCaptureOnlyConfiguration,
   resolvePreReleaseMigrationExclusions,
   safePostgresErrorClassification,
   safeRehearsalStageErrorCode,
+  safeRehearsalStageErrorDiagnostic,
   safeReleaseAuthorityErrorClassification,
   summarizeErrorShape,
   summarizeAuthorityReadinessMismatch,
@@ -40,6 +54,23 @@ import {
 } from "./rehearse-private-pg17-rollout.mjs";
 
 const digest = "d".repeat(64);
+
+function gitCustodyFixture() {
+  const root = mkdtempSync(join(tmpdir(), "rr-catalog-git-custody-"));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+  git("init", "-q");
+  git("config", "user.name", "ReviewRouter Test");
+  git("config", "user.email", "reviewrouter@example.invalid");
+  writeFileSync(join(root, "evidence.txt"), "base\n");
+  git("add", "evidence.txt");
+  git("commit", "-qm", "base");
+  const base = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "evidence.txt"), "audited\n");
+  git("commit", "-qam", "audited");
+  const head = git("rev-parse", "HEAD");
+  return { root, base, head, cleanup: () => rmSync(root, { recursive: true }) };
+}
 
 const migrationManifestIdentity = (migrationNames: readonly string[]) => {
   const migrationsRoot = "packages/platform/db/prisma/migrations";
@@ -64,6 +95,16 @@ describe("disposable dual-version rehearsal", () => {
         new Error("trusted_rollout_evidence_receipt_chain_invalid"),
       ),
     ).toBe("trusted_rollout_evidence_receipt_chain_invalid");
+    expect(
+      safeRehearsalStageErrorCode(
+        new Error("release_migration_target_permit_invalid"),
+      ),
+    ).toBe("release_migration_target_permit_invalid");
+    expect(
+      safeRehearsalStageErrorCode(
+        new Error("legacy_ambiguity_evidence_invalid"),
+      ),
+    ).toBe("legacy_ambiguity_evidence_invalid");
     expect(
       safeRehearsalStageErrorCode(
         new Error("database failed token=do-not-print"),
@@ -143,6 +184,73 @@ describe("disposable dual-version rehearsal", () => {
     ]);
   });
 
+  it("selects safe release-migration diagnostics and redacts arbitrary errors", () => {
+    expect(
+      safeRehearsalStageErrorDiagnostic("run_release_migration", {
+        meta: {
+          driverAdapterError: {
+            cause: {
+              originalMessage:
+                "ERROR: release migration begin binding conflict",
+            },
+          },
+        },
+      }),
+    ).toBe("release migration begin binding conflict");
+
+    const secret =
+      "postgres://admin:do-not-print@private.example/db?token=do-not-print";
+    const diagnostic = safeRehearsalStageErrorDiagnostic(
+      "run_release_migration",
+      new Error(`database failed at ${secret}`),
+    );
+    expect(diagnostic).toBe(
+      '{"version":1,"code":"private_pg17_rehearsal_command_failed","phase":"rehearsal","exit":{"code":null,"signal":null},"metadata":{},"operatorHint":"Inspect the disposable rehearsal phase and local container state."}',
+    );
+    expect(diagnostic).not.toContain(secret);
+    expect(diagnostic).not.toContain("do-not-print");
+  });
+
+  it.each([
+    ["direct snake case", new Error("credential_supersecret123")],
+    [
+      "prefixed migration snake case",
+      new Error("release_migration_password_hunter2"),
+    ],
+    [
+      "nested snake case",
+      {
+        meta: { driverAdapterError: { message: "credential_supersecret123" } },
+      },
+    ],
+    ["direct release text", new Error("release migration password hunter2")],
+    [
+      "nested P0001 release text",
+      {
+        meta: {
+          driverAdapterError: {
+            cause: {
+              originalCode: "P0001",
+              originalMessage: "release migration password hunter2",
+            },
+          },
+        },
+      },
+    ],
+  ])("redacts adversarial %s diagnostics", (_case, error) => {
+    const diagnostic = safeRehearsalStageErrorDiagnostic(
+      "run_release_migration",
+      error,
+    );
+    expect(diagnostic).toBe(
+      '{"version":1,"code":"private_pg17_rehearsal_command_failed","phase":"rehearsal","exit":{"code":null,"signal":null},"metadata":{},"operatorHint":"Inspect the disposable rehearsal phase and local container state."}',
+    );
+    expect(diagnostic).not.toContain("credential_supersecret123");
+    expect(diagnostic).not.toContain("release migration password hunter2");
+    expect(diagnostic).not.toContain("release_migration_password_hunter2");
+    expect(diagnostic).not.toContain("hunter2");
+  });
+
   it("reports authority readiness drift without credential material", () => {
     expect(
       summarizeAuthorityReadinessMismatch({
@@ -211,7 +319,7 @@ describe("disposable dual-version rehearsal", () => {
       safePostgresErrorClassification(
         "psql: ERROR:  P0001: release migration V70-V73 live catalog digest mismatch: internal context redacted\nDETAIL: token=secret",
       ),
-    ).toBe("release migration v70-v73 live catalog digest mismatch");
+    ).toBe("release migration invariant rejected");
     expect(
       safePostgresErrorClassification(
         `psql: ERROR:  P0001: release migration target live completion mismatch:catalog_digest_observed\nDETAIL: expected=sha256:${"1".repeat(64)} observed=sha256:${"2".repeat(64)}\nCONTEXT: token=secret`,
@@ -230,7 +338,7 @@ describe("disposable dual-version rehearsal", () => {
       safePostgresErrorClassification(
         "psql: ERROR:  P0001: codex_oauth_provider_identity_mismatch\nDETAIL: token=secret",
       ),
-    ).toBe("codex_oauth_provider_identity_mismatch");
+    ).toBe("postgres named invariant rejected");
     expect(
       safePostgresErrorClassification(
         'psql: ERROR:  42P01: relation "CodexOAuthSetupManifest" does not exist\nDETAIL: token=secret',
@@ -241,6 +349,51 @@ describe("disposable dual-version rehearsal", () => {
         'psql: ERROR:  0A000: unsupported operation near "secret"\nDETAIL: token=secret',
       ),
     ).toBe("postgres sqlstate 0A000");
+  });
+
+  it.each([
+    [
+      "direct named release invariant",
+      "psql: ERROR: P0001: release_migration_password_hunter2",
+    ],
+    [
+      "nested-looking named release invariant",
+      "psql: ERROR: P0001: wrapper_release_migration_password_hunter2",
+    ],
+    [
+      "direct named codex invariant",
+      "psql: ERROR: P0001: codex_oauth_token_secret",
+    ],
+    [
+      "nested-looking named codex invariant",
+      "psql: ERROR: P0001: wrapper_codex_oauth_token_secret",
+    ],
+    [
+      "arbitrary P0001 sentence",
+      "psql: ERROR: P0001: release migration password hunter2",
+    ],
+    [
+      "nested-looking arbitrary P0001 sentence",
+      "psql: ERROR: P0001: wrapper release migration password hunter2",
+    ],
+  ])("does not publish attacker text from a %s", (_case, stderr) => {
+    const classification = safePostgresErrorClassification(stderr);
+    expect(classification).toBeDefined();
+    expect(classification).not.toMatch(/password|hunter2|token|secret/u);
+  });
+
+  it("requires a strictly allowlisted activation catalog digest detail", () => {
+    for (const detail of [
+      `sections=grants,passwordHunter expected=sha256:${"3".repeat(64)} observed=sha256:${"4".repeat(64)}`,
+      `sections=roleReachability,grants expected=sha256:${"3".repeat(64)} observed=sha256:${"4".repeat(64)}`,
+      `sections=grants,grants expected=sha256:${"3".repeat(64)} observed=sha256:${"4".repeat(64)}`,
+    ]) {
+      const classification = safePostgresErrorClassification(
+        `psql: ERROR: P0001: activation catalog policy mismatch\nDETAIL: ${detail}`,
+      );
+      expect(classification).toBe("postgres sqlstate P0001");
+      expect(classification).not.toMatch(/password|hunter2|token|secret/u);
+    }
   });
   it("requires explicit opt-in and immutable PG16.13/PG17 images", () => {
     expect(
@@ -289,21 +442,36 @@ describe("disposable dual-version rehearsal", () => {
       }),
     ).rejects.toThrow("private_pg17_rehearsal_control_readiness_timeout");
   });
-  it("authorizes normal rehearsal under the promoted schema-v5 trust root", () => {
-    expect(rehearsalActivationCatalogPolicyAuthorization).toEqual({
-      preactivationCatalogPolicySha256:
-        "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
-      activatedCatalogPolicySha256:
-        "sha256:cc35c6b43fe8b117a492705eeaf2ab9a9ac0e05f98546fa32ac9d340df89867b",
-    });
+  it("keeps a pending schema-v5 trust root importable but blocks execution", async () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual(
+      reviewedActivationCatalogPolicyDigests,
+    );
+    expect(rehearsalActivationCatalogPolicyAuthorization).not.toEqual(
       canonicalActivationCatalogPolicyDigests,
+    );
+    expect(canonicalActivationCatalogPolicyTrustRootReadiness.status).toBe(
+      "blocked",
     );
     expect(() =>
       authorizeCanonicalActivationCatalogPolicies(
         rehearsalActivationCatalogPolicyAuthorization,
       ),
-    ).not.toThrow();
+    ).toThrow("activation_catalog_policy_digest_mismatch");
+
+    const execute = vi.fn();
+    await expect(
+      executeDisposableRehearsal(
+        {
+          REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1",
+          REVIEW_ROUTER_REHEARSAL_PG16_IMAGE: `postgres:16.13-bookworm@sha256:${digest}`,
+          REVIEW_ROUTER_REHEARSAL_PG17_IMAGE: `postgres:17.5-bookworm@sha256:${digest}`,
+        },
+        execute,
+      ),
+    ).rejects.toThrow(
+      "private_pg17_rehearsal_activation_catalog_policy_trust_root_blocked",
+    );
+    expect(execute).not.toHaveBeenCalled();
   });
   it("allows loaded disposable catalog observations without changing production timing", () => {
     expect(rehearsalReadinessPolicy).toEqual({
@@ -502,31 +670,76 @@ describe("disposable dual-version rehearsal", () => {
     );
   });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
-    const identity = "rr-disposable-production-shaped-capture";
-    expect(
-      resolveRehearsalCaptureOnlyConfiguration({
-        REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1",
-        REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY: identity,
-      }),
-    ).toEqual({ disposableDatabaseIdentity: identity });
-    for (const value of [undefined, "0", "true", "01"])
+    const repository = gitCustodyFixture();
+    try {
+      const identity = "rr-disposable-production-shaped-capture";
+      const captureBaseCommit = repository.base;
+      const auditedHead = repository.head;
       expect(
-        resolveRehearsalCaptureOnlyConfiguration({
-          REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:
-            value,
-          REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
-            identity,
-        }),
-      ).toBeUndefined();
-    expect(() =>
-      resolveRehearsalCaptureOnlyConfiguration({
-        REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1",
-        REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
-          "production",
-      }),
-    ).toThrow(
-      "activation_catalog_policy_candidate_disposable_identity_required",
-    );
+        resolveRehearsalCaptureOnlyConfiguration(
+          {
+            REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:
+              "1",
+            REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+              identity,
+            REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT:
+              captureBaseCommit,
+            REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
+          },
+          repository.root,
+        ),
+      ).toEqual({
+        disposableDatabaseIdentity: identity,
+        captureBaseCommit,
+        auditedHead,
+      });
+      for (const value of [undefined, "0", "true", "01"])
+        expect(
+          resolveRehearsalCaptureOnlyConfiguration(
+            {
+              REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:
+                value,
+              REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+                identity,
+              REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT:
+                captureBaseCommit,
+              REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
+            },
+            repository.root,
+          ),
+        ).toBeUndefined();
+      expect(() =>
+        resolveRehearsalCaptureOnlyConfiguration(
+          {
+            REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:
+              "1",
+            REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+              "production",
+            REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT:
+              captureBaseCommit,
+            REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
+          },
+          repository.root,
+        ),
+      ).toThrow(
+        "activation_catalog_policy_candidate_disposable_identity_required",
+      );
+      expect(() =>
+        resolveRehearsalCaptureOnlyConfiguration(
+          {
+            REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:
+              "1",
+            REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+              identity,
+            REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT: auditedHead,
+            REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD: auditedHead,
+          },
+          repository.root,
+        ),
+      ).toThrow("activation_catalog_policy_git_review_range_invalid");
+    } finally {
+      repository.cleanup();
+    }
   });
   it("rejects capture against a durable or source database target", () => {
     expect(() =>
@@ -554,6 +767,106 @@ describe("disposable dual-version rehearsal", () => {
         targetContainer: "rr-target",
       }),
     ).toBeUndefined();
+  });
+  it("binds an emitted candidate to the exact disposable capture checkpoint", () => {
+    const artifact = {
+      kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+      version: 1,
+      liveCatalogDigest: `sha256:${"c".repeat(64)}`,
+      policies: {},
+    };
+    const candidate = {
+      commitSha: "a".repeat(40),
+      databaseIdentity: "127.0.0.1:5432/review_router",
+      manifestIdentity: canonicalReleaseMigrationArtifact.postManifestIdentity,
+      projectionSha256: `sha256:${"b".repeat(64)}`,
+    };
+    expect(
+      createActivationCatalogCaptureCheckpoint({
+        artifact,
+        candidate,
+        configuredDatabaseIdentity: candidate.databaseIdentity,
+        disposableIdentity: "rr-disposable-candidate-test",
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "d".repeat(64),
+        captureBaseCommit: "9".repeat(40),
+        auditedHead: candidate.commitSha,
+      }),
+    ).toEqual({
+      kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+      version: 2,
+      policies: artifact.policies,
+      capture: {
+        commitSha: candidate.commitSha,
+        postManifestIdentity: candidate.manifestIdentity,
+        database: {
+          disposableIdentity: "rr-disposable-candidate-test",
+          configuredIdentity: candidate.databaseIdentity,
+          systemIdentifier: "7612345678901234567",
+          recoveryWitnessSha256: "d".repeat(64),
+        },
+        projection: {
+          sha256: candidate.projectionSha256,
+          observedDigest: artifact.liveCatalogDigest,
+        },
+        custody: {
+          captureBaseCommit: "9".repeat(40),
+          auditedHead: candidate.commitSha,
+          evidenceSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        },
+      },
+    });
+    expect(artifact.liveCatalogDigest).not.toBe(
+      canonicalReleaseMigrationArtifact.postCatalogDigest,
+    );
+    expect(() =>
+      createActivationCatalogCaptureCheckpoint({
+        artifact,
+        candidate,
+        configuredDatabaseIdentity: candidate.databaseIdentity,
+        disposableIdentity: "production",
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "d".repeat(64),
+        captureBaseCommit: "9".repeat(40),
+        auditedHead: candidate.commitSha,
+      }),
+    ).toThrow("activation_catalog_policy_capture_binding_invalid");
+    expect(() =>
+      createActivationCatalogCaptureCheckpoint({
+        artifact,
+        candidate,
+        configuredDatabaseIdentity: "127.0.0.1:6432/cross_run_review_router",
+        disposableIdentity: "rr-disposable-candidate-test",
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "d".repeat(64),
+        captureBaseCommit: "9".repeat(40),
+        auditedHead: candidate.commitSha,
+      }),
+    ).toThrow("activation_catalog_policy_capture_binding_invalid");
+    expect(() =>
+      createActivationCatalogCaptureCheckpoint({
+        artifact,
+        candidate: undefined,
+        configuredDatabaseIdentity: candidate.databaseIdentity,
+        disposableIdentity: "rr-disposable-candidate-test",
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "d".repeat(64),
+        captureBaseCommit: "9".repeat(40),
+        auditedHead: candidate.commitSha,
+      }),
+    ).toThrow("activation_catalog_policy_capture_binding_invalid");
+    expect(() =>
+      createActivationCatalogCaptureCheckpoint({
+        artifact,
+        candidate,
+        configuredDatabaseIdentity: candidate.databaseIdentity,
+        disposableIdentity: "rr-disposable-candidate-test",
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "d".repeat(64),
+        captureBaseCommit: "9".repeat(40),
+        auditedHead: "e".repeat(40),
+      }),
+    ).toThrow("activation_catalog_policy_capture_binding_invalid");
   });
   it("stops the capture-only branch before target staging", async () => {
     const candidate = Object.freeze({ kind: "candidate", version: 1 });
@@ -631,16 +944,32 @@ describe("disposable dual-version rehearsal", () => {
   });
   it("runs capture-only through the authoritative migration use case without staging", async () => {
     const calls: string[] = [];
-    const candidate = Object.freeze({
-      kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
-      version: 1,
-      policies: Object.freeze({}),
-    });
     const transition = Object.freeze({
       transitionSha256: `sha256:${"1".repeat(64)}`,
       migrationArtifactDigest: `sha256:${"2".repeat(64)}`,
       postManifestIdentity: `sha256:${"3".repeat(64)}`,
       postCatalogDigest: `sha256:${"4".repeat(64)}`,
+    });
+    const artifact = Object.freeze({
+      kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+      version: 1,
+      liveCatalogDigest: transition.postCatalogDigest,
+      policies: Object.freeze({}),
+    });
+    const candidate = createActivationCatalogCaptureCheckpoint({
+      artifact,
+      candidate: {
+        commitSha: "a".repeat(40),
+        databaseIdentity: "127.0.0.1:5432/review_router",
+        manifestIdentity: transition.postManifestIdentity,
+        projectionSha256: `sha256:${"5".repeat(64)}`,
+      },
+      configuredDatabaseIdentity: "127.0.0.1:5432/review_router",
+      disposableIdentity: "rr-disposable-authoritative-test",
+      systemIdentifier: "7612345678901234567",
+      recoveryWitnessSha256: "6".repeat(64),
+      captureBaseCommit: "9".repeat(40),
+      auditedHead: "a".repeat(40),
     });
     const migratedRollout = Object.freeze({
       targetManifestPhase: "post_migration",
@@ -656,6 +985,9 @@ describe("disposable dual-version rehearsal", () => {
     const runReleaseMigration = vi.fn(async () => {
       calls.push("rollout-use-case-cas");
       return migratedRollout;
+    });
+    const prepareCapture = vi.fn(async () => {
+      calls.push("prepare-capture");
     });
     const captureCandidate = vi.fn(async () => {
       calls.push("capture-candidate");
@@ -676,25 +1008,171 @@ describe("disposable dual-version rehearsal", () => {
         rollout: { phase: "pre-migration" },
         runStage,
         runReleaseMigration,
+        prepareCapture,
         captureCandidate,
         stageTargetServices,
       }),
     ).resolves.toEqual({
       mode: "capture-only",
-      candidate: {
-        ...candidate,
-        version: 2,
-        liveCatalogDigest: transition.postCatalogDigest,
-      },
+      candidate,
     });
     expect(calls).toEqual([
+      "stage:prepare_activation_catalog_capture",
+      "prepare-capture",
       "stage:run_release_migration",
       "rollout-use-case-cas",
       "stage:capture_activation_catalog_policy",
       "capture-candidate",
     ]);
+    expect(prepareCapture).toHaveBeenCalledOnce();
     expect(runReleaseMigration).toHaveBeenCalledOnce();
     expect(stageTargetServices).not.toHaveBeenCalled();
+  });
+  it("captures after an exact disposable catalog-digest mismatch without staging or promotion", async () => {
+    const candidate = createActivationCatalogCaptureCheckpoint({
+      artifact: {
+        kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+        version: 1,
+        liveCatalogDigest: `sha256:${"3".repeat(64)}`,
+        policies: {},
+      },
+      candidate: {
+        commitSha: "a".repeat(40),
+        databaseIdentity: "127.0.0.1:5432/review_router",
+        manifestIdentity: `sha256:${"1".repeat(64)}`,
+        projectionSha256: `sha256:${"2".repeat(64)}`,
+      },
+      configuredDatabaseIdentity: "127.0.0.1:5432/review_router",
+      disposableIdentity: "rr-disposable-sentinel-test",
+      systemIdentifier: "7612345678901234567",
+      recoveryWitnessSha256: "4".repeat(64),
+      captureBaseCommit: "9".repeat(40),
+      auditedHead: "a".repeat(40),
+    });
+    const captureCandidate = vi.fn(async () => candidate);
+    const stageTargetServices = vi.fn();
+    const prepareCapture = vi.fn();
+    const runReleaseMigration = vi.fn(async () => {
+      throw new Error("activation_catalog_policy_capture_ready");
+    });
+
+    await expect(
+      runRehearsalReleaseMigration({
+        captureOnly: { disposableDatabaseIdentity: "rr-disposable-test" },
+        rollout: { phase: "pre-migration" },
+        runStage: vi.fn(async (_name, operation) => operation()),
+        runReleaseMigration,
+        prepareCapture,
+        captureCandidate,
+        stageTargetServices,
+      }),
+    ).resolves.toEqual({ mode: "capture-only", candidate });
+    expect(prepareCapture).toHaveBeenCalledOnce();
+    expect(captureCandidate).toHaveBeenCalledOnce();
+    expect(stageTargetServices).not.toHaveBeenCalled();
+  });
+  it("returns real-flow checkpoints accepted as an independent capture pair", async () => {
+    const artifact = Object.freeze({
+      kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+      version: 1,
+      liveCatalogDigest: `sha256:${"3".repeat(64)}`,
+      policies: Object.freeze({
+        preactivation: Object.freeze({}),
+        activated: Object.freeze({}),
+      }),
+    });
+    const produce = async (
+      configuredDatabaseIdentity: string,
+      disposableIdentity: string,
+      systemIdentifier: string,
+    ) => {
+      const migrationCandidate = Object.freeze({
+        commitSha: "a".repeat(40),
+        databaseIdentity: configuredDatabaseIdentity,
+        manifestIdentity: `sha256:${"1".repeat(64)}`,
+        projectionSha256: `sha256:${"2".repeat(64)}`,
+      });
+      const result = await runRehearsalReleaseMigration({
+        captureOnly: { disposableDatabaseIdentity: disposableIdentity },
+        rollout: { phase: "pre-migration" },
+        runStage: async (_name, operation) => operation(),
+        prepareCapture: async () => undefined,
+        runReleaseMigration: async () => {
+          expect(migrationCandidate.databaseIdentity).toBe(
+            configuredDatabaseIdentity,
+          );
+          throw new Error("activation_catalog_policy_capture_ready");
+        },
+        captureCandidate: async () =>
+          createActivationCatalogCaptureCheckpoint({
+            artifact,
+            candidate: migrationCandidate,
+            configuredDatabaseIdentity,
+            disposableIdentity,
+            systemIdentifier,
+            recoveryWitnessSha256: "4".repeat(64),
+            captureBaseCommit: "9".repeat(40),
+            auditedHead: migrationCandidate.commitSha,
+          }),
+        stageTargetServices: vi.fn(),
+      });
+      return result.candidate;
+    };
+
+    const first = await produce(
+      "127.0.0.1:5432/review_router",
+      "rr-disposable-pair-first",
+      "7612345678901234567",
+    );
+    const second = await produce(
+      "127.0.0.1:6432/review_router",
+      "rr-disposable-pair-second",
+      "7612345678901234568",
+    );
+    expect(
+      assertActivationCatalogCapturePair(
+        { value: first, bytes: 1, sha256: "first" },
+        { value: second, bytes: 1, sha256: "second" },
+      ).selected,
+    ).toBe(first);
+    expect(first).toMatchObject({
+      version: 2,
+      capture: {
+        commitSha: "a".repeat(40),
+        postManifestIdentity: `sha256:${"1".repeat(64)}`,
+        projection: {
+          sha256: `sha256:${"2".repeat(64)}`,
+          observedDigest: `sha256:${"3".repeat(64)}`,
+        },
+        database: {
+          configuredIdentity: "127.0.0.1:5432/review_router",
+          disposableIdentity: "rr-disposable-pair-first",
+          systemIdentifier: "7612345678901234567",
+          recoveryWitnessSha256: "4".repeat(64),
+        },
+      },
+    });
+  });
+  it("fails closed before migration when capture attestation preparation fails", async () => {
+    const failure = new Error("capture_attestation_preparation_failed");
+    const runReleaseMigration = vi.fn();
+    const captureCandidate = vi.fn();
+
+    await expect(
+      runRehearsalReleaseMigration({
+        captureOnly: { disposableDatabaseIdentity: "rr-disposable-test" },
+        rollout: { phase: "pre-migration" },
+        runStage: vi.fn(async (_name, operation) => operation()),
+        runReleaseMigration,
+        prepareCapture: vi.fn(async () => {
+          throw failure;
+        }),
+        captureCandidate,
+        stageTargetServices: vi.fn(),
+      }),
+    ).rejects.toBe(failure);
+    expect(runReleaseMigration).not.toHaveBeenCalled();
+    expect(captureCandidate).not.toHaveBeenCalled();
   });
   it("keeps normal migration in the rollout use case and stages its result", async () => {
     const preMigrationRollout = Object.freeze({ phase: "pre-migration" });
@@ -718,6 +1196,7 @@ describe("disposable dual-version rehearsal", () => {
     });
     const stagedRollout = Object.freeze({ phase: "staged" });
     const runReleaseMigration = vi.fn(async () => migratedRollout);
+    const prepareCapture = vi.fn();
     const captureCandidate = vi.fn();
     const stageTargetServices = vi.fn(async () => stagedRollout);
     const runStage = vi.fn(async (_name, operation) => operation());
@@ -728,6 +1207,7 @@ describe("disposable dual-version rehearsal", () => {
         rollout: preMigrationRollout,
         runStage,
         runReleaseMigration,
+        prepareCapture,
         captureCandidate,
         stageTargetServices,
       }),
@@ -737,6 +1217,7 @@ describe("disposable dual-version rehearsal", () => {
       runReleaseMigration,
     );
     expect(runReleaseMigration).toHaveBeenCalledOnce();
+    expect(prepareCapture).not.toHaveBeenCalled();
     expect(captureCandidate).not.toHaveBeenCalled();
     expect(stageTargetServices).toHaveBeenCalledWith(migratedRollout);
   });
@@ -798,6 +1279,9 @@ describe("disposable dual-version rehearsal", () => {
       "000072_retire_superseded_codex_setup_claims",
       "000072_runtime_canary_challenge",
       "000073_codex_oauth_active_namespace_refresh",
+      "000087_codex_oauth_v4_v5_workflow_reattestation",
+      "000088_codex_oauth_reattestation_mutation_owner_fence",
+      "000089_codex_oauth_v4_v5_staged_compatibility",
     ]);
     expect(exclusions).not.toContain("000067_review_live_progress");
     expect(exclusions).not.toContain(
@@ -1337,6 +1821,9 @@ describe("disposable dual-version rehearsal", () => {
     expect(bootstrapStage).toBeLessThan(releaseMigrationStage);
     expect(source).toContain("rehearsal_canonical_step_failed:${step}");
     expect(source).toContain("safePostgresErrorClassification(result.stderr)");
+    expect(source).toMatch(
+      /const classification = safePostgresErrorClassification\(result\.stderr\);[\s\S]*?rehearsal_canonical_postgres_error:\$\{step\}:\$\{classification\}/u,
+    );
     expect(source).toContain("rehearsal_control_stage_started:health_ready");
     expect(source).toContain("expectedDatabaseIdentity");
     expect(source.indexOf('runStage("quiesce_source"')).toBeLessThan(
@@ -1379,8 +1866,20 @@ describe("disposable dual-version rehearsal", () => {
       "rehearsal_control_health_not_ready:status=${status}",
     );
     expect(source).toContain("rehearsal_canonical_postgres_error:${step}");
+    expect(source).toContain("rehearsal_canonical_step_started:${safeStep}");
+    expect(source).toContain("rehearsal_canonical_step_completed:${safeStep}");
     expect(source).toContain(
-      "rehearsal_stage_failed:${safeName}:${safeError ?? redactedErrorChain(error)}",
+      '"rehearsal_migration_substep_started:configuration\\n"',
+    );
+    expect(source).toContain(
+      '"rehearsal_migration_substep_completed:configuration\\n"',
+    );
+    expect(source).toContain('"rehearsal_migration_substep_started:permit\\n"');
+    expect(source).toContain(
+      '"rehearsal_migration_substep_completed:permit\\n"',
+    );
+    expect(source).toContain(
+      "rehearsal_stage_failed:${safeName}:${safeRehearsalStageErrorDiagnostic(safeName, error)}",
     );
     expect(source).toContain(
       "migrationManifestIdentity:\n              current.activationReceipt.postManifestIdentity",
@@ -1411,10 +1910,19 @@ describe("disposable dual-version rehearsal", () => {
       /trustedActivationCatalogPolicies:\s+captureOnly\s+\? canonicalActivationCatalogPolicies\s+: authorizeCanonicalActivationCatalogPolicies/u,
     );
     expect(source).toContain(
+      "const releaseCommitSha = facts.canonicalEnv.REVIEW_ROUTER_RELEASE_COMMIT_SHA",
+    );
+    expect(source).toContain("expectedCommitSha: releaseCommitSha");
+    expect(source).toContain("commitSha: releaseCommitSha");
+    expect(source).toContain("sourceCommitSha: releaseCommitSha");
+    expect(source).toContain(
       "private_pg17_rehearsal_activation_catalog_policy_trust_root_blocked",
     );
     const releaseMigration = source.indexOf(
-      "const migratedRollout = await runStage(",
+      "migratedRollout = await runStage(",
+    );
+    const capturePreparation = source.indexOf(
+      '"prepare_activation_catalog_capture"',
     );
     const capture = source.indexOf(
       '"capture_activation_catalog_policy_candidate"',
@@ -1444,13 +1952,17 @@ describe("disposable dual-version rehearsal", () => {
     );
     const activate = source.indexOf('runStage("activate_target_generation"');
     expect(releaseMigration).toBeGreaterThan(-1);
-    expect(releaseMigration).toBeLessThan(marker);
-    expect(releaseMigration).toBeLessThan(fixtureCleanup);
-    expect(fixtureCleanup).toBeLessThan(marker);
-    expect(marker).toBeLessThan(capture);
+    expect(capturePreparation).toBeGreaterThan(-1);
+    expect(capturePreparation).toBeLessThan(releaseMigration);
+    expect(marker).toBeLessThan(fixtureCleanup);
+    expect(fixtureCleanup).toBeLessThan(capture);
     expect(capture).toBeLessThan(stageTarget);
     expect(stageTarget).toBeLessThan(activate);
-    const fixtureCleanupBranch = source.slice(fixtureCleanup, marker);
+    expect(marker).toBeLessThan(capture);
+    const fixtureCleanupBranch = source.slice(
+      fixtureCleanup,
+      source.indexOf("const stdout = canonicalRun(", fixtureCleanup),
+    );
     expect(fixtureCleanupBranch).toContain(
       "facts.sql(facts.targetContainer, statement)",
     );
@@ -1472,6 +1984,11 @@ describe("disposable dual-version rehearsal", () => {
     );
     expect(captureBranch).not.toContain("install_activation_permit");
     expect(captureBranch).not.toContain("executePrivateGenerationActivation");
+    expect(
+      source.match(
+        /canonicalRun\(\s*"mark_disposable_activation_catalog_database"/gu,
+      ),
+    ).toHaveLength(1);
     expect(source).not.toContain("rehearsal_capture_debug_");
   });
 });

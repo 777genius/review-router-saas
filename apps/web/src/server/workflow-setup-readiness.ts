@@ -4,13 +4,14 @@ import {
   areWorkflowDocumentsSemanticallyEqual,
   assertSameVersionedProviderSecretNamespace,
   type CodexRotatingReviewActionV2Mode,
-  CodexRotatingT0WorkflowSchemaVersion,
+  type CodexRotatingT0WorkflowSchemaVersion,
   type VersionedProviderSecretNamespace,
   defaultCodexRotatingWorkflowPath,
   defaultInteractionWorkflowPath,
   defaultWorkflowPath,
   getCodexRotatingWorkflowSetupContentMarkerGroups,
   getWorkflowSetupContentMarkerGroups,
+  isVersionedSecretNamespaceCodexWorkflowSchemaVersion,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
   renderCanonicalCodexRotatingInteractionWorkflowV3,
   scanCodexRotatingAdvisoryWorkflow,
@@ -76,9 +77,9 @@ export async function isWorkflowSetupAlreadyCurrent(
                   }
                 : {}),
             }),
-          ...(input.codexRotatingWorkflowSchemaVersion ===
-            CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 &&
-          input.codexRotatingWorkflowSecretNamespace
+          ...(isVersionedSecretNamespaceCodexWorkflowSchemaVersion(
+            input.codexRotatingWorkflowSchemaVersion,
+          ) && input.codexRotatingWorkflowSecretNamespace
             ? {
                 expectedContentValidator: (workflow: string) =>
                   isCanonicalVersionedCodexWorkflowReady({
@@ -86,6 +87,8 @@ export async function isWorkflowSetupAlreadyCurrent(
                     expectedActionRef: input.actionRef,
                     expectedProviderInstanceId:
                       input.codexRotatingProviderInstanceId!,
+                    expectedWorkflowSchemaVersion:
+                      input.codexRotatingWorkflowSchemaVersion!,
                     expectedSecretNamespace:
                       input.codexRotatingWorkflowSecretNamespace!,
                   }),
@@ -149,6 +152,7 @@ function isCanonicalVersionedCodexWorkflowReady(input: {
   readonly workflow: string;
   readonly expectedActionRef: string;
   readonly expectedProviderInstanceId: string;
+  readonly expectedWorkflowSchemaVersion: CodexRotatingT0WorkflowSchemaVersion;
   readonly expectedSecretNamespace: VersionedProviderSecretNamespace;
 }): boolean {
   try {
@@ -161,8 +165,7 @@ function isCanonicalVersionedCodexWorkflowReady(input: {
     if (
       metadata.actionRef !== input.expectedActionRef ||
       metadata.providerInstanceId !== input.expectedProviderInstanceId ||
-      metadata.workflowSchemaVersion !==
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+      metadata.workflowSchemaVersion !== input.expectedWorkflowSchemaVersion ||
       !metadata.secretNamespace
     ) {
       return false;

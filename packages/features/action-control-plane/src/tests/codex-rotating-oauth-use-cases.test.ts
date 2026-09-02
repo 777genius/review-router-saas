@@ -13,6 +13,7 @@ import {
 } from "../index";
 import { parseReviewConfiguration } from "@reviewrouter/features-review-config";
 import {
+  allocateVersionedProviderSecretNamespace,
   computeEncryptedPayloadDigest,
   createVersionedSecretWorkflowSourceAttestation,
   WorkflowSourceTrust,
@@ -31,6 +32,26 @@ const repository = {
   selected: true,
   installationStatus: "active",
 };
+
+const memoryWorkflowAttestation = (workflowSchemaVersion = 4) =>
+  createVersionedSecretWorkflowSourceAttestation({
+    repositoryId: repository.githubRepositoryId,
+    workflowPath: ".github/workflows/reviewrouter-codex.yml",
+    workflowSourceCommitSha: workflowSha,
+    workflowSourceBlobSha: "b".repeat(40),
+    workflowSourceSha256: "c".repeat(64),
+    workflowSemanticSha256: "d".repeat(64),
+    workflowSchemaVersion,
+    sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+    secretNamespace: allocateVersionedProviderSecretNamespace({
+      scope: {
+        repositoryId: repository.githubRepositoryId,
+        providerInstanceId: `codex-rotating:${repository.githubRepositoryId}`,
+      },
+      epoch: 1n,
+      randomBytes: () => new Uint8Array(16),
+    }),
+  });
 
 const claims = {
   iss: "https://token.actions.githubusercontent.com",
@@ -60,6 +81,124 @@ const pullRequestTargetClaims = {
 } as const;
 
 describe("Codex rotating OAuth action control plane", () => {
+  it("fails closed when runtime workflow verification omits its mandatory attestation", async () => {
+    const dependencies = buildRotatingDependencies();
+    vi.mocked(
+      dependencies.codexRotatingWorkflowSourceVerifier.verifyWorkflowSource,
+    ).mockResolvedValueOnce({
+      binding: {
+        providerInstanceId: "codex-rotating:123456",
+        repositoryFullName: repository.fullName,
+        githubRepositoryId: repository.githubRepositoryId,
+        actionRef: `777genius/review-router@${workflowSha}`,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSchemaVersion: 4,
+      },
+    } as never);
+
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 4,
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow("workflow_source_attestation_missing");
+  });
+
+  it("fails closed when the memory adapter receives an attestation for another namespace", async () => {
+    const ledger = new InMemoryCodexRotatingOAuthRepository([
+      {
+        providerInstanceId: "codex-rotating:123456",
+        repositoryFullName: repository.fullName,
+        githubRepositoryId: repository.githubRepositoryId,
+        actionRef: `777genius/review-router@${workflowSha}`,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSchemaVersion: 4,
+      },
+    ]);
+    const stale = createVersionedSecretWorkflowSourceAttestation({
+      ...memoryWorkflowAttestation(),
+      secretNamespace: allocateVersionedProviderSecretNamespace({
+        scope: {
+          repositoryId: repository.githubRepositoryId,
+          providerInstanceId: "codex-rotating:123456",
+        },
+        epoch: 2n,
+        randomBytes: () => new Uint8Array(16).fill(1),
+      }),
+    });
+
+    await expect(
+      ledger.acquirePrelease({
+        repository,
+        providerInstanceId: "codex-rotating:123456",
+        githubRunId: "stale-attestation-run",
+        githubRunAttempt: "1",
+        verifiedWorkflowAttestation: stale,
+        newWorkAdmissionBarrier: allowNewWorkAdmission,
+      }),
+    ).rejects.toThrow("codex_rotating_workflow_attestation_stale");
+  });
+
+  it.each([
+    ["workflow blob", "workflowSourceBlobSha", "e".repeat(40)],
+    ["workflow source digest", "workflowSourceSha256", "e".repeat(64)],
+    ["workflow semantic digest", "workflowSemanticSha256", "e".repeat(64)],
+  ] as const)(
+    "fails closed when the memory adapter receives changed %s bytes",
+    async (_name, field, changedValue) => {
+      const persisted = memoryWorkflowAttestation();
+      const binding = {
+        providerInstanceId: "codex-rotating:123456",
+        repositoryFullName: repository.fullName,
+        githubRepositoryId: repository.githubRepositoryId,
+        actionRef: `777genius/review-router@${workflowSha}`,
+        workflowPath: persisted.workflowPath,
+        workflowSchemaVersion: persisted.workflowSchemaVersion,
+        activeSecretNamespace: persisted.secretNamespace,
+        activeWorkflowSource: {
+          workflowPath: persisted.workflowPath,
+          workflowSourceCommitSha: persisted.workflowSourceCommitSha,
+          workflowSourceBlobSha: persisted.workflowSourceBlobSha,
+          workflowSourceSha256: persisted.workflowSourceSha256,
+          workflowSemanticSha256: persisted.workflowSemanticSha256,
+          sourceTrust: "trusted_default_branch_revision" as const,
+          repositoryId: persisted.repositoryId,
+        },
+      } as const;
+      const ledger = new InMemoryCodexRotatingOAuthRepository([binding]);
+      const changed = createVersionedSecretWorkflowSourceAttestation({
+        ...persisted,
+        [field]: changedValue,
+      });
+      await ledger.ensureVerifiedProviderBinding({
+        repository,
+        binding: {
+          ...binding,
+          activeWorkflowSource: {
+            ...binding.activeWorkflowSource,
+            [field]: changedValue,
+          },
+        },
+      });
+
+      await expect(
+        ledger.acquirePrelease({
+          repository,
+          providerInstanceId: binding.providerInstanceId,
+          githubRunId: `changed-${field}`,
+          githubRunAttempt: "1",
+          verifiedWorkflowAttestation: changed,
+          newWorkAdmissionBarrier: allowNewWorkAdmission,
+        }),
+      ).rejects.toThrow("codex_rotating_workflow_attestation_stale");
+    },
+  );
+
   it("fails closed across a recovery-witness change before memory lease and writeback mutation", async () => {
     const witnessOne = "witness_generation_one_12345678901234567890";
     const witnessTwo = "witness_generation_two_12345678901234567890";
@@ -70,7 +209,7 @@ describe("Codex rotating OAuth action control plane", () => {
       githubRepositoryId: "123456",
       actionRef: `777genius/review-router@${workflowSha}`,
       workflowPath: ".github/workflows/reviewrouter-codex.yml",
-      workflowSchemaVersion: 1,
+      workflowSchemaVersion: 4,
     } as const;
     const ledger = new InMemoryCodexRotatingOAuthRepository([binding], {
       initialDatabaseRecoveryWitness: witnessOne,
@@ -86,6 +225,7 @@ describe("Codex rotating OAuth action control plane", () => {
         githubRunId: "witness-run",
         githubRunAttempt: "1",
         now,
+        verifiedWorkflowAttestation: memoryWorkflowAttestation(),
         newWorkAdmissionBarrier: allowNewWorkAdmission,
       }),
     ).rejects.toThrow("codex_rotating_database_recovery_witness_mismatch");
@@ -97,6 +237,7 @@ describe("Codex rotating OAuth action control plane", () => {
       githubRunId: "witness-run",
       githubRunAttempt: "1",
       now,
+      verifiedWorkflowAttestation: memoryWorkflowAttestation(),
       newWorkAdmissionBarrier: allowNewWorkAdmission,
     });
     expect(lease.status).toBe("preleased");
@@ -203,7 +344,7 @@ describe("Codex rotating OAuth action control plane", () => {
           githubRepositoryId: "123456",
           actionRef: `777genius/review-router@${workflowSha}`,
           workflowPath: ".github/workflows/reviewrouter-codex.yml",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
       ],
       {
@@ -230,10 +371,9 @@ describe("Codex rotating OAuth action control plane", () => {
             githubRepositoryId: "123456",
             actionRef: `777genius/review-router@${workflowSha}`,
             workflowPath: ".github/workflows/reviewrouter-codex.yml",
-            workflowSchemaVersion: 1,
+            workflowSchemaVersion: 4,
           },
-          workflowSourceSha256:
-            "workflow-source-sha256-012345678901234567890123456789",
+          attestation: memoryWorkflowAttestation(),
         }),
         resolveWorkflowRunPullRequest: vi.fn().mockResolvedValue(240),
       },
@@ -296,6 +436,7 @@ describe("Codex rotating OAuth action control plane", () => {
                 workflowSourceBlobSha: "b".repeat(40),
                 workflowSourceSha256: "c".repeat(64),
                 workflowSemanticSha256: "d".repeat(64),
+                workflowSchemaVersion: 5,
                 sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
                 secretNamespace: namespace,
               }),
@@ -311,7 +452,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -329,7 +470,7 @@ describe("Codex rotating OAuth action control plane", () => {
       expect.objectContaining({
         expectedActionOwnerRepo: "777genius/review-router",
         expectedProviderInstanceId: "codex-rotating:123456",
-        expectedWorkflowSchemaVersion: 1,
+        expectedWorkflowSchemaVersion: 4,
       }),
     );
     expect(
@@ -533,6 +674,7 @@ describe("Codex rotating OAuth action control plane", () => {
       githubRunId: "9002",
       githubRunAttempt: "1",
       now,
+      verifiedWorkflowAttestation: memoryWorkflowAttestation(),
       newWorkAdmissionBarrier: allowNewWorkAdmission,
     });
     if (unchangedLease.status === "conflict") {
@@ -605,6 +747,7 @@ describe("Codex rotating OAuth action control plane", () => {
       githubRunId: "9003",
       githubRunAttempt: "1",
       now,
+      verifiedWorkflowAttestation: memoryWorkflowAttestation(),
       newWorkAdmissionBarrier: allowNewWorkAdmission,
     });
     if (newerOwner.status === "conflict") {
@@ -736,7 +879,7 @@ describe("Codex rotating OAuth action control plane", () => {
       actionRef: currentActionRef,
       ...(allowedActionRefs ? { allowedActionRefs } : {}),
       workflowPath: ".github/workflows/reviewrouter-codex.yml",
-      workflowSchemaVersion: 1,
+      workflowSchemaVersion: 4,
     };
     const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
       binding,
@@ -759,10 +902,9 @@ describe("Codex rotating OAuth action control plane", () => {
             githubRepositoryId: "123456",
             actionRef: workflowActionRef,
             workflowPath: ".github/workflows/reviewrouter-codex.yml",
-            workflowSchemaVersion: 1,
+            workflowSchemaVersion: 4,
           },
-          workflowSourceSha256:
-            "workflow-source-sha256-012345678901234567890123456789",
+          attestation: memoryWorkflowAttestation(),
         }),
       },
       codexRotatingNewWorkAdmission: allowNewWorkAdmission,
@@ -777,7 +919,7 @@ describe("Codex rotating OAuth action control plane", () => {
         oidcToken: "jwt",
         audience: "reviewrouter",
         providerInstanceId: "codex-rotating:123456",
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 4,
       },
       dependencies,
     );
@@ -808,7 +950,7 @@ describe("Codex rotating OAuth action control plane", () => {
         githubRepositoryId: "123456",
         actionRef: `777genius/review-router@${workflowSha}`,
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 4,
       },
     ]);
     const dependencies = {
@@ -836,10 +978,9 @@ describe("Codex rotating OAuth action control plane", () => {
             githubRepositoryId: "123456",
             actionRef: `777genius/review-router@${workflowSha}`,
             workflowPath: ".github/workflows/reviewrouter-codex.yml",
-            workflowSchemaVersion: 1,
+            workflowSchemaVersion: 4,
           },
-          workflowSourceSha256:
-            "workflow-source-sha256-012345678901234567890123456789",
+          attestation: memoryWorkflowAttestation(),
         }),
       },
       codexRotatingNewWorkAdmission: allowNewWorkAdmission,
@@ -855,7 +996,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -878,7 +1019,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt-2",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -895,10 +1036,9 @@ describe("Codex rotating OAuth action control plane", () => {
             githubRepositoryId: "123456",
             actionRef: "evil/review-router@main",
             workflowPath: ".github/workflows/reviewrouter-codex.yml",
-            workflowSchemaVersion: 1,
+            workflowSchemaVersion: 4,
           },
-          workflowSourceSha256:
-            "workflow-source-sha256-012345678901234567890123456789",
+          attestation: memoryWorkflowAttestation(),
         }),
       },
     });
@@ -909,7 +1049,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -931,7 +1071,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -949,7 +1089,7 @@ describe("Codex rotating OAuth action control plane", () => {
         githubRepositoryId: "123456",
         actionRef: `777genius/review-router@${workflowSha}`,
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 4,
       },
     ]);
     const acquire = vi.spyOn(codexRotatingOAuth, "acquirePrelease");
@@ -968,7 +1108,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -985,7 +1125,7 @@ describe("Codex rotating OAuth action control plane", () => {
         githubRepositoryId: "123456",
         actionRef: `777genius/review-router@${workflowSha}`,
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 4,
       },
     ]);
     const assertAdmitted = vi
@@ -1006,7 +1146,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -1040,7 +1180,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -1082,7 +1222,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -1105,7 +1245,7 @@ describe("Codex rotating OAuth action control plane", () => {
       githubRepositoryId: "123456",
       actionRef: `777genius/review-router@${workflowSha}`,
       workflowPath: ".github/workflows/reviewrouter-codex.yml",
-      workflowSchemaVersion: 2,
+      workflowSchemaVersion: 4,
     } as const;
     const dependencies = buildRotatingDependencies({
       reviewIntentAdmissionRequired: false,
@@ -1115,8 +1255,7 @@ describe("Codex rotating OAuth action control plane", () => {
       codexRotatingWorkflowSourceVerifier: {
         verifyWorkflowSource: vi.fn().mockResolvedValue({
           binding,
-          workflowSourceSha256:
-            "workflow-source-sha256-012345678901234567890123456789",
+          attestation: memoryWorkflowAttestation(),
         }),
       },
     });
@@ -1126,7 +1265,7 @@ describe("Codex rotating OAuth action control plane", () => {
         oidcToken: "jwt",
         audience: "reviewrouter",
         providerInstanceId: "codex-rotating:123456",
-        workflowSchemaVersion: 2,
+        workflowSchemaVersion: 4,
       },
       dependencies,
     );
@@ -1171,7 +1310,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -1212,7 +1351,7 @@ describe("Codex rotating OAuth action control plane", () => {
         oidcToken: "jwt",
         audience: "reviewrouter",
         providerInstanceId: "codex-rotating:123456",
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 4,
       },
       dependencies,
     );
@@ -1257,7 +1396,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -1327,7 +1466,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -1504,7 +1643,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -1532,7 +1671,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -1628,7 +1767,7 @@ describe("Codex rotating OAuth action control plane", () => {
             oidcToken: "jwt",
             audience: "reviewrouter",
             providerInstanceId: "codex-rotating:123456",
-            workflowSchemaVersion: 1,
+            workflowSchemaVersion: 4,
           },
           dependencies,
         ),
@@ -1711,7 +1850,7 @@ describe("Codex rotating OAuth action control plane", () => {
             oidcToken: "jwt-after-randomized-restart",
             audience: "reviewrouter",
             providerInstanceId: "codex-rotating:123456",
-            workflowSchemaVersion: 1,
+            workflowSchemaVersion: 4,
           },
           dependencies,
         ),
@@ -1727,7 +1866,7 @@ describe("Codex rotating OAuth action control plane", () => {
         githubRepositoryId: "123456",
         actionRef: `777genius/review-router@${workflowSha}`,
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 4,
       },
     ]);
     const dependencies = buildRotatingDependencies({
@@ -1758,7 +1897,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -1835,7 +1974,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt-after-failed-writeback",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -1859,7 +1998,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "forged-jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:999999",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -1881,7 +2020,7 @@ describe("Codex rotating OAuth action control plane", () => {
           oidcToken: "jwt",
           audience: "reviewrouter",
           providerInstanceId: "codex-rotating:123456",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
         dependencies,
       ),
@@ -1975,7 +2114,7 @@ describe("Codex rotating OAuth action control plane", () => {
         oidcToken: "jwt",
         audience: "reviewrouter",
         providerInstanceId: "codex-rotating:123456",
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 4,
       },
       dependencies,
     );
@@ -2015,7 +2154,7 @@ function buildRotatingDependencies(
           githubRepositoryId: "123456",
           actionRef: `777genius/review-router@${workflowSha}`,
           workflowPath: ".github/workflows/reviewrouter-codex.yml",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
       ],
       { clock: { now: () => now } },
@@ -2044,6 +2183,7 @@ function buildRotatingDependencies(
                 workflowSourceBlobSha: "b".repeat(40),
                 workflowSourceSha256: "c".repeat(64),
                 workflowSemanticSha256: "d".repeat(64),
+                workflowSchemaVersion: 5,
                 sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
                 secretNamespace: namespace,
               }),
@@ -2084,10 +2224,9 @@ function buildRotatingDependencies(
           githubRepositoryId: "123456",
           actionRef: `777genius/review-router@${workflowSha}`,
           workflowPath: ".github/workflows/reviewrouter-codex.yml",
-          workflowSchemaVersion: 1,
+          workflowSchemaVersion: 4,
         },
-        workflowSourceSha256:
-          "workflow-source-sha256-012345678901234567890123456789",
+        attestation: memoryWorkflowAttestation(),
       }),
     },
     replayNonces: {
@@ -2151,7 +2290,7 @@ async function completeRotatingWriteback(
         oidcToken: "jwt",
         audience: "reviewrouter",
         providerInstanceId: "codex-rotating:123456",
-        workflowSchemaVersion: 1,
+        workflowSchemaVersion: 4,
       },
       dependencies,
     ),

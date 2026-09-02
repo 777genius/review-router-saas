@@ -112,6 +112,7 @@ export async function provisionRepositoryReviewRouterWorkflow(
       ...(input.codexRotatingProviderInstanceId
         ? {
             codexRotatingWorkflowSchemaVersion:
+              input.codexRotatingWorkflowSchemaVersion ??
               CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
           }
         : input.codexRotatingWorkflowSchemaVersion !== undefined
