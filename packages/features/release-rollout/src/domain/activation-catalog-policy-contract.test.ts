@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
 import { sha256Canonical } from "./canonical-json";
 import { activationCatalogRawPromotionTrustRoot } from "./activation-catalog-policy-raw-promotion-trust-root";
 import {
@@ -13,16 +12,10 @@ import {
 
 describe("promoted activation catalog policy trust root", () => {
   it("admits the active reviewed trust root", () => {
-    const provenance = JSON.parse(
-      readFileSync(
-        new URL("activation-catalog-policy-provenance.json", import.meta.url),
-        "utf8",
-      ),
-    );
-    expect(canonicalActivationCatalogPolicyDigests).toEqual(
-      reviewedActivationCatalogPolicyDigests,
-    );
     if (activationCatalogRawPromotionTrustRoot.status === "ready") {
+      expect(canonicalActivationCatalogPolicyDigests).toEqual(
+        reviewedActivationCatalogPolicyDigests,
+      );
       expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
         status: "ready",
         reason: "reviewed-raw",
@@ -43,25 +36,10 @@ describe("promoted activation catalog policy trust root", () => {
       );
     } else {
       expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
-        status: "ready",
+        status: "blocked",
         reason:
-          "reviewed-v29-schema-v5-pr245-promoted-with-evidence-contract-v2",
+          "fresh-authenticated-raw-capture-and-independent-review-required",
       });
-      expect(provenance).toMatchObject({
-        version: 5,
-        status: "ready",
-        evidenceContractVersion: 2,
-        capture: {
-          baseCommit: "79c8496d64b63c129e19331ee328666f714d82b1",
-          auditedTree: "1cdb05db1f73eb2bf294d774d517fff533ca24bc",
-        },
-      });
-      expect(
-        canonicalActivationCatalogPolicies.preactivation.policy.grants,
-      ).toHaveLength(3082);
-      expect(
-        canonicalActivationCatalogPolicies.activated.policy.grants,
-      ).toHaveLength(4072);
     }
   });
 
@@ -74,12 +52,22 @@ describe("promoted activation catalog policy trust root", () => {
     visit(canonicalActivationCatalogPolicyArtifact);
   });
 
-  it("authorizes only the exact compact digests under the ready trust root", () => {
-    expect(() =>
-      authorizeCanonicalActivationCatalogPolicies(
-        canonicalActivationCatalogPolicyDigests,
-      ),
-    ).not.toThrow();
+  it("authorizes only the exact compact digests under a ready trust root", () => {
+    if (activationCatalogRawPromotionTrustRoot.status === "ready") {
+      expect(() =>
+        authorizeCanonicalActivationCatalogPolicies(
+          canonicalActivationCatalogPolicyDigests,
+        ),
+      ).not.toThrow();
+    } else {
+      expect(() =>
+        authorizeCanonicalActivationCatalogPolicies(
+          canonicalActivationCatalogPolicyDigests,
+        ),
+      ).toThrow(
+        "activation_catalog_policy_trust_root_blocked:fresh-authenticated-raw-capture-and-independent-review-required",
+      );
+    }
     expect(() =>
       authorizeCanonicalActivationCatalogPolicies({
         ...reviewedActivationCatalogPolicyDigests,

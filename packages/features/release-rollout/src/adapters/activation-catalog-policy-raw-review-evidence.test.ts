@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { sha256Canonical } from "../domain/canonical-json";
 import {
   activationCatalogRawPromotionOptIn,
   activationCatalogRawReviewArtifactRepositoryPath,
@@ -10,15 +11,14 @@ import {
   type ActivationCatalogRawPromotionTrustRootReady,
 } from "../domain/activation-catalog-policy-raw-promotion-trust-root";
 import { canonicalReleaseMigrationPostManifestIdentity } from "../domain/release-migration-transition";
-import {
-  assertActivationCatalogPolicyReviewEvidence,
-} from "./activation-catalog-policy-review-evidence";
+import { assertActivationCatalogPolicyReviewEvidence } from "./activation-catalog-policy-review-evidence";
 
 const digest = (value: Buffer): string =>
   createHash("sha256").update(value).digest("hex");
 
-const fixedRawReviewArtifact = Buffer.from(
-  `# Raw activation catalog independent review
+const rawReviewArtifact = (captureSetSha256: string): Buffer =>
+  Buffer.from(
+    `# Raw activation catalog independent review
 
 ## Decision
 
@@ -46,12 +46,12 @@ const fixedRawReviewArtifact = Buffer.from(
 | selected | \`activation-catalog-policy-candidate-1.json\` | \`2677685\` | \`140043ec47171493ff2e713eb0ec0a2afe18ae1133bb61b5178069533cbad6e9\` |
 | corroborating | \`activation-catalog-policy-candidate-2.json\` | \`2677685\` | \`57c519a3f5ee2413ff61e1236ba49450160859e20f0ed0612fd1c3b67e283bf0\` |
 
-Capture-set digest: \`sha256:7c697879d6acfdfeb9a77a2d1eb9f6d8bb9b468da14f9c62f4cd3337a4b8fdea\`
+Capture-set digest: \`${captureSetSha256}\`
 Source PostgreSQL image: \`postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60\`
 Target PostgreSQL image: \`postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4\`
 `,
-  "utf8",
-);
+    "utf8",
+  );
 
 function deepFreeze<T>(
   value: T,
@@ -79,12 +79,8 @@ const capture = {
 };
 
 function rawEvidence() {
-  const value = {
-    kind: "reviewrouter-activation-catalog-raw-capture-evidence" as const,
-    version: 1 as const,
+  const captureSetMaterial = {
     selectedCaptureId: "activation-catalog-policy-candidate-1.json",
-    captureSetSha256:
-      "sha256:7c697879d6acfdfeb9a77a2d1eb9f6d8bb9b468da14f9c62f4cd3337a4b8fdea",
     captures: [
       {
         label: "activation-catalog-policy-candidate-1.json",
@@ -107,8 +103,7 @@ function rawEvidence() {
         "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4",
     },
     reviewResult: "GO" as const,
-    reviewDecisionId:
-      "RR-PR236-RAW-CATALOG-GO-BE9958E3-140043EC-20260831",
+    reviewDecisionId: "RR-PR236-RAW-CATALOG-GO-BE9958E3-140043EC-20260831",
     projectionSha256:
       "sha256:42aaf14dff0968cfea3b1e80dca7c05de19e7888500c56e55f8fc3856684ebc6",
     liveCatalogDigest:
@@ -130,7 +125,12 @@ function rawEvidence() {
         "0579802d4276c087fd1d9281f09b0159d70b9920907f0fc355604cdc4d0fb21f",
     },
   };
-  return value;
+  return {
+    kind: "reviewrouter-activation-catalog-raw-capture-evidence" as const,
+    version: 1 as const,
+    captureSetSha256: `sha256:${sha256Canonical(captureSetMaterial)}`,
+    ...captureSetMaterial,
+  };
 }
 
 function unboundRoot(): ActivationCatalogRawPromotionTrustRootReady {
@@ -160,7 +160,7 @@ function unboundRoot(): ActivationCatalogRawPromotionTrustRootReady {
 
 function fixture(frozen = true) {
   let root = unboundRoot();
-  const reviewArtifact = fixedRawReviewArtifact;
+  const reviewArtifact = rawReviewArtifact(root.evidence.captureSetSha256);
   const runtime = {
     status: "done",
     changedFiles: [],
