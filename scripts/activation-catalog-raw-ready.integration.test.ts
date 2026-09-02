@@ -29,7 +29,6 @@ import {
   activationCatalogRawReviewerRuntimeRepositoryPath,
   type ActivationCatalogRawPromotionTrustRootReady,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-raw-promotion-trust-root";
-import { activationCatalogRawReviewArtifact } from "../packages/features/release-rollout/src/adapters/activation-catalog-policy-review-evidence";
 import { activationCatalogCaptureSurface } from "./lib/activation-catalog-git-custody.mjs";
 
 const sourceRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -65,6 +64,49 @@ const canonicalActivationCatalogPolicies = generatedPolicies(
 
 const sha256 = (value: Buffer | string): string =>
   createHash("sha256").update(value).digest("hex");
+
+function rawReviewArtifactFixture(
+  ready: ActivationCatalogRawPromotionTrustRootReady,
+): string {
+  const { evidence, independentReview } = ready;
+  const captures = evidence.captures
+    .map(
+      (capture, index) =>
+        `| ${index === 0 ? "selected" : "corroborating"} | \`${capture.label}\` | \`${capture.bytes}\` | \`${capture.sha256}\` |`,
+    )
+    .join("\n");
+  return `# Raw activation catalog independent review
+
+## Decision
+
+- Verdict: **GO**
+- BLOCKER: **0**
+- HIGH: **0**
+- Decision ID: \`${evidence.reviewDecisionId}\`
+- Reviewed at: \`${independentReview.reviewedAt}\`
+
+## Capture identities
+
+- Base commit: \`${evidence.capture.baseCommit}\`
+- Audited head: \`${evidence.capture.auditedHead}\`
+- Audited tree: \`${evidence.capture.auditedTree}\`
+- Workflow run: \`${evidence.capture.workflowRunId}\`
+- Run attempt: \`${evidence.capture.runAttempt}\`
+- Job: \`${evidence.capture.jobId}\`
+- Artifact ID: \`${evidence.capture.artifactId}\`
+- Artifact name: \`${evidence.capture.artifactName}\`
+
+## Raw captures
+
+| Selection | Label | Bytes | Raw SHA-256 |
+| --- | --- | ---: | --- |
+${captures}
+
+Capture-set digest: \`${evidence.captureSetSha256}\`
+Source PostgreSQL image: \`${evidence.postgresImages.sourcePg16}\`
+Target PostgreSQL image: \`${evidence.postgresImages.targetPg17}\`
+`;
+}
 
 function git(root: string, ...args: string[]): string {
   return execFileSync("git", args, {
@@ -352,7 +394,7 @@ describe("raw activation catalog READY production integration", () => {
       },
     };
     const reviewArtifact = Buffer.from(
-      activationCatalogRawReviewArtifact(readyRoot),
+      rawReviewArtifactFixture(readyRoot),
       "utf8",
     );
     const reviewerRuntime = Buffer.from(
