@@ -39,7 +39,7 @@ const catalogInnerContext =
 const catalogStatement = `SQL statement "SELECT reviewrouter_activation.complete_migration_permit(
       requested_rollout_id,requested_permit_epoch,requested_permit_nonce,
       '{}'::jsonb)"`;
-const catalogOuterContext = `CONTEXT:  PL/pgSQL function ${executorSignature} line 5513 at PERFORM`;
+const catalogOuterContext = `PL/pgSQL function ${executorSignature} line 5513 at PERFORM`;
 const catalogRecord = `${errorLine(417, catalogGuard)}\n${catalogDetail}\n${catalogInnerContext}\n${catalogStatement}\n${catalogOuterContext}\n`;
 
 describe("exact PostgreSQL catalog digest mismatch classification", () => {
@@ -92,6 +92,14 @@ describe("exact PostgreSQL catalog digest mismatch classification", () => {
       "wrong outer context",
       catalogGuard,
       catalogRecord.replace(" line 5513 at PERFORM", " line 5513 at CALL"),
+    ],
+    [
+      "repeated context prefix",
+      catalogGuard,
+      catalogRecord.replace(
+        catalogOuterContext,
+        `CONTEXT:  ${catalogOuterContext}`,
+      ),
     ],
     [
       "changed statement whitespace",

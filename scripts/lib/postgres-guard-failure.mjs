@@ -123,6 +123,11 @@ export function isExactPostgresCatalogDigestMismatchFailure(
     catalogDigestStatementLines.every(
       (line, index) => lines[index + 3] === line,
     ) &&
-    isExactContextLine(lines[6], executorSignature, "PERFORM")
+    isExactContextLine(
+      lines[6],
+      executorSignature,
+      "PERFORM",
+      "PL/pgSQL function ",
+    )
   );
 }
