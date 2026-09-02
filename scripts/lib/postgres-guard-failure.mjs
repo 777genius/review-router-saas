@@ -6,7 +6,7 @@ const reconciliationSignature =
 const catalogDigestMismatchGuard =
   "release migration target live completion mismatch:catalog_digest_observed";
 const catalogDigestDetailPattern =
-  /^DETAIL:  expected=sha256:[a-f0-9]{64} observed=sha256:[a-f0-9]{64}$/u;
+  /^DETAIL: {2}expected=sha256:[a-f0-9]{64} observed=sha256:[a-f0-9]{64}$/u;
 const completeMigrationPermitSignature =
   "reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)";
 const catalogDigestStatementLines = Object.freeze([

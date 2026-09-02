@@ -3,7 +3,6 @@ import { sha256Canonical } from "./canonical-json";
 import { activationCatalogRawPromotionTrustRoot } from "./activation-catalog-policy-raw-promotion-trust-root";
 import {
   authorizeCanonicalActivationCatalogPolicies,
-  canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyArtifact,
   canonicalActivationCatalogPolicyDigests,
   canonicalActivationCatalogPolicyTrustRootReadiness,
