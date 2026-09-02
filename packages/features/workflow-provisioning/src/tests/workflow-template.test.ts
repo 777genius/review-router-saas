@@ -388,6 +388,27 @@ describe("renderReviewRouterWorkflow", () => {
     ).toBe(false);
   });
 
+  it.each(["main", "v1", "v1.2.3"])(
+    "rejects mutable %s runtime refs before granting app-first rerun authority",
+    (runtimeRef) => {
+      const options = {
+        actionRef: `777genius/review-router@${runtimeRef}`,
+        apiUrl: "https://reviewrouter.site",
+        runtimeConfigMode: "oidc" as const,
+      };
+
+      expect(() =>
+        renderCanonicalCodexRotatingInteractionWorkflowV2(options),
+      ).toThrow("invalid_app_first_interaction_reusable_workflow_runtime_ref");
+      expect(() => renderCodexRotatingInteractionWorkflow(options)).toThrow(
+        "invalid_app_first_interaction_reusable_workflow_runtime_ref",
+      );
+      expect(() =>
+        renderCanonicalCodexRotatingInteractionWorkflowV1(options),
+      ).not.toThrow();
+    },
+  );
+
   it("exports readiness markers for the dedicated rotating Codex workflow", () => {
     expect(
       getCodexRotatingWorkflowSetupContentMarkerGroups({

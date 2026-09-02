@@ -395,6 +395,11 @@ function renderCanonicalCodexRotatingInteractionWorkflow(
   appFirstV2: boolean,
 ): string {
   const runtimeRef = extractReusableRuntimeRef(options.actionRef);
+  if (appFirstV2 && !/^[a-fA-F0-9]{40}$/.test(runtimeRef)) {
+    throw new Error(
+      "invalid_app_first_interaction_reusable_workflow_runtime_ref",
+    );
+  }
 
   return `name: ReviewRouter Interaction
 
