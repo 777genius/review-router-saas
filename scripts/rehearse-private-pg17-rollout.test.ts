@@ -34,7 +34,6 @@ import {
   disposableProviderScopeConcurrencyExerciseSql,
   disposableSqlConfiguration,
   disposableTargetPublicTableAclCanonicalizationSql,
-  executeDisposableRehearsal,
   normalizeRehearsalDockerInvocation,
   resolveRehearsalCaptureOnlyConfiguration,
   resolvePreReleaseMigrationExclusions,
