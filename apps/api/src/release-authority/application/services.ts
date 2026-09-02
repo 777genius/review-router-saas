@@ -412,25 +412,29 @@ export class ReleaseAuthorityService {
       if (!this.targetReceiptReader)
         throw new Error("target_activation_receipt_reader_unavailable");
       const targetReceiptReader = this.targetReceiptReader;
-      const receipt = await executeFresh(
-        "reader",
-        () => targetReceiptReader.read(input.authorization.rolloutId),
-        TargetManifestPhase.PostMigration,
-      );
-      if (!receipt || "receiptAbsent" in receipt)
-        throw new Error("target_activation_receipt_missing");
-      if (
-        !targetActivationIdentityMatches({
-          target: receipt,
-          authorization: input.authorization,
-          proposedReceipt: input.activationReceipt,
-          expectedReceiptSha256: input.nextReceiptSha256,
-        })
-      )
-        throw new Error("target_activation_receipt_mismatch");
       return executeFresh(
-        "control",
-        () => this.repository.finalizeActivation(input),
+        "reader",
+        async () => {
+          const receipt = await targetReceiptReader.read(
+            input.authorization.rolloutId,
+          );
+          if (!receipt || "receiptAbsent" in receipt)
+            throw new Error("target_activation_receipt_missing");
+          if (
+            !targetActivationIdentityMatches({
+              target: receipt,
+              authorization: input.authorization,
+              proposedReceipt: input.activationReceipt,
+              expectedReceiptSha256: input.nextReceiptSha256,
+            })
+          )
+            throw new Error("target_activation_receipt_mismatch");
+          return executeFresh(
+            "control",
+            () => this.repository.finalizeActivation(input),
+            TargetManifestPhase.PostMigration,
+          );
+        },
         TargetManifestPhase.PostMigration,
       );
     });

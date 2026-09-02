@@ -335,6 +335,22 @@ export function resolvePreReleaseMigrationExclusions(migrationNames) {
   return preReleaseMigrationBoundary.excluded;
 }
 
+export function materializeCanonicalPreReleasePrisma(
+  sourcePrisma,
+  destinationPrisma,
+) {
+  cpSync(sourcePrisma, destinationPrisma, { recursive: true });
+  const migrationDirectory = join(destinationPrisma, "migrations");
+  const migrationNames = readdirSync(migrationDirectory, {
+    withFileTypes: true,
+  })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  for (const migration of resolvePreReleaseMigrationExclusions(migrationNames))
+    rmSync(join(migrationDirectory, migration), { recursive: true });
+  return destinationPrisma;
+}
+
 export function disposableTargetPublicTableAclCanonicalizationSql() {
   return `ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_role_bootstrap IN SCHEMA public
 REVOKE SELECT ON TABLES FROM PUBLIC;
@@ -1672,24 +1688,10 @@ export async function executeDisposableRehearsal(
       );
     }
     const preReleasePrisma = join(directory, "pre-release-prisma");
-    cpSync(
+    materializeCanonicalPreReleasePrisma(
       join(process.cwd(), "packages/platform/db/prisma"),
       preReleasePrisma,
-      {
-        recursive: true,
-      },
     );
-    const migrationNames = readdirSync(join(preReleasePrisma, "migrations"), {
-      withFileTypes: true,
-    })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
-    for (const migration of resolvePreReleaseMigrationExclusions(
-      migrationNames,
-    ))
-      rmSync(join(preReleasePrisma, "migrations", migration), {
-        recursive: true,
-      });
     const preReleasePrismaConfig = join(directory, "prisma.config.mjs");
     const sourceDatabaseCredential = join(directory, "source-database-url");
     writeFileSync(
