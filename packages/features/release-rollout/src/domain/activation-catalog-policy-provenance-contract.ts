@@ -415,12 +415,10 @@ export function assertActivationCatalogRawCaptureEvidence(
     throw new Error("activation_catalog_policy_raw_capture_evidence_invalid");
 
   const captures = value.captures;
-  const {
-    kind: _kind,
-    version: _version,
-    captureSetSha256: _captureSet,
-    ...captureSetMaterial
-  } = value;
+  const captureSetMaterial = { ...value };
+  delete captureSetMaterial.kind;
+  delete captureSetMaterial.version;
+  delete captureSetMaterial.captureSetSha256;
   if (
     captures.some(
       (capture) =>

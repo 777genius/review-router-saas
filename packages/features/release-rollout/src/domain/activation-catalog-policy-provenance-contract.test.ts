@@ -256,12 +256,10 @@ describe("activation catalog policy promotion provenance v5", () => {
       },
       generatedArtifactSource: { bytes: 1000, sha256: "d".repeat(64) },
     };
-    const {
-      kind: _kind,
-      version: _version,
-      captureSetSha256: _set,
-      ...material
-    } = raw;
+    const material = { ...raw } as Record<string, unknown>;
+    delete material.kind;
+    delete material.version;
+    delete material.captureSetSha256;
     raw.captureSetSha256 = `sha256:${sha256Canonical(material)}`;
     expect(() => assertActivationCatalogRawCaptureEvidence(raw)).not.toThrow();
     expect(() =>
