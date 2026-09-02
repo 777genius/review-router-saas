@@ -42,8 +42,52 @@ const custodyDatabaseUrl = `postgresql://reviewrouter_comment_token_custody:${cu
 const apiDatabaseUrl = `postgresql://reviewrouter_api:${apiPassword}@127.0.0.1:${port}/${database}?schema=public`;
 const releaseMigrationDatabaseUrl = `postgresql://reviewrouter_release_migration:${releaseMigrationPassword}@127.0.0.1:${port}/${database}?schema=public`;
 
+const hostedPoolStagedMigrations = [
+  {
+    name: "000075_hosted_codex_security_certification",
+    phase: "verify-000075",
+  },
+  {
+    name: "000076_hosted_codex_terminalization_restore_invariants",
+    phase: "verify-000076",
+  },
+  {
+    name: "000077_hosted_codex_r57_security_race_remediation",
+    phase: "verify-000077",
+  },
+  { name: "000079_hosted_codex_output_limits", phase: "verify-000079" },
+  { name: "000080_hosted_codex_attempt_generation", phase: "verify-000080" },
+  { name: "000081_hosted_codex_runtime_gate", phase: "verify-000081" },
+  {
+    name: "000082_validate_hosted_codex_output_limits",
+    phase: "verify-000082",
+  },
+  {
+    name: "000083_hosted_codex_comment_token_mint_protocol",
+    phase: "verify-000083",
+  },
+  {
+    name: "000084_harden_comment_token_custody",
+    phase: "verify-000084",
+  },
+  {
+    name: "000085_comment_token_gate_lock_result",
+    phase: "verify-000085",
+  },
+  {
+    name: "000086_comment_token_custody_r18_remediation",
+    phase: "verify-000086",
+  },
+];
+
+const codexOAuthV5Migrations = [
+  "000087_codex_oauth_v4_v5_workflow_reattestation",
+  "000088_codex_oauth_reattestation_mutation_owner_fence",
+  "000089_codex_oauth_v4_v5_staged_compatibility",
+];
+
 let started = false;
-let rehearsalDirectory;
+const rehearsalDirectories = [];
 try {
   run("docker", [
     "run",
@@ -78,42 +122,19 @@ try {
       migrationDatabase,
     ]);
     await grantMigrationSchemaOwnerAuthority(migrationDatabaseUrl);
-    rehearsalDirectory = prepareMigrationRehearsal();
+    const rehearsalDirectory = prepareMigrationRehearsal({
+      excludeHostedPoolMigrations: true,
+    });
+    rehearsalDirectories.push(rehearsalDirectory);
     runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
     runMigrationTest(migrationDatabaseUrl, "seed-000074");
-    addSecurityCertificationMigration(rehearsalDirectory);
-    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
-    runMigrationTest(migrationDatabaseUrl, "verify-000075");
-    addTerminalizationMigration(rehearsalDirectory);
-    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
-    runMigrationTest(migrationDatabaseUrl, "verify-000076");
-    addR57RemediationMigration(rehearsalDirectory);
-    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
-    runMigrationTest(migrationDatabaseUrl, "verify-000077");
-    addOutputLimitsMigration(rehearsalDirectory);
-    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
-    runMigrationTest(migrationDatabaseUrl, "verify-000079");
-    addAttemptGenerationMigration(rehearsalDirectory);
-    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
-    runMigrationTest(migrationDatabaseUrl, "verify-000080");
-    addRuntimeGateMigration(rehearsalDirectory);
-    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
-    runMigrationTest(migrationDatabaseUrl, "verify-000081");
-    addOutputLimitsValidationMigration(rehearsalDirectory);
-    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
-    runMigrationTest(migrationDatabaseUrl, "verify-000082");
-    addCommentTokenMintProtocolMigration(rehearsalDirectory);
-    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
-    runMigrationTest(migrationDatabaseUrl, "verify-000083");
-    addCommentTokenCustodyHardeningMigration(rehearsalDirectory);
-    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
-    runMigrationTest(migrationDatabaseUrl, "verify-000084");
-    addCommentTokenGateLockResultMigration(rehearsalDirectory);
-    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
-    runMigrationTest(migrationDatabaseUrl, "verify-000085");
-    addCommentTokenR18RemediationMigration(rehearsalDirectory);
-    runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
-    runMigrationTest(migrationDatabaseUrl, "verify-000086");
+    for (const migration of hostedPoolStagedMigrations) {
+      addMigration(rehearsalDirectory, migration.name);
+      runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
+      runMigrationTest(migrationDatabaseUrl, migration.phase);
+    }
+    await prepareCodexOAuthV5ReleaseAuthority(migrationDatabaseUrl);
+    applyCodexOAuthV5Migrations(rehearsalDirectory, migrationDatabaseUrl);
 
     const migrationCount = await countAppliedMigrations(migrationDatabaseUrl);
     runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
@@ -124,7 +145,13 @@ try {
     }
   }
   if (runPostgresE2e) {
-    runMigrationDeploy("packages/platform/db", databaseUrl);
+    const rehearsalDirectory = prepareMigrationRehearsal({
+      excludeHostedPoolMigrations: false,
+    });
+    rehearsalDirectories.push(rehearsalDirectory);
+    runMigrationDeploy(rehearsalDirectory, databaseUrl);
+    await prepareCodexOAuthV5ReleaseAuthority(databaseUrl);
+    applyCodexOAuthV5Migrations(rehearsalDirectory, databaseUrl);
     await applyProductionRuntimeAcl(databaseUrl, database);
     await prepareProviderScopeConcurrencyReleaseAuthority(databaseUrl);
     await proveProviderScopeConcurrencyRollout(
@@ -151,7 +178,7 @@ try {
     }
   }
 } finally {
-  if (rehearsalDirectory)
+  for (const rehearsalDirectory of rehearsalDirectories)
     rmSync(rehearsalDirectory, { recursive: true, force: true });
   if (started) {
     spawnSync("docker", ["rm", "--force", container], { stdio: "ignore" });
@@ -595,136 +622,71 @@ async function exportRelayEffectRows(connectionString, outputPath) {
   }
 }
 
-function prepareMigrationRehearsal() {
+function prepareMigrationRehearsal({ excludeHostedPoolMigrations }) {
   const directory = mkdtempSync("packages/platform/db/.hosted-pool-migration-");
   cpSync(
     "packages/platform/db/prisma.config.ts",
     join(directory, "prisma.config.ts"),
   );
+  const excludedMigrations = new Set([
+    ...codexOAuthV5Migrations,
+    ...(excludeHostedPoolMigrations
+      ? hostedPoolStagedMigrations.map((migration) => migration.name)
+      : []),
+  ]);
   cpSync("packages/platform/db/prisma", join(directory, "prisma"), {
     recursive: true,
-    filter: (source) =>
-      ![
-        "000075_hosted_codex_security_certification",
-        "000076_hosted_codex_terminalization_restore_invariants",
-        "000077_hosted_codex_r57_security_race_remediation",
-        "000079_hosted_codex_output_limits",
-        "000080_hosted_codex_attempt_generation",
-        "000081_hosted_codex_runtime_gate",
-        "000082_validate_hosted_codex_output_limits",
-        "000083_hosted_codex_comment_token_mint_protocol",
-        "000084_harden_comment_token_custody",
-        "000085_comment_token_gate_lock_result",
-        "000086_comment_token_custody_r18_remediation",
-      ].includes(basename(source)),
+    filter: (source) => !excludedMigrations.has(basename(source)),
   });
   return directory;
 }
 
-function addOutputLimitsMigration(directory) {
+function addMigration(directory, migrationName) {
   cpSync(
-    "packages/platform/db/prisma/migrations/000079_hosted_codex_output_limits",
-    join(directory, "prisma/migrations/000079_hosted_codex_output_limits"),
+    join("packages/platform/db/prisma/migrations", migrationName),
+    join(directory, "prisma/migrations", migrationName),
     { recursive: true },
   );
 }
 
-function addAttemptGenerationMigration(directory) {
-  cpSync(
-    "packages/platform/db/prisma/migrations/000080_hosted_codex_attempt_generation",
-    join(directory, "prisma/migrations/000080_hosted_codex_attempt_generation"),
-    { recursive: true },
-  );
+function applyCodexOAuthV5Migrations(directory, url) {
+  for (const migrationName of codexOAuthV5Migrations) {
+    addMigration(directory, migrationName);
+    runMigrationDeploy(directory, url);
+  }
 }
 
-function addRuntimeGateMigration(directory) {
-  cpSync(
-    "packages/platform/db/prisma/migrations/000081_hosted_codex_runtime_gate",
-    join(directory, "prisma/migrations/000081_hosted_codex_runtime_gate"),
-    { recursive: true },
-  );
-}
-
-function addOutputLimitsValidationMigration(directory) {
-  cpSync(
-    "packages/platform/db/prisma/migrations/000082_validate_hosted_codex_output_limits",
-    join(
-      directory,
-      "prisma/migrations/000082_validate_hosted_codex_output_limits",
-    ),
-    { recursive: true },
-  );
-}
-
-function addCommentTokenMintProtocolMigration(directory) {
-  cpSync(
-    "packages/platform/db/prisma/migrations/000083_hosted_codex_comment_token_mint_protocol",
-    join(
-      directory,
-      "prisma/migrations/000083_hosted_codex_comment_token_mint_protocol",
-    ),
-    { recursive: true },
-  );
-}
-
-function addCommentTokenCustodyHardeningMigration(directory) {
-  cpSync(
-    "packages/platform/db/prisma/migrations/000084_harden_comment_token_custody",
-    join(directory, "prisma/migrations/000084_harden_comment_token_custody"),
-    { recursive: true },
-  );
-}
-
-function addCommentTokenGateLockResultMigration(directory) {
-  cpSync(
-    "packages/platform/db/prisma/migrations/000085_comment_token_gate_lock_result",
-    join(directory, "prisma/migrations/000085_comment_token_gate_lock_result"),
-    { recursive: true },
-  );
-}
-
-function addCommentTokenR18RemediationMigration(directory) {
-  cpSync(
-    "packages/platform/db/prisma/migrations/000086_comment_token_custody_r18_remediation",
-    join(
-      directory,
-      "prisma/migrations/000086_comment_token_custody_r18_remediation",
-    ),
-    { recursive: true },
-  );
-}
-
-function addR57RemediationMigration(directory) {
-  cpSync(
-    "packages/platform/db/prisma/migrations/000077_hosted_codex_r57_security_race_remediation",
-    join(
-      directory,
-      "prisma/migrations/000077_hosted_codex_r57_security_race_remediation",
-    ),
-    { recursive: true },
-  );
-}
-
-function addTerminalizationMigration(directory) {
-  cpSync(
-    "packages/platform/db/prisma/migrations/000076_hosted_codex_terminalization_restore_invariants",
-    join(
-      directory,
-      "prisma/migrations/000076_hosted_codex_terminalization_restore_invariants",
-    ),
-    { recursive: true },
-  );
-}
-
-function addSecurityCertificationMigration(directory) {
-  cpSync(
-    "packages/platform/db/prisma/migrations/000075_hosted_codex_security_certification",
-    join(
-      directory,
-      "prisma/migrations/000075_hosted_codex_security_certification",
-    ),
-    { recursive: true },
-  );
+async function prepareCodexOAuthV5ReleaseAuthority(url) {
+  const client = new pg.Client({ connectionString: url });
+  await client.connect();
+  try {
+    await client.query(`
+      ALTER SCHEMA public OWNER TO reviewrouter_release_schema_owner;
+      ALTER TABLE public."CodexOAuthSecretNamespace"
+        OWNER TO reviewrouter_release_schema_owner;
+    `);
+    const authority = await client.query(`
+      SELECT
+        (SELECT owner.rolname
+         FROM pg_catalog.pg_namespace namespace
+         JOIN pg_catalog.pg_roles owner ON owner.oid = namespace.nspowner
+         WHERE namespace.nspname = 'public') AS schema_owner,
+        (SELECT owner.rolname
+         FROM pg_catalog.pg_class relation
+         JOIN pg_catalog.pg_roles owner ON owner.oid = relation.relowner
+         WHERE relation.oid =
+           'public."CodexOAuthSecretNamespace"'::regclass) AS namespace_owner
+    `);
+    if (
+      authority.rows.length !== 1 ||
+      authority.rows[0]?.schema_owner !== "reviewrouter_release_schema_owner" ||
+      authority.rows[0]?.namespace_owner !== "reviewrouter_release_schema_owner"
+    ) {
+      throw new Error("codex_oauth_v5_release_authority_invalid");
+    }
+  } finally {
+    await client.end();
+  }
 }
 
 function runMigrationDeploy(directory, url) {

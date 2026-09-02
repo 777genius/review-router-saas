@@ -420,7 +420,7 @@ export async function captureGitHubWorkflowProvenance(
       /(?:^|\n)\s*workflow_schema_version:\s*["']?([0-9]+)["']?\s*(?:\n|$)/u,
     );
     const workflowSchemaVersion = Number(marker?.[1]);
-    if (![1, 2, 3, 4].includes(workflowSchemaVersion)) {
+    if (![1, 2, 3, 4, 5].includes(workflowSchemaVersion)) {
       throw new Error(
         "GitHub workflow source has an unsupported or absent schema marker",
       );
@@ -492,7 +492,7 @@ export async function captureGitHubWorkflowDrainProvenance(
   return {
     observationVersion: 2,
     source: "github-actions-api",
-    supportedWorkflowSchemaVersions: [1, 2, 3, 4],
+    supportedWorkflowSchemaVersions: [1, 2, 3, 4, 5],
     captureIdentity: {
       ...second.captureIdentity,
       rawResponsesSha256: sha256(
@@ -506,7 +506,7 @@ export async function captureGitHubWorkflowDrainProvenance(
       cohort: sample.cohort,
       rawResponses: sample.rawResponses,
       observedAt: sample.captureIdentity.observedAt,
-      inventoriedWorkflowSchemaVersions: [1, 2, 3, 4],
+      inventoriedWorkflowSchemaVersions: [1, 2, 3, 4, 5],
       runs: sample.runs,
     })),
   };

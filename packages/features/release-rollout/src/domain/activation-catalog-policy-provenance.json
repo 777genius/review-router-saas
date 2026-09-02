@@ -1,32 +1,34 @@
 {
   "kind": "reviewrouter-activation-catalog-policy-promotion-provenance",
-  "version": 4,
+  "version": 5,
   "status": "ready",
-  "readinessReason": "reviewed-v29-comment-token-custody-promoted-with-exact-go-evidence",
-  "promotedAt": "2026-08-30T10:03:24.000Z",
-  "captureBaseCommit": "7459b6d4fd8aab5c377547246292faf3376d98cb",
+  "readinessReason": "reviewed-v29-schema-v5-pr245-promoted-with-evidence-contract-v2",
+  "evidenceContractVersion": 2,
+  "promotedAt": "2026-08-30T15:18:45.287Z",
+  "capture": {
+    "baseCommit": "79c8496d64b63c129e19331ee328666f714d82b1",
+    "auditedHead": "79c8496d64b63c129e19331ee328666f714d82b1",
+    "auditedTree": "1cdb05db1f73eb2bf294d774d517fff533ca24bc",
+    "workflowRunId": "33315824201",
+    "runAttempt": 1,
+    "jobId": "99268972795",
+    "artifactId": "9733425691",
+    "artifactName": "activation-catalog-policy-79c8496d64b63c129e19331ee328666f714d82b1-1"
+  },
   "candidate": {
     "bytes": 2651682,
     "sha256": "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28",
     "liveCatalogDigest": "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
     "captures": [
       {
-        "label": "github-actions:33303681159:attempt:1:artifact:9729775403:capture-a",
-        "artifactBytes": 2651682,
-        "artifactSha256": "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28",
-        "payloadOffsetBytes": 0,
-        "prefixSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "payloadBytes": 2651682,
-        "payloadSha256": "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28"
+        "label": "activation-catalog-policy-candidate-1.json",
+        "bytes": 2651682,
+        "sha256": "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28"
       },
       {
-        "label": "github-actions:33303681159:attempt:1:artifact:9729775403:capture-b",
-        "artifactBytes": 2651682,
-        "artifactSha256": "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28",
-        "payloadOffsetBytes": 0,
-        "prefixSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "payloadBytes": 2651682,
-        "payloadSha256": "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28"
+        "label": "activation-catalog-policy-candidate-2.json",
+        "bytes": 2651682,
+        "sha256": "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28"
       }
     ]
   },
@@ -40,26 +42,45 @@
     "artifact": "sha256:5d7a98bf13e65ab8071691086efb792699b994961caadf435ee9fd4845c2f1cf",
     "liveCatalogDigest": "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d"
   },
+  "reviewedSources": {
+    "liveCatalogProjectionSourceSha256": "39e855060bfc186c6fb92fe1cd5c72410f8f72802200da49d6c1fe45eb6ed5f4",
+    "normalizationSourceSha256": "7b23d64a1f2160398cdeb9194b0a3f3583e5566a1b20a0b2009caaf7ddbe0da1"
+  },
+  "generatedArtifactSource": {
+    "bytes": 2651797,
+    "sha256": "cc9be40be941b6291013cdf921afa6db84ad9e615b988fe8ff7a24a387566fc3"
+  },
   "independentReview": {
     "result": "GO",
-    "reviewerRunId": "rrv140policy3-review-r1",
-    "reviewDecisionId": "RR-V29-CODEX-GO-7459B6D4-B138EB3E-20260830",
-    "reviewedAt": "2026-08-30T09:58:12.982Z",
-    "baseCommit": "7459b6d4fd8aab5c377547246292faf3376d98cb",
-    "auditedHead": "7459b6d4fd8aab5c377547246292faf3376d98cb",
-    "reviewArtifactSha256": "08df458e97033dae692f04153285f9c68a6d6f3d11dea5f2e626fb687cebcd6f",
-    "reviewerEvidenceSha256": "4620e71b3ea9369fda0396d506e0d9d0984123d0d5d28af6b237fc0f6042a3a8",
-    "candidateBytes": 2651682,
-    "candidateSha256": "b138eb3ece6553d505debff1dc978a9b6fd8ea854cf70c037c05e364b3d0aa28",
-    "postgresImages": {
-      "sourcePg16": "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
-      "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
+    "reviewerRunId": "rr-pr245-r253-schema-v5-provenance-review",
+    "reviewerTaskId": "rr-pr245-r253-schema-v5-provenance-review",
+    "reviewDecisionId": "RR-PR245-SCHEMA-V5-GO-79C8496D-B138EB3E-20260830",
+    "reviewedAt": "2026-08-30T14:26:32Z",
+    "completedAt": "2026-08-30T14:27:44.120Z",
+    "baseCommit": "79c8496d64b63c129e19331ee328666f714d82b1",
+    "auditedHead": "79c8496d64b63c129e19331ee328666f714d82b1",
+    "auditedTree": "1cdb05db1f73eb2bf294d774d517fff533ca24bc",
+    "reviewArtifact": {
+      "bytes": 12600,
+      "sha256": "7abaefccd0fa7771c6594824df794415801771f68f14bf0521d2d2461b360528"
     },
-    "canonicalDigests": {
-      "preactivation": "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
-      "activated": "sha256:cc35c6b43fe8b117a492705eeaf2ab9a9ac0e05f98546fa32ac9d340df89867b",
-      "artifact": "sha256:5d7a98bf13e65ab8071691086efb792699b994961caadf435ee9fd4845c2f1cf",
-      "liveCatalogDigest": "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d"
+    "reviewerEvidence": {
+      "bytes": 13211,
+      "sha256": "9db6562b268d4e1d0e264d843dfe1551168fe0845e2c29b389b16e22aceb96a1"
+    }
+  },
+  "supplementalReview": {
+    "result": "GO",
+    "reviewerRunId": "rr-pr245-r252b-schema-v5-security-review",
+    "reviewerTaskId": "rr-pr245-r252b-schema-v5-security-review",
+    "reviewDecisionId": "RR-PR245-SCHEMA-V5-GO-79C8496D-B138EB3E-20260830",
+    "completedAt": "2026-08-30T14:37:20.636Z",
+    "baseCommit": "79c8496d64b63c129e19331ee328666f714d82b1",
+    "auditedHead": "79c8496d64b63c129e19331ee328666f714d82b1",
+    "auditedTree": "1cdb05db1f73eb2bf294d774d517fff533ca24bc",
+    "reviewerEvidence": {
+      "bytes": 12791,
+      "sha256": "19fd8a8c9c8d17b0f84688f032fa014d52dce79621251f4cb363dd24fb456005"
     }
   }
 }

@@ -3,7 +3,10 @@ import {
   authorizeCodexRotatingSetupDispatch,
   getCodexRotatingSetupStatus,
   prepareCodexRotatingSetup,
+  reattestCodexRotatingWorkflow,
   recordCodexRotatingSetupDispatchOutcome,
+  type CodexRotatingDefaultWorkflowSourcePort,
+  type CodexRotatingWorkflowReattestationRequest,
 } from "@reviewrouter/features-provider-setup";
 import { requireReviewRouterDatabaseRecoveryWitness } from "@reviewrouter/platform-config";
 import { getCodexEffectAuthorityPrisma, getPrisma } from "./prisma";
@@ -29,6 +32,17 @@ export const codexRotatingSetupLedger = {
     recordCodexRotatingSetupDispatchOutcome(input, ledger()),
   status: (input: unknown) => getCodexRotatingSetupStatus(input, ledger()),
   activate: (input: unknown) => activateCodexRotatingSetup(input, ledger()),
+  replaceActiveWorkflowSource: (
+    input: CodexRotatingWorkflowReattestationRequest,
+    defaultWorkflowSource: CodexRotatingDefaultWorkflowSourcePort,
+  ) => {
+    const claims = ledger().claims;
+    return reattestCodexRotatingWorkflow(input, {
+      currentWorkflowAttestation: claims,
+      defaultWorkflowSource,
+      workflowReattestation: claims,
+    });
+  },
 };
 
 export function codexRotatingSetupLedgerHttpError(error: unknown): {

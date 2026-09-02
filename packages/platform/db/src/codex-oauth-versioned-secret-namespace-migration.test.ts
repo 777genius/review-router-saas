@@ -61,6 +61,19 @@ describe("000064 never-reused versioned namespace ledger", () => {
     ),
     "utf8",
   );
+  const workflowCompatibilitySql = readFileSync(
+    resolve(
+      import.meta.dirname,
+      "../prisma/migrations/000089_codex_oauth_v4_v5_staged_compatibility/migration.sql",
+    ),
+    "utf8",
+  );
+  const migrationSqlByForeignKey = new Map([
+    [
+      "CodexOAuthWorkflowCompatibility_namespace_fkey",
+      workflowCompatibilitySql,
+    ],
+  ]);
   const prismaSchema = readFileSync(
     resolve(import.meta.dirname, "../prisma/schema.prisma"),
     "utf8",
@@ -317,11 +330,14 @@ describe("000064 never-reused versioned namespace ledger", () => {
     }
   });
 
-  it("keeps the canonical FK inventory synchronized with 000064", () => {
+  it("keeps the canonical FK inventory synchronized with its defining migration", () => {
     for (const foreignKey of codexRotatingRecoveryLedgerForeignKeys) {
-      expect(parseMigrationForeignKey(sql, foreignKey.name)).toEqual(
-        parseCanonicalForeignKey(foreignKey),
-      );
+      expect(
+        parseMigrationForeignKey(
+          migrationSqlByForeignKey.get(foreignKey.name) ?? sql,
+          foreignKey.name,
+        ),
+      ).toEqual(parseCanonicalForeignKey(foreignKey));
     }
   });
 
@@ -483,13 +499,18 @@ function parseMigrationForeignKey(
   name: string,
 ): ParsedForeignKeyDefinition {
   const parsed = new RegExp(
-    `ADD CONSTRAINT "${escapeRegExp(name)}"\\s+FOREIGN KEY \\(([^)]+)\\)\\s+REFERENCES "([^"]+)"\\(([^)]+)\\)([\\s\\S]*?)(?=,\\s*(?:(?:ADD|DROP) CONSTRAINT)|;)`,
+    `(?:ADD )?CONSTRAINT "${escapeRegExp(name)}"\\s+FOREIGN KEY \\(([^)]+)\\)\\s+REFERENCES (?:public\\.)?"([^"]+)"\\(([^)]+)\\)([\\s\\S]*?)(?=,\\s*(?:(?:ADD|DROP)\\s+)?CONSTRAINT|;)`,
     "u",
   ).exec(sql);
-  if (!parsed) throw new Error(`missing 000064 FK ${name}`);
-  const statementStart = sql.lastIndexOf("ALTER TABLE", parsed.index);
-  const table = /^ALTER TABLE "([^"]+)"/u.exec(sql.slice(statementStart))?.[1];
-  if (!table) throw new Error(`missing source table for 000064 FK ${name}`);
+  if (!parsed) throw new Error(`missing migration FK ${name}`);
+  const statementStart = Math.max(
+    sql.lastIndexOf("ALTER TABLE", parsed.index),
+    sql.lastIndexOf("CREATE TABLE", parsed.index),
+  );
+  const table = /^(?:ALTER|CREATE) TABLE (?:public\.)?"([^"]+)"/u.exec(
+    sql.slice(statementStart),
+  )?.[1];
+  if (!table) throw new Error(`missing source table for migration FK ${name}`);
   const localColumns = parsed[1];
   const referencedTable = parsed[2];
   const referencedColumns = parsed[3];
@@ -500,7 +521,7 @@ function parseMigrationForeignKey(
     !referencedColumns ||
     actions === undefined
   ) {
-    throw new Error(`incomplete 000064 FK ${name}`);
+    throw new Error(`incomplete migration FK ${name}`);
   }
   return {
     table,

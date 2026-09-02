@@ -113,6 +113,7 @@ describe("integrated API to provider to workflow activation faults", () => {
             workflowSourceBlobSha: "b".repeat(40),
             workflowSourceSha256: "c".repeat(64),
             workflowSemanticSha256: "d".repeat(64),
+            workflowSchemaVersion: 5,
             sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
             secretNamespace: namespace,
           });

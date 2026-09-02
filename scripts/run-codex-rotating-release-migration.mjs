@@ -22,10 +22,7 @@ import {
 } from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
 import { normalizeSecretSafePostgresArguments } from "./lib/secret-safe-command-boundary.mjs";
 import { effectivePrincipalInventorySql } from "../packages/features/release-rollout/src/adapters/effective-principal-postgres.mjs";
-import {
-  liveV70V73CatalogDigestSha256 as fencedLiveV70V73CatalogDigestSha256,
-  fencedLiveV70V73CatalogDigestSql,
-} from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
+import { fencedLiveV70V73CatalogDigestSql } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 import {
   prepareLegacyAmbiguityReconciliation,
   verifyLegacyAmbiguityReconciliation,
@@ -466,6 +463,7 @@ const quarantineTables = Object.freeze([
 ]);
 
 const fullyProtectedRuntimeTables = Object.freeze([
+  "CodexOAuthWorkflowCompatibility",
   "CodexOAuthDatabaseAuthorityKey",
   "CodexOAuthDatabaseAuthorityReceipt",
   "HostedCodexCommentTokenRevocationProof",
@@ -1571,8 +1569,8 @@ BEGIN
     migration_name||':'||checksum,',' ORDER BY migration_name),''),'UTF8')),'hex')
   INTO STRICT observed_manifest_identity FROM public._prisma_migrations
   WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL;
-  SELECT digest INTO STRICT observed_catalog_digest
-  FROM (${fencedLiveV70V73CatalogDigestSql}) live(digest);
+  SELECT reviewrouter_activation.observe_live_migration_catalog_digest()
+  INTO STRICT observed_catalog_digest;
   IF observed_manifest_identity IS DISTINCT FROM
        current_permit.expected_post_manifest_identity THEN
     RAISE EXCEPTION
@@ -2234,7 +2232,11 @@ BEGIN
   IF session_user <> 'reviewrouter_release_migration' THEN
     RAISE EXCEPTION 'activation catalog policy candidate pair caller invalid';
   END IF;
-  RETURN reviewrouter_activation.capture_runtime_acl_policy_pair();
+  RETURN reviewrouter_activation.capture_runtime_acl_policy_pair() ||
+    jsonb_build_object(
+      'liveCatalogDigest',
+      reviewrouter_activation.observe_live_migration_catalog_digest()
+    );
 END
 $capture_catalog_policy_candidate_pair$;
 ALTER FUNCTION reviewrouter_activation.capture_catalog_policy_candidate_pair()
@@ -2755,7 +2757,7 @@ BEGIN
         'RepositoryConnection','CodexOAuthChildIdentityQuarantine','CodexOAuthLease',
         'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
         'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
-        'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
+        'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent','CodexOAuthWorkflowCompatibility',
         'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
         '${workerOwnedMaintenanceCheckpointTable}','HostedCodexRuntimeGate',
         'HostedCodexRuntimeClosure','HostedCodexCommentTokenMint',
@@ -2806,12 +2808,13 @@ BEGIN
          ELSE role_kind <> 'effect-authority' AND relname <> '_prisma_migrations'
            AND relname NOT IN ('CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
              'HostedCodexCommentTokenMint','HostedCodexCommentTokenRevocationProof','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
+           AND (relname <> 'CodexOAuthWorkflowCompatibility' OR role_kind IN ('api','web'))
            AND (relname <> '${workerOwnedMaintenanceCheckpointTable}' OR role_kind = 'worker') END)
          OR can_insert IS DISTINCT FROM (CASE WHEN role_kind='custody' THEN relname='HostedCodexCommentRefreshUse'
          ELSE role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthDatabaseAuthorityKey',
-           'CodexOAuthDatabaseAuthorityReceipt','RuntimeGenerationWitnessProof',
+           'CodexOAuthDatabaseAuthorityReceipt','CodexOAuthWorkflowCompatibility','RuntimeGenerationWitnessProof',
            'HostedCodexCommentTokenRevocationProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
            AND relname NOT IN ('HostedCodexRuntimeGate','HostedCodexRuntimeClosure',
              'ReviewProviderScopeConcurrencyControl')
@@ -2821,7 +2824,7 @@ BEGIN
          ELSE role_kind <> 'effect-authority' AND relname NOT IN (
            '_prisma_migrations','RepositoryConnection','CodexOAuthChildIdentityQuarantine',
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance',
-           'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
+           'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt','CodexOAuthWorkflowCompatibility',
            'HostedCodexCommentTokenRevocationProof','RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof')
            AND relname NOT IN ('HostedCodexRuntimeGate','HostedCodexRuntimeClosure',
              'ReviewProviderScopeConcurrencyControl')
@@ -2832,7 +2835,7 @@ BEGIN
            'CodexOAuthProviderIdentityQuarantine','CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
            'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupManifest','CodexOAuthSetupPayloadClaim',
            'CodexOAuthSetupRecoveryRequest','CodexOAuthWritebackIntent',
-           'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt',
+           'CodexOAuthDatabaseAuthorityKey','CodexOAuthDatabaseAuthorityReceipt','CodexOAuthWorkflowCompatibility',
            'RuntimeGenerationWitnessProof','RuntimeCanaryChallenge','RuntimeCanaryChallengeProof',
            'HostedCodexCommentTokenRevocationProof','${workerOwnedMaintenanceCheckpointTable}',
            'HostedCodexRuntimeGate','HostedCodexRuntimeClosure',
@@ -2892,6 +2895,7 @@ BEGIN
          WHEN role_kind='web' AND proname='codex_oauth_authorize_setup_confirmation' THEN argument_types='text, integer, text'
          WHEN role_kind='web' AND proname='codex_oauth_provider_identity_repair_challenge' THEN argument_types='text, text, text, text, text, text, text, bigint, text, text, text, text, text, text, bigint'
          WHEN role_kind='web' AND proname='codex_oauth_repair_quarantined_provider' THEN argument_types='text, text, text, text, text, text, text, bigint, text, text, text, text, text, text, bigint, text'
+         WHEN role_kind='web' AND proname='codex_oauth_reattest_active_namespace_v4_to_v5' THEN argument_types='text, text, text, text, bigint, text, text, text, text, text, integer, integer, text, text, text, text, text, text, text, text, integer'
          ELSE false END)
        OR has_database_privilege('public',current_database(),'CONNECT')
        OR has_database_privilege('public',current_database(),'CREATE')
@@ -3188,6 +3192,20 @@ REVOKE ALL ON FUNCTION reviewrouter_activation.read_activation_migration_manifes
 GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()
   TO ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName},
      reviewrouter_release_migration;
+CREATE OR REPLACE FUNCTION reviewrouter_activation.observe_live_migration_catalog_digest()
+RETURNS text LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp AS $observe_live_migration_catalog_digest$
+  SELECT digest FROM (${fencedLiveV70V73CatalogDigestSql}) live(digest)
+$observe_live_migration_catalog_digest$;
+ALTER FUNCTION reviewrouter_activation.observe_live_migration_catalog_digest()
+  OWNER TO ${activationReceiptGuardRoleName};
+REVOKE ALL ON FUNCTION reviewrouter_activation.observe_live_migration_catalog_digest()
+  FROM PUBLIC;
+REVOKE ALL ON FUNCTION reviewrouter_activation.observe_live_migration_catalog_digest()
+  FROM ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName},
+    ${canonicalBootstrapRoleName}, ${releaseSchemaOwnerRoleName};
+GRANT EXECUTE ON FUNCTION reviewrouter_activation.observe_live_migration_catalog_digest()
+  TO reviewrouter_release_migration;
 -- Install the schema-owner ACL projectors before the activation namespace is
 -- fingerprinted. Role bootstrap may validate them, but must not mutate this
 -- trusted namespace after release-control readiness has been attested.
@@ -3230,6 +3248,7 @@ export function activationRoutineBodyTrustRoots() {
           digestBody("activate"),
           digestBody("install_migration_permit"),
           digestBody("consume_migration_permit"),
+          digestBody("observe_live_migration_catalog_digest"),
           digestBody("complete_migration_permit"),
           digestBody("terminalize_migration_permit"),
           digestBody("read_migration_receipt"),
@@ -4144,6 +4163,8 @@ DROP PROCEDURE IF EXISTS public.reviewrouter_execute_release_migration(
   text,text,text,text,text,bigint,text,jsonb);
 DROP PROCEDURE IF EXISTS public.reviewrouter_execute_release_migration(
   text,text,text,text,text,bigint,text,jsonb,boolean);
+DROP PROCEDURE IF EXISTS public.reviewrouter_execute_release_migration(
+  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean);
 CREATE OR REPLACE PROCEDURE public.reviewrouter_execute_release_migration(
   requested_rollout_id text,
   requested_target_system_identifier text,
@@ -4154,7 +4175,8 @@ CREATE OR REPLACE PROCEDURE public.reviewrouter_execute_release_migration(
   requested_permit_nonce text,
   requested_source_legacy_ambiguity jsonb,
   requested_eligibility_cutoff timestamptz,
-  requested_acl_gate_closed boolean
+  requested_acl_gate_closed boolean,
+  requested_catalog_capture_only boolean
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -4165,12 +4187,33 @@ AS $rr_guarded_release_executor_v1$
 DECLARE permit_result text;
 DECLARE requested_inventory jsonb;
 DECLARE observed_inventory jsonb;
+DECLARE capture_binding jsonb;
 BEGIN
   IF session_user <> 'reviewrouter_release_migration' THEN
     RAISE EXCEPTION 'release migration executor caller invalid';
   END IF;
-  IF requested_acl_gate_closed IS NULL THEN
+  IF requested_acl_gate_closed IS NULL OR requested_catalog_capture_only IS NULL THEN
     RAISE EXCEPTION 'release migration executor ACL gate mode invalid';
+  END IF;
+  IF requested_catalog_capture_only THEN
+    SELECT pg_catalog.shobj_description(database.oid,'pg_database')::jsonb
+    INTO STRICT capture_binding
+    FROM pg_catalog.pg_database database
+    WHERE database.datname=pg_catalog.current_database();
+    IF pg_catalog.current_setting(
+         'reviewrouter.activation_catalog_candidate_capture',true
+       ) IS DISTINCT FROM 'disposable-only'
+       OR capture_binding->'disposableCaptureAttestation'->>'kind'
+          IS DISTINCT FROM 'reviewrouter-disposable-database-attestation-v1'
+       OR capture_binding->'disposableCaptureAttestation'->>'identity'
+          IS DISTINCT FROM pg_catalog.current_setting(
+            'reviewrouter.activation_catalog_disposable_database_identity',true
+          )
+       OR capture_binding->'disposableCaptureAttestation'->>'systemIdentifier'
+          IS DISTINCT FROM requested_target_system_identifier
+       OR capture_binding->'disposableCaptureAttestation'->>'recoveryWitnessSha256'
+          IS DISTINCT FROM requested_target_recovery_witness_sha256
+    THEN RAISE EXCEPTION 'release migration catalog capture target invalid'; END IF;
   END IF;
   permit_result := reviewrouter_activation.consume_migration_permit(
     requested_rollout_id,requested_target_system_identifier,
@@ -4265,15 +4308,17 @@ ${guardedAclGate}
   ) THEN
     RAISE EXCEPTION 'release migration executor runtime write gate mismatch';
   END IF;
-  PERFORM reviewrouter_activation.complete_migration_permit(
-    requested_rollout_id,requested_permit_epoch,requested_permit_nonce,
-    '{}'::jsonb);
+  IF NOT requested_catalog_capture_only THEN
+    PERFORM reviewrouter_activation.complete_migration_permit(
+      requested_rollout_id,requested_permit_epoch,requested_permit_nonce,
+      '{}'::jsonb);
+  END IF;
 END
 $rr_guarded_release_executor_v1$;
 REVOKE ALL ON PROCEDURE public.reviewrouter_execute_release_migration(
-  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) FROM PUBLIC;
+  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean) FROM PUBLIC;
 GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(
-  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) TO reviewrouter_release_migration;
+  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean) TO reviewrouter_release_migration;
 DO $transferred_public_routine_acl$
 DECLARE routine_row record;
 BEGIN
@@ -4320,36 +4365,155 @@ BEGIN
   END IF;
 END
 $transferred_public_routine_acl_gate$;
-DO $provider_scope_concurrency_operator_acl$
-DECLARE operator_routine_count integer;
+-- A privilege-free dump preserves these routines but intentionally omits the
+-- four operator grants installed by migration 000079. Re-establish that
+-- production contract at the canonical post-restore provisioning boundary,
+-- after ownership has converged to the final NOLOGIN schema owner.
+ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_snapshot()
+  SECURITY DEFINER SET search_path TO pg_catalog, public;
+ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_status()
+  SECURITY DEFINER SET search_path TO pg_catalog, public;
+ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_activate()
+  SECURITY DEFINER SET search_path TO pg_catalog, public;
+ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_close_for_rollback()
+  SECURITY DEFINER SET search_path TO pg_catalog, public;
+ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_verify_rollback()
+  SECURITY DEFINER SET search_path TO pg_catalog, public;
+-- Remove every explicit non-owner EXECUTE ACL, including principals unknown to
+-- this release and privileges they delegated.  CASCADE makes the convergence
+-- close the complete grant chain rather than only its first known edge.
+DO $provider_scope_concurrency_acl_convergence$
+DECLARE routine_row record;
+DECLARE grantee_row record;
 BEGIN
-  SELECT count(*) INTO operator_routine_count
-  FROM unnest(ARRAY[
-    to_regprocedure('public.reviewrouter_provider_scope_concurrency_snapshot()'),
-    to_regprocedure('public.reviewrouter_provider_scope_concurrency_status()'),
-    to_regprocedure('public.reviewrouter_provider_scope_concurrency_activate()'),
-    to_regprocedure('public.reviewrouter_provider_scope_concurrency_close_for_rollback()'),
-    to_regprocedure('public.reviewrouter_provider_scope_concurrency_verify_rollback()')
-  ]) routine_oid
-  WHERE routine_oid IS NOT NULL;
-  IF operator_routine_count = 0 THEN
-    RETURN;
-  END IF;
-  IF operator_routine_count <> 5 THEN
-    RAISE EXCEPTION 'provider scope concurrency operator topology is partial';
-  END IF;
-  GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_status()
-    TO reviewrouter_release_migration;
-  GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_activate()
-    TO reviewrouter_release_migration;
-  GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_close_for_rollback()
-    TO reviewrouter_release_migration;
-  GRANT EXECUTE ON FUNCTION public.reviewrouter_provider_scope_concurrency_verify_rollback()
-    TO reviewrouter_release_migration;
-  REVOKE ALL ON FUNCTION public.reviewrouter_provider_scope_concurrency_snapshot()
-    FROM reviewrouter_release_migration;
+  FOR routine_row IN
+    SELECT routine.oid, routine.proowner
+    FROM pg_proc routine
+    JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+    WHERE namespace.nspname = 'public'
+      AND routine.pronargs = 0
+      AND routine.proname = ANY (ARRAY[
+        'reviewrouter_provider_scope_concurrency_snapshot',
+        'reviewrouter_provider_scope_concurrency_status',
+        'reviewrouter_provider_scope_concurrency_activate',
+        'reviewrouter_provider_scope_concurrency_close_for_rollback',
+        'reviewrouter_provider_scope_concurrency_verify_rollback'
+      ])
+    ORDER BY routine.oid
+  LOOP
+    FOR grantee_row IN
+      SELECT DISTINCT acl.grantee
+      FROM aclexplode(
+        coalesce(
+          (SELECT selected.proacl FROM pg_proc selected
+           WHERE selected.oid = routine_row.oid),
+          acldefault('f', routine_row.proowner)
+        )
+      ) acl
+      WHERE acl.privilege_type = 'EXECUTE'
+        AND acl.grantee <> routine_row.proowner
+      ORDER BY acl.grantee
+    LOOP
+      IF grantee_row.grantee = 0 THEN
+        EXECUTE format(
+          'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC CASCADE',
+          routine_row.oid::regprocedure
+        );
+      ELSE
+        EXECUTE format(
+          'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I CASCADE',
+          routine_row.oid::regprocedure,
+          pg_get_userbyid(grantee_row.grantee)
+        );
+      END IF;
+    END LOOP;
+  END LOOP;
 END
-$provider_scope_concurrency_operator_acl$;
+$provider_scope_concurrency_acl_convergence$;
+GRANT EXECUTE ON FUNCTION
+  public.reviewrouter_provider_scope_concurrency_status(),
+  public.reviewrouter_provider_scope_concurrency_activate(),
+  public.reviewrouter_provider_scope_concurrency_close_for_rollback(),
+  public.reviewrouter_provider_scope_concurrency_verify_rollback()
+TO reviewrouter_release_migration;
+DO $provider_scope_concurrency_operator_boundary$
+DECLARE routine_count integer;
+DECLARE canonical_count integer;
+DECLARE explicit_execute_count integer;
+DECLARE owner_execute_count integer;
+DECLARE release_execute_count integer;
+DECLARE canonical_execute_count integer;
+BEGIN
+  SELECT count(*), count(*) FILTER (
+    WHERE owner.rolname = '${releaseSchemaOwnerRoleName}'
+      AND routine.prosecdef
+      AND routine.proconfig = ARRAY['search_path=pg_catalog, public']::text[]
+  )
+  INTO routine_count, canonical_count
+  FROM pg_proc routine
+  JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+  JOIN pg_roles owner ON owner.oid = routine.proowner
+  WHERE namespace.nspname = 'public'
+    AND routine.pronargs = 0
+    AND routine.proname = ANY (ARRAY[
+      'reviewrouter_provider_scope_concurrency_snapshot',
+      'reviewrouter_provider_scope_concurrency_status',
+      'reviewrouter_provider_scope_concurrency_activate',
+      'reviewrouter_provider_scope_concurrency_close_for_rollback',
+      'reviewrouter_provider_scope_concurrency_verify_rollback'
+    ]);
+  SELECT count(*),
+         count(*) FILTER (
+           WHERE acl.grantee = routine.proowner
+         ),
+         count(*) FILTER (
+           WHERE acl.grantee = 'reviewrouter_release_migration'::regrole
+         ),
+         count(*) FILTER (
+           WHERE (
+             acl.grantee = routine.proowner
+             AND acl.grantor = routine.proowner
+             AND NOT acl.is_grantable
+           ) OR (
+             acl.grantee = 'reviewrouter_release_migration'::regrole
+             AND routine.proname <>
+               'reviewrouter_provider_scope_concurrency_snapshot'
+             AND acl.grantor = routine.proowner
+             AND NOT acl.is_grantable
+           )
+         )
+  INTO explicit_execute_count, owner_execute_count, release_execute_count,
+       canonical_execute_count
+  FROM pg_proc routine
+  JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+  CROSS JOIN LATERAL aclexplode(
+    coalesce(routine.proacl, acldefault('f', routine.proowner))
+  ) acl
+  WHERE namespace.nspname = 'public'
+    AND routine.pronargs = 0
+    AND routine.proname = ANY (ARRAY[
+      'reviewrouter_provider_scope_concurrency_snapshot',
+      'reviewrouter_provider_scope_concurrency_status',
+      'reviewrouter_provider_scope_concurrency_activate',
+      'reviewrouter_provider_scope_concurrency_close_for_rollback',
+      'reviewrouter_provider_scope_concurrency_verify_rollback'
+    ])
+    AND acl.privilege_type = 'EXECUTE';
+  IF routine_count <> 5 OR canonical_count <> 5
+     OR explicit_execute_count <> 9
+     OR owner_execute_count <> 5
+     OR release_execute_count <> 4
+     OR canonical_execute_count <> 9
+     OR has_function_privilege(
+       'reviewrouter_release_migration',
+       'public.reviewrouter_provider_scope_concurrency_snapshot()',
+       'EXECUTE'
+     ) THEN
+    RAISE EXCEPTION
+      'provider scope concurrency operator boundary is non-canonical';
+  END IF;
+END
+$provider_scope_concurrency_operator_boundary$;
 ${
   ownerAuthorizedInitialRuntimeGateClosed
     ? `-- A fresh target may need its first canonical ACL projection before the
@@ -4361,7 +4525,7 @@ ${initialRuntimeAclGate}`
     : ""
 }
 GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(
-  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) TO reviewrouter_release_migration;
+  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean) TO reviewrouter_release_migration;
 GRANT SELECT ON TABLE public._prisma_migrations TO reviewrouter_release_migration;
 GRANT SELECT ("id","status") ON TABLE public."CodexOAuthLease",
   public."CodexOAuthSetupManifest", public."CodexOAuthWritebackIntent"
@@ -4464,6 +4628,8 @@ BEGIN
       failed_invariant := 'install_migration_permit_routine_missing';
     WHEN to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)') IS NULL THEN
       failed_invariant := 'consume_migration_permit_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.observe_live_migration_catalog_digest()') IS NULL THEN
+      failed_invariant := 'observe_live_migration_catalog_digest_routine_missing';
     WHEN to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)') IS NULL THEN
       failed_invariant := 'complete_migration_permit_routine_missing';
     WHEN to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)') IS NULL THEN
@@ -4554,6 +4720,14 @@ BEGIN
         failed_invariant := 'permit_installer_terminalize_migration_permit_execute_missing';
       WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)','EXECUTE') THEN
         failed_invariant := 'release_migration_consume_migration_permit_execute_present';
+      WHEN NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.observe_live_migration_catalog_digest()','EXECUTE') THEN
+        failed_invariant := 'release_migration_observe_live_migration_catalog_digest_execute_missing';
+      WHEN has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.observe_live_migration_catalog_digest()','EXECUTE') THEN
+        failed_invariant := 'permit_installer_observe_live_migration_catalog_digest_execute_present';
+      WHEN has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.observe_live_migration_catalog_digest()','EXECUTE') THEN
+        failed_invariant := 'receipt_reader_observe_live_migration_catalog_digest_execute_present';
+      WHEN has_function_privilege('${releaseSchemaOwnerRoleName}','reviewrouter_activation.observe_live_migration_catalog_digest()','EXECUTE') THEN
+        failed_invariant := 'schema_owner_observe_live_migration_catalog_digest_execute_present';
       WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)','EXECUTE') THEN
         failed_invariant := 'release_migration_complete_migration_permit_execute_present';
       WHEN NOT has_function_privilege('${releaseSchemaOwnerRoleName}','reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)','EXECUTE') THEN
@@ -4909,7 +5083,8 @@ ${
   role === "web"
     ? `GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_setup_confirmation"(text, integer, text) TO ${username};
 GRANT EXECUTE ON FUNCTION public."codex_oauth_provider_identity_repair_challenge"(text,text,text,text,text,text,text,bigint,text,text,text,text,text,text,bigint) TO ${username};
-GRANT EXECUTE ON FUNCTION public."codex_oauth_repair_quarantined_provider"(text,text,text,text,text,text,text,bigint,text,text,text,text,text,text,bigint,text) TO ${username};`
+GRANT EXECUTE ON FUNCTION public."codex_oauth_repair_quarantined_provider"(text,text,text,text,text,text,text,bigint,text,text,text,text,text,text,bigint,text) TO ${username};
+GRANT EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer) TO ${username};`
     : role === "api"
       ? `GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_runtime_confirmation"(text, text, integer, text) TO ${username};
 GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_runtime_completion"(text, text) TO ${username};`
@@ -4997,6 +5172,8 @@ REVOKE UPDATE ON TABLE public."CodexOAuthProviderInstance" FROM ${username};
 GRANT UPDATE (${providerUpdateColumnList}) ON TABLE public."CodexOAuthProviderInstance" TO ${username};
 REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityKey" FROM ${username};
 REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityReceipt" FROM ${username};
+REVOKE ALL ON TABLE public."CodexOAuthWorkflowCompatibility" FROM ${username};
+${role === "api" || role === "web" ? `GRANT SELECT ON TABLE public."CodexOAuthWorkflowCompatibility" TO ${username};` : ""}
 REVOKE ALL ON TABLE public."RuntimeGenerationWitnessProof" FROM ${username};
 REVOKE ALL ON TABLE public."RuntimeCanaryChallenge" FROM ${username};
 REVOKE ALL ON TABLE public."RuntimeCanaryChallengeProof" FROM ${username};
@@ -5106,15 +5283,10 @@ COMMIT;
 }
 
 /** Canonical projection of the live V70-V73 security catalog. */
-export const liveV70V73CatalogDigestSha256 =
-  fencedLiveV70V73CatalogDigestSha256;
 export const liveV70V73CatalogDigestSql = fencedLiveV70V73CatalogDigestSql;
 
-export const liveV70V72CatalogDigestSha256 = liveV70V73CatalogDigestSha256;
 export const liveV70V72CatalogDigestSql = liveV70V73CatalogDigestSql;
-
-if (liveV70V73CatalogDigestSha256 !== fencedLiveV70V73CatalogDigestSha256)
-  throw new Error("release_migration_fenced_catalog_projection_drift");
+export const liveV70V79CatalogDigestSql = liveV70V73CatalogDigestSql;
 
 export function releaseMigrationPermitFromEnv(env) {
   const permit = {
@@ -5175,6 +5347,8 @@ export function atomicMigrationAndGrantSql(
   configuration,
   {
     gateClosed = false,
+    catalogCaptureOnly = false,
+    disposableDatabaseIdentity,
     migrationBundleSql = atomicReleaseMigrationBundleSql(),
     migrationPermit,
     legacyReconciliation,
@@ -5186,10 +5360,25 @@ export function atomicMigrationAndGrantSql(
     throw new Error("release_migration_bundle_override_forbidden");
   if (!legacyReconciliation?.evidence)
     throw new Error("release_migration_legacy_reconciliation_missing");
+  if (
+    catalogCaptureOnly &&
+    !/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(
+      disposableDatabaseIdentity ?? "",
+    )
+  )
+    throw new Error(
+      "activation_catalog_policy_candidate_disposable_identity_required",
+    );
   return `\\set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL lock_timeout = '5000ms';
 SET LOCAL statement_timeout = '120000ms';
+${
+  catalogCaptureOnly
+    ? `SET LOCAL reviewrouter.activation_catalog_candidate_capture = 'disposable-only';
+SET LOCAL reviewrouter.activation_catalog_disposable_database_identity = ${quoted(disposableDatabaseIdentity)};`
+    : ""
+}
 -- Migration takes the target lock exclusively before touching catalog state.
 -- Authority begin/complete use target-shared then control-authority order and
 -- never upgrade a shared lock, preventing cross-worker upgrade deadlocks.
@@ -5204,7 +5393,8 @@ CALL public.reviewrouter_execute_release_migration(
   ${quoted(migrationPermit.nonce)},
   ${quoted(JSON.stringify(legacyReconciliation.evidence))}::jsonb,
   ${quoted(migrationPermit.eligibilityCutoff)}::timestamptz,
-  ${gateClosed ? "true" : "false"}::boolean);
+  ${gateClosed ? "true" : "false"}::boolean,
+  ${catalogCaptureOnly ? "true" : "false"}::boolean);
 SET LOCAL search_path = pg_catalog, pg_temp;
 DO $phase_aware_manifest_postcondition$
 DECLARE manifest_identity text;
@@ -5236,13 +5426,18 @@ BEGIN
       'public.reviewrouter_answer_runtime_canary_challenge(text,text,text,text,text,text)'::regprocedure
     ) AND NOT prosecdef
   ) THEN RAISE EXCEPTION 'release migration V72 routine security invalid'; END IF;
-  SELECT digest INTO STRICT catalog_digest FROM (${liveV70V73CatalogDigestSql}) live(digest);
-  SELECT reviewrouter_activation.read_migration_receipt(
+  SELECT reviewrouter_activation.observe_live_migration_catalog_digest()
+  INTO STRICT catalog_digest;
+  ${
+    catalogCaptureOnly
+      ? ""
+      : `SELECT reviewrouter_activation.read_migration_receipt(
     ${quoted(migrationPermit.rolloutId)},${migrationPermit.epoch}::bigint,
     ${quoted(migrationPermit.nonce)}
   )->>'postCatalogDigest' INTO STRICT receipt_catalog_digest;
   IF catalog_digest IS DISTINCT FROM receipt_catalog_digest
-    THEN RAISE EXCEPTION 'release migration V70-V73 live catalog digest mismatch'; END IF;
+    THEN RAISE EXCEPTION 'release migration V70-V73 live catalog digest mismatch'; END IF;`
+  }
 END
 $phase_aware_manifest_postcondition$;
 COMMIT;
@@ -5517,6 +5712,29 @@ export function executeCanonicalRoleBootstrap(
   };
 }
 
+export function classifyActivationCatalogCaptureStateShape(rawState) {
+  if (typeof rawState !== "string") return "not_string";
+  const trimmed = rawState.trim();
+  if (trimmed.length === 0) return "empty";
+  if (trimmed.includes("\u0000")) return "contains_nul";
+  const lineCount = trimmed.split(/\r?\n/u).length;
+  const objectBounded = trimmed.startsWith("{") && trimmed.endsWith("}");
+  if (lineCount === 1)
+    return objectBounded ? "single_line_object" : "single_line_other";
+  return objectBounded ? "multi_line_object_boundary" : "multi_line_other";
+}
+
+export function parseActivationCatalogCaptureState(rawState) {
+  try {
+    return JSON.parse(rawState.trim());
+  } catch {
+    process.stderr.write(
+      `activation_catalog_policy_capture_state_json_invalid:${classifyActivationCatalogCaptureStateShape(rawState)}\n`,
+    );
+    throw new Error("activation_catalog_policy_capture_state_json_invalid");
+  }
+}
+
 export function executeCanonicalReleaseMigration(
   env = process.env,
   run = runReleaseMigrationSubprocess,
@@ -5563,6 +5781,9 @@ export function executeCanonicalReleaseMigration(
     },
     run,
   );
+  const catalogCaptureOnly =
+    env.REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY ===
+    "1";
   run(
     "deploy_migrations_and_converge_grants",
     "psql",
@@ -5571,11 +5792,72 @@ export function executeCanonicalReleaseMigration(
       env: childEnv,
       input: atomicMigrationAndGrantSql(configuration, {
         gateClosed: env.REVIEW_ROUTER_RELEASE_ACL_GATE_MODE === "closed",
+        catalogCaptureOnly,
+        disposableDatabaseIdentity:
+          env.REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY,
         migrationPermit,
         legacyReconciliation,
       }),
     },
   );
+  if (catalogCaptureOnly) {
+    const rawCaptureState = run(
+      "verify_catalog_capture_migration_state",
+      "psql",
+      [
+        configuration.releaseUrl,
+        "--no-psqlrc",
+        "--quiet",
+        "--tuples-only",
+        "--no-align",
+      ],
+      {
+        env: childEnv,
+        input: `\\set ON_ERROR_STOP on
+COPY (SELECT jsonb_build_object(
+            'manifestIdentity','sha256:'||encode(pg_catalog.sha256(convert_to(coalesce(string_agg(
+              migration_name||':'||checksum,',' ORDER BY migration_name),''),'UTF8')),'hex'),
+            'unfinishedCount',(SELECT count(*) FROM public._prisma_migrations
+              WHERE finished_at IS NULL AND rolled_back_at IS NULL)
+          ) FROM public._prisma_migrations
+          WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL) TO STDOUT`,
+      },
+    );
+    process.stderr.write(
+      "activation_catalog_policy_capture_raw_state_received\n",
+    );
+    const captureState = parseActivationCatalogCaptureState(rawCaptureState);
+    process.stderr.write(
+      "activation_catalog_policy_capture_json_parse_complete\n",
+    );
+    const captureStateChecks = Object.freeze({
+      manifestIdentityExact:
+        captureState.manifestIdentity ===
+        canonicalReleaseMigrationArtifact.postManifestIdentity,
+      noUnfinishedMigrations: Number(captureState.unfinishedCount) === 0,
+    });
+    process.stderr.write(
+      "activation_catalog_policy_capture_checks_constructed\n",
+    );
+    if (Object.values(captureStateChecks).some((check) => !check)) {
+      process.stderr.write(
+        `activation_catalog_policy_capture_state_invalid:${JSON.stringify(captureStateChecks)}\n`,
+      );
+      throw new Error("activation_catalog_policy_capture_state_invalid");
+    }
+    return Object.freeze({
+      version: 1,
+      captureOnlyStatus: "catalog_candidate_ready",
+      candidate: Object.freeze({
+        commitSha: configuration.commit,
+        databaseIdentity: configuration.databaseIdentity,
+        manifestIdentity: captureState.manifestIdentity,
+        projectionSha256: `sha256:${createHash("sha256")
+          .update(fencedLiveV70V73CatalogDigestSql)
+          .digest("hex")}`,
+      }),
+    });
+  }
   const targetMigrationReceipt = JSON.parse(
     run(
       "read_target_migration_receipt",

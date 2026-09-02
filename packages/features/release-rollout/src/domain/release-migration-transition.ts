@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import type { LegacyAmbiguityEvidence } from "./trusted-rollout-evidence";
+import { canonicalReleaseMigrationPostManifestIdentity } from "./release-migration-artifact-identity.js";
+import { activationCatalogRawPromotionTrustRoot } from "./activation-catalog-policy-raw-promotion-trust-root";
+
+export { canonicalReleaseMigrationPostManifestIdentity };
 
 export const TargetManifestPhase = Object.freeze({
   PreMigration: "pre_migration",
@@ -132,24 +136,57 @@ export const canonicalReleaseMigrationEntries = Object.freeze([
     "000073_codex_oauth_active_namespace_refresh",
     "3e5b6606f22c8bec6f75f52f48b693806d597fa283155f6e033844c4f6be4de6",
   ],
+  [
+    "000087_codex_oauth_v4_v5_workflow_reattestation",
+    "af5fccfd987312b85d48cd38b7f528780f52e82daab47c34829581e50193b090",
+  ],
+  [
+    "000088_codex_oauth_reattestation_mutation_owner_fence",
+    "18a1e48953d1360d3661ea6753b7aa350fc7e28caeaeb65d42c9ac42569f1cf0",
+  ],
+  [
+    "000089_codex_oauth_v4_v5_staged_compatibility",
+    "bd35157bc11c84dd181ba7f2edf589503d75cb359c12e9a93bf4a884f94c9db7",
+  ],
 ] as const).map(([name, checksum]) =>
   Object.freeze({ migrationName: name, migrationSqlSha256: checksum }),
 );
 
+export const deriveOrderedPendingEntriesSha256 = (
+  entries: readonly ReleaseMigrationEntry[],
+): string =>
+  `sha256:${createHash("sha256")
+    .update(
+      entries
+        .map(
+          ({ migrationName, migrationSqlSha256 }) =>
+            `${migrationName}:${migrationSqlSha256}`,
+        )
+        .join(","),
+    )
+    .digest("hex")}`;
+
+export const historicalReleaseMigrationPostCatalogDigest =
+  "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d";
+
+const canonicalReleaseMigrationPostCatalogDigest = (() => {
+  if (activationCatalogRawPromotionTrustRoot.status === "ready")
+    return activationCatalogRawPromotionTrustRoot.evidence.liveCatalogDigest;
+  return historicalReleaseMigrationPostCatalogDigest;
+})();
+
 export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
-    "sha256:bc7853ee946ab41b455e786dded6b34fb0f548a4591ca965d066e8efb1479cd5",
+    "sha256:706f21ce004aecbdaba32dac7af9f3a266534b638f2daf906e7a26630b0111b7",
   preManifestIdentity:
     "sha256:c0ab0520ee922e695b2954f0a0af81ffd0ad6fb57f41ec3ddc124fe7c8a781eb",
-  orderedPendingEntriesSha256:
-    "sha256:c2eae628ec1b20ab29f09ae56ea6111a7d97948c8e5fea370c6cf5e45cf330fa",
+  orderedPendingEntriesSha256: deriveOrderedPendingEntriesSha256(
+    canonicalReleaseMigrationEntries,
+  ),
   migrationBundleSha256:
-    "sha256:b98968fc30e81ab1af1d5e0c47004e158e281b1a690c41c4f2b74eec6400d73a",
-  postManifestIdentity:
-    "sha256:13acb121fbc5bbdebef197d58d5e8dcfca99815e005acc0aae7988bc86d33ef2",
-  // Database-derived digest bound to the exact reviewed v29 capture.
-  postCatalogDigest:
-    "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
+    "sha256:6438ef7b8dd4d753a58cfc05bf100cfe6e1a7ed077cc5abcbec9b7cbba565a70",
+  postManifestIdentity: canonicalReleaseMigrationPostManifestIdentity,
+  postCatalogDigest: canonicalReleaseMigrationPostCatalogDigest,
 });
 
 export const canonicalReleaseMigrationResumeManifestIdentities = Object.freeze([
@@ -199,6 +236,8 @@ export function assertReleaseMigrationTransitionIntegrity(
     value.schemaVersion !== 1 ||
     !/^[a-f0-9]{40}$/u.test(value.commitSha) ||
     !digest.test(value.releaseImageDigest) ||
+    value.orderedPendingEntriesSha256 !==
+      deriveOrderedPendingEntriesSha256(value.orderedMigrationEntries) ||
     value.transitionSha256 !== canonicalDigest(unsigned)
   )
     throw new Error("release_migration_transition_untrusted");

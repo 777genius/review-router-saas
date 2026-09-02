@@ -13,13 +13,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import {
   isSanitizedDiagnosticError,
   sanitizedDiagnosticError,
 } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
+import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
 import {
   assembleTrustedRolloutEvidence,
   assertPromotionAllowed,
@@ -49,6 +50,7 @@ import {
   evaluateEffectivePrincipalInventory,
   canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
+  reviewedActivationCatalogPolicyDigests,
   canonicalActivationCatalogPolicyTrustRootReadiness,
   assertCanonicalActivationCatalogPolicyTrustRootReady,
   authorizeCanonicalActivationCatalogPolicies,
@@ -63,6 +65,8 @@ import { PostgresCleanupObservationAdapter } from "../apps/api/src/release-witne
 import {
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
+  releaseMigrationPermitFromEnv,
+  resolveReleaseMigrationConfiguration,
   activationAuthorityProvisioningSql,
   activationRoutineBodyTrustRoots,
   canonicalActivationCatalogPolicyCandidateSql,
@@ -70,6 +74,9 @@ import {
   runtimeGrantSql,
 } from "./run-codex-rotating-release-migration.mjs";
 import { parsePrivatePg17ActivationCatalogPolicyCandidate } from "./capture-private-pg17-activation-catalog-policy.mjs";
+import { assertActivationCatalogGitCustody } from "./lib/activation-catalog-git-custody.mjs";
+
+const checkoutRoot = resolve(import.meta.dirname, "..");
 
 function rehearsalLegacyAmbiguityReceipt({
   rollout,
@@ -189,15 +196,16 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA release_authority FROM PUBLIC;`,
 
 export const rehearsalActivationCatalogPolicyAuthorization = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
+    reviewedActivationCatalogPolicyDigests.preactivationCatalogPolicySha256,
   activatedCatalogPolicySha256:
-    "sha256:cc35c6b43fe8b117a492705eeaf2ab9a9ac0e05f98546fa32ac9d340df89867b",
+    reviewedActivationCatalogPolicyDigests.activatedCatalogPolicySha256,
 });
 if (
-  rehearsalActivationCatalogPolicyAuthorization.preactivationCatalogPolicySha256 !==
+  canonicalActivationCatalogPolicyTrustRootReadiness.status === "ready" &&
+  (rehearsalActivationCatalogPolicyAuthorization.preactivationCatalogPolicySha256 !==
     canonicalActivationCatalogPolicyDigests.preactivationCatalogPolicySha256 ||
-  rehearsalActivationCatalogPolicyAuthorization.activatedCatalogPolicySha256 !==
-    canonicalActivationCatalogPolicyDigests.activatedCatalogPolicySha256
+    rehearsalActivationCatalogPolicyAuthorization.activatedCatalogPolicySha256 !==
+      canonicalActivationCatalogPolicyDigests.activatedCatalogPolicySha256)
 )
   throw new Error("rehearsal_activation_catalog_policy_authorization_drift");
 export const rehearsalReadinessPolicy = Object.freeze({
@@ -286,6 +294,9 @@ const preReleaseMigrationBoundary = Object.freeze({
     "000072_retire_superseded_codex_setup_claims",
     "000072_runtime_canary_challenge",
     "000073_codex_oauth_active_namespace_refresh",
+    "000087_codex_oauth_v4_v5_workflow_reattestation",
+    "000088_codex_oauth_reattestation_mutation_owner_fence",
+    "000089_codex_oauth_v4_v5_staged_compatibility",
   ]),
   retained: Object.freeze([
     "000067_review_live_progress",
@@ -391,7 +402,10 @@ export function validateRehearsalConfiguration(env) {
   return Object.freeze({ sourceImage, targetImage });
 }
 
-export function resolveRehearsalCaptureOnlyConfiguration(env) {
+export function resolveRehearsalCaptureOnlyConfiguration(
+  env,
+  repositoryRoot = checkoutRoot,
+) {
   if (
     env.REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY !==
     "1"
@@ -399,6 +413,9 @@ export function resolveRehearsalCaptureOnlyConfiguration(env) {
     return undefined;
   const disposableDatabaseIdentity =
     env.REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY ?? "";
+  const captureBaseCommit =
+    env.REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT ?? "";
+  const auditedHead = env.REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD ?? "";
   if (
     !/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(
       disposableDatabaseIdentity,
@@ -407,7 +424,22 @@ export function resolveRehearsalCaptureOnlyConfiguration(env) {
     throw new Error(
       "activation_catalog_policy_candidate_disposable_identity_required",
     );
-  return Object.freeze({ disposableDatabaseIdentity });
+  if (
+    !/^[a-f0-9]{40}$/u.test(captureBaseCommit) ||
+    !/^[a-f0-9]{40}$/u.test(auditedHead)
+  )
+    throw new Error("activation_catalog_policy_capture_custody_required");
+  assertActivationCatalogGitCustody({
+    repositoryRoot,
+    captureBaseCommit,
+    auditedHead,
+    requireExactCheckoutHead: true,
+  });
+  return Object.freeze({
+    disposableDatabaseIdentity,
+    captureBaseCommit,
+    auditedHead,
+  });
 }
 
 export function assertDisposableCaptureTarget({
@@ -425,6 +457,75 @@ export function assertDisposableCaptureTarget({
     throw new Error(
       "activation_catalog_policy_candidate_disposable_attestation_required",
     );
+}
+
+export function createActivationCatalogCaptureCheckpoint({
+  artifact,
+  candidate,
+  configuredDatabaseIdentity,
+  disposableIdentity,
+  systemIdentifier,
+  recoveryWitnessSha256,
+  captureBaseCommit,
+  auditedHead,
+}) {
+  if (
+    artifact?.kind !==
+      "reviewrouter-activation-catalog-policy-artifact-candidate" ||
+    artifact?.version !== 1 ||
+    !/^[a-f0-9]{40}$/u.test(candidate?.commitSha ?? "") ||
+    !/^sha256:[a-f0-9]{64}$/u.test(candidate?.manifestIdentity ?? "") ||
+    !/^sha256:[a-f0-9]{64}$/u.test(candidate?.projectionSha256 ?? "") ||
+    !/^sha256:[a-f0-9]{64}$/u.test(artifact?.liveCatalogDigest ?? "") ||
+    typeof candidate?.databaseIdentity !== "string" ||
+    candidate.databaseIdentity.length < 3 ||
+    typeof configuredDatabaseIdentity !== "string" ||
+    candidate.databaseIdentity !== configuredDatabaseIdentity ||
+    !/^rr-disposable-[a-z0-9][a-z0-9._-]{7,127}$/u.test(
+      disposableIdentity ?? "",
+    ) ||
+    !/^[1-9][0-9]{0,19}$/u.test(systemIdentifier ?? "") ||
+    !/^[a-f0-9]{64}$/u.test(recoveryWitnessSha256 ?? "") ||
+    !/^[a-f0-9]{40}$/u.test(captureBaseCommit ?? "") ||
+    !/^[a-f0-9]{40}$/u.test(auditedHead ?? "") ||
+    candidate?.commitSha !== auditedHead
+  )
+    throw new Error("activation_catalog_policy_capture_binding_invalid");
+  const database = Object.freeze({
+    disposableIdentity,
+    configuredIdentity: candidate.databaseIdentity,
+    systemIdentifier,
+    recoveryWitnessSha256,
+  });
+  const projection = Object.freeze({
+    sha256: candidate.projectionSha256,
+    observedDigest: artifact.liveCatalogDigest,
+  });
+  const immutableEvidence = {
+    auditedHead,
+    captureBaseCommit,
+    commitSha: candidate.commitSha,
+    database,
+    policies: artifact.policies,
+    postManifestIdentity: candidate.manifestIdentity,
+    projection,
+  };
+  return Object.freeze({
+    kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
+    version: 2,
+    policies: artifact.policies,
+    capture: Object.freeze({
+      commitSha: candidate.commitSha,
+      postManifestIdentity: candidate.manifestIdentity,
+      database,
+      projection,
+      custody: Object.freeze({
+        captureBaseCommit,
+        auditedHead,
+        evidenceSha256: `sha256:${sha256Canonical(immutableEvidence)}`,
+      }),
+    }),
+  });
 }
 
 export async function routeRehearsalAfterReleaseMigration({
@@ -447,13 +548,44 @@ export async function runRehearsalReleaseMigration({
   captureOnly,
   runStage,
   runReleaseMigration,
+  prepareCapture,
   captureCandidate,
   stageTargetServices,
 }) {
-  const migratedRollout = await runStage(
-    "run_release_migration",
-    runReleaseMigration,
-  );
+  let migratedRollout;
+  if (captureOnly)
+    await runStage("prepare_activation_catalog_capture", prepareCapture);
+  try {
+    migratedRollout = await runStage(
+      "run_release_migration",
+      runReleaseMigration,
+    );
+  } catch (error) {
+    if (
+      !captureOnly ||
+      !(error instanceof Error) ||
+      error.message !== "activation_catalog_policy_capture_ready"
+    )
+      throw error;
+    const routed = await routeRehearsalAfterReleaseMigration({
+      captureOnly,
+      captureCandidate,
+      stageTargetServices: () => {
+        throw new Error("activation_catalog_policy_capture_rollout_forbidden");
+      },
+    });
+    if (
+      routed.candidate?.kind !==
+        "reviewrouter-activation-catalog-policy-artifact-candidate" ||
+      routed.candidate.version !== 2 ||
+      routed.candidate.capture == null
+    )
+      throw new Error(
+        "activation_catalog_policy_candidate_migration_binding_invalid",
+        { cause: error },
+      );
+    return routed;
+  }
   const migrationReceipt = migratedRollout.receipts.at(-1);
   if (
     migratedRollout.targetManifestPhase !== "post_migration" ||
@@ -478,19 +610,18 @@ export async function runRehearsalReleaseMigration({
     if (
       policyCandidate?.kind !==
         "reviewrouter-activation-catalog-policy-artifact-candidate" ||
-      policyCandidate.version !== 1 ||
-      !/^sha256:[a-f0-9]{64}$/u.test(migrationReceipt.postCatalogDigest)
+      policyCandidate.version !== 2 ||
+      policyCandidate.capture?.postManifestIdentity !==
+        migrationReceipt.postManifestIdentity ||
+      policyCandidate.capture?.projection?.observedDigest !==
+        migrationReceipt.postCatalogDigest
     )
       throw new Error(
         "activation_catalog_policy_candidate_migration_binding_invalid",
       );
     return Object.freeze({
       mode: "capture-only",
-      candidate: Object.freeze({
-        ...policyCandidate,
-        version: 2,
-        liveCatalogDigest: migrationReceipt.postCatalogDigest,
-      }),
+      candidate: policyCandidate,
     });
   }
   return routeRehearsalAfterReleaseMigration({
@@ -583,7 +714,7 @@ function redactedErrorChain(error) {
 
 export function safeRehearsalStageErrorCode(error) {
   const message = error instanceof Error ? error.message : "";
-  return /^(?:(?:private_pg17_rehearsal|release_rollout|runner_ledger|trusted_rollout)_[a-z0-9_]{2,160}|activation_catalog_policy_candidate_invalid:(?:preactivation|activated):(?:policy|roles|role-(?:shape|name|login|inherit|superuser|bypass-rls|replication|create-database|create-role|connection-limit|valid-until)|memberships|membership|reachability|row-security|row-security-policy|row-security-policy-order|row-security-order|extension|extension-order|grant|grant-order|effective-permissions|permission|permission-order|rehearsal-resource|unknown))$/u.test(
+  return /^(?:(?:(?:legacy_ambiguity|private_pg17_rehearsal|release_migration|release_rollout|runner_ledger|trusted_rollout)_[a-z0-9_]{2,160})|activation_catalog_policy_candidate_invalid:(?:preactivation|activated):(?:policy|roles|role-(?:shape|name|login|inherit|superuser|bypass-rls|replication|create-database|create-role|connection-limit|valid-until)|memberships|membership|reachability|row-security|row-security-policy|row-security-policy-order|row-security-order|extension|extension-order|grant|grant-order|effective-permissions|permission|permission-order|rehearsal-resource|unknown))$/u.test(
     message,
   )
     ? message
@@ -689,6 +820,39 @@ export function safeReleaseAuthorityErrorClassification(error) {
   return undefined;
 }
 
+export function safeRehearsalStageErrorDiagnostic(stageName, error) {
+  if (stageName !== "run_release_migration") {
+    return safeRehearsalStageErrorCode(error) ?? redactedErrorChain(error);
+  }
+  {
+    const pending = [error];
+    const seen = new Set();
+    const safeMessages = [
+      ...safeReleaseAuthorityInvariantMessages,
+      ...safeReleaseMigrationInvariantMessages,
+    ];
+    while (pending.length > 0) {
+      const current = pending.shift();
+      if (!current || typeof current !== "object" || seen.has(current))
+        continue;
+      seen.add(current);
+      for (const key of ["message", "originalMessage"]) {
+        const message = current[key];
+        if (typeof message !== "string") continue;
+        const classification = safeMessages.find(
+          (candidate) =>
+            message === candidate || message === `ERROR: ${candidate}`,
+        );
+        if (classification) return classification;
+      }
+      for (const key of ["cause", "meta", "driverAdapterError"])
+        if (current[key] && typeof current[key] === "object")
+          pending.push(current[key]);
+    }
+  }
+  return redactedErrorChain(error);
+}
+
 export function summarizeErrorShape(error) {
   const pending = [{ path: "error", value: error, depth: 0 }];
   const seen = new Set();
@@ -728,6 +892,10 @@ export function safePostgresErrorClassification(stderr) {
     /ERROR:\s*[0-9A-Z]{5}:\s*/gu,
     "ERROR: ",
   );
+  const errorMessages = (normalizedStderr ?? "")
+    .split(/\r?\n/u)
+    .map((line) => /ERROR:\s*(.*?)\s*$/iu.exec(line)?.[1]?.toLowerCase())
+    .filter((message) => message !== undefined);
   const prismaCode = sqlState
     ? undefined
     : stderr?.match(/\b(P[0-9]{4})\b/u)?.[1];
@@ -752,43 +920,57 @@ export function safePostgresErrorClassification(stderr) {
     return `permission denied for ${deniedObject[1]?.toLowerCase()} ${deniedObject[2]}`;
   if (/ERROR:\s*permission denied/iu.test(normalizedStderr ?? ""))
     return "permission denied";
-  const namedInvariant = normalizedStderr?.match(
-    /ERROR:\s*((?:codex_oauth|reviewrouter|runtime|release)_[a-z0-9_]{2,160})(?:\n|$)/iu,
-  )?.[1];
-  if (namedInvariant) return namedInvariant.toLowerCase();
-  const missingObject = normalizedStderr?.match(
-    /ERROR:\s*((?:relation|role|schema|function|procedure) "[A-Za-z][A-Za-z0-9_.]{0,127}" does not exist)(?:\n|$)/iu,
-  )?.[1];
-  if (missingObject) return missingObject.toLowerCase();
-  const staticInvariant = normalizedStderr?.match(
-    /ERROR:\s*([a-z][a-z0-9 -]{2,100})(?:\n|$)/iu,
-  )?.[1];
-  if (staticInvariant) {
-    const normalizedInvariant = staticInvariant.toLowerCase();
-    const digestEvidence =
-      normalizedInvariant === "activation catalog policy mismatch"
-        ? stderr?.match(
-            /DETAIL:\s*sections=([A-Za-z,]+) expected=(sha256:[a-f0-9]{64}) observed=(sha256:[a-f0-9]{64})(?:\n|$)/u,
-          )
-        : undefined;
-    return digestEvidence
-      ? `${normalizedInvariant}:sections=${digestEvidence[1]}:expected=${digestEvidence[2]}:observed=${digestEvidence[3]}`
-      : normalizedInvariant;
-  }
   const releaseInvariant = safeReleaseMigrationInvariantMessages.find(
-    (message) => normalizedStderr?.includes(message),
+    (message) => errorMessages.includes(message.toLowerCase()),
   );
   if (releaseInvariant) {
     const digestEvidence =
       releaseInvariant ===
       "release migration target live completion mismatch:catalog_digest_observed"
         ? stderr?.match(
-            /DETAIL:\s*expected=(sha256:[a-f0-9]{64}) observed=(sha256:[a-f0-9]{64})(?:\n|$)/u,
+            /DETAIL:\s*expected=(sha256:[a-f0-9]{64}) observed=(sha256:[a-f0-9]{64})(?:\r?\n|$)/u,
           )
         : undefined;
     return digestEvidence
       ? `${releaseInvariant.toLowerCase()}:expected=${digestEvidence[1]}:observed=${digestEvidence[2]}`
       : releaseInvariant.toLowerCase();
+  }
+  const namedInvariant = normalizedStderr?.match(
+    /ERROR:\s*((?:codex_oauth|reviewrouter|runtime|release)_[a-z0-9_]{2,160})(?:\n|$)/iu,
+  )?.[1];
+  if (namedInvariant) return "postgres named invariant rejected";
+  const missingObject = normalizedStderr?.match(
+    /ERROR:\s*((?:relation|role|schema|function|procedure) "[A-Za-z][A-Za-z0-9_.]{0,127}" does not exist)(?:\n|$)/iu,
+  )?.[1];
+  if (missingObject) return missingObject.toLowerCase();
+  if (errorMessages.includes("public ownership convergence failed"))
+    return "public ownership convergence failed";
+  if (errorMessages.includes("activation catalog policy mismatch")) {
+    const digestEvidence = stderr?.match(
+      /DETAIL:\s*sections=([A-Za-z]+(?:,[A-Za-z]+)*) expected=(sha256:[a-f0-9]{64}) observed=(sha256:[a-f0-9]{64})(?:\r?\n|$)/u,
+    );
+    const safeSections = Object.freeze([
+      "database",
+      "effectivePermissions",
+      "extensions",
+      "grants",
+      "kind",
+      "memberships",
+      "phase",
+      "roleReachability",
+      "roles",
+      "rowSecurity",
+      "version",
+    ]);
+    const sections = digestEvidence?.[1].split(",");
+    if (
+      digestEvidence &&
+      sections &&
+      new Set(sections).size === sections.length &&
+      sections.every((section) => safeSections.includes(section)) &&
+      sections.join(",") === [...sections].sort().join(",")
+    )
+      return `activation catalog policy mismatch:sections=${digestEvidence[1]}:expected=${digestEvidence[2]}:observed=${digestEvidence[3]}`;
   }
   if (/ERROR:\s*release migration/iu.test(normalizedStderr ?? ""))
     return "release migration invariant rejected";
@@ -822,9 +1004,231 @@ export const disposableSqlConfiguration = () => ({
   releasePassword: "disposable-release",
 });
 
+/**
+ * The pre-release source models an already provisioned SaaS database. Some
+ * retained migrations deliberately choose a baseline/self-hosted path only
+ * when both release-authority roles are absent, so those roles must exist
+ * before Prisma applies the retained baseline. Target role bootstrap remains
+ * a separate, post-copy operation.
+ */
 export function disposablePg16SourceAuthorityRoleFoundationSql() {
-  return `CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;`;
+  return `CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE reviewrouter_release_schema_owner
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;`;
+}
+
+export function assertDisposablePreReleaseAuthorityTopologySql() {
+  return `DO $assert_live_authority_topology$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_roles
+    WHERE rolname = 'reviewrouter_release_migration'
+      AND rolcanlogin AND rolinherit
+      AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole
+      AND NOT rolreplication AND NOT rolbypassrls
+      AND rolconnlimit = -1 AND rolvaliduntil IS NULL
+  ) OR NOT EXISTS (
+    SELECT 1
+    FROM pg_roles
+    WHERE rolname = 'reviewrouter_release_schema_owner'
+      AND NOT rolcanlogin AND rolinherit
+      AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole
+      AND NOT rolreplication AND NOT rolbypassrls
+      AND rolconnlimit = -1 AND rolvaliduntil IS NULL
+  ) OR EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'ReviewProviderScopeConcurrencyControl_baseline_closed'
+  ) OR to_regprocedure(
+    'public.reviewrouter_provider_scope_concurrency_snapshot()'
+  ) IS NULL OR (
+    SELECT owner.rolname
+    FROM pg_proc routine
+    JOIN pg_roles owner ON owner.oid = routine.proowner
+    WHERE routine.oid = to_regprocedure(
+      'public.reviewrouter_provider_scope_concurrency_snapshot()'
+    )
+  ) IS DISTINCT FROM 'reviewrouter_release_schema_owner' THEN
+    RAISE EXCEPTION
+      'private_pg17_rehearsal_source_authority_topology_drift';
+  END IF;
+END
+$assert_live_authority_topology$;`;
+}
+
+export function assertDisposableProviderScopeConcurrencyAuthoritySql() {
+  return `DO $assert_provider_scope_concurrency_authority$
+DECLARE denied_role text;
+DECLARE routine_count integer;
+DECLARE canonical_count integer;
+DECLARE explicit_execute_count integer;
+DECLARE owner_execute_count integer;
+DECLARE release_execute_count integer;
+DECLARE canonical_execute_count integer;
+BEGIN
+  SELECT count(*), count(*) FILTER (
+    WHERE owner.rolname = 'reviewrouter_release_schema_owner'
+      AND routine.prosecdef
+      AND routine.proconfig = ARRAY['search_path=pg_catalog, public']::text[]
+  )
+  INTO routine_count, canonical_count
+  FROM pg_proc routine
+  JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+  JOIN pg_roles owner ON owner.oid = routine.proowner
+  WHERE namespace.nspname = 'public'
+    AND routine.pronargs = 0
+    AND routine.proname = ANY (ARRAY[
+      'reviewrouter_provider_scope_concurrency_snapshot',
+      'reviewrouter_provider_scope_concurrency_status',
+      'reviewrouter_provider_scope_concurrency_activate',
+      'reviewrouter_provider_scope_concurrency_close_for_rollback',
+      'reviewrouter_provider_scope_concurrency_verify_rollback'
+    ]);
+  SELECT count(*),
+         count(*) FILTER (
+           WHERE acl.grantee = routine.proowner
+         ),
+         count(*) FILTER (
+           WHERE acl.grantee = 'reviewrouter_release_migration'::regrole
+         ),
+         count(*) FILTER (
+           WHERE (
+             acl.grantee = routine.proowner
+             AND acl.grantor = routine.proowner
+             AND NOT acl.is_grantable
+           ) OR (
+             acl.grantee = 'reviewrouter_release_migration'::regrole
+             AND routine.proname <>
+               'reviewrouter_provider_scope_concurrency_snapshot'
+             AND acl.grantor = routine.proowner
+             AND NOT acl.is_grantable
+           )
+         )
+  INTO explicit_execute_count, owner_execute_count, release_execute_count,
+       canonical_execute_count
+  FROM pg_proc routine
+  JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+  CROSS JOIN LATERAL aclexplode(
+    coalesce(routine.proacl, acldefault('f', routine.proowner))
+  ) acl
+  WHERE namespace.nspname = 'public'
+    AND routine.pronargs = 0
+    AND routine.proname = ANY (ARRAY[
+      'reviewrouter_provider_scope_concurrency_snapshot',
+      'reviewrouter_provider_scope_concurrency_status',
+      'reviewrouter_provider_scope_concurrency_activate',
+      'reviewrouter_provider_scope_concurrency_close_for_rollback',
+      'reviewrouter_provider_scope_concurrency_verify_rollback'
+    ])
+    AND acl.privilege_type = 'EXECUTE';
+  IF routine_count <> 5 OR canonical_count <> 5
+     OR explicit_execute_count <> 9
+     OR owner_execute_count <> 5
+     OR release_execute_count <> 4
+     OR canonical_execute_count <> 9
+     OR has_function_privilege(
+       'reviewrouter_release_migration',
+       'public.reviewrouter_provider_scope_concurrency_snapshot()',
+       'EXECUTE'
+     ) THEN
+    RAISE EXCEPTION
+      'private_pg17_rehearsal_provider_scope_concurrency_authority_failed';
+  END IF;
+  FOREACH denied_role IN ARRAY ARRAY[
+    'reviewrouter_api', 'reviewrouter_web', 'reviewrouter_worker',
+    'reviewrouter_comment_token_custody',
+    'reviewrouter_codex_effect_authority',
+    'reviewrouter_activation_permit_installer',
+    'reviewrouter_activation_receipt_reader',
+    'reviewrouter_role_bootstrap'
+  ] LOOP
+    IF EXISTS (
+      SELECT 1
+      FROM pg_proc routine
+      JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+      WHERE namespace.nspname = 'public'
+        AND routine.pronargs = 0
+        AND routine.proname = ANY (ARRAY[
+          'reviewrouter_provider_scope_concurrency_snapshot',
+          'reviewrouter_provider_scope_concurrency_status',
+          'reviewrouter_provider_scope_concurrency_activate',
+          'reviewrouter_provider_scope_concurrency_close_for_rollback',
+          'reviewrouter_provider_scope_concurrency_verify_rollback'
+        ])
+        AND has_function_privilege(denied_role, routine.oid, 'EXECUTE')
+    ) THEN
+      RAISE EXCEPTION
+        'private_pg17_rehearsal_provider_scope_concurrency_denied_role:%',
+        denied_role;
+    END IF;
+  END LOOP;
+END
+$assert_provider_scope_concurrency_authority$;`;
+}
+
+export function disposableProviderScopeConcurrencyAdversarialAclSql() {
+  return `GRANT EXECUTE ON FUNCTION
+  public.reviewrouter_provider_scope_concurrency_snapshot(),
+  public.reviewrouter_provider_scope_concurrency_status()
+TO reviewrouter_provider_administrator WITH GRANT OPTION;
+SET ROLE reviewrouter_provider_administrator;
+GRANT EXECUTE ON FUNCTION
+  public.reviewrouter_provider_scope_concurrency_snapshot(),
+  public.reviewrouter_provider_scope_concurrency_status()
+TO reviewrouter_api;
+RESET ROLE;
+DO $assert_adversarial_provider_scope_concurrency_acl$
+BEGIN
+  IF (SELECT count(*)
+      FROM pg_proc routine
+      JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+      CROSS JOIN LATERAL aclexplode(
+        coalesce(routine.proacl, acldefault('f', routine.proowner))
+      ) acl
+      WHERE namespace.nspname = 'public'
+        AND routine.pronargs = 0
+        AND routine.proname IN (
+          'reviewrouter_provider_scope_concurrency_snapshot',
+          'reviewrouter_provider_scope_concurrency_status'
+        )
+        AND acl.grantee = 'reviewrouter_provider_administrator'::regrole
+        AND acl.grantor = routine.proowner
+        AND acl.privilege_type = 'EXECUTE'
+        AND acl.is_grantable) <> 2
+     OR (SELECT count(*)
+         FROM pg_proc routine
+         JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+         CROSS JOIN LATERAL aclexplode(
+           coalesce(routine.proacl, acldefault('f', routine.proowner))
+         ) acl
+         WHERE namespace.nspname = 'public'
+           AND routine.pronargs = 0
+           AND routine.proname IN (
+             'reviewrouter_provider_scope_concurrency_snapshot',
+             'reviewrouter_provider_scope_concurrency_status'
+           )
+           AND acl.grantee = 'reviewrouter_api'::regrole
+           AND acl.grantor =
+             'reviewrouter_provider_administrator'::regrole
+           AND acl.privilege_type = 'EXECUTE'
+           AND NOT acl.is_grantable) <> 2 THEN
+    RAISE EXCEPTION
+      'private_pg17_rehearsal_adversarial_operator_acl_setup_failed';
+  END IF;
+END
+$assert_adversarial_provider_scope_concurrency_acl$;`;
+}
+
+export function disposableProviderScopeConcurrencyExerciseSql() {
+  return `\\set ON_ERROR_STOP on
+BEGIN;
+SELECT public.reviewrouter_provider_scope_concurrency_status();
+SELECT public.reviewrouter_provider_scope_concurrency_activate();
+SELECT public.reviewrouter_provider_scope_concurrency_close_for_rollback();
+SELECT public.reviewrouter_provider_scope_concurrency_verify_rollback();
+ROLLBACK;`;
 }
 
 export function disposablePg17TargetRoleFoundationSql({
@@ -1298,6 +1702,9 @@ export async function executeDisposableRehearsal(
       `import { readFileSync } from "node:fs"; export default { schema: ${JSON.stringify(join(preReleasePrisma, "schema.prisma"))}, migrations: { path: ${JSON.stringify(join(preReleasePrisma, "migrations"))} }, datasource: { url: readFileSync(process.env.REVIEW_ROUTER_DATABASE_URL_FILE, "utf8").trim() } };\n`,
       { mode: 0o600 },
     );
+    // Retained migrations observe the live SaaS authority pair. Provision it
+    // before migration deployment so the disposable source cannot silently
+    // take a baseline/self-hosted branch that production would never take.
     sql(source, disposablePg16SourceAuthorityRoleFoundationSql());
     const sourceMigration = spawnSync(
       "pnpm",
@@ -1331,6 +1738,10 @@ export async function executeDisposableRehearsal(
         signal: sourceMigration.signal,
         timedOut: sourceMigration.error?.code === "ETIMEDOUT",
       });
+    // Prove the retained baseline selected the SaaS authority branch. Merely
+    // creating both role names is insufficient if a future migration changes
+    // the branch predicate or ownership handoff.
+    sql(source, assertDisposablePreReleaseAuthorityTopologySql());
     sql(
       source,
       `COMMENT ON DATABASE review_router IS '{"recoveryWitnessSha256":"${"a".repeat(64)}"}'; CREATE ROLE rehearsal_writer LOGIN; GRANT CONNECT ON DATABASE review_router TO rehearsal_writer; CREATE TABLE rehearsal_items(id bigserial PRIMARY KEY, value text NOT NULL UNIQUE); INSERT INTO rehearsal_items(value) VALUES ('one'),('two'),('three'); CREATE SCHEMA app_private; CREATE TABLE app_private.rehearsal_private(id integer PRIMARY KEY, value text); INSERT INTO app_private.rehearsal_private VALUES (1,'private'); CREATE SEQUENCE app_private.called_sequence; SELECT nextval('app_private.called_sequence'); CREATE SEQUENCE app_private.uncalled_sequence; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO PUBLIC;`,
@@ -1667,7 +2078,8 @@ ROLLBACK;`,
         "reviewrouter_codex_effect_authority",
         configuration.roles[4].password,
       ),
-      REVIEW_ROUTER_RELEASE_COMMIT_SHA: "d".repeat(40),
+      REVIEW_ROUTER_RELEASE_COMMIT_SHA:
+        captureOnly?.auditedHead ?? "d".repeat(40),
       REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: sha256(sourceSnapshot),
       REVIEW_ROUTER_ROLLOUT_ID: "disposable-rehearsal",
       REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER: sourceSystemIdentifier,
@@ -1679,6 +2091,14 @@ ROLLBACK;`,
       GITHUB_RUN_ID: "1",
       GITHUB_RUN_ATTEMPT: "1",
       REVIEW_ROUTER_CUTOVER_WORKFLOW_JOB_ID: "11",
+      ...(captureOnly
+        ? {
+            REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY:
+              "1",
+            REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+              captureOnly.disposableDatabaseIdentity,
+          }
+        : {}),
     };
     const publicTableReadDrift = JSON.parse(
       sql(
@@ -2235,8 +2655,10 @@ async function verifyProductionPathRehearsal(facts) {
       credential.cleanup();
     }
   };
-  const canonicalRun = (step, command, args, options = {}) =>
-    canonicalProcessRun(step, command, args, {
+  const canonicalRun = (step, command, args, options = {}) => {
+    const safeStep = /^[a-z][a-z0-9_]{2,63}$/u.test(step) ? step : "unknown";
+    process.stderr.write(`rehearsal_canonical_step_started:${safeStep}\n`);
+    const output = canonicalProcessRun(step, command, args, {
       ...options,
       ...(options.env
         ? {
@@ -2249,6 +2671,9 @@ async function verifyProductionPathRehearsal(facts) {
           }
         : {}),
     });
+    process.stderr.write(`rehearsal_canonical_step_completed:${safeStep}\n`);
+    return output;
+  };
   const activationCommands = {
     execute(command, args, options) {
       return {
@@ -2268,9 +2693,10 @@ async function verifyProductionPathRehearsal(facts) {
     roleJobName: "private-role-job",
     cutoverJobName: "private-cutover-job",
   };
+  const releaseCommitSha = facts.canonicalEnv.REVIEW_ROUTER_RELEASE_COMMIT_SHA;
   let rollout = createReleaseRollout({
     rolloutId: "disposable-rehearsal",
-    expectedCommitSha: "d".repeat(40),
+    expectedCommitSha: releaseCommitSha,
     execution,
     source: {
       renderResourceId: "dpg-disposable-source",
@@ -2289,7 +2715,7 @@ async function verifyProductionPathRehearsal(facts) {
       recoveryWitnessSha256: "c".repeat(64),
     },
     migrationTransition: createReleaseMigrationTransition({
-      commitSha: "d".repeat(40),
+      commitSha: releaseCommitSha,
       releaseImageDigest: facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST,
     }),
   });
@@ -2305,7 +2731,7 @@ async function verifyProductionPathRehearsal(facts) {
     workflowJobId: lifecycle === "role" ? "10" : "11",
     workflowJobName:
       lifecycle === "role" ? execution.roleJobName : execution.cutoverJobName,
-    commitSha: "d".repeat(40),
+    commitSha: releaseCommitSha,
     runnerName: `rr-${lifecycle}`,
     cleanupCanary: `rr-cleanup:disposable-rehearsal:rr-${lifecycle}`,
     renderJobId: job,
@@ -2317,7 +2743,7 @@ async function verifyProductionPathRehearsal(facts) {
     provenance: { kind: "image", deployId: "dep-disposable", imageSha: digest },
     imageAttestation: {
       subjectDigest: digest,
-      sourceCommitSha: "d".repeat(40),
+      sourceCommitSha: releaseCommitSha,
       statementSha256: digest,
       builderId: "disposable-rehearsal-builder",
     },
@@ -2633,34 +3059,60 @@ async function verifyProductionPathRehearsal(facts) {
   };
   let evidence;
   let legacyReconciliation;
+  let activationCatalogMigrationCandidate;
   const sourceLegacyAmbiguity = facts.sourceLegacyAmbiguity;
   const runReleaseMigrationPort = async (_target, transition, permit) => {
+    const migrationEnv = {
+      ...facts.canonicalEnv,
+      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+      REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_SYSTEM_IDENTIFIER:
+        permit.targetSystemIdentifier,
+      REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_RECOVERY_WITNESS_SHA256:
+        permit.targetRecoveryWitnessSha256,
+      REVIEW_ROUTER_MIGRATION_PERMIT_TRANSITION_SHA256: permit.transitionSha256,
+      REVIEW_ROUTER_MIGRATION_PERMIT_PREVIOUS_RECEIPT_SHA256:
+        permit.expectedPreviousReceiptSha256,
+      REVIEW_ROUTER_MIGRATION_PERMIT_EPOCH: String(permit.epoch),
+      REVIEW_ROUTER_MIGRATION_PERMIT_NONCE: permit.nonce,
+      REVIEW_ROUTER_MIGRATION_PERMIT_SOURCE_LEGACY_AMBIGUITY_BASE64URL:
+        Buffer.from(JSON.stringify(permit.sourceLegacyAmbiguity)).toString(
+          "base64url",
+        ),
+      REVIEW_ROUTER_MIGRATION_PERMIT_ELIGIBILITY_CUTOFF:
+        permit.eligibilityCutoff,
+    };
+    process.stderr.write("rehearsal_migration_substep_started:configuration\n");
+    const migrationConfiguration =
+      resolveReleaseMigrationConfiguration(migrationEnv);
+    process.stderr.write(
+      "rehearsal_migration_substep_completed:configuration\n",
+    );
+    process.stderr.write("rehearsal_migration_substep_started:permit\n");
+    releaseMigrationPermitFromEnv(migrationEnv);
+    process.stderr.write("rehearsal_migration_substep_completed:permit\n");
     process.stderr.write(
       "rehearsal_migration_substep_started:canonical_migration\n",
     );
     const migration = executeCanonicalReleaseMigration(
-      {
-        ...facts.canonicalEnv,
-        REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
-        REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_SYSTEM_IDENTIFIER:
-          permit.targetSystemIdentifier,
-        REVIEW_ROUTER_MIGRATION_PERMIT_TARGET_RECOVERY_WITNESS_SHA256:
-          permit.targetRecoveryWitnessSha256,
-        REVIEW_ROUTER_MIGRATION_PERMIT_TRANSITION_SHA256:
-          permit.transitionSha256,
-        REVIEW_ROUTER_MIGRATION_PERMIT_PREVIOUS_RECEIPT_SHA256:
-          permit.expectedPreviousReceiptSha256,
-        REVIEW_ROUTER_MIGRATION_PERMIT_EPOCH: String(permit.epoch),
-        REVIEW_ROUTER_MIGRATION_PERMIT_NONCE: permit.nonce,
-        REVIEW_ROUTER_MIGRATION_PERMIT_SOURCE_LEGACY_AMBIGUITY_BASE64URL:
-          Buffer.from(JSON.stringify(permit.sourceLegacyAmbiguity)).toString(
-            "base64url",
-          ),
-        REVIEW_ROUTER_MIGRATION_PERMIT_ELIGIBILITY_CUTOFF:
-          permit.eligibilityCutoff,
-      },
+      migrationEnv,
       canonicalRun,
     );
+    if (migration.captureOnlyStatus === "catalog_candidate_ready") {
+      const candidate = migration.candidate;
+      if (
+        !facts.captureOnly ||
+        !candidate ||
+        candidate.commitSha !== facts.captureOnly.auditedHead ||
+        candidate.databaseIdentity !==
+          migrationConfiguration.databaseIdentity ||
+        candidate.manifestIdentity !==
+          canonicalReleaseMigrationArtifact.postManifestIdentity ||
+        !/^sha256:[a-f0-9]{64}$/u.test(candidate.projectionSha256 ?? "")
+      )
+        throw new Error("activation_catalog_policy_capture_mode_invalid");
+      activationCatalogMigrationCandidate = candidate;
+      throw new Error("activation_catalog_policy_capture_ready");
+    }
     process.stderr.write(
       "rehearsal_migration_substep_completed:canonical_migration\n",
     );
@@ -2980,12 +3432,44 @@ COMMIT;
         // before roleProvisioningSql runs, then prove its transactional
         // self-demotion completed before any release migration or permit work.
         facts.assertCanonicalBootstrapPrivileged();
+        // Seed an unrelated WITH GRANT OPTION root and a delegated child on the
+        // restored routines. Canonical provisioning must remove both edges.
+        facts.sql(
+          facts.targetContainer,
+          disposableProviderScopeConcurrencyAdversarialAclSql(),
+        );
         const result = executeCanonicalRoleBootstrap(
           facts.canonicalEnv,
           canonicalRun,
         );
         facts.assertCanonicalBootstrapDemoted();
         facts.assertCanonicalPgcryptoAcl();
+        facts.sql(
+          facts.targetContainer,
+          assertDisposableProviderScopeConcurrencyAuthoritySql(),
+        );
+        canonicalRun(
+          "exercise_provider_scope_concurrency_authority",
+          "psql",
+          [
+            facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
+            "--no-psqlrc",
+            "--quiet",
+          ],
+          {
+            env: {
+              DATABASE_URL:
+                facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
+            },
+            input: disposableProviderScopeConcurrencyExerciseSql(),
+          },
+        );
+        // The four calls exercise activation and rollback management together
+        // but must leave the restored target at its pre-exercise state.
+        facts.sql(
+          facts.targetContainer,
+          assertDisposableProviderScopeConcurrencyAuthoritySql(),
+        );
         await assertTargetActivationReadiness("post_bootstrap", true);
         return observed(RolloutStep.BootstrapTargetRoles, result);
       },
@@ -3402,9 +3886,8 @@ COMMIT;
       process.stderr.write(`rehearsal_stage_completed:${safeName}\n`);
       return result;
     } catch (error) {
-      const safeError = safeRehearsalStageErrorCode(error);
       process.stderr.write(
-        `rehearsal_stage_failed:${safeName}:${safeError ?? redactedErrorChain(error)}\n`,
+        `rehearsal_stage_failed:${safeName}:${safeRehearsalStageErrorDiagnostic(safeName, error)}\n`,
       );
       throw error;
     } finally {
@@ -3453,6 +3936,7 @@ COMMIT;
   ({ rollout } = await runStage("provision_cutover_runner", () =>
     useCases.provisionCutoverRunner(rollout),
   ));
+  const captureIdentity = facts.captureOnly?.disposableDatabaseIdentity;
   const postMigration = await runRehearsalReleaseMigration({
     captureOnly: facts.captureOnly,
     rollout,
@@ -3464,21 +3948,15 @@ COMMIT;
         );
       return useCases.runReleaseMigration(rollout, sourceLegacyAmbiguity);
     },
-    captureCandidate: () => {
-      const identity = facts.captureOnly.disposableDatabaseIdentity;
+    prepareCapture: () => {
       assertDisposableCaptureTarget({
         createdContainers: facts.createdContainers,
         sourceContainer: facts.sourceContainer,
         targetContainer: facts.targetContainer,
       });
       const attestationNonce = rawSha256(
-        `${identity}:${facts.targetSystemIdentifier}:${facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256}`,
+        `${captureIdentity}:${facts.targetSystemIdentifier}:${facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256}`,
       );
-      process.stderr.write("rehearsal_capture_substep_started:cleanup\n");
-      cleanupCaptureOnlyRehearsalFixtures({
-        executeSql: (statement) => facts.sql(facts.targetContainer, statement),
-      });
-      process.stderr.write("rehearsal_capture_substep_completed:cleanup\n");
       process.stderr.write("rehearsal_capture_substep_started:attestation\n");
       canonicalRun(
         "mark_disposable_activation_catalog_database",
@@ -3509,7 +3987,7 @@ BEGIN
   END IF;
   binding := jsonb_set(binding,'{disposableCaptureAttestation}',jsonb_build_object(
     'kind','reviewrouter-disposable-database-attestation-v1',
-    'identity','${identity}',
+    'identity','${captureIdentity}',
     'systemIdentifier',binding->>'systemIdentifier',
     'databaseOid',(SELECT oid::text FROM pg_database WHERE datname=current_database()),
     'recoveryWitnessSha256',binding->>'recoveryWitnessSha256',
@@ -3521,6 +3999,13 @@ $attest_disposable_capture_database$;\n`,
         },
       );
       process.stderr.write("rehearsal_capture_substep_completed:attestation\n");
+    },
+    captureCandidate: () => {
+      process.stderr.write("rehearsal_capture_substep_started:cleanup\n");
+      cleanupCaptureOnlyRehearsalFixtures({
+        executeSql: (statement) => facts.sql(facts.targetContainer, statement),
+      });
+      process.stderr.write("rehearsal_capture_substep_completed:cleanup\n");
       process.stderr.write("rehearsal_capture_substep_started:projection\n");
       const stdout = canonicalRun(
         "capture_activation_catalog_policy_candidate",
@@ -3538,7 +4023,7 @@ $attest_disposable_capture_database$;\n`,
           },
           input: canonicalActivationCatalogPolicyCandidateSql(
             disposableSqlConfiguration(),
-            identity,
+            captureIdentity,
           ),
         },
       );
@@ -3547,15 +4032,31 @@ $attest_disposable_capture_database$;\n`,
       const candidate =
         parsePrivatePg17ActivationCatalogPolicyCandidate(stdout);
       process.stderr.write("rehearsal_capture_substep_completed:validation\n");
-      return candidate;
+      process.stderr.write(
+        `activation_catalog_policy_observed_catalog_digest:${candidate.liveCatalogDigest}\n`,
+      );
+      const migrationCandidate = activationCatalogMigrationCandidate;
+      return createActivationCatalogCaptureCheckpoint({
+        artifact: candidate,
+        candidate: migrationCandidate,
+        configuredDatabaseIdentity: resolveReleaseMigrationConfiguration(
+          facts.canonicalEnv,
+        ).databaseIdentity,
+        disposableIdentity: captureIdentity,
+        systemIdentifier: facts.targetSystemIdentifier,
+        recoveryWitnessSha256:
+          facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256,
+        captureBaseCommit: facts.captureOnly?.captureBaseCommit,
+        auditedHead: facts.captureOnly?.auditedHead,
+      });
     },
     stageTargetServices: (migratedRollout) =>
       runStage("stage_target_services", () =>
         useCases.stageTargetServices(migratedRollout),
       ),
   });
-  await assertTargetActivationReadiness("post_migration", true);
   if (postMigration.mode === "capture-only") return postMigration.candidate;
+  await assertTargetActivationReadiness("post_migration", true);
   rollout = postMigration.rollout;
   rollout = await runStage("activate_target_generation", () =>
     useCases.activateTargetGeneration(rollout, cutoverRunner.workflowJobId),

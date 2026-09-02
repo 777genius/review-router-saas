@@ -140,14 +140,17 @@ kinds make projection fail closed. The built-in languages and tablespaces are
 accepted only in their immutable default shape. No catalog-local OID is admitted
 to the artifact.
 
-The promoted trust root is generated from the independently reviewed v29
-candidate. Immutable capture, image, phase-digest, audited-HEAD, and final-review
-evidence is recorded in the adjacent
-`activation-catalog-policy-provenance.json`. The immutable review report is
-stored under `docs/release-evidence/` and its byte SHA-256 is bound by provenance
-v4. The candidate's captured live-catalog digest is bound to the canonical
-release-migration receipt. These files are the machine-readable source for the
-precise ready state; stale capture blockers are not retained after promotion.
+The raw promotion trust root starts in `pending` and blocks promotion until two
+fresh authenticated captures and their independent semantic review are bound.
+The ready trust root records both capture locators and hashes, pinned images,
+phase digests, audited commit/tree, generated-source bindings, the immutable
+review report, and reviewer runtime evidence. The report must assess the exact
+raw ACL, ownership, role-transition, normalization, and policy diff; a generated
+locator-only `GO` is not evidence. The captures' live-catalog digest must match
+the canonical release-migration receipt. The checked-in trust root and files
+under `docs/release-evidence/` are the machine-readable source for the precise
+ready state. Never reuse capture evidence after migration or projection bytes
+change.
 
 The command has no permit-installation or activation capability. It reads the
 preactivation candidate only after a capture-only transaction drops the exact
@@ -158,19 +161,24 @@ and duplicate normalized grant identities. It then reads the
 preactivation candidate, applies the exact production runtime grants, reads the
 activated candidate, and ends with `ROLLBACK`; it never substitutes one phase
 for the other. Review the complete diff, verify that no provider identity is
-present, then promote only the reviewed bytes with the exact operator opt-in:
+present, then verify only the two reviewed raw capture files with the exact
+operator opt-in:
 
 ```bash
-REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v29 \
-  pnpm release-rollout:promote-activation-catalog-policy \
-  --candidate /secure/evidence/rr-activation-catalog-candidate-v29.json --write
+pnpm release-rollout:promote-activation-catalog-policy \
+  --capture-1 /verified-artifacts/activation-catalog-policy-candidate-1.json \
+  --capture-2 /verified-artifacts/activation-catalog-policy-candidate-2.json \
+  --raw-opt-in promote-reviewed-activation-catalog-raw-v1
 ```
 
-Omit `--write` to verify that the checked-in generated module is byte-exact.
-The command accepts no runtime policy path, verifies the reviewed whole-file
-size and SHA-256 before parsing, validates normalization, checks both reviewed
+This repository-owned no-write command is the clean-checkout verification gate.
+Append `--write` only for the separately authorized mechanical promotion. The
+command accepts no runtime policy path, verifies both reviewed whole-file sizes
+and SHA-256 values before parsing, validates normalization, checks both reviewed
 phase digests and the canonical artifact digest, and writes only the fixed
-source-owned artifact path. Update both compact deployment digest
+source-owned artifact path. While the trust root is `pending`, both verification
+and `--write` fail closed before reading caller-provided captures. Update both
+compact deployment digest
 authorizations and the disposable rehearsal authorization as part of the same
 release change. Promotion does not by itself authorize deployment; deployment
 still requires the separately approved release process. Never run candidate
@@ -724,7 +732,7 @@ REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY="$REPOSITORY" \
 The release artifact fixes one `ReleaseMigrationTransitionV1` to the exact
 release commit, immutable image digest, ordered migration SQL checksums,
 migration bundle digest, exact pre-manifest, every exact crash-resume root,
-the exact 73-migration post-manifest, and the V72 catalog postcondition. The
+the exact 92-entry post-manifest through `000089`, and its catalog postcondition. The
 control plane derives this transition from its trusted release identity; a
 runner cannot submit or override an expected manifest.
 
@@ -733,7 +741,7 @@ generation and returns one idempotent permit while the target is exactly at the
 pre-manifest. After a crash, `begin` reads the durable `migrating` phase without
 requiring the target to still be pre-migration, and the migration adapter
 verifies the permit, bundle, exact transition-owned resume root,
-post-manifest, and V72 objects while holding the migration lock; `complete`
+post-manifest, and the objects through `000089` while holding the migration lock; `complete`
 freshly attests the exact post-manifest and atomically stores the canonical
 `run_release_migration` receipt. A retry returns the same permit or canonical
 receipt. A SQL failure quarantines the target forward-only. Never edit the

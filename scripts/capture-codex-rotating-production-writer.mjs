@@ -13,6 +13,7 @@ import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs"
 import {
   codexRotatingCatalogTables,
   codexRotatingCatalogColumns,
+  codexRotatingCatalogCheckNames,
   codexRotatingPrimaryKeys,
   codexRotatingCatalogForeignKeyNames,
   codexRotatingDatabaseRoles,
@@ -54,6 +55,18 @@ const migrationFiles = [
     "000073_codex_oauth_active_namespace_refresh",
     "packages/platform/db/prisma/migrations/000073_codex_oauth_active_namespace_refresh/migration.sql",
   ],
+  [
+    "000087_codex_oauth_v4_v5_workflow_reattestation",
+    "packages/platform/db/prisma/migrations/000087_codex_oauth_v4_v5_workflow_reattestation/migration.sql",
+  ],
+  [
+    "000088_codex_oauth_reattestation_mutation_owner_fence",
+    "packages/platform/db/prisma/migrations/000088_codex_oauth_reattestation_mutation_owner_fence/migration.sql",
+  ],
+  [
+    "000089_codex_oauth_v4_v5_staged_compatibility",
+    "packages/platform/db/prisma/migrations/000089_codex_oauth_v4_v5_staged_compatibility/migration.sql",
+  ],
 ];
 assertExactMigrationInventory(
   readdirSync(resolve(checkoutRoot, "packages/platform/db/prisma/migrations"))
@@ -82,6 +95,7 @@ const catalogTriggerTables = [
   ...codexRotatingCatalogTables,
 ];
 const releaseMigrationRole = codexRotatingDatabaseRoles.releaseMigration;
+const releaseSchemaOwnerRole = codexRotatingDatabaseRoles.schemaOwner;
 const roleBootstrapRole = "reviewrouter_role_bootstrap";
 const runtimeDatabaseRoles = codexRotatingDatabaseRoles.runtime;
 const allDatabaseRoles = [
@@ -327,14 +341,14 @@ SELECT jsonb_build_object(
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = current_schema()
         AND c.relname IN (${sqlLiterals([...codexRotatingCatalogTables, "_prisma_migrations"])})
-        AND c.relowner <> (SELECT oid FROM pg_roles WHERE rolname = '${releaseMigrationRole}')
+        AND c.relowner <> (SELECT oid FROM pg_roles WHERE rolname = '${releaseSchemaOwnerRole}')
     ), '[]'::jsonb),
     'nonReleaseOwnedFunctions', coalesce((
       SELECT jsonb_agg(p.proname ORDER BY p.proname)
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
       WHERE n.nspname = current_schema()
         AND p.proname LIKE 'codex_oauth_%'
-        AND p.proowner <> (SELECT oid FROM pg_roles WHERE rolname = '${releaseMigrationRole}')
+        AND p.proowner <> (SELECT oid FROM pg_roles WHERE rolname = '${releaseSchemaOwnerRole}')
     ), '[]'::jsonb)
   ),
   'unsafeWork', jsonb_build_object(
@@ -373,6 +387,9 @@ SELECT jsonb_build_object(
       ,'000065_codex_oauth_authority_acl_hardening'
       ,'000066_codex_oauth_rotating_cascade_authority'
       ,'000073_codex_oauth_active_namespace_refresh'
+      ,'000087_codex_oauth_v4_v5_workflow_reattestation'
+      ,'000088_codex_oauth_reattestation_mutation_owner_fence'
+      ,'000089_codex_oauth_v4_v5_staged_compatibility'
     )
   ), '[]'::jsonb),
   'catalog', jsonb_build_object(
@@ -383,6 +400,7 @@ SELECT jsonb_build_object(
         'persistence', c.relpersistence,
         'rowSecurity', c.relrowsecurity,
         'forceRowSecurity', c.relforcerowsecurity
+        ,'owner', pg_get_userbyid(c.relowner)
       ) ORDER BY c.relname)
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = current_schema()
@@ -482,6 +500,17 @@ SELECT jsonb_build_object(
         'function', p.proname,
         'type', t.tgtype,
         'enabled', t.tgenabled
+        ,'definition', pg_get_triggerdef(t.oid, true),
+        'updateColumns', coalesce((
+          SELECT jsonb_agg(a.attname ORDER BY update_column.ordinality)
+          FROM unnest(t.tgattr::smallint[]) WITH ORDINALITY AS update_column(attnum, ordinality)
+          JOIN pg_attribute a ON a.attrelid = t.tgrelid AND a.attnum = update_column.attnum
+        ), '[]'::jsonb),
+        'whenExpression', CASE WHEN t.tgqual IS NULL THEN NULL ELSE pg_get_expr(t.tgqual, t.tgrelid) END,
+        'arguments', encode(t.tgargs, 'escape'),
+        'constraint', t.tgconstraint <> 0::oid,
+        'deferrable', t.tgdeferrable,
+        'initiallyDeferred', t.tginitdeferred
       ) ORDER BY t.tgname)
       FROM pg_trigger t
       JOIN pg_class c ON c.oid = t.tgrelid
@@ -496,6 +525,7 @@ SELECT jsonb_build_object(
     'functions', coalesce((
       SELECT jsonb_agg(jsonb_build_object(
         'name', p.proname,
+        'identityArguments', pg_get_function_identity_arguments(p.oid),
         'owner', owner.rolname,
         'bodySha256', encode(sha256(convert_to(btrim(
           replace(replace(p.prosrc, E'\r\n', E'\n'), E'\r', E'\n'),
@@ -552,35 +582,8 @@ SELECT jsonb_build_object(
       JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE con.contype = 'c'
         AND n.nspname = current_schema()
-        AND c.relname IN ('CodexOAuthDatabaseAuthorityKey','CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent','CodexOAuthSetupRecoveryRequest','CodexOAuthSetupPayloadClaim','CodexOAuthSecretNamespace','CodexOAuthSetupDispatchAttempt')
-        AND con.conname IN (
-          'CodexOAuthDatabaseAuthorityKey_singleton_check',
-          'CodexOAuthProviderInstance_mutation_fence_check',
-          'CodexOAuthLease_pullRequestNumber_check',
-          'CodexOAuthSetupManifest_epoch_check',
-          'CodexOAuthLease_epoch_check',
-          'CodexOAuthWritebackIntent_epoch_check'
-          ,'CodexOAuthSetupRecoveryRequest_epoch_check'
-          ,'CodexOAuthSetupRecoveryRequest_contract_check'
-          ,'CodexOAuthSetupRecoveryRequest_database_recovery_witness_check'
-          ,'CodexOAuthSetupManifest_payload_claim_complete_check'
-          ,'CodexOAuthSetupManifest_recovery_expiry_check'
-          ,'CodexOAuthSetupManifest_database_recovery_witness_check'
-          ,'CodexOAuthSetupPayloadClaim_payload_check'
-          ,'CodexOAuthSecretNamespace_lifecycle_check'
-          ,'CodexOAuthSecretNamespace_name_check'
-          ,'CodexOAuthSecretNamespace_recovery_witness_check'
-          ,'CodexOAuthSetupDispatchAttempt_lifecycle_check'
-          ,'CodexOAuthProviderInstance_active_namespace_pair_check'
-          ,'CodexOAuthLease_secret_namespace_pair_check'
-          ,'CodexOAuthWritebackIntent_versioned_dispatch_check'
-          ,'CodexOAuthWritebackIntent_executor_lease_check'
-          ,'CodexOAuthWritebackIntent_provider_response_check'
-          ,'CodexOAuthWritebackIntent_database_incarnation_check'
-          ,'CodexOAuthWritebackIntent_database_recovery_witness_check'
-          ,'CodexOAuthWritebackIntent_account_identity_check'
-          ,'CodexOAuthWritebackIntent_recovery_resolution_check'
-        )
+        AND c.relname IN (${sqlLiterals(codexRotatingCatalogTables)})
+        AND con.conname IN (${sqlLiterals(codexRotatingCatalogCheckNames)})
     ), '[]'::jsonb),
     'indexes', coalesce((
       SELECT jsonb_agg(jsonb_build_object(
@@ -679,6 +682,7 @@ SELECT jsonb_build_object(
       'functions', coalesce((
         SELECT jsonb_agg(jsonb_build_object(
           'name', p.proname,
+          'identityArguments', pg_get_function_identity_arguments(p.oid),
           'grantee', CASE WHEN acl.grantee = 0 THEN 'PUBLIC' ELSE grantee.rolname END,
           'grantor', grantor.rolname,
           'privilege', acl.privilege_type,

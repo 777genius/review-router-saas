@@ -1,6 +1,6 @@
 export type Sha256Digest = `sha256:${string}`;
 
-export const supportedWorkflowSchemaVersions = [1, 2, 3, 4] as const;
+export const supportedWorkflowSchemaVersions = [1, 2, 3, 4, 5] as const;
 export type SupportedWorkflowSchemaVersion =
   (typeof supportedWorkflowSchemaVersions)[number];
 

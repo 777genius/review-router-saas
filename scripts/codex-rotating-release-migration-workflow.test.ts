@@ -1183,7 +1183,7 @@ false
     expect(registerRelease).toContain("current-deployment-result.json");
   });
 
-  it("provisions custody through migration 000086 without exposing credentials", () => {
+  it("provisions custody through migration 000089 without exposing credentials", () => {
     expect(workflow).toContain(
       'username: "reviewrouter_comment_token_custody"',
     );
@@ -1202,8 +1202,8 @@ false
     );
     expect(workflow).toContain("canonicalPrismaMigrationCatalog");
     expect(canonicalPrismaMigrationCatalog).toEqual({
-      appliedMigrationCount: 89,
-      latestMigration: "000086_comment_token_custody_r18_remediation",
+      appliedMigrationCount: 92,
+      latestMigration: "000089_codex_oauth_v4_v5_staged_compatibility",
     });
     expect(workflow).toContain(".runtimeRoleCount == 5");
     expect(workflow).toContain(".custodyFunction == true");

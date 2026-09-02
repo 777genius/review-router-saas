@@ -1,11 +1,15 @@
-import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
+import { describe, expect, it } from "vitest";
 import {
+  activationCatalogArtifactPath,
+  activationCatalogRawPromotionTrustRoot,
   activationCatalogPromotionOptIn,
   activationCatalogPromotionProvenancePath,
+  assertActivationCatalogPolicyReviewedSourceBindings,
   assertArtifactCandidate,
   assertActivationCatalogPolicyIndependentReviewEvidence,
   assertReviewedActivationCatalogPromotionProvenance,
+  canonicalActivationCatalogArtifactSourceFromRawCapture,
   promotePrivatePg17ActivationCatalogPolicy,
   reviewedActivationCatalogCandidate,
 } from "./promote-private-pg17-activation-catalog-policy.mjs";
@@ -13,10 +17,27 @@ import canonicalActivationCatalogPolicyArtifact from "../packages/features/relea
 import { assertActivationCatalogLiveDigestTransitionBinding } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
 
+const rawEvidenceOnlyBinding = {
+  canonicalDigests: {
+    preactivation:
+      "sha256:28c02276a3256329e9234bf7d7ecf7b2902651c51c6b0b35ba6a8d40582e2b0a",
+    activated:
+      "sha256:52aa57bd91c33b0e51a8ba0ff87b2ff4fbe22435f863804428bcb0ae2f3064ca",
+    artifact:
+      "sha256:3af42ff77b0d4168b3bb271f57d29387655064627ca74169557dbb79d9953959",
+  },
+  generatedArtifactSource: {
+    bytes: 2677061,
+    sha256: "0579802d4276c087fd1d9281f09b0159d70b9920907f0fc355604cdc4d0fb21f",
+  },
+};
+const rawReviewedLiveCatalogDigest =
+  "sha256:7ed3473cc71431dd2257a13d3c8fb048c4bb1adf3048064ff3117988251da644";
+
 describe("activation catalog policy promotion", () => {
   it("pins the exact reviewed v29 candidate and operator opt-in", () => {
     expect(activationCatalogPromotionOptIn).toBe(
-      "promote-reviewed-activation-catalog-v29",
+      "promote-reviewed-activation-catalog-v29-schema-v5-pr245",
     );
     expect(reviewedActivationCatalogCandidate).toEqual({
       sha256:
@@ -24,6 +45,10 @@ describe("activation catalog policy promotion", () => {
       bytes: 2_651_682,
       liveCatalogDigest:
         "sha256:6ecfc9b47b47a6351f72c6f9793df3f408b2b33a275158f5499b09c10a6c048d",
+      liveCatalogProjectionSourceSha256:
+        "39e855060bfc186c6fb92fe1cd5c72410f8f72802200da49d6c1fe45eb6ed5f4",
+      normalizationSourceSha256:
+        "7b23d64a1f2160398cdeb9194b0a3f3583e5566a1b20a0b2009caaf7ddbe0da1",
       preactivationCatalogPolicySha256:
         "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
       activatedCatalogPolicySha256:
@@ -33,13 +58,147 @@ describe("activation catalog policy promotion", () => {
     });
   });
 
-  it("requires the exact operator promotion opt-in before reading input", async () => {
+  it("keeps the legacy entrypoint available while raw promotion is pending", async () => {
+    const artifactBefore = await readFile(activationCatalogArtifactPath);
     await expect(
       promotePrivatePg17ActivationCatalogPolicy({
-        env: {},
-        argv: ["--candidate", "/does/not/exist"],
+        env: {
+          REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION:
+            activationCatalogPromotionOptIn,
+        },
+        argv: ["--candidate", "/does/not/exist", "--write"],
       }),
-    ).rejects.toThrow("activation_catalog_policy_promotion_opt_in_required");
+    ).rejects.toHaveProperty("code", "ENOENT");
+    expect(
+      (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
+    ).toBe(true);
+  });
+
+  it("loads the exact code-owned raw promotion mode", () => {
+    expect(activationCatalogRawPromotionTrustRoot).toEqual({
+      status: "pending",
+      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
+    });
+  });
+
+  it("preserves the later evidence-only raw-byte binding path", async () => {
+    const generated = canonicalActivationCatalogArtifactSourceFromRawCapture(
+      { policies: canonicalActivationCatalogPolicyArtifact.policies },
+      rawEvidenceOnlyBinding,
+    );
+
+    expect(
+      generated.equals(await readFile(activationCatalogArtifactPath)),
+    ).toBe(true);
+  });
+
+  it("fails closed for independently drifted raw artifact bindings", () => {
+    const evidence = rawEvidenceOnlyBinding;
+    const mismatch = `sha256:${"0".repeat(64)}`;
+    const driftedBindings = [
+      [
+        "canonicalDigests",
+        "preactivation",
+        mismatch,
+        "activation_catalog_policy_promotion_phase_digest_drift",
+      ],
+      [
+        "canonicalDigests",
+        "activated",
+        mismatch,
+        "activation_catalog_policy_promotion_phase_digest_drift",
+      ],
+      [
+        "canonicalDigests",
+        "artifact",
+        mismatch,
+        "activation_catalog_policy_promotion_artifact_drift",
+      ],
+      [
+        "generatedArtifactSource",
+        "bytes",
+        evidence.generatedArtifactSource.bytes + 1,
+        "activation_catalog_policy_generated_source_drift",
+      ],
+      [
+        "generatedArtifactSource",
+        "sha256",
+        "0".repeat(64),
+        "activation_catalog_policy_generated_source_drift",
+      ],
+    ] as const;
+
+    for (const [section, key, value, error] of driftedBindings) {
+      const driftedEvidence = structuredClone(evidence);
+      Object.assign(driftedEvidence[section], { [key]: value });
+      expect(
+        () =>
+          canonicalActivationCatalogArtifactSourceFromRawCapture(
+            { policies: canonicalActivationCatalogPolicyArtifact.policies },
+            driftedEvidence,
+          ),
+        `${section}.${key}`,
+      ).toThrow(error);
+    }
+  });
+
+  it("keeps live-digest promotion closed while raw review evidence is pending", () => {
+    expect(() =>
+      assertActivationCatalogLiveDigestTransitionBinding(
+        rawReviewedLiveCatalogDigest,
+        canonicalReleaseMigrationArtifact.postCatalogDigest,
+      ),
+    ).toThrow("activation_catalog_policy_live_digest_transition_drift");
+    expect(() =>
+      assertActivationCatalogLiveDigestTransitionBinding(
+        `sha256:${"0".repeat(64)}`,
+        canonicalReleaseMigrationArtifact.postCatalogDigest,
+      ),
+    ).toThrow("activation_catalog_policy_live_digest_transition_drift");
+  });
+
+  it("rejects caller-supplied raw authority at the CLI gate without writing", async () => {
+    const artifactBefore = await readFile(activationCatalogArtifactPath);
+    await expect(
+      promotePrivatePg17ActivationCatalogPolicy({
+        env: {
+          REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION:
+            "promote-authenticated-CALLER-FORGED-GO",
+        },
+        argv: [
+          "--capture-1",
+          "/does/not/exist-1",
+          "--capture-2",
+          "/does/not/exist-2",
+          "--authenticated-evidence",
+          "/caller/forged.json",
+          "--write",
+        ],
+      }),
+    ).rejects.toThrow("activation_catalog_policy_promotion_arguments_invalid");
+    expect(
+      (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
+    ).toBe(true);
+  });
+
+  it("uses the loaded code-owned raw root before reading captures", async () => {
+    const artifactBefore = await readFile(activationCatalogArtifactPath);
+    const attempt = promotePrivatePg17ActivationCatalogPolicy({
+      env: {},
+      argv: [
+        "--capture-1",
+        "/does/not/exist-1",
+        "--capture-2",
+        "/does/not/exist-2",
+        "--write",
+      ],
+    });
+    await expect(attempt).rejects.toThrow(
+      "activation_catalog_policy_raw_trust_root_pending",
+    );
+    expect(
+      (await readFile(activationCatalogArtifactPath)).equals(artifactBefore),
+    ).toBe(true);
   });
 
   it("requires an explicit candidate path under the exact opt-in", async () => {
@@ -52,20 +211,6 @@ describe("activation catalog policy promotion", () => {
         argv: [],
       }),
     ).rejects.toThrow("activation_catalog_policy_promotion_candidate_required");
-  });
-
-  it("refuses unreviewed candidate bytes", async () => {
-    await expect(
-      promotePrivatePg17ActivationCatalogPolicy({
-        env: {
-          REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION:
-            activationCatalogPromotionOptIn,
-        },
-        argv: ["--candidate", import.meta.filename],
-      }),
-    ).rejects.toThrow(
-      /activation_catalog_policy_promotion_candidate_(?:size|hash)_drift/u,
-    );
   });
 
   it.each([
@@ -105,19 +250,10 @@ describe("activation catalog policy promotion", () => {
     ).not.toThrow();
   });
 
-  it("fails closed when the candidate and migration transition digests diverge", () => {
-    expect(() =>
-      assertActivationCatalogLiveDigestTransitionBinding(
-        reviewedActivationCatalogCandidate.liveCatalogDigest,
-        canonicalReleaseMigrationArtifact.postCatalogDigest,
-      ),
-    ).not.toThrow();
-    expect(() =>
-      assertActivationCatalogLiveDigestTransitionBinding(
-        reviewedActivationCatalogCandidate.liveCatalogDigest,
-        `sha256:${"f".repeat(64)}`,
-      ),
-    ).toThrow("activation_catalog_policy_live_digest_transition_drift");
+  it("fails closed when reviewed projection source bindings drift", async () => {
+    await expect(
+      assertActivationCatalogPolicyReviewedSourceBindings(),
+    ).rejects.toThrow("activation_catalog_policy_reviewed_source_drift");
   });
 
   it("refuses promotion without exact independent GO evidence", () => {
@@ -129,10 +265,13 @@ describe("activation catalog policy promotion", () => {
     ).toThrow("activation_catalog_policy_promotion_provenance_invalid");
   });
 
-  it("verifies the immutable independent review and runtime evidence", async () => {
+  it("accepts the exact ready provenance and both materialized reviews", async () => {
     const provenance = JSON.parse(
       await readFile(activationCatalogPromotionProvenancePath, "utf8"),
     );
+    expect(() =>
+      assertReviewedActivationCatalogPromotionProvenance(provenance),
+    ).not.toThrow();
     await expect(
       assertActivationCatalogPolicyIndependentReviewEvidence(provenance),
     ).resolves.toBeUndefined();

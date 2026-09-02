@@ -131,6 +131,9 @@ export async function preleaseCodexRotatingOAuth(
         expectedWorkflowSchemaVersion: input.workflowSchemaVersion,
       },
     );
+  if (!verifiedWorkflow.attestation) {
+    throw new Error("workflow_source_attestation_missing");
+  }
   if (
     !isImmutableActionRef(verifiedWorkflow.binding.actionRef) ||
     verifiedWorkflow.binding.actionRef.split("@")[0]!.toLowerCase() !==
@@ -142,7 +145,6 @@ export async function preleaseCodexRotatingOAuth(
   if (binding.activeSecretNamespace) {
     if (
       !binding.activeWorkflowSource ||
-      !verifiedWorkflow.attestation ||
       !verifiedWorkflow.binding.activeSecretNamespace
     ) {
       throw new Error("workflow_source_attestation_missing");
@@ -218,6 +220,7 @@ export async function preleaseCodexRotatingOAuth(
     githubRunId: claims.run_id,
     githubRunAttempt: claims.run_attempt,
     ...(pullRequestNumber ? { pullRequestNumber } : {}),
+    verifiedWorkflowAttestation: verifiedWorkflow.attestation,
     newWorkAdmissionBarrier: {
       assertAdmitted: assertNewWorkAdmitted,
     },

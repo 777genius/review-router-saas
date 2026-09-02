@@ -1,241 +1,272 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { sha256Canonical } from "./canonical-json";
+import { reviewedActivationCatalogPromotionExpectation as expected } from "./activation-catalog-policy-promotion-expectation";
 import {
   activationCatalogPolicyTrustRootReadinessFromProvenance,
+  assertActivationCatalogRawCaptureEvidence,
   assertActivationCatalogPolicyPromotionProvenance,
-  type ActivationCatalogPolicyPromotionExpectation,
 } from "./activation-catalog-policy-provenance-contract";
 
-const expected: ActivationCatalogPolicyPromotionExpectation = {
-  readinessReason: "reviewed-v21",
-  captureBaseCommit: "a".repeat(40),
-  auditedHead: "2".repeat(40),
-  captureArtifactBytes: 47,
-  captureArtifactSha256: "4".repeat(64),
-  capturePayloadOffsetBytes: 5,
-  capturePrefixSha256: "5".repeat(64),
-  reviewArtifactSha256: "3".repeat(64),
-  reviewerEvidenceSha256: "6".repeat(64),
-  reviewerRunId: "rr-policy-review-v21",
-  reviewDecisionId: "rr-policy-review-v21:go",
-  candidateBytes: 42,
-  candidateSha256: "b".repeat(64),
-  liveCatalogDigest: `sha256:${"7".repeat(64)}`,
-  sourcePg16Image: `postgres:16.13-bookworm@sha256:${"c".repeat(64)}`,
-  targetPg17Image: `postgres:17.5-bookworm@sha256:${"d".repeat(64)}`,
-  preactivationCatalogPolicySha256: `sha256:${"e".repeat(64)}`,
-  activatedCatalogPolicySha256: `sha256:${"f".repeat(64)}`,
-  artifactCanonicalSha256: `sha256:${"1".repeat(64)}`,
+const ready = (): Record<string, any> =>
+  JSON.parse(
+    readFileSync(
+      new URL("activation-catalog-policy-provenance.json", import.meta.url),
+      "utf8",
+    ),
+  );
+
+const blocked = {
+  kind: "reviewrouter-activation-catalog-policy-promotion-provenance",
+  version: 5,
+  status: "blocked",
+  readinessReason:
+    "independent-review-required-after-catalog-projection-change",
+  invalidatedReview: {
+    reviewDecisionId: "RR-V29-CODEX-GO-7459B6D4-B138EB3E-20260830",
+    auditedHead: "7459b6d4fd8aab5c377547246292faf3376d98cb",
+    invalidatedByCommit: "54520f050c61e88356ea0376964ac25a38700bc8",
+  },
+  pendingReviewSourceBindings: {
+    liveCatalogProjectionSourceSha256:
+      expected.liveCatalogProjectionSourceSha256,
+    normalizationSourceSha256: expected.normalizationSourceSha256,
+  },
 };
 
-const ready = () => ({
-  kind: "reviewrouter-activation-catalog-policy-promotion-provenance",
-  version: 4,
-  status: "ready",
-  readinessReason: expected.readinessReason,
-  promotedAt: "2026-08-15T10:31:00.000Z",
-  captureBaseCommit: expected.captureBaseCommit,
-  candidate: {
-    bytes: expected.candidateBytes,
-    sha256: expected.candidateSha256,
-    liveCatalogDigest: expected.liveCatalogDigest,
-    captures: [
-      {
-        label: "capture-a",
-        artifactBytes: expected.captureArtifactBytes,
-        artifactSha256: expected.captureArtifactSha256,
-        payloadOffsetBytes: expected.capturePayloadOffsetBytes,
-        prefixSha256: expected.capturePrefixSha256,
-        payloadBytes: expected.candidateBytes,
-        payloadSha256: expected.candidateSha256,
-      },
-      {
-        label: "capture-b",
-        artifactBytes: expected.captureArtifactBytes,
-        artifactSha256: expected.captureArtifactSha256,
-        payloadOffsetBytes: expected.capturePayloadOffsetBytes,
-        prefixSha256: expected.capturePrefixSha256,
-        payloadBytes: expected.candidateBytes,
-        payloadSha256: expected.candidateSha256,
-      },
-    ],
-  },
-  postgresImages: {
-    sourcePg16: expected.sourcePg16Image,
-    targetPg17: expected.targetPg17Image,
-  },
-  canonicalDigests: {
-    preactivation: expected.preactivationCatalogPolicySha256,
-    activated: expected.activatedCatalogPolicySha256,
-    artifact: expected.artifactCanonicalSha256,
-    liveCatalogDigest: expected.liveCatalogDigest,
-  },
-  independentReview: {
-    result: "GO",
-    reviewerRunId: expected.reviewerRunId,
-    reviewDecisionId: expected.reviewDecisionId,
-    reviewedAt: "2026-08-15T10:30:00.000Z",
-    baseCommit: expected.captureBaseCommit,
-    auditedHead: expected.auditedHead,
-    reviewArtifactSha256: expected.reviewArtifactSha256,
-    reviewerEvidenceSha256: expected.reviewerEvidenceSha256,
-    candidateBytes: expected.candidateBytes,
-    candidateSha256: expected.candidateSha256,
-    postgresImages: {
-      sourcePg16: expected.sourcePg16Image,
-      targetPg17: expected.targetPg17Image,
-    },
-    canonicalDigests: {
-      preactivation: expected.preactivationCatalogPolicySha256,
-      activated: expected.activatedCatalogPolicySha256,
-      artifact: expected.artifactCanonicalSha256,
-      liveCatalogDigest: expected.liveCatalogDigest,
-    },
-  },
-});
+const allPaths = (
+  value: unknown,
+  prefix: readonly string[] = [],
+): string[][] => {
+  if (Array.isArray(value))
+    return value.flatMap((nested, index) => [
+      [...prefix, String(index)],
+      ...allPaths(nested, [...prefix, String(index)]),
+    ]);
+  if (value === null || typeof value !== "object") return [Array.from(prefix)];
+  return Object.entries(value).flatMap(([key, nested]) => [
+    [...prefix, key],
+    ...allPaths(nested, [...prefix, key]),
+  ]);
+};
 
-describe("activation catalog policy promotion provenance", () => {
-  it("accepts two byte-identical captures and an exact independent GO", () => {
+const getParent = (value: Record<string, any>, path: readonly string[]) => {
+  let parent: any = value;
+  for (const key of path.slice(0, -1)) parent = parent[key];
+  return { parent, key: path.at(-1)! };
+};
+
+const changed = (value: unknown): unknown => {
+  if (typeof value === "string") return `${value}-modified`;
+  if (typeof value === "number") return value + 1;
+  if (Array.isArray(value)) return [...value, "modified"];
+  if (value !== null && typeof value === "object") return null;
+  return "modified";
+};
+
+const provenancePaths = allPaths(ready()).filter((path) => path.length > 0);
+
+describe("activation catalog policy promotion provenance v5", () => {
+  it("accepts the exact evidence-contract-v2 ready aggregate", () => {
     expect(
       activationCatalogPolicyTrustRootReadinessFromProvenance(
         ready(),
         expected,
       ),
-    ).toEqual({ status: "ready", reason: "reviewed-v21" });
+    ).toEqual({ status: "ready", reason: expected.readinessReason });
     expect(() =>
       assertActivationCatalogPolicyPromotionProvenance(ready(), expected),
     ).not.toThrow();
   });
 
-  it.each([
-    [
-      "legacy schema v3",
-      (value: ReturnType<typeof ready>) => {
-        value.version = 3;
-      },
-    ],
-    [
-      "candidate live catalog digest drift",
-      (value: ReturnType<typeof ready>) => {
-        value.candidate.liveCatalogDigest = `sha256:${"0".repeat(64)}`;
-      },
-    ],
-    [
-      "malformed candidate live catalog digest",
-      (value: ReturnType<typeof ready>) => {
-        value.candidate.liveCatalogDigest = "not-a-sha256";
-      },
-    ],
-    [
-      "top-level live catalog digest drift",
-      (value: ReturnType<typeof ready>) => {
-        value.canonicalDigests.liveCatalogDigest = `sha256:${"0".repeat(64)}`;
-      },
-    ],
-    [
-      "independent-review live catalog digest drift",
-      (value: ReturnType<typeof ready>) => {
-        value.independentReview.canonicalDigests.liveCatalogDigest = `sha256:${"0".repeat(64)}`;
-      },
-    ],
-    [
-      "malformed top-level live catalog digest",
-      (value: ReturnType<typeof ready>) => {
-        value.canonicalDigests.liveCatalogDigest = `sha256:${"A".repeat(64)}`;
-      },
-    ],
-    [
-      "malformed independent-review canonical digest",
-      (value: ReturnType<typeof ready>) => {
-        value.independentReview.canonicalDigests.artifact = "not-a-sha256";
-      },
-    ],
-    [
-      "audited head drift",
-      (value: ReturnType<typeof ready>) => {
-        value.independentReview.auditedHead = "0".repeat(40);
-      },
-    ],
-    [
-      "review artifact digest drift",
-      (value: ReturnType<typeof ready>) => {
-        value.independentReview.reviewArtifactSha256 = "0".repeat(64);
-      },
-    ],
-    [
-      "reviewer runtime evidence digest drift",
-      (value: ReturnType<typeof ready>) => {
-        value.independentReview.reviewerEvidenceSha256 = "0".repeat(64);
-      },
-    ],
-    [
-      "review decision identity drift",
-      (value: ReturnType<typeof ready>) => {
-        value.independentReview.reviewDecisionId = "rr-policy-review-v21:no-go";
-      },
-    ],
-    [
-      "NO-GO review",
-      (value: ReturnType<typeof ready>) => {
-        value.independentReview.result = "NO-GO";
-      },
-    ],
-    [
-      "candidate drift",
-      (value: ReturnType<typeof ready>) => {
-        value.independentReview.candidateSha256 = "0".repeat(64);
-      },
-    ],
-    [
-      "image drift",
-      (value: ReturnType<typeof ready>) => {
-        value.independentReview.postgresImages.targetPg17 = `postgres:17.5-bookworm@sha256:${"0".repeat(64)}`;
-      },
-    ],
-    [
-      "duplicate capture",
-      (value: ReturnType<typeof ready>) => {
-        value.candidate.captures[1]!.label = value.candidate.captures[0]!.label;
-      },
-    ],
-    [
-      "raw capture artifact digest drift",
-      (value: ReturnType<typeof ready>) => {
-        value.candidate.captures[0]!.artifactSha256 = "0".repeat(64);
-      },
-    ],
-    [
-      "capture payload boundary drift",
-      (value: ReturnType<typeof ready>) => {
-        value.candidate.captures[0]!.payloadOffsetBytes += 1;
-      },
-    ],
-    [
-      "review after promotion",
-      (value: ReturnType<typeof ready>) => {
-        value.independentReview.reviewedAt = "2026-08-15T10:32:00.000Z";
-      },
-    ],
-    [
-      "promotion timestamp without time",
-      (value: ReturnType<typeof ready>) => {
-        value.promotedAt = "2026-08-15";
-      },
-    ],
-    [
-      "invalid calendar timestamp",
-      (value: ReturnType<typeof ready>) => {
-        value.promotedAt = "2026-99-99T10:31:00.000Z";
-      },
-    ],
-  ])("blocks %s", (_name, mutate) => {
+  it.each(provenancePaths)("fails closed when %s is missing", (...path) => {
     const value = ready();
-    mutate(value);
+    const { parent, key } = getParent(value, path);
+    delete parent[key];
     expect(
       activationCatalogPolicyTrustRootReadinessFromProvenance(value, expected)
         .status,
     ).toBe("blocked");
+  });
+
+  it.each(provenancePaths)("fails closed when %s is modified", (...path) => {
+    const value = ready();
+    const { parent, key } = getParent(value, path);
+    parent[key] = changed(parent[key]);
+    expect(
+      activationCatalogPolicyTrustRootReadinessFromProvenance(value, expected)
+        .status,
+    ).toBe("blocked");
+  });
+
+  it.each([
+    [
+      "invalid reviewedAt",
+      "not-a-time",
+      expected.reviewerCompletedAt,
+      expected.supplementalCompletedAt,
+      expected.promotedAt,
+    ],
+    [
+      "invalid calendar date",
+      "2026-02-31T14:26:32Z",
+      expected.reviewerCompletedAt,
+      expected.supplementalCompletedAt,
+      expected.promotedAt,
+    ],
+    [
+      "equal authoritative times",
+      expected.reviewerCompletedAt,
+      expected.reviewerCompletedAt,
+      expected.supplementalCompletedAt,
+      expected.promotedAt,
+    ],
+    [
+      "reversed authoritative times",
+      "2026-08-30T14:27:45.120Z",
+      expected.reviewerCompletedAt,
+      expected.supplementalCompletedAt,
+      expected.promotedAt,
+    ],
+    [
+      "equal review completions",
+      expected.reviewedAt,
+      expected.supplementalCompletedAt,
+      expected.supplementalCompletedAt,
+      expected.promotedAt,
+    ],
+    [
+      "reversed review completions",
+      expected.reviewedAt,
+      "2026-08-30T14:37:21.636Z",
+      expected.supplementalCompletedAt,
+      expected.promotedAt,
+    ],
+    [
+      "promotion at supplemental completion",
+      expected.reviewedAt,
+      expected.reviewerCompletedAt,
+      expected.supplementalCompletedAt,
+      expected.supplementalCompletedAt,
+    ],
+    [
+      "promotion before supplemental completion",
+      expected.reviewedAt,
+      expected.reviewerCompletedAt,
+      expected.supplementalCompletedAt,
+      "2026-08-30T14:37:19.636Z",
+    ],
+  ])(
+    "rejects %s",
+    (_name, reviewedAt, completedAt, supplementalAt, promotedAt) => {
+      const value = ready();
+      value.independentReview.reviewedAt = reviewedAt;
+      value.independentReview.completedAt = completedAt;
+      value.supplementalReview.completedAt = supplementalAt;
+      value.promotedAt = promotedAt;
+      const timelineExpected = {
+        ...expected,
+        reviewedAt,
+        reviewerCompletedAt: completedAt,
+        supplementalCompletedAt: supplementalAt,
+        promotedAt,
+      };
+      expect(
+        activationCatalogPolicyTrustRootReadinessFromProvenance(
+          value,
+          timelineExpected,
+        ).status,
+      ).toBe("blocked");
+    },
+  );
+
+  it("requires the exact two expected capture labels, not merely distinct labels", () => {
+    const value = ready();
+    value.candidate.captures[0]!.label = "capture-a";
+    value.candidate.captures[1].label = "capture-b";
+    expect(
+      activationCatalogPolicyTrustRootReadinessFromProvenance(value, expected)
+        .status,
+    ).toBe("blocked");
+  });
+
+  it("preserves the existing well-formed blocked trust root as fail closed", () => {
+    expect(
+      activationCatalogPolicyTrustRootReadinessFromProvenance(
+        blocked,
+        expected,
+      ),
+    ).toEqual({
+      status: "blocked",
+      reason: "independent-review-required-after-catalog-projection-change",
+    });
     expect(() =>
-      assertActivationCatalogPolicyPromotionProvenance(value, expected),
+      assertActivationCatalogPolicyPromotionProvenance(blocked, expected),
+    ).toThrow("activation_catalog_policy_promotion_provenance_invalid");
+  });
+
+  it("fails closed for malformed and unknown-field trust roots", () => {
+    expect(
+      activationCatalogPolicyTrustRootReadinessFromProvenance(
+        { ...ready(), unknown: true },
+        expected,
+      ).status,
+    ).toBe("blocked");
+    expect(
+      activationCatalogPolicyTrustRootReadinessFromProvenance(null, expected)
+        .status,
+    ).toBe("blocked");
+  });
+
+  it("accepts strict raw evidence v1 and never treats malformed raw as legacy", () => {
+    const captures = [
+      { label: "candidate-1.json", bytes: 100, sha256: "a".repeat(64) },
+      { label: "candidate-2.json", bytes: 101, sha256: "b".repeat(64) },
+    ];
+    const raw = {
+      kind: "reviewrouter-activation-catalog-raw-capture-evidence",
+      version: 1,
+      selectedCaptureId: captures[0]!.label,
+      captureSetSha256: "",
+      captures,
+      capture: {
+        baseCommit: "1".repeat(40),
+        auditedHead: "2".repeat(40),
+        auditedTree: "3".repeat(40),
+        workflowRunId: "10",
+        runAttempt: 1,
+        jobId: "11",
+        artifactId: "12",
+        artifactName: "activation-catalog-capture",
+      },
+      postgresImages: {
+        sourcePg16: `postgres:16@sha256:${"4".repeat(64)}`,
+        targetPg17: `postgres:17@sha256:${"5".repeat(64)}`,
+      },
+      reviewResult: "GO",
+      reviewDecisionId: "RR-RAW-GO",
+      projectionSha256: `sha256:${"6".repeat(64)}`,
+      liveCatalogDigest: `sha256:${"7".repeat(64)}`,
+      postManifestIdentity: `sha256:${"8".repeat(64)}`,
+      recoveryWitnessSha256: "9".repeat(64),
+      canonicalDigests: {
+        preactivation: `sha256:${"a".repeat(64)}`,
+        activated: `sha256:${"b".repeat(64)}`,
+        artifact: `sha256:${"c".repeat(64)}`,
+      },
+      generatedArtifactSource: { bytes: 1000, sha256: "d".repeat(64) },
+    };
+    const material = { ...raw } as Record<string, unknown>;
+    delete material.kind;
+    delete material.version;
+    delete material.captureSetSha256;
+    raw.captureSetSha256 = `sha256:${sha256Canonical(material)}`;
+    expect(() => assertActivationCatalogRawCaptureEvidence(raw)).not.toThrow();
+    expect(() =>
+      assertActivationCatalogRawCaptureEvidence({ ...raw, version: 2 }),
+    ).toThrow("activation_catalog_policy_raw_capture_evidence_invalid");
+    expect(() =>
+      assertActivationCatalogPolicyPromotionProvenance(raw, expected),
     ).toThrow("activation_catalog_policy_promotion_provenance_invalid");
   });
 });

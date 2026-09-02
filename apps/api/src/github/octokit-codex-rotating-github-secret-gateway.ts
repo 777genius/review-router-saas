@@ -11,6 +11,7 @@ import {
   workflowDocumentSemanticSha256,
   WorkflowSourceTrust,
   renderCanonicalCodexRotatingT0WorkflowV4,
+  renderCanonicalCodexRotatingT0WorkflowV5,
   CodexRotatingT0WorkflowSchemaVersion,
   type VersionedProviderSecretNamespace,
 } from "@reviewrouter/features-codex-oauth-rotating";
@@ -342,7 +343,19 @@ export class OctokitCodexRotatingGitHubSecretGateway
       throw new Error("codex_rotating_workflow_publish_source_untrusted");
     }
     const refreshScheduleCron = extractCanonicalRefreshCron(currentSource);
-    const nextSource = renderCanonicalCodexRotatingT0WorkflowV4({
+    const renderVersionedWorkflow =
+      metadata.workflowSchemaVersion ===
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+        ? renderCanonicalCodexRotatingT0WorkflowV4
+        : metadata.workflowSchemaVersion ===
+            CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5
+          ? renderCanonicalCodexRotatingT0WorkflowV5
+          : null;
+    if (!renderVersionedWorkflow) {
+      throw new Error("codex_rotating_workflow_publish_source_untrusted");
+    }
+    const workflowSchemaVersion = metadata.workflowSchemaVersion;
+    const nextSource = renderVersionedWorkflow({
       actionRef: metadata.actionRef,
       apiUrl: metadata.apiUrl,
       providerInstanceId: input.providerInstanceId,
@@ -358,8 +371,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
     const nextMetadata =
       readCanonicalCodexRotatingT0WorkflowSourceMetadata(nextSource);
     if (
-      nextMetadata.workflowSchemaVersion !==
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+      nextMetadata.workflowSchemaVersion !== workflowSchemaVersion ||
       !nextMetadata.secretNamespace
     ) {
       throw new Error("codex_rotating_workflow_publish_render_invalid");
@@ -391,8 +403,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
       workflowPath: managedCodexWorkflowPath,
       expectedActionOwnerRepo: metadata.actionRef.split("@")[0]!,
       expectedProviderInstanceId: input.providerInstanceId,
-      expectedWorkflowSchemaVersion:
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+      expectedWorkflowSchemaVersion: workflowSchemaVersion,
     });
     if (!verified.attestation) {
       throw new Error("codex_rotating_workflow_publish_attestation_missing");
@@ -512,6 +523,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
       workflowSourceBlobSha,
       workflowSourceSha256,
       workflowSemanticSha256: workflowDocumentSemanticSha256(workflow),
+      workflowSchemaVersion: metadata.workflowSchemaVersion,
       sourceTrust:
         workflowBranch === defaultBranch
           ? WorkflowSourceTrust.TrustedDefaultBranchRevision

@@ -2,14 +2,23 @@ import { describe, expect, it, vi } from "vitest";
 import {
   assertClassifiedOutcome,
   assertExactPullRequestHead,
+  assertExactReleasePullRequestRevision,
   assertFreshAttemptTwoRun,
   assertSimultaneousOneAccount,
+  createGitHubHostedPoolCanaryPort,
   parseHostedPoolCanaryConfig,
   runHostedPoolProductionCanary,
   type CanaryRunEvidence,
   type HostedPoolCanaryPort,
 } from "./run-hosted-pool-production-canary";
 import type { HostedPoolControlPort } from "./hosted-pool-production-control";
+import { renderCanonicalHostedPoolWorkflowV2 } from "../packages/features/workflow-provisioning/src/domain/hosted-pool-workflow-template";
+
+vi.mock("../packages/platform/db/src/index.js", () => ({
+  createPrismaClient: () => ({
+    $disconnect: vi.fn(async () => undefined),
+  }),
+}));
 
 const sha = "a".repeat(40);
 const releaseSha = "b".repeat(40);
@@ -316,34 +325,268 @@ function kit() {
 }
 
 describe("hosted pool one-shot production canary", () => {
-  it("binds release evidence to the exact PR head and rejects merge SHA", () => {
-    const pullRequest = {
+  it("accepts an open release PR only at its exact source head", () => {
+    const openPullRequest = {
       number: 227,
       state: "open",
+      merged: false,
+      merged_at: null,
       head: { sha: releaseSha },
       base: { repo: { full_name: "777genius/review-router-saas" } },
       merge_commit_sha: "c".repeat(40),
     };
     expect(() =>
-      assertExactPullRequestHead(pullRequest, {
+      assertExactReleasePullRequestRevision(openPullRequest, {
         pullRequestNumber: 227,
-        headSha: releaseSha,
+        releaseHeadSha: releaseSha,
         repositoryFullName: "777genius/review-router-saas",
         errorCode: "mismatch",
       }),
     ).not.toThrow();
     expect(() =>
-      assertExactPullRequestHead(
-        { ...pullRequest, head: { sha: "c".repeat(40) } },
+      assertExactReleasePullRequestRevision(
+        { ...openPullRequest, head: { sha: "d".repeat(40) } },
         {
           pullRequestNumber: 227,
-          headSha: releaseSha,
+          releaseHeadSha: releaseSha,
           repositoryFullName: "777genius/review-router-saas",
           errorCode: "mismatch",
         },
       ),
     ).toThrow("mismatch");
   });
+
+  it.each(["2026-08-29T12:34:56.000Z", "2026-08-29T12:34:56Z"])(
+    "accepts a merged release PR at its exact resulting commit with timestamp %s",
+    (mergedAt) => {
+      expect(() =>
+        assertExactReleasePullRequestRevision(
+          {
+            number: 245,
+            state: "closed",
+            merged: true,
+            merged_at: mergedAt,
+            head: { sha: "2".repeat(40) },
+            base: { repo: { full_name: "777genius/review-router-saas" } },
+            merge_commit_sha: releaseSha,
+          },
+          {
+            pullRequestNumber: 245,
+            releaseHeadSha: releaseSha,
+            repositoryFullName: "777genius/review-router-saas",
+            errorCode: "mismatch",
+          },
+        ),
+      ).not.toThrow();
+    },
+  );
+
+  it.each([
+    [
+      "closed but unmerged",
+      { state: "closed", merged: false, merged_at: null },
+    ],
+    ["wrong merged commit", { merge_commit_sha: "c".repeat(40) }],
+    ["malformed merged timestamp", { merged_at: "not-a-timestamp" }],
+    ["malformed calendar timestamp", { merged_at: "2026-02-31T12:34:56.000Z" }],
+  ])("rejects a %s release PR response", (_name, patch) => {
+    const mergedPullRequest = {
+      number: 245,
+      state: "closed",
+      merged: true,
+      merged_at: "2026-08-29T12:34:56.000Z",
+      head: { sha: "2".repeat(40) },
+      base: { repo: { full_name: "777genius/review-router-saas" } },
+      merge_commit_sha: releaseSha,
+    };
+    expect(() =>
+      assertExactReleasePullRequestRevision(
+        { ...mergedPullRequest, ...patch },
+        {
+          pullRequestNumber: 245,
+          releaseHeadSha: releaseSha,
+          repositoryFullName: "777genius/review-router-saas",
+          errorCode: "mismatch",
+        },
+      ),
+    ).toThrow("mismatch");
+  });
+
+  it("rejects an open PR whose synthetic merge SHA is the only match", () => {
+    expect(() =>
+      assertExactReleasePullRequestRevision(
+        {
+          number: 245,
+          state: "open",
+          merged: false,
+          merged_at: null,
+          head: { sha: "2".repeat(40) },
+          base: { repo: { full_name: "777genius/review-router-saas" } },
+          merge_commit_sha: releaseSha,
+        },
+        {
+          pullRequestNumber: 245,
+          releaseHeadSha: releaseSha,
+          repositoryFullName: "777genius/review-router-saas",
+          errorCode: "mismatch",
+        },
+      ),
+    ).toThrow("mismatch");
+  });
+
+  it.each([
+    ["wrong PR", { number: 246 }, releaseSha],
+    [
+      "wrong repository",
+      { base: { repo: { full_name: "777genius/other" } } },
+      releaseSha,
+    ],
+    ["malformed response", { base: null }, releaseSha],
+    ["malformed response SHA", { head: { sha: "not-a-sha" } }, releaseSha],
+    ["malformed expected SHA", {}, "not-a-sha"],
+  ])("rejects %s", (_name, patch, expectedSha) => {
+    const pullRequest = {
+      number: 245,
+      state: "closed",
+      merged: true,
+      merged_at: "2026-08-29T12:34:56.000Z",
+      head: { sha: "2".repeat(40) },
+      base: { repo: { full_name: "777genius/review-router-saas" } },
+      merge_commit_sha: releaseSha,
+    };
+    expect(() =>
+      assertExactReleasePullRequestRevision(
+        { ...pullRequest, ...patch },
+        {
+          pullRequestNumber: 245,
+          releaseHeadSha: expectedSha,
+          repositoryFullName: "777genius/review-router-saas",
+          errorCode: "mismatch",
+        },
+      ),
+    ).toThrow("mismatch");
+  });
+
+  it("keeps disposable PR validation strict to an open exact head", () => {
+    const pullRequest = {
+      number: 17,
+      state: "open",
+      head: { sha: releaseSha, repo: { id: 123456789 } },
+      base: { repo: { id: 123456789 } },
+      merge_commit_sha: "c".repeat(40),
+    };
+    expect(() =>
+      assertExactPullRequestHead(pullRequest, {
+        pullRequestNumber: 17,
+        headSha: releaseSha,
+        repositoryId: 123456789,
+        errorCode: "mismatch",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertExactPullRequestHead(
+        { ...pullRequest, merge_commit_sha: releaseSha },
+        {
+          pullRequestNumber: 17,
+          headSha: releaseSha,
+          repositoryId: 123456789,
+          errorCode: "mismatch",
+        },
+      ),
+    ).toThrow("mismatch");
+    expect(() =>
+      assertExactPullRequestHead(
+        { ...pullRequest, state: "closed" },
+        {
+          pullRequestNumber: 17,
+          headSha: releaseSha,
+          repositoryId: 123456789,
+          errorCode: "mismatch",
+        },
+      ),
+    ).toThrow("mismatch");
+  });
+
+  it.each([
+    ["merged exact SHA", {}, true],
+    ["wrong merged SHA", { merge_commit_sha: "c".repeat(40) }, false],
+    ["closed but unmerged", { merged: false, merged_at: null }, false],
+  ])(
+    "wires release validation into GitHub preflight for %s",
+    async (_name, releasePatch, reachesActionsLookup) => {
+      const config = parseHostedPoolCanaryConfig(env);
+      const workflow = renderCanonicalHostedPoolWorkflowV2({
+        actionRef: `777genius/review-router@${sha}`,
+        apiUrl: "https://reviewrouter.example",
+        providerInstanceId: "hosted-pool:repository:123456789",
+        bindingId: "binding-canary",
+        bindingRevision: 1,
+      });
+      const responses = [
+        {
+          id: 123456789,
+          full_name: "777genius/rr-codex-rotating-e2e",
+          archived: false,
+          visibility: "private",
+          default_branch: "main",
+        },
+        { id: 987654321, app_slug: "reviewrouter-app" },
+        { sha: "d".repeat(40) },
+        { content: Buffer.from(workflow).toString("base64") },
+        {
+          number: 227,
+          state: "closed",
+          merged: true,
+          merged_at: "2026-08-29T12:34:56.000Z",
+          head: { sha: "2".repeat(40) },
+          base: { repo: { full_name: "777genius/review-router-saas" } },
+          merge_commit_sha: releaseSha,
+          ...releasePatch,
+        },
+      ];
+      const fetchMock = vi.fn<typeof fetch>(async () => {
+        const body = responses.shift();
+        return body
+          ? new Response(JSON.stringify(body), { status: 200 })
+          : new Response(null, { status: 418 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const canary = createGitHubHostedPoolCanaryPort({
+        appJwt: "app-jwt",
+        repositoryToken: "repository-token",
+        databaseUrl: "postgresql://fixture.invalid/reviewrouter",
+      });
+      try {
+        const preflight = canary.preflight(config);
+        if (reachesActionsLookup) {
+          await expect(preflight).rejects.toThrow(
+            "hosted_pool_canary_github_418",
+          );
+        } else {
+          await expect(preflight).rejects.toThrow(
+            "hosted_pool_canary_release_pr_head_mismatch",
+          );
+        }
+        expect(fetchMock).toHaveBeenCalledTimes(reachesActionsLookup ? 6 : 5);
+        expect(fetchMock.mock.calls[4]?.[0]).toBe(
+          "https://api.github.com/repos/777genius/review-router-saas/pulls/227",
+        );
+        expect(
+          fetchMock.mock.calls.some(([request]) =>
+            String(request).includes("/actions/runs/"),
+          ),
+        ).toBe(reachesActionsLookup);
+        if (reachesActionsLookup) {
+          expect(fetchMock.mock.calls[5]?.[0]).toBe(
+            "https://api.github.com/repos/777genius/rr-codex-rotating-e2e/actions/runs/11",
+          );
+        }
+      } finally {
+        await canary.disconnect();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it("accepts only a fresh attempt-2 run on the exact source head", () => {
     const rerunRequestedAt = new Date("2026-08-22T00:00:00.000Z");

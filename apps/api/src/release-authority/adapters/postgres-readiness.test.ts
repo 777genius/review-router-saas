@@ -104,6 +104,7 @@ describe("release authority ACL readiness observation", () => {
     expect(sql).toContain("assert_no_activation_receipt");
     expect(sql).toContain("project_effective_principal_authority(text)");
     expect(sql).toContain("capture_catalog_policy_candidate_pair()");
+    expect(sql).toContain("observe_live_migration_catalog_digest()");
     expect(sql).toContain("apply_runtime_acl()");
     expect(sql).toContain("apply_runtime_database_acl(text)");
     expect(sql).toContain("capture_runtime_acl_policy_pair()");

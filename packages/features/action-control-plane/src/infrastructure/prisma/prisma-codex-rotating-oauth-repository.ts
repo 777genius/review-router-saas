@@ -20,6 +20,7 @@ import {
   mapActiveVersionedProviderSecretNamespace,
   parseVersionedProviderSecretName,
   RuntimeVersionedDurableMarker,
+  WorkflowSourceTrust,
   reserveRuntimeVersionedEffectConfirmationWindow,
   type CodexRotatingEncryptedWritebackRequest,
   type CodexRotatingProviderBinding,
@@ -156,6 +157,7 @@ export class PrismaCodexRotatingOAuthRepository
             workflowSourceSha256: true,
             workflowSemanticSha256: true,
             workflowSourceTrust: true,
+            workflowSchemaVersion: true,
             attestedRepositoryId: true,
           },
         },
@@ -181,13 +183,58 @@ export class PrismaCodexRotatingOAuthRepository
     } catch {
       return null;
     }
-    const source = provider.activeSecretNamespace;
+    const currentSource = provider.activeSecretNamespace;
+    let source = currentSource;
+    if (
+      currentSource?.workflowSchemaVersion !== input.workflowSchemaVersion &&
+      input.workflowSchemaVersion === 4
+    ) {
+      const retiringSources = await this.prisma.$queryRaw<
+        Array<{
+          id: string;
+          githubRepositoryId: string;
+          namespaceEpoch: bigint;
+          secretName: string;
+          status: string;
+          workflowPath: string;
+          workflowSourceCommitSha: string;
+          workflowSourceBlobSha: string;
+          workflowSourceSha256: string;
+          workflowSemanticSha256: string;
+          workflowSourceTrust: string;
+          workflowSchemaVersion: number;
+          attestedRepositoryId: string;
+        }>
+      >`
+        SELECT namespace."id", namespace."githubRepositoryId",
+          namespace."namespaceEpoch", namespace."secretName", namespace."status",
+          compatibility."workflowPath", compatibility."workflowSourceCommitSha",
+          compatibility."workflowSourceBlobSha", compatibility."workflowSourceSha256",
+          compatibility."workflowSemanticSha256", compatibility."workflowSourceTrust",
+          compatibility."workflowSchemaVersion", compatibility."attestedRepositoryId"
+        FROM "CodexOAuthWorkflowCompatibility" compatibility
+        JOIN "CodexOAuthSecretNamespace" namespace
+          ON namespace."id" = compatibility."namespaceId"
+        JOIN "CodexOAuthProviderInstance" provider
+          ON provider."id" = namespace."providerInstanceRowId"
+        WHERE compatibility."namespaceId" = ${activeSecretNamespace.namespaceId}
+          AND compatibility."retireAt" > CURRENT_TIMESTAMP
+          AND compatibility."workflowSchemaVersion" = ${input.workflowSchemaVersion}
+          AND namespace."status" = 'active'
+          AND NOT namespace."permanentlyRetired"
+          AND provider."id" = ${provider.id}
+          AND provider."activeSecretNamespaceId" = namespace."id"
+          AND provider."activeSecretNamespaceEpoch" = namespace."namespaceEpoch"
+      `;
+      source = retiringSources.length === 1 ? retiringSources[0]! : null;
+    }
     if (
       !source?.workflowPath ||
       !source.workflowSourceCommitSha ||
       !source.workflowSourceBlobSha ||
       !source.workflowSourceSha256 ||
       source.workflowSourceTrust !== "trusted_default_branch_revision" ||
+      source.workflowSchemaVersion !== input.workflowSchemaVersion ||
       !source.attestedRepositoryId ||
       !source.workflowSemanticSha256
     ) {
@@ -274,6 +321,7 @@ export class PrismaCodexRotatingOAuthRepository
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
+    readonly verifiedWorkflowAttestation: VersionedSecretWorkflowSourceAttestation;
     readonly newWorkAdmissionBarrier: Readonly<{
       assertAdmitted(): void;
     }>;
@@ -347,6 +395,54 @@ export class PrismaCodexRotatingOAuthRepository
         throw new Error("codex_rotating_provider_identity_mismatch");
       }
       const activeNamespace = requireActiveNamespaceBinding(provider);
+      const lockedWorkflowAdmissions = await tx.$queryRaw<
+        LockedWorkflowAdmissionRow[]
+      >(Prisma.sql`
+          SELECT namespace."id", namespace."githubRepositoryId",
+            namespace."namespaceEpoch", namespace."secretName",
+            namespace."status", namespace."permanentlyRetired",
+            namespace."workflowPath", namespace."workflowSourceCommitSha",
+            namespace."workflowSourceBlobSha", namespace."workflowSourceSha256",
+            namespace."workflowSemanticSha256", namespace."workflowSourceTrust",
+            namespace."workflowSchemaVersion", namespace."attestedRepositoryId"
+          FROM "CodexOAuthSecretNamespace" namespace
+          WHERE namespace."id" = ${provider.activeSecretNamespaceId}
+            AND namespace."providerInstanceRowId" = ${provider.id}
+          FOR UPDATE
+        `);
+      const lockedCompatibilityAdmissions = await tx.$queryRaw<
+        LockedWorkflowAdmissionRow[]
+      >(Prisma.sql`
+          -- Compatibility rows are immutable. Their sole insertion path locks
+          -- this namespace row before inserting, so the namespace lock above
+          -- serializes admission without runtime UPDATE authority here.
+          SELECT namespace."id", namespace."githubRepositoryId",
+            namespace."namespaceEpoch", namespace."secretName",
+            namespace."status", namespace."permanentlyRetired",
+            compatibility."workflowPath", compatibility."workflowSourceCommitSha",
+            compatibility."workflowSourceBlobSha", compatibility."workflowSourceSha256",
+            compatibility."workflowSemanticSha256", compatibility."workflowSourceTrust",
+            compatibility."workflowSchemaVersion", compatibility."attestedRepositoryId",
+            compatibility."retireAt"
+          FROM "CodexOAuthWorkflowCompatibility" compatibility
+          JOIN "CodexOAuthSecretNamespace" namespace
+            ON namespace."id" = compatibility."namespaceId"
+          WHERE compatibility."namespaceId" = ${provider.activeSecretNamespaceId}
+            AND namespace."providerInstanceRowId" = ${provider.id}
+        `);
+      assertLockedWorkflowAdmissionMatches({
+        persisted:
+          lockedWorkflowAdmissions.length === 1
+            ? lockedWorkflowAdmissions[0]!
+            : null,
+        activeNamespace,
+        verified: input.verifiedWorkflowAttestation,
+        compatibility:
+          lockedCompatibilityAdmissions.length === 1
+            ? lockedCompatibilityAdmissions[0]!
+            : null,
+        now,
+      });
       assertAutomaticRuntimeDatabaseRecoveryWitness(
         provider.activeSecretNamespace?.databaseRecoveryWitness,
         this.options.databaseRecoveryWitness,
@@ -1941,6 +2037,7 @@ export class PrismaCodexRotatingOAuthRepository
             workflowSourceSha256: input.attestation.workflowSourceSha256,
             workflowSemanticSha256: input.attestation.workflowSemanticSha256,
             workflowSourceTrust: input.attestation.sourceTrust,
+            workflowSchemaVersion: input.attestation.workflowSchemaVersion,
             attestedRepositoryId: input.attestation.repositoryId,
             activatedAt: now,
           },
@@ -2269,6 +2366,69 @@ function requireActiveNamespaceBinding(provider: {
     id: provider.activeSecretNamespaceId,
     epoch: provider.activeSecretNamespaceEpoch,
   };
+}
+
+type LockedWorkflowAdmissionRow = Readonly<{
+  id: string;
+  githubRepositoryId: string;
+  namespaceEpoch: bigint;
+  secretName: string;
+  status: string;
+  permanentlyRetired: boolean;
+  workflowPath: string | null;
+  workflowSourceCommitSha: string | null;
+  workflowSourceBlobSha: string | null;
+  workflowSourceSha256: string | null;
+  workflowSemanticSha256: string | null;
+  workflowSourceTrust: string | null;
+  workflowSchemaVersion: number | null;
+  attestedRepositoryId: string | null;
+  retireAt?: Date | undefined;
+}>;
+
+function assertLockedWorkflowAdmissionMatches(input: {
+  readonly persisted: LockedWorkflowAdmissionRow | null;
+  readonly activeNamespace: {
+    readonly id: string | null;
+    readonly epoch: bigint | null;
+  };
+  readonly verified: VersionedSecretWorkflowSourceAttestation;
+  readonly compatibility: LockedWorkflowAdmissionRow | null;
+  readonly now: Date;
+}): void {
+  const { activeNamespace, verified } = input;
+  const persisted =
+    input.persisted?.workflowSchemaVersion === verified.workflowSchemaVersion
+      ? input.persisted
+      : input.compatibility?.workflowSchemaVersion ===
+            verified.workflowSchemaVersion &&
+          input.compatibility.retireAt !== undefined &&
+          input.compatibility.retireAt > input.now
+        ? input.compatibility
+        : null;
+  if (
+    !persisted ||
+    persisted.status !== "active" ||
+    persisted.permanentlyRetired ||
+    activeNamespace.id !== persisted.id ||
+    activeNamespace.epoch !== persisted.namespaceEpoch ||
+    verified.secretNamespace.namespaceId !== persisted.id ||
+    verified.secretNamespace.epoch !== persisted.namespaceEpoch ||
+    verified.secretNamespace.name !== persisted.secretName ||
+    verified.repositoryId !== persisted.githubRepositoryId ||
+    verified.repositoryId !== persisted.attestedRepositoryId ||
+    verified.workflowPath !== persisted.workflowPath ||
+    !persisted.workflowSourceCommitSha ||
+    verified.sourceTrust !== WorkflowSourceTrust.TrustedDefaultBranchRevision ||
+    verified.workflowSourceBlobSha !== persisted.workflowSourceBlobSha ||
+    verified.workflowSourceSha256 !== persisted.workflowSourceSha256 ||
+    verified.workflowSemanticSha256 !== persisted.workflowSemanticSha256 ||
+    persisted.workflowSourceTrust !==
+      WorkflowSourceTrust.TrustedDefaultBranchRevision ||
+    verified.workflowSchemaVersion !== persisted.workflowSchemaVersion
+  ) {
+    throw new Error("codex_rotating_workflow_attestation_stale");
+  }
 }
 
 async function lockProviderByInstanceId(

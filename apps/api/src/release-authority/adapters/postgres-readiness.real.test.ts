@@ -956,8 +956,8 @@ activationDescribe("activation target semantic readiness", () => {
         "activationGuardExact",
       ],
       [
-        "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) TO reviewrouter_release_migration WITH GRANT OPTION",
-        "REVOKE GRANT OPTION FOR EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) FROM reviewrouter_release_migration",
+        "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean) TO reviewrouter_release_migration WITH GRANT OPTION",
+        "REVOKE GRANT OPTION FOR EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean) FROM reviewrouter_release_migration",
         "activationGuardExact",
       ],
     ] as const;
