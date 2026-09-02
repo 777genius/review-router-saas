@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-import { isExactPostgresGuardFailure } from "./postgres-guard-failure.mjs";
+import {
+  isExactPostgresCatalogDigestMismatchFailure,
+  isExactPostgresGuardFailure,
+} from "./postgres-guard-failure.mjs";
 
 const guard = "legacy_reconciliation_inventory_changed";
 const nestedGuard = "legacy_reconciliation_unresolved_intent";
@@ -27,6 +30,95 @@ const failure = (stderr: unknown, overrides = {}) => ({
 });
 const errorLine = (line: number | string, value = guard) =>
   `psql:<stdin>:${line}: ERROR:  ${value}`;
+
+const catalogGuard =
+  "release migration target live completion mismatch:catalog_digest_observed";
+const catalogDetail = `DETAIL:  expected=sha256:${"1".repeat(64)} observed=sha256:${"2".repeat(64)}`;
+const catalogInnerContext =
+  "CONTEXT:  PL/pgSQL function reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb) line 30 at RAISE";
+const catalogStatement = `SQL statement "SELECT reviewrouter_activation.complete_migration_permit(
+      requested_rollout_id,requested_permit_epoch,requested_permit_nonce,
+      '{}'::jsonb)"`;
+const catalogOuterContext = `CONTEXT:  PL/pgSQL function ${executorSignature} line 5513 at PERFORM`;
+const catalogRecord = `${errorLine(417, catalogGuard)}\n${catalogDetail}\n${catalogInnerContext}\n${catalogStatement}\n${catalogOuterContext}\n`;
+
+describe("exact PostgreSQL catalog digest mismatch classification", () => {
+  it("accepts the complete bounded psql record", () => {
+    expect(
+      isExactPostgresCatalogDigestMismatchFailure(
+        failure(catalogRecord),
+        catalogGuard,
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["wrong guard", guard, catalogRecord],
+    ["wrong status", catalogGuard, catalogRecord, { status: 1 }],
+    ["signal", catalogGuard, catalogRecord, { signal: "SIGTERM" }],
+    ["spawn error", catalogGuard, catalogRecord, { error: undefined }],
+    [
+      "missing detail",
+      catalogGuard,
+      `${errorLine(417, catalogGuard)}\n${catalogInnerContext}\n${catalogStatement}\n${catalogOuterContext}\n`,
+    ],
+    [
+      "malformed expected hash",
+      catalogGuard,
+      catalogRecord.replace("1".repeat(64), "g".repeat(64)),
+    ],
+    [
+      "malformed observed hash",
+      catalogGuard,
+      catalogRecord.replace("2".repeat(64), "2".repeat(63)),
+    ],
+    [
+      "reordered detail",
+      catalogGuard,
+      `${catalogDetail}\n${errorLine(417, catalogGuard)}\n${catalogInnerContext}\n${catalogStatement}\n${catalogOuterContext}\n`,
+    ],
+    [
+      "duplicate detail",
+      catalogGuard,
+      `${errorLine(417, catalogGuard)}\n${catalogDetail}\n${catalogDetail}\n${catalogInnerContext}\n${catalogStatement}\n${catalogOuterContext}\n`,
+    ],
+    ["extra line", catalogGuard, `${catalogRecord}NOTICE:  unrelated\n`],
+    [
+      "wrong context",
+      catalogGuard,
+      catalogRecord.replace(" line 30 at RAISE", " line 30 at CALL"),
+    ],
+    [
+      "wrong outer context",
+      catalogGuard,
+      catalogRecord.replace(" line 5513 at PERFORM", " line 5513 at CALL"),
+    ],
+    [
+      "changed statement whitespace",
+      catalogGuard,
+      catalogRecord.replace(
+        "      requested_rollout_id",
+        "     requested_rollout_id",
+      ),
+    ],
+    [
+      "missing statement line",
+      catalogGuard,
+      catalogRecord.replace(
+        "      requested_rollout_id,requested_permit_epoch,requested_permit_nonce,\n",
+        "",
+      ),
+    ],
+    ["non-ASCII", catalogGuard, catalogRecord.replace("DETAIL", "DÉTAIL")],
+  ])("rejects %s", (_name, expectedGuard, stderr, overrides = {}) => {
+    expect(
+      isExactPostgresCatalogDigestMismatchFailure(
+        failure(stderr, overrides),
+        expectedGuard,
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("exact PostgreSQL guard failure classification", () => {
   it.each([

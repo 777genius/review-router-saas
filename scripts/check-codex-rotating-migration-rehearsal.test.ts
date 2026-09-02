@@ -816,6 +816,8 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toContain(
       "release migration target live completion mismatch:catalog_digest_observed",
     );
+    expect(source).toContain('kind: "catalog_digest_mismatch"');
+    expect(source).toContain("isExactPostgresCatalogDigestMismatchFailure(");
     expect(source).toContain("pending_catalog_completion_blocked_as_expected");
     expect(source).toContain('rollback.permitState === "installed"');
     expect(source).toContain("rollback.targetReceipt === null");

@@ -31,7 +31,10 @@ import {
   createSecretSafePostgresInvocation,
   runSecretSafePostgresCommand,
 } from "./lib/secret-safe-command-boundary.mjs";
-import { isExactPostgresGuardFailure } from "./lib/postgres-guard-failure.mjs";
+import {
+  isExactPostgresCatalogDigestMismatchFailure,
+  isExactPostgresGuardFailure,
+} from "./lib/postgres-guard-failure.mjs";
 import {
   isExpectedPrismaLockTimeoutFailure,
   prismaLockTimeoutFailureMarkers,
@@ -233,6 +236,7 @@ try {
           !catalogTrustRootReady &&
           step === "deploy_migrations_and_converge_grants"
             ? {
+                kind: "catalog_digest_mismatch",
                 guard:
                   "release migration target live completion mismatch:catalog_digest_observed",
                 evidence: pendingCatalogFailureEvidence,
@@ -4738,10 +4742,15 @@ function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
       maxBuffer: 16 * 1024 * 1024,
       timeout: 600_000,
     });
-    if (
-      options.expectedFailure &&
-      isExactPostgresGuardFailure(result, options.expectedFailure.guard)
-    )
+    const expectedFailureMatched =
+      options.expectedFailure?.kind === "catalog_digest_mismatch"
+        ? isExactPostgresCatalogDigestMismatchFailure(
+            result,
+            options.expectedFailure.guard,
+          )
+        : options.expectedFailure !== undefined &&
+          isExactPostgresGuardFailure(result, options.expectedFailure.guard);
+    if (expectedFailureMatched)
       throw new Error(options.expectedFailure.evidence);
     if (result.status !== 0 || result.error)
       throw sanitizedDiagnosticError({
