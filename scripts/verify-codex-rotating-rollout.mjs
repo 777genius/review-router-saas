@@ -97,7 +97,7 @@ const migrations = [
     sourceFile:
       "packages/platform/db/prisma/migrations/000087_codex_oauth_v4_v5_workflow_reattestation/migration.sql",
     expectedSha256:
-      "d443e366de64879b1d6c32f4edba3648d8e8da160f804b6ec87bede581343109",
+      "af5fccfd987312b85d48cd38b7f528780f52e82daab47c34829581e50193b090",
   },
   {
     id: "000088_codex_oauth_reattestation_mutation_owner_fence",

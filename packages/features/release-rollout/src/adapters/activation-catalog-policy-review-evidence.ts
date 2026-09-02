@@ -378,55 +378,76 @@ const assertLegacyActivationCatalogPolicyReviewEvidence = (
   assertSupplementalMarkdown(supplementalSummary, expected);
 };
 
-export function activationCatalogRawReviewArtifact(
+const assertRawReviewMarkdown = (
+  markdown: string,
   expected: ActivationCatalogRawPromotionTrustRootReady,
-): string {
-  const evidence = expected.evidence;
-  const review = expected.independentReview;
-  return [
-    "# Raw activation catalog independent review",
-    "",
-    "## Decision",
-    "",
-    "- Verdict: **GO**",
-    "- BLOCKER: **0**",
-    "- HIGH: **0**",
-    `- Decision ID: \`${evidence.reviewDecisionId}\``,
-    `- Reviewed at: \`${review.reviewedAt}\``,
-    "",
-    "## Capture identities",
-    "",
-    `- Base commit: \`${evidence.capture.baseCommit}\``,
-    `- Audited head: \`${evidence.capture.auditedHead}\``,
-    `- Audited tree: \`${evidence.capture.auditedTree}\``,
-    `- Workflow run: \`${evidence.capture.workflowRunId}\``,
-    `- Run attempt: \`${evidence.capture.runAttempt}\``,
-    `- Job: \`${evidence.capture.jobId}\``,
-    `- Artifact ID: \`${evidence.capture.artifactId}\``,
-    `- Artifact name: \`${evidence.capture.artifactName}\``,
-    "",
-    "## Raw captures",
-    "",
-    "| Selection | Label | Bytes | Raw SHA-256 |",
-    "| --- | --- | ---: | --- |",
-    ...evidence.captures.map((capture, index) =>
-      [
+): void => {
+  try {
+    const evidence = expected.evidence;
+    const review = expected.independentReview;
+    const headings = [...markdown.matchAll(/^## (.+)$/gmu)].map(
+      (match) => match[1],
+    );
+    if (
+      !markdown.startsWith(
+        "# Raw activation catalog independent review\n",
+      ) ||
+      JSON.stringify(headings) !==
+        JSON.stringify(["Decision", "Capture identities", "Raw captures"])
+    )
+      throw new Error("invalid");
+
+    exactKeyedLines(
+      exactSection(markdown, "Decision"),
+      /^- ([A-Za-z][A-Za-z ]+): (.+)$/gmu,
+      {
+        Verdict: "**GO**",
+        BLOCKER: "**0**",
+        HIGH: "**0**",
+        "Decision ID": `\`${evidence.reviewDecisionId}\``,
+        "Reviewed at": `\`${review.reviewedAt}\``,
+      },
+    );
+
+    exactKeyedLines(
+      exactSection(markdown, "Capture identities"),
+      /^- ([A-Za-z][A-Za-z ]+): (.+)$/gmu,
+      {
+        "Base commit": `\`${evidence.capture.baseCommit}\``,
+        "Audited head": `\`${evidence.capture.auditedHead}\``,
+        "Audited tree": `\`${evidence.capture.auditedTree}\``,
+        "Workflow run": `\`${evidence.capture.workflowRunId}\``,
+        "Run attempt": `\`${evidence.capture.runAttempt}\``,
+        Job: `\`${evidence.capture.jobId}\``,
+        "Artifact ID": `\`${evidence.capture.artifactId}\``,
+        "Artifact name": `\`${evidence.capture.artifactName}\``,
+      },
+    );
+
+    const captures = exactSection(markdown, "Raw captures");
+    exactTable(
+      captures,
+      ["Selection", "Label", "Bytes", "Raw SHA-256"],
+      evidence.captures.map((capture, index) => [
         index === 0 ? "selected" : "corroborating",
         `\`${capture.label}\``,
         `\`${capture.bytes}\``,
         `\`${capture.sha256}\``,
-      ]
-        .join(" | ")
-        .replace(/^/u, "| ")
-        .replace(/$/u, " |"),
-    ),
-    "",
-    `Capture-set digest: \`${evidence.captureSetSha256}\``,
-    `Source PostgreSQL image: \`${evidence.postgresImages.sourcePg16}\``,
-    `Target PostgreSQL image: \`${evidence.postgresImages.targetPg17}\``,
-    "",
-  ].join("\n");
-}
+      ]),
+    );
+    exactKeyedLines(
+      captures,
+      /^([^|:\n][^:\n]*): `([^`]+)`$/gmu,
+      {
+        "Capture-set digest": evidence.captureSetSha256,
+        "Source PostgreSQL image": evidence.postgresImages.sourcePg16,
+        "Target PostgreSQL image": evidence.postgresImages.targetPg17,
+      },
+    );
+  } catch {
+    throw new Error("activation_catalog_policy_raw_review_report_invalid");
+  }
+};
 
 const assertRawRuntime = (
   value: unknown,
@@ -502,10 +523,8 @@ const assertRawActivationCatalogPolicyReviewEvidence = (
     throw new Error(
       "activation_catalog_policy_raw_review_materialization_mismatch",
     );
-  if (
-    markdown !== activationCatalogRawReviewArtifact(expected) ||
-    expected.evidence.reviewResult !== "GO"
-  )
+  assertRawReviewMarkdown(markdown, expected);
+  if (expected.evidence.reviewResult !== "GO")
     throw new Error("activation_catalog_policy_raw_review_report_invalid");
 };
 

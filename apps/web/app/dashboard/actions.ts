@@ -59,7 +59,6 @@ import {
 import { OctokitRepositoryWorkflowProbe } from "@reviewrouter/features-repo-health";
 import {
   CodexRotatingReviewActionV2Mode,
-  CodexRotatingT0WorkflowSchemaVersion,
   defaultCodexRotatingWorkflowPath,
   defaultWorkflowPath,
   OctokitWorkflowSetupGateway,
@@ -115,6 +114,11 @@ import { activateConfirmedCodexNamespaceAfterWorkflowMerge } from "../../src/ser
 import { activateConfirmedHostedPoolBindingAfterWorkflowMerge } from "../../src/server/hosted-pool-workflow-activation";
 import { PrismaCodexRotatingSetupReadiness } from "../../src/server/prisma-codex-rotating-setup-readiness";
 import { PrismaCodexRotatingWorkflowNamespace } from "../../src/server/prisma-codex-rotating-workflow-namespace";
+import type {
+  CodexRotatingVersionedWriterSchemaVersion,
+  CodexRotatingWriterSchemaPolicy,
+} from "../../src/server/codex-rotating-writer-schema-policy";
+import { createCodexRotatingWriterSchemaPolicy } from "../../src/server/codex-rotating-writer-schema-policy-env";
 import {
   providerSecretAvailabilityStatusForError,
   providerSecretNamesForAuthMode,
@@ -479,6 +483,12 @@ async function provisionPendingRepositoryOwnedWorkflow(input: {
     githubRepositoryId: repository.githubRepositoryId.toString(),
     providerInstanceId,
   });
+  const writerSchemaVersion =
+    await selectCodexRotatingWriterSchemaVersion({
+      prisma,
+      inspection: namespaceInspection,
+      policy: createCodexRotatingWriterSchemaPolicy(),
+    });
   const resolvedRuntime = await loadResolvedReviewRuntime({
     prisma,
     workspaceId: input.workspaceId,
@@ -528,8 +538,7 @@ async function provisionPendingRepositoryOwnedWorkflow(input: {
           codexRotatingWorkflowSecretNamespace: namespaceInspection.namespace,
           codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
           forkAgenticSandboxEnabled: false,
-          codexRotatingWorkflowSchemaVersion:
-            CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+          codexRotatingWorkflowSchemaVersion: writerSchemaVersion,
           actor: actor.actor,
         },
         {
@@ -1056,7 +1065,11 @@ async function createSetupPullRequestMutation(
       ? {
           codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
           codexRotatingWorkflowSchemaVersion:
-            CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+            await selectCodexRotatingWriterSchemaVersion({
+              prisma,
+              inspection: codexRotatingWorkflowNamespaceInspection!,
+              policy: createCodexRotatingWriterSchemaPolicy(),
+            }),
         }
       : null;
     const forkAgenticSandboxEnabled = false;
@@ -1233,6 +1246,8 @@ async function confirmSetupPullRequestMergedMutation(
   let params: Record<string, string>;
 
   try {
+    const writerSchemaPolicy =
+      createCodexRotatingWriterSchemaPolicy();
     const repository = await prisma.repositoryConnection.findUnique({
       where: { id: repositoryId },
       select: {
@@ -1377,7 +1392,11 @@ async function confirmSetupPullRequestMergedMutation(
       ? {
           codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
           codexRotatingWorkflowSchemaVersion:
-            CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+            await selectCodexRotatingWriterSchemaVersion({
+              prisma,
+              inspection: codexRotatingWorkflowNamespaceInspection!,
+              policy: writerSchemaPolicy,
+            }),
         }
       : null;
     const forkAgenticSandboxEnabled = false;
@@ -1486,8 +1505,7 @@ async function confirmSetupPullRequestMergedMutation(
         defaultBranch: repository.defaultBranch,
         expectedRepositoryFullName: repository.fullName,
         expectedApiUrl: resolveWorkflowPublicApiUrl(),
-        expectedWorkflowSchemaVersion:
-          CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+        writerSchemaPolicy,
       });
       if (hostedBinding?.status === "active") {
         await createPrismaHostedPoolDashboardMutationPort({
@@ -1560,6 +1578,8 @@ async function confirmProviderSecretSetupMutation(
   let params: Record<string, string>;
 
   try {
+    const writerSchemaPolicy =
+      createCodexRotatingWriterSchemaPolicy();
     const repository = await loadRepositoryForWorkspace({
       prisma,
       workspaceId,
@@ -1614,8 +1634,7 @@ async function confirmProviderSecretSetupMutation(
         defaultBranch: repository.defaultBranch,
         expectedRepositoryFullName: repository.fullName,
         expectedApiUrl: resolveWorkflowPublicApiUrl(),
-        expectedWorkflowSchemaVersion:
-          CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+        writerSchemaPolicy,
       });
       rotatingReadiness = await confirmCodexRotatingSetupReadiness(
         {
@@ -3002,6 +3021,27 @@ async function resolveCodexWorkflowSecretNamespace(input: {
     },
   );
   return inspection;
+}
+
+async function selectCodexRotatingWriterSchemaVersion(input: {
+  readonly prisma: PrismaClient;
+  readonly inspection: CodexRotatingWorkflowNamespaceInspection;
+  readonly policy: CodexRotatingWriterSchemaPolicy;
+}): Promise<CodexRotatingVersionedWriterSchemaVersion> {
+  const activeNamespace =
+    input.inspection.source === "active"
+      ? await input.prisma.codexOAuthSecretNamespace.findUnique({
+          where: {
+            id: input.inspection.namespace.namespaceId,
+          },
+          select: { workflowSchemaVersion: true },
+        })
+      : null;
+  return input.policy.selectWriterSchemaVersion({
+    existingNamespace: input.inspection.source === "active",
+    existingWorkflowSchemaVersion:
+      activeNamespace?.workflowSchemaVersion ?? null,
+  });
 }
 
 async function resolveCodexRotatingProvisioningActionRef(input: {

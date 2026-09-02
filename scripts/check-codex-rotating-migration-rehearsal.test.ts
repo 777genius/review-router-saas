@@ -753,6 +753,49 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
+  it("rehearses migration87 transient provider states and a stale pointer on the real predecessor schema", () => {
+    const proof =
+      /function proveMigration87LegacyBackfill\(url\) \{([\s\S]+?)\n\}\n\nfunction proveCanonicalLegacyReconciliationNegativeCases/u.exec(
+        source,
+      )?.[1];
+
+    expect(proof).toBeDefined();
+    expect(source).toContain(
+      "proveMigration87LegacyBackfill(providerAdmin)",
+    );
+    for (const migration of [
+      "migration63",
+      "migration64",
+      "migration65",
+      "migration66",
+      "migration69",
+      "migration70",
+      "migration71",
+      "migration72Retire",
+      "migration72Canary",
+      "migration73",
+    ]) {
+      expect(source).toContain(migration);
+    }
+    expect(proof).toContain("'unknown_auth_state'");
+    expect(proof).toContain("'stale_queued_secret'");
+    expect(proof).toContain("'migration87-stale-pointer'");
+    expect(proof).toContain('7004::bigint');
+    expect(proof).toContain('"namespaceEpoch",');
+    expect(proof).toContain("7003");
+    expect(proof).toContain('psql(url, ["-f", migration87])');
+    expect(proof).toContain(
+      "codex_oauth_active_namespace_schema_version_ambiguous",
+    );
+    expect(proof).toContain(
+      "migration87 stale-pointer rejection did not roll back atomically",
+    );
+    expect(proof).toContain('namespace."workflowSchemaVersion" = 4');
+    expect(proof).toContain(
+      "migration87 transient provider-state backfill proof failed",
+    );
+  });
+
   it("reads the database generation binding as shared-object metadata", () => {
     expect(source).toContain("shobj_description(oid, 'pg_database')");
     expect(source).not.toMatch(/\bobj_description\(oid, 'pg_database'\)/u);

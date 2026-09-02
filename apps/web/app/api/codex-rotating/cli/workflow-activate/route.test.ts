@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   authorize: vi.fn(),
   createOctokit: vi.fn(),
   findFirst: vi.fn(),
+  writerSchemaPolicy: { selectWriterSchemaVersion: vi.fn() },
 }));
 
 vi.mock("@reviewrouter/features-entitlements", () => ({
@@ -17,6 +18,12 @@ vi.mock("@reviewrouter/features-entitlements", () => ({
 vi.mock("../../../../../src/server/codex-rotating-workflow-activation", () => ({
   activateConfirmedCodexNamespaceAfterWorkflowMerge: mocks.activate,
 }));
+vi.mock(
+  "../../../../../src/server/codex-rotating-writer-schema-policy-env",
+  () => ({
+    createCodexRotatingWriterSchemaPolicy: () => mocks.writerSchemaPolicy,
+  }),
+);
 vi.mock("../../../../../src/server/dashboard-mutations", () => ({
   createGitHubAppInstallationOctokit: mocks.createOctokit,
 }));
@@ -80,7 +87,7 @@ describe("Codex rotating CLI workflow activation route", () => {
       expect.objectContaining({
         githubRepositoryId: "1228051727",
         expectedApiUrl: "https://api.reviewrouter.test",
-        expectedWorkflowSchemaVersion: 5,
+        writerSchemaPolicy: mocks.writerSchemaPolicy,
       }),
     );
     await expect(response.json()).resolves.toEqual({

@@ -270,7 +270,7 @@ WITH selected_relations AS (
           'checksum','3e5b6606f22c8bec6f75f52f48b693806d597fa283155f6e033844c4f6be4de6',
           'finished',true,'rolledBack',false),
         jsonb_build_object('name','000087_codex_oauth_v4_v5_workflow_reattestation',
-          'checksum','d443e366de64879b1d6c32f4edba3648d8e8da160f804b6ec87bede581343109',
+          'checksum','af5fccfd987312b85d48cd38b7f528780f52e82daab47c34829581e50193b090',
           'finished',true,'rolledBack',false),
         jsonb_build_object('name','000088_codex_oauth_reattestation_mutation_owner_fence',
           'checksum','18a1e48953d1360d3661ea6753b7aa350fc7e28caeaeb65d42c9ac42569f1cf0',

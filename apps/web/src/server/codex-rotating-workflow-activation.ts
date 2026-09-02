@@ -22,6 +22,7 @@ import {
 } from "@reviewrouter/platform-config";
 import { codexRotatingSetupLedger } from "./codex-rotating-setup-ledger";
 import { PrismaCodexRotatingWorkflowNamespace } from "./prisma-codex-rotating-workflow-namespace";
+import type { CodexRotatingWriterSchemaPolicy } from "./codex-rotating-writer-schema-policy";
 
 type GitHubRequester = {
   request(
@@ -49,7 +50,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
   readonly defaultBranch: string;
   readonly expectedRepositoryFullName: string;
   readonly expectedApiUrl: string;
-  readonly expectedWorkflowSchemaVersion: CodexRotatingT0WorkflowSchemaVersion;
+  readonly writerSchemaPolicy: CodexRotatingWriterSchemaPolicy;
 }): Promise<CodexRotatingWorkflowActivationResult> {
   const rotatingProvider =
     await input.prisma.codexOAuthProviderInstance.findUnique({
@@ -81,6 +82,19 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     },
   );
   const namespace = inspection.namespace;
+  const activeNamespace =
+    inspection.source === "active"
+      ? await input.prisma.codexOAuthSecretNamespace.findUnique({
+          where: { id: namespace.namespaceId },
+          select: { workflowSchemaVersion: true },
+        })
+      : null;
+  const expectedWorkflowSchemaVersion =
+    input.writerSchemaPolicy.selectWriterSchemaVersion({
+      existingNamespace: inspection.source === "active",
+      existingWorkflowSchemaVersion:
+        activeNamespace?.workflowSchemaVersion ?? null,
+    });
   if (inspection.source === "active") {
     if (!rotatingProvider.latestGenerationHash) {
       throw new Error("codex_rotating_workflow_generation_missing");
@@ -94,7 +108,12 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
         workflowPath: defaultCodexRotatingWorkflowPath,
         namespace,
       },
-      defaultWorkflowSourcePort(input, providerInstanceId, namespace),
+      defaultWorkflowSourcePort(
+        input,
+        providerInstanceId,
+        namespace,
+        expectedWorkflowSchemaVersion,
+      ),
     );
     return {
       status:
@@ -145,7 +164,7 @@ export async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
     expectedApiUrl: input.expectedApiUrl,
     expectedProviderInstanceId: providerInstanceId,
     expectedSecretNamespace: namespace,
-    expectedWorkflowSchemaVersion: input.expectedWorkflowSchemaVersion,
+    expectedWorkflowSchemaVersion,
   });
   const attestation = createVersionedSecretWorkflowSourceAttestation({
     repositoryId: input.githubRepositoryId,
@@ -218,6 +237,7 @@ function defaultWorkflowSourcePort(
   >,
   providerInstanceId: string,
   namespace: VersionedProviderSecretNamespace,
+  expectedWorkflowSchemaVersion: CodexRotatingT0WorkflowSchemaVersion,
 ): CodexRotatingDefaultWorkflowSourcePort {
   let observedRepository:
     | Readonly<{ id: string; fullName: string; defaultBranch: string }>
@@ -248,7 +268,7 @@ function defaultWorkflowSourcePort(
         headCommitSha: readGitHubCommitSha(response.data),
       };
     },
-    async readVerifiedWorkflowAt({ commitSha, expectedSchemaVersion }) {
+    async readVerifiedWorkflowAt({ commitSha }) {
       if (!observedRepository) {
         throw new Error("codex_rotating_workflow_repository_identity_missing");
       }
@@ -275,7 +295,7 @@ function defaultWorkflowSourcePort(
         expectedApiUrl: input.expectedApiUrl,
         expectedProviderInstanceId: providerInstanceId,
         expectedSecretNamespace: namespace,
-        expectedWorkflowSchemaVersion: expectedSchemaVersion,
+        expectedWorkflowSchemaVersion,
       });
       return createVersionedSecretWorkflowSourceAttestation({
         repositoryId: input.githubRepositoryId,

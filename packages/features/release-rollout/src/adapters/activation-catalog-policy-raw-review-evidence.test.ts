@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { sha256Canonical } from "../domain/canonical-json";
 import {
   activationCatalogRawPromotionOptIn,
   activationCatalogRawReviewArtifactRepositoryPath,
@@ -12,12 +11,47 @@ import {
 } from "../domain/activation-catalog-policy-raw-promotion-trust-root";
 import { canonicalReleaseMigrationPostManifestIdentity } from "../domain/release-migration-transition";
 import {
-  activationCatalogRawReviewArtifact,
   assertActivationCatalogPolicyReviewEvidence,
 } from "./activation-catalog-policy-review-evidence";
 
 const digest = (value: Buffer): string =>
   createHash("sha256").update(value).digest("hex");
+
+const fixedRawReviewArtifact = Buffer.from(
+  `# Raw activation catalog independent review
+
+## Decision
+
+- Verdict: **GO**
+- BLOCKER: **0**
+- HIGH: **0**
+- Decision ID: \`RR-PR236-RAW-CATALOG-GO-BE9958E3-140043EC-20260831\`
+- Reviewed at: \`2026-08-31T22:13:00.000Z\`
+
+## Capture identities
+
+- Base commit: \`1963a5d3d7697c120c67eb864bb003c1a69f2a4d\`
+- Audited head: \`be9958e3912d8d07fc965f0364fe8565d85d9894\`
+- Audited tree: \`5e6612922c2368d7f0d3a948794aa90e9a3f44ba\`
+- Workflow run: \`33444675220\`
+- Run attempt: \`1\`
+- Job: \`99660942529\`
+- Artifact ID: \`9777622013\`
+- Artifact name: \`activation-catalog-policy-be9958e3912d8d07fc965f0364fe8565d85d9894-1\`
+
+## Raw captures
+
+| Selection | Label | Bytes | Raw SHA-256 |
+| --- | --- | ---: | --- |
+| selected | \`activation-catalog-policy-candidate-1.json\` | \`2677685\` | \`140043ec47171493ff2e713eb0ec0a2afe18ae1133bb61b5178069533cbad6e9\` |
+| corroborating | \`activation-catalog-policy-candidate-2.json\` | \`2677685\` | \`57c519a3f5ee2413ff61e1236ba49450160859e20f0ed0612fd1c3b67e283bf0\` |
+
+Capture-set digest: \`sha256:7c697879d6acfdfeb9a77a2d1eb9f6d8bb9b468da14f9c62f4cd3337a4b8fdea\`
+Source PostgreSQL image: \`postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60\`
+Target PostgreSQL image: \`postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4\`
+`,
+  "utf8",
+);
 
 function deepFreeze<T>(
   value: T,
@@ -33,14 +67,15 @@ function deepFreeze<T>(
 }
 
 const capture = {
-  baseCommit: "a".repeat(40),
-  auditedHead: "b".repeat(40),
-  auditedTree: "c".repeat(40),
-  workflowRunId: "123",
+  baseCommit: "1963a5d3d7697c120c67eb864bb003c1a69f2a4d",
+  auditedHead: "be9958e3912d8d07fc965f0364fe8565d85d9894",
+  auditedTree: "5e6612922c2368d7f0d3a948794aa90e9a3f44ba",
+  workflowRunId: "33444675220",
   runAttempt: 1,
-  jobId: "456",
-  artifactId: "789",
-  artifactName: "activation-catalog-policy-raw",
+  jobId: "99660942529",
+  artifactId: "9777622013",
+  artifactName:
+    "activation-catalog-policy-be9958e3912d8d07fc965f0364fe8565d85d9894-1",
 };
 
 function rawEvidence() {
@@ -48,46 +83,53 @@ function rawEvidence() {
     kind: "reviewrouter-activation-catalog-raw-capture-evidence" as const,
     version: 1 as const,
     selectedCaptureId: "activation-catalog-policy-candidate-1.json",
-    captureSetSha256: "",
+    captureSetSha256:
+      "sha256:7c697879d6acfdfeb9a77a2d1eb9f6d8bb9b468da14f9c62f4cd3337a4b8fdea",
     captures: [
       {
         label: "activation-catalog-policy-candidate-1.json",
-        bytes: 101,
-        sha256: "1".repeat(64),
+        bytes: 2677685,
+        sha256:
+          "140043ec47171493ff2e713eb0ec0a2afe18ae1133bb61b5178069533cbad6e9",
       },
       {
         label: "activation-catalog-policy-candidate-2.json",
-        bytes: 102,
-        sha256: "2".repeat(64),
+        bytes: 2677685,
+        sha256:
+          "57c519a3f5ee2413ff61e1236ba49450160859e20f0ed0612fd1c3b67e283bf0",
       },
     ] as const,
     capture: { ...capture },
     postgresImages: {
-      sourcePg16: `postgres:16@sha256:${"3".repeat(64)}`,
-      targetPg17: `postgres:17@sha256:${"4".repeat(64)}`,
+      sourcePg16:
+        "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+      targetPg17:
+        "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4",
     },
     reviewResult: "GO" as const,
-    reviewDecisionId: "RR-RAW-GO",
-    projectionSha256: `sha256:${"5".repeat(64)}`,
-    liveCatalogDigest: `sha256:${"6".repeat(64)}`,
+    reviewDecisionId:
+      "RR-PR236-RAW-CATALOG-GO-BE9958E3-140043EC-20260831",
+    projectionSha256:
+      "sha256:42aaf14dff0968cfea3b1e80dca7c05de19e7888500c56e55f8fc3856684ebc6",
+    liveCatalogDigest:
+      "sha256:7ed3473cc71431dd2257a13d3c8fb048c4bb1adf3048064ff3117988251da644",
     postManifestIdentity: canonicalReleaseMigrationPostManifestIdentity,
-    recoveryWitnessSha256: "8".repeat(64),
+    recoveryWitnessSha256:
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     canonicalDigests: {
-      preactivation: `sha256:${"9".repeat(64)}`,
-      activated: `sha256:${"a".repeat(64)}`,
-      artifact: `sha256:${"b".repeat(64)}`,
+      preactivation:
+        "sha256:28c02276a3256329e9234bf7d7ecf7b2902651c51c6b0b35ba6a8d40582e2b0a",
+      activated:
+        "sha256:52aa57bd91c33b0e51a8ba0ff87b2ff4fbe22435f863804428bcb0ae2f3064ca",
+      artifact:
+        "sha256:3af42ff77b0d4168b3bb271f57d29387655064627ca74169557dbb79d9953959",
     },
     generatedArtifactSource: {
-      bytes: 103,
-      sha256: "c".repeat(64),
+      bytes: 2677061,
+      sha256:
+        "0579802d4276c087fd1d9281f09b0159d70b9920907f0fc355604cdc4d0fb21f",
     },
   };
-  const material = Object.fromEntries(
-    Object.entries(value).filter(
-      ([key]) => !["kind", "version", "captureSetSha256"].includes(key),
-    ),
-  );
-  value.captureSetSha256 = `sha256:${sha256Canonical(material)}`;
   return value;
 }
 
@@ -108,20 +150,17 @@ function unboundRoot(): ActivationCatalogRawPromotionTrustRootReady {
         bytes: 1,
         sha256: "e".repeat(64),
       },
-      reviewerRunId: "rr-raw-independent-review",
-      reviewerTaskId: "rr-raw-independent-review",
-      reviewedAt: "2026-08-31T10:00:00Z",
-      completedAt: "2026-08-31T10:01:00Z",
+      reviewerRunId: "rr-pr236-capture-review-r225-fallback",
+      reviewerTaskId: "rr-pr236-capture-review-r225-fallback",
+      reviewedAt: "2026-08-31T22:13:00.000Z",
+      completedAt: "2026-08-31T22:19:06.959Z",
     },
   };
 }
 
 function fixture(frozen = true) {
   let root = unboundRoot();
-  const reviewArtifact = Buffer.from(
-    activationCatalogRawReviewArtifact(root),
-    "utf8",
-  );
+  const reviewArtifact = fixedRawReviewArtifact;
   const runtime = {
     status: "done",
     changedFiles: [],
@@ -183,7 +222,7 @@ function bindReviewerRuntime(
 }
 
 describe("activation catalog raw review trust root", () => {
-  it("accepts a code-owned ready root and its exact materialized GO review", () => {
+  it("accepts fixed independently authored review and receipt fixture bytes", () => {
     const { root, buffers } = fixture();
     expect(activationCatalogRawTrustRootReadiness(root).status).toBe("ready");
     expect(() =>
@@ -376,22 +415,36 @@ describe("activation catalog raw review trust root", () => {
     );
   });
 
-  it("rejects canonical, hash-bound runtime JSON that does not materialize GO", () => {
+  it("rejects independently rebound review and receipt bytes with a non-GO verdict", () => {
     const { root, buffers } = fixture();
-    const runtime = JSON.parse(buffers.reviewerRuntime.toString("utf8"));
-    runtime.evidence[1] = runtime.evidence[1].replace(
-      "- Verdict: **GO**",
-      "- Verdict: **NO-GO**",
+    const reviewArtifact = Buffer.from(
+      buffers.reviewArtifact
+        .toString("utf8")
+        .replace("- Verdict: **GO**", "- Verdict: **NO-GO**"),
+      "utf8",
     );
+    const runtime = JSON.parse(buffers.reviewerRuntime.toString("utf8"));
+    runtime.evidence[1] = `output_summary:${reviewArtifact.toString("utf8")}`;
     const reviewerRuntime = Buffer.from(
       `${JSON.stringify(runtime, null, 2)}\n`,
       "utf8",
     );
+    const reboundRoot = {
+      ...bindReviewerRuntime(root, reviewerRuntime),
+      independentReview: {
+        ...bindReviewerRuntime(root, reviewerRuntime).independentReview,
+        reviewArtifact: {
+          ...root.independentReview.reviewArtifact,
+          bytes: reviewArtifact.byteLength,
+          sha256: digest(reviewArtifact),
+        },
+      },
+    };
     expect(() =>
       assertActivationCatalogPolicyReviewEvidence(
-        { ...buffers, reviewerRuntime },
-        bindReviewerRuntime(root, reviewerRuntime),
+        { reviewArtifact, reviewerRuntime },
+        reboundRoot,
       ),
-    ).toThrow("activation_catalog_policy_raw_review_materialization_mismatch");
+    ).toThrow("activation_catalog_policy_raw_review_report_invalid");
   });
 });

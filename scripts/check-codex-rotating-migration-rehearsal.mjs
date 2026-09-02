@@ -122,6 +122,21 @@ const migration63 = join(migrationsDirectory, migration63Name, "migration.sql");
 const migration64 = join(migrationsDirectory, migration64Name, "migration.sql");
 const migration65 = join(migrationsDirectory, migration65Name, "migration.sql");
 const migration66 = join(migrationsDirectory, migration66Name, "migration.sql");
+const migration69 = join(migrationsDirectory, migration69Name, "migration.sql");
+const migration70 = join(migrationsDirectory, migration70Name, "migration.sql");
+const migration71 = join(migrationsDirectory, migration71Name, "migration.sql");
+const migration72Retire = join(
+  migrationsDirectory,
+  migration72RetireName,
+  "migration.sql",
+);
+const migration72Canary = join(
+  migrationsDirectory,
+  migration72CanaryName,
+  "migration.sql",
+);
+const migration73 = join(migrationsDirectory, migration73Name, "migration.sql");
+const migration87 = join(migrationsDirectory, migration87Name, "migration.sql");
 const rotatingMigrationNames = readdirSync(migrationsDirectory)
   .filter((name) => /^0000(?:6[0-9]|[7-9][0-9])_/u.test(name))
   .sort();
@@ -1112,6 +1127,21 @@ async function proveMigrationSpecificLegacyBehavior() {
         END IF;
       END $$;`,
     ]);
+    for (const migration of [
+      migration63,
+      migration64,
+      migration65,
+      migration66,
+      migration69,
+      migration70,
+      migration71,
+      migration72Retire,
+      migration72Canary,
+      migration73,
+    ]) {
+      psql(providerAdmin, ["-f", migration]);
+    }
+    proveMigration87LegacyBackfill(providerAdmin);
   } finally {
     psql(
       adminUrl,
@@ -1120,6 +1150,168 @@ async function proveMigrationSpecificLegacyBehavior() {
     );
     cleanupRuntimeRoles(adminUrl);
   }
+}
+
+function proveMigration87LegacyBackfill(url) {
+  psql(url, [
+    "-c",
+    String.raw`
+      DO $$ BEGIN
+        IF EXISTS (
+          SELECT 1 FROM public."CodexOAuthSecretNamespace"
+          WHERE "status" = 'active'
+        ) THEN
+          RAISE EXCEPTION 'migration87_fixture_requires_no_active_namespace';
+        END IF;
+      END $$;
+
+      ALTER TABLE public."CodexOAuthProviderInstance"
+        DISABLE TRIGGER USER;
+      ALTER TABLE public."CodexOAuthSecretNamespace"
+        DISABLE TRIGGER USER;
+
+      UPDATE public."CodexOAuthProviderInstance"
+      SET "state" = fixture."state",
+          "activeSecretNamespaceId" = fixture."namespaceId",
+          "activeSecretNamespaceEpoch" = fixture."pointerEpoch",
+          "activeSecretNamespaceName" = fixture."secretName"
+      FROM (
+        VALUES
+          (
+            'p-fetched',
+            'unknown_auth_state',
+            'migration87-unknown-auth-state',
+            7001::bigint,
+            'REVIEWROUTER_CODEX_AUTH_JSON_R900001_P0123456789abcdef_E7001_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+          ),
+          (
+            'p-issued',
+            'stale_queued_secret',
+            'migration87-stale-queued-secret',
+            7002::bigint,
+            'REVIEWROUTER_CODEX_AUTH_JSON_R900002_P0123456789abcdef_E7002_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+          ),
+          (
+            'p-clean',
+            'active',
+            'migration87-stale-pointer',
+            7004::bigint,
+            'REVIEWROUTER_CODEX_AUTH_JSON_R900007_P0123456789abcdef_E7003_cccccccccccccccccccccccccccccccc'
+          )
+      ) fixture(
+        "providerId", "state", "namespaceId", "pointerEpoch", "secretName"
+      )
+      WHERE provider."id" = fixture."providerId";
+
+      INSERT INTO public."CodexOAuthSecretNamespace" (
+        "id", "providerInstanceRowId", "githubRepositoryId", "namespaceEpoch",
+        "secretName", "databaseRecoveryWitness", "status", "confirmedAt",
+        "activatedAt", "workflowPath", "workflowSourceCommitSha",
+        "workflowSourceBlobSha", "workflowSourceSha256",
+        "workflowSemanticSha256", "workflowSourceTrust",
+        "attestedRepositoryId"
+      ) VALUES
+        (
+          'migration87-unknown-auth-state', 'p-fetched', '900001', 7001,
+          'REVIEWROUTER_CODEX_AUTH_JSON_R900001_P0123456789abcdef_E7001_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          repeat('f', 64), 'active', now(), now(),
+          '.github/workflows/reviewrouter-codex.yml', repeat('a', 40),
+          repeat('b', 40), repeat('c', 64), repeat('d', 64),
+          'trusted_default_branch_revision', '900001'
+        ),
+        (
+          'migration87-stale-queued-secret', 'p-issued', '900002', 7002,
+          'REVIEWROUTER_CODEX_AUTH_JSON_R900002_P0123456789abcdef_E7002_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          repeat('f', 64), 'active', now(), now(),
+          '.github/workflows/reviewrouter-codex.yml', repeat('a', 40),
+          repeat('b', 40), repeat('c', 64), repeat('d', 64),
+          'trusted_default_branch_revision', '900002'
+        ),
+        (
+          'migration87-stale-pointer', 'p-clean', '900007', 7003,
+          'REVIEWROUTER_CODEX_AUTH_JSON_R900007_P0123456789abcdef_E7003_cccccccccccccccccccccccccccccccc',
+          repeat('f', 64), 'active', now(), now(),
+          '.github/workflows/reviewrouter-codex.yml', repeat('a', 40),
+          repeat('b', 40), repeat('c', 64), repeat('d', 64),
+          'trusted_default_branch_revision', '900007'
+        );
+
+      ALTER TABLE public."CodexOAuthSecretNamespace"
+        ENABLE TRIGGER USER;
+      ALTER TABLE public."CodexOAuthProviderInstance"
+        ENABLE TRIGGER USER;
+    `,
+  ]);
+
+  const stalePointer = psql(
+    url,
+    [
+      "-v",
+      "VERBOSITY=verbose",
+      "-v",
+      "SHOW_CONTEXT=never",
+      "-f",
+      migration87,
+    ],
+    false,
+  );
+  assertPsqlFailedWithExactMessage(
+    { ...stalePointer, postgresInputSource: migration87 },
+    "codex_oauth_active_namespace_schema_version_ambiguous",
+    "migration87 stale active-provider pointer did not fail closed",
+  );
+  assert(
+    psql(url, [
+      "-Atc",
+      `SELECT count(*) FROM information_schema.columns
+       WHERE table_schema='public'
+         AND table_name='CodexOAuthSecretNamespace'
+         AND column_name='workflowSchemaVersion'`,
+    ]).stdout.trim() === "0",
+    "migration87 stale-pointer rejection did not roll back atomically",
+  );
+
+  psql(url, [
+    "-c",
+    `ALTER TABLE public."CodexOAuthProviderInstance" DISABLE TRIGGER USER;
+     UPDATE public."CodexOAuthProviderInstance"
+     SET "activeSecretNamespaceEpoch"=7003
+     WHERE "id"='p-clean';
+     ALTER TABLE public."CodexOAuthProviderInstance" ENABLE TRIGGER USER;`,
+  ]);
+  psql(url, ["-f", migration87]);
+  psql(url, [
+    "-c",
+    String.raw`DO $$ BEGIN
+      IF (
+        SELECT count(*)
+        FROM public."CodexOAuthSecretNamespace" namespace
+        JOIN public."CodexOAuthProviderInstance" provider
+          ON provider."id" = namespace."providerInstanceRowId"
+        WHERE provider."id" IN ('p-fetched', 'p-issued')
+          AND provider."state" IN ('unknown_auth_state', 'stale_queued_secret')
+          AND namespace."status" = 'active'
+          AND NOT namespace."permanentlyRetired"
+          AND namespace."workflowSchemaVersion" = 4
+          AND namespace."workflowPath" IS NOT NULL
+          AND namespace."workflowSourceCommitSha" IS NOT NULL
+          AND namespace."workflowSourceBlobSha" IS NOT NULL
+          AND namespace."workflowSourceSha256" IS NOT NULL
+          AND namespace."workflowSemanticSha256" IS NOT NULL
+          AND namespace."workflowSourceTrust" =
+            'trusted_default_branch_revision'
+          AND namespace."attestedRepositoryId" =
+            namespace."githubRepositoryId"
+          AND provider."activeSecretNamespaceId" = namespace."id"
+          AND provider."activeSecretNamespaceEpoch" =
+            namespace."namespaceEpoch"
+          AND provider."activeSecretNamespaceName" = namespace."secretName"
+      ) <> 2 THEN
+        RAISE EXCEPTION
+          'migration87 transient provider-state backfill proof failed';
+      END IF;
+    END $$;`,
+  ]);
 }
 
 function proveCanonicalLegacyReconciliationNegativeCases() {

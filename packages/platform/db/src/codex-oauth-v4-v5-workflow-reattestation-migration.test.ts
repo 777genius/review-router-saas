@@ -14,9 +14,36 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
 
   it("is an atomic forward migration with a pinned digest", () => {
     expect(createHash("sha256").update(sql).digest("hex")).toBe(
-      "d443e366de64879b1d6c32f4edba3648d8e8da160f804b6ec87bede581343109",
+      "af5fccfd987312b85d48cd38b7f528780f52e82daab47c34829581e50193b090",
     );
     expect(sql).toMatch(/^BEGIN;[\s\S]+COMMIT;\s*$/u);
+  });
+
+  it("backfills from the active pointer and trusted attestation without requiring a transient provider state", () => {
+    const backfill =
+      /UPDATE public\."CodexOAuthSecretNamespace" namespace([\s\S]+?)DO \$backfill\$/u.exec(
+        sql,
+      )?.[1];
+
+    expect(backfill).toBeDefined();
+    expect(backfill).not.toContain('provider."state" = \'active\'');
+    expect(backfill).toContain('namespace."status" = \'active\'');
+    expect(backfill).toContain('NOT namespace."permanentlyRetired"');
+    expect(backfill).toContain(
+      'namespace."workflowSourceTrust" = \'trusted_default_branch_revision\'',
+    );
+    expect(backfill).toContain(
+      'namespace."attestedRepositoryId" = namespace."githubRepositoryId"',
+    );
+    expect(backfill).toContain(
+      'provider."activeSecretNamespaceId" = namespace."id"',
+    );
+    expect(backfill).toContain(
+      'provider."activeSecretNamespaceEpoch" = namespace."namespaceEpoch"',
+    );
+    expect(backfill).toContain(
+      'provider."activeSecretNamespaceName" = namespace."secretName"',
+    );
   });
 
   it("authorizes only the exact locked active V4-to-V5 transition", () => {

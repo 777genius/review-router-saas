@@ -49,10 +49,12 @@ vi.mock("./prisma-codex-rotating-workflow-namespace", () => ({
 }));
 
 import { activateConfirmedCodexNamespaceAfterWorkflowMerge } from "./codex-rotating-workflow-activation";
+import { CodexRotatingWriterSchemaPolicy } from "./codex-rotating-writer-schema-policy";
 
 const source = "name: canonical workflow\n";
 const blobSha = gitBlobSha(source);
 const firstHead = "a".repeat(40);
+const releaseSha = "e".repeat(40);
 
 describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
   beforeEach(() => {
@@ -278,6 +280,57 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
     );
     expect(mocks.replaceActiveWorkflowSource).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    ["V5", 5],
+    ["V4", 4],
+  ])(
+    "keeps an active %s namespace on its existing schema while the gate is disabled",
+    async (_name, existingSchemaVersion) => {
+      mocks.inspectNamespace.mockResolvedValueOnce({
+        source: "active",
+        namespace: {
+          namespaceId: "namespace_2",
+          epoch: 2n,
+          name: "REVIEWROUTER_CODEX_AUTH_JSON_TEST_E2",
+        },
+      });
+      const { input, findAttestation } = fixture({
+        v5WritingEnabled: false,
+      });
+      findAttestation.mockResolvedValueOnce({
+        workflowSchemaVersion: existingSchemaVersion,
+      });
+      mocks.replaceActiveWorkflowSource.mockImplementationOnce(
+        async (
+          _target: unknown,
+          sourcePort: CodexRotatingDefaultWorkflowSourcePort,
+        ) => {
+          const identity = await sourcePort.readDefaultSourceIdentity();
+          await sourcePort.readVerifiedWorkflowAt({
+            commitSha: identity.headCommitSha,
+            expectedSchemaVersion: 5,
+          });
+          return {
+            status: "already_active",
+            workflowSourceCommitSha: identity.headCommitSha,
+          };
+        },
+      );
+
+      await expect(
+        activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
+      ).resolves.toMatchObject({
+        status: "already_active",
+        namespaceEpoch: "2",
+      });
+      expect(mocks.assertTrusted).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedWorkflowSchemaVersion: existingSchemaVersion,
+        }),
+      );
+    },
+  );
 
   it("re-attests an active V4 namespace after its workflow is upgraded to V5", async () => {
     const previousSource = "name: canonical v4 workflow\n";
@@ -510,7 +563,11 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
   });
 });
 
-function fixture() {
+function fixture(
+  policyOverride: {
+    readonly v5WritingEnabled?: boolean;
+  } = {},
+) {
   const findUnique = vi.fn().mockResolvedValue({
     id: "provider_1",
     latestGenerationHash: "9".repeat(64),
@@ -550,7 +607,11 @@ function fixture() {
       defaultBranch: "main",
       expectedRepositoryFullName: "777genius/review-router-saas-e2e",
       expectedApiUrl: "https://api.reviewrouter.test",
-      expectedWorkflowSchemaVersion: 5,
+      writerSchemaPolicy: new CodexRotatingWriterSchemaPolicy({
+        v5WritingEnabled: policyOverride.v5WritingEnabled ?? true,
+        configuredReaderReleaseCommitSha: releaseSha,
+        runtimeReleaseCommitSha: releaseSha,
+      }),
     },
   };
 }

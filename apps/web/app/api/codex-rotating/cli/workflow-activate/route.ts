@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { CodexRotatingT0WorkflowSchemaVersion } from "@reviewrouter/features-workflow-provisioning";
 import {
   assertWorkspaceFeatureEntitlement,
   PrismaEntitlementRepository,
 } from "@reviewrouter/features-entitlements";
 import { activateConfirmedCodexNamespaceAfterWorkflowMerge } from "../../../../../src/server/codex-rotating-workflow-activation";
+import { createCodexRotatingWriterSchemaPolicy } from "../../../../../src/server/codex-rotating-writer-schema-policy-env";
 import { createGitHubAppInstallationOctokit } from "../../../../../src/server/dashboard-mutations";
 import { createDashboardRateLimitPolicy } from "../../../../../src/server/dashboard-rate-limits";
 import { authorizeGitHubCliRepository } from "../../../../../src/server/github-cli-repository-authorization";
@@ -91,8 +91,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       defaultBranch: repository.defaultBranch,
       expectedRepositoryFullName: repository.fullName,
       expectedApiUrl: resolveWorkflowPublicApiUrl(),
-      expectedWorkflowSchemaVersion:
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+      writerSchemaPolicy: createCodexRotatingWriterSchemaPolicy(),
     });
     if (result.status === "not_configured") {
       throw new Error("codex_rotating_not_enabled");

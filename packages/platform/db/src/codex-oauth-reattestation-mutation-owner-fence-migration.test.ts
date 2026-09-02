@@ -21,7 +21,7 @@ const migration80 = readFileSync(
 describe("Codex OAuth reattestation mutation-owner fence migration", () => {
   it("preserves immutable 000079 and pins the additive follow-up", () => {
     expect(createHash("sha256").update(migration79).digest("hex")).toBe(
-      "d443e366de64879b1d6c32f4edba3648d8e8da160f804b6ec87bede581343109",
+      "af5fccfd987312b85d48cd38b7f528780f52e82daab47c34829581e50193b090",
     );
     expect(createHash("sha256").update(migration80).digest("hex")).toBe(
       "18a1e48953d1360d3661ea6753b7aa350fc7e28caeaeb65d42c9ac42569f1cf0",

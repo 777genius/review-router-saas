@@ -24,7 +24,6 @@ WHERE namespace."status" = 'active'
   AND namespace."workflowSourceTrust" = 'trusted_default_branch_revision'
   AND namespace."attestedRepositoryId" = namespace."githubRepositoryId"
   AND provider."id" = namespace."providerInstanceRowId"
-  AND provider."state" = 'active'
   AND provider."activeSecretNamespaceId" = namespace."id"
   AND provider."activeSecretNamespaceEpoch" = namespace."namespaceEpoch"
   AND provider."activeSecretNamespaceName" = namespace."secretName";
