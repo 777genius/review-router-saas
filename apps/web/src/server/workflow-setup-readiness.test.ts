@@ -10,20 +10,25 @@ import {
   CodexRotatingT0WorkflowSchemaVersion,
   createVersionedProviderSecretNamespace,
   defaultCodexRotatingWorkflowPath,
+  defaultInteractionWorkflowPath,
   defaultWorkflowPath,
+  renderCanonicalCodexRotatingInteractionWorkflowV2,
+  renderCodexRotatingInteractionWorkflow,
   renderCodexRotatingAdvisoryWorkflow,
 } from "@reviewrouter/features-workflow-provisioning";
 import { isWorkflowSetupAlreadyCurrent } from "./workflow-setup-readiness";
 
 class CapturingWorkflowProbe implements RepositoryWorkflowProbePort {
   public input: RepositoryWorkflowProbeInput | null = null;
+  public readonly inputs: RepositoryWorkflowProbeInput[] = [];
 
   constructor(private readonly check: RepositoryWorkflowCheck) {}
 
   async probeWorkflow(
     input: RepositoryWorkflowProbeInput,
   ): Promise<RepositoryWorkflowCheck> {
-    this.input = input;
+    this.input ??= input;
+    this.inputs.push(input);
     return this.check;
   }
 }
@@ -61,14 +66,29 @@ function canonicalV4Workflow(): string {
   });
 }
 
-function checkV4WorkflowReadiness(workflow: string): Promise<boolean> {
+function canonicalV3InteractionWorkflow(): string {
+  return renderCodexRotatingInteractionWorkflow({
+    actionRef: v4ActionRef,
+    apiUrl: "https://api.reviewrouter.site",
+    runtimeConfigMode: "oidc",
+  });
+}
+
+function checkV4WorkflowReadiness(
+  workflow: string,
+  interactionWorkflow = canonicalV3InteractionWorkflow(),
+): Promise<boolean> {
   const probe = new OctokitRepositoryWorkflowProbe({
     createRequester: async () => ({
-      request: async () => ({
+      request: async (_route, parameters) => ({
         data: {
           type: "file",
           encoding: "base64",
-          content: Buffer.from(workflow).toString("base64"),
+          content: Buffer.from(
+            parameters?.path === defaultInteractionWorkflowPath
+              ? interactionWorkflow
+              : workflow,
+          ).toString("base64"),
         },
       }),
     }),
@@ -84,7 +104,10 @@ function checkV4WorkflowReadiness(workflow: string): Promise<boolean> {
         CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
       codexRotatingWorkflowSecretNamespace: v4SecretNamespace,
     },
-    { workflowProbe: probe },
+    {
+      workflowProbe: probe,
+      resolvePublicApiUrl: () => "https://api.reviewrouter.site",
+    },
   );
 }
 
@@ -295,6 +318,11 @@ describe("workflow setup readiness", () => {
         ],
       ],
     });
+    expect(probe.inputs[1]).toMatchObject({
+      workflowPath: defaultInteractionWorkflowPath,
+      expectedActionRef:
+        "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+    });
   });
 
   it("requires fork sandbox markers when rotating Codex fork mode is enabled", async () => {
@@ -308,6 +336,8 @@ describe("workflow setup readiness", () => {
       isWorkflowSetupAlreadyCurrent(
         {
           ...readinessInput,
+          actionRef:
+            "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
           codexRotatingProviderInstanceId: "codex-rotating:123456",
           forkAgenticSandboxEnabled: true,
         },
@@ -396,6 +426,19 @@ describe("workflow setup readiness", () => {
     await expect(checkV4WorkflowReadiness(canonicalV4Workflow())).resolves.toBe(
       true,
     );
+  });
+
+  it("does not treat the prior V2 interaction workflow as current", async () => {
+    await expect(
+      checkV4WorkflowReadiness(
+        canonicalV4Workflow(),
+        renderCanonicalCodexRotatingInteractionWorkflowV2({
+          actionRef: v4ActionRef,
+          apiUrl: "https://api.reviewrouter.site",
+          runtimeConfigMode: "oidc",
+        }),
+      ),
+    ).resolves.toBe(false);
   });
 
   it.each([

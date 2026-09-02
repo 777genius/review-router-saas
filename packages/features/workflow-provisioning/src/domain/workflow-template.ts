@@ -6,6 +6,7 @@ import {
   managedInteractionWorkflowPath,
 } from "@reviewrouter/protocol-review-workflow";
 import {
+  areWorkflowDocumentsSemanticallyEqual,
   codexRotatingMaxChangedLinesVariableName,
   codexRotatingReviewDraftsVariableName,
   codexRotatingSecretName,
@@ -21,6 +22,7 @@ import {
 } from "@reviewrouter/features-codex-oauth-rotating";
 
 export {
+  areWorkflowDocumentsSemanticallyEqual,
   renderCodexRotatingAdvisoryWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
 };
@@ -366,7 +368,7 @@ jobs:
 export function renderCodexRotatingInteractionWorkflow(
   options: ReviewRouterWorkflowOptions,
 ): string {
-  return renderCanonicalCodexRotatingInteractionWorkflowV2(options);
+  return renderCanonicalCodexRotatingInteractionWorkflowV3(options);
 }
 
 /**
@@ -376,7 +378,17 @@ export function renderCodexRotatingInteractionWorkflow(
 export function renderCanonicalCodexRotatingInteractionWorkflowV1(
   options: ReviewRouterWorkflowOptions,
 ): string {
-  return renderCanonicalCodexRotatingInteractionWorkflow(options, false);
+  return renderCanonicalCodexRotatingInteractionWorkflow(options, "v1");
+}
+
+/**
+ * Immutable schema-v2 authority contract. This remains executable during a
+ * staggered rollout, but new setup must install v3.
+ */
+export function renderCanonicalCodexRotatingInteractionWorkflowV2(
+  options: ReviewRouterWorkflowOptions,
+): string {
+  return renderCanonicalCodexRotatingInteractionWorkflow(options, "v2");
 }
 
 /**
@@ -384,18 +396,20 @@ export function renderCanonicalCodexRotatingInteractionWorkflowV1(
  * narrow Actions rerun authority. Repository writes are issued only through
  * App OIDC.
  */
-export function renderCanonicalCodexRotatingInteractionWorkflowV2(
+export function renderCanonicalCodexRotatingInteractionWorkflowV3(
   options: ReviewRouterWorkflowOptions,
 ): string {
-  return renderCanonicalCodexRotatingInteractionWorkflow(options, true);
+  return renderCanonicalCodexRotatingInteractionWorkflow(options, "v3");
 }
 
 function renderCanonicalCodexRotatingInteractionWorkflow(
   options: ReviewRouterWorkflowOptions,
-  appFirstV2: boolean,
+  version: "v1" | "v2" | "v3",
 ): string {
   const runtimeRef = extractReusableRuntimeRef(options.actionRef);
-  if (appFirstV2 && !/^[a-fA-F0-9]{40}$/.test(runtimeRef)) {
+  const appFirst = version !== "v1";
+  const actionsRerunAuthority = version === "v3";
+  if (actionsRerunAuthority && !/^[a-fA-F0-9]{40}$/.test(runtimeRef)) {
     throw new Error(
       "invalid_app_first_interaction_reusable_workflow_runtime_ref",
     );
@@ -411,7 +425,7 @@ on:
   workflow_dispatch:
 
 ${
-  appFirstV2
+  appFirst
     ? "permissions: {}"
     : `permissions:
   actions: write
@@ -426,11 +440,10 @@ jobs:
     name: interaction
     runs-on: ubuntu-24.04
     if: \${{ ${interactionJobGuardExpression} }}${
-      appFirstV2
+      appFirst
         ? `
     permissions:
-      actions: write
-      contents: read
+${actionsRerunAuthority ? "      actions: write\n" : ""}      contents: read
       issues: read
       pull-requests: read
       id-token: write`
@@ -452,7 +465,7 @@ jobs:
       REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT: "/api/action/v1/memory-commands"
     steps:
       - name: Checkout ReviewRouter interaction runtime
-        uses: actions/checkout@${appFirstV2 ? actionsCheckoutV6Commit : "v6"}
+        uses: actions/checkout@${appFirst ? actionsCheckoutV6Commit : "v6"}
         with:
           repository: ${reusableWorkflowRuntimeRepository}
           ref: \${{ env.RR_RUNTIME_REF }}
@@ -460,7 +473,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@${appFirstV2 ? actionsSetupNodeV6Commit : "v6"}
+        uses: actions/setup-node@${appFirst ? actionsSetupNodeV6Commit : "v6"}
         with:
           node-version: "24"
 

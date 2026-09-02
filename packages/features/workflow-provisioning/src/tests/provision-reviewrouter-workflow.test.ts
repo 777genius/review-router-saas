@@ -451,6 +451,7 @@ describe("provisionReviewRouterWorkflow", () => {
   it("rejects rotating Codex workflow provisioning on a mutable main action ref", async () => {
     const gateway = new CapturingSetupGateway();
     const provisioning = new CapturingProvisioningRepository();
+    const auditLog = new CapturingAuditLog();
 
     await expect(
       provisionReviewRouterWorkflow(
@@ -465,13 +466,15 @@ describe("provisionReviewRouterWorkflow", () => {
           runtimeConfigMode: "oidc",
           codexRotatingProviderInstanceId: "codex-rotating:123456",
         },
-        { setupGateway: gateway, provisioning },
+        { setupGateway: gateway, provisioning, auditLog },
       ),
     ).rejects.toThrow(
       "invalid_app_first_interaction_reusable_workflow_runtime_ref",
     );
     expect(gateway.input).toBeNull();
     expect(provisioning.opened).toBeNull();
+    expect(provisioning.failed).toBeNull();
+    expect(auditLog.events).toEqual([]);
   });
 
   it("persists safe GitHub failure summaries without raw adapter details", async () => {
