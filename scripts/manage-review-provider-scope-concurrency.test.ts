@@ -69,10 +69,19 @@ function commentFreeExecutableSource(source: string): string {
 }
 
 function literalAuthorityStatements(steps: WorkflowStep[]): string[] {
-  const executable = steps
+  let executable = steps
     .map((step) => commentFreeExecutableSource(step.run ?? ""))
     .join("\n")
     .replace(/\\\n\s*/gu, " ");
+  const approvedSchemaGrants = [
+    /\bGRANT\s+USAGE\s+ON\s+SCHEMA\s+public\s+TO\s+reviewrouter_release_migration\s*;/iu,
+    /\bGRANT\s+USAGE\s*,\s*CREATE\s+ON\s+SCHEMA\s+public\s+TO\s+reviewrouter_release_schema_owner\s*;/iu,
+  ];
+  for (const approvedGrant of approvedSchemaGrants) {
+    // Remove exactly one approved occurrence. A duplicate or broadened grant
+    // remains visible to the generic GRANT rejection below.
+    executable = executable.replace(approvedGrant, "");
+  }
   const forbidden = [
     /\bGRANT\b/giu,
     /\bALTER\s+ROLE\b/giu,
@@ -401,6 +410,11 @@ function assertProviderFixtureContract(
     'ALTER TABLE public."ReviewProviderScopeConcurrencyControl" OWNER TO reviewrouter_release_schema_owner',
     'ALTER TABLE public."ReviewInvocationLeaseV2" OWNER TO reviewrouter_release_schema_owner',
   ];
+  const approvedHandoffStatements = [
+    ...approvedAuthority,
+    "GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration",
+    "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_schema_owner",
+  ];
   const authorityStatements = literalAuthorityStatements(steps);
   if (
     JSON.stringify(authorityStatements) !== JSON.stringify(approvedAuthority)
@@ -428,9 +442,9 @@ function assertProviderFixtureContract(
   ).run;
   if (
     JSON.stringify(psqlStatements(handoffRun)) !==
-    JSON.stringify(approvedAuthority)
+    JSON.stringify(approvedHandoffStatements)
   ) {
-    throw new Error("provider fixture must transfer exactly two table owners");
+    throw new Error("provider fixture has unexpected handoff authority");
   }
 
   const providerTest = step("Provider-scope real database tests");
@@ -655,6 +669,29 @@ describe("provider scope concurrency rollout control", () => {
       `            ${THROUGH_PROVIDER_SCOPE_PRISMA_CONFIG}`,
       `            # ${THROUGH_PROVIDER_SCOPE_PRISMA_CONFIG}`,
     ],
+    [
+      "deleted release migration schema usage",
+      "          GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration;\n",
+      "",
+    ],
+    [
+      "deleted schema-owner schema authority",
+      `          GRANT USAGE, CREATE ON SCHEMA public
+            TO reviewrouter_release_schema_owner;
+`,
+      "",
+    ],
+    [
+      "broadened release migration schema authority",
+      "          GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration;",
+      "          GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_migration;",
+    ],
+    [
+      "public schema authority",
+      "          GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration;",
+      `          GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration;
+          GRANT USAGE ON SCHEMA public TO PUBLIC;`,
+    ],
     ["removed teardown always guard", "        if: always()\n", ""],
     [
       "commented teardown always guard",
@@ -737,6 +774,14 @@ describe("provider scope concurrency rollout control", () => {
       "      - name: Provider-scope real database tests",
       `      - name: Accidental authority
         run: psql --command='ALTER TABLE public."AddedStepThird" OWNER TO reviewrouter_release_schema_owner;'
+
+      - name: Provider-scope real database tests`,
+    ],
+    [
+      "a duplicate approved grant in another shell",
+      "          SQL\n\n      - name: Provider-scope real database tests",
+      `          SQL
+          psql -h 127.0.0.1 -U postgres -d review_router_provider_scope_ci_test -c 'GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration;'
 
       - name: Provider-scope real database tests`,
     ],

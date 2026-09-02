@@ -490,6 +490,11 @@ jobs:
             OWNER TO reviewrouter_release_schema_owner;
           ALTER TABLE public."ReviewInvocationLeaseV2"
             OWNER TO reviewrouter_release_schema_owner;
+          -- The restricted migration login can resolve the rollout routines,
+          -- while only their NOLOGIN owner can recreate the reversible index.
+          GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration;
+          GRANT USAGE, CREATE ON SCHEMA public
+            TO reviewrouter_release_schema_owner;
           SQL
 
       - name: Provider-scope real database tests
