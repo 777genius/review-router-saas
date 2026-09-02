@@ -389,9 +389,7 @@ const assertRawReviewMarkdown = (
       (match) => match[1],
     );
     if (
-      !markdown.startsWith(
-        "# Raw activation catalog independent review\n",
-      ) ||
+      !markdown.startsWith("# Raw activation catalog independent review\n") ||
       JSON.stringify(headings) !==
         JSON.stringify(["Decision", "Capture identities", "Raw captures"])
     )
@@ -435,15 +433,11 @@ const assertRawReviewMarkdown = (
         `\`${capture.sha256}\``,
       ]),
     );
-    exactKeyedLines(
-      captures,
-      /^([^|:\n][^:\n]*): `([^`]+)`$/gmu,
-      {
-        "Capture-set digest": evidence.captureSetSha256,
-        "Source PostgreSQL image": evidence.postgresImages.sourcePg16,
-        "Target PostgreSQL image": evidence.postgresImages.targetPg17,
-      },
-    );
+    exactKeyedLines(captures, /^([^|:\n][^:\n]*): `([^`]+)`$/gmu, {
+      "Capture-set digest": evidence.captureSetSha256,
+      "Source PostgreSQL image": evidence.postgresImages.sourcePg16,
+      "Target PostgreSQL image": evidence.postgresImages.targetPg17,
+    });
   } catch {
     throw new Error("activation_catalog_policy_raw_review_report_invalid");
   }

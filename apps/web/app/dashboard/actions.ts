@@ -483,12 +483,11 @@ async function provisionPendingRepositoryOwnedWorkflow(input: {
     githubRepositoryId: repository.githubRepositoryId.toString(),
     providerInstanceId,
   });
-  const writerSchemaVersion =
-    await selectCodexRotatingWriterSchemaVersion({
-      prisma,
-      inspection: namespaceInspection,
-      policy: createCodexRotatingWriterSchemaPolicy(),
-    });
+  const writerSchemaVersion = await selectCodexRotatingWriterSchemaVersion({
+    prisma,
+    inspection: namespaceInspection,
+    policy: createCodexRotatingWriterSchemaPolicy(),
+  });
   const resolvedRuntime = await loadResolvedReviewRuntime({
     prisma,
     workspaceId: input.workspaceId,
@@ -1246,8 +1245,7 @@ async function confirmSetupPullRequestMergedMutation(
   let params: Record<string, string>;
 
   try {
-    const writerSchemaPolicy =
-      createCodexRotatingWriterSchemaPolicy();
+    const writerSchemaPolicy = createCodexRotatingWriterSchemaPolicy();
     const repository = await prisma.repositoryConnection.findUnique({
       where: { id: repositoryId },
       select: {
@@ -1578,8 +1576,7 @@ async function confirmProviderSecretSetupMutation(
   let params: Record<string, string>;
 
   try {
-    const writerSchemaPolicy =
-      createCodexRotatingWriterSchemaPolicy();
+    const writerSchemaPolicy = createCodexRotatingWriterSchemaPolicy();
     const repository = await loadRepositoryForWorkspace({
       prisma,
       workspaceId,

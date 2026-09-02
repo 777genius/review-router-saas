@@ -16,9 +16,7 @@ export class CodexRotatingWriterSchemaPolicy {
   constructor(configuration: CodexRotatingWriterSchemaPolicyConfiguration) {
     this.#v5WritingAuthorized =
       configuration.v5WritingEnabled &&
-      isFullCommitSha(
-        configuration.configuredReaderReleaseCommitSha,
-      ) &&
+      isFullCommitSha(configuration.configuredReaderReleaseCommitSha) &&
       isFullCommitSha(configuration.runtimeReleaseCommitSha) &&
       configuration.configuredReaderReleaseCommitSha ===
         configuration.runtimeReleaseCommitSha;
@@ -49,8 +47,6 @@ export class CodexRotatingWriterSchemaPolicy {
   }
 }
 
-function isFullCommitSha(
-  value: string | undefined,
-): value is string {
+function isFullCommitSha(value: string | undefined): value is string {
   return typeof value === "string" && /^[a-f0-9]{40}$/iu.test(value);
 }

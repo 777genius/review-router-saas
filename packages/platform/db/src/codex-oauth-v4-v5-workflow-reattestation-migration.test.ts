@@ -26,11 +26,11 @@ describe("000079 Codex OAuth V4-to-V5 workflow re-attestation", () => {
       )?.[1];
 
     expect(backfill).toBeDefined();
-    expect(backfill).not.toContain('provider."state" = \'active\'');
-    expect(backfill).toContain('namespace."status" = \'active\'');
+    expect(backfill).not.toContain("provider.\"state\" = 'active'");
+    expect(backfill).toContain("namespace.\"status\" = 'active'");
     expect(backfill).toContain('NOT namespace."permanentlyRetired"');
     expect(backfill).toContain(
-      'namespace."workflowSourceTrust" = \'trusted_default_branch_revision\'',
+      "namespace.\"workflowSourceTrust\" = 'trusted_default_branch_revision'",
     );
     expect(backfill).toContain(
       'namespace."attestedRepositoryId" = namespace."githubRepositoryId"',

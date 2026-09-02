@@ -175,9 +175,7 @@ describe("dashboard rotating namespace activation contract", () => {
     );
     expect(policy).toContain("existingWorkflowSchemaVersion");
     expect(policy).toContain("runtimeReleaseCommitSha");
-    expect(policy).not.toContain(
-      "1fb0e2ee21fcb03550211eea83677872fab82b5b",
-    );
+    expect(policy).not.toContain("1fb0e2ee21fcb03550211eea83677872fab82b5b");
     for (const source of [dashboard, activation, cli]) {
       expect(source).not.toContain("VersionedSecretNamespaceV5");
     }

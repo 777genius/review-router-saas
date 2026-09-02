@@ -1,17 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { CodexRotatingT0WorkflowSchemaVersion } from "@reviewrouter/features-workflow-provisioning";
-import {
-  CodexRotatingWriterSchemaPolicy,
-} from "./codex-rotating-writer-schema-policy";
-import {
-  createCodexRotatingWriterSchemaPolicy,
-} from "./codex-rotating-writer-schema-policy-env";
+import { CodexRotatingWriterSchemaPolicy } from "./codex-rotating-writer-schema-policy";
+import { createCodexRotatingWriterSchemaPolicy } from "./codex-rotating-writer-schema-policy-env";
 
 const releaseSha = "a".repeat(40);
-const v4 =
-  CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4;
-const v5 =
-  CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5;
+const v4 = CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4;
+const v5 = CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5;
 
 describe("CodexRotatingWriterSchemaPolicy", () => {
   it.each([

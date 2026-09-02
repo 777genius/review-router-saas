@@ -77,8 +77,7 @@ describe("activation catalog policy promotion", () => {
   it("loads the exact code-owned raw promotion mode", () => {
     expect(activationCatalogRawPromotionTrustRoot).toEqual({
       status: "pending",
-      reason:
-        "fresh-authenticated-raw-capture-and-independent-review-required",
+      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
     });
   });
 
