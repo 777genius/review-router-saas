@@ -1,12 +1,87 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { canonicalPrismaMigrationCatalog } from "./lib/canonical-prisma-migration-catalog.mjs";
 
 const workflow = readFileSync(
   ".github/workflows/codex-rotating-release-migration.yml",
   "utf8",
 );
+const trustBootstrap = workflow.slice(
+  workflow.indexOf("\n  trust-bootstrap:"),
+  workflow.indexOf("\n  recover:"),
+);
+const registerRelease = workflow.slice(
+  workflow.indexOf("\n  register-release:"),
+);
 
 describe("Codex rotating release migration workflow", () => {
+  it("establishes current protected main before any repository checkout", () => {
+    expect(trustBootstrap).toContain(
+      'required("GITHUB_REF") !== "refs/heads/main"',
+    );
+    expect(trustBootstrap).toContain("branch.protected !== true");
+    expect(trustBootstrap).toContain(
+      "branch.commit?.sha?.toLowerCase() !== dispatchSha",
+    );
+    expect(trustBootstrap).toContain("trusted_main_sha=${dispatchSha}");
+    expect(trustBootstrap).not.toContain("actions/checkout@");
+    expect(registerRelease).toContain("needs: trust-bootstrap");
+  });
+
+  it("checks out and verifies the requested immutable migration source", () => {
+    expect(workflow).toContain(
+      "ref: ${{ needs.trust-bootstrap.outputs.trusted_main_sha }}",
+    );
+    expect(workflow).toContain('git switch --detach "$RELEASE_COMMIT_SHA"');
+    expect(workflow).toContain('observed_source_sha="$(git rev-parse HEAD)"');
+    expect(workflow).toContain(
+      '[[ "$observed_source_sha" == "$RELEASE_COMMIT_SHA" ]]',
+    );
+  });
+
+  it("fails closed until every exact runtime service is suspended", () => {
+    const suspensionBarrier = workflow.indexOf(
+      'all(.suspended == "suspended")',
+    );
+    const credentialRotation = workflow.indexOf("create-runtime-roles.sql");
+    const migration = workflow.indexOf("pnpm db:migrate:deploy");
+    expect(suspensionBarrier).toBeGreaterThan(-1);
+    expect(credentialRotation).toBeGreaterThan(suspensionBarrier);
+    expect(migration).toBeGreaterThan(suspensionBarrier);
+    expect(workflow).toContain("recovery-phase.json");
+    expect(workflow).toContain('persist_recovery_phase "services_suspended"');
+    expect(workflow).toContain('persist_recovery_phase "credentials_rotated"');
+    expect(workflow).toContain('persist_recovery_phase "migration_complete"');
+    expect(workflow).toContain(
+      'persist_recovery_phase "service_credentials_staged"',
+    );
+    expect(workflow).toContain('persist_recovery_phase "ready_to_resume"');
+    expect(workflow).toContain("recovery-resume-state.json");
+  });
+
+  it("converges live and partially suspended service sets before mutation", () => {
+    expect(workflow).toContain('if [[ "$state" != "suspended" ]]');
+    expect(workflow).toContain(
+      '"https://api.render.com/v1/services/$service_id/suspend"',
+    );
+    expect(workflow).toContain("suspension_deadline=$((SECONDS + 600))");
+  });
+
+  it("records observed revisions and image digests before resuming", () => {
+    const revisionProof = workflow.indexOf(
+      "service-revision-observations.json",
+    );
+    const resume = workflow.indexOf(
+      '"https://api.render.com/v1/services/$service_id/resume"',
+    );
+    expect(revisionProof).toBeGreaterThan(-1);
+    expect(resume).toBeGreaterThan(revisionProof);
+    expect(workflow).toContain("observedCommitSha");
+    expect(workflow).toContain("observedImageDigest");
+    expect(workflow).toContain('all(.observedStatus == "live")');
+    expect(workflow).toContain("all(.observedCommitSha == $releaseCommitSha)");
+  });
+
   it("keeps recovery and Action release identities separate", () => {
     expect(workflow).toContain("release_commit_sha:");
     expect(workflow).toContain("action_commit_sha:");
@@ -18,13 +93,202 @@ describe("Codex rotating release migration workflow", () => {
     );
   });
 
-  it("redeploys every runtime service and waits for live status", () => {
-    expect(workflow).toContain(
+  it("requires and verifies the exact registration source commit", () => {
+    const releaseCommitInput = workflow.slice(
+      workflow.indexOf("      release_commit_sha:"),
+      workflow.indexOf("      action_commit_sha:"),
+    );
+
+    expect(releaseCommitInput).toContain("required: true");
+    expect(registerRelease).toContain(
+      "RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}",
+    );
+    expect(registerRelease).toContain(
+      "ref: ${{ needs.trust-bootstrap.outputs.trusted_main_sha }}",
+    );
+    expect(registerRelease).not.toContain(
+      "ref: ${{ inputs.release_commit_sha }}",
+    );
+    expect(registerRelease).toContain("fetch-depth: 0");
+    expect(registerRelease).toContain(
+      '[[ "$(git cat-file -t "$RELEASE_COMMIT_SHA")" == "commit" ]]',
+    );
+    expect(registerRelease).toContain(
+      'git merge-base --is-ancestor "$RELEASE_COMMIT_SHA" "$TRUSTED_MAIN_SHA"',
+    );
+    expect(registerRelease).toContain(
+      'git switch --detach "$RELEASE_COMMIT_SHA"',
+    );
+    expect(
+      registerRelease.indexOf('git switch --detach "$RELEASE_COMMIT_SHA"'),
+    ).toBeLessThan(registerRelease.indexOf("corepack enable"));
+    expect(registerRelease).toContain(
+      '[[ "$RELEASE_COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]',
+    );
+    expect(registerRelease).toContain(
+      'observed_source_sha="$(git rev-parse HEAD)"',
+    );
+    expect(registerRelease).toContain(
+      '[[ "$observed_source_sha" == "$RELEASE_COMMIT_SHA" ]]',
+    );
+    expect(registerRelease).not.toContain("ref: ${{ github.sha }}");
+  });
+
+  it("fails closed unless all current live services run the release commit", () => {
+    const preflight = registerRelease.indexOf("live_service_preflight='[]'");
+    const firstRenderMutation = registerRelease.indexOf("render_api -X PUT");
+    const firewallMutation = registerRelease.indexOf(
+      'runner_ip="$(curl --fail',
+    );
+
+    expect(preflight).toBeGreaterThan(-1);
+    expect(firstRenderMutation).toBeGreaterThan(preflight);
+    expect(firewallMutation).toBeGreaterThan(preflight);
+    expect(registerRelease).toContain(
+      '"https://api.render.com/v1/services/$service_id/deploys?limit=1"',
+    );
+    expect(registerRelease).toContain('all(.observedStatus == "live")');
+    expect(registerRelease).toContain(
+      "all(.observedCommitSha == $releaseCommitSha)",
+    );
+    expect(registerRelease).toContain("live-service-preflight.json");
+  });
+
+  it("pins every redeploy and verifies its observed live commit", () => {
+    expect(registerRelease).toContain(
       '"https://api.render.com/v1/services/$service_id/deploys"',
     );
-    expect(workflow).toContain("deadline=$((SECONDS + 900))");
-    expect(workflow).toContain('length == 3 and all(.status == "live")');
-    expect(workflow).toContain("deployment-result.json");
+    expect(registerRelease).toContain(
+      "'{clearCache: \"do_not_clear\", commitId: $commitId}'",
+    );
+    expect(registerRelease).toContain(
+      '--data-binary @"$work/deploy-request.json"',
+    );
+    expect(registerRelease).not.toContain(
+      '--data-binary \'{"clearCache":"do_not_clear"}\'',
+    );
+    expect(registerRelease).toContain("deadline=$((SECONDS + 900))");
+    expect(registerRelease).toContain(
+      'if [[ "$observed_commit_sha" != "$RELEASE_COMMIT_SHA" ]]',
+    );
+    expect(registerRelease).toContain(
+      "all(.observedCommitSha == $releaseCommitSha)",
+    );
+    expect(registerRelease).toContain("deployment-result.json");
+  });
+
+  it("reconciles an accepted deploy without blindly repeating the mutation", () => {
+    const deployMutation = registerRelease.slice(
+      registerRelease.indexOf("render_deploy_mutation()"),
+      registerRelease.indexOf("close_firewall()"),
+    );
+    const createCalls = registerRelease.match(
+      /render_deploy_mutation -X POST/gu,
+    );
+
+    expect(deployMutation).not.toContain("--retry");
+    expect(createCalls).toHaveLength(1);
+    expect(registerRelease).toContain(
+      'before_deploy_id="$(\n              jq -er --arg serviceId "$service_id"',
+    );
+    expect(registerRelease).toContain(
+      "deploy_intent_at=\"$(node -e 'process.stdout.write(new Date().toISOString())')\"",
+    );
+    expect(registerRelease).toContain("deploys?limit=20");
+    expect(registerRelease).toContain('[[ "$deploy_id" =~ ^dep-[a-z0-9-]+$ ]]');
+    expect(registerRelease).toContain(".[0].deployId == $beforeDeployId");
+    expect(registerRelease).toContain(
+      "($beforeDeployIds | index($id)) == null",
+    );
+    expect(registerRelease).toContain(
+      "== $releaseCommitSha\n                          )",
+    );
+    expect(registerRelease).toContain(">= ($intentEpoch - 5)");
+    expect(registerRelease).toContain("candidate_count > 1");
+    expect(registerRelease).toContain(
+      "reconciliation_deadline=$((SECONDS + 120))",
+    );
+    expect(registerRelease).toContain("deploy-creation-evidence.json");
+    expect(registerRelease).toContain("deploy-reconciliation-$service_id.json");
+  });
+
+  it("allows absent pending commit metadata but requires exact live metadata", () => {
+    expect(registerRelease).toContain(
+      '(.commit.id // .commit.sha // .commitId // "")',
+    );
+    expect(registerRelease).toContain(
+      'if [[ -n "$observed_commit_sha" && "$observed_commit_sha" != "$RELEASE_COMMIT_SHA" ]]',
+    );
+    expect(registerRelease).toContain(
+      'live)\n                  if [[ "$observed_commit_sha" != "$RELEASE_COMMIT_SHA" ]]',
+    );
+  });
+
+  it("rejects a concurrent newer deploy after pinned deploy convergence", () => {
+    const exactDeployPolling = registerRelease.indexOf('deploys/$deploy_id"');
+    const latestDeployReread = registerRelease.lastIndexOf('deploys?limit=1"');
+
+    expect(latestDeployReread).toBeGreaterThan(exactDeployPolling);
+    expect(registerRelease).toContain(
+      '.deployId == $expectedDeployId\n                and .status == "live"',
+    );
+    expect(registerRelease).toContain(
+      "and .observedCommitSha == $releaseCommitSha",
+    );
+    expect(registerRelease).toContain("current-deployment-result.json");
+  });
+
+  it("provisions custody through migration 000089 without exposing credentials", () => {
+    expect(workflow).toContain(
+      'username: "reviewrouter_comment_token_custody"',
+    );
+    expect(workflow).toContain("RR_CUSTODY_PASSWORD");
+    expect(workflow).toContain(
+      '{ role: "comment-token-custody", username: "reviewrouter_comment_token_custody" }',
+    );
+    expect(workflow).toContain(
+      "REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL",
+    );
+    expect(workflow).toContain(
+      ".latestMigration == $canonical[0].latestMigration",
+    );
+    expect(workflow).toContain(
+      ".appliedMigrationCount == $canonical[0].appliedMigrationCount",
+    );
+    expect(workflow).toContain("canonicalPrismaMigrationCatalog");
+    expect(canonicalPrismaMigrationCatalog).toEqual({
+      appliedMigrationCount: 92,
+      latestMigration: "000089_codex_oauth_v4_v5_staged_compatibility",
+    });
+    expect(workflow).toContain(".runtimeRoleCount == 5");
+    expect(workflow).toContain(".custodyFunction == true");
+    expect(workflow).not.toMatch(/echo .*RR_CUSTODY_PASSWORD/u);
+  });
+
+  it("fences and drains custody sessions before installing the new password", () => {
+    const noLogin = workflow.indexOf(
+      "ALTER ROLE reviewrouter_comment_token_custody NOLOGIN;",
+    );
+    const commit = workflow.indexOf("COMMIT;", noLogin);
+    const terminate = workflow.indexOf(
+      "SELECT pg_terminate_backend(pid)",
+      commit,
+    );
+    const proveEmpty = workflow.indexOf(
+      "custody credential rotation retained an old backend",
+      terminate,
+    );
+    const begin = workflow.indexOf("BEGIN;", proveEmpty);
+    const rotate = workflow.indexOf(
+      "ALTER ROLE reviewrouter_comment_token_custody LOGIN NOCREATEROLE PASSWORD",
+      begin,
+    );
+    expect(noLogin).toBeGreaterThan(0);
+    expect(commit).toBeGreaterThan(noLogin);
+    expect(terminate).toBeGreaterThan(commit);
+    expect(proveEmpty).toBeGreaterThan(terminate);
+    expect(begin).toBeGreaterThan(proveEmpty);
+    expect(rotate).toBeGreaterThan(begin);
   });
 
   it("opens the global kill switch only after explicit confirmation", () => {

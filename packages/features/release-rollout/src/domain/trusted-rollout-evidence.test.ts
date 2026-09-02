@@ -500,6 +500,27 @@ const create = () =>
     trustedWitnessPolicy,
   );
 
+type UnsignedEvidence = Omit<
+  TrustedRolloutEvidence,
+  "schemaVersion" | "evidenceSha256"
+>;
+const reassemble = (
+  mutate: (evidence: UnsignedEvidence) => UnsignedEvidence,
+): TrustedRolloutEvidence => {
+  const {
+    schemaVersion: _schemaVersion,
+    evidenceSha256: _evidenceSha256,
+    ...unsigned
+  } = create();
+  void _schemaVersion;
+  void _evidenceSha256;
+  return assembleTrustedRolloutEvidence(
+    mutate(unsigned),
+    trustedImagePolicy,
+    trustedWitnessPolicy,
+  );
+};
+
 describe("trusted post-cleanup evidence", () => {
   it("assembles and verifies full schema-14 evidence", () => {
     expect(create().releaseWitness.releaseAuthority.schemaVersion).toBe(
@@ -512,6 +533,118 @@ describe("trusted post-cleanup evidence", () => {
         trustedWitnessPolicy,
       ),
     ).toEqual(create());
+  });
+  it("permits safe identifiers whose role name contains token", () => {
+    expect(() =>
+      reassemble((evidence) => ({
+        ...evidence,
+        quiescence: {
+          ...evidence.quiescence,
+          reconnectDeniedRoles: [
+            ...evidence.quiescence.reconnectDeniedRoles,
+            "reviewrouter_comment_token_custody",
+          ],
+        },
+      })),
+    ).not.toThrow();
+  });
+  it("permits the exact credentialProcessGone cleanup attestation", () => {
+    expect(create().cleanups.every((item) => item.credentialProcessGone)).toBe(
+      true,
+    );
+    expect(() =>
+      assertTrustedRolloutEvidence(
+        create(),
+        trustedImagePolicy,
+        trustedWitnessPolicy,
+      ),
+    ).not.toThrow();
+  });
+  it.each([
+    ["true outside cleanup", true],
+    ["false", false],
+    ["string", "opaque-secret-material"],
+    ["object", { value: "opaque-secret-material" }],
+    ["number", 1],
+  ])(
+    "rejects nested credentialProcessGone injection with %s value",
+    (_name, injectedValue) => {
+      expect(() =>
+        reassemble((evidence) => ({
+          ...evidence,
+          equivalence: {
+            ...evidence.equivalence,
+            tables: [
+              {
+                ...evidence.equivalence.tables[0]!,
+                credentialProcessGone: injectedValue,
+              },
+            ],
+          },
+        })),
+      ).toThrow("trusted_rollout_evidence_contains_secret");
+    },
+  );
+  it.each([
+    "password",
+    "accessToken",
+    "client_secret",
+    "apiKey",
+    "APIKey",
+    "APIToken",
+    "privateKeyPem",
+    "databaseUrl",
+    "connectionString",
+    "dsn",
+    "authorization",
+    "credentialValue",
+    "credentialBlob",
+    "credential_blob",
+    "credentialProcessGoneExtra",
+    "credentials",
+  ])("rejects secret-bearing %s fields", (secretKey) => {
+    expect(() =>
+      reassemble((evidence) => ({
+        ...evidence,
+        equivalence: {
+          ...evidence.equivalence,
+          tables: [
+            {
+              ...evidence.equivalence.tables[0]!,
+              [secretKey]: "opaque-secret-material",
+            },
+          ],
+        },
+      })),
+    ).toThrow("trusted_rollout_evidence_contains_secret");
+  });
+  it.each([
+    ["PostgreSQL DSN", "postgresql://release:secret@db.internal/reviews"],
+    ["password assignment", "password=hunter2"],
+    ["bearer credential", "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature"],
+    ["token assignment", "token=opaque-secret-material"],
+    ["GitHub token", `ghp_${"a".repeat(36)}`],
+    ["GitHub fine-grained token", `github_pat_${"a".repeat(32)}`],
+    ["OpenAI token", `sk-${"a".repeat(40)}`],
+    [
+      "private key",
+      "-----BEGIN PRIVATE KEY-----\nopaque-secret-material\n-----END PRIVATE KEY-----",
+    ],
+  ])("rejects %s values in non-secret fields", (_name, secretMaterial) => {
+    expect(() =>
+      reassemble((evidence) => ({
+        ...evidence,
+        equivalence: {
+          ...evidence.equivalence,
+          tables: [
+            {
+              ...evidence.equivalence.tables[0]!,
+              table: secretMaterial,
+            },
+          ],
+        },
+      })),
+    ).toThrow("trusted_rollout_evidence_contains_secret");
   });
   it("rejects evidence signed for stale release-authority schema 11", () => {
     const {

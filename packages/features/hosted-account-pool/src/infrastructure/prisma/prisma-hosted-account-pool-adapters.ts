@@ -40,6 +40,8 @@ type HostedPoolPrismaClient = Pick<
   | "hostedCodexRepositoryBinding"
 >;
 
+const enrollmentTransactionTimeoutMs = 15_000;
+
 /**
  * Application-owned authority for writing the next review-configuration
  * version. The Prisma adapter deliberately cannot mutate configuration rows.
@@ -107,7 +109,9 @@ export class PrismaHostedCredentialEnrollment implements HostedCredentialEnrollm
         databaseResourceIdentity: this.databaseResourceIdentity,
       });
 
-      return await this.prisma.$transaction(async (transaction) => {
+      const enrollAtomically = async (
+        transaction: Prisma.TransactionClient,
+      ) => {
         const revision = await transaction.hostedCodexPool.updateMany({
           where: {
             id: input.poolId,
@@ -273,6 +277,9 @@ export class PrismaHostedCredentialEnrollment implements HostedCredentialEnrollm
           createdAt: input.now,
           updatedAt: input.now,
         };
+      };
+      return await this.prisma.$transaction(enrollAtomically, {
+        timeout: enrollmentTransactionTimeoutMs,
       });
     } catch (error) {
       if (isPrismaErrorCode(error, "P2002")) {

@@ -18,12 +18,23 @@ import type {
   HostedCodexRelayAuthorizationPort,
   HostedCodexStreamingRelayPort,
 } from "../../interface/http/register-hosted-codex-relay-routes.js";
-import { PrismaInvocationGrantRepository } from "../prisma/prisma-invocation-grant-repository.js";
 import {
+  HostedCodexFailoverOutcomeUnknownError,
+  PrismaInvocationGrantRepository,
+} from "../prisma/prisma-invocation-grant-repository.js";
+import {
+  HostedCodexCredentialGenerationChangedError,
+  HostedCodexEffectReservationDeferredError,
+  HostedCodexEffectReservationOutcomeUnknownError,
   PrismaHostedCodexUpstreamEffectLedger,
   type HostedCodexUpstreamEffectLease,
 } from "../prisma/prisma-hosted-codex-upstream-effect-ledger.js";
+import { normalizeExpiredHostedAccountCooldownWithCas } from "../prisma/prisma-hosted-account-cooldown.js";
 import type { HostedCodexSessionRuntime } from "../runtime/hosted-codex-session-runtime.js";
+import {
+  noHostedCodexCanaryFaultPlan,
+  type HostedCodexCanaryFaultPlanPort,
+} from "../../application/ports/hosted-codex-canary-fault-plan-port.js";
 
 const upstreamResponsesUrl = "https://chatgpt.com/backend-api/codex/responses";
 
@@ -42,18 +53,24 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
     input: Parameters<HostedCodexRelayAuthorizationPort["authorize"]>[0],
   ): Promise<AuthorizedHostedCodexRelay> {
     const tokenHash = sha256(input.opaqueGrant);
-    const stored = await this.prisma.hostedCodexInvocationGrant.findUnique({
-      where: { capabilityTokenHash: tokenHash },
-      include: {
-        binding: {
-          include: {
-            pool: true,
-            repository: { include: { installation: true } },
+    const [stored, runtimeGate] = await Promise.all([
+      this.prisma.hostedCodexInvocationGrant.findUnique({
+        where: { capabilityTokenHash: tokenHash },
+        include: {
+          binding: {
+            include: {
+              pool: true,
+              repository: { include: { installation: true } },
+            },
           },
+          account: true,
         },
-        account: true,
-      },
-    });
+      }),
+      this.prisma.hostedCodexRuntimeGate.findUnique({
+        where: { id: "global" },
+        select: { status: true, authzEpoch: true },
+      }),
+    ]);
     const now = new Date();
     const requestId = relayRequestId(
       sha256(
@@ -85,12 +102,25 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
       account.state === "healthy" ||
       (account.state === "cooldown" &&
         account.cooldownUntil !== null &&
-        account.cooldownUntil <= now);
+        account.cooldownUntil <= now &&
+        (await normalizeExpiredHostedAccountCooldownWithCas(this.prisma, {
+          accountId: account.id,
+          now,
+          snapshot: {
+            state: account.state,
+            cooldownUntil: account.cooldownUntil,
+            healthVersion: account.healthVersion,
+          },
+        })));
     if (
       binding.status !== "active" ||
       binding.revision !== stored.bindingRevision ||
       binding.pool.status !== "active" ||
       binding.pool.authzEpoch !== stored.authzEpoch ||
+      stored.runtimeAuthzEpoch === null ||
+      !runtimeGate ||
+      runtimeGate.status !== "active" ||
+      runtimeGate.authzEpoch !== stored.runtimeAuthzEpoch ||
       binding.repository.archived ||
       !binding.repository.selected ||
       binding.repository.provider !== "github" ||
@@ -147,6 +177,16 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
       grantExpiresAtMs: stored.expiresAt.getTime(),
       declaredRequestBytes: input.requestBytes,
       maxRequestBodyBytes: stored.maxRequestBytes,
+      maxResponseBytes: stored.maxResponseBytes,
+      maxOutputTokens: stored.maxOutputTokens,
+      faultPlanScope: {
+        workspaceId: stored.workspaceId,
+        githubRepositoryId: binding.repository.githubRepositoryId,
+        actionRef: binding.workflowActionRef ?? "",
+        repositoryBindingId: binding.id,
+        bindingRevision: stored.bindingRevision,
+        requestOrdinal: input.requestOrdinal,
+      },
     };
   }
 }
@@ -163,6 +203,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
     | "heartbeat"
     | "markResponseStarted"
     | "authority"
+    | "assertLiveAuthority"
   >;
 
   constructor(
@@ -180,16 +221,18 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         | "heartbeat"
         | "markResponseStarted"
         | "authority"
+        | "assertLiveAuthority"
       >;
+      readonly faultPlans?: HostedCodexCanaryFaultPlanPort;
     } = { failoverEnabled: false },
   ) {
     this.failoverEnabled = options.failoverEnabled;
     this.now = options.now ?? (() => new Date());
-    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 10_000;
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 2_000;
     if (
       !Number.isSafeInteger(this.heartbeatIntervalMs) ||
       this.heartbeatIntervalMs < 5 ||
-      this.heartbeatIntervalMs > 10_000
+      this.heartbeatIntervalMs > 5_000
     ) {
       throw new Error("hosted_codex_effect_heartbeat_interval_invalid");
     }
@@ -200,13 +243,24 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         ledger.prismaClient,
         this.now,
       );
+    this.faultPlans = options.faultPlans ?? noHostedCodexCanaryFaultPlan;
   }
+
+  private readonly faultPlans: HostedCodexCanaryFaultPlanPort;
 
   async open(input: Parameters<HostedCodexStreamingRelayPort["open"]>[0]) {
     try {
       return await this.openAuthorized(input);
     } catch (error) {
-      if (error instanceof UpstreamTerminalUnknownError) throw error.cause;
+      if (error instanceof HostedCodexEffectReservationDeferredError) {
+        throw error;
+      }
+      if (
+        error instanceof UpstreamTerminalUnknownError ||
+        error instanceof UpstreamNoEffectError ||
+        error instanceof HostedCodexEffectReservationOutcomeUnknownError
+      )
+        throw error.cause;
       await completeFailedRequest(
         input.authorization,
         this.ledger,
@@ -224,24 +278,59 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
       input.authorization.maxRequestBodyBytes,
       input.abortSignal,
     );
-    if (
-      rawRequestBody.byteLength !== input.authorization.declaredRequestBytes
-    ) {
-      throw new Error("hosted_relay_content_length_mismatch");
+    let providerRequestBody: Uint8Array<ArrayBuffer> | undefined;
+    try {
+      if (
+        rawRequestBody.byteLength !== input.authorization.declaredRequestBytes
+      ) {
+        throw new Error("hosted_relay_content_length_mismatch");
+      }
+      const requestHash = sha256Bytes(rawRequestBody);
+      await this.ledger.recordRequestHash({
+        grantId: input.authorization.grantId,
+        requestId: input.authorization.requestId,
+        requestHash,
+      });
+      const requestBody = parseRequestJson(rawRequestBody);
+      const maxOutputTokens = clampMaxOutputTokens(
+        requestBody.max_output_tokens,
+        input.authorization.maxOutputTokens,
+      );
+      providerRequestBody = new TextEncoder().encode(
+        JSON.stringify({
+          ...requestBody,
+          model: input.authorization.model,
+          store: false,
+          max_output_tokens: maxOutputTokens,
+        }),
+      );
+      return await this.dispatchAuthorized(
+        input,
+        requestHash,
+        providerRequestBody,
+      );
+    } finally {
+      rawRequestBody.fill(0);
+      providerRequestBody?.fill(0);
     }
-    await this.ledger.recordRequestHash({
-      grantId: input.authorization.grantId,
-      requestId: input.authorization.requestId,
-      requestHash: sha256Bytes(rawRequestBody),
-    });
-    const requestBody = parseRequestJson(rawRequestBody);
-    const requestHash = sha256Bytes(rawRequestBody);
+  }
+
+  private async dispatchAuthorized(
+    input: Parameters<HostedCodexStreamingRelayPort["open"]>[0],
+    requestHash: string,
+    providerRequestBody: Uint8Array<ArrayBuffer>,
+  ) {
     let accountId = input.authorization.accountId;
     let failedOver = false;
     let upstream: Response;
     let effectLease: HostedCodexUpstreamEffectLease;
     let streamHeartbeat: EffectHeartbeat | undefined;
+    let generationRetryCount = 0;
     while (true) {
+      await this.effects.assertLiveAuthority({
+        grantId: input.authorization.grantId,
+        accountId,
+      });
       let session;
       try {
         session = await this.runtime.ensureFreshSession({
@@ -266,15 +355,78 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
       const remainingMs =
         input.authorization.grantExpiresAtMs - this.now().getTime();
       if (remainingMs <= 0) throw new Error("hosted_grant_expired");
-      effectLease = await this.effects.prepare({
-        relayRequestId: input.authorization.requestId,
-        grantId: input.authorization.grantId,
-        workspaceId: input.authorization.workspaceId,
-        poolId: input.authorization.poolId,
-        accountId,
-        requestHash,
-      });
-      await this.effects.markDispatching(effectLease);
+      try {
+        effectLease = await this.effects.prepare({
+          relayRequestId: input.authorization.requestId,
+          grantId: input.authorization.grantId,
+          workspaceId: input.authorization.workspaceId,
+          poolId: input.authorization.poolId,
+          accountId,
+          credentialGeneration: session.credentialGeneration,
+          requestHash,
+        });
+      } catch (error) {
+        if (
+          error instanceof HostedCodexCredentialGenerationChangedError &&
+          generationRetryCount < 2
+        ) {
+          generationRetryCount += 1;
+          continue;
+        }
+        throw error;
+      }
+      try {
+        const syntheticFault = await this.consumeFault(
+          input.authorization,
+          "before_provider_fetch",
+          effectLease.attemptOrdinal,
+        );
+        if (failedOver && syntheticFault !== null)
+          throw new Error("hosted_codex_canary_fault_plan_not_one_shot");
+        if (
+          !failedOver &&
+          (syntheticFault === "synthetic_unauthorized" ||
+            syntheticFault === "synthetic_rate_limited")
+        ) {
+          const syntheticStatus =
+            syntheticFault === "synthetic_rate_limited" ? 429 : 401;
+          accountId = await this.switchToBackup(
+            input.authorization,
+            syntheticStatus === 429 ? "rate_limited" : "credential_invalid",
+            syntheticStatus === 429
+              ? new Date(this.now().getTime() + 15 * 60_000)
+              : null,
+            {
+              lease: effectLease,
+              status: syntheticStatus,
+              sourceState: "prepared",
+            },
+          );
+          failedOver = true;
+          continue;
+        }
+        await this.effects.markDispatching(effectLease);
+      } catch (error) {
+        if (error instanceof HostedCodexFailoverOutcomeUnknownError) {
+          throw new UpstreamNoEffectError(error);
+        }
+        try {
+          await completeFailedRequest(
+            input.authorization,
+            this.ledger,
+            "relay_open_failed",
+            effectCompletion(
+              this.effects,
+              effectLease,
+              "failed_no_effect",
+              "pre-dispatch-failure",
+            ),
+          );
+        } catch (completionError) {
+          throw new UpstreamNoEffectError(completionError);
+        }
+        throw new UpstreamNoEffectError(error);
+      }
       let heartbeat = startEffectHeartbeat(
         this.effects,
         effectLease,
@@ -290,11 +442,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
             "content-type": "application/json",
             accept: safeAccept(input.accept),
           },
-          body: JSON.stringify({
-            ...requestBody,
-            model: input.authorization.model,
-            store: false,
-          }),
+          body: providerRequestBody,
           signal: AbortSignal.any([
             input.abortSignal,
             AbortSignal.timeout(Math.min(remainingMs, 120_000)),
@@ -318,6 +466,29 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
             },
             this.ledger,
           );
+          const droppedFault = await this.consumeFault(
+            input.authorization,
+            "after_response_started",
+            effectLease.attemptOrdinal,
+          );
+          if (droppedFault === "drop_after_response_started") {
+            await upstream.body?.cancel();
+            await terminalizeUnknownRequest(
+              input.authorization,
+              this.ledger,
+              "ambiguous_dropped_response",
+              effectCompletion(
+                this.effects,
+                effectLease,
+                "terminal_unknown",
+                "operator-canary-dropped-response",
+              ),
+              this.now(),
+            );
+            throw new UpstreamTerminalUnknownError(
+              new Error("hosted_codex_canary_dropped_response"),
+            );
+          }
         } else {
           await this.effects.markResponseStarted(
             effectLease,
@@ -336,7 +507,11 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
             upstream.status === 429
               ? new Date(this.now().getTime() + 15 * 60_000)
               : null,
-            { lease: effectLease, status: upstream.status },
+            {
+              lease: effectLease,
+              status: upstream.status,
+              sourceState: "response_started",
+            },
           );
           await heartbeat.stop();
           failedOver = true;
@@ -350,6 +525,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         streamHeartbeat = heartbeat;
       } catch (error) {
         await heartbeat.stop();
+        if (error instanceof UpstreamTerminalUnknownError) throw error;
         await terminalizeUnknownRequest(
           input.authorization,
           this.ledger,
@@ -385,17 +561,20 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
       );
     }
     try {
-      const body = Readable.fromWeb(upstream.body as never).pipe(
-        completionTransform(
-          input.authorization,
-          this.ledger,
-          this.effects,
-          effectLease,
-          upstream.ok,
-          streamHeartbeat,
-          this.now,
-        ),
+      const source = Readable.fromWeb(upstream.body as never);
+      const completion = completionTransform(
+        input.authorization,
+        this.ledger,
+        this.effects,
+        effectLease,
+        upstream.ok,
+        input.authorization.maxResponseBytes,
+        streamHeartbeat,
+        this.now,
+        () => source.destroy(),
       );
+      completion.once("error", () => source.destroy());
+      const body = source.pipe(completion);
       return {
         statusCode: upstream.status,
         headers: safeResponseHeaders(upstream.headers),
@@ -419,6 +598,27 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
     }
   }
 
+  private async consumeFault(
+    authorization: AuthorizedHostedCodexRelay,
+    injectionPoint: "before_provider_fetch" | "after_response_started",
+    attemptOrdinal: number,
+  ) {
+    const scope = authorization.faultPlanScope;
+    if (!scope) return null;
+    return this.faultPlans.consume({
+      workspaceId: scope.workspaceId,
+      githubRepositoryId: scope.githubRepositoryId,
+      runId: authorization.runId,
+      runAttempt: authorization.runAttempt,
+      actionRef: scope.actionRef,
+      repositoryBindingId: scope.repositoryBindingId,
+      bindingRevision: scope.bindingRevision,
+      requestOrdinal: scope.requestOrdinal,
+      attemptOrdinal,
+      injectionPoint,
+    });
+  }
+
   private async switchToBackup(
     authorization: AuthorizedHostedCodexRelay,
     failure: "rate_limited" | "credential_invalid" | "needs_reconnect",
@@ -426,6 +626,7 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
     classifiedEffect?: {
       readonly lease: HostedCodexUpstreamEffectLease;
       readonly status: number;
+      readonly sourceState: "prepared" | "response_started";
     },
   ): Promise<string> {
     if (!this.failoverEnabled)
@@ -436,22 +637,40 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         requestId: relayRequestId(authorization.requestId),
         failure,
         effectFence: classifiedEffect
-          ? "classified_response_before_success"
+          ? classifiedEffect.sourceState === "response_started"
+            ? "classified_response_before_success"
+            : "before_refresh_or_upstream_effect"
           : "before_refresh_or_upstream_effect",
         cooldownUntil,
         now: this.now(),
         ...(classifiedEffect
           ? {
-              effect: {
-                ...this.effects.authority(classifiedEffect.lease),
-                terminalEvidenceHash: sha256(
-                  `classified-response\u0000${classifiedEffect.status}\u0000${classifiedEffect.lease.attemptId}`,
-                ),
-                errorCode:
-                  classifiedEffect.status === 429
-                    ? "quota_limited"
-                    : "credential_invalid",
-              },
+              effect:
+                classifiedEffect.sourceState === "prepared"
+                  ? {
+                      ...this.effects.authority(classifiedEffect.lease),
+                      sourceState: "prepared" as const,
+                      terminalState: "failed_no_effect" as const,
+                      terminalEvidenceHash: sha256(
+                        `prepared\u0000${classifiedEffect.status}\u0000${classifiedEffect.lease.attemptId}`,
+                      ),
+                      errorCode:
+                        classifiedEffect.status === 429
+                          ? "quota_limited"
+                          : "credential_invalid",
+                    }
+                  : {
+                      ...this.effects.authority(classifiedEffect.lease),
+                      sourceState: "response_started" as const,
+                      terminalState: "failed_classified" as const,
+                      terminalEvidenceHash: sha256(
+                        `response_started\u0000${classifiedEffect.status}\u0000${classifiedEffect.lease.attemptId}`,
+                      ),
+                      errorCode:
+                        classifiedEffect.status === 429
+                          ? "quota_limited"
+                          : "credential_invalid",
+                    },
             }
           : {}),
       },
@@ -540,15 +759,21 @@ async function readBoundedBody(
 ): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let bytes = 0;
-  for await (const chunk of body) {
-    if (signal.aborted) throw signal.reason;
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    bytes += buffer.byteLength;
-    if (bytes > maxBytes)
-      throw new Error("hosted_relay_request_bytes_exceeded");
-    chunks.push(buffer);
+  try {
+    for await (const chunk of body) {
+      if (signal.aborted) throw signal.reason;
+      const buffer = Buffer.from(chunk);
+      bytes += buffer.byteLength;
+      if (bytes > maxBytes) {
+        buffer.fill(0);
+        throw new Error("hosted_relay_request_bytes_exceeded");
+      }
+      chunks.push(buffer);
+    }
+    return Buffer.concat(chunks);
+  } finally {
+    for (const chunk of chunks) chunk.fill(0);
   }
-  return Buffer.concat(chunks);
 }
 
 function parseRequestJson(body: Buffer): Record<string, unknown> {
@@ -559,14 +784,24 @@ function parseRequestJson(body: Buffer): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+function clampMaxOutputTokens(value: unknown, grantCap: number): number {
+  if (value === undefined) return grantCap;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("hosted_relay_max_output_tokens_invalid");
+  }
+  return Math.min(value, grantCap);
+}
+
 function completionTransform(
   authorization: AuthorizedHostedCodexRelay,
   ledger: PrismaInvocationGrantRepository,
   effects: Pick<PrismaHostedCodexUpstreamEffectLedger, "authority">,
   effectLease: HostedCodexUpstreamEffectLease,
   succeeded: boolean,
+  maxResponseBytes: number,
   heartbeat: EffectHeartbeat | undefined,
   now: () => Date,
+  abortUpstream: () => void,
 ): Transform {
   const hash = createHash("sha256");
   let bytes = 0;
@@ -646,7 +881,14 @@ function completionTransform(
   const transform = new Transform({
     transform(chunk, _encoding, callback) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      bytes += buffer.byteLength;
+      const nextBytes = bytes + buffer.byteLength;
+      if (nextBytes > maxResponseBytes) {
+        abortUpstream();
+        buffer.fill(0);
+        callback(new ProviderResponseLimitError());
+        return;
+      }
+      bytes = nextBytes;
       hash.update(buffer);
       callback(null, buffer);
     },
@@ -657,7 +899,9 @@ function completionTransform(
       if (!error || finalized) return callback(error);
       const code = error.message.includes("client_disconnected")
         ? "client_disconnected"
-        : "upstream_stream_failed";
+        : error instanceof ProviderResponseLimitError
+          ? "provider_response_bytes_exceeded"
+          : "upstream_stream_failed";
       finalize(false, code, callback, error);
     },
   });
@@ -720,7 +964,7 @@ function asError(error: unknown): Error {
 function effectCompletion(
   effects: Pick<PrismaHostedCodexUpstreamEffectLedger, "authority">,
   lease: HostedCodexUpstreamEffectLease,
-  terminalState: "succeeded" | "terminal_unknown",
+  terminalState: "succeeded" | "failed_no_effect" | "terminal_unknown",
   evidence: string,
 ) {
   return {
@@ -735,6 +979,18 @@ function effectCompletion(
 class UpstreamTerminalUnknownError extends Error {
   constructor(readonly cause: unknown) {
     super("hosted_codex_upstream_terminal_unknown");
+  }
+}
+
+class UpstreamNoEffectError extends Error {
+  constructor(readonly cause: unknown) {
+    super("hosted_codex_upstream_no_effect");
+  }
+}
+
+class ProviderResponseLimitError extends Error {
+  constructor() {
+    super("hosted_codex_provider_response_bytes_exceeded");
   }
 }
 

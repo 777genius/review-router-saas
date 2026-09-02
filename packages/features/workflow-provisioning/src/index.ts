@@ -14,6 +14,7 @@ export {
   assertTrustedCanonicalVersionedWorkflow,
   createVersionedProviderSecretNamespace,
   createVersionedSecretWorkflowSourceAttestation,
+  isVersionedSecretNamespaceCodexWorkflowSchemaVersion,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
   workflowDocumentSemanticSha256,
   type VersionedProviderSecretNamespace,

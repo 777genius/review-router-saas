@@ -22,6 +22,7 @@ import {
   codexRotatingCatalogIndexNames,
   codexRotatingCatalogTables,
   codexRotatingFunctionBodyDigests,
+  codexRotatingFunctionIdentityArguments,
   codexRotatingIndexDefinitions,
   codexRotatingPartialIndexPredicates,
   codexRotatingDatabaseRoles,
@@ -91,6 +92,27 @@ const migrations = [
     expectedSha256:
       "3e5b6606f22c8bec6f75f52f48b693806d597fa283155f6e033844c4f6be4de6",
   },
+  {
+    id: "000087_codex_oauth_v4_v5_workflow_reattestation",
+    sourceFile:
+      "packages/platform/db/prisma/migrations/000087_codex_oauth_v4_v5_workflow_reattestation/migration.sql",
+    expectedSha256:
+      "af5fccfd987312b85d48cd38b7f528780f52e82daab47c34829581e50193b090",
+  },
+  {
+    id: "000088_codex_oauth_reattestation_mutation_owner_fence",
+    sourceFile:
+      "packages/platform/db/prisma/migrations/000088_codex_oauth_reattestation_mutation_owner_fence/migration.sql",
+    expectedSha256:
+      "18a1e48953d1360d3661ea6753b7aa350fc7e28caeaeb65d42c9ac42569f1cf0",
+  },
+  {
+    id: "000089_codex_oauth_v4_v5_staged_compatibility",
+    sourceFile:
+      "packages/platform/db/prisma/migrations/000089_codex_oauth_v4_v5_staged_compatibility/migration.sql",
+    expectedSha256:
+      "bd35157bc11c84dd181ba7f2edf589503d75cb359c12e9a93bf4a884f94c9db7",
+  },
 ];
 const checkedInRotatingMigrations = readdirSync(
   resolve(checkoutRoot, "packages/platform/db/prisma/migrations"),
@@ -108,7 +130,7 @@ const exactServiceRoles = new Map([
   ["reviewrouter-web", "web"],
   ["reviewrouter-worker", "worker"],
 ]);
-const releaseMigrationRole = codexRotatingDatabaseRoles.releaseMigration;
+const releaseSchemaOwnerRole = codexRotatingDatabaseRoles.schemaOwner;
 const effectAuthorityRole = codexRotatingDatabaseRoles.effectAuthority;
 const runtimeDatabaseRoles = codexRotatingDatabaseRoles.runtime;
 const exactForeignKeys = codexRotatingCatalogForeignKeys.map(
@@ -649,11 +671,13 @@ function verifyDatabase(db, descriptor, need, options) {
             "forceRowSecurity",
             "kind",
             "name",
+            "owner",
             "persistence",
             "rowSecurity",
           ]) &&
           entry.kind === "r" &&
           entry.persistence === "p" &&
+          entry.owner === releaseSchemaOwnerRole &&
           entry.rowSecurity === false &&
           entry.forceRowSecurity === false,
       ),
@@ -776,7 +800,7 @@ function verifyDatabase(db, descriptor, need, options) {
     exactCatalogAcl(
       db?.catalog?.privileges?.tables,
       codexRotatingCatalogTables,
-      [releaseMigrationRole, effectAuthorityRole, ...runtimeDatabaseRoles],
+      [releaseSchemaOwnerRole, effectAuthorityRole, ...runtimeDatabaseRoles],
       null,
     ),
     "database owned table privileges are not exact",
@@ -819,23 +843,27 @@ function exactCatalogAcl(entries, objects, grantees, fixedPrivileges) {
   for (const name of objects) {
     for (const grantee of grantees) {
       const privileges =
-        grantee === releaseMigrationRole
+        grantee === releaseSchemaOwnerRole
           ? ownerPrivileges
           : grantee === effectAuthorityRole ||
               name === "CodexOAuthDatabaseAuthorityKey" ||
               name === "CodexOAuthDatabaseAuthorityReceipt"
             ? []
-            : name === "CodexOAuthChildIdentityQuarantine" ||
-                name === "CodexOAuthProviderIdentityQuarantine"
-              ? ["SELECT"]
-              : name === "CodexOAuthProviderInstance"
-                ? ["INSERT", "SELECT"]
-                : runtimePrivileges;
+            : name === "CodexOAuthWorkflowCompatibility"
+              ? ["reviewrouter_api", "reviewrouter_web"].includes(grantee)
+                ? ["SELECT"]
+                : []
+              : name === "CodexOAuthChildIdentityQuarantine" ||
+                  name === "CodexOAuthProviderIdentityQuarantine"
+                ? ["SELECT"]
+                : name === "CodexOAuthProviderInstance"
+                  ? ["INSERT", "SELECT"]
+                  : runtimePrivileges;
       for (const privilege of privileges)
         expected.push({
           name,
           grantee,
-          grantor: releaseMigrationRole,
+          grantor: releaseSchemaOwnerRole,
           privilege,
           grantable: false,
         });
@@ -872,7 +900,7 @@ function exactColumnCatalogAcl(entries) {
     codexRotatingProviderRuntimeUpdateColumns.map((column) => ({
       name: `CodexOAuthProviderInstance.${column}`,
       grantee,
-      grantor: releaseMigrationRole,
+      grantor: releaseSchemaOwnerRole,
       privilege: "UPDATE",
       grantable: false,
     })),
@@ -897,6 +925,7 @@ function exactFunctionCatalogAcl(entries) {
           "grantable",
           "grantee",
           "grantor",
+          "identityArguments",
           "name",
           "privilege",
         ]),
@@ -912,20 +941,23 @@ function exactFunctionCatalogAcl(entries) {
     ["codex_oauth_authorize_runtime_completion", ["reviewrouter_api"]],
     ["codex_oauth_provider_identity_repair_challenge", ["reviewrouter_web"]],
     ["codex_oauth_repair_quarantined_provider", ["reviewrouter_web"]],
+    ["codex_oauth_reattest_active_namespace_v4_to_v5", ["reviewrouter_web"]],
     ["codex_oauth_sign_database_authority", [effectAuthorityRole]],
   ]);
   const expected = exactFunctions.flatMap((name) => [
     {
       name,
-      grantee: releaseMigrationRole,
-      grantor: releaseMigrationRole,
+      identityArguments: expectedFunctionIdentityArguments(name),
+      grantee: releaseSchemaOwnerRole,
+      grantor: releaseSchemaOwnerRole,
       privilege: "EXECUTE",
       grantable: false,
     },
     ...(runtimeExecute.get(name) ?? []).map((grantee) => ({
       name,
+      identityArguments: expectedFunctionIdentityArguments(name),
       grantee,
-      grantor: releaseMigrationRole,
+      grantor: releaseSchemaOwnerRole,
       privilege: "EXECUTE",
       grantable: false,
     })),
@@ -933,12 +965,17 @@ function exactFunctionCatalogAcl(entries) {
   const key = (entry) =>
     JSON.stringify([
       entry.name,
+      entry.identityArguments,
       entry.grantee,
       entry.grantor,
       entry.privilege,
       entry.grantable,
     ]);
   return equalSorted(entries.map(key), expected.map(key));
+}
+
+function expectedFunctionIdentityArguments(name) {
+  return codexRotatingFunctionIdentityArguments[name] ?? "";
 }
 
 export function verifyCodexRotatingDatabaseCatalog(
@@ -1010,7 +1047,7 @@ function verifyDatabaseAuthorization(authorization, need) {
       "schemaOwner",
     ]) &&
       authorization.databaseOwner === bootstrapRole &&
-      authorization.schemaOwner === releaseRole &&
+      authorization.schemaOwner === releaseSchemaOwnerRole &&
       equalSorted(
         roles.map((entry) => entry.name),
         expectedRoleNames,
@@ -1070,21 +1107,6 @@ function verifyDatabaseAuthorization(authorization, need) {
         Array.isArray(entry.repositoryConnectionColumnInsert) &&
         Array.isArray(entry.repositoryConnectionColumnUpdate) &&
         Array.isArray(entry.repositoryConnectionColumnReferences);
-      const releaseColumnsAreFull =
-        columnPrivilegeArraysAreValid &&
-        entry.repositoryConnectionColumnSelect.length > 0 &&
-        equalSorted(
-          entry.repositoryConnectionColumnInsert,
-          entry.repositoryConnectionColumnSelect,
-        ) &&
-        equalSorted(
-          entry.repositoryConnectionColumnUpdate,
-          entry.repositoryConnectionColumnSelect,
-        ) &&
-        equalSorted(
-          entry.repositoryConnectionColumnReferences,
-          entry.repositoryConnectionColumnSelect,
-        );
       const runtimeColumnsAreSelectOnly =
         columnPrivilegeArraysAreValid &&
         entry.repositoryConnectionColumnSelect.length > 0 &&
@@ -1099,29 +1121,33 @@ function verifyDatabaseAuthorization(authorization, need) {
         entry.repositoryConnectionColumnUpdate.length === 0 &&
         entry.repositoryConnectionColumnReferences.length === 0;
       return (
-        entry.databaseCreate === isRelease &&
-        entry.schemaCreate === isRelease &&
+        entry.databaseCreate === false &&
+        entry.schemaCreate === false &&
         entry.canSetReleaseRole === isRelease &&
-        entry.ownsCatalogObject === isRelease &&
-        entry.ownsRepositoryConnection === isRelease &&
-        entry.ddlTablePrivileges === isRelease &&
+        entry.ownsCatalogObject === false &&
+        entry.ownsRepositoryConnection === false &&
+        entry.ddlTablePrivileges === false &&
         entry.migrationHistoryPrivileges === isRelease &&
-        entry.providerSetupStateSelect === (isRelease || isRuntime) &&
-        entry.providerSetupStateInsert === (isRelease || isRuntime) &&
-        entry.providerSetupStateUpdate === (isRelease || isRuntime) &&
-        entry.providerSetupStateDelete === (isRelease || isRuntime) &&
-        entry.allSequenceUsage === (isRelease || isRuntime) &&
-        entry.anySequenceSelectOrUpdate === isRelease &&
-        entry.authorityTablePrivileges === isRelease &&
-        entry.repositoryConnectionSelect === (isRelease || isRuntime) &&
-        entry.repositoryConnectionInsert === isRelease &&
-        entry.repositoryConnectionUpdate === isRelease &&
-        entry.repositoryConnectionDelete === isRelease &&
-        (isRelease
-          ? releaseColumnsAreFull
-          : isRuntime
-            ? runtimeColumnsAreSelectOnly
-            : effectColumnsAreEmpty)
+        entry.providerSetupStateSelect === isRuntime &&
+        entry.providerSetupStateInsert === isRuntime &&
+        entry.providerSetupStateUpdate === isRuntime &&
+        entry.providerSetupStateDelete === isRuntime &&
+        entry.allSequenceUsage === isRuntime &&
+        entry.anySequenceSelectOrUpdate === false &&
+        entry.authorityTablePrivileges === false &&
+        entry.repositoryConnectionSelect === isRuntime &&
+        entry.repositoryConnectionInsert === false &&
+        entry.repositoryConnectionUpdate === false &&
+        entry.repositoryConnectionDelete === false &&
+        (isRuntime
+          ? runtimeColumnsAreSelectOnly
+          : isEffectAuthority
+            ? effectColumnsAreEmpty
+            : columnPrivilegeArraysAreValid &&
+              entry.repositoryConnectionColumnSelect.length === 0 &&
+              entry.repositoryConnectionColumnInsert.length === 0 &&
+              entry.repositoryConnectionColumnUpdate.length === 0 &&
+              entry.repositoryConnectionColumnReferences.length === 0)
       );
     }) &&
       Array.isArray(authorization?.memberships) &&
@@ -1379,9 +1405,24 @@ function exactTriggerBinding(entry) {
       "codex_oauth_runtime_writeback_evidence_guard",
       31,
     ],
+    CodexOAuthWorkflowCompatibility_guard: [
+      "CodexOAuthWorkflowCompatibility",
+      "codex_oauth_workflow_compatibility_guard",
+      31,
+    ],
+    CodexOAuthSecretNamespace_workflow_compatibility_guard: [
+      "CodexOAuthSecretNamespace",
+      "codex_oauth_workflow_compatibility_guard",
+      19,
+    ],
     RepositoryConnection_codex_oauth_identity_guard: [
       "RepositoryConnection",
       "codex_oauth_repository_identity_guard",
+      17,
+    ],
+    RepositoryConnection_comment_token_revoke: [
+      "RepositoryConnection",
+      "hosted_codex_comment_token_authority_revoke_enqueue",
       17,
     ],
     RepositoryConnection_runtime_referential_action_guard: [
@@ -1390,9 +1431,53 @@ function exactTriggerBinding(entry) {
       27,
     ],
   };
+  const updateColumns = {
+    RepositoryConnection_comment_token_revoke: [
+      "provider",
+      "selected",
+      "archived",
+      "visibility",
+      "githubRepositoryId",
+      "fullName",
+      "installationId",
+    ],
+    RepositoryConnection_runtime_referential_action_guard: [
+      "id",
+      "workspaceId",
+      "installationId",
+      "gitlabInstallationId",
+      "scmRepositoryIdentityId",
+    ],
+  };
+  const isRepositoryIdentityConstraint =
+    entry.name === "RepositoryConnection_codex_oauth_identity_guard";
   return (
-    hasExactKeys(entry, ["enabled", "function", "name", "table", "type"]) &&
+    hasExactKeys(entry, [
+      "arguments",
+      "constraint",
+      "deferrable",
+      "definition",
+      "enabled",
+      "function",
+      "initiallyDeferred",
+      "name",
+      "table",
+      "type",
+      "updateColumns",
+      "whenExpression",
+    ]) &&
+    typeof entry.definition === "string" &&
+    entry.definition.startsWith(
+      `CREATE ${isRepositoryIdentityConstraint ? "CONSTRAINT " : ""}TRIGGER "${entry.name}" `,
+    ) &&
     entry.enabled === "O" &&
+    entry.arguments === "" &&
+    entry.constraint === isRepositoryIdentityConstraint &&
+    entry.deferrable === isRepositoryIdentityConstraint &&
+    entry.initiallyDeferred === false &&
+    entry.whenExpression === null &&
+    JSON.stringify(entry.updateColumns) ===
+      JSON.stringify(updateColumns[entry.name] ?? []) &&
     JSON.stringify([entry.table, entry.function, entry.type]) ===
       JSON.stringify(bindings[entry.name])
   );
@@ -1420,6 +1505,10 @@ function exactFunctionDefinition(entry) {
         "target_kind text, target_id text, replacement_lease_id text DEFAULT NULL::text",
       codex_oauth_repair_quarantined_provider:
         "provider_row_id text, old_workspace_id text, old_repository_id text, old_provider_instance_id text, old_auth_mode text, old_secret_name text, old_repository_provider text, old_github_repository_id bigint, old_external_repository_id text, new_workspace_id text, new_repository_id text, new_provider_instance_id text, new_auth_mode text, new_secret_name text, new_github_repository_id bigint, target_signature text",
+      codex_oauth_reattest_active_namespace_v4_to_v5:
+        "target_provider_row_id text, target_claim_id text, target_attempt_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_generation_hash text, target_workflow_path text, target_source_trust text, expected_schema_version integer, target_schema_version integer, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text, compatibility_window_seconds integer",
+      codex_oauth_v4_v5_reattestation_transition:
+        "target_provider_row_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_workflow_path text, target_source_trust text, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text",
     }[entry?.name] ?? "";
   const expectedResult = entry?.name?.startsWith("codex_oauth_authorize_")
     ? "void"
@@ -1428,25 +1517,40 @@ function exactFunctionDefinition(entry) {
       : entry?.name === "codex_oauth_database_authority_challenge" ||
           entry?.name === "codex_oauth_sign_database_authority" ||
           entry?.name === "codex_oauth_provider_identity_transition" ||
-          entry?.name === "codex_oauth_provider_identity_repair_challenge"
+          entry?.name === "codex_oauth_provider_identity_repair_challenge" ||
+          entry?.name === "codex_oauth_v4_v5_reattestation_transition"
         ? "text"
-        : entry?.name?.includes("repair")
+        : entry?.name === "codex_oauth_reattest_active_namespace_v4_to_v5"
           ? "void"
-          : "trigger";
+          : entry?.name?.includes("repair")
+            ? "void"
+            : "trigger";
   const securityDefinerFunction =
+    entry?.name === "hosted_codex_comment_token_authority_revoke_enqueue" ||
     entry?.name?.startsWith("codex_oauth_authorize_") ||
     entry?.name === "codex_oauth_consume_database_authority" ||
     entry?.name === "codex_oauth_sign_database_authority" ||
     entry?.name === "codex_oauth_provider_identity_repair_challenge" ||
     entry?.name === "codex_oauth_provider_identity_guard" ||
     entry?.name === "codex_oauth_runtime_referential_action_guard" ||
-    entry?.name === "codex_oauth_repair_quarantined_provider";
+    entry?.name === "codex_oauth_repair_quarantined_provider" ||
+    entry?.name === "codex_oauth_reattest_active_namespace_v4_to_v5" ||
+    entry?.name === "codex_oauth_workflow_compatibility_guard" ||
+    entry?.name === "codex_oauth_secret_namespace_tombstone_guard";
   const fixedSearchPathFunction =
     securityDefinerFunction ||
     entry?.name === "codex_oauth_database_authority_challenge" ||
     entry?.name === "codex_oauth_database_authority_receipt_guard" ||
     entry?.name === "codex_oauth_provider_identity_transition" ||
-    entry?.name === "codex_oauth_provider_identity_repair_challenge";
+    entry?.name === "codex_oauth_provider_identity_repair_challenge" ||
+    entry?.name === "codex_oauth_v4_v5_reattestation_transition" ||
+    entry?.name === "codex_oauth_workflow_compatibility_guard";
+  const expectedConfig =
+    entry?.name === "hosted_codex_comment_token_authority_revoke_enqueue"
+      ? ["search_path=pg_catalog, pg_temp"]
+      : fixedSearchPathFunction
+        ? ["search_path=pg_catalog, public"]
+        : null;
   return (
     typeof bodySha256 === "string" &&
     hasExactKeys(entry, [
@@ -1455,6 +1559,7 @@ function exactFunctionDefinition(entry) {
       "config",
       "language",
       "leakproof",
+      "identityArguments",
       "name",
       "owner",
       "parallel",
@@ -1469,16 +1574,14 @@ function exactFunctionDefinition(entry) {
       "volatility",
     ]) &&
     entry?.securityDefiner === securityDefinerFunction &&
-    entry.owner === releaseMigrationRole &&
+    entry.identityArguments === expectedFunctionIdentityArguments(entry.name) &&
+    entry.owner === releaseSchemaOwnerRole &&
     entry.prokind === "f" &&
     entry.proretset === false &&
     entry.prosupport === null &&
     entry.procost === 100 &&
     entry.prorows === 0 &&
-    JSON.stringify(entry?.config) ===
-      JSON.stringify(
-        fixedSearchPathFunction ? ["search_path=pg_catalog, public"] : null,
-      ) &&
+    JSON.stringify(entry?.config) === JSON.stringify(expectedConfig) &&
     entry.language === "plpgsql" &&
     entry.volatility === "v" &&
     entry.parallel === "u" &&
@@ -1615,6 +1718,26 @@ function exactCheckDefinition(entry) {
     CodexOAuthWritebackIntent_recovery_resolution_check: [
       "recoveryRequestRowId",
       "recoveryResolvedAt",
+    ],
+    CodexOAuthWorkflowCompatibility_v4_check: ["workflowSchemaVersion", "4"],
+    CodexOAuthWorkflowCompatibility_trust_check: [
+      "workflowSourceTrust",
+      "trusted_default_branch_revision",
+    ],
+    CodexOAuthWorkflowCompatibility_path_check: ["workflowPath"],
+    CodexOAuthWorkflowCompatibility_commit_check: ["workflowSourceCommitSha"],
+    CodexOAuthWorkflowCompatibility_blob_check: ["workflowSourceBlobSha"],
+    CodexOAuthWorkflowCompatibility_source_digest_check: [
+      "workflowSourceSha256",
+    ],
+    CodexOAuthWorkflowCompatibility_semantic_digest_check: [
+      "workflowSemanticSha256",
+    ],
+    CodexOAuthWorkflowCompatibility_repository_check: ["attestedRepositoryId"],
+    CodexOAuthWorkflowCompatibility_retirement_check: [
+      "retireAt",
+      "createdAt",
+      "25",
     ],
   }[entry?.name];
   const expectedValidated =
@@ -1762,6 +1885,7 @@ function exactIndexDefinition(entry) {
     CodexOAuthWritebackIntent_dispatchAttemptId_key: ["dispatchAttemptId"],
     CodexOAuthWritebackIntent_secretNamespaceId_idx: ["secretNamespaceId"],
     CodexOAuthWritebackIntent_versioned_lease_key: ["leaseId"],
+    CodexOAuthWorkflowCompatibility_retire_at_idx: ["retireAt"],
   }[entry?.name];
   const predicateTokens = {
     CodexOAuthSetupManifest_one_active_provider_key: [
@@ -1790,7 +1914,7 @@ function exactIndexDefinition(entry) {
         ? "int4_ops"
         : ["resolvedAt", "expiresAt", "activeLeaseExpiresAt"].includes(key)
           ? "timestamp_ops"
-          : key === "recoveryExpiresAt"
+          : ["recoveryExpiresAt", "retireAt"].includes(key)
             ? "timestamptz_ops"
             : "text_ops",
   );
@@ -2304,7 +2428,7 @@ function verifyWorkflowRuns(observation, descriptor, need, options) {
     need,
     options,
   );
-  const supportedWorkflowSchemaVersions = [1, 2, 3, 4];
+  const supportedWorkflowSchemaVersions = [1, 2, 3, 4, 5];
   const hasExactSupportedSchemaInventory = (versions) =>
     Array.isArray(versions) &&
     JSON.stringify(versions) ===

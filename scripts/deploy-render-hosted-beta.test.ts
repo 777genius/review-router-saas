@@ -52,6 +52,8 @@ const hostedPoolEnvForSha = (sha: string) => ({
   REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION: "0",
   REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0",
   REVIEW_ROUTER_ENABLE_HOSTED_CODEX_FAILOVER: "0",
+  REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+    "postgresql://reviewrouter_comment_token_custody:custody@db.internal/review_router",
   REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN:
     "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789abc",
   AWS_REGION: "us-east-1",
@@ -430,7 +432,7 @@ describe("Render hosted deploy hardening", () => {
     );
   });
 
-  it("requires only the five non-bootstrap deployment database roles", () => {
+  it("requires only the six non-bootstrap deployment database roles", () => {
     const urls = resolveDistinctDatabaseRoleUrls({
       REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL:
         "this-runtime-only-resolver-must-not-parse-bootstrap-secrets",
@@ -442,6 +444,8 @@ describe("Render hosted deploy hardening", () => {
         "postgresql://reviewrouter_worker:c@db.internal/review_router",
       REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
         "postgresql://reviewrouter_codex_effect_authority:e@db.internal/review_router",
+      REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+        "postgresql://reviewrouter_comment_token_custody:f@db.internal/review_router",
       REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:
         "postgresql://reviewrouter_release_migration:d@db.internal/review_router",
     });
@@ -453,7 +457,10 @@ describe("Render hosted deploy hardening", () => {
     expect(new URL(urls.codexEffectAuthority).username).toBe(
       "reviewrouter_codex_effect_authority",
     );
-    expect(Object.keys(urls)).toHaveLength(5);
+    expect(new URL(urls.commentTokenCustody).username).toBe(
+      "reviewrouter_comment_token_custody",
+    );
+    expect(Object.keys(urls)).toHaveLength(6);
     expect(() =>
       parseHostedDeployDotenv(
         "KEEP=value\nREVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL='must-not-be-parsed'\n",
@@ -581,6 +588,8 @@ describe("Render hosted deploy hardening", () => {
           "postgresql://reviewrouter_worker:c@db.internal/review_router",
         REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
           "postgresql://reviewrouter_codex_effect_authority:e@db.internal/review_router",
+        REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+          "postgresql://reviewrouter_comment_token_custody:f@db.internal/review_router",
         REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:
           "postgresql://reviewrouter_release_migration:d@db.internal/review_router",
         ...override,
@@ -819,6 +828,9 @@ describe("Render hosted deploy hardening", () => {
     ]) {
       expect(result[key], key).toBe("0");
     }
+    expect(result.REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL).toBe(
+      hostedPoolEnv.REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL,
+    );
     expect(result.REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE).toBe("1");
     expect(result.REVIEW_ROUTER_PROGRESS_FILE_COVERAGE).toBe("1");
     expect(result.REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES).toBe("1");
@@ -1024,6 +1036,8 @@ describe("Render hosted deploy hardening", () => {
       ...dormantReviewV2Env,
       REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
         "postgresql://reviewrouter_codex_effect_authority:authority@db.internal/review_router",
+      REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+        "postgresql://reviewrouter_comment_token_custody:custody@db.internal/review_router",
     };
     const results = [];
     for (const role of ["web", "api", "worker", "api"] as const) {
@@ -1050,6 +1064,11 @@ describe("Render hosted deploy hardening", () => {
       expect(values.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL).toBe(
         role === "api" || role === "web"
           ? env.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL
+          : undefined,
+      );
+      expect(values.REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL).toBe(
+        role === "api"
+          ? env.REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL
           : undefined,
       );
       results.push(values);
@@ -1093,6 +1112,8 @@ describe("Render hosted deploy hardening", () => {
         "postgresql://reviewrouter_worker:c@db.internal:5432/review_router",
       REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
         "postgresql://reviewrouter_codex_effect_authority:e@db.internal/review_router",
+      REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+        "postgresql://reviewrouter_comment_token_custody:f@db.internal/review_router",
       REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:
         "postgresql://reviewrouter_release_migration:d@db.internal/review_router",
     });
@@ -1342,6 +1363,8 @@ describe("Render hosted deploy hardening", () => {
         "postgresql://reviewrouter_worker:c@db.internal/review_router",
       REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
         "postgresql://reviewrouter_codex_effect_authority:e@db.internal/review_router",
+      REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+        "postgresql://reviewrouter_comment_token_custody:f@db.internal/review_router",
       REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:
         "postgresql://reviewrouter_release_migration:d@db.internal/review_router",
     });

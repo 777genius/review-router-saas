@@ -9,6 +9,10 @@ import {
   type EncryptedCredentialEnvelope,
 } from "../crypto/credential-envelope-vault.js";
 import {
+  createCustodyDeadline,
+  defaultCustodyOperationTimeoutMs,
+} from "../../application/custody-operation-deadline.js";
+import {
   hostedCodexMutationLeaseAuthority,
   PrismaHostedCodexMutationFence,
 } from "./prisma-hosted-codex-mutation-fence.js";
@@ -33,6 +37,7 @@ export class PrismaHostedCodexRestoreReconciler {
     private readonly permitVerifier: HostedCodexRestorePermitVerifierPort,
     private readonly fault?: (phase: RestorePhase, itemId?: string) => void,
     private readonly now: () => Date = () => new Date(),
+    private readonly custodyOperationTimeoutMs = defaultCustodyOperationTimeoutMs,
   ) {
     if (databaseResourceIdentity.length < 16) {
       throw new Error("hosted_codex_database_resource_identity_invalid");
@@ -280,25 +285,50 @@ export class PrismaHostedCodexRestoreReconciler {
       }
       const authority = hostedCodexMutationLeaseAuthority(lease.leaseId);
       try {
-        const plaintext = await this.recoveryVault.decrypt(source.envelope, {
-          workspaceId: item.workspaceId,
-          poolId: item.poolId,
-          accountId: item.accountId,
-          generation: toSafeNumber(item.generation),
-          databaseIncarnation: operation.sourceIncarnation,
-          databaseResourceIdentity: source.databaseResourceIdentity,
-        });
-        this.fault?.("after_item_decrypt", item.id);
+        const decryptDeadline = createCustodyDeadline(
+          undefined,
+          this.custodyOperationTimeoutMs,
+        );
+        const plaintext = await decryptDeadline
+          .run(
+            this.recoveryVault.decrypt(
+              source.envelope,
+              {
+                workspaceId: item.workspaceId,
+                poolId: item.poolId,
+                accountId: item.accountId,
+                generation: toSafeNumber(item.generation),
+                databaseIncarnation: operation.sourceIncarnation,
+                databaseResourceIdentity: source.databaseResourceIdentity,
+              },
+              decryptDeadline.signal,
+            ),
+            (latePlaintext) => latePlaintext.fill(0),
+          )
+          .finally(() => decryptDeadline.dispose());
         let target: EncryptedCredentialEnvelope;
         try {
-          target = await this.recoveryVault.encrypt(plaintext, {
-            workspaceId: item.workspaceId,
-            poolId: item.poolId,
-            accountId: item.accountId,
-            generation: toSafeNumber(item.generation),
-            databaseIncarnation: operation.targetIncarnation,
-            databaseResourceIdentity: operation.databaseResourceIdentity,
-          });
+          this.fault?.("after_item_decrypt", item.id);
+          const encryptDeadline = createCustodyDeadline(
+            undefined,
+            this.custodyOperationTimeoutMs,
+          );
+          target = await encryptDeadline
+            .run(
+              this.recoveryVault.encrypt(
+                plaintext,
+                {
+                  workspaceId: item.workspaceId,
+                  poolId: item.poolId,
+                  accountId: item.accountId,
+                  generation: toSafeNumber(item.generation),
+                  databaseIncarnation: operation.targetIncarnation,
+                  databaseResourceIdentity: operation.databaseResourceIdentity,
+                },
+                encryptDeadline.signal,
+              ),
+            )
+            .finally(() => encryptDeadline.dispose());
         } finally {
           plaintext.fill(0);
         }

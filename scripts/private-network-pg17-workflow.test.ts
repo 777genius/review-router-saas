@@ -16,6 +16,10 @@ const authorityMigrationWorkflow = readFileSync(
   ".github/workflows/release-authority-migration.yml",
   "utf8",
 );
+const roleBootstrapWorkflow = readFileSync(
+  ".github/workflows/codex-rotating-role-bootstrap.yml",
+  "utf8",
+);
 const releaseImageVerifier = readFileSync(
   "scripts/verify-private-pg17-release-image-provenance.ts",
   "utf8",
@@ -506,6 +510,18 @@ describe("private-network PG17 workflow security contract", () => {
       expect(job).toContain("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON:");
       expect(job).toContain("RENDER_SERVICE_SUSPENSION_API_KEY:");
       expect(job).toContain("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS:");
+    }
+  });
+
+  it("wires custody credentials into every canonical bootstrap and release caller", () => {
+    const custodySecret =
+      "REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL }}";
+    expect(roleBootstrapWorkflow).toContain(custodySecret);
+    for (const jobName of ["role-bootstrap-private", "pg17-cutover-private"]) {
+      const job = jobs(workflow).find((block) =>
+        block.startsWith(`  ${jobName}:`),
+      )!;
+      expect(job).toContain(custodySecret);
     }
   });
 

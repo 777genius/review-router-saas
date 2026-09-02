@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
   canonicalActivationCatalogPolicyTrustRootReadiness,
 } from "@reviewrouter/features-release-rollout";
@@ -56,14 +55,15 @@ describe("activation catalog policy deployment authorization", () => {
     ).toThrow("activation_catalog_policy_digest_mismatch");
   });
 
-  it("authorizes the independently reviewed PG17 policy recapture", () => {
+  it("keeps exact configured digests blocked while the schema-v5 trust root is pending", () => {
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
-      status: "ready",
-      reason:
-        "reviewed-v25-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
+      status: "blocked",
+      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
     });
-    expect(trustedActivationCatalogPoliciesFromEnvironment(configured)).toBe(
-      canonicalActivationCatalogPolicies,
+    expect(() =>
+      trustedActivationCatalogPoliciesFromEnvironment(configured),
+    ).toThrow(
+      "activation_catalog_policy_trust_root_blocked:fresh-authenticated-raw-capture-and-independent-review-required",
     );
   });
 });

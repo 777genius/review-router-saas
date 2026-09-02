@@ -23,6 +23,11 @@ const configuration = {
       password: "worker-pass",
     },
     {
+      role: "comment-token-custody",
+      username: "reviewrouter_comment_token_custody",
+      password: "custody-pass",
+    },
+    {
       role: "effect-authority",
       username: "reviewrouter_codex_effect_authority",
       password: "effect-pass",

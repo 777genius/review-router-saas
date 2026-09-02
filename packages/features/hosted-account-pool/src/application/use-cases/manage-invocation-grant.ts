@@ -48,6 +48,7 @@ export async function issueInvocationGrant(
       readonly maxUses: number;
     };
     readonly authority: InvocationGrantAuthority;
+    readonly runtimeAuthzEpoch: bigint;
     readonly now: Date;
   },
   dependencies: {

@@ -52,45 +52,58 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
     if (input.workflowSchemaVersion !== this.requiredWorkflowSchemaVersion) {
       throw new Error("hosted_workflow_schema_version_mismatch");
     }
-    const repository = await this.prisma.repositoryConnection.findFirst({
-      where: {
-        provider: "github",
-        githubRepositoryId: BigInt(input.claims.repository_id),
-      },
-      select: {
-        id: true,
-        workspaceId: true,
-        githubRepositoryId: true,
-        owner: true,
-        name: true,
-        fullName: true,
-        visibility: true,
-        selected: true,
-        archived: true,
-        installation: {
-          select: { githubInstallationId: true, status: true },
+    const [repository, runtimeGate] = await Promise.all([
+      this.prisma.repositoryConnection.findFirst({
+        where: {
+          provider: "github",
+          githubRepositoryId: BigInt(input.claims.repository_id),
         },
-        hostedCodexBindings: {
-          where: { id: input.bindingId },
-          take: 1,
-          select: {
-            id: true,
-            status: true,
-            revision: true,
-            workflowPath: true,
-            workflowActionRef: true,
-            workflowSourceCommitSha: true,
-            workflowSourceBlobSha: true,
-            workflowSourceSha256: true,
-            workflowSemanticSha256: true,
-            workflowSourceTrust: true,
-            attestedGithubRepositoryId: true,
-            attestedBindingRevision: true,
-            pool: { select: { authzEpoch: true, status: true } },
+        select: {
+          id: true,
+          workspaceId: true,
+          githubRepositoryId: true,
+          owner: true,
+          name: true,
+          fullName: true,
+          visibility: true,
+          selected: true,
+          archived: true,
+          installation: {
+            select: { githubInstallationId: true, status: true },
+          },
+          hostedCodexBindings: {
+            where: { id: input.bindingId },
+            take: 1,
+            select: {
+              id: true,
+              status: true,
+              revision: true,
+              workflowPath: true,
+              workflowActionRef: true,
+              workflowSourceCommitSha: true,
+              workflowSourceBlobSha: true,
+              workflowSourceSha256: true,
+              workflowSemanticSha256: true,
+              workflowSourceTrust: true,
+              attestedGithubRepositoryId: true,
+              attestedBindingRevision: true,
+              pool: { select: { authzEpoch: true, status: true } },
+            },
           },
         },
-      },
-    });
+      }),
+      this.prisma.hostedCodexRuntimeGate.findUnique({
+        where: { id: "global" },
+        select: { status: true, authzEpoch: true },
+      }),
+    ]);
+    if (
+      !runtimeGate ||
+      runtimeGate.status !== "active" ||
+      runtimeGate.authzEpoch < 1n
+    ) {
+      throw new Error("hosted_runtime_gate_not_active");
+    }
     const binding = repository?.hostedCodexBindings[0];
     if (
       !repository ||
@@ -208,6 +221,7 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
       bindingId: binding.id,
       bindingRevision,
       authzEpoch: binding.pool.authzEpoch.toString(),
+      runtimeAuthzEpoch: runtimeGate.authzEpoch.toString(),
       workflowSourceSha256: attestation.workflowSourceSha256,
     };
     const workflowSource = `${repository.fullName}/${attestation.workflowPath}@refs/pull/${reviewRequest.pullRequestNumber}/merge`;
@@ -229,6 +243,7 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
       bindingId: binding.id,
       bindingRevision,
       authzEpoch: binding.pool.authzEpoch,
+      runtimeAuthzEpoch: runtimeGate.authzEpoch,
       workflowSchemaVersion: this.requiredWorkflowSchemaVersion,
       workflowSource,
       workflowJobSource: workflowJob.ref,

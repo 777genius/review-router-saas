@@ -149,6 +149,8 @@ Optional grant limits use bounded integer parsing and the following defaults:
 | `REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_REQUESTS`            |      32 |           1-64 |
 | `REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_CONCURRENT_REQUESTS` |       2 |            1-8 |
 | `REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_REQUEST_BYTES`       | 2000000 |   1024-2000000 |
+| `REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_RESPONSE_BYTES`      | 8000000 | 65536-32000000 |
+| `REVIEW_ROUTER_HOSTED_CODEX_GRANT_MAX_OUTPUT_TOKENS`       |   32768 |     256-100000 |
 | `REVIEW_ROUTER_HOSTED_CODEX_COMMENT_REFRESH_MAX_USES`      |       8 |           1-32 |
 
 Omitting these variables uses the defaults. Invalid values fail composition;
@@ -248,12 +250,40 @@ does not accept one ambient token for both trust domains.
 Operators pin five distinct existing disposable workflow run IDs in
 `REVIEW_ROUTER_HOSTED_POOL_CANARY_RUN_IDS_JSON`: `simultaneous_a`,
 `simultaneous_b`, `unauthorized`, `rate_limited`, and `dropped_response`.
-The first two are dispatched concurrently and must prove one sticky primary
-account; 401 and 429 must each show exactly one classified backup attempt; the
-ambiguous dropped response must be `terminal_unknown` with exactly one upstream
-attempt. The harness performs no rerun retry. It collects database evidence and
-always runs the ordered rollback above. Tests use deterministic fake ports and
-never contact GitHub, Render, KMS, or a provider.
+Each source run must be a completed, successful attempt-1 `pull_request` run of
+the canonical hosted workflow. `workflow_dispatch`, prior reruns, moved workflow
+tuples, and noncanonical source revisions are rejected before any flag changes.
+
+The v2 canary also requires the exact dedicated pool ID, exactly two healthy
+account IDs, the disposable repository ID repeated as the sole allowlist entry,
+and three distinct `rr-canary-fault-v2` operator-signed fault plans in
+`REVIEW_ROUTER_HOSTED_POOL_CANARY_FAULT_PLANS_JSON`. The API holds only the
+stable Ed25519 public authority key and key ID. The operator stages each
+short-lived (at most one-hour), exact repository/run-attempt/action/binding/
+revision/request/attempt plan in the audit ledger immediately before its run;
+the API verifies and atomically consumes it once. Repository input cannot select
+or widen a fault. Rollback cancels every still-open staged plan.
+
+Activation enables pool, custody, relay, and failover together on the exact API
+and web services, verifies the two-service readback, then enables admission last.
+The first two runs are dispatched concurrently and must prove the same sticky
+primary account with overlapping upstream attempt timestamps. Synthetic 401 and
+429 are injected before the primary inference effect exists and must each show
+one successful backup effect and one fault-plan consumption. The dropped
+response is injected only after durable response-start, must become
+`terminal_unknown`, revoke the invocation grant and comment-refresh capability,
+and must remain an unchanged one-effect graph after the quiescence reread. Every
+ReviewRouter publication in the attempt window must be authored by the exact
+configured GitHub App bot.
+
+The harness performs no rerun retry. Schema-2 evidence records exact
+binding/revision, grant, request, effect, fault-consumption, App-publication,
+ordered activation, failure, and rollback observations and seals the JSON with
+`evidenceSha256`. Rollback is attempted after every protected execution path,
+continues through individual closure failures, and independently verifies both
+services at all-zero flags plus zero in-flight, issued-grant, and unresolved-
+request counts. Tests use deterministic fake ports and never contact GitHub,
+Render, KMS, or a provider.
 
 ## Runtime Commands
 

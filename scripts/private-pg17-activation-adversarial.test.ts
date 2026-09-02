@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   activationAuthorityProvisioningSql,
@@ -67,6 +68,19 @@ const databaseName = "review_router";
 const applicationRelation = 'public."RepositoryConnection"';
 const configuration = disposableSqlConfiguration();
 const migrationPermitEligibilityCutoff = "2026-08-12T00:00:02.300Z";
+const canonicalReleaseAuthorityRoleFoundationSql = `GRANT reviewrouter_release_schema_owner TO ${adminUsername}
+  WITH ADMIN TRUE, INHERIT FALSE, SET TRUE;
+UPDATE pg_catalog.pg_authid
+SET rolsuper=false, rolcanlogin=false, rolcreatedb=false,
+    rolcreaterole=false, rolreplication=false, rolbypassrls=false
+WHERE rolname='${providerAdminUsername}';`;
+const applyProductionMigrationBaseline = <Result>(
+  provisionCanonicalReleaseAuthorityRoles: () => void,
+  deployMigrations: () => Result,
+) => {
+  provisionCanonicalReleaseAuthorityRoles();
+  return deployMigrations();
+};
 type SourceLegacyAmbiguityEvidence = ReturnType<
   typeof sourceLegacyAmbiguityFixture
 >;
@@ -74,6 +88,68 @@ const migrationPermitEvidenceByRollout = new Map<
   string,
   SourceLegacyAmbiguityEvidence
 >();
+
+describe("PG17 production migration baseline fixture ordering", () => {
+  it("provisions canonical release authority before deploying migrations", () => {
+    const phases: string[] = [];
+    const result = applyProductionMigrationBaseline(
+      () => phases.push("provision-release-authority"),
+      () => {
+        phases.push("deploy-migrations");
+        return "deployed";
+      },
+    );
+
+    expect(result).toBe("deployed");
+    expect(phases).toEqual([
+      "provision-release-authority",
+      "deploy-migrations",
+    ]);
+    const targetRoleFoundation = disposablePg17TargetRoleFoundationSql({
+      providerAdminUsername,
+      demoteProvider: false,
+    });
+    const schemaOwnerCreate = "CREATE ROLE reviewrouter_release_schema_owner";
+    expect(targetRoleFoundation).toContain(schemaOwnerCreate);
+    expect(canonicalReleaseAuthorityRoleFoundationSql).not.toContain(
+      schemaOwnerCreate,
+    );
+    expect(
+      `${targetRoleFoundation}\n${canonicalReleaseAuthorityRoleFoundationSql}`.split(
+        schemaOwnerCreate,
+      ),
+    ).toHaveLength(2);
+    expect(canonicalReleaseAuthorityRoleFoundationSql).toContain(
+      `GRANT reviewrouter_release_schema_owner TO ${adminUsername}`,
+    );
+    expect(canonicalReleaseAuthorityRoleFoundationSql).toContain(
+      "WITH ADMIN TRUE, INHERIT FALSE, SET TRUE",
+    );
+    expect(canonicalReleaseAuthorityRoleFoundationSql).toContain(
+      `WHERE rolname='${providerAdminUsername}'`,
+    );
+  });
+
+  it("retains 000079 fail-closed rejection for either partial authority topology", () => {
+    const migrationSql = readFileSync(
+      new URL(
+        "../packages/platform/db/prisma/migrations/000079_remove_account_wide_provider_lane_serialization/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(migrationSql).toContain(
+      "IF schema_owner_exists <> release_migration_exists THEN",
+    );
+    expect(migrationSql).toContain(
+      "provider_scope_concurrency_authority_roles_partial:reviewrouter_release_schema_owner_missing",
+    );
+    expect(migrationSql).toContain(
+      "provider_scope_concurrency_authority_roles_partial:reviewrouter_release_migration_missing",
+    );
+  });
+});
 
 const persistAdditionalSourceOwnedReceipt = (
   context: CaseContext,
@@ -285,21 +361,31 @@ const initializeSeed = () => {
     providerAdminUsername,
     disposablePg17TargetRoleFoundationSql({
       providerAdminUsername,
+      demoteProvider: false,
     }),
   );
-  const migration = spawnSync(
-    "pnpm",
-    ["--filter", "@reviewrouter/platform-db", "db:migrate:deploy"],
-    {
-      cwd: new URL("..", import.meta.url),
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        DATABASE_URL: `postgresql://${adminUsername}:disposable-bootstrap@127.0.0.1:${publishedPort(seedContainer)}/${databaseName}?sslmode=disable`,
-      },
-      maxBuffer: 16 * 1024 * 1024,
-      timeout: 600_000,
-    },
+  const migration = applyProductionMigrationBaseline(
+    () =>
+      psqlAs(
+        seedContainer,
+        providerAdminUsername,
+        canonicalReleaseAuthorityRoleFoundationSql,
+      ),
+    () =>
+      spawnSync(
+        "pnpm",
+        ["--filter", "@reviewrouter/platform-db", "db:migrate:deploy"],
+        {
+          cwd: new URL("..", import.meta.url),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            DATABASE_URL: `postgresql://${adminUsername}:disposable-bootstrap@127.0.0.1:${publishedPort(seedContainer)}/${databaseName}?sslmode=disable`,
+          },
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: 600_000,
+        },
+      ),
   );
   expect(
     migration.status,
@@ -417,6 +503,7 @@ const initializeSeed = () => {
            'reviewrouter_api',
            'reviewrouter_web',
            'reviewrouter_worker',
+           'reviewrouter_comment_token_custody',
            'reviewrouter_codex_effect_authority'
          );`,
       ),
@@ -425,6 +512,7 @@ const initializeSeed = () => {
     reviewrouter_activation_permit_installer: true,
     reviewrouter_activation_receipt_reader: true,
     reviewrouter_api: false,
+    reviewrouter_comment_token_custody: false,
     reviewrouter_codex_effect_authority: false,
     reviewrouter_release_migration: true,
     reviewrouter_release_schema_owner: false,
@@ -938,6 +1026,7 @@ describePg17(
             `SELECT bool_and(NOT has_function_privilege(principal,routine,'EXECUTE'))
              FROM unnest(ARRAY['${releaseUsername}','reviewrouter_api',
                'reviewrouter_web','reviewrouter_worker',
+               'reviewrouter_comment_token_custody',
                'reviewrouter_codex_effect_authority']) principal
              CROSS JOIN unnest(ARRAY[
                'reviewrouter_activation.apply_runtime_database_acl(text)'::regprocedure,
@@ -1498,7 +1587,8 @@ describePg17(
               `SELECT bool_and(NOT has_database_privilege(
                role_name,current_database(),'CONNECT'))
              FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
-               'reviewrouter_worker','reviewrouter_codex_effect_authority'])
+               'reviewrouter_worker','reviewrouter_comment_token_custody',
+               'reviewrouter_codex_effect_authority'])
                AS roles(role_name);`,
             ),
           ).toBe("t");
@@ -1508,7 +1598,8 @@ describePg17(
               `SELECT NOT EXISTS (
                SELECT 1
                FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
-                 'reviewrouter_worker','reviewrouter_codex_effect_authority'])
+                 'reviewrouter_worker','reviewrouter_comment_token_custody',
+                 'reviewrouter_codex_effect_authority'])
                  AS roles(role_name)
                CROSS JOIN pg_class relation
                JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
@@ -1545,6 +1636,40 @@ describePg17(
           ).toBe("t");
 
           context.psqlAs(adminUsername, runtimeGrantSql(configuration));
+          expect(
+            context.psqlAs(
+              adminUsername,
+              `SELECT bool_and(
+                 has_table_privilege(role_name,
+                   'public."HostedCodexRuntimeGate"','SELECT')
+                 AND NOT has_table_privilege(role_name,
+                   'public."HostedCodexRuntimeGate"','INSERT')
+                 AND NOT has_table_privilege(role_name,
+                   'public."HostedCodexRuntimeGate"','UPDATE')
+                 AND NOT has_table_privilege(role_name,
+                   'public."HostedCodexRuntimeGate"','DELETE'))
+               FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
+                 'reviewrouter_worker']) AS roles(role_name);`,
+            ),
+          ).toBe("t");
+          const runtimeGateMutation = context.psqlResultAs(
+            "reviewrouter_web",
+            `UPDATE public."HostedCodexRuntimeGate"
+             SET "status"='active',"authzEpoch"="authzEpoch"+1,
+                 "revision"="revision"+1,
+                 "reasonCode"='runtime_reopen_attempt',
+                 "changedAt"="changedAt"+interval '1 second'
+             WHERE "id"='global';`,
+          );
+          expect(runtimeGateMutation.status).not.toBe(0);
+          expect(runtimeGateMutation.stderr).toContain("permission denied");
+          expect(
+            context.psqlAs(
+              adminUsername,
+              `SELECT "status"::text FROM public."HostedCodexRuntimeGate"
+               WHERE "id"='global';`,
+            ),
+          ).toBe("closed");
           const openCatalogDigest = context
             .psqlAs(installerUsername, fencedLiveV70V72CatalogDigestSql)
             .split("\n")
@@ -1583,7 +1708,8 @@ describePg17(
               `SELECT bool_and(NOT has_database_privilege(
                role_name,current_database(),'CONNECT'))
              FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
-               'reviewrouter_worker','reviewrouter_codex_effect_authority'])
+               'reviewrouter_worker','reviewrouter_comment_token_custody',
+               'reviewrouter_codex_effect_authority'])
                AS roles(role_name);`,
             ),
           ).toBe("t");
@@ -1635,26 +1761,113 @@ describePg17(
     );
 
     it(
-      "recomputes the live V70-V72 digest through the fenced installer connection",
-      isolatedCase(
-        "fenced-v70-v72-digest",
-        () => {},
-        ({ psqlAs: runAs }) => {
-          const canonicalDigest = runAs(
-            installerUsername,
-            fencedLiveV70V72CatalogDigestSql,
-          );
-          expect(canonicalDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
-          runAs(
-            adversarialAdminUsername,
-            `ALTER FUNCTION public.reviewrouter_answer_runtime_canary_challenge(
-             text,text,text,text,text,text) SECURITY INVOKER;`,
-          );
-          expect(
-            runAs(installerUsername, fencedLiveV70V72CatalogDigestSql),
-          ).not.toBe(canonicalDigest);
-        },
-      ),
+      "keeps forbidden witness writes visible while canonical ACL activation is digest-stable",
+      (() => {
+        let evidence:
+          | {
+              baselineDigest: string;
+              activatedDigest: string;
+              alternativeGrantorBaseline: string;
+              alternativeGrantorDigest: string;
+              alternativeGrantorEntry: string;
+              forbiddenWriteDigest: string;
+            }
+          | undefined;
+        return isolatedCase(
+          "fenced-v70-v72-digest",
+          () => {
+            expect(evidence?.baselineDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+            expect(evidence?.forbiddenWriteDigest).not.toBe(
+              evidence?.baselineDigest,
+            );
+            expect(evidence?.alternativeGrantorEntry).toBe(
+              "reviewrouter_api=a/rr_digest_alt_grantor",
+            );
+            expect(evidence?.alternativeGrantorDigest).not.toBe(
+              evidence?.alternativeGrantorBaseline,
+            );
+            expect(evidence?.activatedDigest).toBe(evidence?.baselineDigest);
+          },
+          (context) => {
+            const baselineDigest = context.psqlAs(
+              installerUsername,
+              fencedLiveV70V72CatalogDigestSql,
+            );
+            context.psqlAs(
+              adversarialAdminUsername,
+              `GRANT INSERT ON TABLE public."RuntimeGenerationWitnessProof"
+                 TO reviewrouter_api;`,
+            );
+            const forbiddenWriteDigest = context.psqlAs(
+              installerUsername,
+              fencedLiveV70V72CatalogDigestSql,
+            );
+            context.psqlAs(
+              adversarialAdminUsername,
+              `REVOKE INSERT ON TABLE public."RuntimeGenerationWitnessProof"
+                 FROM reviewrouter_api;
+               CREATE ROLE rr_digest_alt_grantor NOLOGIN;
+               GRANT INSERT ON TABLE public."HostedCodexCommentRefreshUse"
+                 TO rr_digest_alt_grantor WITH GRANT OPTION;`,
+            );
+            const alternativeGrantorBaseline = context.psqlAs(
+              installerUsername,
+              fencedLiveV70V72CatalogDigestSql,
+            );
+            context.psqlAs(
+              adversarialAdminUsername,
+              `SET ROLE rr_digest_alt_grantor;
+               GRANT INSERT ON TABLE public."HostedCodexCommentRefreshUse"
+                 TO reviewrouter_api;
+               RESET ROLE;`,
+            );
+            const alternativeGrantorDigest = context.psqlAs(
+              installerUsername,
+              fencedLiveV70V72CatalogDigestSql,
+            );
+            const alternativeGrantorEntry = context.psqlAs(
+              installerUsername,
+              `SELECT acl::text
+               FROM pg_class relation
+               CROSS JOIN LATERAL unnest(relation.relacl) acl
+               WHERE relation.oid='public."HostedCodexCommentRefreshUse"'::regclass
+                 AND acl::text='reviewrouter_api=a/rr_digest_alt_grantor';`,
+            );
+            context.psqlAs(
+              adversarialAdminUsername,
+              `SET ROLE rr_digest_alt_grantor;
+               REVOKE INSERT ON TABLE public."HostedCodexCommentRefreshUse"
+                 FROM reviewrouter_api;
+               RESET ROLE;
+               REVOKE INSERT ON TABLE public."HostedCodexCommentRefreshUse"
+                 FROM rr_digest_alt_grantor;
+               DROP ROLE rr_digest_alt_grantor;
+               GRANT EXECUTE ON FUNCTION reviewrouter_activation.apply_runtime_acl()
+                 TO reviewrouter_release_migration;`,
+            );
+            context.psqlAs(
+              releaseUsername,
+              "SELECT reviewrouter_activation.apply_runtime_acl();",
+            );
+            context.psqlAs(
+              adversarialAdminUsername,
+              `REVOKE EXECUTE ON FUNCTION reviewrouter_activation.apply_runtime_acl()
+                 FROM reviewrouter_release_migration;`,
+            );
+            evidence = {
+              alternativeGrantorBaseline,
+              alternativeGrantorDigest,
+              alternativeGrantorEntry,
+              activatedDigest: context.psqlAs(
+                installerUsername,
+                fencedLiveV70V72CatalogDigestSql,
+              ),
+              baselineDigest,
+              forbiddenWriteDigest,
+            };
+          },
+        );
+      })(),
       120_000,
     );
 
@@ -1830,6 +2043,10 @@ printf 'hostile_mutator_excluded\n'`,
     it(
       "applies runtime grants only inside a permit-guarded activation call",
       isolatedCase("permit-guarded-runtime-acl", (context) => {
+        const preactivationDigest = context.psqlAs(
+          installerUsername,
+          fencedLiveV70V72CatalogDigestSql,
+        );
         const before = context.psqlAs(
           adminUsername,
           runtimeAclAuthoritySnapshotSql,
@@ -1880,11 +2097,15 @@ printf 'hostile_mutator_excluded\n'`,
         expect(receipt.rolloutId).toBe("permit-guarded-runtime-acl");
         expect(receipt.firstWriteBoundary).toBe(true);
         expect(
+          context.psqlAs(installerUsername, fencedLiveV70V72CatalogDigestSql),
+        ).toBe(preactivationDigest);
+        expect(
           context.psqlAs(
             adminUsername,
             `SELECT bool_and(has_database_privilege(role_name,current_database(),'CONNECT'))
              FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
-               'reviewrouter_worker','reviewrouter_codex_effect_authority']) role_name;`,
+               'reviewrouter_worker','reviewrouter_comment_token_custody',
+               'reviewrouter_codex_effect_authority']) role_name;`,
           ),
         ).toBe("t");
       }),

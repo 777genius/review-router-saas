@@ -873,6 +873,12 @@ class InMemoryActionReplayNonces implements ActionOidcReplayNonceStorePort {
 class InMemoryCommentTokenIssuer implements GitHubAppCommentTokenIssuerPort {
   public readonly calls: IssueGitHubAppCommentTokenInput[] = [];
 
+  async prepareCommentToken(
+    input: Omit<IssueGitHubAppCommentTokenInput, "signal">,
+  ) {
+    return { send: async () => this.issueCommentToken(input) };
+  }
+
   async issueCommentToken(input: IssueGitHubAppCommentTokenInput) {
     this.calls.push(input);
     return {
@@ -885,6 +891,7 @@ class InMemoryCommentTokenIssuer implements GitHubAppCommentTokenIssuerPort {
         issues: "write" as const,
         statuses: "write" as const,
       },
+      custody: "acceptable" as const,
     };
   }
 }
@@ -1351,14 +1358,18 @@ describe("API app", () => {
     expect(response.body).toContain(`${expectedApiUrl}/docs`);
   });
 
-  it("serves a small readiness response for API demos", async () => {
+  it("serves readiness independently from liveness", async () => {
     const app = await createApiApp();
-    const response = await app.inject({ method: "GET", url: "/ready" });
+    const [liveness, readiness] = await Promise.all([
+      app.inject({ method: "GET", url: "/health" }),
+      app.inject({ method: "GET", url: "/ready" }),
+    ]);
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
+    expect(liveness.statusCode).toBe(200);
+    expect(readiness.statusCode).toBe(200);
+    expect(readiness.json()).toMatchObject({
       service: "review-router-api",
-      status: "ready",
+      status: "ok",
     });
   });
 
@@ -1439,7 +1450,7 @@ describe("API app", () => {
     });
   });
 
-  it("marks health degraded when a dependency is degraded", async () => {
+  it("keeps liveness 200 and fails readiness closed when a dependency is degraded", async () => {
     const app = await createApiApp({
       healthDependencies: [
         {
@@ -1447,10 +1458,15 @@ describe("API app", () => {
         },
       ],
     });
-    const response = await app.inject({ method: "GET", url: "/health" });
+    const [liveness, readiness] = await Promise.all([
+      app.inject({ method: "GET", url: "/health" }),
+      app.inject({ method: "GET", url: "/ready" }),
+    ]);
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
+    expect(liveness.statusCode).toBe(200);
+    expect(liveness.json()).toMatchObject({ status: "ok" });
+    expect(readiness.statusCode).toBe(503);
+    expect(readiness.json()).toMatchObject({
       service: "review-router-api",
       status: "degraded",
       dependencies: [{ name: "database", status: "degraded" }],

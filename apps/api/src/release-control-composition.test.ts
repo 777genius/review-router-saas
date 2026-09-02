@@ -27,6 +27,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+const trustedMigrationTransition = createReleaseMigrationTransition({
+  commitSha: "0".repeat(40),
+  releaseImageDigest: `sha256:${"0".repeat(64)}`,
+});
+
 const trustedDatabaseIdentity = {
   authorityDatabaseIdentity: {
     serverIdentity: "1",
@@ -43,14 +48,10 @@ const trustedDatabaseIdentity = {
   installerRoutineBodySha256: "a".repeat(64),
   readerRoutineBodySha256: "b".repeat(64),
   targetMigrationManifestIdentity:
-    "sha256:bb102d7d6013f7373f177ea5f266a5427a877fc54b95af8876d30ec2b17ab478",
+    trustedMigrationTransition.preManifestIdentity,
   activationNamespaceFingerprint: `sha256:${"d".repeat(64)}`,
 } as const;
 const trustedActivationCatalogPolicies = canonicalActivationCatalogPolicies;
-const trustedMigrationTransition = createReleaseMigrationTransition({
-  commitSha: "0".repeat(40),
-  releaseImageDigest: `sha256:${"0".repeat(64)}`,
-});
 const explicitCompositionTestGate = {
   execute: async <Result>(
     sequence: Parameters<

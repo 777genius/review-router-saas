@@ -6,6 +6,10 @@ import {
   type EncryptedCredentialEnvelope,
 } from "../crypto/credential-envelope-vault";
 import { fingerprintCodexAuthJson } from "../security/codex-account-identity.js";
+import {
+  isHostedAccountTransactionWriteConflict,
+  normalizeExpiredHostedAccountCooldownWithCas,
+} from "./prisma-hosted-account-cooldown.js";
 import { hostedCodexMutationLeaseAuthority } from "./prisma-hosted-codex-mutation-fence.js";
 
 export class PrismaHostedCodexSessionPersistence implements HostedCodexSessionPersistencePort {
@@ -29,29 +33,24 @@ export class PrismaHostedCodexSessionPersistence implements HostedCodexSessionPe
   }
 
   async read(accountId: string) {
-    // Prisma may materialize relations with more than one SQL statement. A
-    // repeatable-read snapshot prevents observing activeGeneration from a CAS
-    // commit while still observing the predecessor credential generation.
-    const account = await this.prisma.$transaction(
-      (transaction) =>
-        transaction.hostedCodexAccount.findUnique({
-          where: { id: accountId },
-          include: {
-            credentialVersions: {
-              orderBy: { generation: "desc" },
-              take: 1,
-              include: {
-                envelopeRevisions: { orderBy: { revision: "desc" }, take: 1 },
-              },
-            },
-          },
-        }),
-      {
-        isolationLevel: "RepeatableRead",
-        maxWait: 15_000,
-        timeout: 15_000,
-      },
-    );
+    let account:
+      | Awaited<ReturnType<typeof this.readAccountSnapshot>>
+      | undefined;
+    let lastConflict: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await normalizeExpiredHostedAccountCooldownWithCas(this.prisma, {
+        accountId,
+        now: new Date(),
+      });
+      try {
+        account = await this.readAccountSnapshot(accountId);
+        break;
+      } catch (error) {
+        if (!isHostedAccountTransactionWriteConflict(error)) throw error;
+        lastConflict = error;
+      }
+    }
+    if (account === undefined) throw lastConflict;
     const credential = account?.credentialVersions[0];
     if (!account || !credential || account.activeGeneration === null)
       return null;
@@ -101,6 +100,32 @@ export class PrismaHostedCodexSessionPersistence implements HostedCodexSessionPe
       generationHash: credential.generationHash,
       storageVersion: `hosted-envelope-v${credential.envelopeVersion}`,
     };
+  }
+
+  private readAccountSnapshot(accountId: string) {
+    // Prisma may materialize relations with more than one SQL statement. A
+    // repeatable-read snapshot prevents observing activeGeneration from a CAS
+    // commit while still observing the predecessor credential generation.
+    return this.prisma.$transaction(
+      (transaction) =>
+        transaction.hostedCodexAccount.findUnique({
+          where: { id: accountId },
+          include: {
+            credentialVersions: {
+              orderBy: { generation: "desc" },
+              take: 1,
+              include: {
+                envelopeRevisions: { orderBy: { revision: "desc" }, take: 1 },
+              },
+            },
+          },
+        }),
+      {
+        isolationLevel: "RepeatableRead",
+        maxWait: 15_000,
+        timeout: 15_000,
+      },
+    );
   }
 
   async compareAndSwap(input: {

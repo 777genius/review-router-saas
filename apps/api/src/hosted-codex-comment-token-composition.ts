@@ -3,107 +3,157 @@ import type { PrismaClient } from "@reviewrouter/platform-db";
 import type { Clock } from "@reviewrouter/shared";
 import type { GitHubAppCommentTokenIssuerPort } from "@reviewrouter/features-action-control-plane";
 import {
-  consumeHostedCommentTokenRefreshCapability,
-  invocationGrantId,
-  PrismaInvocationGrantRepository,
-  type HostedCodexCommentTokenIssuerPort,
+  CredentialEnvelopeVault,
+  HostedCommentTokenMintProtocol,
+  PrismaHostedCommentTokenMintLedger,
+  type HostedCommentTokenMintLedgerPort,
+  type HostedCommentTokenPreparedSecretVaultPort,
+  type HostedCommentTokenSecretVaultPort,
 } from "@reviewrouter/features-hosted-account-pool";
 
-export class HostedCodexCommentTokenIssuer implements HostedCodexCommentTokenIssuerPort {
-  private readonly grants: PrismaInvocationGrantRepository;
-
-  constructor(
-    private readonly dependencies: {
-      readonly prisma: PrismaClient;
-      readonly commentTokens: GitHubAppCommentTokenIssuerPort;
-      readonly clock: Clock;
-      readonly grants?: PrismaInvocationGrantRepository;
-    },
-  ) {
-    this.grants =
-      dependencies.grants ??
-      new PrismaInvocationGrantRepository(dependencies.prisma);
-  }
-
-  async issue(
-    input: Parameters<HostedCodexCommentTokenIssuerPort["issue"]>[0],
-  ) {
-    const now = this.dependencies.clock.now();
-    const stored =
-      await this.dependencies.prisma.hostedCodexInvocationGrant.findUnique({
-        where: { id: input.invocationLeaseId },
-        include: {
-          binding: {
-            include: {
-              repository: { include: { installation: true } },
-              pool: true,
-            },
-          },
-        },
-      });
-    if (!stored) throw new Error("hosted_comment_refresh_grant_not_found");
-    const repository = stored.binding.repository;
-    if (
-      stored.status !== "issued" ||
-      stored.expiresAt <= now ||
-      stored.repositoryBindingId !== input.bindingId ||
-      toSafeNumber(stored.bindingRevision) !== input.bindingVersion ||
-      stored.binding.revision !== stored.bindingRevision ||
-      stored.binding.status !== "active" ||
-      stored.binding.pool.status !== "active" ||
-      stored.binding.pool.authzEpoch !== stored.authzEpoch ||
-      repository.provider !== "github" ||
-      !repository.selected ||
-      repository.archived ||
-      (repository.visibility !== "private" &&
-        repository.visibility !== "internal") ||
-      !repository.githubRepositoryId ||
-      !repository.installation ||
-      repository.installation.status !== "active"
-    ) {
-      throw new Error("hosted_comment_refresh_authority_mismatch");
-    }
-    const consumption = await consumeHostedCommentTokenRefreshCapability(
-      {
-        grantId: invocationGrantId(stored.id),
-        presentedTokenHash: hashCapability(input.opaqueRefreshCapability),
-        requestIdHash: sha256(input.idempotencyKey),
-        now,
-      },
-      this.grants,
-    );
-    if (consumption.status !== "consumed") {
-      throw new Error(`hosted_comment_refresh_${consumption.status}`);
-    }
-    const token = await this.dependencies.commentTokens.issueCommentToken({
-      githubInstallationId:
-        repository.installation.githubInstallationId.toString(),
-      githubRepositoryId: repository.githubRepositoryId.toString(),
-      repositoryFullName: repository.fullName,
+export class HostedCodexCommentTokenIssuer extends HostedCommentTokenMintProtocol {
+  constructor(dependencies: {
+    readonly prisma: PrismaClient;
+    readonly commentTokens: GitHubAppCommentTokenIssuerPort &
+      Required<Pick<GitHubAppCommentTokenIssuerPort, "prepareCommentToken">>;
+    readonly clock: Clock;
+    readonly mintLedger?: HostedCommentTokenMintLedgerPort;
+    readonly secretVault: HostedCommentTokenPreparedSecretVaultPort;
+  }) {
+    super({
+      commentTokens: dependencies.commentTokens,
+      clock: dependencies.clock,
+      mintLedger:
+        dependencies.mintLedger ??
+        new PrismaHostedCommentTokenMintLedger(dependencies.prisma),
+      secretVault: dependencies.secretVault,
     });
+  }
+}
+
+export class HostedCommentTokenEnvelopeVault implements HostedCommentTokenPreparedSecretVaultPort {
+  constructor(
+    private readonly vault: CredentialEnvelopeVault,
+    private readonly databaseIncarnation: string,
+    private readonly databaseResourceIdentity: string,
+  ) {}
+  async prepareSeal(
+    input: Parameters<
+      HostedCommentTokenPreparedSecretVaultPort["prepareSeal"]
+    >[0],
+  ) {
+    const prepared = await this.vault.prepareEncrypt(
+      this.context(input),
+      input.signal,
+    );
     return {
-      token: token.token,
-      repository: token.repository,
-      expiresAt: token.expiresAt.toISOString(),
+      capture: (token: string) => {
+        const plaintext = Buffer.from(token, "utf8");
+        try {
+          return toHostedEnvelope(prepared.capture(plaintext));
+        } finally {
+          plaintext.fill(0);
+        }
+      },
+      destroy: () => prepared.destroy(),
+    };
+  }
+  async seal(input: Parameters<HostedCommentTokenSecretVaultPort["seal"]>[0]) {
+    const plaintext = Buffer.from(input.token, "utf8");
+    try {
+      const envelope = await this.vault.encrypt(plaintext, this.context(input));
+      return toHostedEnvelope(envelope);
+    } finally {
+      plaintext.fill(0);
+    }
+  }
+  async open(input: Parameters<HostedCommentTokenSecretVaultPort["open"]>[0]) {
+    const encryptedDataKey = Buffer.from(input.envelope.encryptedDataKey);
+    let plaintext: Uint8Array | undefined;
+    try {
+      const wrappedDataEncryptionKey = JSON.parse(
+        encryptedDataKey.toString("utf8"),
+      ) as {
+        keyId: string;
+        nonce: string;
+        ciphertext: string;
+        authenticationTag: string;
+      };
+      plaintext = await this.vault.decrypt(
+        {
+          schemaVersion: 1,
+          encryptionAlgorithm: "aes-256-gcm",
+          keyId: input.envelope.keyId,
+          nonce: encodeBase64(input.envelope.iv),
+          ciphertext: encodeBase64(input.envelope.ciphertext),
+          authenticationTag: encodeBase64(input.envelope.authTag),
+          wrappedDataEncryptionKey,
+          associatedDataHash: input.envelope.aadHash,
+          ciphertextHash: sha256Bytes(input.envelope.ciphertext),
+        },
+        this.context(input),
+        input.signal,
+      );
+      return Buffer.from(plaintext);
+    } finally {
+      encryptedDataKey.fill(0);
+      plaintext?.fill(0);
+      zeroEnvelope(input.envelope);
+    }
+  }
+  private context(input: {
+    mintId: string;
+    workspaceId: string;
+    poolId: string;
+  }) {
+    return {
+      workspaceId: input.workspaceId,
+      poolId: input.poolId,
+      accountId: input.mintId,
+      generation: 1,
+      databaseIncarnation: this.databaseIncarnation,
+      databaseResourceIdentity: this.databaseResourceIdentity,
     };
   }
 }
 
-function sha256(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
+function toHostedEnvelope(
+  envelope: Awaited<ReturnType<CredentialEnvelopeVault["encrypt"]>>,
+) {
+  return {
+    ciphertext: Buffer.from(envelope.ciphertext, "base64"),
+    encryptedDataKey: Buffer.from(
+      JSON.stringify(envelope.wrappedDataEncryptionKey),
+      "utf8",
+    ),
+    iv: Buffer.from(envelope.nonce, "base64"),
+    authTag: Buffer.from(envelope.authenticationTag, "base64"),
+    keyId: envelope.keyId,
+    aadHash: envelope.associatedDataHash,
+  };
 }
 
-function hashCapability(value: string): string {
-  if (!/^[A-Za-z0-9_-]{43}$/u.test(value)) {
-    throw new Error("hosted_comment_refresh_capability_invalid");
-  }
-  return sha256(value);
+function sha256Bytes(value: Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
-function toSafeNumber(value: bigint): number {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 1) {
-    throw new Error("hosted_comment_refresh_revision_invalid");
+function zeroEnvelope(envelope: {
+  ciphertext: Uint8Array;
+  encryptedDataKey: Uint8Array;
+  iv: Uint8Array;
+  authTag: Uint8Array;
+}) {
+  envelope.ciphertext.fill(0);
+  envelope.encryptedDataKey.fill(0);
+  envelope.iv.fill(0);
+  envelope.authTag.fill(0);
+}
+
+function encodeBase64(value: Uint8Array): string {
+  const copy = Buffer.from(value);
+  try {
+    return copy.toString("base64");
+  } finally {
+    copy.fill(0);
   }
-  return number;
 }

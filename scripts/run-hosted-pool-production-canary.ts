@@ -4,10 +4,37 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPrismaClient } from "../packages/platform/db/src/index.js";
 import {
+  canonicalHostedPoolProviderInstanceId,
+  hostedPoolWorkflowSemanticSha256,
+  readCanonicalHostedPoolWorkflowMetadata,
+  scanCanonicalHostedPoolWorkflowV2,
+} from "../packages/features/workflow-provisioning/src/domain/hosted-pool-workflow-template.js";
+import { hostedCodexCanaryFaultPlanTokenMaxBytes } from "../packages/features/hosted-account-pool/src/application/ports/hosted-codex-canary-fault-plan-port.js";
+import {
   createRenderHostedPoolControlPort,
   executeHostedPoolControl,
+  HostedPoolRollbackError,
   type HostedPoolControlPort,
 } from "./hosted-pool-production-control";
+import type {
+  CanaryRunEvidence,
+  HostedPoolCanaryConfig,
+  HostedPoolCanaryPhase,
+  HostedPoolCanaryPort,
+  HostedPoolDeploymentEvidencePort,
+} from "./hosted-pool-production-ports";
+import { assertCanonicalAttemptOnePullRequestRun } from "./hosted-pool-production-github-dispatch";
+import {
+  collectExactHostedPoolPublicationEvidence,
+  createRenderHostedPoolDeploymentEvidencePort,
+  readExactHostedPoolRunEvidence,
+} from "./hosted-pool-production-evidence";
+import { verifyHostedPoolRollbackEvidence } from "./hosted-pool-production-rollback-verification";
+export type {
+  CanaryRunEvidence,
+  HostedPoolCanaryConfig,
+  HostedPoolCanaryPort,
+} from "./hosted-pool-production-ports";
 
 export const hostedPoolCanaryTarget = Object.freeze({
   owner: "777genius",
@@ -16,42 +43,126 @@ export const hostedPoolCanaryTarget = Object.freeze({
   workflowPath: ".github/workflows/reviewrouter-codex.yml",
 });
 
-type PhaseName =
-  | "simultaneous_a"
-  | "simultaneous_b"
-  | "unauthorized"
-  | "rate_limited"
-  | "dropped_response";
-export type CanaryRunEvidence = Readonly<{
-  runId: number;
-  invocationId: string;
-  activeAccountId: string;
-  primaryAccountId: string;
-  backupAccountId: string | null;
-  failoverCount: number;
-  grantStatus: string;
-  requestStatuses: readonly string[];
-  attempts: readonly Readonly<{
-    ordinal: number;
-    state: string;
-    errorCode: string | null;
-    accountId: string;
-  }>[];
-}>;
-export type HostedPoolCanaryPort = Readonly<{
-  preflight(config: HostedPoolCanaryConfig): Promise<Record<string, unknown>>;
-  rerun(runId: number): Promise<void>;
-  waitForSuccess(runId: number): Promise<void>;
-  evidence(runId: number): Promise<CanaryRunEvidence>;
-}>;
-export type HostedPoolCanaryConfig = Readonly<{
-  repositoryId: number;
-  installationId: number;
-  allowlistedRepositoryId: number;
-  appSlug: string;
-  actionSha: string;
-  runs: Readonly<Record<PhaseName, number>>;
-}>;
+export function assertExactPullRequestHead(
+  value: unknown,
+  input: {
+    pullRequestNumber: number;
+    headSha: string;
+    errorCode: string;
+    repositoryId?: number;
+    repositoryFullName?: string;
+  },
+) {
+  const pullRequest = value as any;
+  if (
+    pullRequest?.number !== input.pullRequestNumber ||
+    pullRequest?.state !== "open" ||
+    String(pullRequest?.head?.sha ?? "").toLowerCase() !== input.headSha ||
+    String(pullRequest?.merge_commit_sha ?? "").toLowerCase() ===
+      input.headSha ||
+    (input.repositoryId !== undefined &&
+      (pullRequest?.base?.repo?.id !== input.repositoryId ||
+        pullRequest?.head?.repo?.id !== input.repositoryId)) ||
+    (input.repositoryFullName !== undefined &&
+      String(pullRequest?.base?.repo?.full_name ?? "").toLowerCase() !==
+        input.repositoryFullName.toLowerCase())
+  )
+    throw new Error(input.errorCode);
+}
+
+export function assertExactReleasePullRequestRevision(
+  value: unknown,
+  input: {
+    pullRequestNumber: number;
+    releaseHeadSha: string;
+    repositoryFullName: string;
+    errorCode: string;
+  },
+) {
+  const pullRequest = value as any;
+  const headSha = pullRequest?.head?.sha;
+  const mergeCommitSha = pullRequest?.merge_commit_sha;
+  const repositoryFullName = pullRequest?.base?.repo?.full_name;
+  const shaPattern = /^[a-f0-9]{40}$/iu;
+  const expectedSha =
+    typeof input.releaseHeadSha === "string"
+      ? input.releaseHeadSha.toLowerCase()
+      : "";
+  const normalizedHeadSha =
+    typeof headSha === "string" ? headSha.toLowerCase() : "";
+  const normalizedMergeCommitSha =
+    typeof mergeCommitSha === "string" ? mergeCommitSha.toLowerCase() : "";
+  const identityMatches =
+    Number.isSafeInteger(input.pullRequestNumber) &&
+    input.pullRequestNumber > 0 &&
+    shaPattern.test(input.releaseHeadSha) &&
+    typeof input.repositoryFullName === "string" &&
+    input.repositoryFullName.length > 0 &&
+    pullRequest?.number === input.pullRequestNumber &&
+    typeof repositoryFullName === "string" &&
+    repositoryFullName.toLowerCase() ===
+      input.repositoryFullName.toLowerCase() &&
+    typeof headSha === "string" &&
+    shaPattern.test(headSha) &&
+    (mergeCommitSha === null ||
+      (typeof mergeCommitSha === "string" && shaPattern.test(mergeCommitSha)));
+  const isExactOpenHead =
+    pullRequest?.state === "open" &&
+    pullRequest?.merged === false &&
+    pullRequest?.merged_at === null &&
+    normalizedHeadSha === expectedSha &&
+    normalizedMergeCommitSha !== expectedSha;
+  const mergedAtValue = pullRequest?.merged_at;
+  const mergedAt =
+    typeof mergedAtValue === "string" ? new Date(mergedAtValue) : null;
+  const canonicalMergedAtValue =
+    typeof mergedAtValue === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(mergedAtValue)
+      ? `${mergedAtValue.slice(0, -1)}.000Z`
+      : mergedAtValue;
+  const isExactMergedRevision =
+    pullRequest?.state === "closed" &&
+    pullRequest?.merged === true &&
+    typeof mergedAtValue === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(mergedAtValue) &&
+    mergedAt !== null &&
+    Number.isFinite(mergedAt.getTime()) &&
+    mergedAt.toISOString() === canonicalMergedAtValue &&
+    typeof mergeCommitSha === "string" &&
+    normalizedMergeCommitSha === expectedSha;
+  if (!identityMatches || (!isExactOpenHead && !isExactMergedRevision))
+    throw new Error(input.errorCode);
+}
+
+export function assertFreshAttemptTwoRun(
+  value: unknown,
+  input: {
+    runId: number;
+    expectedConclusion: "success" | "failure";
+    sourceHeadSha: string;
+    rerunRequestedAt: Date;
+  },
+) {
+  const run = value as any;
+  if (run?.run_attempt > 2)
+    throw new Error(`hosted_pool_canary_run_replayed:${input.runId}`);
+  if (run?.run_attempt !== 2 || run?.status !== "completed") return null;
+  if (run.conclusion !== input.expectedConclusion)
+    throw new Error(
+      `hosted_pool_canary_run_failed:${input.runId}:${run.conclusion}`,
+    );
+  const startedAt = new Date(run.run_started_at);
+  const finishedAt = new Date(run.updated_at);
+  if (
+    String(run.head_sha ?? "").toLowerCase() !== input.sourceHeadSha ||
+    !Number.isFinite(startedAt.getTime()) ||
+    !Number.isFinite(finishedAt.getTime()) ||
+    startedAt.getTime() < input.rerunRequestedAt.getTime() - 5_000 ||
+    finishedAt < startedAt
+  )
+    throw new Error(`hosted_pool_canary_run_timestamps_invalid:${input.runId}`);
+  return { startedAt, finishedAt };
+}
 
 export function parseHostedPoolCanaryConfig(
   env: Readonly<Record<string, string | undefined>>,
@@ -81,11 +192,44 @@ export function parseHostedPoolCanaryConfig(
       `777genius/review-router@${actionSha}`
   )
     throw new Error("hosted_pool_canary_action_release_mismatch");
+  const releasePullRequestNumber = positive(
+    env.REVIEW_ROUTER_HOSTED_POOL_CANARY_RELEASE_PR_NUMBER,
+  );
+  const releaseHeadSha = required(
+    env.REVIEW_ROUTER_HOSTED_POOL_CANARY_RELEASE_HEAD_SHA,
+  ).toLowerCase();
+  if (!/^[a-f0-9]{40}$/u.test(releaseHeadSha))
+    throw new Error("hosted_pool_canary_release_head_sha_invalid");
   const appSlug = required(
     env.REVIEW_ROUTER_HOSTED_POOL_CANARY_APP_SLUG,
   ).toLowerCase();
   if (!/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/u.test(appSlug))
     throw new Error("hosted_pool_canary_app_slug_invalid");
+  if (
+    positive(env.REVIEW_ROUTER_HOSTED_POOL_CANARY_DISPOSABLE_REPOSITORY_ID) !==
+    repositoryId
+  )
+    throw new Error("hosted_pool_canary_disposable_repository_id_mismatch");
+  const poolId = required(env.REVIEW_ROUTER_HOSTED_POOL_CANARY_POOL_ID);
+  const accountIds = parseExactStringTuple(
+    env.REVIEW_ROUTER_HOSTED_POOL_CANARY_ACCOUNT_IDS_JSON,
+    "hosted_pool_canary_exact_account_pool_required",
+  );
+  const faultPlans = parseExactObject(
+    env.REVIEW_ROUTER_HOSTED_POOL_CANARY_FAULT_PLANS_JSON,
+    ["unauthorized", "rate_limited", "dropped_response"] as const,
+    "hosted_pool_canary_fault_plans_invalid",
+  );
+  if (
+    Object.values(faultPlans).some(
+      (token) =>
+        !token.startsWith("rr-canary-fault-v2.") ||
+        Buffer.byteLength(token, "utf8") >
+          hostedCodexCanaryFaultPlanTokenMaxBytes,
+    ) ||
+    new Set(Object.values(faultPlans)).size !== 3
+  )
+    throw new Error("hosted_pool_canary_fault_plans_invalid");
   let parsed: unknown;
   try {
     parsed = JSON.parse(
@@ -96,7 +240,7 @@ export function parseHostedPoolCanaryConfig(
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error("hosted_pool_canary_run_ids_invalid");
-  const names: PhaseName[] = [
+  const names: HostedPoolCanaryPhase[] = [
     "simultaneous_a",
     "simultaneous_b",
     "unauthorized",
@@ -110,7 +254,7 @@ export function parseHostedPoolCanaryConfig(
       name,
       positive((parsed as Record<string, unknown>)[name]),
     ]),
-  ) as Record<PhaseName, number>;
+  ) as Record<HostedPoolCanaryPhase, number>;
   if (new Set(Object.values(runs)).size !== names.length)
     throw new Error("hosted_pool_canary_run_ids_not_unique");
   return Object.freeze({
@@ -119,6 +263,11 @@ export function parseHostedPoolCanaryConfig(
     allowlistedRepositoryId: repositoryId,
     appSlug,
     actionSha,
+    releasePullRequestNumber,
+    releaseHeadSha,
+    poolId,
+    accountIds,
+    faultPlans,
     runs,
   });
 }
@@ -129,17 +278,28 @@ export async function runHostedPoolProductionCanary(input: {
   readonly executeConfirmation?: string;
   readonly rollbackConfirmation?: string;
   readonly canary: HostedPoolCanaryPort;
+  readonly deployment: HostedPoolDeploymentEvidencePort;
   readonly control: HostedPoolControlPort;
   readonly now?: () => Date;
+  readonly sleep?: (milliseconds: number) => Promise<void>;
+  readonly quiescenceMs?: number;
 }) {
   const now = input.now ?? (() => new Date());
-  const preflight = await input.canary.preflight(input.config);
+  const [preflight, preflightDeployments] = await Promise.all([
+    input.canary.preflight(input.config),
+    input.deployment.readExactRevision(input.config.releaseHeadSha),
+  ]);
   const records: Array<Record<string, unknown>> = [
-    { phase: "preflight", at: now().toISOString(), ...preflight },
+    {
+      phase: "preflight",
+      at: now().toISOString(),
+      ...preflight,
+      deployments: preflightDeployments,
+    },
   ];
   if (!input.execute)
     return seal({
-      schemaVersion: 1,
+      schemaVersion: 3,
       target: hostedPoolCanaryTarget.fullName,
       result: "dry_run",
       records,
@@ -152,13 +312,50 @@ export async function runHostedPoolProductionCanary(input: {
 
   let outcome = "passed";
   try {
+    const protectedScope = await executeHostedPoolControl({
+      command: "rollback",
+      execute: true,
+      confirmation: "EXECUTE HOSTED POOL ROLLBACK",
+      port: input.control,
+      now,
+    });
+    verifyHostedPoolRollbackEvidence(protectedScope.events);
+    records.push({
+      phase: "rollback_protected_scope_entered",
+      at: now().toISOString(),
+      evidenceSha256: protectedScope.evidenceSha256,
+      events: protectedScope.events,
+    });
+    const activation = await executeHostedPoolControl({
+      command: "activate",
+      execute: true,
+      confirmation: "EXECUTE HOSTED POOL ACTIVATE",
+      port: input.control,
+      now,
+    });
+    const activationDeployments = await input.deployment.readExactRevision(
+      input.config.releaseHeadSha,
+    );
+    records.push({
+      phase: "ordered_activation",
+      at: now().toISOString(),
+      evidenceSha256: activation.evidenceSha256,
+      events: activation.events,
+      deployments: activationDeployments,
+    });
     await Promise.all([
       input.canary.rerun(input.config.runs.simultaneous_a),
       input.canary.rerun(input.config.runs.simultaneous_b),
     ]);
     await Promise.all([
-      input.canary.waitForSuccess(input.config.runs.simultaneous_a),
-      input.canary.waitForSuccess(input.config.runs.simultaneous_b),
+      input.canary.waitForCompletion(
+        input.config.runs.simultaneous_a,
+        "success",
+      ),
+      input.canary.waitForCompletion(
+        input.config.runs.simultaneous_b,
+        "success",
+      ),
     ]);
     const simultaneous = await Promise.all([
       input.canary.evidence(input.config.runs.simultaneous_a),
@@ -177,10 +374,31 @@ export async function runHostedPoolProductionCanary(input: {
       ["dropped_response", "dropped"],
     ] as const) {
       const runId = input.config.runs[phase];
-      await input.canary.rerun(runId);
-      await input.canary.waitForSuccess(runId);
-      const observed = await input.canary.evidence(runId);
+      if (!input.control.setFaultPlan)
+        throw new Error("hosted_pool_canary_fault_plan_control_missing");
+      await input.control.setFaultPlan(input.config.faultPlans[phase]);
+      let observed: CanaryRunEvidence;
+      try {
+        await input.canary.rerun(runId);
+        await input.canary.waitForCompletion(
+          runId,
+          phase === "dropped_response" ? "failure" : "success",
+        );
+        observed = await input.canary.evidence(runId);
+      } finally {
+        await input.control.setFaultPlan(null);
+      }
       assertClassifiedOutcome(observed, expected);
+      if (phase === "dropped_response") {
+        await (
+          input.sleep ??
+          ((milliseconds) =>
+            new Promise((done) => setTimeout(done, milliseconds)))
+        )(input.quiescenceMs ?? 15_000);
+        const quiesced = await input.canary.evidence(runId);
+        assertStableDroppedEvidence(observed, quiesced);
+        observed = quiesced;
+      }
       records.push({
         phase,
         classification: expected,
@@ -204,12 +422,17 @@ export async function runHostedPoolProductionCanary(input: {
         port: input.control,
         now,
       });
+      verifyHostedPoolRollbackEvidence(rollback.events);
+      const rollbackDeployments = await input.deployment.readExactRevision(
+        input.config.releaseHeadSha,
+      );
       records.push({
         phase: "ordered_rollback",
         at: now().toISOString(),
         outcome,
         evidenceSha256: rollback.evidenceSha256,
         events: rollback.events,
+        deployments: rollbackDeployments,
       });
     } catch (error) {
       outcome = "failed";
@@ -217,18 +440,32 @@ export async function runHostedPoolProductionCanary(input: {
         phase: "ordered_rollback_failed",
         at: now().toISOString(),
         error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof HostedPoolRollbackError
+          ? { rollbackEvidence: error.rollbackEvidence }
+          : {}),
       });
     }
   }
   return seal({
-    schemaVersion: 1,
+    schemaVersion: 3,
     target: hostedPoolCanaryTarget.fullName,
     result: outcome,
     records,
   });
 }
 
-function assertSimultaneousOneAccount(items: readonly CanaryRunEvidence[]) {
+export function assertSimultaneousOneAccount(
+  items: readonly CanaryRunEvidence[],
+) {
+  const firstAttempt = items[0]?.attempts[0];
+  const secondAttempt = items[1]?.attempts[0];
+  const firstInterval = readSuccessfulAttemptInterval(items[0], firstAttempt);
+  const secondInterval = readSuccessfulAttemptInterval(items[1], secondAttempt);
+  const overlaps =
+    firstInterval &&
+    secondInterval &&
+    firstInterval.startedAt < secondInterval.completedAt &&
+    secondInterval.startedAt < firstInterval.completedAt;
   if (
     items.length !== 2 ||
     items[0]!.invocationId === items[1]!.invocationId ||
@@ -238,16 +475,23 @@ function assertSimultaneousOneAccount(items: readonly CanaryRunEvidence[]) {
     ) ||
     items[0]!.primaryAccountId !== items[1]!.primaryAccountId ||
     items[0]!.activeAccountId !== items[1]!.activeAccountId ||
+    !overlaps ||
     items.some(
       (item) =>
         item.activeAccountId !== item.primaryAccountId ||
         item.failoverCount !== 0 ||
         item.requestStatuses.length !== 1 ||
         item.requestStatuses[0] !== "succeeded" ||
+        item.requestErrorCode !== null ||
         item.attempts.length !== 1 ||
         item.attempts[0]!.state !== "succeeded" ||
         item.attempts[0]!.errorCode !== null ||
-        item.attempts[0]!.accountId !== item.primaryAccountId,
+        item.attempts[0]!.accountId !== item.primaryAccountId ||
+        !hasBoundProviderPublication(item) ||
+        item.appBotPublicationCount < 1 ||
+        item.nonAppBotPublicationCount !== 0 ||
+        item.faultPlanConsumptionCount !== 0 ||
+        item.faultPlanConsumptions.length !== 0,
     )
   )
     throw new Error("hosted_pool_canary_simultaneous_account_contract_failed");
@@ -260,33 +504,187 @@ export function assertClassifiedOutcome(
   if (expected === "dropped") {
     if (
       item.failoverCount !== 0 ||
+      item.grantStatus !== "revoked" ||
+      item.grantRevokedAt === null ||
+      item.commentRefreshRevokedAt === null ||
       item.activeAccountId !== item.primaryAccountId ||
       item.requestStatuses.length !== 1 ||
       item.requestStatuses[0] !== "terminal_unknown" ||
+      item.requestErrorCode !== "ambiguous_dropped_response" ||
+      item.requestStartedAt === null ||
+      item.successfulResponseStartedAt === null ||
+      item.completedAt === null ||
       item.attempts.length !== 1 ||
       item.attempts[0]!.state !== "terminal_unknown" ||
       item.attempts[0]!.errorCode !== "ambiguous_dropped_response" ||
-      item.attempts[0]!.accountId !== item.primaryAccountId
+      item.attempts[0]!.accountId !== item.primaryAccountId ||
+      item.attempts[0]!.dispatchStartedAt === null ||
+      item.attempts[0]!.responseStartedAt === null ||
+      item.attempts[0]!.completedAt === null ||
+      !hasExactFaultConsumption(item, "drop_after_response_started") ||
+      item.providerResponseIdHash !== null ||
+      item.publicationAttemptId !== null ||
+      item.publicationObjects.length !== 0 ||
+      item.nonAppBotPublicationCount !== 0
     )
       throw new Error("hosted_pool_canary_dropped_response_replayed");
     return;
   }
+  const syntheticAttempt = item.attempts[0];
+  const successfulAttempt = item.attempts[1];
   if (
     item.failoverCount !== 1 ||
     !item.backupAccountId ||
+    item.primaryAccountId === item.backupAccountId ||
     item.activeAccountId !== item.backupAccountId ||
     item.attempts.length !== 2 ||
     item.requestStatuses.length !== 1 ||
     item.requestStatuses[0] !== "succeeded" ||
-    item.attempts[0]!.state !== "failed_classified" ||
-    item.attempts[0]!.errorCode !==
+    item.requestErrorCode !== null ||
+    item.requestStartedAt === null ||
+    item.successfulResponseStartedAt === null ||
+    item.completedAt === null ||
+    syntheticAttempt?.ordinal !== 1 ||
+    syntheticAttempt.state !== "failed_no_effect" ||
+    syntheticAttempt.errorCode !==
       (expected === "401" ? "credential_invalid" : "quota_limited") ||
-    item.attempts[0]!.accountId !== item.primaryAccountId ||
-    item.attempts[1]!.state !== "succeeded" ||
-    item.attempts[1]!.errorCode !== null ||
-    item.attempts[1]!.accountId !== item.backupAccountId
+    syntheticAttempt.accountId !== item.primaryAccountId ||
+    syntheticAttempt.dispatchStartedAt !== null ||
+    syntheticAttempt.responseStartedAt !== null ||
+    syntheticAttempt.completedAt === null ||
+    successfulAttempt?.ordinal !== 2 ||
+    successfulAttempt.state !== "succeeded" ||
+    successfulAttempt.errorCode !== null ||
+    successfulAttempt.accountId !== item.backupAccountId ||
+    successfulAttempt.dispatchStartedAt === null ||
+    successfulAttempt.responseStartedAt === null ||
+    successfulAttempt.completedAt === null ||
+    !hasExactFaultConsumption(
+      item,
+      expected === "401" ? "synthetic_unauthorized" : "synthetic_rate_limited",
+    ) ||
+    !hasBoundProviderPublication(item) ||
+    item.appBotPublicationCount < 1 ||
+    item.nonAppBotPublicationCount !== 0
   )
     throw new Error(`hosted_pool_canary_${expected}_backup_contract_failed`);
+}
+
+function hasBoundProviderPublication(item: CanaryRunEvidence) {
+  return (
+    item.sourceRunAttempt === 2 &&
+    /^[a-f0-9]{40}$/u.test(item.sourceHeadSha) &&
+    item.sourceExecutionId.length > 0 &&
+    /^[a-f0-9]{64}$/u.test(item.providerInvocationKey) &&
+    /^[a-f0-9]{64}$/u.test(item.providerResponseIdHash ?? "") &&
+    Boolean(item.publicationAttemptId) &&
+    item.publicationObjects.length > 0
+  );
+}
+
+function assertStableDroppedEvidence(
+  before: CanaryRunEvidence,
+  after: CanaryRunEvidence,
+) {
+  const stable = (item: CanaryRunEvidence) => ({
+    sourceRunAttempt: item.sourceRunAttempt,
+    sourceHeadSha: item.sourceHeadSha,
+    sourceExecutionId: item.sourceExecutionId,
+    grantId: item.grantId,
+    invocationId: item.invocationId,
+    workspaceId: item.workspaceId,
+    githubRepositoryId: item.githubRepositoryId,
+    actionRef: item.actionRef,
+    activeAccountId: item.activeAccountId,
+    primaryAccountId: item.primaryAccountId,
+    backupAccountId: item.backupAccountId,
+    failoverCount: item.failoverCount,
+    grantStatus: item.grantStatus,
+    grantRevokedAt: item.grantRevokedAt,
+    commentRefreshRevokedAt: item.commentRefreshRevokedAt,
+    repositoryBindingId: item.repositoryBindingId,
+    bindingRevision: item.bindingRevision,
+    issuedAt: item.issuedAt,
+    completedAt: item.completedAt,
+    requestId: item.requestId,
+    requestOrdinal: item.requestOrdinal,
+    requestErrorCode: item.requestErrorCode,
+    requestReceivedAt: item.requestReceivedAt,
+    requestStartedAt: item.requestStartedAt,
+    successfulResponseStartedAt: item.successfulResponseStartedAt,
+    providerInvocationKey: item.providerInvocationKey,
+    providerResponseIdHash: item.providerResponseIdHash,
+    publicationAttemptId: item.publicationAttemptId,
+    appBotPublicationCount: item.appBotPublicationCount,
+    nonAppBotPublicationCount: item.nonAppBotPublicationCount,
+    publicationObjects: item.publicationObjects,
+    requestStatuses: item.requestStatuses,
+    attempts: item.attempts,
+    faultPlanConsumptionCount: item.faultPlanConsumptionCount,
+    faultPlanConsumptions: item.faultPlanConsumptions,
+  });
+  if (JSON.stringify(stable(before)) !== JSON.stringify(stable(after)))
+    throw new Error("hosted_pool_canary_dropped_response_not_quiescent");
+}
+
+function hasExactFaultConsumption(
+  item: CanaryRunEvidence,
+  phase:
+    | "synthetic_unauthorized"
+    | "synthetic_rate_limited"
+    | "drop_after_response_started",
+) {
+  const expectedInjectionPoint =
+    phase === "drop_after_response_started"
+      ? "after_response_started"
+      : "before_provider_fetch";
+  return (
+    item.faultPlanConsumptionCount === 1 &&
+    item.faultPlanConsumptions.length === 1 &&
+    item.faultPlanConsumptions[0]!.phase === phase &&
+    item.faultPlanConsumptions[0]!.repositoryId === item.githubRepositoryId &&
+    item.faultPlanConsumptions[0]!.runAttempt === 2 &&
+    item.faultPlanConsumptions[0]!.actionRef === item.actionRef &&
+    item.faultPlanConsumptions[0]!.bindingId === item.repositoryBindingId &&
+    item.faultPlanConsumptions[0]!.bindingRevision === item.bindingRevision &&
+    item.faultPlanConsumptions[0]!.requestOrdinal === item.requestOrdinal &&
+    item.faultPlanConsumptions[0]!.attemptOrdinal === 1 &&
+    item.faultPlanConsumptions[0]!.injectionPoint === expectedInjectionPoint
+  );
+}
+
+function readSuccessfulAttemptInterval(
+  item: CanaryRunEvidence | undefined,
+  attempt: CanaryRunEvidence["attempts"][number] | undefined,
+) {
+  if (
+    !item ||
+    !attempt?.dispatchStartedAt ||
+    !attempt.responseStartedAt ||
+    !attempt.completedAt ||
+    !item.completedAt
+  )
+    return null;
+  const issuedAt = new Date(item.issuedAt);
+  const startedAt = new Date(attempt.dispatchStartedAt);
+  const responseStartedAt = new Date(attempt.responseStartedAt);
+  const completedAt = new Date(attempt.completedAt);
+  const requestCompletedAt = new Date(item.completedAt);
+  if (
+    [
+      issuedAt,
+      startedAt,
+      responseStartedAt,
+      completedAt,
+      requestCompletedAt,
+    ].some((value) => !Number.isFinite(value.getTime())) ||
+    startedAt < issuedAt ||
+    responseStartedAt < startedAt ||
+    completedAt < responseStartedAt ||
+    requestCompletedAt < completedAt
+  )
+    return null;
+  return { startedAt, completedAt };
 }
 
 function seal<T extends Record<string, unknown>>(
@@ -304,11 +702,23 @@ export function createGitHubHostedPoolCanaryPort(input: {
   appJwt: string;
   repositoryToken: string;
   databaseUrl: string;
+  now?: () => Date;
 }): HostedPoolCanaryPort & { disconnect(): Promise<void> } {
   const prisma = createPrismaClient({
     databaseUrl: input.databaseUrl,
     poolMax: 1,
   });
+  const pullRequests = new Map<number, number>();
+  const sourceHeads = new Map<number, string>();
+  const rerunRequestedAt = new Map<number, Date>();
+  const attemptWindows = new Map<
+    number,
+    { readonly startedAt: Date; readonly finishedAt: Date }
+  >();
+  let expectedAppBot = "";
+  let expectedBinding:
+    | { readonly id: string; readonly revision: bigint }
+    | undefined;
   const request = async (
     token: string,
     method: string,
@@ -338,7 +748,10 @@ export function createGitHubHostedPoolCanaryPort(input: {
       );
       if (
         repository.id !== config.repositoryId ||
-        repository.full_name?.toLowerCase() !== hostedPoolCanaryTarget.fullName
+        repository.full_name?.toLowerCase() !==
+          hostedPoolCanaryTarget.fullName ||
+        repository.archived === true ||
+        !["private", "internal"].includes(String(repository.visibility))
       )
         throw new Error("hosted_pool_canary_repository_identity_mismatch");
       const installation: any = await request(
@@ -351,78 +764,147 @@ export function createGitHubHostedPoolCanaryPort(input: {
         installation.app_slug?.toLowerCase() !== config.appSlug
       )
         throw new Error("hosted_pool_canary_installation_identity_mismatch");
+      const defaultBranchCommit: any = await request(
+        input.repositoryToken,
+        "GET",
+        `/repos/${hostedPoolCanaryTarget.fullName}/commits/${encodeURIComponent(repository.default_branch)}`,
+      );
+      if (!/^[a-f0-9]{40}$/iu.test(String(defaultBranchCommit.sha ?? "")))
+        throw new Error("hosted_pool_canary_default_branch_revision_invalid");
       const workflow: any = await request(
         input.repositoryToken,
         "GET",
-        `/repos/${hostedPoolCanaryTarget.fullName}/contents/${hostedPoolCanaryTarget.workflowPath}`,
+        `/repos/${hostedPoolCanaryTarget.fullName}/contents/${hostedPoolCanaryTarget.workflowPath}?ref=${encodeURIComponent(defaultBranchCommit.sha)}`,
       );
       const source = Buffer.from(workflow.content ?? "", "base64").toString(
         "utf8",
       );
-      if (!source.includes(`777genius/review-router@${config.actionSha}`))
-        throw new Error("hosted_pool_canary_workflow_action_sha_mismatch");
+      const scan = scanCanonicalHostedPoolWorkflowV2(source);
+      const metadata = scan.valid
+        ? readCanonicalHostedPoolWorkflowMetadata(source)
+        : null;
+      if (
+        !metadata ||
+        metadata.actionRef !== `777genius/review-router@${config.actionSha}` ||
+        metadata.providerInstanceId !==
+          canonicalHostedPoolProviderInstanceId(String(config.repositoryId))
+      )
+        throw new Error("hosted_pool_canary_workflow_tuple_mismatch");
+      expectedAppBot = `${config.appSlug}[bot]`.toLowerCase();
+      const releasePullRequest: any = await request(
+        input.repositoryToken,
+        "GET",
+        `/repos/777genius/review-router-saas/pulls/${config.releasePullRequestNumber}`,
+      );
+      assertExactReleasePullRequestRevision(releasePullRequest, {
+        pullRequestNumber: config.releasePullRequestNumber,
+        releaseHeadSha: config.releaseHeadSha,
+        repositoryFullName: "777genius/review-router-saas",
+        errorCode: "hosted_pool_canary_release_pr_head_mismatch",
+      });
       for (const runId of Object.values(config.runs)) {
         const run: any = await request(
           input.repositoryToken,
           "GET",
           `/repos/${hostedPoolCanaryTarget.fullName}/actions/runs/${runId}`,
         );
-        if (
-          run.id !== runId ||
-          run.repository?.id !== config.repositoryId ||
-          run.run_attempt !== 1 ||
-          run.status !== "completed" ||
-          run.conclusion !== "success" ||
-          run.event !== "workflow_dispatch" ||
-          !/^[a-f0-9]{40}$/iu.test(String(run.head_sha ?? "")) ||
-          (run.path !== hostedPoolCanaryTarget.workflowPath &&
-            !String(run.path ?? "").startsWith(
-              `${hostedPoolCanaryTarget.workflowPath}@`,
-            ))
-        ) {
-          throw new Error(
-            `hosted_pool_canary_source_run_not_one_shot:${runId}`,
-          );
-        }
+        const sourceRun = assertCanonicalAttemptOnePullRequestRun(run, {
+          runId,
+          repositoryId: config.repositoryId,
+          workflowPath: hostedPoolCanaryTarget.workflowPath,
+        });
+        const pullRequest: any = await request(
+          input.repositoryToken,
+          "GET",
+          `/repos/${hostedPoolCanaryTarget.fullName}/pulls/${sourceRun.pullRequestNumber}`,
+        );
+        assertExactPullRequestHead(pullRequest, {
+          pullRequestNumber: sourceRun.pullRequestNumber,
+          headSha: sourceRun.headSha,
+          repositoryId: config.repositoryId,
+          errorCode: `hosted_pool_canary_source_pr_head_mismatch:${runId}`,
+        });
+        pullRequests.set(runId, sourceRun.pullRequestNumber);
+        sourceHeads.set(runId, sourceRun.headSha);
         const runWorkflow: any = await request(
           input.repositoryToken,
           "GET",
-          `/repos/${hostedPoolCanaryTarget.fullName}/contents/${hostedPoolCanaryTarget.workflowPath}?ref=${encodeURIComponent(run.head_sha)}`,
+          `/repos/${hostedPoolCanaryTarget.fullName}/contents/${hostedPoolCanaryTarget.workflowPath}?ref=${encodeURIComponent(sourceRun.headSha)}`,
         );
         const runSource = Buffer.from(
           runWorkflow.content ?? "",
           "base64",
         ).toString("utf8");
-        if (!runSource.includes(`777genius/review-router@${config.actionSha}`))
+        const runScan = scanCanonicalHostedPoolWorkflowV2(runSource);
+        const runMetadata = runScan.valid
+          ? readCanonicalHostedPoolWorkflowMetadata(runSource)
+          : null;
+        if (
+          !runMetadata ||
+          runMetadata.actionRef !==
+            `777genius/review-router@${config.actionSha}` ||
+          runMetadata.bindingId !== metadata.bindingId ||
+          runMetadata.bindingRevision !== metadata.bindingRevision ||
+          runMetadata.providerInstanceId !== metadata.providerInstanceId
+        )
           throw new Error(
-            `hosted_pool_canary_source_run_action_sha_mismatch:${runId}`,
+            `hosted_pool_canary_source_run_tuple_mismatch:${runId}`,
           );
       }
-      const binding = await prisma.hostedCodexRepositoryBinding.findFirst({
-        where: {
-          attestedGithubRepositoryId: BigInt(config.repositoryId),
-          status: "active",
-        },
-        select: {
-          workflowActionRef: true,
-          workflowPath: true,
-          repositoryConnectionId: true,
-          repository: {
-            select: {
-              githubRepositoryId: true,
-              fullName: true,
-              installation: {
-                select: { githubInstallationId: true, status: true },
+      const activeBindings = await prisma.hostedCodexRepositoryBinding.findMany(
+        {
+          where: { status: "active" },
+          select: {
+            id: true,
+            poolId: true,
+            revision: true,
+            workflowActionRef: true,
+            workflowPath: true,
+            workflowSourceCommitSha: true,
+            workflowSourceBlobSha: true,
+            workflowSourceSha256: true,
+            workflowSemanticSha256: true,
+            repositoryConnectionId: true,
+            repository: {
+              select: {
+                githubRepositoryId: true,
+                fullName: true,
+                installation: {
+                  select: { githubInstallationId: true, status: true },
+                },
+              },
+            },
+            pool: {
+              select: {
+                status: true,
+                accounts: {
+                  select: { id: true, state: true },
+                  orderBy: { id: "asc" },
+                },
               },
             },
           },
         },
-      });
+      );
+      if (activeBindings.length !== 1)
+        throw new Error("hosted_pool_canary_non_target_active_binding_present");
+      const binding = activeBindings[0];
       if (
         !binding ||
+        binding.id !== metadata.bindingId ||
+        binding.poolId !== config.poolId ||
+        binding.revision !== BigInt(metadata.bindingRevision) ||
         binding.workflowActionRef !==
           `777genius/review-router@${config.actionSha}` ||
         binding.workflowPath !== hostedPoolCanaryTarget.workflowPath ||
+        binding.workflowSourceCommitSha?.toLowerCase() !==
+          String(defaultBranchCommit.sha).toLowerCase() ||
+        binding.workflowSourceBlobSha?.toLowerCase() !==
+          String(workflow.sha).toLowerCase() ||
+        binding.workflowSourceSha256?.toLowerCase() !==
+          createHash("sha256").update(source, "utf8").digest("hex") ||
+        binding.workflowSemanticSha256?.toLowerCase() !==
+          hostedPoolWorkflowSemanticSha256(source) ||
         binding.repository.githubRepositoryId !== BigInt(config.repositoryId) ||
         binding.repository.fullName.toLowerCase() !==
           hostedPoolCanaryTarget.fullName ||
@@ -431,15 +913,68 @@ export function createGitHubHostedPoolCanaryPort(input: {
         binding.repository.installation?.status !== "active"
       )
         throw new Error("hosted_pool_canary_binding_action_sha_mismatch");
+      expectedBinding = { id: binding.id, revision: binding.revision };
+      const observedAccountIds = binding.pool.accounts
+        .map(({ id }) => id)
+        .sort();
+      if (
+        binding.pool.status !== "active" ||
+        observedAccountIds.join("\0") !==
+          [...config.accountIds].sort().join("\0") ||
+        binding.pool.accounts.some(({ state }) => state !== "healthy")
+      )
+        throw new Error("hosted_pool_canary_dedicated_account_pool_invalid");
+      const configurations = await prisma.reviewConfiguration.findMany({
+        where: { repositoryId: binding.repositoryConnectionId },
+        select: {
+          versions: {
+            orderBy: { version: "desc" },
+            take: 1,
+            select: {
+              fastMode: true,
+              providerAuthMode: true,
+              providers: {
+                select: { fastMode: true, providerAuthMode: true },
+              },
+            },
+          },
+        },
+      });
+      const currentVersions = configurations.flatMap((item) => item.versions);
+      if (
+        currentVersions.length !== 1 ||
+        currentVersions[0]!.fastMode ||
+        currentVersions[0]!.providerAuthMode !==
+          "codex_subscription_oauth_hosted_pool" ||
+        currentVersions[0]!.providers.length < 1 ||
+        currentVersions[0]!.providers.some(
+          (provider) =>
+            provider.fastMode ||
+            provider.providerAuthMode !==
+              "codex_subscription_oauth_hosted_pool",
+        )
+      )
+        throw new Error(
+          "hosted_pool_canary_hosted_dependency_contract_invalid",
+        );
       return {
         repositoryId: config.repositoryId,
         installationId: config.installationId,
         allowlist: [config.repositoryId],
         actionSha: config.actionSha,
         repositoryConnectionId: binding.repositoryConnectionId,
+        repositoryBindingId: binding.id,
+        bindingRevision: binding.revision.toString(),
+        poolId: binding.poolId,
+        accountIds: observedAccountIds,
+        workflowTuple: {
+          reusableWorkflowRef: `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${config.actionSha}`,
+          actionRef: `777genius/review-router@${config.actionSha}`,
+        },
       };
     },
     async rerun(runId) {
+      rerunRequestedAt.set(runId, (input.now ?? (() => new Date()))());
       await request(
         input.repositoryToken,
         "POST",
@@ -447,20 +982,25 @@ export function createGitHubHostedPoolCanaryPort(input: {
         { enable_debug_logging: false },
       );
     },
-    async waitForSuccess(runId) {
+    async waitForCompletion(runId, expectedConclusion) {
       for (let poll = 0; poll < 120; poll += 1) {
         const run: any = await request(
           input.repositoryToken,
           "GET",
           `/repos/${hostedPoolCanaryTarget.fullName}/actions/runs/${runId}`,
         );
-        if (run.run_attempt > 2)
-          throw new Error(`hosted_pool_canary_run_replayed:${runId}`);
-        if (run.run_attempt === 2 && run.status === "completed") {
-          if (run.conclusion !== "success")
-            throw new Error(
-              `hosted_pool_canary_run_failed:${runId}:${run.conclusion}`,
-            );
+        const requestedAt = rerunRequestedAt.get(runId);
+        const sourceHeadSha = sourceHeads.get(runId);
+        if (!requestedAt || !sourceHeadSha)
+          throw new Error(`hosted_pool_canary_run_scope_missing:${runId}`);
+        const window = assertFreshAttemptTwoRun(run, {
+          runId,
+          expectedConclusion,
+          sourceHeadSha,
+          rerunRequestedAt: requestedAt,
+        });
+        if (window) {
+          attemptWindows.set(runId, window);
           return;
         }
         await new Promise((done) => setTimeout(done, 5_000));
@@ -468,38 +1008,40 @@ export function createGitHubHostedPoolCanaryPort(input: {
       throw new Error(`hosted_pool_canary_run_timeout:${runId}`);
     },
     async evidence(runId) {
-      const grant = await prisma.hostedCodexInvocationGrant.findFirst({
-        where: { runId: String(runId), runAttempt: 2 },
-        orderBy: { createdAt: "desc" },
-        include: {
-          relayRequests: {
-            include: {
-              upstreamAttempts: { orderBy: { attemptOrdinal: "asc" } },
-            },
-            orderBy: { ordinal: "asc" },
-          },
+      const prNumber = pullRequests.get(runId);
+      const sourceHeadSha = sourceHeads.get(runId);
+      const attemptWindow = attemptWindows.get(runId);
+      if (
+        !prNumber ||
+        !sourceHeadSha ||
+        !expectedAppBot ||
+        !expectedBinding ||
+        !attemptWindow
+      )
+        throw new Error(
+          `hosted_pool_canary_publication_scope_missing:${runId}`,
+        );
+      const publication = await collectExactHostedPoolPublicationEvidence(
+        {
+          request: (method, path, body) =>
+            request(input.repositoryToken, method, path, body),
         },
-      });
-      if (!grant)
-        throw new Error(`hosted_pool_canary_evidence_missing:${runId}`);
-      return {
+        {
+          repository: hostedPoolCanaryTarget.fullName,
+          pullRequestNumber: prNumber,
+          expectedAppBot,
+          ...attemptWindow,
+        },
+      );
+      return readExactHostedPoolRunEvidence({
+        prisma,
         runId,
-        invocationId: grant.invocationId,
-        activeAccountId: grant.activeAccountId,
-        primaryAccountId: grant.primaryAccountId,
-        backupAccountId: grant.backupAccountId,
-        failoverCount: grant.failoverCount,
-        grantStatus: grant.status,
-        requestStatuses: grant.relayRequests.map((request) => request.status),
-        attempts: grant.relayRequests.flatMap((request) =>
-          request.upstreamAttempts.map((attempt) => ({
-            ordinal: attempt.attemptOrdinal,
-            state: attempt.state,
-            errorCode: attempt.errorCode,
-            accountId: attempt.accountId,
-          })),
-        ),
-      };
+        runAttempt: 2,
+        repositoryBindingId: expectedBinding.id,
+        bindingRevision: expectedBinding.revision,
+        sourceHeadSha,
+        publication,
+      });
     },
     disconnect: () => prisma.$disconnect(),
   };
@@ -527,6 +1069,10 @@ async function main() {
     serviceIds: ids as [string, string],
     databaseUrl,
   });
+  const deployment = createRenderHostedPoolDeploymentEvidencePort({
+    apiKey: required(process.env.RENDER_API_KEY),
+    serviceIds: ids as [string, string],
+  });
   try {
     const result = await runHostedPoolProductionCanary({
       config,
@@ -544,6 +1090,7 @@ async function main() {
           }
         : {}),
       canary,
+      deployment,
       control,
     });
     const output = resolve(
@@ -578,6 +1125,50 @@ function positive(value: unknown) {
   if (!Number.isSafeInteger(parsed) || parsed < 1)
     throw new Error("hosted_pool_canary_positive_integer_required");
   return parsed;
+}
+
+function parseExactStringTuple(
+  value: unknown,
+  errorCode: string,
+): readonly [string, string] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(required(value));
+  } catch {
+    throw new Error(errorCode);
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length !== 2 ||
+    parsed.some((item) => typeof item !== "string" || item.length === 0) ||
+    parsed[0] === parsed[1]
+  )
+    throw new Error(errorCode);
+  return parsed as [string, string];
+}
+
+function parseExactObject<const Keys extends readonly string[]>(
+  value: unknown,
+  keys: Keys,
+  errorCode: string,
+): Record<Keys[number], string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(required(value));
+  } catch {
+    throw new Error(errorCode);
+  }
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    Object.keys(parsed).sort().join("\0") !== [...keys].sort().join("\0") ||
+    Object.values(parsed).some(
+      (item) => typeof item !== "string" || item.length === 0,
+    )
+  )
+    throw new Error(errorCode);
+  return parsed as Record<Keys[number], string>;
 }
 
 if (

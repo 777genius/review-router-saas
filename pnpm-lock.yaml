@@ -651,6 +651,9 @@ importers:
       '@aws-sdk/credential-providers':
         specifier: 3.1111.0
         version: 3.1111.0
+      '@smithy/node-http-handler':
+        specifier: 4.11.3
+        version: 4.11.3
       '@openai/codex':
         specifier: 0.147.0
         version: 0.147.0

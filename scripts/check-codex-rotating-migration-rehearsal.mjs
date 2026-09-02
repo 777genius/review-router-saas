@@ -5,7 +5,10 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { codexRotatingProductionWriterBaseObservationSql } from "./capture-codex-rotating-production-writer.mjs";
-import { codexRotatingTriggers } from "./codex-rotating-production-writer-schema.mjs";
+import {
+  codexRotatingFunctions,
+  codexRotatingTriggers,
+} from "./codex-rotating-production-writer-schema.mjs";
 import { createRehearsalAuthorityContext } from "./codex-rotating-rehearsal-authority-context.mjs";
 import {
   assertRehearsalRoleObservation,
@@ -14,23 +17,45 @@ import {
 import {
   activationAuthorityProvisioningSql,
   executeCanonicalReleaseMigration,
-  liveV70V73CatalogDigestSha256,
   roleProvisioningSql,
   runtimeGrantStatements,
 } from "./run-codex-rotating-release-migration.mjs";
 import { legacyAmbiguityInventorySql } from "./reconcile-codex-rotating-legacy-ambiguity.mjs";
 import { verifyCodexRotatingDatabaseCatalog } from "./verify-codex-rotating-rollout.mjs";
-import {
-  createSanitizedDiagnostic,
-  sanitizedDiagnosticError,
-} from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
+import { sanitizedDiagnosticError } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
 import { sha256Canonical } from "../packages/features/release-rollout/src/domain/canonical-json.ts";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
+import { canonicalActivationCatalogPolicyTrustRootReadiness } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-contract.ts";
 import {
   createDatabaseCredentialBoundary,
   createSecretSafePostgresInvocation,
   runSecretSafePostgresCommand,
 } from "./lib/secret-safe-command-boundary.mjs";
+import {
+  isExactPostgresCatalogDigestMismatchFailure,
+  isExactPostgresGuardFailure,
+} from "./lib/postgres-guard-failure.mjs";
+import {
+  isExpectedPrismaLockTimeoutFailure,
+  prismaLockTimeoutFailureMarkers,
+} from "./codex-rotating-lock-timeout-proof.mjs";
+import {
+  hasCanonicalPrismaGenericAbortedTransactionError,
+  hasCanonicalPrismaMigrationPostgresErrorEvidence,
+} from "./lib/postgres-error-evidence.mjs";
+import {
+  assertPsqlFailedWithExactMessage,
+  assertPsqlFailedWithOneOfExactMessages,
+  psqlResultDiagnostic,
+  rehearsalProcessDiagnostic,
+} from "./codex-rotating-rehearsal-process-result.mjs";
+import {
+  findMigration89AdvisoryLock,
+  findMigration89RelationLock,
+  migration89LockBlockedBy,
+  spawnMigration89Process,
+  waitForMigration89LockState,
+} from "./codex-rotating-migration89-process.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const dbDirectory = join(root, "packages/platform/db");
@@ -60,6 +85,40 @@ const migration76Name =
   "000076_hosted_codex_terminalization_restore_invariants";
 const migration77Name = "000077_hosted_codex_r57_security_race_remediation";
 const migration78Name = "000078_review_investigation_maintenance_checkpoint";
+const migration79Name = "000079_hosted_codex_output_limits";
+const migration79ScopeName =
+  "000079_remove_account_wide_provider_lane_serialization";
+const migration80Name = "000080_hosted_codex_attempt_generation";
+const migration81Name = "000081_hosted_codex_runtime_gate";
+const migration82Name = "000082_validate_hosted_codex_output_limits";
+const migration83Name = "000083_hosted_codex_comment_token_mint_protocol";
+const migration84Name = "000084_harden_comment_token_custody";
+const migration85Name = "000085_comment_token_gate_lock_result";
+const migration86Name = "000086_comment_token_custody_r18_remediation";
+const migration87Name = "000087_codex_oauth_v4_v5_workflow_reattestation";
+const migration88Name = "000088_codex_oauth_reattestation_mutation_owner_fence";
+const migration89Name = "000089_codex_oauth_v4_v5_staged_compatibility";
+const postgresLockTimeoutFailure = Object.freeze({
+  sqlState: "55P03",
+  message: "canceling statement due to lock timeout",
+  routine: "ProcessInterrupts",
+});
+
+function duplicateRelationFailure(relation) {
+  return Object.freeze({
+    sqlState: "42P07",
+    message: `relation "${relation}" already exists`,
+    routine: "index_create",
+  });
+}
+
+function duplicateFunctionFailure(routine) {
+  return Object.freeze({
+    sqlState: "42723",
+    message: `function "${routine}" already exists with same argument types`,
+    routine: "ProcedureCreate",
+  });
+}
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -67,6 +126,21 @@ const migration63 = join(migrationsDirectory, migration63Name, "migration.sql");
 const migration64 = join(migrationsDirectory, migration64Name, "migration.sql");
 const migration65 = join(migrationsDirectory, migration65Name, "migration.sql");
 const migration66 = join(migrationsDirectory, migration66Name, "migration.sql");
+const migration69 = join(migrationsDirectory, migration69Name, "migration.sql");
+const migration70 = join(migrationsDirectory, migration70Name, "migration.sql");
+const migration71 = join(migrationsDirectory, migration71Name, "migration.sql");
+const migration72Retire = join(
+  migrationsDirectory,
+  migration72RetireName,
+  "migration.sql",
+);
+const migration72Canary = join(
+  migrationsDirectory,
+  migration72CanaryName,
+  "migration.sql",
+);
+const migration73 = join(migrationsDirectory, migration73Name, "migration.sql");
+const migration87 = join(migrationsDirectory, migration87Name, "migration.sql");
 const rotatingMigrationNames = readdirSync(migrationsDirectory)
   .filter((name) => /^0000(?:6[0-9]|[7-9][0-9])_/u.test(name))
   .sort();
@@ -93,6 +167,18 @@ assert(
       migration76Name,
       migration77Name,
       migration78Name,
+      migration79Name,
+      migration79ScopeName,
+      migration80Name,
+      migration81Name,
+      migration82Name,
+      migration83Name,
+      migration84Name,
+      migration85Name,
+      migration86Name,
+      migration87Name,
+      migration88Name,
+      migration89Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -106,6 +192,9 @@ const databaseName = `rr_codex_fence_${process.pid}_${Date.now()}`;
 const adminUrl = databaseUrl(baseUrl, "postgres");
 const rehearsalProviderAdminUrl = databaseUrl(baseUrl, databaseName);
 const rehearsalRoleMarker = `reviewrouter-rehearsal-managed:${process.pid}:${randomUUID()}`;
+const migration89BoundaryOnly = process.argv.includes(
+  "--migration89-boundary-only",
+);
 let rehearsalAuthority;
 
 try {
@@ -116,93 +205,185 @@ try {
       .startsWith("17"),
     "the rehearsal database server must be PostgreSQL 17",
   );
-  await proveMigrationSpecificLegacyBehavior();
-  proveCanonicalLegacyReconciliationNegativeCases();
-  const rehearsalRelease = prepareCanonicalReleaseRoles(
-    rehearsalProviderAdminUrl,
-    applyCanonicalPreMigrationBaseline,
-  );
-  rehearsalAuthority = rehearsalRelease.authority;
-  const providerAdmin = rehearsalAuthority.providerAdmin;
-  const runtimeClients = rehearsalAuthority.runtime;
-  seedDirtyFixtures(providerAdmin, { canonicalSuccess: true });
-  const migrationPermitEnvironment =
-    installRehearsalMigrationPermit(rehearsalAuthority);
-  const releaseMigrationResult = executeCanonicalReleaseMigration(
-    {
-      ...rehearsalRelease.environment,
-      ...migrationPermitEnvironment,
-      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
-    },
-    runRehearsalReleaseSubprocess,
-    loopbackRehearsalDatabaseIdentity,
-  );
-  assert(
-    releaseMigrationResult.aclGateState === "open",
-    "combined migration rehearsal must exercise the open runtime ACL state",
-  );
-  const targetMigrationReceipt = releaseMigrationResult.targetMigrationReceipt;
-  const expectedEffectFingerprint = `sha256:${createHash("sha256")
-    .update(
-      [
-        targetMigrationReceipt.rolloutId,
-        targetMigrationReceipt.transitionSha256,
-        targetMigrationReceipt.permitEpoch,
-        targetMigrationReceipt.permitNonce,
-        targetMigrationReceipt.sourceLegacyAmbiguity.inventorySha256,
-        targetMigrationReceipt.eligibilityCutoff,
-        targetMigrationReceipt.postManifestIdentity,
-        targetMigrationReceipt.postCatalogDigest,
-      ].join(":"),
-    )
-    .digest("hex")}`;
-  assert(
-    targetMigrationReceipt.effectFingerprint === expectedEffectFingerprint,
-    "target migration effect fingerprint must match independently observed receipt facts",
-  );
-  const replayMigrationResult = executeCanonicalReleaseMigration(
-    {
-      ...rehearsalRelease.environment,
-      ...migrationPermitEnvironment,
-      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
-    },
-    runRehearsalReleaseSubprocess,
-    loopbackRehearsalDatabaseIdentity,
-  );
-  assert(
-    JSON.stringify(replayMigrationResult.targetMigrationReceipt) ===
-      JSON.stringify(releaseMigrationResult.targetMigrationReceipt) &&
-      JSON.stringify(replayMigrationResult.legacyReconciliation.inventory) ===
-        JSON.stringify(releaseMigrationResult.legacyReconciliation.inventory),
-    "canonical replay did not return the immutable original receipt",
-  );
+  if (migration89BoundaryOnly) {
+    await proveMigration89TwoSessionBoundary();
+    process.stderr.write(
+      "Codex rotating PostgreSQL 17 migration89 two-session boundary passed.\n",
+    );
+  } else {
+    await proveMigrationSpecificLegacyBehavior();
+    proveCanonicalLegacyReconciliationNegativeCases();
+    await proveMigration89TwoSessionBoundary();
+    proveLateMigrationRollbackAndReplayMatrix();
+    const rehearsalRelease = prepareCanonicalReleaseRoles(
+      rehearsalProviderAdminUrl,
+      applyCanonicalPreMigrationBaseline,
+    );
+    rehearsalAuthority = rehearsalRelease.authority;
+    const providerAdmin = rehearsalAuthority.providerAdmin;
+    const runtimeClients = rehearsalAuthority.runtime;
+    seedDirtyFixtures(providerAdmin, { canonicalSuccess: true });
+    const migrationPermitEnvironment =
+      installRehearsalMigrationPermit(rehearsalAuthority);
+    const catalogTrustRootReady =
+      canonicalActivationCatalogPolicyTrustRootReadiness.status === "ready";
+    const pendingCatalogFailureEvidence =
+      "pending_catalog_completion_blocked_as_expected";
+    const releaseRun = (step, command, args, options) =>
+      runRehearsalReleaseSubprocess(step, command, args, {
+        ...options,
+        expectedFailure:
+          !catalogTrustRootReady &&
+          step === "deploy_migrations_and_converge_grants"
+            ? {
+                kind: "catalog_digest_mismatch",
+                guard:
+                  "release migration target live completion mismatch:catalog_digest_observed",
+                evidence: pendingCatalogFailureEvidence,
+              }
+            : undefined,
+      });
+    const preMigrationHistoryDigest = migrationHistoryDigest(
+      providerAdmin,
+      rotatingMigrationNames,
+    );
+    let releaseMigrationResult;
+    let pendingCatalogRejected = false;
+    try {
+      releaseMigrationResult = executeCanonicalReleaseMigration(
+        {
+          ...rehearsalRelease.environment,
+          ...migrationPermitEnvironment,
+          REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+        },
+        releaseRun,
+        loopbackRehearsalDatabaseIdentity,
+      );
+    } catch (error) {
+      if (
+        catalogTrustRootReady ||
+        !(error instanceof Error) ||
+        error.message !== pendingCatalogFailureEvidence
+      )
+        throw error;
+      pendingCatalogRejected = true;
+    }
+    if (!catalogTrustRootReady) {
+      const postRejectionHistoryDigest = migrationHistoryDigest(
+        providerAdmin,
+        rotatingMigrationNames,
+      );
+      const rollback = JSON.parse(
+        psql(providerAdmin, [
+          "-Atc",
+          `SELECT json_build_object(
+            'permitState',(SELECT state FROM reviewrouter_activation.migration_permit
+              WHERE rollout_id='rehearsal-rollout-v1'),
+            'targetReceipt',(SELECT target_receipt FROM reviewrouter_activation.migration_permit
+              WHERE rollout_id='rehearsal-rollout-v1')
+          )`,
+        ]).stdout.trim(),
+      );
+      assert(
+        pendingCatalogRejected &&
+          releaseMigrationResult === undefined &&
+          rollback.permitState === "installed" &&
+          rollback.targetReceipt === null &&
+          postRejectionHistoryDigest === preMigrationHistoryDigest,
+        "pending activation catalog rejection was not fail-closed and retryable",
+      );
+      process.stderr.write(
+        "Codex rotating PostgreSQL 17 combined rehearsal stopped at the pending activation catalog trust boundary as expected.\n",
+      );
+    } else {
+      assert(
+        releaseMigrationResult.aclGateState === "closed",
+        "combined migration rehearsal must complete against the trusted pre-activation catalog",
+      );
+      const targetMigrationReceipt =
+        releaseMigrationResult.targetMigrationReceipt;
+      const expectedEffectFingerprint = `sha256:${createHash("sha256")
+        .update(
+          [
+            targetMigrationReceipt.rolloutId,
+            targetMigrationReceipt.transitionSha256,
+            targetMigrationReceipt.permitEpoch,
+            targetMigrationReceipt.permitNonce,
+            targetMigrationReceipt.sourceLegacyAmbiguity.inventorySha256,
+            targetMigrationReceipt.eligibilityCutoff,
+            targetMigrationReceipt.postManifestIdentity,
+            targetMigrationReceipt.postCatalogDigest,
+          ].join(":"),
+        )
+        .digest("hex")}`;
+      assert(
+        targetMigrationReceipt.effectFingerprint === expectedEffectFingerprint,
+        "target migration effect fingerprint must match independently observed receipt facts",
+      );
+      const replayMigrationResult = executeCanonicalReleaseMigration(
+        {
+          ...rehearsalRelease.environment,
+          ...migrationPermitEnvironment,
+          REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+        },
+        runRehearsalReleaseSubprocess,
+        loopbackRehearsalDatabaseIdentity,
+      );
+      assert(
+        JSON.stringify(replayMigrationResult.targetMigrationReceipt) ===
+          JSON.stringify(releaseMigrationResult.targetMigrationReceipt) &&
+          JSON.stringify(
+            replayMigrationResult.legacyReconciliation.inventory,
+          ) ===
+            JSON.stringify(
+              releaseMigrationResult.legacyReconciliation.inventory,
+            ),
+        "canonical replay did not return the immutable original receipt",
+      );
+      // The trusted post-migration digest is the production pre-activation state.
+      // Reopen only after receipt replay so the remaining runtime behavior proofs
+      // can exercise the activated ACL without changing completion authority.
+      convergeRuntimePrivileges(providerAdmin);
 
-  proveSuccessfulCombinedRelease(providerAdmin);
-  proveDatabasePrivileges(providerAdmin);
-  proveRuntimeParentCascadesDenied(providerAdmin, runtimeClients);
-  proveStaleAclProviderIdentityEscalationDenied(providerAdmin, runtimeClients);
-  proveMaintenanceCheckpointColumnAclConvergence(providerAdmin);
-  proveTerminalInsertGuards(providerAdmin);
-  proveSequentialFabricationDeniedForEveryRuntimeRole(runtimeClients);
-  proveRuntimeVersionedWriteback(providerAdmin, runtimeClients);
-  proveAccountSwitchRecoveryContract(providerAdmin);
-  proveCompletedRecoveryEvidenceRetention(providerAdmin);
-  const versionedNamespaceEvidence =
-    proveVersionedNamespaceLedger(providerAdmin);
-  provePrismaCleanupRetention(providerAdmin, versionedNamespaceEvidence);
-  proveLegacyChildWritesRejected(providerAdmin);
-  proveParentIdentityWriteRejected(providerAdmin);
-  await proveProviderRepairAuthorityV2(providerAdmin, runtimeClients);
-  await proveQuarantineCleanupPathV2(providerAdmin, runtimeClients);
-  proveExactProductionCatalogContract(providerAdmin);
-  proveMigrateDeployNoOp(providerAdmin);
-  proveLateMigrationRollbackAndReplayMatrix();
-  proveReleaseAuthorityMarkerIsolation(providerAdmin);
-  const observation = collectObservation(providerAdmin);
-  process.stdout.write(`${JSON.stringify(observation)}\n`);
-  process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000078 rehearsal passed.\n",
-  );
+      proveSuccessfulCombinedRelease(providerAdmin);
+      proveDatabasePrivileges(providerAdmin);
+      proveRuntimeParentCascadesDenied(providerAdmin, runtimeClients);
+      proveStaleAclProviderIdentityEscalationDenied(
+        providerAdmin,
+        runtimeClients,
+      );
+      proveMaintenanceCheckpointColumnAclConvergence(providerAdmin);
+      proveTerminalInsertGuards(providerAdmin);
+      proveSequentialFabricationDeniedForEveryRuntimeRole(runtimeClients);
+      proveRuntimeVersionedWriteback(providerAdmin, runtimeClients);
+      proveAccountSwitchRecoveryContract(providerAdmin);
+      proveCompletedRecoveryEvidenceRetention(providerAdmin);
+      const versionedNamespaceEvidence =
+        proveVersionedNamespaceLedger(providerAdmin);
+      await proveActiveNamespaceV4V5Reattestation(
+        providerAdmin,
+        runtimeClients,
+        versionedNamespaceEvidence,
+      );
+      proveSelfHostedV4V5ReattestationOwnerInvocation(
+        providerAdmin,
+        runtimeClients.web,
+      );
+      provePrismaCleanupRetention(providerAdmin, versionedNamespaceEvidence);
+      proveLegacyChildWritesRejected(providerAdmin);
+      proveParentIdentityWriteRejected(providerAdmin);
+      await proveProviderRepairAuthorityV2(providerAdmin, runtimeClients);
+      await proveQuarantineCleanupPathV2(providerAdmin, runtimeClients);
+      proveExactProductionCatalogContract(providerAdmin);
+      proveMigrateDeployNoOp(providerAdmin);
+      proveReleaseAuthorityMarkerIsolation(providerAdmin);
+      const observation = collectObservation(providerAdmin);
+      process.stdout.write(`${JSON.stringify(observation)}\n`);
+      process.stderr.write(
+        "Codex rotating PostgreSQL 17 combined 000060 through 000089 rehearsal passed.\n",
+      );
+    }
+  }
 } finally {
   const databaseDrop = psql(
     adminUrl,
@@ -221,6 +402,759 @@ try {
     "rehearsal_database_removal_not_proven_before_role_cleanup",
   );
   cleanupRuntimeRoles(adminUrl);
+}
+
+function proveSelfHostedV4V5ReattestationOwnerInvocation(
+  providerAdmin,
+  hostedWebUrl,
+) {
+  const temporaryWebRole = `rr_rehearsal_web_absent_${process.pid}`;
+  const ownerPassword = `${randomUUID()}${randomUUID()}`;
+  const ownerUrl = new URL(String(providerAdmin));
+  ownerUrl.username = "reviewrouter_release_schema_owner";
+  ownerUrl.password = ownerPassword;
+  const renamedWebUrl = new URL(String(hostedWebUrl));
+  renamedWebUrl.username = temporaryWebRole;
+  const call = `SELECT public."codex_oauth_reattest_active_namespace_v4_to_v5"(
+    NULL::text,NULL::text,NULL::text,NULL::text,NULL::bigint,NULL::text,
+    NULL::text,NULL::text,NULL::text,NULL::text,NULL::integer,NULL::integer,
+    NULL::text,NULL::text,NULL::text,NULL::text,NULL::text,NULL::text,
+    NULL::text,NULL::text,NULL::integer)`;
+  psql(providerAdmin, [
+    "-c",
+    `ALTER ROLE reviewrouter_web RENAME TO ${quoteIdentifier(temporaryWebRole)};
+     ALTER ROLE reviewrouter_release_schema_owner LOGIN PASSWORD ${quoteLiteral(ownerPassword)}`,
+  ]);
+  try {
+    assertPsqlFailedWithExactMessage(
+      psql(ownerUrl, ["-c", call], false),
+      "codex_oauth_active_namespace_reattestation_invalid",
+      "self-hosted canonical table/function owner session was not admitted",
+    );
+    assertPsqlFailedWithExactMessage(
+      psql(renamedWebUrl, ["-c", call], false),
+      "codex_oauth_active_namespace_reattestation_role_forbidden",
+      "self-hosted non-owner session bypassed exact owner admission",
+    );
+  } finally {
+    psql(providerAdmin, [
+      "-c",
+      `ALTER ROLE reviewrouter_release_schema_owner NOLOGIN;
+       ALTER ROLE ${quoteIdentifier(temporaryWebRole)} RENAME TO reviewrouter_web`,
+    ]);
+  }
+}
+
+async function proveMigration89TwoSessionBoundary() {
+  const migration89 = join(
+    migrationsDirectory,
+    migration89Name,
+    "migration.sql",
+  );
+  const installPre89BoundaryFixture = (url) =>
+    psql(url, [
+      "-c",
+      String.raw`
+        CREATE TABLE public."RepositoryConnection" (
+          "id" text PRIMARY KEY, "githubRepositoryId" bigint NOT NULL
+        );
+        CREATE TABLE public."CodexOAuthProviderInstance" (
+          "id" text PRIMARY KEY, "repositoryId" text NOT NULL,
+          "state" text NOT NULL, "activeSecretNamespaceId" text,
+          "activeSecretNamespaceEpoch" bigint, "activeSecretNamespaceName" text,
+          "latestGenerationHash" text, "mutationOwner" text,
+          "mutationOwnerId" text, "mutationEpoch" bigint NOT NULL DEFAULT 0,
+          "activeLeaseId" text
+        );
+        CREATE TABLE public."CodexOAuthSecretNamespace" (
+          "id" text PRIMARY KEY, "providerInstanceRowId" text NOT NULL,
+          "githubRepositoryId" text NOT NULL, "namespaceEpoch" bigint NOT NULL,
+          "secretName" text NOT NULL, "status" text NOT NULL,
+          "permanentlyRetired" boolean NOT NULL DEFAULT false,
+          "workflowPath" text, "workflowSourceCommitSha" text,
+          "workflowSourceBlobSha" text, "workflowSourceSha256" text,
+          "workflowSemanticSha256" text, "workflowSourceTrust" text,
+          "workflowSchemaVersion" integer, "attestedRepositoryId" text
+        );
+        CREATE TABLE public."CodexOAuthSetupPayloadClaim" (
+          "id" text PRIMARY KEY, "providerInstanceRowId" text,
+          "githubRepositoryId" text, "generationHash" text, "status" text,
+          "confirmedAttemptId" text
+        );
+        CREATE TABLE public."CodexOAuthSetupDispatchAttempt" (
+          "id" text PRIMARY KEY, "claimId" text, "namespaceId" text,
+          "status" text
+        );
+        CREATE TABLE public."CodexOAuthDatabaseAuthorityReceipt" (
+          "databaseRole" text, "backendPid" integer, "transactionId" bigint,
+          "effect" text, "ownerId" text, "effectCode" integer,
+          "consumedAt" timestamptz
+        );
+        INSERT INTO public."RepositoryConnection" VALUES ('repository', 900001);
+        INSERT INTO public."CodexOAuthProviderInstance" (
+          "id","repositoryId","state","activeSecretNamespaceId",
+          "activeSecretNamespaceEpoch","activeSecretNamespaceName","latestGenerationHash"
+        ) VALUES ('provider','repository','retired','namespace',1,'secret','generation');
+        INSERT INTO public."CodexOAuthSecretNamespace" (
+          "id","providerInstanceRowId","githubRepositoryId","namespaceEpoch",
+          "secretName","status","workflowPath","workflowSourceCommitSha",
+          "workflowSourceBlobSha","workflowSourceSha256","workflowSemanticSha256",
+          "workflowSourceTrust","workflowSchemaVersion","attestedRepositoryId"
+        ) VALUES (
+          'namespace','provider','900001',1,'secret','active',
+          '.github/workflows/reviewrouter-codex.yml',repeat('a',40),repeat('b',40),
+          repeat('c',64),repeat('d',64),'trusted_default_branch_revision',4,'900001'
+        );
+        CREATE FUNCTION public."codex_oauth_v4_v5_reattestation_transition"(
+          text,text,bigint,text,text,text,text,text,text,text,text,text,text,text,text
+        ) RETURNS text LANGUAGE sql IMMUTABLE AS $transition$
+          SELECT jsonb_build_array($1,$2,$3,$4,$5,$6,$7,4,5,$8,$9,$10,$11,
+                                   $12,$13,$14,$15)::text
+        $transition$;
+        CREATE FUNCTION public."codex_oauth_consume_database_authority"(
+          target_effect text, target_owner_id text, target_effect_code integer
+        ) RETURNS boolean LANGUAGE plpgsql AS $consume$
+        DECLARE affected_count integer;
+        BEGIN
+          UPDATE public."CodexOAuthDatabaseAuthorityReceipt"
+          SET "consumedAt"=clock_timestamp()
+          WHERE "databaseRole"=session_user
+            AND "backendPid"=pg_backend_pid()
+            AND "transactionId"=txid_current()
+            AND "effect"=target_effect AND "ownerId"=target_owner_id
+            AND "effectCode"=target_effect_code AND "consumedAt" IS NULL;
+          GET DIAGNOSTICS affected_count = ROW_COUNT;
+          RETURN affected_count = 1;
+        END $consume$;
+        CREATE FUNCTION public."codex_oauth_secret_namespace_tombstone_guard"()
+        RETURNS trigger LANGUAGE plpgsql AS $guard$
+        BEGIN
+          IF OLD."status"='active' AND NEW."status"='active'
+             AND OLD."workflowSchemaVersion"=4
+             AND NEW."workflowSchemaVersion"=5
+             AND NOT public."codex_oauth_consume_database_authority"(
+               'active_namespace_v4_v5_reattestation',
+               public."codex_oauth_v4_v5_reattestation_transition"(
+                 OLD."providerInstanceRowId",OLD."id",OLD."namespaceEpoch",
+                 OLD."secretName",OLD."githubRepositoryId",OLD."workflowPath",
+                 OLD."workflowSourceTrust",OLD."workflowSourceCommitSha",
+                 OLD."workflowSourceBlobSha",OLD."workflowSourceSha256",
+                 OLD."workflowSemanticSha256",NEW."workflowSourceCommitSha",
+                 NEW."workflowSourceBlobSha",NEW."workflowSourceSha256",
+                 NEW."workflowSemanticSha256"), 0)
+          THEN
+            RAISE EXCEPTION 'codex_oauth_secret_namespace_identity_immutable'
+              USING ERRCODE='23514';
+          END IF;
+          RETURN NEW;
+        END $guard$;
+        CREATE TRIGGER "CodexOAuthSecretNamespace_tombstone_guard"
+        BEFORE UPDATE ON public."CodexOAuthSecretNamespace"
+        FOR EACH ROW EXECUTE FUNCTION public."codex_oauth_secret_namespace_tombstone_guard"();
+        CREATE FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(
+          text,text,text,text,bigint,text,text,text,text,text,integer,integer,
+          text,text,text,text,text,text,text,text
+        ) RETURNS void LANGUAGE plpgsql AS $old$
+        BEGIN
+          INSERT INTO public."CodexOAuthDatabaseAuthorityReceipt" (
+            "databaseRole","backendPid","transactionId","effect","ownerId","effectCode"
+          )
+          SELECT session_user,pg_backend_pid(),txid_current(),
+            'active_namespace_v4_v5_reattestation',
+            public."codex_oauth_v4_v5_reattestation_transition"(
+              namespace."providerInstanceRowId",namespace."id",namespace."namespaceEpoch",
+              namespace."secretName",namespace."githubRepositoryId",namespace."workflowPath",
+              namespace."workflowSourceTrust",namespace."workflowSourceCommitSha",
+              namespace."workflowSourceBlobSha",namespace."workflowSourceSha256",
+              namespace."workflowSemanticSha256",namespace."workflowSourceCommitSha",
+              namespace."workflowSourceBlobSha",namespace."workflowSourceSha256",
+              namespace."workflowSemanticSha256"),0
+          FROM public."CodexOAuthSecretNamespace" namespace
+          WHERE namespace."id"='namespace';
+          UPDATE public."CodexOAuthSecretNamespace"
+          SET "workflowSchemaVersion"=5 WHERE "id"='namespace';
+          -- A relation-backed latch is not an execution barrier here: routine
+          -- query-plan initialization may take its relation lock before this
+          -- UPDATE. The advisory request has no relation dependency, so its
+          -- wait proves this backend executed the preceding UPDATE first.
+          PERFORM pg_advisory_xact_lock(810081, 1);
+        END $old$;
+      `,
+    ]);
+  const oldCall = String.raw`SELECT public."codex_oauth_reattest_active_namespace_v4_to_v5"(
+    NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+    NULL,NULL,NULL,NULL)`;
+  const spawned = new Set();
+  const spawnPsql = (url, args = [], keepStdinOpen = false) => {
+    const invocation = createSecretSafePostgresInvocation({
+      databaseUrl: url,
+      args: [
+        "-X",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-v",
+        "VERBOSITY=verbose",
+        "-v",
+        "SHOW_CONTEXT=never",
+        ...args,
+      ],
+    });
+    const handle = spawnMigration89Process({
+      binary: psqlBinary,
+      args: invocation.args,
+      environment: invocation.environment,
+      input: invocation.input,
+      keepStdinOpen,
+      cleanup: invocation.cleanup,
+    });
+    spawned.add(handle);
+    void handle.result.then(() => spawned.delete(handle));
+    return handle;
+  };
+  const lockSnapshot = (url, timeoutMs) =>
+    JSON.parse(
+      psql(
+        url,
+        [
+          "-qAtc",
+          String.raw`SET statement_timeout='2s';
+          SELECT json_build_object(
+            'databaseOid', target_database.oid::bigint,
+            'relationOid', target_relation.oid::bigint,
+            'locks', COALESCE((
+              SELECT json_agg(row_to_json(observation))
+              FROM (
+                SELECT activity.application_name AS application,
+                       activity.pid,
+                       activity.datid::bigint AS "databaseOid",
+                       activity.state,
+                       activity.wait_event_type AS "waitEventType",
+                       activity.wait_event AS "waitEvent",
+                       observed_lock.locktype AS "lockType",
+                       observed_lock.database::bigint AS "lockDatabaseOid",
+                       observed_lock.relation::bigint AS "relationOid",
+                       CASE
+                         WHEN observed_lock.locktype='relation'
+                          AND observed_lock.database=target_database.oid
+                          AND observed_lock.relation=target_relation.oid
+                         THEN target_relation.oid::regclass::text
+                       END AS relation,
+                       observed_lock.mode,
+                       observed_lock.granted,
+                       observed_lock.classid::bigint AS "classId",
+                       observed_lock.objid::bigint AS "objectId",
+                       observed_lock.objsubid AS "objectSubId",
+                       pg_blocking_pids(activity.pid) AS blockers
+                FROM pg_stat_activity activity
+                JOIN pg_locks observed_lock ON observed_lock.pid=activity.pid
+                WHERE activity.application_name LIKE 'rr-m89-%'
+                  AND (
+                    (observed_lock.locktype='relation'
+                     AND observed_lock.database=target_database.oid
+                     AND observed_lock.relation=target_relation.oid)
+                    OR
+                    (observed_lock.locktype='advisory'
+                     AND observed_lock.classid=810081
+                     AND observed_lock.objid=1
+                     AND observed_lock.objsubid=2)
+                  )
+                ORDER BY activity.application_name, observed_lock.locktype,
+                         observed_lock.relation, observed_lock.mode
+              ) observation
+            ), '[]'::json)
+          )::text
+          FROM pg_database target_database
+          JOIN pg_namespace target_namespace
+            ON target_namespace.nspname='public'
+          JOIN pg_class target_relation
+            ON target_relation.relnamespace=target_namespace.oid
+           AND target_relation.relname='CodexOAuthSecretNamespace'
+          WHERE target_database.datname=current_database()`,
+        ],
+        true,
+        timeoutMs,
+      ).stdout.trim(),
+    );
+  const releaseBlocker = async (blocker) => {
+    if (!blocker) return;
+    if (blocker.unavailableResult() === undefined)
+      blocker.end("COMMIT;\n\\q\n");
+    const result = await blocker.result;
+    assert(
+      result.status === 0 && !result.timedOut && result.error == null,
+      `migration89_blocker_cleanup_failed:${psqlResultDiagnostic(result)}`,
+    );
+  };
+  const compatibilityPredecessorFailure = Object.freeze({
+    sqlState: "55000",
+    message: "codex_oauth_v4_v5_compatibility_predecessor_evidence_missing",
+    routine: "exec_stmt_raise",
+  });
+  const exactStaleFailure = Object.freeze({
+    sqlState: "40001",
+    message: "codex_oauth_active_namespace_reattestation_stale",
+    routine: "exec_stmt_raise",
+  });
+  const installCausalV4Fixture = (url, suffix) => {
+    const result = psql(url, [
+      "-c",
+      `INSERT INTO public."CodexOAuthProviderInstance" (
+         "id","repositoryId","state","activeSecretNamespaceId",
+         "activeSecretNamespaceEpoch","activeSecretNamespaceName",
+         "latestGenerationHash","mutationEpoch"
+       ) VALUES ('provider-${suffix}','repository','active','namespace-${suffix}',
+         2,'secret-${suffix}',repeat('e',64),1);
+       INSERT INTO public."CodexOAuthSecretNamespace" (
+         "id","providerInstanceRowId","githubRepositoryId","namespaceEpoch",
+         "secretName","status","workflowPath","workflowSourceCommitSha",
+         "workflowSourceBlobSha","workflowSourceSha256","workflowSemanticSha256",
+         "workflowSourceTrust","workflowSchemaVersion","attestedRepositoryId"
+       ) VALUES ('namespace-${suffix}','provider-${suffix}','900001',2,
+         'secret-${suffix}','active','.github/workflows/reviewrouter-codex.yml',
+         repeat('a',40),repeat('b',40),repeat('c',64),repeat('d',64),
+         'trusted_default_branch_revision',4,'900001');
+       INSERT INTO public."CodexOAuthSetupPayloadClaim" (
+         "id","providerInstanceRowId","githubRepositoryId","generationHash",
+         "status","confirmedAttemptId"
+       ) VALUES ('claim-${suffix}','provider-${suffix}','900001',repeat('e',64),
+         'active','attempt-${suffix}');
+       INSERT INTO public."CodexOAuthSetupDispatchAttempt" (
+         "id","claimId","namespaceId","status"
+       ) VALUES ('attempt-${suffix}','claim-${suffix}','namespace-${suffix}','confirmed');`,
+    ]);
+    assert(
+      result.status === 0 && !result.error,
+      `migration89_causal_fixture_install_failed:${psqlResultDiagnostic(result)}`,
+    );
+  };
+  const causalCall = (suffix, digit) =>
+    `public."codex_oauth_reattest_active_namespace_v4_to_v5"(
+      'provider-${suffix}','claim-${suffix}','attempt-${suffix}',
+      'namespace-${suffix}',2::bigint,'secret-${suffix}','900001',repeat('e',64),
+      '.github/workflows/reviewrouter-codex.yml','trusted_default_branch_revision',
+      4,5,repeat('a',40),repeat('b',40),repeat('c',64),repeat('d',64),
+      repeat('${digit}',40),repeat('${digit}',40),repeat('${digit}',64),
+      repeat('${digit}',64),90000)`;
+  const exactWebAdmission = "SET SESSION AUTHORIZATION reviewrouter_web;";
+  const migration89RoutineSignature =
+    "public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer)";
+  const proveCausalV4OwnershipFence = async (url) => {
+    const admissionContract = psql(url, [
+      "-qAtc",
+      `${exactWebAdmission}
+       SELECT concat_ws(':', session_user,
+         (to_regprocedure(${quoteLiteral(migration89RoutineSignature)}) IS NOT NULL)::int,
+         has_function_privilege(
+           'reviewrouter_web',${quoteLiteral(migration89RoutineSignature)},'EXECUTE'
+         )::int)`,
+    ]);
+    assert(
+      admissionContract.status === 0 &&
+        !admissionContract.error &&
+        admissionContract.stdout.trim() === "reviewrouter_web:1:1",
+      `migration89_exact_web_admission_unavailable:${psqlResultDiagnostic(admissionContract)}`,
+    );
+    for (const mutationOwner of ["setup", "recovery"]) {
+      installCausalV4Fixture(url, mutationOwner);
+      const mutationOwnerId =
+        mutationOwner === "setup"
+          ? `claim-${mutationOwner}`
+          : `setup-recovery:causal-${mutationOwner}`;
+      const ownerHeld = psql(
+        url,
+        [
+          "-v",
+          "VERBOSITY=verbose",
+          "-v",
+          "SHOW_CONTEXT=never",
+          "-c",
+          `BEGIN;
+           UPDATE public."CodexOAuthProviderInstance"
+           SET "mutationEpoch"="mutationEpoch"+1,
+               "mutationOwner"=${quoteLiteral(mutationOwner)},
+               "mutationOwnerId"=${quoteLiteral(mutationOwnerId)}
+           WHERE "id"='provider-${mutationOwner}';
+           ${exactWebAdmission}
+           SELECT ${causalCall(mutationOwner, "f")};`,
+        ],
+        false,
+      );
+      assertPsqlFailedWithExactMessage(
+        ownerHeld,
+        exactStaleFailure,
+        `genuine V4 ${mutationOwner} ownership did not distinguish and fence re-attestation`,
+      );
+    }
+
+    installCausalV4Fixture(url, "clear");
+    const clearControl = psql(url, [
+      "-c",
+      `${exactWebAdmission} SELECT ${causalCall("clear", "f")}`,
+    ]);
+    assert(
+      clearControl.status === 0 && !clearControl.error,
+      `migration89_genuine_v4_ownership_clear_control_failed:${psqlResultDiagnostic(clearControl)}`,
+    );
+    assert(
+      psql(url, [
+        "-Atc",
+        `SELECT concat_ws(':',
+          (SELECT count(*) FROM public."CodexOAuthSecretNamespace"
+           WHERE "id"='namespace-clear' AND "workflowSchemaVersion"=5),
+          (SELECT count(*) FROM public."CodexOAuthWorkflowCompatibility"
+           WHERE "namespaceId"='namespace-clear'),
+          (SELECT count(*) FROM public."CodexOAuthDatabaseAuthorityReceipt"
+           WHERE "databaseRole"='reviewrouter_web'
+             AND "effect"='active_namespace_v4_v5_reattestation'
+             AND "ownerId"=jsonb_build_array(
+               'provider-clear','namespace-clear',2::bigint,'secret-clear','900001',
+               '.github/workflows/reviewrouter-codex.yml',
+               'trusted_default_branch_revision',4,5,repeat('a',40),repeat('b',40),
+               repeat('c',64),repeat('d',64),repeat('f',40),repeat('f',40),
+               repeat('f',64),repeat('f',64))::text
+             AND "effectCode"=0 AND "consumedAt" IS NOT NULL))`,
+      ]).stdout.trim() === "1:1:1",
+      "migration89 genuine V4 ownership-clear control did not retain exact transition evidence",
+    );
+
+    installCausalV4Fixture(url, "concurrent");
+    const winnerUrl = new URL(String(url));
+    winnerUrl.searchParams.set("application_name", "rr-m89-causal-winner");
+    const winner = spawnPsql(winnerUrl, ["-qAt"], true);
+    winner.write(
+      `BEGIN; ${exactWebAdmission} SELECT ${causalCall("concurrent", "7")}; SELECT 'migration89-causal-winner-ready';\n`,
+    );
+    const winnerDeadline = Date.now() + 5_000;
+    while (!winner.stdout().includes("migration89-causal-winner-ready")) {
+      assert(
+        winner.unavailableResult() === undefined && Date.now() < winnerDeadline,
+        "migration89_causal_winner_did_not_reach_transaction_hold",
+      );
+      await delay(25);
+    }
+    const loserUrl = new URL(String(url));
+    loserUrl.searchParams.set("application_name", "rr-m89-causal-loser");
+    const loser = spawnPsql(loserUrl, [
+      "-c",
+      `${exactWebAdmission} SELECT ${causalCall("concurrent", "8")}`,
+    ]);
+    const loserDeadline = Date.now() + 5_000;
+    while (
+      psql(url, [
+        "-Atc",
+        `SELECT count(*) FROM pg_stat_activity
+         WHERE application_name='rr-m89-causal-loser'
+           AND wait_event_type='Lock'
+           AND cardinality(pg_blocking_pids(pid)) > 0`,
+      ]).stdout.trim() !== "1"
+    ) {
+      assert(
+        loser.unavailableResult() === undefined && Date.now() < loserDeadline,
+        "migration89_causal_loser_did_not_serialize_behind_winner",
+      );
+      await delay(25);
+    }
+    winner.end("COMMIT;\n\\q\n");
+    const [winnerResult, loserResult] = await Promise.all([
+      winner.result,
+      loser.result,
+    ]);
+    assert(
+      winnerResult.status === 0 && !winnerResult.error,
+      `migration89_causal_winner_failed:${psqlResultDiagnostic(winnerResult)}`,
+    );
+    assertPsqlFailedWithExactMessage(
+      loserResult,
+      exactStaleFailure,
+      "same-current-routine concurrent loser did not fail exact stale",
+    );
+  };
+
+  for (const ordering of ["old_invocation_first", "migration_boundary_first"]) {
+    let disposableWebRoleCreated = false;
+    const name = `${databaseName}_migration89_${ordering}`;
+    const url = databaseUrl(baseUrl, name);
+    try {
+      psql(adminUrl, ["-c", `CREATE DATABASE ${quoteIdentifier(name)}`]);
+      const webRoleExists = psql(adminUrl, [
+        "-Atc",
+        "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='reviewrouter_web')::int",
+      ]);
+      assert(
+        webRoleExists.status === 0 &&
+          !webRoleExists.error &&
+          ["0", "1"].includes(webRoleExists.stdout.trim()),
+        `migration89_web_role_inventory_failed:${psqlResultDiagnostic(webRoleExists)}`,
+      );
+      if (webRoleExists.stdout.trim() === "0") {
+        const createWebRole = psql(adminUrl, [
+          "-c",
+          "CREATE ROLE reviewrouter_web NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+        ]);
+        assert(
+          createWebRole.status === 0 && !createWebRole.error,
+          `migration89_disposable_web_role_create_failed:${psqlResultDiagnostic(createWebRole)}`,
+        );
+        disposableWebRoleCreated = true;
+      }
+      const webAdmission = psql(adminUrl, [
+        "-qAtc",
+        `${exactWebAdmission} SELECT session_user`,
+      ]);
+      assert(
+        webAdmission.status === 0 &&
+          !webAdmission.error &&
+          webAdmission.stdout.trim() === "reviewrouter_web",
+        `migration89_exact_web_session_admission_failed:${psqlResultDiagnostic(webAdmission)}`,
+      );
+
+      installPre89BoundaryFixture(url);
+      if (ordering === "old_invocation_first") {
+        const blockerUrl = new URL(String(url));
+        blockerUrl.searchParams.set("application_name", "rr-m89-old-barrier");
+        const blocker = spawnPsql(blockerUrl, ["-qAt"], true);
+        blocker.write("SELECT pg_advisory_lock(810081, 1);\n");
+        await waitForMigration89LockState({
+          description: "old barrier held",
+          lockSnapshot: (timeoutMs) => lockSnapshot(url, timeoutMs),
+          predicate: (snapshot) =>
+            Boolean(
+              findMigration89AdvisoryLock(snapshot, "rr-m89-old-barrier", true),
+            ),
+          watchedProcesses: [{ name: "old_barrier", handle: blocker }],
+        });
+        const oldUrl = new URL(String(url));
+        oldUrl.searchParams.set("application_name", "rr-m89-old-first");
+        const old = spawnPsql(oldUrl, ["-c", oldCall]);
+        await waitForMigration89LockState({
+          description: "old invocation crossed update",
+          lockSnapshot: (timeoutMs) => lockSnapshot(url, timeoutMs),
+          predicate: (snapshot) => {
+            const holderLock = findMigration89AdvisoryLock(
+              snapshot,
+              "rr-m89-old-barrier",
+              true,
+            );
+            const oldBarrierLock = findMigration89AdvisoryLock(
+              snapshot,
+              "rr-m89-old-first",
+              false,
+            );
+            const oldRelationLock = findMigration89RelationLock(
+              snapshot,
+              "rr-m89-old-first",
+              '"CodexOAuthSecretNamespace"',
+              "RowExclusiveLock",
+              true,
+            );
+            return Boolean(
+              holderLock &&
+              oldRelationLock &&
+              oldBarrierLock &&
+              migration89LockBlockedBy(snapshot, oldBarrierLock, holderLock),
+            );
+          },
+          watchedProcesses: [
+            { name: "old_barrier", handle: blocker },
+            { name: "old_invocation", handle: old },
+          ],
+        });
+        const migrationUrl = new URL(String(url));
+        migrationUrl.searchParams.set(
+          "application_name",
+          "rr-m89-old-first-migration",
+        );
+        const migration = spawnPsql(migrationUrl, ["-f", migration89]);
+        await waitForMigration89LockState({
+          description: "migration queued behind old update",
+          lockSnapshot: (timeoutMs) => lockSnapshot(url, timeoutMs),
+          predicate: (snapshot) => {
+            const oldLock = findMigration89RelationLock(
+              snapshot,
+              "rr-m89-old-first",
+              '"CodexOAuthSecretNamespace"',
+              "RowExclusiveLock",
+              true,
+            );
+            const migrationLock = findMigration89RelationLock(
+              snapshot,
+              "rr-m89-old-first-migration",
+              '"CodexOAuthSecretNamespace"',
+              "ShareRowExclusiveLock",
+              false,
+            );
+            return Boolean(
+              oldLock &&
+              migrationLock &&
+              migration89LockBlockedBy(snapshot, migrationLock, oldLock),
+            );
+          },
+          watchedProcesses: [
+            { name: "old_barrier", handle: blocker },
+            { name: "old_invocation", handle: old },
+            { name: "migration", handle: migration },
+          ],
+        });
+        blocker.end(
+          "SELECT CASE WHEN pg_advisory_unlock(810081, 1) " +
+            "THEN 'migration89_barrier_released' ELSE 'migration89_barrier_missing' END;\n\\q\n",
+        );
+        const blockerResult = await blocker.result;
+        assert(
+          blockerResult.status === 0 &&
+            !blockerResult.timedOut &&
+            blockerResult.error == null &&
+            blockerResult.stdout.trim() === "migration89_barrier_released",
+          `migration89_blocker_cleanup_failed:${psqlResultDiagnostic(blockerResult)}`,
+        );
+        const [oldResult, migrationResult] = await Promise.all([
+          old.result,
+          migration.result,
+        ]);
+        assert(
+          oldResult.status === 0 &&
+            !oldResult.timedOut &&
+            oldResult.error == null,
+          `migration89_old_first_invocation_failed:${psqlResultDiagnostic(oldResult)}`,
+        );
+        assertPsqlFailedWithExactMessage(
+          { ...migrationResult, postgresInputSource: migration89 },
+          compatibilityPredecessorFailure,
+          "migration89 did not wait for and reject the old invocation V5 result",
+        );
+      } else {
+        const blockerUrl = new URL(String(url));
+        blockerUrl.searchParams.set("application_name", "rr-m89-blocker");
+        const blocker = spawnPsql(blockerUrl, ["-qAt"], true);
+        blocker.write(
+          'BEGIN; LOCK TABLE public."CodexOAuthSecretNamespace" IN ROW EXCLUSIVE MODE;\n',
+        );
+        await waitForMigration89LockState({
+          description: "migration ordering blocker held",
+          lockSnapshot: (timeoutMs) => lockSnapshot(url, timeoutMs),
+          predicate: (snapshot) =>
+            Boolean(
+              findMigration89RelationLock(
+                snapshot,
+                "rr-m89-blocker",
+                '"CodexOAuthSecretNamespace"',
+                "RowExclusiveLock",
+                true,
+              ),
+            ),
+          watchedProcesses: [{ name: "migration_blocker", handle: blocker }],
+        });
+        const migrationUrl = new URL(String(url));
+        migrationUrl.searchParams.set(
+          "application_name",
+          "rr-m89-migration-first",
+        );
+        const migration = spawnPsql(migrationUrl, ["-f", migration89]);
+        await waitForMigration89LockState({
+          description: "migration boundary queued",
+          lockSnapshot: (timeoutMs) => lockSnapshot(url, timeoutMs),
+          predicate: (snapshot) => {
+            const blockerLock = findMigration89RelationLock(
+              snapshot,
+              "rr-m89-blocker",
+              '"CodexOAuthSecretNamespace"',
+              "RowExclusiveLock",
+              true,
+            );
+            const migrationLock = findMigration89RelationLock(
+              snapshot,
+              "rr-m89-migration-first",
+              '"CodexOAuthSecretNamespace"',
+              "ShareRowExclusiveLock",
+              false,
+            );
+            return Boolean(
+              blockerLock &&
+              migrationLock &&
+              migration89LockBlockedBy(snapshot, migrationLock, blockerLock),
+            );
+          },
+          watchedProcesses: [
+            { name: "migration_blocker", handle: blocker },
+            { name: "migration", handle: migration },
+          ],
+        });
+        const oldUrl = new URL(String(url));
+        oldUrl.searchParams.set(
+          "application_name",
+          "rr-m89-migration-first-old",
+        );
+        const old = spawnPsql(oldUrl, ["-c", oldCall]);
+        await waitForMigration89LockState({
+          description: "old invocation queued behind migration boundary",
+          lockSnapshot: (timeoutMs) => lockSnapshot(url, timeoutMs),
+          predicate: (snapshot) => {
+            const migrationLock = findMigration89RelationLock(
+              snapshot,
+              "rr-m89-migration-first",
+              '"CodexOAuthSecretNamespace"',
+              "ShareRowExclusiveLock",
+              false,
+            );
+            const oldLock = findMigration89RelationLock(
+              snapshot,
+              "rr-m89-migration-first-old",
+              '"CodexOAuthSecretNamespace"',
+              "RowExclusiveLock",
+              false,
+            );
+            return Boolean(
+              migrationLock &&
+              oldLock &&
+              migration89LockBlockedBy(snapshot, oldLock, migrationLock),
+            );
+          },
+          watchedProcesses: [
+            { name: "migration_blocker", handle: blocker },
+            { name: "migration", handle: migration },
+            { name: "old_invocation", handle: old },
+          ],
+        });
+        await releaseBlocker(blocker);
+        const [migrationResult, oldResult] = await Promise.all([
+          migration.result,
+          old.result,
+        ]);
+        assert(
+          migrationResult.status === 0 &&
+            !migrationResult.timedOut &&
+            migrationResult.error == null,
+          `migration89_boundary_first_failed:${psqlResultDiagnostic(migrationResult)}`,
+        );
+        assertPsqlFailedWithExactMessage(
+          oldResult,
+          compatibilityPredecessorFailure,
+          "old invocation crossed the committed migration89 boundary",
+        );
+        await proveCausalV4OwnershipFence(url);
+      }
+    } finally {
+      const unsettled = [...spawned];
+      await Promise.all(unsettled.map((handle) => handle.terminateAndWait()));
+      const dropResult = psql(
+        adminUrl,
+        ["-c", `DROP DATABASE IF EXISTS ${quoteIdentifier(name)} WITH (FORCE)`],
+        false,
+      );
+      const dropWebRole = disposableWebRoleCreated
+        ? psql(adminUrl, ["-c", "DROP ROLE reviewrouter_web"], false)
+        : undefined;
+      assert(
+        dropResult.status === 0 && !dropResult.error,
+        `migration89_database_cleanup_failed:${psqlResultDiagnostic(dropResult)}`,
+      );
+      if (dropWebRole)
+        assert(
+          dropWebRole.status === 0 && !dropWebRole.error,
+          `migration89_disposable_web_role_cleanup_failed:${psqlResultDiagnostic(dropWebRole)}`,
+        );
+    }
+  }
 }
 
 async function proveMigrationSpecificLegacyBehavior() {
@@ -264,6 +1198,28 @@ async function proveMigrationSpecificLegacyBehavior() {
         END IF;
       END $$;`,
     ]);
+    for (const migration of [
+      migration63,
+      migration64,
+      migration65,
+      migration66,
+      migration69,
+      migration70,
+      migration71,
+      migration72Retire,
+      migration72Canary,
+      migration73,
+    ]) {
+      psql(providerAdmin, ["-f", migration]);
+    }
+    // Migration 64 creates this table after the initial role-provisioning
+    // handoff. Mirror the production ownership boundary before migration 87
+    // validates and extends the namespace contract.
+    psql(providerAdmin, [
+      "-c",
+      'ALTER TABLE public."CodexOAuthSecretNamespace" OWNER TO reviewrouter_release_schema_owner',
+    ]);
+    proveMigration87LegacyBackfill(providerAdmin);
   } finally {
     psql(
       adminUrl,
@@ -274,31 +1230,225 @@ async function proveMigrationSpecificLegacyBehavior() {
   }
 }
 
+function proveMigration87LegacyBackfill(url) {
+  psql(url, [
+    "-c",
+    String.raw`
+      DO $$ BEGIN
+        IF EXISTS (
+          SELECT 1 FROM public."CodexOAuthSecretNamespace"
+          WHERE "status" = 'active'
+        ) THEN
+          RAISE EXCEPTION 'migration87_fixture_requires_no_active_namespace';
+        END IF;
+      END $$;
+
+      ALTER TABLE public."CodexOAuthProviderInstance"
+        DISABLE TRIGGER ALL;
+      ALTER TABLE public."CodexOAuthSecretNamespace"
+        DISABLE TRIGGER ALL;
+
+      UPDATE public."CodexOAuthProviderInstance" AS provider
+      SET "state" = fixture."state",
+          "activeSecretNamespaceId" = fixture."namespaceId",
+          "activeSecretNamespaceEpoch" = fixture."pointerEpoch",
+          "activeSecretNamespaceName" = fixture."secretName"
+      FROM (
+        VALUES
+          (
+            'p-fetched',
+            'unknown_auth_state',
+            'migration87-unknown-auth-state',
+            7001::bigint,
+            'REVIEWROUTER_CODEX_AUTH_JSON_R900001_P0123456789abcdef_E7001_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+          ),
+          (
+            'p-issued',
+            'stale_queued_secret',
+            'migration87-stale-queued-secret',
+            7002::bigint,
+            'REVIEWROUTER_CODEX_AUTH_JSON_R900002_P0123456789abcdef_E7002_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+          ),
+          (
+            'p-clean',
+            'active',
+            'migration87-stale-pointer',
+            7004::bigint,
+            'REVIEWROUTER_CODEX_AUTH_JSON_R900007_P0123456789abcdef_E7003_cccccccccccccccccccccccccccccccc'
+          )
+      ) fixture(
+        "providerId", "state", "namespaceId", "pointerEpoch", "secretName"
+      )
+      WHERE provider."id" = fixture."providerId";
+
+      INSERT INTO public."CodexOAuthSecretNamespace" (
+        "id", "providerInstanceRowId", "githubRepositoryId", "namespaceEpoch",
+        "secretName", "databaseRecoveryWitness", "status", "confirmedAt",
+        "activatedAt", "workflowPath", "workflowSourceCommitSha",
+        "workflowSourceBlobSha", "workflowSourceSha256",
+        "workflowSemanticSha256", "workflowSourceTrust",
+        "attestedRepositoryId"
+      ) VALUES
+        (
+          'migration87-unknown-auth-state', 'p-fetched', '900001', 7001,
+          'REVIEWROUTER_CODEX_AUTH_JSON_R900001_P0123456789abcdef_E7001_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          repeat('f', 64), 'active', now(), now(),
+          '.github/workflows/reviewrouter-codex.yml', repeat('a', 40),
+          repeat('b', 40), repeat('c', 64), repeat('d', 64),
+          'trusted_default_branch_revision', '900001'
+        ),
+        (
+          'migration87-stale-queued-secret', 'p-issued', '900002', 7002,
+          'REVIEWROUTER_CODEX_AUTH_JSON_R900002_P0123456789abcdef_E7002_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          repeat('f', 64), 'active', now(), now(),
+          '.github/workflows/reviewrouter-codex.yml', repeat('a', 40),
+          repeat('b', 40), repeat('c', 64), repeat('d', 64),
+          'trusted_default_branch_revision', '900002'
+        ),
+        (
+          'migration87-stale-pointer', 'p-clean', '900007', 7003,
+          'REVIEWROUTER_CODEX_AUTH_JSON_R900007_P0123456789abcdef_E7003_cccccccccccccccccccccccccccccccc',
+          repeat('f', 64), 'active', now(), now(),
+          '.github/workflows/reviewrouter-codex.yml', repeat('a', 40),
+          repeat('b', 40), repeat('c', 64), repeat('d', 64),
+          'trusted_default_branch_revision', '900007'
+        );
+
+      ALTER TABLE public."CodexOAuthSecretNamespace"
+        ENABLE TRIGGER ALL;
+      ALTER TABLE public."CodexOAuthProviderInstance"
+        ENABLE TRIGGER ALL;
+    `,
+  ]);
+
+  const stalePointer = psql(
+    url,
+    ["-v", "VERBOSITY=verbose", "-v", "SHOW_CONTEXT=never", "-f", migration87],
+    false,
+  );
+  assertPsqlFailedWithExactMessage(
+    { ...stalePointer, postgresInputSource: migration87 },
+    "codex_oauth_active_namespace_schema_version_ambiguous",
+    "migration87 stale active-provider pointer did not fail closed",
+  );
+  assert(
+    psql(url, [
+      "-Atc",
+      `SELECT count(*) FROM information_schema.columns
+       WHERE table_schema='public'
+         AND table_name='CodexOAuthSecretNamespace'
+         AND column_name='workflowSchemaVersion'`,
+    ]).stdout.trim() === "0",
+    "migration87 stale-pointer rejection did not roll back atomically",
+  );
+
+  psql(url, [
+    "-c",
+    `ALTER TABLE public."CodexOAuthProviderInstance" DISABLE TRIGGER USER;
+     UPDATE public."CodexOAuthProviderInstance"
+     SET "activeSecretNamespaceEpoch"=7003
+     WHERE "id"='p-clean';
+     ALTER TABLE public."CodexOAuthProviderInstance" ENABLE TRIGGER USER;`,
+  ]);
+  psql(url, ["-f", migration87]);
+  psql(url, [
+    "-c",
+    String.raw`DO $$ BEGIN
+      IF (
+        SELECT count(*)
+        FROM public."CodexOAuthSecretNamespace" namespace
+        JOIN public."CodexOAuthProviderInstance" provider
+          ON provider."id" = namespace."providerInstanceRowId"
+        WHERE provider."id" IN ('p-fetched', 'p-issued')
+          AND provider."state" IN ('unknown_auth_state', 'stale_queued_secret')
+          AND namespace."status" = 'active'
+          AND NOT namespace."permanentlyRetired"
+          AND namespace."workflowSchemaVersion" = 4
+          AND namespace."workflowPath" IS NOT NULL
+          AND namespace."workflowSourceCommitSha" IS NOT NULL
+          AND namespace."workflowSourceBlobSha" IS NOT NULL
+          AND namespace."workflowSourceSha256" IS NOT NULL
+          AND namespace."workflowSemanticSha256" IS NOT NULL
+          AND namespace."workflowSourceTrust" =
+            'trusted_default_branch_revision'
+          AND namespace."attestedRepositoryId" =
+            namespace."githubRepositoryId"
+          AND provider."activeSecretNamespaceId" = namespace."id"
+          AND provider."activeSecretNamespaceEpoch" =
+            namespace."namespaceEpoch"
+          AND provider."activeSecretNamespaceName" = namespace."secretName"
+      ) <> 2 THEN
+        RAISE EXCEPTION
+          'migration87 transient provider-state backfill proof failed';
+      END IF;
+    END $$;`,
+  ]);
+}
+
 function proveCanonicalLegacyReconciliationNegativeCases() {
   for (const testCase of [
-    { name: "unresolved", options: { canonicalSuccess: false } },
+    {
+      name: "unresolved",
+      options: { canonicalSuccess: false },
+      expectedFailure: {
+        stage: "database",
+        error: "legacy_reconciliation_unresolved_intent",
+        evidence:
+          "canonical_negative_database_guard_observed:unresolved:legacy_reconciliation_unresolved_intent",
+      },
+    },
     {
       name: "unexpired",
       options: { canonicalSuccess: true, retainUnexpiredLease: true },
+      expectedFailure: {
+        stage: "database",
+        error: "legacy_reconciliation_lease_not_eligible",
+        evidence:
+          "canonical_negative_database_guard_observed:unexpired:legacy_reconciliation_lease_not_eligible",
+      },
     },
     {
       name: "inventory_race",
       options: { canonicalSuccess: true },
       injectInventoryRace: true,
+      expectedFailure: {
+        stage: "database",
+        error: "legacy_reconciliation_inventory_changed",
+        evidence:
+          "canonical_negative_database_guard_observed:inventory_race:legacy_reconciliation_inventory_changed",
+      },
     },
     {
       name: "ttl_crossing",
       options: { canonicalSuccess: true },
       injectTtlCrossing: true,
+      expectedFailure: {
+        stage: "database",
+        error: "legacy_reconciliation_lease_not_eligible",
+        evidence:
+          "canonical_negative_database_guard_observed:ttl_crossing:legacy_reconciliation_lease_not_eligible",
+      },
     },
     {
       name: "unknown_status",
       options: { canonicalSuccess: true },
       injectUnknownStatus: true,
+      expectedFailure: {
+        stage: "preflight",
+        error: "legacy_reconciliation_intent_status_unclassified:new_state",
+        evidence:
+          "canonical_negative_preflight_guard_observed:unknown_status:legacy_reconciliation_intent_status_unclassified:new_state",
+      },
     },
     {
       name: "forged_digest",
       options: { canonicalSuccess: true },
+      expectedFailure: {
+        stage: "preflight",
+        error: "legacy_ambiguity_evidence_digest_invalid",
+        evidence:
+          "canonical_negative_preflight_guard_observed:forged_digest:legacy_ambiguity_evidence_digest_invalid",
+      },
       transformSourceEvidence: (evidence) => ({
         ...evidence,
         inventorySha256: `sha256:${"0".repeat(64)}`,
@@ -355,18 +1505,40 @@ function proveCanonicalLegacyReconciliationNegativeCases() {
               `UPDATE "CodexOAuthLease" SET status='expired' WHERE id='lease-expired'`,
             ]);
           }
-          return runRehearsalReleaseSubprocess(step, command, args, options);
+          return runRehearsalReleaseSubprocess(step, command, args, {
+            ...options,
+            expectedFailure:
+              testCase.expectedFailure.stage === "database" &&
+              step === "deploy_migrations_and_converge_grants"
+                ? {
+                    guard: testCase.expectedFailure.error,
+                    evidence: testCase.expectedFailure.evidence,
+                  }
+                : undefined,
+          });
         };
         executeCanonicalReleaseMigration(
           {
             ...release.environment,
             ...permit,
-            REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
+            REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
           },
           releaseRun,
           loopbackRehearsalDatabaseIdentity,
         );
-      } catch {
+      } catch (error) {
+        const exactPreflightFailure =
+          testCase.expectedFailure.stage === "preflight" &&
+          error instanceof Error &&
+          error.message === testCase.expectedFailure.error;
+        const exactDatabaseFailure =
+          testCase.expectedFailure.stage === "database" &&
+          error instanceof Error &&
+          error.message === testCase.expectedFailure.evidence;
+        assert(
+          exactPreflightFailure || exactDatabaseFailure,
+          `canonical ${testCase.name} fixture did not produce ${testCase.expectedFailure.evidence}`,
+        );
         rejected = true;
       }
       assert(rejected, `canonical ${testCase.name} fixture was not rejected`);
@@ -432,6 +1604,9 @@ function proveLateMigrationRollbackAndReplayMatrix() {
         'CREATE INDEX "CodexOAuthSetupManifest_recovery_expiry_idx" ON "CodexOAuthSetupManifest"("status")',
       cleanup: 'DROP INDEX "CodexOAuthSetupManifest_recovery_expiry_idx"',
       failureMarker: "CodexOAuthSetupManifest_recovery_expiry_idx",
+      failureEvidence: duplicateRelationFailure(
+        "CodexOAuthSetupManifest_recovery_expiry_idx",
+      ),
       leaked:
         "SELECT count(*) FROM information_schema.columns WHERE table_name='CodexOAuthSetupManifest' AND column_name='payloadVersion'",
     },
@@ -448,6 +1623,9 @@ function proveLateMigrationRollbackAndReplayMatrix() {
         'CREATE INDEX "CodexOAuthSecretNamespace_secretName_key" ON "CodexOAuthProviderInstance"("id")',
       cleanup: 'DROP INDEX "CodexOAuthSecretNamespace_secretName_key"',
       failureMarker: "CodexOAuthSecretNamespace_secretName_key",
+      failureEvidence: duplicateRelationFailure(
+        "CodexOAuthSecretNamespace_secretName_key",
+      ),
       leaked:
         "SELECT count(*) FROM information_schema.tables WHERE table_name='CodexOAuthSecretNamespace'",
     },
@@ -465,6 +1643,9 @@ function proveLateMigrationRollbackAndReplayMatrix() {
         'CREATE FUNCTION "codex_oauth_database_authority_receipt_guard"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$',
       cleanup: 'DROP FUNCTION "codex_oauth_database_authority_receipt_guard"()',
       failureMarker: "codex_oauth_database_authority_receipt_guard",
+      failureEvidence: duplicateFunctionFailure(
+        "codex_oauth_database_authority_receipt_guard",
+      ),
       leaked:
         "SELECT count(*) FROM pg_proc WHERE proname='codex_oauth_authorize_provider_identity_repair'",
     },
@@ -483,6 +1664,9 @@ function proveLateMigrationRollbackAndReplayMatrix() {
         'CREATE FUNCTION "codex_oauth_runtime_referential_action_guard"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN OLD; END $$',
       cleanup: 'DROP FUNCTION "codex_oauth_runtime_referential_action_guard"()',
       failureMarker: "codex_oauth_runtime_referential_action_guard",
+      failureEvidence: duplicateFunctionFailure(
+        "codex_oauth_runtime_referential_action_guard",
+      ),
       leaked:
         "SELECT count(*) FROM pg_proc WHERE proname='codex_oauth_provider_identity_repair_challenge'",
     },
@@ -495,29 +1679,43 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       applyCanonicalPreMigrationBaseline(url);
       psql(url, ["-c", testCase.decoy]);
       const failed = migrateDeploy(url, false);
-      assertPrismaMigrationFailureEnvelope(
-        failed,
-        testCase.failureMarker,
-        `${testCase.name} injected failure did not report its decoy collision`,
-      );
       for (const [migrationName] of testCase.prior) {
         proveMigrationRunnerHistory(url, migrationName, true);
       }
       proveMigrationRunnerHistory(url, testCase.name, false);
-      const directFailure = psql(url, ["-f", testCase.source], false);
-      assert(
-        directFailure.status !== 0 &&
-          `${directFailure.stdout}${directFailure.stderr}`.includes(
-            testCase.failureMarker,
-          ) &&
-          `${directFailure.stdout}${directFailure.stderr}`
-            .toLowerCase()
-            .includes("already exists"),
+      const directFailure = psql(
+        url,
+        ["-v", "VERBOSITY=verbose", "-f", testCase.source],
+        false,
+      );
+      assertPsqlFailedWithExactMessage(
+        { ...directFailure, postgresInputSource: testCase.source },
+        testCase.failureEvidence,
         `${testCase.name} direct replay did not prove its decoy collision`,
       );
+      const rollbackUnchanged =
+        psql(url, ["-Atc", testCase.leaked]).stdout.trim() === "0";
       assert(
-        psql(url, ["-Atc", testCase.leaked]).stdout.trim() === "0",
+        rollbackUnchanged,
         `${testCase.name} leaked partial catalog state after rollback`,
+      );
+      assertPrismaMigrationFailureEnvelope(
+        failed,
+        testCase.name,
+        testCase.failureEvidence,
+        `${testCase.name} injected failure did not report its decoy collision`,
+        {
+          historyEvidence: readPrismaLockTimeoutHistoryEvidence(
+            url,
+            testCase.name,
+          ),
+          directFailureProof: {
+            migrationName: testCase.name,
+            expectedFailure: testCase.failureEvidence,
+            observed: true,
+          },
+          rollbackUnchanged,
+        },
       );
       psql(url, ["-c", testCase.cleanup]);
       migrateResolve(url, "--rolled-back", testCase.name);
@@ -578,7 +1776,16 @@ function applyCanonicalPreMigrationBaseline(url) {
         directory === migration75Name ||
         directory === migration76Name ||
         directory === migration77Name ||
-        directory === migration78Name);
+        directory === migration78Name ||
+        directory === migration79Name ||
+        directory === migration79ScopeName ||
+        directory === migration80Name ||
+        directory === migration81Name ||
+        directory === migration82Name ||
+        directory === migration83Name ||
+        directory === migration84Name ||
+        directory === migration85Name ||
+        directory === migration86Name);
     if (!isCanonicalPreMigration) continue;
     const source = join(migrationsDirectory, directory, "migration.sql");
     psql(url, ["-f", source]);
@@ -771,15 +1978,15 @@ async function proveMigration60LockTimeout(url, fixtureAdminUrl) {
       '"CodexOAuthSetupManifest"',
     );
     const directStartedAt = Date.now();
-    const directFailure = psql(url, ["-f", migration60], false);
-    const directElapsedMs = Date.now() - directStartedAt;
-    const directOutput = `${directFailure.stdout}${directFailure.stderr}`;
-    assert(
-      directFailure.status !== 0,
-      "held manifest lock must reject direct 000060",
+    const directFailure = psql(
+      url,
+      ["-v", "VERBOSITY=verbose", "-f", migration60],
+      false,
     );
-    assert(
-      directOutput.toLowerCase().includes("lock timeout"),
+    const directElapsedMs = Date.now() - directStartedAt;
+    assertPsqlFailedWithExactMessage(
+      { ...directFailure, postgresInputSource: migration60 },
+      postgresLockTimeoutFailure,
       "direct_000060_lock_timeout_not_observed",
     );
     assert(
@@ -796,10 +2003,13 @@ async function proveMigration60LockTimeout(url, fixtureAdminUrl) {
     );
     assertPrismaLockTimeoutEnvelope(
       runnerFailure,
+      readPrismaLockTimeoutHistoryEvidence(url, migration60Name),
+      migration60Name,
       "runner_000060_lock_timeout_not_observed",
+      { migrationName: migration60Name, observed: true },
     );
     assert(
-      runnerElapsedMs >= 14_000 && runnerElapsedMs < 30_000,
+      runnerElapsedMs >= 14_000 && runnerElapsedMs < 45_000,
       `prisma_000060_lock_timeout_unbounded:${runnerElapsedMs}`,
     );
     proveMigrationRunnerHistory(url, migration60Name, false);
@@ -852,15 +2062,15 @@ async function proveCombinedLockTimeout(url, fixtureAdminUrl) {
       '"CodexOAuthProviderInstance"',
     );
     const directStartedAt = Date.now();
-    const directFailure = psql(url, ["-f", migration61], false);
-    const directElapsedMs = Date.now() - directStartedAt;
-    const directFailureOutput = `${directFailure.stdout}${directFailure.stderr}`;
-    assert(
-      directFailure.status !== 0,
-      "held provider lock must reject direct 000061 execution",
+    const directFailure = psql(
+      url,
+      ["-v", "VERBOSITY=verbose", "-f", migration61],
+      false,
     );
-    assert(
-      directFailureOutput.toLowerCase().includes("lock timeout"),
+    const directElapsedMs = Date.now() - directStartedAt;
+    assertPsqlFailedWithExactMessage(
+      { ...directFailure, postgresInputSource: migration61 },
+      postgresLockTimeoutFailure,
       "direct_000061_lock_timeout_not_observed",
     );
     assert(
@@ -877,10 +2087,13 @@ async function proveCombinedLockTimeout(url, fixtureAdminUrl) {
     );
     assertPrismaLockTimeoutEnvelope(
       failed,
+      readPrismaLockTimeoutHistoryEvidence(url, migration61Name),
+      migration61Name,
       "runner_000061_lock_timeout_not_observed",
+      { migrationName: migration61Name, observed: true },
     );
     assert(
-      elapsedMs >= 14_000 && elapsedMs < 30_000,
+      elapsedMs >= 14_000 && elapsedMs < 45_000,
       `prisma_000061_lock_timeout_unbounded:${elapsedMs}`,
     );
     proveMigrationRunnerHistory(url, migration60Name, true);
@@ -920,14 +2133,17 @@ function proveInjected61Rollback(url) {
     'CREATE INDEX "CodexOAuthProviderInstance_mutation_owner_idx" ON "CodexOAuthProviderInstance"("id")',
   ]);
   const before = databaseFingerprintBefore61(url);
-  const directFailure = psql(url, ["-f", migration61], false);
-  const directFailureOutput = `${directFailure.stdout}${directFailure.stderr}`;
-  assert(
-    directFailure.status !== 0,
-    "decoy 000061 index must reject direct migration execution",
+  const directFailure = psql(
+    url,
+    ["-v", "VERBOSITY=verbose", "-f", migration61],
+    false,
   );
-  assert(
-    directFailureOutput.toLowerCase().includes("already exists"),
+  const injectedFailure = duplicateRelationFailure(
+    "CodexOAuthProviderInstance_mutation_owner_idx",
+  );
+  assertPsqlFailedWithExactMessage(
+    { ...directFailure, postgresInputSource: migration61 },
+    injectedFailure,
     "direct_000061_injected_failure_not_observed",
   );
   assert(
@@ -936,14 +2152,28 @@ function proveInjected61Rollback(url) {
   );
 
   const failed = migrateDeploy(url, false);
+  const rollbackUnchanged = databaseFingerprintBefore61(url) === before;
+  assert(
+    rollbackUnchanged,
+    "Prisma 000061 transaction did not roll back atomically",
+  );
   assertPrismaMigrationFailureEnvelope(
     failed,
-    "CodexOAuthProviderInstance_mutation_owner_idx",
+    migration61Name,
+    injectedFailure,
     "decoy 000061 index must inject a runner failure",
-  );
-  assert(
-    databaseFingerprintBefore61(url) === before,
-    "Prisma 000061 transaction did not roll back atomically",
+    {
+      historyEvidence: readPrismaLockTimeoutHistoryEvidence(
+        url,
+        migration61Name,
+      ),
+      directFailureProof: {
+        migrationName: migration61Name,
+        expectedFailure: injectedFailure,
+        observed: true,
+      },
+      rollbackUnchanged,
+    },
   );
   psql(url, [
     "-c",
@@ -1125,7 +2355,11 @@ function proveSuccessfulCombinedRelease(url) {
 
       SELECT array_agg(tgname ORDER BY tgname) INTO actual FROM pg_trigger
       WHERE NOT tgisinternal
-        AND (tgname LIKE 'CodexOAuth%guard' OR tgname LIKE 'RepositoryConnection%guard');
+        AND (
+          tgname LIKE 'CodexOAuth%guard'
+          OR tgname LIKE 'RepositoryConnection%guard'
+          OR tgname = 'RepositoryConnection_comment_token_revoke'
+        );
       expected := ARRAY[${[...codexRotatingTriggers]
         .sort()
         .map((name) => quoteLiteral(name))
@@ -1145,7 +2379,8 @@ function proveSuccessfulCombinedRelease(url) {
           ('CodexOAuthSetupDispatchAttempt_evidence_guard','CodexOAuthSetupDispatchAttempt','codex_oauth_setup_attempt_evidence_guard',31::smallint),
           ('CodexOAuthSetupPayloadClaim_evidence_guard','CodexOAuthSetupPayloadClaim','codex_oauth_setup_claim_evidence_guard',31::smallint),
           ('CodexOAuthSetupRecoveryRequest_evidence_guard','CodexOAuthSetupRecoveryRequest','codex_oauth_setup_recovery_evidence_guard',31::smallint),
-          ('RepositoryConnection_codex_oauth_identity_guard','RepositoryConnection','codex_oauth_repository_identity_guard',17::smallint)
+          ('RepositoryConnection_codex_oauth_identity_guard','RepositoryConnection','codex_oauth_repository_identity_guard',17::smallint),
+          ('RepositoryConnection_comment_token_revoke','RepositoryConnection','hosted_codex_comment_token_authority_revoke_enqueue',17::smallint)
         ) wanted(trigger_name, table_name, function_name, trigger_type)
         WHERE NOT EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid
           WHERE t.tgname=wanted.trigger_name AND c.relname=wanted.table_name AND p.proname=wanted.function_name AND t.tgtype=wanted.trigger_type)
@@ -1568,6 +2803,403 @@ function proveVersionedNamespaceLedger(url) {
   return evidence;
 }
 
+async function proveActiveNamespaceV4V5Reattestation(
+  adminUrl,
+  clients,
+  evidence,
+) {
+  const target = JSON.parse(
+    psql(adminUrl, [
+      "-Atc",
+      `SELECT row_to_json(target) FROM (
+        SELECT provider."id" AS "providerId", provider."latestGenerationHash" AS "generationHash",
+          ${quoteLiteral(evidence.activeRecoverySetupNamespace.claimId)} AS "claimId",
+          ${quoteLiteral(evidence.activeRecoverySetupNamespace.attemptId)} AS "attemptId",
+          namespace."id" AS "namespaceId", namespace."namespaceEpoch"::text AS "namespaceEpoch",
+          namespace."secretName", namespace."githubRepositoryId" AS "repositoryId",
+          namespace."workflowPath", namespace."workflowSourceTrust" AS "sourceTrust",
+          namespace."workflowSourceCommitSha" AS "commitSha",
+          namespace."workflowSourceBlobSha" AS "blobSha",
+          namespace."workflowSourceSha256" AS "sourceSha256",
+          namespace."workflowSemanticSha256" AS "semanticSha256",
+          namespace."workflowSchemaVersion" AS "schemaVersion"
+        FROM "CodexOAuthProviderInstance" provider
+        JOIN "CodexOAuthSecretNamespace" namespace
+          ON namespace."id" = provider."activeSecretNamespaceId"
+        WHERE namespace."id"=${quoteLiteral(evidence.activeRecoverySetupNamespace.namespaceId)}
+      ) target`,
+    ]).stdout.trim(),
+  );
+  const nextHex = (length, current, digit) => {
+    const candidate = digit.repeat(length);
+    return candidate === current
+      ? (digit === "a" ? "b" : "a").repeat(length)
+      : candidate;
+  };
+  const prior = {
+    commitSha: "4".repeat(40),
+    blobSha: "4".repeat(40),
+    sourceSha256: "4".repeat(64),
+    semanticSha256: "4".repeat(64),
+  };
+  const reattested = {
+    commitSha: "5".repeat(40),
+    blobSha: "5".repeat(40),
+    sourceSha256: "5".repeat(64),
+    semanticSha256: "5".repeat(64),
+  };
+  const competitor = {
+    commitSha: nextHex(40, target.commitSha, "6"),
+    blobSha: nextHex(40, target.blobSha, "7"),
+    sourceSha256: nextHex(64, target.sourceSha256, "8"),
+    semanticSha256: nextHex(64, target.semanticSha256, "9"),
+  };
+  assert(
+    target.schemaVersion === 5 &&
+      Object.entries(reattested).every(([key, value]) => target[key] === value),
+    "production-path V4-to-V5 re-attestation result missing",
+  );
+  const call = (oldEvidence, newEvidence, overrides = {}) => {
+    const exact = {
+      ...target,
+      expectedSchemaVersion: 4,
+      targetSchemaVersion: 5,
+      ...overrides,
+    };
+    const schemaLiteral = (value) =>
+      value === null ? "NULL" : `${Number(value)}::integer`;
+    return `public."codex_oauth_reattest_active_namespace_v4_to_v5"(
+      ${quoteLiteral(exact.providerId)},${quoteLiteral(exact.claimId)},${quoteLiteral(exact.attemptId)},
+      ${quoteLiteral(exact.namespaceId)},${exact.namespaceEpoch}::bigint,${quoteLiteral(exact.secretName)},
+      ${quoteLiteral(exact.repositoryId)},${quoteLiteral(exact.generationHash)},
+      ${quoteLiteral(exact.workflowPath)},${quoteLiteral(exact.sourceTrust)},
+      ${schemaLiteral(exact.expectedSchemaVersion)},${schemaLiteral(exact.targetSchemaVersion)},
+      ${quoteLiteral(oldEvidence.commitSha)},${quoteLiteral(oldEvidence.blobSha)},
+      ${quoteLiteral(oldEvidence.sourceSha256)},${quoteLiteral(oldEvidence.semanticSha256)},
+      ${quoteLiteral(newEvidence.commitSha)},${quoteLiteral(newEvidence.blobSha)},
+      ${quoteLiteral(newEvidence.sourceSha256)},${quoteLiteral(newEvidence.semanticSha256)},90000::integer)`;
+  };
+
+  for (const rejectedSchemaVersion of [1, 2, 3]) {
+    const rejectedLegacyActiveSchema = psql(
+      adminUrl,
+      [
+        "-c",
+        `UPDATE "CodexOAuthSecretNamespace"
+         SET "workflowSchemaVersion"=${rejectedSchemaVersion}
+         WHERE "id"=${quoteLiteral(target.namespaceId)}`,
+      ],
+      false,
+    );
+    assertPsqlFailedWithExactMessage(
+      rejectedLegacyActiveSchema,
+      "codex_oauth_secret_namespace_workflow_schema_invalid",
+      `active namespace schema V${rejectedSchemaVersion} did not fail closed`,
+    );
+  }
+
+  for (const versionOverride of [
+    { expectedSchemaVersion: null },
+    { targetSchemaVersion: null },
+  ]) {
+    const rejectedNull = psql(
+      clients.web,
+      ["-c", `SELECT ${call(prior, reattested, versionOverride)}`],
+      false,
+    );
+    assertPsqlFailedWithExactMessage(
+      rejectedNull,
+      "codex_oauth_active_namespace_reattestation_invalid",
+      "NULL workflow schema version did not fail closed",
+    );
+  }
+
+  for (const mutationOwner of ["setup", "recovery"]) {
+    const mutationOwnerId =
+      mutationOwner === "setup"
+        ? target.claimId
+        : "setup-recovery:reattestation-proof";
+    const ownerHeld = psql(
+      clients.web,
+      [
+        "-c",
+        `BEGIN;
+         UPDATE "CodexOAuthProviderInstance"
+         SET "mutationEpoch"="mutationEpoch"+1,
+             "mutationOwner"=${quoteLiteral(mutationOwner)},
+             "mutationOwnerId"=${quoteLiteral(mutationOwnerId)}
+         WHERE "id"=${quoteLiteral(target.providerId)};
+         SELECT ${call(prior, reattested)};
+         ROLLBACK;`,
+      ],
+      false,
+    );
+    assertPsqlFailedWithExactMessage(
+      ownerHeld,
+      "codex_oauth_active_namespace_reattestation_stale",
+      `${mutationOwner} mutation ownership did not fence direct security-definer re-attestation`,
+    );
+  }
+
+  const stale = psql(
+    clients.web,
+    [
+      "-c",
+      `SELECT ${call({ ...prior, commitSha: competitor.commitSha }, reattested)}`,
+    ],
+    false,
+  );
+  assertPsqlFailedWithExactMessage(
+    stale,
+    "codex_oauth_active_namespace_reattestation_stale",
+    "stale old workflow SHA did not fail closed",
+  );
+  const replay = psql(
+    clients.web,
+    ["-c", `SELECT ${call(prior, reattested)}`],
+    false,
+  );
+  assertPsqlFailedWithExactMessage(
+    replay,
+    "codex_oauth_active_namespace_reattestation_stale",
+    "completed V4-to-V5 receipt replay did not fail closed",
+  );
+
+  for (const [label, overrides, expectedError] of [
+    [
+      "repository",
+      { repositoryId: "999999999" },
+      "codex_oauth_active_namespace_reattestation_stale",
+    ],
+    [
+      "epoch",
+      { namespaceEpoch: String(BigInt(target.namespaceEpoch) + 1n) },
+      "codex_oauth_active_namespace_reattestation_stale",
+    ],
+    [
+      "generation",
+      { generationHash: nextHex(64, target.generationHash, "9") },
+      "codex_oauth_active_namespace_reattestation_stale",
+    ],
+    [
+      "path",
+      { workflowPath: ".github/workflows/not-the-active-workflow.yml" },
+      "codex_oauth_active_namespace_reattestation_stale",
+    ],
+    [
+      "trust",
+      { sourceTrust: "mutable_or_untrusted" },
+      "codex_oauth_active_namespace_reattestation_invalid",
+    ],
+  ]) {
+    const rejected = psql(
+      clients.web,
+      ["-c", `SELECT ${call(prior, competitor, overrides)}`],
+      false,
+    );
+    assertPsqlFailedWithExactMessage(
+      rejected,
+      expectedError,
+      `wrong ${label} active namespace re-attestation did not fail closed`,
+    );
+  }
+
+  const direct = psql(
+    adminUrl,
+    [
+      "-c",
+      `UPDATE "CodexOAuthSecretNamespace"
+       SET "workflowSourceCommitSha"=${quoteLiteral(competitor.commitSha)}
+       WHERE "id"=${quoteLiteral(target.namespaceId)}`,
+    ],
+    false,
+  );
+  assertPsqlFailedWithExactMessage(
+    direct,
+    "codex_oauth_secret_namespace_identity_immutable",
+    "direct active namespace evidence update bypassed the tombstone guard",
+  );
+  const directSchemaVersion = psql(
+    adminUrl,
+    [
+      "-c",
+      `UPDATE "CodexOAuthSecretNamespace"
+       SET "workflowSchemaVersion"=4
+       WHERE "id"=${quoteLiteral(target.namespaceId)}`,
+    ],
+    false,
+  );
+  assertPsqlFailedWithExactMessage(
+    directSchemaVersion,
+    "codex_oauth_secret_namespace_identity_immutable",
+    "direct active namespace workflow schema update bypassed the tombstone guard",
+  );
+  const createdAtMutation = psql(
+    adminUrl,
+    [
+      "-c",
+      `UPDATE "CodexOAuthSecretNamespace"
+       SET "createdAt"="createdAt" + interval '1 second'
+       WHERE "id"=${quoteLiteral(target.namespaceId)}`,
+    ],
+    false,
+  );
+  assertPsqlFailedWithExactMessage(
+    createdAtMutation,
+    "codex_oauth_secret_namespace_identity_immutable",
+    "active namespace createdAt mutation bypassed the tombstone guard",
+  );
+  for (const [runtimeRole, runtimeUrl] of Object.entries({
+    api: clients.api,
+    web: clients.web,
+    worker: clients.worker,
+  })) {
+    const retiredAtSet = psql(
+      runtimeUrl,
+      [
+        "-c",
+        `UPDATE "CodexOAuthSecretNamespace"
+         SET "retiredAt"=clock_timestamp()
+         WHERE "id"=${quoteLiteral(target.namespaceId)}`,
+      ],
+      false,
+    );
+    assertPsqlFailedWithExactMessage(
+      retiredAtSet,
+      "codex_oauth_secret_namespace_identity_immutable",
+      `direct ${runtimeRole} namespace retiredAt set bypassed the tombstone guard`,
+    );
+    for (const [label, expression] of [
+      ["change", `"retiredAt" + interval '1 second'`],
+      ["clear", "NULL"],
+    ]) {
+      const rejected = psql(
+        runtimeUrl,
+        [
+          "-c",
+          `UPDATE "CodexOAuthSecretNamespace"
+           SET "retiredAt"=${expression}
+           WHERE "id"=(
+             SELECT "id" FROM "CodexOAuthSecretNamespace"
+             WHERE "retiredAt" IS NOT NULL
+             ORDER BY "createdAt" LIMIT 1
+           )`,
+        ],
+        false,
+      );
+      assertPsqlFailedWithExactMessage(
+        rejected,
+        "codex_oauth_secret_namespace_identity_immutable",
+        `direct ${runtimeRole} namespace retiredAt ${label} bypassed the tombstone guard`,
+      );
+    }
+  }
+  for (const [label, statement] of [
+    [
+      "update",
+      `UPDATE "CodexOAuthWorkflowCompatibility"
+       SET "retireAt"="retireAt" + interval '1 second'
+       WHERE "namespaceId"=${quoteLiteral(target.namespaceId)}`,
+    ],
+    [
+      "delete",
+      `DELETE FROM "CodexOAuthWorkflowCompatibility"
+       WHERE "namespaceId"=${quoteLiteral(target.namespaceId)}`,
+    ],
+  ]) {
+    const rejected = psql(adminUrl, ["-c", statement], false);
+    assertPsqlFailedWithExactMessage(
+      rejected,
+      "codex_oauth_workflow_compatibility_immutable",
+      `trusted V4 compatibility evidence ${label} did not fail closed`,
+    );
+  }
+  assert(
+    psql(adminUrl, [
+      "-Atc",
+      `SELECT concat_ws(':',
+        (SELECT count(*) FROM "CodexOAuthSecretNamespace"
+         WHERE "id"=${quoteLiteral(target.namespaceId)}
+           AND "workflowSourceCommitSha"=${quoteLiteral(reattested.commitSha)}
+           AND "workflowSourceBlobSha"=${quoteLiteral(reattested.blobSha)}
+           AND "workflowSourceSha256"=${quoteLiteral(reattested.sourceSha256)}
+           AND "workflowSemanticSha256"=${quoteLiteral(reattested.semanticSha256)}
+           AND "workflowSchemaVersion"=5),
+        (SELECT count(*) FROM "CodexOAuthWorkflowCompatibility"
+         WHERE "namespaceId"=${quoteLiteral(target.namespaceId)}
+           AND "workflowPath"=${quoteLiteral(target.workflowPath)}
+           AND "workflowSourceCommitSha"=${quoteLiteral(prior.commitSha)}
+           AND "workflowSourceBlobSha"=${quoteLiteral(prior.blobSha)}
+           AND "workflowSourceSha256"=${quoteLiteral(prior.sourceSha256)}
+           AND "workflowSemanticSha256"=${quoteLiteral(prior.semanticSha256)}
+           AND "workflowSourceTrust"='trusted_default_branch_revision'
+           AND "workflowSchemaVersion"=4
+           AND "attestedRepositoryId"=${quoteLiteral(target.repositoryId)}
+           AND "retireAt"="createdAt" + interval '25 hours'),
+        (SELECT count(*) FROM "CodexOAuthDatabaseAuthorityReceipt"
+         WHERE "databaseRole"='reviewrouter_web'
+           AND "effect"='active_namespace_v4_v5_reattestation'
+           AND "ownerId"=jsonb_build_array(
+             ${quoteLiteral(target.providerId)},${quoteLiteral(target.namespaceId)},
+             ${target.namespaceEpoch}::bigint,${quoteLiteral(target.secretName)},
+             ${quoteLiteral(target.repositoryId)},${quoteLiteral(target.workflowPath)},
+             ${quoteLiteral(target.sourceTrust)},4,5,
+             ${quoteLiteral(prior.commitSha)},${quoteLiteral(prior.blobSha)},
+             ${quoteLiteral(prior.sourceSha256)},${quoteLiteral(prior.semanticSha256)},
+             ${quoteLiteral(reattested.commitSha)},${quoteLiteral(reattested.blobSha)},
+             ${quoteLiteral(reattested.sourceSha256)},${quoteLiteral(reattested.semanticSha256)}
+           )::text
+           AND "effectCode"=0 AND "consumedAt" IS NOT NULL))`,
+    ]).stdout.trim() === "1:1:1",
+    "production-path V4-to-V5 transition evidence mismatch",
+  );
+  assert(
+    psql(adminUrl, [
+      "-Atc",
+      `SELECT concat_ws(':',
+        EXISTS (
+          SELECT 1 FROM pg_proc routine
+          CROSS JOIN LATERAL aclexplode(routine.proacl) privilege
+          WHERE routine.oid='public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer)'::regprocedure
+            AND privilege.grantee=0 AND privilege.privilege_type='EXECUTE'
+        )::int,
+        has_function_privilege('reviewrouter_api', 'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer)', 'EXECUTE')::int,
+        has_function_privilege('reviewrouter_worker', 'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer)', 'EXECUTE')::int,
+        has_function_privilege('reviewrouter_web', 'public.codex_oauth_reattest_active_namespace_v4_to_v5(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer)', 'EXECUTE')::int)`,
+    ]).stdout.trim() === "0:0:0:1",
+    "active namespace re-attestation routine ACL is not web-only",
+  );
+  assert(
+    psql(adminUrl, [
+      "-Atc",
+      `SELECT concat_ws(':',
+        has_table_privilege('reviewrouter_api','public."CodexOAuthWorkflowCompatibility"','SELECT')::int,
+        has_table_privilege('reviewrouter_api','public."CodexOAuthWorkflowCompatibility"','INSERT,UPDATE,DELETE')::int,
+        has_table_privilege('reviewrouter_web','public."CodexOAuthWorkflowCompatibility"','SELECT')::int,
+        has_table_privilege('reviewrouter_web','public."CodexOAuthWorkflowCompatibility"','INSERT,UPDATE,DELETE')::int,
+        has_table_privilege('reviewrouter_worker','public."CodexOAuthWorkflowCompatibility"','SELECT,INSERT,UPDATE,DELETE')::int,
+        has_table_privilege('reviewrouter_codex_effect_authority','public."CodexOAuthWorkflowCompatibility"','SELECT,INSERT,UPDATE,DELETE')::int)`,
+    ]).stdout.trim() === "1:0:1:0:0:0",
+    "workflow compatibility table ACL is not read-only for API/web",
+  );
+  for (const [runtimeRole, databaseUrl] of Object.entries(clients)) {
+    const rejected = psql(
+      databaseUrl,
+      [
+        "-c",
+        `INSERT INTO "CodexOAuthWorkflowCompatibility" ("namespaceId")
+         VALUES ('adversarial-runtime-insert')`,
+      ],
+      false,
+    );
+    assertPsqlFailedWithExactMessage(
+      rejected,
+      "permission denied for table CodexOAuthWorkflowCompatibility",
+      `${runtimeRole} retained workflow compatibility INSERT`,
+    );
+  }
+}
+
 function assertVersionedNamespaceEvidenceRetained(
   url,
   evidence,
@@ -1768,8 +3400,11 @@ function proveDatabasePrivileges(url) {
         ) INTO function_count, unsafe_function_count
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname = current_schema() AND p.proname LIKE 'codex_oauth_%';
-        IF function_count <> 22 OR unsafe_function_count <> 0 THEN
+        WHERE n.nspname = current_schema()
+          AND p.proname = ANY (
+            ARRAY[${codexRotatingFunctions.map(quoteLiteral).join(", ")}]::text[]
+          );
+        IF function_count <> ${codexRotatingFunctions.length} OR unsafe_function_count <> 0 THEN
           RAISE EXCEPTION 'Codex OAuth function privilege mismatch: %, %', function_count, unsafe_function_count;
         END IF;
 
@@ -1960,12 +3595,62 @@ function proveDatabasePrivileges(url) {
                AND has_function_privilege(
                  'reviewrouter_release_migration', routine.oid, 'EXECUTE'
                )
-               AND routine.oid <> 'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure
+               AND routine.oid NOT IN (
+                 'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean)'::regprocedure,
+                 'public.reviewrouter_provider_scope_concurrency_status()'::regprocedure,
+                 'public.reviewrouter_provider_scope_concurrency_activate()'::regprocedure,
+                 'public.reviewrouter_provider_scope_concurrency_close_for_rollback()'::regprocedure,
+                 'public.reviewrouter_provider_scope_concurrency_verify_rollback()'::regprocedure
+               )
            )
            OR NOT has_function_privilege(
              'reviewrouter_release_migration',
-             'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure,
+             'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean)'::regprocedure,
              'EXECUTE'
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_status()'::regprocedure,
+             'EXECUTE'
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_activate()'::regprocedure,
+             'EXECUTE'
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_close_for_rollback()'::regprocedure,
+             'EXECUTE'
+           )
+           OR NOT has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_verify_rollback()'::regprocedure,
+             'EXECUTE'
+           )
+           OR has_function_privilege(
+             'reviewrouter_release_migration',
+             'public.reviewrouter_provider_scope_concurrency_snapshot()'::regprocedure,
+             'EXECUTE'
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_proc routine
+             JOIN pg_roles owner ON owner.oid = routine.proowner
+             WHERE routine.oid IN (
+               'public.reviewrouter_provider_scope_concurrency_snapshot()'::regprocedure,
+               'public.reviewrouter_provider_scope_concurrency_status()'::regprocedure,
+               'public.reviewrouter_provider_scope_concurrency_activate()'::regprocedure,
+               'public.reviewrouter_provider_scope_concurrency_close_for_rollback()'::regprocedure,
+               'public.reviewrouter_provider_scope_concurrency_verify_rollback()'::regprocedure
+             )
+               AND (
+                 owner.rolname <> 'reviewrouter_release_schema_owner'
+                 OR NOT routine.prosecdef
+                 OR routine.proconfig IS DISTINCT FROM
+                    ARRAY['search_path=pg_catalog, public']::text[]
+                 OR has_function_privilege('public', routine.oid, 'EXECUTE')
+               )
            )
            OR NOT has_table_privilege(
              'reviewrouter_release_migration',
@@ -2128,6 +3813,10 @@ function proveDatabasePrivileges(url) {
                    'RuntimeCanaryChallengeProof',
                    'RuntimeGenerationWitnessProof',
                    'ReviewInvestigationMaintenanceCheckpoint',
+                   'HostedCodexCommentTokenMint',
+                   'HostedCodexCommentTokenRevocationProof',
+                   'HostedCodexRuntimeClosure',
+                   'ReviewProviderScopeConcurrencyControl',
                    'CodexOAuthDatabaseAuthorityKey',
                    'CodexOAuthDatabaseAuthorityReceipt',
                    'CodexOAuthChildIdentityQuarantine',
@@ -2139,11 +3828,46 @@ function proveDatabasePrivileges(url) {
                    'CodexOAuthSetupManifest',
                    'CodexOAuthSetupPayloadClaim',
                    'CodexOAuthSetupRecoveryRequest',
-                   'CodexOAuthWritebackIntent'
+                   'CodexOAuthWritebackIntent',
+                   'CodexOAuthWorkflowCompatibility'
                  )
                  AND NOT has_table_privilege(
                    role_name, relation.oid, 'SELECT,INSERT,UPDATE,DELETE'
                  )
+             )
+             OR has_table_privilege(
+               role_name,
+               'public."CodexOAuthWorkflowCompatibility"',
+               'SELECT'
+             ) IS DISTINCT FROM (
+               role_name IN ('reviewrouter_api', 'reviewrouter_web')
+             )
+             OR has_table_privilege(
+               role_name,
+               'public."CodexOAuthWorkflowCompatibility"',
+               'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+             )
+             OR has_any_column_privilege(
+               role_name,
+               'public."CodexOAuthWorkflowCompatibility"',
+               'SELECT'
+             ) IS DISTINCT FROM (
+               role_name IN ('reviewrouter_api', 'reviewrouter_web')
+             )
+             OR has_any_column_privilege(
+               role_name,
+               'public."CodexOAuthWorkflowCompatibility"',
+               'INSERT,UPDATE,REFERENCES'
+             )
+             OR NOT has_table_privilege(
+               role_name,
+               'public."ReviewProviderScopeConcurrencyControl"',
+               'SELECT'
+             )
+             OR has_table_privilege(
+               role_name,
+               'public."ReviewProviderScopeConcurrencyControl"',
+               'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
              )
              OR has_table_privilege(
                role_name,
@@ -2344,15 +4068,15 @@ function proveDatabasePrivileges(url) {
 
         SELECT count(*),
                count(*) FILTER (
-                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
                    AND member.rolname = 'reviewrouter_role_bootstrap'
-                   AND grantor.rolname NOT IN ('reviewrouter_role_bootstrap','reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+                   AND grantor.rolname NOT IN ('reviewrouter_role_bootstrap','reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
                    AND membership.admin_option
                    AND NOT membership.inherit_option
                    AND NOT membership.set_option
                ),
                count(DISTINCT granted.oid) FILTER (
-                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
                    AND member.rolname = 'reviewrouter_role_bootstrap'
                ),
                count(DISTINCT grantor.oid)
@@ -2362,16 +4086,16 @@ function proveDatabasePrivileges(url) {
         JOIN pg_roles member ON member.oid = membership.member
         JOIN pg_roles grantor ON grantor.oid = membership.grantor
         WHERE (
-               granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
-            OR member.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+               granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+            OR member.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_comment_token_custody','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
             OR granted.rolname = 'reviewrouter_role_bootstrap'
             OR member.rolname = 'reviewrouter_role_bootstrap'
         )
           AND granted.rolname <> 'reviewrouter_activation_receipt_guard'
           AND member.rolname <> 'reviewrouter_activation_receipt_guard';
-        IF membership_count <> 5
-           OR canonical_membership_count <> 5
-           OR membership_role_count <> 5
+        IF membership_count <> 6
+           OR canonical_membership_count <> 6
+           OR membership_role_count <> 6
            OR membership_grantor_count <> 1 THEN
           RAISE EXCEPTION
             'Codex OAuth role membership authority mismatch: total %, canonical %, roles %, grantors %',
@@ -2394,6 +4118,7 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     ["reviewrouter_api", "rr-rehearsal-api"],
     ["reviewrouter_web", "rr-rehearsal-web"],
     ["reviewrouter_worker", "rr-rehearsal-worker"],
+    ["reviewrouter_comment_token_custody", "rr-rehearsal-custody"],
     ["reviewrouter_codex_effect_authority", "rr-rehearsal-effect-authority"],
     ["reviewrouter_release_migration", "rr-rehearsal-release"],
   ];
@@ -2439,13 +4164,18 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     COMMENT ON ROLE reviewrouter_web IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_worker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_worker"))};
     COMMENT ON ROLE reviewrouter_worker IS ${quoteLiteral(rehearsalRoleMarker)};
+    CREATE ROLE reviewrouter_comment_token_custody LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_comment_token_custody"))};
+    COMMENT ON ROLE reviewrouter_comment_token_custody IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_codex_effect_authority LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_codex_effect_authority"))};
     COMMENT ON ROLE reviewrouter_codex_effect_authority IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_release_migration LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(passwords.get("reviewrouter_release_migration"))};
     COMMENT ON ROLE reviewrouter_release_migration IS ${quoteLiteral(rehearsalRoleMarker)};
+    CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+    COMMENT ON ROLE reviewrouter_release_schema_owner IS ${quoteLiteral(rehearsalRoleMarker)};
     GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_web TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_worker TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+    GRANT reviewrouter_comment_token_custody TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_codex_effect_authority TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
     CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
@@ -2558,6 +4288,10 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     api: clientUrl("reviewrouter_api", "rr-rehearsal-api"),
     web: clientUrl("reviewrouter_web", "rr-rehearsal-web"),
     worker: clientUrl("reviewrouter_worker", "rr-rehearsal-worker"),
+    custody: clientUrl(
+      "reviewrouter_comment_token_custody",
+      "rr-rehearsal-custody",
+    ),
     effectAuthority: clientUrl(
       "reviewrouter_codex_effect_authority",
       "rr-rehearsal-effect-authority",
@@ -2570,6 +4304,8 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
     REVIEW_ROUTER_API_DATABASE_URL: runtime.api.toString(),
     REVIEW_ROUTER_WEB_DATABASE_URL: runtime.web.toString(),
     REVIEW_ROUTER_WORKER_DATABASE_URL: runtime.worker.toString(),
+    REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+      runtime.custody.toString(),
     REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
       runtime.effectAuthority.toString(),
     REVIEW_ROUTER_RELEASE_COMMIT_SHA: "a".repeat(40),
@@ -2598,6 +4334,11 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
         role: "worker",
         username: "reviewrouter_worker",
         password: passwords.get("reviewrouter_worker"),
+      },
+      {
+        role: "comment-token-custody",
+        username: "reviewrouter_comment_token_custody",
+        password: passwords.get("reviewrouter_comment_token_custody"),
       },
       {
         role: "effect-authority",
@@ -2878,7 +4619,7 @@ function installRehearsalMigrationPermit(
         ${quoteLiteral(permit.transitionSha256)},
         ${quoteLiteral(permit.previousReceiptSha256)},
         ${quoteLiteral(rehearsalPostManifestIdentitySha256)},
-        ${quoteLiteral(liveV70V73CatalogDigestSha256)},
+        ${quoteLiteral(canonicalReleaseMigrationArtifact.postCatalogDigest)},
         ${quoteLiteral(JSON.stringify(sourceLegacyAmbiguity))}::jsonb,
         ${quoteLiteral(eligibilityCutoff)}::timestamptz,
         ${permit.epoch}::bigint,
@@ -2954,9 +4695,15 @@ function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
         code: "private_pg17_rehearsal_command_failed",
         phase: "rehearsal",
       });
+    const canonicalFailureSourceArgs = options.expectedFailure
+      ? ["--file=-"]
+      : [];
     const postgres = createSecretSafePostgresInvocation({
       databaseUrl: args[urlIndex],
-      args: args.filter((_, index) => index !== urlIndex),
+      args: [
+        ...args.filter((_, index) => index !== urlIndex),
+        ...canonicalFailureSourceArgs,
+      ],
       input: options.input,
     });
     const credential = createDatabaseCredentialBoundary(args[urlIndex]);
@@ -3000,6 +4747,16 @@ function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
       maxBuffer: 16 * 1024 * 1024,
       timeout: 600_000,
     });
+    const expectedFailureMatched =
+      options.expectedFailure?.kind === "catalog_digest_mismatch"
+        ? isExactPostgresCatalogDigestMismatchFailure(
+            result,
+            options.expectedFailure.guard,
+          )
+        : options.expectedFailure !== undefined &&
+          isExactPostgresGuardFailure(result, options.expectedFailure.guard);
+    if (expectedFailureMatched)
+      throw new Error(options.expectedFailure.evidence);
     if (result.status !== 0 || result.error)
       throw sanitizedDiagnosticError({
         code: "private_pg17_rehearsal_command_failed",
@@ -3021,6 +4778,7 @@ function markCanonicalRehearsalRoles(url) {
       "reviewrouter_api",
       "reviewrouter_web",
       "reviewrouter_worker",
+      "reviewrouter_comment_token_custody",
       "reviewrouter_codex_effect_authority",
       "reviewrouter_release_migration",
       "reviewrouter_release_schema_owner",
@@ -3038,6 +4796,7 @@ function cleanupRuntimeRoles(url) {
     "reviewrouter_api",
     "reviewrouter_web",
     "reviewrouter_worker",
+    "reviewrouter_comment_token_custody",
     "reviewrouter_codex_effect_authority",
     "reviewrouter_release_migration",
     "reviewrouter_release_schema_owner",
@@ -3601,6 +5360,17 @@ function proveRuntimeParentCascadesDenied(adminUrl, clients) {
         ],
       ]) {
         const result = psql(url, ["-c", sql], false);
+        if (label === "workspace key update") {
+          assertPsqlFailedWithOneOfExactMessages(
+            result,
+            [
+              "codex_oauth_runtime_referential_update_forbidden",
+              "codex_oauth_provider_identity_authority_required",
+            ],
+            `${role} bypassed rotating protection through ${label}`,
+          );
+          continue;
+        }
         assertPsqlFailedWithExactMessage(
           result,
           expected,
@@ -4371,24 +6141,126 @@ function withApplicationName(url, applicationName) {
   return result.toString();
 }
 
-function assertPrismaLockTimeoutEnvelope(result, message) {
-  const output = `${result.stdout}${result.stderr}`.toLowerCase();
-  // Prisma's schema engine can replace the inner PostgreSQL lock-timeout error
-  // with the transaction-aborted envelope after the migration rolls back.
-  assert(
-    output.includes("lock timeout") ||
-      output.includes("current transaction is aborted"),
-    message,
+function readPrismaLockTimeoutHistoryEvidence(url, migrationName) {
+  return JSON.parse(
+    psql(url, [
+      "-Atc",
+      String.raw`SELECT json_build_object(
+        'total',count(*),
+        'currentFailed',count(*) FILTER (
+          WHERE finished_at IS NULL AND rolled_back_at IS NULL
+        ),
+        'zeroStep',count(*) FILTER (
+          WHERE finished_at IS NULL AND rolled_back_at IS NULL
+            AND applied_steps_count = 0
+        ),
+        'lockTimeoutLog',count(*) FILTER (
+          WHERE finished_at IS NULL AND rolled_back_at IS NULL
+            AND coalesce(logs,'') ILIKE '%lock timeout%'
+        ),
+        'abortedTransactionLog',count(*) FILTER (
+          WHERE finished_at IS NULL AND rolled_back_at IS NULL
+            AND coalesce(logs,'') ILIKE '%current transaction is aborted%'
+        ),
+        'emptyLog',count(*) FILTER (
+          WHERE finished_at IS NULL AND rolled_back_at IS NULL
+            AND coalesce(logs,'') = ''
+        ),
+        'exactFailureLog',count(*) FILTER (
+          WHERE finished_at IS NULL AND rolled_back_at IS NULL
+            AND applied_steps_count = 0
+            AND (coalesce(logs,'') ILIKE '%lock timeout%'
+              OR coalesce(logs,'') ILIKE '%current transaction is aborted%')
+        )
+      )
+      FROM "_prisma_migrations"
+      WHERE migration_name = ${quoteLiteral(migrationName)}
+        AND rolled_back_at IS NULL`,
+    ]).stdout,
   );
 }
 
-function assertPrismaMigrationFailureEnvelope(result, marker, message) {
-  const output = `${result.stdout}${result.stderr}`.toLowerCase();
-  const exactFailure =
-    output.includes(marker.toLowerCase()) && output.includes("already exists");
+function assertPrismaLockTimeoutEnvelope(
+  result,
+  historyEvidence,
+  migrationName,
+  message,
+  directLockTimeoutProof,
+) {
+  const output = String(result.stderr ?? "");
+  // Prisma's schema engine can replace the inner PostgreSQL lock-timeout error
+  // with the transaction-aborted envelope after the migration rolls back.  Do
+  // not accept that generic envelope unless the exact zero-step failed row and
+  // the direct psql attempt against this same held-lock fixture prove it.
   assert(
-    result.status !== 0 &&
-      (exactFailure || output.includes("current transaction is aborted")),
+    isExpectedPrismaLockTimeoutFailure({
+      result,
+      output,
+      migrationName,
+      historyEvidence,
+      directLockTimeoutProof,
+    }),
+    `${message}:${JSON.stringify(
+      prismaLockTimeoutFailureMarkers({
+        result,
+        output,
+        migrationName,
+        historyEvidence,
+        directLockTimeoutProof,
+      }),
+    )}`,
+  );
+}
+
+function assertPrismaMigrationFailureEnvelope(
+  result,
+  migrationName,
+  expectedFailure,
+  message,
+  independentProof,
+) {
+  const structuredExpected = hasCanonicalPrismaMigrationPostgresErrorEvidence(
+    result,
+    {
+      ...expectedFailure,
+      migrationName,
+    },
+  );
+  const structuredAborted = [
+    "exec_bind_message",
+    "exec_execute_message",
+    "exec_simple_query",
+  ].some((routine) =>
+    hasCanonicalPrismaMigrationPostgresErrorEvidence(result, {
+      sqlState: "25P02",
+      message:
+        "current transaction is aborted, commands ignored until end of transaction block",
+      migrationName,
+      routine,
+    }),
+  );
+  const genericAborted = hasCanonicalPrismaGenericAbortedTransactionError(
+    result,
+    migrationName,
+  );
+  const historyEvidence = independentProof?.historyEvidence;
+  const directFailureProof = independentProof?.directFailureProof;
+  const expectedDirectFailure = directFailureProof?.expectedFailure;
+  const exactIndependentProof =
+    historyEvidence?.total === 1 &&
+    historyEvidence?.currentFailed === 1 &&
+    historyEvidence?.zeroStep === 1 &&
+    directFailureProof?.observed === true &&
+    directFailureProof?.migrationName === migrationName &&
+    expectedDirectFailure?.sqlState === expectedFailure.sqlState &&
+    expectedDirectFailure?.message === expectedFailure.message &&
+    expectedDirectFailure?.routine === expectedFailure.routine &&
+    independentProof?.rollbackUnchanged === true;
+  assert(
+    exactIndependentProof &&
+      (structuredExpected ||
+        structuredAborted ||
+        (genericAborted && historyEvidence?.emptyLog === 1)),
     message,
   );
 }
@@ -4439,12 +6311,17 @@ function migrateResolve(url, resolution, name) {
 }
 
 function prisma(url, args, requireSuccess = true) {
-  const command = process.env.npm_execpath
+  const command = process.env.REVIEW_ROUTER_PRISMA_BINARY
     ? {
-        executable: process.execPath,
-        args: [process.env.npm_execpath, "exec", "prisma", ...args],
+        executable: process.env.REVIEW_ROUTER_PRISMA_BINARY,
+        args,
       }
-    : { executable: "pnpm", args: ["exec", "prisma", ...args] };
+    : process.env.npm_execpath
+      ? {
+          executable: process.execPath,
+          args: [process.env.npm_execpath, "exec", "prisma", ...args],
+        }
+      : { executable: "pnpm", args: ["exec", "prisma", ...args] };
   const credential = createDatabaseCredentialBoundary(url);
   try {
     const result = spawnSync(command.executable, command.args, {
@@ -4505,7 +6382,9 @@ function requirePostgres17() {
   });
 }
 
-function psql(url, args, requireSuccess = true) {
+function psql(url, args, requireSuccess = true, timeoutMs = 600_000) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 600_000)
+    throw new Error("rehearsal_psql_timeout_invalid");
   const invocation = createSecretSafePostgresInvocation({
     databaseUrl: url,
     args: ["-X", "-v", "ON_ERROR_STOP=1", ...args],
@@ -4516,7 +6395,7 @@ function psql(url, args, requireSuccess = true) {
       env: invocation.environment,
       input: invocation.input,
       maxBuffer: 16 * 1024 * 1024,
-      timeout: 600_000,
+      timeout: timeoutMs,
     });
     if (requireSuccess && (result.status !== 0 || result.error))
       throw sanitizedDiagnosticError({
@@ -4543,39 +6422,6 @@ function quoteIdentifier(value) {
 }
 function quoteLiteral(value) {
   return `'${value.replaceAll("'", "''")}'`;
-}
-function psqlResultDiagnostic(result) {
-  return JSON.stringify(rehearsalProcessDiagnostic(result));
-}
-function rehearsalProcessDiagnostic(result) {
-  return createSanitizedDiagnostic({
-    code: "private_pg17_rehearsal_command_failed",
-    phase: "rehearsal",
-    exitCode: result.status,
-    signal: result.signal,
-    timedOut: result.error?.code === "ETIMEDOUT",
-  });
-}
-function assertPsqlFailedWithExactMessage(result, expectedFailure, message) {
-  assert(
-    result.status !== 0 &&
-      `${result.stdout}${result.stderr}`.includes(expectedFailure),
-    `${message}: expected=${JSON.stringify(expectedFailure)}; ${psqlResultDiagnostic(result)}`,
-  );
-}
-function assertPsqlFailedWithOneOfExactMessages(
-  result,
-  expectedFailures,
-  message,
-) {
-  const output = `${result.stdout}${result.stderr}`;
-  assert(
-    result.status !== 0 &&
-      expectedFailures.some((expectedFailure) =>
-        output.includes(expectedFailure),
-      ),
-    `${message}: expectedOneOf=${JSON.stringify(expectedFailures)}; ${psqlResultDiagnostic(result)}`,
-  );
 }
 function assert(condition, message) {
   if (!condition) throw new Error(message);

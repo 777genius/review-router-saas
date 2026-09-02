@@ -111,20 +111,19 @@ export function assertActivationCatalogPolicyNormalizationForProfile(
   if (roles.length !== profile.principalNames.length) throw new Error("roles");
   roles.forEach((role, index) => {
     const expectedName = profile.principalNames[index];
-    if (
-      !isExactRecord(role, roleFields) ||
-      role.name !== expectedName ||
-      role.canLogin !== !noLogin.has(expectedName!) ||
-      role.inherit !== true ||
-      role.superuser !== false ||
-      role.bypassRls !== false ||
-      role.replication !== false ||
-      role.createDatabase !== false ||
-      role.createRole !== createRole.has(expectedName!) ||
-      role.connectionLimit !== -1 ||
-      role.validUntil !== null
-    )
-      throw new Error("role");
+    if (!isExactRecord(role, roleFields)) throw new Error("role-shape");
+    if (role.name !== expectedName) throw new Error("role-name");
+    if (role.canLogin !== !noLogin.has(expectedName!))
+      throw new Error("role-login");
+    if (role.inherit !== true) throw new Error("role-inherit");
+    if (role.superuser !== false) throw new Error("role-superuser");
+    if (role.bypassRls !== false) throw new Error("role-bypass-rls");
+    if (role.replication !== false) throw new Error("role-replication");
+    if (role.createDatabase !== false) throw new Error("role-create-database");
+    if (role.createRole !== createRole.has(expectedName!))
+      throw new Error("role-create-role");
+    if (role.connectionLimit !== -1) throw new Error("role-connection-limit");
+    if (role.validUntil !== null) throw new Error("role-valid-until");
   });
 
   const memberships = value.memberships as unknown[];

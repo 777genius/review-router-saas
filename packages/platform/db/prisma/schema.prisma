@@ -179,15 +179,15 @@ model RepositoryConnection {
   createdAt               DateTime              @default(now())
   updatedAt               DateTime              @updatedAt
 
-  workspace                    Workspace                     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  installation                 GitHubInstallation?           @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  gitlabInstallation           GitLabInstallation?           @relation(fields: [gitlabInstallationId], references: [id], onDelete: Cascade)
+  workspace                    Workspace                      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  installation                 GitHubInstallation?            @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  gitlabInstallation           GitLabInstallation?            @relation(fields: [gitlabInstallationId], references: [id], onDelete: Cascade)
   provisioning                 WorkflowProvisioning[]
   reviewConfigs                ReviewConfiguration[]
   providerSetup                ProviderSetupState[]
   actionHealth                 ActionRunHealthReport[]
   conflictReviewAttempts       ConflictReviewAttempt[]
-  rulesetSources               OrgRulesetProvisioning[]      @relation("OrgRulesetSourceRepository")
+  rulesetSources               OrgRulesetProvisioning[]       @relation("OrgRulesetSourceRepository")
   permissionCache              RepositoryPermissionCache[]
   memoryItems                  MemoryItem[]
   memorySuggestions            MemorySuggestion[]
@@ -417,6 +417,7 @@ model CodexOAuthSecretNamespace {
   workflowSourceSha256    String?
   workflowSemanticSha256  String?
   workflowSourceTrust     String?
+  workflowSchemaVersion   Int?
   attestedRepositoryId    String?
   createdAt               DateTime  @default(now()) @db.Timestamptz(3)
   confirmedAt             DateTime? @db.Timestamptz(3)
@@ -427,9 +428,31 @@ model CodexOAuthSecretNamespace {
   activeForProvider CodexOAuthProviderInstance?     @relation("CodexOAuthActiveSecretNamespace")
   dispatchAttempt   CodexOAuthSetupDispatchAttempt?
   runtimeWritebacks CodexOAuthWritebackIntent[]
+  workflowCompatibility CodexOAuthWorkflowCompatibility?
 
   @@unique([providerInstanceRowId, namespaceEpoch], map: "CodexOAuthSecretNamespace_provider_epoch_key")
   @@index([providerInstanceRowId, status], map: "CodexOAuthSecretNamespace_provider_status_idx")
+}
+
+/// A bounded, immutable V4 admission bridge retained when the active source
+/// advances to V5. Runtime admission still requires the exact active namespace
+/// and provider pointer, and stops at retireAt.
+model CodexOAuthWorkflowCompatibility {
+  namespaceId                String   @id
+  workflowPath               String
+  workflowSourceCommitSha    String
+  workflowSourceBlobSha      String
+  workflowSourceSha256       String
+  workflowSemanticSha256     String
+  workflowSourceTrust        String
+  workflowSchemaVersion      Int
+  attestedRepositoryId       String
+  retireAt                   DateTime @db.Timestamptz(3)
+  createdAt                  DateTime @default(now()) @db.Timestamptz(3)
+
+  namespace CodexOAuthSecretNamespace @relation(fields: [namespaceId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthWorkflowCompatibility_namespace_fkey")
+
+  @@index([retireAt], map: "CodexOAuthWorkflowCompatibility_retire_at_idx")
 }
 
 model CodexOAuthSetupDispatchAttempt {
@@ -1285,7 +1308,7 @@ model ReviewExecutionV2 {
 }
 
 model ReviewExecutionProgressV1 {
-  executionId             String                        @id
+  executionId             String                           @id
   workspaceId             String
   repositoryConnectionId  String
   scmRepositoryIdentityId String
@@ -1307,7 +1330,7 @@ model ReviewExecutionProgressV1 {
   coveredFileCount        Int?
   uncoveredFileCount      Int?
   excludedFileCount       Int?
-  desiredVersion          BigInt                        @default(1)
+  desiredVersion          BigInt                           @default(1)
   terminalOutcome         ReviewProgressTerminalOutcomeV1?
   updatedAt               DateTime
 
@@ -1321,21 +1344,21 @@ model ReviewProgressPublicationV1 {
   repositoryConnectionId  String
   scmRepositoryIdentityId String
   pullRequestNumber       Int
-  version                 BigInt                        @default(1)
+  version                 BigInt    @default(1)
   activeExecutionId       String
   activeGeneration        BigInt
   activeHeadSha           String
   activePlanHash          String
-  desiredVersion          BigInt                        @default(1)
-  publishedVersion        BigInt                        @default(0)
+  desiredVersion          BigInt    @default(1)
+  publishedVersion        BigInt    @default(0)
   commentId               BigInt?
   publishedBodyHash       String?
   nextPublishAt           DateTime
   lastPublishedAt         DateTime?
-  claimId                 String?                       @unique
+  claimId                 String?   @unique
   claimOwnerIdHash        String?
   claimUntil              DateTime?
-  failureCount            Int                           @default(0)
+  failureCount            Int       @default(0)
   lastErrorCode           String?
   createdAt               DateTime
   updatedAt               DateTime
@@ -1347,7 +1370,7 @@ model ReviewProgressPublicationV1 {
 }
 
 model ReviewProgressInstallationBudgetV1 {
-  githubInstallationId BigInt   @id
+  githubInstallationId BigInt    @id
   nextMutationAt       DateTime
   cooldownUntil        DateTime?
   updatedAt            DateTime
@@ -1433,6 +1456,118 @@ model ReviewInvocationLeaseTombstoneV2 {
   @@index([compactedAt, leaseId])
 }
 
+model HostedCodexRuntimeGate {
+  id            String                       @id
+  status        HostedCodexRuntimeGateStatus @default(closed)
+  authzEpoch    BigInt                       @default(1)
+  revision      BigInt                       @default(1)
+  reasonCode    String
+  changedAt     DateTime
+  changedByHash String
+
+  @@index([status, authzEpoch, revision], map: "HostedCodexRuntimeGate_authority_idx")
+}
+
+model HostedCodexCommentTokenMint {
+  id                      String                             @id
+  purpose                 HostedCodexCommentTokenMintPurpose
+  state                   HostedCodexCommentTokenMintState   @default(prepared)
+  revision                BigInt                             @default(1)
+  providerAttempt         Int                                @default(0) @db.SmallInt
+  ownerIdHash             String
+  fenceEpoch              BigInt                             @default(1)
+  grantId                 String
+  capabilityId            String?
+  logicalKeyHash          String                             @unique(map: "HostedCodexCommentTokenMint_logical_key")
+  requestFingerprintHash  String
+  requestIdHash           String?
+  presentedTokenHash      String?
+  runtimeAuthzEpoch       BigInt
+  runtimeGateRevision     BigInt
+  workspaceId             String
+  repositoryBindingId     String
+  bindingRevision         BigInt
+  bindingStateVersion     BigInt
+  poolId                  String
+  poolRevision            BigInt
+  poolAuthzEpoch          BigInt
+  repositoryConnectionId  String
+  repositoryUpdatedAt     DateTime
+  githubInstallationRowId String
+  installationUpdatedAt   DateTime
+  installationStatus      GitHubInstallationStatus
+  installationSelection   String
+  installationWorkspaceId String
+  githubInstallationId    BigInt
+  githubRepositoryId      BigInt
+  repositoryFullName      String
+  preparedAt              DateTime                           @default(now())
+  leaseExpiresAt          DateTime
+  dispatchAuthorizedUntil DateTime?
+  dispatchStartedAt       DateTime?
+  capturedAt              DateTime?
+  finalizedAt             DateTime?
+  deliveredAt             DateTime?
+  deliveryClaimIdHash     String?
+  deliveryClaimExpiresAt  DateTime?
+  completedAt             DateTime?
+  unsafeUntil             DateTime?
+  tokenHash               String?
+  tokenExpiresAt          DateTime?
+  secretCiphertext        Bytes?
+  secretEncryptedDataKey  Bytes?
+  secretIv                Bytes?
+  secretAuthTag           Bytes?
+  secretKeyId             String?
+  secretAadHash           String?
+  terminalEvidenceHash    String?
+  revocationEvidenceHash  String?
+  revocationFailureCount  Int                                @default(0)
+  nextRevocationAt        DateTime                            @default(dbgenerated("'1970-01-01 00:00:00+00'::timestamp with time zone")) @db.Timestamptz(3)
+  errorCode               String?
+  createdAt               DateTime                           @default(now())
+  updatedAt               DateTime                           @updatedAt
+
+  grant      HostedCodexInvocationGrant    @relation(fields: [grantId], references: [id], onDelete: Restrict, map: "HostedCodexCommentTokenMint_grant_fkey")
+  refreshUse HostedCodexCommentRefreshUse?
+
+  @@index([state, unsafeUntil, tokenExpiresAt], map: "HostedCodexCommentTokenMint_drain_idx")
+  @@index([state, nextRevocationAt, id], map: "HostedCodexCommentTokenMint_revocation_queue_idx")
+  @@index([runtimeAuthzEpoch, repositoryBindingId, poolId, repositoryConnectionId, githubInstallationRowId], map: "HostedCodexCommentTokenMint_authority_idx")
+}
+
+model HostedCodexRuntimeClosure {
+  id                String                         @id
+  gateRevision      BigInt                         @unique(map: "HostedCodexRuntimeClosure_gate_revision_key")
+  closedAuthzEpoch  BigInt
+  state             HostedCodexRuntimeClosureState @default(draining)
+  revision          BigInt                         @default(1)
+  startedAt         DateTime                       @default(now())
+  completedAt       DateTime?
+  actorHash         String
+  reasonHash        String
+  legacyBarrier     Boolean                        @default(true)
+  legacyUnsafeUntil DateTime
+  createdAt         DateTime                       @default(now())
+  updatedAt         DateTime                       @updatedAt
+}
+
+// Append-only evidence is written exclusively by the custody SECURITY DEFINER
+// routine. It is intentionally unavailable through generated Prisma writes,
+// while remaining part of schema/migration drift validation.
+model HostedCodexCommentTokenRevocationProof {
+  mintId           String   @id
+  tokenHash        String
+  evidenceHash     String
+  ownerIdHash      String
+  fenceEpoch       BigInt
+  receiptAuthority String
+  receiptResult    String
+  recordedAt       DateTime @default(now())
+
+  @@ignore
+}
+
 model HostedCodexPool {
   id           String                @id @default(cuid())
   workspaceId  String
@@ -1472,11 +1607,11 @@ model HostedCodexAccount {
   createdAt          DateTime                @default(now())
   updatedAt          DateTime                @updatedAt
 
-  pool               HostedCodexPool                @relation(fields: [poolId, workspaceId], references: [id, workspaceId], onDelete: Restrict, map: "HostedCodexAccount_pool_tenant_fkey")
+  pool               HostedCodexPool                    @relation(fields: [poolId, workspaceId], references: [id, workspaceId], onDelete: Restrict, map: "HostedCodexAccount_pool_tenant_fkey")
   credentialVersions HostedCodexCredentialVersion[]
-  invocationGrants   HostedCodexInvocationGrant[]   @relation("HostedCodexGrantAccount")
-  primaryGrants      HostedCodexInvocationGrant[]   @relation("HostedCodexGrantPrimaryAccount")
-  backupGrants       HostedCodexInvocationGrant[]   @relation("HostedCodexGrantBackupAccount")
+  invocationGrants   HostedCodexInvocationGrant[]       @relation("HostedCodexGrantAccount")
+  primaryGrants      HostedCodexInvocationGrant[]       @relation("HostedCodexGrantPrimaryAccount")
+  backupGrants       HostedCodexInvocationGrant[]       @relation("HostedCodexGrantBackupAccount")
   mutationFence      HostedCodexMutationFence?
   restoreItems       HostedCodexRestoreItem[]
   upstreamAttempts   HostedCodexUpstreamEffectAttempt[]
@@ -1506,10 +1641,11 @@ model HostedCodexCredentialVersion {
   credentialExpiresAt DateTime?
   createdAt           DateTime  @default(now())
 
-  account            HostedCodexAccount             @relation(fields: [accountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexCredentialVersion_account_tenant_fkey")
+  account            HostedCodexAccount                      @relation(fields: [accountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexCredentialVersion_account_tenant_fkey")
   generationReceipts HostedCodexGenerationReceipt[]
   envelopeRevisions  HostedCodexCredentialEnvelopeRevision[]
   restoreItems       HostedCodexRestoreItem[]
+  upstreamAttempts   HostedCodexUpstreamEffectAttempt[]
 
   @@unique([accountId, generation])
   @@unique([accountId, databaseIncarnation, generation], map: "HostedCodexCredentialVersion_account_incarnation_generation_key")
@@ -1607,27 +1743,27 @@ model HostedCodexRestoreItem {
 }
 
 model HostedCodexRepositoryBinding {
-  id                     String                             @id @default(cuid())
-  workspaceId            String
-  poolId                 String
-  repositoryConnectionId String
-  status                 HostedCodexRepositoryBindingStatus @default(pending_activation)
-  revision               BigInt                             @default(1)
-  stateVersion           BigInt                             @default(1)
-  workflowPath           String?
-  workflowActionRef      String?
-  workflowSourceCommitSha String?
-  workflowSourceBlobSha  String?
-  workflowSourceSha256   String?
-  workflowSemanticSha256 String?
-  workflowSourceTrust    String?
+  id                         String                             @id @default(cuid())
+  workspaceId                String
+  poolId                     String
+  repositoryConnectionId     String
+  status                     HostedCodexRepositoryBindingStatus @default(pending_activation)
+  revision                   BigInt                             @default(1)
+  stateVersion               BigInt                             @default(1)
+  workflowPath               String?
+  workflowActionRef          String?
+  workflowSourceCommitSha    String?
+  workflowSourceBlobSha      String?
+  workflowSourceSha256       String?
+  workflowSemanticSha256     String?
+  workflowSourceTrust        String?
   attestedGithubRepositoryId BigInt?
-  attestedBindingRevision BigInt?
-  activatedAt            DateTime?
-  drainingAt             DateTime?
-  tombstonedAt           DateTime?
-  createdAt              DateTime                           @default(now())
-  updatedAt              DateTime                           @updatedAt
+  attestedBindingRevision    BigInt?
+  activatedAt                DateTime?
+  drainingAt                 DateTime?
+  tombstonedAt               DateTime?
+  createdAt                  DateTime                           @default(now())
+  updatedAt                  DateTime                           @updatedAt
 
   pool       HostedCodexPool              @relation(fields: [poolId, workspaceId], references: [id, workspaceId], onDelete: Restrict, map: "HostedCodexRepositoryBinding_pool_tenant_fkey")
   repository RepositoryConnection         @relation(fields: [repositoryConnectionId, workspaceId], references: [id, workspaceId], onDelete: Restrict, map: "HostedCodexRepositoryBinding_repository_tenant_fkey")
@@ -1660,6 +1796,7 @@ model HostedCodexInvocationGrant {
   runtimeConfigVersion      Int
   bindingRevision           BigInt
   authzEpoch                BigInt
+  runtimeAuthzEpoch         BigInt?
   capabilityTokenHash       String                           @unique
   status                    HostedCodexInvocationGrantStatus @default(issued)
   issuedAt                  DateTime                         @default(now())
@@ -1667,6 +1804,8 @@ model HostedCodexInvocationGrant {
   maxRequests               Int
   maxConcurrentRequests     Int
   maxRequestBytes           Int
+  maxResponseBytes          Int                              @default(8000000)
+  maxOutputTokens           Int                              @default(32768)
   requestCount              Int                              @default(0)
   inFlight                  Int                              @default(0)
   firstSuccessfulResponseAt DateTime?
@@ -1676,13 +1815,14 @@ model HostedCodexInvocationGrant {
   createdAt                 DateTime                         @default(now())
   updatedAt                 DateTime                         @updatedAt
 
-  binding        HostedCodexRepositoryBinding @relation(fields: [repositoryBindingId, workspaceId, poolId, repositoryConnectionId, bindingRevision], references: [id, workspaceId, poolId, repositoryConnectionId, revision], onDelete: Restrict, map: "HostedCodexInvocationGrant_binding_tenant_fkey")
-  account        HostedCodexAccount           @relation("HostedCodexGrantAccount", fields: [activeAccountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexInvocationGrant_account_tenant_fkey")
-  primaryAccount HostedCodexAccount           @relation("HostedCodexGrantPrimaryAccount", fields: [primaryAccountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexInvocationGrant_primary_account_tenant_fkey")
-  backupAccount  HostedCodexAccount?          @relation("HostedCodexGrantBackupAccount", fields: [backupAccountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexInvocationGrant_backup_account_tenant_fkey")
-  relayRequests  HostedCodexRelayRequest[]
-  upstreamAttempts HostedCodexUpstreamEffectAttempt[]
+  binding                  HostedCodexRepositoryBinding         @relation(fields: [repositoryBindingId, workspaceId, poolId, repositoryConnectionId, bindingRevision], references: [id, workspaceId, poolId, repositoryConnectionId, revision], onDelete: Restrict, map: "HostedCodexInvocationGrant_binding_tenant_fkey")
+  account                  HostedCodexAccount                   @relation("HostedCodexGrantAccount", fields: [activeAccountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexInvocationGrant_account_tenant_fkey")
+  primaryAccount           HostedCodexAccount                   @relation("HostedCodexGrantPrimaryAccount", fields: [primaryAccountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexInvocationGrant_primary_account_tenant_fkey")
+  backupAccount            HostedCodexAccount?                  @relation("HostedCodexGrantBackupAccount", fields: [backupAccountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexInvocationGrant_backup_account_tenant_fkey")
+  relayRequests            HostedCodexRelayRequest[]
+  upstreamAttempts         HostedCodexUpstreamEffectAttempt[]
   commentRefreshCapability HostedCodexCommentRefreshCapability?
+  commentTokenMints        HostedCodexCommentTokenMint[]
 
   @@unique([id, workspaceId, poolId])
   @@unique([id, invocationId, repositoryBindingId, workspaceId, poolId, repositoryConnectionId], map: "HostedCodexInvocationGrant_comment_refresh_scope_key")
@@ -1710,7 +1850,7 @@ model HostedCodexRelayRequest {
   completedAt                 DateTime?
   updatedAt                   DateTime                      @updatedAt
 
-  grant HostedCodexInvocationGrant @relation(fields: [grantId], references: [id], onDelete: Restrict)
+  grant            HostedCodexInvocationGrant         @relation(fields: [grantId], references: [id], onDelete: Restrict)
   upstreamAttempts HostedCodexUpstreamEffectAttempt[]
 
   @@unique([grantId, ordinal])
@@ -1728,6 +1868,7 @@ model HostedCodexUpstreamEffectAttempt {
   workspaceId            String
   poolId                 String
   accountId              String
+  credentialGeneration   BigInt?
   attemptOrdinal         Int
   requestHash            String
   idempotencyKeyHash     String                         @unique
@@ -1745,9 +1886,10 @@ model HostedCodexUpstreamEffectAttempt {
   createdAt              DateTime                       @default(now())
   updatedAt              DateTime                       @updatedAt
 
-  relayRequest HostedCodexRelayRequest     @relation(fields: [relayRequestId, grantId], references: [id, grantId], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_request_fkey")
-  grant        HostedCodexInvocationGrant  @relation(fields: [grantId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_grant_tenant_fkey")
-  account      HostedCodexAccount          @relation(fields: [accountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_account_tenant_fkey")
+  relayRequest      HostedCodexRelayRequest       @relation(fields: [relayRequestId, grantId], references: [id, grantId], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_request_fkey")
+  grant             HostedCodexInvocationGrant    @relation(fields: [grantId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_grant_tenant_fkey")
+  account           HostedCodexAccount            @relation(fields: [accountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_account_tenant_fkey")
+  credentialVersion HostedCodexCredentialVersion? @relation(fields: [accountId, credentialGeneration], references: [accountId, generation], onDelete: Restrict, map: "HostedCodexUpstreamEffectAttempt_credential_generation_fkey")
 
   @@unique([relayRequestId, attemptOrdinal], map: "HostedCodexUpstreamEffectAttempt_request_attempt_key")
   @@index([state, leaseExpiresAt, id], map: "HostedCodexUpstreamEffectAttempt_sweep_idx")
@@ -1755,25 +1897,25 @@ model HostedCodexUpstreamEffectAttempt {
 }
 
 model HostedCodexCommentRefreshCapability {
-  id                     String   @id @default(cuid())
-  grantId                String   @unique
+  id                     String    @id @default(cuid())
+  grantId                String    @unique
   invocationId           String
   repositoryBindingId    String
   workspaceId            String
   poolId                 String
   repositoryConnectionId String
-  capabilityTokenHash    String   @unique
-  issuedAt               DateTime @default(now())
+  capabilityTokenHash    String    @unique
+  issuedAt               DateTime  @default(now())
   expiresAt              DateTime
   maxUses                Int
-  useCount               Int      @default(0)
+  useCount               Int       @default(0)
   lastUsedAt             DateTime?
   revokedAt              DateTime?
-  revision               BigInt   @default(1)
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  revision               BigInt    @default(1)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
-  grant HostedCodexInvocationGrant @relation(fields: [grantId, invocationId, repositoryBindingId, workspaceId, poolId, repositoryConnectionId], references: [id, invocationId, repositoryBindingId, workspaceId, poolId, repositoryConnectionId], onDelete: Restrict, map: "HostedCodexCommentRefreshCapability_grant_scope_fkey")
+  grant HostedCodexInvocationGrant     @relation(fields: [grantId, invocationId, repositoryBindingId, workspaceId, poolId, repositoryConnectionId], references: [id, invocationId, repositoryBindingId, workspaceId, poolId, repositoryConnectionId], onDelete: Restrict, map: "HostedCodexCommentRefreshCapability_grant_scope_fkey")
   uses  HostedCodexCommentRefreshUse[]
 
   @@unique([id, grantId, invocationId, repositoryBindingId, workspaceId, poolId, repositoryConnectionId], map: "HostedCodexCommentRefreshCapability_scope_key")
@@ -1795,9 +1937,11 @@ model HostedCodexCommentRefreshUse {
   ordinal                Int
   requestIdHash          String
   presentedTokenHash     String
+  mintId                 String?  @unique(map: "HostedCodexCommentRefreshUse_mint_key")
   usedAt                 DateTime @default(now())
 
   capability HostedCodexCommentRefreshCapability @relation(fields: [capabilityId, grantId, invocationId, repositoryBindingId, workspaceId, poolId, repositoryConnectionId], references: [id, grantId, invocationId, repositoryBindingId, workspaceId, poolId, repositoryConnectionId], onDelete: Restrict, map: "HostedCodexCommentRefreshUse_capability_scope_fkey")
+  mint       HostedCodexCommentTokenMint?        @relation(fields: [mintId], references: [id], onDelete: Restrict, map: "HostedCodexCommentRefreshUse_mint_fkey")
 
   @@unique([capabilityId, ordinal])
   @@unique([capabilityId, requestIdHash])
@@ -1805,7 +1949,7 @@ model HostedCodexCommentRefreshUse {
 }
 
 model HostedCodexMutationFence {
-  accountId          String   @id
+  accountId          String    @id
   workspaceId        String
   poolId             String
   fenceEpoch         BigInt
@@ -1814,8 +1958,8 @@ model HostedCodexMutationFence {
   expiresAt          DateTime?
   releasedAt         DateTime?
   releaseReason      String?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   account HostedCodexAccount @relation(fields: [accountId, workspaceId, poolId], references: [id, workspaceId, poolId], onDelete: Restrict, map: "HostedCodexMutationFence_account_tenant_fkey")
 
@@ -2077,7 +2221,7 @@ model ReviewInvestigationPrivateMaterial {
 }
 
 model ReviewInvestigationMaintenanceCheckpoint {
-  checkpointKey           String   @id
+  checkpointKey           String    @id
   cursorExpiresAt         DateTime?
   cursorPrivateMaterialId String?
   updatedAt               DateTime
@@ -3134,6 +3278,32 @@ enum HostedCodexPoolStatus {
   draining
   paused
   tombstoned
+}
+
+enum HostedCodexRuntimeGateStatus {
+  closed
+  active
+}
+
+enum HostedCodexCommentTokenMintPurpose {
+  initial
+  refresh
+}
+
+enum HostedCodexCommentTokenMintState {
+  prepared
+  dispatching
+  issued
+  revoke_pending
+  outcome_unknown
+  failed_no_token
+  revoked
+  expired
+}
+
+enum HostedCodexRuntimeClosureState {
+  draining
+  complete
 }
 
 enum HostedCodexAccountState {

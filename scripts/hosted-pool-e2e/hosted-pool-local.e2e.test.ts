@@ -100,6 +100,8 @@ describe("disposable hosted pool local E2E", () => {
             grantExpiresAtMs: Date.now() + 60_000,
             declaredRequestBytes: request.requestBytes,
             maxRequestBodyBytes: 16_384,
+            maxResponseBytes: 65_536,
+            maxOutputTokens: 4_096,
           };
         },
       },
@@ -228,6 +230,8 @@ describe("disposable hosted pool local E2E", () => {
           grantExpiresAtMs: Date.now() + 60_000,
           declaredRequestBytes: requestBytes,
           maxRequestBodyBytes: 1_024,
+          maxResponseBytes: 4_096,
+          maxOutputTokens: 1_024,
         }),
       },
       relay: {
@@ -349,6 +353,8 @@ describe("disposable hosted pool local E2E", () => {
             grantExpiresAtMs: Date.now() + 60_000,
             declaredRequestBytes: requestBytes,
             maxRequestBodyBytes: opaqueGrant === "byte-budget" ? 1 : 1_024,
+            maxResponseBytes: 4_096,
+            maxOutputTokens: 1_024,
           };
         },
       },

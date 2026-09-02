@@ -151,17 +151,18 @@ export class HostedCodexSessionStore implements SessionStorePort {
     const authJson = codexAuthJsonFromArtifact(input.nextArtifact);
     validatedArtifact(authJson);
     const bytes = Buffer.from(authJson, "utf8");
-    const result = await this.persistence.compareAndSwap({
-      accountId: input.providerInstanceId,
-      expectedGeneration: input.expectedGeneration,
-      nextAuthJsonBytes: bytes,
-      nextGenerationHash: sha256(bytes),
-      idempotencyKey: input.idempotencyKey,
-      leaseId: input.leaseId,
-    });
-    bytes.fill(0);
-    if (result.status === "stale_generation") return result;
-    return result;
+    try {
+      return await this.persistence.compareAndSwap({
+        accountId: input.providerInstanceId,
+        expectedGeneration: input.expectedGeneration,
+        nextAuthJsonBytes: bytes,
+        nextGenerationHash: sha256(bytes),
+        idempotencyKey: input.idempotencyKey,
+        leaseId: input.leaseId,
+      });
+    } finally {
+      bytes.fill(0);
+    }
   }
 }
 
@@ -267,6 +268,7 @@ export class HostedCodexSessionRuntime {
   }): Promise<{
     readonly accessToken: string;
     readonly chatgptAccountId: string;
+    readonly credentialGeneration: number;
   }> {
     const refreshInput = {
       providerInstanceId: input.accountId,
@@ -297,6 +299,13 @@ export class HostedCodexSessionRuntime {
         ? refresh.session.artifact
         : refresh.session?.artifact;
     if (!artifact) throw new Error("hosted_codex_refreshed_session_missing");
+    const credentialGeneration =
+      refresh.status === "ready"
+        ? refresh.session.generation
+        : refresh.session?.generation;
+    if (!credentialGeneration || !Number.isSafeInteger(credentialGeneration)) {
+      throw new Error("hosted_codex_credential_generation_missing");
+    }
     const authJson = codexAuthJsonFromArtifact(artifact);
     const parsed = validateCodexAuthJsonBytes({
       authJsonBytes: authJson,
@@ -308,6 +317,7 @@ export class HostedCodexSessionRuntime {
     return {
       accessToken,
       chatgptAccountId: extractChatgptAccountId(idToken),
+      credentialGeneration,
     };
   }
 }

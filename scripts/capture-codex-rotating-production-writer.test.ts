@@ -8,6 +8,8 @@ import {
   captureProductionWriterObservation,
 } from "./capture-codex-rotating-production-writer.mjs";
 import {
+  codexRotatingCatalogCheckNames,
+  codexRotatingCatalogTables,
   codexRotatingFunctionBodyDigests,
   codexRotatingCatalogForeignKeyNames,
 } from "./codex-rotating-production-writer-schema.mjs";
@@ -106,6 +108,44 @@ describe("production-writer rollout observation capture", () => {
     );
   });
 
+  it("projects migration 000081 and its compatibility catalog directly from the production SQL", () => {
+    const sql = codexRotatingProductionWriterBaseObservationSql;
+    expect(sql).toContain("'000089_codex_oauth_v4_v5_staged_compatibility'");
+    expect(sql).toContain("'CodexOAuthWorkflowCompatibility'");
+    expect(sql).toContain("'checks', coalesce((");
+    expect(sql).toContain("'indexes', coalesce((");
+    expect(sql).toContain("'triggers', coalesce((");
+    expect(sql).toContain("'privileges', jsonb_build_object(");
+    expect(sql).toContain("'columns', coalesce((");
+    expect(sql).toContain("'tables', coalesce((");
+
+    const checksStart = sql.indexOf("\n    'checks', coalesce((");
+    const checksEnd = sql.indexOf("\n    'indexes', coalesce((", checksStart);
+    const checksSql = sql.slice(checksStart, checksEnd);
+    const projectedTables = [...checksSql.matchAll(/'([^']+)'/gu)]
+      .map(([, value]) => value)
+      .filter((value) => codexRotatingCatalogTables.includes(value));
+    const projectedChecks = [...checksSql.matchAll(/'([^']+_check)'/gu)].map(
+      ([, value]) => value,
+    );
+
+    expect(checksStart).toBeGreaterThan(0);
+    expect(checksEnd).toBeGreaterThan(checksStart);
+    expect(new Set(projectedTables)).toEqual(
+      new Set(codexRotatingCatalogTables),
+    );
+    expect(new Set(projectedChecks)).toEqual(
+      new Set(codexRotatingCatalogCheckNames),
+    );
+    expect(
+      projectedChecks.filter((name) =>
+        name.startsWith("CodexOAuthWorkflowCompatibility_"),
+      ),
+    ).toHaveLength(9);
+    expect(checksSql).toContain("'definition', pg_get_constraintdef(con.oid)");
+    expect(checksSql).toContain("'validated', con.convalidated");
+  });
+
   it("observes every exact rotating-writer foreign key", () => {
     const foreignKeysStart =
       codexRotatingProductionWriterBaseObservationSql.indexOf(
@@ -153,7 +193,34 @@ describe("production-writer rollout observation capture", () => {
       functionsEnd,
     );
 
-    expect(codexRotatingFunctionBodyDigests).toHaveLength(22);
+    expect(codexRotatingFunctionBodyDigests.map(({ name }) => name)).toEqual([
+      "codex_oauth_authorize_runtime_completion",
+      "codex_oauth_authorize_runtime_confirmation",
+      "codex_oauth_authorize_setup_confirmation",
+      "codex_oauth_child_identity_fence_guard",
+      "codex_oauth_consume_database_authority",
+      "codex_oauth_database_authority_challenge",
+      "codex_oauth_database_authority_receipt_guard",
+      "codex_oauth_provider_identity_guard",
+      "codex_oauth_provider_identity_repair_challenge",
+      "codex_oauth_provider_identity_transition",
+      "codex_oauth_provider_mutation_transition_guard",
+      "codex_oauth_reattest_active_namespace_v4_to_v5",
+      "codex_oauth_repair_quarantined_child",
+      "codex_oauth_repair_quarantined_provider",
+      "codex_oauth_repository_identity_guard",
+      "codex_oauth_runtime_referential_action_guard",
+      "codex_oauth_runtime_writeback_evidence_guard",
+      "codex_oauth_secret_namespace_tombstone_guard",
+      "codex_oauth_setup_attempt_evidence_guard",
+      "codex_oauth_setup_claim_evidence_guard",
+      "codex_oauth_setup_manifest_evidence_guard",
+      "codex_oauth_setup_recovery_evidence_guard",
+      "codex_oauth_sign_database_authority",
+      "hosted_codex_comment_token_authority_revoke_enqueue",
+      "codex_oauth_v4_v5_reattestation_transition",
+      "codex_oauth_workflow_compatibility_guard",
+    ]);
     expect(functionsSql).toContain("'bodySha256'");
     expect(functionsSql).toContain("'owner', owner.rolname");
     expect(functionsSql).toContain("p.prosrc");
@@ -632,6 +699,18 @@ describe("production-writer rollout observation capture", () => {
         },
         {
           id: "000073_codex_oauth_active_namespace_refresh",
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        },
+        {
+          id: "000087_codex_oauth_v4_v5_workflow_reattestation",
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        },
+        {
+          id: "000088_codex_oauth_reattestation_mutation_owner_fence",
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        },
+        {
+          id: "000089_codex_oauth_v4_v5_staged_compatibility",
           sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
         },
       ],

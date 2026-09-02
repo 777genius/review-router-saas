@@ -24,6 +24,14 @@ export function mapConfigToRuntimeEnv(
     REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED:
       runtimeToggle(investigation.productionEffectsEnabled),
   };
+  if (
+    config.providers.some(
+      (provider) =>
+        provider.kind === "codex" && provider.reasoningEffort === "ultra",
+    )
+  ) {
+    runtimeEnv.RUN_TIMEOUT_SECONDS = "1800";
+  }
   const reviewLanguage = config.reviewLanguage?.trim();
   if (reviewLanguage) {
     runtimeEnv.REVIEW_OUTPUT_LANGUAGE = reviewLanguage;

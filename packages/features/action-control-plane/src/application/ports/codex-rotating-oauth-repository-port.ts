@@ -46,6 +46,7 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
+    readonly verifiedWorkflowAttestation: VersionedSecretWorkflowSourceAttestation;
     readonly newWorkAdmissionBarrier: Readonly<{
       assertAdmitted(): void;
     }>;
@@ -259,7 +260,7 @@ export interface CodexRotatingWorkflowSourceVerifierPort {
     readonly expectedWorkflowSchemaVersion: number;
   }): Promise<{
     readonly binding: CodexRotatingProviderBinding;
-    readonly attestation?: VersionedSecretWorkflowSourceAttestation;
+    readonly attestation: VersionedSecretWorkflowSourceAttestation;
   }>;
 
   resolveWorkflowRunPullRequest?(input: {

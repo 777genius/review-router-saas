@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
+import { hostedCommentTokenDelivery } from "../application/ports/hosted-comment-token-mint-ledger-port";
 import {
   hostedCodexCommentTokenPath,
   hostedCodexGrantPath,
@@ -24,6 +25,8 @@ describe("hosted Codex relay routes", () => {
       };
     });
     const app = Fastify({ logger: false });
+    const releaseInitialDelivery = vi.fn(async () => undefined);
+    const releaseRefreshDelivery = vi.fn(async () => undefined);
     await registerHostedCodexRelayRoutes(app, {
       enabled: true,
       grants: {
@@ -39,13 +42,20 @@ describe("hosted Codex relay routes", () => {
           commentTokenRefreshCapability: "opaque-comment-refresh",
           grantExpiresAt: "2026-08-15T12:00:00.000Z",
           commentTokenExpiresAt: "2026-08-15T11:00:00.000Z",
-          policy: { maxRequests: 4, maxRequestBodyBytes: 1_024 },
+          [hostedCommentTokenDelivery]: releaseInitialDelivery,
+          policy: {
+            maxRequests: 4,
+            maxRequestBodyBytes: 1_024,
+            maxResponseBytes: 4_096,
+            maxOutputTokens: 1_024,
+          },
         }),
       },
       commentTokens: {
         issue: async () => ({
           token: "refreshed-github-app-token",
           repository: "owner/private-repo",
+          [hostedCommentTokenDelivery]: releaseRefreshDelivery,
         }),
       },
       authorization: {
@@ -62,6 +72,8 @@ describe("hosted Codex relay routes", () => {
           grantExpiresAtMs: Date.now() + 60_000,
           declaredRequestBytes: 2,
           maxRequestBodyBytes: 1_024,
+          maxResponseBytes: 4_096,
+          maxOutputTokens: 1_024,
         }),
       },
       relay: { open: relayOpen },
@@ -86,6 +98,9 @@ describe("hosted Codex relay routes", () => {
       repository: "owner/private-repo",
       commentToken: "github-app-token",
     });
+    await vi.waitFor(() =>
+      expect(releaseInitialDelivery).toHaveBeenCalledOnce(),
+    );
 
     const response = await app.inject({
       method: "POST",
@@ -122,6 +137,9 @@ describe("hosted Codex relay routes", () => {
       token: "refreshed-github-app-token",
       repository: "owner/private-repo",
     });
+    await vi.waitFor(() =>
+      expect(releaseRefreshDelivery).toHaveBeenCalledOnce(),
+    );
     await app.close();
   });
 

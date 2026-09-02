@@ -7,10 +7,15 @@ import {
   type EncryptCommandOutput,
 } from "@aws-sdk/client-kms";
 import { fromTokenFile } from "@aws-sdk/credential-providers";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import type {
   CredentialKeyringPort,
   WrappedDataEncryptionKey,
 } from "./credential-envelope-vault.js";
+import {
+  createCustodyDeadline,
+  defaultCustodyOperationTimeoutMs,
+} from "../../application/custody-operation-deadline.js";
 
 const wrappingAlgorithm = "SYMMETRIC_DEFAULT" as const;
 
@@ -29,8 +34,14 @@ export interface HostedCodexKmsAuditPort {
 }
 
 export interface AwsKmsClientPort {
-  send(command: EncryptCommand): Promise<EncryptCommandOutput>;
-  send(command: DecryptCommand): Promise<DecryptCommandOutput>;
+  send(
+    command: EncryptCommand,
+    options?: { abortSignal?: AbortSignal },
+  ): Promise<EncryptCommandOutput>;
+  send(
+    command: DecryptCommand,
+    options?: { abortSignal?: AbortSignal },
+  ): Promise<DecryptCommandOutput>;
 }
 
 /** AWS KMS envelope-key adapter. Provider plaintext is never sent to KMS. */
@@ -43,6 +54,7 @@ export class AwsKmsHostedCodexKeyring implements CredentialKeyringPort {
     keyId: string,
     private readonly audit: HostedCodexKmsAuditPort,
     private readonly now: () => Date = () => new Date(),
+    private readonly operationTimeoutMs = defaultCustodyOperationTimeoutMs,
   ) {
     this.currentKeyId = requireKeyId(keyId);
   }
@@ -53,24 +65,36 @@ export class AwsKmsHostedCodexKeyring implements CredentialKeyringPort {
     readonly context: Parameters<
       CredentialKeyringPort["wrapDataEncryptionKey"]
     >[0]["context"];
+    readonly signal?: AbortSignal;
   }): Promise<WrappedDataEncryptionKey> {
     if (input.dataEncryptionKey.byteLength !== 32) {
       throw new Error("credential_data_key_invalid");
     }
     const associatedDataHash = sha256(input.associatedData);
     const kmsPlaintext = Uint8Array.from(input.dataEncryptionKey);
+    let kmsCiphertext: Uint8Array | undefined;
+    const deadline = createCustodyDeadline(
+      input.signal,
+      this.operationTimeoutMs,
+    );
     try {
-      const result = await this.client.send(
-        new EncryptCommand({
-          KeyId: this.currentKeyId,
-          Plaintext: kmsPlaintext,
-          EncryptionAlgorithm: wrappingAlgorithm,
-          EncryptionContext: encryptionContext(
-            input.context,
-            associatedDataHash,
-          ),
-        }),
+      deadline.signal.throwIfAborted();
+      const result = await deadline.run(
+        this.client.send(
+          new EncryptCommand({
+            KeyId: this.currentKeyId,
+            Plaintext: kmsPlaintext,
+            EncryptionAlgorithm: wrappingAlgorithm,
+            EncryptionContext: encryptionContext(
+              input.context,
+              associatedDataHash,
+            ),
+          }),
+          { abortSignal: deadline.signal },
+        ),
+        zeroEncryptOutput,
       );
+      kmsCiphertext = result.CiphertextBlob;
       if (!result.CiphertextBlob?.byteLength) {
         throw new Error("hosted_codex_kms_encrypt_response_invalid");
       }
@@ -78,32 +102,49 @@ export class AwsKmsHostedCodexKeyring implements CredentialKeyringPort {
       if (canonicalKeyArn !== this.currentKeyId) {
         throw new Error("hosted_codex_kms_encrypt_key_mismatch");
       }
-      await this.record(
-        "wrap",
-        this.currentKeyId,
-        associatedDataHash,
-        input.context,
-        "succeeded",
+      await deadline.run(
+        Promise.resolve().then(() =>
+          this.record(
+            "wrap",
+            this.currentKeyId,
+            associatedDataHash,
+            input.context,
+            "succeeded",
+          ),
+        ),
       );
-      return {
-        // Persist the canonical identity returned by KMS, never the request
-        // spelling. This prevents an alias repoint from silently changing the
-        // wrapping authority represented by an envelope.
-        keyId: canonicalKeyArn,
-        nonce: "",
-        ciphertext: Buffer.from(result.CiphertextBlob).toString("base64"),
-        authenticationTag: "",
-      };
+      const wrappedCiphertext = Buffer.from(result.CiphertextBlob);
+      try {
+        return {
+          // Persist the canonical identity returned by KMS, never the request
+          // spelling. This prevents an alias repoint from silently changing the
+          // wrapping authority represented by an envelope.
+          keyId: canonicalKeyArn,
+          nonce: "",
+          ciphertext: wrappedCiphertext.toString("base64"),
+          authenticationTag: "",
+        };
+      } finally {
+        wrappedCiphertext.fill(0);
+      }
     } catch (error) {
-      await this.record(
-        "wrap",
-        this.currentKeyId,
-        associatedDataHash,
-        input.context,
-        "failed",
-      );
+      await deadline
+        .run(
+          Promise.resolve().then(() =>
+            this.record(
+              "wrap",
+              this.currentKeyId,
+              associatedDataHash,
+              input.context,
+              "failed",
+            ),
+          ),
+        )
+        .catch(() => undefined);
       throw new Error("hosted_codex_kms_wrap_failed", { cause: error });
     } finally {
+      deadline.dispose();
+      kmsCiphertext?.fill(0);
       kmsPlaintext.fill(0);
     }
   }
@@ -114,35 +155,53 @@ export class AwsKmsHostedCodexKeyring implements CredentialKeyringPort {
     readonly context: Parameters<
       CredentialKeyringPort["unwrapDataEncryptionKey"]
     >[0]["context"];
+    readonly signal?: AbortSignal;
   }): Promise<Uint8Array> {
     const keyId = requireKeyId(input.wrappedKey.keyId);
     const associatedDataHash = sha256(input.associatedData);
+    const deadline = createCustodyDeadline(
+      input.signal,
+      this.operationTimeoutMs,
+    );
     let ciphertext: Buffer;
+    let kmsPlaintext: Uint8Array | undefined;
     try {
       ciphertext = decodeBase64(input.wrappedKey.ciphertext);
     } catch (error) {
-      await this.record(
-        "unwrap",
-        keyId,
-        associatedDataHash,
-        input.context,
-        "failed",
-      );
+      await deadline
+        .run(
+          Promise.resolve().then(() =>
+            this.record(
+              "unwrap",
+              keyId,
+              associatedDataHash,
+              input.context,
+              "failed",
+            ),
+          ),
+        )
+        .catch(() => undefined);
+      deadline.dispose();
       throw new Error("hosted_codex_kms_ciphertext_invalid", { cause: error });
     }
     try {
-      const result = await this.client.send(
-        new DecryptCommand({
-          KeyId: keyId,
-          CiphertextBlob: ciphertext,
-          EncryptionAlgorithm: wrappingAlgorithm,
-          EncryptionContext: encryptionContext(
-            input.context,
-            associatedDataHash,
-          ),
-        }),
+      deadline.signal.throwIfAborted();
+      const result = await deadline.run(
+        this.client.send(
+          new DecryptCommand({
+            KeyId: keyId,
+            CiphertextBlob: ciphertext,
+            EncryptionAlgorithm: wrappingAlgorithm,
+            EncryptionContext: encryptionContext(
+              input.context,
+              associatedDataHash,
+            ),
+          }),
+          { abortSignal: deadline.signal },
+        ),
+        zeroDecryptOutput,
       );
-      const kmsPlaintext = result.Plaintext;
+      kmsPlaintext = result.Plaintext;
       const canonicalKeyArn = requireKeyArn(result.KeyId ?? "");
       if (canonicalKeyArn !== keyId) {
         kmsPlaintext?.fill(0);
@@ -153,27 +212,39 @@ export class AwsKmsHostedCodexKeyring implements CredentialKeyringPort {
         throw new Error("hosted_codex_kms_decrypt_response_invalid");
       }
       try {
-        await this.record(
-          "unwrap",
-          keyId,
-          associatedDataHash,
-          input.context,
-          "succeeded",
+        await deadline.run(
+          Promise.resolve().then(() =>
+            this.record(
+              "unwrap",
+              keyId,
+              associatedDataHash,
+              input.context,
+              "succeeded",
+            ),
+          ),
         );
         return Uint8Array.from(kmsPlaintext);
       } finally {
         kmsPlaintext.fill(0);
       }
     } catch (error) {
-      await this.record(
-        "unwrap",
-        keyId,
-        associatedDataHash,
-        input.context,
-        "failed",
-      );
+      await deadline
+        .run(
+          Promise.resolve().then(() =>
+            this.record(
+              "unwrap",
+              keyId,
+              associatedDataHash,
+              input.context,
+              "failed",
+            ),
+          ),
+        )
+        .catch(() => undefined);
       throw new Error("hosted_codex_kms_unwrap_failed", { cause: error });
     } finally {
+      deadline.dispose();
+      kmsPlaintext?.fill(0);
       ciphertext.fill(0);
     }
   }
@@ -206,6 +277,7 @@ export function createProductionAwsKmsHostedCodexKeyring(input: {
   readonly client?: AwsKmsClientPort;
   readonly audit?: HostedCodexKmsAuditPort;
   readonly purpose?: "relay" | "enrollment" | "recovery";
+  readonly operationTimeoutMs?: number;
 }): AwsKmsHostedCodexKeyring {
   const purpose = input.purpose ?? "relay";
   const configuredRole = input.env.REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE?.trim();
@@ -241,12 +313,23 @@ export function createProductionAwsKmsHostedCodexKeyring(input: {
     input.client ??
     new KMSClient({
       region,
-      credentials: fromTokenFile({
-        clientConfig: { region },
-        roleArn,
-        roleSessionName: `reviewrouter-hosted-codex-${purpose}`,
-        webIdentityTokenFile,
-      }),
+      requestHandler: boundedAwsHttpHandler(input.operationTimeoutMs),
+      maxAttempts: 2,
+      retryMode: "standard",
+      credentials: boundedCredentialProvider(
+        fromTokenFile({
+          clientConfig: {
+            region,
+            requestHandler: boundedAwsHttpHandler(input.operationTimeoutMs),
+            maxAttempts: 2,
+            retryMode: "standard",
+          },
+          roleArn,
+          roleSessionName: `reviewrouter-hosted-codex-${purpose}`,
+          webIdentityTokenFile,
+        }),
+        input.operationTimeoutMs,
+      ),
     });
   return new AwsKmsHostedCodexKeyring(
     client,
@@ -258,7 +341,40 @@ export function createProductionAwsKmsHostedCodexKeyring(input: {
         );
       },
     },
+    undefined,
+    input.operationTimeoutMs,
   );
+}
+
+export function boundedCredentialProvider(
+  provider: ReturnType<typeof fromTokenFile>,
+  timeoutMs = defaultCustodyOperationTimeoutMs,
+): ReturnType<typeof fromTokenFile> {
+  return async () => {
+    const deadline = createCustodyDeadline(undefined, timeoutMs);
+    try {
+      return await deadline.run(provider());
+    } finally {
+      deadline.dispose();
+    }
+  };
+}
+
+function boundedAwsHttpHandler(timeoutMs = defaultCustodyOperationTimeoutMs) {
+  const bounded = Math.max(1, Math.floor(timeoutMs));
+  return new NodeHttpHandler({
+    connectionTimeout: Math.min(3_000, bounded),
+    requestTimeout: bounded,
+    socketTimeout: bounded,
+  });
+}
+
+function zeroEncryptOutput(output: EncryptCommandOutput): void {
+  output.CiphertextBlob?.fill(0);
+}
+
+function zeroDecryptOutput(output: DecryptCommandOutput): void {
+  output.Plaintext?.fill(0);
 }
 
 function encryptionContext(
@@ -301,6 +417,7 @@ export function requireKeyArn(value: string): string {
 function decodeBase64(value: string): Buffer {
   const decoded = Buffer.from(value, "base64");
   if (!value || decoded.toString("base64") !== value) {
+    decoded.fill(0);
     throw new Error("hosted_codex_kms_ciphertext_invalid");
   }
   return decoded;

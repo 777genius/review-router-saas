@@ -7,6 +7,12 @@
   },
   "include": [
     "scripts/hosted-pool-production-control.ts",
-    "scripts/run-hosted-pool-production-canary.ts"
+    "scripts/hosted-pool-production-ports.ts",
+    "scripts/hosted-pool-production-github-dispatch.ts",
+    "scripts/hosted-pool-production-evidence.ts",
+    "scripts/hosted-pool-production-rollback-verification.ts",
+    "scripts/run-hosted-pool-production-canary.ts",
+    "apps/api/src/hosted-codex-canary-fault-plan.ts",
+    "apps/api/src/hosted-codex-canary-fault-composition.ts"
   ]
 }

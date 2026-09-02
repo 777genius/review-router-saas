@@ -96,11 +96,12 @@ export class AcquireOrJoinInvocationFlight {
 
     let takeover = false;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const observation =
-        await this.flights.observeActiveInvocationFlightByLane({
-          providerVoteIdentityHash: command.providerVoteIdentityHash,
-          requestedAt: command.now,
-        });
+      const observation = await this.flights.observeActiveInvocationFlight({
+        scope: command.scope,
+        providerInvocationKey: command.providerInvocationKey,
+        providerVoteIdentityHash: command.providerVoteIdentityHash,
+        requestedAt: command.now,
+      });
       const incumbent = observation.flight;
       const decision = decideInvocationFlightJoin({
         incumbent,

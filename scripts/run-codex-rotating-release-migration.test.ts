@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  liveV70V72CatalogDigestSha256 as fencedLiveV70V72CatalogDigestSha256,
   fencedLiveV70V72CatalogDigestSql,
+  liveV70V73CatalogDigestSha256,
 } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
 import { sha256Canonical } from "../packages/features/release-rollout/src/domain/release-rollout";
@@ -15,21 +16,28 @@ import {
   canonicalActivationCatalogPolicyCandidateSql,
   canonicalRoleTopologyObservationSql,
   canonicalDatabaseGenerationObservationSql,
+  classifyActivationCatalogCaptureStateShape,
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
-  liveV70V72CatalogDigestSha256,
   liveV70V72CatalogDigestSql,
   isActivationPrincipalRoleCapabilityPermitted,
+  parseActivationCatalogCaptureState,
   resolveReleaseMigrationConfiguration,
   resolveRoleBootstrapConfiguration,
   roleProvisioningSql,
   providerRuntimeUpdateColumns,
   rotatingEvidenceTables,
   runReleaseMigrationSubprocess,
+  runtimeAuthorityReadOnlyTables,
   runtimeGrantSql,
   stripAtomicMigrationEnvelope,
   workerOwnedMaintenanceCheckpointTable,
 } from "./run-codex-rotating-release-migration.mjs";
+
+const executableSource = readFileSync(
+  new URL("./run-codex-rotating-release-migration.mjs", import.meta.url),
+  "utf8",
+);
 
 const legacyEvidenceUnsigned = {
   schemaVersion: 1 as const,
@@ -81,6 +89,8 @@ function environment() {
       "postgresql://reviewrouter_worker:worker-secret@db.internal/review_router",
     REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
       "postgresql://reviewrouter_codex_effect_authority:signer-secret@db.internal/review_router",
+    REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL:
+      "postgresql://reviewrouter_comment_token_custody:custody-secret@db.internal/review_router",
     REVIEW_ROUTER_RELEASE_COMMIT_SHA: "a".repeat(40),
     REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
     REVIEW_ROUTER_ROLLOUT_ID: "rollout-test",
@@ -202,6 +212,153 @@ describe("application database release-authority isolation", () => {
     expect(authoritySql).toContain("nonce");
     expect(sql).not.toContain("install_activation_permit");
     expect(sql).not.toContain("activate_generation");
+    expect(executableSource).toContain(
+      "verify_catalog_capture_migration_state",
+    );
+    expect(executableSource).toContain(
+      'captureOnlyStatus: "catalog_candidate_ready"',
+    );
+    expect(authoritySql).toContain(
+      "reviewrouter_activation.observe_live_migration_catalog_digest()",
+    );
+    expect(authoritySql).toContain(
+      "reviewrouter_activation.capture_runtime_acl_policy_pair() ||",
+    );
+    expect(executableSource).not.toContain("captureState.catalogDigest");
+    expect(executableSource).toContain(
+      "activation_catalog_policy_capture_state_invalid:${JSON.stringify(captureStateChecks)}",
+    );
+    const rawCheckpoint = executableSource.indexOf(
+      "activation_catalog_policy_capture_raw_state_received",
+    );
+    const parseCheckpoint = executableSource.indexOf(
+      "activation_catalog_policy_capture_json_parse_complete",
+    );
+    const checksCheckpoint = executableSource.indexOf(
+      "activation_catalog_policy_capture_checks_constructed",
+    );
+    expect(rawCheckpoint).toBeGreaterThan(-1);
+    expect(parseCheckpoint).toBeGreaterThan(rawCheckpoint);
+    expect(checksCheckpoint).toBeGreaterThan(parseCheckpoint);
+  });
+
+  it("parses capture state without reflecting malformed raw output", () => {
+    expect(
+      parseActivationCatalogCaptureState(
+        '  {"permitState":"consumed","unfinishedCount":0}\n',
+      ),
+    ).toEqual({ permitState: "consumed", unfinishedCount: 0 });
+
+    const attackerOutput =
+      "not-json postgresql://release:password_hunter2@db.internal/review_router";
+    let thrown: unknown;
+    try {
+      parseActivationCatalogCaptureState(attackerOutput);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe(
+      "activation_catalog_policy_capture_state_json_invalid",
+    );
+    expect((thrown as Error).message).not.toMatch(
+      /not-json|postgresql|password|hunter2|db\.internal/u,
+    );
+  });
+
+  it("classifies malformed capture output without retaining its contents", () => {
+    expect(classifyActivationCatalogCaptureStateShape(undefined)).toBe(
+      "not_string",
+    );
+    expect(classifyActivationCatalogCaptureStateShape("  \n")).toBe("empty");
+    expect(classifyActivationCatalogCaptureStateShape('{"a":1}')).toBe(
+      "single_line_object",
+    );
+    expect(classifyActivationCatalogCaptureStateShape('{"a":\n1}')).toBe(
+      "multi_line_object_boundary",
+    );
+    expect(classifyActivationCatalogCaptureStateShape("secret\nvalue")).toBe(
+      "multi_line_other",
+    );
+    expect(
+      classifyActivationCatalogCaptureStateShape("secret\u0000value"),
+    ).toBe("contains_nul");
+  });
+
+  it("binds the catalog digest only to the trusted capture envelope", () => {
+    let captureArgs: readonly string[] | undefined;
+    let captureInput: string | undefined;
+    const run = (
+      step: string,
+      _command: string,
+      args: readonly string[],
+      options?: { input?: string },
+    ) => {
+      if (step === "verify_release_authority")
+        return JSON.stringify({
+          currentUser: "reviewrouter_release_migration",
+          sessionUser: "reviewrouter_release_migration",
+          login: true,
+          superuser: false,
+          createDatabase: false,
+          createRole: false,
+          replication: false,
+          bypassRls: false,
+        });
+      if (step.startsWith("legacy_ambiguity_inventory_"))
+        return JSON.stringify({
+          activeLeaseIds: [],
+          fetchedSetupIds: [],
+          pendingIntentIds: [],
+          intentStatuses: [],
+        });
+      if (step === "verify_catalog_capture_migration_state") {
+        captureArgs = args;
+        captureInput = options?.input;
+        return JSON.stringify({
+          manifestIdentity:
+            canonicalReleaseMigrationArtifact.postManifestIdentity,
+          unfinishedCount: 0,
+        });
+      }
+      return step === "migration_history_preflight" ? "preflight" : "";
+    };
+    const result = executeCanonicalReleaseMigration(
+      {
+        ...environment(),
+        REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1",
+        REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY:
+          "rr-disposable-candidate-test",
+      },
+      run as never,
+    );
+
+    expect(result).toEqual({
+      version: 1,
+      captureOnlyStatus: "catalog_candidate_ready",
+      candidate: {
+        commitSha: "a".repeat(40),
+        databaseIdentity: "db.internal:5432/review_router",
+        manifestIdentity:
+          canonicalReleaseMigrationArtifact.postManifestIdentity,
+        projectionSha256: `sha256:${createHash("sha256")
+          .update(fencedLiveV70V72CatalogDigestSql)
+          .digest("hex")}`,
+      },
+    });
+    expect(captureArgs).toContain("--quiet");
+    expect(captureArgs).not.toContain("--command");
+    expect(captureInput).toMatch(
+      /^\\set ON_ERROR_STOP on\nCOPY \(SELECT jsonb_build_object\(/u,
+    );
+    expect(captureInput).toMatch(/\) TO STDOUT$/u);
+    expect(captureInput).not.toContain(
+      "reviewrouter_activation.migration_permit",
+    );
+    expect(captureInput).not.toContain("observe_live_migration_catalog_digest");
+    expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
+      liveV70V73CatalogDigestSha256,
+    );
   });
 
   it("provisions only target-local activation capability", () => {
@@ -292,6 +449,7 @@ describe("application database release-authority isolation", () => {
         "reviewrouter_api",
         "reviewrouter_web",
         "reviewrouter_worker",
+        "reviewrouter_comment_token_custody",
         "reviewrouter_codex_effect_authority",
         "reviewrouter_release_migration",
         "reviewrouter_role_bootstrap",
@@ -353,6 +511,7 @@ describe("canonical exclusive release migration caller", () => {
   it("rejects role-attribute drift and non-canonical bootstrap topology", () => {
     const names = [
       "reviewrouter_api",
+      "reviewrouter_comment_token_custody",
       "reviewrouter_codex_effect_authority",
       "reviewrouter_release_migration",
       "reviewrouter_web",
@@ -492,12 +651,13 @@ describe("canonical exclusive release migration caller", () => {
     ).toThrow("release_migration_role_observation_failed");
   });
 
-  it("converges the four service roles and isolates effect authority", () => {
+  it("converges runtime, custody, and isolated effect-authority roles", () => {
     const configuration = resolveReleaseMigrationConfiguration(environment());
     expect(configuration.roles.map((role) => role.username)).toEqual([
       "reviewrouter_api",
       "reviewrouter_web",
       "reviewrouter_worker",
+      "reviewrouter_comment_token_custody",
       "reviewrouter_codex_effect_authority",
     ]);
     expect(() =>
@@ -510,6 +670,81 @@ describe("canonical exclusive release migration caller", () => {
     const ownerAuthorizedInitialProjection = roleProvisioningSql(
       configuration,
       { ownerAuthorizedInitialRuntimeGateClosed: true },
+    );
+    const providerScopeBoundaryStart = provisioning.indexOf(
+      "-- A privilege-free dump preserves these routines",
+    );
+    const providerScopeBoundaryEnd = provisioning.indexOf(
+      "$provider_scope_concurrency_operator_boundary$;",
+    );
+    const providerScopeBoundary = provisioning.slice(
+      providerScopeBoundaryStart,
+      providerScopeBoundaryEnd,
+    );
+    expect(providerScopeBoundaryStart).toBeGreaterThan(
+      provisioning.indexOf("$transferred_public_routine_acl_gate$;"),
+    );
+    expect(providerScopeBoundaryEnd).toBeGreaterThan(
+      providerScopeBoundaryStart,
+    );
+    expect(providerScopeBoundaryEnd).toBeLessThan(
+      provisioning.indexOf("RESET ROLE;", providerScopeBoundaryEnd),
+    );
+    for (const routine of [
+      "snapshot",
+      "status",
+      "activate",
+      "close_for_rollback",
+      "verify_rollback",
+    ]) {
+      expect(providerScopeBoundary).toContain(
+        `ALTER FUNCTION public.reviewrouter_provider_scope_concurrency_${routine}()\n  SECURITY DEFINER SET search_path TO pg_catalog, public;`,
+      );
+    }
+    expect(providerScopeBoundary).toContain(
+      "DO $provider_scope_concurrency_acl_convergence$",
+    );
+    expect(providerScopeBoundary).toContain(
+      "AND acl.grantee <> routine_row.proowner",
+    );
+    expect(providerScopeBoundary).toContain(
+      "REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC CASCADE",
+    );
+    expect(providerScopeBoundary).toContain(
+      "REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I CASCADE",
+    );
+    expect(providerScopeBoundary).toContain(
+      "pg_get_userbyid(grantee_row.grantee)",
+    );
+    const operatorGrant = providerScopeBoundary.match(
+      /GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+([\s\S]*?)\s+TO\s+([a-z_][a-z0-9_]*)\s*;/i,
+    );
+    expect(operatorGrant).not.toBeNull();
+    expect(
+      operatorGrant?.[1].split(",").map((routine) => routine.trim()),
+    ).toEqual([
+      "public.reviewrouter_provider_scope_concurrency_status()",
+      "public.reviewrouter_provider_scope_concurrency_activate()",
+      "public.reviewrouter_provider_scope_concurrency_close_for_rollback()",
+      "public.reviewrouter_provider_scope_concurrency_verify_rollback()",
+    ]);
+    expect(operatorGrant?.[2]).toBe("reviewrouter_release_migration");
+    expect(operatorGrant?.index).toBeGreaterThan(
+      providerScopeBoundary.indexOf(
+        "$provider_scope_concurrency_acl_convergence$;",
+      ),
+    );
+    expect(providerScopeBoundary).toContain("routine_count <> 5");
+    expect(providerScopeBoundary).toContain("canonical_count <> 5");
+    expect(providerScopeBoundary).toContain("explicit_execute_count <> 9");
+    expect(providerScopeBoundary).toContain("owner_execute_count <> 5");
+    expect(providerScopeBoundary).toContain("release_execute_count <> 4");
+    expect(providerScopeBoundary).toContain("canonical_execute_count <> 9");
+    expect(providerScopeBoundary).toContain("acl.grantor = routine.proowner");
+    expect(providerScopeBoundary).toContain("AND NOT acl.is_grantable");
+    expect(providerScopeBoundary).not.toContain("AND acl.is_grantable");
+    expect(providerScopeBoundary).toContain(
+      "routine.proconfig = ARRAY['search_path=pg_catalog, public']::text[]",
     );
     const grants = runtimeGrantSql(configuration);
     expect(grants).toContain("BEGIN;");
@@ -595,10 +830,12 @@ describe("canonical exclusive release migration caller", () => {
     expect(
       activationAuthority.lastIndexOf(manifestIdentityRevoke),
     ).toBeLessThan(activationAuthority.lastIndexOf(manifestIdentityGrant));
+    const liveCatalogDigestRoutine =
+      "CREATE OR REPLACE FUNCTION reviewrouter_activation.observe_live_migration_catalog_digest()";
     const finalManifestIdentityGrant = activationAuthority.slice(
       activationAuthority.lastIndexOf(manifestIdentityGrant),
       activationAuthority.indexOf(
-        "-- Install the schema-owner ACL projectors",
+        liveCatalogDigestRoutine,
         activationAuthority.lastIndexOf(manifestIdentityGrant),
       ),
     );
@@ -607,6 +844,11 @@ describe("canonical exclusive release migration caller", () => {
     );
     expect(finalManifestIdentityGrant).toContain(
       "reviewrouter_activation_permit_installer",
+    );
+    const manifestIdentityRoutine =
+      "CREATE OR REPLACE FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()";
+    expect(activationAuthority.indexOf(manifestIdentityRoutine)).toBeLessThan(
+      activationAuthority.indexOf(liveCatalogDigestRoutine),
     );
     expect(finalManifestIdentityGrant).toContain(
       "reviewrouter_activation_receipt_reader",
@@ -676,7 +918,7 @@ describe("canonical exclusive release migration caller", () => {
       activationBoundary.matchAll(/failed_invariant := '([a-z_]+)'/gu),
       (match) => match[1],
     );
-    expect(stableBoundaryReasons).toHaveLength(54);
+    expect(stableBoundaryReasons).toHaveLength(59);
     expect(new Set(stableBoundaryReasons).size).toBe(
       stableBoundaryReasons.length,
     );
@@ -789,7 +1031,11 @@ describe("canonical exclusive release migration caller", () => {
         3,
       );
     expect(atomicMigration.trim().endsWith("COMMIT;")).toBe(true);
-    expect(atomicMigration).toContain(liveV70V72CatalogDigestSql);
+    expect(activationAuthority).toContain(liveV70V72CatalogDigestSql);
+    expect(atomicMigration).toContain(
+      "reviewrouter_activation.observe_live_migration_catalog_digest()",
+    );
+    expect(atomicMigration).not.toContain(liveV70V72CatalogDigestSql);
     for (const catalogSemantic of [
       "attacl",
       "attcollation",
@@ -816,8 +1062,14 @@ describe("canonical exclusive release migration caller", () => {
     expect(activationAuthority).toContain(
       "JOIN table_facts USING (role_name,role_kind,relname)",
     );
-    expect(liveV70V72CatalogDigestSha256).toBe(
-      fencedLiveV70V72CatalogDigestSha256,
+    expect(canonicalReleaseMigrationArtifact.postCatalogDigest).toBe(
+      liveV70V73CatalogDigestSha256,
+    );
+    expect(executableSource).not.toContain(
+      "sha256:e71e1fc196604551532c2a5f7fb6903ad0ea0838d8fa2f41e99f8a4791610c68",
+    );
+    expect(liveV70V73CatalogDigestSha256).toBe(
+      canonicalReleaseMigrationArtifact.postCatalogDigest,
     );
     expect(fencedLiveV70V72CatalogDigestSql).toContain(
       "read_activation_migration_manifest_identity()",
@@ -843,17 +1095,48 @@ describe("canonical exclusive release migration caller", () => {
     expect(liveV70V72CatalogDigestSql).toContain(
       "authority_root.relname='rollout'",
     );
-    expect(liveV70V72CatalogDigestSql).toContain(
-      "relname='CodexOAuthWritebackIntent'",
-    );
+    for (const custodyRoutine of [
+      "hosted_codex_lock_comment_token_mint",
+      "hosted_codex_mutate_comment_token_mint_v85",
+    ])
+      expect(liveV70V72CatalogDigestSql).toContain(`'${custodyRoutine}'`);
     for (const dynamicPrincipal of [
       "reviewrouter_api",
       "reviewrouter_web",
       "reviewrouter_worker",
+      "reviewrouter_comment_token_custody",
     ])
       expect(liveV70V72CatalogDigestSql).toContain(dynamicPrincipal);
+    expect(liveV70V72CatalogDigestSql).not.toContain(
+      "WHEN relname='CodexOAuthWritebackIntent'",
+    );
+    expect(liveV70V72CatalogDigestSql).toContain("FROM unnest(a.attacl) v");
+    expect(liveV70V72CatalogDigestSql).toContain("FROM unnest(relacl) v");
+    expect([
+      ...liveV70V72CatalogDigestSql.matchAll(
+        /WHERE split_part\(split_part\(normalized_acl\.entry,'\/',1\),'=',2\)<>''/gu,
+      ),
+    ]).toHaveLength(2);
+    expect(liveV70V72CatalogDigestSql).not.toContain("'[awdD]'");
+    expect([
+      ...liveV70V72CatalogDigestSql.matchAll(
+        /split_part\(v::text,'\/',2\)='reviewrouter_release_schema_owner'/gu,
+      ),
+    ]).toHaveLength(7);
     expect(liveV70V72CatalogDigestSql).toContain(
-      "pg_catalog.regexp_replace(\n              split_part(split_part(v::text,'/',1),'=',2),'[awdD]','','g'",
+      "WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'\n                AND split_part(v::text,'=',1) IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker')\n                AND relname IN ('GitHubInstallation','HostedCodexCommentRefreshCapability','HostedCodexCommentRefreshUse','HostedCodexInvocationGrant','HostedCodexPool','HostedCodexRepositoryBinding')\n              THEN '[awd]'",
+    );
+    expect(liveV70V72CatalogDigestSql).toContain(
+      "AND relname IN ('CodexOAuthWritebackIntent','GitHubInstallation','HostedCodexCommentRefreshCapability','HostedCodexCommentRefreshUse','HostedCodexInvocationGrant','HostedCodexPool','HostedCodexRepositoryBinding')\n              THEN '[aw]'",
+    );
+    expect(liveV70V72CatalogDigestSql).toContain(
+      "AND relname='HostedCodexCommentRefreshUse'\n              THEN '[a]'",
+    );
+    expect(liveV70V72CatalogDigestSql).toContain(
+      "WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'\n              AND split_part(v::text,'=',1)='reviewrouter_comment_token_custody'\n              AND r.relname='HostedCodexCommentRefreshCapability'\n              AND a.attname IN ('useCount','lastUsedAt','revision','updatedAt')",
+    );
+    expect(liveV70V72CatalogDigestSql).not.toMatch(
+      /RuntimeGenerationWitnessProof[^)]*THEN '\[a/gu,
     );
     expect(atomicMigration).toContain(
       "release migration V70-V73 live catalog digest mismatch",
@@ -872,6 +1155,7 @@ describe("canonical exclusive release migration caller", () => {
         "reviewrouter_api",
         "reviewrouter_web",
         "reviewrouter_worker",
+        "reviewrouter_comment_token_custody",
         "reviewrouter_codex_effect_authority",
         "reviewrouter_release_migration",
       ].map((username) => ({
@@ -884,9 +1168,11 @@ describe("canonical exclusive release migration caller", () => {
               ? "web-secret"
               : username === "reviewrouter_worker"
                 ? "worker-secret"
-                : username === "reviewrouter_codex_effect_authority"
-                  ? "signer-secret"
-                  : "release") +
+                : username === "reviewrouter_comment_token_custody"
+                  ? "custody-secret"
+                  : username === "reviewrouter_codex_effect_authority"
+                    ? "signer-secret"
+                    : "release") +
           "'",
       })),
     ]);
@@ -913,6 +1199,18 @@ describe("canonical exclusive release migration caller", () => {
     );
     expect(provisioning).toContain(
       "transferred public routine ACL is non-canonical",
+    );
+    expect(provisioning).toContain(
+      "DO $provider_scope_concurrency_acl_convergence$",
+    );
+    expect(provisioning).toContain(
+      "DO $provider_scope_concurrency_operator_boundary$",
+    );
+    expect(provisioning).toContain(
+      "REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC CASCADE",
+    );
+    expect(provisioning).toContain(
+      "provider scope concurrency operator boundary is non-canonical",
     );
     expect(provisioning.indexOf("DO $transfer_public_ownership$")).toBeLessThan(
       provisioning.indexOf("DO $transferred_public_routine_acl$"),
@@ -961,10 +1259,34 @@ describe("canonical exclusive release migration caller", () => {
       provisioning.match(
         /ALTER ROLE reviewrouter_[a-z_]+ LOGIN NOCREATEROLE PASSWORD/gu,
       ),
-    ).toHaveLength(5);
+    ).toHaveLength(6);
     expect(provisioning).toContain(
       "refusing to converge unexpectedly privileged role",
     );
+    const custodyNoLogin = provisioning.indexOf(
+      "ALTER ROLE reviewrouter_comment_token_custody NOLOGIN;",
+    );
+    const custodyCommit = provisioning.indexOf("COMMIT;", custodyNoLogin);
+    const custodyTerminate = provisioning.indexOf(
+      "SELECT pg_terminate_backend(pid)",
+      custodyCommit,
+    );
+    const custodySessionProof = provisioning.indexOf(
+      "custody credential rotation retained an old backend",
+      custodyTerminate,
+    );
+    const custodyPassword = provisioning.indexOf(
+      "ALTER ROLE reviewrouter_comment_token_custody LOGIN NOCREATEROLE PASSWORD",
+      custodySessionProof,
+    );
+    expect(custodyNoLogin).toBeGreaterThan(0);
+    expect(custodyCommit).toBeGreaterThan(custodyNoLogin);
+    expect(custodyTerminate).toBeGreaterThan(custodyCommit);
+    expect(custodySessionProof).toBeGreaterThan(custodyTerminate);
+    expect(provisioning.lastIndexOf("BEGIN;", custodyPassword)).toBeGreaterThan(
+      custodySessionProof,
+    );
+    expect(custodyPassword).toBeGreaterThan(custodySessionProof);
     expect(provisioning).not.toContain(
       "GRANT reviewrouter_release_schema_owner TO reviewrouter_role_bootstrap",
     );
@@ -1042,6 +1364,30 @@ describe("canonical exclusive release migration caller", () => {
       "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_schema_owner",
     );
     expect(provisioning).toContain(
+      "REVOKE USAGE, CREATE ON SCHEMA public FROM reviewrouter_release_schema_owner",
+    );
+    expect(provisioning).toContain(
+      "release schema owner public ACL handoff survived convergence",
+    );
+    expect(
+      provisioning.indexOf(
+        "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_schema_owner",
+      ),
+    ).toBeLessThan(
+      provisioning.indexOf(
+        "REVOKE USAGE, CREATE ON SCHEMA public FROM reviewrouter_release_schema_owner",
+      ),
+    );
+    expect(
+      provisioning.indexOf(
+        "REVOKE USAGE, CREATE ON SCHEMA public FROM reviewrouter_release_schema_owner",
+      ),
+    ).toBeLessThan(
+      provisioning.indexOf(
+        "SELECT 'ALTER SCHEMA public OWNER TO reviewrouter_release_schema_owner'",
+      ),
+    );
+    expect(provisioning).toContain(
       "REVOKE CREATE, TEMPORARY ON DATABASE %I FROM reviewrouter_release_migration",
     );
     expect(provisioning).toContain(
@@ -1054,8 +1400,9 @@ describe("canonical exclusive release migration caller", () => {
       "PERFORM reviewrouter_activation.complete_migration_permit(",
     );
     expect(provisioning).toContain("requested_acl_gate_closed boolean");
+    expect(provisioning).toContain("requested_catalog_capture_only boolean");
     expect(provisioning).toContain(
-      "text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean",
+      "text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean",
     );
     expect(provisioning).toContain(
       "release migration executor ACL gate mode invalid",
@@ -1228,6 +1575,9 @@ describe("canonical exclusive release migration caller", () => {
       "RAISE EXCEPTION 'release migration target live completion mismatch';",
     );
     expect(provisioning).toContain(
+      "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(\n  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean,boolean) TO reviewrouter_release_migration;",
+    );
+    expect(provisioning).not.toContain(
       "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(\n  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) TO reviewrouter_release_migration;",
     );
     expect(provisioning).not.toContain(
@@ -1293,6 +1643,12 @@ describe("canonical exclusive release migration caller", () => {
     expect(activationAuthority).toContain(
       "WHEN role_kind='api' AND proname='reviewrouter_runtime_generation_write_read_canary' THEN",
     );
+    expect(activationAuthority).toContain(
+      "'HostedCodexRuntimeGate','HostedCodexRuntimeClosure',\n             'ReviewProviderScopeConcurrencyControl'",
+    );
+    expect(activationAuthority).toContain(
+      "'HostedCodexRuntimeGate','HostedCodexRuntimeClosure',\n           'ReviewProviderScopeConcurrencyControl','HostedCodexCommentTokenMint'",
+    );
     expect(grants).toContain(
       "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM reviewrouter_codex_effect_authority",
     );
@@ -1310,6 +1666,43 @@ describe("canonical exclusive release migration caller", () => {
       expect(grants).toContain(
         `GRANT SELECT ON TABLE public."RepositoryConnection" TO ${role}`,
       );
+      const runtimeAuthorityAclStart = grants.indexOf(
+        "DO $runtime_authority_acl$",
+        grants.indexOf(
+          `GRANT SELECT ON TABLE public."RepositoryConnection" TO ${role}`,
+        ),
+      );
+      const runtimeAuthorityAclEnd = grants.indexOf(
+        "$runtime_authority_acl$;",
+        runtimeAuthorityAclStart,
+      );
+      const runtimeAuthorityAcl = grants.slice(
+        runtimeAuthorityAclStart,
+        runtimeAuthorityAclEnd + "$runtime_authority_acl$;".length,
+      );
+      expect(runtimeAuthorityAclStart).toBeGreaterThan(-1);
+      expect(runtimeAuthorityAclEnd).toBeGreaterThan(runtimeAuthorityAclStart);
+      for (const table of runtimeAuthorityReadOnlyTables) {
+        expect(runtimeAuthorityAcl).toContain(`'${table}'`);
+      }
+      expect(runtimeAuthorityReadOnlyTables).toContain(
+        "ReviewProviderScopeConcurrencyControl",
+      );
+      expect(runtimeAuthorityAcl).toContain(
+        "'REVOKE INSERT, UPDATE, DELETE ON TABLE public.%I FROM %I'",
+      );
+      expect(runtimeAuthorityAcl).toContain(
+        "'GRANT SELECT ON TABLE public.%I TO %I'",
+      );
+      expect(grants).toContain(
+        `REVOKE ALL ON TABLE public."CodexOAuthWorkflowCompatibility" FROM ${role}`,
+      );
+      const compatibilitySelect = `GRANT SELECT ON TABLE public."CodexOAuthWorkflowCompatibility" TO ${role}`;
+      if (role === "reviewrouter_api" || role === "reviewrouter_web") {
+        expect(grants).toContain(compatibilitySelect);
+      } else {
+        expect(grants).not.toContain(compatibilitySelect);
+      }
       const genericGrant = grants.indexOf(
         `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
       );
@@ -1342,6 +1735,7 @@ describe("canonical exclusive release migration caller", () => {
         expect(grants).toContain(`'${table}'`);
       }
       expect(grants).toContain("REVOKE ALL (%I) ON TABLE public.%I FROM %I");
+      expect(grants).toContain("'ReviewProviderScopeConcurrencyControl'");
       expect(grants).toContain("'REVOKE DELETE ON TABLE public.%I FROM %I'");
       expect(grants).toContain(
         "'REVOKE INSERT, UPDATE, DELETE ON TABLE public.%I FROM %I'",
@@ -1357,6 +1751,12 @@ describe("canonical exclusive release migration caller", () => {
           )}) ON TABLE public."CodexOAuthProviderInstance" TO ${role}`,
       );
     }
+    expect(grants).toContain(
+      'GRANT EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text,integer) TO reviewrouter_web',
+    );
+    expect(grants).not.toContain(
+      'GRANT EXECUTE ON FUNCTION public."codex_oauth_reattest_active_namespace_v4_to_v5"(text,text,text,text,bigint,text,text,text,text,text,integer,integer,text,text,text,text,text,text,text,text) TO reviewrouter_web',
+    );
     expect(
       grants.indexOf(
         "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM reviewrouter_codex_effect_authority",
@@ -1365,6 +1765,83 @@ describe("canonical exclusive release migration caller", () => {
       grants.indexOf(
         'GRANT EXECUTE ON FUNCTION public."codex_oauth_sign_database_authority"(text) TO reviewrouter_codex_effect_authority',
       ),
+    );
+  });
+
+  it("keeps provider-scope rollout control SELECT-only in the activation ACL verifier", () => {
+    const activationAuthority = activationAuthorityProvisioningSql();
+    const activateGeneration = activationAuthority.slice(
+      activationAuthority.indexOf(
+        "CREATE OR REPLACE FUNCTION reviewrouter_activation.activate_generation(",
+      ),
+      activationAuthority.indexOf(
+        "ALTER FUNCTION reviewrouter_activation.activate_generation(text)",
+      ),
+    );
+    const insertExpectation = activateGeneration.slice(
+      activateGeneration.indexOf("OR can_insert IS DISTINCT FROM"),
+      activateGeneration.indexOf("OR can_update IS DISTINCT FROM"),
+    );
+    const updateExpectation = activateGeneration.slice(
+      activateGeneration.indexOf("OR can_update IS DISTINCT FROM"),
+      activateGeneration.indexOf("OR can_delete IS DISTINCT FROM"),
+    );
+    const deleteExpectation = activateGeneration.slice(
+      activateGeneration.indexOf("OR can_delete IS DISTINCT FROM"),
+      activateGeneration.indexOf("OR can_truncate"),
+    );
+
+    for (const expectation of [
+      insertExpectation,
+      updateExpectation,
+      deleteExpectation,
+    ]) {
+      expect(expectation).toContain("ReviewProviderScopeConcurrencyControl");
+    }
+    expect(activateGeneration).toContain(
+      "'HostedCodexCommentRefreshUse','ReviewProviderScopeConcurrencyControl'",
+    );
+    expect(activateGeneration).toContain(
+      "column_facts.role_kind NOT IN ('effect-authority','custody')",
+    );
+  });
+
+  it("rejects runtime column grant options while retaining custody UPDATE access", () => {
+    const activationAuthority = activationAuthorityProvisioningSql();
+    const activateGeneration = activationAuthority.slice(
+      activationAuthority.indexOf(
+        "CREATE OR REPLACE FUNCTION reviewrouter_activation.activate_generation(",
+      ),
+      activationAuthority.indexOf(
+        "ALTER FUNCTION reviewrouter_activation.activate_generation(text)",
+      ),
+    );
+    const columnGrantOptionCheck = activateGeneration.slice(
+      activateGeneration.indexOf(
+        "OR EXISTS (SELECT 1 FROM pg_attribute attribute",
+      ),
+      activateGeneration.indexOf(
+        "OR EXISTS (SELECT 1 FROM routines,",
+        activateGeneration.indexOf(
+          "OR EXISTS (SELECT 1 FROM pg_attribute attribute",
+        ),
+      ),
+    );
+
+    expect(columnGrantOptionCheck).toContain(
+      "CROSS JOIN LATERAL aclexplode(attribute.attacl) acl",
+    );
+    expect(columnGrantOptionCheck).toContain(
+      "WHERE attribute.attacl IS NOT NULL\n           AND attribute.attrelid IN (SELECT oid FROM tables)",
+    );
+    expect(columnGrantOptionCheck).toContain(
+      "AND attribute.attnum>0 AND NOT attribute.attisdropped\n           AND acl.is_grantable",
+    );
+    expect(columnGrantOptionCheck).toContain(
+      "'reviewrouter_comment_token_custody'",
+    );
+    expect(activateGeneration).toContain(
+      "WHEN column_facts.role_kind='custody'\n               AND column_facts.relname='HostedCodexCommentRefreshCapability'\n               AND column_facts.attname=ANY(ARRAY['useCount','lastUsedAt','revision','updatedAt'])\n             THEN true",
     );
   });
 
@@ -1424,6 +1901,7 @@ describe("canonical exclusive release migration caller", () => {
     }> = [];
     const roleNames = [
       "reviewrouter_api",
+      "reviewrouter_comment_token_custody",
       "reviewrouter_codex_effect_authority",
       "reviewrouter_release_migration",
       "reviewrouter_web",

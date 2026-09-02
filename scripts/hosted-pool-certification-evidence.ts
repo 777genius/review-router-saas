@@ -48,7 +48,15 @@ export function assertHostedCertificationSecretFree(
   sources: readonly CertificationScanSource[],
   sentinels: readonly string[],
 ): void {
-  const usableSentinels = sentinels.filter((value) => value.length >= 4);
+  const usableSentinels = sentinels.filter(
+    (value) => value.length >= 16 && value.trim() === value,
+  );
+  if (
+    usableSentinels.length !== sentinels.length ||
+    usableSentinels.length < 1 ||
+    new Set(usableSentinels).size !== usableSentinels.length
+  )
+    throw new Error("hosted_certification_secret_sentinels_required");
   for (const source of sources) {
     const candidates = [
       source.value,
@@ -107,6 +115,15 @@ export async function buildHostedCertificationEvidence(input: {
     "packages/platform/db/prisma/migrations/000076_hosted_codex_terminalization_restore_invariants/migration.sql",
     "packages/platform/db/prisma/migrations/000077_hosted_codex_r57_security_race_remediation/migration.sql",
     "packages/platform/db/prisma/migrations/000078_review_investigation_maintenance_checkpoint/migration.sql",
+    "packages/platform/db/prisma/migrations/000079_hosted_codex_output_limits/migration.sql",
+    "packages/platform/db/prisma/migrations/000079_remove_account_wide_provider_lane_serialization/migration.sql",
+    "packages/platform/db/prisma/migrations/000080_hosted_codex_attempt_generation/migration.sql",
+    "packages/platform/db/prisma/migrations/000081_hosted_codex_runtime_gate/migration.sql",
+    "packages/platform/db/prisma/migrations/000082_validate_hosted_codex_output_limits/migration.sql",
+    "packages/platform/db/prisma/migrations/000083_hosted_codex_comment_token_mint_protocol/migration.sql",
+    "packages/platform/db/prisma/migrations/000084_harden_comment_token_custody/migration.sql",
+    "packages/platform/db/prisma/migrations/000085_comment_token_gate_lock_result/migration.sql",
+    "packages/platform/db/prisma/migrations/000086_comment_token_custody_r18_remediation/migration.sql",
   ];
   const sources: CertificationScanSource[] = [];
   const logsDirectory = join(input.outputDirectory, "logs");
@@ -123,13 +140,13 @@ export async function buildHostedCertificationEvidence(input: {
   ] as const;
   const gates = gateNames.map((name) => ({
     name,
-    status: input.gateStatuses?.[name] ?? "local",
+    status: input.gateStatuses?.[name] ?? "missing",
   }));
-  if (input.gateStatuses && gates.some((gate) => gate.status !== "success")) {
+  if (gates.some((gate) => gate.status !== "success")) {
     throw new Error("hosted_certification_gate_failed");
   }
   const evidence = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     subject: {
       commitSha,
       parentSha,
@@ -144,7 +161,7 @@ export async function buildHostedCertificationEvidence(input: {
     ),
     gates,
     scan: {
-      policyVersion: "hosted-certification-sensitive-scan-v1",
+      policyVersion: "hosted-certification-sensitive-scan-v2",
       sourceCount: sources.length + 1,
       relayEffectRowsIncluded:
         Boolean(input.databaseUrl) ||

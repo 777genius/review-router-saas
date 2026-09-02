@@ -1,13 +1,11 @@
 import { sha256Canonical } from "./canonical-json";
 import generatedActivationCatalogPolicyArtifact from "./activation-catalog-policy-artifact.generated.js";
-import activationCatalogPolicyPromotionProvenance from "./activation-catalog-policy-provenance.json" with { type: "json" };
 import { type ActivationCatalogPolicy } from "./effective-principal-inventory";
 import {
   assertActivationCatalogPolicyNormalizationForProfile,
   productionActivationCatalogPolicyNormalizationProfile,
 } from "./activation-catalog-policy-normalization";
-import { reviewedActivationCatalogPromotionExpectation } from "./activation-catalog-policy-promotion-expectation";
-import { activationCatalogPolicyTrustRootReadinessFromProvenance } from "./activation-catalog-policy-provenance-contract";
+import { activationCatalogRawPromotionTrustRoot } from "./activation-catalog-policy-raw-promotion-trust-root";
 
 export type ActivationCatalogPolicyPhase = "preactivation" | "activated";
 
@@ -24,10 +22,13 @@ export type ActivationCatalogPolicyDigests = Readonly<{
 export const canonicalActivationCatalogPolicyTrustRootReadiness: Readonly<{
   status: "blocked" | "ready";
   reason: string;
-}> = activationCatalogPolicyTrustRootReadinessFromProvenance(
-  activationCatalogPolicyPromotionProvenance,
-  reviewedActivationCatalogPromotionExpectation,
-);
+}> =
+  activationCatalogRawPromotionTrustRoot.status === "ready"
+    ? Object.freeze({ status: "ready", reason: "reviewed-raw" })
+    : Object.freeze({
+        status: "blocked",
+        reason: activationCatalogRawPromotionTrustRoot.reason,
+      });
 
 export function assertCanonicalActivationCatalogPolicyTrustRootReady(): void {
   if (canonicalActivationCatalogPolicyTrustRootReadiness.status !== "ready")
@@ -108,17 +109,27 @@ export const canonicalActivationCatalogPolicyDigests = Object.freeze({
 
 export const reviewedActivationCatalogPolicyDigests = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:36e6e4875c530beba1cb6bfc580a358d031895334e6af6a6bad193148e1beebe",
+    activationCatalogRawPromotionTrustRoot.status === "ready"
+      ? activationCatalogRawPromotionTrustRoot.evidence.canonicalDigests
+          .preactivation
+      : "sha256:87266972e7979bb15464f470f1cb94c1cf8fee3f8ec62d36c8c866328e52925b",
   activatedCatalogPolicySha256:
-    "sha256:d0ccc9a760f69c467d3c9df56502704abb1f03116a2be156eb206100b35f5866",
+    activationCatalogRawPromotionTrustRoot.status === "ready"
+      ? activationCatalogRawPromotionTrustRoot.evidence.canonicalDigests
+          .activated
+      : "sha256:cc35c6b43fe8b117a492705eeaf2ab9a9ac0e05f98546fa32ac9d340df89867b",
 });
 
 if (
   canonicalActivationCatalogPolicyTrustRootReadiness.status === "ready" &&
-  !activationCatalogPolicyDigestsEqual(
+  (!activationCatalogPolicyDigestsEqual(
     canonicalActivationCatalogPolicyDigests,
     reviewedActivationCatalogPolicyDigests,
-  )
+  ) ||
+    (activationCatalogRawPromotionTrustRoot.status === "ready" &&
+      `sha256:${sha256Canonical(canonicalActivationCatalogPolicyArtifact)}` !==
+        activationCatalogRawPromotionTrustRoot.evidence.canonicalDigests
+          .artifact))
 )
   throw new Error("activation_catalog_policy_reviewed_digest_drift");
 

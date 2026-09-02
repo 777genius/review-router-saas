@@ -11,16 +11,44 @@ import {
   productionActivationCatalogPolicyNormalizationProfile,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts";
 import {
+  assertActivationCatalogLiveDigestTransitionBinding,
   activationCatalogPromotionOptIn,
   reviewedActivationCatalogCandidate,
   reviewedActivationCatalogPromotionExpectation,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation.ts";
-import { assertActivationCatalogPolicyPromotionProvenance } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
+import {
+  assertActivationCatalogRawPromotionTrustRootReady,
+  activationCatalogRawPromotionTrustRoot,
+} from "../packages/features/release-rollout/src/domain/activation-catalog-policy-raw-promotion-trust-root.ts";
+import {
+  assertActivationCatalogPolicyPromotionProvenance,
+  assertActivationCatalogRawCaptureEvidence,
+} from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
+import {
+  canonicalReleaseMigrationArtifact,
+  historicalReleaseMigrationPostCatalogDigest,
+} from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
+import { assertActivationCatalogPolicyReviewEvidence } from "../packages/features/release-rollout/src/adapters/activation-catalog-policy-review-evidence.ts";
+import {
+  reviewedActivationCatalogCandidatePath,
+  reviewedActivationCatalogCandidateRepositoryPath,
+} from "./lib/reviewed-activation-catalog-candidate.mjs";
+import {
+  readAndAssertActivationCatalogCapturePair,
+  readBoundedActivationCatalogBytes,
+} from "./lib/activation-catalog-capture-pair.mjs";
+import {
+  assertActivationCatalogCaptureSurfaceIdentity,
+  assertActivationCatalogGitCustody,
+} from "./lib/activation-catalog-git-custody.mjs";
 
 export {
+  activationCatalogRawPromotionTrustRoot,
   activationCatalogPromotionOptIn,
   reviewedActivationCatalogCandidate,
   reviewedActivationCatalogPromotionExpectation,
+  reviewedActivationCatalogCandidatePath,
+  reviewedActivationCatalogCandidateRepositoryPath,
 };
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -34,11 +62,23 @@ export const activationCatalogPromotionProvenancePath = resolve(
 );
 export const activationCatalogIndependentReviewPath = resolve(
   repositoryRoot,
-  "docs/release-evidence/activation-catalog-policy-v25-independent-review.json",
+  "docs/release-evidence/activation-catalog-policy-v29-schema-v5-independent-review.md",
 );
 export const activationCatalogReviewerEvidencePath = resolve(
   repositoryRoot,
-  "docs/release-evidence/activation-catalog-policy-v25-reviewer-runtime.json",
+  "docs/release-evidence/activation-catalog-policy-v29-schema-v5-reviewer-runtime.json",
+);
+export const activationCatalogSupplementalReviewerEvidencePath = resolve(
+  repositoryRoot,
+  "docs/release-evidence/activation-catalog-policy-v29-schema-v5-security-reviewer-runtime.json",
+);
+export const activationCatalogLiveProjectionSourcePath = resolve(
+  repositoryRoot,
+  "packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs",
+);
+export const activationCatalogNormalizationSourcePath = resolve(
+  repositoryRoot,
+  "packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts",
 );
 
 export function assertReviewedActivationCatalogPromotionProvenance(value) {
@@ -58,67 +98,17 @@ async function readPromotionProvenance() {
   }
 }
 
-async function readJsonEvidence(path, hash, errorCode) {
-  try {
-    const bytes = await readFile(path);
-    if (sha256(bytes) !== hash) throw new Error(errorCode);
-    return JSON.parse(bytes.toString("utf8"));
-  } catch {
-    throw new Error(errorCode);
-  }
-}
-
-export async function assertActivationCatalogPolicyIndependentReviewEvidence(
-  provenance,
-) {
-  const expectation = reviewedActivationCatalogPromotionExpectation;
-  const report = await readJsonEvidence(
-    activationCatalogIndependentReviewPath,
-    expectation.reviewArtifactSha256,
-    "activation_catalog_policy_independent_review_artifact_invalid",
+export async function assertActivationCatalogPolicyIndependentReviewEvidence() {
+  const [reviewArtifact, reviewerRuntime, supplementalRuntime] =
+    await Promise.all([
+      readFile(activationCatalogIndependentReviewPath),
+      readFile(activationCatalogReviewerEvidencePath),
+      readFile(activationCatalogSupplementalReviewerEvidencePath),
+    ]);
+  assertActivationCatalogPolicyReviewEvidence(
+    { reviewArtifact, reviewerRuntime, supplementalRuntime },
+    reviewedActivationCatalogPromotionExpectation,
   );
-  const reviewer = await readJsonEvidence(
-    activationCatalogReviewerEvidencePath,
-    expectation.reviewerEvidenceSha256,
-    "activation_catalog_policy_reviewer_runtime_evidence_invalid",
-  );
-  const outputSummary = Array.isArray(reviewer.evidence)
-    ? reviewer.evidence.find(
-        (entry) =>
-          typeof entry === "string" && entry.startsWith("output_summary:"),
-      )
-    : undefined;
-  if (
-    report?.verdict !== "GO" ||
-    report?.exactHead !== expectation.auditedHead ||
-    report?.sourceProductCommit !== expectation.captureBaseCommit ||
-    report?.reviewerRunId !== expectation.reviewerRunId ||
-    report?.reviewDecisionId !== expectation.reviewDecisionId ||
-    report?.reviewerEvidenceSha256 !== expectation.reviewerEvidenceSha256 ||
-    report?.candidateBytes !== expectation.candidateBytes ||
-    report?.candidateSha256 !== expectation.candidateSha256 ||
-    canonicalJson(report?.candidateCaptures) !==
-      canonicalJson(provenance?.candidate?.captures) ||
-    reviewer?.status !== "done" ||
-    reviewer?.provider !== "codex" ||
-    reviewer?.runId !== expectation.reviewerRunId ||
-    reviewer?.taskId !== expectation.reviewerRunId ||
-    reviewer?.updatedAt !== report.reviewedAt ||
-    !Array.isArray(reviewer.blockers) ||
-    reviewer.blockers.length !== 0 ||
-    !Array.isArray(reviewer.changedFiles) ||
-    reviewer.changedFiles.length !== 0 ||
-    !reviewer.evidence.includes("safe_execution_status:completed") ||
-    typeof outputSummary !== "string" ||
-    (!outputSummary.includes("# Verdict: GO") &&
-      !outputSummary.includes("**Verdict: GO**")) ||
-    !outputSummary.includes(expectation.reviewDecisionId) ||
-    !outputSummary.includes(expectation.candidateSha256) ||
-    !outputSummary.includes(expectation.captureBaseCommit)
-  )
-    throw new Error(
-      "activation_catalog_policy_independent_review_evidence_invalid",
-    );
 }
 
 async function writeArtifactAtomically(generated) {
@@ -134,34 +124,89 @@ async function writeArtifactAtomically(generated) {
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
+export async function assertActivationCatalogPolicyReviewedSourceBindings() {
+  const expectation = reviewedActivationCatalogPromotionExpectation;
+  const [projectionSource, normalizationSource] = await Promise.all([
+    readFile(activationCatalogLiveProjectionSourcePath),
+    readFile(activationCatalogNormalizationSourcePath),
+  ]);
+  if (
+    sha256(projectionSource) !==
+      expectation.liveCatalogProjectionSourceSha256 ||
+    sha256(normalizationSource) !== expectation.normalizationSourceSha256
+  )
+    throw new Error("activation_catalog_policy_reviewed_source_drift");
+}
+
 function parseArguments(argv) {
-  let candidatePath;
+  const paths = {};
   let write = false;
+  let rawOptIn;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === "--candidate" && candidatePath === undefined) {
-      candidatePath = argv[index + 1];
+    const key = {
+      "--candidate": "candidatePath",
+      "--capture-1": "capture1Path",
+      "--capture-2": "capture2Path",
+    }[argument];
+    if (key && paths[key] === undefined && argv[index + 1]) {
+      paths[key] = resolve(argv[index + 1]);
       index += 1;
     } else if (argument === "--write" && !write) {
       write = true;
+    } else if (
+      argument === "--raw-opt-in" &&
+      rawOptIn === undefined &&
+      argv[index + 1]
+    ) {
+      rawOptIn = argv[index + 1];
+      index += 1;
     } else {
       throw new Error("activation_catalog_policy_promotion_arguments_invalid");
     }
   }
-  if (!candidatePath)
+  if (paths.candidatePath && Object.keys(paths).length === 1)
+    return { mode: "legacy", candidatePath: paths.candidatePath, write };
+  if (
+    !paths.candidatePath &&
+    paths.capture1Path &&
+    paths.capture2Path &&
+    Object.keys(paths).length === 2
+  )
+    return {
+      mode: "raw",
+      capturePaths: [paths.capture1Path, paths.capture2Path],
+      rawOptIn,
+      write,
+    };
+  if (Object.keys(paths).length === 0)
     throw new Error("activation_catalog_policy_promotion_candidate_required");
-  return { candidatePath: resolve(candidatePath), write };
+  throw new Error("activation_catalog_policy_promotion_arguments_invalid");
 }
 
-function assertArtifactCandidate(value) {
+export function assertArtifactCandidate(
+  value,
+  reviewedCandidate = reviewedActivationCatalogCandidate,
+) {
+  const reviewedLiveCatalogDigest = Reflect.get(
+    reviewedCandidate,
+    "liveCatalogDigest",
+  );
+  const capturesLiveCatalogDigest =
+    typeof reviewedLiveCatalogDigest === "string";
+  const expectedFields = capturesLiveCatalogDigest
+    ? "kind,liveCatalogDigest,policies,version"
+    : "kind,policies,version";
   if (
     value === null ||
     typeof value !== "object" ||
     Array.isArray(value) ||
-    Object.keys(value).sort().join(",") !== "kind,policies,version" ||
+    Object.keys(value).sort().join(",") !== expectedFields ||
     value.kind !==
       "reviewrouter-activation-catalog-policy-artifact-candidate" ||
-    value.version !== 1 ||
+    value.version !== (capturesLiveCatalogDigest ? 2 : 1) ||
+    (capturesLiveCatalogDigest &&
+      value.liveCatalogDigest !== reviewedLiveCatalogDigest) ||
     value.policies === null ||
     typeof value.policies !== "object" ||
     Array.isArray(value.policies) ||
@@ -229,32 +274,184 @@ export function canonicalActivationCatalogArtifactSource(candidateBytes) {
     reviewedActivationCatalogCandidate.artifactCanonicalSha256
   )
     throw new Error("activation_catalog_policy_promotion_artifact_drift");
-  return Buffer.from(
+  const generated = Buffer.from(
     `// Generated by scripts/promote-private-pg17-activation-catalog-policy.mjs. Do not edit.\n` +
       `/** @type {unknown} */\n` +
       `const canonicalActivationCatalogPolicyArtifact = ${canonicalArtifact};\n` +
       `export default canonicalActivationCatalogPolicyArtifact;\n`,
     "utf8",
   );
+  if (
+    generated.byteLength !==
+      reviewedActivationCatalogPromotionExpectation.generatedArtifactSourceBytes ||
+    sha256(generated) !==
+      reviewedActivationCatalogPromotionExpectation.generatedArtifactSourceSha256
+  )
+    throw new Error("activation_catalog_policy_generated_source_drift");
+  return generated;
+}
+
+export function canonicalActivationCatalogArtifactSourceFromRawCapture(
+  rawCapture,
+  evidence,
+) {
+  assertNormalizedCandidatePolicy(
+    rawCapture.policies.preactivation,
+    "preactivation",
+  );
+  assertNormalizedCandidatePolicy(rawCapture.policies.activated, "activated");
+  const artifact = {
+    kind: "reviewrouter-activation-catalog-policy-artifact",
+    version: 1,
+    policies: rawCapture.policies,
+  };
+  if (
+    `sha256:${sha256Canonical(artifact.policies.preactivation)}` !==
+      evidence.canonicalDigests.preactivation ||
+    `sha256:${sha256Canonical(artifact.policies.activated)}` !==
+      evidence.canonicalDigests.activated
+  )
+    throw new Error("activation_catalog_policy_promotion_phase_digest_drift");
+  const canonicalArtifact = canonicalJson(artifact);
+  if (
+    `sha256:${sha256(canonicalArtifact)}` !== evidence.canonicalDigests.artifact
+  )
+    throw new Error("activation_catalog_policy_promotion_artifact_drift");
+  const generated = Buffer.from(
+    `// Generated by scripts/promote-private-pg17-activation-catalog-policy.mjs. Do not edit.\n` +
+      `/** @type {unknown} */\n` +
+      `const canonicalActivationCatalogPolicyArtifact = ${canonicalArtifact};\n` +
+      `export default canonicalActivationCatalogPolicyArtifact;\n`,
+    "utf8",
+  );
+  if (
+    generated.byteLength !== evidence.generatedArtifactSource.bytes ||
+    sha256(generated) !== evidence.generatedArtifactSource.sha256
+  )
+    throw new Error("activation_catalog_policy_generated_source_drift");
+  return generated;
+}
+
+function assertRawGitCustody(root) {
+  const custody = assertActivationCatalogGitCustody({
+    repositoryRoot,
+    captureBaseCommit: root.evidence.capture.baseCommit,
+    auditedHead: root.evidence.capture.auditedHead,
+  });
+  assertActivationCatalogCaptureSurfaceIdentity({
+    repositoryRoot,
+    auditedHead: root.evidence.capture.auditedHead,
+    auditedTree: root.evidence.capture.auditedTree,
+  });
+  return custody;
+}
+
+async function promoteRawActivationCatalogPolicy(argumentsValue) {
+  assertActivationCatalogRawPromotionTrustRootReady(
+    activationCatalogRawPromotionTrustRoot,
+  );
+  const root = activationCatalogRawPromotionTrustRoot;
+  if (argumentsValue.rawOptIn !== root.optIn)
+    throw new Error("activation_catalog_policy_raw_opt_in_required");
+
+  assertActivationCatalogRawCaptureEvidence(root.evidence);
+  assertRawGitCustody(root);
+
+  const [reviewArtifactFile, reviewerRuntimeFile] = await Promise.all([
+    readBoundedActivationCatalogBytes(
+      resolve(
+        repositoryRoot,
+        root.independentReview.reviewArtifact.repositoryPath,
+      ),
+      root.independentReview.reviewArtifact,
+    ),
+    readBoundedActivationCatalogBytes(
+      resolve(
+        repositoryRoot,
+        root.independentReview.reviewerRuntime.repositoryPath,
+      ),
+      root.independentReview.reviewerRuntime,
+    ),
+  ]);
+  assertActivationCatalogPolicyReviewEvidence(
+    {
+      reviewArtifact: reviewArtifactFile.contents,
+      reviewerRuntime: reviewerRuntimeFile.contents,
+    },
+    root,
+  );
+
+  const pair = await readAndAssertActivationCatalogCapturePair(
+    argumentsValue.capturePaths,
+    root.evidence,
+  );
+  assertActivationCatalogLiveDigestTransitionBinding(
+    root.evidence.liveCatalogDigest,
+    canonicalReleaseMigrationArtifact.postCatalogDigest,
+  );
+  const generated = canonicalActivationCatalogArtifactSourceFromRawCapture(
+    pair.selected,
+    root.evidence,
+  );
+
+  assertRawGitCustody(root);
+  if (argumentsValue.write) await writeArtifactAtomically(generated);
+  else {
+    let existing;
+    try {
+      existing = await readFile(activationCatalogArtifactPath);
+    } catch {
+      throw new Error("activation_catalog_policy_promotion_artifact_missing");
+    }
+    if (!existing.equals(generated))
+      throw new Error("activation_catalog_policy_promotion_artifact_drift");
+  }
+
+  return Object.freeze({
+    artifactPath: activationCatalogArtifactPath,
+    artifactSourceSha256: sha256(generated),
+    candidatePath: argumentsValue.capturePaths[0],
+    candidateSha256: root.evidence.captures[0].sha256,
+    liveCatalogDigest: root.evidence.liveCatalogDigest,
+    mode: argumentsValue.write ? "promoted" : "verified",
+    provenance: "raw-v1",
+  });
 }
 
 export async function promotePrivatePg17ActivationCatalogPolicy({
   env = process.env,
   argv = process.argv.slice(2),
 } = {}) {
-  if (
-    env.REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION !==
-    activationCatalogPromotionOptIn
-  )
-    throw new Error("activation_catalog_policy_promotion_opt_in_required");
-  const { candidatePath, write } = parseArguments(argv);
-  const generated = canonicalActivationCatalogArtifactSource(
-    await readFile(candidatePath),
+  const argumentsValue = parseArguments(argv);
+  if (argumentsValue.mode === "raw")
+    return promoteRawActivationCatalogPolicy(argumentsValue);
+
+  if (activationCatalogRawPromotionTrustRoot.status === "ready")
+    throw new Error("activation_catalog_policy_legacy_promotion_superseded");
+
+  assertActivationCatalogLiveDigestTransitionBinding(
+    reviewedActivationCatalogCandidate.liveCatalogDigest,
+    historicalReleaseMigrationPostCatalogDigest,
   );
+
+  const optIn = env.REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION;
+  if (optIn !== activationCatalogPromotionOptIn)
+    throw new Error("activation_catalog_policy_promotion_opt_in_required");
+
+  const generated = canonicalActivationCatalogArtifactSource(
+    await readFile(argumentsValue.candidatePath),
+  );
+  await assertActivationCatalogPolicyReviewedSourceBindings();
   const provenance = await readPromotionProvenance();
   assertReviewedActivationCatalogPromotionProvenance(provenance);
-  await assertActivationCatalogPolicyIndependentReviewEvidence(provenance);
-  if (write) await writeArtifactAtomically(generated);
+  await assertActivationCatalogPolicyIndependentReviewEvidence();
+  const result = {
+    candidatePath: argumentsValue.candidatePath,
+    candidateSha256: reviewedActivationCatalogCandidate.sha256,
+    ...reviewedActivationCatalogCandidate,
+  };
+
+  if (argumentsValue.write) await writeArtifactAtomically(generated);
   else {
     let existing;
     try {
@@ -266,14 +463,10 @@ export async function promotePrivatePg17ActivationCatalogPolicy({
       throw new Error("activation_catalog_policy_promotion_artifact_drift");
   }
   return Object.freeze({
-    candidatePath,
-    candidateSha256: reviewedActivationCatalogCandidate.sha256,
+    ...result,
     artifactPath: activationCatalogArtifactPath,
     artifactSourceSha256: sha256(generated),
-    artifactCanonicalSha256:
-      reviewedActivationCatalogCandidate.artifactCanonicalSha256,
-    ...reviewedActivationCatalogCandidate,
-    mode: write ? "promoted" : "verified",
+    mode: argumentsValue.write ? "promoted" : "verified",
   });
 }
 

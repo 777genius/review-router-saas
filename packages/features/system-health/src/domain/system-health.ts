@@ -10,6 +10,7 @@ export type SystemHealth = {
 export type DependencyHealth = {
   readonly name: string;
   readonly status: SystemHealthStatus;
+  readonly metrics?: Readonly<Record<string, number | boolean | string | null>>;
 };
 
 export function resolveSystemStatus(

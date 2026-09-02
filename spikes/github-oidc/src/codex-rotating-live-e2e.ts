@@ -24,6 +24,7 @@ import {
 } from "../../../packages/features/repositories/src/index.ts";
 import {
   CodexRotatingReviewActionV2Mode,
+  CodexRotatingT0WorkflowSchemaVersion,
   WorkflowSourceTrust,
   assertSameVersionedProviderSecretNamespace,
   assertTrustedCanonicalVersionedWorkflow,
@@ -564,6 +565,8 @@ async function provisionRotatingWorkflow(input: {
       codexRotatingProviderInstanceId: input.providerInstanceId,
       codexRotatingWorkflowSecretNamespace: input.workflowNamespace,
       codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      codexRotatingWorkflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
       forkAgenticSandboxEnabled: false,
     },
     {
@@ -697,6 +700,8 @@ async function isRotatingWorkflowCurrentOnDefaultBranch(
       expectedApiUrl: apiUrl,
       expectedProviderInstanceId: providerInstanceId,
       expectedSecretNamespace: workflowNamespace,
+      expectedWorkflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
     });
     return true;
   } catch {
@@ -754,8 +759,9 @@ async function activateVersionedSetupNamespace(input: {
     },
   );
   const { source, blobSha } = readGitHubWorkflowBlob(contentResponse.data);
+  const metadata = readCanonicalCodexRotatingT0WorkflowSourceMetadata(source);
   assertTrustedCanonicalVersionedWorkflow({
-    metadata: readCanonicalCodexRotatingT0WorkflowSourceMetadata(source),
+    metadata,
     observedRepositoryId: observedRepository.id,
     observedRepositoryFullName: observedRepository.fullName,
     expectedRepositoryId: input.githubRepositoryId,
@@ -764,6 +770,8 @@ async function activateVersionedSetupNamespace(input: {
     expectedApiUrl: apiUrl,
     expectedProviderInstanceId: input.providerInstanceId,
     expectedSecretNamespace: input.workflowNamespace,
+    expectedWorkflowSchemaVersion:
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
   });
   const attestation = createVersionedSecretWorkflowSourceAttestation({
     repositoryId: input.githubRepositoryId,
@@ -772,6 +780,7 @@ async function activateVersionedSetupNamespace(input: {
     workflowSourceBlobSha: blobSha,
     workflowSourceSha256: createHash("sha256").update(source).digest("hex"),
     workflowSemanticSha256: workflowDocumentSemanticSha256(source),
+    workflowSchemaVersion: metadata.workflowSchemaVersion,
     sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
     secretNamespace: input.workflowNamespace,
   });
@@ -807,6 +816,7 @@ async function activateVersionedSetupNamespace(input: {
     workflowSourceSha256: attestation.workflowSourceSha256,
     workflowSemanticSha256: attestation.workflowSemanticSha256,
     sourceTrust: "trusted_default_branch_revision",
+    workflowSchemaVersion: attestation.workflowSchemaVersion,
   });
 }
 

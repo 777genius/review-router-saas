@@ -38,6 +38,7 @@ import {
 import type { InvocationFlightQueryPort } from "../../application/ports/invocation-flight-ports";
 import {
   createEmptyReviewExecutionStream,
+  reviewRevisionsEqual,
   reviewExecutionAbsoluteMaxWorkSlots,
   type FinalizedReviewProjectionArtifact,
   type ReviewExecution,
@@ -47,6 +48,7 @@ import {
   type ReviewExecutionStream,
   type ReviewInvocationLease,
   ReviewInvocationLeasePurpose,
+  ReviewExecutionState,
   type ReviewWorkSlot,
 } from "../../domain/review-execution";
 import {
@@ -206,6 +208,11 @@ export class PrismaReviewExecutionStore
     return record === null ? null : leaseToDomain(record);
   }
 
+  /**
+   * Legacy repository-owned flight observation remains available to its exact
+   * callers during the mixed fleet. It is an observation/join path only; new
+   * admission and lease capacity are fenced by the scope-local path below.
+   */
   async observeActiveInvocationFlightByLane(input: {
     readonly providerVoteIdentityHash: string;
     readonly requestedAt: Date;
@@ -252,494 +259,585 @@ export class PrismaReviewExecutionStore
     });
   }
 
+  async observeActiveInvocationFlight(input: {
+    readonly scope: ReviewExecutionScope;
+    readonly providerInvocationKey: string;
+    readonly providerVoteIdentityHash: string;
+    readonly requestedAt: Date;
+  }): Promise<Readonly<{ flight: InvocationFlight | null; observedAt: Date }>> {
+    return this.prisma.$transaction(async (transaction) => {
+      const observedAt = await databaseNow(transaction);
+      // Shared only: this fences the fleet cutover transaction while the
+      // observer chooses its read shape. It is not invocation capacity or an
+      // account-wide provider lock.
+      await transaction.$queryRaw`
+        SELECT pg_advisory_xact_lock_shared(1381126735, 1381192279) IS NULL AS "locked"
+      `;
+      const controls = await transaction.$queryRaw<
+        Array<{ activated: boolean }>
+      >`
+        SELECT "activated"
+        FROM "ReviewProviderScopeConcurrencyControl"
+        WHERE "singleton" = true
+      `;
+      if (controls.length !== 1) {
+        throw new Error("review_provider_scope_concurrency_control_missing");
+      }
+      const activated = controls[0]!.activated;
+      const incumbents = await transaction.reviewInvocationLeaseV2.findMany({
+        where: {
+          ...(activated
+            ? {
+                ...scopeWhere(input.scope),
+                providerInvocationKey: input.providerInvocationKey,
+              }
+            : {
+                providerVoteIdentityHash: input.providerVoteIdentityHash,
+              }),
+          purpose: leasePurposeToPrisma(
+            ReviewInvocationLeasePurpose.ProviderExecution,
+          ),
+          state: PrismaLeaseState.active,
+        },
+        orderBy: { leaseId: "asc" },
+        take: 2,
+      });
+      if (incumbents.length > 1) {
+        throw new Error(
+          activated
+            ? "review_provider_invocation_invariant_violated"
+            : "review_provider_lane_invariant_violated",
+        );
+      }
+      const record = incumbents[0];
+      if (record === undefined) return { flight: null, observedAt };
+      const executionRecord = await transaction.reviewExecutionV2.findUnique({
+        where: { executionId: record.executionId },
+      });
+      if (executionRecord === null) {
+        throw new Error("invocation_flight_owner_execution_missing");
+      }
+      const execution = await loadExecution(transaction, executionRecord);
+      const slot = execution.workSlots.find(
+        (candidate) => candidate.workSlotId === record.workSlotId,
+      );
+      if (slot === undefined) {
+        throw new Error("invocation_flight_owner_slot_missing");
+      }
+      return {
+        flight: restoreInvocationFlight({
+          execution,
+          slot,
+          lease: leaseToDomain(record),
+        }),
+        observedAt,
+      };
+    });
+  }
+
   async prepareExecution(command: PrepareReviewExecutionCommand) {
-    try {
-      return await this.prisma.$transaction(
-        async (transaction) => {
-          await lockScope(transaction, command.scope);
-          const existing = await transaction.reviewExecutionV2.findFirst({
-            where: {
-              ...scopeWhere(command.scope),
-              authorizationId: command.authorizationId,
-              startIdentityHash: command.startIdentityHash,
-            },
-          });
-          if (existing !== null) {
-            const execution = await loadExecution(transaction, existing);
-            const replay = decideExecutionPreparationReplay({
-              existingByStartIdentity: execution,
-              canonicalStartHash: command.canonicalStartHash,
+    for (let attempt = 1; attempt <= transactionRetryLimit; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (transaction) => {
+            await lockScope(transaction, command.scope);
+            const existing = await transaction.reviewExecutionV2.findFirst({
+              where: {
+                ...scopeWhere(command.scope),
+                authorizationId: command.authorizationId,
+                startIdentityHash: command.startIdentityHash,
+              },
             });
-            if (
-              replay.status ===
-              ExecutionPreparationReplayDecisionStatus.Restored
-            ) {
+            if (existing !== null) {
+              const execution = await loadExecution(transaction, existing);
+              const replay = decideExecutionPreparationReplay({
+                existingByStartIdentity: execution,
+                canonicalStartHash: command.canonicalStartHash,
+              });
+              if (
+                replay.status ===
+                ExecutionPreparationReplayDecisionStatus.Restored
+              ) {
+                return {
+                  status: ReviewExecutionPrepareStatus.Restored,
+                  snapshot: requiredSnapshot(
+                    await loadSnapshot(transaction, existing.executionId),
+                  ),
+                };
+              }
               return {
-                status: ReviewExecutionPrepareStatus.Restored,
-                snapshot: requiredSnapshot(
-                  await loadSnapshot(transaction, existing.executionId),
-                ),
+                status: ReviewExecutionPrepareStatus.IdempotencyConflict,
               };
             }
-            return {
-              status: ReviewExecutionPrepareStatus.IdempotencyConflict,
-            };
-          }
 
-          const now = await databaseNow(transaction);
-          await ensureStream(transaction, command.scope, now);
-          await lockStream(transaction, command.scope);
-          const streamRecord = await requiredStreamRecord(
-            transaction,
-            command.scope,
-          );
-          const stream = streamToDomain(streamRecord);
-          if (stream.version !== command.expectedStreamVersion) {
-            return {
-              status: ReviewExecutionPrepareStatus.ConcurrencyConflict,
-            };
-          }
-          if (
-            await transaction.reviewExecutionV2.findUnique({
-              where: { executionId: command.executionId },
-            })
-          ) {
-            return {
-              status: ReviewExecutionPrepareStatus.IdempotencyConflict,
-            };
-          }
-          const priorPreparedRecord =
-            stream.preparedExecutionId === null
-              ? null
-              : await transaction.reviewExecutionV2.findUnique({
-                  where: { executionId: stream.preparedExecutionId },
-                });
-          const priorPrepared =
-            priorPreparedRecord === null
-              ? null
-              : await loadExecution(transaction, priorPreparedRecord);
-          const decision = decideExecutionPreparation({
-            stream,
-            priorPrepared,
-            ...command,
-            now,
-            admissionDeadlineAt: databaseRelativeDate(
-              now,
-              command.now,
-              command.admissionDeadlineAt,
-              "admission_deadline",
-            ),
-            executionDeadlineAt: databaseRelativeDate(
-              now,
-              command.now,
-              command.executionDeadlineAt,
-              "execution_deadline",
-            ),
-            retainUntil: databaseRelativeDate(
-              now,
-              command.now,
-              command.retainUntil,
-              "retention_deadline",
-            ),
-          });
-          if (decision.supersededPrepared !== null) {
-            if (priorPrepared === null) {
-              throw new Error("review_execution_prepared_row_missing");
+            const now = await databaseNow(transaction);
+            await ensureStream(transaction, command.scope, now);
+            await lockStream(transaction, command.scope);
+            const streamRecord = await requiredStreamRecord(
+              transaction,
+              command.scope,
+            );
+            const stream = streamToDomain(streamRecord);
+            if (stream.version !== command.expectedStreamVersion) {
+              return {
+                status: ReviewExecutionPrepareStatus.ConcurrencyConflict,
+              };
             }
-            await persistExecutionUpdate(
-              transaction,
+            if (
+              await transaction.reviewExecutionV2.findUnique({
+                where: { executionId: command.executionId },
+              })
+            ) {
+              return {
+                status: ReviewExecutionPrepareStatus.IdempotencyConflict,
+              };
+            }
+            const priorPreparedRecord =
+              stream.preparedExecutionId === null
+                ? null
+                : await transaction.reviewExecutionV2.findUnique({
+                    where: { executionId: stream.preparedExecutionId },
+                  });
+            const priorPrepared =
+              priorPreparedRecord === null
+                ? null
+                : await loadExecution(transaction, priorPreparedRecord);
+            const decision = decideExecutionPreparation({
+              stream,
               priorPrepared,
-              decision.supersededPrepared,
-            );
-            await this.captureProgress(
-              transaction,
-              decision.supersededPrepared,
-            );
+              ...command,
+              now,
+              admissionDeadlineAt: databaseRelativeDate(
+                now,
+                command.now,
+                command.admissionDeadlineAt,
+                "admission_deadline",
+              ),
+              executionDeadlineAt: databaseRelativeDate(
+                now,
+                command.now,
+                command.executionDeadlineAt,
+                "execution_deadline",
+              ),
+              retainUntil: databaseRelativeDate(
+                now,
+                command.now,
+                command.retainUntil,
+                "retention_deadline",
+              ),
+            });
+            if (decision.supersededPrepared !== null) {
+              if (priorPrepared === null) {
+                throw new Error("review_execution_prepared_row_missing");
+              }
+              await persistExecutionUpdate(
+                transaction,
+                priorPrepared,
+                decision.supersededPrepared,
+              );
+              await this.captureProgress(
+                transaction,
+                decision.supersededPrepared,
+              );
+            }
+            await createExecution(transaction, decision.execution);
+            await this.captureProgress(transaction, decision.execution);
+            await persistStreamUpdate(transaction, stream, decision.stream);
+            return {
+              status: ReviewExecutionPrepareStatus.Prepared,
+              snapshot: requiredSnapshot(
+                await loadSnapshot(transaction, decision.execution.executionId),
+              ),
+            };
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+        );
+      } catch (error) {
+        if (isUniqueConstraintError(error)) {
+          return this.resolvePrepareRace(command);
+        }
+        if (isSerializationError(error)) {
+          if (attempt < transactionRetryLimit) {
+            await pauseBeforeTransactionRetry(command.scope, attempt);
+            continue;
           }
-          await createExecution(transaction, decision.execution);
-          await this.captureProgress(transaction, decision.execution);
-          await persistStreamUpdate(transaction, stream, decision.stream);
-          return {
-            status: ReviewExecutionPrepareStatus.Prepared,
-            snapshot: requiredSnapshot(
-              await loadSnapshot(transaction, decision.execution.executionId),
-            ),
-          };
-        },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-      );
-    } catch (error) {
-      if (isUniqueConstraintError(error)) {
-        return this.resolvePrepareRace(command);
+          return this.resolvePrepareRace(command);
+        }
+        throw error;
       }
-      if (isSerializationError(error)) {
-        return { status: ReviewExecutionPrepareStatus.ConcurrencyConflict };
-      }
-      throw error;
     }
+    throw new Error("review_execution_prepare_retry_unreachable");
   }
 
   async confirmAdmission(command: ConfirmReviewExecutionAdmissionCommand) {
-    try {
-      return await this.prisma.$transaction(
-        async (transaction) => {
-          await lockScope(transaction, command.scope);
-          await lockStream(transaction, command.scope);
-          const streamRecord =
-            await transaction.reviewExecutionStreamV2.findFirst({
-              where: scopeWhere(command.scope),
+    for (let attempt = 1; attempt <= transactionRetryLimit; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (transaction) => {
+            await lockScope(transaction, command.scope);
+            await lockStream(transaction, command.scope);
+            const streamRecord =
+              await transaction.reviewExecutionStreamV2.findFirst({
+                where: scopeWhere(command.scope),
+              });
+            const executionRecord =
+              await transaction.reviewExecutionV2.findUnique({
+                where: { executionId: command.executionId },
+              });
+            if (streamRecord === null || executionRecord === null) {
+              return { status: ReviewExecutionAdmissionStatus.Missing };
+            }
+            const stream = streamToDomain(streamRecord);
+            const execution = await loadExecution(transaction, executionRecord);
+            const priorActiveRecord =
+              stream.activeExecutionId !== null &&
+              stream.activeExecutionId !== execution.executionId
+                ? await transaction.reviewExecutionV2.findUnique({
+                    where: { executionId: stream.activeExecutionId },
+                  })
+                : null;
+            if (
+              stream.activeExecutionId !== null &&
+              stream.activeExecutionId !== execution.executionId &&
+              priorActiveRecord === null
+            ) {
+              throw new Error("review_execution_active_pointer_corrupted");
+            }
+            const priorActive =
+              priorActiveRecord === null
+                ? null
+                : await loadExecution(transaction, priorActiveRecord);
+            if (
+              priorActive !== null &&
+              !sameScope(priorActive, command.scope)
+            ) {
+              throw new Error("review_execution_active_scope_corrupted");
+            }
+            const priorActiveLeases =
+              priorActive === null
+                ? []
+                : await loadActiveLeases(transaction, priorActive.executionId);
+            const decision = decideExecutionAdmission({
+              stream,
+              execution,
+              priorActive,
+              priorActiveLeases,
+              authorizationId: command.authorizationId,
+              mutationEpoch: command.mutationEpoch,
+              requestedRevision: command.requestedRevision,
+              observedRevision: command.observedRevision,
+              verdict: admissionVerdict(command.verdict),
+              checkedAt: await databaseNow(transaction),
             });
-          const executionRecord =
-            await transaction.reviewExecutionV2.findUnique({
-              where: { executionId: command.executionId },
-            });
-          if (streamRecord === null || executionRecord === null) {
-            return { status: ReviewExecutionAdmissionStatus.Missing };
-          }
-          const stream = streamToDomain(streamRecord);
-          const execution = await loadExecution(transaction, executionRecord);
-          const priorActiveRecord =
-            stream.activeExecutionId !== null &&
-            stream.activeExecutionId !== execution.executionId
-              ? await transaction.reviewExecutionV2.findUnique({
-                  where: { executionId: stream.activeExecutionId },
-                })
-              : null;
-          if (
-            stream.activeExecutionId !== null &&
-            stream.activeExecutionId !== execution.executionId &&
-            priorActiveRecord === null
-          ) {
-            throw new Error("review_execution_active_pointer_corrupted");
-          }
-          const priorActive =
-            priorActiveRecord === null
-              ? null
-              : await loadExecution(transaction, priorActiveRecord);
-          if (priorActive !== null && !sameScope(priorActive, command.scope)) {
-            throw new Error("review_execution_active_scope_corrupted");
-          }
-          const priorActiveLeases =
-            priorActive === null
-              ? []
-              : await loadActiveLeases(transaction, priorActive.executionId);
-          const decision = decideExecutionAdmission({
-            stream,
-            execution,
-            priorActive,
-            priorActiveLeases,
-            authorizationId: command.authorizationId,
-            mutationEpoch: command.mutationEpoch,
-            requestedRevision: command.requestedRevision,
-            observedRevision: command.observedRevision,
-            verdict: admissionVerdict(command.verdict),
-            checkedAt: await databaseNow(transaction),
-          });
-          if (decision.status === ExecutionAdmissionDecisionStatus.Restored) {
-            return {
-              status: ReviewExecutionAdmissionStatus.Restored,
-              snapshot: requiredSnapshot(
-                await loadSnapshot(transaction, execution.executionId),
-              ),
-            };
-          }
-          if (
-            decision.status === ExecutionAdmissionDecisionStatus.Superseded &&
-            decision.stream.version === stream.version
-          ) {
-            return {
-              status: ReviewExecutionAdmissionStatus.Superseded,
-              snapshot: requiredSnapshot(
-                await loadSnapshot(transaction, execution.executionId),
-              ),
-            };
-          }
-          if (stream.version !== command.expectedStreamVersion) {
-            return {
-              status: ReviewExecutionAdmissionStatus.ConcurrencyConflict,
-            };
-          }
-          if (
-            decision.status === ExecutionAdmissionDecisionStatus.NotPrepared
-          ) {
-            return { status: ReviewExecutionAdmissionStatus.NotPrepared };
-          }
-          if (decision.status === ExecutionAdmissionDecisionStatus.Deferred) {
-            return {
-              status: ReviewExecutionAdmissionStatus.Deferred,
-              snapshot: requiredSnapshot(
-                await loadSnapshot(transaction, execution.executionId),
-              ),
-            };
-          }
-          await persistExecutionUpdate(
-            transaction,
-            execution,
-            decision.execution,
-          );
-          await this.captureProgress(transaction, decision.execution);
-          if (decision.supersededPriorActive !== null) {
-            if (priorActive === null) {
-              throw new Error("review_execution_prior_active_missing");
+            if (decision.status === ExecutionAdmissionDecisionStatus.Restored) {
+              return {
+                status: ReviewExecutionAdmissionStatus.Restored,
+                snapshot: requiredSnapshot(
+                  await loadSnapshot(transaction, execution.executionId),
+                ),
+              };
+            }
+            if (
+              decision.status === ExecutionAdmissionDecisionStatus.Superseded &&
+              decision.stream.version === stream.version
+            ) {
+              return {
+                status: ReviewExecutionAdmissionStatus.Superseded,
+                snapshot: requiredSnapshot(
+                  await loadSnapshot(transaction, execution.executionId),
+                ),
+              };
+            }
+            if (stream.version !== command.expectedStreamVersion) {
+              return {
+                status: ReviewExecutionAdmissionStatus.ConcurrencyConflict,
+              };
+            }
+            if (
+              decision.status === ExecutionAdmissionDecisionStatus.NotPrepared
+            ) {
+              return { status: ReviewExecutionAdmissionStatus.NotPrepared };
+            }
+            if (decision.status === ExecutionAdmissionDecisionStatus.Deferred) {
+              return {
+                status: ReviewExecutionAdmissionStatus.Deferred,
+                snapshot: requiredSnapshot(
+                  await loadSnapshot(transaction, execution.executionId),
+                ),
+              };
             }
             await persistExecutionUpdate(
               transaction,
-              priorActive,
-              decision.supersededPriorActive,
+              execution,
+              decision.execution,
             );
-            await this.captureProgress(
-              transaction,
-              decision.supersededPriorActive,
-            );
+            await this.captureProgress(transaction, decision.execution);
+            if (decision.supersededPriorActive !== null) {
+              if (priorActive === null) {
+                throw new Error("review_execution_prior_active_missing");
+              }
+              await persistExecutionUpdate(
+                transaction,
+                priorActive,
+                decision.supersededPriorActive,
+              );
+              await this.captureProgress(
+                transaction,
+                decision.supersededPriorActive,
+              );
+            }
+            await persistLeaseStates(transaction, decision.revokedPriorLeases);
+            await persistStreamUpdate(transaction, stream, decision.stream);
+            return {
+              status:
+                decision.status === ExecutionAdmissionDecisionStatus.Admitted
+                  ? ReviewExecutionAdmissionStatus.Admitted
+                  : ReviewExecutionAdmissionStatus.Superseded,
+              snapshot: requiredSnapshot(
+                await loadSnapshot(transaction, execution.executionId),
+              ),
+            };
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+        );
+      } catch (error) {
+        if (isSerializationError(error)) {
+          if (attempt < transactionRetryLimit) {
+            await pauseBeforeTransactionRetry(command.scope, attempt);
+            continue;
           }
-          await persistLeaseStates(transaction, decision.revokedPriorLeases);
-          await persistStreamUpdate(transaction, stream, decision.stream);
-          return {
-            status:
-              decision.status === ExecutionAdmissionDecisionStatus.Admitted
-                ? ReviewExecutionAdmissionStatus.Admitted
-                : ReviewExecutionAdmissionStatus.Superseded,
-            snapshot: requiredSnapshot(
-              await loadSnapshot(transaction, execution.executionId),
-            ),
-          };
-        },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-      );
-    } catch (error) {
-      if (isSerializationError(error)) {
-        return { status: ReviewExecutionAdmissionStatus.ConcurrencyConflict };
+          return this.resolveAdmissionSerializationExhaustion(command);
+        }
+        throw error;
       }
-      throw error;
     }
+    throw new Error("review_execution_admission_retry_unreachable");
   }
 
   async acquireLease(
     command: AcquireReviewInvocationLeaseCommand,
   ): Promise<ReviewInvocationLeaseAcquireResult> {
-    try {
-      return await this.prisma.$transaction(
-        async (transaction) => {
-          let observedProviderIncumbent: LeaseRecord | null = null;
-          if (
-            command.purpose === ReviewInvocationLeasePurpose.ProviderExecution
-          ) {
-            await lockProviderLane(
-              transaction,
-              command.providerVoteIdentityHash,
-            );
-            const incumbents =
-              await transaction.reviewInvocationLeaseV2.findMany({
-                where: {
-                  providerVoteIdentityHash: command.providerVoteIdentityHash,
-                  purpose: leasePurposeToPrisma(
-                    ReviewInvocationLeasePurpose.ProviderExecution,
-                  ),
-                  state: PrismaLeaseState.active,
-                },
-                orderBy: { leaseId: "asc" },
-                take: 2,
+    for (
+      let attempt = 1;
+      attempt <= acquireTransactionRetryLimit;
+      attempt += 1
+    ) {
+      try {
+        return await this.prisma.$transaction(
+          async (transaction) => {
+            await lockScopes(transaction, [command.scope]);
+            const executionIdentity =
+              await transaction.reviewExecutionV2.findUnique({
+                where: { executionId: command.executionId },
+                select: { generation: true },
               });
-            if (incumbents.length > 1) {
-              throw new Error("review_provider_lane_invariant_violated");
-            }
-            observedProviderIncumbent = incumbents[0] ?? null;
-          }
-          await lockScopes(transaction, [
-            command.scope,
-            ...(observedProviderIncumbent
-              ? [leaseToDomain(observedProviderIncumbent)]
-              : []),
-          ]);
-          const executionIdentity =
-            await transaction.reviewExecutionV2.findUnique({
-              where: { executionId: command.executionId },
-              select: { generation: true },
+            const existing =
+              executionIdentity === null
+                ? null
+                : await transaction.reviewInvocationLeaseV2.findFirst({
+                    where: {
+                      ...scopeWhere(command.scope),
+                      executionGeneration: executionIdentity.generation,
+                      providerInvocationKey: command.providerInvocationKey,
+                      acquireRequestIdHash: command.acquireRequestIdHash,
+                    },
+                  });
+            const replay = decideLeaseAcquireReplay({
+              existingByAcquireIdentity:
+                existing === null ? null : leaseToDomain(existing),
+              scope: command.scope,
+              executionId: command.executionId,
+              acquireRequestIdHash: command.acquireRequestIdHash,
+              acquireRequestHash: command.acquireRequestHash,
+              ownerIdHash: command.ownerIdHash,
+              providerInvocationKey: command.providerInvocationKey,
+              preparedManifestCanonicalJson:
+                command.preparedManifestCanonicalJson,
+              preparedManifestKey: command.preparedManifestKey,
+              providerVoteIdentityHash: command.providerVoteIdentityHash,
+              workSlotId: command.workSlotId,
+              purpose: command.purpose,
             });
-          const existing =
-            executionIdentity === null
-              ? null
-              : await transaction.reviewInvocationLeaseV2.findFirst({
+            if (replay.status === LeaseAcquireReplayDecisionStatus.Restored) {
+              return {
+                status: ReviewInvocationLeaseAcquireStatus.Restored,
+                lease: replay.lease,
+              };
+            }
+            if (
+              replay.status ===
+              LeaseAcquireReplayDecisionStatus.IdempotencyConflict
+            ) {
+              return {
+                status: ReviewInvocationLeaseAcquireStatus.IdempotencyConflict,
+              };
+            }
+            await lockStream(transaction, command.scope);
+            await lockExecution(transaction, command.executionId);
+            await lockWorkSlot(
+              transaction,
+              command.executionId,
+              command.workSlotId,
+            );
+            let snapshot = await loadSnapshot(transaction, command.executionId);
+            if (snapshot === null) {
+              return { status: ReviewInvocationLeaseAcquireStatus.Missing };
+            }
+            const now = await databaseNow(transaction);
+            let decision = await decideLeaseAcquireForSnapshot(
+              transaction,
+              snapshot,
+              command,
+              now,
+            );
+            const early = await persistEarlyLeaseAcquireResult(
+              transaction,
+              decision,
+              snapshot,
+              command.executionId,
+            );
+            if (early !== null) {
+              if (early.snapshot) {
+                await this.captureProgress(
+                  transaction,
+                  early.snapshot.execution,
+                );
+              }
+              return early;
+            }
+            if (decision.status !== LeaseAcquireDecisionStatus.Acquired) {
+              throw new Error("review_lease_acquire_decision_unhandled");
+            }
+            if (
+              command.purpose === ReviewInvocationLeasePurpose.ProviderExecution
+            ) {
+              const incumbentRecords =
+                await transaction.reviewInvocationLeaseV2.findMany({
                   where: {
                     ...scopeWhere(command.scope),
-                    executionGeneration: executionIdentity.generation,
                     providerInvocationKey: command.providerInvocationKey,
-                    acquireRequestIdHash: command.acquireRequestIdHash,
+                    purpose: leasePurposeToPrisma(
+                      ReviewInvocationLeasePurpose.ProviderExecution,
+                    ),
+                    state: PrismaLeaseState.active,
                   },
+                  orderBy: { leaseId: "asc" },
+                  take: 2,
                 });
-          const replay = decideLeaseAcquireReplay({
-            existingByAcquireIdentity:
-              existing === null ? null : leaseToDomain(existing),
-            scope: command.scope,
-            executionId: command.executionId,
-            acquireRequestIdHash: command.acquireRequestIdHash,
-            acquireRequestHash: command.acquireRequestHash,
-            ownerIdHash: command.ownerIdHash,
-            providerInvocationKey: command.providerInvocationKey,
-            preparedManifestCanonicalJson:
-              command.preparedManifestCanonicalJson,
-            preparedManifestKey: command.preparedManifestKey,
-            providerVoteIdentityHash: command.providerVoteIdentityHash,
-            workSlotId: command.workSlotId,
-            purpose: command.purpose,
-          });
-          if (replay.status === LeaseAcquireReplayDecisionStatus.Restored) {
-            return {
-              status: ReviewInvocationLeaseAcquireStatus.Restored,
-              lease: replay.lease,
-            };
-          }
-          if (
-            replay.status ===
-            LeaseAcquireReplayDecisionStatus.IdempotencyConflict
-          ) {
-            return {
-              status: ReviewInvocationLeaseAcquireStatus.IdempotencyConflict,
-            };
-          }
-          await lockStream(transaction, command.scope);
-          await lockExecution(transaction, command.executionId);
-          await lockWorkSlot(
-            transaction,
-            command.executionId,
-            command.workSlotId,
-          );
-          let snapshot = await loadSnapshot(transaction, command.executionId);
-          if (snapshot === null) {
-            return { status: ReviewInvocationLeaseAcquireStatus.Missing };
-          }
-          const now = await databaseNow(transaction);
-          let decision = await decideLeaseAcquireForSnapshot(
-            transaction,
-            snapshot,
-            command,
-            now,
-          );
-          const early = await persistEarlyLeaseAcquireResult(
-            transaction,
-            decision,
-            snapshot,
-            command.executionId,
-          );
-          if (early !== null) {
-            if (early.snapshot) {
-              await this.captureProgress(transaction, early.snapshot.execution);
-            }
-            return early;
-          }
-          if (decision.status !== LeaseAcquireDecisionStatus.Acquired) {
-            throw new Error("review_lease_acquire_decision_unhandled");
-          }
-          if (
-            command.purpose === ReviewInvocationLeasePurpose.ProviderExecution
-          ) {
-            const incumbentRecords =
-              await transaction.reviewInvocationLeaseV2.findMany({
-                where: {
-                  providerVoteIdentityHash: command.providerVoteIdentityHash,
-                  purpose: leasePurposeToPrisma(
-                    ReviewInvocationLeasePurpose.ProviderExecution,
-                  ),
-                  state: PrismaLeaseState.active,
-                },
-                orderBy: { leaseId: "asc" },
-                take: 2,
-              });
-            if (incumbentRecords.length > 1) {
-              throw new Error("review_provider_lane_invariant_violated");
-            }
-            const incumbentRecord = incumbentRecords[0] ?? null;
-            if (incumbentRecord !== null) {
-              const incumbent = leaseToDomain(incumbentRecord);
-              const locallyExpiring =
-                decision.expiredLease?.leaseId === incumbent.leaseId;
-              if (!locallyExpiring && incumbent.expiresAt > now) {
-                return { status: ReviewInvocationLeaseAcquireStatus.Busy };
+              if (incumbentRecords.length > 1) {
+                throw new Error(
+                  "review_provider_invocation_invariant_violated",
+                );
               }
-              if (!locallyExpiring) {
-                const incumbentExecutionRecord =
-                  await transaction.reviewExecutionV2.findUnique({
-                    where: { executionId: incumbent.executionId },
+              const incumbentRecord = incumbentRecords[0] ?? null;
+              if (incumbentRecord !== null) {
+                const incumbent = leaseToDomain(incumbentRecord);
+                const locallyExpiring =
+                  decision.expiredLease?.leaseId === incumbent.leaseId;
+                if (!locallyExpiring && incumbent.expiresAt > now) {
+                  return { status: ReviewInvocationLeaseAcquireStatus.Busy };
+                }
+                if (!locallyExpiring) {
+                  const incumbentExecutionRecord =
+                    await transaction.reviewExecutionV2.findUnique({
+                      where: { executionId: incumbent.executionId },
+                    });
+                  const incumbentExecution = incumbentExecutionRecord
+                    ? await loadExecution(transaction, incumbentExecutionRecord)
+                    : null;
+                  const expiry = decideLeaseExpiry({
+                    lease: incumbent,
+                    execution: incumbentExecution,
+                    now,
                   });
-                const incumbentExecution = incumbentExecutionRecord
-                  ? await loadExecution(transaction, incumbentExecutionRecord)
-                  : null;
-                const expiry = decideLeaseExpiry({
-                  lease: incumbent,
-                  execution: incumbentExecution,
-                  now,
-                });
-                await persistLeaseTransition(
-                  transaction,
-                  incumbent,
-                  expiry.lease,
-                  incumbentExecution,
-                  expiry.execution,
-                  this.options.progressCapture,
-                );
-                snapshot = await loadSnapshot(transaction, command.executionId);
-                if (snapshot === null) {
-                  return { status: ReviewInvocationLeaseAcquireStatus.Missing };
-                }
-                decision = await decideLeaseAcquireForSnapshot(
-                  transaction,
-                  snapshot,
-                  command,
-                  now,
-                );
-                const recomputedEarly = await persistEarlyLeaseAcquireResult(
-                  transaction,
-                  decision,
-                  snapshot,
-                  command.executionId,
-                );
-                if (recomputedEarly !== null) {
-                  if (recomputedEarly.snapshot) {
-                    await this.captureProgress(
-                      transaction,
-                      recomputedEarly.snapshot.execution,
-                    );
+                  await persistLeaseTransition(
+                    transaction,
+                    incumbent,
+                    expiry.lease,
+                    incumbentExecution,
+                    expiry.execution,
+                    this.options.progressCapture,
+                  );
+                  snapshot = await loadSnapshot(
+                    transaction,
+                    command.executionId,
+                  );
+                  if (snapshot === null) {
+                    return {
+                      status: ReviewInvocationLeaseAcquireStatus.Missing,
+                    };
                   }
-                  return recomputedEarly;
-                }
-                if (decision.status !== LeaseAcquireDecisionStatus.Acquired) {
-                  throw new Error("review_lease_acquire_decision_unhandled");
+                  decision = await decideLeaseAcquireForSnapshot(
+                    transaction,
+                    snapshot,
+                    command,
+                    now,
+                  );
+                  const recomputedEarly = await persistEarlyLeaseAcquireResult(
+                    transaction,
+                    decision,
+                    snapshot,
+                    command.executionId,
+                  );
+                  if (recomputedEarly !== null) {
+                    if (recomputedEarly.snapshot) {
+                      await this.captureProgress(
+                        transaction,
+                        recomputedEarly.snapshot.execution,
+                      );
+                    }
+                    return recomputedEarly;
+                  }
+                  if (decision.status !== LeaseAcquireDecisionStatus.Acquired) {
+                    throw new Error("review_lease_acquire_decision_unhandled");
+                  }
                 }
               }
             }
+            if (decision.expiredLease !== null) {
+              await persistSingleLeaseState(transaction, decision.expiredLease);
+            }
+            await persistExecutionUpdate(
+              transaction,
+              snapshot.execution,
+              decision.execution,
+            );
+            await assertLeaseIdentityNotTombstoned(transaction, decision.lease);
+            await transaction.reviewInvocationLeaseV2.create({
+              data: leaseCreateData(decision.lease),
+            });
+            await this.captureProgress(transaction, decision.execution);
+            return {
+              status: ReviewInvocationLeaseAcquireStatus.Acquired,
+              lease: decision.lease,
+              snapshot: requiredSnapshot(
+                await loadSnapshot(transaction, command.executionId),
+              ),
+            };
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (
+          command.purpose === ReviewInvocationLeasePurpose.ProviderExecution &&
+          isLegacyProviderVoteLaneUniqueConstraintError(error)
+        ) {
+          return { status: ReviewInvocationLeaseAcquireStatus.Busy };
+        }
+        if (isUniqueConstraintError(error)) {
+          return this.resolveLeaseAcquireRace(command);
+        }
+        if (isSerializationError(error)) {
+          if (attempt < acquireTransactionRetryLimit) {
+            await pauseBeforeTransactionRetry(command.scope, attempt);
+            continue;
           }
-          if (decision.expiredLease !== null) {
-            await persistSingleLeaseState(transaction, decision.expiredLease);
-          }
-          await persistExecutionUpdate(
-            transaction,
-            snapshot.execution,
-            decision.execution,
-          );
-          await assertLeaseIdentityNotTombstoned(transaction, decision.lease);
-          await transaction.reviewInvocationLeaseV2.create({
-            data: leaseCreateData(decision.lease),
-          });
-          await this.captureProgress(transaction, decision.execution);
-          return {
-            status: ReviewInvocationLeaseAcquireStatus.Acquired,
-            lease: decision.lease,
-            snapshot: requiredSnapshot(
-              await loadSnapshot(transaction, command.executionId),
-            ),
-          };
-        },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-      );
-    } catch (error) {
-      if (isUniqueConstraintError(error)) {
-        return this.resolveLeaseAcquireRace(command);
+          return this.resolveLeaseAcquireSerializationExhaustion(command);
+        }
+        throw error;
       }
-      if (isSerializationError(error)) {
-        return { status: ReviewInvocationLeaseAcquireStatus.Busy };
-      }
-      throw error;
     }
+    throw new Error("review_execution_lease_acquire_retry_unreachable");
   }
 
   async renewLease(
@@ -1159,15 +1257,6 @@ export class PrismaReviewExecutionStore
           if (observedLease === null) {
             return { status: ReviewInvocationLeaseTransitionStatus.Missing };
           }
-          if (
-            observedLease.purpose ===
-            ReviewInvocationLeasePurpose.ProviderExecution
-          ) {
-            await lockProviderLane(
-              transaction,
-              observedLease.providerVoteIdentityHash,
-            );
-          }
           await lockScope(transaction, observedLease);
           await lockStream(transaction, observedLease);
           await lockExecution(transaction, observedLease.executionId);
@@ -1406,6 +1495,55 @@ export class PrismaReviewExecutionStore
       : { status: ReviewExecutionPrepareStatus.IdempotencyConflict };
   }
 
+  private async resolveAdmissionSerializationExhaustion(
+    command: ConfirmReviewExecutionAdmissionCommand,
+  ) {
+    const snapshot = await this.findExecution(command.executionId);
+    if (snapshot === null || !sameScope(snapshot.execution, command.scope)) {
+      return { status: ReviewExecutionAdmissionStatus.ConcurrencyConflict };
+    }
+    const identityMatches =
+      snapshot.execution.authorizationId === command.authorizationId &&
+      snapshot.execution.mutationEpoch === command.mutationEpoch &&
+      reviewRevisionsEqual(
+        snapshot.execution.revision,
+        command.requestedRevision,
+      );
+    if (
+      identityMatches &&
+      snapshot.execution.state === ReviewExecutionState.Running &&
+      snapshot.stream.activeExecutionId === command.executionId
+    ) {
+      return {
+        status: ReviewExecutionAdmissionStatus.Restored,
+        snapshot,
+      };
+    }
+    if (
+      identityMatches &&
+      command.verdict === ReviewExecutionAdmissionVerdict.Stale &&
+      snapshot.execution.state === ReviewExecutionState.Superseded
+    ) {
+      return {
+        status: ReviewExecutionAdmissionStatus.Superseded,
+        snapshot,
+      };
+    }
+    if (
+      identityMatches &&
+      command.verdict === ReviewExecutionAdmissionVerdict.Unavailable &&
+      snapshot.execution.state === ReviewExecutionState.Planned &&
+      snapshot.stream.preparedExecutionId === command.executionId &&
+      snapshot.stream.version === command.expectedStreamVersion
+    ) {
+      return {
+        status: ReviewExecutionAdmissionStatus.Deferred,
+        snapshot,
+      };
+    }
+    return { status: ReviewExecutionAdmissionStatus.ConcurrencyConflict };
+  }
+
   private async resolveLeaseAcquireRace(
     command: AcquireReviewInvocationLeaseCommand,
   ): Promise<ReviewInvocationLeaseAcquireResult> {
@@ -1423,6 +1561,9 @@ export class PrismaReviewExecutionStore
     });
     if (record === null) {
       if (command.purpose === ReviewInvocationLeasePurpose.ProviderExecution) {
+        // During the rolling migration, the retired vote-hash-only partial
+        // index can still reject an otherwise unrelated scope with P2002.
+        // Report contention; never reinterpret that incumbent as joinable.
         const incumbent = await this.prisma.reviewInvocationLeaseV2.findFirst({
           where: {
             providerVoteIdentityHash: command.providerVoteIdentityHash,
@@ -1462,6 +1603,47 @@ export class PrismaReviewExecutionStore
       : {
           status: ReviewInvocationLeaseAcquireStatus.IdempotencyConflict,
         };
+  }
+
+  private async resolveLeaseAcquireSerializationExhaustion(
+    command: AcquireReviewInvocationLeaseCommand,
+  ): Promise<ReviewInvocationLeaseAcquireResult> {
+    const execution = await this.findExecution(command.executionId);
+    if (execution === null) {
+      return { status: ReviewInvocationLeaseAcquireStatus.Missing };
+    }
+    const record = await this.prisma.reviewInvocationLeaseV2.findFirst({
+      where: {
+        ...scopeWhere(command.scope),
+        executionGeneration: execution.execution.generation,
+        providerInvocationKey: command.providerInvocationKey,
+        acquireRequestIdHash: command.acquireRequestIdHash,
+      },
+    });
+    if (record === null) {
+      // The API deliberately has no generic transaction-conflict result. Once
+      // bounded retries are exhausted, fail closed as contention; never claim
+      // that provider work was acquired when commit is unknown.
+      return { status: ReviewInvocationLeaseAcquireStatus.Busy };
+    }
+    const lease = leaseToDomain(record);
+    const replay = decideLeaseAcquireReplay({
+      existingByAcquireIdentity: lease,
+      scope: command.scope,
+      executionId: command.executionId,
+      acquireRequestIdHash: command.acquireRequestIdHash,
+      acquireRequestHash: command.acquireRequestHash,
+      ownerIdHash: command.ownerIdHash,
+      providerInvocationKey: command.providerInvocationKey,
+      preparedManifestCanonicalJson: command.preparedManifestCanonicalJson,
+      preparedManifestKey: command.preparedManifestKey,
+      providerVoteIdentityHash: command.providerVoteIdentityHash,
+      workSlotId: command.workSlotId,
+      purpose: command.purpose,
+    });
+    return replay.status === LeaseAcquireReplayDecisionStatus.Restored
+      ? { status: ReviewInvocationLeaseAcquireStatus.Restored, lease }
+      : { status: ReviewInvocationLeaseAcquireStatus.IdempotencyConflict };
   }
 
   private async resolveFinalizationRace(
@@ -2249,15 +2431,6 @@ async function lockScopes(
   }
 }
 
-async function lockProviderLane(
-  transaction: Transaction,
-  providerVoteIdentityHash: string,
-): Promise<void> {
-  await transaction.$executeRaw(
-    Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${`review-provider-lane:${providerVoteIdentityHash}`}, 0))`,
-  );
-}
-
 async function lockStream(
   transaction: Transaction,
   scope: ReviewExecutionScope,
@@ -2459,10 +2632,30 @@ function assertLimit(limit: number): void {
   }
 }
 
-function isUniqueConstraintError(error: unknown): boolean {
+function isUniqueConstraintError(
+  error: unknown,
+): error is Prisma.PrismaClientKnownRequestError {
   return (
     error instanceof Prisma.PrismaClientKnownRequestError &&
     error.code === "P2002"
+  );
+}
+
+function isLegacyProviderVoteLaneUniqueConstraintError(
+  error: unknown,
+): boolean {
+  if (!isUniqueConstraintError(error)) return false;
+  const legacyConstraint =
+    "ReviewInvocationLeaseV2_one_active_provider_vote_lane";
+  let metadata = "";
+  try {
+    metadata = JSON.stringify(error.meta) ?? "";
+  } catch {
+    // Unserializable metadata cannot verify the retired constraint identity.
+  }
+  return (
+    metadata.includes(legacyConstraint) ||
+    error.message.includes(legacyConstraint)
   );
 }
 
@@ -2474,3 +2667,37 @@ function isSerializationError(error: unknown): boolean {
 }
 
 class ConcurrentExecutionMutationError extends Error {}
+
+async function pauseBeforeTransactionRetry(
+  scope: ReviewExecutionScope,
+  failedAttempt: number,
+): Promise<void> {
+  const windowMs = transactionRetryBaseDelayMs * 2 ** (failedAttempt - 1);
+  const scopeDigest = createHash("sha256")
+    .update(
+      JSON.stringify([
+        scope.workspaceId,
+        scope.repositoryConnectionId,
+        scope.scmRepositoryIdentityId,
+        scope.pullRequestNumber,
+        failedAttempt,
+      ]),
+    )
+    .digest();
+  const spreadMs = scopeDigest.readUInt32BE(0) % windowMs;
+  const delayMs = Math.min(windowMs + spreadMs, transactionRetryMaxDelayMs);
+  await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+}
+
+// Concurrent first writes to distinct scope keys can still form PostgreSQL SSI
+// dependencies on shared B-tree pages. Preparation and admission retain five
+// total attempts (under 480 ms added wait). Serializable lease acquisition gets
+// ten total attempts because it also fences concurrent inserts. Scope spreading
+// breaks up a burst's lockstep retries, while the 512 ms per-pause cap bounds the
+// nine acquire pauses to at most 3,035 ms in total. Genuine exhaustion still
+// reaches the exact reconciliation paths above (or is rethrown by mutations
+// without a safe reconciliation).
+const transactionRetryLimit = 5;
+const acquireTransactionRetryLimit = 10;
+const transactionRetryBaseDelayMs = 16;
+const transactionRetryMaxDelayMs = 512;

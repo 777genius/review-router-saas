@@ -255,13 +255,34 @@ try {
       (SELECT count(*) FROM pg_indexes
        WHERE schemaname = 'public'
        AND indexname = 'ReviewProgressPublicationV1_due_partial_idx')
-       AS review_progress_due_index;
+       AS review_progress_due_index,
+      (SELECT count(*) FROM pg_indexes
+       WHERE schemaname = 'public'
+       AND tablename = 'ReviewInvocationLeaseV2'
+       AND indexname = 'ReviewInvocationLeaseV2_one_active_provider_vote_lane')
+       AS retained_legacy_provider_vote_index,
+      (SELECT count(*) FROM "ReviewProviderScopeConcurrencyControl"
+       WHERE "singleton" = true AND "activated" = false)
+       AS provider_scope_concurrency_initially_closed,
+      (SELECT count(*) FROM pg_constraint
+       WHERE conname =
+         'ReviewProviderScopeConcurrencyControl_baseline_closed'
+       AND convalidated) AS provider_scope_concurrency_baseline_guard,
+      (SELECT count(*) FROM pg_proc
+       WHERE pronamespace = 'public'::regnamespace
+       AND proname IN (
+         'reviewrouter_provider_scope_concurrency_snapshot',
+         'reviewrouter_provider_scope_concurrency_status',
+         'reviewrouter_provider_scope_concurrency_activate',
+         'reviewrouter_provider_scope_concurrency_close_for_rollback',
+         'reviewrouter_provider_scope_concurrency_verify_rollback'
+       )) AS provider_scope_concurrency_operator_routines;
   `;
   const result = psql(invariantSql, smokeUrl.toString(), ["-At"]);
   const output = result.stdout.trim();
   if (
     output !==
-    "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|4|1|1|1|1|1|27|6|4|5|1|43|4|2|1|5|6|3|2|1|3|3|6|1"
+    "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|4|1|1|1|1|1|27|6|4|5|1|43|4|2|1|5|6|3|2|1|3|3|6|1|1|1|1|0"
   ) {
     fail("Migrated schema invariants failed");
   }

@@ -1,0 +1,72 @@
+{
+  "verdict": "GO",
+  "exactHead": "83e55ce8772e54757b97e0214721af56af18ae0b",
+  "sourceProductCommit": "83e55ce8772e54757b97e0214721af56af18ae0b",
+  "reviewerRunId": "rr-activation-policy-v26-review-r1",
+  "reviewDecisionId": "codex:activation-policy-v26:83e55ce8772:f2eeaf4ed03d:go",
+  "reviewedAt": "2026-08-25T12:47:04.000Z",
+  "reviewerEvidenceSha256": "45cfc438e5c3ceef5be281bee7d007a0849921d50dac20e0f62dbea03e8b5a7c",
+  "candidateBytes": 2490382,
+  "candidateSha256": "f2eeaf4ed03dbb72c7b551a483201aa6086788c3ee3d3b8118ded067ae5f3d1f",
+  "candidateCaptures": [
+    {
+      "label": "github-actions:32848269242:artifact:9563246346:capture-a",
+      "artifactBytes": 2490382,
+      "artifactSha256": "f2eeaf4ed03dbb72c7b551a483201aa6086788c3ee3d3b8118ded067ae5f3d1f",
+      "payloadOffsetBytes": 0,
+      "prefixSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payloadBytes": 2490382,
+      "payloadSha256": "f2eeaf4ed03dbb72c7b551a483201aa6086788c3ee3d3b8118ded067ae5f3d1f"
+    },
+    {
+      "label": "github-actions:32848269242:artifact:9563246346:capture-b",
+      "artifactBytes": 2490382,
+      "artifactSha256": "f2eeaf4ed03dbb72c7b551a483201aa6086788c3ee3d3b8118ded067ae5f3d1f",
+      "payloadOffsetBytes": 0,
+      "prefixSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payloadBytes": 2490382,
+      "payloadSha256": "f2eeaf4ed03dbb72c7b551a483201aa6086788c3ee3d3b8118ded067ae5f3d1f"
+    }
+  ],
+  "captureLineage": {
+    "runId": 32848269242,
+    "runAttempt": 1,
+    "artifactId": 9563246346,
+    "event": "workflow_dispatch",
+    "actor": "777genius",
+    "headBranch": "review/activation-catalog-v26-capture",
+    "headSha": "83e55ce8772e54757b97e0214721af56af18ae0b",
+    "disposableIdentities": [
+      "rr-disposable-32848269242-1-a",
+      "rr-disposable-32848269242-1-b"
+    ]
+  },
+  "postgresImages": {
+    "sourcePg16": "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+    "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
+  },
+  "canonicalDigests": {
+    "preactivation": "sha256:b95cc2c1fdd94b64056f6d8cd9316d361dce87a8a6a8064c8db51db65a886e68",
+    "activated": "sha256:118834866426337911d13e47f2752f2f982c1393792668036e359b0062117c6f",
+    "artifact": "sha256:95a5b1adcb36e6917fa9113a17e7392772d344e4c9dfbef3d206e57e959f01d3"
+  },
+  "normalizedDelta": {
+    "roles": { "before": 10, "after": 10 },
+    "memberships": { "before": 5, "after": 5 },
+    "reachability": { "before": 8, "after": 8 },
+    "rlsInventory": { "before": 121, "after": 121 },
+    "extensions": { "before": 2, "after": 2 },
+    "preactivationGrants": { "before": 2920, "after": 2922 },
+    "activatedGrants": { "before": 3904, "after": 3906 }
+  },
+  "securityConclusions": [
+    "Both phases add only ownership and owner execute authority for public.hosted_codex_invocation_output_budget_guard().",
+    "No PUBLIC, API, Web, worker, authority, provider-effect, role, membership, reachability, RLS, extension, or unrelated grant drift exists.",
+    "The candidate was reproduced byte-identically from two disposable PostgreSQL 16 to 17 captures at the exact audited commit."
+  ],
+  "residualRisks": [
+    "Any candidate, migration, normalizer, workflow, image, provenance, or audited-head change invalidates this GO.",
+    "This GO authorizes mechanical trust-root publication only and does not authorize production deployment."
+  ],
+  "promotionAuthorization": "GO only for mechanical activation catalog policy v26 publication from candidate SHA-256 f2eeaf4ed03dbb72c7b551a483201aa6086788c3ee3d3b8118ded067ae5f3d1f."
+}

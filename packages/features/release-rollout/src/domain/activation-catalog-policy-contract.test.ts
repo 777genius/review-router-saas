@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { sha256Canonical } from "./canonical-json";
+import { activationCatalogRawPromotionTrustRoot } from "./activation-catalog-policy-raw-promotion-trust-root";
 import {
   authorizeCanonicalActivationCatalogPolicies,
-  canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyArtifact,
   canonicalActivationCatalogPolicyDigests,
   canonicalActivationCatalogPolicyTrustRootReadiness,
@@ -10,32 +10,36 @@ import {
 } from "./activation-catalog-policy-contract";
 
 describe("promoted activation catalog policy trust root", () => {
-  it("pins the reviewed phase digests and readiness reason", () => {
-    const provenance = JSON.parse(
-      readFileSync(
-        new URL("activation-catalog-policy-provenance.json", import.meta.url),
-        "utf8",
-      ),
-    );
-    expect(reviewedActivationCatalogPolicyDigests).toEqual({
-      preactivationCatalogPolicySha256:
-        provenance.canonicalDigests.preactivation,
-      activatedCatalogPolicySha256: provenance.canonicalDigests.activated,
-    });
-    expect(canonicalActivationCatalogPolicyDigests).toEqual(
-      reviewedActivationCatalogPolicyDigests,
-    );
-    expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
-      status: "ready",
-      reason:
-        "reviewed-v25-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
-    });
-    expect(
-      canonicalActivationCatalogPolicies.preactivation.policy.grants,
-    ).toHaveLength(2920);
-    expect(
-      canonicalActivationCatalogPolicies.activated.policy.grants,
-    ).toHaveLength(3904);
+  it("admits the active reviewed trust root", () => {
+    if (activationCatalogRawPromotionTrustRoot.status === "ready") {
+      expect(canonicalActivationCatalogPolicyDigests).toEqual(
+        reviewedActivationCatalogPolicyDigests,
+      );
+      expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
+        status: "ready",
+        reason: "reviewed-raw",
+      });
+      expect(reviewedActivationCatalogPolicyDigests).toEqual({
+        preactivationCatalogPolicySha256:
+          activationCatalogRawPromotionTrustRoot.evidence.canonicalDigests
+            .preactivation,
+        activatedCatalogPolicySha256:
+          activationCatalogRawPromotionTrustRoot.evidence.canonicalDigests
+            .activated,
+      });
+      expect(
+        `sha256:${sha256Canonical(canonicalActivationCatalogPolicyArtifact)}`,
+      ).toBe(
+        activationCatalogRawPromotionTrustRoot.evidence.canonicalDigests
+          .artifact,
+      );
+    } else {
+      expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
+        status: "blocked",
+        reason:
+          "fresh-authenticated-raw-capture-and-independent-review-required",
+      });
+    }
   });
 
   it("deep-freezes the source-owned artifact before exposing it", () => {
@@ -47,12 +51,22 @@ describe("promoted activation catalog policy trust root", () => {
     visit(canonicalActivationCatalogPolicyArtifact);
   });
 
-  it("requires independent exact compact digest authorization", () => {
-    expect(
-      authorizeCanonicalActivationCatalogPolicies(
-        canonicalActivationCatalogPolicyDigests,
-      ),
-    ).toBe(canonicalActivationCatalogPolicies);
+  it("authorizes only the exact compact digests under a ready trust root", () => {
+    if (activationCatalogRawPromotionTrustRoot.status === "ready") {
+      expect(() =>
+        authorizeCanonicalActivationCatalogPolicies(
+          canonicalActivationCatalogPolicyDigests,
+        ),
+      ).not.toThrow();
+    } else {
+      expect(() =>
+        authorizeCanonicalActivationCatalogPolicies(
+          canonicalActivationCatalogPolicyDigests,
+        ),
+      ).toThrow(
+        "activation_catalog_policy_trust_root_blocked:fresh-authenticated-raw-capture-and-independent-review-required",
+      );
+    }
     expect(() =>
       authorizeCanonicalActivationCatalogPolicies({
         ...reviewedActivationCatalogPolicyDigests,

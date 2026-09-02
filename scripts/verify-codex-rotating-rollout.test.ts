@@ -18,6 +18,7 @@ import {
   codexRotatingCatalogIndexNames,
   codexRotatingCatalogTables,
   codexRotatingFunctionBodyDigests,
+  codexRotatingFunctionIdentityArguments,
   codexRotatingIndexDefinitions,
   codexRotatingPartialIndexPredicates,
   codexRotatingFunctions,
@@ -35,6 +36,8 @@ const authorityAclHardeningForwardChecksum =
   "ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c";
 const rotatingCascadeAuthorityForwardChecksum =
   "3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8";
+const v4V5WorkflowReattestationForwardChecksum =
+  "af5fccfd987312b85d48cd38b7f528780f52e82daab47c34829581e50193b090";
 
 describe("observation-backed Codex rotating rollout verifier", () => {
   it("keeps the exhaustive column inventory synchronized with Prisma", () => {
@@ -72,6 +75,9 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "000065_codex_oauth_authority_acl_hardening",
       "000066_codex_oauth_rotating_cascade_authority",
       "000073_codex_oauth_active_namespace_refresh",
+      "000087_codex_oauth_v4_v5_workflow_reattestation",
+      "000088_codex_oauth_reattestation_mutation_owner_fence",
+      "000089_codex_oauth_v4_v5_staged_compatibility",
     ]) {
       const sql = readFileSync(
         join(
@@ -81,7 +87,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
         "utf8",
       );
       for (const match of sql.matchAll(
-        /CREATE (?:OR REPLACE )?FUNCTION "([^"]+)"\s*\([\s\S]*?\)\s*RETURNS?\s+[\s\S]*?LANGUAGE plpgsql[\s\S]*?AS \$\$([\s\S]*?)\$\$;|DROP FUNCTION "([^"]+)"\s*\([^;]*\);/gu,
+        /CREATE (?:OR REPLACE )?FUNCTION (?:public\.)?"([^"]+)"\s*\([\s\S]*?\)\s*RETURNS?\s+[\s\S]*?LANGUAGE plpgsql[\s\S]*?AS \$\$([\s\S]*?)\$\$;|DROP FUNCTION (?:public\.)?"([^"]+)"\s*\([^;]*\);/gu,
       )) {
         if (match[3]) finalBodies.delete(match[3]);
         else finalBodies.set(match[1]!, match[2]!);
@@ -97,7 +103,32 @@ describe("observation-backed Codex rotating rollout verifier", () => {
           ),
         }))
         .sort((left, right) => left.name.localeCompare(right.name)),
-    ).toEqual([...codexRotatingFunctionBodyDigests]);
+    ).toEqual(
+      codexRotatingFunctionBodyDigests.filter(({ name }) =>
+        name.startsWith("codex_oauth_"),
+      ),
+    );
+
+    const custodySql = readFileSync(
+      join(
+        process.cwd(),
+        "packages/platform/db/prisma/migrations/000084_harden_comment_token_custody/migration.sql",
+      ),
+      "utf8",
+    );
+    const custodyBody =
+      /CREATE OR REPLACE FUNCTION hosted_codex_comment_token_authority_revoke_enqueue\(\)[\s\S]*?AS \$guard\$([\s\S]*?)\$guard\$;/u.exec(
+        custodySql,
+      )?.[1];
+    expect(custodyBody).toBeDefined();
+    expect(
+      codexRotatingFunctionBodyDigests.find(
+        ({ name }) =>
+          name === "hosted_codex_comment_token_authority_revoke_enqueue",
+      )?.bodySha256,
+    ).toBe(
+      digest(Buffer.from(custodyBody!.replace(/\r\n?/gu, "\n").trim(), "utf8")),
+    );
   });
 
   it("accepts digested executable/database observations", () => {
@@ -186,6 +217,39 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "000064_codex_oauth_versioned_secret_namespaces checked-in forward migration digest mismatched",
     );
     expect(versionedSecretNamespaceForwardChecksum).not.toBe(rewrittenDigest);
+  });
+
+  it("rejects stale 000079 digest evidence even when source and history agree", () => {
+    const fixture = observedFixture();
+    const sourcePath =
+      "packages/platform/db/prisma/migrations/000087_codex_oauth_v4_v5_workflow_reattestation/migration.sql";
+    const staleBytes = Buffer.from(
+      readFileSync(sourcePath, "utf8").replace(
+        "NOT IN (4, 5)",
+        "NOT BETWEEN 1 AND 5",
+      ),
+    );
+    const staleDigest = digest(staleBytes);
+    expect(staleDigest).not.toBe(v4V5WorkflowReattestationForwardChecksum);
+    const observedSource = fixture.artifacts.database.migrationSources.find(
+      (entry: { id: string }) =>
+        entry.id === "000087_codex_oauth_v4_v5_workflow_reattestation",
+    );
+    const history = fixture.artifacts.database.history.find(
+      (entry: { migration_name: string }) =>
+        entry.migration_name ===
+        "000087_codex_oauth_v4_v5_workflow_reattestation",
+    );
+    observedSource.sha256 = staleDigest;
+    history.checksum = staleDigest;
+    fixture.options.readSource = (path: string) =>
+      path.endsWith(sourcePath) ? staleBytes : readFileSync(path);
+
+    expect(
+      verifyCodexRotatingRollout(fixture.evidence, fixture.options).failures,
+    ).toContain(
+      "000087_codex_oauth_v4_v5_workflow_reattestation checked-in forward migration digest mismatched",
+    );
   });
 
   it("reuses the exact production catalog verifier for PostgreSQL rehearsal", () => {
@@ -305,7 +369,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
         "Render services still expose independent migration callers",
         "compatibility probe cases are missing executable observations or derived digests",
         "v2 issuance was observed before v1/v2 installer and workflow publication",
-        "000073_codex_oauth_active_namespace_refresh migration history is not exactly one current success",
+        "000089_codex_oauth_v4_v5_staged_compatibility migration history is not exactly one current success",
         "rollback floor must be the fence-aware deployed commit",
       ]),
     );
@@ -413,9 +477,9 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "new queued/in-progress supported workflow-schema work arrived between observations",
     ],
     [
-      "unknown future workflow schema",
+      "new v5 workflow arrival",
       (fixture: any) => {
-        fixture.artifacts.workflowRuns.observations[0].runs.push({
+        fixture.artifacts.workflowRuns.observations[1].runs.push({
           runId: "103",
           status: "queued",
           workflowSchemaVersion: 5,
@@ -423,13 +487,26 @@ describe("observation-backed Codex rotating rollout verifier", () => {
           headSha: "8".repeat(40),
         });
       },
+      "new queued/in-progress supported workflow-schema work arrived between observations",
+    ],
+    [
+      "unknown future workflow schema",
+      (fixture: any) => {
+        fixture.artifacts.workflowRuns.observations[0].runs.push({
+          runId: "104",
+          status: "queued",
+          workflowSchemaVersion: 6,
+          workflowPath: ".github/workflows/reviewrouter-codex.yml",
+          headSha: "8".repeat(40),
+        });
+      },
       "queued/in-progress supported workflow-schema inventory is incomplete",
     ],
     [
-      "omitted v4 schema inventory",
+      "omitted v5 schema inventory",
       (fixture: any) => {
         fixture.artifacts.workflowRuns.observations[1].inventoriedWorkflowSchemaVersions =
-          [1, 2, 3];
+          [1, 2, 3, 4];
       },
       "queued/in-progress supported workflow-schema inventory is incomplete",
     ],
@@ -518,22 +595,12 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "runtime database roles can perform DDL or assume the release-migration role",
     ],
     [
-      "release role no longer owns the catalog",
+      "canonical schema ownership changed",
       (fixture: any) => {
-        fixture.artifacts.database.databaseAuthorization.roles.find(
-          (role: any) => role.name === "reviewrouter_release_migration",
-        ).ownsCatalogObject = false;
+        fixture.artifacts.database.databaseAuthorization.schemaOwner =
+          "reviewrouter_release_migration";
       },
-      "runtime database roles can perform DDL or assume the release-migration role",
-    ],
-    [
-      "release role no longer owns repository configuration",
-      (fixture: any) => {
-        fixture.artifacts.database.databaseAuthorization.roles.find(
-          (role: any) => role.name === "reviewrouter_release_migration",
-        ).ownsRepositoryConnection = false;
-      },
-      "runtime database roles can perform DDL or assume the release-migration role",
+      "database bootstrap ownership, schema DDL ownership, and canonical role inventory are not exclusive",
     ],
     [
       "runtime role can update repository configuration",
@@ -635,47 +702,11 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "runtime database roles can perform DDL or assume the release-migration role",
     ],
     [
-      "release owner lost full repository update columns",
+      "release migration role gains repository update columns",
       (fixture: any) => {
         fixture.artifacts.database.databaseAuthorization.roles.find(
           (role: any) => role.name === "reviewrouter_release_migration",
         ).repositoryConnectionColumnUpdate = ["id"];
-      },
-      "runtime database roles can perform DDL or assume the release-migration role",
-    ],
-    [
-      "release owner lost full repository insert privilege",
-      (fixture: any) => {
-        fixture.artifacts.database.databaseAuthorization.roles.find(
-          (role: any) => role.name === "reviewrouter_release_migration",
-        ).repositoryConnectionInsert = false;
-      },
-      "runtime database roles can perform DDL or assume the release-migration role",
-    ],
-    [
-      "release owner lost full repository select privilege",
-      (fixture: any) => {
-        fixture.artifacts.database.databaseAuthorization.roles.find(
-          (role: any) => role.name === "reviewrouter_release_migration",
-        ).repositoryConnectionSelect = false;
-      },
-      "runtime database roles can perform DDL or assume the release-migration role",
-    ],
-    [
-      "release owner lost full repository update privilege",
-      (fixture: any) => {
-        fixture.artifacts.database.databaseAuthorization.roles.find(
-          (role: any) => role.name === "reviewrouter_release_migration",
-        ).repositoryConnectionUpdate = false;
-      },
-      "runtime database roles can perform DDL or assume the release-migration role",
-    ],
-    [
-      "release owner lost full repository delete privilege",
-      (fixture: any) => {
-        fixture.artifacts.database.databaseAuthorization.roles.find(
-          (role: any) => role.name === "reviewrouter_release_migration",
-        ).repositoryConnectionDelete = false;
       },
       "runtime database roles can perform DDL or assume the release-migration role",
     ],
@@ -960,6 +991,59 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "database trigger bindings are not exact",
     ],
     [
+      "comment-token revocation trigger loses an update column",
+      (catalog: any) =>
+        catalog.triggers
+          .find(
+            (entry: any) =>
+              entry.name === "RepositoryConnection_comment_token_revoke",
+          )
+          .updateColumns.pop(),
+      "database trigger bindings are not exact",
+    ],
+    [
+      "trigger definition gains a conditional bypass",
+      (catalog: any) => {
+        catalog.triggers[0].definition += " WHEN (false)";
+        catalog.triggers[0].whenExpression = "false";
+      },
+      "database trigger bindings are not exact",
+    ],
+    [
+      "reattestation routine is dropped",
+      (catalog: any) => {
+        catalog.functions = catalog.functions.filter(
+          (entry: any) =>
+            entry.name !== "codex_oauth_reattest_active_namespace_v4_to_v5",
+        );
+        catalog.inventory.functions = catalog.inventory.functions.filter(
+          (name: string) =>
+            name !== "codex_oauth_reattest_active_namespace_v4_to_v5",
+        );
+      },
+      "database rotating OAuth catalog inventory is not exact",
+    ],
+    [
+      "reattestation routine body is replaced",
+      (catalog: any) => {
+        catalog.functions.find(
+          (entry: any) =>
+            entry.name === "codex_oauth_reattest_active_namespace_v4_to_v5",
+        ).bodySha256 = digest(Buffer.from("BEGIN RETURN; END"));
+      },
+      "database trigger function definitions are not exact",
+    ],
+    [
+      "reattestation routine owner is changed",
+      (catalog: any) => {
+        catalog.functions.find(
+          (entry: any) =>
+            entry.name === "codex_oauth_reattest_active_namespace_v4_to_v5",
+        ).owner = "reviewrouter_web";
+      },
+      "database trigger function definitions are not exact",
+    ],
+    [
       "same-token weakened function body",
       (catalog: any) => {
         catalog.functions.find(
@@ -1129,6 +1213,22 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "database owned function privileges are not exact",
     ],
     [
+      "reattestation routine is executable by the API role",
+      (catalog: any) =>
+        catalog.privileges.functions.push({
+          name: "codex_oauth_reattest_active_namespace_v4_to_v5",
+          identityArguments:
+            codexRotatingFunctionIdentityArguments[
+              "codex_oauth_reattest_active_namespace_v4_to_v5"
+            ],
+          grantee: "reviewrouter_api",
+          grantor: "reviewrouter_release_schema_owner",
+          privilege: "EXECUTE",
+          grantable: false,
+        }),
+      "database owned function privileges are not exact",
+    ],
+    [
       "effect authority can read signing key",
       (catalog: any) =>
         catalog.privileges.tables.push({
@@ -1257,7 +1357,7 @@ function observedFixture(): any {
       },
       databaseAuthorization: {
         databaseOwner: "reviewrouter_role_bootstrap",
-        schemaOwner: "reviewrouter_release_migration",
+        schemaOwner: "reviewrouter_release_schema_owner",
         roles: [
           "reviewrouter_release_migration",
           "reviewrouter_codex_effect_authority",
@@ -1286,38 +1386,35 @@ function observedFixture(): any {
           ];
           return {
             name,
-            allSequenceUsage: release || runtime,
-            anySequenceSelectOrUpdate: release,
-            authorityTablePrivileges: release,
+            allSequenceUsage: runtime,
+            anySequenceSelectOrUpdate: false,
+            authorityTablePrivileges: false,
             canLogin: true,
             superuser: false,
             createDatabase: false,
             createRole: false,
             replication: false,
             bypassRls: false,
-            databaseCreate: release,
-            schemaCreate: release,
+            databaseCreate: false,
+            schemaCreate: false,
             schemaUsage: true,
             canSetReleaseRole: release,
-            ownsCatalogObject: release,
-            ownsRepositoryConnection: release,
-            ddlTablePrivileges: release,
+            ownsCatalogObject: false,
+            ownsRepositoryConnection: false,
+            ddlTablePrivileges: false,
             migrationHistoryPrivileges: release,
-            providerSetupStateSelect: release || runtime,
-            providerSetupStateInsert: release || runtime,
-            providerSetupStateUpdate: release || runtime,
-            providerSetupStateDelete: release || runtime,
-            repositoryConnectionSelect: release || runtime,
-            repositoryConnectionInsert: release,
-            repositoryConnectionUpdate: release,
-            repositoryConnectionDelete: release,
-            repositoryConnectionColumnSelect:
-              release || runtime ? repositoryColumns : [],
-            repositoryConnectionColumnInsert: release ? repositoryColumns : [],
-            repositoryConnectionColumnUpdate: release ? repositoryColumns : [],
-            repositoryConnectionColumnReferences: release
-              ? repositoryColumns
-              : [],
+            providerSetupStateSelect: runtime,
+            providerSetupStateInsert: runtime,
+            providerSetupStateUpdate: runtime,
+            providerSetupStateDelete: runtime,
+            repositoryConnectionSelect: runtime,
+            repositoryConnectionInsert: false,
+            repositoryConnectionUpdate: false,
+            repositoryConnectionDelete: false,
+            repositoryConnectionColumnSelect: runtime ? repositoryColumns : [],
+            repositoryConnectionColumnInsert: [],
+            repositoryConnectionColumnUpdate: [],
+            repositoryConnectionColumnReferences: [],
           };
         }),
         memberships: [
@@ -1447,6 +1544,24 @@ function observedFixture(): any {
             "packages/platform/db/prisma/migrations/000073_codex_oauth_active_namespace_refresh/migration.sql",
           ),
         },
+        {
+          id: "000087_codex_oauth_v4_v5_workflow_reattestation",
+          sha256: sourceDigest(
+            "packages/platform/db/prisma/migrations/000087_codex_oauth_v4_v5_workflow_reattestation/migration.sql",
+          ),
+        },
+        {
+          id: "000088_codex_oauth_reattestation_mutation_owner_fence",
+          sha256: sourceDigest(
+            "packages/platform/db/prisma/migrations/000088_codex_oauth_reattestation_mutation_owner_fence/migration.sql",
+          ),
+        },
+        {
+          id: "000089_codex_oauth_v4_v5_staged_compatibility",
+          sha256: sourceDigest(
+            "packages/platform/db/prisma/migrations/000089_codex_oauth_v4_v5_staged_compatibility/migration.sql",
+          ),
+        },
       ],
       history: [
         {
@@ -1515,6 +1630,34 @@ function observedFixture(): any {
           current: true,
           applied_steps_count: 1,
         },
+        {
+          migration_name: "000087_codex_oauth_v4_v5_workflow_reattestation",
+          checksum: sourceDigest(
+            "packages/platform/db/prisma/migrations/000087_codex_oauth_v4_v5_workflow_reattestation/migration.sql",
+          ),
+          finished: true,
+          current: true,
+          applied_steps_count: 1,
+        },
+        {
+          migration_name:
+            "000088_codex_oauth_reattestation_mutation_owner_fence",
+          checksum: sourceDigest(
+            "packages/platform/db/prisma/migrations/000088_codex_oauth_reattestation_mutation_owner_fence/migration.sql",
+          ),
+          finished: true,
+          current: true,
+          applied_steps_count: 1,
+        },
+        {
+          migration_name: "000089_codex_oauth_v4_v5_staged_compatibility",
+          checksum: sourceDigest(
+            "packages/platform/db/prisma/migrations/000089_codex_oauth_v4_v5_staged_compatibility/migration.sql",
+          ),
+          finished: true,
+          current: true,
+          applied_steps_count: 1,
+        },
       ],
       catalog: {
         tables: codexRotatingCatalogTables.map((name) => ({
@@ -1523,6 +1666,7 @@ function observedFixture(): any {
           persistence: "p",
           rowSecurity: false,
           forceRowSecurity: false,
+          owner: "reviewrouter_release_schema_owner",
         })),
         inventory: {
           columns: [...codexRotatingCatalogColumnKeys],
@@ -1548,14 +1692,14 @@ function observedFixture(): any {
             codexRotatingProviderRuntimeUpdateColumns.map((column) => ({
               name: `CodexOAuthProviderInstance.${column}`,
               grantee,
-              grantor: "reviewrouter_release_migration",
+              grantor: "reviewrouter_release_schema_owner",
               privilege: "UPDATE",
               grantable: false,
             })),
           ),
           functions: codexRotatingFunctions.flatMap((name) =>
             [
-              "reviewrouter_release_migration",
+              "reviewrouter_release_schema_owner",
               ...(name === "codex_oauth_consume_database_authority"
                 ? [
                     "reviewrouter_api",
@@ -1574,7 +1718,9 @@ function observedFixture(): any {
                       ? ["reviewrouter_web"]
                       : name ===
                             "codex_oauth_provider_identity_repair_challenge" ||
-                          name === "codex_oauth_repair_quarantined_provider"
+                          name === "codex_oauth_repair_quarantined_provider" ||
+                          name ===
+                            "codex_oauth_reattest_active_namespace_v4_to_v5"
                         ? ["reviewrouter_web"]
                         : name ===
                               "codex_oauth_authorize_runtime_confirmation" ||
@@ -1583,21 +1729,23 @@ function observedFixture(): any {
                           : []),
             ].map((grantee) => ({
               name,
+              identityArguments:
+                codexRotatingFunctionIdentityArguments[name] ?? "",
               grantee,
-              grantor: "reviewrouter_release_migration",
+              grantor: "reviewrouter_release_schema_owner",
               privilege: "EXECUTE",
               grantable: false,
             })),
           ),
           tables: codexRotatingCatalogTables.flatMap((name) =>
             [
-              "reviewrouter_release_migration",
+              "reviewrouter_release_schema_owner",
               "reviewrouter_codex_effect_authority",
               "reviewrouter_api",
               "reviewrouter_web",
               "reviewrouter_worker",
             ].flatMap((grantee) =>
-              (grantee === "reviewrouter_release_migration"
+              (grantee === "reviewrouter_release_schema_owner"
                 ? [
                     "DELETE",
                     "INSERT",
@@ -1608,20 +1756,24 @@ function observedFixture(): any {
                     "TRUNCATE",
                     "UPDATE",
                   ]
-                : grantee === "reviewrouter_codex_effect_authority" ||
-                    name === "CodexOAuthDatabaseAuthorityKey" ||
-                    name === "CodexOAuthDatabaseAuthorityReceipt"
-                  ? []
-                  : name === "CodexOAuthChildIdentityQuarantine" ||
-                      name === "CodexOAuthProviderIdentityQuarantine"
+                : name === "CodexOAuthWorkflowCompatibility"
+                  ? ["reviewrouter_api", "reviewrouter_web"].includes(grantee)
                     ? ["SELECT"]
-                    : name === "CodexOAuthProviderInstance"
-                      ? ["INSERT", "SELECT"]
-                      : ["INSERT", "SELECT", "UPDATE"]
+                    : []
+                  : grantee === "reviewrouter_codex_effect_authority" ||
+                      name === "CodexOAuthDatabaseAuthorityKey" ||
+                      name === "CodexOAuthDatabaseAuthorityReceipt"
+                    ? []
+                    : name === "CodexOAuthChildIdentityQuarantine" ||
+                        name === "CodexOAuthProviderIdentityQuarantine"
+                      ? ["SELECT"]
+                      : name === "CodexOAuthProviderInstance"
+                        ? ["INSERT", "SELECT"]
+                        : ["INSERT", "SELECT", "UPDATE"]
               ).map((privilege) => ({
                 name,
                 grantee,
-                grantor: "reviewrouter_release_migration",
+                grantor: "reviewrouter_release_schema_owner",
                 privilege,
                 grantable: false,
               })),
@@ -1725,10 +1877,28 @@ function observedFixture(): any {
             17,
           ],
           [
+            "RepositoryConnection_comment_token_revoke",
+            "RepositoryConnection",
+            "hosted_codex_comment_token_authority_revoke_enqueue",
+            17,
+          ],
+          [
             "RepositoryConnection_runtime_referential_action_guard",
             "RepositoryConnection",
             "codex_oauth_runtime_referential_action_guard",
             27,
+          ],
+          [
+            "CodexOAuthSecretNamespace_workflow_compatibility_guard",
+            "CodexOAuthSecretNamespace",
+            "codex_oauth_workflow_compatibility_guard",
+            19,
+          ],
+          [
+            "CodexOAuthWorkflowCompatibility_guard",
+            "CodexOAuthWorkflowCompatibility",
+            "codex_oauth_workflow_compatibility_guard",
+            31,
           ],
         ].map(([name, table, fn, type]) => ({
           name,
@@ -1736,11 +1906,41 @@ function observedFixture(): any {
           function: fn,
           type,
           enabled: "O",
+          definition: `CREATE ${name === "RepositoryConnection_codex_oauth_identity_guard" ? "CONSTRAINT " : ""}TRIGGER "${name}" ON ${table}`,
+          updateColumns:
+            name === "RepositoryConnection_comment_token_revoke"
+              ? [
+                  "provider",
+                  "selected",
+                  "archived",
+                  "visibility",
+                  "githubRepositoryId",
+                  "fullName",
+                  "installationId",
+                ]
+              : name === "RepositoryConnection_runtime_referential_action_guard"
+                ? [
+                    "id",
+                    "workspaceId",
+                    "installationId",
+                    "gitlabInstallationId",
+                    "scmRepositoryIdentityId",
+                  ]
+                : [],
+          whenExpression: null,
+          arguments: "",
+          constraint:
+            name === "RepositoryConnection_codex_oauth_identity_guard",
+          deferrable:
+            name === "RepositoryConnection_codex_oauth_identity_guard",
+          initiallyDeferred: false,
         })),
         functions: codexRotatingFunctionBodyDigests.map(
           ({ name, bodySha256 }) => ({
             name,
-            owner: "reviewrouter_release_migration",
+            identityArguments:
+              codexRotatingFunctionIdentityArguments[name] ?? "",
+            owner: "reviewrouter_release_schema_owner",
             bodySha256,
             prokind: "f",
             proretset: false,
@@ -1748,26 +1948,36 @@ function observedFixture(): any {
             procost: 100,
             prorows: 0,
             securityDefiner:
+              name === "hosted_codex_comment_token_authority_revoke_enqueue" ||
               name.startsWith("codex_oauth_authorize_") ||
               name === "codex_oauth_consume_database_authority" ||
               name === "codex_oauth_provider_identity_repair_challenge" ||
               name === "codex_oauth_provider_identity_guard" ||
               name === "codex_oauth_runtime_referential_action_guard" ||
               name === "codex_oauth_repair_quarantined_provider" ||
+              name === "codex_oauth_reattest_active_namespace_v4_to_v5" ||
+              name === "codex_oauth_workflow_compatibility_guard" ||
+              name === "codex_oauth_secret_namespace_tombstone_guard" ||
               name === "codex_oauth_sign_database_authority",
             config:
-              name.startsWith("codex_oauth_authorize_") ||
-              name === "codex_oauth_consume_database_authority" ||
-              name === "codex_oauth_database_authority_challenge" ||
-              name === "codex_oauth_database_authority_receipt_guard" ||
-              name === "codex_oauth_provider_identity_guard" ||
-              name === "codex_oauth_runtime_referential_action_guard" ||
-              name === "codex_oauth_provider_identity_transition" ||
-              name === "codex_oauth_provider_identity_repair_challenge" ||
-              name === "codex_oauth_repair_quarantined_provider" ||
-              name === "codex_oauth_sign_database_authority"
-                ? ["search_path=pg_catalog, public"]
-                : null,
+              name === "hosted_codex_comment_token_authority_revoke_enqueue"
+                ? ["search_path=pg_catalog, pg_temp"]
+                : name.startsWith("codex_oauth_authorize_") ||
+                    name === "codex_oauth_consume_database_authority" ||
+                    name === "codex_oauth_database_authority_challenge" ||
+                    name === "codex_oauth_database_authority_receipt_guard" ||
+                    name === "codex_oauth_provider_identity_guard" ||
+                    name === "codex_oauth_runtime_referential_action_guard" ||
+                    name === "codex_oauth_provider_identity_transition" ||
+                    name === "codex_oauth_provider_identity_repair_challenge" ||
+                    name === "codex_oauth_repair_quarantined_provider" ||
+                    name === "codex_oauth_reattest_active_namespace_v4_to_v5" ||
+                    name === "codex_oauth_workflow_compatibility_guard" ||
+                    name === "codex_oauth_secret_namespace_tombstone_guard" ||
+                    name === "codex_oauth_v4_v5_reattestation_transition" ||
+                    name === "codex_oauth_sign_database_authority"
+                  ? ["search_path=pg_catalog, public"]
+                  : null,
             language: "plpgsql",
             volatility: "v",
             parallel: "u",
@@ -1780,11 +1990,14 @@ function observedFixture(): any {
                 : name === "codex_oauth_database_authority_challenge" ||
                     name === "codex_oauth_sign_database_authority" ||
                     name === "codex_oauth_provider_identity_transition" ||
-                    name === "codex_oauth_provider_identity_repair_challenge"
+                    name === "codex_oauth_provider_identity_repair_challenge" ||
+                    name === "codex_oauth_v4_v5_reattestation_transition"
                   ? "text"
-                  : name.includes("repair")
+                  : name === "codex_oauth_reattest_active_namespace_v4_to_v5"
                     ? "void"
-                    : "trigger",
+                    : name.includes("repair")
+                      ? "void"
+                      : "trigger",
             arguments:
               name === "codex_oauth_authorize_runtime_completion"
                 ? "target_intent_id text, target_signature text"
@@ -1808,7 +2021,13 @@ function observedFixture(): any {
                                 : name ===
                                     "codex_oauth_repair_quarantined_provider"
                                   ? "provider_row_id text, old_workspace_id text, old_repository_id text, old_provider_instance_id text, old_auth_mode text, old_secret_name text, old_repository_provider text, old_github_repository_id bigint, old_external_repository_id text, new_workspace_id text, new_repository_id text, new_provider_instance_id text, new_auth_mode text, new_secret_name text, new_github_repository_id bigint, target_signature text"
-                                  : "",
+                                  : name ===
+                                      "codex_oauth_reattest_active_namespace_v4_to_v5"
+                                    ? "target_provider_row_id text, target_claim_id text, target_attempt_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_generation_hash text, target_workflow_path text, target_source_trust text, expected_schema_version integer, target_schema_version integer, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text, compatibility_window_seconds integer"
+                                    : name ===
+                                        "codex_oauth_v4_v5_reattestation_transition"
+                                      ? "target_provider_row_id text, target_namespace_id text, target_namespace_epoch bigint, target_secret_name text, target_repository_id text, target_workflow_path text, target_source_trust text, old_commit_sha text, old_blob_sha text, old_source_sha256 text, old_semantic_sha256 text, new_commit_sha text, new_blob_sha text, new_source_sha256 text, new_semantic_sha256 text"
+                                      : "",
           }),
         ),
         checks: [
@@ -1934,6 +2153,31 @@ function observedFixture(): any {
             "recoveryRequestRowId recoveryResolvedAt",
             true,
           ],
+          ...codexRotatingCatalogCheckNames
+            .filter((name) =>
+              name.startsWith("CodexOAuthWorkflowCompatibility_"),
+            )
+            .map((name) => [
+              name,
+              name.endsWith("_v4_check")
+                ? "workflowSchemaVersion 4"
+                : name.endsWith("_trust_check")
+                  ? "workflowSourceTrust trusted_default_branch_revision"
+                  : name.endsWith("_path_check")
+                    ? "workflowPath"
+                    : name.endsWith("_commit_check")
+                      ? "workflowSourceCommitSha"
+                      : name.endsWith("_blob_check")
+                        ? "workflowSourceBlobSha"
+                        : name.endsWith("_source_digest_check")
+                          ? "workflowSourceSha256"
+                          : name.endsWith("_semantic_digest_check")
+                            ? "workflowSemanticSha256"
+                            : name.endsWith("_repository_check")
+                              ? "attestedRepositoryId"
+                              : "retireAt createdAt 25",
+              true,
+            ]),
         ].map(([name, definition, validated]) => ({
           name,
           table: String(name).split("_", 1)[0],
@@ -2149,6 +2393,7 @@ function observedFixture(): any {
             false,
           ],
           ["CodexOAuthWritebackIntent_versioned_lease_key", "leaseId", true],
+          ["CodexOAuthWorkflowCompatibility_retire_at_idx", "retireAt", false],
         ].map(([name, definition, unique]) => ({
           name,
           definition,
@@ -2186,7 +2431,7 @@ function observedFixture(): any {
                         "activeLeaseExpiresAt",
                       ].includes(key)
                     ? "timestamp_ops"
-                    : key === "recoveryExpiresAt"
+                    : ["recoveryExpiresAt", "retireAt"].includes(key)
                       ? "timestamptz_ops"
                       : "text_ops",
             ),
@@ -2293,11 +2538,11 @@ function observedFixture(): any {
     workflowRuns: {
       observationVersion: 1,
       source: "github-actions-api",
-      supportedWorkflowSchemaVersions: [1, 2, 3, 4],
+      supportedWorkflowSchemaVersions: [1, 2, 3, 4, 5],
       observations: [
         {
           observedAt: "2026-08-09T00:03:05Z",
-          inventoriedWorkflowSchemaVersions: [1, 2, 3, 4],
+          inventoriedWorkflowSchemaVersions: [1, 2, 3, 4, 5],
           runs: [
             {
               runId: "100",
@@ -2310,7 +2555,7 @@ function observedFixture(): any {
         },
         {
           observedAt: "2026-08-09T00:03:35Z",
-          inventoriedWorkflowSchemaVersions: [1, 2, 3, 4],
+          inventoriedWorkflowSchemaVersions: [1, 2, 3, 4, 5],
           runs: [
             {
               runId: "100",
@@ -2389,6 +2634,9 @@ function observedFixture(): any {
             "000065_codex_oauth_authority_acl_hardening",
             "000066_codex_oauth_rotating_cascade_authority",
             "000073_codex_oauth_active_namespace_refresh",
+            "000087_codex_oauth_v4_v5_workflow_reattestation",
+            "000088_codex_oauth_reattestation_mutation_owner_fence",
+            "000089_codex_oauth_v4_v5_staged_compatibility",
           ],
           singleCaller: true,
           caller: "release-migration",
