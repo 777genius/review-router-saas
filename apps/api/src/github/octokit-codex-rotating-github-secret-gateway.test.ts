@@ -148,7 +148,7 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
     CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
     CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
   ])(
-    "publishes and verifies the exact schema-$workflowSchemaVersion namespace on the default branch",
+    "publishes and verifies the exact schema-%i namespace on the default branch",
     async (workflowSchemaVersion) => {
       const currentNamespace = allocateVersionedProviderSecretNamespace({
         scope: {
