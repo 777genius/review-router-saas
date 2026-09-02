@@ -760,7 +760,14 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       )?.[1];
 
     expect(proof).toBeDefined();
-    expect(source).toContain("proveMigration87LegacyBackfill(providerAdmin)");
+    const migration87ProofCall = source.indexOf(
+      "proveMigration87LegacyBackfill(providerAdmin)",
+    );
+    const namespaceOwnershipHandoff = source.indexOf(
+      'ALTER TABLE public."CodexOAuthSecretNamespace" OWNER TO reviewrouter_release_schema_owner',
+    );
+    expect(namespaceOwnershipHandoff).toBeGreaterThan(-1);
+    expect(migration87ProofCall).toBeGreaterThan(namespaceOwnershipHandoff);
     for (const migration of [
       "migration63",
       "migration64",

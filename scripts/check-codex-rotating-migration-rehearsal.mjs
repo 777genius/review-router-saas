@@ -1141,6 +1141,13 @@ async function proveMigrationSpecificLegacyBehavior() {
     ]) {
       psql(providerAdmin, ["-f", migration]);
     }
+    // Migration 64 creates this table after the initial role-provisioning
+    // handoff. Mirror the production ownership boundary before migration 87
+    // validates and extends the namespace contract.
+    psql(providerAdmin, [
+      "-c",
+      'ALTER TABLE public."CodexOAuthSecretNamespace" OWNER TO reviewrouter_release_schema_owner',
+    ]);
     proveMigration87LegacyBackfill(providerAdmin);
   } finally {
     psql(
