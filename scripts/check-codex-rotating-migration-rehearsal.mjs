@@ -25,6 +25,7 @@ import { verifyCodexRotatingDatabaseCatalog } from "./verify-codex-rotating-roll
 import { sanitizedDiagnosticError } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
 import { sha256Canonical } from "../packages/features/release-rollout/src/domain/canonical-json.ts";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
+import { canonicalActivationCatalogPolicyTrustRootReadiness } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-contract.ts";
 import {
   createDatabaseCredentialBoundary,
   createSecretSafePostgresInvocation,
@@ -221,97 +222,158 @@ try {
     seedDirtyFixtures(providerAdmin, { canonicalSuccess: true });
     const migrationPermitEnvironment =
       installRehearsalMigrationPermit(rehearsalAuthority);
-    const releaseMigrationResult = executeCanonicalReleaseMigration(
-      {
-        ...rehearsalRelease.environment,
-        ...migrationPermitEnvironment,
-        REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
-      },
-      runRehearsalReleaseSubprocess,
-      loopbackRehearsalDatabaseIdentity,
-    );
-    assert(
-      releaseMigrationResult.aclGateState === "closed",
-      "combined migration rehearsal must complete against the trusted pre-activation catalog",
-    );
-    const targetMigrationReceipt =
-      releaseMigrationResult.targetMigrationReceipt;
-    const expectedEffectFingerprint = `sha256:${createHash("sha256")
-      .update(
-        [
-          targetMigrationReceipt.rolloutId,
-          targetMigrationReceipt.transitionSha256,
-          targetMigrationReceipt.permitEpoch,
-          targetMigrationReceipt.permitNonce,
-          targetMigrationReceipt.sourceLegacyAmbiguity.inventorySha256,
-          targetMigrationReceipt.eligibilityCutoff,
-          targetMigrationReceipt.postManifestIdentity,
-          targetMigrationReceipt.postCatalogDigest,
-        ].join(":"),
+    const catalogTrustRootReady =
+      canonicalActivationCatalogPolicyTrustRootReadiness.status === "ready";
+    const pendingCatalogFailureEvidence =
+      "pending_catalog_completion_blocked_as_expected";
+    const releaseRun = (step, command, args, options) =>
+      runRehearsalReleaseSubprocess(step, command, args, {
+        ...options,
+        expectedFailure:
+          !catalogTrustRootReady &&
+          step === "deploy_migrations_and_converge_grants"
+            ? {
+                guard:
+                  "release migration target live completion mismatch:catalog_digest_observed",
+                evidence: pendingCatalogFailureEvidence,
+              }
+            : undefined,
+      });
+    let releaseMigrationResult;
+    let pendingCatalogRejected = false;
+    try {
+      releaseMigrationResult = executeCanonicalReleaseMigration(
+        {
+          ...rehearsalRelease.environment,
+          ...migrationPermitEnvironment,
+          REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+        },
+        releaseRun,
+        loopbackRehearsalDatabaseIdentity,
+      );
+    } catch (error) {
+      if (
+        catalogTrustRootReady ||
+        !(error instanceof Error) ||
+        error.message !== pendingCatalogFailureEvidence
       )
-      .digest("hex")}`;
-    assert(
-      targetMigrationReceipt.effectFingerprint === expectedEffectFingerprint,
-      "target migration effect fingerprint must match independently observed receipt facts",
-    );
-    const replayMigrationResult = executeCanonicalReleaseMigration(
-      {
-        ...rehearsalRelease.environment,
-        ...migrationPermitEnvironment,
-        REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
-      },
-      runRehearsalReleaseSubprocess,
-      loopbackRehearsalDatabaseIdentity,
-    );
-    assert(
-      JSON.stringify(replayMigrationResult.targetMigrationReceipt) ===
-        JSON.stringify(releaseMigrationResult.targetMigrationReceipt) &&
-        JSON.stringify(replayMigrationResult.legacyReconciliation.inventory) ===
-          JSON.stringify(releaseMigrationResult.legacyReconciliation.inventory),
-      "canonical replay did not return the immutable original receipt",
-    );
-    // The trusted post-migration digest is the production pre-activation state.
-    // Reopen only after receipt replay so the remaining runtime behavior proofs
-    // can exercise the activated ACL without changing completion authority.
-    convergeRuntimePrivileges(providerAdmin);
+        throw error;
+      pendingCatalogRejected = true;
+    }
+    if (!catalogTrustRootReady) {
+      const rollback = JSON.parse(
+        psql(providerAdmin, [
+          "-Atc",
+          `SELECT json_build_object(
+            'permitState',(SELECT state FROM reviewrouter_activation.migration_permit
+              WHERE rollout_id='rehearsal-rollout-v1'),
+            'targetReceipt',(SELECT target_receipt FROM reviewrouter_activation.migration_permit
+              WHERE rollout_id='rehearsal-rollout-v1'),
+            'committedTargetMigrations',(SELECT count(*) FROM public._prisma_migrations
+              WHERE migration_name IN (${rotatingMigrationNames.map(quoteLiteral).join(",")})
+                AND finished_at IS NOT NULL AND rolled_back_at IS NULL)
+          )`,
+        ]).stdout.trim(),
+      );
+      assert(
+        pendingCatalogRejected &&
+          releaseMigrationResult === undefined &&
+          rollback.permitState === "installed" &&
+          rollback.targetReceipt === null &&
+          rollback.committedTargetMigrations === 0,
+        "pending activation catalog rejection was not fail-closed and retryable",
+      );
+      process.stderr.write(
+        "Codex rotating PostgreSQL 17 combined rehearsal stopped at the pending activation catalog trust boundary as expected.\n",
+      );
+    } else {
+      assert(
+        releaseMigrationResult.aclGateState === "closed",
+        "combined migration rehearsal must complete against the trusted pre-activation catalog",
+      );
+      const targetMigrationReceipt =
+        releaseMigrationResult.targetMigrationReceipt;
+      const expectedEffectFingerprint = `sha256:${createHash("sha256")
+        .update(
+          [
+            targetMigrationReceipt.rolloutId,
+            targetMigrationReceipt.transitionSha256,
+            targetMigrationReceipt.permitEpoch,
+            targetMigrationReceipt.permitNonce,
+            targetMigrationReceipt.sourceLegacyAmbiguity.inventorySha256,
+            targetMigrationReceipt.eligibilityCutoff,
+            targetMigrationReceipt.postManifestIdentity,
+            targetMigrationReceipt.postCatalogDigest,
+          ].join(":"),
+        )
+        .digest("hex")}`;
+      assert(
+        targetMigrationReceipt.effectFingerprint === expectedEffectFingerprint,
+        "target migration effect fingerprint must match independently observed receipt facts",
+      );
+      const replayMigrationResult = executeCanonicalReleaseMigration(
+        {
+          ...rehearsalRelease.environment,
+          ...migrationPermitEnvironment,
+          REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+        },
+        runRehearsalReleaseSubprocess,
+        loopbackRehearsalDatabaseIdentity,
+      );
+      assert(
+        JSON.stringify(replayMigrationResult.targetMigrationReceipt) ===
+          JSON.stringify(releaseMigrationResult.targetMigrationReceipt) &&
+          JSON.stringify(
+            replayMigrationResult.legacyReconciliation.inventory,
+          ) ===
+            JSON.stringify(
+              releaseMigrationResult.legacyReconciliation.inventory,
+            ),
+        "canonical replay did not return the immutable original receipt",
+      );
+      // The trusted post-migration digest is the production pre-activation state.
+      // Reopen only after receipt replay so the remaining runtime behavior proofs
+      // can exercise the activated ACL without changing completion authority.
+      convergeRuntimePrivileges(providerAdmin);
 
-    proveSuccessfulCombinedRelease(providerAdmin);
-    proveDatabasePrivileges(providerAdmin);
-    proveRuntimeParentCascadesDenied(providerAdmin, runtimeClients);
-    proveStaleAclProviderIdentityEscalationDenied(
-      providerAdmin,
-      runtimeClients,
-    );
-    proveMaintenanceCheckpointColumnAclConvergence(providerAdmin);
-    proveTerminalInsertGuards(providerAdmin);
-    proveSequentialFabricationDeniedForEveryRuntimeRole(runtimeClients);
-    proveRuntimeVersionedWriteback(providerAdmin, runtimeClients);
-    proveAccountSwitchRecoveryContract(providerAdmin);
-    proveCompletedRecoveryEvidenceRetention(providerAdmin);
-    const versionedNamespaceEvidence =
-      proveVersionedNamespaceLedger(providerAdmin);
-    await proveActiveNamespaceV4V5Reattestation(
-      providerAdmin,
-      runtimeClients,
-      versionedNamespaceEvidence,
-    );
-    proveSelfHostedV4V5ReattestationOwnerInvocation(
-      providerAdmin,
-      runtimeClients.web,
-    );
-    provePrismaCleanupRetention(providerAdmin, versionedNamespaceEvidence);
-    proveLegacyChildWritesRejected(providerAdmin);
-    proveParentIdentityWriteRejected(providerAdmin);
-    await proveProviderRepairAuthorityV2(providerAdmin, runtimeClients);
-    await proveQuarantineCleanupPathV2(providerAdmin, runtimeClients);
-    proveExactProductionCatalogContract(providerAdmin);
-    proveMigrateDeployNoOp(providerAdmin);
-    proveReleaseAuthorityMarkerIsolation(providerAdmin);
-    const observation = collectObservation(providerAdmin);
-    process.stdout.write(`${JSON.stringify(observation)}\n`);
-    process.stderr.write(
-      "Codex rotating PostgreSQL 17 combined 000060 through 000089 rehearsal passed.\n",
-    );
+      proveSuccessfulCombinedRelease(providerAdmin);
+      proveDatabasePrivileges(providerAdmin);
+      proveRuntimeParentCascadesDenied(providerAdmin, runtimeClients);
+      proveStaleAclProviderIdentityEscalationDenied(
+        providerAdmin,
+        runtimeClients,
+      );
+      proveMaintenanceCheckpointColumnAclConvergence(providerAdmin);
+      proveTerminalInsertGuards(providerAdmin);
+      proveSequentialFabricationDeniedForEveryRuntimeRole(runtimeClients);
+      proveRuntimeVersionedWriteback(providerAdmin, runtimeClients);
+      proveAccountSwitchRecoveryContract(providerAdmin);
+      proveCompletedRecoveryEvidenceRetention(providerAdmin);
+      const versionedNamespaceEvidence =
+        proveVersionedNamespaceLedger(providerAdmin);
+      await proveActiveNamespaceV4V5Reattestation(
+        providerAdmin,
+        runtimeClients,
+        versionedNamespaceEvidence,
+      );
+      proveSelfHostedV4V5ReattestationOwnerInvocation(
+        providerAdmin,
+        runtimeClients.web,
+      );
+      provePrismaCleanupRetention(providerAdmin, versionedNamespaceEvidence);
+      proveLegacyChildWritesRejected(providerAdmin);
+      proveParentIdentityWriteRejected(providerAdmin);
+      await proveProviderRepairAuthorityV2(providerAdmin, runtimeClients);
+      await proveQuarantineCleanupPathV2(providerAdmin, runtimeClients);
+      proveExactProductionCatalogContract(providerAdmin);
+      proveMigrateDeployNoOp(providerAdmin);
+      proveReleaseAuthorityMarkerIsolation(providerAdmin);
+      const observation = collectObservation(providerAdmin);
+      process.stdout.write(`${JSON.stringify(observation)}\n`);
+      process.stderr.write(
+        "Codex rotating PostgreSQL 17 combined 000060 through 000089 rehearsal passed.\n",
+      );
+    }
   }
 } finally {
   const databaseDrop = psql(

@@ -806,6 +806,28 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
+  it("treats the pending catalog completion mismatch as an exact retryable boundary", () => {
+    expect(source).toContain(
+      'canonicalActivationCatalogPolicyTrustRootReadiness.status === "ready"',
+    );
+    expect(source).toContain(
+      'step === "deploy_migrations_and_converge_grants"',
+    );
+    expect(source).toContain(
+      "release migration target live completion mismatch:catalog_digest_observed",
+    );
+    expect(source).toContain("pending_catalog_completion_blocked_as_expected");
+    expect(source).toContain('rollback.permitState === "installed"');
+    expect(source).toContain("rollback.targetReceipt === null");
+    expect(source).toContain("rollback.committedTargetMigrations === 0");
+    expect(source).toContain(
+      "pending activation catalog rejection was not fail-closed and retryable",
+    );
+    expect(source).not.toContain(
+      "sha256:b6ec8e853ef2a1decad3b034982172ed1778883ab6e392fb803c8f755cf6230e",
+    );
+  });
+
   it("reads the database generation binding as shared-object metadata", () => {
     expect(source).toContain("shobj_description(oid, 'pg_database')");
     expect(source).not.toMatch(/\bobj_description\(oid, 'pg_database'\)/u);
