@@ -243,6 +243,10 @@ try {
               }
             : undefined,
       });
+    const preMigrationHistoryDigest = migrationHistoryDigest(
+      providerAdmin,
+      rotatingMigrationNames,
+    );
     let releaseMigrationResult;
     let pendingCatalogRejected = false;
     try {
@@ -265,6 +269,10 @@ try {
       pendingCatalogRejected = true;
     }
     if (!catalogTrustRootReady) {
+      const postRejectionHistoryDigest = migrationHistoryDigest(
+        providerAdmin,
+        rotatingMigrationNames,
+      );
       const rollback = JSON.parse(
         psql(providerAdmin, [
           "-Atc",
@@ -272,10 +280,7 @@ try {
             'permitState',(SELECT state FROM reviewrouter_activation.migration_permit
               WHERE rollout_id='rehearsal-rollout-v1'),
             'targetReceipt',(SELECT target_receipt FROM reviewrouter_activation.migration_permit
-              WHERE rollout_id='rehearsal-rollout-v1'),
-            'committedTargetMigrations',(SELECT count(*) FROM public._prisma_migrations
-              WHERE migration_name IN (${rotatingMigrationNames.map(quoteLiteral).join(",")})
-                AND finished_at IS NOT NULL AND rolled_back_at IS NULL)
+              WHERE rollout_id='rehearsal-rollout-v1')
           )`,
         ]).stdout.trim(),
       );
@@ -284,7 +289,7 @@ try {
           releaseMigrationResult === undefined &&
           rollback.permitState === "installed" &&
           rollback.targetReceipt === null &&
-          rollback.committedTargetMigrations === 0,
+          postRejectionHistoryDigest === preMigrationHistoryDigest,
         "pending activation catalog rejection was not fail-closed and retryable",
       );
       process.stderr.write(

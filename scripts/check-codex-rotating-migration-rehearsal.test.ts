@@ -821,7 +821,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toContain("pending_catalog_completion_blocked_as_expected");
     expect(source).toContain('rollback.permitState === "installed"');
     expect(source).toContain("rollback.targetReceipt === null");
-    expect(source).toContain("rollback.committedTargetMigrations === 0");
+    expect(source).toContain(
+      "const preMigrationHistoryDigest = migrationHistoryDigest(",
+    );
+    expect(source).toContain(
+      "const postRejectionHistoryDigest = migrationHistoryDigest(",
+    );
+    expect(source).toContain(
+      "postRejectionHistoryDigest === preMigrationHistoryDigest",
+    );
     expect(source).toContain(
       "pending activation catalog rejection was not fail-closed and retryable",
     );
