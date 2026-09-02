@@ -201,10 +201,11 @@ export const rehearsalActivationCatalogPolicyAuthorization = Object.freeze({
     reviewedActivationCatalogPolicyDigests.activatedCatalogPolicySha256,
 });
 if (
-  rehearsalActivationCatalogPolicyAuthorization.preactivationCatalogPolicySha256 !==
+  canonicalActivationCatalogPolicyTrustRootReadiness.status === "ready" &&
+  (rehearsalActivationCatalogPolicyAuthorization.preactivationCatalogPolicySha256 !==
     canonicalActivationCatalogPolicyDigests.preactivationCatalogPolicySha256 ||
-  rehearsalActivationCatalogPolicyAuthorization.activatedCatalogPolicySha256 !==
-    canonicalActivationCatalogPolicyDigests.activatedCatalogPolicySha256
+    rehearsalActivationCatalogPolicyAuthorization.activatedCatalogPolicySha256 !==
+      canonicalActivationCatalogPolicyDigests.activatedCatalogPolicySha256)
 )
   throw new Error("rehearsal_activation_catalog_policy_authorization_drift");
 export const rehearsalReadinessPolicy = Object.freeze({
