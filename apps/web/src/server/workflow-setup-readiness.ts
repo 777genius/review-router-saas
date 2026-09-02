@@ -1,19 +1,23 @@
 import type { RepositoryWorkflowProbePort } from "@reviewrouter/features-repo-health";
 import type { ProviderKind } from "@reviewrouter/features-review-providers";
 import {
+  areWorkflowDocumentsSemanticallyEqual,
   assertSameVersionedProviderSecretNamespace,
   type CodexRotatingReviewActionV2Mode,
   type CodexRotatingT0WorkflowSchemaVersion,
   type VersionedProviderSecretNamespace,
   defaultCodexRotatingWorkflowPath,
+  defaultInteractionWorkflowPath,
   defaultWorkflowPath,
   getCodexRotatingWorkflowSetupContentMarkerGroups,
   getWorkflowSetupContentMarkerGroups,
   isVersionedSecretNamespaceCodexWorkflowSchemaVersion,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
+  renderCanonicalCodexRotatingInteractionWorkflowV3,
   scanCodexRotatingAdvisoryWorkflow,
   type ReviewRouterDiscussionMode,
 } from "@reviewrouter/features-workflow-provisioning";
+import { resolveWorkflowPublicApiUrl } from "./workflow-public-api-url";
 
 export type WorkflowSetupReadinessInput = {
   readonly githubInstallationId: string;
@@ -37,6 +41,7 @@ export async function isWorkflowSetupAlreadyCurrent(
   input: WorkflowSetupReadinessInput,
   dependencies: {
     readonly workflowProbe: RepositoryWorkflowProbePort;
+    readonly resolvePublicApiUrl?: () => string;
   },
 ): Promise<boolean> {
   if (input.discussionMode === "suggest") {
@@ -101,10 +106,45 @@ export async function isWorkflowSetupAlreadyCurrent(
         : {}),
   });
 
-  return (
+  const managedWorkflowCurrent =
     workflowCheck.status === "present" &&
     workflowCheck.expectedActionRefFound &&
-    (workflowCheck.expectedContentMarkersFound ?? true)
+    (workflowCheck.expectedContentMarkersFound ?? true);
+  if (!managedWorkflowCurrent || !input.codexRotatingProviderInstanceId) {
+    return managedWorkflowCurrent;
+  }
+
+  let expectedInteractionWorkflow: string;
+  try {
+    expectedInteractionWorkflow =
+      renderCanonicalCodexRotatingInteractionWorkflowV3({
+        actionRef: input.actionRef,
+        apiUrl:
+          dependencies.resolvePublicApiUrl?.() ?? resolveWorkflowPublicApiUrl(),
+        runtimeConfigMode: "oidc",
+      });
+  } catch {
+    return false;
+  }
+
+  const interactionWorkflowCheck =
+    await dependencies.workflowProbe.probeWorkflow({
+      githubInstallationId: input.githubInstallationId,
+      owner: input.owner,
+      name: input.name,
+      defaultBranch: input.defaultBranch,
+      workflowPath: defaultInteractionWorkflowPath,
+      expectedActionRef: input.actionRef,
+      expectedContentValidator: (workflow: string) =>
+        areWorkflowDocumentsSemanticallyEqual(
+          workflow,
+          expectedInteractionWorkflow,
+        ),
+    });
+
+  return (
+    interactionWorkflowCheck.status === "present" &&
+    interactionWorkflowCheck.expectedContentMarkersFound === true
   );
 }
 
