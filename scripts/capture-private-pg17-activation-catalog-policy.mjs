@@ -41,15 +41,21 @@ export function parsePrivatePg17ActivationCatalogPolicyCandidate(stdout) {
     observations[0] === null ||
     typeof observations[0] !== "object" ||
     Array.isArray(observations[0]) ||
-    Object.keys(observations[0]).length !== 2 ||
+    Object.keys(observations[0]).length !== 3 ||
     !Object.hasOwn(observations[0], "preactivation") ||
-    !Object.hasOwn(observations[0], "activated")
+    !Object.hasOwn(observations[0], "activated") ||
+    !Object.hasOwn(observations[0], "liveCatalogDigest")
   )
     throw new Error("activation_catalog_policy_candidate_envelope_invalid");
-  const { preactivation, activated } = observations[0];
+  const { preactivation, activated, liveCatalogDigest } = observations[0];
+  if (!/^sha256:[a-f0-9]{64}$/u.test(liveCatalogDigest))
+    throw new Error(
+      "activation_catalog_policy_candidate_catalog_digest_invalid",
+    );
   return Object.freeze({
     kind: "reviewrouter-activation-catalog-policy-artifact-candidate",
     version: 1,
+    liveCatalogDigest,
     policies: Object.freeze({
       preactivation: assertCandidate(preactivation, "preactivation"),
       activated: assertCandidate(activated, "activated"),

@@ -37,7 +37,7 @@ import {
   workSlot,
 } from "../testing/review-execution-store-contract";
 
-const databaseUrl = process.env.REVIEW_ROUTER_TEST_DATABASE_URL;
+const databaseUrl = process.env.REVIEW_ROUTER_PROVIDER_SCOPE_TEST_DATABASE_URL;
 let prisma: PrismaClient;
 const currentWorkspaceIds = new Set<string>();
 const limitsProfileId = "limits-contract";
@@ -1373,7 +1373,8 @@ if (databaseUrl) {
   });
 } else {
   describe.skip("Prisma review execution PostgreSQL contracts", () => {
-    it("requires REVIEW_ROUTER_TEST_DATABASE_URL", () => undefined);
+    it("requires REVIEW_ROUTER_PROVIDER_SCOPE_TEST_DATABASE_URL", () =>
+      undefined);
   });
 }
 

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { allocateVersionedProviderSecretNamespace } from "@reviewrouter/features-codex-oauth-rotating";
+import {
+  allocateVersionedProviderSecretNamespace,
+  CodexRotatingT0WorkflowSchemaVersion,
+} from "@reviewrouter/features-codex-oauth-rotating";
 import type {
   AuditEventInput,
   AuditLogRepositoryPort,
@@ -634,6 +637,48 @@ describe("provisionReviewRouterWorkflow", () => {
     expect(workflow?.operation).not.toBe("delete");
     expect(workflow && "content" in workflow ? workflow.content : "").toContain(
       `secrets.${namespace.name}`,
+    );
+    expect(workflow && "content" in workflow ? workflow.content : "").toContain(
+      "workflow_schema_version: 4",
+    );
+  });
+
+  it("honors an explicit v5 workflow schema for a proven namespace", async () => {
+    const gateway = new CapturingSetupGateway();
+    const namespace = allocateVersionedProviderSecretNamespace({
+      scope: {
+        repositoryId: "123456",
+        providerInstanceId: "codex-rotating:123456",
+      },
+      epoch: 7n,
+      randomBytes: (size) => new Uint8Array(size).fill(7),
+    });
+
+    await provisionRepositoryReviewRouterWorkflow(
+      {
+        repositoryId: "repo-1",
+        actionRef: `777genius/review-router@${"a".repeat(40)}`,
+        apiUrl: "https://app.reviewrouter.dev",
+        runtimeConfigMode: "oidc",
+        staticRuntimeEnv: { REVIEW_AUTH_MODE: "codex-oauth-rotating" },
+        codexRotatingProviderInstanceId: "codex-rotating:123456",
+        codexRotatingWorkflowSecretNamespace: namespace,
+        codexRotatingWorkflowSchemaVersion:
+          CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+      },
+      {
+        targets: new StaticWorkflowProvisioningTarget(activeTarget),
+        setupGateway: gateway,
+        provisioning: new CapturingProvisioningRepository(),
+      },
+    );
+
+    const workflow = gateway.input?.workflowFiles.find(
+      (file) => file.path === ".github/workflows/reviewrouter-codex.yml",
+    );
+    expect(workflow?.operation).not.toBe("delete");
+    expect(workflow && "content" in workflow ? workflow.content : "").toContain(
+      "workflow_schema_version: 5",
     );
   });
 

@@ -1,5 +1,19 @@
-import { type ActivationCatalogPolicyPromotionExpectation } from "./activation-catalog-policy-provenance-contract";
-import { canonicalReleaseMigrationArtifact } from "./release-migration-transition";
+import type { ActivationCatalogPolicyPromotionExpectation } from "./activation-catalog-policy-provenance-contract";
+
+export {
+  activationCatalogRawPromotionOptIn,
+  activationCatalogRawPromotionTrustRoot,
+  activationCatalogRawReviewArtifactRepositoryPath,
+  activationCatalogRawReviewerRuntimeRepositoryPath,
+  activationCatalogRawTrustRootReadiness,
+  assertActivationCatalogRawPromotionTrustRootReady,
+  loadActivationCatalogRawPromotionTrustRoot,
+} from "./activation-catalog-policy-raw-promotion-trust-root";
+export type {
+  ActivationCatalogRawPromotionTrustRoot,
+  ActivationCatalogRawPromotionTrustRootPending,
+  ActivationCatalogRawPromotionTrustRootReady,
+} from "./activation-catalog-policy-raw-promotion-trust-root";
 
 export function assertActivationCatalogLiveDigestTransitionBinding(
   candidateLiveCatalogDigest: string,
@@ -28,11 +42,6 @@ export const reviewedActivationCatalogCandidate = Object.freeze({
   artifactCanonicalSha256:
     "sha256:5d7a98bf13e65ab8071691086efb792699b994961caadf435ee9fd4845c2f1cf",
 });
-
-assertActivationCatalogLiveDigestTransitionBinding(
-  reviewedActivationCatalogCandidate.liveCatalogDigest,
-  canonicalReleaseMigrationArtifact.postCatalogDigest,
-);
 
 export const reviewedActivationCatalogPromotionExpectation = Object.freeze({
   readinessReason:

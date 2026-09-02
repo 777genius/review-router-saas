@@ -3,6 +3,11 @@ import type {
   CodexRotatingSetupClaimAdmissionStatus,
   CodexRotatingSetupPayloadClaimPort,
 } from "../../application/ports/codex-rotating-setup-payload-claim-port";
+import type {
+  CodexRotatingCurrentWorkflowAttestationPort,
+  CodexRotatingWorkflowReattestationPersistencePort,
+  CodexRotatingWorkflowReattestationTransition,
+} from "../../application/ports/codex-rotating-workflow-reattestation-port";
 import {
   assertCodexRotatingAccountIdentityTransition,
   codexRotatingSetupRecoveryFencesMatch,
@@ -18,10 +23,17 @@ import {
   type CodexRotatingSetupRecoveryFence,
   type CodexRotatingSetupStatus,
 } from "../../domain/codex-rotating-setup-payload-claim";
+import { assertCodexRotatingWorkflowAlreadyActiveTransition } from "../../domain/codex-rotating-workflow-reattestation";
+import { assertCodexRotatingWorkflowV4ToV5Transition } from "../../domain/codex-rotating-workflow-reattestation";
 import {
   allocateVersionedProviderSecretNamespace,
   assertProviderSecretAuthorizationUnexpired,
+  assertSameVersionedProviderSecretNamespace,
+  createVersionedProviderSecretNamespace,
+  createVersionedSecretWorkflowSourceAttestation,
   fingerprintDatabaseRecoveryWitness,
+  type VersionedSecretWorkflowSourceAttestation,
+  WorkflowSourceTrust,
 } from "@reviewrouter/features-codex-oauth-rotating";
 
 type Stored = {
@@ -32,9 +44,17 @@ type Stored = {
   attemptOrder: string[];
   prepareReplayExpiresAt: Date;
   recoveryExpiresAt: Date;
+  workflowAttestation: VersionedSecretWorkflowSourceAttestation | null;
+  retiringWorkflowAttestation: VersionedSecretWorkflowSourceAttestation | null;
+  retiringWorkflowAt: Date | null;
 };
 
-export class InMemoryCodexRotatingSetupPayloadClaim implements CodexRotatingSetupPayloadClaimPort {
+export class InMemoryCodexRotatingSetupPayloadClaim
+  implements
+    CodexRotatingSetupPayloadClaimPort,
+    CodexRotatingCurrentWorkflowAttestationPort,
+    CodexRotatingWorkflowReattestationPersistencePort
+{
   readonly #claims = new Map<string, Stored>();
   readonly #epochs = new Map<string, string>();
   readonly #recoveryFences = new Map<string, CodexRotatingSetupRecoveryFence>();
@@ -102,6 +122,9 @@ export class InMemoryCodexRotatingSetupPayloadClaim implements CodexRotatingSetu
       attemptOrder: [],
       prepareReplayExpiresAt: new Date(now.getTime() + 15 * 60_000),
       recoveryExpiresAt: new Date(now.getTime() + 24 * 60 * 60_000),
+      workflowAttestation: null,
+      retiringWorkflowAttestation: null,
+      retiringWorkflowAt: null,
     };
     this.#claims.set(key, stored);
     this.#claims.set(claimId, stored);
@@ -240,7 +263,194 @@ export class InMemoryCodexRotatingSetupPayloadClaim implements CodexRotatingSetu
     ) {
       throw new Error("codex_rotating_setup_activation_mismatch");
     }
+    stored.workflowAttestation = createVersionedSecretWorkflowSourceAttestation(
+      {
+        repositoryId: attestation.repositoryId,
+        workflowPath: attestation.workflowPath,
+        workflowSourceCommitSha: attestation.workflowSourceCommitSha,
+        workflowSourceBlobSha: attestation.workflowSourceBlobSha,
+        workflowSourceSha256: attestation.workflowSourceSha256,
+        workflowSemanticSha256: attestation.workflowSemanticSha256,
+        sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+        workflowSchemaVersion: attestation.workflowSchemaVersion,
+        secretNamespace: createVersionedProviderSecretNamespace({
+          scope: {
+            repositoryId: attestation.repositoryId,
+            providerInstanceId: stored.claim.providerInstanceId,
+          },
+          namespaceId: attestation.namespaceId,
+          epoch: attestation.namespaceEpoch,
+          name: attestation.secretName,
+        }),
+      },
+    );
     stored.status = "active";
+    return { status: "active" as const };
+  }
+
+  async readActiveWorkflowAttestation(
+    namespace: Parameters<
+      CodexRotatingCurrentWorkflowAttestationPort["readActiveWorkflowAttestation"]
+    >[0],
+  ) {
+    const stored = [...new Set(this.#claims.values())].find(
+      (candidate) =>
+        candidate.status === "active" &&
+        candidate.workflowAttestation !== null &&
+        sameExactNamespace(
+          candidate.workflowAttestation.secretNamespace,
+          namespace,
+        ),
+    );
+    if (!stored?.workflowAttestation) return null;
+    return createVersionedSecretWorkflowSourceAttestation(
+      stored.workflowAttestation,
+    );
+  }
+
+  /** Runtime-facing test seam for the same bounded V4/V5 admission semantics. */
+  async readWorkflowAttestationForAdmission(
+    namespace: Parameters<
+      CodexRotatingCurrentWorkflowAttestationPort["readActiveWorkflowAttestation"]
+    >[0],
+    workflowSchemaVersion: 4 | 5,
+  ): Promise<VersionedSecretWorkflowSourceAttestation | null> {
+    const stored = [...new Set(this.#claims.values())].find(
+      (candidate) =>
+        candidate.status === "active" &&
+        candidate.workflowAttestation !== null &&
+        sameExactNamespace(
+          candidate.workflowAttestation.secretNamespace,
+          namespace,
+        ),
+    );
+    if (!stored?.workflowAttestation) return null;
+    if (
+      stored.workflowAttestation.workflowSchemaVersion === workflowSchemaVersion
+    ) {
+      return createVersionedSecretWorkflowSourceAttestation(
+        stored.workflowAttestation,
+      );
+    }
+    if (
+      stored.retiringWorkflowAttestation?.workflowSchemaVersion ===
+        workflowSchemaVersion &&
+      stored.retiringWorkflowAt !== null &&
+      this.clock.now() < stored.retiringWorkflowAt
+    ) {
+      return createVersionedSecretWorkflowSourceAttestation(
+        stored.retiringWorkflowAttestation,
+      );
+    }
+    return null;
+  }
+
+  async validateActiveWorkflowSource(input: {
+    target: Parameters<
+      CodexRotatingWorkflowReattestationPersistencePort["validateActiveWorkflowSource"]
+    >[0]["target"];
+    expectedCurrent: VersionedSecretWorkflowSourceAttestation;
+    verifiedActive: VersionedSecretWorkflowSourceAttestation;
+  }) {
+    const stored = this.#required(input.target.claimId);
+    const attempt = [...stored.attempts.values()].find(
+      (candidate) => candidate.attemptId === input.target.attemptId,
+    );
+    const persisted = stored.workflowAttestation;
+    if (
+      stored.status !== "active" ||
+      !attempt ||
+      attempt.status !== "confirmed" ||
+      attempt.namespaceId !== input.target.namespace.namespaceId ||
+      attempt.namespaceEpoch !== input.target.namespace.epoch.toString() ||
+      attempt.secretName !== input.target.namespace.name ||
+      stored.claim.repositoryId !== input.target.repositoryId ||
+      stored.claim.generationHash !== input.target.expectedGenerationHash ||
+      !persisted ||
+      !sameExactWorkflowAttestation(persisted, input.expectedCurrent)
+    ) {
+      throw new Error("codex_rotating_workflow_reattestation_stale");
+    }
+    try {
+      assertSameVersionedProviderSecretNamespace({
+        expected: input.target.namespace,
+        actual: persisted.secretNamespace,
+      });
+      assertCodexRotatingWorkflowAlreadyActiveTransition({
+        persisted,
+        verified: input.verifiedActive,
+      });
+    } catch {
+      throw new Error("codex_rotating_workflow_reattestation_stale");
+    }
+    return { status: "active" as const };
+  }
+
+  async replaceActiveWorkflowSource(
+    transition: CodexRotatingWorkflowReattestationTransition,
+  ) {
+    const stored = this.#required(transition.target.claimId);
+    const attempt = [...stored.attempts.values()].find(
+      (candidate) => candidate.attemptId === transition.target.attemptId,
+    );
+    const persisted = stored.workflowAttestation;
+    if (
+      stored.status !== "active" ||
+      !attempt ||
+      attempt.status !== "confirmed" ||
+      attempt.namespaceId !== transition.target.namespace.namespaceId ||
+      attempt.namespaceEpoch !== transition.target.namespace.epoch.toString() ||
+      attempt.secretName !== transition.target.namespace.name ||
+      stored.claim.repositoryId !== transition.target.repositoryId ||
+      stored.claim.generationHash !==
+        transition.target.expectedGenerationHash ||
+      !persisted ||
+      !sameExactWorkflowAttestation(persisted, transition.expectedCurrent)
+    ) {
+      throw new Error("codex_rotating_workflow_reattestation_stale");
+    }
+    try {
+      assertSameVersionedProviderSecretNamespace({
+        expected: transition.target.namespace,
+        actual: persisted.secretNamespace,
+      });
+      assertSameVersionedProviderSecretNamespace({
+        expected: persisted.secretNamespace,
+        actual: transition.replacement.secretNamespace,
+      });
+    } catch {
+      throw new Error("codex_rotating_workflow_reattestation_stale");
+    }
+    if (
+      persisted.workflowSchemaVersion !== 4 ||
+      transition.replacement.workflowSchemaVersion !== 5 ||
+      transition.replacement.repositoryId !== persisted.repositoryId ||
+      transition.replacement.workflowPath !== persisted.workflowPath ||
+      transition.replacement.sourceTrust !== persisted.sourceTrust ||
+      transition.replacement.workflowSourceSha256 ===
+        persisted.workflowSourceSha256 ||
+      transition.replacement.workflowSemanticSha256 ===
+        persisted.workflowSemanticSha256
+    ) {
+      throw new Error("codex_rotating_workflow_reattestation_stale");
+    }
+    try {
+      assertCodexRotatingWorkflowV4ToV5Transition({
+        current: persisted,
+        replacement: transition.replacement,
+        compatibilityWindowSeconds: transition.compatibilityWindowSeconds,
+      });
+    } catch {
+      throw new Error("codex_rotating_workflow_reattestation_stale");
+    }
+    stored.retiringWorkflowAttestation =
+      createVersionedSecretWorkflowSourceAttestation(persisted);
+    stored.retiringWorkflowAt = new Date(
+      this.clock.now().getTime() + transition.compatibilityWindowSeconds * 1000,
+    );
+    stored.workflowAttestation = createVersionedSecretWorkflowSourceAttestation(
+      transition.replacement,
+    );
     return { status: "active" as const };
   }
 
@@ -335,4 +545,41 @@ export class InMemoryCodexRotatingSetupPayloadClaim implements CodexRotatingSetu
       throw error;
     }
   }
+}
+
+function sameExactNamespace(
+  left: VersionedSecretWorkflowSourceAttestation["secretNamespace"],
+  right: VersionedSecretWorkflowSourceAttestation["secretNamespace"],
+): boolean {
+  return (
+    left.mode === right.mode &&
+    left.namespaceId === right.namespaceId &&
+    left.epoch === right.epoch &&
+    left.name === right.name &&
+    left.scope.repositoryId === right.scope.repositoryId &&
+    left.scope.providerInstanceId === right.scope.providerInstanceId
+  );
+}
+
+function sameExactWorkflowAttestation(
+  left: VersionedSecretWorkflowSourceAttestation,
+  right: VersionedSecretWorkflowSourceAttestation,
+): boolean {
+  return (
+    left.repositoryId === right.repositoryId &&
+    left.workflowPath === right.workflowPath &&
+    left.workflowSourceCommitSha === right.workflowSourceCommitSha &&
+    left.workflowSourceBlobSha === right.workflowSourceBlobSha &&
+    left.workflowSourceSha256 === right.workflowSourceSha256 &&
+    left.workflowSemanticSha256 === right.workflowSemanticSha256 &&
+    left.workflowSchemaVersion === right.workflowSchemaVersion &&
+    left.sourceTrust === right.sourceTrust &&
+    left.secretNamespace.namespaceId === right.secretNamespace.namespaceId &&
+    left.secretNamespace.epoch === right.secretNamespace.epoch &&
+    left.secretNamespace.name === right.secretNamespace.name &&
+    left.secretNamespace.scope.repositoryId ===
+      right.secretNamespace.scope.repositoryId &&
+    left.secretNamespace.scope.providerInstanceId ===
+      right.secretNamespace.scope.providerInstanceId
+  );
 }

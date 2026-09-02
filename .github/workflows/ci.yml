@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      activation_catalog_policy_capture_base_sha:
+        description: Exact reviewed base commit for the activation catalog Git range
+        required: false
+        type: string
+        default: ""
       release_authority_contract_baseline_sha:
         description: Previous protected main SHA used as the immutable migration baseline
         required: false
@@ -143,6 +148,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -167,14 +173,30 @@ jobs:
         env:
           REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1"
           REVIEW_ROUTER_PRIVATE_PG17_ACTIVATION_CATALOG_POLICY_CAPTURE_ONLY: "1"
+          REQUESTED_CAPTURE_BASE_COMMIT: ${{ inputs.activation_catalog_policy_capture_base_sha }}
           REVIEW_ROUTER_REHEARSAL_PG16_IMAGE: postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60
           REVIEW_ROUTER_REHEARSAL_PG17_IMAGE: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
         run: |
+          audited_head="$(git rev-parse HEAD)"
+          if [[ -z "$REQUESTED_CAPTURE_BASE_COMMIT" ]]; then
+            echo "activation catalog capture requires an explicit reviewed base commit" >&2
+            exit 1
+          fi
+          git cat-file -e "$REQUESTED_CAPTURE_BASE_COMMIT^{commit}"
+          capture_base="$(git merge-base "$REQUESTED_CAPTURE_BASE_COMMIT" "$audited_head")"
+          if [[ "$capture_base" != "$REQUESTED_CAPTURE_BASE_COMMIT" || "$capture_base" == "$audited_head" ]]; then
+            echo "activation catalog capture Git review range is invalid" >&2
+            exit 1
+          fi
+          export REVIEW_ROUTER_ACTIVATION_CATALOG_CAPTURE_BASE_COMMIT="$capture_base"
+          export REVIEW_ROUTER_ACTIVATION_CATALOG_AUDITED_HEAD="$audited_head"
           export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-a"
           node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-policy-candidate-1.json
           export REVIEW_ROUTER_ACTIVATION_CATALOG_DISPOSABLE_DATABASE_IDENTITY="rr-disposable-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b"
           node --import tsx scripts/rehearse-private-pg17-rollout.mjs > activation-catalog-policy-candidate-2.json
-          cmp activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json
+          node scripts/lib/activation-catalog-capture-pair.mjs \
+            activation-catalog-policy-candidate-1.json \
+            activation-catalog-policy-candidate-2.json
           sha256sum activation-catalog-policy-candidate-1.json activation-catalog-policy-candidate-2.json
       - name: Upload activation catalog policy captures
         if: ${{ inputs.activation_catalog_policy_capture }}
@@ -295,8 +317,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5433/review_router_ci_test?schema=public
-      REVIEW_ROUTER_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5433/review_router_ci_test?schema=public
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/review_router_ci_test?schema=public
+      REVIEW_ROUTER_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/review_router_ci_test?schema=public
 
     services:
       postgres:
@@ -350,25 +372,13 @@ jobs:
       - name: Review Action v2 handoff contract tests
         run: pnpm protocol:handoff:test
 
-      - name: Start isolated provider-scope transition test database
-        run: |
-          docker run --detach --name reviewrouter-quality-test-postgres \
-            --env POSTGRES_PASSWORD=postgres --publish 5433:5432 \
-            postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
-          for attempt in $(seq 1 30); do
-            if PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -c 'SELECT 1' >/dev/null 2>&1; then
-              exit 0
-            fi
-            sleep 1
-          done
-          exit 1
-
       - name: Create CI databases
         env:
           PGPASSWORD: postgres
         run: |
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE review_router_ci'
-          psql -h 127.0.0.1 -p 5433 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE review_router_ci_test'
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE review_router_ci_test'
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE review_router_provider_scope_ci_test'
 
       - name: Rotating Codex PostgreSQL 17 combined migration rehearsal (no skips)
         env:
@@ -381,52 +391,97 @@ jobs:
       - name: Apply dev database migrations
         run: pnpm db:migrate:deploy
 
-      - name: Apply test database through the pre-000079 boundary
+      - name: Apply ordinary test database migrations
+        run: DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir packages/platform/db db:migrate:deploy
+
+      - name: Build provider-scope migration catalogs
         run: |
-          PROVIDER_SCOPE_FIXTURE="$RUNNER_TEMP/provider-scope-pre-000079"
-          export PROVIDER_SCOPE_FIXTURE
+          PROVIDER_SCOPE_FIXTURE_ROOT="$RUNNER_TEMP/provider-scope-migrations"
+          export PROVIDER_SCOPE_FIXTURE_ROOT
           node --input-type=module <<'NODE'
           import { cpSync, readdirSync, rmSync, writeFileSync } from "node:fs";
           import { join, resolve } from "node:path";
 
-          const target = resolve(process.env.PROVIDER_SCOPE_FIXTURE);
-          cpSync(resolve("packages/platform/db/prisma"), target, {
-            recursive: true,
-          });
-          const migrations = join(target, "migrations");
-          for (const entry of readdirSync(migrations, { withFileTypes: true })) {
-            if (entry.isDirectory() && entry.name >= "000079_") {
-              rmSync(join(migrations, entry.name), { recursive: true });
+          const source = resolve("packages/platform/db/prisma");
+          const fixtureRoot = resolve(process.env.PROVIDER_SCOPE_FIXTURE_ROOT);
+          const phases = [
+            { name: "pre-000079", firstExcludedMigration: "000079_" },
+            { name: "through-000079", firstExcludedMigration: "000080_" },
+          ];
+          for (const phase of phases) {
+            const target = join(fixtureRoot, phase.name);
+            cpSync(source, target, { recursive: true });
+            const migrations = join(target, "migrations");
+            for (const entry of readdirSync(migrations, {
+              withFileTypes: true,
+            })) {
+              if (
+                entry.isDirectory() &&
+                entry.name >= phase.firstExcludedMigration
+              ) {
+                rmSync(join(migrations, entry.name), { recursive: true });
+              }
             }
+            writeFileSync(
+              `${target}.config.mjs`,
+              `export default { schema: ${JSON.stringify(
+                join(target, "schema.prisma"),
+              )}, migrations: { path: ${JSON.stringify(
+                migrations,
+              )} }, datasource: { url: process.env.DATABASE_URL } };\n`,
+            );
           }
-          writeFileSync(
-            `${target}.config.mjs`,
-            `export default { schema: ${JSON.stringify(
-              join(target, "schema.prisma"),
-            )}, migrations: { path: ${JSON.stringify(
-              migrations,
-            )} }, datasource: { url: process.env.DATABASE_URL } };\n`,
+
+          const preMigrations = readdirSync(
+            join(fixtureRoot, "pre-000079", "migrations"),
           );
+          const postMigrations = readdirSync(
+            join(fixtureRoot, "through-000079", "migrations"),
+          );
+          const expectedBoundary = [
+            "000079_hosted_codex_output_limits",
+            "000079_remove_account_wide_provider_lane_serialization",
+          ];
+          if (preMigrations.some((name) => name >= "000079_")) {
+            throw new Error("pre-000079 catalog crossed its upper boundary");
+          }
+          if (postMigrations.some((name) => name >= "000080_")) {
+            throw new Error("through-000079 catalog crossed its upper boundary");
+          }
+          const actualBoundary = postMigrations
+            .filter((name) => name.startsWith("000079_"))
+            .sort();
+          if (JSON.stringify(actualBoundary) !== JSON.stringify(expectedBoundary)) {
+            throw new Error("through-000079 catalog has an unexpected boundary");
+          }
           NODE
-          DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @reviewrouter/platform-db exec prisma migrate deploy \
-            --config "$PROVIDER_SCOPE_FIXTURE.config.mjs"
+
+      - name: Apply provider-scope database before 000079
+        env:
+          REVIEW_ROUTER_PROVIDER_SCOPE_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/review_router_provider_scope_ci_test?schema=public
+        run: |
+          DATABASE_URL="$REVIEW_ROUTER_PROVIDER_SCOPE_TEST_DATABASE_URL" \
+            pnpm --filter @reviewrouter/platform-db exec prisma migrate deploy \
+            --config "$RUNNER_TEMP/provider-scope-migrations/pre-000079.config.mjs"
 
       - name: Provision provider-scope transition test roles
         env:
           PGPASSWORD: postgres
         run: |
-          psql -h 127.0.0.1 -p 5433 -U postgres -v ON_ERROR_STOP=1 <<'SQL'
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 <<'SQL'
           CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'postgres' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE reviewrouter_release_schema_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          ALTER DATABASE review_router_ci_test OWNER TO reviewrouter_release_schema_owner;
           SQL
 
-      - name: Apply test database migrations
+      - name: Apply provider-scope database through 000079 and hand off relations
         env:
           PGPASSWORD: postgres
+          REVIEW_ROUTER_PROVIDER_SCOPE_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/review_router_provider_scope_ci_test?schema=public
         run: |
-          DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir packages/platform/db db:migrate:deploy
-          psql -h 127.0.0.1 -p 5433 -U postgres -d review_router_ci_test \
+          DATABASE_URL="$REVIEW_ROUTER_PROVIDER_SCOPE_TEST_DATABASE_URL" \
+            pnpm --filter @reviewrouter/platform-db exec prisma migrate deploy \
+            --config "$RUNNER_TEMP/provider-scope-migrations/through-000079.config.mjs"
+          psql -h 127.0.0.1 -U postgres -d review_router_provider_scope_ci_test \
             -v ON_ERROR_STOP=1 <<'SQL'
           -- The provider-scope SECURITY DEFINER routines update the rollout
           -- control and drop/restore an index on the lease table. Those are
@@ -435,6 +490,33 @@ jobs:
             OWNER TO reviewrouter_release_schema_owner;
           ALTER TABLE public."ReviewInvocationLeaseV2"
             OWNER TO reviewrouter_release_schema_owner;
+          -- The restricted migration login can resolve the rollout routines,
+          -- while only their NOLOGIN owner can recreate the reversible index.
+          GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration;
+          GRANT USAGE, CREATE ON SCHEMA public
+            TO reviewrouter_release_schema_owner;
+          SQL
+
+      - name: Provider-scope real database tests
+        env:
+          REVIEW_ROUTER_PROVIDER_SCOPE_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/review_router_provider_scope_ci_test?schema=public
+        run: |
+          pnpm exec vitest run \
+            packages/features/review-executions/src/tests/prisma-review-execution-store-real.test.ts
+
+      - name: Tear down provider-scope database and roles
+        if: always()
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT pg_terminate_backend(pid)
+          FROM pg_stat_activity
+          WHERE datname = 'review_router_provider_scope_ci_test'
+            AND pid <> pg_backend_pid();
+          DROP DATABASE IF EXISTS review_router_provider_scope_ci_test;
+          DROP ROLE IF EXISTS reviewrouter_release_migration;
+          DROP ROLE IF EXISTS reviewrouter_release_schema_owner;
           SQL
 
       - name: Bind hosted certification input bytes

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   authorize: vi.fn(),
   createOctokit: vi.fn(),
   findFirst: vi.fn(),
+  writerSchemaPolicy: { selectWriterSchemaVersion: vi.fn() },
 }));
 
 vi.mock("@reviewrouter/features-entitlements", () => ({
@@ -17,6 +18,12 @@ vi.mock("@reviewrouter/features-entitlements", () => ({
 vi.mock("../../../../../src/server/codex-rotating-workflow-activation", () => ({
   activateConfirmedCodexNamespaceAfterWorkflowMerge: mocks.activate,
 }));
+vi.mock(
+  "../../../../../src/server/codex-rotating-writer-schema-policy-env",
+  () => ({
+    createCodexRotatingWriterSchemaPolicy: () => mocks.writerSchemaPolicy,
+  }),
+);
 vi.mock("../../../../../src/server/dashboard-mutations", () => ({
   createGitHubAppInstallationOctokit: mocks.createOctokit,
 }));
@@ -80,6 +87,7 @@ describe("Codex rotating CLI workflow activation route", () => {
       expect.objectContaining({
         githubRepositoryId: "1228051727",
         expectedApiUrl: "https://api.reviewrouter.test",
+        writerSchemaPolicy: mocks.writerSchemaPolicy,
       }),
     );
     await expect(response.json()).resolves.toEqual({
@@ -214,6 +222,32 @@ describe("Codex rotating CLI workflow activation route", () => {
     await expect(response.json()).resolves.toEqual({
       error: "invalid_request",
     });
+  });
+
+  it("returns the schema-neutral workflow mismatch code", async () => {
+    mocks.activate.mockRejectedValueOnce(
+      new Error("codex_rotating_workflow_schema_version_mismatch"),
+    );
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "codex_rotating_workflow_schema_version_mismatch",
+    });
+  });
+
+  it.each([
+    ["codex_rotating_workflow_reattestation_stale", 409],
+    ["codex_rotating_workflow_reattestation_invalid", 400],
+    ["codex_rotating_workflow_reattestation_forbidden", 403],
+  ])("maps typed safe re-attestation error %s", async (error, status) => {
+    mocks.activate.mockRejectedValueOnce(new Error(error));
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(status);
+    await expect(response.json()).resolves.toEqual({ error });
   });
 
   it("extracts only an allowlisted activation invariant from wrapped errors", async () => {

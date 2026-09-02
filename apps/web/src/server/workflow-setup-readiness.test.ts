@@ -36,39 +36,68 @@ const readinessInput = {
   actionRef: "777genius/review-router@main",
 };
 
-const v4ActionRef =
+const versionedActionRef =
   "777genius/review-router@0123456789abcdef0123456789abcdef01234567";
-const v4ProviderInstanceId = "codex-rotating:123456";
+const versionedProviderInstanceId = "codex-rotating:123456";
 const v4SecretNamespace = createVersionedProviderSecretNamespace({
   scope: {
     repositoryId: "123456",
-    providerInstanceId: v4ProviderInstanceId,
+    providerInstanceId: versionedProviderInstanceId,
   },
   namespaceId: "sns_0123456789abcdef0123456789abcdef",
   epoch: 4,
   name: "REVIEWROUTER_CODEX_AUTH_JSON_R123456_Pb3d5f6be619a10be_E4_0123456789abcdef0123456789abcdef",
 });
+const v5SecretNamespace = createVersionedProviderSecretNamespace({
+  scope: {
+    repositoryId: "123456",
+    providerInstanceId: versionedProviderInstanceId,
+  },
+  namespaceId: "sns_abcdef0123456789abcdef0123456789",
+  epoch: 5,
+  name: "REVIEWROUTER_CODEX_AUTH_JSON_R123456_Pb3d5f6be619a10be_E5_abcdef0123456789abcdef0123456789",
+});
 
-function canonicalV4Workflow(): string {
+function canonicalV4Workflow(
+  secretNamespace: typeof v4SecretNamespace = v4SecretNamespace,
+): string {
   return renderCodexRotatingAdvisoryWorkflow({
-    actionRef: v4ActionRef,
+    actionRef: versionedActionRef,
     apiUrl: "https://api.reviewrouter.site",
-    providerInstanceId: v4ProviderInstanceId,
+    providerInstanceId: versionedProviderInstanceId,
     reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
     workflowSchemaVersion:
       CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
-    activeSecretNamespace: v4SecretNamespace,
+    activeSecretNamespace: secretNamespace,
   });
 }
 
-function checkV4WorkflowReadiness(workflow: string): Promise<boolean> {
+function canonicalV5Workflow(): string {
+  return renderCodexRotatingAdvisoryWorkflow({
+    actionRef: versionedActionRef,
+    apiUrl: "https://api.reviewrouter.site",
+    providerInstanceId: versionedProviderInstanceId,
+    reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    workflowSchemaVersion:
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+    activeSecretNamespace: v5SecretNamespace,
+  });
+}
+
+function checkVersionedWorkflowReadiness(input: {
+  readonly workflow: string;
+  readonly workflowSchemaVersion:
+    | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+    | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5;
+  readonly secretNamespace: typeof v4SecretNamespace;
+}): Promise<boolean> {
   const probe = new OctokitRepositoryWorkflowProbe({
     createRequester: async () => ({
       request: async () => ({
         data: {
           type: "file",
           encoding: "base64",
-          content: Buffer.from(workflow).toString("base64"),
+          content: Buffer.from(input.workflow).toString("base64"),
         },
       }),
     }),
@@ -77,15 +106,32 @@ function checkV4WorkflowReadiness(workflow: string): Promise<boolean> {
   return isWorkflowSetupAlreadyCurrent(
     {
       ...readinessInput,
-      actionRef: v4ActionRef,
-      codexRotatingProviderInstanceId: v4ProviderInstanceId,
+      actionRef: versionedActionRef,
+      codexRotatingProviderInstanceId: versionedProviderInstanceId,
       codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
-      codexRotatingWorkflowSchemaVersion:
-        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
-      codexRotatingWorkflowSecretNamespace: v4SecretNamespace,
+      codexRotatingWorkflowSchemaVersion: input.workflowSchemaVersion,
+      codexRotatingWorkflowSecretNamespace: input.secretNamespace,
     },
     { workflowProbe: probe },
   );
+}
+
+function checkV4WorkflowReadiness(workflow: string): Promise<boolean> {
+  return checkVersionedWorkflowReadiness({
+    workflow,
+    workflowSchemaVersion:
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+    secretNamespace: v4SecretNamespace,
+  });
+}
+
+function checkV5WorkflowReadiness(workflow: string): Promise<boolean> {
+  return checkVersionedWorkflowReadiness({
+    workflow,
+    workflowSchemaVersion:
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5,
+    secretNamespace: v5SecretNamespace,
+  });
 }
 
 describe("workflow setup readiness", () => {
@@ -396,6 +442,29 @@ describe("workflow setup readiness", () => {
     await expect(checkV4WorkflowReadiness(canonicalV4Workflow())).resolves.toBe(
       true,
     );
+  });
+
+  it("accepts a canonical schema-v5 workflow when setup PR metadata is missing", async () => {
+    await expect(checkV5WorkflowReadiness(canonicalV5Workflow())).resolves.toBe(
+      true,
+    );
+  });
+
+  it("rejects a schema-v5 workflow with a mismatched secret namespace", async () => {
+    await expect(
+      checkV5WorkflowReadiness(
+        canonicalV5Workflow().replaceAll(
+          v5SecretNamespace.name,
+          v4SecretNamespace.name,
+        ),
+      ),
+    ).resolves.toBe(false);
+  });
+
+  it("rejects a schema-v4 workflow when schema v5 is expected", async () => {
+    await expect(
+      checkV5WorkflowReadiness(canonicalV4Workflow(v5SecretNamespace)),
+    ).resolves.toBe(false);
   });
 
   it.each([

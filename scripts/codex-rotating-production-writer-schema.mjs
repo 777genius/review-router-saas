@@ -31,6 +31,7 @@ export const codexRotatingCatalogTables = Object.freeze([
   "CodexOAuthSetupPayloadClaim",
   "CodexOAuthSetupRecoveryRequest",
   "CodexOAuthWritebackIntent",
+  "CodexOAuthWorkflowCompatibility",
 ]);
 
 export const codexRotatingProviderRuntimeUpdateColumns = Object.freeze([
@@ -55,6 +56,28 @@ export const codexRotatingProviderRuntimeUpdateColumns = Object.freeze([
 // compares them with these lists so an unexpected object cannot be hidden by
 // an allowlist in the observation query.
 const legacyCatalogColumns = Object.freeze([
+  ...[
+    ["namespaceId", "text", false],
+    ["workflowPath", "text", false],
+    ["workflowSourceCommitSha", "text", false],
+    ["workflowSourceBlobSha", "text", false],
+    ["workflowSourceSha256", "text", false],
+    ["workflowSemanticSha256", "text", false],
+    ["workflowSourceTrust", "text", false],
+    ["workflowSchemaVersion", "integer", false],
+    ["attestedRepositoryId", "text", false],
+    ["retireAt", "timestamp(3) with time zone", false],
+    ["createdAt", "timestamp(3) with time zone", false, "CURRENT_TIMESTAMP"],
+  ].map(([name, type, nullable, defaultExpression]) =>
+    c(
+      "CodexOAuthWorkflowCompatibility",
+      name,
+      type,
+      nullable,
+      defaultExpression,
+    ),
+  ),
+
   ...[
     ["id", "text", false],
     ["workspaceId", "text", false],
@@ -393,6 +416,7 @@ export const codexRotatingOwnedColumns = Object.freeze([
     ["workflowSourceSha256", "text", true],
     ["workflowSemanticSha256", "text", true],
     ["workflowSourceTrust", "text", true],
+    ["workflowSchemaVersion", "integer", true],
     ["attestedRepositoryId", "text", true],
     ["createdAt", "timestamp(3) with time zone", false, "CURRENT_TIMESTAMP"],
     ["confirmedAt", "timestamp(3) with time zone", true],
@@ -463,6 +487,15 @@ export const codexRotatingCatalogCheckNames = Object.freeze([
   "CodexOAuthWritebackIntent_provider_response_check",
   "CodexOAuthWritebackIntent_recovery_resolution_check",
   "CodexOAuthWritebackIntent_versioned_dispatch_check",
+  "CodexOAuthWorkflowCompatibility_blob_check",
+  "CodexOAuthWorkflowCompatibility_commit_check",
+  "CodexOAuthWorkflowCompatibility_path_check",
+  "CodexOAuthWorkflowCompatibility_repository_check",
+  "CodexOAuthWorkflowCompatibility_retirement_check",
+  "CodexOAuthWorkflowCompatibility_semantic_digest_check",
+  "CodexOAuthWorkflowCompatibility_source_digest_check",
+  "CodexOAuthWorkflowCompatibility_trust_check",
+  "CodexOAuthWorkflowCompatibility_v4_check",
 ]);
 
 // SHA-256 of PostgreSQL 17 pg_get_constraintdef output after canonical
@@ -625,6 +658,46 @@ export const codexRotatingCheckDefinitions = Object.freeze([
       "4ad90c3c72a58bdb4aaabbf7e1e0ad0c19f00ae4a3e8ec6290d9451a12a37b04",
     validated: true,
   }),
+  ...[
+    [
+      "CodexOAuthWorkflowCompatibility_v4_check",
+      "e0ef620c4722c13c8cbd345234b1c0ede950052c877f313362e6c1e18c236c31",
+    ],
+    [
+      "CodexOAuthWorkflowCompatibility_trust_check",
+      "36d102460d3f095b1d00f706895f0e00188e2ce52e03d8d8ec9e9c03b7b8c9e1",
+    ],
+    [
+      "CodexOAuthWorkflowCompatibility_path_check",
+      "560ec3add7e9366c260eebdbcfc7205bfe4849888d239f2899144705212d250a",
+    ],
+    [
+      "CodexOAuthWorkflowCompatibility_commit_check",
+      "5a5ec03562e0a84dbe80d93ce179c293f40f9fd747b4c8b88bb4f03d85eacb2a",
+    ],
+    [
+      "CodexOAuthWorkflowCompatibility_blob_check",
+      "34b9c0822b2b5cea57d2b6fd3a333bcc04037610df1255bc8ebdc9c19fe2f1ce",
+    ],
+    [
+      "CodexOAuthWorkflowCompatibility_source_digest_check",
+      "59d6eac6c746b2e806e5a4d26063335b683d22333ec31ff7a39c6877e7925cf7",
+    ],
+    [
+      "CodexOAuthWorkflowCompatibility_semantic_digest_check",
+      "cd452348ecb799d43c93f80bf527722e56c9648096b690774360e792e8f07199",
+    ],
+    [
+      "CodexOAuthWorkflowCompatibility_repository_check",
+      "154b3f74a8980a8c0322bdaf3ef40133338319e5d07595681b7b09a3eb12e9f7",
+    ],
+    [
+      "CodexOAuthWorkflowCompatibility_retirement_check",
+      "04152db378add5ab023464f410ff8bf1c94114fea21723d6f10b86fae86bf921",
+    ],
+  ].map(([name, definitionSha256]) =>
+    Object.freeze({ name, definitionSha256, validated: true }),
+  ),
 ]);
 
 export const codexRotatingPartialIndexPredicates = Object.freeze([
@@ -875,9 +948,15 @@ export const codexRotatingIndexDefinitions = Object.freeze([
     definitionSha256:
       "41e8490a6a7a01df0a34a610a7dc95961912cad96175d4a80ab3684d79c4b457",
   }),
+  Object.freeze({
+    name: "CodexOAuthWorkflowCompatibility_retire_at_idx",
+    definitionSha256:
+      "4ffd65cee5a9837119dd8a823571b2821c8c13eede0a7d3b7ee44f6401816a87",
+  }),
 ]);
 
 export const codexRotatingDatabaseRoles = Object.freeze({
+  schemaOwner: "reviewrouter_release_schema_owner",
   releaseMigration: "reviewrouter_release_migration",
   effectAuthority: "reviewrouter_codex_effect_authority",
   runtime: Object.freeze([
@@ -947,6 +1026,8 @@ export const codexRotatingCatalogIndexNames = Object.freeze([
   "CodexOAuthWritebackIntent_providerInstanceId_status_idx",
   "CodexOAuthWritebackIntent_secretNamespaceId_idx",
   "CodexOAuthWritebackIntent_versioned_lease_key",
+  "CodexOAuthWorkflowCompatibility_pkey",
+  "CodexOAuthWorkflowCompatibility_retire_at_idx",
 ]);
 
 const prismaModeledRecoveryLedgerForeignKeys = [];
@@ -1005,10 +1086,10 @@ export const codexRotatingLegacyForeignKeys = Object.freeze([
   ),
 ]);
 
-// pg_get_constraintdef output for every recovery-ledger FK owned or replaced
-// by migration 000064. Source table and the complete deparsed definition are
-// both part of the contract so a same-name constraint cannot be repointed or
-// weakened without failing production capture and the PostgreSQL rehearsal.
+// pg_get_constraintdef output for every recovery-ledger FK owned by the
+// versioned namespace migrations. Source table and the complete deparsed
+// definition are both part of the contract so a same-name constraint cannot be
+// repointed or weakened without failing capture and the PostgreSQL rehearsal.
 export const codexRotatingRecoveryLedgerForeignKeys = Object.freeze([
   fk(
     "CodexOAuthSetupRecoveryRequest_providerInstanceRowId_fkey",
@@ -1110,6 +1191,11 @@ export const codexRotatingRecoveryLedgerForeignKeys = Object.freeze([
     "CodexOAuthWritebackIntent",
     'FOREIGN KEY ("leaseId") REFERENCES "CodexOAuthLease"(id) ON DELETE RESTRICT',
   ),
+  fk(
+    "CodexOAuthWorkflowCompatibility_namespace_fkey",
+    "CodexOAuthWorkflowCompatibility",
+    'FOREIGN KEY ("namespaceId") REFERENCES "CodexOAuthSecretNamespace"(id) ON DELETE RESTRICT',
+  ),
 ]);
 
 export const codexRotatingRecoveryLedgerForeignKeyNames = Object.freeze(
@@ -1190,6 +1276,11 @@ export const codexRotatingPrimaryKeys = Object.freeze(
       "CodexOAuthWritebackIntent",
       "PRIMARY KEY (id)",
     ],
+    [
+      "CodexOAuthWorkflowCompatibility_pkey",
+      "CodexOAuthWorkflowCompatibility",
+      'PRIMARY KEY ("namespaceId")',
+    ],
   ].map(([name, table, definition]) =>
     Object.freeze({ name, table, definition, validated: true }),
   ),
@@ -1246,6 +1337,10 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
     "0c735bbe8f8748d5efa6a001b416bc268e92ad7cc466d23cb21b98d0b0750d06",
   ),
   functionBody(
+    "codex_oauth_reattest_active_namespace_v4_to_v5",
+    "8351c12456b9c8454ec4f93106c3bebe08b07aa27c0c3eaf45adfe4b5d1927a0",
+  ),
+  functionBody(
     "codex_oauth_repair_quarantined_child",
     "d07c4ff352fea8060d67294f4deb2ba2a691c60bac6d3acfc8f1106af2716426",
   ),
@@ -1267,7 +1362,7 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
   ),
   functionBody(
     "codex_oauth_secret_namespace_tombstone_guard",
-    "f52841303c4626a6270c1a897ffcf46d2e17c8f785a8bdd1dad6321f9a26d85f",
+    "e50b55fe3ec2438d970d2be76c46b609a9f33cfcaf14aa1f673a973ec9303548",
   ),
   functionBody(
     "codex_oauth_setup_attempt_evidence_guard",
@@ -1293,11 +1388,39 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
     "hosted_codex_comment_token_authority_revoke_enqueue",
     "0013c1f97330dd16fe222cb1e58233f90c5459721725c919a0eab7f13353d2de",
   ),
+  functionBody(
+    "codex_oauth_v4_v5_reattestation_transition",
+    "2d4586ae5b2100dc320230fef3b7cf7ee9ed98a79a689b5896a233687a285e1c",
+  ),
+  functionBody(
+    "codex_oauth_workflow_compatibility_guard",
+    "5565da3d4314848555f12b58b697e7c5277f233bd3badd1da27d36dbd37851cd",
+  ),
 ]);
 
 export const codexRotatingFunctions = Object.freeze(
   codexRotatingFunctionBodyDigests.map(({ name }) => name),
 );
+
+export const codexRotatingFunctionIdentityArguments = Object.freeze({
+  codex_oauth_authorize_runtime_completion: "text, text",
+  codex_oauth_authorize_runtime_confirmation: "text, text, integer, text",
+  codex_oauth_authorize_setup_confirmation: "text, integer, text",
+  codex_oauth_consume_database_authority: "text, text, integer",
+  codex_oauth_database_authority_challenge: "text, text, integer",
+  codex_oauth_provider_identity_transition:
+    "text, text, text, text, text, text, text, text, text, text, text",
+  codex_oauth_provider_identity_repair_challenge:
+    "text, text, text, text, text, text, text, bigint, text, text, text, text, text, text, bigint",
+  codex_oauth_sign_database_authority: "text",
+  codex_oauth_repair_quarantined_child: "text, text, text",
+  codex_oauth_repair_quarantined_provider:
+    "text, text, text, text, text, text, text, bigint, text, text, text, text, text, text, bigint, text",
+  codex_oauth_reattest_active_namespace_v4_to_v5:
+    "text, text, text, text, bigint, text, text, text, text, text, integer, integer, text, text, text, text, text, text, text, text, integer",
+  codex_oauth_v4_v5_reattestation_transition:
+    "text, text, bigint, text, text, text, text, text, text, text, text, text, text, text, text",
+});
 
 export const codexRotatingTriggers = Object.freeze([
   "CodexOAuthChildIdentityQuarantine_cascade_guard",
@@ -1314,6 +1437,7 @@ export const codexRotatingTriggers = Object.freeze([
   "CodexOAuthSetupManifest_identity_fence_guard",
   "CodexOAuthSetupManifest_evidence_guard",
   "CodexOAuthSecretNamespace_tombstone_guard",
+  "CodexOAuthSecretNamespace_workflow_compatibility_guard",
   "CodexOAuthSetupPayloadClaim_cascade_guard",
   "CodexOAuthSetupPayloadClaim_evidence_guard",
   "CodexOAuthSetupDispatchAttempt_evidence_guard",
@@ -1322,6 +1446,7 @@ export const codexRotatingTriggers = Object.freeze([
   "CodexOAuthWritebackIntent_cascade_guard",
   "CodexOAuthWritebackIntent_identity_fence_guard",
   "CodexOAuthWritebackIntent_runtime_evidence_guard",
+  "CodexOAuthWorkflowCompatibility_guard",
   "RepositoryConnection_codex_oauth_identity_guard",
   "RepositoryConnection_comment_token_revoke",
   "RepositoryConnection_runtime_referential_action_guard",

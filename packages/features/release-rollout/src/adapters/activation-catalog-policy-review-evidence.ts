@@ -1,11 +1,17 @@
 import { createHash } from "node:crypto";
 import { TextDecoder } from "node:util";
 import { type ActivationCatalogPolicyPromotionExpectation } from "../domain/activation-catalog-policy-provenance-contract";
+import { type ActivationCatalogRawPromotionTrustRootReady } from "../domain/activation-catalog-policy-raw-promotion-trust-root";
 
 export type ActivationCatalogPolicyReviewEvidenceBuffers = Readonly<{
   reviewArtifact: Buffer;
   reviewerRuntime: Buffer;
   supplementalRuntime: Buffer;
+}>;
+
+export type ActivationCatalogRawReviewEvidenceBuffers = Readonly<{
+  reviewArtifact: Buffer;
+  reviewerRuntime: Buffer;
 }>;
 
 const exactRecord = (
@@ -323,10 +329,10 @@ const assertRuntime = (
   return value.evidence[1].slice("output_summary:".length);
 };
 
-export function assertActivationCatalogPolicyReviewEvidence(
+const assertLegacyActivationCatalogPolicyReviewEvidence = (
   buffers: ActivationCatalogPolicyReviewEvidenceBuffers,
   expected: ActivationCatalogPolicyPromotionExpectation,
-): void {
+): void => {
   if (expected.evidenceContractVersion !== 2)
     throw new Error("activation_catalog_policy_evidence_contract_invalid");
 
@@ -370,4 +376,169 @@ export function assertActivationCatalogPolicyReviewEvidence(
     );
   assertAuthoritativeMarkdown(markdown, expected);
   assertSupplementalMarkdown(supplementalSummary, expected);
+};
+
+const assertRawReviewMarkdown = (
+  markdown: string,
+  expected: ActivationCatalogRawPromotionTrustRootReady,
+): void => {
+  try {
+    const evidence = expected.evidence;
+    const review = expected.independentReview;
+    const headings = [...markdown.matchAll(/^## (.+)$/gmu)].map(
+      (match) => match[1],
+    );
+    if (
+      !markdown.startsWith("# Raw activation catalog independent review\n") ||
+      JSON.stringify(headings) !==
+        JSON.stringify(["Decision", "Capture identities", "Raw captures"])
+    )
+      throw new Error("invalid");
+
+    exactKeyedLines(
+      exactSection(markdown, "Decision"),
+      /^- ([A-Za-z][A-Za-z ]+): (.+)$/gmu,
+      {
+        Verdict: "**GO**",
+        BLOCKER: "**0**",
+        HIGH: "**0**",
+        "Decision ID": `\`${evidence.reviewDecisionId}\``,
+        "Reviewed at": `\`${review.reviewedAt}\``,
+      },
+    );
+
+    exactKeyedLines(
+      exactSection(markdown, "Capture identities"),
+      /^- ([A-Za-z][A-Za-z ]+): (.+)$/gmu,
+      {
+        "Base commit": `\`${evidence.capture.baseCommit}\``,
+        "Audited head": `\`${evidence.capture.auditedHead}\``,
+        "Audited tree": `\`${evidence.capture.auditedTree}\``,
+        "Workflow run": `\`${evidence.capture.workflowRunId}\``,
+        "Run attempt": `\`${evidence.capture.runAttempt}\``,
+        Job: `\`${evidence.capture.jobId}\``,
+        "Artifact ID": `\`${evidence.capture.artifactId}\``,
+        "Artifact name": `\`${evidence.capture.artifactName}\``,
+      },
+    );
+
+    const captures = exactSection(markdown, "Raw captures");
+    exactTable(
+      captures,
+      ["Selection", "Label", "Bytes", "Raw SHA-256"],
+      evidence.captures.map((capture, index) => [
+        index === 0 ? "selected" : "corroborating",
+        `\`${capture.label}\``,
+        `\`${capture.bytes}\``,
+        `\`${capture.sha256}\``,
+      ]),
+    );
+    exactKeyedLines(captures, /^([^|:\n][^:\n]*): `([^`]+)`$/gmu, {
+      "Capture-set digest": evidence.captureSetSha256,
+      "Source PostgreSQL image": evidence.postgresImages.sourcePg16,
+      "Target PostgreSQL image": evidence.postgresImages.targetPg17,
+    });
+  } catch {
+    throw new Error("activation_catalog_policy_raw_review_report_invalid");
+  }
+};
+
+const assertRawRuntime = (
+  value: unknown,
+  expected: ActivationCatalogRawPromotionTrustRootReady,
+): string => {
+  const review = expected.independentReview;
+  if (
+    !exactRecord(value, [
+      "status",
+      "changedFiles",
+      "evidence",
+      "blockers",
+      "nextAction",
+      "schemaVersion",
+      "provider",
+      "runId",
+      "taskId",
+      "details",
+      "updatedAt",
+    ]) ||
+    value.status !== "done" ||
+    value.provider !== "codex" ||
+    value.schemaVersion !== 1 ||
+    value.nextAction !== "review_completed" ||
+    value.runId !== review.reviewerRunId ||
+    value.taskId !== review.reviewerTaskId ||
+    value.updatedAt !== review.completedAt ||
+    !exactRecord(value.details, ["baseCommit"]) ||
+    value.details.baseCommit !== expected.evidence.capture.baseCommit ||
+    !Array.isArray(value.blockers) ||
+    value.blockers.length !== 0 ||
+    !Array.isArray(value.changedFiles) ||
+    value.changedFiles.length !== 0 ||
+    !Array.isArray(value.evidence) ||
+    value.evidence.length !== 3 ||
+    value.evidence[0] !== "safe_execution_status:completed" ||
+    typeof value.evidence[1] !== "string" ||
+    !value.evidence[1].startsWith("output_summary:") ||
+    value.evidence[2] !== "attempt_count:1"
+  )
+    throw new Error(
+      "activation_catalog_policy_raw_reviewer_runtime_evidence_invalid",
+    );
+  return value.evidence[1].slice("output_summary:".length);
+};
+
+const assertRawActivationCatalogPolicyReviewEvidence = (
+  buffers: ActivationCatalogRawReviewEvidenceBuffers,
+  expected: ActivationCatalogRawPromotionTrustRootReady,
+): void => {
+  if (expected.independentReview.contractVersion !== 1)
+    throw new Error("activation_catalog_policy_raw_review_contract_invalid");
+  const markdown = exactRawFile(
+    buffers.reviewArtifact,
+    expected.independentReview.reviewArtifact.bytes,
+    expected.independentReview.reviewArtifact.sha256,
+    "activation_catalog_policy_raw_independent_review_artifact_invalid",
+  );
+  const runtimeText = exactRawFile(
+    buffers.reviewerRuntime,
+    expected.independentReview.reviewerRuntime.bytes,
+    expected.independentReview.reviewerRuntime.sha256,
+    "activation_catalog_policy_raw_reviewer_runtime_evidence_invalid",
+  );
+  const materialized = assertRawRuntime(
+    parseJson(
+      runtimeText,
+      "activation_catalog_policy_raw_reviewer_runtime_evidence_invalid",
+    ),
+    expected,
+  );
+  if (!Buffer.from(materialized, "utf8").equals(buffers.reviewArtifact))
+    throw new Error(
+      "activation_catalog_policy_raw_review_materialization_mismatch",
+    );
+  assertRawReviewMarkdown(markdown, expected);
+  if (expected.evidence.reviewResult !== "GO")
+    throw new Error("activation_catalog_policy_raw_review_report_invalid");
+};
+
+export function assertActivationCatalogPolicyReviewEvidence(
+  buffers:
+    | ActivationCatalogPolicyReviewEvidenceBuffers
+    | ActivationCatalogRawReviewEvidenceBuffers,
+  expected:
+    | ActivationCatalogPolicyPromotionExpectation
+    | ActivationCatalogRawPromotionTrustRootReady,
+): void {
+  if ("status" in expected) {
+    assertRawActivationCatalogPolicyReviewEvidence(
+      buffers as ActivationCatalogRawReviewEvidenceBuffers,
+      expected,
+    );
+    return;
+  }
+  assertLegacyActivationCatalogPolicyReviewEvidence(
+    buffers as ActivationCatalogPolicyReviewEvidenceBuffers,
+    expected,
+  );
 }
