@@ -280,7 +280,7 @@ describe("target-local PG17 activation permit", () => {
     );
     expect(source).toContain("disposablePg17CanonicalRoleBootstrapSetupSql()");
     expect(source).toContain("roleProvisioningSql(configuration, {");
-    expect(source).toContain("ownerAuthorizedInitialRuntimeGateClosed: true");
+    expect(source).toContain("ownerAuthorizedInitialRuntimeGateClosed: false");
     expect(
       source.indexOf(
         "canonicalRoleBootstrapSetup.publicTableAclCanonicalization",
@@ -301,8 +301,11 @@ describe("target-local PG17 activation permit", () => {
       source.indexOf("type CaseContext"),
     );
     expect(seedInitializer).not.toContain("runtimeGrantSql(");
+    expect(seedInitializer).toContain(
+      "ownerAuthorizedInitialRuntimeGateClosed: false",
+    );
     expect(
-      seedInitializer.indexOf("ownerAuthorizedInitialRuntimeGateClosed: true"),
+      seedInitializer.indexOf("ownerAuthorizedInitialRuntimeGateClosed: false"),
     ).toBeLessThan(
       seedInitializer.indexOf("const expectedPostCatalogDigest ="),
     );
@@ -321,7 +324,9 @@ describe("target-local PG17 activation permit", () => {
       seedInitializer.indexOf("atomicMigrationAndGrantSql(configuration, {"),
     );
     expect(source).toContain('"@reviewrouter/platform-db"');
-    expect(source).toContain('"db:migrate:deploy"');
+    expect(source).toContain(
+      '"prisma",\n        "migrate",\n        "deploy",',
+    );
     expect(source).toContain("clone immutable production-shaped seed");
     expect(source).toContain(
       "const reactivateDisposableAdversarialAdminOffline =",
