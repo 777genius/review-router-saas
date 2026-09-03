@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  certifiedForkReviewFilePatchMaxBytes,
   certifiedForkReviewModelOutputHash,
+  certifiedForkReviewModelSummaryMaxBytes,
+  certifiedForkReviewPacketMaxBytes,
   certifiedForkReviewPromptContextHash,
   parseCertifiedForkReviewFile,
   parseCertifiedForkReviewModelOutput,
   parseCertifiedForkReviewPromptPacket,
   serializeCertifiedForkReviewModelOutput,
 } from "../application/use-cases/certified-fork-review-packet.js";
+import { certifiedForkReviewWorkflowSchemaVersion } from "../application/use-cases/certified-fork-review-binding.js";
 import { prepareCertifiedForkReview } from "../application/use-cases/prepare-certified-fork-review.js";
 import { publishCertifiedForkReview } from "../application/use-cases/publish-certified-fork-review.js";
 
@@ -55,6 +59,11 @@ const parseModel = (
   paths: readonly string[],
   changes: Record<string, unknown> = {},
 ) => parseCertifiedForkReviewModelOutput({ ...output(), ...changes }, paths);
+const without = (value: object, key: string) => {
+  const copy = { ...value } as Record<string, unknown>;
+  delete copy[key];
+  return copy;
+};
 
 describe("certified fork review pure use cases", () => {
   it("prepares a deterministic immutable schema-6 packet", () => {
@@ -64,14 +73,27 @@ describe("certified fork review pure use cases", () => {
       binding: sourceBinding,
       files: sourceFiles,
     });
+    expect(certifiedForkReviewWorkflowSchemaVersion).toBe(6);
     expect(Object.keys(packet)).toEqual([
       "protocolVersion",
       "binding",
       "contextHash",
       "files",
     ]);
+    expect(Object.keys(packet.files[0]!)).toEqual([
+      "path",
+      "status",
+      "additions",
+      "deletions",
+      "patch",
+    ]);
+    const content = { binding: packet.binding, files: packet.files };
     expect(packet.contextHash).toBe(
-      certifiedForkReviewPromptContextHash(packet),
+      certifiedForkReviewPromptContextHash(content),
+    );
+    expectCode(
+      () => certifiedForkReviewPromptContextHash(new Proxy(content, {})),
+      "certified_fork_review_content_invalid",
     );
     expect(Object.isFrozen(packet)).toBe(true);
     sourceBinding.reviewHeadSha = "c".repeat(40);
@@ -81,19 +103,35 @@ describe("certified fork review pure use cases", () => {
     expect(
       prepareCertifiedForkReview({ binding: binding(), files: files() }),
     ).toEqual(packet);
+    expect(
+      prepareCertifiedForkReview({
+        binding: binding(),
+        files: [{ ...file(), patch: "different" }],
+      }).contextHash,
+    ).not.toBe(packet.contextHash);
   });
 
   it("rejects strict file and packet violations without invoking accessors", () => {
     const first = file();
     const assertFile = (value: unknown, code: string) =>
       expectCode(() => parseCertifiedForkReviewFile(value), code);
+    for (const key of Object.keys(first)) {
+      assertFile(without(first, key), "certified_fork_review_file_invalid");
+    }
     assertFile({ ...first, extra: true }, "certified_fork_review_file_invalid");
+    assertFile(
+      { ...first, [Symbol("extra")]: true },
+      "certified_fork_review_file_invalid",
+    );
     assertFile(
       { ...first, additions: "3" },
       "certified_fork_review_file_count_invalid",
     );
     assertFile(new Date(), "certified_fork_review_file_invalid");
     assertFile(new Proxy(first, {}), "certified_fork_review_file_invalid");
+    const revoked = Proxy.revocable(first, {});
+    revoked.revoke();
+    assertFile(revoked.proxy, "certified_fork_review_file_invalid");
     let accessed = false;
     const accessor = { ...first };
     Object.defineProperty(accessor, "patch", {
@@ -114,6 +152,55 @@ describe("certified fork review pure use cases", () => {
         }),
       "certified_fork_review_packet_invalid",
     );
+    const packet = prepare();
+    for (const key of Object.keys(packet)) {
+      expectCode(
+        () => parseCertifiedForkReviewPromptPacket(without(packet, key)),
+        "certified_fork_review_packet_invalid",
+      );
+    }
+    expectCode(
+      () => parseCertifiedForkReviewPromptPacket({ ...packet, extra: true }),
+      "certified_fork_review_packet_invalid",
+    );
+    expectCode(
+      () =>
+        parseCertifiedForkReviewPromptPacket({
+          ...packet,
+          [Symbol("extra")]: true,
+        }),
+      "certified_fork_review_packet_invalid",
+    );
+    expectCode(
+      () => parseCertifiedForkReviewPromptPacket(new Proxy(packet, {})),
+      "certified_fork_review_packet_invalid",
+    );
+    expectCode(
+      () => parseCertifiedForkReviewPromptPacket(new Date()),
+      "certified_fork_review_packet_invalid",
+    );
+    expectCode(
+      () =>
+        parseCertifiedForkReviewPromptPacket({
+          ...packet,
+          protocolVersion: "1",
+        }),
+      "certified_fork_review_packet_version_invalid",
+    );
+    let packetAccessed = false;
+    const packetAccessor = { ...packet };
+    Object.defineProperty(packetAccessor, "contextHash", {
+      enumerable: true,
+      get: () => {
+        packetAccessed = true;
+        return packet.contextHash;
+      },
+    });
+    expectCode(
+      () => parseCertifiedForkReviewPromptPacket(packetAccessor),
+      "certified_fork_review_packet_invalid",
+    );
+    expect(packetAccessed).toBe(false);
   });
 
   it("rejects malformed prepare and publish envelopes without invoking getters", () => {
@@ -176,11 +263,14 @@ describe("certified fork review pure use cases", () => {
       prepareCertifiedForkReview({ binding: binding(), files: entries });
     for (const path of [
       "/tmp/a",
+      "C:relative",
       "a\\b",
       "a//b",
       "a/../b",
       "a/./b",
       "a`b",
+      "a\u0000b",
+      "a\u061cb",
       "a\u202eb",
     ]) {
       expectCode(
@@ -192,6 +282,47 @@ describe("certified fork review pure use cases", () => {
       () => prepareFiles([file(), file()]),
       "certified_fork_review_duplicate_path",
     );
+    const decorated = files() as Array<unknown> & { extra?: boolean };
+    decorated.extra = true;
+    expectCode(
+      () => prepareFiles(decorated),
+      "certified_fork_review_files_invalid",
+    );
+    const sparse = new Array(2);
+    sparse[0] = file();
+    expectCode(
+      () => prepareFiles(sparse),
+      "certified_fork_review_files_invalid",
+    );
+    expectCode(
+      () => prepareFiles(new Proxy(files(), {})),
+      "certified_fork_review_files_invalid",
+    );
+    const revoked = Proxy.revocable(files(), {});
+    revoked.revoke();
+    expectCode(
+      () => prepareFiles(revoked.proxy),
+      "certified_fork_review_files_invalid",
+    );
+    let arrayAccessed = false;
+    const accessorArray = files();
+    Object.defineProperty(accessorArray, "0", {
+      enumerable: true,
+      get: () => {
+        arrayAccessed = true;
+        return file();
+      },
+    });
+    expectCode(
+      () => prepareFiles(accessorArray),
+      "certified_fork_review_files_invalid",
+    );
+    expect(arrayAccessed).toBe(false);
+    expect(
+      prepareFiles([
+        { ...file(), patch: "x".repeat(certifiedForkReviewFilePatchMaxBytes) },
+      ]).files[0]!.patch,
+    ).toHaveLength(certifiedForkReviewFilePatchMaxBytes);
     expectCode(
       () => prepareFiles([{ ...file(), patch: "🙂".repeat(60_000) }]),
       "certified_fork_review_file_patch_invalid",
@@ -203,11 +334,35 @@ describe("certified fork review pure use cases", () => {
         ),
       "certified_fork_review_files_too_many",
     );
+    const emptyPacket = prepareFiles([
+      { ...file(), patch: "" },
+      { ...file("README.md"), patch: "" },
+    ]);
+    const payloadBytes =
+      certifiedForkReviewPacketMaxBytes -
+      Buffer.byteLength(JSON.stringify(emptyPacket), "utf8");
+    const firstPatchBytes = Math.min(
+      certifiedForkReviewFilePatchMaxBytes,
+      payloadBytes,
+    );
+    const exactPacket = prepareFiles([
+      { ...file(), patch: "x".repeat(firstPatchBytes) },
+      {
+        ...file("README.md"),
+        patch: "y".repeat(payloadBytes - firstPatchBytes),
+      },
+    ]);
+    expect(Buffer.byteLength(JSON.stringify(exactPacket), "utf8")).toBe(
+      certifiedForkReviewPacketMaxBytes,
+    );
     expectCode(
       () =>
         prepareFiles([
-          { ...file(), patch: "x".repeat(150_000) },
-          { ...file("README.md"), patch: "y".repeat(150_000) },
+          { ...file(), patch: "x".repeat(firstPatchBytes) },
+          {
+            ...file("README.md"),
+            patch: "y".repeat(payloadBytes - firstPatchBytes + 1),
+          },
         ]),
       "certified_fork_review_packet_too_large",
     );
@@ -224,6 +379,25 @@ describe("certified fork review pure use cases", () => {
     expect(certifiedForkReviewModelOutputHash(parsed, paths)).toMatch(
       /^[a-f0-9]{64}$/u,
     );
+    const noOptionalFields = parseCertifiedForkReviewModelOutput(
+      {
+        protocolVersion: 1,
+        summaryMarkdown: "x".repeat(certifiedForkReviewModelSummaryMaxBytes),
+        findings: [
+          {
+            severity: "info",
+            title: "🙂".repeat(50),
+            body: "🙂".repeat(2_000),
+          },
+        ],
+      },
+      paths,
+    );
+    expect(noOptionalFields.findings[0]).toEqual({
+      severity: "info",
+      title: "🙂".repeat(50),
+      body: "🙂".repeat(2_000),
+    });
   });
 
   it("rejects hostile model output, bad ranges, paths and sizes", () => {
@@ -231,6 +405,13 @@ describe("certified fork review pure use cases", () => {
     const finding = output().findings[0]!;
     const assertModel = (changes: Record<string, unknown>, code: string) =>
       expectCode(() => parseModel(paths, changes), code);
+    for (const key of Object.keys(output())) {
+      expectCode(
+        () =>
+          parseCertifiedForkReviewModelOutput(without(output(), key), paths),
+        "certified_fork_review_model_output_invalid",
+      );
+    }
     assertModel(
       { findings: "bad" },
       "certified_fork_review_model_findings_invalid",
@@ -240,6 +421,24 @@ describe("certified fork review pure use cases", () => {
       () => parseCertifiedForkReviewModelOutput(new Proxy(output(), {}), paths),
       "certified_fork_review_model_output_invalid",
     );
+    assertModel(
+      { protocolVersion: "1" },
+      "certified_fork_review_model_output_version_invalid",
+    );
+    let outputAccessed = false;
+    const outputAccessor = output();
+    Object.defineProperty(outputAccessor, "summaryMarkdown", {
+      enumerable: true,
+      get: () => {
+        outputAccessed = true;
+        return "bad";
+      },
+    });
+    expectCode(
+      () => parseCertifiedForkReviewModelOutput(outputAccessor, paths),
+      "certified_fork_review_model_output_invalid",
+    );
+    expect(outputAccessed).toBe(false);
     assertModel(
       { findings: [{ ...finding, severity: "urgent" }] },
       "certified_fork_review_finding_severity_invalid",
@@ -251,6 +450,68 @@ describe("certified fork review pure use cases", () => {
     assertModel(
       { findings: [{ ...finding, path: "unknown.ts" }] },
       "certified_fork_review_finding_path_unknown",
+    );
+    for (const key of ["severity", "title", "body"]) {
+      assertModel(
+        { findings: [without(finding, key)] },
+        "certified_fork_review_finding_invalid",
+      );
+    }
+    assertModel(
+      { findings: [{ ...finding, extra: true }] },
+      "certified_fork_review_finding_invalid",
+    );
+    assertModel(
+      { findings: [{ ...finding, [Symbol("extra")]: true }] },
+      "certified_fork_review_finding_invalid",
+    );
+    assertModel(
+      { findings: [{ ...finding, title: "🙂".repeat(51) }] },
+      "certified_fork_review_finding_title_invalid",
+    );
+    assertModel(
+      { findings: [{ ...finding, body: "🙂".repeat(2_001) }] },
+      "certified_fork_review_finding_body_invalid",
+    );
+    assertModel(
+      { findings: [{ ...finding, path: undefined }] },
+      "certified_fork_review_finding_path_invalid",
+    );
+    assertModel(
+      { findings: [{ ...finding, startLine: "2" }] },
+      "certified_fork_review_finding_line_invalid",
+    );
+    assertModel(
+      { findings: [{ ...finding, endLine: 1_000_001 }] },
+      "certified_fork_review_finding_line_invalid",
+    );
+    let findingAccessed = false;
+    const findingAccessor = { ...finding };
+    Object.defineProperty(findingAccessor, "body", {
+      enumerable: true,
+      get: () => {
+        findingAccessed = true;
+        return "bad";
+      },
+    });
+    assertModel(
+      { findings: [findingAccessor] },
+      "certified_fork_review_finding_invalid",
+    );
+    expect(findingAccessed).toBe(false);
+    const decoratedFindings = output().findings as Array<unknown> & {
+      extra?: boolean;
+    };
+    decoratedFindings.extra = true;
+    assertModel(
+      { findings: decoratedFindings },
+      "certified_fork_review_model_findings_invalid",
+    );
+    const revokedFindings = Proxy.revocable(output().findings, {});
+    revokedFindings.revoke();
+    assertModel(
+      { findings: revokedFindings.proxy },
+      "certified_fork_review_model_findings_invalid",
     );
     assertModel(
       { summaryMarkdown: "🙂".repeat(20_000) },
@@ -270,7 +531,7 @@ describe("certified fork review pure use cases", () => {
       binding: prepared.binding,
       contextHash: prepared.contextHash,
     };
-    for (const [field, value] of [
+    const mutations = [
       ["sourceRepository", "fork-owner/other"],
       ["sourceRepositoryId", "11"],
       ["baseRepository", "777genius/other"],
@@ -278,7 +539,8 @@ describe("certified fork review pure use cases", () => {
       ["pullRequestNumber", 43],
       ["reviewHeadSha", "c".repeat(40)],
       ["baseSha", "d".repeat(40)],
-    ] as const) {
+    ] as const;
+    for (const [field, value] of mutations) {
       expect(
         publishCertifiedForkReview({
           prepared,
@@ -287,6 +549,24 @@ describe("certified fork review pure use cases", () => {
         }),
       ).toEqual(stale);
     }
+    const poison = Proxy.revocable({}, {});
+    poison.revoke();
+    expect(
+      publishCertifiedForkReview({
+        prepared,
+        binding: { ...binding(), reviewHeadSha: "c".repeat(40) },
+        modelOutput: poison.proxy,
+      }),
+    ).toEqual(stale);
+    expectCode(
+      () =>
+        publishCertifiedForkReview({
+          prepared,
+          binding: { ...binding(), trustDomain: "internal" },
+          modelOutput: output(),
+        }),
+      "certified_fork_review_binding_invalid",
+    );
   });
 
   it("returns ready only for matching valid output and preserves snapshots", () => {

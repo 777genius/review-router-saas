@@ -8,8 +8,8 @@ import {
   type CertifiedForkReviewPromptPacket,
 } from "./certified-fork-review-packet.js";
 import {
-  assertCertifiedForkReviewBindingMatches,
   parseCertifiedForkReviewBinding,
+  serializeCertifiedForkReviewBinding,
 } from "./certified-fork-review-binding.js";
 
 export type CertifiedForkReviewPublishResult =
@@ -48,11 +48,11 @@ export function publishCertifiedForkReview(
   );
   const packet = parseCertifiedForkReviewPromptPacket(values.prepared);
   const binding = parseCertifiedForkReviewBinding(values.binding);
-  try {
-    assertCertifiedForkReviewBindingMatches(packet.binding, binding);
-  } catch (error) {
-    if (error instanceof Error) return staleResult(packet);
-    throw error;
+  if (
+    serializeCertifiedForkReviewBinding(packet.binding) !==
+    serializeCertifiedForkReviewBinding(binding)
+  ) {
+    return staleResult(packet);
   }
   const filePaths = packet.files.map((file) => file.path);
   const modelOutput = parseCertifiedForkReviewModelOutput(

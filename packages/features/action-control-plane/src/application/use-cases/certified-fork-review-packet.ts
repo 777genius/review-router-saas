@@ -47,7 +47,7 @@ const modelOutputKeys = [
   "findings",
 ] as const;
 const hex64 = /^[a-f0-9]{64}$/u;
-const safePathBanned = /[\\`\u007f-\u009f\u2028-\u202e\u2066-\u2069]/u;
+const safePathBanned = /[\\`\p{Cc}\p{Bidi_Control}\p{Zl}\p{Zp}]/u;
 const fileStatuses = new Set<CertifiedForkReviewFile["status"]>([
   "added",
   "modified",
@@ -78,21 +78,15 @@ function byteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");
 }
 
-function hasControlOrBidi(value: string): boolean {
-  for (const character of value) {
-    const codePoint = character.codePointAt(0) as number;
-    if ((codePoint >= 0 && codePoint <= 0x1f) || codePoint === 0x7f) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    isProxy(value) ||
+    Array.isArray(value)
+  ) {
     return false;
   }
-  if (isProxy(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
@@ -102,29 +96,7 @@ export function readExactRecord(
   allowedKeys: readonly string[],
   code: string,
 ): Record<string, unknown> {
-  if (!isPlainObject(input)) invalid(code);
-  const keys = Reflect.ownKeys(input);
-  if (
-    keys.length < allowedKeys.length ||
-    keys.some((key) => typeof key !== "string") ||
-    keys.some((key) => typeof key !== "string" || !allowedKeys.includes(key))
-  ) {
-    invalid(code);
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(input);
-  const values: Record<string, unknown> = {};
-  for (const key of allowedKeys) {
-    const descriptor = descriptors[key];
-    if (
-      descriptor === undefined ||
-      descriptor.enumerable !== true ||
-      !("value" in descriptor)
-    ) {
-      invalid(code);
-    }
-    values[key] = descriptor.value;
-  }
-  return values;
+  return readRequiredRecord(input, allowedKeys, [], code);
 }
 
 function readRequiredRecord(
@@ -138,12 +110,12 @@ function readRequiredRecord(
   const keys = Reflect.ownKeys(input);
   if (
     keys.length < requiredKeys.length ||
-    keys.some((key) => typeof key !== "string") ||
+    keys.length > allowedKeys.length ||
     keys.some((key) => typeof key !== "string" || !allowedKeys.includes(key))
   )
     invalid(code);
   const descriptors = Object.getOwnPropertyDescriptors(input);
-  const values: Record<string, unknown> = {};
+  const values: Record<string, unknown> = Object.create(null);
   for (const key of keys) {
     if (typeof key !== "string") invalid(code);
     const descriptor = descriptors[key];
@@ -164,32 +136,29 @@ function readRequiredRecord(
   return values;
 }
 
-function readStrictArray(input: unknown, code: string): readonly unknown[] {
-  if (typeof input !== "object" || input === null || !Array.isArray(input)) {
+function readStrictArray(
+  input: unknown,
+  code: string,
+  maxLength: number,
+  tooManyCode = code,
+): readonly unknown[] {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    isProxy(input) ||
+    !Array.isArray(input)
+  ) {
     invalid(code);
   }
-  if (isProxy(input) || Object.getPrototypeOf(input) !== Array.prototype) {
+  if (Object.getPrototypeOf(input) !== Array.prototype) {
     invalid(code);
   }
+  const length = input.length;
+  if (length > maxLength) invalid(tooManyCode);
   const keys = Reflect.ownKeys(input);
-  if (
-    keys.some((key) => typeof key !== "string") ||
-    keys.some(
-      (key) =>
-        key !== "length" && (typeof key !== "string" || !/^\d+$/u.test(key)),
-    )
-  ) {
-    invalid(code);
-  }
-  const lengthDescriptor = Object.getOwnPropertyDescriptor(input, "length");
-  if (
-    lengthDescriptor === undefined ||
-    lengthDescriptor.value !== input.length
-  ) {
-    invalid(code);
-  }
+  if (keys.length !== length + 1) invalid(code);
   const result: unknown[] = [];
-  for (let index = 0; index < input.length; index += 1) {
+  for (let index = 0; index < length; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
     if (
       descriptor === undefined ||
@@ -206,20 +175,19 @@ function readStrictArray(input: unknown, code: string): readonly unknown[] {
 function assertSafePath(
   path: unknown,
   code: string,
-  maxBytes?: number,
+  maxBytes = certifiedForkReviewPacketMaxBytes,
 ): asserts path is string {
   if (
     typeof path !== "string" ||
     path.length === 0 ||
-    (maxBytes !== undefined && byteLength(path) > maxBytes)
+    byteLength(path) > maxBytes
   ) {
     invalid(code);
   }
   if (
     path.startsWith("/") ||
     /^[A-Za-z]:/u.test(path) ||
-    safePathBanned.test(path) ||
-    hasControlOrBidi(path)
+    safePathBanned.test(path)
   ) {
     invalid(code);
   }
@@ -275,11 +243,22 @@ export function parseCertifiedForkReviewFile(
 export function parseCertifiedForkReviewFiles(
   input: unknown,
 ): readonly CertifiedForkReviewFile[] {
-  const values = readStrictArray(input, "certified_fork_review_files_invalid");
-  if (values.length > certifiedForkReviewMaxFiles) {
-    invalid("certified_fork_review_files_too_many");
+  const values = readStrictArray(
+    input,
+    "certified_fork_review_files_invalid",
+    certifiedForkReviewMaxFiles,
+    "certified_fork_review_files_too_many",
+  );
+  const files: CertifiedForkReviewFile[] = [];
+  let encodedBytes = 2;
+  for (const value of values) {
+    const file = parseCertifiedForkReviewFile(value);
+    encodedBytes +=
+      byteLength(JSON.stringify(file)) + (files.length === 0 ? 0 : 1);
+    if (encodedBytes > certifiedForkReviewPacketMaxBytes)
+      invalid("certified_fork_review_packet_too_large");
+    files.push(file);
   }
-  const files = values.map(parseCertifiedForkReviewFile);
   const paths = new Set(files.map((file) => file.path));
   if (paths.size !== files.length)
     invalid("certified_fork_review_duplicate_path");
@@ -311,14 +290,20 @@ function fileObject(file: CertifiedForkReviewFile): Record<string, unknown> {
   };
 }
 
-export function serializeCertifiedForkReviewPacketContent(input: {
-  readonly binding: CertifiedForkReviewBinding;
-  readonly files: readonly CertifiedForkReviewFile[];
-}): string {
+export function serializeCertifiedForkReviewPacketContent(
+  input: unknown,
+): string {
+  const values = readExactRecord(
+    input,
+    ["binding", "files"],
+    "certified_fork_review_content_invalid",
+  );
+  const binding = parseCertifiedForkReviewBinding(values.binding);
+  const files = parseCertifiedForkReviewFiles(values.files);
   return JSON.stringify({
     protocolVersion: 1,
-    binding: bindingObject(input.binding),
-    files: input.files.map(fileObject),
+    binding: bindingObject(binding),
+    files: files.map(fileObject),
   });
 }
 
@@ -340,10 +325,7 @@ export function serializeParsedCertifiedForkReviewPromptPacket(
   });
 }
 
-export function certifiedForkReviewPromptContextHash(input: {
-  readonly binding: CertifiedForkReviewBinding;
-  readonly files: readonly CertifiedForkReviewFile[];
-}): string {
+export function certifiedForkReviewPromptContextHash(input: unknown): string {
   return createHash("sha256")
     .update(serializeCertifiedForkReviewPacketContent(input), "utf8")
     .digest("hex");
@@ -478,10 +460,9 @@ export function parseCertifiedForkReviewModelOutput(
   const findingsInput = readStrictArray(
     values.findings,
     "certified_fork_review_model_findings_invalid",
+    certifiedForkReviewMaxFindings,
+    "certified_fork_review_model_findings_too_many",
   );
-  if (findingsInput.length > certifiedForkReviewMaxFindings) {
-    invalid("certified_fork_review_model_findings_too_many");
-  }
   const paths = filePaths instanceof Set ? filePaths : new Set(filePaths);
   const findings = Object.freeze(
     findingsInput.map((finding) => parseFinding(finding, paths)),
