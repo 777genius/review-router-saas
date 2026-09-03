@@ -1545,7 +1545,7 @@ describePg17(
               'migration-quarantine','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}',31,'${"1f".padStart(32, "0")}',
               '${evidenceFor("migration-quarantine")}'::jsonb,
-              '${eligibilityCutoff}'::timestamptz,true);`,
+              '${eligibilityCutoff}'::timestamptz,true,false);`,
             ).stderr,
           ).toContain("release migration target permit unavailable");
 
@@ -1620,7 +1620,7 @@ describePg17(
             'migration-completed','${context.systemIdentifier}','${witness}',
             '${transition}','${previous}',32,'${nonce}',
             '${evidenceFor("migration-completed")}'::jsonb,
-            '${eligibilityCutoff}'::timestamptz,true);`,
+            '${eligibilityCutoff}'::timestamptz,true,false);`,
           );
           expect(
             context.psqlResultAs(
@@ -1694,7 +1694,7 @@ describePg17(
               'migration-completed','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}',32,'${nonce}',
               '${evidenceFor("migration-completed")}'::jsonb,
-              '${eligibilityCutoff}'::timestamptz,true);`,
+              '${eligibilityCutoff}'::timestamptz,true,false);`,
             ).stderr,
           ).toContain(
             "release migration executor replay ACL gate mode conflict",
@@ -1767,7 +1767,7 @@ describePg17(
             'migration-open','${context.systemIdentifier}','${witness}',
             '${transition}','${previous}',33,'${openNonce}',
             '${evidenceFor("migration-open")}'::jsonb,
-            '${eligibilityCutoff}'::timestamptz,false);`,
+            '${eligibilityCutoff}'::timestamptz,false,false);`,
           );
           expect(projectedOpenAttempt.status).not.toBe(0);
           expect(projectedOpenAttempt.stderr).toContain(
