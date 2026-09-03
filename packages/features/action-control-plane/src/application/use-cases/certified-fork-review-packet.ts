@@ -314,7 +314,7 @@ export function serializeCertifiedForkReviewPromptPacket(
   return serializeParsedCertifiedForkReviewPromptPacket(packet);
 }
 
-export function serializeParsedCertifiedForkReviewPromptPacket(
+function serializeParsedCertifiedForkReviewPromptPacket(
   packet: CertifiedForkReviewPromptPacket,
 ): string {
   return JSON.stringify({

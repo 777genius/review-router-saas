@@ -66,6 +66,29 @@ const without = (value: object, key: string) => {
 };
 
 describe("certified fork review pure use cases", () => {
+  it("keeps typed-only serializers private and validates public serialization", async () => {
+    const api =
+      await import("../application/use-cases/certified-fork-review-packet.js");
+    expect(api).not.toHaveProperty(
+      "serializeParsedCertifiedForkReviewPromptPacket",
+    );
+    let invoked = false;
+    const hostile = new Proxy(
+      {},
+      {
+        get: () => {
+          invoked = true;
+          throw new Error("attacker_callback");
+        },
+      },
+    );
+    expectCode(
+      () => api.serializeCertifiedForkReviewPromptPacket(hostile),
+      "certified_fork_review_packet_invalid",
+    );
+    expect(invoked).toBe(false);
+  });
+
   it("prepares a deterministic immutable schema-6 packet", () => {
     const sourceBinding = binding();
     const sourceFiles = files();

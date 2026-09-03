@@ -1,10 +1,9 @@
 import type { CertifiedForkReviewPromptPacket } from "./certified-fork-review-packet.js";
 import {
-  certifiedForkReviewPacketMaxBytes,
   certifiedForkReviewPromptContextHash,
   parseCertifiedForkReviewFiles,
+  parseCertifiedForkReviewPromptPacket,
   readExactRecord,
-  serializeParsedCertifiedForkReviewPromptPacket,
 } from "./certified-fork-review-packet.js";
 import { parseCertifiedForkReviewBinding } from "./certified-fork-review-binding.js";
 
@@ -19,19 +18,11 @@ export function prepareCertifiedForkReview(
   const binding = parseCertifiedForkReviewBinding(values.binding);
   const files = parseCertifiedForkReviewFiles(values.files);
   const contextHash = certifiedForkReviewPromptContextHash({ binding, files });
-  const packet = Object.freeze({
+  const packet = {
     protocolVersion: 1 as const,
     binding,
     contextHash,
     files,
-  });
-  if (
-    Buffer.byteLength(
-      serializeParsedCertifiedForkReviewPromptPacket(packet),
-      "utf8",
-    ) > certifiedForkReviewPacketMaxBytes
-  ) {
-    throw new Error("certified_fork_review_packet_too_large");
-  }
-  return packet;
+  };
+  return parseCertifiedForkReviewPromptPacket(packet);
 }
