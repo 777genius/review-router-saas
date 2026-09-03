@@ -843,7 +843,7 @@ describe("high-risk activation mutation policy", () => {
     ]);
   });
 
-  it("freshly attests the target reader immediately before finalization", async () => {
+  it("retains the target reader fence until control finalization completes", async () => {
     const events: string[] = [];
     const repository = {
       finalizeActivation: vi.fn(async () => {
@@ -860,8 +860,10 @@ describe("high-risk activation mutation policy", () => {
     const gate: ReleaseAuthorityHighRiskMutationGate = {
       execute: async (sequence) =>
         await sequence(async (target, mutation) => {
-          events.push(`${target}-attested`);
-          return await mutation(targetAttestation);
+          events.push(`${target}-fence-open`);
+          const result = await mutation(targetAttestation);
+          events.push(`${target}-fence-close`);
+          return result;
         }),
     };
 
@@ -873,10 +875,12 @@ describe("high-risk activation mutation policy", () => {
     ).finalize(finalizeInput);
 
     expect(events).toEqual([
-      "reader-attested",
+      "reader-fence-open",
       "target-read",
-      "control-attested",
+      "control-fence-open",
       "authority-write",
+      "control-fence-close",
+      "reader-fence-close",
     ]);
   });
 

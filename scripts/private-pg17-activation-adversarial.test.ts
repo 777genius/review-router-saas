@@ -1,6 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   activationAuthorityProvisioningSql,
@@ -16,11 +25,14 @@ import {
   disposablePg17CanonicalRoleBootstrapSetupSql,
   disposablePg17TargetRoleFoundationSql,
   disposableSqlConfiguration,
+  materializeCanonicalPreReleasePrisma,
   persistRehearsalSourceOwnedReceipt,
+  resolvePreReleaseMigrationExclusions,
 } from "./rehearse-private-pg17-rollout.mjs";
 import {
   canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyTrustRootReadiness,
+  canonicalReleaseMigrationArtifact,
 } from "../packages/features/release-rollout/src/index.js";
 import { sourceLegacyAmbiguityFixture } from "../test/fixtures/source-legacy-ambiguity";
 
@@ -149,7 +161,85 @@ describe("PG17 production migration baseline fixture ordering", () => {
       "provider_scope_concurrency_authority_roles_partial:reviewrouter_release_migration_missing",
     );
   });
+
+  it("materializes the exact canonical pre-release migration boundary", () => {
+    const sourcePrisma = fileURLToPath(
+      new URL("../packages/platform/db/prisma", import.meta.url),
+    );
+    const directory = mkdtempSync(
+      join(tmpdir(), "reviewrouter-pg17-pre-release-"),
+    );
+    const destinationPrisma = join(directory, "prisma");
+    try {
+      const actual = readdirSync(join(sourcePrisma, "migrations"), {
+        withFileTypes: true,
+      })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort();
+      const excluded = new Set(resolvePreReleaseMigrationExclusions(actual));
+      materializeCanonicalPreReleasePrisma(sourcePrisma, destinationPrisma);
+      const materialized = readdirSync(join(destinationPrisma, "migrations"), {
+        withFileTypes: true,
+      })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort();
+
+      expect(materialized).toEqual(
+        actual.filter((migration) => !excluded.has(migration)),
+      );
+      expect(materialized).toContain(
+        "000086_comment_token_custody_r18_remediation",
+      );
+      expect(materialized).not.toContain(
+        "000087_codex_oauth_v4_v5_workflow_reattestation",
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
+
+const deployCanonicalPreReleaseBaseline = (databaseUrl: string) => {
+  const directory = mkdtempSync(
+    join(tmpdir(), "reviewrouter-pg17-adversarial-seed-"),
+  );
+  try {
+    const prismaDirectory = materializeCanonicalPreReleasePrisma(
+      fileURLToPath(new URL("../packages/platform/db/prisma", import.meta.url)),
+      join(directory, "prisma"),
+    );
+    const configPath = join(directory, "prisma.config.mjs");
+    writeFileSync(
+      configPath,
+      `export default { schema: ${JSON.stringify(join(prismaDirectory, "schema.prisma"))}, migrations: { path: ${JSON.stringify(join(prismaDirectory, "migrations"))} }, datasource: { url: process.env.DATABASE_URL } };\n`,
+      { mode: 0o600 },
+    );
+    return spawnSync(
+      "pnpm",
+      [
+        "--filter",
+        "@reviewrouter/platform-db",
+        "exec",
+        "prisma",
+        "migrate",
+        "deploy",
+        "--config",
+        configPath,
+      ],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        encoding: "utf8",
+        env: { ...process.env, DATABASE_URL: databaseUrl },
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: 600_000,
+      },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
 
 const persistAdditionalSourceOwnedReceipt = (
   context: CaseContext,
@@ -372,19 +462,8 @@ const initializeSeed = () => {
         canonicalReleaseAuthorityRoleFoundationSql,
       ),
     () =>
-      spawnSync(
-        "pnpm",
-        ["--filter", "@reviewrouter/platform-db", "db:migrate:deploy"],
-        {
-          cwd: new URL("..", import.meta.url),
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            DATABASE_URL: `postgresql://${adminUsername}:disposable-bootstrap@127.0.0.1:${publishedPort(seedContainer)}/${databaseName}?sslmode=disable`,
-          },
-          maxBuffer: 16 * 1024 * 1024,
-          timeout: 600_000,
-        },
+      deployCanonicalPreReleaseBaseline(
+        `postgresql://${adminUsername}:disposable-bootstrap@127.0.0.1:${publishedPort(seedContainer)}/${databaseName}?sslmode=disable`,
       ),
   );
   expect(
@@ -479,7 +558,7 @@ const initializeSeed = () => {
     seedContainer,
     adminUsername,
     roleProvisioningSql(configuration, {
-      ownerAuthorizedInitialRuntimeGateClosed: true,
+      ownerAuthorizedInitialRuntimeGateClosed: false,
     }),
   );
   expect(
@@ -632,19 +711,11 @@ const initializeSeed = () => {
     installerUsername,
     "SELECT system_identifier::text FROM pg_catalog.pg_control_system();",
   );
-  const migrationChecksum = psqlAs(
-    seedContainer,
-    installerUsername,
-    "SELECT reviewrouter_activation.read_activation_migration_manifest_identity();",
-  );
-  const expectedPostCatalogDigest = psqlAs(
-    seedContainer,
-    installerUsername,
-    `SET search_path = pg_catalog, pg_temp;
-     ${fencedLiveV70V72CatalogDigestSql}`,
-  )
-    .split("\n")
-    .at(-1);
+  const expectedPostManifestIdentity =
+    canonicalReleaseMigrationArtifact.postManifestIdentity;
+  const expectedPostCatalogDigest =
+    canonicalReleaseMigrationArtifact.postCatalogDigest;
+  expect(expectedPostManifestIdentity).toMatch(/^sha256:[a-f0-9]{64}$/u);
   expect(expectedPostCatalogDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
   const transitionSha256 = `sha256:${"1".repeat(64)}`;
   const previousReceiptSha256 = `sha256:${"2".repeat(64)}`;
@@ -656,7 +727,7 @@ const initializeSeed = () => {
       `SELECT reviewrouter_activation.install_migration_permit(
         '${rolloutId}','1','${systemIdentifier}','${"c".repeat(64)}',
         '${transitionSha256}','${previousReceiptSha256}',
-        '${migrationChecksum}','${expectedPostCatalogDigest}',
+        '${expectedPostManifestIdentity}','${expectedPostCatalogDigest}',
         '${JSON.stringify(sourceLegacyAmbiguity).replaceAll("'", "''")}'::jsonb,
         '${eligibilityCutoff}'::timestamptz,1,'${nonce}');`,
     ),
