@@ -957,6 +957,74 @@ const runtimeAclAuthoritySnapshotSql = `SELECT jsonb_build_object(
     FROM pg_auth_members membership)
 )::text;`;
 
+const phaseAclTupleSnapshotSql = `WITH relation_acl AS (
+  SELECT relation.relname,grantee.rolname AS grantee,
+    grantor.rolname AS grantor,acl.privilege_type,acl.is_grantable
+  FROM pg_class relation
+  JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+  CROSS JOIN LATERAL aclexplode(coalesce(
+    relation.relacl,acldefault('r',relation.relowner)
+  )) acl
+  JOIN pg_roles grantee ON grantee.oid=acl.grantee
+  JOIN pg_roles grantor ON grantor.oid=acl.grantor
+  WHERE namespace.nspname='public'
+), column_acl AS (
+  SELECT relation.relname,attribute.attname,grantee.rolname AS grantee,
+    grantor.rolname AS grantor,acl.privilege_type,acl.is_grantable
+  FROM pg_class relation
+  JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+  JOIN pg_attribute attribute ON attribute.attrelid=relation.oid
+  CROSS JOIN LATERAL aclexplode(attribute.attacl) acl
+  JOIN pg_roles grantee ON grantee.oid=acl.grantee
+  JOIN pg_roles grantor ON grantor.oid=acl.grantor
+  WHERE namespace.nspname='public'
+    AND attribute.attnum>0 AND NOT attribute.attisdropped
+), expected_relation_acl AS (
+  SELECT * FROM relation_acl
+  WHERE grantor='reviewrouter_release_schema_owner'
+    AND grantee IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker')
+    AND NOT is_grantable
+    AND (
+      privilege_type='INSERT' AND relname IN (
+        'CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
+        'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupPayloadClaim'
+      )
+      OR privilege_type='UPDATE' AND relname IN (
+        'CodexOAuthSecretNamespace','CodexOAuthSetupDispatchAttempt',
+        'CodexOAuthSetupPayloadClaim'
+      )
+    )
+), expected_column_acl AS (
+  SELECT * FROM column_acl
+  WHERE grantor='reviewrouter_release_schema_owner'
+    AND grantee IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker')
+    AND NOT is_grantable AND privilege_type='UPDATE'
+    AND relname='CodexOAuthProviderInstance'
+    AND attname IN (
+      'activeAccountIdentityHash','activeLeaseExpiresAt','activeLeaseId',
+      'activeSecretNamespaceEpoch','activeSecretNamespaceId',
+      'activeSecretNamespaceName','latestGeneration','latestGenerationHash',
+      'mutationEpoch','mutationOwner','mutationOwnerId','updatedAt','state'
+    )
+)
+SELECT jsonb_build_object(
+  'relation',count(*) FILTER (WHERE kind='relation'),
+  'column',count(*) FILTER (WHERE kind='column'),
+  'total',count(*),
+  'oldPoolInsert',(
+    SELECT count(*) FROM relation_acl
+    WHERE relname='HostedCodexPool' AND privilege_type='INSERT'
+      AND grantor='reviewrouter_release_schema_owner'
+      AND grantee IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker')
+      AND NOT is_grantable
+  )
+)::text
+FROM (
+  SELECT 'relation' AS kind FROM expected_relation_acl
+  UNION ALL
+  SELECT 'column' AS kind FROM expected_column_acl
+) expected_acl;`;
+
 const attestDisposableCaptureSql = () => `
 DO $attest_disposable_capture$
 DECLARE binding jsonb;
@@ -1842,6 +1910,8 @@ describePg17(
               alternativeGrantorDigest: string;
               alternativeGrantorEntry: string;
               forbiddenWriteDigest: string;
+              preactivationPhaseAcl: unknown;
+              activatedPhaseAcl: unknown;
             }
           | undefined;
         return isolatedCase(
@@ -1858,11 +1928,26 @@ describePg17(
               evidence?.alternativeGrantorBaseline,
             );
             expect(evidence?.activatedDigest).toBe(evidence?.baselineDigest);
+            expect(evidence?.preactivationPhaseAcl).toEqual({
+              column: 0,
+              oldPoolInsert: 0,
+              relation: 0,
+              total: 0,
+            });
+            expect(evidence?.activatedPhaseAcl).toEqual({
+              column: 39,
+              oldPoolInsert: 3,
+              relation: 21,
+              total: 60,
+            });
           },
           (context) => {
             const baselineDigest = context.psqlAs(
               installerUsername,
               fencedLiveV70V72CatalogDigestSql,
+            );
+            const preactivationPhaseAcl = JSON.parse(
+              context.psqlAs(installerUsername, phaseAclTupleSnapshotSql),
             );
             context.psqlAs(
               adversarialAdminUsername,
@@ -1929,16 +2014,161 @@ describePg17(
               alternativeGrantorBaseline,
               alternativeGrantorDigest,
               alternativeGrantorEntry,
+              activatedPhaseAcl: JSON.parse(
+                context.psqlAs(installerUsername, phaseAclTupleSnapshotSql),
+              ),
               activatedDigest: context.psqlAs(
                 installerUsername,
                 fencedLiveV70V72CatalogDigestSql,
               ),
               baselineDigest,
               forbiddenWriteDigest,
+              preactivationPhaseAcl,
             };
           },
         );
       })(),
+      120_000,
+    );
+
+    it(
+      "keeps non-allowlisted phase ACL drift digest-visible",
+      isolatedCase(
+        "phase-acl-negative-drift",
+        () => {},
+        (context) => {
+          const digest = () =>
+            context.psqlAs(installerUsername, fencedLiveV70V72CatalogDigestSql);
+          const baselineDigest = digest();
+          const expectVisibleDrift = (
+            label: string,
+            grantSql: string,
+            revokeSql: string,
+          ) => {
+            context.psqlAs(adversarialAdminUsername, grantSql);
+            expect(digest(), label).not.toBe(baselineDigest);
+            context.psqlAs(adversarialAdminUsername, revokeSql);
+            expect(digest(), `${label} cleanup`).toBe(baselineDigest);
+          };
+
+          expectVisibleDrift(
+            "extra DELETE",
+            `GRANT DELETE ON TABLE public."CodexOAuthProviderInstance"
+             TO reviewrouter_api;`,
+            `REVOKE DELETE ON TABLE public."CodexOAuthProviderInstance"
+             FROM reviewrouter_api;`,
+          );
+          expectVisibleDrift(
+            "non-allowlisted column UPDATE",
+            `GRANT UPDATE ("id") ON TABLE public."CodexOAuthProviderInstance"
+             TO reviewrouter_api;`,
+            `REVOKE UPDATE ("id") ON TABLE public."CodexOAuthProviderInstance"
+             FROM reviewrouter_api;`,
+          );
+          expectVisibleDrift(
+            "non-allowlisted column INSERT",
+            `GRANT INSERT ("state") ON TABLE public."CodexOAuthProviderInstance"
+             TO reviewrouter_api;`,
+            `REVOKE INSERT ("state") ON TABLE public."CodexOAuthProviderInstance"
+             FROM reviewrouter_api;`,
+          );
+          expectVisibleDrift(
+            "grant option",
+            `GRANT INSERT ON TABLE public."CodexOAuthProviderInstance"
+             TO reviewrouter_api WITH GRANT OPTION;`,
+            `REVOKE GRANT OPTION FOR INSERT
+             ON TABLE public."CodexOAuthProviderInstance"
+             FROM reviewrouter_api;
+           REVOKE INSERT ON TABLE public."CodexOAuthProviderInstance"
+             FROM reviewrouter_api;`,
+          );
+          expectVisibleDrift(
+            "routine EXECUTE",
+            `GRANT EXECUTE ON FUNCTION
+             public.reviewrouter_read_runtime_generation_witness_proofs(text,text)
+             TO reviewrouter_web;`,
+            `REVOKE EXECUTE ON FUNCTION
+             public.reviewrouter_read_runtime_generation_witness_proofs(text,text)
+             FROM reviewrouter_web;`,
+          );
+          expectVisibleDrift(
+            "default privilege",
+            `ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_schema_owner
+             IN SCHEMA public GRANT TRUNCATE ON TABLES TO reviewrouter_api;`,
+            `ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_schema_owner
+             IN SCHEMA public REVOKE TRUNCATE ON TABLES FROM reviewrouter_api;`,
+          );
+          expectVisibleDrift(
+            "schema privilege",
+            "GRANT CREATE ON SCHEMA public TO reviewrouter_api;",
+            "REVOKE CREATE ON SCHEMA public FROM reviewrouter_api;",
+          );
+
+          context.psqlAs(
+            adversarialAdminUsername,
+            `CREATE ROLE rr_phase_acl_grantee NOLOGIN;
+           GRANT SELECT ON TABLE public."CodexOAuthProviderInstance"
+             TO rr_phase_acl_grantee;`,
+          );
+          const explicitSelectBaseline = digest();
+          context.psqlAs(
+            adversarialAdminUsername,
+            `GRANT INSERT ON TABLE public."CodexOAuthProviderInstance"
+             TO rr_phase_acl_grantee;`,
+          );
+          expect(digest(), "wrong grantee").not.toBe(explicitSelectBaseline);
+          context.psqlAs(
+            adversarialAdminUsername,
+            `REVOKE INSERT ON TABLE public."CodexOAuthProviderInstance"
+             FROM rr_phase_acl_grantee;`,
+          );
+          expect(digest(), "wrong grantee cleanup").toBe(
+            explicitSelectBaseline,
+          );
+          context.psqlAs(
+            adversarialAdminUsername,
+            `REVOKE SELECT ON TABLE public."CodexOAuthProviderInstance"
+             FROM rr_phase_acl_grantee;
+           DROP ROLE rr_phase_acl_grantee;`,
+          );
+          expect(digest(), "explicit SELECT baseline cleanup").toBe(
+            baselineDigest,
+          );
+
+          context.psqlAs(
+            adversarialAdminUsername,
+            `CREATE ROLE rr_phase_acl_grantor NOLOGIN;
+           GRANT INSERT ON TABLE public."CodexOAuthProviderInstance"
+             TO rr_phase_acl_grantor WITH GRANT OPTION;`,
+          );
+          const wrongGrantorBaseline = digest();
+          context.psqlAs(
+            adversarialAdminUsername,
+            `SET ROLE rr_phase_acl_grantor;
+           GRANT INSERT ON TABLE public."CodexOAuthProviderInstance"
+             TO reviewrouter_api;
+           RESET ROLE;`,
+          );
+          expect(digest(), "wrong grantor").not.toBe(wrongGrantorBaseline);
+          context.psqlAs(
+            adversarialAdminUsername,
+            `SET ROLE rr_phase_acl_grantor;
+           REVOKE INSERT ON TABLE public."CodexOAuthProviderInstance"
+             FROM reviewrouter_api;
+           RESET ROLE;`,
+          );
+          expect(digest(), "wrong grantor cleanup").toBe(wrongGrantorBaseline);
+          context.psqlAs(
+            adversarialAdminUsername,
+            `REVOKE INSERT ON TABLE public."CodexOAuthProviderInstance"
+             FROM rr_phase_acl_grantor;
+           DROP ROLE rr_phase_acl_grantor;`,
+          );
+          expect(digest(), "wrong grantor baseline cleanup").toBe(
+            baselineDigest,
+          );
+        },
+      ),
       120_000,
     );
 

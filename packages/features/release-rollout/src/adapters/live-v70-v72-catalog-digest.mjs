@@ -31,6 +31,44 @@ const phaseVaryingApplicationDeleteRelationSql =
     .filter((relation) => relation !== "CodexOAuthWritebackIntent")
     .map((relation) => `'${relation}'`)
     .join(",");
+const phaseVaryingCodexOAuthInsertRelations = Object.freeze([
+  "CodexOAuthProviderInstance",
+  "CodexOAuthSecretNamespace",
+  "CodexOAuthSetupDispatchAttempt",
+  "CodexOAuthSetupPayloadClaim",
+]);
+const phaseVaryingCodexOAuthInsertRelationSql =
+  phaseVaryingCodexOAuthInsertRelations
+    .map((relation) => `'${relation}'`)
+    .join(",");
+const phaseVaryingCodexOAuthUpdateRelations = Object.freeze([
+  "CodexOAuthSecretNamespace",
+  "CodexOAuthSetupDispatchAttempt",
+  "CodexOAuthSetupPayloadClaim",
+]);
+const phaseVaryingCodexOAuthUpdateRelationSql =
+  phaseVaryingCodexOAuthUpdateRelations
+    .map((relation) => `'${relation}'`)
+    .join(",");
+const phaseVaryingCodexOAuthProviderUpdateColumns = Object.freeze([
+  "activeAccountIdentityHash",
+  "activeLeaseExpiresAt",
+  "activeLeaseId",
+  "activeSecretNamespaceEpoch",
+  "activeSecretNamespaceId",
+  "activeSecretNamespaceName",
+  "latestGeneration",
+  "latestGenerationHash",
+  "mutationEpoch",
+  "mutationOwner",
+  "mutationOwnerId",
+  "updatedAt",
+  "state",
+]);
+const phaseVaryingCodexOAuthProviderUpdateColumnSql =
+  phaseVaryingCodexOAuthProviderUpdateColumns
+    .map((column) => `'${column}'`)
+    .join(",");
 
 // Only these reviewed ACL tuples vary between preactivation and activated.
 // Every other write bit is phase-stable and therefore remains digest-visible.
@@ -43,6 +81,14 @@ const phaseVaryingRelationPrivilegePatternSql = `CASE
                 AND split_part(v::text,'=',1) IN (${phaseVaryingApplicationAclPrincipalSql})
                 AND relname IN (${phaseVaryingApplicationInsertUpdateRelationSql})
               THEN '[aw]'
+              WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'
+                AND split_part(v::text,'=',1) IN (${phaseVaryingApplicationAclPrincipalSql})
+                AND relname IN (${phaseVaryingCodexOAuthUpdateRelationSql})
+              THEN '[aw]'
+              WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'
+                AND split_part(v::text,'=',1) IN (${phaseVaryingApplicationAclPrincipalSql})
+                AND relname IN (${phaseVaryingCodexOAuthInsertRelationSql})
+              THEN '[a]'
               WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'
                 AND split_part(v::text,'=',1)='reviewrouter_comment_token_custody'
                 AND relname='HostedCodexCommentRefreshUse'
@@ -131,6 +177,13 @@ WITH selected_relations AS (
         normalized_acl.entry ORDER BY normalized_acl.entry COLLATE "C")
         FROM (
           SELECT CASE
+            WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'
+              AND split_part(v::text,'=',1) IN (${phaseVaryingApplicationAclPrincipalSql})
+              AND r.relname='CodexOAuthProviderInstance'
+              AND a.attname IN (${phaseVaryingCodexOAuthProviderUpdateColumnSql})
+            THEN split_part(v::text,'=',1)||'='||pg_catalog.regexp_replace(
+              split_part(split_part(v::text,'/',1),'=',2),'[w]','','g'
+            )||'/'||split_part(v::text,'/',2)
             WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'
               AND split_part(v::text,'=',1)='reviewrouter_comment_token_custody'
               AND r.relname='HostedCodexCommentRefreshCapability'
