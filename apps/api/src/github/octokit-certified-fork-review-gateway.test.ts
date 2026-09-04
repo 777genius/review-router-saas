@@ -66,6 +66,14 @@ describe("OctokitCertifiedForkReviewGateway", () => {
   it.each([
     ["binary", { patch: "Binary files differ" }],
     ["truncated", { patch: undefined }],
+    [
+      "patchless rename",
+      { status: "renamed", patch: undefined, additions: 0, deletions: 0 },
+    ],
+    [
+      "empty rename",
+      { status: "renamed", patch: "", additions: 0, deletions: 0 },
+    ],
     ["unsafe path", { path: "../secret" }],
     ["newline path", { path: "src/a.ts\n<!-- injected -->" }],
     ["backtick path", { path: "src/`injected`.ts" }],
@@ -154,29 +162,77 @@ describe("OctokitCertifiedForkReviewGateway", () => {
     expect(pages).toEqual([1, 2, 3, 4, 5]);
   });
 
-  it("enforces the paginated file-count budget", async () => {
+  it("rejects an excessive declared file count before fetching files", async () => {
+    const pages: number[] = [];
     const gateway = fixture(async (route, parameters) => {
-      if (route.endsWith("/pulls/{pull_number}")) {
-        return response(route, parameters, { changedFiles: 501 });
-      }
-      if (route.endsWith("/pulls/{pull_number}/files")) {
-        const page = Number(parameters?.page);
-        return {
-          data: Array.from({ length: page <= 3 ? 100 : 1 }, (_, index) => ({
-            filename: `src/${page}-${index}.ts`,
-            status: "modified",
-            additions: 1,
-            deletions: 0,
-            patch: "@@",
-          })),
-        };
-      }
-      return response(route, parameters);
+      if (route.endsWith("/files")) pages.push(Number(parameters?.page));
+      return response(route, parameters, { changedFiles: 501 });
     });
     await expect(
       gateway.prepareContext({ githubInstallationId: "7", binding }),
     ).rejects.toThrow("certified_fork_diff_budget_exceeded");
+    expect(pages).toEqual([]);
   });
+
+  it.each([
+    [
+      "file-count overrun",
+      499,
+      101,
+      "@@",
+      5,
+      "certified_fork_diff_budget_exceeded",
+    ],
+    [
+      "page exhaustion",
+      499,
+      100,
+      "@@",
+      5,
+      "certified_fork_diff_pagination_exceeded",
+    ],
+    [
+      "aggregate patch bytes",
+      200,
+      100,
+      "x".repeat(1_300),
+      2,
+      "certified_fork_diff_budget_exceeded",
+    ],
+  ] as const)(
+    "enforces %s inside pagination",
+    async (_name, changedFiles, lastPageSize, patch, expectedPages, error) => {
+      const pages: number[] = [];
+      const gateway = fixture(async (route, parameters) => {
+        if (route.endsWith("/pulls/{pull_number}")) {
+          return response(route, parameters, { changedFiles });
+        }
+        if (route.endsWith("/pulls/{pull_number}/files")) {
+          const page = Number(parameters?.page);
+          pages.push(page);
+          return {
+            data: Array.from(
+              { length: page < expectedPages ? 100 : lastPageSize },
+              (_, index) => ({
+                filename: `src/${page}-${index}.ts`,
+                status: "modified",
+                additions: 1,
+                deletions: 0,
+                patch,
+              }),
+            ),
+          };
+        }
+        return response(route, parameters);
+      });
+      await expect(
+        gateway.prepareContext({ githubInstallationId: "7", binding }),
+      ).rejects.toThrow(error);
+      expect(pages).toEqual(
+        Array.from({ length: expectedPages }, (_, i) => i + 1),
+      );
+    },
+  );
 
   it("fails closed when changed_files moves between pages", async () => {
     let pullReads = 0;
@@ -184,7 +240,7 @@ describe("OctokitCertifiedForkReviewGateway", () => {
       if (route.endsWith("/pulls/{pull_number}")) {
         pullReads += 1;
         return response(route, parameters, {
-          changedFiles: pullReads >= 3 ? 101 : 100,
+          changedFiles: pullReads >= 3 ? 102 : 101,
         });
       }
       if (route.endsWith("/pulls/{pull_number}/files")) {
@@ -211,6 +267,7 @@ describe("OctokitCertifiedForkReviewGateway", () => {
       if (route.endsWith("/pulls/{pull_number}")) {
         pullReads += 1;
         return response(route, parameters, {
+          changedFiles: 101,
           headSha: pullReads >= 3 ? "d".repeat(40) : headSha,
         });
       }
