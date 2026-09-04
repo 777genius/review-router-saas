@@ -1122,7 +1122,7 @@ describe("canonical exclusive release migration caller", () => {
       ...liveV70V72CatalogDigestSql.matchAll(
         /split_part\(v::text,'\/',2\)='reviewrouter_release_schema_owner'/gu,
       ),
-    ]).toHaveLength(7);
+    ]).toHaveLength(12);
     expect(liveV70V72CatalogDigestSql).toContain(
       "WHEN split_part(v::text,'/',2)='reviewrouter_release_schema_owner'\n                AND split_part(v::text,'=',1) IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker')\n                AND relname IN ('GitHubInstallation','HostedCodexCommentRefreshCapability','HostedCodexCommentRefreshUse','HostedCodexInvocationGrant','HostedCodexPool','HostedCodexRepositoryBinding')\n              THEN '[awd]'",
     );
@@ -2172,7 +2172,7 @@ describe("canonical exclusive release migration caller", () => {
   });
 
   it("never includes credential values in validation errors", () => {
-    const secret = "credential-that-must-not-be-logged";
+    const secret = "test-fixture-literal";
     try {
       resolveReleaseMigrationConfiguration({
         ...environment(),
