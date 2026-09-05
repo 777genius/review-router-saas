@@ -58,6 +58,7 @@ try {
       owner: true,
       name: true,
       defaultBranch: true,
+      installationId: true,
     },
   });
 
@@ -76,6 +77,7 @@ try {
   const pullRequest = await provisionReviewRouterWorkflow(
     {
       workspaceId: repository.workspaceId,
+      installationId: repository.installationId!,
       repositoryId: repository.id,
       owner: repository.owner,
       name: repository.name,

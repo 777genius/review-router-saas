@@ -39,8 +39,20 @@ export async function provisionReviewRouterWorkflow(
     });
   }
 
+  const attempt = await dependencies.provisioning.beginAttempt({
+    workspaceId: plan.workspaceId,
+    repositoryId: plan.repositoryId,
+    installationId: plan.installationId,
+    status: "not_started",
+    branch: plan.setupBranch,
+    workflowPath: plan.workflowPath,
+    workflowStyle: plan.workflowStyle,
+    actionVersion: plan.actionRef,
+  });
+
   if (dependencies.enabled === false) {
     await dependencies.provisioning.markFailed({
+      ...attempt,
       workspaceId: plan.workspaceId,
       repositoryId: plan.repositoryId,
       status: "failed",
@@ -124,6 +136,7 @@ export async function provisionReviewRouterWorkflow(
       });
 
     await dependencies.provisioning.markSetupPullRequestOpen({
+      ...attempt,
       workspaceId: plan.workspaceId,
       repositoryId: plan.repositoryId,
       status: "setup_pr_open",
@@ -159,6 +172,7 @@ export async function provisionReviewRouterWorkflow(
   } catch (error: unknown) {
     const message = safeWorkflowProvisioningErrorSummary(error);
     await dependencies.provisioning.markFailed({
+      ...attempt,
       workspaceId: plan.workspaceId,
       repositoryId: plan.repositoryId,
       status: "failed",

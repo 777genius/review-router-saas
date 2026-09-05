@@ -32,6 +32,10 @@ describe("PrismaRepositoryHealthRepository", () => {
       expect.objectContaining({
         select: expect.objectContaining({
           provisioning: {
+            where: {
+              workspaceId: "workspace_1",
+              repository: { workspaceId: "workspace_1" },
+            },
             orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
             take: 1,
             select: { status: true },

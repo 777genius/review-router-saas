@@ -1,4 +1,5 @@
 export type WorkflowProvisioningTarget = {
+  readonly installationId: string;
   readonly workspaceId: string;
   readonly repositoryId: string;
   readonly owner: string;

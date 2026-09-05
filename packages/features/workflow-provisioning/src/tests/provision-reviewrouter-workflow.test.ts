@@ -41,6 +41,15 @@ class CapturingSetupGateway implements WorkflowSetupGatewayPort {
 }
 
 class CapturingProvisioningRepository implements WorkflowProvisioningRepositoryPort {
+  async beginAttempt(record: WorkflowProvisioningRecord) {
+    return {
+      workspaceId: record.workspaceId,
+      repositoryId: record.repositoryId,
+      installationId: record.installationId,
+      attemptId: "attempt-1",
+      revision: 0,
+    };
+  }
   public opened: WorkflowProvisioningRecord | null = null;
   public failed: WorkflowProvisioningRecord | null = null;
 
@@ -73,6 +82,7 @@ class StaticWorkflowProvisioningTarget implements WorkflowProvisioningTargetPort
 
 const activeTarget = {
   workspaceId: "workspace-1",
+  installationId: "installation-1",
   repositoryId: "repo-1",
   owner: "777genius",
   name: "example",
@@ -92,6 +102,7 @@ describe("provisionReviewRouterWorkflow", () => {
     const pullRequest = await provisionReviewRouterWorkflow(
       {
         workspaceId: "workspace-1",
+        installationId: "installation-1",
         repositoryId: "repo-1",
         owner: "777genius",
         name: "example",
@@ -175,6 +186,7 @@ describe("provisionReviewRouterWorkflow", () => {
       provisionReviewRouterWorkflow(
         {
           workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           owner: "777genius",
           name: "example",
@@ -208,6 +220,7 @@ describe("provisionReviewRouterWorkflow", () => {
       provisionReviewRouterWorkflow(
         {
           workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           owner: "777genius",
           name: "example",
@@ -238,6 +251,7 @@ describe("provisionReviewRouterWorkflow", () => {
       provisionReviewRouterWorkflow(
         {
           workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           owner: "777genius",
           name: "example",
@@ -269,6 +283,7 @@ describe("provisionReviewRouterWorkflow", () => {
       provisionReviewRouterWorkflow(
         {
           workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           owner: "777genius",
           name: "example",
@@ -298,6 +313,7 @@ describe("provisionReviewRouterWorkflow", () => {
     await provisionReviewRouterWorkflow(
       {
         workspaceId: "workspace-1",
+        installationId: "installation-1",
         repositoryId: "repo-1",
         owner: "777genius",
         name: "example",
@@ -352,6 +368,7 @@ describe("provisionReviewRouterWorkflow", () => {
     await provisionReviewRouterWorkflow(
       {
         workspaceId: "workspace-1",
+        installationId: "installation-1",
         repositoryId: "repo-1",
         owner: "777genius",
         name: "example",
@@ -460,6 +477,7 @@ describe("provisionReviewRouterWorkflow", () => {
       provisionReviewRouterWorkflow(
         {
           workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           owner: "777genius",
           name: "example",
@@ -494,6 +512,7 @@ describe("provisionReviewRouterWorkflow", () => {
       provisionReviewRouterWorkflow(
         {
           workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           owner: "777genius",
           name: "example",

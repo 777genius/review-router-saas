@@ -22,7 +22,7 @@ export class PrismaWorkflowProvisioningTarget implements WorkflowProvisioningTar
         defaultBranch: true,
         selected: true,
         archived: true,
-        installation: { select: { status: true } },
+        installation: { select: { id: true, status: true } },
       },
     });
 
@@ -36,6 +36,7 @@ export class PrismaWorkflowProvisioningTarget implements WorkflowProvisioningTar
 
     return {
       workspaceId: repository.workspaceId,
+      installationId: repository.installation.id,
       repositoryId: repository.id,
       owner: repository.owner,
       name: repository.name,

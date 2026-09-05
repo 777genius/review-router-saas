@@ -313,6 +313,7 @@ async function provisionSetupPullRequest(installationId: number): Promise<{
         owner: true,
         name: true,
         defaultBranch: true,
+        installationId: true,
       },
     });
 
@@ -338,6 +339,7 @@ async function provisionSetupPullRequest(installationId: number): Promise<{
     return await provisionReviewRouterWorkflow(
       {
         workspaceId: repository.workspaceId,
+        installationId: repository.installationId!,
         repositoryId: repository.id,
         owner: repository.owner,
         name: repository.name,

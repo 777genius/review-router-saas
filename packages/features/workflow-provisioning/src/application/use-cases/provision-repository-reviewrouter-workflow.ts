@@ -70,6 +70,7 @@ export async function provisionRepositoryReviewRouterWorkflow(
   return provisionReviewRouterWorkflow(
     {
       workspaceId: target.workspaceId,
+      installationId: target.installationId,
       repositoryId: target.repositoryId,
       owner: target.owner,
       name: target.name,

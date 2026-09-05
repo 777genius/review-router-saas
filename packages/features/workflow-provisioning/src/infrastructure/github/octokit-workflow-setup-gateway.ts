@@ -1,3 +1,4 @@
+import { preferredSetupBaseBranches } from "../../domain/workflow-provisioning";
 import { Buffer } from "node:buffer";
 import type {
   WorkflowSetupFile,
@@ -346,12 +347,6 @@ type GitHubPullRequest = {
 };
 
 const setupPullRequestTitle = "chore: add ReviewRouter workflow";
-
-export function preferredSetupBaseBranches(
-  defaultBranch: string,
-): readonly string[] {
-  return [defaultBranch] as const;
-}
 
 const setupPullRequestBody = [
   "This PR installs the ReviewRouter GitHub Actions workflows.",

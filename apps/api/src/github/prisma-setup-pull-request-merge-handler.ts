@@ -26,10 +26,12 @@ export class PrismaSetupPullRequestMergeHandler {
       },
       select: {
         id: true,
+        workspaceId: true,
+        installationId: true,
         fullName: true,
       },
     });
-    if (!repository) {
+    if (!repository?.installationId) {
       return {
         processed: false,
         ignored: true,
@@ -43,6 +45,9 @@ export class PrismaSetupPullRequestMergeHandler {
       this.prisma,
     ).markConfigured({
       repositoryId: repository.id,
+      workspaceId: repository.workspaceId,
+      installationId: repository.installationId,
+      baseBranch: payload.pull_request.base.ref,
       setupBranch,
       pullRequestNumber,
     });

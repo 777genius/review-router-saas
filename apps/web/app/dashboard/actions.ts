@@ -1252,6 +1252,7 @@ async function confirmSetupPullRequestMergedMutation(
       select: {
         id: true,
         workspaceId: true,
+        installationId: true,
         provider: true,
         githubRepositoryId: true,
         owner: true,
@@ -1266,11 +1267,13 @@ async function confirmSetupPullRequestMergedMutation(
         },
         provisioning: {
           where: {
-            status: { in: ["setup_pr_open", "failed", "configured"] },
+            workspaceId,
           },
           orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
           take: 1,
           select: {
+            attemptId: true,
+            revision: true,
             branch: true,
             pullRequestUrl: true,
           },
@@ -1283,7 +1286,8 @@ async function confirmSetupPullRequestMergedMutation(
     if (
       repository.provider !== "github" ||
       !repository.githubRepositoryId ||
-      !repository.installation
+      !repository.installation ||
+      !repository.installationId
     ) {
       throw new Error("repository_not_found");
     }
@@ -1340,6 +1344,9 @@ async function confirmSetupPullRequestMergedMutation(
       await markRepositoryWorkflowSetupNeedsAttention({
         prisma,
         repositoryId,
+        workspaceId,
+        installationId: repository.installationId,
+        expectedAttempt: setupProvisioning!,
         setupBranch: setupProvisioning?.branch ?? null,
         pullRequestNumber,
         reason: "setup_pr_wrong_base_branch",
@@ -1404,6 +1411,22 @@ async function confirmSetupPullRequestMergedMutation(
     const conflictReviewFallbackAllowed = codexRotatingProviderInstanceId
       ? false
       : isConflictReviewFallbackAllowedForRepository(repository.fullName);
+    const verifiedWorkflowActionRef = setupPullRequestMerged
+      ? null
+      : codexRotatingProviderInstanceId
+        ? await resolveCodexRotatingProvisioningActionRef({
+            prisma,
+            inspection: codexRotatingWorkflowNamespaceInspection!,
+            octokit,
+            owner: repository.owner,
+            name: repository.name,
+            defaultBranch: repository.defaultBranch,
+            expectedRepositoryId:
+              githubRepository.githubRepositoryId.toString(),
+            expectedRepositoryFullName: repository.fullName,
+            expectedProviderInstanceId: codexRotatingProviderInstanceId,
+          })
+        : resolveReviewRouterActionRef();
     const workflowReady = setupPullRequestMerged
       ? true
       : await isWorkflowSetupAlreadyCurrent(
@@ -1413,20 +1436,7 @@ async function confirmSetupPullRequestMergedMutation(
             owner: repository.owner,
             name: repository.name,
             defaultBranch: setupBaseBranch,
-            actionRef: codexRotatingProviderInstanceId
-              ? await resolveCodexRotatingProvisioningActionRef({
-                  prisma,
-                  inspection: codexRotatingWorkflowNamespaceInspection!,
-                  octokit,
-                  owner: repository.owner,
-                  name: repository.name,
-                  defaultBranch: repository.defaultBranch,
-                  expectedRepositoryId:
-                    githubRepository.githubRepositoryId.toString(),
-                  expectedRepositoryFullName: repository.fullName,
-                  expectedProviderInstanceId: codexRotatingProviderInstanceId,
-                })
-              : resolveReviewRouterActionRef(),
+            actionRef: verifiedWorkflowActionRef!,
             conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
             ...(codexRotatingProviderInstanceId
               ? {
@@ -1461,6 +1471,9 @@ async function confirmSetupPullRequestMergedMutation(
         await markRepositoryWorkflowSetupNeedsAttention({
           prisma,
           repositoryId,
+          workspaceId,
+          installationId: repository.installationId,
+          expectedAttempt: setupProvisioning!,
           setupBranch: setupProvisioning?.branch ?? null,
           pullRequestNumber,
           reason,
@@ -1522,12 +1535,36 @@ async function confirmSetupPullRequestMergedMutation(
       }
     }
 
-    await markRepositoryWorkflowConfigured({
+    const setupAuthority = new PrismaWorkflowProvisioningStatusAuthority(
       prisma,
+    );
+    const setupScope = {
       repositoryId,
-      setupBranch: setupProvisioning?.branch ?? null,
-      pullRequestNumber,
-    });
+      workspaceId,
+      installationId: repository.installationId,
+    };
+    if (setupPullRequestMerged) {
+      await setupAuthority.assertConfigured({
+        ...setupScope,
+        expectedAttempt: setupProvisioning!,
+        setupBranch: setupProvisioning?.branch ?? null,
+        pullRequestNumber,
+        baseBranch: setupBaseBranch,
+      });
+    } else {
+      await setupAuthority.confirmInstalledWorkflow({
+        ...setupScope,
+        expectedAttempt: setupProvisioning,
+        baseBranch: setupBaseBranch,
+        branch: setupProvisioning?.branch ?? "reviewrouter/setup",
+        status: "configured",
+        workflowPath: codexRotatingProviderInstanceId
+          ? ".github/workflows/reviewrouter-codex.yml"
+          : ".github/workflows/reviewrouter.yml",
+        workflowStyle: "reusable",
+        actionVersion: verifiedWorkflowActionRef!,
+      });
+    }
     await recordAuditEvent(
       {
         workspaceId,
@@ -3342,18 +3379,13 @@ function assertCodexRotatingOAuthRepositoryAllowed(input: {
   }
 }
 
-async function markRepositoryWorkflowConfigured(input: {
-  readonly prisma: PrismaClient;
-  readonly repositoryId: string;
-  readonly setupBranch: string | null;
-  readonly pullRequestNumber: number | null;
-}): Promise<void> {
-  await new PrismaWorkflowProvisioningStatusAuthority(
-    input.prisma,
-  ).assertConfigured(input);
-}
-
 async function markRepositoryWorkflowSetupNeedsAttention(input: {
+  readonly workspaceId: string;
+  readonly installationId: string;
+  readonly expectedAttempt: {
+    readonly attemptId: string;
+    readonly revision: number;
+  };
   readonly prisma: PrismaClient;
   readonly repositoryId: string;
   readonly setupBranch: string | null;

@@ -45,6 +45,7 @@ export async function provisionHostedPoolRepositoryWorkflow(
 
   const plan = createProvisionWorkflowPlan({
     workspaceId: target.workspaceId,
+    installationId: target.installationId,
     repositoryId: target.repositoryId,
     owner: target.owner,
     name: target.name,
@@ -56,15 +57,21 @@ export async function provisionHostedPoolRepositoryWorkflow(
   });
   const record = {
     workspaceId: plan.workspaceId,
+    installationId: plan.installationId,
     repositoryId: plan.repositoryId,
     branch: plan.setupBranch,
     workflowPath: plan.workflowPath,
     workflowStyle: "reusable" as const,
     actionVersion: plan.actionRef,
   };
+  const attempt = await dependencies.provisioning.beginAttempt({
+    ...record,
+    status: "not_started",
+  });
   if (dependencies.enabled === false) {
     await dependencies.provisioning.markFailed({
       ...record,
+      ...attempt,
       status: "failed",
       pullRequestUrl: null,
       errorMessage: "workflow_provisioning_disabled",
@@ -100,6 +107,7 @@ export async function provisionHostedPoolRepositoryWorkflow(
       });
     await dependencies.provisioning.markSetupPullRequestOpen({
       ...record,
+      ...attempt,
       status: "setup_pr_open",
       branch: pullRequest.branch,
       pullRequestUrl: pullRequest.url,
@@ -129,6 +137,7 @@ export async function provisionHostedPoolRepositoryWorkflow(
   } catch (error) {
     await dependencies.provisioning.markFailed({
       ...record,
+      ...attempt,
       status: "failed",
       pullRequestUrl: null,
       errorMessage: safeHostedProvisioningError(error),

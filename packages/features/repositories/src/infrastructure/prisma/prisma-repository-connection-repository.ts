@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { workflowProvisioningTransaction } from "@reviewrouter/features-workflow-provisioning";
 import type { PrismaClient } from "@prisma/client";
 import type {
   GitHubRepositorySnapshot,
@@ -30,41 +32,93 @@ export class PrismaRepositoryConnectionRepository implements RepositoryConnectio
     }
 
     for (const repository of input.repositories) {
-      await this.prisma.repositoryConnection.upsert({
-        where: { githubRepositoryId: BigInt(repository.githubRepositoryId) },
-        update: {
-          workspaceId: installation.workspaceId,
-          provider: "github",
-          sourceBaseUrl: "https://github.com",
-          externalRepositoryId: repository.githubRepositoryId,
-          installationId: installation.id,
-          owner: repository.owner,
-          name: repository.name,
-          fullName: repository.fullName,
-          defaultBranch: repository.defaultBranch,
-          visibility: toVisibility(repository.visibility),
-          archived: repository.archived,
-          stargazersCount: repository.stargazersCount,
-          selected: true,
-          lastSyncedAt: input.syncedAt,
-        },
-        create: {
-          workspaceId: installation.workspaceId,
-          provider: "github",
-          sourceBaseUrl: "https://github.com",
-          externalRepositoryId: repository.githubRepositoryId,
-          installationId: installation.id,
-          githubRepositoryId: BigInt(repository.githubRepositoryId),
-          owner: repository.owner,
-          name: repository.name,
-          fullName: repository.fullName,
-          defaultBranch: repository.defaultBranch,
-          visibility: toVisibility(repository.visibility),
-          archived: repository.archived,
-          stargazersCount: repository.stargazersCount,
-          selected: true,
-          lastSyncedAt: input.syncedAt,
-        },
+      await workflowProvisioningTransaction(this.prisma, async (tx) => {
+        const previous = await tx.repositoryConnection.findUnique({
+          where: { githubRepositoryId: BigInt(repository.githubRepositoryId) },
+          select: { id: true, workspaceId: true, installationId: true },
+        });
+        const saved = await tx.repositoryConnection.upsert({
+          where: { githubRepositoryId: BigInt(repository.githubRepositoryId) },
+          update: {
+            workspaceId: installation.workspaceId,
+            provider: "github",
+            sourceBaseUrl: "https://github.com",
+            externalRepositoryId: repository.githubRepositoryId,
+            installationId: installation.id,
+            owner: repository.owner,
+            name: repository.name,
+            fullName: repository.fullName,
+            defaultBranch: repository.defaultBranch,
+            visibility: toVisibility(repository.visibility),
+            archived: repository.archived,
+            stargazersCount: repository.stargazersCount,
+            selected: true,
+            lastSyncedAt: input.syncedAt,
+          },
+          create: {
+            workspaceId: installation.workspaceId,
+            provider: "github",
+            sourceBaseUrl: "https://github.com",
+            externalRepositoryId: repository.githubRepositoryId,
+            installationId: installation.id,
+            githubRepositoryId: BigInt(repository.githubRepositoryId),
+            owner: repository.owner,
+            name: repository.name,
+            fullName: repository.fullName,
+            defaultBranch: repository.defaultBranch,
+            visibility: toVisibility(repository.visibility),
+            archived: repository.archived,
+            stargazersCount: repository.stargazersCount,
+            selected: true,
+            lastSyncedAt: input.syncedAt,
+          },
+        });
+        if (
+          previous &&
+          (previous.workspaceId !== installation.workspaceId ||
+            previous.installationId !== installation.id)
+        ) {
+          // Transfer invalidates setup evidence and all in-flight attempt tokens.
+          // Retain a row so legacy RepositoryConnection status cannot resurface.
+          const current = await tx.workflowProvisioning.findUnique({
+            where: { repositoryId: saved.id },
+          });
+          if (current) {
+            const invalidated = await tx.workflowProvisioning.updateMany({
+              where: {
+                id: current.id,
+                attemptId: current.attemptId,
+                revision: current.revision,
+                workspaceId: current.workspaceId,
+                installationId: current.installationId,
+                status: current.status,
+              },
+              data: {
+                workspaceId: installation.workspaceId,
+                installationId: installation.id,
+                attemptId: randomUUID(),
+                revision: { increment: 1 },
+                status: "not_started",
+                pullRequestUrl: null,
+                errorMessage: null,
+              },
+            });
+            if (invalidated.count !== 1)
+              throw new Error("workflow_provisioning_concurrent_transition");
+          } else {
+            await tx.workflowProvisioning.create({
+              data: {
+                workspaceId: installation.workspaceId,
+                repositoryId: saved.id,
+                installationId: installation.id,
+                status: "not_started",
+                branch: "reviewrouter/setup",
+                workflowPath: ".github/workflows/reviewrouter-codex.yml",
+                actionVersion: "",
+              },
+            });
+          }
+        }
       });
     }
 

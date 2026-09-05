@@ -769,6 +769,9 @@ importers:
       '@reviewrouter/features-outbox':
         specifier: workspace:*
         version: link:../outbox
+      '@reviewrouter/features-workflow-provisioning':
+        specifier: workspace:*
+        version: link:../workflow-provisioning
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared

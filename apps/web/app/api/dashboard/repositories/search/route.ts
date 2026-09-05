@@ -127,6 +127,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       visibility: true,
       setupStatus: true,
       provisioning: {
+        where: { workspaceId: workspace.id },
         orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
         take: 1,
         select: { status: true },

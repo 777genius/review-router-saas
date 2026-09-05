@@ -41,7 +41,14 @@ export function projectRepositorySetupStatus(input: {
   }
 }
 
+export function preferredSetupBaseBranches(
+  defaultBranch: string,
+): readonly string[] {
+  return [defaultBranch];
+}
+
 export type ProvisionWorkflowInput = {
+  readonly installationId: string;
   readonly workspaceId: string;
   readonly repositoryId: string;
   readonly owner: string;

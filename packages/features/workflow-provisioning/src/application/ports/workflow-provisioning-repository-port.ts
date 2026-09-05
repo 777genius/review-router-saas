@@ -1,9 +1,18 @@
 import type { WorkflowProvisioningStatus } from "../../domain/workflow-provisioning";
 import type { ReviewRouterWorkflowStyle } from "../../domain/workflow-template";
 
-export type WorkflowProvisioningRecord = {
+export type WorkflowProvisioningScope = {
   readonly workspaceId: string;
   readonly repositoryId: string;
+  readonly installationId: string;
+};
+
+export type WorkflowProvisioningAttempt = WorkflowProvisioningScope & {
+  readonly attemptId: string;
+  readonly revision: number;
+};
+
+export type WorkflowProvisioningRecord = WorkflowProvisioningScope & {
   readonly status: WorkflowProvisioningStatus;
   readonly branch: string;
   readonly workflowPath: string;
@@ -14,6 +23,13 @@ export type WorkflowProvisioningRecord = {
 };
 
 export interface WorkflowProvisioningRepositoryPort {
-  markSetupPullRequestOpen(record: WorkflowProvisioningRecord): Promise<void>;
-  markFailed(record: WorkflowProvisioningRecord): Promise<void>;
+  beginAttempt(
+    record: WorkflowProvisioningRecord,
+  ): Promise<WorkflowProvisioningAttempt>;
+  markSetupPullRequestOpen(
+    record: WorkflowProvisioningRecord & WorkflowProvisioningAttempt,
+  ): Promise<void>;
+  markFailed(
+    record: WorkflowProvisioningRecord & WorkflowProvisioningAttempt,
+  ): Promise<void>;
 }

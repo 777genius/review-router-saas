@@ -8,6 +8,7 @@ import {
 
 const target = {
   workspaceId: "workspace-1",
+  installationId: "installation-1",
   repositoryId: "repo-1",
   owner: "777genius",
   name: "example",
@@ -44,6 +45,11 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
         },
         setupGateway: { createOrUpdateSetupPullRequest },
         provisioning: {
+          beginAttempt: vi.fn(async (record) => ({
+            ...record,
+            attemptId: "attempt-1",
+            revision: 0,
+          })),
           markSetupPullRequestOpen,
           markFailed: vi.fn(async () => undefined),
         },
@@ -104,6 +110,11 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
         },
         setupGateway: { createOrUpdateSetupPullRequest },
         provisioning: {
+          beginAttempt: vi.fn(async (record) => ({
+            ...record,
+            attemptId: "attempt-1",
+            revision: 0,
+          })),
           markSetupPullRequestOpen: vi.fn(async () => undefined),
           markFailed: vi.fn(async () => undefined),
         },
@@ -143,6 +154,11 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
             }),
           },
           provisioning: {
+            beginAttempt: vi.fn(async (record) => ({
+              ...record,
+              attemptId: "attempt-1",
+              revision: 0,
+            })),
             markSetupPullRequestOpen: vi.fn(async () => undefined),
             markFailed,
           },

@@ -28,6 +28,7 @@ export class PrismaSupportDiagnosticsRepository implements SupportDiagnosticsRep
             archived: true,
             setupStatus: true,
             provisioning: {
+              where: { workspaceId, repository: { workspaceId } },
               orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
               take: 1,
               select: { status: true },
@@ -49,6 +50,7 @@ export class PrismaSupportDiagnosticsRepository implements SupportDiagnosticsRep
           },
         },
         provisioning: {
+          where: { workspaceId, repository: { workspaceId } },
           select: { status: true },
         },
         auditEvents: {

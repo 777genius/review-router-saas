@@ -20,6 +20,7 @@ export class PrismaRepositoryHealthRepository implements RepositoryHealthReposit
         defaultBranch: true,
         setupStatus: true,
         provisioning: {
+          where: { workspaceId, repository: { workspaceId } },
           orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
           take: 1,
           select: { status: true },
