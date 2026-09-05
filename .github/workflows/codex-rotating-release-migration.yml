@@ -23,17 +23,12 @@ on:
         description: Exact review-router Action commit to register
         required: false
         type: string
-      open_global_emergency:
-        description: Open the Review v2 global kill switch after verified registration
-        required: false
-        default: false
-        type: boolean
       operator_repository:
-        description: Optional OWNER/REPO whose repository kill switch is opened after the global switch
+        description: Optional OWNER/REPO for closed-gate rollout diagnostics
         required: false
         type: string
       operator_workspace_id:
-        description: Optional ReviewRouter workspace whose kill switch is opened after the global switch
+        description: Optional ReviewRouter workspace for staged rollout configuration
         required: false
         type: string
       investigation_rollout_profile:
@@ -118,6 +113,7 @@ jobs:
                 Accept: "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
               },
+              signal: AbortSignal.timeout(20000),
             },
           );
           if (!response.ok) fail(`github_api_${response.status}`);
@@ -128,6 +124,29 @@ jobs:
           ) {
             fail("stale_or_unprotected_main");
           }
+          const environmentResponse = await fetch(
+            `https://api.github.com/repos/${repository}/environments/production-release`,
+            {
+              headers: {
+                Authorization: `Bearer ${required("GH_TOKEN")}`,
+                Accept: "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+              signal: AbortSignal.timeout(20000),
+            },
+          );
+          if (!environmentResponse.ok) fail(`environment_api_${environmentResponse.status}`);
+          const environment = await environmentResponse.json();
+          const reviewers = environment.protection_rules?.find(
+            (rule) => rule.type === "required_reviewers",
+          );
+          if (
+            !Array.isArray(reviewers?.reviewers) ||
+            reviewers.reviewers.length === 0 ||
+            reviewers.prevent_self_review !== true ||
+            environment.deployment_branch_policy?.protected_branches !== true ||
+            environment.deployment_branch_policy?.custom_branch_policies !== false
+          ) fail("environment_unprotected");
           appendFileSync(
             required("GITHUB_OUTPUT"),
             `trusted_main_sha=${dispatchSha}\n`,
@@ -135,12 +154,36 @@ jobs:
           );
           NODE
 
+  release-evidence:
+    name: Verify exact recovery release evidence
+    needs: trust-bootstrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout immutable release verifier
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_main_sha }}
+      - name: Require exact PostgreSQL release-gate evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_RELEASE_GATE_SHA: ${{ inputs.release_commit_sha }}
+        run: |
+          set -euo pipefail
+          node scripts/release-gate-evidence.mjs verify
+
   recover:
     name: Complete restored PG17 cutover
-    needs: trust-bootstrap
+    needs: [trust-bootstrap, release-evidence]
+    environment: production-release
     if: ${{ inputs.confirmation == 'RECOVER_EXISTING_PG17' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 70
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
@@ -188,6 +231,21 @@ jobs:
           pnpm db:generate
           docker pull postgres:17-alpine >/dev/null
 
+      - name: Authenticate existing production topology
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRUSTED_MAIN_SHA: ${{ needs.trust-bootstrap.outputs.trusted_main_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/reviewrouter-pg17-recovery"
+          node --input-type=module <<'NODE'
+          import {writeFileSync} from "node:fs";
+          import {authenticateRecoveryTopology} from "./scripts/render-recovery-journal.mjs";
+          const topology = await authenticateRecoveryTopology(process.env.GH_TOKEN, process.env.TRUSTED_MAIN_SHA);
+          writeFileSync(`${process.env.RUNNER_TEMP}/reviewrouter-pg17-recovery/trusted-topology.json`, JSON.stringify(topology) + "\n", {mode:0o600});
+          NODE
+
       - name: Provision roles, migrate, switch services, and resume
         shell: bash
         run: |
@@ -195,8 +253,13 @@ jobs:
           umask 077
           work="$RUNNER_TEMP/reviewrouter-pg17-recovery"
           mkdir -p "$work"
+          rm -f "$work/worker-effect-fence.json"
           firewall_open=0
           render_api() {
+            if [[ " $* " == *" -X "* ]]; then
+              assert_recovery_target_identity || return 1
+              assert_recovery_fleet_identity || return 1
+            fi
             curl --fail --silent --show-error \
               --retry 4 --retry-all-errors --retry-delay 3 \
               --connect-timeout 15 --max-time 120 \
@@ -204,26 +267,1263 @@ jobs:
               -H "Authorization: Bearer $RENDER_API_KEY" \
               "$@"
           }
+          # A deploy creation has an uncertain side-effect boundary. Never retry
+          # this POST; reconcile an accepted-but-unobserved response instead.
+          render_deploy_mutation() {
+            if [[ " $* " == *" -X "* ]]; then
+              assert_recovery_target_identity || return 1
+              assert_recovery_fleet_identity || return 1
+            fi
+            curl --fail --silent --show-error \
+              --connect-timeout 15 --max-time 120 \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+          # Activation-sensitive reads must honor the caller's absolute
+          # deadline. Retrying a page here could make an outer deadline
+          # meaningless while the fleet is suspended or partly resumed.
+          render_inventory_api() {
+            local absolute_deadline="$1"
+            local remaining request_timeout
+            shift
+            if [[ " $* " == *" -X "* ]]; then
+              assert_recovery_target_identity "$absolute_deadline" || return 1
+              assert_recovery_fleet_identity "$absolute_deadline" || return 1
+            fi
+            remaining=$((absolute_deadline - SECONDS))
+            if (( remaining <= 0 )); then
+              echo "::error::Render inventory deadline expired before request" >&2
+              return 124
+            fi
+            request_timeout="$remaining"
+            if (( request_timeout > 20 )); then
+              request_timeout=20
+            fi
+            curl --fail --silent --show-error \
+              --connect-timeout 5 --max-time "$request_timeout" \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+          suspension_guard_armed=0
+          recovery_complete=0
+          recovery_suspension_set_filter='
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and ([.[].observedServiceId] | unique | length == 3)
+            and all(
+              .serviceId == .observedServiceId
+              and .suspended == "suspended"
+            )
+          '
+          assert_recovery_admission_closed() {
+            local observation
+            observation="$(docker run --rm -i -e DATABASE_URL postgres:17-alpine \
+              sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -At' <<'SQL'
+          SELECT json_build_object(
+            'review', (SELECT json_agg(row_to_json(c)) FROM (
+              SELECT "policyScope", "workspaceId", "repositoryConnectionId",
+                "scmRepositoryIdentityId", stopped, version
+              FROM "ReviewSafetyEmergencyControl" WHERE "policyScope" = 'global'
+            ) c),
+            'hosted', (SELECT json_agg(row_to_json(g)) FROM (
+              SELECT id, status, "authzEpoch"::text, revision::text
+              FROM "HostedCodexRuntimeGate" WHERE id = 'global'
+            ) g)
+          );
+          SQL
+            )" || return 1
+            observation="$(jq -cse '
+              if length == 1 and (.[0] | type) == "object" then .[0]
+              else error("recovery_admission_response_ambiguous") end
+            ' <<<"$observation")" || return 1
+            jq -e '
+              (.review | type == "array" and length == 1)
+              and .review[0].policyScope == "global"
+              and .review[0].workspaceId == null
+              and .review[0].repositoryConnectionId == null
+              and .review[0].scmRepositoryIdentityId == null
+              and .review[0].stopped == true
+              and (.review[0].version | type == "number" and . >= 1 and floor == .)
+              and (.hosted | type == "array" and length == 1)
+              and .hosted[0].id == "global"
+              and .hosted[0].status == "closed"
+              and (.hosted[0].authzEpoch | type == "string" and test("^[1-9][0-9]*$"))
+              and (.hosted[0].revision | type == "string" and test("^[1-9][0-9]*$"))
+            ' <<<"$observation" >/dev/null || return 1
+            printf '%s\n' "$observation" > "$work/admission-closed-result.json" || return 1
+          }
+          close_recovery_admission() {
+            assert_recovery_target_identity || return 1
+            assert_recovery_fleet_identity || return 1
+            docker run --rm -i -e DATABASE_URL postgres:17-alpine \
+              sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -q' <<'SQL' || return 1
+          BEGIN;
+          SET LOCAL lock_timeout = '10s';
+          SET LOCAL statement_timeout = '30s';
+          LOCK TABLE "ReviewSafetyEmergencyControl", "HostedCodexRuntimeGate" IN EXCLUSIVE MODE;
+          DO $closed$ BEGIN
+            IF (SELECT count(*) FROM "ReviewSafetyEmergencyControl" WHERE "policyScope" = 'global') <> 1
+              OR (SELECT count(*) FROM "HostedCodexRuntimeGate" WHERE id = 'global') <> 1 THEN
+              RAISE EXCEPTION 'recovery admission singleton missing or ambiguous';
+            END IF;
+          END $closed$;
+          UPDATE "ReviewSafetyEmergencyControl" SET stopped = true, version = version + 1,
+            reason = 'PG17 recovery', "updatedBy" = 'pg17-recovery', "updatedAt" = clock_timestamp()
+            WHERE "policyScope" = 'global' AND stopped IS DISTINCT FROM true;
+          UPDATE "HostedCodexRuntimeGate" SET status = 'closed', "authzEpoch" = "authzEpoch" + 1,
+            revision = revision + 1, "reasonCode" = 'pg17_recovery',
+            "changedAt" = GREATEST(clock_timestamp(), "changedAt" + INTERVAL '1 millisecond'),
+            "changedByHash" = encode(sha256(convert_to('pg17-recovery', 'UTF8')), 'hex') WHERE id = 'global' AND status <> 'closed';
+          COMMIT;
+          SQL
+            assert_recovery_admission_closed || return 1
+          }
+          capture_worker_effect_fence() {
+            local purpose="${1:-bootstrap}"
+            node --input-type=module <<'NODE' > "$work/worker-fence-observe.sql" || return 1
+          import { workerFenceSnapshotSql } from "./scripts/render-recovery-journal.mjs";
+          process.stdout.write(workerFenceSnapshotSql + ";");
+          NODE
+            docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
+              sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atf /work/worker-fence-observe.sql' \
+              > "$work/worker-fence-before.json" || return 1
+            WORK="$work" PURPOSE="$purpose" node --input-type=module <<'NODE' || return 1
+          import { readFileSync, writeFileSync } from "node:fs";
+          import { planWorkerEffectFence, planWorkerCompensationFence } from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const evidence = (process.env.PURPOSE === "compensation" ? planWorkerCompensationFence : planWorkerEffectFence)(JSON.parse(readFileSync(`${work}/worker-fence-before.json`, "utf8")));
+          writeFileSync(`${work}/worker-effect-fence.json`, JSON.stringify(evidence) + "\n", { mode: 0o600 });
+          NODE
+          }
+          establish_recovery_barriers() {
+            close_recovery_admission || return 1
+            persist_recovery_phase admission_closed || return 1
+            set_recovery_maintenance true || return 1
+            persist_recovery_phase maintenance_enabled || return 1
+            capture_worker_effect_fence || return 1
+            jq --slurpfile fence "$work/worker-effect-fence.json" \
+              '.workerFence = $fence[0] | .revision += 1' "$work/recovery-journal.json" > "$work/journal-next.json" || return 1
+            mv "$work/journal-next.json" "$work/recovery-journal.json" || return 1
+            persist_recovery_phase worker_fence_intent || return 1
+            worker_fence_sql fence > "$work/worker-fence.sql" || return 1
+            docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
+              sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -qf /work/worker-fence.sql' || return 1
+            assert_worker_effect_fenced || return 1
+            assert_recovery_admission_closed || return 1
+            assert_recovery_maintenance true || return 1
+            persist_recovery_phase barriers_verified || return 1
+          }
+          assert_recovery_maintenance() {
+            local enabled="$1" deadline="${2:-$((SECONDS + 90))}" service_id observation
+            for service_id in "$API_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              observation="$(render_inventory_api "$deadline" \
+                "https://api.render.com/v1/services/$service_id")" || return 1
+              jq -e --arg id "$service_id" --argjson enabled "$enabled" '
+                (.service // .) | .id == $id
+                and .serviceDetails.maintenanceMode.enabled == $enabled
+                and .serviceDetails.maintenanceMode.uri == ""
+              ' <<<"$observation" >/dev/null || return 1
+            done
+          }
+          set_recovery_maintenance() {
+            local enabled="$1" deadline="${2:-$((SECONDS + 90))}" service_id failed=0
+            local recovery_closure=0
+            [[ "$enabled" != true ]] || recovery_closure=1
+            local body
+            body="$(jq -nc --argjson enabled "$enabled" \
+              '{serviceDetails:{maintenanceMode:{enabled:$enabled,uri:""}}}')" || return 1
+            # Try both exact services even if the first PATCH loses its response.
+            for service_id in "$API_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              render_inventory_api "$deadline" -X PATCH -H "Content-Type: application/json" \
+                --data-binary "$body" "https://api.render.com/v1/services/$service_id" \
+                -o /dev/null || failed=1
+            done
+            assert_recovery_maintenance "$enabled" "$deadline" || return 1
+            [[ "$failed" -eq 0 ]]
+          }
+          worker_fence_sql() {
+            local operation="$1"
+            assert_recovery_target_identity || return 1
+            assert_recovery_fleet_identity || return 1
+            WORK="$work" OPERATION="$operation" node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { workerEffectFenceSql } from "./scripts/render-recovery-journal.mjs";
+          const evidence = JSON.parse(readFileSync(`${process.env.WORK}/worker-effect-fence.json`, "utf8"));
+          process.stdout.write(workerEffectFenceSql(evidence, process.env.OPERATION === "restore"));
+          NODE
+          }
+          assert_worker_effect_fenced() {
+            WORK="$work" node --input-type=module <<'NODE' > "$work/worker-fence-observe.sql" || return 1
+          import { workerFenceSnapshotSql } from "./scripts/render-recovery-journal.mjs";
+          process.stdout.write(workerFenceSnapshotSql + ";");
+          NODE
+            docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
+              sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atf /work/worker-fence-observe.sql' \
+              > "$work/worker-fence-observed.json" || return 1
+            jq -e --slurpfile expected "$work/worker-effect-fence.json" \
+              '. == $expected[0].fenced' "$work/worker-fence-observed.json" >/dev/null
+          }
+          assert_recovery_config_unchanged() {
+            local service_id
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              render_inventory_api "$((SECONDS + 30))" \
+                "https://api.render.com/v1/services/$service_id/env-vars" \
+                > "$work/current-$service_id-env.json" || return 1
+            done
+            WORK="$work" node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { recoveryConfigFingerprint } from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const expected = JSON.parse(readFileSync(`${work}/recovery-config-fingerprints.json`, "utf8"));
+          for (const { serviceId, fingerprint } of Object.values(expected)) {
+            if (recoveryConfigFingerprint(readFileSync(`${work}/current-${serviceId}-env.json`, "utf8")) !== fingerprint) {
+              throw new Error("recovery_configuration_drift");
+            }
+          }
+          NODE
+          }
+          open_recovery_database() {
+            local deadline=$((SECONDS + 120)) runner_ip
+            runner_ip="$(curl --fail --silent --show-error --max-time 20 https://api.ipify.org)" || return 1
+            [[ "$runner_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+            jq -n --arg cidr "$runner_ip/32" '{ipAllowList: [{
+              cidrBlock: $cidr, description: "temporary GitHub PG17 cutover recovery"
+            }]}' > "$work/firewall.json" || return 1
+            # Reopening is also required after an accepted-but-unobserved close.
+            firewall_open=1
+            render_inventory_api "$deadline" -X PATCH -H "Content-Type: application/json" \
+              --data-binary @"$work/firewall.json" \
+              "https://api.render.com/v1/postgres/$TARGET_DB_ID" -o /dev/null || return 1
+            render_inventory_api "$deadline" "https://api.render.com/v1/postgres/$TARGET_DB_ID/connection-info" \
+              > "$work/connection-info.json" || return 1
+            external_url="$(jq -er '.externalConnectionString' "$work/connection-info.json")" || return 1
+            if [[ "$external_url" == *\?* ]]; then
+              external_url="$external_url&sslmode=require&connect_timeout=15"
+            else
+              external_url="$external_url?sslmode=require&connect_timeout=15"
+            fi
+            export DATABASE_URL="$external_url"
+          }
+          compensate_worker_effect_fence() {
+            local recovery_closure=1
+            # Evidence is staged before rejecting torn phase replicas. It conveys
+            # exact REVOKE authority only; recovery itself remains rejected.
+            open_recovery_database || return 1
+            close_recovery_admission || return 1
+            if [[ ! -f "$work/worker-effect-fence.json" ]]; then
+              capture_worker_effect_fence compensation || return 1
+            fi
+            worker_fence_sql fence > "$work/worker-refence.sql" || return 1
+            docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
+              sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -qf /work/worker-refence.sql' || return 1
+            assert_worker_effect_fenced || return 1
+            assert_recovery_admission_closed || return 1
+          }
           close_firewall() {
+            local recovery_closure=1
             if [[ "$firewall_open" -eq 1 ]]; then
               render_api -X PATCH \
                 -H "Content-Type: application/json" \
                 --data-binary '{"ipAllowList":[]}' \
                 "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
-                -o /dev/null || true
+                -o /dev/null || return 1
+              render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
+                | jq -e --arg targetDbId "$TARGET_DB_ID" '
+                    .id == $targetDbId and .ipAllowList == []
+                  ' >/dev/null || return 1
+              firewall_open=0
             fi
           }
+          compensate_recovery_fleet() {
+            local recovery_closure=1
+            local deadline observations observed_service_id service service_id state
+            deadline=$((SECONDS + ${RECOVERY_COMPENSATION_TIMEOUT_SECONDS:-300}))
+            observations='[]'
+            while (( SECONDS < deadline )); do
+              for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+                # A resume response may be uncertain or not visible yet. Retry
+                # the idempotent suspend for every exact ID within one absolute
+                # deadline, including one that still reads as suspended.
+                render_inventory_api "$deadline" -X POST \
+                  "https://api.render.com/v1/services/$service_id/suspend" \
+                  -o /dev/null || true
+              done
+              observations='[]'
+              for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+                service="$(
+                  render_inventory_api "$deadline" \
+                    "https://api.render.com/v1/services/$service_id" \
+                    2>/dev/null || true
+                )"
+                observed_service_id="$(
+                  jq -er '(.service // .).id' <<<"$service" 2>/dev/null || true
+                )"
+                state="$(
+                  jq -er '(.service // .).suspended' \
+                    <<<"$service" 2>/dev/null || true
+                )"
+                observations="$(
+                  jq -c \
+                    --arg serviceId "$service_id" \
+                    --arg observedServiceId "$observed_service_id" \
+                    --arg suspended "$state" '
+                      . + [{
+                        serviceId: $serviceId,
+                        observedServiceId: $observedServiceId,
+                        suspended: $suspended
+                      }]
+                    ' \
+                    <<<"$observations"
+                )"
+              done
+              if jq -e "$recovery_suspension_set_filter" \
+                <<<"$observations" >/dev/null; then
+                break
+              fi
+              sleep 10
+            done
+            printf '%s\n' "$observations" \
+              > "$work/compensation-suspension-result.json"
+            jq -e "$recovery_suspension_set_filter" \
+              <<<"$observations" >/dev/null
+          }
           cleanup() {
-            close_firewall
+            local cleanup_status=$?
+            trap - EXIT
+            trap '' HUP INT TERM
+            set +e
+            if [[ "$suspension_guard_armed" -eq 1 && "$recovery_complete" -eq 0 ]]; then
+              echo "::warning::Recovery exited after the suspension barrier; converging all runtime services back to suspended."
+              if ! set_recovery_maintenance true; then
+                echo "::error::Recovery could not prove API/web maintenance enabled."
+                cleanup_status=1
+              fi
+              if ! compensate_recovery_fleet; then
+                echo "::error::Recovery compensation could not prove all runtime services suspended."
+                if [[ "$cleanup_status" -eq 0 ]]; then
+                  cleanup_status=1
+                fi
+              fi
+              if ! compensate_worker_effect_fence; then
+                echo "::error::Recovery could not prove the worker effect fence and closed admission."
+                cleanup_status=1
+              fi
+            fi
+            if ! close_firewall; then
+              echo "::error::Recovery could not prove the database firewall closed."
+              cleanup_status=1
+            fi
             rm -f "$work"/*secret* "$work"/*url* "$work"/*env.json "$work/connection-info.json"
+            exit "$cleanup_status"
+          }
+          terminate_recovery() {
+            local signal_status="$1"
+            # Convert runner cancellation signals to a normal shell exit so
+            # the EXIT trap can converge the exact fleet back to suspended.
+            trap '' HUP INT TERM
+            exit "$signal_status"
           }
           trap cleanup EXIT
+          trap 'terminate_recovery 129' HUP
+          trap 'terminate_recovery 130' INT
+          trap 'terminate_recovery 143' TERM
+
+          # Canonical names and git topology bind the verified production roles.
+          # Read the whole identity set before any suspension or credential effect.
+          service_scope_filter='
+            (.service // .)
+            | .id == $serviceId
+              and .name == $serviceName
+              and (.ownerId // .owner.id) == $ownerId
+              and (.owner.id == null or .owner.id == $ownerId)
+              and .environmentId == $environmentId
+              and .type == $serviceType
+              and .repo == "https://github.com/777genius/review-router-saas"
+              and .branch == "main"
+              and .autoDeploy == "no"
+              and (.suspended == "suspended" or .suspended == "not_suspended")
+          '
+          assert_recovery_trusted_topology() {
+            WORK="$work" node --input-type=module <<'NODE' || return 1
+          import {readFileSync} from "node:fs";
+          import {recoveryProductionScope, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
+          const trusted = JSON.parse(readFileSync(`${process.env.WORK}/trusted-topology.json`, "utf8"));
+          if (trusted.ownerId !== recoveryProductionScope.ownerId || trusted.environmentId !== recoveryProductionScope.environmentId ||
+            trusted.repository !== recoveryProductionScope.repository || !/^[1-9][0-9]*$/.test(trusted.sourceRunId) ||
+            !/^sha256:[a-f0-9]{64}$/.test(trusted.artifactDigest) ||
+            process.env.RENDER_OWNER_ID !== trusted.ownerId || process.env.RENDER_ENVIRONMENT_ID !== trusted.environmentId ||
+            JSON.stringify(Object.keys(trusted.services ?? {}).sort()) !== JSON.stringify([...recoveryRoles].sort()) ||
+            recoveryRoles.some(role => process.env[`${role.toUpperCase()}_SERVICE_ID`] !== trusted.services[role]?.id)) {
+            throw new Error("recovery_untrusted_topology");
+          }
+          NODE
+          }
+          assert_recovery_target_identity() {
+            assert_recovery_trusted_topology || return 1
+            local target deadline="${1:-$((SECONDS + 90))}"
+            target="$(render_inventory_api "$deadline" "https://api.render.com/v1/postgres/$TARGET_DB_ID")" || return 1
+            target="$(jq -cse '
+              if length == 1 and (.[0] | type) == "object" then .[0]
+              else error("recovery_target_response_ambiguous") end
+            ' <<<"$target")" || return 1
+            jq -e --arg targetDbId "$TARGET_DB_ID" \
+              --arg ownerId "$RENDER_OWNER_ID" \
+              --arg environmentId "$RENDER_ENVIRONMENT_ID" --argjson closing "${recovery_closure:-0}" '
+                .id == $targetDbId
+                and .version == "17"
+                and ($closing == 1 or .status == "available")
+                and .name == "reviewrouter-db"
+                and .environmentId == $environmentId
+                and (.ownerId // .owner.id) == $ownerId
+                and (.owner.id == null or .owner.id == $ownerId)
+              ' <<<"$target" >/dev/null || return 1
+            printf '%s\n' "$target" > "$work/target.json" || return 1
+          }
+          assert_recovery_fleet_identity() {
+            assert_recovery_trusted_topology || return 1
+            local service_id service_type service_name service deadline="${1:-$((SECONDS + 90))}"
+            local scope_filter="$service_scope_filter"
+            if [[ "${recovery_closure:-0}" == 1 ]]; then
+              scope_filter='
+                (.service // .) | .id == $serviceId and .name == $serviceName
+                and (.ownerId // .owner.id) == $ownerId
+                and (.owner.id == null or .owner.id == $ownerId)
+                and .environmentId == $environmentId and .type == $serviceType
+              '
+            fi
+            [[ -n "$API_SERVICE_ID" && -n "$WORKER_SERVICE_ID" && -n "$WEB_SERVICE_ID" ]] || return 1
+            [[ "$API_SERVICE_ID" != "$WORKER_SERVICE_ID" && "$API_SERVICE_ID" != "$WEB_SERVICE_ID" && "$WORKER_SERVICE_ID" != "$WEB_SERVICE_ID" ]] || return 1
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              service_type=web_service
+              case "$service_id" in
+                "$API_SERVICE_ID") service_name=reviewrouter-api ;;
+                "$WORKER_SERVICE_ID") service_name=reviewrouter-worker; service_type=background_worker ;;
+                "$WEB_SERVICE_ID") service_name=reviewrouter-web ;;
+              esac
+              service="$(render_inventory_api "$deadline" "https://api.render.com/v1/services/$service_id")" || return 1
+              service="$(jq -cse '
+                if length == 1 and (.[0] | type) == "object" then .[0]
+                else error("recovery_service_response_ambiguous") end
+              ' <<<"$service")" || return 1
+              jq -e --arg serviceId "$service_id" \
+                --arg serviceName "$service_name" \
+                --arg ownerId "$RENDER_OWNER_ID" \
+                --arg environmentId "$RENDER_ENVIRONMENT_ID" \
+                --arg serviceType "$service_type" \
+                "$scope_filter" <<<"$service" >/dev/null || return 1
+            done
+          }
+          recovery_deployment_inventory_filter='
+            def recovery_deployment_identity($deploy):
+              ([
+                  $deploy.commit.id?,
+                  $deploy.commit.sha?,
+                  $deploy.commitId?
+                ] | map(select(. != null))) as $commitCandidates
+              | ([
+                  $deploy.image.sha?,
+                  $deploy.image.digest?,
+                  $deploy.imageDigest?
+                ] | map(select(. != null))) as $imageCandidates
+              | if (($deploy.commit? != null and ($deploy.commit | type) != "object")
+                  or ($deploy.image? != null and ($deploy.image | type) != "object")) then {kind:"invalid"}
+                elif (
+                  ($commitCandidates | length) >= 1
+                  and all(
+                    $commitCandidates[];
+                    type == "string" and test("^[a-f0-9]{40}$")
+                  )
+                  and (($commitCandidates | unique | length) == 1)
+                  and (($imageCandidates | length) == 0)
+                ) then {
+                  kind: "git",
+                  commitSha: $commitCandidates[0]
+                }
+                elif (
+                  ($commitCandidates | length) == 0
+                  and ($imageCandidates | length) >= 1
+                  and all(
+                    $imageCandidates[];
+                    type == "string" and test("^sha256:[a-f0-9]{64}$")
+                  )
+                  and (($imageCandidates | unique | length) == 1)
+                ) then {
+                  kind: "image",
+                  imageDigest: $imageCandidates[0]
+                }
+                elif (
+                  ($commitCandidates | length) == 0
+                  and ($imageCandidates | length) == 0
+                ) then {kind: "missing"}
+                else {kind: "invalid"}
+                end;
+            def recovery_deployment_status_class($status):
+              if ([
+                "created",
+                "queued",
+                "build_in_progress",
+                "pre_deploy_in_progress",
+                "update_in_progress",
+                "live"
+              ] | index($status)) != null then "active"
+              elif ([
+                "build_failed",
+                "pre_deploy_failed",
+                "update_failed",
+                "canceled",
+                "deactivated",
+                "failed"
+              ] | index($status)) != null
+              then "terminal"
+              else "unknown"
+              end;
+            (if type == "array" then .
+             elif ((.deploys? | type) == "array") then .deploys
+             elif type == "object" then [.]
+             else error("recovery_deployment_shape")
+             end)
+            | map(.deploy // .)
+            | map(
+                . as $deploy
+                | recovery_deployment_identity($deploy) as $identity
+                | ($deploy.status
+                    | if type == "string" and length > 0 then .
+                      else error("recovery_deployment_status")
+                      end) as $status
+                | {
+                    serviceId: (
+                      ($deploy.serviceId // $serviceId) as $observedServiceId
+                      | if (
+                          ($observedServiceId | type) == "string"
+                          and $observedServiceId == $serviceId
+                        ) then $observedServiceId
+                        else error("recovery_deployment_service_identity")
+                        end
+                    ),
+                    deployId: (
+                      $deploy.id
+                      | if type == "string" and test("^dep-[a-z0-9-]+$")
+                        then .
+                        else error("recovery_deployment_id")
+                        end
+                    ),
+                    observedStatus: $status,
+                    statusClass: recovery_deployment_status_class($status),
+                    createdAt: (
+                      $deploy.createdAt
+                      | if type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$") then .
+                        else error("recovery_deployment_created_at") end
+                      | . as $created
+                      | sub("\\.[0-9]+Z$"; "Z") as $seconds
+                      | if (try ($seconds | fromdateiso8601 | strftime("%Y-%m-%dT%H:%M:%SZ")) catch null) == $seconds
+                        then $created else error("recovery_deployment_created_at") end
+                    ),
+                    deploymentIdentityKind: $identity.kind,
+                    observedCommitSha: ($identity.commitSha // null),
+                    observedImageDigest: ($identity.imageDigest // null)
+                  }
+              )
+          '
+          recovery_deployment_set_filter='
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and ([.[].deployId] | unique | length == 3)
+            and all(.observedStatus == "live")
+            and all(
+              .deploymentIdentityKind == "git"
+              and .observedCommitSha == $releaseCommitSha
+              and .observedImageDigest == null
+            )
+          '
+          recovery_predeploy_inventory_filter='
+            length >= 1
+            and (([.[].deployId] | length) == ([.[].deployId] | unique | length))
+            and all(.serviceId == $serviceId)
+            and all(.statusClass != "unknown" and .deploymentIdentityKind != "invalid"
+                and (.deploymentIdentityKind != "missing" or (.statusClass == "active" and .observedStatus != "live")))
+            and .[0].deploymentIdentityKind == "git"
+            and .[0].observedImageDigest == null
+            and ([.[] | select(
+              .statusClass == "active" and .observedStatus != "live"
+            )] | length) == 0
+            and ([.[] | select(.observedStatus == "live")] | length) <= 1
+          '
+          recovery_reconciliation_filter='
+            . as $inventory
+            | def identity: {serviceId,deployId,createdAt,deploymentIdentityKind,observedCommitSha,observedImageDigest};
+            def in_window($start; $end): capture("^(?<whole>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<fraction>\\.[0-9]+)?Z$")
+              | (.whole + "Z" | fromdateiso8601) as $epoch
+              | $epoch >= $start and (($epoch + ((.fraction // "0") | tonumber)) <= $end)
+                and ($epoch != $end or ((.fraction // "0") | test("[1-9]") | not));
+            if (all(.[]; .serviceId == $serviceId and .statusClass != "unknown"
+                and .deploymentIdentityKind != "invalid")
+              and (map(.deployId) | unique | length) == length
+              and all($beforeInventory[]; . as $before
+                | any($inventory[]; identity == ($before | identity))))
+            then [.[] | select(.deployId as $id | ($beforeDeployIds | index($id)) == null)]
+            else error("recovery_reconciliation_missing_or_changed_history") end
+            | if length == 0 then []
+              elif length != 1 then error("recovery_reconciliation_ambiguous")
+              elif (.[0] | .serviceId == $serviceId
+                and .deploymentIdentityKind == "git"
+                and .observedCommitSha == $releaseCommitSha
+                and .observedImageDigest == null
+                and .statusClass == "active"
+                and (.createdAt | type) == "string"
+                and (try (
+                  .createdAt | in_window($intentEpoch; ([$observationEpoch, $intentDeadlineEpoch] | min))
+                ) catch false)) then .
+              else error("recovery_reconciliation_candidate") end
+          '
+          recovery_pending_deployment_filter='
+            length == 1
+            and .[0].serviceId == $serviceId
+            and .[0].deployId == $expectedDeployId
+            and (.[0].observedStatus as $observedStatus
+              | ([
+                  "created",
+                  "queued",
+                  "build_in_progress",
+                  "pre_deploy_in_progress",
+                  "update_in_progress"
+                ] | index($observedStatus)) != null)
+            and (
+              .[0].deploymentIdentityKind == "missing"
+              or (
+                .[0].deploymentIdentityKind == "git"
+                and .[0].observedCommitSha == $releaseCommitSha
+                and .[0].observedImageDigest == null
+              )
+            )
+          '
+          recovery_exact_deployment_filter='
+            length == 1
+            and .[0].serviceId == $serviceId
+            and .[0].deployId == $expectedDeployId
+            and .[0].observedStatus == "live"
+            and .[0].deploymentIdentityKind == "git"
+            and .[0].observedCommitSha == $releaseCommitSha
+            and .[0].observedImageDigest == null
+          '
+          recovery_bound_inventory_filter='
+            length >= 1
+            and (([.[].deployId] | length) == ([.[].deployId] | unique | length))
+            and all(.serviceId == $serviceId)
+            and all(.statusClass != "unknown" and .deploymentIdentityKind != "invalid"
+                and (.deploymentIdentityKind != "missing" or (.statusClass == "active" and .observedStatus != "live")))
+            and .[0].deployId == $expectedDeployId
+            and .[0].observedStatus == "live"
+            and .[0].deploymentIdentityKind == "git"
+            and .[0].observedCommitSha == $releaseCommitSha
+            and .[0].observedImageDigest == null
+            and ([.[] | select(.statusClass == "active") | .deployId]
+              == [$expectedDeployId])
+          '
+          recovery_service_observation_filter='
+            (.service // .) as $service
+            | {
+                role: $role,
+                serviceId: (
+                  $service.id
+                  | if type == "string" and . == $serviceId then .
+                    else error("recovery_service_identity")
+                    end
+                ),
+                suspended: (
+                  $service.suspended
+                  | if type == "string" then .
+                    else error("recovery_service_suspension")
+                    end
+                ),
+                type: (
+                  $service.type
+                  | if type == "string" then .
+                    else error("recovery_service_type")
+                    end
+                ),
+                url: ($service.serviceDetails.url // null)
+              }
+          '
+          recovery_service_set_filter='
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and ([.[].role] | sort == ["api", "web", "worker"])
+            and all(.suspended == "not_suspended")
+            and (map(select(.role == "api" or .role == "web"))
+              | all(
+                  .type == "web_service"
+                  and (.url | type) == "string"
+                  and (.url | test("^https://[^/]+/?$"))
+                ))
+            and (map(select(.role == "worker"))
+              | length == 1 and .[0].type == "background_worker")
+          '
+          assert_recovery_fleet_readiness() {
+            local bindings="$1" deadline="$2" service_id path service
+            (( SECONDS < deadline )) || return 124
+            assert_recovery_target_identity "$deadline" || return 1
+            assert_recovery_fleet_identity "$deadline" || return 1
+            assert_recovery_admission_closed || return 1
+            assert_worker_effect_fenced || return 1
+            assert_recovery_config_unchanged || return 1
+            assert_recovery_maintenance true "$deadline" || return 1
+            for service_id in "$API_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              path=/health
+              [[ "$service_id" != "$WEB_SERVICE_ID" ]] || path=/
+              service="$(render_inventory_api "$deadline" "https://api.render.com/v1/services/$service_id")" || return 1
+              jq -e --arg id "$service_id" --arg path "$path" '
+                (.service // .) | .id == $id and .suspended == "not_suspended"
+                and .serviceDetails.healthCheckPath == $path
+              ' <<<"$service" >/dev/null || return 1
+            done
+            # Render promotes these exact IDs to live only after their configured
+            # health checks pass. Edge maintenance remains enabled throughout.
+            observe_bound_recovery_deployments "$bindings" "$work/readiness-deployment-result.json" "$deadline" || return 1
+            observe_recovery_services "$work/readiness-service-result.json" "$deadline" || return 1
+            (( SECONDS < deadline )) || return 124
+          }
+          observe_recovery_services() {
+            local absolute_deadline observation observations output_path
+            local role service service_id role_rows
+            output_path="$1"
+            absolute_deadline="${2:-}"
+            observations='[]'
+            role_rows="$(jq -nr \
+              --arg api "$API_SERVICE_ID" \
+              --arg worker "$WORKER_SERVICE_ID" \
+              --arg web "$WEB_SERVICE_ID" '
+                ["api", $api], ["worker", $worker], ["web", $web] | @tsv
+              ')" || return 1
+            while IFS=$'\t' read -r role service_id; do
+              if [[ -n "$absolute_deadline" ]]; then
+                service="$(
+                  render_inventory_api "$absolute_deadline" \
+                    "https://api.render.com/v1/services/$service_id"
+                )" || return 1
+              else
+                service="$(
+                  render_api \
+                    "https://api.render.com/v1/services/$service_id"
+                )" || return 1
+              fi
+              observation="$(
+                jq -ce --arg role "$role" --arg serviceId "$service_id" \
+                  "$recovery_service_observation_filter" <<<"$service"
+              )" || return 1
+              observations="$(
+                jq -c --argjson observation "$observation" \
+                  '. + [$observation]' <<<"$observations"
+              )" || return 1
+            done <<<"$role_rows"
+            printf '%s\n' "$observations" > "$output_path" || return 1
+            jq -e "$recovery_service_set_filter" \
+              <<<"$observations" >/dev/null
+          }
+          assert_recovery_fleet_suspended() {
+            local absolute_deadline observations observed_service_id output_path
+            local service service_id suspended
+            output_path="$1"
+            absolute_deadline="${2:-}"
+            observations='[]'
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              if [[ -n "$absolute_deadline" ]]; then
+                service="$(
+                  render_inventory_api "$absolute_deadline" \
+                    "https://api.render.com/v1/services/$service_id"
+                )" || return 1
+              else
+                service="$(
+                  render_api "https://api.render.com/v1/services/$service_id"
+                )" || return 1
+              fi
+              observed_service_id="$(
+                jq -er '(.service // .).id' <<<"$service"
+              )" || return 1
+              suspended="$(jq -er '(.service // .).suspended' <<<"$service")" || return 1
+              observations="$(
+                jq -c --arg serviceId "$service_id" \
+                  --arg observedServiceId "$observed_service_id" \
+                  --arg suspended "$suspended" '
+                    . + [{
+                      serviceId: $serviceId,
+                      observedServiceId: $observedServiceId,
+                      suspended: $suspended
+                    }]
+                  ' \
+                  <<<"$observations"
+              )" || return 1
+            done
+            printf '%s\n' "$observations" > "$output_path" || return 1
+            jq -e "$recovery_suspension_set_filter" \
+              <<<"$observations" >/dev/null
+          }
+          assert_recovery_service_suspended() {
+            local absolute_deadline response service_id
+            service_id="$1"
+            absolute_deadline="${2:-}"
+            if [[ -n "$absolute_deadline" ]]; then
+              response="$(
+                render_inventory_api "$absolute_deadline" \
+                  "https://api.render.com/v1/services/$service_id"
+              )" || return 1
+            else
+              response="$(
+                render_api "https://api.render.com/v1/services/$service_id"
+              )" || return 1
+            fi
+            jq -e --arg serviceId "$service_id" '
+              (.service // .)
+              | .id == $serviceId and .suspended == "suspended"
+            ' <<<"$response" >/dev/null
+          }
+          assert_recovery_service_online() {
+            local service_id="$1" deadline="${2:-$((SECONDS + 90))}" response
+            response="$(render_inventory_api "$deadline" \
+              "https://api.render.com/v1/services/$service_id")" || return 1
+            jq -e --arg id "$service_id" '
+              (.service // .) | .id == $id and .suspended == "not_suspended"
+            ' <<<"$response" >/dev/null
+          }
+          fetch_recovery_deployment_inventory() {
+            local absolute_deadline all_deployments cursor encoded_cursor entries
+            local entry_count final_entries final_inventory final_snapshot
+            local first_page_snapshot next_cursor page page_inventory raw_page
+            local seen_cursors service_id url
+            service_id="$1"
+            absolute_deadline="$2"
+            all_deployments='[]'
+            cursor=""
+            page=0
+            seen_cursors='[]'
+            while true; do
+              page=$((page + 1))
+              if (( page > 50 )); then
+                echo "::error::Render deployment inventory exceeded 50 pages for $service_id" >&2
+                return 1
+              fi
+              url="https://api.render.com/v1/services/$service_id/deploys?limit=100"
+              if [[ -n "$cursor" ]]; then
+                encoded_cursor="$(
+                  node -e '
+                    process.stdout.write(encodeURIComponent(process.argv[1]));
+                  ' "$cursor"
+                )" || return 1
+                url="$url&cursor=$encoded_cursor"
+              fi
+              raw_page="$(render_inventory_api "$absolute_deadline" "$url")" || return 1
+              entries="$(
+                jq -ce '
+                  if type == "array" then .
+                  elif ((.deploys? | type) == "array") then .deploys
+                  else error("recovery_deployment_page_shape")
+                  end
+                ' <<<"$raw_page"
+              )" || return 1
+              entry_count="$(jq -er 'length' <<<"$entries")" || return 1
+              page_inventory="$(
+                jq -ce --arg serviceId "$service_id" \
+                  "$recovery_deployment_inventory_filter" <<<"$entries"
+              )" || return 1
+              if (( page == 1 )); then
+                first_page_snapshot="$(
+                  jq -c '
+                    map({
+                      serviceId,
+                      deployId,
+                      observedStatus,
+                      statusClass,
+                      createdAt,
+                      deploymentIdentityKind,
+                      observedCommitSha,
+                      observedImageDigest
+                    })
+                  ' <<<"$page_inventory"
+                )" || return 1
+              fi
+              all_deployments="$(
+                jq -c --argjson page "$page_inventory" '. + $page' \
+                  <<<"$all_deployments"
+              )" || return 1
+              if (( entry_count < 100 )); then
+                break
+              fi
+              next_cursor="$(
+                jq -er '
+                  if type == "array" then .[-1].cursor
+                  elif ((.nextCursor? | type) == "string") then .nextCursor
+                  elif ((.cursor? | type) == "string") then .cursor
+                  else .deploys[-1].cursor
+                  end
+                  | select(type == "string" and length > 0)
+                ' <<<"$raw_page"
+              )" || return 1
+              if jq -e --arg cursor "$next_cursor" \
+                'index($cursor) != null' <<<"$seen_cursors" >/dev/null; then
+                echo "::error::Render deployment inventory repeated cursor for $service_id" >&2
+                return 1
+              fi
+              seen_cursors="$(
+                jq -c --arg cursor "$next_cursor" '. + [$cursor]' \
+                  <<<"$seen_cursors"
+              )" || return 1
+              cursor="$next_cursor"
+            done
+            # Cursor pagination is not a point-in-time snapshot. A concurrent
+            # deployment would be inserted at the head, so require the entire
+            # normalized first page to remain byte-for-byte stable around the
+            # exhaustive traversal before trusting its active-deploy set.
+            raw_page="$(
+              render_inventory_api "$absolute_deadline" \
+                "https://api.render.com/v1/services/$service_id/deploys?limit=100"
+            )" || return 1
+            final_entries="$(
+              jq -ce '
+                if type == "array" then .
+                elif ((.deploys? | type) == "array") then .deploys
+                else error("recovery_deployment_page_shape")
+                end
+              ' <<<"$raw_page"
+            )" || return 1
+            final_inventory="$(
+              jq -ce --arg serviceId "$service_id" \
+                "$recovery_deployment_inventory_filter" <<<"$final_entries"
+            )" || return 1
+            final_snapshot="$(
+              jq -c '
+                map({
+                  serviceId,
+                  deployId,
+                  observedStatus,
+                  statusClass,
+                  createdAt,
+                  deploymentIdentityKind,
+                  observedCommitSha,
+                  observedImageDigest
+                })
+              ' <<<"$final_inventory"
+            )" || return 1
+            if [[ "$final_snapshot" != "$first_page_snapshot" ]]; then
+              echo "::error::Render deployment inventory head changed during pagination for $service_id" >&2
+              return 1
+            fi
+            jq -e '
+              ([.[].deployId] | length) == ([.[].deployId] | unique | length)
+              and all(.statusClass != "unknown" and .deploymentIdentityKind != "invalid"
+                and (.deploymentIdentityKind != "missing" or (.statusClass == "active" and .observedStatus != "live")))
+            ' <<<"$all_deployments" >/dev/null || return 1
+            printf '%s\n' "$all_deployments"
+          }
+          observe_bound_recovery_deployment() {
+            local absolute_deadline exact exact_observations expected_deploy_id
+            local inventory service_id exact_deployment
+            service_id="$1"
+            expected_deploy_id="$2"
+            absolute_deadline="$3"
+            exact="$(
+              render_inventory_api "$absolute_deadline" \
+                "https://api.render.com/v1/services/$service_id/deploys/$expected_deploy_id"
+            )" || return 1
+            exact_observations="$(
+              jq -ce --arg serviceId "$service_id" \
+                "$recovery_deployment_inventory_filter" <<<"$exact"
+            )" || return 1
+            jq -e \
+              --arg serviceId "$service_id" \
+              --arg expectedDeployId "$expected_deploy_id" \
+              --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+              "$recovery_exact_deployment_filter" \
+              <<<"$exact_observations" >/dev/null || return 1
+            inventory="$(
+              fetch_recovery_deployment_inventory \
+                "$service_id" "$absolute_deadline"
+            )" || return 1
+            printf '%s\n' "$inventory" > "$work/bound-$service_id-inventory.json" || return 1
+            printf '%s\n' "$exact_observations" > "$work/bound-$service_id-exact.json" || return 1
+            WORK="$work" SERVICE_ID="$service_id" node --input-type=module <<'NODE' || return 1
+          import {readFileSync} from "node:fs";
+          import {parseRecoveryJson, assertRecoveryDeploymentInventory, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const state = parseRecoveryJson(readFileSync(`${work}/recovery-journal.json`, "utf8"));
+          const role = recoveryRoles.find(role => state.tuple.services[role].id === process.env.SERVICE_ID);
+          const target = assertRecoveryDeploymentInventory(state, role, parseRecoveryJson(readFileSync(`${work}/bound-${process.env.SERVICE_ID}-inventory.json`, "utf8")));
+          const exact = parseRecoveryJson(readFileSync(`${work}/bound-${process.env.SERVICE_ID}-exact.json`, "utf8"));
+          if (exact.length !== 1 || exact[0].createdAt !== target.createdAt) throw new Error("recovery_exact_deployment_timestamp_disagreement");
+          NODE
+            jq -e \
+              --arg serviceId "$service_id" \
+              --arg expectedDeployId "$expected_deploy_id" \
+              --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+              "$recovery_bound_inventory_filter" \
+              <<<"$inventory" >/dev/null || return 1
+            exact_deployment="$(jq -ce '.[0]' <<<"$exact_observations")" || return 1
+            jq -nc \
+              --argjson exact "$exact_deployment" \
+              --argjson inventory "$inventory" '
+                {
+                  deployment: ($exact + {
+                    latestDeployId: $inventory[0].deployId,
+                    activeDeployIds: [
+                      $inventory[]
+                      | select(.statusClass == "active")
+                      | .deployId
+                    ]
+                  }),
+                  inventory: $inventory
+                }
+              '
+          }
+          observe_bound_recovery_deployments() {
+            local absolute_deadline binding_observation bindings_json
+            local expected_deploy_id inventories inventory observation
+            local observations output_path service_id binding_rows
+            bindings_json="$1"
+            output_path="$2"
+            absolute_deadline="$3"
+            observations='[]'
+            inventories='[]'
+            binding_rows="$(jq -er '
+              if type == "array" and length == 3
+                and ([.[].serviceId] | unique | length == 3)
+                and ([.[].deployId] | unique | length == 3)
+                and all((.serviceId | test("^srv-[a-z0-9-]+$"))
+                  and (.deployId | test("^dep-[a-z0-9-]+$")))
+              then .[] | [.serviceId, .deployId] | @tsv
+              else error("recovery_binding_set") end
+            ' <<<"$bindings_json")" || return 1
+            while IFS=$'\t' read -r service_id expected_deploy_id; do
+              binding_observation="$(
+                observe_bound_recovery_deployment \
+                  "$service_id" "$expected_deploy_id" "$absolute_deadline"
+              )" || return 1
+              observation="$(jq -c '.deployment' <<<"$binding_observation")" || return 1
+              inventory="$(jq -c '.inventory' <<<"$binding_observation")" || return 1
+              observations="$(
+                jq -c --argjson observation "$observation" \
+                  '. + [$observation]' <<<"$observations"
+              )" || return 1
+              inventories="$(
+                jq -c --arg serviceId "$service_id" \
+                  --argjson deployments "$inventory" \
+                  '. + [{serviceId: $serviceId, deployments: $deployments}]' \
+                  <<<"$inventories"
+              )" || return 1
+            done <<<"$binding_rows"
+            jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+              "$recovery_deployment_set_filter" <<<"$observations" >/dev/null || return 1
+            # Independently bind the fleet evidence to the retained IDs.
+            jq -e --argjson bindings "$bindings_json" '
+              all(.[]; . as $observed
+                | any($bindings[]; .serviceId == $observed.serviceId
+                    and .deployId == $observed.deployId)
+                and .latestDeployId == .deployId
+                and .activeDeployIds == [.deployId])
+            ' <<<"$observations" >/dev/null || return 1
+            jq -n --argjson deployments "$observations" \
+              --argjson inventories "$inventories" \
+              '{deployments: $deployments, inventories: $inventories}' \
+              > "$output_path"
+          }
+
+          # Establish immutable closure scope before reading terminal authority.
+          recovery_closure=1 assert_recovery_target_identity
+          recovery_closure=1 assert_recovery_fleet_identity
+          # Read-only admission must rule out terminal receipts before arming effects.
+          recovery_phase_key="REVIEW_ROUTER_PG17_RECOVERY_PHASE"
+          read_recovery_phase() {
+            local service_id="$1" response
+            response="$(render_inventory_api "$((SECONDS + 30))" "https://api.render.com/v1/services/$service_id/env-vars")" || return $?
+            RESPONSE="$response" node --input-type=module <<'NODE'
+          import { readRecoveryPhaseResponse } from "./scripts/render-recovery-journal.mjs";
+          process.stdout.write(JSON.stringify(readRecoveryPhaseResponse(process.env.RESPONSE)) + "\n");
+          NODE
+          }
+          read_recovery_replicas() {
+            local service_id observed replicas='[]'
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              observed="$(read_recovery_phase "$service_id")" || return $?
+              replicas="$(jq -c --argjson state "$observed" '. + [$state]' <<<"$replicas")" || return $?
+            done
+            printf '%s\n' "$replicas"
+          }
+          assert_recovery_nonterminal() {
+            local replicas
+            replicas="$(read_recovery_replicas)" || return 1
+            if jq -e 'any(.[]; .phase == "fleet_verified_closed" or .phase == "complete")' <<<"$replicas" >/dev/null; then
+              echo "::error::Recovery is already complete or fleet_verified_closed; terminal receipts authorize no effects." >&2
+              return 1
+            fi
+            printf '%s\n' "$replicas"
+          }
+          persist_recovery_journal() {
+            local service_id observed
+            WORK="$work" node --input-type=module <<'NODE' || return 1
+          import {readFileSync} from "node:fs";
+          import {parseRecoveryJson, loadRecoveryJournal} from "./scripts/render-recovery-journal.mjs";
+          const state = parseRecoveryJson(readFileSync(`${process.env.WORK}/recovery-journal.json`, "utf8"));
+          loadRecoveryJournal(state, state.tuple);
+          NODE
+            jq -c '{value: tojson}' "$work/recovery-journal.json" > "$work/recovery-phase-env.json" || return 1
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              render_inventory_api "$((SECONDS + 30))" -X PUT -H "Content-Type: application/json" \
+                --data-binary @"$work/recovery-phase-env.json" \
+                "https://api.render.com/v1/services/$service_id/env-vars/$recovery_phase_key" -o /dev/null || return 1
+            done
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              observed="$(read_recovery_phase "$service_id")" || return 1
+              jq -e --slurpfile expected "$work/recovery-journal.json" \
+                '. == $expected[0]' <<<"$observed" >/dev/null || return 1
+            done
+          }
+          persist_recovery_phase() {
+            local phase="$1"
+            WORK="$work" PHASE="$phase" node --input-type=module <<'NODE' || return 1
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, loadRecoveryJournal, advanceRecoveryPhase} from "./scripts/render-recovery-journal.mjs";
+          const path = `${process.env.WORK}/recovery-journal.json`;
+          let state = parseRecoveryJson(readFileSync(path, "utf8"));
+          state = loadRecoveryJournal(state, state.tuple);
+          if (state.phase === "validated" && process.env.PHASE === "services_suspended") {
+            state = advanceRecoveryPhase(state, "frozen");
+          } else if (state.phase !== "frozen") {
+            throw new Error("recovery_bootstrap_replay_prohibited");
+          }
+          state.bootstrapPhase = process.env.PHASE;
+          state.revision += 1;
+          writeFileSync(path, JSON.stringify(state) + "\n", {mode: 0o600});
+          NODE
+            persist_recovery_journal
+          }
+          journal_service_phase() {
+            jq -er --arg role "$role" '.services[$role].phase' "$work/recovery-journal.json"
+          }
+          advance_recovery_service() {
+            local next_phase="$1"
+            WORK="$work" ROLE="$role" NEXT_PHASE="$next_phase" node --input-type=module <<'NODE' || return 1
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, advanceRecoveryService} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const path = `${work}/recovery-journal.json`;
+          const state = parseRecoveryJson(readFileSync(path, "utf8"));
+          const evidence = parseRecoveryJson(readFileSync(`${work}/journal-transition-evidence.json`, "utf8"));
+          const next = advanceRecoveryService(state, process.env.ROLE, process.env.NEXT_PHASE, evidence);
+          writeFileSync(path, JSON.stringify(next) + "\n", {mode: 0o600});
+          NODE
+            persist_recovery_journal
+          }
+          prior_recovery_phases="$(assert_recovery_nonterminal)"
+          # A nonterminal crash may have left every barrier open. Arm closure
+          # before any local staging or mutable desired-configuration validation.
+          suspension_guard_armed=1
+          firewall_open=1
+          printf '%s\n' "$prior_recovery_phases" > "$work/recovery-resume-state.json"
+          WORK="$work" node --input-type=module <<'NODE'
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, recoveryCompensationFence, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const replicas = parseRecoveryJson(readFileSync(`${work}/recovery-resume-state.json`, "utf8"));
+          if (!replicas.every(value => value === null)) {
+            const expected = structuredClone(replicas[0]?.tuple ?? {});
+            Object.assign(expected, {targetDbId:process.env.TARGET_DB_ID, ownerId:process.env.RENDER_OWNER_ID,
+              environmentId:process.env.RENDER_ENVIRONMENT_ID, releaseCommitSha:process.env.RELEASE_COMMIT_SHA});
+            expected.services = Object.fromEntries(recoveryRoles.map(role => [role, {
+              ...expected.services?.[role], id:process.env[`${role.toUpperCase()}_SERVICE_ID`],
+              name:`reviewrouter-${role}`, type:role === "worker" ? "background_worker" : "web_service",
+              ownerId:expected.ownerId, environmentId:expected.environmentId,
+              repo:"https://github.com/777genius/review-router-saas", branch:"main", autoDeploy:"no"
+            }]));
+            const evidence = recoveryCompensationFence(replicas, expected);
+            if (evidence) writeFileSync(`${work}/worker-effect-fence.json`, JSON.stringify(evidence) + "\n", {mode:0o600});
+          }
+          NODE
+          # Mutable drift rejects forward progress with fail-closed cleanup armed.
+          assert_recovery_target_identity
+          assert_recovery_fleet_identity
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            render_inventory_api "$((SECONDS + 30))" "https://api.render.com/v1/services/$service_id/env-vars" \
+              > "$work/initial-$service_id-env.json"
+            fetch_recovery_deployment_inventory "$service_id" "$((SECONDS + 120))" \
+              > "$work/initial-$service_id-inventory.json"
+          done
+          WORK="$work" node --input-type=module <<'NODE'
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, createRecoveryJournal, loadRecoveryReplicas, recoveryConfigFingerprint,
+            recoveryRoles, recoveryContinuationMode, recoveryCompensationFence, assertRecoveryPreEffectInventory, assertRecoveryDeploymentInventory} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const read = name => parseRecoveryJson(readFileSync(`${work}/${name}`, "utf8"));
+          const retained = read("recovery-resume-state.json");
+          const inventories = {};
+          const services = {};
+          for (const role of recoveryRoles) {
+            const id = process.env[`${role.toUpperCase()}_SERVICE_ID`];
+            inventories[role] = read(`initial-${id}-inventory.json`);
+            services[role] = {id, name: `reviewrouter-${role}`,
+              type: role === "worker" ? "background_worker" : "web_service",
+              repo: "https://github.com/777genius/review-router-saas", branch: "main", autoDeploy: "no",
+              ownerId: process.env.RENDER_OWNER_ID, environmentId: process.env.RENDER_ENVIRONMENT_ID,
+              configFingerprint: recoveryConfigFingerprint(readFileSync(`${work}/initial-${id}-env.json`, "utf8"))};
+          }
+          const tuple = {operationId: process.env.GITHUB_RUN_ID, targetDbId: process.env.TARGET_DB_ID,
+            releaseCommitSha: process.env.RELEASE_COMMIT_SHA, ownerId: process.env.RENDER_OWNER_ID,
+            environmentId: process.env.RENDER_ENVIRONMENT_ID, services};
+          let journal;
+          if (retained.every(value => value === null)) {
+            // No journal is fresh authority only with a complete, quiescent predecessor history.
+            for (const inventory of Object.values(inventories)) {
+              if (!inventory.length || inventory.some(item => item.observedCommitSha === tuple.releaseCommitSha) ||
+                inventory.filter(item => item.statusClass === "active").length !== 1 ||
+                inventory[0].observedStatus !== "live" || inventory[0].deploymentIdentityKind !== "git") {
+                throw new Error("recovery_missing_effect_history");
+              }
+            }
+            journal = createRecoveryJournal(tuple, inventories);
+          } else {
+            const expected = structuredClone(tuple);
+            expected.operationId = retained[0]?.tuple?.operationId;
+            for (const role of recoveryRoles) expected.services[role].configFingerprint = retained[0]?.tuple?.services?.[role]?.configFingerprint;
+            // Stage only unanimous, validated compensation evidence before a
+            // phase disagreement rejects activation. Never choose a replica's phase.
+            const compensation = recoveryCompensationFence(retained, expected);
+            if (compensation) writeFileSync(`${work}/worker-effect-fence.json`, JSON.stringify(compensation) + "\n", {mode: 0o600});
+            journal = loadRecoveryReplicas(retained, expected);
+            // Lost bootstrap credentials cannot be reconstructed from sanitized evidence.
+            // Never rotate again to manufacture a fresh starting point.
+            const bootstrapUnstarted = recoveryContinuationMode(journal) === "bootstrap";
+            for (const role of recoveryRoles) {
+              if (bootstrapUnstarted) assertRecoveryPreEffectInventory(journal, role, inventories[role]);
+              if (["deploy_bound", "verified"].includes(journal.services[role].phase)) {
+                assertRecoveryDeploymentInventory(journal, role, inventories[role], true);
+              }
+              const fingerprint = bootstrapUnstarted ? journal.tuple.services[role].configFingerprint : journal.runtimeConfigFingerprints[role].fingerprint;
+              if (services[role].configFingerprint !== fingerprint) throw new Error("recovery_retained_configuration_drift");
+            }
+            if (!bootstrapUnstarted) {
+              writeFileSync(`${work}/worker-effect-fence.json`, JSON.stringify(journal.workerFence) + "\n", {mode: 0o600});
+              writeFileSync(`${work}/recovery-config-fingerprints.json`, JSON.stringify(journal.runtimeConfigFingerprints) + "\n", {mode: 0o600});
+            }
+          }
+          writeFileSync(`${work}/recovery-journal.json`, JSON.stringify(journal) + "\n", {mode: 0o600});
+          NODE
+          recovery_bootstrap=0
+          if jq -e '.phase == "validated" or (.phase == "frozen" and .bootstrapPhase == "services_suspended")' "$work/recovery-journal.json" >/dev/null; then
+            recovery_bootstrap=1
+            persist_recovery_journal
+          fi
+          suspension_guard_armed=1
 
           # Converge both an initially live set and a partially suspended set
           # to the same fail-closed barrier. No database or credential mutation
           # is permitted above the proof that all three exact IDs are stopped.
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-            state="$(render_api "https://api.render.com/v1/services/$service_id" | jq -er '.suspended')"
+            service="$(render_api "https://api.render.com/v1/services/$service_id")"
+            state="$(
+              jq -er --arg serviceId "$service_id" '
+                (.service // .)
+                | select(.id == $serviceId)
+                | .suspended
+              ' <<<"$service"
+            )"
             if [[ "$state" != "suspended" ]]; then
               render_api -X POST \
                 "https://api.render.com/v1/services/$service_id/suspend" \
@@ -238,73 +1538,33 @@ jobs:
               suspension_observations="$(
                 jq -c \
                   --arg serviceId "$service_id" \
-                  --arg suspended "$(jq -er '.suspended' <<<"$service")" \
-                  '. + [{serviceId: $serviceId, suspended: $suspended}]' \
+                  --arg observedServiceId "$(
+                    jq -er '(.service // .).id' <<<"$service"
+                  )" \
+                  --arg suspended "$(
+                    jq -er '(.service // .).suspended' <<<"$service"
+                  )" '
+                    . + [{
+                      serviceId: $serviceId,
+                      observedServiceId: $observedServiceId,
+                      suspended: $suspended
+                    }]
+                  ' \
                   <<<"$suspension_observations"
               )"
             done
-            if jq -e 'length == 3 and all(.suspended == "suspended")' \
+            if jq -e "$recovery_suspension_set_filter" \
               <<<"$suspension_observations" >/dev/null; then
               break
             fi
             sleep 10
           done
-          jq -e 'length == 3 and all(.suspended == "suspended")' \
+          jq -e "$recovery_suspension_set_filter" \
             <<<"$suspension_observations" >/dev/null
-          recovery_phase_key="REVIEW_ROUTER_PG17_RECOVERY_PHASE"
-          read_recovery_phase() {
-            local service_id="$1"
-            render_api "https://api.render.com/v1/services/$service_id/env-vars" \
-              | jq -er --arg key "$recovery_phase_key" '
-                  map(.envVar // .)
-                  | (map(select(.key == $key))[0].value // "{}")
-                  | try fromjson catch {}
-                  | if type == "object" then . else {} end
-                '
-          }
-          prior_recovery_phases='[]'
-          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-            prior_recovery_phases="$(
-              jq -c --arg serviceId "$service_id" \
-                --argjson state "$(read_recovery_phase "$service_id")" \
-                '. + [{serviceId: $serviceId, state: $state}]' \
-                <<<"$prior_recovery_phases"
-            )"
-          done
-          printf '%s\n' "$prior_recovery_phases" > "$work/recovery-resume-state.json"
-          persist_recovery_phase() {
-            local phase="$1"
-            jq -n \
-              --arg phase "$phase" \
-              --arg targetDbId "$TARGET_DB_ID" \
-              --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
-                {value: ({
-                  schemaVersion: 1,
-                  phase: $phase,
-                  targetDbId: $targetDbId,
-                  releaseCommitSha: $releaseCommitSha
-                } | tojson)}
-              ' \
-              > "$work/recovery-phase-env.json"
-            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-              render_api -X PUT -H "Content-Type: application/json" \
-                --data-binary @"$work/recovery-phase-env.json" \
-                "https://api.render.com/v1/services/$service_id/env-vars/$recovery_phase_key" \
-                -o /dev/null
-            done
-            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-              read_recovery_phase "$service_id" | jq -e \
-                --arg phase "$phase" \
-                --arg targetDbId "$TARGET_DB_ID" \
-                --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
-                  .schemaVersion == 1
-                  and .phase == $phase
-                  and .targetDbId == $targetDbId
-                  and .releaseCommitSha == $releaseCommitSha
-                ' >/dev/null
-            done
-          }
-          persist_recovery_phase "services_suspended"
+          suspension_guard_armed=1
+          if [[ "$recovery_bootstrap" -eq 1 ]]; then
+            persist_recovery_phase "services_suspended"
+          fi
           jq -n \
             --arg phase "services_suspended" \
             --arg runId "$GITHUB_RUN_ID" \
@@ -312,30 +1572,43 @@ jobs:
             '{phase: $phase, runId: $runId, services: $services}' \
             > "$work/recovery-phase.json"
 
-          render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" > "$work/target.json"
-          jq -e \
-            --arg ownerId "$RENDER_OWNER_ID" \
-            --arg environmentId "$RENDER_ENVIRONMENT_ID" '
-              .version == "17"
-              and .status == "available"
-              and .name == "reviewrouter-db"
-              and .environmentId == $environmentId
-              and ((.ownerId // .owner.id) == $ownerId)
-            ' "$work/target.json" >/dev/null
+          open_recovery_database
+          node --input-type=module <<'NODE' > "$work/canonical-migration-catalog.json"
+          import { canonicalPrismaMigrationCatalog } from "./scripts/lib/canonical-prisma-migration-catalog.mjs";
+          process.stdout.write(`${JSON.stringify(canonicalPrismaMigrationCatalog)}\n`);
+          NODE
 
-          runner_ip="$(curl --fail --silent --show-error --max-time 30 https://api.ipify.org)"
-          [[ "$runner_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
-          jq -n --arg cidr "$runner_ip/32" '{ipAllowList: [{
-            cidrBlock: $cidr,
-            description: "temporary GitHub PG17 cutover recovery"
-          }]}' > "$work/firewall.json"
-          render_api -X PATCH -H "Content-Type: application/json" \
-            --data-binary @"$work/firewall.json" \
-            "https://api.render.com/v1/postgres/$TARGET_DB_ID" -o /dev/null
-          firewall_open=1
+          assert_recovery_database_gates() {
+            docker run --rm -e DATABASE_URL postgres:17-alpine \
+              sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "
+                SELECT json_build_object(
+                  '\''serverMajor'\'', current_setting('\''server_version_num'\'')::integer / 10000,
+                  '\''publicTableCount'\'', (SELECT count(*) FROM information_schema.tables WHERE table_schema='\''public'\'' AND table_type='\''BASE TABLE'\''),
+                  '\''appliedMigrationCount'\'', (SELECT count(*) FROM \"_prisma_migrations\" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL),
+                  '\''runtimeRoleCount'\'', (SELECT count(*) FROM pg_roles WHERE rolname IN ('\''reviewrouter_api'\'','\''reviewrouter_web'\'','\''reviewrouter_worker'\'','\''reviewrouter_codex_effect_authority'\'','\''reviewrouter_comment_token_custody'\'')),
+                  '\''latestMigration'\'', (SELECT migration_name FROM "_prisma_migrations" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY finished_at DESC, migration_name DESC LIMIT 1),
+                  '\''publicConnect'\'', has_database_privilege('\''public'\'', current_database(), '\''CONNECT'\''),
+                  '\''apiConnect'\'', has_database_privilege('\''reviewrouter_api'\'', current_database(), '\''CONNECT'\''),
+                  '\''effectFunction'\'', has_function_privilege('\''reviewrouter_codex_effect_authority'\'', '\''public.codex_oauth_sign_database_authority(text)'\'', '\''EXECUTE'\''),
+                  '\''custodyFunction'\'', has_function_privilege('\''reviewrouter_comment_token_custody'\'', '\''public.hosted_codex_mutate_comment_token_mint(text,jsonb)'\'', '\''EXECUTE'\'')
+                );
+              "' > "$work/target-stats.json" || return 1
+            jq -e --slurpfile canonical "$work/canonical-migration-catalog.json" '
+              .serverMajor == 17
+              and .publicTableCount >= 110
+              and .appliedMigrationCount == $canonical[0].appliedMigrationCount
+              and .runtimeRoleCount == 5
+              and .latestMigration == $canonical[0].latestMigration
+              and .publicConnect == false
+              and .apiConnect == true
+              and .effectFunction == true
+              and .custodyFunction == true
+            ' "$work/target-stats.json" >/dev/null
 
-          render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID/connection-info" \
-            > "$work/connection-info.json"
+          }
+          if [[ "$recovery_bootstrap" -eq 1 ]]; then
+          establish_recovery_barriers
+          persist_recovery_phase "credential_rotation_intent"
           WORK="$work" node --input-type=module <<'NODE'
           import { randomBytes } from "node:crypto";
           import { chmodSync, readFileSync, writeFileSync } from "node:fs";
@@ -375,13 +1648,6 @@ jobs:
           chmodSync(`${work}/runtime-role-urls.json`, 0o600);
           NODE
 
-          external_url="$(jq -er '.externalConnectionString' "$work/connection-info.json")"
-          if [[ "$external_url" == *\?* ]]; then
-            external_url="$external_url&sslmode=require&connect_timeout=15"
-          else
-            external_url="$external_url?sslmode=require&connect_timeout=15"
-          fi
-          export DATABASE_URL="$external_url"
           docker run --rm -e DATABASE_URL postgres:17-alpine \
             sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "
               SELECT json_build_object(
@@ -456,6 +1722,11 @@ jobs:
           RR_WORKER_PASSWORD="$(jq -er '.roles.worker.password' "$work/runtime-role-secrets.json")"
           RR_EFFECT_PASSWORD="$(jq -er '.roles.effectAuthority.password' "$work/runtime-role-secrets.json")"
           RR_CUSTODY_PASSWORD="$(jq -er '.roles.commentTokenCustody.password' "$work/runtime-role-secrets.json")"
+          assert_recovery_admission_closed
+          assert_recovery_maintenance true
+          assert_worker_effect_fenced
+          assert_recovery_target_identity
+          assert_recovery_fleet_identity
           docker run --rm \
             -e DATABASE_URL \
             -e RR_API_PASSWORD -e RR_WEB_PASSWORD -e RR_WORKER_PASSWORD -e RR_EFFECT_PASSWORD -e RR_CUSTODY_PASSWORD \
@@ -467,8 +1738,17 @@ jobs:
           jq -n --arg phase "credentials_rotated" --arg runId "$GITHUB_RUN_ID" \
             '{phase: $phase, runId: $runId}' > "$work/recovery-phase.json"
 
+          assert_recovery_admission_closed
+          assert_recovery_maintenance true
+          assert_worker_effect_fenced
+          assert_recovery_target_identity
+          assert_recovery_fleet_identity
           DATABASE_URL="$external_url" pnpm db:migrate:deploy
-          node --import tsx --input-type=module <<'NODE' > "$work/runtime-grants.sql"
+          assert_worker_effect_fenced
+          assert_recovery_admission_closed
+          WORK="$work" node --import tsx --input-type=module <<'NODE' > "$work/runtime-grants.sql"
+          import {readFileSync} from "node:fs";
+          import {workerFenceSnapshotSql} from "./scripts/render-recovery-journal.mjs";
           import { runtimeGrantSql } from "./scripts/run-codex-rotating-release-migration.mjs";
           const canonical = runtimeGrantSql({ roles: [
             { role: "api", username: "reviewrouter_api" },
@@ -486,41 +1766,29 @@ jobs:
             return !skip;
           }).join("\n");
           if (removed !== 6) throw new Error(`unexpected_default_privilege_statement_count:${removed}`);
-          process.stdout.write(compatible);
+          const evidence = JSON.parse(readFileSync(`${process.env.WORK}/worker-effect-fence.json`, "utf8"));
+          const expected = JSON.stringify(evidence.fenced).replaceAll("'", "''");
+          const owner = '"' + evidence.before.owner.replaceAll('"', '""') + '"';
+          const fence = `SET LOCAL ROLE ${owner};
+          REVOKE UPDATE ON public."OutboxEvent" FROM reviewrouter_worker;
+          RESET ROLE;
+          DO $closed$ DECLARE observed jsonb; BEGIN
+            ${workerFenceSnapshotSql} INTO observed;
+            IF observed IS DISTINCT FROM '${expected}'::jsonb THEN RAISE EXCEPTION 'recovery grant refresh changed worker fence'; END IF;
+          END $closed$;`;
+          if ((compatible.match(/COMMIT;/g) ?? []).length !== 1) throw new Error("recovery_grant_transaction_shape");
+          process.stdout.write(compatible.replace("COMMIT;", fence + "\nCOMMIT;"));
           NODE
+          assert_recovery_target_identity
+          assert_recovery_fleet_identity
           docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
             sh -ceu 'psql "$DATABASE_URL" --no-psqlrc --quiet --file=/work/runtime-grants.sql'
 
-          node --input-type=module <<'NODE' > "$work/canonical-migration-catalog.json"
-          import { canonicalPrismaMigrationCatalog } from "./scripts/lib/canonical-prisma-migration-catalog.mjs";
-          process.stdout.write(`${JSON.stringify(canonicalPrismaMigrationCatalog)}\n`);
-          NODE
+          assert_worker_effect_fenced
+          assert_recovery_admission_closed
+          assert_recovery_maintenance true
 
-          docker run --rm -e DATABASE_URL postgres:17-alpine \
-            sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "
-              SELECT json_build_object(
-                '\''serverMajor'\'', current_setting('\''server_version_num'\'')::integer / 10000,
-                '\''publicTableCount'\'', (SELECT count(*) FROM information_schema.tables WHERE table_schema='\''public'\'' AND table_type='\''BASE TABLE'\''),
-                '\''appliedMigrationCount'\'', (SELECT count(*) FROM \"_prisma_migrations\" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL),
-                '\''runtimeRoleCount'\'', (SELECT count(*) FROM pg_roles WHERE rolname IN ('\''reviewrouter_api'\'','\''reviewrouter_web'\'','\''reviewrouter_worker'\'','\''reviewrouter_codex_effect_authority'\'','\''reviewrouter_comment_token_custody'\'')),
-                '\''latestMigration'\'', (SELECT migration_name FROM "_prisma_migrations" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY finished_at DESC, migration_name DESC LIMIT 1),
-                '\''publicConnect'\'', has_database_privilege('\''public'\'', current_database(), '\''CONNECT'\''),
-                '\''apiConnect'\'', has_database_privilege('\''reviewrouter_api'\'', current_database(), '\''CONNECT'\''),
-                '\''effectFunction'\'', has_function_privilege('\''reviewrouter_codex_effect_authority'\'', '\''public.codex_oauth_sign_database_authority(text)'\'', '\''EXECUTE'\''),
-                '\''custodyFunction'\'', has_function_privilege('\''reviewrouter_comment_token_custody'\'', '\''public.hosted_codex_mutate_comment_token_mint(text,jsonb)'\'', '\''EXECUTE'\'')
-              );
-            "' > "$work/target-stats.json"
-          jq -e --slurpfile canonical "$work/canonical-migration-catalog.json" '
-            .serverMajor == 17
-            and .publicTableCount >= 110
-            and .appliedMigrationCount == $canonical[0].appliedMigrationCount
-            and .runtimeRoleCount == 5
-            and .latestMigration == $canonical[0].latestMigration
-            and .publicConnect == false
-            and .apiConnect == true
-            and .effectFunction == true
-            and .custodyFunction == true
-          ' "$work/target-stats.json" >/dev/null
+          assert_recovery_database_gates
 
           persist_recovery_phase "migration_complete"
           jq -n --arg phase "migration_complete" --arg runId "$GITHUB_RUN_ID" \
@@ -548,84 +1816,544 @@ jobs:
           done
           render_api -X PUT -H "Content-Type: application/json" --data-binary @"$work/custody-env.json" \
             "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars/REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL" -o /dev/null
+          # A successful PUT is insufficient: freeze the complete effective
+          # configuration only after every staged credential reads back exactly.
+          for service_id in "$API_SERVICE_ID" "$WEB_SERVICE_ID" "$WORKER_SERVICE_ID"; do
+            render_api "https://api.render.com/v1/services/$service_id/env-vars" \
+              > "$work/staged-$service_id-env.json"
+          done
+          WORK="$work" node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          import { parseRecoveryJson, recoveryConfigFingerprint } from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const urls = parseRecoveryJson(readFileSync(`${work}/runtime-role-urls.json`, "utf8"));
+          const fingerprints = {};
+          for (const role of ["api", "web", "worker"]) {
+            const id = process.env[`${role.toUpperCase()}_SERVICE_ID`];
+            const environment = parseRecoveryJson(readFileSync(`${work}/staged-${id}-env.json`, "utf8"));
+            const fingerprint = recoveryConfigFingerprint(environment);
+            const values = Object.fromEntries(environment.map((entry) => {
+              const { key, value } = entry.envVar ?? entry;
+              return [key, value];
+            }));
+            const expected = { DATABASE_URL: urls.roles[role].internal };
+            if (role !== "worker") expected.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL = urls.roles.effectAuthority.internal;
+            if (role === "api") expected.REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL = urls.roles.commentTokenCustody.internal;
+            for (const [key, value] of Object.entries(expected)) {
+              if (values[key] !== value) throw new Error(`recovery_staged_configuration_mismatch:${role}:${key}`);
+            }
+            const baseline = parseRecoveryJson(readFileSync(`${work}/initial-${id}-env.json`, "utf8"));
+            const journal = parseRecoveryJson(readFileSync(`${work}/recovery-journal.json`, "utf8"));
+            if (recoveryConfigFingerprint(baseline) !== journal.tuple.services[role].configFingerprint) {
+              throw new Error("recovery_bootstrap_baseline_mismatch");
+            }
+            const nonOwned = entries => entries.map(entry => entry.envVar ?? entry)
+              .filter(entry => !Object.hasOwn(expected, entry.key));
+            if (recoveryConfigFingerprint(nonOwned(environment)) !== recoveryConfigFingerprint(nonOwned(baseline))) {
+              throw new Error("recovery_non_owned_configuration_drift");
+            }
+            fingerprints[role] = { serviceId: id, fingerprint };
+          }
+          writeFileSync(`${work}/recovery-config-fingerprints.json`, `${JSON.stringify(fingerprints)}\n`, { mode: 0o600 });
+          NODE
           persist_recovery_phase "service_credentials_staged"
           jq -n --arg phase "service_credentials_staged" --arg runId "$GITHUB_RUN_ID" \
             '{phase: $phase, runId: $runId}' > "$work/recovery-phase.json"
 
-          close_firewall
-          firewall_open=0
+          WORK="$work" node --input-type=module <<'NODE'
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, attachRecoveryPreparation} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const read = name => parseRecoveryJson(readFileSync(`${work}/${name}`, "utf8"));
+          const state = attachRecoveryPreparation(read("recovery-journal.json"), read("recovery-config-fingerprints.json"), read("worker-effect-fence.json"));
+          writeFileSync(`${work}/recovery-journal.json`, JSON.stringify(state) + "\n", {mode: 0o600});
+          NODE
+          persist_recovery_journal
+          fi
+          assert_recovery_database_gates
+          # A nonterminal attempt may have restored the grant before a process
+          # died. Exact idempotent re-fencing precedes any new resume.
+          worker_fence_sql fence > "$work/worker-refence.sql"
+          docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
+            sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -qf /work/worker-refence.sql'
+          assert_worker_effect_fenced
+          assert_recovery_admission_closed
+          set_recovery_maintenance true
 
-          service_revision_observations='[]'
+          # Journal metadata is save-only and excluded from runtime fingerprints.
+          # Every effect intent and exact deployment binding is read back durably.
+          assert_recovery_fleet_suspended "$work/pre-deploy-suspension-result.json"
+          if jq -e '.phase == "fleet_verified_closed" or .phase == "complete"' "$work/recovery-journal.json" >/dev/null; then
+            suspension_guard_armed=0
+            echo "::error::Recovery is already complete."
+            exit 1
+          fi
+          deploy_bindings='[]'
+          deploy_creation_evidence='[]'
+          printf '%s\n' "$deploy_creation_evidence" \
+            > "$work/deploy-creation-evidence.json"
+          jq -n --arg commitId "$RELEASE_COMMIT_SHA" \
+            '{clearCache: "do_not_clear", commitId: $commitId}' \
+            > "$work/deploy-request.json"
+          resume_result='[]'
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-            deploys="$(render_api "https://api.render.com/v1/services/$service_id/deploys?limit=1")"
-            observation="$(
-              jq -ce --arg serviceId "$service_id" '
-                (if type == "array" then .[0] else (.deploys[0] // .[0]) end)
-                | (.deploy // .) as $deploy
-                | {
-                    serviceId: $serviceId,
-                    deployId: ($deploy.id | select(type == "string" and length > 0)),
-                    observedStatus: ($deploy.status | select(type == "string")),
-                    observedCommitSha: (
-                      ($deploy.commit.id // $deploy.commit.sha // $deploy.commitId)
-                      | select(type == "string" and test("^[a-f0-9]{40}$"))
-                    ),
-                    observedImageDigest: (
-                      ($deploy.image.sha // $deploy.image.digest // $deploy.imageDigest)
-                      | select(type == "string" and test("^sha256:[a-f0-9]{64}$"))
-                    )
-                  }
-              ' <<<"$deploys"
-            )"
-            service_revision_observations="$(
-              jq -c --argjson observation "$observation" '. + [$observation]' \
-                <<<"$service_revision_observations"
-            )"
-          done
-          jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
-            length == 3
-            and all(.observedCommitSha == $releaseCommitSha)
-            and all(.observedStatus == "live")
-            and ([.[].serviceId] | unique | length == 3)
-            and all(.observedImageDigest | test("^sha256:[a-f0-9]{64}$"))
-          ' <<<"$service_revision_observations" >/dev/null
-          printf '%s\n' "$service_revision_observations" \
-            > "$work/service-revision-observations.json"
-          persist_recovery_phase "ready_to_resume"
-          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-            render_api -X POST \
+            case "$service_id" in
+              "$API_SERVICE_ID") role=api ;;
+              "$WORKER_SERVICE_ID") role=worker ;;
+              "$WEB_SERVICE_ID") role=web ;;
+            esac
+            printf '{}\n' > "$work/journal-transition-evidence.json"
+            if [[ "$(journal_service_phase)" == pending ]]; then
+              advance_recovery_service resume_intent
+            fi
+            assert_recovery_service_suspended "$service_id"
+            assert_recovery_maintenance true
+            assert_recovery_admission_closed
+            assert_worker_effect_fenced
+            assert_recovery_config_unchanged
+            render_deploy_mutation -X POST \
               "https://api.render.com/v1/services/$service_id/resume" -o /dev/null
+            resume_deadline=$((SECONDS + 90))
+            until assert_recovery_service_online "$service_id" "$resume_deadline"; do
+              (( SECONDS < resume_deadline )) || exit 1
+              sleep 3
+            done
+            assert_recovery_maintenance true
+            assert_recovery_admission_closed
+            if [[ "$(journal_service_phase)" == resume_intent ]]; then
+              advance_recovery_service resumed
+            fi
+            if [[ "$(journal_service_phase)" == resumed ]]; then
+            predeploy_inventory_deadline=$((SECONDS + 120))
+            before_inventory="$(
+              fetch_recovery_deployment_inventory \
+                "$service_id" "$predeploy_inventory_deadline"
+            )"
+            jq -e --arg serviceId "$service_id" \
+              "$recovery_predeploy_inventory_filter" \
+              <<<"$before_inventory" >/dev/null
+            printf '%s\n' "$before_inventory" \
+              > "$work/deploy-preintent-$service_id.json"
+            before_deploy_ids="$(jq -c '[.[].deployId]' <<<"$before_inventory")"
+            deploy_intent_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+            deploy_intent_epoch="$(date -u -d "$deploy_intent_at" +%s)"
+            jq -nc --argjson inventory "$before_inventory" --argjson intentEpoch "$deploy_intent_epoch" \
+              '{inventory:$inventory,intentEpoch:$intentEpoch}' > "$work/journal-transition-evidence.json"
+            advance_recovery_service deploy_intent
+            assert_recovery_admission_closed
+            assert_worker_effect_fenced
+            assert_recovery_config_unchanged
+            assert_recovery_service_online "$service_id"
+            (( $(date -u +%s) <= deploy_intent_epoch + 120 ))
+            set +e
+            deploy_response="$(
+              render_deploy_mutation -X POST -H "Content-Type: application/json" \
+                --data-binary @"$work/deploy-request.json" \
+                "https://api.render.com/v1/services/$service_id/deploys"
+            )"
+            deploy_mutation_status=$?
+            set -e
+            else
+              deploy_response=""
+              deploy_mutation_status=125
+              before_inventory="$(jq -ce --arg role "$role" '.services[$role].deployBeforeInventory' "$work/recovery-journal.json")"
+              before_deploy_ids="$(jq -c '[.[].deployId]' <<<"$before_inventory")"
+              deploy_intent_epoch="$(jq -er --arg role "$role" '.services[$role].intentEpoch' "$work/recovery-journal.json")"
+              deploy_intent_at="$(date -u -d "@$deploy_intent_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+            fi
+            deploy_id="$(jq -r --arg role "$role" '.services[$role].deployId // ""' "$work/recovery-journal.json")"
+            direct_observations=""
+            if [[ "$deploy_mutation_status" -eq 0 ]]; then
+              direct_observations="$(
+                jq -ce --arg serviceId "$service_id" \
+                  "$recovery_deployment_inventory_filter" \
+                  <<<"$deploy_response" 2>/dev/null || true
+              )"
+              deploy_id="$(
+                jq -r 'if length == 1 then .[0].deployId else empty end' \
+                  <<<"$direct_observations" 2>/dev/null || true
+              )"
+              if [[ -n "$deploy_id" ]]; then
+                if ! jq -e \
+                  --arg serviceId "$service_id" \
+                  --arg expectedDeployId "$deploy_id" \
+                  --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+                  "($recovery_pending_deployment_filter) or ($recovery_exact_deployment_filter)" \
+                  <<<"$direct_observations" >/dev/null; then
+                  echo "::error::Render returned an invalid deployment identity for $service_id"
+                  exit 1
+                fi
+                jq -e --arg deployId "$deploy_id" \
+                  --argjson beforeDeployIds "$before_deploy_ids" \
+                  '($beforeDeployIds | index($deployId)) == null' \
+                  <<<"{}" >/dev/null
+              fi
+            fi
+            reconciled=false
+            response_deploy_id="$deploy_id"
+            if [[ "$(journal_service_phase)" == deploy_intent ]]; then
+              reconciled=true
+              deploy_id=""
+              reconciliation_deadline=$((SECONDS + 120))
+              reconciliation_candidates='[]'
+              stable_candidate_id=""
+              stable_candidate_observations=0
+              while (( SECONDS < reconciliation_deadline )); do
+                assert_recovery_service_online \
+                  "$service_id" "$reconciliation_deadline"
+                recent_inventory="$(
+                  fetch_recovery_deployment_inventory \
+                    "$service_id" "$reconciliation_deadline"
+                )"
+                observation_epoch="$(date -u +%s.%N)"
+                jq -e '
+                  ([.[].deployId] | length) == ([.[].deployId] | unique | length)
+                ' <<<"$recent_inventory" >/dev/null
+                reconciliation_candidates="$(
+                  jq -ce \
+                    --arg serviceId "$service_id" \
+                    --argjson beforeDeployIds "$before_deploy_ids" \
+                    --argjson beforeInventory "$before_inventory" \
+                    --argjson intentDeadlineEpoch "$((deploy_intent_epoch + 120))" \
+                    --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+                    --argjson intentEpoch "$deploy_intent_epoch" \
+                    --argjson observationEpoch "$observation_epoch" \
+                    "$recovery_reconciliation_filter" \
+                    <<<"$recent_inventory"
+                )"
+                jq -n \
+                  --arg serviceId "$service_id" \
+                  --arg intentAt "$deploy_intent_at" \
+                  --argjson mutationExitStatus "$deploy_mutation_status" \
+                  --argjson beforeDeployIds "$before_deploy_ids" \
+                  --argjson candidates "$reconciliation_candidates" '
+                    {
+                      serviceId: $serviceId,
+                      intentAt: $intentAt,
+                      mutationExitStatus: $mutationExitStatus,
+                      beforeDeployIds: $beforeDeployIds,
+                      candidates: $candidates
+                    }
+                  ' > "$work/deploy-reconciliation-$service_id.json"
+                candidate_count="$(jq -r 'length' <<<"$reconciliation_candidates")"
+                if (( candidate_count > 1 )); then
+                  echo "::error::Render deploy reconciliation is ambiguous for $service_id"
+                  exit 1
+                fi
+                if (( candidate_count == 1 )); then
+                  observed_candidate_id="$(
+                    jq -er '.[0].deployId' <<<"$reconciliation_candidates"
+                  )"
+                  if [[ "$observed_candidate_id" == "$stable_candidate_id" ]]; then
+                    stable_candidate_observations=$((stable_candidate_observations + 1))
+                  else
+                    stable_candidate_id="$observed_candidate_id"
+                    stable_candidate_observations=1
+                  fi
+                  if (( stable_candidate_observations >= 2 )); then
+                    [[ -z "$response_deploy_id" || "$response_deploy_id" == "$observed_candidate_id" ]]
+                    deploy_id="$observed_candidate_id"
+                    break
+                  fi
+                else
+                  stable_candidate_id=""
+                  stable_candidate_observations=0
+                fi
+                sleep 5
+              done
+              if [[ -z "$deploy_id" ]]; then
+                echo "::error::Render deploy mutation could not be reconciled for $service_id"
+                exit 1
+              fi
+            fi
+            [[ "$deploy_id" =~ ^dep-[a-z0-9-]+$ ]]
+            jq -e --arg deployId "$deploy_id" \
+              --argjson beforeDeployIds "$before_deploy_ids" \
+              '($beforeDeployIds | index($deployId)) == null' \
+              <<<"{}" >/dev/null
+            if [[ "$(journal_service_phase)" == deploy_intent ]]; then
+              jq -nc --arg deployId "$deploy_id" '{deployId:$deployId}' > "$work/journal-transition-evidence.json"
+              advance_recovery_service deploy_bound
+            fi
+            deploy_bindings="$(
+              jq -c --arg serviceId "$service_id" --arg deployId "$deploy_id" \
+                '. + [{serviceId: $serviceId, deployId: $deployId}]' \
+                <<<"$deploy_bindings"
+            )"
+            deploy_creation_evidence="$(
+              jq -c \
+                --arg serviceId "$service_id" \
+                --argjson beforeDeployIds "$before_deploy_ids" \
+                --arg deployId "$deploy_id" \
+                --arg intentAt "$deploy_intent_at" \
+                --argjson mutationExitStatus "$deploy_mutation_status" \
+                --argjson reconciled "$reconciled" '
+                  . + [{
+                    serviceId: $serviceId,
+                    beforeDeployIds: $beforeDeployIds,
+                    deployId: $deployId,
+                    intentAt: $intentAt,
+                    mutationExitStatus: $mutationExitStatus,
+                    reconciled: $reconciled
+                  }]
+                ' <<<"$deploy_creation_evidence"
+            )"
+            printf '%s\n' "$deploy_creation_evidence" \
+              > "$work/deploy-creation-evidence.json"
+            deployment_deadline=$((SECONDS + 900))
+            while (( SECONDS < deployment_deadline )); do
+              assert_recovery_service_online "$service_id" "$deployment_deadline"
+              assert_recovery_maintenance true "$deployment_deadline"
+              assert_recovery_admission_closed
+              pending=0
+              failed=0
+              deployment_observations='[]'
+              for exact_service in "$service_id"; do
+                [[ "$exact_service" == "$service_id" ]]
+                deploy_response="$(
+                  render_inventory_api "$deployment_deadline" \
+                    "https://api.render.com/v1/services/$service_id/deploys/$deploy_id"
+                )"
+                observations="$(
+                  jq -ce --arg serviceId "$service_id" \
+                    "$recovery_deployment_inventory_filter" <<<"$deploy_response"
+                )"
+                observation="$(jq -ce 'if length == 1 then .[0] else error("recovery_exact_deploy_shape") end' <<<"$observations")"
+                deployment_observations="$(
+                  jq -c --argjson observation "$observation" \
+                    '. + [$observation]' <<<"$deployment_observations"
+                )"
+                if jq -e \
+                  --arg serviceId "$service_id" \
+                  --arg expectedDeployId "$deploy_id" \
+                  --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+                  "$recovery_exact_deployment_filter" \
+                  <<<"$observations" >/dev/null; then
+                  continue
+                fi
+                if jq -e \
+                  --arg serviceId "$service_id" \
+                  --arg expectedDeployId "$deploy_id" \
+                  --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+                  "$recovery_pending_deployment_filter" \
+                  <<<"$observations" >/dev/null; then
+                  pending=1
+                else
+                  failed=1
+                fi
+              done
+              printf '%s\n' "$deployment_observations" \
+                > "$work/deployment-result.json"
+              if (( failed == 1 )); then
+                jq -c . "$work/deployment-result.json"
+                exit 1
+              fi
+              if (( pending == 0 )); then
+                break
+              fi
+              sleep 10
+            done
+            jq -e --arg serviceId "$service_id" --arg expectedDeployId "$deploy_id" \
+              --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+              "$recovery_exact_deployment_filter" "$work/deployment-result.json" >/dev/null
+            observe_bound_recovery_deployment "$service_id" "$deploy_id" "$((SECONDS + 120))" \
+              > "$work/verified-deployment-$service_id.json"
+            if [[ "$(journal_service_phase)" == deploy_bound ]]; then
+              jq '{inventory:.inventory}' "$work/verified-deployment-$service_id.json" > "$work/journal-transition-evidence.json"
+              advance_recovery_service verified
+            fi
+            resume_result="$(jq -c --arg serviceId "$service_id" --arg deployId "$deploy_id" \
+              '. + [{serviceId:$serviceId,deployId:$deployId,verified:true}]' <<<"$resume_result")"
+            printf '%s\n' "$resume_result" > "$work/resume-result.json"
           done
+          jq -e '
+            length == 3
+            and ([.[].serviceId] | unique | length == 3)
+            and ([.[].deployId] | unique | length == 3)
+          ' <<<"$deploy_bindings" >/dev/null
+          jq -n --arg phase "target_deploys_created" --arg runId "$GITHUB_RUN_ID" \
+            --argjson deploys "$deploy_bindings" \
+            '{phase: $phase, runId: $runId, deploys: $deploys}' \
+            > "$work/recovery-phase.json"
+
+          online_deadline=$((SECONDS + 600))
+          online_ready=0
+          while (( SECONDS < online_deadline )); do
+            if observe_recovery_services \
+              "$work/post-resume-service-result.json" \
+              "$online_deadline"; then
+              online_ready=1
+              break
+            fi
+            sleep 10
+          done
+          [[ "$online_ready" -eq 1 ]]
+
+          api_origin="$(
+            jq -er '.[] | select(.role == "api") | .url | rtrimstr("/")' \
+              "$work/post-resume-service-result.json"
+          )"
+          web_origin="$(
+            jq -er '.[] | select(.role == "web") | .url | rtrimstr("/")' \
+              "$work/post-resume-service-result.json"
+          )"
+          observe_bound_recovery_deployments "$deploy_bindings" \
+            "$work/pre-maintenance-removal-deployment-result.json" "$((SECONDS + 240))"
+          assert_recovery_admission_closed
+          assert_recovery_maintenance true
+          assert_worker_effect_fenced
+          assert_recovery_config_unchanged
+          assert_recovery_database_gates
+          health_deadline=$((SECONDS + 300))
+          health_ready=0
+          while (( SECONDS < health_deadline )); do
+            if assert_recovery_fleet_readiness "$deploy_bindings" "$health_deadline"; then
+              health_ready=1
+              break
+            fi
+            sleep 10
+          done
+          [[ "$health_ready" -eq 1 ]]
+          jq -n \
+            --arg apiUrl "$api_origin/health" \
+            --arg webUrl "$web_origin/" \
+            --arg workerServiceId "$WORKER_SERVICE_ID" '
+              {
+                api: {url: $apiUrl, healthy: true, healthSignal: "render_exact_live_deploy_with_configured_health_check"},
+                web: {url: $webUrl, healthy: true, healthSignal: "render_exact_live_deploy_with_configured_health_check"},
+                worker: {
+                  serviceId: $workerServiceId,
+                  healthSignal: "render_not_suspended_and_exact_live_deploy"
+                }
+              }
+            ' > "$work/health-result.json"
+          assert_recovery_admission_closed
+          assert_recovery_maintenance true
+          assert_worker_effect_fenced
+          assert_recovery_config_unchanged
+          # Native configured HTTP probes bypass Render edge maintenance. The
+          # bounded readiness observation above proves their exact live deploys;
+          # public traffic stays closed through every pre-opening proof.
+          assert_recovery_target_identity
+          assert_recovery_fleet_identity
+          observe_bound_recovery_deployments "$deploy_bindings" "$work/pre-open-deployment-result.json" "$((SECONDS + 240))"
+          assert_recovery_config_unchanged
+          assert_recovery_admission_closed
+          assert_worker_effect_fenced
+          assert_recovery_maintenance true
+          set_recovery_maintenance false
+          assert_recovery_maintenance false
+          assert_recovery_target_identity
+          assert_recovery_fleet_identity
+          assert_recovery_admission_closed
+          assert_recovery_config_unchanged
+          observe_bound_recovery_deployments "$deploy_bindings" "$work/pre-restore-deployment-result.json" "$((SECONDS + 240))"
+          worker_fence_sql restore > "$work/worker-restore.sql"
+          # EXIT compensation stays armed across an uncertain transaction response.
+          docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
+            sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -qf /work/worker-restore.sql'
+          post_resume_observation_deadline=$((SECONDS + 240))
+          observe_bound_recovery_deployments "$deploy_bindings" \
+            "$work/post-resume-deployment-result.json" \
+            "$post_resume_observation_deadline"
+          # Bind service identity and online state again after the final
+          # deployment inventory proof, immediately before committing success.
+          final_service_observation_deadline=$((SECONDS + 90))
+          observe_recovery_services \
+            "$work/post-resume-service-result.json" \
+            "$final_service_observation_deadline"
+          jq -n --arg phase "recovery_complete" --arg runId "$GITHUB_RUN_ID" \
+            --slurpfile services "$work/post-resume-service-result.json" \
+            --slurpfile deployment "$work/post-resume-deployment-result.json" \
+            --slurpfile health "$work/health-result.json" '
+              {
+                phase: $phase,
+                runId: $runId,
+                services: $services[0],
+                deployment: $deployment[0],
+                health: $health[0]
+              }
+            ' > "$work/recovery-phase.json"
 
           jq -n \
             --arg targetDbId "$TARGET_DB_ID" \
             --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
             --arg recoveryRunId "$GITHUB_RUN_ID" \
             --arg observedSourceCommitSha "$(git rev-parse HEAD)" \
-            --slurpfile serviceRevisions "$work/service-revision-observations.json" \
+            --slurpfile deployCreation "$work/deploy-creation-evidence.json" \
+            --slurpfile serviceRevisions "$work/post-resume-deployment-result.json" \
+            --slurpfile resumedServices "$work/post-resume-service-result.json" \
+            --slurpfile health "$work/health-result.json" \
             --slurpfile targetStats "$work/target-stats.json" \
             '{
               targetDbId: $targetDbId,
               targetVersion: 17,
               releaseCommitSha: $observedSourceCommitSha,
               recoveryRunId: $recoveryRunId,
-              serviceRevisions: $serviceRevisions[0],
+              deployCreation: $deployCreation[0],
+              serviceRevisions: $serviceRevisions[0].deployments,
+              resumedServices: $resumedServices[0],
+              health: $health[0],
               targetStats: $targetStats[0]
             }' > "$work/recovery-manifest.json"
+          assert_recovery_admission_closed
+          assert_recovery_target_identity
+          assert_recovery_fleet_identity
+          assert_recovery_config_unchanged
+          assert_recovery_maintenance false
+          # Last compensated effect: close and read back the DB firewall. No
+          # terminal replica exists yet, including on a lost close response.
+          close_firewall
+          # Commit point: safe/live state and closed admission/firewall are
+          # proven. A failed or lost terminal metadata write must never refence
+          # this committed fleet. Torn terminal replicas authorize no replay.
+          recovery_complete=1
+          WORK="$work" node --input-type=module <<'NODE'
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, advanceRecoveryPhase} from "./scripts/render-recovery-journal.mjs";
+          const path = `${process.env.WORK}/recovery-journal.json`;
+          const retained = parseRecoveryJson(readFileSync(path, "utf8"));
+          const closed = advanceRecoveryPhase(retained, "fleet_verified_closed");
+          const state = advanceRecoveryPhase(closed, "complete");
+          writeFileSync(path, JSON.stringify(state) + "\n", {mode: 0o600});
+          NODE
+          persist_recovery_journal
           unset DATABASE_URL external_url
 
       - name: Upload recovery evidence
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: reviewrouter-pg17-recovery-${{ github.run_id }}
-          path: ${{ runner.temp }}/reviewrouter-pg17-recovery/recovery-manifest.json
-          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/trusted-topology.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/readiness-deployment-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/readiness-service-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/pre-restore-deployment-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/recovery-journal.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/worker-effect-fence.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/admission-closed-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/recovery-manifest.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/recovery-phase.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/recovery-config-fingerprints.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/*suspension-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/deploy-creation-evidence.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/deploy-preintent-*.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/deploy-reconciliation-*.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/deployment-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/pre-resume-deployment-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/resume-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/post-resume-service-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/post-resume-deployment-result.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/health-result.json
+          if-no-files-found: warn
           retention-days: 30
           compression-level: 0
 
   register-release:
     name: Register verified Review Action release
-    needs: trust-bootstrap
+    needs: [trust-bootstrap, release-evidence]
+    environment: production-release
     if: ${{ inputs.confirmation == 'REGISTER_VERIFIED_REVIEW_ACTION_RELEASE' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -637,7 +2365,6 @@ jobs:
       RENDER_ENVIRONMENT_ID: ${{ inputs.environment_id }}
       RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
       ACTION_COMMIT_SHA: ${{ inputs.action_commit_sha }}
-      OPEN_GLOBAL_EMERGENCY: ${{ inputs.open_global_emergency }}
       OPERATOR_REPOSITORY: ${{ inputs.operator_repository }}
       OPERATOR_WORKSPACE_ID: ${{ inputs.operator_workspace_id }}
       INVESTIGATION_ROLLOUT_PROFILE: ${{ inputs.investigation_rollout_profile }}
@@ -674,24 +2401,23 @@ jobs:
           [[ "$API_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
           [[ "$WORKER_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
           [[ "$WEB_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
+          [[ "$API_SERVICE_ID" != "$WORKER_SERVICE_ID" ]]
+          [[ "$API_SERVICE_ID" != "$WEB_SERVICE_ID" ]]
+          [[ "$WORKER_SERVICE_ID" != "$WEB_SERVICE_ID" ]]
           if [[ -n "$OPERATOR_REPOSITORY" ]]; then
-            [[ "$OPEN_GLOBAL_EMERGENCY" == "true" ]]
             [[ -n "$OPERATOR_WORKSPACE_ID" ]]
             [[ "$OPERATOR_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
           fi
           if [[ -n "$OPERATOR_WORKSPACE_ID" ]]; then
-            [[ "$OPEN_GLOBAL_EMERGENCY" == "true" ]]
             [[ "$OPERATOR_WORKSPACE_ID" =~ ^[A-Za-z0-9_-]+$ ]]
           fi
           case "$INVESTIGATION_ROLLOUT_PROFILE" in
             preserve) ;;
             shadow)
-              [[ "$OPEN_GLOBAL_EMERGENCY" == "true" ]]
               [[ -n "$OPERATOR_REPOSITORY" ]]
               [[ -n "$OPERATOR_WORKSPACE_ID" ]]
               ;;
             production)
-              [[ "$OPEN_GLOBAL_EMERGENCY" == "true" ]]
               [[ -n "$OPERATOR_REPOSITORY" ]]
               [[ -n "$OPERATOR_WORKSPACE_ID" ]]
               [[ "$INVESTIGATION_REPOSITORY_CONNECTION_ID" =~ ^[A-Za-z0-9_-]+$ ]]
@@ -706,6 +2432,21 @@ jobs:
           node scripts/rewrite-dist-esm-imports.mjs
           docker pull postgres:17-alpine >/dev/null
 
+      - name: Authenticate existing production topology
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRUSTED_MAIN_SHA: ${{ needs.trust-bootstrap.outputs.trusted_main_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/reviewrouter-release-registration"
+          node --input-type=module <<'NODE'
+          import {writeFileSync} from "node:fs";
+          import {authenticateRecoveryTopology} from "./scripts/render-recovery-journal.mjs";
+          const topology = await authenticateRecoveryTopology(process.env.GH_TOKEN, process.env.TRUSTED_MAIN_SHA);
+          writeFileSync(`${process.env.RUNNER_TEMP}/reviewrouter-release-registration/trusted-topology.json`, JSON.stringify(topology) + "\n", {mode:0o600});
+          NODE
+
       - name: Verify and register release
         shell: bash
         run: |
@@ -715,6 +2456,10 @@ jobs:
           mkdir -p "$work"
           firewall_open=0
           render_api() {
+            if [[ " $* " == *" -X "* ]]; then
+              assert_recovery_target_identity || return 1
+              assert_recovery_fleet_identity || return 1
+            fi
             curl --fail --silent --show-error \
               --retry 4 --retry-all-errors --retry-delay 3 \
               --connect-timeout 15 --max-time 120 \
@@ -723,39 +2468,509 @@ jobs:
               "$@"
           }
           render_deploy_mutation() {
+            if [[ " $* " == *" -X "* ]]; then
+              assert_recovery_target_identity || return 1
+              assert_recovery_fleet_identity || return 1
+            fi
             curl --fail --silent --show-error \
               --connect-timeout 15 --max-time 120 \
               -H "Accept: application/json" \
               -H "Authorization: Bearer $RENDER_API_KEY" \
               "$@"
           }
+          render_inventory_api() {
+            local absolute_deadline="$1"
+            local remaining request_timeout
+            shift
+            if [[ " $* " == *" -X "* ]]; then
+              assert_recovery_target_identity "$absolute_deadline" || return 1
+              assert_recovery_fleet_identity "$absolute_deadline" || return 1
+            fi
+            remaining=$((absolute_deadline - SECONDS))
+            if (( remaining <= 0 )); then
+              echo "::error::Render inventory deadline expired before request" >&2
+              return 124
+            fi
+            request_timeout="$remaining"
+            if (( request_timeout > 20 )); then
+              request_timeout=20
+            fi
+            curl --fail --silent --show-error \
+              --connect-timeout 5 --max-time "$request_timeout" \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+          recovery_deployment_inventory_filter='
+            def recovery_deployment_identity($deploy):
+              ([
+                  $deploy.commit.id?,
+                  $deploy.commit.sha?,
+                  $deploy.commitId?
+                ] | map(select(. != null))) as $commitCandidates
+              | ([
+                  $deploy.image.sha?,
+                  $deploy.image.digest?,
+                  $deploy.imageDigest?
+                ] | map(select(. != null))) as $imageCandidates
+              | if (($deploy.commit? != null and ($deploy.commit | type) != "object")
+                  or ($deploy.image? != null and ($deploy.image | type) != "object")) then {kind:"invalid"}
+                elif (
+                  ($commitCandidates | length) >= 1
+                  and all(
+                    $commitCandidates[];
+                    type == "string" and test("^[a-f0-9]{40}$")
+                  )
+                  and (($commitCandidates | unique | length) == 1)
+                  and (($imageCandidates | length) == 0)
+                ) then {
+                  kind: "git",
+                  commitSha: $commitCandidates[0]
+                }
+                elif (
+                  ($commitCandidates | length) == 0
+                  and ($imageCandidates | length) >= 1
+                  and all(
+                    $imageCandidates[];
+                    type == "string" and test("^sha256:[a-f0-9]{64}$")
+                  )
+                  and (($imageCandidates | unique | length) == 1)
+                ) then {
+                  kind: "image",
+                  imageDigest: $imageCandidates[0]
+                }
+                elif (
+                  ($commitCandidates | length) == 0
+                  and ($imageCandidates | length) == 0
+                ) then {kind: "missing"}
+                else {kind: "invalid"}
+                end;
+            def recovery_deployment_status_class($status):
+              if ([
+                "created",
+                "queued",
+                "build_in_progress",
+                "pre_deploy_in_progress",
+                "update_in_progress",
+                "live"
+              ] | index($status)) != null then "active"
+              elif ([
+                "build_failed",
+                "pre_deploy_failed",
+                "update_failed",
+                "canceled",
+                "deactivated",
+                "failed"
+              ] | index($status)) != null
+              then "terminal"
+              else "unknown"
+              end;
+            (if type == "array" then .
+             elif ((.deploys? | type) == "array") then .deploys
+             elif type == "object" then [.]
+             else error("recovery_deployment_shape")
+             end)
+            | map(.deploy // .)
+            | map(
+                . as $deploy
+                | recovery_deployment_identity($deploy) as $identity
+                | ($deploy.status
+                    | if type == "string" and length > 0 then .
+                      else error("recovery_deployment_status")
+                      end) as $status
+                | {
+                    serviceId: (
+                      ($deploy.serviceId // $serviceId) as $observedServiceId
+                      | if (
+                          ($observedServiceId | type) == "string"
+                          and $observedServiceId == $serviceId
+                        ) then $observedServiceId
+                        else error("recovery_deployment_service_identity")
+                        end
+                    ),
+                    deployId: (
+                      $deploy.id
+                      | if type == "string" and test("^dep-[a-z0-9-]+$")
+                        then .
+                        else error("recovery_deployment_id")
+                        end
+                    ),
+                    observedStatus: $status,
+                    statusClass: recovery_deployment_status_class($status),
+                    createdAt: (
+                      $deploy.createdAt
+                      | if type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$") then .
+                        else error("recovery_deployment_created_at") end
+                      | . as $created
+                      | sub("\\.[0-9]+Z$"; "Z") as $seconds
+                      | if (try ($seconds | fromdateiso8601 | strftime("%Y-%m-%dT%H:%M:%SZ")) catch null) == $seconds
+                        then $created else error("recovery_deployment_created_at") end
+                    ),
+                    deploymentIdentityKind: $identity.kind,
+                    observedCommitSha: ($identity.commitSha // null),
+                    observedImageDigest: ($identity.imageDigest // null)
+                  }
+              )
+          '
+          fetch_recovery_deployment_inventory() {
+            local absolute_deadline all_deployments cursor encoded_cursor entries
+            local entry_count final_entries final_inventory final_snapshot
+            local first_page_snapshot next_cursor page page_inventory raw_page
+            local seen_cursors service_id url
+            service_id="$1"
+            absolute_deadline="$2"
+            all_deployments='[]'
+            cursor=""
+            page=0
+            seen_cursors='[]'
+            while true; do
+              page=$((page + 1))
+              if (( page > 50 )); then
+                echo "::error::Render deployment inventory exceeded 50 pages for $service_id" >&2
+                return 1
+              fi
+              url="https://api.render.com/v1/services/$service_id/deploys?limit=100"
+              if [[ -n "$cursor" ]]; then
+                encoded_cursor="$(
+                  node -e '
+                    process.stdout.write(encodeURIComponent(process.argv[1]));
+                  ' "$cursor"
+                )" || return 1
+                url="$url&cursor=$encoded_cursor"
+              fi
+              raw_page="$(render_inventory_api "$absolute_deadline" "$url")" || return 1
+              entries="$(
+                jq -ce '
+                  if type == "array" then .
+                  elif ((.deploys? | type) == "array") then .deploys
+                  else error("recovery_deployment_page_shape")
+                  end
+                ' <<<"$raw_page"
+              )" || return 1
+              entry_count="$(jq -er 'length' <<<"$entries")" || return 1
+              page_inventory="$(
+                jq -ce --arg serviceId "$service_id" \
+                  "$recovery_deployment_inventory_filter" <<<"$entries"
+              )" || return 1
+              if (( page == 1 )); then
+                first_page_snapshot="$(
+                  jq -c '
+                    map({
+                      serviceId,
+                      deployId,
+                      observedStatus,
+                      statusClass,
+                      createdAt,
+                      deploymentIdentityKind,
+                      observedCommitSha,
+                      observedImageDigest
+                    })
+                  ' <<<"$page_inventory"
+                )" || return 1
+              fi
+              all_deployments="$(
+                jq -c --argjson page "$page_inventory" '. + $page' \
+                  <<<"$all_deployments"
+              )" || return 1
+              if (( entry_count < 100 )); then
+                break
+              fi
+              next_cursor="$(
+                jq -er '
+                  if type == "array" then .[-1].cursor
+                  elif ((.nextCursor? | type) == "string") then .nextCursor
+                  elif ((.cursor? | type) == "string") then .cursor
+                  else .deploys[-1].cursor
+                  end
+                  | select(type == "string" and length > 0)
+                ' <<<"$raw_page"
+              )" || return 1
+              if jq -e --arg cursor "$next_cursor" \
+                'index($cursor) != null' <<<"$seen_cursors" >/dev/null; then
+                echo "::error::Render deployment inventory repeated cursor for $service_id" >&2
+                return 1
+              fi
+              seen_cursors="$(
+                jq -c --arg cursor "$next_cursor" '. + [$cursor]' \
+                  <<<"$seen_cursors"
+              )" || return 1
+              cursor="$next_cursor"
+            done
+            # Cursor pagination is not a point-in-time snapshot. A concurrent
+            # deployment would be inserted at the head, so require the entire
+            # normalized first page to remain byte-for-byte stable around the
+            # exhaustive traversal before trusting its active-deploy set.
+            raw_page="$(
+              render_inventory_api "$absolute_deadline" \
+                "https://api.render.com/v1/services/$service_id/deploys?limit=100"
+            )" || return 1
+            final_entries="$(
+              jq -ce '
+                if type == "array" then .
+                elif ((.deploys? | type) == "array") then .deploys
+                else error("recovery_deployment_page_shape")
+                end
+              ' <<<"$raw_page"
+            )" || return 1
+            final_inventory="$(
+              jq -ce --arg serviceId "$service_id" \
+                "$recovery_deployment_inventory_filter" <<<"$final_entries"
+            )" || return 1
+            final_snapshot="$(
+              jq -c '
+                map({
+                  serviceId,
+                  deployId,
+                  observedStatus,
+                  statusClass,
+                  createdAt,
+                  deploymentIdentityKind,
+                  observedCommitSha,
+                  observedImageDigest
+                })
+              ' <<<"$final_inventory"
+            )" || return 1
+            if [[ "$final_snapshot" != "$first_page_snapshot" ]]; then
+              echo "::error::Render deployment inventory head changed during pagination for $service_id" >&2
+              return 1
+            fi
+            jq -e '
+              ([.[].deployId] | length) == ([.[].deployId] | unique | length)
+              and all(.statusClass != "unknown" and .deploymentIdentityKind != "invalid"
+                and (.deploymentIdentityKind != "missing" or (.statusClass == "active" and .observedStatus != "live")))
+            ' <<<"$all_deployments" >/dev/null || return 1
+            printf '%s\n' "$all_deployments"
+          }
+          recovery_reconciliation_filter='
+            . as $inventory
+            | def identity: {serviceId,deployId,createdAt,deploymentIdentityKind,observedCommitSha,observedImageDigest};
+            def in_window($start; $end): capture("^(?<whole>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<fraction>\\.[0-9]+)?Z$")
+              | (.whole + "Z" | fromdateiso8601) as $epoch
+              | $epoch >= $start and (($epoch + ((.fraction // "0") | tonumber)) <= $end)
+                and ($epoch != $end or ((.fraction // "0") | test("[1-9]") | not));
+            if (all(.[]; .serviceId == $serviceId and .statusClass != "unknown"
+                and .deploymentIdentityKind != "invalid")
+              and (map(.deployId) | unique | length) == length
+              and all($beforeInventory[]; . as $before
+                | any($inventory[]; identity == ($before | identity))))
+            then [.[] | select(.deployId as $id | ($beforeDeployIds | index($id)) == null)]
+            else error("recovery_reconciliation_missing_or_changed_history") end
+            | if length == 0 then []
+              elif length != 1 then error("recovery_reconciliation_ambiguous")
+              elif (.[0] | .serviceId == $serviceId
+                and .deploymentIdentityKind == "git"
+                and .observedCommitSha == $releaseCommitSha
+                and .observedImageDigest == null
+                and .statusClass == "active"
+                and (.createdAt | type) == "string"
+                and (try (
+                  .createdAt | in_window($intentEpoch; ([$observationEpoch, $intentDeadlineEpoch] | min))
+                ) catch false)) then .
+              else error("recovery_reconciliation_candidate") end
+          '
+          fetch_registration_deployment_inventory() {
+            local service_id="$1" absolute_deadline="$2" inventory
+            inventory="$(fetch_recovery_deployment_inventory "$service_id" "$absolute_deadline")" || return 1
+            jq -ce '
+              if all(.deploymentIdentityKind == "git" or .deploymentIdentityKind == "missing") then
+                map({
+                  id: .deployId,
+                  serviceId,
+                  status: .observedStatus,
+                  commitId: .observedCommitSha,
+                  createdAt
+                })
+              else error("registration_deployment_provenance") end
+            ' <<<"$inventory"
+          }
+
+          assert_recovery_admission_closed() {
+            local observation
+            observation="$(docker run --rm -i -e DATABASE_URL postgres:17-alpine \
+              sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -At' <<'SQL'
+          SELECT json_build_object(
+            'review', (SELECT json_agg(row_to_json(c)) FROM (
+              SELECT "policyScope", "workspaceId", "repositoryConnectionId",
+                "scmRepositoryIdentityId", stopped, version
+              FROM "ReviewSafetyEmergencyControl" WHERE "policyScope" = 'global'
+            ) c),
+            'hosted', (SELECT json_agg(row_to_json(g)) FROM (
+              SELECT id, status, "authzEpoch"::text, revision::text
+              FROM "HostedCodexRuntimeGate" WHERE id = 'global'
+            ) g)
+          );
+          SQL
+            )" || return 1
+            observation="$(jq -cse '
+              if length == 1 and (.[0] | type) == "object" then .[0]
+              else error("recovery_admission_response_ambiguous") end
+            ' <<<"$observation")" || return 1
+            jq -e '
+              (.review | type == "array" and length == 1)
+              and .review[0].policyScope == "global"
+              and .review[0].workspaceId == null
+              and .review[0].repositoryConnectionId == null
+              and .review[0].scmRepositoryIdentityId == null
+              and .review[0].stopped == true
+              and (.review[0].version | type == "number" and . >= 1 and floor == .)
+              and (.hosted | type == "array" and length == 1)
+              and .hosted[0].id == "global"
+              and .hosted[0].status == "closed"
+              and (.hosted[0].authzEpoch | type == "string" and test("^[1-9][0-9]*$"))
+              and (.hosted[0].revision | type == "string" and test("^[1-9][0-9]*$"))
+            ' <<<"$observation" >/dev/null || return 1
+            printf '%s\n' "$observation" > "$work/admission-closed-result.json" || return 1
+          }
           close_firewall() {
+            local recovery_closure=1
             if [[ "$firewall_open" -eq 1 ]]; then
               render_api -X PATCH \
                 -H "Content-Type: application/json" \
                 --data-binary '{"ipAllowList":[]}' \
                 "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
-                -o /dev/null || true
+                -o /dev/null || return 1
+              render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
+                | jq -e --arg targetDbId "$TARGET_DB_ID" '
+                    .id == $targetDbId and .ipAllowList == []
+                  ' >/dev/null || return 1
+              firewall_open=0
             fi
           }
           cleanup() {
-            close_firewall
+            local cleanup_status=$?
+            trap - EXIT
+            set +e
+            if ! close_firewall; then
+              echo "::error::Registration could not prove the database firewall closed."
+              cleanup_status=1
+            fi
             rm -f "$work/api-env.json" "$work/api-env-object.json" \
               "$work/connection-info.json" "$work/operator-input.json" \
               "$work/investigation-env-value.json" \
               "$work"/investigation-service-env-*.json
+            exit "$cleanup_status"
           }
           trap cleanup EXIT
 
-          render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" > "$work/target.json"
-          jq -e \
-            --arg ownerId "$RENDER_OWNER_ID" \
-            --arg environmentId "$RENDER_ENVIRONMENT_ID" '
-              .version == "17"
-              and .status == "available"
+          # Canonical names and git topology bind the verified production roles.
+          # Read the whole identity set before any suspension or credential effect.
+          service_scope_filter='
+            (.service // .)
+            | .id == $serviceId
+              and .name == $serviceName
+              and (.ownerId // .owner.id) == $ownerId
+              and (.owner.id == null or .owner.id == $ownerId)
               and .environmentId == $environmentId
-              and ((.ownerId // .owner.id) == $ownerId)
-            ' "$work/target.json" >/dev/null
+              and .type == $serviceType
+              and .repo == "https://github.com/777genius/review-router-saas"
+              and .branch == "main"
+              and .autoDeploy == "no"
+              and (.suspended == "suspended" or .suspended == "not_suspended")
+          '
+          assert_recovery_trusted_topology() {
+            WORK="$work" node --input-type=module <<'NODE' || return 1
+          import {readFileSync} from "node:fs";
+          import {recoveryProductionScope, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
+          const trusted = JSON.parse(readFileSync(`${process.env.WORK}/trusted-topology.json`, "utf8"));
+          if (trusted.ownerId !== recoveryProductionScope.ownerId || trusted.environmentId !== recoveryProductionScope.environmentId ||
+            trusted.repository !== recoveryProductionScope.repository || !/^[1-9][0-9]*$/.test(trusted.sourceRunId) ||
+            !/^sha256:[a-f0-9]{64}$/.test(trusted.artifactDigest) ||
+            process.env.RENDER_OWNER_ID !== trusted.ownerId || process.env.RENDER_ENVIRONMENT_ID !== trusted.environmentId ||
+            JSON.stringify(Object.keys(trusted.services ?? {}).sort()) !== JSON.stringify([...recoveryRoles].sort()) ||
+            recoveryRoles.some(role => process.env[`${role.toUpperCase()}_SERVICE_ID`] !== trusted.services[role]?.id)) {
+            throw new Error("recovery_untrusted_topology");
+          }
+          NODE
+          }
+          assert_recovery_target_identity() {
+            assert_recovery_trusted_topology || return 1
+            local target deadline="${1:-$((SECONDS + 90))}"
+            target="$(render_inventory_api "$deadline" "https://api.render.com/v1/postgres/$TARGET_DB_ID")" || return 1
+            target="$(jq -cse '
+              if length == 1 and (.[0] | type) == "object" then .[0]
+              else error("recovery_target_response_ambiguous") end
+            ' <<<"$target")" || return 1
+            jq -e --arg targetDbId "$TARGET_DB_ID" \
+              --arg ownerId "$RENDER_OWNER_ID" \
+              --arg environmentId "$RENDER_ENVIRONMENT_ID" --argjson closing "${recovery_closure:-0}" '
+                .id == $targetDbId
+                and .version == "17"
+                and ($closing == 1 or .status == "available")
+                and .name == "reviewrouter-db"
+                and .environmentId == $environmentId
+                and (.ownerId // .owner.id) == $ownerId
+                and (.owner.id == null or .owner.id == $ownerId)
+              ' <<<"$target" >/dev/null || return 1
+            printf '%s\n' "$target" > "$work/target.json" || return 1
+          }
+          assert_recovery_fleet_identity() {
+            assert_recovery_trusted_topology || return 1
+            local service_id service_type service_name service deadline="${1:-$((SECONDS + 90))}"
+            local scope_filter="$service_scope_filter"
+            if [[ "${recovery_closure:-0}" == 1 ]]; then
+              scope_filter='
+                (.service // .) | .id == $serviceId and .name == $serviceName
+                and (.ownerId // .owner.id) == $ownerId
+                and (.owner.id == null or .owner.id == $ownerId)
+                and .environmentId == $environmentId and .type == $serviceType
+              '
+            fi
+            [[ -n "$API_SERVICE_ID" && -n "$WORKER_SERVICE_ID" && -n "$WEB_SERVICE_ID" ]] || return 1
+            [[ "$API_SERVICE_ID" != "$WORKER_SERVICE_ID" && "$API_SERVICE_ID" != "$WEB_SERVICE_ID" && "$WORKER_SERVICE_ID" != "$WEB_SERVICE_ID" ]] || return 1
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              service_type=web_service
+              case "$service_id" in
+                "$API_SERVICE_ID") service_name=reviewrouter-api ;;
+                "$WORKER_SERVICE_ID") service_name=reviewrouter-worker; service_type=background_worker ;;
+                "$WEB_SERVICE_ID") service_name=reviewrouter-web ;;
+              esac
+              service="$(render_inventory_api "$deadline" "https://api.render.com/v1/services/$service_id")" || return 1
+              service="$(jq -cse '
+                if length == 1 and (.[0] | type) == "object" then .[0]
+                else error("recovery_service_response_ambiguous") end
+              ' <<<"$service")" || return 1
+              jq -e --arg serviceId "$service_id" \
+                --arg serviceName "$service_name" \
+                --arg ownerId "$RENDER_OWNER_ID" \
+                --arg environmentId "$RENDER_ENVIRONMENT_ID" \
+                --arg serviceType "$service_type" \
+                "$scope_filter" <<<"$service" >/dev/null || return 1
+            done
+          }
+          # Establish immutable closure scope before reading terminal authority.
+          recovery_closure=1 assert_recovery_target_identity
+          recovery_closure=1 assert_recovery_fleet_identity
+
+
+          recovery_phase_key="REVIEW_ROUTER_PG17_RECOVERY_PHASE"
+          read_recovery_phase() {
+            local service_id="$1" response
+            response="$(render_inventory_api "$((SECONDS + 30))" "https://api.render.com/v1/services/$service_id/env-vars")" || return $?
+            RESPONSE="$response" node --input-type=module <<'NODE'
+          import { readRecoveryPhaseResponse } from "./scripts/render-recovery-journal.mjs";
+          process.stdout.write(JSON.stringify(readRecoveryPhaseResponse(process.env.RESPONSE)) + "\n");
+          NODE
+          }
+          read_recovery_replicas() {
+            local service_id observed replicas='[]'
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              observed="$(read_recovery_phase "$service_id")" || return $?
+              replicas="$(jq -c --argjson state "$observed" '. + [$state]' <<<"$replicas")" || return $?
+            done
+            printf '%s\n' "$replicas"
+          }
+          assert_recovery_nonterminal() {
+            local replicas
+            replicas="$(read_recovery_replicas)" || return 1
+            if jq -e 'any(.[]; .phase == "fleet_verified_closed" or .phase == "complete")' <<<"$replicas" >/dev/null; then
+              echo "::error::Recovery is already complete or fleet_verified_closed; terminal receipts authorize no effects." >&2
+              return 1
+            fi
+            printf '%s\n' "$replicas"
+          }
+          assert_recovery_nonterminal > /dev/null
+          assert_recovery_target_identity
+          assert_recovery_fleet_identity
 
           live_service_preflight='[]'
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
@@ -931,13 +3146,20 @@ jobs:
             cidrBlock: $cidr,
             description: "temporary verified release registration"
           }]}' > "$work/firewall.json"
+          # Arm cleanup before the PATCH: an accepted request can lose its response.
+          firewall_open=1
           render_api -X PATCH -H "Content-Type: application/json" \
             --data-binary @"$work/firewall.json" \
             "https://api.render.com/v1/postgres/$TARGET_DB_ID" -o /dev/null
-          firewall_open=1
           render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID/connection-info" \
             > "$work/connection-info.json"
 
+          DATABASE_URL="$(jq -er '.externalConnectionString' "$work/connection-info.json")"
+          export DATABASE_URL
+          assert_recovery_admission_closed
+
+          assert_recovery_target_identity
+          assert_recovery_fleet_identity
           WORK="$work" ACTION_COMMIT_SHA="$ACTION_COMMIT_SHA" node --input-type=module <<'NODE'
           import { createHash, randomBytes } from "node:crypto";
           import { readFileSync, writeFileSync } from "node:fs";
@@ -1202,169 +3424,10 @@ jobs:
             })}\n`,
             { mode: 0o644 },
           );
-          if (process.env.OPEN_GLOBAL_EMERGENCY === "true") {
-            const emergency = spawnSync(
-              "node",
-              [
-                "--conditions=production",
-                "apps/api/dist/review-action-v2-operator-cli.js",
-                "emergency",
-                "global",
-                "open",
-                "--confirm",
-                "global",
-              ],
-              { cwd: process.cwd(), env: operatorEnv, encoding: "utf8" },
-            );
-            if (emergency.status !== 0) {
-              const diagnostic = {
-                exitStatus: emergency.status,
-                diagnosticCodes: diagnosticCodes(emergency.stdout, emergency.stderr),
-                stderrSha256: createHash("sha256")
-                  .update(emergency.stderr, "utf8")
-                  .digest("hex"),
-              };
-              writeFileSync(
-                `${work}/emergency-control-diagnostic.json`,
-                `${JSON.stringify(diagnostic)}\n`,
-                { mode: 0o644 },
-              );
-              throw new Error(
-                `review_v2_global_emergency_open_failed:exit_${emergency.status ?? "unknown"}`,
-              );
-            }
-            const emergencyResult = JSON.parse(emergency.stdout);
-            if (emergencyResult.control?.stopped !== false) {
-              throw new Error("review_v2_global_emergency_open_not_confirmed");
-            }
-            writeFileSync(
-              `${work}/emergency-control-result.json`,
-              `${JSON.stringify({
-                requestedState: "open",
-                writeStatus: emergencyResult.status,
-                stopped: emergencyResult.control.stopped,
-              })}\n`,
-              { mode: 0o644 },
-            );
-            const operatorWorkspaceId = process.env.OPERATOR_WORKSPACE_ID;
-            if (operatorWorkspaceId) {
-              const workspaceEmergency = spawnSync(
-                "node",
-                [
-                  "--conditions=production",
-                  "apps/api/dist/review-action-v2-operator-cli.js",
-                  "emergency",
-                  "workspace",
-                  "open",
-                  "--workspace",
-                  operatorWorkspaceId,
-                  "--confirm",
-                  operatorWorkspaceId,
-                ],
-                { cwd: process.cwd(), env: operatorEnv, encoding: "utf8" },
-              );
-              if (workspaceEmergency.status !== 0) {
-                const diagnostic = {
-                  workspaceId: operatorWorkspaceId,
-                  exitStatus: workspaceEmergency.status,
-                  diagnosticCodes: diagnosticCodes(
-                    workspaceEmergency.stdout,
-                    workspaceEmergency.stderr,
-                  ),
-                  stderrSha256: createHash("sha256")
-                    .update(workspaceEmergency.stderr, "utf8")
-                    .digest("hex"),
-                };
-                writeFileSync(
-                  `${work}/workspace-emergency-control-diagnostic.json`,
-                  `${JSON.stringify(diagnostic)}\n`,
-                  { mode: 0o644 },
-                );
-                throw new Error(
-                  `review_v2_workspace_emergency_open_failed:exit_${workspaceEmergency.status ?? "unknown"}`,
-                );
-              }
-              const workspaceEmergencyResult = JSON.parse(
-                workspaceEmergency.stdout,
-              );
-              if (
-                workspaceEmergencyResult.workspaceId !== operatorWorkspaceId ||
-                workspaceEmergencyResult.control?.stopped !== false
-              ) {
-                throw new Error(
-                  "review_v2_workspace_emergency_open_not_confirmed",
-                );
-              }
-              writeFileSync(
-                `${work}/workspace-emergency-control-result.json`,
-                `${JSON.stringify({
-                  workspaceId: operatorWorkspaceId,
-                  requestedState: "open",
-                  writeStatus: workspaceEmergencyResult.status,
-                  stopped: workspaceEmergencyResult.control.stopped,
-                })}\n`,
-                { mode: 0o644 },
-              );
-            }
-            const operatorRepository = process.env.OPERATOR_REPOSITORY;
-            if (operatorRepository) {
-              const repositoryEmergency = spawnSync(
-                "node",
-                [
-                  "--conditions=production",
-                  "apps/api/dist/review-action-v2-operator-cli.js",
-                  "emergency",
-                  "repository",
-                  "open",
-                  "--repo",
-                  operatorRepository,
-                  "--confirm",
-                  operatorRepository,
-                ],
-                { cwd: process.cwd(), env: operatorEnv, encoding: "utf8" },
-              );
-              if (repositoryEmergency.status !== 0) {
-                const diagnostic = {
-                  repository: operatorRepository,
-                  exitStatus: repositoryEmergency.status,
-                  diagnosticCodes: diagnosticCodes(
-                    repositoryEmergency.stdout,
-                    repositoryEmergency.stderr,
-                  ),
-                  stderrSha256: createHash("sha256")
-                    .update(repositoryEmergency.stderr, "utf8")
-                    .digest("hex"),
-                };
-                writeFileSync(
-                  `${work}/repository-emergency-control-diagnostic.json`,
-                  `${JSON.stringify(diagnostic)}\n`,
-                  { mode: 0o644 },
-                );
-                throw new Error(
-                  `review_v2_repository_emergency_open_failed:exit_${repositoryEmergency.status ?? "unknown"}`,
-                );
-              }
-              const repositoryEmergencyResult = JSON.parse(
-                repositoryEmergency.stdout,
-              );
-              if (
-                repositoryEmergencyResult.repository !== operatorRepository ||
-                repositoryEmergencyResult.control?.stopped !== false
-              ) {
-                throw new Error(
-                  "review_v2_repository_emergency_open_not_confirmed",
-                );
-              }
-              writeFileSync(
-                `${work}/repository-emergency-control-result.json`,
-                `${JSON.stringify({
-                  repository: operatorRepository,
-                  requestedState: "open",
-                  writeStatus: repositoryEmergencyResult.status,
-                  stopped: repositoryEmergencyResult.control.stopped,
-                })}\n`,
-                { mode: 0o644 },
-              );
+          // Recovery stages configuration only. Explicit activation workflows
+          // own opening Review v2 and Hosted Codex admission after recovery.
+          const operatorRepository = process.env.OPERATOR_REPOSITORY;
+          if (operatorRepository) {
               const rolloutStatus = spawnSync(
                 "node",
                 [
@@ -1419,23 +3482,6 @@ jobs:
                   "review_v2_investigation_producer_release_mismatch",
                 );
               }
-              const requiredCapabilities =
-                rolloutProfile === "production"
-                  ? ["recording", "shadow", "context_critic", "production_effects"]
-                  : rolloutProfile === "shadow"
-                    ? ["recording", "shadow", "context_critic"]
-                    : ["recording"];
-              if (
-                requiredCapabilities.some(
-                  (capability) =>
-                    rolloutStatusResult.decisions?.[capability] !== "allowed",
-                )
-              ) {
-                throw new Error(
-                  "review_v2_investigation_profile_not_allowed",
-                );
-              }
-            }
           }
           NODE
 
@@ -1473,8 +3519,7 @@ jobs:
               ' "$work/live-service-preflight.json"
             )"
             before_deploys="$(
-              render_api \
-                "https://api.render.com/v1/services/$service_id/deploys?limit=20"
+              fetch_registration_deployment_inventory "$service_id" "$((SECONDS + 120))"
             )"
             before_deploy_snapshot="$(
               jq -ce --arg serviceId "$service_id" '
@@ -1513,6 +3558,12 @@ jobs:
             )"
             deploy_intent_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
             deploy_intent_epoch="$(date -u -d "$deploy_intent_at" +%s)"
+            before_inventory="$(jq -ce --arg serviceId "$service_id" "$recovery_deployment_inventory_filter" <<<"$before_deploys")"
+            jq -e --arg id "$before_deploy_id" \
+              '[.[] | select(.statusClass == "active") | .deployId] == [$id]' <<<"$before_inventory" >/dev/null
+            jq -nc --argjson inventory "$before_inventory" --argjson epoch "$deploy_intent_epoch" \
+              '{beforeInventory:$inventory,intentEpoch:$epoch,intentDeadlineEpoch:($epoch+120)}' > "$work/registration-intent-$service_id.json"
+            assert_recovery_admission_closed
             set +e
             deploy="$(
               render_deploy_mutation -X POST -H "Content-Type: application/json" \
@@ -1534,54 +3585,25 @@ jobs:
                 deploy_id=""
               fi
             fi
-            reconciled=false
+            reconciled=true
+            response_deploy_id="$deploy_id"
+            deploy_id=""
             if [[ -z "$deploy_id" ]]; then
-              reconciled=true
+              stable_candidate_id=""
+              stable_candidate_observations=0
               reconciliation_deadline=$((SECONDS + 120))
               reconciliation_candidates='[]'
               while (( SECONDS < reconciliation_deadline )); do
                 recent_deploys="$(
-                  render_api \
-                    "https://api.render.com/v1/services/$service_id/deploys?limit=20"
+                  fetch_registration_deployment_inventory "$service_id" "$reconciliation_deadline"
                 )"
-                reconciliation_candidates="$(
-                  jq -ce \
-                    --arg serviceId "$service_id" \
-                    --argjson beforeDeployIds "$before_deploy_ids" \
-                    --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
-                    --argjson intentEpoch "$deploy_intent_epoch" '
-                      (if type == "array" then .
-                       elif (.deploys | type) == "array" then .deploys
-                       else error("registration_deploy_list_shape")
-                       end)
-                      | map(.deploy // .)
-                      | map(select(
-                          (.id | type) == "string"
-                          and (.id | test("^dep-[a-z0-9-]+$"))
-                          and (.id as $id | ($beforeDeployIds | index($id)) == null)
-                          and ((.serviceId // $serviceId) == $serviceId)
-                          and (
-                            (.commit.id // .commit.sha // .commitId // "")
-                            == $releaseCommitSha
-                          )
-                          and ((.createdAt | type) == "string")
-                          and (
-                            try (
-                              (.createdAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
-                              >= ($intentEpoch - 5)
-                            ) catch false
-                          )
-                        ))
-                      | map({
-                          deployId: .id,
-                          status,
-                          createdAt,
-                          observedCommitSha: (
-                            .commit.id // .commit.sha // .commitId
-                          )
-                        })
-                    ' <<<"$recent_deploys"
-                )"
+                recent_inventory="$(jq -ce --arg serviceId "$service_id" "$recovery_deployment_inventory_filter" <<<"$recent_deploys")"
+                observation_epoch="$(date -u +%s.%N)"
+                reconciliation_candidates="$(jq -ce --arg serviceId "$service_id" \
+                  --argjson beforeDeployIds "$before_deploy_ids" --argjson beforeInventory "$before_inventory" \
+                  --arg releaseCommitSha "$RELEASE_COMMIT_SHA" --argjson intentEpoch "$deploy_intent_epoch" \
+                  --argjson intentDeadlineEpoch "$((deploy_intent_epoch + 120))" --argjson observationEpoch "$observation_epoch" \
+                  "$recovery_reconciliation_filter" <<<"$recent_inventory")"
                 jq -n \
                   --arg serviceId "$service_id" \
                   --arg beforeDeployId "$before_deploy_id" \
@@ -1602,8 +3624,21 @@ jobs:
                   exit 1
                 fi
                 if (( candidate_count == 1 )); then
-                  deploy_id="$(jq -er '.[0].deployId' <<<"$reconciliation_candidates")"
-                  break
+                  observed_candidate_id="$(jq -er '.[0].deployId' <<<"$reconciliation_candidates")"
+                  if [[ "$observed_candidate_id" == "$stable_candidate_id" ]]; then
+                    stable_candidate_observations=$((stable_candidate_observations + 1))
+                  else
+                    stable_candidate_id="$observed_candidate_id"
+                    stable_candidate_observations=1
+                  fi
+                  if (( stable_candidate_observations >= 2 )); then
+                    [[ -z "$response_deploy_id" || "$response_deploy_id" == "$observed_candidate_id" ]]
+                    deploy_id="$observed_candidate_id"
+                    break
+                  fi
+                else
+                  stable_candidate_id=""
+                  stable_candidate_observations=0
                 fi
                 sleep 5
               done
@@ -1716,9 +3751,20 @@ jobs:
           current_deployments='[]'
           while IFS=$'\t' read -r service_id expected_deploy_id; do
             latest_deploys="$(
-              render_api \
-                "https://api.render.com/v1/services/$service_id/deploys?limit=1"
+              fetch_registration_deployment_inventory "$service_id" "$((SECONDS + 120))"
             )"
+            before_inventory="$(jq -ce '.beforeInventory' "$work/registration-intent-$service_id.json")"
+            before_deploy_ids="$(jq -c '[.[].deployId]' <<<"$before_inventory")"
+            deploy_intent_epoch="$(jq -er '.intentEpoch' "$work/registration-intent-$service_id.json")"
+            intent_deadline_epoch="$(jq -er '.intentDeadlineEpoch' "$work/registration-intent-$service_id.json")"
+            recent_inventory="$(jq -ce --arg serviceId "$service_id" "$recovery_deployment_inventory_filter" <<<"$latest_deploys")"
+            candidates="$(jq -ce --arg serviceId "$service_id" --argjson beforeInventory "$before_inventory" \
+              --argjson beforeDeployIds "$before_deploy_ids" --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+              --argjson intentEpoch "$deploy_intent_epoch" --argjson intentDeadlineEpoch "$intent_deadline_epoch" \
+              --argjson observationEpoch "$(date -u +%s.%N)" "$recovery_reconciliation_filter" <<<"$recent_inventory")"
+            jq -e --arg id "$expected_deploy_id" 'length == 1 and .[0].deployId == $id' <<<"$candidates" >/dev/null
+            jq -e --arg id "$expected_deploy_id" \
+              '[.[] | select(.statusClass == "active") | .deployId] == [$id]' <<<"$recent_inventory" >/dev/null
             current_deployment="$(
               jq -ce --arg serviceId "$service_id" '
                 (if type == "array" then .[0] else (.deploys[0] // .[0]) end)
@@ -1756,8 +3802,10 @@ jobs:
             and ([.[].serviceId] | unique | length == 3)
             and ([.[].deployId] | unique | length == 3)
           ' "$work/current-deployment-result.json" >/dev/null
+          assert_recovery_admission_closed
           close_firewall
           firewall_open=0
+          unset DATABASE_URL
 
       - name: Upload release registration evidence
         if: always()
@@ -1765,16 +3813,11 @@ jobs:
         with:
           name: reviewrouter-release-registration-${{ github.run_id }}
           path: |
+            ${{ runner.temp }}/reviewrouter-release-registration/admission-closed-result.json
             ${{ runner.temp }}/reviewrouter-release-registration/release-manifest.json
             ${{ runner.temp }}/reviewrouter-release-registration/environment-preflight.json
             ${{ runner.temp }}/reviewrouter-release-registration/registration-result.json
             ${{ runner.temp }}/reviewrouter-release-registration/registration-diagnostic.json
-            ${{ runner.temp }}/reviewrouter-release-registration/emergency-control-result.json
-            ${{ runner.temp }}/reviewrouter-release-registration/emergency-control-diagnostic.json
-            ${{ runner.temp }}/reviewrouter-release-registration/workspace-emergency-control-result.json
-            ${{ runner.temp }}/reviewrouter-release-registration/workspace-emergency-control-diagnostic.json
-            ${{ runner.temp }}/reviewrouter-release-registration/repository-emergency-control-result.json
-            ${{ runner.temp }}/reviewrouter-release-registration/repository-emergency-control-diagnostic.json
             ${{ runner.temp }}/reviewrouter-release-registration/investigation-rollout-status-result.json
             ${{ runner.temp }}/reviewrouter-release-registration/investigation-rollout-status-diagnostic.json
             ${{ runner.temp }}/reviewrouter-release-registration/investigation-env-proof.json
