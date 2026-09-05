@@ -179,9 +179,16 @@ jobs:
 
           request="$(jq -nc --arg commitId "$candidate_commit" '{clearCache:"do_not_clear", commitId:$commitId}')"
           echo "phase=create_deploy_while_suspended"
+          set +e
           response="$(render_mutation -X POST -H "Content-Type: application/json" \
             --data-binary "$request" \
             "https://api.render.com/v1/services/$service_id/deploys")"
+          mutation_status=$?
+          set -e
+          if [[ "$mutation_status" -ne 0 ]]; then
+            printf '%s\n' "$response" | jq -c . || printf '%s\n' "$response"
+            exit "$mutation_status"
+          fi
           deploy_id="$(jq -er --arg service "$service_id" --arg sha "$candidate_commit" '
             (.deploy // .) as $deploy
             | select(($deploy.serviceId // $service) == $service)
