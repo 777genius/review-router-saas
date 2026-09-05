@@ -3,6 +3,7 @@ import {
   assertRenderManagedRoleBranch,
   classifyRenderManagedMembership,
   inspectRenderManagedLedger,
+  partitionRenderSchemaHandoffCheckout,
   readRenderSchemaHandoffCatalog,
   readReviewedRenderManagedContract,
   renderManagedEvidenceDigest,
@@ -11,6 +12,7 @@ import {
   renderManagedMigrationPhase,
   renderManagedMigrationPhases,
   renderManagedTemporaryMembershipSql,
+  renderSchemaHandoffCheckoutExtension,
 } from "./render-schema-handoff-policy.mjs";
 import {
   assertRenderManagedCatalogMatches,
@@ -69,6 +71,48 @@ const roles = () => [
 ];
 
 describe("two managed histories and full Prisma ledger observations", () => {
+  it("refuses ledger93/94/95 in both phases even with the admitted95 checkout", () => {
+    const checkout = [...catalog, ...renderSchemaHandoffCheckoutExtension];
+    const managed = partitionRenderSchemaHandoffCheckout(checkout);
+    expect(managed).toEqual(catalog);
+    const complete = checkout.map((row, index) => ({
+      ...rows(1)[0]!,
+      ...row,
+      id: `00000000-0000-0000-0000-${String(index).padStart(12, "0")}`,
+    }));
+    for (const count of [93, 94, 95])
+      for (const phase of [retained, handoff])
+        expect(() =>
+          inspectRenderManagedLedger(managed, complete.slice(0, count), phase),
+        ).toThrow("managed_ledger_count");
+    for (const [phase, count] of [
+      [retained, 76],
+      [retained, 89],
+      [handoff, 89],
+      [handoff, 92],
+    ] as const) {
+      expect(
+        inspectRenderManagedLedger(managed, complete.slice(0, count), phase),
+      ).toEqual(inspectRenderManagedLedger(catalog, rows(count), phase));
+      // A successful-history digest or identity projection cannot replace the
+      // complete ledger metadata, even when its migration manifest matches.
+      expect(() =>
+        inspectRenderManagedLedger(managed, managed.slice(0, count), phase),
+      ).toThrow("managed_ledger_history");
+      expect(() =>
+        inspectRenderManagedLedger(
+          managed,
+          renderManagedEvidenceDigest(complete.slice(0, count)),
+          phase,
+        ),
+      ).toThrow("managed_ledger_count");
+    }
+    for (const phase of [retained, handoff])
+      expect(() => readReviewedRenderManagedContract(phase)).toThrow(
+        "managed_independent_review_missing",
+      );
+  });
+
   it("binds 76 to the exact source prefix, independently of row count", () => {
     const state = inspectRenderManagedLedger(catalog, rows(), retained);
     expect(state.manifest).toBe(
