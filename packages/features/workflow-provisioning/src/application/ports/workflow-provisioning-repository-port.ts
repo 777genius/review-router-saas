@@ -9,6 +9,7 @@ export type WorkflowProvisioningScope = {
 
 export type WorkflowProvisioningAttempt = WorkflowProvisioningScope & {
   readonly attemptId: string;
+  readonly branch: string;
   readonly revision: number;
 };
 
@@ -18,6 +19,7 @@ export type WorkflowProvisioningRecord = WorkflowProvisioningScope & {
   readonly workflowPath: string;
   readonly workflowStyle: ReviewRouterWorkflowStyle;
   readonly actionVersion: string;
+  readonly pullRequestHeadSha?: string | null;
   readonly pullRequestUrl?: string | null;
   readonly errorMessage?: string | null;
 };

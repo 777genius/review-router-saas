@@ -17,6 +17,8 @@ import type { WorkflowProvisioningTargetPort } from "../ports/workflow-provision
 
 export async function provisionHostedPoolRepositoryWorkflow(
   input: {
+    readonly workspaceId: string;
+    readonly installationId: string;
     readonly repositoryId: string;
     readonly actionRef: string;
     readonly apiUrl: string;
@@ -34,19 +36,24 @@ export async function provisionHostedPoolRepositoryWorkflow(
     readonly auditMetadata?: Readonly<Record<string, unknown>>;
   },
 ) {
-  const target = await dependencies.targets.findWorkflowProvisioningTarget(
-    input.repositoryId,
-  );
-  if (!target) throw new Error("repository_not_found");
+  const target =
+    await dependencies.targets.findWorkflowProvisioningTarget(input);
+  if (
+    !target ||
+    target.workspaceId !== input.workspaceId ||
+    target.installationId !== input.installationId ||
+    target.repositoryId !== input.repositoryId
+  )
+    throw new Error("repository_not_found");
   if (!target.selected) throw new Error("repository_not_selected");
   if (target.archived) throw new Error("repository_archived");
   if (target.installationStatus !== "active")
     throw new Error("installation_not_active");
 
   const plan = createProvisionWorkflowPlan({
-    workspaceId: target.workspaceId,
-    installationId: target.installationId,
-    repositoryId: target.repositoryId,
+    workspaceId: input.workspaceId,
+    installationId: input.installationId,
+    repositoryId: input.repositoryId,
     owner: target.owner,
     name: target.name,
     defaultBranch: target.defaultBranch,
@@ -85,7 +92,7 @@ export async function provisionHostedPoolRepositoryWorkflow(
         owner: plan.owner,
         repo: plan.name,
         baseBranch: plan.defaultBranch,
-        setupBranch: plan.setupBranch,
+        setupBranch: attempt.branch,
         setupMode: "hosted_pool",
         workflowFiles: [
           {
@@ -111,6 +118,7 @@ export async function provisionHostedPoolRepositoryWorkflow(
       status: "setup_pr_open",
       branch: pullRequest.branch,
       pullRequestUrl: pullRequest.url,
+      pullRequestHeadSha: pullRequest.headSha,
       errorMessage: null,
     });
     if (dependencies.auditLog) {

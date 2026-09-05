@@ -32,17 +32,20 @@ export class PrismaWorkflowProvisioningStatusAuthority {
   async markConfigured(
     input: WorkflowProvisioningPullRequestIdentity & {
       readonly baseBranch: string;
+      readonly headSha: string | null;
     },
   ): Promise<boolean> {
     return this.transition(input, {
       status: "configured",
       baseBranch: input.baseBranch,
+      headSha: input.headSha,
     });
   }
 
   async assertConfigured(
     input: WorkflowProvisioningPullRequestIdentity & {
       readonly baseBranch: string;
+      readonly headSha: string | null;
     },
   ): Promise<void> {
     if (!(await this.markConfigured(input)))
@@ -121,7 +124,10 @@ export class PrismaWorkflowProvisioningStatusAuthority {
       if (
         current.workspaceId !== input.workspaceId ||
         current.installationId !== input.installationId ||
-        current.attemptId !== input.expectedAttempt?.attemptId
+        current.attemptId !== input.expectedAttempt?.attemptId ||
+        current.workflowPath !== input.workflowPath ||
+        current.workflowStyle !== input.workflowStyle ||
+        current.actionVersion !== input.actionVersion
       )
         throw new Error("workflow_provisioning_match_not_found");
       if (current.status === "configured") return;
@@ -148,7 +154,7 @@ export class PrismaWorkflowProvisioningStatusAuthority {
   private async transition(
     input: WorkflowProvisioningPullRequestIdentity,
     next:
-      | { status: "configured"; baseBranch: string }
+      | { status: "configured"; baseBranch: string; headSha: string | null }
       | { status: "failed"; reason: Failure },
   ): Promise<boolean> {
     return workflowProvisioningTransaction(this.prisma, async (tx) => {
@@ -173,6 +179,12 @@ export class PrismaWorkflowProvisioningStatusAuthority {
           input.pullRequestNumber ||
         (input.expectedAttempt &&
           current.attemptId !== input.expectedAttempt.attemptId)
+      )
+        return false;
+      if (
+        next.status === "configured" &&
+        (!current.pullRequestHeadSha ||
+          current.pullRequestHeadSha !== next.headSha)
       )
         return false;
       if (current.status === "configured") {

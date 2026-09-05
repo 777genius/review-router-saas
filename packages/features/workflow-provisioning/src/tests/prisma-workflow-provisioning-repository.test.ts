@@ -25,7 +25,12 @@ describe("provisioning attempt writers", () => {
       ...attempt,
       pullRequestUrl: initialCandidate.pullRequestUrl,
     });
-    expect(await authority.markConfigured(identity)).toBe(true);
+    expect(
+      await authority.markConfigured({
+        ...identity,
+        setupBranch: attempt.branch,
+      }),
+    ).toBe(true);
     await writer.markFailed({
       ...record,
       ...attempt,
@@ -153,6 +158,7 @@ describe("provisioning attempt writers", () => {
       };
       const sync = new PrismaRepositoryConnectionRepository(prisma as never);
       const input = {
+        inventoryGeneration: 1n,
         githubInstallationId: "124",
         syncedAt: new Date("2026-09-05T00:00:00Z"),
         repositories: [

@@ -321,7 +321,7 @@ async function provisionPendingHostedPoolWorkflow(input: {
       selected: true,
       archived: true,
       installation: {
-        select: { status: true, githubInstallationId: true },
+        select: { id: true, status: true, githubInstallationId: true },
       },
     },
   });
@@ -367,6 +367,8 @@ async function provisionPendingHostedPoolWorkflow(input: {
     async () =>
       provisionHostedPoolRepositoryWorkflow(
         {
+          workspaceId: input.workspaceId,
+          installationId: githubRepository.installation.id,
           repositoryId: input.repositoryId,
           actionRef: resolveHostedPoolActionRelease().actionRef,
           apiUrl: resolveWorkflowPublicApiUrl(),
@@ -415,7 +417,7 @@ async function provisionPendingRepositoryOwnedWorkflow(input: {
         selected: true,
         archived: true,
         installation: {
-          select: { status: true, githubInstallationId: true },
+          select: { id: true, status: true, githubInstallationId: true },
         },
       },
     }),
@@ -529,6 +531,8 @@ async function provisionPendingRepositoryOwnedWorkflow(input: {
     async () =>
       provisionRepositoryReviewRouterWorkflow(
         {
+          workspaceId: input.workspaceId,
+          installationId: githubRepository.installation.id,
           repositoryId: input.repositoryId,
           actionRef,
           apiUrl: resolveWorkflowPublicApiUrl(),
@@ -992,7 +996,7 @@ async function createSetupPullRequestMutation(
         visibility: true,
         defaultBranch: true,
         installation: {
-          select: { githubInstallationId: true },
+          select: { id: true, githubInstallationId: true },
         },
       },
     });
@@ -1187,6 +1191,8 @@ async function createSetupPullRequestMutation(
         async () =>
           provisionRepositoryReviewRouterWorkflow(
             {
+              workspaceId,
+              installationId: githubRepository.installation.id,
               repositoryId,
               actionRef,
               apiUrl: resolveWorkflowPublicApiUrl(),
@@ -1276,6 +1282,7 @@ async function confirmSetupPullRequestMergedMutation(
             revision: true,
             branch: true,
             pullRequestUrl: true,
+            pullRequestHeadSha: true,
           },
         },
       },
@@ -1332,6 +1339,13 @@ async function confirmSetupPullRequestMergedMutation(
       : null;
     const setupPullRequestStatus = setupPullRequestInspection?.status ?? null;
     const setupPullRequestMerged = setupPullRequestStatus === "merged";
+    if (
+      setupPullRequestMerged &&
+      (!setupProvisioning?.pullRequestHeadSha ||
+        setupProvisioning.pullRequestHeadSha !==
+          setupPullRequestInspection?.headSha)
+    )
+      throw new Error("workflow_provisioning_match_not_found");
     const setupBaseBranch =
       setupPullRequestInspection?.baseBranch ??
       (await resolveDashboardSetupBaseBranch({
@@ -1545,6 +1559,7 @@ async function confirmSetupPullRequestMergedMutation(
     };
     if (setupPullRequestMerged) {
       await setupAuthority.assertConfigured({
+        headSha: setupPullRequestInspection?.headSha ?? null,
         ...setupScope,
         expectedAttempt: setupProvisioning!,
         setupBranch: setupProvisioning?.branch ?? null,

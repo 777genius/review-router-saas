@@ -57,6 +57,8 @@ describe("setup authority", () => {
     const f = fixture();
     for (const change of [
       { pullRequestNumber: 8 },
+      { headSha: "c".repeat(40) },
+      { headSha: null },
       { setupBranch: "other" },
       { workspaceId: "workspace_2" },
       { installationId: "installation_2" },
@@ -179,6 +181,33 @@ describe("setup authority", () => {
       }),
     ).rejects.toThrow("workflow_provisioning_match_not_found");
   });
+  it.each([
+    { workflowPath: ".github/workflows/another.yml" },
+    { workflowStyle: "explicit" as const },
+    { actionVersion: "b".repeat(40) },
+  ])(
+    "rejects installed evidence for a different artifact: %j",
+    async (change) => {
+      for (const status of [
+        "not_started",
+        "setup_pr_open",
+        "failed",
+        "configured",
+      ] as const) {
+        const f = fixture(status);
+        await expect(
+          f.authority.confirmInstalledWorkflow({
+            ...record,
+            ...change,
+            baseBranch: "main",
+            expectedAttempt: initialCandidate,
+          }),
+        ).rejects.toThrow("workflow_provisioning_match_not_found");
+        expect(f.current()?.status).toBe(status);
+        expect(f.workflowProvisioning.updateMany).not.toHaveBeenCalled();
+      }
+    },
+  );
   it("recovers failed attempts with no recorded PR only from installed evidence", async () => {
     const f = fixture("failed");
     const current = {

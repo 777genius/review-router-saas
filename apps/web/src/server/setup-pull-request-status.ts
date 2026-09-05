@@ -15,6 +15,7 @@ export type SetupPullRequestStatus =
 export type SetupPullRequestInspection = {
   readonly status: SetupPullRequestStatus;
   readonly baseBranch: string | null;
+  readonly headSha: string | null;
 };
 
 export async function inspectSetupPullRequest(
@@ -36,9 +37,10 @@ export async function inspectSetupPullRequest(
           ? "closed"
           : "branch_deleted",
         baseBranch: null,
+        headSha: null,
       };
     }
-    return { status: "closed", baseBranch: null };
+    return { status: "closed", baseBranch: null, headSha: null };
   }
 
   const setupBranchMatches =
@@ -50,25 +52,45 @@ export async function inspectSetupPullRequest(
     pullRequest.baseRef &&
     !input.allowedBaseBranches.includes(pullRequest.baseRef)
   ) {
-    return { status: "wrong_base_branch", baseBranch: pullRequest.baseRef };
+    return {
+      status: "wrong_base_branch",
+      headSha: pullRequest.headSha,
+      baseBranch: pullRequest.baseRef,
+    };
   }
 
   if (pullRequest.merged && setupBranchMatches) {
-    return { status: "merged", baseBranch: pullRequest.baseRef };
+    return {
+      status: "merged",
+      headSha: pullRequest.headSha,
+      baseBranch: pullRequest.baseRef,
+    };
   }
 
   if (
     setupBranch &&
     !(await setupBranchExists({ ...input, setupBranch }, octokit))
   ) {
-    return { status: "branch_deleted", baseBranch: pullRequest.baseRef };
+    return {
+      status: "branch_deleted",
+      headSha: pullRequest.headSha,
+      baseBranch: pullRequest.baseRef,
+    };
   }
 
   if (pullRequest.state === "closed") {
-    return { status: "closed", baseBranch: pullRequest.baseRef };
+    return {
+      status: "closed",
+      headSha: pullRequest.headSha,
+      baseBranch: pullRequest.baseRef,
+    };
   }
 
-  return { status: "open", baseBranch: pullRequest.baseRef };
+  return {
+    status: "open",
+    headSha: pullRequest.headSha,
+    baseBranch: pullRequest.baseRef,
+  };
 }
 
 export async function inspectSetupPullRequestStatus(
@@ -95,6 +117,7 @@ async function readPullRequest(
   readonly merged: boolean;
   readonly state: string | null;
   readonly headRef: string | null;
+  readonly headSha: string | null;
   readonly baseRef: string | null;
 } | null> {
   try {
@@ -142,19 +165,28 @@ function parsePullRequest(data: unknown): {
   readonly merged: boolean;
   readonly state: string | null;
   readonly headRef: string | null;
+  readonly headSha: string | null;
   readonly baseRef: string | null;
 } {
   if (typeof data !== "object" || data === null) {
-    return { merged: false, state: null, headRef: null, baseRef: null };
+    return {
+      merged: false,
+      state: null,
+      headRef: null,
+      headSha: null,
+      baseRef: null,
+    };
   }
 
   const pullRequest = data as {
     readonly merged?: unknown;
     readonly state?: unknown;
-    readonly head?: { readonly ref?: unknown };
+    readonly head?: { readonly ref?: unknown; readonly sha?: unknown };
     readonly base?: { readonly ref?: unknown };
   };
   return {
+    headSha:
+      typeof pullRequest.head?.sha === "string" ? pullRequest.head.sha : null,
     merged: pullRequest.merged === true,
     state: typeof pullRequest.state === "string" ? pullRequest.state : null,
     headRef:

@@ -13,12 +13,14 @@ export const record = {
   workflowPath: ".github/workflows/reviewrouter-codex.yml",
   workflowStyle: "reusable" as const,
   actionVersion: "a".repeat(40),
+  pullRequestHeadSha: "b".repeat(40),
 };
 export const identity = {
   ...scope,
   setupBranch: record.branch,
   pullRequestNumber: 7,
   baseBranch: "main",
+  headSha: record.pullRequestHeadSha,
 };
 export const initialCandidate = {
   ...record,

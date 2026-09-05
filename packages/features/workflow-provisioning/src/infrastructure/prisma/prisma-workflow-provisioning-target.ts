@@ -1,3 +1,4 @@
+import type { WorkflowProvisioningScope } from "../../application/ports/workflow-provisioning-repository-port";
 import type { PrismaClient } from "@prisma/client";
 import type {
   WorkflowProvisioningTarget,
@@ -8,10 +9,14 @@ export class PrismaWorkflowProvisioningTarget implements WorkflowProvisioningTar
   constructor(private readonly prisma: PrismaClient) {}
 
   async findWorkflowProvisioningTarget(
-    repositoryId: string,
+    scope: WorkflowProvisioningScope,
   ): Promise<WorkflowProvisioningTarget | null> {
     const repository = await this.prisma.repositoryConnection.findUnique({
-      where: { id: repositoryId },
+      where: {
+        id: scope.repositoryId,
+        workspaceId: scope.workspaceId,
+        installationId: scope.installationId,
+      },
       select: {
         id: true,
         workspaceId: true,

@@ -23,17 +23,19 @@ export class PrismaWorkflowProvisioningRepository implements WorkflowProvisionin
       const current = await tx.workflowProvisioning.findUnique({
         where: { repositoryId: record.repositoryId },
       });
+      const attemptId = randomUUID();
       const data = {
         workspaceId: record.workspaceId,
         repositoryId: record.repositoryId,
         installationId: record.installationId,
-        attemptId: randomUUID(),
+        attemptId,
         revision: (current?.revision ?? -1) + 1,
         status: "not_started" as const,
-        branch: record.branch,
+        branch: `${record.branch}/${attemptId}`,
         workflowPath: record.workflowPath,
         workflowStyle: record.workflowStyle,
         actionVersion: record.actionVersion,
+        pullRequestHeadSha: null,
         pullRequestUrl: null,
         errorMessage: null,
       };
@@ -59,6 +61,7 @@ export class PrismaWorkflowProvisioningRepository implements WorkflowProvisionin
         repositoryId: data.repositoryId,
         installationId: data.installationId,
         attemptId: data.attemptId,
+        branch: data.branch,
         revision: data.revision,
       };
     });
@@ -90,9 +93,17 @@ export class PrismaWorkflowProvisioningRepository implements WorkflowProvisionin
         current.attemptId !== record.attemptId ||
         current.revision !== record.revision ||
         current.status !== "not_started" ||
-        current.branch !== record.branch
+        current.branch !== record.branch ||
+        current.workflowPath !== record.workflowPath ||
+        current.workflowStyle !== record.workflowStyle ||
+        current.actionVersion !== record.actionVersion
       )
         return;
+      if (
+        status === "setup_pr_open" &&
+        !/^[a-f0-9]{40}$/.test(record.pullRequestHeadSha ?? "")
+      )
+        throw new Error("workflow_provisioning_artifact_required");
       await tx.workflowProvisioning.updateMany({
         where: {
           ...provisioningScopeWhere(record),
@@ -104,6 +115,8 @@ export class PrismaWorkflowProvisioningRepository implements WorkflowProvisionin
         data: {
           status,
           revision: { increment: 1 },
+          pullRequestHeadSha:
+            status === "setup_pr_open" ? record.pullRequestHeadSha! : null,
           pullRequestUrl:
             status === "setup_pr_open" ? (record.pullRequestUrl ?? null) : null,
           errorMessage:

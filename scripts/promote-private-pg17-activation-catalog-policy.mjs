@@ -24,10 +24,7 @@ import {
   assertActivationCatalogPolicyPromotionProvenance,
   assertActivationCatalogRawCaptureEvidence,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
-import {
-  canonicalReleaseMigrationArtifact,
-  historicalReleaseMigrationPostCatalogDigest,
-} from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
+import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.ts";
 import { assertActivationCatalogPolicyReviewEvidence } from "../packages/features/release-rollout/src/adapters/activation-catalog-policy-review-evidence.ts";
 import {
   reviewedActivationCatalogCandidatePath,
@@ -86,16 +83,6 @@ export function assertReviewedActivationCatalogPromotionProvenance(value) {
     value,
     reviewedActivationCatalogPromotionExpectation,
   );
-}
-
-async function readPromotionProvenance() {
-  try {
-    return JSON.parse(
-      await readFile(activationCatalogPromotionProvenancePath, "utf8"),
-    );
-  } catch {
-    throw new Error("activation_catalog_policy_promotion_provenance_invalid");
-  }
 }
 
 export async function assertActivationCatalogPolicyIndependentReviewEvidence() {
@@ -419,55 +406,14 @@ async function promoteRawActivationCatalogPolicy(argumentsValue) {
 }
 
 export async function promotePrivatePg17ActivationCatalogPolicy({
-  env = process.env,
   argv = process.argv.slice(2),
 } = {}) {
   const argumentsValue = parseArguments(argv);
   if (argumentsValue.mode === "raw")
     return promoteRawActivationCatalogPolicy(argumentsValue);
 
-  if (activationCatalogRawPromotionTrustRoot.status === "ready")
-    throw new Error("activation_catalog_policy_legacy_promotion_superseded");
-
-  assertActivationCatalogLiveDigestTransitionBinding(
-    reviewedActivationCatalogCandidate.liveCatalogDigest,
-    historicalReleaseMigrationPostCatalogDigest,
-  );
-
-  const optIn = env.REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION;
-  if (optIn !== activationCatalogPromotionOptIn)
-    throw new Error("activation_catalog_policy_promotion_opt_in_required");
-
-  const generated = canonicalActivationCatalogArtifactSource(
-    await readFile(argumentsValue.candidatePath),
-  );
-  await assertActivationCatalogPolicyReviewedSourceBindings();
-  const provenance = await readPromotionProvenance();
-  assertReviewedActivationCatalogPromotionProvenance(provenance);
-  await assertActivationCatalogPolicyIndependentReviewEvidence();
-  const result = {
-    candidatePath: argumentsValue.candidatePath,
-    candidateSha256: reviewedActivationCatalogCandidate.sha256,
-    ...reviewedActivationCatalogCandidate,
-  };
-
-  if (argumentsValue.write) await writeArtifactAtomically(generated);
-  else {
-    let existing;
-    try {
-      existing = await readFile(activationCatalogArtifactPath);
-    } catch {
-      throw new Error("activation_catalog_policy_promotion_artifact_missing");
-    }
-    if (!existing.equals(generated))
-      throw new Error("activation_catalog_policy_promotion_artifact_drift");
-  }
-  return Object.freeze({
-    ...result,
-    artifactPath: activationCatalogArtifactPath,
-    artifactSourceSha256: sha256(generated),
-    mode: argumentsValue.write ? "promoted" : "verified",
-  });
+  // A pending replacement catalog never restores legacy promotion authority.
+  throw new Error("activation_catalog_policy_legacy_promotion_superseded");
 }
 
 if (

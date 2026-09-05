@@ -19,7 +19,10 @@ const envelope = {
       merged: true,
       draft: false,
       base: { ref: "main" },
-      head: { ref: "reviewrouter/setup" },
+      head: {
+        ref: "reviewrouter/setup",
+        sha: initialCandidate.pullRequestHeadSha,
+      },
     },
   },
 } as const;
@@ -79,6 +82,25 @@ describe("setup PR merge webhook", () => {
     ).toMatchObject({ processed: false });
     expect(f.workflowProvisioning.create).not.toHaveBeenCalled();
   });
+  it.each([undefined, "c".repeat(40)])(
+    "rejects a missing or changed PR head: %s",
+    async (sha) => {
+      const f = fixture();
+      expect(
+        await f.handler.handleGitHubPullRequestWebhook({
+          ...envelope,
+          payload: {
+            ...envelope.payload,
+            pull_request: {
+              ...envelope.payload.pull_request,
+              head: { ref: "reviewrouter/setup", ...(sha ? { sha } : {}) },
+            },
+          },
+        }),
+      ).toMatchObject({ processed: false });
+      expect(f.workflowProvisioning.updateMany).not.toHaveBeenCalled();
+    },
+  );
   it("rejects a wrong-base merge and accepts a PR retargeted to the allowed branch", async () => {
     const f = fixture({
       ...initialCandidate,

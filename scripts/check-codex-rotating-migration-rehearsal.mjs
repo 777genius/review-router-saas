@@ -98,6 +98,10 @@ const migration86Name = "000086_comment_token_custody_r18_remediation";
 const migration87Name = "000087_codex_oauth_v4_v5_workflow_reattestation";
 const migration88Name = "000088_codex_oauth_reattestation_mutation_owner_fence";
 const migration89Name = "000089_codex_oauth_v4_v5_staged_compatibility";
+const migration89QuiescenceName =
+  "000089_workflow_provisioning_writer_quiescence";
+const migration90Name = "000090_workflow_provisioning_attempt_authority";
+const migration91Name = "000091_workflow_provisioning_artifact_and_inventory";
 const postgresLockTimeoutFailure = Object.freeze({
   sqlState: "55P03",
   message: "canceling statement due to lock timeout",
@@ -179,6 +183,9 @@ assert(
       migration87Name,
       migration88Name,
       migration89Name,
+      migration89QuiescenceName,
+      migration90Name,
+      migration91Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -380,7 +387,7 @@ try {
       const observation = collectObservation(providerAdmin);
       process.stdout.write(`${JSON.stringify(observation)}\n`);
       process.stderr.write(
-        "Codex rotating PostgreSQL 17 combined 000060 through 000089 rehearsal passed.\n",
+        "Codex rotating PostgreSQL 17 combined 000060 through 000091 rehearsal passed.\n",
       );
     }
   }

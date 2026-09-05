@@ -175,6 +175,7 @@ model RepositoryConnection {
   archived                Boolean               @default(false)
   stargazersCount         Int                   @default(0)
   setupStatus             RepositorySetupStatus @default(not_configured)
+  inventoryGeneration     BigInt                @default(0)
   lastSyncedAt            DateTime?
   createdAt               DateTime              @default(now())
   updatedAt               DateTime              @updatedAt
@@ -2715,6 +2716,7 @@ model WorkflowProvisioning {
   workflowPath   String
   workflowStyle  String                     @default("explicit")
   actionVersion  String
+  pullRequestHeadSha String?
   pullRequestUrl String?
   errorMessage   String?
   createdAt      DateTime                   @default(now())

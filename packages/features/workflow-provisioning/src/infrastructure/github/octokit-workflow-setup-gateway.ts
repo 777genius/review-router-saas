@@ -64,6 +64,31 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       }
     }
 
+    // Bind the intended files to an immutable revision before recording the PR.
+    const { data: writtenRef } = await this.octokit.request(
+      "GET /repos/{owner}/{repo}/git/ref/{ref}",
+      {
+        owner: input.owner,
+        repo: input.repo,
+        ref: `heads/${input.setupBranch}`,
+      },
+    );
+    const headSha = parseGitRefSha(writtenRef);
+    if (!/^[a-f0-9]{40}$/.test(headSha))
+      throw new Error("workflow_provisioning_artifact_invalid");
+    for (const file of input.workflowFiles) {
+      const installed = await this.readWorkflowFile(
+        { ...input, setupBranch: headSha },
+        file.path,
+      );
+      if (
+        file.operation === "delete"
+          ? installed.sha !== null
+          : installed.content !== file.content
+      )
+        throw new Error("workflow_provisioning_artifact_mismatch");
+    }
+
     const pullRequest = await this.getOrCreateSetupPullRequest(
       {
         ...input,
@@ -72,7 +97,10 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       existingOpenPullRequest,
     );
 
+    if (pullRequest.headSha !== headSha)
+      throw new Error("workflow_provisioning_artifact_mismatch");
     return {
+      headSha,
       url: pullRequest.html_url,
       number: pullRequest.number,
       branch: input.setupBranch,
@@ -341,6 +369,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
 }
 
 type GitHubPullRequest = {
+  readonly headSha: string;
   readonly html_url: string;
   readonly number: number;
   readonly mergedAt: string | null;
@@ -433,6 +462,7 @@ function parsePullRequest(data: unknown): GitHubPullRequest {
     readonly html_url?: unknown;
     readonly number?: unknown;
     readonly merged_at?: unknown;
+    readonly head?: { readonly sha?: unknown };
   };
   if (
     typeof pullRequest.html_url !== "string" ||
@@ -441,6 +471,8 @@ function parsePullRequest(data: unknown): GitHubPullRequest {
     throw new Error("github_pull_request_response_invalid");
   }
   return {
+    headSha:
+      typeof pullRequest.head?.sha === "string" ? pullRequest.head.sha : "",
     html_url: pullRequest.html_url,
     number: pullRequest.number,
     mergedAt:

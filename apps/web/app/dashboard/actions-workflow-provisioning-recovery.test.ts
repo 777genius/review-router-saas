@@ -76,6 +76,7 @@ describe("dashboard setup PR recovery", () => {
     mocks.inspectSetupPullRequest.mockResolvedValue({
       status: "merged",
       baseBranch: "main",
+      headSha: "b".repeat(40),
     });
     mocks.activateConfirmedCodexNamespaceAfterWorkflowMerge.mockResolvedValue(
       undefined,
@@ -113,6 +114,7 @@ describe("dashboard setup PR recovery", () => {
           revision: 1,
           branch: "reviewrouter/setup",
           pullRequestUrl: "https://github.com/acme/widget/pull/7",
+          pullRequestHeadSha: "b".repeat(40),
         },
       ],
     }));
@@ -127,6 +129,7 @@ describe("dashboard setup PR recovery", () => {
         status: provisioningStatus,
         branch: "reviewrouter/setup",
         pullRequestUrl: "https://github.com/acme/widget/pull/7",
+        pullRequestHeadSha: "b".repeat(40),
         errorMessage:
           provisioningStatus === "failed" ? "setup_pr_closed" : null,
       })),
@@ -180,6 +183,7 @@ describe("dashboard setup PR recovery", () => {
               revision: true,
               branch: true,
               pullRequestUrl: true,
+              pullRequestHeadSha: true,
             },
           },
         }),

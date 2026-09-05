@@ -56,7 +56,7 @@ export async function provisionReviewRouterWorkflow(
       workspaceId: plan.workspaceId,
       repositoryId: plan.repositoryId,
       status: "failed",
-      branch: plan.setupBranch,
+      branch: attempt.branch,
       workflowPath: plan.workflowPath,
       workflowStyle: plan.workflowStyle,
       actionVersion: plan.actionRef,
@@ -131,7 +131,7 @@ export async function provisionReviewRouterWorkflow(
         owner: plan.owner,
         repo: plan.name,
         baseBranch: plan.defaultBranch,
-        setupBranch: plan.setupBranch,
+        setupBranch: attempt.branch,
         workflowFiles,
       });
 
@@ -145,6 +145,7 @@ export async function provisionReviewRouterWorkflow(
       workflowStyle: plan.workflowStyle,
       actionVersion: plan.actionRef,
       pullRequestUrl: pullRequest.url,
+      pullRequestHeadSha: pullRequest.headSha,
       errorMessage: null,
     });
     if (dependencies.auditLog) {
@@ -176,7 +177,7 @@ export async function provisionReviewRouterWorkflow(
       workspaceId: plan.workspaceId,
       repositoryId: plan.repositoryId,
       status: "failed",
-      branch: plan.setupBranch,
+      branch: attempt.branch,
       workflowPath: plan.workflowPath,
       workflowStyle: plan.workflowStyle,
       actionVersion: plan.actionRef,
@@ -192,7 +193,7 @@ export async function provisionReviewRouterWorkflow(
           targetType: "repository",
           targetId: plan.repositoryId,
           metadata: {
-            branch: plan.setupBranch,
+            branch: attempt.branch,
             workflowPath: plan.workflowPath,
             workflowStyle: plan.workflowStyle,
             actionVersion: plan.actionRef,

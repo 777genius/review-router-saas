@@ -48,6 +48,7 @@ export class PrismaSetupPullRequestMergeHandler {
       workspaceId: repository.workspaceId,
       installationId: repository.installationId,
       baseBranch: payload.pull_request.base.ref,
+      headSha: payload.pull_request.head.sha ?? null,
       setupBranch,
       pullRequestNumber,
     });

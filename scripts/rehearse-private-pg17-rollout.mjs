@@ -297,6 +297,9 @@ const preReleaseMigrationBoundary = Object.freeze({
     "000087_codex_oauth_v4_v5_workflow_reattestation",
     "000088_codex_oauth_reattestation_mutation_owner_fence",
     "000089_codex_oauth_v4_v5_staged_compatibility",
+    "000089_workflow_provisioning_writer_quiescence",
+    "000090_workflow_provisioning_attempt_authority",
+    "000091_workflow_provisioning_artifact_and_inventory",
   ]),
   retained: Object.freeze([
     "000067_review_live_progress",
