@@ -5920,9 +5920,9 @@ describe("existing release topology authority", () => {
     (defect) => {
       const root = mkdtempSync(join(tmpdir(), "recovery-trusted-receipt-"));
       try {
-        const sha = spawnSync("git", ["rev-parse", "HEAD"], {
-          encoding: "utf8",
-        }).stdout.trim();
+        const source = join(root, "source");
+        mkdirSync(source);
+        const { head: sha } = topologySourceFixture(source);
         const manifest = {
           recoveryRunId: "123",
           targetVersion: 17,
@@ -6027,6 +6027,7 @@ globalThis.fetch=async url => {
 ${program}`,
           ],
           {
+            cwd: source,
             encoding: "utf8",
             env: {
               ...subprocessEnv,
@@ -7052,58 +7053,171 @@ function topologyDispatchIdentity(sha: string) {
   };
 }
 
-// Real git ancestry and source bytes, with the actual checked-in parent workflow
-// (three jobs, recovery skipped for registration). No fabricated recovery at 421.
-// Only HTTP is stubbed; any unanticipated endpoint rejects without networking.
+// The verifier needs the old three-job contract and an exact historical blob,
+// not the old workflow's provider scripts or the producer's private Git objects.
+// Keep that contract here, and bind only the two immutable boundary literals in
+// a disposable copy of the tracked journal to real deterministic fixture Git.
+// The verifier, ancestry checks, source hashes and receipt checks stay intact.
+const topologyHistoricalWorkflow = `name: Offline historical registration contract
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+        type: string
+jobs:
+  trust-bootstrap:
+    name: Verify protected main dispatch
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
+  recover:
+    name: Complete restored PG17 cutover
+    if: \${{ inputs.confirmation == 'RECOVER_EXISTING_PG17' }}
+    needs: trust-bootstrap
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
+  register-release:
+    name: Register verified Review Action release
+    if: \${{ inputs.confirmation == 'REGISTER_VERIFIED_REVIEW_ACTION_RELEASE' }}
+    needs: trust-bootstrap
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
+`;
+
 function topologySourceFixture(work: string) {
+  const gitEnv = Object.fromEntries(
+    Object.entries(subprocessEnv).filter(([key]) => !key.startsWith("GIT_")),
+  );
   const git = (...args: string[]) => {
     const result = spawnSync("git", args, {
       cwd: work,
       encoding: "utf8",
       env: {
-        ...subprocessEnv,
+        ...gitEnv,
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_NOSYSTEM: "1",
         GIT_AUTHOR_NAME: "Offline fixture",
         GIT_AUTHOR_EMAIL: "fixture@example.invalid",
         GIT_COMMITTER_NAME: "Offline fixture",
         GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+        GIT_AUTHOR_DATE: "2026-09-05T00:00:00Z",
+        GIT_COMMITTER_DATE: "2026-09-05T00:00:00Z",
       },
     });
     if (result.status !== 0) throw new Error(result.stderr);
     return result.stdout.trim();
   };
-  git("init", "--quiet");
-  const objects = spawnSync(
-    "git",
-    ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
-    { encoding: "utf8" },
-  ).stdout.trim();
-  writeFileSync(join(work, ".git/objects/info/alternates"), objects + "\n");
-  const base = "14f8e5668cafc271c406d8eebf0446ae21a8dbad";
-  git("read-tree", base);
+  git(
+    "init",
+    "--quiet",
+    "--template=",
+    "--initial-branch=main",
+    "--object-format=sha1",
+  );
+  const path = ".github/workflows/codex-rotating-release-migration.yml";
+  mkdirSync(join(work, ".github/workflows"), { recursive: true });
+  writeFileSync(join(work, path), topologyHistoricalWorkflow);
+  git("add", path);
+  const tree = git("write-tree");
+  const prior = git(
+    "commit-tree",
+    tree,
+    "-m",
+    "test: before bootstrap boundary",
+  );
+  const older = git(
+    "commit-tree",
+    tree,
+    "-p",
+    prior,
+    "-m",
+    "test: older registration",
+  );
+  const parent = git(
+    "commit-tree",
+    tree,
+    "-p",
+    prior,
+    "-p",
+    older,
+    "-m",
+    "test: protected bootstrap boundary",
+  );
+  const boundary = {
+    headSha: parent,
+    workflowBlob: git("rev-parse", `${parent}:${path}`),
+  };
+  const journalPath = "scripts/render-recovery-journal.mjs";
+  const journal = readFileSync(journalPath, "utf8");
+  const productionBoundary = `export const recoveryBootstrapBoundary = Object.freeze({
+  headSha: "${recoveryBootstrapBoundary.headSha}",
+  workflowBlob: "${recoveryBootstrapBoundary.workflowBlob}",
+});`;
+  expect(journal.split(productionBoundary)).toHaveLength(2);
+  const fixtureBoundary = `export const recoveryBootstrapBoundary = Object.freeze({
+  headSha: "${boundary.headSha}",
+  workflowBlob: "${boundary.workflowBlob}",
+});`;
+  const fixtureJournal = journal.replace(productionBoundary, fixtureBoundary);
+  expect(fixtureJournal.replace(fixtureBoundary, productionBoundary)).toBe(
+    journal,
+  );
   for (const file of [
-    "scripts/render-recovery-journal.mjs",
+    journalPath,
     "scripts/lib/github-actions-trusted-evidence.mjs",
-    ".github/workflows/codex-rotating-release-migration.yml",
+    path,
   ]) {
     mkdirSync(join(work, file.slice(0, file.lastIndexOf("/"))), {
       recursive: true,
     });
-    writeFileSync(join(work, file), readFileSync(file));
+    writeFileSync(
+      join(work, file),
+      file === journalPath ? fixtureJournal : readFileSync(file),
+    );
     git("add", file);
   }
   const head = git(
     "commit-tree",
     git("write-tree"),
     "-p",
-    base,
+    parent,
     "-m",
     "test: exact offline bootstrap source",
   );
   git("update-ref", "HEAD", head);
-  return { head, git };
+  return { head, parent, boundary, git };
 }
 
-describe("protected main first recovery bootstrap with real historical workflow", () => {
+describe("protected main first recovery bootstrap with deterministic historical contract", () => {
+  it("reproduces the same complete source history without an external object store", () => {
+    const root = mkdtempSync(join(tmpdir(), "recovery-source-determinism-"));
+    try {
+      const fixtures = ["first", "second"].map((name) => {
+        const work = join(root, name);
+        mkdirSync(work);
+        const fixture = topologySourceFixture(work);
+        expect(existsSync(join(work, ".git/objects/info/alternates"))).toBe(
+          false,
+        );
+        expect(fixture.git("fsck", "--full", "--no-dangling")).toBe("");
+        expect(fixture.git("rev-list", "--count", fixture.head)).toBe("4");
+        return fixture;
+      });
+      expect(fixtures[0]!.head).toBe(fixtures[1]!.head);
+      expect(fixtures[0]!.boundary).toEqual(fixtures[1]!.boundary);
+      // These production trust roots are not changed to accommodate a fixture.
+      expect(recoveryBootstrapBoundary).toEqual({
+        headSha: "42134d9b8c263915340f910786b6826824bf30b5",
+        workflowBlob: "351255c5592d58460f3c58b1bf38ff87428a0d11",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     "no_history",
     "parent_registration",
@@ -7176,8 +7290,7 @@ describe("protected main first recovery bootstrap with real historical workflow"
   ])("authenticates source/receipt without fallback: %s", (defect) => {
     const work = mkdtempSync(join(tmpdir(), "recovery-source-bootstrap-"));
     try {
-      const { head, git } = topologySourceFixture(work);
-      const parent = recoveryBootstrapBoundary.headSha;
+      const { head, parent, boundary, git } = topologySourceFixture(work);
       const path = ".github/workflows/codex-rotating-release-migration.yml";
       const historicalWorkflow = git("show", `${parent}:${path}`);
       const historicalJobs = [
@@ -7191,9 +7304,7 @@ describe("protected main first recovery bootstrap with real historical workflow"
       expect(historicalWorkflow).not.toContain(
         "Verify exact recovery release evidence",
       );
-      expect(git("rev-parse", `${parent}:${path}`)).toBe(
-        recoveryBootstrapBoundary.workflowBlob,
-      );
+      expect(git("rev-parse", `${parent}:${path}`)).toBe(boundary.workflowBlob);
       const candidateJobs = [...workflow.matchAll(/^ {4}name: (.+)$/gmu)].map(
         (match) => match[1]!,
       );
@@ -7262,7 +7373,7 @@ describe("protected main first recovery bootstrap with real historical workflow"
       if (defect === "older_registration") {
         const older = git("rev-parse", `${parent}^2`);
         expect(git("rev-parse", `${older}:${path}`)).toBe(
-          recoveryBootstrapBoundary.workflowBlob,
+          boundary.workflowBlob,
         );
         runs = [run(123, parent)];
         runs[0]!.head_sha = older;
@@ -7778,6 +7889,19 @@ printf converted > "$work/converted"
 });
 
 describe("PR247 durable registration deployment restart", () => {
+  const startupStart = registerRelease.indexOf(
+    '\n          assert_recovery_nonterminal reference > "$work/recovery-resume-state.json"',
+  );
+  const startupEnd = registerRelease.indexOf(
+    "          # Reacquire admin connectivity",
+    startupStart,
+  );
+  expect(startupStart).toBeGreaterThan(0);
+  expect(startupEnd).toBeGreaterThan(startupStart);
+  // Include compact scope/binding admission and cleanup arming before expansion.
+  const startup = registerRelease
+    .slice(startupStart, startupEnd)
+    .replace(/^ {10}/gmu, "");
   const creationStart = registerRelease.indexOf("          deploys='[]'");
   const creationEnd = registerRelease.indexOf(
     "          deadline=$((SECONDS + 900))",
@@ -7823,8 +7947,9 @@ assert_recovery_fleet_identity() { :; }
 render_api() {
   if [[ "$*" == *connection-info* ]]; then printf '{"externalConnectionString":"postgresql://fixture@db.invalid/recovery"}'
   elif [[ " $* " == *" -X PATCH "* ]]; then
-    if [[ "$*" == *'"ipAllowList":[]'* ]]; then touch "$remote/firewall-closed"
-    else printf 'open\\n' >> "$remote/connectivity"; rm -f "$remote/firewall-closed"; fi
+    if [[ "$*" == *'"ipAllowList":[]'* ]]; then
+      printf 'close\\n' >> "$remote/events"; touch "$remote/firewall-closed"
+    else printf 'open\\n' >> "$remote/events"; printf 'open\\n' >> "$remote/connectivity"; rm -f "$remote/firewall-closed"; fi
   elif [[ "$*" == *postgres/dpg-target* ]]; then
     [[ -f "$remote/firewall-closed" ]] || return 98
     printf '{"id":"dpg-target","ipAllowList":[]}'
@@ -7844,9 +7969,11 @@ render_inventory_api() {
   done
   id="\${url#*services/}"; id="\${id%%/*}"
   if [[ " $* " == *" -X PUT "* ]]; then
+    printf 'persist:%s\\n' "$id" >> "$remote/events"
     jq -r '.value' "$payload" > "$remote/$id.journal.json"
     if [[ "$crash" == torn_intent && "$id" == srv-api ]] && jq -e '(.journal // .).services.api.phase == "deploy_intent"' "$remote/$id.journal.json" >/dev/null; then kill -KILL "$$"; fi
   else
+    printf 'reference:%s\\n' "$id" >> "$remote/events"
     if [[ -f "$remote/$id.journal.json" ]]; then
       jq -nc --arg key "$recovery_phase_key" --rawfile value "$remote/$id.journal.json" --arg defect "$defect" '[{key:"REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON",value:"[]"},{key:"FIXTURE",value:(if $defect == "config" then "drift" else "stable" end)},{key:$key,value:$value}]'
     else printf '[{"key":"REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON","value":"[]"},{"key":"FIXTURE","value":"stable"}]'; fi
@@ -7854,6 +7981,7 @@ render_inventory_api() {
 }
 fetch_registration_deployment_inventory() {
   local id="$1" role="\${1#srv-}" created=""
+  printf 'history:%s\\n' "$id" >> "$remote/events"
   if [[ -f "$remote/$id.created" ]]; then created="$(cat "$remote/$id.created")"; fi
   jq -nc --arg role "$role" --arg sha "$RELEASE_COMMIT_SHA" --arg created "$created" --arg defect "$defect" '
     [{id:("dep-old-"+$role),status:"live",commitId:$sha,createdAt:"2026-09-05T00:00:00Z"}]
@@ -7869,6 +7997,7 @@ render_deploy_mutation() {
   local arg url="" id
   for arg in "$@"; do [[ "$arg" != https:* ]] || url="$arg"; done
   id="$(basename "$(dirname "$url")")"
+  printf 'post:%s\\n' "$id" >> "$remote/events"
   printf '%s\\n' "$id" >> "$remote/posts"
   [[ ! -f "$remote/$id.created" ]] || return 99
   date -u +%Y-%m-%dT%H:%M:%SZ > "$remote/$id.created"
@@ -7879,8 +8008,7 @@ render_deploy_mutation() {
 }
 ${helpers}
 trap cleanup EXIT
-${registerRelease.slice(registerRelease.indexOf('          assert_recovery_nonterminal > "$work/recovery-resume-state.json"'), registerRelease.indexOf("          initialize_registration_journal\n")).replace(/^ {10}/gmu, "")}
-initialize_registration_journal
+${startup}
 ${registerRelease.slice(registerRelease.indexOf('          runner_ip="$(curl --fail'), registerRelease.indexOf("          # A retained deployment configuration")).replace(/^ {10}/gmu, "")}
 jq -nc --arg sha "$ACTION_COMMIT_SHA" '{actionCommitSha:$sha,releaseStatus:"created",producerReleaseId:"fixture"}' > "$work/registration-result.json"
 printf '[{"key":"REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON","value":"[]"}]' > "$work/registration-owned-env.json"
@@ -7991,13 +8119,95 @@ close_firewall
         );
         expect(lost.signal, lost.stderr).toBe("SIGKILL");
         rmSync(first, { recursive: true });
+        const journals = recoveryRoles.map((role) =>
+          readFileSync(join(remote, `srv-${role}.journal.json`), "utf8"),
+        );
+        writeFileSync(join(remote, "events"), "");
         const resumed = run(second, remote, "", defect);
         expect(resumed.status, resumed.stderr).not.toBe(0);
-        expect(existsSync(join(remote, "firewall-closed"))).toBe(true);
+        expect(
+          existsSync(join(remote, "firewall-closed")),
+          resumed.stderr,
+        ).toBe(true);
+        const events = readFileSync(join(remote, "events"), "utf8")
+          .trim()
+          .split("\n");
+        expect(events.slice(0, 3)).toEqual(
+          recoveryRoles.map((role) => `reference:srv-${role}`),
+        );
+        expect(events.at(-1)).toBe("close");
+        expect(events.some((event) => event.startsWith("post:"))).toBe(false);
+        if (defect !== "missing") {
+          // Scope is admitted, but expansion/configuration rejects before a
+          // replacement runner may initialize journals or reopen connectivity.
+          expect(events.some((event) => /^(open|persist:)/u.test(event))).toBe(
+            false,
+          );
+          expect(
+            recoveryRoles.map((role) =>
+              readFileSync(join(remote, `srv-${role}.journal.json`), "utf8"),
+            ),
+          ).toEqual(journals);
+        }
+        // Missing deployment visibility permits bounded observation after
+        // reconnecting; it still cannot authorize another deployment POST.
+        expect(readFileSync(join(remote, "connectivity"), "utf8")).toBe(
+          defect === "missing" ? "open\nopen\n" : "open\n",
+        );
         if (defect === "torn_intent")
           expect(existsSync(join(remote, "posts"))).toBe(false);
         else
           expect(readFileSync(join(remote, "posts"), "utf8")).toBe("srv-api\n");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["foreign_scope", "binding_mismatch", "malformed"])(
+    "rejects restart authority before provider effects with %s",
+    (defect) => {
+      const root = mkdtempSync(join(tmpdir(), "pr247-registration-scope-"));
+      try {
+        const first = join(root, "first"),
+          second = join(root, "second"),
+          remote = join(root, "remote");
+        for (const path of [first, second, remote]) mkdirSync(path);
+        const lost = run(first, remote, "srv-api");
+        expect(lost.signal, lost.stderr).toBe("SIGKILL");
+        rmSync(first, { recursive: true });
+        const path = join(remote, "srv-worker.journal.json");
+        const replica = JSON.parse(readFileSync(path, "utf8"));
+        if (defect === "foreign_scope")
+          replica.journal.tuple.targetDbId = "dpg-foreign";
+        if (defect === "binding_mismatch") {
+          replica.journal.registration.actionCommitSha = "e".repeat(40);
+          replica.journal.registrationResult.actionCommitSha = "e".repeat(40);
+        }
+        if (defect === "malformed") replica.journal.tuple.services.api.id = "";
+        writeFileSync(path, JSON.stringify(replica));
+        writeFileSync(join(remote, "events"), "");
+        const resumed = run(second, remote, "");
+        expect(resumed.status, resumed.stderr).not.toBe(0);
+        expect(resumed.stderr).toContain(
+          defect === "foreign_scope"
+            ? "recovery_journal_tuple_mismatch"
+            : defect === "binding_mismatch"
+              ? "recovery_registration_binding_mismatch"
+              : "recovery_tuple_service_id",
+        );
+        expect(existsSync(join(remote, "firewall-closed"))).toBe(false);
+        const events = readFileSync(join(remote, "events"), "utf8")
+          .trim()
+          .split("\n");
+        expect(
+          events.every((event) => event.startsWith("reference:")),
+          resumed.stderr,
+        ).toBe(true);
+        expect(readFileSync(join(remote, "connectivity"), "utf8")).toBe(
+          "open\n",
+        );
+        expect(readFileSync(join(remote, "posts"), "utf8")).toBe("srv-api\n");
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
