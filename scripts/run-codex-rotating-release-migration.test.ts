@@ -10,6 +10,7 @@ import { sha256Canonical } from "../packages/features/release-rollout/src/domain
 import {
   adaptGuardedMigrationForSchemaOwner,
   activationAuthorityProvisioningSql,
+  activationMigrationExclusionSql,
   atomicMigrationAndGrantSql,
   activationPrincipalRoleCapabilityMatrix,
   assertCanonicalRoleTopology,
@@ -2211,5 +2212,18 @@ describe("canonical exclusive release migration caller", () => {
       expect(JSON.stringify(error)).not.toContain(credential);
       expect(String(error).length).toBeLessThan(768);
     }
+  });
+});
+
+describe("exported activation/migration exclusion", () => {
+  it("keeps the existing SQL and canonical authority lock unchanged", () => {
+    expect(activationMigrationExclusionSql).toBe(
+      "SET LOCAL lock_timeout = '5000ms';\n" +
+        "SET LOCAL statement_timeout = '120000ms';\n" +
+        "SELECT pg_advisory_xact_lock(1381126735, 1129271120);",
+    );
+    expect(activationAuthorityProvisioningSql()).toContain(
+      `BEGIN;\n${activationMigrationExclusionSql}\n`,
+    );
   });
 });
