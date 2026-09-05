@@ -1,9 +1,10 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { stripAtomicMigrationEnvelope } from "../run-codex-rotating-release-migration.mjs";
 import {
   readRenderSchemaHandoffCatalog,
   readReviewedRenderManagedContract,
+  renderSchemaHandoffCheckoutExtension,
 } from "./render-schema-handoff-policy.mjs";
 import {
   renderSchemaHandoffDependencySql,
@@ -41,6 +42,43 @@ const input = () => ({
 });
 
 describe("bounded managed89-to92 transaction construction", () => {
+  it("keeps the reader-to-builder boundary at92 for either complete checkout", () => {
+    expect([92, 95]).toContain(
+      readdirSync("packages/platform/db/prisma/migrations").length,
+    );
+    expect(catalog).toHaveLength(92);
+    const sql = renderSchemaHandoffTransaction(input());
+    expect(sql).toContain(
+      "(SELECT count(*) FROM public._prisma_migrations) <> 92",
+    );
+    expect(
+      sql.match(/^INSERT INTO public\._prisma_migrations/gmu),
+    ).toHaveLength(3);
+    const terminal = sql.slice(
+      sql.indexOf("WITH expected(name,checksum) AS (VALUES "),
+    );
+    for (const row of catalog)
+      expect(terminal).toContain(`('${row.migrationName}','${row.checksum}')`);
+    for (const row of renderSchemaHandoffCheckoutExtension) {
+      expect(sql).not.toContain(row.migrationName);
+      expect(sql).not.toContain(row.checksum);
+    }
+    const extensionLedger = renderSchemaHandoffCheckoutExtension.map(
+      (row: { migrationName: string; checksum: string }, index: number) => ({
+        ...ledger(1)[0]!,
+        ...row,
+        id: `00000000-0000-0000-0000-${String(93 + index).padStart(12, "0")}`,
+      }),
+    );
+    for (const count of [1, 2, 3])
+      expect(() =>
+        renderSchemaHandoffTransaction({
+          ...input(),
+          ledger: [...ledger(92), ...extensionLedger.slice(0, count)],
+        }),
+      ).toThrow("managed_ledger_count");
+  });
+
   it("keeps all three fixed migration bodies and ledger changes inside one uncommitted transaction", () => {
     const sql = renderSchemaHandoffTransaction(input());
     expect(sql.match(/^BEGIN;$/gmu)).toHaveLength(1);

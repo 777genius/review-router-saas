@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { canonicalPrismaMigrationNames } from "./canonical-prisma-migration-catalog.mjs";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
 
 // Source and ledger evidence only. These invariants do not authorize a managed
 // production baseline, database identity, workflow execution, or runtime entry.
@@ -94,24 +93,98 @@ export function assertRenderSchemaHandoffCatalog(catalog) {
     fail("migration_catalog");
 }
 
-// Hash current bytes against fixed reviewed source identities. A caller cannot
-// nominate a new manifest by passing an observed database snapshot.
+// Checkout admission only: these PR244 files never enter managed SQL or ledger
+// bounds. Full names matter, including the two distinct 000089 directories.
+export const renderSchemaHandoffCheckoutExtension = Object.freeze([
+  Object.freeze({
+    migrationName: "000089_workflow_provisioning_writer_quiescence",
+    checksum:
+      "92496088bff5e074c19a74a5a9dacdc38cb8794fac0abec605121eb3b61b29f8",
+  }),
+  Object.freeze({
+    migrationName: "000090_workflow_provisioning_attempt_authority",
+    checksum:
+      "ca3fbbdc19b72ac75c0b31a5ddae887028191ec8c333b769853fc88f2cf37a49",
+  }),
+  Object.freeze({
+    migrationName: "000091_workflow_provisioning_artifact_and_inventory",
+    checksum:
+      "086a7e2a38e1c3fa67ba44edcdac198af46327fd380eaeb2d13849ac6d22a562",
+  }),
+]);
+
+export function partitionRenderSchemaHandoffCheckout(catalog) {
+  if (
+    !Array.isArray(catalog) ||
+    catalog.some(
+      (row, i) =>
+        !row ||
+        !/^\d{6}_[a-z0-9_]+$/u.test(row.migrationName) ||
+        !/^[a-f0-9]{64}$/u.test(row.checksum) ||
+        (i > 0 && row.migrationName <= catalog[i - 1].migrationName),
+    )
+  )
+    fail("checkout_catalog");
+  const managed = [];
+  let extensions = 0;
+  for (const row of catalog) {
+    const extension = renderSchemaHandoffCheckoutExtension.find(
+      (entry) => entry.migrationName === row.migrationName,
+    );
+    if (!extension) managed.push(row);
+    else {
+      if (row.checksum !== extension.checksum) fail("checkout_extension");
+      extensions++;
+    }
+  }
+  if (extensions !== 0 && extensions !== 3) fail("checkout_extension");
+  if (
+    extensions === 3 &&
+    manifest(catalog) !==
+      "sha256:6c62ac869a47211043f8fffdd7af105cb6bd677b65462033195d41e7d7aafa2e"
+  )
+    fail("checkout_manifest");
+  assertRenderSchemaHandoffCatalog(managed);
+  return Object.freeze(managed);
+}
+
+// Inspect every directory entry on every read. The shared canonical scanner
+// deliberately filters names and caches its inventory; managed admission must
+// reject hidden additions without changing that separate canonical contract.
 export function readRenderSchemaHandoffCatalog() {
-  const catalog = canonicalPrismaMigrationNames.map((migrationName) =>
-    Object.freeze({
-      migrationName,
-      checksum: sha256(
-        readFileSync(
-          new URL(
-            `../../packages/platform/db/prisma/migrations/${migrationName}/migration.sql`,
-            import.meta.url,
-          ),
-        ),
-      ),
-    }),
+  const directory = new URL(
+    "../../packages/platform/db/prisma/migrations/",
+    import.meta.url,
   );
-  assertRenderSchemaHandoffCatalog(catalog);
-  return Object.freeze(catalog);
+  let catalog;
+  try {
+    const entries = readdirSync(directory, { withFileTypes: true });
+    if (
+      entries.some(
+        (entry) =>
+          !entry.isDirectory() || !/^\d{6}_[a-z0-9_]+$/u.test(entry.name),
+      )
+    )
+      fail("checkout_inventory");
+    catalog = entries.map(({ name: migrationName }) => {
+      const sql = new URL(`${migrationName}/migration.sql`, directory);
+      if (!lstatSync(sql).isFile()) fail("checkout_inventory");
+      return Object.freeze({
+        migrationName,
+        checksum: sha256(readFileSync(sql)),
+      });
+    });
+  } catch {
+    fail("checkout_inventory");
+  }
+  catalog.sort((a, b) =>
+    a.migrationName < b.migrationName
+      ? -1
+      : a.migrationName > b.migrationName
+        ? 1
+        : 0,
+  );
+  return partitionRenderSchemaHandoffCheckout(catalog);
 }
 
 export function assertRenderSchemaHandoffLedger(catalog, ledger, phase) {
