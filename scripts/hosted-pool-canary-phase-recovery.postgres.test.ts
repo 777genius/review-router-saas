@@ -66,7 +66,7 @@ describe.skipIf(!url)(
       throw new Error("provider_control_forbidden_in_pg_test");
     });
     const control = createRenderHostedPoolControlPort({
-      apiKey: "disposable-not-a-key",
+      apiKey: "test-fixture-literal",
       serviceIds: ["unused-api", "unused-web"],
       databaseUrl: url ?? "postgresql://unused@127.0.0.1:1/unused",
       fetchImpl: renderFetch,
@@ -377,7 +377,7 @@ describe.skipIf(!url)(
       });
       const runtime = {
         ensureFreshSession: async () => ({
-          accessToken: "disposable-token",
+          accessToken: "fixture-fixture-literal",
           chatgptAccountId: "disposable-account",
           credentialGeneration: 1,
         }),
