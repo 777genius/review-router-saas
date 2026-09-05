@@ -8,6 +8,8 @@ import {
   renderCanonicalCodexRotatingInteractionWorkflowV3,
   defaultInteractionWorkflowPath,
   hostedPoolWorkflowSemanticSha256,
+  workflowDocumentSemanticSha256,
+  renderReviewRouterReusableWorkflow,
   renderCanonicalHostedPoolWorkflowV2,
 } from "@reviewrouter/features-workflow-provisioning";
 import {
@@ -24,18 +26,28 @@ const mocks = vi.hoisted(() => ({
   activateCodex: vi.fn(),
   switchConfiguration: vi.fn(),
   setRepositorySource: vi.fn(),
+  ledgerActivate: vi.fn(),
+  activeAttestation: vi.fn(),
+  validateActive: vi.fn(),
+  persistReplacement: vi.fn(),
 }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("next/navigation", () => ({ redirect: vi.fn() }));
 vi.mock("../../src/server/hosted-pool-dashboard", () => ({}));
-vi.mock("../../src/server/prisma", () => ({ getPrisma: mocks.getPrisma }));
+vi.mock("../../src/server/prisma", () => ({
+  getPrisma: mocks.getPrisma,
+  getCodexEffectAuthorityPrisma: mocks.getPrisma,
+}));
 vi.mock("@reviewrouter/features-review-config", async (original) => ({
   ...(await original<typeof import("@reviewrouter/features-review-config")>()),
   resolveReviewRuntimeEnv: mocks.runtime,
 }));
 vi.mock("@reviewrouter/features-provider-setup", async (original) => ({
   ...(await original<typeof import("@reviewrouter/features-provider-setup")>()),
-  inspectCodexRotatingWorkflowNamespace: mocks.namespace,
+  inspectCodexRotatingWorkflowNamespace: mocks.namespace.mockImplementation(
+    (await original<typeof import("@reviewrouter/features-provider-setup")>())
+      .inspectCodexRotatingWorkflowNamespace,
+  ),
 }));
 vi.mock("@reviewrouter/features-audit-log", () => ({
   recordAuditEvent: mocks.audit,
@@ -53,20 +65,149 @@ vi.mock("../../src/server/dashboard-mutations", () => ({
   createGitHubAppInstallationOctokit: mocks.createOctokit,
   dashboardMutationAccessAuditMetadata: () => ({}),
 }));
-vi.mock("../../src/server/codex-rotating-workflow-activation", () => ({
-  activateConfirmedCodexNamespaceAfterWorkflowMerge: mocks.activateCodex,
+vi.mock(
+  "../../src/server/codex-rotating-workflow-activation",
+  async (original) => {
+    const actual =
+      await original<
+        typeof import("../../src/server/codex-rotating-workflow-activation")
+      >();
+    mocks.activateCodex.mockImplementation(
+      actual.activateConfirmedCodexNamespaceAfterWorkflowMerge,
+    );
+    return {
+      ...actual,
+      activateConfirmedCodexNamespaceAfterWorkflowMerge: mocks.activateCodex,
+    };
+  },
+);
+// Run the production ledger/use cases; stop at the namespace persistence port.
+// Generation and provider-transaction qualification belong to the downstream DB lane.
+vi.mock("../../src/server/prisma-codex-rotating-setup-payload-claim", () => ({
+  PrismaCodexRotatingSetupPayloadClaim: class {
+    activate = mocks.ledgerActivate;
+    readActiveWorkflowAttestation = mocks.activeAttestation;
+    validateActiveWorkflowSource = mocks.validateActive;
+    replaceActiveWorkflowSource = mocks.persistReplacement;
+  },
 }));
-// Observe the real hosted verifier/activation adapter at its first effect.
-// Account/configuration internals and all transport remain disposable fakes.
-vi.mock("../../src/server/prisma-hosted-pool-mutations", () => ({
-  switchRepositoryConfigurationAuthMode: mocks.switchConfiguration,
-  createPrismaHostedPoolDashboardMutationPort: () => ({
-    setRepositorySource: mocks.setRepositorySource,
-  }),
-}));
+// Extract the unchanged production source-switch chain without constructing
+// account, credential or KMS adapters. Only that construction boundary is fake;
+// the dashboard method, use case, Prisma adapters and configuration writes run.
+vi.mock("../../src/server/prisma-hosted-pool-mutations", async () => {
+  const { readFileSync } = await import("node:fs");
+  const ts = await import("typescript");
+  const configuration = await import("@reviewrouter/features-review-config");
+  const identifiers =
+    await import("../../../../packages/features/hosted-account-pool/src/domain/identifiers");
+  const useCase =
+    await import("../../../../packages/features/hosted-account-pool/src/application/use-cases/switch-repository-auth-mode");
+  function evaluate(
+    source: string,
+    dependencies: Record<string, unknown>,
+    names: string[],
+  ) {
+    const parsed = ts.createSourceFile(
+      "production.ts",
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const declarations = parsed.statements
+      .filter(
+        (statement) =>
+          (ts.isFunctionDeclaration(statement) ||
+            ts.isClassDeclaration(statement)) &&
+          statement.name &&
+          names.includes(statement.name.getText(parsed)),
+      )
+      .map((statement) => statement.getText(parsed))
+      .join("\n");
+    const js = ts.transpileModule(declarations, {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+      },
+    }).outputText;
+    const exports = {};
+    return new Function(
+      "exports",
+      ...Object.keys(dependencies),
+      js + `\nreturn { ${names.join(", ")} };`,
+    )(exports, ...Object.values(dependencies));
+  }
+  const adapters = evaluate(
+    readFileSync(
+      new URL(
+        "../../../../packages/features/hosted-account-pool/src/infrastructure/prisma/prisma-hosted-account-pool-adapters.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    identifiers,
+    [
+      "PrismaHostedPoolBindingRepository",
+      "PrismaRepositoryAuthModeSwitch",
+      "isEligibleRepository",
+      "restoreBinding",
+      "bindingStatus",
+      "toSafeNumber",
+      "ConfigurationAuthorityRejectedError",
+      "isPrismaErrorCode",
+    ],
+  );
+  const source = readFileSync(
+    new URL(
+      "../../src/server/prisma-hosted-pool-mutations.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const start = source.indexOf("  const createAdapters = () => {");
+  const end = source.indexOf("\n\n  return {", start);
+  if (start < 0 || end < 0)
+    throw new Error("production_factory_boundary_missing");
+  const real = evaluate(
+    source.slice(0, start) +
+      "  const createAdapters = () => constructAdapters(input.prisma, createRepositoryConfigurationAuthority());" +
+      source.slice(end),
+    {
+      ...configuration,
+      ...identifiers,
+      ...useCase,
+      constructAdapters: (prisma: unknown, authority: unknown) => ({
+        bindings: new adapters.PrismaHostedPoolBindingRepository(prisma),
+        authModeSwitch: new adapters.PrismaRepositoryAuthModeSwitch(
+          prisma,
+          authority,
+        ),
+      }),
+    },
+    [
+      "createPrismaHostedPoolDashboardMutationPort",
+      "createRepositoryConfigurationAuthority",
+      "switchRepositoryConfigurationAuthMode",
+      "withCodexAuthMode",
+    ],
+  );
+  mocks.switchConfiguration.mockImplementation(
+    real.switchRepositoryConfigurationAuthMode,
+  );
+  return {
+    ...real,
+    switchRepositoryConfigurationAuthMode: mocks.switchConfiguration,
+    createPrismaHostedPoolDashboardMutationPort: (input: unknown) => {
+      const port = real.createPrismaHostedPoolDashboardMutationPort(input);
+      mocks.setRepositorySource.mockImplementation(port.setRepositorySource);
+      return { ...port, setRepositorySource: mocks.setRepositorySource };
+    },
+  };
+});
 vi.mock("../../src/server/workflow-public-api-url", () => ({
   resolveWorkflowPublicApiUrl: () => "https://api.reviewrouter.test",
 }));
+
+import { fingerprintDatabaseRecoveryWitness } from "@reviewrouter/features-provider-setup";
 
 import { confirmSetupPullRequestMergedClientAction } from "./actions";
 
@@ -80,6 +221,11 @@ function matches(
 ): boolean {
   return Object.entries(where).every(([key, expected]) => {
     if (expected && typeof expected === "object") {
+      if ("is" in expected)
+        return matches(
+          actual[key] as Record<string, unknown>,
+          expected.is as Record<string, unknown>,
+        );
       if ("in" in expected)
         return (expected.in as unknown[]).includes(actual[key]);
       return (
@@ -95,23 +241,45 @@ function matches(
   });
 }
 
-function fixture(baseBranch: "main" | "master", scenario = "valid") {
-  const rotating = scenario.startsWith("rotating_");
+function fixture(
+  baseBranch: "main" | "master",
+  scenario = "valid",
+  mode?: "stored_active" | "rotating_hosted" | "generic",
+) {
+  const rotating =
+    scenario.startsWith("rotating_") || mode === "rotating_hosted";
+  const activeStored =
+    scenario.startsWith("stored_active_") || mode === "stored_active";
+  const rotatingWithBinding =
+    rotating &&
+    (mode === "rotating_hosted" ||
+      scenario.includes("active_binding") ||
+      scenario.includes("hosted_config"));
   const actualActionRef =
     scenario === "trusted_overlap"
       ? `777genius/review-router@${"c".repeat(40)}`
       : actionRef;
   const historical = {
     ...initialCandidate,
-    pullRequestHeadSha: scenario.startsWith("stored_")
-      ? scenario === "stored_head_mismatch"
-        ? "c".repeat(40)
-        : "b".repeat(40)
-      : null,
+    status:
+      scenario === "stored_active_configured"
+        ? ("configured" as const)
+        : initialCandidate.status,
+    pullRequestHeadSha:
+      activeStored ||
+      mode === "rotating_hosted" ||
+      scenario.startsWith("stored_") ||
+      scenario.includes("stored_head")
+        ? scenario === "stored_head_mismatch"
+          ? "c".repeat(40)
+          : "b".repeat(40)
+        : null,
     workflowPath:
-      scenario === "artifact_path"
+      mode === "generic"
         ? ".github/workflows/reviewrouter.yml"
-        : workflowPath,
+        : scenario === "artifact_path"
+          ? ".github/workflows/reviewrouter.yml"
+          : workflowPath,
     workflowStyle:
       scenario === "artifact_style"
         ? ("explicit" as const)
@@ -136,7 +304,11 @@ function fixture(baseBranch: "main" | "master", scenario = "valid") {
     defaultBranch: "main",
     selected: true,
     archived: false,
-    installation: { status: "active", githubInstallationId: 123n },
+    installation: {
+      workspaceId: "workspace_1",
+      status: "active",
+      githubInstallationId: 123n,
+    },
     provisioning: scenario === "no_history" ? [] : [historical],
   };
   if (scenario === "initial_installation")
@@ -145,8 +317,9 @@ function fixture(baseBranch: "main" | "master", scenario = "valid") {
       installation: { ...repository.installation, status: "suspended" },
     };
   let binding: Record<string, unknown> | null =
+    mode === "generic" ||
     scenario === "missing_binding" ||
-    (rotating && scenario !== "rotating_active_binding")
+    (rotating && !rotatingWithBinding)
       ? null
       : {
           id: "binding-1",
@@ -157,11 +330,14 @@ function fixture(baseBranch: "main" | "master", scenario = "valid") {
           status:
             scenario === "binding_ineligible"
               ? "draining"
-              : scenario === "already_active" ||
+              : activeStored ||
+                  scenario === "already_active" ||
                   scenario === "active_attestation_invalid" ||
-                  scenario === "rotating_active_binding"
+                  rotatingWithBinding
                 ? "active"
                 : "pending_activation",
+          poolId: "pool-1",
+          attestedBindingRevision: null,
           revision: 3n,
           stateVersion: 7n,
           tombstonedAt: scenario === "binding_tombstoned" ? new Date(0) : null,
@@ -190,6 +366,12 @@ function fixture(baseBranch: "main" | "master", scenario = "valid") {
       `runtime_ref: "${"a".repeat(40)}"`,
       `runtime_ref: "${"c".repeat(40)}"`,
     );
+  const namespace = createVersionedProviderSecretNamespace({
+    scope: { repositoryId: "456", providerInstanceId: "codex-rotating:456" },
+    namespaceId: `sns_${"a".repeat(32)}`,
+    name: `REVIEWROUTER_CODEX_AUTH_JSON_R456_P${createHash("sha256").update("codex-rotating:456").digest("hex").slice(0, 16)}_E4_${"a".repeat(32)}`,
+    epoch: 4,
+  });
   if (rotating || scenario === "pending_rotating_config") {
     vi.stubEnv("REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH", "1");
     vi.stubEnv("REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS", "W".repeat(43));
@@ -204,29 +386,66 @@ function fixture(baseBranch: "main" | "master", scenario = "valid") {
         ],
       },
     });
-    const namespace = createVersionedProviderSecretNamespace({
-      scope: { repositoryId: "456", providerInstanceId: "codex-rotating:456" },
-      namespaceId: `sns_${"a".repeat(32)}`,
-      name: `REVIEWROUTER_CODEX_AUTH_JSON_R456_P${createHash("sha256").update("codex-rotating:456").digest("hex").slice(0, 16)}_E4_${"a".repeat(32)}`,
-      epoch: 4,
-    });
-    mocks.namespace.mockResolvedValue({
-      source: "confirmed_setup_candidate",
-      namespace,
-      claimId: "fake_claim",
-      attemptId: "fake_attempt",
-    });
     if (rotating)
       source = renderCodexRotatingAdvisoryWorkflow({
         actionRef,
         apiUrl: "https://api.reviewrouter.test",
         providerInstanceId: "codex-rotating:456",
         reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
-        workflowSchemaVersion:
-          CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+        workflowSchemaVersion: scenario.includes("active_namespace")
+          ? CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5
+          : CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
         activeSecretNamespace: namespace,
       });
   }
+  if (mode === "rotating_hosted" || scenario.includes("hosted_config"))
+    mocks.runtime.mockResolvedValue({
+      config: {
+        providers: [
+          {
+            kind: "codex",
+            authMode: "codex_subscription_oauth_hosted_pool",
+            model: "gpt-5.3-codex",
+          },
+        ],
+      },
+    });
+  if (rotating) {
+    if (scenario === "invalid_workflow")
+      source = source.replace("id-token: write", "id-token: read");
+    if (scenario === "untrusted_ref")
+      source = source.replaceAll("a".repeat(40), "c".repeat(40));
+    if (scenario === "runtime_ref_mismatch")
+      source = source.replace(
+        `runtime_ref: "${"a".repeat(40)}"`,
+        `runtime_ref: "${"c".repeat(40)}"`,
+      );
+    if (scenario === "wrong_api")
+      source = source.replaceAll(
+        "https://api.reviewrouter.test",
+        "https://other.reviewrouter.test",
+      );
+    if (scenario === "wrong_provider")
+      source = source.replaceAll("codex-rotating:456", "codex-rotating:999");
+  }
+  if (mode === "generic") {
+    vi.stubEnv("REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK", "1");
+    vi.stubEnv("REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES", "");
+    mocks.runtime.mockResolvedValue({
+      config: { providers: [{ kind: "openrouter", authMode: "api_key" }] },
+    });
+    source = renderReviewRouterReusableWorkflow({
+      actionRef,
+      apiUrl: "https://api.reviewrouter.test",
+      runtimeConfigMode: "oidc",
+      conflictReviewFallbackEnabled: true,
+    });
+  }
+  if (scenario === "source_changed_after_selection")
+    vi.stubEnv(
+      "REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS",
+      `777genius/review-router@${"c".repeat(40)}`,
+    );
   const blobSha = createHash("sha1")
     .update(`blob ${Buffer.byteLength(source)}\0`)
     .update(source)
@@ -271,7 +490,7 @@ function fixture(baseBranch: "main" | "master", scenario = "valid") {
     if (scenario.includes("revision_during"))
       state.replace({ ...historical, revision: historical.revision + 1 });
     if (scenario === "head_during_probe")
-      state.replace({ ...historical, pullRequestHeadSha: "b".repeat(40) });
+      state.replace({ ...historical, pullRequestHeadSha: "e".repeat(40) });
     if (scenario === "branch_during_probe")
       state.replace({ ...historical, branch: "reviewrouter/new-setup" });
     if (scenario === "url_during_probe")
@@ -279,7 +498,10 @@ function fixture(baseBranch: "main" | "master", scenario = "valid") {
         ...historical,
         pullRequestUrl: "https://github.com/acme/widget/pull/8",
       });
-    if (scenario === "artifact_during_activation")
+    if (
+      scenario === "artifact_during_activation" ||
+      scenario === "artifact_during_probe"
+    )
       state.replace({
         ...historical,
         workflowPath: ".github/workflows/other.yml",
@@ -337,24 +559,261 @@ function fixture(baseBranch: "main" | "master", scenario = "valid") {
   );
   const hostedCodexRepositoryBinding = {
     findFirst: findBinding,
+    findUnique: findBinding,
     updateMany: updateBinding,
   };
+  let configurationVersion: Record<string, unknown> | null = {
+    id: "configuration-version-0",
+    version: 1,
+    schemaVersion: 2,
+    providerKind: "codex",
+    providerAuthMode:
+      rotating && !rotatingWithBinding
+        ? "codex_subscription_oauth_rotating"
+        : "codex_subscription_oauth_hosted_pool",
+    model: "gpt-5.3-codex",
+    reasoningEffort: "medium",
+    agenticContext: false,
+    fastMode: false,
+    failOnSeverity: "off",
+    inlineMaxComments: 10,
+    providerLimit: 1,
+    providerMaxParallel: 1,
+    inlineMinAgreement: 1,
+    targetTokensPerBatch: 8000,
+    reviewLanguage: null,
+    providers: [],
+  };
+  const configWrites = vi.fn(
+    async ({ data }: { data: Record<string, unknown> }) => {
+      events.push(`configuration_write:${data.providerAuthMode}`);
+      configurationVersion = {
+        ...data,
+        id: "configuration-version-1",
+        providers: (data.providers as { create: unknown[] }).create,
+      };
+      return configurationVersion;
+    },
+  );
+  const namespaceCandidate = {
+    providerInstanceRowId: "provider_row_1",
+    providerWorkspaceId: "workspace_1",
+    providerRepositoryId: "repository_1",
+    providerInstanceId: "codex-rotating:456",
+    providerAuthMode: "codex_subscription_oauth_rotating",
+    providerState: "workflow_update_required",
+    providerMutationOwner: "setup",
+    providerMutationOwnerId: "codex_manifest_workflow_1",
+    providerMutationEpoch: 11n,
+    providerActiveNamespaceId: null,
+    providerActiveNamespaceEpoch: null,
+    providerActiveNamespaceName: null,
+    retainedActiveNamespaceId: null,
+    retainedActiveNamespaceProviderInstanceRowId: null,
+    retainedActiveNamespaceGithubRepositoryId: null,
+    retainedActiveNamespaceEpoch: null,
+    retainedActiveNamespaceSecretName: null,
+    retainedActiveNamespaceDatabaseRecoveryWitness: null,
+    retainedActiveNamespaceStatus: null,
+    retainedActiveNamespacePermanentlyRetired: null,
+    retainedActiveNamespaceActivatedAt: null,
+    retainedActiveNamespaceRetiredAt: null,
+    claimId: "codex_claim_workflow_1",
+    claimProviderInstanceRowId: "provider_row_1",
+    claimWorkspaceId: "workspace_1",
+    claimRepositoryId: "repository_1",
+    claimGithubRepositoryId: "456",
+    claimManifestId: "codex_manifest_workflow_1",
+    claimRecoveryEpoch: 11n,
+    claimStatus: "confirmed_candidate",
+    claimAccountIdentityAlgorithm: "provider_issuer_subject_account_v1",
+    claimDatabaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+      "W".repeat(43),
+    ),
+    claimConfirmedAttemptId: "codex_attempt_workflow_1",
+    claimConfirmedAt: new Date("2026-08-10T00:00:00Z"),
+    claimActivatedAt: null,
+    claimRecoveryExpiresAt: new Date("2099-01-01T00:00:00Z"),
+    attemptId: "codex_attempt_workflow_1",
+    attemptClaimId: "codex_claim_workflow_1",
+    attemptNamespaceId: namespace.namespaceId,
+    attemptStatus: "confirmed",
+    attemptDefiniteResponseCode: 204,
+    attemptConfirmedAt: new Date("2026-08-10T00:00:00Z"),
+    attemptDispatchExpiresAt: new Date("2026-08-10T00:09:00.000Z"),
+    namespaceId: namespace.namespaceId,
+    namespaceProviderInstanceRowId: "provider_row_1",
+    namespaceGithubRepositoryId: "456",
+    namespaceEpoch: namespace.epoch,
+    namespaceSecretName: namespace.name,
+    namespaceDatabaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+      "W".repeat(43),
+    ),
+    namespaceStatus: "confirmed_candidate",
+    namespacePermanentlyRetired: false,
+    namespaceConfirmedAt: new Date("2026-08-10T00:00:00Z"),
+    namespaceActivatedAt: null,
+    manifestId: "codex_manifest_workflow_1",
+    manifestProviderInstanceRowId: "provider_row_1",
+    manifestWorkspaceId: "workspace_1",
+    manifestRepositoryId: "repository_1",
+    manifestProviderInstanceId: "codex-rotating:456",
+    manifestStatus: "fetched",
+    manifestMutationEpoch: 11n,
+    manifestDatabaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+      "W".repeat(43),
+    ),
+    manifestRecoveryExpiresAt: new Date("2099-01-01T00:00:00Z"),
+    manifestConsumedAt: null,
+  };
+  const activeEvidence = {
+    providerInstanceRowId: "provider_row_1",
+    providerWorkspaceId: "workspace_1",
+    providerRepositoryId: "repository_1",
+    providerInstanceId: "codex-rotating:456",
+    providerAuthMode: "codex_subscription_oauth_rotating",
+    providerState: "active",
+    providerMutationEpoch: 12n,
+    providerLatestGeneration: 1,
+    providerActiveNamespaceId: namespace.namespaceId,
+    providerActiveNamespaceEpoch: namespace.epoch,
+    providerActiveNamespaceName: namespace.name,
+    providerActiveAccountIdentityHash: "i".repeat(43),
+    providerLatestGenerationHash: "g".repeat(43),
+    claimId: "codex_claim_active_1",
+    claimProviderInstanceRowId: "provider_row_1",
+    claimWorkspaceId: "workspace_1",
+    claimRepositoryId: "repository_1",
+    claimGithubRepositoryId: "456",
+    claimManifestId: "codex_manifest_active_1",
+    claimRecoveryEpoch: 11n,
+    claimStatus: "active",
+    claimGenerationHash: "g".repeat(43),
+    claimAccountIdentityHash: "i".repeat(43),
+    claimDatabaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+      "W".repeat(43),
+    ),
+    claimConfirmedAttemptId: "codex_attempt_active_1",
+    claimActivatedAt: new Date("2026-08-10T00:00:00Z"),
+    attemptId: "codex_attempt_active_1",
+    attemptClaimId: "codex_claim_active_1",
+    attemptNamespaceId: namespace.namespaceId,
+    attemptStatus: "confirmed",
+    attemptDefiniteResponseCode: 204,
+    attemptConfirmedAt: new Date("2026-08-10T00:00:00Z"),
+    setupNamespaceId: namespace.namespaceId,
+    setupNamespaceProviderInstanceRowId: "provider_row_1",
+    setupNamespaceGithubRepositoryId: "456",
+    setupNamespaceEpoch: namespace.epoch,
+    setupNamespaceSecretName: namespace.name,
+    setupNamespaceDatabaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+      "W".repeat(43),
+    ),
+    setupNamespaceStatus: "active",
+    setupNamespacePermanentlyRetired: false,
+    setupNamespaceWorkflowPath: ".github/workflows/reviewrouter-codex.yml",
+    setupNamespaceWorkflowSourceCommitSha: commitSha,
+    setupNamespaceWorkflowSourceBlobSha: blobSha,
+    setupNamespaceWorkflowSourceSha256: createHash("sha256")
+      .update(source)
+      .digest("hex"),
+    setupNamespaceWorkflowSemanticSha256:
+      workflowDocumentSemanticSha256(source),
+    setupNamespaceWorkflowSourceTrust: "trusted_default_branch_revision",
+    setupNamespaceAttestedRepositoryId: "456",
+    setupNamespaceActivatedAt: new Date("2026-08-10T00:00:00Z"),
+    namespaceId: namespace.namespaceId,
+    namespaceProviderInstanceRowId: "provider_row_1",
+    namespaceGithubRepositoryId: "456",
+    namespaceEpoch: namespace.epoch,
+    namespaceSecretName: namespace.name,
+    namespaceDatabaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+      "W".repeat(43),
+    ),
+    namespaceStatus: "active",
+    namespacePermanentlyRetired: false,
+    namespaceWorkflowPath: ".github/workflows/reviewrouter-codex.yml",
+    namespaceWorkflowSourceCommitSha: commitSha,
+    namespaceWorkflowSourceBlobSha: blobSha,
+    namespaceWorkflowSourceSha256: createHash("sha256")
+      .update(source)
+      .digest("hex"),
+    namespaceWorkflowSemanticSha256: workflowDocumentSemanticSha256(source),
+    namespaceWorkflowSourceTrust: "trusted_default_branch_revision",
+    namespaceAttestedRepositoryId: "456",
+    namespaceActivatedAt: new Date("2026-08-10T00:00:00Z"),
+    runtimeIntentId: null,
+    runtimeIntentProviderInstanceRowId: null,
+    runtimeIntentSecretNamespaceId: null,
+    runtimeIntentDispatchAttemptId: null,
+    runtimeIntentStatus: null,
+    runtimeIntentMutationEpoch: null,
+    runtimeIntentGeneration: null,
+    runtimeIntentLatestGenerationHash: null,
+    runtimeIntentAccountIdentityHash: null,
+    runtimeIntentAccountIdentityAlgorithm: null,
+    runtimeIntentDatabaseRecoveryWitness: null,
+    runtimeIntentProviderResponseCode: null,
+    runtimeIntentProviderConfirmedAt: null,
+    runtimeIntentCompletedAt: null,
+    manifestStatus: "consumed",
+    manifestDatabaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+      "W".repeat(43),
+    ),
+    manifestConsumedAt: new Date("2026-08-10T00:00:00Z"),
+  };
+  let providerReads = 0;
   const transaction = {
     ...state.prisma,
+    $executeRawUnsafe: vi.fn(async () => 0),
+    $queryRaw: vi.fn(async (strings: TemplateStringsArray) => {
+      const query = Array.from(strings).join("?");
+      if (query.includes("FOR UPDATE")) return [{ id: "provider_row_1" }];
+      if (query.includes("LIMIT 2")) return [namespaceCandidate];
+      return scenario.includes("active_namespace") ? [activeEvidence] : [];
+    }),
     repositoryConnection: { findFirst: scopedRepository },
     hostedCodexRepositoryBinding,
+    hostedCodexPool: { findFirst: vi.fn(async () => ({ id: "pool-1" })) },
+    reviewConfiguration: {
+      findUnique: vi.fn(async () =>
+        configurationVersion ? { versions: [configurationVersion] } : null,
+      ),
+      upsert: vi.fn(async () => ({ id: "configuration-1" })),
+    },
+    reviewConfigurationVersion: {
+      findFirst: vi.fn(async () => configurationVersion),
+      create: configWrites,
+    },
+    codexOAuthSecretNamespace: {
+      findUnique: vi.fn(async () => ({ workflowSchemaVersion: 5 })),
+    },
+    codexOAuthProviderInstance: {
+      findUnique: vi.fn(async () => {
+        providerReads++;
+        return rotating &&
+          !scenario.includes("absent_provider") &&
+          !(scenario.includes("provider_removed") && providerReads >= 2)
+          ? { id: "provider_row_1", latestGenerationHash: "a".repeat(64) }
+          : null;
+      }),
+    },
   };
   mocks.getPrisma.mockReturnValue({
     ...transaction,
     repositoryConnection: {
       findFirst: scopedRepository,
-      findUnique: vi.fn(async () => ({ ...repository })),
+      findUnique: vi.fn(async () => ({
+        ...repository,
+        provisioning: state.current() ? [state.current()] : [],
+      })),
     },
     $transaction: vi.fn(async (callback: (tx: unknown) => unknown) =>
       callback(transaction),
     ),
   });
   let refCount = 0;
+  let contentCount = 0;
   const request = vi.fn(
     async (route: string, parameters?: Record<string, unknown>) => {
       if (route === "GET /repos/{owner}/{repo}/pulls/{pull_number}") {
@@ -386,7 +845,8 @@ function fixture(baseBranch: "main" | "master", scenario = "valid") {
           data: {
             object: {
               sha:
-                scenario === "default_head_moved" && refCount === 2
+                (scenario === "default_head_moved" && refCount === 2) ||
+                (scenario === "default_head_moved_in_adapter" && refCount === 3)
                   ? "e".repeat(40)
                   : commitSha,
             },
@@ -394,26 +854,55 @@ function fixture(baseBranch: "main" | "master", scenario = "valid") {
         };
       }
       if (route === "GET /repos/{owner}/{repo}/contents/{path}") {
-        if (rotating) {
+        contentCount++;
+        if (mode === "generic") {
           events.push(`workflow:${parameters?.path}:${parameters?.ref}`);
-          if (parameters?.ref !== "main") throw new Error("wrong_rotating_ref");
-          const interaction =
-            parameters.path === defaultInteractionWorkflowPath;
-          if (interaction && scenario === "rotating_missing_interaction")
+          if (scenario === "workflow_absent")
             throw Object.assign(new Error("absent"), { status: 404 });
           return {
             data: {
               type: "file",
+              path: parameters?.path,
               encoding: "base64",
-              content: Buffer.from(
-                interaction
-                  ? renderCanonicalCodexRotatingInteractionWorkflowV3({
-                      actionRef,
-                      apiUrl: "https://api.reviewrouter.test",
-                      runtimeConfigMode: "oidc",
-                    })
-                  : source,
-              ).toString("base64"),
+              content: Buffer.from(source).toString("base64"),
+              sha: blobSha,
+            },
+          };
+        }
+        if (rotating) {
+          if (scenario.endsWith("_during_probe")) race();
+          if (scenario === "workflow_absent")
+            throw Object.assign(new Error("absent"), { status: 404 });
+          events.push(`workflow:${parameters?.path}:${parameters?.ref}`);
+          if (parameters?.ref !== "main" && parameters?.ref !== commitSha)
+            throw new Error("wrong_rotating_ref");
+          const interaction =
+            parameters.path === defaultInteractionWorkflowPath;
+          if (interaction && scenario === "rotating_missing_interaction")
+            throw Object.assign(new Error("absent"), { status: 404 });
+          const content = interaction
+            ? renderCanonicalCodexRotatingInteractionWorkflowV3({
+                actionRef,
+                apiUrl: "https://api.reviewrouter.test",
+                runtimeConfigMode: "oidc",
+              })
+            : source;
+          return {
+            data: {
+              type: "file",
+              path:
+                scenario === "response_path_mismatch"
+                  ? ".github/workflows/other.yml"
+                  : parameters.path,
+              encoding: "base64",
+              content: Buffer.from(content).toString("base64"),
+              sha:
+                scenario === "blob_mismatch"
+                  ? "f".repeat(40)
+                  : createHash("sha1")
+                      .update(`blob ${Buffer.byteLength(content)}\0`)
+                      .update(content)
+                      .digest("hex"),
             },
           };
         }
@@ -431,8 +920,21 @@ function fixture(baseBranch: "main" | "master", scenario = "valid") {
                 ? ".github/workflows/other.yml"
                 : workflowPath,
             encoding: "base64",
-            content: Buffer.from(source).toString("base64"),
-            sha: scenario === "blob_mismatch" ? "f".repeat(40) : blobSha,
+            content: Buffer.from(
+              scenario === "source_changed_after_selection" && contentCount > 1
+                ? source.replaceAll("a".repeat(40), "c".repeat(40))
+                : source,
+            ).toString("base64"),
+            sha:
+              scenario === "blob_mismatch"
+                ? "f".repeat(40)
+                : scenario === "source_changed_after_selection" &&
+                    contentCount > 1
+                  ? createHash("sha1")
+                      .update(`blob ${Buffer.byteLength(source)}\0`)
+                      .update(source.replaceAll("a".repeat(40), "c".repeat(40)))
+                      .digest("hex")
+                  : blobSha,
           },
         };
       }
@@ -440,9 +942,28 @@ function fixture(baseBranch: "main" | "master", scenario = "valid") {
     },
   );
   mocks.createOctokit.mockResolvedValue({ request });
-  mocks.switchConfiguration.mockImplementation(async () => {
-    events.push("activation_effect");
-    return scenario !== "activation_rejected";
+  mocks.ledgerActivate.mockImplementation(async () => {
+    events.push("rotating_namespace_activation");
+    if (scenario.endsWith("_during_activation")) race();
+    return { status: "activated" };
+  });
+  mocks.activeAttestation.mockResolvedValue({
+    repositoryId: "456",
+    workflowPath,
+    workflowSourceCommitSha: commitSha,
+    workflowSourceBlobSha: blobSha,
+    workflowSourceSha256: createHash("sha256").update(source).digest("hex"),
+    workflowSemanticSha256: workflowDocumentSemanticSha256(source),
+    workflowSchemaVersion: 5,
+    sourceTrust: "trusted_default_branch_revision",
+    secretNamespace: namespace,
+  });
+  mocks.validateActive.mockImplementation(async () => {
+    events.push("rotating_namespace_validation");
+    return { status: "active" };
+  });
+  mocks.persistReplacement.mockImplementation(async () => {
+    throw new Error("unexpected_reattestation_write");
   });
   const form = new FormData();
   form.set("repositoryId", "repository_1");
@@ -462,6 +983,8 @@ function fixture(baseBranch: "main" | "master", scenario = "valid") {
     expectedCurrent: () => expectedCurrent,
     binding: () => binding,
     initialBinding,
+    configWrites,
+    configuration: () => configurationVersion,
   };
 }
 
@@ -481,9 +1004,198 @@ describe("hosted setup recovery composition", () => {
         ],
       },
     });
-    mocks.activateCodex.mockResolvedValue({ status: "not_configured" });
+    mocks.ledgerActivate.mockResolvedValue({ status: "activated" });
   });
   afterEach(() => vi.unstubAllEnvs());
+
+  it.each(["stored_active_configured", "stored_active_setup_pr_open"])(
+    "reconfirms the active hosted stored-head workflow without changing authentication: %s",
+    async (scenario) => {
+      const f = fixture("main", scenario);
+      const result = await confirmSetupPullRequestMergedClientAction(f.form);
+      console.info(
+        "actual-routing-effect",
+        JSON.stringify({
+          scenario,
+          result,
+          events: f.events,
+          authMode: f.configuration()?.providerAuthMode,
+          bindingStatus: f.binding()?.status,
+          bindingRevision: String(f.binding()?.revision),
+        }),
+      );
+      expect(result.params, f.events.join(", ")).toHaveProperty(
+        "notice",
+        "setup_pr_merged",
+      );
+      expect(f.binding()).toEqual(f.initialBinding);
+      expect(f.configuration()?.providerAuthMode).toBe(
+        "codex_subscription_oauth_hosted_pool",
+      );
+      expect(f.configWrites).not.toHaveBeenCalled();
+      expect(mocks.activateCodex).not.toHaveBeenCalled();
+      expect(mocks.setRepositorySource).not.toHaveBeenCalled();
+      expect(
+        f.request.mock.calls.some(([route]) => route.includes("/contents/")),
+      ).toBe(true);
+      const afterFirst = f.state.current();
+      const second = await confirmSetupPullRequestMergedClientAction(f.form);
+      expect(second.params).toHaveProperty("notice", "setup_pr_merged");
+      expect(f.state.current()).toEqual(afterFirst);
+      expect(f.binding()).toEqual(f.initialBinding);
+      expect(f.configWrites).not.toHaveBeenCalled();
+      expect(mocks.setRepositorySource).not.toHaveBeenCalled();
+    },
+  );
+
+  describe.each(["stored_active", "rotating_hosted"] as const)(
+    "refuses stale or invalid %s routing evidence before configuration, binding or status effects",
+    (mode) => {
+      const scenarios = [
+        "workflow_absent",
+        "invalid_workflow",
+        "untrusted_ref",
+        "runtime_ref_mismatch",
+        "response_path_mismatch",
+        "blob_mismatch",
+        "default_head_moved",
+        "default_head_moved_in_adapter",
+        "wrong_api",
+        "wrong_provider",
+        "github_repository_mismatch",
+        "transfer_during_probe",
+        "installation_during_probe",
+        "inactive_during_probe",
+        "deselected_during_probe",
+        "archived_during_probe",
+        "default_during_probe",
+        "attempt_during_probe",
+        "revision_during_probe",
+        "head_during_probe",
+        "branch_during_probe",
+        "url_during_probe",
+        "artifact_during_probe",
+        "artifact_path",
+        "artifact_style",
+        "artifact_version",
+        "binding_removed_during_probe",
+        "binding_changed_during_probe",
+        "binding_revised_during_probe",
+        "binding_state_during_probe",
+        "binding_draining_during_probe",
+        ...(mode === "stored_active"
+          ? [
+              "source_changed_after_selection",
+              "wrong_binding",
+              "wrong_binding_revision",
+              "active_attestation_invalid",
+            ]
+          : []),
+      ];
+      it.each(scenarios)("refuses %s before effects", async (scenario) => {
+        const f = fixture("main", scenario, mode);
+        const result = await confirmSetupPullRequestMergedClientAction(f.form);
+        const context = `${mode}:${scenario}:${JSON.stringify(result)}:${f.events.join(",")}`;
+        console.info(
+          "actual-refusal-effect",
+          JSON.stringify({
+            mode,
+            scenario,
+            result,
+            events: f.events,
+            configWrites: f.configWrites.mock.calls.length,
+            bindingWrites: f.updateBinding.mock.calls.length,
+            namespaceEffects: mocks.ledgerActivate.mock.calls.length,
+            statusWrites:
+              f.state.workflowProvisioning.updateMany.mock.calls.length,
+          }),
+        );
+        expect(result.params, context).toHaveProperty("error");
+        expect(f.configWrites, context).not.toHaveBeenCalled();
+        expect(f.updateBinding, context).not.toHaveBeenCalled();
+        expect(mocks.ledgerActivate, context).not.toHaveBeenCalled();
+        expect(mocks.setRepositorySource, context).not.toHaveBeenCalled();
+        expect(
+          f.state.workflowProvisioning.updateMany,
+          context,
+        ).not.toHaveBeenCalled();
+        expect(
+          f.state.workflowProvisioning.create,
+          context,
+        ).not.toHaveBeenCalled();
+      });
+    },
+  );
+
+  it("refuses not_configured from the real rotating activation when its provider disappears after readiness", async () => {
+    const f = fixture(
+      "main",
+      "rotating_hosted_config_provider_removed_stored_head",
+    );
+    const result = await confirmSetupPullRequestMergedClientAction(f.form);
+    console.info(
+      "actual-not-configured-effect",
+      JSON.stringify({ result, events: f.events }),
+    );
+    expect(result.params).toHaveProperty("error");
+    expect(mocks.activateCodex).toHaveBeenCalledTimes(1);
+    expect(await mocks.activateCodex.mock.results[0]!.value).toEqual({
+      status: "not_configured",
+    });
+    expect(mocks.ledgerActivate).not.toHaveBeenCalled();
+    expect(f.configWrites).not.toHaveBeenCalled();
+    expect(f.binding()).toEqual(f.initialBinding);
+    expect(mocks.setRepositorySource).not.toHaveBeenCalled();
+    expect(f.state.workflowProvisioning.updateMany).not.toHaveBeenCalled();
+  });
+
+  it.each(["valid", "workflow_absent"])(
+    "retains generic readiness through the real Codex absence adapter: %s",
+    async (scenario) => {
+      const f = fixture("master", scenario, "generic");
+      const result = await confirmSetupPullRequestMergedClientAction(f.form);
+      expect(f.configWrites).not.toHaveBeenCalled();
+      expect(mocks.setRepositorySource).not.toHaveBeenCalled();
+      expect(f.updateBinding).not.toHaveBeenCalled();
+      if (scenario === "valid") {
+        expect(result.params).toHaveProperty("notice", "setup_pr_merged");
+        expect(await mocks.activateCodex.mock.results[0]!.value).toEqual({
+          status: "not_configured",
+        });
+        expect(f.state.current()).toMatchObject({
+          status: "configured",
+          workflowPath: ".github/workflows/reviewrouter.yml",
+        });
+      } else {
+        expect(result.params).toHaveProperty("error");
+        expect(mocks.activateCodex).not.toHaveBeenCalled();
+        expect(f.state.workflowProvisioning.updateMany).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([
+    "transfer_during_activation",
+    "attempt_during_activation",
+    "revision_during_activation",
+    "artifact_during_activation",
+  ])(
+    "fences the source switch and final status after the rotating activation boundary: %s",
+    async (scenario) => {
+      const f = fixture("main", scenario, "rotating_hosted");
+      const result = await confirmSetupPullRequestMergedClientAction(f.form);
+      expect(result.params).toHaveProperty("error");
+      expect(mocks.ledgerActivate).toHaveBeenCalledTimes(1);
+      expect(mocks.setRepositorySource).not.toHaveBeenCalled();
+      expect(f.configWrites).not.toHaveBeenCalled();
+      expect(f.updateBinding).not.toHaveBeenCalled();
+      expect(f.state.workflowProvisioning.updateMany).not.toHaveBeenCalled();
+      console.info(
+        "post-rotating-activation-status-fence",
+        JSON.stringify({ scenario, result, events: f.events }),
+      );
+    },
+  );
 
   it.each(["main", "master"] as const)(
     "recovers historical %s on current main with canonical hosted workflow and no legacy file",
@@ -492,17 +1204,13 @@ describe("hosted setup recovery composition", () => {
       const result = await confirmSetupPullRequestMergedClientAction(f.form);
       expect({ params: result.params, events: f.events }).toMatchObject({
         params: { notice: "setup_pr_merged" },
-        events: [
+        events: expect.arrayContaining([
           "inspect_pr",
           "binding_lookup",
-          "binding_lookup",
-          "ref:heads/main",
           `workflow:${workflowPath}:${commitSha}`,
-          "ref:heads/main",
-          "binding_lookup",
-          "activation_effect",
+          "configuration_write:codex_subscription_oauth_hosted_pool",
           "binding_write",
-        ],
+        ]),
       });
       expect(f.state.current()).toEqual({
         ...f.historical,
@@ -515,14 +1223,17 @@ describe("hosted setup recovery composition", () => {
       expect(mocks.setRepositorySource).not.toHaveBeenCalled();
       expect(f.state.workflowProvisioning.updateMany).toHaveBeenCalledTimes(1);
       expect(f.state.workflowProvisioning.create).not.toHaveBeenCalled();
-      expect(
-        f.request.mock.calls.filter(([route]) => route.includes("/contents/")),
-      ).toEqual([
-        [
-          "GET /repos/{owner}/{repo}/contents/{path}",
-          { owner: "acme", repo: "widget", path: workflowPath, ref: commitSha },
-        ],
-      ]);
+      const contentReads = f.request.mock.calls.filter(([route]) =>
+        route.includes("/contents/"),
+      );
+      expect(contentReads.length).toBeGreaterThan(0);
+      for (const [, parameters] of contentReads)
+        expect(parameters).toEqual({
+          owner: "acme",
+          repo: "widget",
+          path: workflowPath,
+          ref: commitSha,
+        });
       expect(f.events.indexOf("binding_lookup")).toBeLessThan(
         f.events.findIndex((event) => event.startsWith("workflow:")),
       );
@@ -690,10 +1401,16 @@ describe("hosted setup recovery composition", () => {
     "rotating_valid",
     "rotating_active_binding",
     "rotating_missing_interaction",
+    "rotating_hosted_config",
+    "rotating_hosted_config_stored_head",
+    "rotating_hosted_config_active_namespace_stored_head",
+    "rotating_hosted_config_absent_provider",
   ])("preserves the real rotating readiness route: %s", async (scenario) => {
-    const f = fixture("master", scenario);
+    const f = fixture(
+      scenario.includes("stored_head") ? "main" : "master",
+      scenario,
+    );
     const result = await confirmSetupPullRequestMergedClientAction(f.form);
-    expect(f.updateBinding).not.toHaveBeenCalled();
     expect(mocks.switchConfiguration).not.toHaveBeenCalled();
     expect(mocks.namespace).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -704,8 +1421,11 @@ describe("hosted setup recovery composition", () => {
       }),
       expect.anything(),
     );
-    if (scenario === "rotating_missing_interaction") {
-      expect(result.params).toHaveProperty("error", "setup_pr_not_merged");
+    if (
+      scenario === "rotating_missing_interaction" ||
+      scenario.includes("absent_provider")
+    ) {
+      expect(result.params).toHaveProperty("error");
       expect(mocks.activateCodex).not.toHaveBeenCalled();
       expect(mocks.setRepositorySource).not.toHaveBeenCalled();
       expect(f.state.workflowProvisioning.updateMany).not.toHaveBeenCalled();
@@ -720,7 +1440,10 @@ describe("hosted setup recovery composition", () => {
         workflowPath,
         actionVersion: actionRef,
       });
-      if (scenario === "rotating_active_binding")
+      if (
+        scenario === "rotating_active_binding" ||
+        scenario.includes("hosted_config")
+      )
         expect(mocks.setRepositorySource).toHaveBeenCalledWith(
           expect.objectContaining({
             workspaceId: "workspace_1",
@@ -730,11 +1453,53 @@ describe("hosted setup recovery composition", () => {
           }),
         );
       else expect(mocks.setRepositorySource).not.toHaveBeenCalled();
+      if (
+        scenario === "rotating_active_binding" ||
+        scenario.includes("hosted_config")
+      ) {
+        expect(f.configWrites).toHaveBeenCalledTimes(1);
+        expect(f.configuration()?.providerAuthMode).toBe(
+          "codex_subscription_oauth_rotating",
+        );
+        expect(f.binding()).toMatchObject({
+          status: "draining",
+          revision: 4n,
+          stateVersion: 8n,
+        });
+        const verifiedEffect = f.events.findIndex(
+          (event) =>
+            event === "rotating_namespace_activation" ||
+            event === "rotating_namespace_validation",
+        );
+        expect(verifiedEffect).toBeGreaterThanOrEqual(0);
+        expect(verifiedEffect).toBeLessThan(
+          f.events.indexOf(
+            "configuration_write:codex_subscription_oauth_rotating",
+          ),
+        );
+        expect(await mocks.activateCodex.mock.results[0]!.value).toMatchObject({
+          status: scenario.includes("active_namespace")
+            ? "already_active"
+            : "activated",
+          workflowSourceCommitSha: commitSha,
+        });
+      }
     }
     expect(
       f.request.mock.calls
         .filter(([route]) => route.includes("/contents/"))
         .map(([, parameters]) => parameters?.path),
-    ).toEqual([workflowPath, defaultInteractionWorkflowPath]);
+    ).toEqual(expect.arrayContaining([workflowPath]));
+    console.info(
+      "actual-rotating-effect",
+      JSON.stringify({
+        scenario,
+        result,
+        events: f.events,
+        authMode: f.configuration()?.providerAuthMode,
+        bindingStatus: f.binding()?.status,
+        bindingRevision: String(f.binding()?.revision),
+      }),
+    );
   });
 });

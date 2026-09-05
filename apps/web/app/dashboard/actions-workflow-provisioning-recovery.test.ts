@@ -133,6 +133,9 @@ describe("dashboard setup PR recovery", () => {
         {
           attemptId: "attempt_1",
           revision: 1,
+          workflowPath: ".github/workflows/reviewrouter.yml",
+          workflowStyle: "reusable",
+          actionVersion: resolveReviewRouterActionRef(),
           branch: "reviewrouter/setup",
           pullRequestUrl: "https://github.com/acme/widget/pull/7",
           pullRequestHeadSha: "b".repeat(40),
@@ -147,6 +150,9 @@ describe("dashboard setup PR recovery", () => {
         installationId: "installation_1",
         attemptId: "attempt_1",
         revision: 1,
+        workflowPath: ".github/workflows/reviewrouter.yml",
+        workflowStyle: "reusable",
+        actionVersion: resolveReviewRouterActionRef(),
         status: provisioningStatus,
         branch: "reviewrouter/setup",
         pullRequestUrl: "https://github.com/acme/widget/pull/7",
@@ -158,7 +164,7 @@ describe("dashboard setup PR recovery", () => {
         provisioningStatus = "configured";
         return { count: 1 };
       }),
-      findUnique: vi.fn(async () => ({ status: provisioningStatus })),
+      findUnique: vi.fn(async () => workflowProvisioning.findFirst()),
     };
     const transactionClient = {
       workflowProvisioning,
@@ -167,7 +173,10 @@ describe("dashboard setup PR recovery", () => {
       },
     };
     mocks.getPrisma.mockReturnValue({
-      repositoryConnection: { findUnique: repositoryFindUnique },
+      repositoryConnection: {
+        findUnique: repositoryFindUnique,
+        findFirst: transactionClient.repositoryConnection.findFirst,
+      },
       hostedCodexRepositoryBinding: { findFirst: vi.fn(async () => null) },
       workflowProvisioning,
       $transaction: vi.fn(
@@ -255,7 +264,10 @@ describe("dashboard setup PR recovery", () => {
       };
       mocks.getPrisma.mockReturnValue({
         ...state.prisma,
-        repositoryConnection: { findUnique: vi.fn(async () => repository) },
+        repositoryConnection: {
+          ...state.repositoryConnection,
+          findUnique: vi.fn(async () => repository),
+        },
         hostedCodexRepositoryBinding: { findFirst: vi.fn(async () => null) },
       });
       const request = vi.fn(async () => ({ data: {} }));
