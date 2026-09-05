@@ -17,6 +17,9 @@ import {
   advanceRecoveryPhase,
   advanceRecoveryService,
   createRecoveryJournal,
+  compactRecoveryJournal,
+  expandRecoveryJournal,
+  validateRecoveryWorkerSource,
   createRegistrationJournal,
   retainRegistrationConfiguration,
   retainBootstrapCompensationFence,
@@ -558,7 +561,10 @@ ${opening}
       "until assert_recovery_service_online",
       resume,
     );
-    const deploy = recover.indexOf("render_deploy_mutation -X POST", online);
+    const deploy = recover.indexOf(
+      "render_deploy_mutation resume -X POST",
+      online,
+    );
     const verified = recover.indexOf(
       '> "$work/verified-deployment-$service_id.json"',
       deploy,
@@ -601,7 +607,9 @@ ${opening}
       recover.indexOf("render_deploy_mutation()"),
       recover.indexOf("suspension_guard_armed=0"),
     );
-    const createCalls = recover.match(/render_deploy_mutation -X POST/gu);
+    const createCalls = recover.match(
+      /render_deploy_mutation (?:resume|"\$deploy_intent_deadline") -X POST/gu,
+    );
 
     expect(deployClient).not.toContain("--retry");
     expect(createCalls).toHaveLength(2); // one resume and one deploy call site
@@ -1421,7 +1429,7 @@ false
       registerRelease.indexOf("close_firewall()"),
     );
     const createCalls = registerRelease.match(
-      /render_deploy_mutation -X POST/gu,
+      /render_deploy_mutation (?:resume|"\$deploy_intent_deadline") -X POST/gu,
     );
 
     expect(deployMutation).not.toContain("--retry");
@@ -3148,7 +3156,7 @@ render_inventory_api() {
 read_recovery_phase() {
   printf 'read\\n' >> "$work/events"
   [[ "$defect" != read_timeout ]] || return 28
-  if [[ "$defect" == mismatch ]]; then printf '{}'; else cat "$work/recovery-journal.json"; fi
+  if [[ "$defect" == mismatch ]]; then printf '{}'; else jq -r '.value' "$work/recovery-phase-env.json"; fi
 }
 ${extractRecoveryBashFunction("persist_recovery_phase")}
 ${extractRecoveryBashFunction("persist_recovery_journal")}
@@ -3571,6 +3579,9 @@ assert_recovery_maintenance() { :; }
 set_recovery_maintenance() { printf closed > "$work/fleet"; }
 compensate_recovery_fleet() { printf closed > "$work/fleet"; }
 compensate_worker_effect_fence() { printf closed > "$work/fleet"; }
+fetch_recovery_deployment_inventory() {
+  jq -c --arg role "\${1#srv-}" '.services[$role].deployBeforeInventory' "$work/recovery-journal.json"
+}
 ${extractRecoveryBashFunction("read_recovery_phase")}
 ${extractRecoveryBashFunction("persist_recovery_journal")}
 ${extractRecoveryBashFunction("close_firewall")}
@@ -3593,7 +3604,12 @@ ${tail}
         );
         expect(readFileSync(join(work, "firewall"), "utf8")).toBe("closed");
         const replicas = recoveryRoles.map((role) =>
-          JSON.parse(readFileSync(join(work, `replica-${role}.json`), "utf8")),
+          (() => {
+            const value = JSON.parse(
+              readFileSync(join(work, `replica-${role}.json`), "utf8"),
+            );
+            return value.journal ?? value;
+          })(),
         );
         if (closeFailure || fault === "write_before_api")
           expect(replicas.every((r) => r.phase === "prepared")).toBe(true);
@@ -3806,9 +3822,14 @@ fi
           { env, encoding: "utf8" },
         );
         expect(lost.status, lost.stderr).toBe(97);
-        const replicas = recoveryRoles.map((role) =>
-          JSON.parse(readFileSync(join(root, `srv-${role}.json`), "utf8")),
-        );
+        const replicas = recoveryRoles.map((role) => {
+          const value = JSON.parse(
+            readFileSync(join(root, `srv-${role}.json`), "utf8"),
+          );
+          return value?.schemaVersion === 3
+            ? expandRecoveryJournal(value, fixture.inventories)
+            : value;
+        });
         expect(
           loadRecoveryReplicas(replicas, fixture.state.tuple)
             .bootstrapCompensationFence,
@@ -4828,23 +4849,75 @@ printf mutation
       });
     }
   it("uses identical full proofs in both jobs before deploy mutation boundaries", () => {
-    expect(
+    assert.equal(
       extractRecoveryBashFunction(
         "assert_recovery_admission_closed",
         registerRelease,
       ),
-    ).toBe(extractRecoveryBashFunction("assert_recovery_admission_closed"));
-    for (const job of [recover, registerRelease]) {
-      const calls =
-        job.match(
-          /assert_recovery_admission_closed\n(?: {12}(?:assert_|\(\()[^\n]+\n)* {12}set \+e/gmu,
-        ) ?? [];
-      expect(calls).toHaveLength(1);
-      expect(job).toContain("admission-closed-result.json");
-    }
-    expect(recover).toContain(
-      "assert_recovery_admission_closed\n            assert_worker_effect_fenced\n            assert_recovery_config_unchanged\n            render_deploy_mutation -X POST",
+      extractRecoveryBashFunction("assert_recovery_admission_closed"),
     );
+    for (const job of [recover, registerRelease]) {
+      const post = job.indexOf(
+        'render_deploy_mutation "$deploy_intent_deadline" -X POST',
+      );
+      assert.ok(post > 0);
+      const start = job.lastIndexOf(
+        "            assert_recovery_admission_closed",
+        post,
+      );
+      let previous = -1;
+      for (const gate of [
+        "assert_recovery_admission_closed",
+        "assert_recovery_config_unchanged",
+        ".services[$role].intentDeadlineEpoch",
+        "$(date -u +%s) < deploy_intent_deadline",
+        "set +e",
+      ]) {
+        const index = job.slice(start, post).indexOf(gate);
+        assert.ok(index > previous, gate);
+        previous = index;
+      }
+    }
+    const resumeStart = recover.indexOf("          resume_result='[]'");
+    const resumeEnd = recover.indexOf(
+      "            resume_deadline=",
+      resumeStart,
+    );
+    const resume = recover.slice(resumeStart, resumeEnd);
+    const gates = [
+      "assert_recovery_retained_inventories",
+      "advance_recovery_service resume_intent",
+      "assert_recovery_service_suspended",
+      "assert_recovery_maintenance true",
+      "assert_recovery_admission_closed",
+      "assert_worker_effect_fenced",
+      "assert_recovery_config_unchanged",
+      "assert_recovery_worker_runtime",
+      "render_deploy_mutation resume -X POST",
+    ];
+    let previous = -1;
+    for (const gate of gates) {
+      const index = resume.indexOf(gate);
+      assert.ok(index > previous, gate);
+      previous = index;
+    }
+    for (const job of [recover, registerRelease]) {
+      const wrapper = extractRecoveryBashFunction(
+        "render_deploy_mutation",
+        job,
+      );
+      let previous = -1;
+      for (const gate of [
+        "assert_recovery_target_identity",
+        "assert_recovery_fleet_identity",
+        "$(date -u +%s) < intent_deadline",
+        "curl --fail",
+      ]) {
+        const index = wrapper.indexOf(gate);
+        assert.ok(index > previous, gate);
+        previous = index;
+      }
+    }
   });
 });
 
@@ -5525,7 +5598,7 @@ describe("authenticated topology and revalidation in actual workflow Bash", () =
       const command =
         boundary === "worker_fence_sql"
           ? 'worker_fence_sql restore > "$work/restore.sql"\nprintf restore >> "$work/effects"'
-          : `${boundary}${boundary === "render_inventory_api" ? " 999" : ""} -X POST "https://api.render.com/v1/services/$API_SERVICE_ID/resume"`;
+          : `${boundary}${boundary === "render_inventory_api" ? " 999" : boundary === "render_deploy_mutation" ? " resume" : ""} -X POST "https://api.render.com/v1/services/$API_SERVICE_ID/resume"`;
       const result = spawnSync(
         "bash",
         [
@@ -7621,7 +7694,7 @@ render_inventory_api() {
   id="\${url#*services/}"; id="\${id%%/*}"
   if [[ " $* " == *" -X PUT "* ]]; then
     jq -r '.value' "$payload" > "$remote/$id.journal.json"
-    if [[ "$crash" == torn_intent && "$id" == srv-api ]] && jq -e '.services.api.phase == "deploy_intent"' "$remote/$id.journal.json" >/dev/null; then kill -KILL "$$"; fi
+    if [[ "$crash" == torn_intent && "$id" == srv-api ]] && jq -e '(.journal // .).services.api.phase == "deploy_intent"' "$remote/$id.journal.json" >/dev/null; then kill -KILL "$$"; fi
   else
     if [[ -f "$remote/$id.journal.json" ]]; then
       jq -nc --arg key "$recovery_phase_key" --rawfile value "$remote/$id.journal.json" --arg defect "$defect" '[{key:"FIXTURE",value:(if $defect == "config" then "drift" else "stable" end)},{key:$key,value:$value}]'
@@ -7709,17 +7782,18 @@ close_firewall
         expect(lost.signal, lost.stderr).toBe("SIGKILL");
         const retained = JSON.parse(
           readFileSync(join(remote, "srv-api.journal.json"), "utf8"),
-        );
+        ).journal;
         expect(retained.services[role].phase).toBe("deploy_intent");
         expect(retained.services[role].deployId).toBeUndefined();
         const epoch = retained.services[role].intentEpoch;
         rmSync(first, { recursive: true });
         const resumed = run(second, remote, "");
         expect(resumed.status, resumed.stderr).toBe(0);
-        const replicas = recoveryRoles.map((item) =>
-          JSON.parse(
-            readFileSync(join(remote, `srv-${item}.journal.json`), "utf8"),
-          ),
+        const replicas = recoveryRoles.map(
+          (item) =>
+            JSON.parse(
+              readFileSync(join(remote, `srv-${item}.journal.json`), "utf8"),
+            ).journal,
         );
         const state = loadRegistrationReplicas(
           replicas,
@@ -7927,7 +8001,56 @@ function r8Fixture() {
       },
     },
   };
-  return { tuple, fresh, state, inventories, fence, observed };
+  return {
+    tuple,
+    fresh,
+    state,
+    inventories,
+    fence,
+    observed,
+    source: r10WorkerSource(observed),
+  };
+}
+
+function r10WorkerSource(observed: {
+  fence: { database: typeof workerDatabaseFixture };
+  proof: {
+    runtime: {
+      serviceId: string;
+      deployId: string;
+      releaseCommitSha: string;
+      servicePostconditionSha256: string;
+    };
+    challenge: unknown;
+  };
+}) {
+  const canonical = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(canonical)
+      : value && typeof value === "object"
+        ? Object.fromEntries(
+            Object.keys(value)
+              .sort()
+              .map((key) => [
+                key,
+                canonical((value as Record<string, unknown>)[key]),
+              ]),
+          )
+        : value;
+  const { name, oid, systemIdentifier, recoveryWitnessSha256 } =
+    observed.fence.database;
+  const runtime = observed.proof.runtime;
+  return {
+    schemaVersion: 1,
+    database: { name, oid, systemIdentifier, recoveryWitnessSha256 },
+    serviceId: runtime.serviceId,
+    deployId: runtime.deployId,
+    releaseCommitSha: runtime.releaseCommitSha,
+    servicePostconditionSha256: runtime.servicePostconditionSha256,
+    proofSha256: createHash("sha256")
+      .update(JSON.stringify(canonical(observed.proof)))
+      .digest("hex"),
+  };
 }
 
 function r8VerifyService(
@@ -8042,8 +8165,13 @@ ${program}`,
           join(root, "snapshot.json"),
           JSON.stringify(fixture.fence.before),
         );
-        for (const role of recoveryRoles)
+        for (const role of recoveryRoles) {
           writeFileSync(join(root, `srv-${role}.json`), "null");
+          writeFileSync(
+            join(root, `srv-${role}.history.json`),
+            JSON.stringify(fixture.inventories[role]),
+          );
+        }
         if (loss !== "absent")
           writeFileSync(
             join(first, "recovery-journal.json"),
@@ -8069,6 +8197,7 @@ ${program}`,
         ];
         const script = `set -euo pipefail
 work="$1"; remote="$2"; loss="$3"; mode="$4"
+fetch_recovery_deployment_inventory() { cat "$remote/$1.history.json"; }
 recovery_phase_key=REVIEW_ROUTER_PG17_RECOVERY_PHASE
 assert_recovery_target_identity() { :; }
 assert_recovery_fleet_identity() { :; }
@@ -8139,9 +8268,14 @@ fi`;
         );
         assert.equal(readFileSync(join(root, "admission"), "utf8"), "closed");
         rmSync(first, { recursive: true });
-        const replicas = recoveryRoles.map((role) =>
-          JSON.parse(readFileSync(join(root, `srv-${role}.json`), "utf8")),
-        );
+        const replicas = recoveryRoles.map((role) => {
+          const value = JSON.parse(
+            readFileSync(join(root, `srv-${role}.json`), "utf8"),
+          );
+          return value?.schemaVersion === 3
+            ? expandRecoveryJournal(value, fixture.inventories)
+            : value;
+        });
         if (["absent", "local_only", "partial"].includes(loss)) {
           writeFileSync(
             join(next, "recovery-resume-state.json"),
@@ -8357,6 +8491,7 @@ ${actualResume}
                 ...subprocessEnv,
                 DEFECT: defect,
                 RESUMED_ROLE: resumedRole,
+                RECOVERY_WORKER_SOURCE_JSON: JSON.stringify(fixture.source),
                 recovery_deployment_inventory_filter: extractRecoveryJqFilter(
                   "recovery_deployment_inventory_filter",
                 ),
@@ -8429,7 +8564,12 @@ ${actualResume}
         deploymentProvenance: releaseCommitSha,
       }));
     assert.deepEqual(
-      assertRecoveryWorkerRuntime(worker.state, worker.inventory, target),
+      assertRecoveryWorkerRuntime(
+        worker.state,
+        worker.inventory,
+        target,
+        r10WorkerSource(target),
+      ),
       target.proof.runtime,
     );
     assert.throws(
@@ -8438,6 +8578,7 @@ ${actualResume}
           worker.state,
           worker.inventory,
           fixture.observed,
+          fixture.source,
         ),
       /worker_runtime_identity/u,
     );
@@ -8449,6 +8590,7 @@ ${actualResume}
           fixture.state,
           fixture.inventories.worker,
           altered,
+          fixture.source,
         ),
       /worker_runtime_fence/u,
     );
@@ -8458,4 +8600,515 @@ ${actualResume}
       /proofProtected/u,
     );
   });
+});
+
+// R10 cases use node:assert so the same adversarial suite runs without Vitest.
+describe("R10 exact recovery remediation", () => {
+  it("rejects oversized metadata and forged history references before persistence", () => {
+    const fixture = r8Fixture();
+    const oversized = structuredClone(fixture.state);
+    oversized.tuple.operationId = "x".repeat(16384);
+    assert.throws(
+      () => compactRecoveryJournal(oversized),
+      /journal_reference/u,
+    );
+    for (const field of ["count", "sha256"]) {
+      const reference = compactRecoveryJournal(fixture.state);
+      reference.histories.worker.beforeInventory[field] =
+        field === "count" ? 2 : "0".repeat(64);
+      assert.throws(
+        () => expandRecoveryJournal(reference, fixture.inventories),
+        /history_digest_mismatch/u,
+      );
+    }
+  });
+  for (const defect of [
+    "name",
+    "oid",
+    "name-and-oid",
+    "consistent-postcondition",
+    "proof-digest",
+    "absent-source",
+  ]) {
+    it(`rejects independently retained predecessor source mismatch: ${defect}`, () => {
+      const fixture = r8Fixture();
+      const observed = structuredClone(fixture.observed);
+      if (["name", "oid", "name-and-oid"].includes(defect)) {
+        // Copy the original canary and generation into another DB in the SAME
+        // cluster, then consistently change both expected and observed fences.
+        const database = { ...fixture.fence.before.database };
+        if (defect !== "oid") database.name = "copied_database";
+        if (defect !== "name") database.oid = "99999";
+        const fence = planWorkerEffectFence({
+          ...fixture.fence.before,
+          database,
+        });
+        fixture.state.workerFence = fence;
+        observed.fence = fence.fenced;
+      }
+      if (defect === "consistent-postcondition") {
+        observed.proof.runtime.servicePostconditionSha256 = `sha256:${"0".repeat(64)}`;
+        observed.proof.challenge.serviceFacts.find(
+          (fact) => fact.runtimeRole === "worker",
+        )!.servicePostconditionSha256 =
+          observed.proof.runtime.servicePostconditionSha256;
+      }
+      if (defect === "proof-digest") {
+        observed.proof.runtime.nonce = "0".repeat(48);
+        observed.proof.challenge.nonce = observed.proof.runtime.nonce;
+      }
+      assert.throws(
+        () =>
+          assertRecoveryWorkerRuntime(
+            fixture.state,
+            fixture.inventories.worker,
+            observed,
+            defect === "absent-source" ? undefined : fixture.source,
+          ),
+        /worker_runtime_(database_binding|source_binding|retained_source)/u,
+      );
+      assert.deepEqual(
+        validateRecoveryWorkerSource(fixture.source),
+        fixture.source,
+      );
+    });
+  }
+
+  it("takes the retained source only from the protected release environment before effects", () => {
+    assert.match(recover, /environment: production-release/u);
+    assert.match(
+      recover,
+      /RECOVERY_WORKER_SOURCE_JSON: \$\{\{ secrets\.REVIEW_ROUTER_RECOVERY_WORKER_SOURCE_JSON \}\}/u,
+    );
+    assert.match(
+      extractRecoveryBashFunction("assert_recovery_worker_runtime"),
+      /parseRecoveryJson\(process\.env\.RECOVERY_WORKER_SOURCE_JSON \?\? "null"\)/u,
+    );
+    assert.ok(
+      recover.indexOf("validateRecoveryWorkerSource(parseRecoveryJson") <
+        recover.indexOf("          firewall_open=0"),
+    );
+    assert.doesNotMatch(recover, /RECOVERY_WORKER_SOURCE_JSON\s*=/u);
+  });
+
+  for (const [jobName, job] of [
+    ["recovery", recover],
+    ["registration", registerRelease],
+  ] as const) {
+    for (const crossing of ["none", "database", "fleet", "boundary"]) {
+      it(`rechecks ${jobName} deadline after slow ${crossing} reads at the POST boundary`, () => {
+        const wrapper = extractRecoveryBashFunction(
+          "render_deploy_mutation",
+          job,
+        );
+        const result = spawnSync(
+          "bash",
+          [
+            "-c",
+            `set -euo pipefail
+now=119
+assert_recovery_target_identity() { printf 'database\n'; if [[ "$CROSSING" == database ]]; then now=121; fi; }
+assert_recovery_fleet_identity() { printf 'fleet\n'; if [[ "$CROSSING" == fleet ]]; then now=121; fi; if [[ "$CROSSING" == boundary ]]; then now=120; fi; }
+date() { printf '%s' "$now"; }
+curl() { printf 'POST\n'; }
+${wrapper}
+# The old call-site check passes; identity reads then cross the same deadline.
+(( $(date -u +%s) <= 120 ))
+render_deploy_mutation 120 -X POST https://api.render.com/v1/services/srv-api/deploys
+`,
+          ],
+          {
+            env: {
+              ...subprocessEnv,
+              CROSSING: crossing,
+              RENDER_API_KEY: "fixture",
+            },
+            encoding: "utf8",
+          },
+        );
+        assert.equal(
+          result.status,
+          crossing === "none" ? 0 : 124,
+          result.stderr,
+        );
+        assert.equal(
+          result.stdout,
+          `database\nfleet\n${crossing === "none" ? "POST\n" : ""}`,
+        );
+      });
+    }
+
+    it(`proves every ${jobName} deployment gate precedes its single POST`, () => {
+      const post = job.indexOf(
+        'render_deploy_mutation "$deploy_intent_deadline" -X POST',
+      );
+      const start = job.lastIndexOf(
+        "            assert_recovery_admission_closed",
+        post,
+      );
+      assert.ok(start > 0 && post > start);
+      const gates = job.slice(start, post);
+      let previous = -1;
+      for (const gate of jobName === "recovery"
+        ? [
+            "assert_recovery_admission_closed",
+            "assert_worker_effect_fenced",
+            "assert_recovery_config_unchanged",
+            "assert_recovery_service_online",
+            ".services[$role].intentDeadlineEpoch",
+            "$(date -u +%s) < deploy_intent_deadline",
+            "set +e",
+          ]
+        : [
+            "assert_recovery_admission_closed",
+            "assert_recovery_config_unchanged",
+            ".services[$role].intentDeadlineEpoch",
+            "$(date -u +%s) < deploy_intent_deadline",
+            "set +e",
+          ]) {
+        const index = gates.indexOf(gate);
+        assert.ok(index > previous, `${jobName}: ${gate}`);
+        previous = index;
+      }
+      const wrapper = extractRecoveryBashFunction(
+        "render_deploy_mutation",
+        job,
+      );
+      previous = -1;
+      for (const gate of [
+        "assert_recovery_target_identity",
+        "assert_recovery_fleet_identity",
+        "$(date -u +%s) < intent_deadline",
+        "curl --fail",
+      ]) {
+        const index = wrapper.indexOf(gate);
+        assert.ok(index > previous, gate);
+        previous = index;
+      }
+      assert.doesNotMatch(wrapper, /--retry/u);
+    });
+
+    for (const boundary of ["target", "fleet"]) {
+      for (const defect of [
+        "none",
+        "duplicate-id",
+        "escaped-id",
+        "nested-owner",
+        "duplicate-environment",
+        "oversize",
+      ]) {
+        it(`rejects raw ${jobName} ${boundary} topology ${defect} before jq or mutation`, () => {
+          const work = mkdtempSync(join(tmpdir(), "r10-topology-"));
+          try {
+            const target = {
+              id: "dpg-target",
+              name: "reviewrouter-db",
+              version: "17",
+              status: "available",
+              ownerId: "tea-owner",
+              environmentId: "evm-production",
+            };
+            for (const role of recoveryRoles) {
+              const service = {
+                id: `srv-${role}`,
+                name: `reviewrouter-${role}`,
+                ownerId: "tea-owner",
+                environmentId: "evm-production",
+                type: role === "worker" ? "background_worker" : "web_service",
+                repo: "https://github.com/777genius/review-router-saas",
+                branch: "main",
+                autoDeploy: "no",
+                suspended: "suspended",
+              };
+              const raw = JSON.stringify(
+                boundary === "target" ? target : { service },
+              );
+              const id = boundary === "target" ? "dpg-target" : `srv-${role}`;
+              let response = raw;
+              if (defect === "duplicate-id")
+                response = raw.replace(
+                  `"id":"${id}"`,
+                  `"id":"wrong","id":"${id}"`,
+                );
+              if (defect === "escaped-id")
+                response = raw.replace(
+                  `"id":"${id}"`,
+                  `"id":"wrong","i\\u0064":"${id}"`,
+                );
+              if (defect === "nested-owner")
+                response = raw.replace(
+                  '"ownerId":"tea-owner"',
+                  '"owner":{"id":"wrong","id":"tea-owner"}',
+                );
+              if (defect === "duplicate-environment")
+                response = raw.replace(
+                  '"environmentId":"evm-production"',
+                  '"environmentId":"wrong","environmentId":"evm-production"',
+                );
+              if (defect === "oversize") response += " ".repeat(1024 * 1024);
+              writeFileSync(join(work, `srv-${role}.json`), response);
+            }
+            const result = spawnSync(
+              "bash",
+              [
+                "-c",
+                `set -euo pipefail
+work="$WORK"
+assert_recovery_trusted_topology() { :; }
+render_inventory_api() { local id="\${2##*/}"; if [[ "$BOUNDARY" == target ]]; then id=srv-api; fi; cat "$work/$id.json"; }
+jq() { printf 'jq\n' >> "$work/normalization"; command jq "$@"; }
+${extractRecoveryBashFunction(`assert_recovery_${boundary === "target" ? "target" : "fleet"}_identity`, job)}
+assert_recovery_${boundary === "target" ? "target" : "fleet"}_identity
+printf mutation
+`,
+              ],
+              {
+                encoding: "utf8",
+                env: {
+                  ...subprocessEnv,
+                  WORK: work,
+                  BOUNDARY: boundary,
+                  TARGET_DB_ID: "dpg-target",
+                  RENDER_OWNER_ID: "tea-owner",
+                  RENDER_ENVIRONMENT_ID: "evm-production",
+                  API_SERVICE_ID: "srv-api",
+                  WORKER_SERVICE_ID: "srv-worker",
+                  WEB_SERVICE_ID: "srv-web",
+                  service_scope_filter: extractRecoveryJqFilter(
+                    "service_scope_filter",
+                    job,
+                  ),
+                },
+              },
+            );
+            assert.equal(result.status === 0, defect === "none", result.stderr);
+            assert.equal(result.stdout, defect === "none" ? "mutation" : "");
+            assert.equal(
+              existsSync(join(work, "normalization")),
+              defect === "none",
+            );
+          } finally {
+            rmSync(work, { recursive: true, force: true });
+          }
+        });
+      }
+    }
+
+    it(`round-trips a 400-record journal through actual ${jobName} persistence and a fresh runner without a second POST`, () => {
+      const root = mkdtempSync(join(tmpdir(), "r10-history-"));
+      try {
+        const fixture = r8Fixture();
+        for (const role of recoveryRoles) {
+          fixture.inventories[role] = Array.from(
+            { length: 400 },
+            (_, index) => ({
+              ...fixture.inventories[role][0],
+              deployId:
+                index === 0
+                  ? `dep-old-${role}`
+                  : `dep-history-${role}-${index}`,
+              statusClass: index === 0 ? "active" : "terminal",
+              observedStatus: index === 0 ? "live" : "deactivated",
+            }),
+          );
+          fixture.state.services[role].beforeInventory =
+            fixture.inventories[role];
+        }
+        let state = advanceRecoveryService(
+          fixture.state,
+          "api",
+          "resume_intent",
+        );
+        state = advanceRecoveryService(state, "api", "resumed");
+        state = advanceRecoveryService(state, "api", "deploy_intent", {
+          inventory: fixture.inventories.api,
+          intentEpoch: 1788560400,
+        });
+        assert.ok(Buffer.byteLength(JSON.stringify(state)) > 327000);
+        const reference = compactRecoveryJournal(state);
+        assert.ok(Buffer.byteLength(JSON.stringify(reference)) < 16384);
+        assert.deepEqual(
+          expandRecoveryJournal(reference, fixture.inventories),
+          state,
+        );
+        for (const role of recoveryRoles)
+          writeFileSync(
+            join(root, `srv-${role}.history.json`),
+            JSON.stringify(fixture.inventories[role]),
+          );
+        const first = join(root, "first");
+        const next = join(root, "next");
+        mkdirSync(first);
+        mkdirSync(next);
+        writeFileSync(
+          join(first, "recovery-journal.json"),
+          JSON.stringify(state),
+        );
+        const functions = [
+          "read_recovery_phase",
+          "read_recovery_replicas",
+          "persist_recovery_journal",
+        ]
+          .map((name) => extractRecoveryBashFunction(name, job))
+          .join("\n");
+        const mocks = `
+work="$WORK"; remote="$REMOTE"; recovery_phase_key=REVIEW_ROUTER_PG17_RECOVERY_PHASE
+render_inventory_api() {
+  local arg url='' payload=''
+  for arg in "$@"; do
+    if [[ "$arg" == https://* ]]; then url="$arg"; fi
+    if [[ "$arg" == @* ]]; then payload="\${arg#@}"; fi
+  done
+  local id="\${url#*/services/}"; id="\${id%%/*}"
+  if [[ " $* " == *" -X PUT "* ]]; then
+    [[ "$MODE" == write ]] || return 77
+    jq -r '.value' "$payload" > "$remote/$id.reference.json"
+  elif [[ " $* " == *" -X "* ]]; then
+    printf POST >> "$remote/POSTS"; return 78
+  else
+    jq -nc --rawfile value "$remote/$id.reference.json" '[{key:"REVIEW_ROUTER_PG17_RECOVERY_PHASE",value:$value}]'
+  fi
+}
+fetch_recovery_deployment_inventory() { cat "$remote/$1.history.json"; }
+`;
+        const run = (work: string, mode: string, body: string) =>
+          spawnSync(
+            "bash",
+            ["-c", `set -euo pipefail\n${mocks}\n${functions}\n${body}`],
+            {
+              encoding: "utf8",
+              env: {
+                ...subprocessEnv,
+                WORK: work,
+                REMOTE: root,
+                MODE: mode,
+                API_SERVICE_ID: "srv-api",
+                WORKER_SERVICE_ID: "srv-worker",
+                WEB_SERVICE_ID: "srv-web",
+              },
+              timeout: 30000,
+            },
+          );
+        const persisted = run(first, "write", "persist_recovery_journal");
+        assert.equal(persisted.status, 0, persisted.stderr);
+        const uncertainPost = run(
+          first,
+          "write",
+          `
+RENDER_API_KEY=fixture
+assert_recovery_target_identity() { :; }
+assert_recovery_fleet_identity() { :; }
+date() { printf 1788560401; }
+curl() { printf POST >> "$remote/POSTS"; return 28; }
+${extractRecoveryBashFunction("render_deploy_mutation", job)}
+render_deploy_mutation 1788560520 -X POST https://api.render.com/v1/services/srv-api/deploys
+`,
+        );
+        assert.equal(uncertainPost.status, 28, uncertainPost.stderr);
+        assert.equal(readFileSync(join(root, "POSTS"), "utf8"), "POST");
+        const runtimeEntry = readFileSync(
+          join(root, "srv-worker.reference.json"),
+          "utf8",
+        );
+        assert.ok(Buffer.byteLength(runtimeEntry) < 16384);
+        const runtime = spawnSync(
+          process.execPath,
+          [
+            "-e",
+            "process.stdout.write(JSON.parse(process.env.REVIEW_ROUTER_PG17_RECOVERY_PHASE).schemaVersion.toString())",
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              ...subprocessEnv,
+              REVIEW_ROUTER_PG17_RECOVERY_PHASE: runtimeEntry,
+            },
+          },
+        );
+        assert.equal(
+          runtime.status,
+          0,
+          String(runtime.error ?? runtime.stderr),
+        );
+        assert.equal(runtime.stdout, "3");
+        rmSync(first, { recursive: true }); // No local journal survives restart.
+        for (const accepted of [false, true]) {
+          const inventories = structuredClone(fixture.inventories);
+          if (accepted)
+            inventories.api.unshift({
+              ...inventories.api[0],
+              deployId: "dep-target-api",
+              observedCommitSha: releaseCommitSha,
+              createdAt: new Date(
+                (state.services.api.intentEpoch + 1) * 1000,
+              ).toISOString(),
+            });
+          writeFileSync(
+            join(root, "srv-api.history.json"),
+            JSON.stringify(inventories.api),
+          );
+          const restarted = run(
+            next,
+            "read",
+            'read_recovery_replicas > "$work/replicas.json"',
+          );
+          assert.equal(restarted.status, 0, restarted.stderr);
+          const restored = loadRecoveryReplicas(
+            parseRecoveryReplicaResponse(
+              readFileSync(join(next, "replicas.json"), "utf8"),
+            ),
+            state.tuple,
+          );
+          assert.equal(
+            recoveryRestartAction(restored, "api"),
+            "reconcile_deploy",
+          );
+          if (accepted)
+            assert.equal(
+              reconcileRecoveryDeploy(
+                restored,
+                "api",
+                inventories.api,
+                state.services.api.intentDeadlineEpoch,
+              ).services.api.deployId,
+              "dep-target-api",
+            );
+          else
+            assert.throws(
+              () =>
+                reconcileRecoveryDeploy(
+                  restored,
+                  "api",
+                  inventories.api,
+                  state.services.api.intentDeadlineEpoch,
+                ),
+              /reconciliation_unknown/u,
+            );
+          assert.equal(readFileSync(join(root, "POSTS"), "utf8"), "POST");
+        }
+        for (const defect of ["missing", "changed", "reordered", "inserted"]) {
+          const inventories = structuredClone(fixture.inventories);
+          if (defect === "missing") inventories.worker.pop();
+          if (defect === "changed")
+            inventories.worker[7].observedCommitSha = "c".repeat(40);
+          if (defect === "reordered")
+            [inventories.worker[7], inventories.worker[8]] = [
+              inventories.worker[8],
+              inventories.worker[7],
+            ];
+          if (defect === "inserted")
+            inventories.worker.splice(8, 0, {
+              ...inventories.worker[8],
+              deployId: "dep-unrelated",
+            });
+          assert.throws(
+            () => expandRecoveryJournal(reference, inventories),
+            /history_digest_mismatch/u,
+          );
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
 });

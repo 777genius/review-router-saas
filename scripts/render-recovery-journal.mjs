@@ -152,7 +152,7 @@ export function readRecoveryJsonInput() {
   }
 }
 
-// Only save-only journal metadata is excluded. Every runtime key, including
+// Only bounded journal reference metadata is excluded. Every runtime key, including
 // credentials, participates; the returned digest never contains its values.
 export function recoveryConfigFingerprint(environment) {
   const entries = recoveryEnvironmentEntries(environment);
@@ -216,7 +216,125 @@ export function recoveryEnvironmentEntries(environment) {
   return entries;
 }
 
-export function readRecoveryPhaseResponse(response) {
+// Runtime environments retain bounded history references. The complete history
+// stays at the provider/evidence boundary and is reread after runner loss. Its
+// immutable identities (including order and count) must match before use; status
+// changes never supply new identity authority. The original live head is kept
+// for the predecessor-overlap check.
+const historyIdentity = (inventory) =>
+  inventory.map(
+    ({
+      serviceId,
+      deployId,
+      createdAt,
+      deploymentIdentityKind,
+      observedCommitSha,
+      observedImageDigest,
+    }) => ({
+      serviceId,
+      deployId,
+      createdAt,
+      deploymentIdentityKind,
+      observedCommitSha,
+      observedImageDigest,
+    }),
+  );
+
+export function compactRecoveryJournal(journal) {
+  const state = loadRecoveryJournal(journal, journal.tuple);
+  const histories = {};
+  for (const role of recoveryRoles) {
+    histories[role] = {};
+    for (const key of ["beforeInventory", "deployBeforeInventory"]) {
+      const inventory = state.services[role][key];
+      if (!inventory) continue;
+      fail(
+        inventory.slice(1).every((item) => item.statusClass === "terminal"),
+        "history_competing_predecessor",
+      );
+      histories[role][key] = {
+        count: inventory.length,
+        sha256: sha(historyIdentity(inventory)),
+      };
+      state.services[role][key] = [inventory[0]];
+    }
+  }
+  const reference = { schemaVersion: 3, journal: state, histories };
+  validateRecoveryJournalReference(reference);
+  return reference;
+}
+
+function validateRecoveryJournalReference(reference) {
+  fail(
+    reference?.schemaVersion === 3 &&
+      equal(Object.keys(reference).sort(), [
+        "histories",
+        "journal",
+        "schemaVersion",
+      ]) &&
+      Buffer.byteLength(JSON.stringify(reference)) <= 16384,
+    "journal_reference",
+  );
+  const state = loadRecoveryJournal(
+    reference.journal,
+    reference.journal?.tuple,
+  );
+  fail(
+    equal(
+      Object.keys(reference.histories ?? {}).sort(),
+      [...recoveryRoles].sort(),
+    ),
+    "history_roles",
+  );
+  for (const role of recoveryRoles) {
+    const keys = ["beforeInventory", "deployBeforeInventory"].filter(
+      (key) => state.services[role][key],
+    );
+    fail(
+      equal(Object.keys(reference.histories[role]).sort(), [...keys].sort()),
+      "history_keys",
+    );
+    for (const key of keys) {
+      const history = reference.histories[role][key];
+      fail(
+        state.services[role][key].length === 1 &&
+          equal(Object.keys(history).sort(), ["count", "sha256"]) &&
+          Number.isSafeInteger(history.count) &&
+          history.count > 0 &&
+          history.count <= 1000 &&
+          /^[a-f0-9]{64}$/.test(history.sha256),
+        "history_reference",
+      );
+    }
+  }
+  return reference;
+}
+
+export function expandRecoveryJournal(reference, inventories) {
+  validateRecoveryJournalReference(reference);
+  const state = globalThis.structuredClone(reference.journal);
+  for (const role of recoveryRoles) {
+    const inventory = inventories[role];
+    validateInventory(inventory, state.tuple.services[role].id);
+    for (const [key, history] of Object.entries(reference.histories[role])) {
+      const head = state.services[role][key][0];
+      const index = inventory.findIndex(
+        (item) => item.deployId === head.deployId,
+      );
+      fail(index >= 0, "history_head_missing");
+      const retained = inventory.slice(index);
+      fail(
+        retained.length === history.count &&
+          sha(historyIdentity(retained)) === history.sha256,
+        "history_digest_mismatch",
+      );
+      state.services[role][key] = [head, ...retained.slice(1)];
+    }
+  }
+  return loadRecoveryJournal(state, state.tuple);
+}
+
+export function readRecoveryPhaseResponse(response, referenceOnly = false) {
   // Authority readers require raw bytes; accepting pre-parsed responses would
   // make duplicate-member rejection dependent on every caller's discipline.
   const entries = recoveryEnvironmentEntries(parseRecoveryJson(response));
@@ -227,7 +345,29 @@ export function readRecoveryPhaseResponse(response) {
     journal && typeof journal === "object" && !Array.isArray(journal),
     "journal_value_shape",
   );
-  return loadRecoveryJournal(journal, journal.tuple);
+  if (journal.schemaVersion !== 3)
+    return loadRecoveryJournal(journal, journal.tuple);
+  validateRecoveryJournalReference(journal);
+  if (referenceOnly) return journal;
+  // A one-record history is fully retained in its head; no provider read is
+  // needed to resolve it. Longer histories always require digest-checked reads.
+  if (
+    recoveryRoles.every((role) =>
+      Object.values(journal.histories[role]).every(
+        (history) => history.count === 1,
+      ),
+    )
+  )
+    return expandRecoveryJournal(
+      journal,
+      Object.fromEntries(
+        recoveryRoles.map((role) => [
+          role,
+          journal.journal.services[role].beforeInventory,
+        ]),
+      ),
+    );
+  return journal;
 }
 
 export function validateRecoveryTuple(tuple) {
@@ -1120,7 +1260,51 @@ export function workerRuntimeObservationSql(journal, inventory) {
   );`;
 }
 
-export function assertRecoveryWorkerRuntime(journal, inventory, observed) {
+// This receipt comes from the protected release environment, independently of
+// Render's editable saved configuration and the target DB's proof tables. The
+// release operator retains it from the authenticated runtime observation: the
+// digest covers BOTH canary rows, and the receipt binds their original database
+// name/OID and independently verified service postcondition. Missing historical
+// binding is not reconstructed from whichever database is queried now.
+export function validateRecoveryWorkerSource(source) {
+  fail(
+    source?.schemaVersion === 1 &&
+      equal(Object.keys(source).sort(), [
+        "database",
+        "deployId",
+        "proofSha256",
+        "releaseCommitSha",
+        "schemaVersion",
+        "serviceId",
+        "servicePostconditionSha256",
+      ]) &&
+      typeof source.database?.name === "string" &&
+      source.database.name.length > 0 &&
+      /^[1-9][0-9]*$/.test(source.database.oid) &&
+      /^[1-9][0-9]*$/.test(source.database.systemIdentifier) &&
+      /^[a-f0-9]{64}$/.test(source.database.recoveryWitnessSha256) &&
+      equal(Object.keys(source.database).sort(), [
+        "name",
+        "oid",
+        "recoveryWitnessSha256",
+        "systemIdentifier",
+      ]) &&
+      /^srv-[a-z0-9-]+$/.test(source.serviceId) &&
+      /^dep-[a-z0-9-]+$/.test(source.deployId) &&
+      /^[a-f0-9]{40}$/.test(source.releaseCommitSha) &&
+      /^[a-f0-9]{64}$/.test(source.proofSha256) &&
+      /^sha256:[a-f0-9]{64}$/.test(source.servicePostconditionSha256),
+    "worker_runtime_retained_source",
+  );
+  return source;
+}
+
+export function assertRecoveryWorkerRuntime(
+  journal,
+  inventory,
+  observed,
+  retainedSource,
+) {
   const state = validateRecoveryPreparation(journal);
   assertRecoveryRetainedInventory(state, "worker", inventory);
   fail(
@@ -1133,6 +1317,23 @@ export function assertRecoveryWorkerRuntime(journal, inventory, observed) {
   const deployment = inventory[0];
   const database = state.workerFence.fenced.database;
   fail(runtime && challenge, "worker_runtime_evidence_missing");
+  const source = validateRecoveryWorkerSource(retainedSource);
+  fail(
+    source.database.name === database.name &&
+      source.database.oid === database.oid &&
+      source.database.systemIdentifier === database.systemIdentifier &&
+      source.database.recoveryWitnessSha256 === database.recoveryWitnessSha256,
+    "worker_runtime_database_binding",
+  );
+  fail(
+    source.serviceId === runtime.serviceId &&
+      source.deployId === runtime.deployId &&
+      source.releaseCommitSha === runtime.releaseCommitSha &&
+      source.servicePostconditionSha256 ===
+        runtime.servicePostconditionSha256 &&
+      source.proofSha256 === sha(observed.proof),
+    "worker_runtime_source_binding",
+  );
   fail(
     runtime.runtimeRole === "worker" &&
       runtime.databaseRole === "reviewrouter_worker" &&
@@ -1570,7 +1771,11 @@ if (
 ) {
   const raw = readRecoveryJsonInput();
   if (process.argv[2] === "read-phase")
-    process.stdout.write(JSON.stringify(readRecoveryPhaseResponse(raw)) + "\n");
+    process.stdout.write(
+      JSON.stringify(
+        readRecoveryPhaseResponse(raw, process.argv[3] === "reference"),
+      ) + "\n",
+    );
   else if (process.argv[2] === "read-environment")
     process.stdout.write(
       JSON.stringify(recoveryEnvironmentEntries(raw)) + "\n",

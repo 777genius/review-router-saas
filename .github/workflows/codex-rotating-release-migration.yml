@@ -249,12 +249,22 @@ jobs:
 
       - name: Provision roles, migrate, switch services, and resume
         shell: bash
+        env:
+          # Retained by the release operator from independently authenticated
+          # predecessor evidence; never derive this receipt from the target DB.
+          RECOVERY_WORKER_SOURCE_JSON: ${{ secrets.REVIEW_ROUTER_RECOVERY_WORKER_SOURCE_JSON }}
         run: |
           set -euo pipefail
           umask 077
           work="$RUNNER_TEMP/reviewrouter-pg17-recovery"
           mkdir -p "$work"
           rm -f "$work/worker-effect-fence.json"
+          # The environment approval and protected-main bootstrap authenticate
+          # this retained source independently of copied DB canary rows.
+          node --input-type=module <<'NODE'
+          import {parseRecoveryJson, validateRecoveryWorkerSource} from "./scripts/render-recovery-journal.mjs";
+          validateRecoveryWorkerSource(parseRecoveryJson(process.env.RECOVERY_WORKER_SOURCE_JSON ?? "null"));
+          NODE
           firewall_open=0
           render_api() {
             if [[ " $* " == *" -X "* ]]; then
@@ -271,9 +281,17 @@ jobs:
           # A deploy creation has an uncertain side-effect boundary. Never retry
           # this POST; reconcile an accepted-but-unobserved response instead.
           render_deploy_mutation() {
+            local intent_deadline="$1"
+            shift
             if [[ " $* " == *" -X "* ]]; then
               assert_recovery_target_identity || return 1
               assert_recovery_fleet_identity || return 1
+            fi
+            # Slow identity reads may consume the retained acceptance window.
+            # Check after them, at the single, non-retried POST boundary.
+            if [[ "$intent_deadline" != resume ]]; then
+              [[ "$intent_deadline" =~ ^[1-9][0-9]*$ ]] || return 1
+              (( $(date -u +%s) < intent_deadline )) || return 124
             fi
             curl --fail --silent --show-error \
               --connect-timeout 15 --max-time 120 \
@@ -426,6 +444,7 @@ jobs:
             for service_id in "$API_SERVICE_ID" "$WEB_SERVICE_ID"; do
               observation="$(render_inventory_api "$deadline" \
                 "https://api.render.com/v1/services/$service_id")" || return 1
+              printf '%s' "$observation" | node scripts/render-recovery-journal.mjs validate-json || return 1
               jq -e --arg id "$service_id" --argjson enabled "$enabled" '
                 (.service // .) | .id == $id
                 and .serviceDetails.maintenanceMode.enabled == $enabled
@@ -512,7 +531,7 @@ jobs:
           import {parseRecoveryJson, assertRecoveryWorkerRuntime} from "./scripts/render-recovery-journal.mjs";
           const work = process.env.WORK;
           const read = name => parseRecoveryJson(readFileSync(`${work}/${name}`, "utf8"));
-          const evidence = assertRecoveryWorkerRuntime(read("recovery-journal.json"), read("worker-runtime-inventory.json"), read("worker-runtime-observed.json"));
+          const evidence = assertRecoveryWorkerRuntime(read("recovery-journal.json"), read("worker-runtime-inventory.json"), read("worker-runtime-observed.json"), parseRecoveryJson(process.env.RECOVERY_WORKER_SOURCE_JSON ?? "null"));
           writeFileSync(`${work}/worker-runtime-evidence.json`, JSON.stringify(evidence) + "\n", {mode:0o600});
           NODE
           }
@@ -601,10 +620,12 @@ jobs:
                 --data-binary '{"ipAllowList":[]}' \
                 "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
                 -o /dev/null || return 1
-              render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
-                | jq -e --arg targetDbId "$TARGET_DB_ID" '
+              local target
+              target="$(render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID")" || return 1
+              printf '%s' "$target" | node scripts/render-recovery-journal.mjs validate-json || return 1
+              jq -e --arg targetDbId "$TARGET_DB_ID" '
                     .id == $targetDbId and .ipAllowList == []
-                  ' >/dev/null || return 1
+                  ' <<<"$target" >/dev/null || return 1
               firewall_open=0
             fi
           }
@@ -629,6 +650,7 @@ jobs:
                     "https://api.render.com/v1/services/$service_id" \
                     2>/dev/null || true
                 )"
+                printf '%s' "$service" | node scripts/render-recovery-journal.mjs validate-json || continue
                 observed_service_id="$(
                   jq -er '(.service // .).id' <<<"$service" 2>/dev/null || true
                 )"
@@ -736,6 +758,7 @@ jobs:
             assert_recovery_trusted_topology || return 1
             local target deadline="${1:-$((SECONDS + 90))}"
             target="$(render_inventory_api "$deadline" "https://api.render.com/v1/postgres/$TARGET_DB_ID")" || return 1
+            printf '%s' "$target" | node scripts/render-recovery-journal.mjs validate-json || return 1
             target="$(jq -cse '
               if length == 1 and (.[0] | type) == "object" then .[0]
               else error("recovery_target_response_ambiguous") end
@@ -775,6 +798,7 @@ jobs:
                 "$WEB_SERVICE_ID") service_name=reviewrouter-web ;;
               esac
               service="$(render_inventory_api "$deadline" "https://api.render.com/v1/services/$service_id")" || return 1
+              printf '%s' "$service" | node scripts/render-recovery-journal.mjs validate-json || return 1
               service="$(jq -cse '
                 if length == 1 and (.[0] | type) == "object" then .[0]
                 else error("recovery_service_response_ambiguous") end
@@ -1045,6 +1069,7 @@ jobs:
               path=/health
               [[ "$service_id" != "$WEB_SERVICE_ID" ]] || path=/
               service="$(render_inventory_api "$deadline" "https://api.render.com/v1/services/$service_id")" || return 1
+              printf '%s' "$service" | node scripts/render-recovery-journal.mjs validate-json || return 1
               jq -e --arg id "$service_id" --arg path "$path" '
                 (.service // .) | .id == $id and .suspended == "not_suspended"
                 and .serviceDetails.healthCheckPath == $path
@@ -1080,6 +1105,7 @@ jobs:
                     "https://api.render.com/v1/services/$service_id"
                 )" || return 1
               fi
+              printf '%s' "$service" | node scripts/render-recovery-journal.mjs validate-json || return 1
               observation="$(
                 jq -ce --arg role "$role" --arg serviceId "$service_id" \
                   "$recovery_service_observation_filter" <<<"$service"
@@ -1110,6 +1136,7 @@ jobs:
                   render_api "https://api.render.com/v1/services/$service_id"
                 )" || return 1
               fi
+              printf '%s' "$service" | node scripts/render-recovery-journal.mjs validate-json || return 1
               observed_service_id="$(
                 jq -er '(.service // .).id' <<<"$service"
               )" || return 1
@@ -1145,6 +1172,7 @@ jobs:
                 render_api "https://api.render.com/v1/services/$service_id"
               )" || return 1
             fi
+            printf '%s' "$response" | node scripts/render-recovery-journal.mjs validate-json || return 1
             jq -e --arg serviceId "$service_id" '
               (.service // .)
               | .id == $serviceId and .suspended == "suspended"
@@ -1154,6 +1182,7 @@ jobs:
             local service_id="$1" deadline="${2:-$((SECONDS + 90))}" response
             response="$(render_inventory_api "$deadline" \
               "https://api.render.com/v1/services/$service_id")" || return 1
+            printf '%s' "$response" | node scripts/render-recovery-journal.mjs validate-json || return 1
             jq -e --arg id "$service_id" '
               (.service // .) | .id == $id and .suspended == "not_suspended"
             ' <<<"$response" >/dev/null
@@ -1411,7 +1440,31 @@ jobs:
           read_recovery_phase() {
             local service_id="$1" response
             response="$(render_inventory_api "$((SECONDS + 30))" "https://api.render.com/v1/services/$service_id/env-vars")" || return $?
-            printf '%s' "$response" | node scripts/render-recovery-journal.mjs read-phase
+            local reference
+            reference="$(printf '%s' "$response" | node scripts/render-recovery-journal.mjs read-phase "${2:-expand}")" || return 1
+            if [[ "${2:-expand}" == reference ]]; then
+              printf '%s\n' "$reference"
+              return
+            fi
+            if jq -e '.schemaVersion == 3' <<<"$reference" >/dev/null; then
+              printf '%s' "$reference" > "$work/phase-reference.json" || return 1
+              local history_id
+              for history_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+                fetch_recovery_deployment_inventory "$history_id" "$((SECONDS + 120))" \
+                  > "$work/phase-history-$history_id.json" || return 1
+              done
+              WORK="$work" node --input-type=module <<'NODE' || return 1
+          import {readFileSync} from "node:fs";
+          import {parseRecoveryJson, recoveryRoles, expandRecoveryJournal} from "./scripts/render-recovery-journal.mjs";
+          const read = name => parseRecoveryJson(readFileSync(`${process.env.WORK}/${name}`, "utf8"));
+          const reference = read("phase-reference.json");
+          const inventories = Object.fromEntries(recoveryRoles.map(role => [role,
+            read(`phase-history-${process.env[`${role.toUpperCase()}_SERVICE_ID`]}.json`)]));
+          process.stdout.write(JSON.stringify(expandRecoveryJournal(reference, inventories)) + "\n");
+          NODE
+            else
+              printf '%s\n' "$reference"
+            fi
           }
           read_recovery_replicas() {
             local service_id observed replicas='[]'
@@ -1433,21 +1486,24 @@ jobs:
           persist_recovery_journal() {
             local service_id observed
             WORK="$work" node --input-type=module <<'NODE' || return 1
-          import {readFileSync} from "node:fs";
-          import {parseRecoveryJson, loadRecoveryJournal} from "./scripts/render-recovery-journal.mjs";
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, compactRecoveryJournal} from "./scripts/render-recovery-journal.mjs";
           const state = parseRecoveryJson(readFileSync(`${process.env.WORK}/recovery-journal.json`, "utf8"));
-          loadRecoveryJournal(state, state.tuple);
+          const reference = compactRecoveryJournal(state);
+          writeFileSync(`${process.env.WORK}/recovery-phase-env.json`, JSON.stringify({value: JSON.stringify(reference)}) + "\n", {mode:0o600});
           NODE
-            jq -c '{value: tojson}' "$work/recovery-journal.json" > "$work/recovery-phase-env.json" || return 1
             for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
               render_inventory_api "$((SECONDS + 30))" -X PUT -H "Content-Type: application/json" \
                 --data-binary @"$work/recovery-phase-env.json" \
                 "https://api.render.com/v1/services/$service_id/env-vars/$recovery_phase_key" -o /dev/null || return 1
             done
             for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-              observed="$(read_recovery_phase "$service_id")" || return 1
-              jq -e --slurpfile expected "$work/recovery-journal.json" \
-                '. == $expected[0]' <<<"$observed" >/dev/null || return 1
+              observed="$(read_recovery_phase "$service_id" reference)" || return 1
+              # The reference authenticates the complete retained history. Its
+              # durable write needs no second provider history scan; restart
+              # admission resolves every reference before authorizing effects.
+              jq -e --slurpfile expected "$work/recovery-phase-env.json" \
+                '. == ($expected[0].value | fromjson)' <<<"$observed" >/dev/null || return 1
             done
           }
           persist_recovery_phase() {
@@ -1612,6 +1668,7 @@ jobs:
           # is permitted above the proof that all three exact IDs are stopped.
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
             service="$(render_api "https://api.render.com/v1/services/$service_id")"
+            printf '%s' "$service" | node scripts/render-recovery-journal.mjs validate-json
             state="$(
               jq -er --arg serviceId "$service_id" '
                 (.service // .)
@@ -1630,6 +1687,7 @@ jobs:
             suspension_observations='[]'
             for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
               service="$(render_api "https://api.render.com/v1/services/$service_id")"
+              printf '%s' "$service" | node scripts/render-recovery-journal.mjs validate-json
               suspension_observations="$(
                 jq -c \
                   --arg serviceId "$service_id" \
@@ -1975,7 +2033,7 @@ jobs:
           assert_recovery_admission_closed
           set_recovery_maintenance true
 
-          # Journal metadata is save-only and excluded from runtime fingerprints.
+          # Bounded journal references are excluded from runtime fingerprints.
           # Every effect intent and exact deployment binding is read back durably.
           assert_recovery_fleet_suspended "$work/pre-deploy-suspension-result.json"
           if jq -e '.phase == "fleet_verified_closed" or .phase == "complete"' "$work/recovery-journal.json" >/dev/null; then
@@ -2010,7 +2068,7 @@ jobs:
             # Web follows the verified replacement worker. API and worker
             # resumes can expose the retained worker and require its own proof.
             if [[ "$role" != web ]]; then assert_recovery_worker_runtime; fi
-            render_deploy_mutation -X POST \
+            render_deploy_mutation resume -X POST \
               "https://api.render.com/v1/services/$service_id/resume" -o /dev/null
             resume_deadline=$((SECONDS + 90))
             until assert_recovery_service_online "$service_id" "$resume_deadline"; do
@@ -2043,10 +2101,11 @@ jobs:
             assert_worker_effect_fenced
             assert_recovery_config_unchanged
             assert_recovery_service_online "$service_id"
-            (( $(date -u +%s) <= deploy_intent_epoch + 120 ))
+            deploy_intent_deadline="$(jq -er --arg role "$role" '.services[$role].intentDeadlineEpoch' "$work/recovery-journal.json")"
+            (( $(date -u +%s) < deploy_intent_deadline ))
             set +e
             deploy_response="$(
-              render_deploy_mutation -X POST -H "Content-Type: application/json" \
+              render_deploy_mutation "$deploy_intent_deadline" -X POST -H "Content-Type: application/json" \
                 --data-binary @"$work/deploy-request.json" \
                 "https://api.render.com/v1/services/$service_id/deploys"
             )"
@@ -2570,9 +2629,17 @@ jobs:
               "$@"
           }
           render_deploy_mutation() {
+            local intent_deadline="$1"
+            shift
             if [[ " $* " == *" -X "* ]]; then
               assert_recovery_target_identity || return 1
               assert_recovery_fleet_identity || return 1
+            fi
+            # Slow identity reads may consume the retained acceptance window.
+            # Check after them, at the single, non-retried POST boundary.
+            if [[ "$intent_deadline" != resume ]]; then
+              [[ "$intent_deadline" =~ ^[1-9][0-9]*$ ]] || return 1
+              (( $(date -u +%s) < intent_deadline )) || return 124
             fi
             curl --fail --silent --show-error \
               --connect-timeout 15 --max-time 120 \
@@ -2935,10 +3002,12 @@ jobs:
                 --data-binary '{"ipAllowList":[]}' \
                 "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
                 -o /dev/null || return 1
-              render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
-                | jq -e --arg targetDbId "$TARGET_DB_ID" '
+              local target
+              target="$(render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID")" || return 1
+              printf '%s' "$target" | node scripts/render-recovery-journal.mjs validate-json || return 1
+              jq -e --arg targetDbId "$TARGET_DB_ID" '
                     .id == $targetDbId and .ipAllowList == []
-                  ' >/dev/null || return 1
+                  ' <<<"$target" >/dev/null || return 1
               firewall_open=0
             fi
           }
@@ -2993,6 +3062,7 @@ jobs:
             assert_recovery_trusted_topology || return 1
             local target deadline="${1:-$((SECONDS + 90))}"
             target="$(render_inventory_api "$deadline" "https://api.render.com/v1/postgres/$TARGET_DB_ID")" || return 1
+            printf '%s' "$target" | node scripts/render-recovery-journal.mjs validate-json || return 1
             target="$(jq -cse '
               if length == 1 and (.[0] | type) == "object" then .[0]
               else error("recovery_target_response_ambiguous") end
@@ -3032,6 +3102,7 @@ jobs:
                 "$WEB_SERVICE_ID") service_name=reviewrouter-web ;;
               esac
               service="$(render_inventory_api "$deadline" "https://api.render.com/v1/services/$service_id")" || return 1
+              printf '%s' "$service" | node scripts/render-recovery-journal.mjs validate-json || return 1
               service="$(jq -cse '
                 if length == 1 and (.[0] | type) == "object" then .[0]
                 else error("recovery_service_response_ambiguous") end
@@ -3058,7 +3129,31 @@ jobs:
           read_recovery_phase() {
             local service_id="$1" response
             response="$(render_inventory_api "$((SECONDS + 30))" "https://api.render.com/v1/services/$service_id/env-vars")" || return $?
-            printf '%s' "$response" | node scripts/render-recovery-journal.mjs read-phase
+            local reference
+            reference="$(printf '%s' "$response" | node scripts/render-recovery-journal.mjs read-phase "${2:-expand}")" || return 1
+            if [[ "${2:-expand}" == reference ]]; then
+              printf '%s\n' "$reference"
+              return
+            fi
+            if jq -e '.schemaVersion == 3' <<<"$reference" >/dev/null; then
+              printf '%s' "$reference" > "$work/phase-reference.json" || return 1
+              local history_id
+              for history_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+                fetch_recovery_deployment_inventory "$history_id" "$((SECONDS + 120))" \
+                  > "$work/phase-history-$history_id.json" || return 1
+              done
+              WORK="$work" node --input-type=module <<'NODE' || return 1
+          import {readFileSync} from "node:fs";
+          import {parseRecoveryJson, recoveryRoles, expandRecoveryJournal} from "./scripts/render-recovery-journal.mjs";
+          const read = name => parseRecoveryJson(readFileSync(`${process.env.WORK}/${name}`, "utf8"));
+          const reference = read("phase-reference.json");
+          const inventories = Object.fromEntries(recoveryRoles.map(role => [role,
+            read(`phase-history-${process.env[`${role.toUpperCase()}_SERVICE_ID`]}.json`)]));
+          process.stdout.write(JSON.stringify(expandRecoveryJournal(reference, inventories)) + "\n");
+          NODE
+            else
+              printf '%s\n' "$reference"
+            fi
           }
           read_recovery_replicas() {
             local service_id observed replicas='[]'
@@ -3080,21 +3175,24 @@ jobs:
           persist_recovery_journal() {
             local service_id observed
             WORK="$work" node --input-type=module <<'NODE' || return 1
-          import {readFileSync} from "node:fs";
-          import {parseRecoveryJson, loadRecoveryJournal} from "./scripts/render-recovery-journal.mjs";
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, compactRecoveryJournal} from "./scripts/render-recovery-journal.mjs";
           const state = parseRecoveryJson(readFileSync(`${process.env.WORK}/recovery-journal.json`, "utf8"));
-          loadRecoveryJournal(state, state.tuple);
+          const reference = compactRecoveryJournal(state);
+          writeFileSync(`${process.env.WORK}/recovery-phase-env.json`, JSON.stringify({value: JSON.stringify(reference)}) + "\n", {mode:0o600});
           NODE
-            jq -c '{value: tojson}' "$work/recovery-journal.json" > "$work/recovery-phase-env.json" || return 1
             for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
               render_inventory_api "$((SECONDS + 30))" -X PUT -H "Content-Type: application/json" \
                 --data-binary @"$work/recovery-phase-env.json" \
                 "https://api.render.com/v1/services/$service_id/env-vars/$recovery_phase_key" -o /dev/null || return 1
             done
             for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-              observed="$(read_recovery_phase "$service_id")" || return 1
-              jq -e --slurpfile expected "$work/recovery-journal.json" \
-                '. == $expected[0]' <<<"$observed" >/dev/null || return 1
+              observed="$(read_recovery_phase "$service_id" reference)" || return 1
+              # The reference authenticates the complete retained history. Its
+              # durable write needs no second provider history scan; restart
+              # admission resolves every reference before authorizing effects.
+              jq -e --slurpfile expected "$work/recovery-phase-env.json" \
+                '. == ($expected[0].value | fromjson)' <<<"$observed" >/dev/null || return 1
             done
           }
           journal_service_phase() {
@@ -3832,10 +3930,11 @@ jobs:
             persist_recovery_journal
             assert_recovery_admission_closed
             assert_recovery_config_unchanged
-            (( $(date -u +%s) <= deploy_intent_epoch + 120 ))
+            deploy_intent_deadline="$(jq -er --arg role "$role" '.services[$role].intentDeadlineEpoch' "$work/recovery-journal.json")"
+            (( $(date -u +%s) < deploy_intent_deadline ))
             set +e
             deploy="$(
-              render_deploy_mutation -X POST -H "Content-Type: application/json" \
+              render_deploy_mutation "$deploy_intent_deadline" -X POST -H "Content-Type: application/json" \
                 --data-binary @"$work/deploy-request.json" \
                 "https://api.render.com/v1/services/$service_id/deploys"
             )"
