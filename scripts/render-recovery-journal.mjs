@@ -776,8 +776,14 @@ export function assertRecoveryDeploymentInventory(
 
 // Conservative topology: membership (including SET ROLE), ownership, grant
 // options, PUBLIC and column UPDATE paths require operator repair, never a
-// broader privilege revocation. The evidence contains ACL metadata only.
+// broader privilege revocation. Evidence contains generation and ACL metadata.
 export const workerFenceSnapshotSql = `SELECT jsonb_build_object(
+  'database', (SELECT jsonb_build_object(
+    'name', current_database(), 'oid', d.oid::text,
+    'systemIdentifier', (SELECT system_identifier::text FROM pg_control_system()),
+    'boundSystemIdentifier', (shobj_description(d.oid, 'pg_database')::jsonb)->>'systemIdentifier',
+    'recoveryWitnessSha256', (shobj_description(d.oid, 'pg_database')::jsonb)->>'recoveryWitnessSha256'
+  ) FROM pg_database d WHERE d.datname = current_database()),
   'owner', pg_get_userbyid(c.relowner),
   'role', (SELECT jsonb_build_object('name', rolname, 'superuser', rolsuper,
     'createRole', rolcreaterole, 'bypassRls', rolbypassrls) FROM pg_roles
@@ -801,6 +807,16 @@ export const workerFenceSnapshotSql = `SELECT jsonb_build_object(
 ) FROM pg_class c WHERE c.oid = 'public."OutboxEvent"'::regclass`;
 
 export function planWorkerEffectFence(before) {
+  fail(
+    typeof before?.database?.name === "string" &&
+      before.database.name.length > 0 &&
+      /^[1-9][0-9]*$/.test(before.database.oid) &&
+      /^[1-9][0-9]*$/.test(before.database.systemIdentifier) &&
+      before.database.boundSystemIdentifier ===
+        before.database.systemIdentifier &&
+      /^[a-f0-9]{64}$/.test(before.database.recoveryWitnessSha256),
+    "worker_database_generation",
+  );
   fail(before?.role?.name === "reviewrouter_worker", "worker_identity");
   fail(
     before.role.superuser === false &&
@@ -851,28 +867,6 @@ export function planWorkerEffectFence(before) {
   fenced.effectiveUpdate = false;
   fenced.effectiveColumnUpdate = false;
   return { before: globalThis.structuredClone(before), fenced };
-}
-
-// Missing retained evidence cannot authorize restoration. Compensation may
-// nevertheless prove an already-fenced ACL and retain a local REVOKE-only plan.
-export function planWorkerCompensationFence(observed) {
-  if (
-    observed?.effectiveUpdate !== false ||
-    observed?.effectiveColumnUpdate !== false
-  )
-    return planWorkerEffectFence(observed);
-  const before = globalThis.structuredClone(observed);
-  before.tableAcl.push({
-    grantee: "reviewrouter_worker",
-    grantor: before.owner,
-    privilege: "UPDATE",
-    grantable: false,
-  });
-  before.effectiveUpdate = true;
-  before.effectiveColumnUpdate = true;
-  const plan = planWorkerEffectFence(before);
-  fail(equal(plan.fenced, observed), "compensation_fenced_snapshot");
-  return plan;
 }
 
 export function workerEffectFenceSql(evidence, restore = false) {
@@ -991,6 +985,10 @@ export function recoveryContinuationMode(journal) {
 // This returns no phase, deploy ID, credentials or permission to restore UPDATE.
 export function recoveryCompensationFence(replicas, expectedTuple) {
   fail(Array.isArray(replicas) && replicas.length === 3, "replica_count");
+  fail(
+    replicas.every((value) => value !== null),
+    "compensation_restoration_evidence_missing",
+  );
   const journals = replicas.map((value) =>
     loadRecoveryJournal(value, expectedTuple),
   );
@@ -1087,6 +1085,114 @@ export function assertRecoveryRetainedInventory(journal, role, inventory) {
     service.intentDeadlineEpoch,
   );
   return assertRecoveryDeploymentInventory(bound, role, inventory, true);
+}
+
+// Render's saved environment is replacement configuration, not the suspended
+// deployment's effective configuration. Read its existing durable runtime
+// canary instead: the SECURITY DEFINER responder authenticates session_user,
+// local service/release/provenance and the physical database recovery witness.
+// Never manufacture a challenge or a principal proof in the recovery runner.
+export function workerRuntimeObservationSql(journal, inventory) {
+  const state = loadRecoveryJournal(journal, journal.tuple);
+  assertRecoveryRetainedInventory(state, "worker", inventory);
+  const literal = (value) => `'${value.replaceAll("'", "''")}'`;
+  return `SELECT jsonb_build_object(
+    'fence', (${workerFenceSnapshotSql}),
+    'proofProtected', (SELECT count(*) = 2 AND bool_and(
+      pg_get_userbyid(c.relowner) <> 'reviewrouter_worker'
+      AND NOT has_table_privilege('reviewrouter_worker', c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE')
+      AND NOT has_any_column_privilege('reviewrouter_worker', c.oid, 'INSERT,UPDATE')
+      AND NOT has_table_privilege('public', c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE')
+      AND NOT has_any_column_privilege('public', c.oid, 'INSERT,UPDATE'))
+      FROM pg_class c WHERE c.oid IN ('public."RuntimeCanaryChallengeProof"'::regclass,
+        'public."RuntimeCanaryChallenge"'::regclass)),
+    'proof', (SELECT jsonb_build_object(
+      'runtime', to_jsonb(p) || jsonb_build_object('provedAt', to_char(p."provedAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')),
+      'challenge', to_jsonb(c) || jsonb_build_object(
+        'requestedAt', to_char(c."requestedAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+        'expiresAt', to_char(c."expiresAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
+      FROM public."RuntimeCanaryChallengeProof" p
+      JOIN public."RuntimeCanaryChallenge" c ON c."nonce" = p."nonce"
+      WHERE p."runtimeRole" = 'worker'
+        AND p."serviceId" = ${literal(state.tuple.services.worker.id)}
+        AND p."deployId" = ${literal(inventory[0].deployId)}
+      ORDER BY p."provedAt" DESC, p."nonce" LIMIT 1)
+  );`;
+}
+
+export function assertRecoveryWorkerRuntime(journal, inventory, observed) {
+  const state = validateRecoveryPreparation(journal);
+  assertRecoveryRetainedInventory(state, "worker", inventory);
+  fail(
+    equal(observed?.fence, state.workerFence.fenced),
+    "worker_runtime_fence",
+  );
+  fail(observed.proofProtected === true, "worker_runtime_evidence_authority");
+  const runtime = observed.proof?.runtime;
+  const challenge = observed.proof?.challenge;
+  const deployment = inventory[0];
+  const database = state.workerFence.fenced.database;
+  fail(runtime && challenge, "worker_runtime_evidence_missing");
+  fail(
+    runtime.runtimeRole === "worker" &&
+      runtime.databaseRole === "reviewrouter_worker" &&
+      runtime.serviceId === state.tuple.services.worker.id &&
+      runtime.deployId === deployment.deployId &&
+      deployment.observedStatus === "live" &&
+      deployment.deploymentIdentityKind === "git" &&
+      runtime.deploymentProvenance === deployment.observedCommitSha &&
+      runtime.releaseCommitSha === deployment.observedCommitSha &&
+      // The responder proves its immutable provenance; the challenge supplies
+      // the deploy ID. A reused provenance cannot distinguish two runtimes.
+      inventory.filter(
+        (item) => item.observedCommitSha === runtime.deploymentProvenance,
+      ).length === 1,
+    "worker_runtime_identity",
+  );
+  fail(
+    runtime.systemIdentifier === database.systemIdentifier &&
+      runtime.recoveryWitnessSha256 === database.recoveryWitnessSha256 &&
+      challenge.systemIdentifier === runtime.systemIdentifier &&
+      challenge.recoveryWitnessSha256 === runtime.recoveryWitnessSha256,
+    "worker_runtime_generation",
+  );
+  fail(
+    /^[a-f0-9]{48}$/.test(runtime.nonce) &&
+      runtime.nonce === challenge.nonce &&
+      challenge.releaseCommitSha === runtime.releaseCommitSha &&
+      typeof challenge.rolloutId === "string" &&
+      challenge.rolloutId.length > 0 &&
+      /^sha256:[a-f0-9]{64}$/.test(runtime.servicePostconditionSha256) &&
+      Array.isArray(challenge.serviceFacts) &&
+      challenge.serviceFacts.length === 3 &&
+      equal(
+        challenge.serviceFacts.map((fact) => fact.runtimeRole).sort(),
+        [...recoveryRoles].sort(),
+      ) &&
+      challenge.serviceFacts.filter((fact) => fact.runtimeRole === "worker")
+        .length === 1 &&
+      equal(
+        challenge.serviceFacts.find((fact) => fact.runtimeRole === "worker"),
+        {
+          runtimeRole: "worker",
+          serviceId: runtime.serviceId,
+          deployId: runtime.deployId,
+          deploymentProvenance: runtime.deploymentProvenance,
+          servicePostconditionSha256: runtime.servicePostconditionSha256,
+        },
+      ) &&
+      recoveryTimestamp(challenge.requestedAt) >=
+        recoveryTimestamp(deployment.createdAt) &&
+      recoveryTimestamp(challenge.expiresAt) -
+        recoveryTimestamp(challenge.requestedAt) ===
+        10 &&
+      recoveryTimestamp(runtime.provedAt) >=
+        recoveryTimestamp(challenge.requestedAt) &&
+      recoveryTimestamp(runtime.provedAt) <=
+        recoveryTimestamp(challenge.expiresAt),
+    "worker_runtime_configuration",
+  );
+  return globalThis.structuredClone(runtime);
 }
 
 // Production identity is anchored in the checked-in workspace/environment and

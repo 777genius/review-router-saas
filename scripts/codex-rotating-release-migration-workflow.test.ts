@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -40,6 +41,8 @@ import {
   planWorkerEffectFence,
   workerEffectFenceSql,
   workerFenceSnapshotSql,
+  assertRecoveryWorkerRuntime,
+  workerRuntimeObservationSql,
 } from "./render-recovery-journal.mjs";
 import { canonicalPrismaMigrationCatalog } from "./lib/canonical-prisma-migration-catalog.mjs";
 
@@ -141,6 +144,13 @@ const renderInventoryApi = extractRecoveryBashFunction("render_inventory_api");
 const fetchRecoveryDeploymentInventory = extractRecoveryBashFunction(
   "fetch_recovery_deployment_inventory",
 );
+const workerDatabaseFixture = {
+  name: "review_router",
+  oid: "16384",
+  systemIdentifier: "7612345678901234567",
+  boundSystemIdentifier: "7612345678901234567",
+  recoveryWitnessSha256: "e".repeat(64),
+};
 const releaseCommitSha = "a".repeat(40);
 const releaseImageDigest = `sha256:${"b".repeat(64)}`;
 const serviceId = "srv-api";
@@ -2235,6 +2245,7 @@ describe("retained Render recovery journal", () => {
   });
   it("retains validated worker restoration evidence and effective configuration in preparation", () => {
     const fence = planWorkerEffectFence({
+      database: workerDatabaseFixture,
       owner: "schema_owner",
       role: {
         name: "reviewrouter_worker",
@@ -2285,6 +2296,7 @@ describe("retained Render recovery journal", () => {
 
   it("retains only exact compensation evidence across torn terminal writes", () => {
     const fence = planWorkerEffectFence({
+      database: workerDatabaseFixture,
       owner: "schema_owner",
       role: {
         name: "reviewrouter_worker",
@@ -2361,6 +2373,7 @@ describe("retained Render recovery journal", () => {
     ].includes(phase);
     if (unsafeBootstrap) state.bootstrapPhase = phase;
     const fence = planWorkerEffectFence({
+      database: workerDatabaseFixture,
       owner: "schema_owner",
       role: {
         name: "reviewrouter_worker",
@@ -3181,6 +3194,10 @@ if persist_recovery_phase admission_closed; then printf authorized; else exit 1;
       state.phase = "prepared";
       writeFileSync(join(work, "recovery-journal.json"), JSON.stringify(state));
       writeFileSync(
+        join(work, "durable-before-finalization.json"),
+        JSON.stringify(state),
+      );
+      writeFileSync(
         join(work, "worker-effect-fence.json"),
         JSON.stringify(fence),
       );
@@ -3199,6 +3216,9 @@ if persist_recovery_phase admission_closed; then printf authorized; else exit 1;
       const finalization = recover.slice(start, end).replace(/^ {10}/gmu, "");
       const script = `set -euo pipefail
 work="$1"
+export API_SERVICE_ID=srv-api WORKER_SERVICE_ID=srv-worker WEB_SERVICE_ID=srv-web
+export TARGET_DB_ID=dpg-target RENDER_OWNER_ID=tea-owner RENDER_ENVIRONMENT_ID=evm-production RELEASE_COMMIT_SHA=${releaseCommitSha}
+read_recovery_replicas() { jq -s '.[0] as $s | [$s,$s,$s]' "$work/durable-before-finalization.json"; }
 failure="$2"
 worker_fence_restored=0
 suspension_guard_armed=1
@@ -3546,6 +3566,7 @@ assert_recovery_admission_closed() { :; }
 assert_recovery_target_identity() { :; }
 assert_recovery_fleet_identity() { :; }
 assert_recovery_config_unchanged() { :; }
+assert_recovery_worker_runtime() { :; }
 assert_recovery_maintenance() { :; }
 set_recovery_maintenance() { printf closed > "$work/fleet"; }
 compensate_recovery_fleet() { printf closed > "$work/fleet"; }
@@ -3628,6 +3649,7 @@ assert_recovery_maintenance() { :; }
 assert_recovery_admission_closed() { :; }
 assert_worker_effect_fenced() { :; }
 assert_recovery_config_unchanged() { :; }
+assert_recovery_worker_runtime() { :; }
 assert_recovery_service_online() { [[ -f "$work/$1.online" ]]; }
 render_deploy_mutation() {
   local url="" arg id
@@ -3720,6 +3742,7 @@ ${activation}
           "worker_fence_sql",
           "assert_worker_effect_fenced",
           "read_recovery_phase",
+          "read_recovery_replicas",
           "persist_recovery_journal",
           "persist_recovery_phase",
           "retain_bootstrap_compensation_fence",
@@ -3769,6 +3792,10 @@ fi
 `;
         const env = {
           ...subprocessEnv,
+          TARGET_DB_ID: tuple.targetDbId,
+          RENDER_OWNER_ID: tuple.ownerId,
+          RENDER_ENVIRONMENT_ID: tuple.environmentId,
+          RELEASE_COMMIT_SHA: releaseCommitSha,
           API_SERVICE_ID: "srv-api",
           WORKER_SERVICE_ID: "srv-worker",
           WEB_SERVICE_ID: "srv-web",
@@ -4244,6 +4271,7 @@ assert_recovery_service_suspended() { :; }
 assert_recovery_maintenance() { :; }
 assert_recovery_admission_closed() { :; }
 assert_worker_effect_fenced() { :; }
+assert_recovery_worker_runtime() { :; }
 render_deploy_mutation() { printf '%s\\n' "$*" >> "$work/effects"; exit 87; }
 ${extractRecoveryBashFunction("assert_recovery_config_unchanged")}
 ${extractRecoveryBashFunction("assert_recovery_retained_inventories")}
@@ -4958,6 +4986,7 @@ printf deploy_allowed
     },
   );
   const before = () => ({
+    database: workerDatabaseFixture,
     owner: "reviewrouter_release_schema_owner",
     role: {
       name: "reviewrouter_worker",
@@ -5049,21 +5078,13 @@ printf deploy_allowed
 });
 
 describe("worker compensation after terminal journal rejection", () => {
-  it.each([
-    "none",
-    "maintenance",
-    "suspend",
-    "open",
-    "sql",
-    "revoke",
-    "fence",
-    "admission",
-    "close",
-  ])("executes cleanup and preserves failure on %s error", (failure) => {
-    const work = mkdtempSync(join(tmpdir(), "recovery-compensation-"));
-    try {
-      writeFileSync(join(work, "worker-effect-fence.json"), "{}");
-      const script = `set -euo pipefail
+  it.each(["none", "maintenance", "suspend", "open", "close"])(
+    "executes cleanup and preserves failure on %s error",
+    (failure) => {
+      const work = mkdtempSync(join(tmpdir(), "recovery-compensation-"));
+      try {
+        writeFileSync(join(work, "worker-effect-fence.json"), "{}");
+        const script = `set -euo pipefail
 work="$1"
 failure="$2"
 worker_fence_restored=0
@@ -5080,37 +5101,34 @@ assert_worker_effect_fenced() { step fence; }
 assert_recovery_admission_closed() { step admission; }
 close_firewall() { step close; }
 close_recovery_admission() { :; }
+read_recovery_replicas() { printf '[null,null,null]'; }
 ${extractRecoveryBashFunction("retain_bootstrap_compensation_fence")}
 ${extractRecoveryBashFunction("compensate_worker_effect_fence")}
 ${cleanupRecovery}
 trap cleanup EXIT
 exit 1
 `;
-      const result = spawnSync("bash", ["-c", script, "bash", work, failure], {
-        encoding: "utf8",
-        env: subprocessEnv,
-      });
-      expect(result.status, result.stderr).toBe(1);
-      const events = readFileSync(join(work, "events"), "utf8")
-        .trim()
-        .split("\n");
-      expect(events.slice(0, 3)).toEqual(["maintenance", "suspend", "open"]);
-      expect(events.at(-1)).toBe("close");
-      if (failure === "none")
-        expect(events).toEqual([
-          "maintenance",
-          "suspend",
-          "open",
-          "sql",
-          "revoke",
-          "fence",
-          "admission",
-          "close",
-        ]);
-    } finally {
-      rmSync(work, { recursive: true, force: true });
-    }
-  });
+        const result = spawnSync(
+          "bash",
+          ["-c", script, "bash", work, failure],
+          {
+            encoding: "utf8",
+            env: subprocessEnv,
+          },
+        );
+        expect(result.status, result.stderr).toBe(1);
+        const events = readFileSync(join(work, "events"), "utf8")
+          .trim()
+          .split("\n");
+        expect(events.slice(0, 3)).toEqual(["maintenance", "suspend", "open"]);
+        expect(events.at(-1)).toBe("close");
+        if (failure === "none")
+          expect(events).toEqual(["maintenance", "suspend", "open", "close"]);
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    },
+  );
   it("reacquires bounded admin connectivity before re-fencing after an uncertain firewall close", () => {
     const open = extractRecoveryBashFunction("open_recovery_database");
     expect(open).toContain("deadline=$((SECONDS + 120))");
@@ -5128,6 +5146,7 @@ exit 1
 
 describe("PR247 recovery barrier regressions through extracted Bash", () => {
   const before = {
+    database: workerDatabaseFixture,
     owner: "schema_owner",
     role: {
       name: "reviewrouter_worker",
@@ -5271,7 +5290,7 @@ ${bootstrap}`;
   );
 
   it.each([false, true])(
-    "reconciles missing compensation evidence when already fenced=%s",
+    "rejects missing durable compensation evidence when already fenced=%s",
     (alreadyFenced) => {
       const work = mkdtempSync(join(tmpdir(), "recovery-missing-fence-"));
       try {
@@ -5286,6 +5305,7 @@ ${bootstrap}`;
             "-c",
             `set -euo pipefail
 work="$1"
+read_recovery_replicas() { printf '[null,null,null]'; }
 worker_fence_restored=0
 recovery_bootstrap=1
 assert_recovery_target_identity() { :; }
@@ -5305,13 +5325,13 @@ compensate_worker_effect_fence
           ],
           { env: subprocessEnv, encoding: "utf8", timeout: 15000 },
         );
-        expect(result.status, result.stderr).toBe(0);
+        expect(result.status, result.stderr).not.toBe(0);
         expect(readFileSync(join(work, "events"), "utf8")).toBe(
-          "open\nclosed\nrevoke\nclosed_proof\n",
+          "open\nclosed\n",
         );
         expect(
           JSON.parse(readFileSync(join(work, "snapshot.json"), "utf8")),
-        ).toEqual(plan.fenced);
+        ).toEqual(alreadyFenced ? plan.fenced : before);
         expect(existsSync(join(work, "recovery-journal.json"))).toBe(false);
       } finally {
         rmSync(work, { recursive: true, force: true });
@@ -5452,6 +5472,7 @@ describe("authenticated topology and revalidation in actual workflow Bash", () =
         }),
       );
       const fence = planWorkerEffectFence({
+        database: workerDatabaseFixture,
         owner: "schema_owner",
         role: {
           name: "reviewrouter_worker",
@@ -5810,6 +5831,7 @@ describe("bootstrap grant refresh preserves the committed fence", () => {
     const work = mkdtempSync(join(tmpdir(), "recovery-grant-fence-"));
     try {
       const fence = planWorkerEffectFence({
+        database: workerDatabaseFixture,
         owner: "schema_owner",
         role: {
           name: "reviewrouter_worker",
@@ -6351,6 +6373,7 @@ describe("r36 immutable compensation authority despite configuration drift", () 
           JSON.stringify(trusted),
         );
         const fence = planWorkerEffectFence({
+          database: workerDatabaseFixture,
           owner: "schema_owner",
           role: {
             name: "reviewrouter_worker",
@@ -6391,7 +6414,12 @@ describe("r36 immutable compensation authority despite configuration drift", () 
             ),
           ),
         );
+        const durable = r8Fixture().state;
+        durable.workerFence = fence;
+        writeFileSync(join(work, "durable.json"), JSON.stringify(durable));
         const names = [
+          "read_recovery_phase",
+          "read_recovery_replicas",
           "assert_recovery_config_unchanged",
           "render_api",
           "render_inventory_api",
@@ -6438,7 +6466,7 @@ curl() {
     return 0
   fi
   if [[ "$url" == */env-vars ]]; then
-    jq -nc --arg defect "$DEFECT" '[{key:"FIXTURE",value:(if $defect == "environment_values" then "drift" else "initial" end)}]'; return
+    jq -nc --rawfile journal "$work/durable.json" --arg defect "$DEFECT" '[{key:"REVIEW_ROUTER_PG17_RECOVERY_PHASE",value:$journal},{key:"FIXTURE",value:(if $defect == "environment_values" then "drift" else "initial" end)}]'; return
   fi
   if [[ "$url" == */connection-info ]]; then printf '{"externalConnectionString":"postgresql://test@db.invalid/test"}'; return; fi
   if [[ "$url" == */postgres/* ]]; then
@@ -6488,6 +6516,7 @@ ${command}
           {
             env: {
               ...subprocessEnv,
+              RELEASE_COMMIT_SHA: releaseCommitSha,
               TARGET_DB_ID: "dpg-target",
               API_SERVICE_ID: "srv-api",
               WORKER_SERVICE_ID: "srv-worker",
@@ -7761,5 +7790,658 @@ close_firewall
         fixture.result,
       ),
     ).toThrow("registration_configuration_drift");
+  });
+});
+
+// R8 focused cases also run with node:test when the offline host lacks Vitest.
+function r8Fixture() {
+  const services = Object.fromEntries(
+    recoveryRoles.map((role) => [
+      role,
+      {
+        id: `srv-${role}`,
+        name: `reviewrouter-${role}`,
+        type: role === "worker" ? "background_worker" : "web_service",
+        repo: "https://github.com/777genius/review-router-saas",
+        branch: "main",
+        autoDeploy: "no",
+        ownerId: recoveryProductionScope.ownerId,
+        environmentId: recoveryProductionScope.environmentId,
+        configFingerprint: recoveryConfigFingerprint([
+          {
+            key: "DATABASE_URL",
+            value:
+              "postgresql://reviewrouter_worker:fixture@target.invalid/review_router",
+          },
+        ]),
+      },
+    ]),
+  );
+  const tuple = {
+    operationId: "r8-fixture",
+    targetDbId: "dpg-target",
+    ...recoveryProductionScope,
+    releaseCommitSha,
+    services,
+  };
+  const inventories = Object.fromEntries(
+    recoveryRoles.map((role) => [
+      role,
+      [
+        {
+          serviceId: `srv-${role}`,
+          deployId: `dep-old-${role}`,
+          statusClass: "active",
+          observedStatus: "live",
+          deploymentIdentityKind: "git",
+          observedCommitSha: "b".repeat(40),
+          observedImageDigest: null,
+          createdAt: "2026-09-05T00:00:00Z",
+        },
+      ],
+    ]),
+  );
+  const fence = planWorkerEffectFence({
+    database: workerDatabaseFixture,
+    owner: "schema_owner",
+    role: {
+      name: "reviewrouter_worker",
+      superuser: false,
+      createRole: false,
+      bypassRls: false,
+    },
+    memberships: [],
+    columnAcl: [],
+    tableAcl: [
+      {
+        grantee: "reviewrouter_worker",
+        grantor: "schema_owner",
+        privilege: "UPDATE",
+        grantable: false,
+      },
+    ],
+    effectiveUpdate: true,
+    effectiveColumnUpdate: true,
+  });
+  const fresh = createRecoveryJournal(tuple, inventories);
+  const state = attachRecoveryPreparation(
+    advanceRecoveryPhase(fresh, "frozen"),
+    Object.fromEntries(
+      recoveryRoles.map((role) => [
+        role,
+        {
+          serviceId: `srv-${role}`,
+          fingerprint: services[role]!.configFingerprint,
+        },
+      ]),
+    ),
+    fence,
+  );
+  const runtime = {
+    nonce: "f".repeat(48),
+    runtimeRole: "worker",
+    databaseRole: "reviewrouter_worker",
+    serviceId: "srv-worker",
+    deployId: "dep-old-worker",
+    deploymentProvenance: "b".repeat(40),
+    servicePostconditionSha256: `sha256:${"d".repeat(64)}`,
+    systemIdentifier: workerDatabaseFixture.systemIdentifier,
+    recoveryWitnessSha256: workerDatabaseFixture.recoveryWitnessSha256,
+    releaseCommitSha: "b".repeat(40),
+    provedAt: "2026-09-05T00:01:01Z",
+  };
+  const observed = {
+    fence: fence.fenced,
+    proofProtected: true,
+    proof: {
+      runtime,
+      challenge: {
+        nonce: runtime.nonce,
+        rolloutId: "retained-rollout",
+        releaseCommitSha: runtime.releaseCommitSha,
+        systemIdentifier: runtime.systemIdentifier,
+        recoveryWitnessSha256: runtime.recoveryWitnessSha256,
+        requestedAt: "2026-09-05T00:01:00Z",
+        expiresAt: "2026-09-05T00:01:10Z",
+        serviceFacts: recoveryRoles.map((role) => ({
+          runtimeRole: role,
+          serviceId: `srv-${role}`,
+          deployId: `dep-old-${role}`,
+          deploymentProvenance: runtime.deploymentProvenance,
+          servicePostconditionSha256: runtime.servicePostconditionSha256,
+        })),
+      },
+    },
+  };
+  return { tuple, fresh, state, inventories, fence, observed };
+}
+
+function r8VerifyService(
+  state: ReturnType<typeof createRecoveryJournal>,
+  role: string,
+) {
+  const before = state.services[role].beforeInventory;
+  const inventory = [
+    {
+      ...before[0],
+      deployId: `dep-target-${role}`,
+      observedCommitSha: releaseCommitSha,
+      createdAt: "2026-09-05T01:00:01Z",
+    },
+    ...before.map((item: Record<string, unknown>) => ({
+      ...item,
+      observedStatus: "deactivated",
+      statusClass: "terminal",
+    })),
+  ];
+  state = advanceRecoveryService(state, role, "resume_intent");
+  state = advanceRecoveryService(state, role, "resumed");
+  state = advanceRecoveryService(state, role, "deploy_intent", {
+    inventory: before,
+    intentEpoch: Date.parse("2026-09-05T01:00:00Z") / 1000,
+  });
+  state = advanceRecoveryService(state, role, "deploy_bound", {
+    deployId: `dep-target-${role}`,
+  });
+  return {
+    state: advanceRecoveryService(state, role, "verified", { inventory }),
+    inventory,
+  };
+}
+
+describe("PR247 R8 permission and durable runtime boundaries", () => {
+  it("executes trust with effective job permissions and rejects removal of actions:read", () => {
+    const permissionBlock = trustBootstrap.match(
+      /\n    permissions:\n((?:      [^\n]+\n)+)/u,
+    )![1]!;
+    const permissions = Object.fromEntries(
+      [...permissionBlock.matchAll(/      ([a-z-]+): (read|write)/gu)].map(
+        (match) => [match[1], match[2]],
+      ),
+    );
+    assert.deepEqual(permissions, { actions: "read", contents: "read" });
+    const program = trustBootstrap.match(
+      /<<'NODE'\n([\s\S]*?)\n {10}NODE/u,
+    )![1]!;
+    for (const grants of [permissions, { contents: "read" }]) {
+      const root = mkdtempSync(join(tmpdir(), "r8-permissions-"));
+      try {
+        const result = spawnSync(
+          process.execPath,
+          [
+            "--input-type=module",
+            "-e",
+            `
+const permissions = JSON.parse(process.env.PERMISSIONS);
+globalThis.fetch = async url => {
+ const branch = url.endsWith('/branches/main');
+ return {ok: permissions[branch ? 'contents' : 'actions'] === 'read', status: 403, json: async () => branch
+ ? {protected: true, commit: {sha: process.env.GITHUB_SHA}}
+ : {protection_rules:[{type:'required_reviewers',reviewers:[{type:'Team',id:1}],prevent_self_review:true}],deployment_branch_policy:{protected_branches:true,custom_branch_policies:false}}};
+};
+${program}`,
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              ...subprocessEnv,
+              PERMISSIONS: JSON.stringify(grants),
+              GITHUB_REPOSITORY: "fixture/recovery",
+              GITHUB_SHA: releaseCommitSha,
+              GITHUB_REF: "refs/heads/main",
+              GITHUB_EVENT_NAME: "workflow_dispatch",
+              GITHUB_OUTPUT: join(root, "output"),
+              GH_TOKEN: "fixture-only",
+            },
+          },
+        );
+        assert.equal(result.status === 0, "actions" in grants, result.stderr);
+        assert.equal(existsSync(join(root, "output")), "actions" in grants);
+        if (!("actions" in grants))
+          assert.match(result.stderr, /environment_api_403/u);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  for (const loss of [
+    "absent",
+    "local_only",
+    "partial",
+    "write_response",
+    "read_response",
+    "before_revoke",
+    "revoke_response",
+    "after_revoke",
+    "none",
+  ]) {
+    it(`keeps exact restart ACL authority after ${loss}`, () => {
+      const root = mkdtempSync(join(tmpdir(), "r8-compensation-"));
+      const first = join(root, "first"),
+        next = join(root, "next");
+      mkdirSync(first);
+      mkdirSync(next);
+      const fixture = r8Fixture();
+      try {
+        writeFileSync(
+          join(root, "snapshot.json"),
+          JSON.stringify(fixture.fence.before),
+        );
+        for (const role of recoveryRoles)
+          writeFileSync(join(root, `srv-${role}.json`), "null");
+        if (loss !== "absent")
+          writeFileSync(
+            join(first, "recovery-journal.json"),
+            JSON.stringify(fixture.fresh),
+          );
+        // Stale local evidence must confer no authority when every replica is absent.
+        if (loss === "absent")
+          writeFileSync(
+            join(first, "worker-effect-fence.json"),
+            JSON.stringify(fixture.fence),
+          );
+        const functions = [
+          "read_recovery_phase",
+          "read_recovery_replicas",
+          "persist_recovery_journal",
+          "capture_worker_effect_fence",
+          "retain_bootstrap_compensation_fence",
+          "compensate_worker_effect_fence",
+          "worker_fence_sql",
+          "assert_worker_effect_fenced",
+          "persist_recovery_phase",
+          "establish_recovery_barriers",
+        ];
+        const script = `set -euo pipefail
+work="$1"; remote="$2"; loss="$3"; mode="$4"
+recovery_phase_key=REVIEW_ROUTER_PG17_RECOVERY_PHASE
+assert_recovery_target_identity() { :; }
+assert_recovery_fleet_identity() { :; }
+open_recovery_database() { :; }
+close_recovery_admission() { printf closed > "$remote/admission"; }
+assert_recovery_admission_closed() { [[ "$(cat "$remote/admission")" == closed ]]; }
+set_recovery_maintenance() { :; }
+assert_recovery_maintenance() { :; }
+render_inventory_api() {
+ local arg url='' payload='' previous='' id
+ for arg in "$@"; do
+  [[ "$arg" != https:* ]] || url="$arg"
+  [[ "$previous" != --data-binary ]] || payload="\${arg#@}"
+  previous="$arg"
+ done
+ id="\${url#*services/}"; id="\${id%%/*}"
+ if [[ " $* " == *' -X PUT '* ]]; then
+  [[ "$loss" != local_only ]] || return 28
+  [[ "$loss" != partial || "$id" == srv-api ]] || return 28
+  jq -r '.value' "$payload" > "$remote/$id.json"
+  [[ "$loss" != write_response || "$id" != srv-web ]] || return 28
+ else
+  [[ "$loss" != read_response || "$id" != srv-web ]] || return 28
+  if [[ "$(cat "$remote/$id.json")" == null ]]; then printf '[]'; else
+   jq -nc --rawfile value "$remote/$id.json" --arg key "$recovery_phase_key" '[{envVar:{key:$key,value:$value}}]'
+  fi
+ fi
+}
+docker() {
+ if [[ "$*" == *worker-fence-observe.sql* ]]; then cat "$remote/snapshot.json"; return; fi
+ [[ "$loss" != before_revoke ]] || exit 97
+ if jq -e '.effectiveUpdate' "$remote/snapshot.json" >/dev/null; then printf 'revoke\\n' >> "$remote/effects"; fi
+ jq '.fenced' "$work/worker-effect-fence.json" > "$remote/snapshot.json"
+ [[ "$loss" != after_revoke ]] || exit 97
+ [[ "$loss" != revoke_response ]] || return 28
+}
+${functions.map((name) => extractRecoveryBashFunction(name)).join("\n")}
+if [[ "$mode" == compensate ]]; then
+ if compensate_worker_effect_fence; then printf authorized; else exit 1; fi
+else
+ persist_recovery_phase services_suspended
+ establish_recovery_barriers
+fi`;
+        const env = {
+          ...subprocessEnv,
+          TARGET_DB_ID: fixture.tuple.targetDbId,
+          RENDER_OWNER_ID: fixture.tuple.ownerId,
+          RENDER_ENVIRONMENT_ID: fixture.tuple.environmentId,
+          RELEASE_COMMIT_SHA: releaseCommitSha,
+          API_SERVICE_ID: "srv-api",
+          WORKER_SERVICE_ID: "srv-worker",
+          WEB_SERVICE_ID: "srv-web",
+        };
+        const run = (work: string, failure: string, mode: string) =>
+          spawnSync("bash", ["-c", script, "bash", work, root, failure, mode], {
+            env,
+            encoding: "utf8",
+            timeout: 15000,
+          });
+        const result = run(first, loss, "compensate");
+        assert.equal(result.status === 0, loss === "none", result.stderr);
+        const revoked = ["revoke_response", "after_revoke", "none"].includes(
+          loss,
+        );
+        assert.deepEqual(
+          JSON.parse(readFileSync(join(root, "snapshot.json"), "utf8")),
+          revoked ? fixture.fence.fenced : fixture.fence.before,
+        );
+        assert.equal(readFileSync(join(root, "admission"), "utf8"), "closed");
+        rmSync(first, { recursive: true });
+        const replicas = recoveryRoles.map((role) =>
+          JSON.parse(readFileSync(join(root, `srv-${role}.json`), "utf8")),
+        );
+        if (["absent", "local_only", "partial"].includes(loss)) {
+          writeFileSync(
+            join(next, "recovery-resume-state.json"),
+            JSON.stringify(replicas),
+          );
+          for (const role of recoveryRoles) {
+            writeFileSync(
+              join(next, `initial-srv-${role}-env.json`),
+              JSON.stringify([
+                {
+                  key: "DATABASE_URL",
+                  value:
+                    "postgresql://reviewrouter_worker:fixture@target.invalid/review_router",
+                },
+              ]),
+            );
+            writeFileSync(
+              join(next, `initial-srv-${role}-inventory.json`),
+              JSON.stringify(fixture.inventories[role]),
+            );
+          }
+          const marker = recover.indexOf(
+            '          const retained = read("recovery-resume-state.json");',
+          );
+          const start =
+            recover.lastIndexOf("<<'NODE'\n", marker) + "<<'NODE'\n".length;
+          const end = recover.indexOf("\n          NODE", marker);
+          const startup = spawnSync(
+            process.execPath,
+            ["--input-type=module", "-e", recover.slice(start, end)],
+            {
+              env: { ...env, WORK: next, GITHUB_RUN_ID: "r8-new-runner" },
+              encoding: "utf8",
+              timeout: 15000,
+            },
+          );
+          assert.equal(
+            startup.status === 0,
+            loss !== "partial",
+            startup.stderr,
+          );
+          if (loss !== "partial") {
+            assert.equal(
+              recoveryContinuationMode(
+                JSON.parse(
+                  readFileSync(join(next, "recovery-journal.json"), "utf8"),
+                ),
+              ),
+              "bootstrap",
+            );
+          }
+        }
+        if (["absent", "local_only"].includes(loss)) {
+          assert.deepEqual(replicas, [null, null, null]);
+          // Restart can still capture the original grant; no fabricated restoration.
+          assert.deepEqual(
+            planWorkerEffectFence(
+              JSON.parse(readFileSync(join(root, "snapshot.json"), "utf8")),
+            ),
+            fixture.fence,
+          );
+          const restarted = run(next, "none", "restart");
+          assert.equal(restarted.status, 0, restarted.stderr);
+          assert.equal(readFileSync(join(root, "effects"), "utf8"), "revoke\n");
+        } else if (loss === "partial") {
+          assert.throws(() => loadRecoveryReplicas(replicas, fixture.tuple));
+          assert.throws(() =>
+            recoveryCompensationFence(replicas, fixture.tuple),
+          );
+        } else {
+          const retained = loadRecoveryReplicas(replicas, fixture.tuple);
+          assert.deepEqual(retained.bootstrapCompensationFence, fixture.fence);
+          assert.equal(recoveryContinuationMode(retained), "bootstrap");
+          writeFileSync(
+            join(next, "recovery-journal.json"),
+            JSON.stringify(retained),
+          );
+          const restarted = run(next, "none", "restart");
+          assert.equal(restarted.status, 0, restarted.stderr);
+          assert.equal(readFileSync(join(root, "effects"), "utf8"), "revoke\n");
+          assert.deepEqual(
+            JSON.parse(
+              readFileSync(join(next, "recovery-journal.json"), "utf8"),
+            ).workerFence,
+            fixture.fence,
+          );
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  for (const resumedRole of ["api", "worker"]) {
+    for (const defect of [
+      "none",
+      "missing",
+      "owner",
+      "alternate_db",
+      "stale_generation",
+      "different_deploy",
+      "different_service",
+      "old_proof",
+      "config",
+      "unprotected",
+      "raw_duplicate",
+      "fence_drift",
+      "reader_loss",
+      "reused_provenance",
+    ]) {
+      it(`uses the durable runtime reader before the workflow ${resumedRole} resume transition: ${defect}`, () => {
+        const root = mkdtempSync(join(tmpdir(), "r8-worker-runtime-"));
+        const fixture = r8Fixture();
+        if (resumedRole === "worker")
+          fixture.state = r8VerifyService(fixture.state, "api").state;
+        if (defect === "reused_provenance") {
+          const prior = {
+            ...fixture.inventories.worker![0]!,
+            deployId: "dep-earlier-worker",
+            observedStatus: "deactivated",
+            statusClass: "terminal",
+          };
+          fixture.inventories.worker!.push(prior);
+          fixture.state.services.worker.beforeInventory =
+            fixture.inventories.worker;
+        }
+        try {
+          const observed = structuredClone(fixture.observed);
+          if (defect === "owner")
+            observed.proof.runtime.databaseRole = "schema_owner";
+          if (defect === "alternate_db")
+            observed.proof.runtime.systemIdentifier = "99999";
+          if (defect === "stale_generation")
+            observed.proof.runtime.recoveryWitnessSha256 = "0".repeat(64);
+          if (defect === "different_deploy")
+            observed.proof.runtime.deployId = "dep-another";
+          if (defect === "different_service")
+            observed.proof.runtime.serviceId = "srv-another";
+          if (defect === "old_proof")
+            observed.proof.challenge.requestedAt = "2026-09-04T00:00:00Z";
+          if (defect === "config")
+            observed.proof.runtime.servicePostconditionSha256 = `sha256:${"0".repeat(64)}`;
+          if (defect === "unprotected") observed.proofProtected = false;
+          if (defect === "fence_drift") observed.fence = fixture.fence.before;
+          let raw = JSON.stringify(
+            defect === "missing" ? { ...observed, proof: null } : observed,
+          );
+          if (defect === "raw_duplicate")
+            raw = raw.replace(
+              '"databaseRole":"reviewrouter_worker"',
+              '"databaseRole":"schema_owner","databaseRole":"reviewrouter_worker"',
+            );
+          writeFileSync(join(root, "durable-proof.json"), raw);
+          writeFileSync(
+            join(root, "recovery-journal.json"),
+            JSON.stringify(fixture.state),
+          );
+          writeFileSync(
+            join(root, "inventory.json"),
+            JSON.stringify(
+              fixture.inventories.worker!.map((item) => ({
+                deploy: {
+                  id: item.deployId,
+                  serviceId: item.serviceId,
+                  status: item.observedStatus,
+                  commit: { id: item.observedCommitSha },
+                  createdAt: item.createdAt,
+                },
+              })),
+            ),
+          );
+          writeFileSync(join(root, "runtime-state"), "suspended");
+          const gateStart = recover.indexOf(
+            '            assert_recovery_service_suspended "$service_id"',
+            recover.indexOf("          resume_result='[]'"),
+          );
+          const gateEnd = recover.indexOf(
+            '            if [[ "$(journal_service_phase)" == resumed ]]',
+            gateStart,
+          );
+          assert.ok(gateStart > 0 && gateEnd > gateStart);
+          const actualResume = recover
+            .slice(gateStart, gateEnd)
+            .replace(/^ {10}/gmu, "");
+          const result = spawnSync(
+            "bash",
+            [
+              "-c",
+              `set -euo pipefail
+work="$1"; role="$RESUMED_ROLE"; service_id="srv-$RESUMED_ROLE"
+assert_recovery_target_identity() { :; }
+assert_recovery_fleet_identity() { :; }
+render_inventory_api() { cat "$work/inventory.json"; }
+docker() { [[ "$DEFECT" != reader_loss ]] || return 28; cat "$work/durable-proof.json"; }
+assert_recovery_service_suspended() { [[ "$(cat "$work/runtime-state")" == suspended ]]; }
+assert_recovery_maintenance() { :; }
+assert_recovery_admission_closed() { :; }
+assert_worker_effect_fenced() { :; }
+assert_recovery_config_unchanged() { :; }
+render_deploy_mutation() { printf resumed > "$work/runtime-state"; }
+assert_recovery_service_online() { [[ "$(cat "$work/runtime-state")" == resumed ]]; }
+persist_recovery_journal() { cp "$work/recovery-journal.json" "$work/retained.json"; }
+${["fetch_recovery_deployment_inventory", "assert_recovery_worker_runtime", "journal_service_phase", "advance_recovery_service"].map((name) => extractRecoveryBashFunction(name)).join("\n")}
+printf '{}' > "$work/journal-transition-evidence.json"
+advance_recovery_service resume_intent
+${actualResume}
+`,
+              "bash",
+              root,
+            ],
+            {
+              env: {
+                ...subprocessEnv,
+                DEFECT: defect,
+                RESUMED_ROLE: resumedRole,
+                recovery_deployment_inventory_filter: extractRecoveryJqFilter(
+                  "recovery_deployment_inventory_filter",
+                ),
+                WORKER_SERVICE_ID: "srv-worker",
+              },
+              encoding: "utf8",
+              timeout: 15000,
+            },
+          );
+          assert.equal(result.status === 0, defect === "none", result.stderr);
+          assert.equal(
+            readFileSync(join(root, "runtime-state"), "utf8"),
+            defect === "none" ? "resumed" : "suspended",
+          );
+          const retained = JSON.parse(
+            readFileSync(join(root, "retained.json"), "utf8"),
+          );
+          assert.equal(
+            retained.services[resumedRole].phase,
+            defect === "none" ? "resumed" : "resume_intent",
+          );
+          if (defect === "none")
+            assert.deepEqual(
+              JSON.parse(
+                readFileSync(
+                  join(root, "worker-runtime-evidence.json"),
+                  "utf8",
+                ),
+              ),
+              fixture.observed.proof.runtime,
+            );
+          assert.equal(
+            existsSync(join(root, "worker-runtime-evidence.json")),
+            defect === "none",
+          );
+          const sql = readFileSync(
+            join(root, "worker-runtime-observe.sql"),
+            "utf8",
+          );
+          assert.match(sql, /RuntimeCanaryChallengeProof/u);
+          assert.match(sql, /p\."deployId" = 'dep-old-worker'/u);
+          assert.match(sql, /pg_control_system/u);
+          assert.doesNotMatch(
+            sql,
+            /\b(?:INSERT INTO|UPDATE|DELETE FROM|GRANT|REVOKE)\s+(?:public|reviewrouter)/u,
+          );
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
+  it("binds a retained target deploy and rejects an identical ACL on a different database generation", () => {
+    const fixture = r8Fixture();
+    const api = r8VerifyService(fixture.state, "api");
+    const worker = r8VerifyService(api.state, "worker");
+    const target = structuredClone(fixture.observed);
+    target.proof.runtime.deployId = "dep-target-worker";
+    target.proof.runtime.releaseCommitSha = releaseCommitSha;
+    target.proof.runtime.deploymentProvenance = releaseCommitSha;
+    target.proof.runtime.provedAt = "2026-09-05T01:01:01Z";
+    target.proof.challenge.releaseCommitSha = releaseCommitSha;
+    target.proof.challenge.requestedAt = "2026-09-05T01:01:00Z";
+    target.proof.challenge.expiresAt = "2026-09-05T01:01:10Z";
+    target.proof.challenge.serviceFacts =
+      target.proof.challenge.serviceFacts.map((fact) => ({
+        ...fact,
+        deployId: `dep-target-${fact.runtimeRole}`,
+        deploymentProvenance: releaseCommitSha,
+      }));
+    assert.deepEqual(
+      assertRecoveryWorkerRuntime(worker.state, worker.inventory, target),
+      target.proof.runtime,
+    );
+    assert.throws(
+      () =>
+        assertRecoveryWorkerRuntime(
+          worker.state,
+          worker.inventory,
+          fixture.observed,
+        ),
+      /worker_runtime_identity/u,
+    );
+    const altered = structuredClone(fixture.observed);
+    altered.fence.database.oid = "99999";
+    assert.throws(
+      () =>
+        assertRecoveryWorkerRuntime(
+          fixture.state,
+          fixture.inventories.worker,
+          altered,
+        ),
+      /worker_runtime_fence/u,
+    );
+    assert.match(workerEffectFenceSql(fixture.fence), /7612345678901234567/u);
+    assert.match(
+      workerRuntimeObservationSql(fixture.state, fixture.inventories.worker),
+      /proofProtected/u,
+    );
   });
 });

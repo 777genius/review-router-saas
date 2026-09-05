@@ -79,6 +79,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
+      actions: read
       contents: read
     outputs:
       trusted_main_sha: ${{ steps.trust.outputs.trusted_main_sha }}
@@ -381,7 +382,6 @@ jobs:
             assert_recovery_admission_closed || return 1
           }
           capture_worker_effect_fence() {
-            local purpose="${1:-bootstrap}"
             node --input-type=module <<'NODE' > "$work/worker-fence-observe.sql" || return 1
           import { workerFenceSnapshotSql } from "./scripts/render-recovery-journal.mjs";
           process.stdout.write(workerFenceSnapshotSql + ";");
@@ -389,16 +389,16 @@ jobs:
             docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
               sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atf /work/worker-fence-observe.sql' \
               > "$work/worker-fence-before.json" || return 1
-            WORK="$work" PURPOSE="$purpose" node --input-type=module <<'NODE' || return 1
+            WORK="$work" node --input-type=module <<'NODE' || return 1
           import { existsSync, readFileSync, writeFileSync } from "node:fs";
-          import { parseRecoveryJson, reconcileBootstrapCompensationFence, planWorkerEffectFence, planWorkerCompensationFence } from "./scripts/render-recovery-journal.mjs";
+          import { parseRecoveryJson, reconcileBootstrapCompensationFence, planWorkerEffectFence } from "./scripts/render-recovery-journal.mjs";
           const work = process.env.WORK;
           const observed = parseRecoveryJson(readFileSync(`${work}/worker-fence-before.json`, "utf8"));
           const journalPath = `${work}/recovery-journal.json`;
           const journal = existsSync(journalPath) ? parseRecoveryJson(readFileSync(journalPath, "utf8")) : null;
           const evidence = journal?.bootstrapCompensationFence
             ? reconcileBootstrapCompensationFence(journal, observed)
-            : (process.env.PURPOSE === "compensation" ? planWorkerCompensationFence : planWorkerEffectFence)(observed);
+            : planWorkerEffectFence(observed);
           writeFileSync(`${work}/worker-effect-fence.json`, JSON.stringify(evidence) + "\n", { mode: 0o600 });
           NODE
           }
@@ -490,6 +490,32 @@ jobs:
           }
           NODE
           }
+          assert_recovery_worker_runtime() {
+            # Saved replacement env cannot identify a suspended predecessor.
+            # Authenticate its own durable canary against this exact DB fence
+            # and the complete retained deployment history before execution.
+            assert_recovery_target_identity || return 1
+            assert_recovery_fleet_identity || return 1
+            fetch_recovery_deployment_inventory "$WORKER_SERVICE_ID" "$((SECONDS + 120))" \
+              > "$work/worker-runtime-inventory.json" || return 1
+            WORK="$work" node --input-type=module <<'NODE' > "$work/worker-runtime-observe.sql" || return 1
+          import {readFileSync} from "node:fs";
+          import {parseRecoveryJson, workerRuntimeObservationSql} from "./scripts/render-recovery-journal.mjs";
+          const read = name => parseRecoveryJson(readFileSync(`${process.env.WORK}/${name}`, "utf8"));
+          process.stdout.write(workerRuntimeObservationSql(read("recovery-journal.json"), read("worker-runtime-inventory.json")));
+          NODE
+            docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
+              sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atf /work/worker-runtime-observe.sql' \
+              > "$work/worker-runtime-observed.json" || return 1
+            WORK="$work" node --input-type=module <<'NODE' || return 1
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, assertRecoveryWorkerRuntime} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const read = name => parseRecoveryJson(readFileSync(`${work}/${name}`, "utf8"));
+          const evidence = assertRecoveryWorkerRuntime(read("recovery-journal.json"), read("worker-runtime-inventory.json"), read("worker-runtime-observed.json"));
+          writeFileSync(`${work}/worker-runtime-evidence.json`, JSON.stringify(evidence) + "\n", {mode:0o600});
+          NODE
+          }
           open_recovery_database() {
             local deadline=$((SECONDS + 120)) runner_ip
             runner_ip="$(curl --fail --silent --show-error --max-time 20 https://api.ipify.org)" || return 1
@@ -515,11 +541,11 @@ jobs:
           retain_bootstrap_compensation_fence() {
             # Only admitted, unanimous bootstrap journals can retain restoration
             # authority. Persist and read back all replicas before the REVOKE.
-            [[ -f "$work/recovery-journal.json" ]] || return 0
+            [[ -f "$work/recovery-journal.json" ]] || return 1
             if ! jq -e '.phase == "validated" or (.phase == "frozen" and .bootstrapPhase == "services_suspended")' "$work/recovery-journal.json" >/dev/null; then
               return 0
             fi
-            capture_worker_effect_fence compensation || return 1
+            capture_worker_effect_fence || return 1
             WORK="$work" node --input-type=module <<'NODE' || return 1
           import {readFileSync, writeFileSync} from "node:fs";
           import {parseRecoveryJson, retainBootstrapCompensationFence} from "./scripts/render-recovery-journal.mjs";
@@ -536,10 +562,31 @@ jobs:
             # exact REVOKE authority only; recovery itself remains rejected.
             open_recovery_database || return 1
             close_recovery_admission || return 1
-            retain_bootstrap_compensation_fence || return 1
-            if [[ ! -f "$work/worker-effect-fence.json" ]]; then
-              capture_worker_effect_fence compensation || return 1
+            if [[ -f "$work/recovery-journal.json" ]]; then
+              retain_bootstrap_compensation_fence || return 1
             fi
+            # Local snapshots (including an already-fenced ACL) are never
+            # restoration authority. Re-read authenticated durable replicas at
+            # the mutation boundary, even when no local journal survived.
+            read_recovery_replicas > "$work/compensation-replicas.json" || return 1
+            WORK="$work" node --input-type=module <<'NODE' || return 1
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryReplicaResponse, recoveryCompensationFence, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const replicas = parseRecoveryReplicaResponse(readFileSync(`${work}/compensation-replicas.json`, "utf8"));
+          const expected = structuredClone(replicas[0]?.tuple ?? {});
+          Object.assign(expected, {targetDbId:process.env.TARGET_DB_ID, ownerId:process.env.RENDER_OWNER_ID,
+            environmentId:process.env.RENDER_ENVIRONMENT_ID, releaseCommitSha:process.env.RELEASE_COMMIT_SHA});
+          expected.services = Object.fromEntries(recoveryRoles.map(role => [role, {
+            ...expected.services?.[role], id:process.env[`${role.toUpperCase()}_SERVICE_ID`],
+            name:`reviewrouter-${role}`, type:role === "worker" ? "background_worker" : "web_service",
+            ownerId:expected.ownerId, environmentId:expected.environmentId,
+            repo:"https://github.com/777genius/review-router-saas", branch:"main", autoDeploy:"no"
+          }]));
+          const evidence = recoveryCompensationFence(replicas, expected);
+          if (!evidence) throw new Error("recovery_compensation_restoration_evidence_missing");
+          writeFileSync(`${work}/worker-effect-fence.json`, JSON.stringify(evidence) + "\n", {mode:0o600});
+          NODE
             worker_fence_sql fence > "$work/worker-refence.sql" || return 1
             docker run --rm -e DATABASE_URL -v "$work:/work:ro" postgres:17-alpine \
               sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -qf /work/worker-refence.sql' || return 1
@@ -1960,6 +2007,9 @@ jobs:
             assert_recovery_admission_closed
             assert_worker_effect_fenced
             assert_recovery_config_unchanged
+            # Web follows the verified replacement worker. API and worker
+            # resumes can expose the retained worker and require its own proof.
+            if [[ "$role" != web ]]; then assert_recovery_worker_runtime; fi
             render_deploy_mutation -X POST \
               "https://api.render.com/v1/services/$service_id/resume" -o /dev/null
             resume_deadline=$((SECONDS + 90))
@@ -2383,6 +2433,7 @@ jobs:
             ${{ runner.temp }}/reviewrouter-pg17-recovery/pre-restore-deployment-result.json
             ${{ runner.temp }}/reviewrouter-pg17-recovery/recovery-journal.json
             ${{ runner.temp }}/reviewrouter-pg17-recovery/worker-effect-fence.json
+            ${{ runner.temp }}/reviewrouter-pg17-recovery/worker-runtime-evidence.json
             ${{ runner.temp }}/reviewrouter-pg17-recovery/admission-closed-result.json
             ${{ runner.temp }}/reviewrouter-pg17-recovery/recovery-manifest.json
             ${{ runner.temp }}/reviewrouter-pg17-recovery/recovery-phase.json
