@@ -8841,7 +8841,7 @@ describe("R10 exact recovery remediation", () => {
       "          recovery_closure=1 assert_recovery_target_identity",
       "          recovery_closure=1 assert_recovery_fleet_identity",
       '          prior_recovery_phases="$(assert_recovery_nonterminal reference)"',
-      "            recoveryCompensationFence(replicas, expected);",
+      "            for (const replica of replicas) loadRecoveryJournal(replica, expected);",
       "          suspension_guard_armed=1",
       "          firewall_open=1",
       '          prior_recovery_phases="$(assert_recovery_nonterminal)"',
@@ -9816,4 +9816,577 @@ render_deploy_mutation
       }
     },
   );
+});
+
+// Execute the real readers, startup statements, persistence and EXIT handler.
+// Only transport/DB observations use disposable files; unexpected IO is denied.
+function r19ClosureProbe(
+  work: string,
+  source: string,
+  body: string,
+  options: { scenario?: string; crashAfter?: number; cleanup?: boolean } = {},
+) {
+  const fixture = source === recover ? r8Fixture() : registrationFixture();
+  const names = [
+    "read_recovery_phase",
+    "read_recovery_replicas",
+    "assert_recovery_nonterminal",
+    "persist_recovery_journal",
+    "close_firewall",
+    "cleanup",
+    ...(source === recover
+      ? [
+          "set_recovery_maintenance",
+          "assert_recovery_maintenance",
+          "compensate_recovery_fleet",
+          "compensate_worker_effect_fence",
+          "retain_bootstrap_compensation_fence",
+          "worker_fence_sql",
+        ]
+      : ["read_registration_environment", "initialize_registration_journal"]),
+  ];
+  const result = spawnSync(
+    "bash",
+    [
+      "-c",
+      `set -euo pipefail
+work="$WORK"
+remote="$work/remote"
+firewall_open=0
+suspension_guard_armed=0
+recovery_complete=0
+recovery_phase_key=REVIEW_ROUTER_PG17_RECOVERY_PHASE
+writes=0
+${names.map((name) => extractRecoveryBashFunction(name, source)).join("\n")}
+assert_recovery_target_identity() {
+  if [[ "$SCENARIO" == target_drift && "\${recovery_closure:-0}" == 0 ]]; then return 1; fi
+}
+assert_recovery_fleet_identity() {
+  if [[ "$SCENARIO" == fleet_drift && "\${recovery_closure:-0}" == 0 ]]; then return 1; fi
+}
+render_api() {
+  local url='' payload='' method=GET
+  while (( $# )); do
+    case "$1" in
+      https:*) url="$1";;
+      -X) method="$2"; shift;;
+      --data-binary) payload="$2"; shift;;
+    esac
+    shift
+  done
+  local id="\${url#*services/}"; id="\${id%%/*}"
+  case "$method:$url" in
+    GET:*/env-vars)
+      if [[ "$SCENARIO" == init_env_error && "$(wc -l < "$remote/events")" -ge 15 ]]; then return 28; fi
+      printf 'reference:%s\n' "$id" >> "$remote/events"; cat "$remote/$id.env";;
+    PUT:*/env-vars/REVIEW_ROUTER_PG17_RECOVERY_PHASE)
+      jq --arg key "$recovery_phase_key" '[{key:$key,value:.value}]' "\${payload#@}" > "$remote/$id.env"
+      printf 'persist:%s\n' "$id" >> "$remote/events"
+      writes=$((writes + 1))
+      if [[ "$CRASH_AFTER" == "$writes" ]]; then kill -KILL "$BASHPID"; fi;;
+    PATCH:*/postgres/dpg-target)
+      [[ "$payload" == '{"ipAllowList":[]}' ]] || return 96
+      printf 'firewall\n' >> "$remote/events"
+      printf closed > "$remote/firewall";;
+    GET:*/postgres/dpg-target)
+      [[ "$(cat "$remote/firewall")" == closed ]] || return 96
+      printf '{"id":"dpg-target","ipAllowList":[]}' ;;
+    PATCH:*/services/srv-*)
+      jq -e '.serviceDetails.maintenanceMode == {enabled:true,uri:""}' <<<"$payload" >/dev/null || return 96
+      printf 'maintenance:%s\n' "$id" >> "$remote/events"
+      [[ "$SCENARIO" != maintenance_unavailable ]] || return 28;;
+    POST:*/suspend) printf 'suspend:%s\n' "$id" >> "$remote/events";;
+    GET:*/services/srv-*)
+      jq -nc --arg id "$id" '{id:$id,suspended:"suspended",serviceDetails:{maintenanceMode:{enabled:true,uri:""}}}';;
+    *) printf 'unexpected:%s:%s\n' "$method" "$url" >> "$remote/events"; return 96;;
+  esac
+}
+render_inventory_api() { shift; render_api "$@"; }
+fetch_recovery_deployment_inventory() {
+  printf 'history:%s\n' "$1" >> "$remote/events"
+  [[ "$SCENARIO" != history_error ]] || return 28
+  if [[ "$SCENARIO" == history_empty ]]; then printf '[]'; return 0; fi
+  if [[ "$SCENARIO" == init_history_error && "$(sed -n '/^history:/p' "$remote/events" | wc -l)" -gt 9 ]]; then return 28; fi
+  cat "$remote/$1.history"
+}
+open_recovery_database() {
+  printf 'connectivity\n' >> "$remote/events"
+  [[ "$SCENARIO" != worker_unavailable ]] || return 28
+}
+close_recovery_admission() { printf 'admission\n' >> "$remote/events"; }
+capture_worker_effect_fence() { cp "$remote/before.json" "$work/worker-fence-before.json"; }
+assert_worker_effect_fenced() { :; }
+assert_recovery_admission_closed() { :; }
+docker() {
+  [[ -s "$work/worker-refence.sql" ]] || return 96
+  printf 'refence\n' >> "$remote/events"
+}
+curl() { printf 'unexpected:curl\n' >> "$remote/events"; return 96; }
+${options.cleanup === false ? "" : "trap cleanup EXIT"}
+${body}
+`,
+      "bash",
+    ],
+    {
+      encoding: "utf8",
+      timeout: 15000,
+      env: {
+        ...subprocessEnv,
+        WORK: work,
+        SCENARIO: options.scenario ?? "exact",
+        CRASH_AFTER: String(options.crashAfter ?? 0),
+        TARGET_DB_ID: fixture.tuple.targetDbId,
+        RENDER_OWNER_ID: fixture.tuple.ownerId,
+        RENDER_ENVIRONMENT_ID: fixture.tuple.environmentId,
+        RELEASE_COMMIT_SHA: releaseCommitSha,
+        API_SERVICE_ID: "srv-api",
+        WORKER_SERVICE_ID: "srv-worker",
+        WEB_SERVICE_ID: "srv-web",
+        ACTION_COMMIT_SHA: "d".repeat(40),
+        OPERATOR_REPOSITORY: "",
+        OPERATOR_WORKSPACE_ID: "",
+        INVESTIGATION_ROLLOUT_PROFILE: "preserve",
+        INVESTIGATION_REPOSITORY_CONNECTION_ID: "",
+        INVESTIGATION_PRODUCER_RELEASE_ID: "",
+        GITHUB_RUN_ID: "r19-disposable",
+        recovery_suspension_set_filter: recoverySuspensionSetFilter,
+      },
+    },
+  );
+  expect(result.error, result.stderr).toBeUndefined();
+  const events = readFileSync(join(work, "remote/events"), "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  if (process.env.R19_EVIDENCE_DIR) {
+    mkdirSync(process.env.R19_EVIDENCE_DIR, { recursive: true });
+    writeFileSync(
+      join(
+        process.env.R19_EVIDENCE_DIR,
+        `${work.split("/").at(-1)}-${options.crashAfter ?? 0}.json`,
+      ),
+      JSON.stringify({
+        options,
+        status: result.status,
+        signal: result.signal,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        events,
+      }),
+    );
+  }
+  expect(
+    events.some((event) => event.startsWith("unexpected:")),
+    result.stderr,
+  ).toBe(false);
+  return { result, events };
+}
+
+function r19WriteReplicas(
+  work: string,
+  replicas: unknown[],
+  inventories: Record<string, unknown[]>,
+) {
+  mkdirSync(join(work, "remote"), { recursive: true });
+  writeFileSync(join(work, "remote/events"), "");
+  writeFileSync(join(work, "remote/firewall"), "open");
+  for (const [index, role] of recoveryRoles.entries()) {
+    writeFileSync(
+      join(work, `remote/srv-${role}.env`),
+      JSON.stringify(
+        replicas[index] === null
+          ? []
+          : [
+              {
+                key: recoveryJournalKey,
+                value: JSON.stringify(replicas[index]),
+              },
+            ],
+      ),
+    );
+    writeFileSync(
+      join(work, `remote/srv-${role}.history`),
+      JSON.stringify(inventories[role]),
+    );
+  }
+}
+
+function r19Startup(source: string) {
+  const start = source.indexOf(
+    source === recover
+      ? "          prior_recovery_phases="
+      : "\n          assert_recovery_nonterminal ",
+  );
+  const end = source.indexOf(
+    source === recover
+      ? "          # Source evidence is an activation prerequisite"
+      : "          # Reacquire admin connectivity",
+    start,
+  );
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  return (
+    source.slice(start, end).replace(/^ {10}/gmu, "") +
+    '\nprintf "forward\\n" >> "$remote/events"\nexit 77\n'
+  );
+}
+
+const r19IndependentClosures = [
+  "maintenance:srv-api",
+  "maintenance:srv-web",
+  "suspend:srv-api",
+  "suspend:srv-worker",
+  "suspend:srv-web",
+  "firewall",
+];
+const r19ClosureEvents = (events: string[]) =>
+  events.filter((event) => /^(maintenance:|suspend:|firewall$)/u.test(event));
+
+describe("R19 torn bootstrap replica EXIT closure", () => {
+  it.each([1, 2, 3])(
+    "survives a kill after sequential bootstrap write %s",
+    (crashAfter) => {
+      const work = mkdtempSync(join(tmpdir(), "r19-bootstrap-kill-"));
+      try {
+        const fixture = r8Fixture();
+        const fresh = createRecoveryJournal(fixture.tuple, fixture.inventories);
+        r19WriteReplicas(
+          work,
+          recoveryRoles.map(() => compactRecoveryJournal(fresh)),
+          fixture.inventories,
+        );
+        writeFileSync(
+          join(work, "recovery-journal.json"),
+          JSON.stringify(fresh),
+        );
+        writeFileSync(
+          join(work, "remote/before.json"),
+          JSON.stringify(fixture.fence.before),
+        );
+        const killed = r19ClosureProbe(
+          work,
+          recover,
+          "retain_bootstrap_compensation_fence",
+          { crashAfter },
+        );
+        expect(killed.result.signal).toBe("SIGKILL");
+        expect(killed.events).toEqual(
+          recoveryRoles
+            .slice(0, crashAfter)
+            .map((role) => `persist:srv-${role}`),
+        );
+        const retained = recoveryRoles.map(
+          (role) =>
+            JSON.parse(
+              JSON.parse(
+                readFileSync(join(work, `remote/srv-${role}.env`), "utf8"),
+              )[0].value,
+            ).journal,
+        );
+        expect(
+          retained.map((state) => state.bootstrapCompensationFence ?? null),
+        ).toEqual(
+          recoveryRoles.map((_, index) =>
+            index < crashAfter ? fixture.fence : null,
+          ),
+        );
+        // A new runner has no local authority; only the three durable replicas survive.
+        rmSync(join(work, "recovery-journal.json"));
+        rmSync(join(work, "worker-fence-before.json"));
+        writeFileSync(join(work, "remote/events"), "");
+        const restarted = r19ClosureProbe(work, recover, r19Startup(recover));
+        expect(restarted.result.status).not.toBe(0);
+        expect(
+          r19ClosureEvents(restarted.events),
+          restarted.result.stderr,
+        ).toEqual(r19IndependentClosures);
+        expect(restarted.events.includes("refence")).toBe(crashAfter === 3);
+        expect(restarted.events.includes("forward")).toBe(crashAfter === 3);
+        if (crashAfter < 3) {
+          expect(restarted.result.stderr).toContain(
+            "recovery_compensation_evidence_disagreement",
+          );
+          expect(
+            restarted.events.some((event) => event.startsWith("persist:")),
+          ).toBe(false);
+          expect(existsSync(join(work, "worker-refence.sql"))).toBe(false);
+        } else {
+          expect(
+            JSON.parse(
+              readFileSync(join(work, "worker-effect-fence.json"), "utf8"),
+            ),
+          ).toEqual(fixture.fence);
+          expect(readFileSync(join(work, "worker-refence.sql"), "utf8")).toBe(
+            workerEffectFenceSql(fixture.fence, false),
+          );
+        }
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    "000",
+    "001",
+    "010",
+    "011",
+    "100",
+    "101",
+    "110",
+    "111",
+    "different_fence",
+    "all_null",
+    "missing_replica",
+    "foreign",
+    "foreign_operation",
+    "malformed",
+    "registration",
+    "terminal",
+    "worker_unavailable",
+    "maintenance_unavailable",
+  ])("bounds scope/fence effects for %s", (scenario) => {
+    const work = mkdtempSync(join(tmpdir(), "r19-fence-scope-"));
+    try {
+      const fixture = r8Fixture();
+      const fresh = createRecoveryJournal(fixture.tuple, fixture.inventories);
+      const retained = retainBootstrapCompensationFence(
+        fresh,
+        fixture.fence.before,
+      );
+      const mask = /^[01]{3}$/u.test(scenario) ? scenario : "111";
+      const replicas: (ReturnType<typeof compactRecoveryJournal> | null)[] = [
+        ...mask,
+      ].map((bit) => compactRecoveryJournal(bit === "1" ? retained : fresh));
+      if (scenario === "all_null") replicas.fill(null);
+      if (scenario === "missing_replica") replicas[1] = null;
+      if (scenario === "foreign")
+        replicas[1]!.journal.tuple.targetDbId = "dpg-foreign";
+      if (scenario === "foreign_operation")
+        replicas[1]!.journal.tuple.operationId = "another-operation";
+      if (scenario === "malformed") replicas[1]!.journal.revision = -1;
+      if (scenario === "registration")
+        replicas[1] = compactRecoveryJournal(registrationFixture().state);
+      if (scenario === "terminal") replicas[1]!.journal.phase = "complete";
+      if (scenario === "different_fence")
+        replicas[1] = compactRecoveryJournal(
+          retainBootstrapCompensationFence(fresh, {
+            ...fixture.fence.before,
+            tableAcl: [
+              ...fixture.fence.before.tableAcl,
+              {
+                grantee: "reviewrouter_worker",
+                grantor: "schema_owner",
+                privilege: "SELECT",
+                grantable: false,
+              },
+            ],
+          }),
+        );
+      r19WriteReplicas(work, replicas, fixture.inventories);
+      // Unavailable capture must not invent worker privileges in the no-fence case.
+      const probe = r19ClosureProbe(work, recover, r19Startup(recover), {
+        scenario,
+      });
+      const admitted =
+        /^[01]{3}$/u.test(scenario) ||
+        [
+          "different_fence",
+          "all_null",
+          "worker_unavailable",
+          "maintenance_unavailable",
+        ].includes(scenario);
+      expect(probe.result.status).not.toBe(0);
+      expect(r19ClosureEvents(probe.events), probe.result.stderr).toEqual(
+        admitted ? r19IndependentClosures : [],
+      );
+      expect(probe.events.includes("refence")).toBe(false);
+      expect(existsSync(join(work, "worker-refence.sql"))).toBe(false);
+      expect(probe.events.includes("forward")).toBe(
+        [
+          "000",
+          "111",
+          "all_null",
+          "worker_unavailable",
+          "maintenance_unavailable",
+        ].includes(scenario),
+      );
+      expect(probe.events.some((event) => event.startsWith("persist:"))).toBe(
+        false,
+      );
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("R19 registration compact startup EXIT closure", () => {
+  it.each([
+    "history_error",
+    "history_missing",
+    "history_mismatch",
+    "history_empty",
+    "init_env_error",
+    "init_history_error",
+    "registration_phase",
+    "exact",
+    "all_null",
+    "missing_replica",
+    "foreign",
+    "foreign_operation",
+    "malformed",
+    "recovery",
+    "binding_mismatch",
+    "torn_revision",
+    "terminal",
+    "torn_terminal",
+    "target_drift",
+    "fleet_drift",
+  ])("bounds registration effects for %s", (scenario) => {
+    const work = mkdtempSync(join(tmpdir(), "r19-registration-"));
+    try {
+      const fixture = registrationFixture();
+      for (const role of recoveryRoles) {
+        const old = fixture.inventories[role]![0]!;
+        fixture.inventories[role]!.push({
+          ...old,
+          deployId: `dep-history-${role}`,
+          observedStatus: "deactivated",
+          statusClass: "terminal",
+          createdAt: "2026-09-04T00:00:00Z",
+        });
+      }
+      const state = createRegistrationJournal(
+        fixture.tuple,
+        fixture.inventories,
+        fixture.binding,
+      );
+      const replicas: (ReturnType<typeof compactRecoveryJournal> | null)[] =
+        recoveryRoles.map(() => compactRecoveryJournal(state));
+      if (scenario === "all_null") replicas.fill(null);
+      if (scenario === "missing_replica") replicas[1] = null;
+      if (scenario === "foreign")
+        replicas[1]!.journal.tuple.targetDbId = "dpg-foreign";
+      if (scenario === "foreign_operation")
+        replicas[1]!.journal.tuple.operationId = "foreign-operation";
+      if (scenario === "malformed")
+        (
+          replicas[1]!.histories as Record<
+            "api",
+            { beforeInventory: { count: number } }
+          >
+        ).api.beforeInventory.count = 0;
+      if (scenario === "recovery")
+        replicas[1] = compactRecoveryJournal(
+          createRecoveryJournal(fixture.tuple, fixture.inventories),
+        );
+      if (scenario === "binding_mismatch")
+        replicas[1]!.journal.registration.actionCommitSha = "e".repeat(40);
+      if (scenario === "registration_phase")
+        replicas[1]!.journal.phase = "frozen";
+      if (scenario === "torn_revision") replicas[1]!.journal.revision += 1;
+      if (["terminal", "torn_terminal"].includes(scenario)) {
+        let terminal = structuredClone(fixture.state);
+        for (const role of recoveryRoles) {
+          const before = fixture.inventories[role]!;
+          terminal.services[role].beforeInventory = before;
+          terminal = advanceRecoveryService(terminal, role, "resume_intent");
+          terminal = advanceRecoveryService(terminal, role, "resumed");
+          terminal = advanceRecoveryService(terminal, role, "deploy_intent", {
+            inventory: before,
+            intentEpoch: Date.parse("2026-09-05T00:01:00Z") / 1000,
+          });
+          terminal = advanceRecoveryService(terminal, role, "deploy_bound", {
+            deployId: `dep-new-${role}`,
+          });
+          terminal = advanceRecoveryService(terminal, role, "verified", {
+            inventory: [
+              {
+                ...before[0],
+                deployId: `dep-new-${role}`,
+                createdAt: "2026-09-05T00:01:01Z",
+              },
+              ...before.map((item) => ({
+                ...item,
+                observedStatus: "deactivated",
+                statusClass: "terminal",
+              })),
+            ],
+          });
+        }
+        terminal = advanceRecoveryPhase(terminal, "fleet_verified_closed");
+        if (scenario === "terminal")
+          replicas.fill(
+            compactRecoveryJournal(advanceRecoveryPhase(terminal, "complete")),
+          );
+        else replicas[1] = compactRecoveryJournal(terminal);
+      }
+      r19WriteReplicas(work, replicas, fixture.inventories);
+      // Registration's full initialization rereads the original non-owned env.
+      for (const role of recoveryRoles) {
+        const path = join(work, `remote/srv-${role}.env`);
+        writeFileSync(
+          path,
+          JSON.stringify([
+            ...JSON.parse(readFileSync(path, "utf8")),
+            ...fixture.environment,
+          ]),
+        );
+      }
+      if (scenario === "history_missing")
+        rmSync(join(work, "remote/srv-worker.history"));
+      if (scenario === "history_mismatch") {
+        const history = structuredClone(fixture.inventories.worker!);
+        history[1]!.deployId = "dep-substituted";
+        writeFileSync(
+          join(work, "remote/srv-worker.history"),
+          JSON.stringify(history),
+        );
+      }
+      const probe = r19ClosureProbe(
+        work,
+        registerRelease,
+        r19Startup(registerRelease),
+        { scenario },
+      );
+      const admitted = [
+        "history_error",
+        "history_missing",
+        "history_mismatch",
+        "history_empty",
+        "init_env_error",
+        "init_history_error",
+        "exact",
+        "torn_revision",
+        "target_drift",
+        "fleet_drift",
+      ].includes(scenario);
+      expect(probe.result.status).not.toBe(0);
+      expect(r19ClosureEvents(probe.events), probe.result.stderr).toEqual(
+        admitted ? ["firewall"] : [],
+      );
+      expect(probe.events.includes("refence")).toBe(false);
+      expect(probe.events.includes("forward")).toBe(
+        ["exact", "all_null"].includes(scenario),
+      );
+      expect(probe.events.some((event) => event.startsWith("persist:"))).toBe(
+        ["exact", "all_null"].includes(scenario),
+      );
+      expect(probe.events.some((event) => event.startsWith("history:"))).toBe(
+        [
+          "history_error",
+          "history_missing",
+          "history_mismatch",
+          "history_empty",
+          "init_env_error",
+          "init_history_error",
+          "exact",
+          "all_null",
+          "torn_revision",
+        ].includes(scenario),
+      );
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
 });

@@ -1564,12 +1564,13 @@ jobs:
             persist_recovery_journal
           }
           prior_recovery_phases="$(assert_recovery_nonterminal reference)"
-          # Authenticate immutable scope and retained original fence evidence before
-          # arming destructive closure. Compact authority never permits activation.
+          # Authenticate each nonterminal replica against the same immutable scope.
+          # Torn original-fence persistence cannot withhold independent closure;
+          # exact fence agreement still gates worker privileges and forward work.
           printf '%s\n' "$prior_recovery_phases" > "$work/recovery-resume-state.json"
           WORK="$work" node --input-type=module <<'NODE'
           import {readFileSync} from "node:fs";
-          import {parseRecoveryReplicaResponse, recoveryCompensationFence, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
+          import {parseRecoveryReplicaResponse, loadRecoveryJournal, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
           const work = process.env.WORK;
           const replicas = parseRecoveryReplicaResponse(readFileSync(`${work}/recovery-resume-state.json`, "utf8"));
           if (!replicas.every(value => value === null)) {
@@ -1582,7 +1583,7 @@ jobs:
               ownerId:expected.ownerId, environmentId:expected.environmentId,
               repo:"https://github.com/777genius/review-router-saas", branch:"main", autoDeploy:"no"
             }]));
-            recoveryCompensationFence(replicas, expected);
+            for (const replica of replicas) loadRecoveryJournal(replica, expected);
           }
           NODE
           # A nonterminal crash may have left every barrier open. History IO can
@@ -3400,14 +3401,44 @@ jobs:
             return 1
           }
 
-          assert_recovery_nonterminal > "$work/recovery-resume-state.json"
+          assert_recovery_nonterminal reference > "$work/recovery-resume-state.json"
+          # Compact registration authority authenticates closure without history IO.
+          # Check every replica's immutable scope and binding, including torn writes;
+          # full history and unanimous progress remain mandatory for initialization.
+          WORK="$work" node --input-type=module <<'NODE'
+          import {isDeepStrictEqual} from "node:util";
+          import {readFileSync} from "node:fs";
+          import {parseRecoveryReplicaResponse, loadRecoveryJournal, recoveryRoles, validateRegistrationBinding} from "./scripts/render-recovery-journal.mjs";
+          const replicas = parseRecoveryReplicaResponse(readFileSync(`${process.env.WORK}/recovery-resume-state.json`, "utf8"));
+          if (!replicas.every(value => value === null)) {
+            const expected = structuredClone(replicas[0]?.tuple ?? {});
+            Object.assign(expected, {targetDbId:process.env.TARGET_DB_ID, ownerId:process.env.RENDER_OWNER_ID,
+              environmentId:process.env.RENDER_ENVIRONMENT_ID, releaseCommitSha:process.env.RELEASE_COMMIT_SHA});
+            expected.services = Object.fromEntries(recoveryRoles.map(role => [role, {
+              ...expected.services?.[role], id:process.env[`${role.toUpperCase()}_SERVICE_ID`],
+              name:`reviewrouter-${role}`, type:role === "worker" ? "background_worker" : "web_service",
+              ownerId:expected.ownerId, environmentId:expected.environmentId,
+              repo:"https://github.com/777genius/review-router-saas", branch:"main", autoDeploy:"no"
+            }]));
+            const binding = validateRegistrationBinding({actionCommitSha:process.env.ACTION_COMMIT_SHA, operatorRepository:process.env.OPERATOR_REPOSITORY ?? "",
+              operatorWorkspaceId:process.env.OPERATOR_WORKSPACE_ID ?? "", investigationRolloutProfile:process.env.INVESTIGATION_ROLLOUT_PROFILE ?? "preserve",
+              investigationRepositoryConnectionId:process.env.INVESTIGATION_REPOSITORY_CONNECTION_ID ?? "",
+              investigationProducerReleaseId:process.env.INVESTIGATION_PRODUCER_RELEASE_ID ?? ""});
+            for (const replica of replicas) {
+              const state = loadRecoveryJournal(replica, expected);
+              if (!isDeepStrictEqual(state.registration, binding)) throw new Error("recovery_registration_binding_mismatch");
+              if (state.phase !== "prepared") throw new Error("recovery_registration_phase");
+            }
+          }
+          NODE
           # A previous runner may have lost its firewall-close response. Arm
-          # exact-scope cleanup before rejecting any retained registration drift.
+          # exact-scope cleanup before history reads or mutable configuration checks.
           if jq -e 'any(.[]; .registration != null)' "$work/recovery-resume-state.json" >/dev/null; then
             firewall_open=1
           fi
           assert_recovery_target_identity
           assert_recovery_fleet_identity
+          assert_recovery_nonterminal > "$work/recovery-resume-state.json"
 
           initialize_registration_journal
 
