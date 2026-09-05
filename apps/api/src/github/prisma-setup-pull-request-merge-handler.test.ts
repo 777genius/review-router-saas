@@ -21,7 +21,7 @@ const envelope = {
       base: { ref: "main" },
       head: {
         ref: "reviewrouter/setup",
-        sha: initialCandidate.pullRequestHeadSha,
+        sha: initialCandidate.pullRequestHeadSha ?? undefined,
       },
     },
   },
