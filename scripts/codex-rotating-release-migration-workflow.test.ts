@@ -4382,7 +4382,14 @@ NODE
             timeout: 20000,
           },
         );
-        expect(reopened.status, reopened.stderr).toBe(0);
+        expect(
+          reopened.status,
+          JSON.stringify({
+            stderr: reopened.stderr,
+            error: reopened.error?.message,
+            signal: reopened.signal,
+          }),
+        ).toBe(0);
         expect(
           parseRecoveryReplicaResponse(
             readFileSync(join(work, "recovery-resume-state.json"), "utf8"),
@@ -4399,7 +4406,14 @@ NODE
           new Date(pending.services.api.intentEpoch * 1000).toISOString(),
         );
         const resumed = runActivation(work, "", false, 60000);
-        expect(resumed.status, resumed.stderr).toBe(0);
+        expect(
+          resumed.status,
+          JSON.stringify({
+            stderr: resumed.stderr,
+            error: resumed.error?.message,
+            signal: resumed.signal,
+          }),
+        ).toBe(0);
         const final = loadRecoveryJournal(
           readFileSync(join(work, "recovery-journal.json"), "utf8"),
           state.tuple,
