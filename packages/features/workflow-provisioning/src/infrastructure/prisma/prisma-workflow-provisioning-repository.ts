@@ -31,7 +31,7 @@ export class PrismaWorkflowProvisioningRepository implements WorkflowProvisionin
         attemptId,
         revision: (current?.revision ?? -1) + 1,
         status: "not_started" as const,
-        branch: `${record.branch}/${attemptId}`,
+        branch: `${record.branch}-${attemptId}`,
         workflowPath: record.workflowPath,
         workflowStyle: record.workflowStyle,
         actionVersion: record.actionVersion,

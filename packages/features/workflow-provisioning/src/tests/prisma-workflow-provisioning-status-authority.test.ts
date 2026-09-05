@@ -230,4 +230,77 @@ describe("setup authority", () => {
     });
     expect(f.current()?.status).toBe("configured");
   });
+
+  it.each(["attempt", "revision", "scope", "retry_transfer"] as const)(
+    "fences unbound transfer recovery against stale %s evidence",
+    async (race) => {
+      const marker = {
+        ...initialCandidate,
+        status: "not_started" as const,
+        workflowStyle: "explicit" as const,
+        actionVersion: "",
+        pullRequestUrl: null,
+        pullRequestHeadSha: null,
+      };
+      const state = createProvisioningPrisma(marker);
+      const authority = new PrismaWorkflowProvisioningStatusAuthority(
+        state.prisma as never,
+      );
+      const changed = {
+        ...marker,
+        ...(race === "attempt" ? { attemptId: "newer" } : {}),
+        ...(race === "revision" ? { revision: marker.revision + 1 } : {}),
+        ...(race === "scope" || race === "retry_transfer"
+          ? {
+              workspaceId: "workspace_2",
+              installationId: "installation_2",
+              attemptId: "transferred",
+            }
+          : {}),
+      };
+      if (race === "retry_transfer") {
+        state.workflowProvisioning.updateMany.mockImplementationOnce(
+          async () => {
+            state.transfer();
+            state.replace(changed);
+            throw conflict();
+          },
+        );
+      } else {
+        if (race === "scope") state.transfer();
+        state.replace(changed);
+      }
+      await expect(
+        authority.confirmInstalledWorkflow({
+          ...record,
+          workflowPath: ".github/workflows/reviewrouter.yml",
+          baseBranch: "main",
+          expectedAttempt: marker,
+        }),
+      ).rejects.toThrow("workflow_provisioning_match_not_found");
+      expect(state.current()).toEqual(changed);
+      expect(state.workflowProvisioning.updateMany).toHaveBeenCalledTimes(
+        race === "retry_transfer" ? 1 : 0,
+      );
+      if (race === "retry_transfer")
+        expect(state.prisma.$transaction).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("does not treat a PR artifact with an empty version as a transfer placeholder", async () => {
+    const state = createProvisioningPrisma({
+      ...initialCandidate,
+      actionVersion: "",
+    });
+    await expect(
+      new PrismaWorkflowProvisioningStatusAuthority(
+        state.prisma as never,
+      ).confirmInstalledWorkflow({
+        ...record,
+        baseBranch: "main",
+        expectedAttempt: initialCandidate,
+      }),
+    ).rejects.toThrow("workflow_provisioning_match_not_found");
+    expect(state.workflowProvisioning.updateMany).not.toHaveBeenCalled();
+  });
 });

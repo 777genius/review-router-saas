@@ -19,6 +19,29 @@ function deferred() {
 }
 
 describe("workflow attempt artifacts", () => {
+  it("opens a new isolated attempt alongside the legacy setup branch", async () => {
+    const state = createProvisioningPrisma(null);
+    const remote = new WorkflowGitHubFixture();
+    const legacyHead = remote.branches.get("main")!;
+    remote.branches.set("reviewrouter/setup", legacyHead);
+    const attempt = await new PrismaWorkflowProvisioningRepository(
+      state.prisma as never,
+    ).beginAttempt(record);
+    const result = await new OctokitWorkflowSetupGateway(
+      remote,
+    ).createOrUpdateSetupPullRequest({
+      owner: "acme",
+      repo: "widget",
+      baseBranch: "main",
+      setupBranch: attempt.branch,
+      workflowFiles: [{ path: record.workflowPath, content: "new workflow" }],
+    });
+    expect(attempt.branch).toBe(`reviewrouter/setup-${attempt.attemptId}`);
+    expect(remote.branches.get("reviewrouter/setup")).toBe(legacyHead);
+    expect(remote.branches.get(attempt.branch)).toBe(result.headSha);
+    expect(result.headSha).not.toBe(legacyHead);
+  });
+
   it("a paused A cannot overwrite B's branch or configure B from A's PR head", async () => {
     const state = createProvisioningPrisma(null);
     const remote = new WorkflowGitHubFixture();

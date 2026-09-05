@@ -21,6 +21,7 @@ import { PrismaSupportDiagnosticsRepository } from "@reviewrouter/features-suppo
 import { PrismaWorkflowProvisioningRepository } from "../infrastructure/prisma/prisma-workflow-provisioning-repository";
 import { PrismaWorkflowProvisioningStatusAuthority } from "../infrastructure/prisma/prisma-workflow-provisioning-status-authority";
 import { PrismaWorkflowProvisioningQuery } from "../infrastructure/prisma/prisma-workflow-provisioning-query";
+import { withDrainedTargetAuthorityPools } from "../../../../../scripts/lib/quiesced-target-authority";
 
 const databaseUrl = process.env.REVIEW_ROUTER_TEST_DATABASE_URL;
 const withDatabase = databaseUrl ? describe : describe.skip;
@@ -169,7 +170,7 @@ withDatabase("WorkflowProvisioning PostgreSQL concurrency and transfer", () => {
     });
   });
 
-  it("requires a closed writer login fence and drained sessions before 000090", async () => {
+  it("drains capture target authority pools while preserving the old writer fence before 000090", async () => {
     const guard = readFileSync(
       new URL(
         "../../../../platform/db/prisma/migrations/000089_workflow_provisioning_writer_quiescence/migration.sql",
@@ -186,10 +187,27 @@ withDatabase("WorkflowProvisioning PostgreSQL concurrency and transfer", () => {
       databaseUrl: roleUrl.toString(),
       poolMax: 1,
     });
+    const authorityRoles = ["permit", "receipt"].map(
+      (kind) => `pr244_${kind}_${randomUUID().replaceAll("-", "")}`,
+    );
+    const authorityClients = authorityRoles.map((role) => {
+      const url = new URL(roleUrl);
+      url.username = role;
+      return createPrismaClient({ databaseUrl: url.toString(), poolMax: 1 });
+    });
+    const targetAuthority = {
+      permitInstallerPrisma: authorityClients[0]!,
+      targetReceiptReaderPrisma: authorityClients[1]!,
+    };
     await prisma.$executeRawUnsafe(
       `CREATE ROLE "${runtimeRole}" LOGIN PASSWORD '${runtimePassword}'`,
     );
     try {
+      for (const role of authorityRoles) {
+        await prisma.$executeRawUnsafe(
+          `CREATE ROLE "${role}" LOGIN PASSWORD '${runtimePassword}'`,
+        );
+      }
       await prisma.$executeRawUnsafe(
         `GRANT USAGE ON SCHEMA public TO "${runtimeRole}"`,
       );
@@ -201,12 +219,48 @@ withDatabase("WorkflowProvisioning PostgreSQL concurrency and transfer", () => {
       );
       await oldRuntime.$queryRaw`SELECT 1`;
       await prisma.$executeRawUnsafe(`ALTER ROLE "${runtimeRole}" NOLOGIN`);
+      // These are real non-superuser target connections, as left by permit
+      // installation and receipt reads before the canonical capture boundary.
+      await Promise.all(
+        authorityClients.map((client) => client.$queryRaw`SELECT 1`),
+      );
+      await expect(
+        withDrainedTargetAuthorityPools(targetAuthority, () =>
+          prisma.$executeRawUnsafe(guard),
+        ),
+      ).rejects.toThrow("workflow_provisioning_writer_quiescence_required");
+      await expect(oldRuntime.$queryRaw`SELECT 1`).resolves.toBeDefined();
+      await oldRuntime.$disconnect();
+      await Promise.all(
+        authorityClients.map((client) => client.$queryRaw`SELECT 1`),
+      );
+      // With only the authority pools open, the unchanged guard self-blocks.
       await expect(prisma.$executeRawUnsafe(guard)).rejects.toThrow(
         "workflow_provisioning_writer_quiescence_required",
       );
-      await oldRuntime.$disconnect();
-      await expect(prisma.$executeRawUnsafe(guard)).resolves.toBeDefined();
+      await expect(
+        withDrainedTargetAuthorityPools(targetAuthority, async () => {
+          const sessions = await prisma.$queryRawUnsafe<
+            Array<{ count: number }>
+          >(
+            `SELECT count(*)::int AS count FROM pg_stat_activity WHERE usename IN ('${authorityRoles.join("','")}')`,
+          );
+          expect(sessions[0]?.count).toBe(0);
+          return prisma.$executeRawUnsafe(guard);
+        }),
+      ).resolves.toBeDefined();
+      // Verification reuses the same Prisma clients only after the boundary.
+      await Promise.all(
+        authorityClients.map((client) => client.$queryRaw`SELECT 1`),
+      );
+      await expect(prisma.$executeRawUnsafe(guard)).rejects.toThrow(
+        "workflow_provisioning_writer_quiescence_required",
+      );
     } finally {
+      await Promise.all(authorityClients.map((client) => client.$disconnect()));
+      for (const role of authorityRoles) {
+        await prisma.$executeRawUnsafe(`DROP ROLE IF EXISTS "${role}"`);
+      }
       await oldRuntime.$disconnect();
       await prisma.$executeRawUnsafe(`DROP OWNED BY "${runtimeRole}"`);
       await prisma.$executeRawUnsafe(`DROP ROLE "${runtimeRole}"`);
@@ -672,6 +726,99 @@ withDatabase("WorkflowProvisioning PostgreSQL concurrency and transfer", () => {
       }
     },
   );
+  it("binds a transferred no-history placeholder and rejects recovery captured in the old scope", async () => {
+    const transferredRepositoryId = `${prefix}-unbound`;
+    const transferredGithubId = githubId + 2n;
+    await prisma.repositoryConnection.create({
+      data: {
+        id: transferredRepositoryId,
+        workspaceId,
+        installationId,
+        externalRepositoryId: transferredGithubId.toString(),
+        githubRepositoryId: transferredGithubId,
+        owner: "acme",
+        name: "unbound",
+        fullName: "acme/unbound",
+        defaultBranch: "main",
+        visibility: "private",
+        setupStatus: "configured",
+      },
+    });
+    const sync = new PrismaRepositoryConnectionRepository(prisma);
+    const transfer = async (githubInstallationId: bigint) =>
+      sync.syncInstallationRepositories({
+        inventoryGeneration: await sync.beginInstallationInventory(),
+        githubInstallationId: githubInstallationId.toString(),
+        syncedAt: new Date(),
+        repositories: [
+          {
+            githubRepositoryId: transferredGithubId.toString(),
+            owner: "acme",
+            name: "unbound",
+            fullName: "acme/unbound",
+            defaultBranch: "main",
+            visibility: "private",
+            archived: false,
+            stargazersCount: 0,
+          },
+        ],
+      });
+    await transfer(githubId + 1n);
+    const marker = await prisma.workflowProvisioning.findUniqueOrThrow({
+      where: { repositoryId: transferredRepositoryId },
+    });
+    expect(marker).toMatchObject({
+      status: "not_started",
+      workflowPath: record.workflowPath,
+      workflowStyle: "explicit",
+      actionVersion: "",
+      pullRequestUrl: null,
+      pullRequestHeadSha: null,
+    });
+    const authority = new PrismaWorkflowProvisioningStatusAuthority(prisma);
+    const installed = {
+      ...record,
+      repositoryId: transferredRepositoryId,
+      workspaceId: otherWorkspaceId,
+      installationId: otherInstallationId,
+      workflowPath: ".github/workflows/reviewrouter.yml",
+      baseBranch: "main",
+      expectedAttempt: marker,
+    };
+    // A verification started in I2 completes after transfer back to I1.
+    await transfer(githubId);
+    const current = await prisma.workflowProvisioning.findUniqueOrThrow({
+      where: { repositoryId: transferredRepositoryId },
+    });
+    await expect(authority.confirmInstalledWorkflow(installed)).rejects.toThrow(
+      "workflow_provisioning_match_not_found",
+    );
+    expect(
+      await prisma.workflowProvisioning.findUniqueOrThrow({
+        where: { repositoryId: transferredRepositoryId },
+      }),
+    ).toEqual(current);
+    await authority.confirmInstalledWorkflow({
+      ...installed,
+      workspaceId,
+      installationId,
+      expectedAttempt: current,
+    });
+    expect(
+      await prisma.workflowProvisioning.findUniqueOrThrow({
+        where: { repositoryId: transferredRepositoryId },
+      }),
+    ).toMatchObject({
+      workspaceId,
+      installationId,
+      status: "configured",
+      workflowPath: installed.workflowPath,
+      workflowStyle: installed.workflowStyle,
+      actionVersion: installed.actionVersion,
+      pullRequestHeadSha: null,
+      revision: current.revision + 1,
+    });
+  });
 });
 
 /** Both transactions see the same source state before either writes. Errors are

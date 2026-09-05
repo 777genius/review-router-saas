@@ -26,8 +26,23 @@ export class WorkflowGitHubFixture {
       return { data: { object: { sha } } };
     }
     if (route === "POST /repos/{owner}/{repo}/git/refs") {
-      if (this.branches.has(branch))
+      if (
+        [...this.branches.keys()].some(
+          (existing) =>
+            existing === branch ||
+            existing.startsWith(`${branch}/`) ||
+            branch.startsWith(`${existing}/`),
+        )
+      )
         throw Object.assign(new Error("exists"), { status: 422 });
+      this.branches.set(branch, String(parameters.sha));
+      return { data: {} };
+    }
+    if (route === "PATCH /repos/{owner}/{repo}/git/refs/{ref}") {
+      if (!this.branches.has(branch))
+        throw Object.assign(new Error("reference does not exist"), {
+          status: 422,
+        });
       this.branches.set(branch, String(parameters.sha));
       return { data: {} };
     }

@@ -1338,7 +1338,11 @@ async function confirmSetupPullRequestMergedMutation(
         )
       : null;
     const setupPullRequestStatus = setupPullRequestInspection?.status ?? null;
-    const setupPullRequestMerged = setupPullRequestStatus === "merged";
+    // Migrated PRs have no immutable head binding. They must independently
+    // verify the installed workflow before using the fenced recovery path.
+    const setupPullRequestMerged =
+      setupPullRequestStatus === "merged" &&
+      setupProvisioning?.pullRequestHeadSha != null;
     if (
       setupPullRequestMerged &&
       (!setupProvisioning?.pullRequestHeadSha ||
@@ -1347,7 +1351,9 @@ async function confirmSetupPullRequestMergedMutation(
     )
       throw new Error("workflow_provisioning_match_not_found");
     const setupBaseBranch =
-      setupPullRequestInspection?.baseBranch ??
+      (setupPullRequestStatus === "merged" && !setupPullRequestMerged
+        ? null
+        : setupPullRequestInspection?.baseBranch) ??
       (await resolveDashboardSetupBaseBranch({
         octokit,
         owner: repository.owner,

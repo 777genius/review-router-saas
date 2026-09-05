@@ -61,7 +61,11 @@ vi.mock("../../src/server/workflow-public-api-url", () => ({
   resolveWorkflowPublicApiUrl: () => "https://api.reviewrouter.test",
 }));
 
-import { createProvisioningPrisma } from "../../../../packages/features/workflow-provisioning/src/tests/provisioning-prisma-fixture";
+import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
+import {
+  createProvisioningPrisma,
+  initialCandidate,
+} from "../../../../packages/features/workflow-provisioning/src/tests/provisioning-prisma-fixture";
 
 import { confirmSetupPullRequestMergedClientAction } from "./actions";
 
@@ -196,10 +200,26 @@ describe("dashboard setup PR recovery", () => {
     ).resolves.toMatchObject({ params: { notice: "setup_pr_merged" } });
     expect(workflowProvisioning.updateMany).toHaveBeenCalledTimes(1);
   });
-  it.each(["verified", "workflow_absent", "activation_failed"] as const)(
-    "handles installed workflow without a provisioning row: %s",
+  it.each([
+    "verified",
+    "workflow_absent",
+    "activation_failed",
+    "transfer_placeholder",
+  ] as const)(
+    "handles installed workflow without bound provisioning evidence: %s",
     async (scenario) => {
-      const state = createProvisioningPrisma(null);
+      const marker =
+        scenario === "transfer_placeholder"
+          ? {
+              ...initialCandidate,
+              status: "not_started" as const,
+              workflowStyle: "explicit" as const,
+              actionVersion: "",
+              pullRequestHeadSha: null,
+              pullRequestUrl: null,
+            }
+          : null;
+      const state = createProvisioningPrisma(marker);
       const repository = {
         id: "repository_1",
         workspaceId: "workspace_1",
@@ -214,7 +234,7 @@ describe("dashboard setup PR recovery", () => {
         selected: true,
         archived: false,
         installation: { status: "active", githubInstallationId: 123n },
-        provisioning: [],
+        provisioning: marker ? [marker] : [],
       };
       mocks.getPrisma.mockReturnValue({
         ...state.prisma,
@@ -234,11 +254,15 @@ describe("dashboard setup PR recovery", () => {
       form.set("workspaceId", "workspace_1");
       form.set("repositoryId", "repository_1");
       const result = await confirmSetupPullRequestMergedClientAction(form);
-      if (scenario === "verified") {
+      if (scenario === "verified" || scenario === "transfer_placeholder") {
         expect(result).toMatchObject({ params: { notice: "setup_pr_merged" } });
         expect(state.current()).toMatchObject({
           status: "configured",
           pullRequestUrl: null,
+          pullRequestHeadSha: null,
+          workflowPath: ".github/workflows/reviewrouter.yml",
+          workflowStyle: "reusable",
+          actionVersion: resolveReviewRouterActionRef(),
         });
         expect(mocks.isWorkflowSetupAlreadyCurrent).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -255,6 +279,103 @@ describe("dashboard setup PR recovery", () => {
         expect(state.workflowProvisioning.create).not.toHaveBeenCalled();
       }
       expect(mocks.inspectSetupPullRequest).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    "verified",
+    "workflow_absent",
+    "activation_failed",
+    "head_mismatch",
+    "transfer_during_probe",
+  ] as const)(
+    "recovers a historical merged PR only from installed evidence: %s",
+    async (scenario) => {
+      const historical = {
+        ...initialCandidate,
+        pullRequestHeadSha:
+          scenario === "head_mismatch" ? "c".repeat(40) : null,
+        workflowPath: ".github/workflows/reviewrouter.yml",
+        actionVersion: resolveReviewRouterActionRef(),
+      };
+      const state = createProvisioningPrisma(historical);
+      mocks.getPrisma.mockReturnValue({
+        ...state.prisma,
+        repositoryConnection: {
+          findUnique: vi.fn(async () => ({
+            id: "repository_1",
+            workspaceId: "workspace_1",
+            installationId: "installation_1",
+            provider: "github",
+            githubRepositoryId: 456n,
+            owner: "acme",
+            name: "widget",
+            fullName: "acme/widget",
+            visibility: "private",
+            defaultBranch: "main",
+            selected: true,
+            archived: false,
+            installation: { status: "active", githubInstallationId: 123n },
+            provisioning: [historical],
+          })),
+        },
+        hostedCodexRepositoryBinding: { findFirst: vi.fn(async () => null) },
+      });
+      mocks.createGitHubAppInstallationOctokit.mockResolvedValue({
+        request: vi.fn(async () => ({ data: {} })),
+      });
+      // Recovery must probe the current default branch, not the historical PR base.
+      mocks.inspectSetupPullRequest.mockResolvedValue({
+        status: "merged",
+        baseBranch: "master",
+        headSha: "b".repeat(40),
+      });
+      if (scenario === "workflow_absent")
+        mocks.isWorkflowSetupAlreadyCurrent.mockResolvedValue(false);
+      if (scenario === "activation_failed")
+        mocks.activateConfirmedCodexNamespaceAfterWorkflowMerge.mockRejectedValueOnce(
+          new Error("activation_failed"),
+        );
+      if (scenario === "transfer_during_probe")
+        mocks.isWorkflowSetupAlreadyCurrent.mockImplementationOnce(async () => {
+          state.transfer();
+          return true;
+        });
+      const form = new FormData();
+      form.set("workspaceId", "workspace_1");
+      form.set("repositoryId", "repository_1");
+      const result = await confirmSetupPullRequestMergedClientAction(form);
+      if (scenario === "verified") {
+        expect(result.params).toHaveProperty("notice", "setup_pr_merged");
+        expect(mocks.isWorkflowSetupAlreadyCurrent).toHaveBeenCalledWith(
+          expect.objectContaining({ defaultBranch: "main" }),
+          expect.anything(),
+        );
+        expect(
+          mocks.activateConfirmedCodexNamespaceAfterWorkflowMerge,
+        ).toHaveBeenCalled();
+        expect(state.current()).toMatchObject({
+          status: "configured",
+          revision: historical.revision + 1,
+          pullRequestHeadSha: null,
+        });
+        expect(mocks.recordAuditEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metadata: expect.objectContaining({ source: "workflow" }),
+          }),
+          expect.anything(),
+        );
+      } else {
+        expect(result.params).not.toHaveProperty("notice");
+        expect(state.workflowProvisioning.updateMany).not.toHaveBeenCalled();
+        expect(state.current()).toEqual(historical);
+        if (scenario === "head_mismatch") {
+          expect(mocks.isWorkflowSetupAlreadyCurrent).not.toHaveBeenCalled();
+          expect(
+            mocks.activateConfirmedCodexNamespaceAfterWorkflowMerge,
+          ).not.toHaveBeenCalled();
+        }
+      }
     },
   );
 });

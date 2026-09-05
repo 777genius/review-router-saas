@@ -220,6 +220,36 @@ describe("provisioning attempt writers", () => {
       expect(f.prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
         isolationLevel: "Serializable",
       });
+      const authority = new PrismaWorkflowProvisioningStatusAuthority(
+        prisma as never,
+      );
+      await expect(
+        authority.confirmInstalledWorkflow({
+          ...record,
+          baseBranch: "main",
+          expectedAttempt: transferred,
+        }),
+      ).rejects.toThrow("workflow_provisioning_match_not_found");
+      const installed = {
+        ...record,
+        workspaceId: destination.workspaceId,
+        installationId: destination.id,
+        // A marker created without previous authority has no artifact binding.
+        workflowPath: hasAuthority
+          ? record.workflowPath
+          : ".github/workflows/reviewrouter.yml",
+        baseBranch: "main",
+        expectedAttempt: transferred,
+      };
+      await authority.confirmInstalledWorkflow(installed);
+      expect(f.current()).toMatchObject({
+        status: "configured",
+        workflowPath: installed.workflowPath,
+        workflowStyle: "reusable",
+        actionVersion: record.actionVersion,
+        pullRequestHeadSha: null,
+        revision: transferred.revision + 1,
+      });
     },
   );
 });

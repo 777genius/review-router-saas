@@ -270,6 +270,7 @@ import {
 } from "./install-release-authority-db.mjs";
 import { executePrivateGenerationActivation } from "./activate-private-pg17-generation.mjs";
 import { createSecureCanonicalRun } from "./private-pg17-secure-canonical.ts";
+import { withDrainedTargetAuthorityPools } from "./lib/quiesced-target-authority.ts";
 import {
   createDatabaseCredentialBoundary,
   createSecretSafePostgresInvocation,
@@ -3098,9 +3099,8 @@ async function verifyProductionPathRehearsal(facts) {
     process.stderr.write(
       "rehearsal_migration_substep_started:canonical_migration\n",
     );
-    const migration = executeCanonicalReleaseMigration(
-      migrationEnv,
-      canonicalRun,
+    const migration = await withDrainedTargetAuthorityPools(facts, () =>
+      executeCanonicalReleaseMigration(migrationEnv, canonicalRun),
     );
     if (migration.captureOnlyStatus === "catalog_candidate_ready") {
       const candidate = migration.candidate;

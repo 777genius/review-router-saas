@@ -121,13 +121,27 @@ export class PrismaWorkflowProvisioningStatusAuthority {
         current.actionVersion === input.actionVersion
       )
         return;
+      // The no-history transfer marker carries placeholder defaults, not an
+      // artifact binding. Recognize only that exact unbound shape; ordinary
+      // attempts retain all artifact comparisons below.
+      const unboundTransfer =
+        current.status === "not_started" &&
+        current.branch === "reviewrouter/setup" &&
+        current.workflowPath === ".github/workflows/reviewrouter-codex.yml" &&
+        current.workflowStyle === "explicit" &&
+        current.actionVersion === "" &&
+        current.pullRequestUrl === null &&
+        current.pullRequestHeadSha === null &&
+        current.errorMessage === null;
       if (
         current.workspaceId !== input.workspaceId ||
         current.installationId !== input.installationId ||
         current.attemptId !== input.expectedAttempt?.attemptId ||
-        current.workflowPath !== input.workflowPath ||
-        current.workflowStyle !== input.workflowStyle ||
-        current.actionVersion !== input.actionVersion
+        (unboundTransfer
+          ? !input.actionVersion
+          : current.workflowPath !== input.workflowPath ||
+            current.workflowStyle !== input.workflowStyle ||
+            current.actionVersion !== input.actionVersion)
       )
         throw new Error("workflow_provisioning_match_not_found");
       if (current.status === "configured") return;
@@ -142,6 +156,13 @@ export class PrismaWorkflowProvisioningStatusAuthority {
         },
         data: {
           status: "configured",
+          ...(unboundTransfer
+            ? {
+                workflowPath: input.workflowPath,
+                workflowStyle: input.workflowStyle,
+                actionVersion: input.actionVersion,
+              }
+            : {}),
           errorMessage: null,
           revision: { increment: 1 },
         },

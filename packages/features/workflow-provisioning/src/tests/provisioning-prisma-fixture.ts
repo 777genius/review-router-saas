@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { vi } from "vitest";
 
 export const scope = {
@@ -24,6 +25,8 @@ export const identity = {
 };
 export const initialCandidate = {
   ...record,
+  workflowStyle: record.workflowStyle as "explicit" | "reusable",
+  pullRequestHeadSha: record.pullRequestHeadSha as string | null,
   id: "provisioning_1",
   attemptId: "attempt_1",
   revision: 1,
@@ -54,7 +57,11 @@ export function createProvisioningPrisma(
     create: vi.fn(async ({ data }: { data: Partial<Candidate> }) => {
       current = {
         ...initialCandidate,
+        attemptId: randomUUID(),
+        revision: 0,
+        workflowStyle: "explicit",
         ...data,
+        pullRequestHeadSha: data.pullRequestHeadSha ?? null,
         pullRequestUrl: data.pullRequestUrl ?? null,
         errorMessage: data.errorMessage ?? null,
       };
