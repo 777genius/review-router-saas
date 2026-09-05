@@ -11,7 +11,7 @@ const workflow = readFileSync(
 );
 const trustBootstrap = workflow.slice(
   workflow.indexOf("\n  trust-bootstrap:"),
-  workflow.indexOf("\n  recover:"),
+  workflow.indexOf("\n  release-evidence:"),
 );
 const recover = workflow.slice(
   workflow.indexOf("\n  recover:"),
@@ -177,6 +177,194 @@ function boundInventoryAccepts(input: unknown): boolean {
 }
 
 describe("Codex rotating release migration workflow", () => {
+  it("rejects unsafe environment policies before emitting trusted output", () => {
+    const program = trustBootstrap.match(
+      /<<'NODE'\n([\s\S]*?)\n {10}NODE/u,
+    )?.[1];
+    expect(program).toBeDefined();
+    const policy = {
+      protection_rules: [
+        {
+          type: "required_reviewers",
+          reviewers: [{ type: "Team", id: 1 }],
+          prevent_self_review: true,
+        },
+      ],
+      deployment_branch_policy: {
+        protected_branches: true,
+        custom_branch_policies: false,
+      },
+    };
+    for (const [environment, accepted] of [
+      [policy, true],
+      [{ ...policy, protection_rules: [] }, false],
+      [
+        {
+          ...policy,
+          protection_rules: [
+            { ...policy.protection_rules[0], prevent_self_review: false },
+          ],
+        },
+        false,
+      ],
+      [
+        {
+          ...policy,
+          deployment_branch_policy: {
+            protected_branches: false,
+            custom_branch_policies: true,
+          },
+        },
+        false,
+      ],
+    ] as const) {
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `
+globalThis.fetch = async (url) => ({
+  ok: true,
+  json: async () => String(url).endsWith("/branches/main")
+    ? { protected: true, commit: { sha: process.env.GITHUB_SHA } }
+    : JSON.parse(process.env.ENVIRONMENT_FIXTURE),
+});
+${program}
+`,
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            GITHUB_REPOSITORY: "test/recovery",
+            GITHUB_SHA: releaseCommitSha,
+            GITHUB_REF: "refs/heads/main",
+            GITHUB_EVENT_NAME: "workflow_dispatch",
+            GITHUB_OUTPUT: "/dev/null",
+            GH_TOKEN: "mock-token",
+            ENVIRONMENT_FIXTURE: JSON.stringify(environment),
+          },
+        },
+      );
+      expect(result.status === 0).toBe(accepted);
+      if (!accepted) expect(result.stderr).toContain("environment_unprotected");
+    }
+  });
+
+  it("gates credentials on protected environment and exact release evidence", () => {
+    expect(trustBootstrap).toContain("reviewers.prevent_self_review !== true");
+    expect(trustBootstrap).toContain("/environments/production-release");
+    expect(workflow).toContain(
+      "REVIEW_ROUTER_RELEASE_GATE_SHA: ${{ inputs.release_commit_sha }}",
+    );
+    expect(workflow).toContain("node scripts/release-gate-evidence.mjs verify");
+    for (const job of [recover, registerRelease]) {
+      expect(job).toContain("needs: [trust-bootstrap, release-evidence]");
+      expect(job).toContain("environment: production-release");
+    }
+  });
+
+  it("binds service preflight to the owner, environment, role, and exact ID", () => {
+    const filter = extractRecoveryJqFilter("service_scope_filter");
+    const service = {
+      id: "srv-api",
+      ownerId: "tea-owner",
+      environmentId: "evm-target",
+      type: "web_service",
+      suspended: "not_suspended",
+    };
+    const args = {
+      serviceId: "srv-api",
+      ownerId: "tea-owner",
+      environmentId: "evm-target",
+      serviceType: "web_service",
+    };
+    expect(runJq(filter, service, args).status).toBe(0);
+    expect(runJq(filter, { service }, args).status).toBe(0);
+    for (const key of Object.keys(service)) {
+      expect(
+        runJq(filter, { ...service, [key]: "wrong" }, args).status,
+      ).not.toBe(0);
+      expect(runJq(filter, { ...service, [key]: null }, args).status).not.toBe(
+        0,
+      );
+    }
+    expect(registerRelease).toContain(filter);
+    expect(recover.indexOf("service_scope_filter='")).toBeLessThan(
+      recover.indexOf('if [[ "$state" != "suspended" ]]'),
+    );
+  });
+
+  it("requires exact database firewall closure evidence", () => {
+    for (const job of [recover, registerRelease]) {
+      const start = job.indexOf("          close_firewall() {");
+      const end = job.indexOf("\n          }", start);
+      const close = job.slice(start, end + "\n          }".length);
+      for (const [patchStatus, database, accepted] of [
+        [0, { id: "dpg-test", ipAllowList: [] }, true],
+        [28, { id: "dpg-test", ipAllowList: [] }, false],
+        [0, { id: "dpg-other", ipAllowList: [] }, false],
+        [0, { id: "dpg-test", ipAllowList: [{}] }, false],
+        [0, { id: "dpg-test" }, false],
+      ] as const) {
+        const result = spawnSync(
+          "bash",
+          [
+            "-c",
+            `set -euo pipefail
+firewall_open=1
+TARGET_DB_ID=dpg-test
+render_api() {
+  if [[ "$1" == "-X" ]]; then return "$PATCH_STATUS"; fi
+  printf '%s\\n' "$DATABASE_FIXTURE"
+}
+${close}
+if close_firewall; then printf 'closed=%s' "$firewall_open"; else exit 1; fi
+`,
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              PATCH_STATUS: String(patchStatus),
+              DATABASE_FIXTURE: JSON.stringify(database),
+            },
+          },
+        );
+        expect(result.status === 0).toBe(accepted);
+        if (accepted) expect(result.stdout).toBe("closed=0");
+      }
+    }
+  });
+
+  it("closes the firewall when its opening PATCH loses the response", () => {
+    for (const job of [recover, registerRelease]) {
+      const start = job.indexOf("          # Arm cleanup before the PATCH:");
+      const end = job.indexOf("\n\n", start);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const opening = job.slice(start, end).replace(/^ {10}/gmu, "");
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -euo pipefail
+firewall_open=0
+work=/unused
+TARGET_DB_ID=dpg-test
+render_api() { return 28; }
+trap 'printf "cleanup_armed=%s\\n" "$firewall_open"' EXIT
+${opening}
+`,
+        ],
+        { encoding: "utf8" },
+      );
+      expect(result.status).toBe(28);
+      expect(result.stdout).toBe("cleanup_armed=1\n");
+    }
+  });
+
   it("establishes current protected main before any repository checkout", () => {
     expect(trustBootstrap).toContain(
       'required("GITHUB_REF") !== "refs/heads/main"',
@@ -187,7 +375,9 @@ describe("Codex rotating release migration workflow", () => {
     );
     expect(trustBootstrap).toContain("trusted_main_sha=${dispatchSha}");
     expect(trustBootstrap).not.toContain("actions/checkout@");
-    expect(registerRelease).toContain("needs: trust-bootstrap");
+    expect(registerRelease).toContain(
+      "needs: [trust-bootstrap, release-evidence]",
+    );
   });
 
   it("checks out and verifies the requested immutable migration source", () => {
@@ -1139,7 +1329,16 @@ false
     expect(registerRelease).toContain(
       "deploy_intent_at=\"$(node -e 'process.stdout.write(new Date().toISOString())')\"",
     );
-    expect(registerRelease).toContain("deploys?limit=20");
+    expect(registerRelease).not.toContain("deploys?limit=20");
+    expect(registerRelease.replace(/^ {10}/gmu, "")).toContain(
+      fetchRecoveryDeploymentInventory,
+    );
+    expect(registerRelease.replace(/^ {10}/gmu, "")).toContain(
+      renderInventoryApi,
+    );
+    expect(registerRelease).toContain(
+      'fetch_registration_deployment_inventory "$service_id" "$reconciliation_deadline"',
+    );
     expect(registerRelease).toContain('[[ "$deploy_id" =~ ^dep-[a-z0-9-]+$ ]]');
     expect(registerRelease).toContain(".[0].deployId == $beforeDeployId");
     expect(registerRelease).toContain(

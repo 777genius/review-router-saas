@@ -118,6 +118,7 @@ jobs:
                 Accept: "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
               },
+              signal: AbortSignal.timeout(20000),
             },
           );
           if (!response.ok) fail(`github_api_${response.status}`);
@@ -128,6 +129,29 @@ jobs:
           ) {
             fail("stale_or_unprotected_main");
           }
+          const environmentResponse = await fetch(
+            `https://api.github.com/repos/${repository}/environments/production-release`,
+            {
+              headers: {
+                Authorization: `Bearer ${required("GH_TOKEN")}`,
+                Accept: "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+              signal: AbortSignal.timeout(20000),
+            },
+          );
+          if (!environmentResponse.ok) fail(`environment_api_${environmentResponse.status}`);
+          const environment = await environmentResponse.json();
+          const reviewers = environment.protection_rules?.find(
+            (rule) => rule.type === "required_reviewers",
+          );
+          if (
+            !Array.isArray(reviewers?.reviewers) ||
+            reviewers.reviewers.length === 0 ||
+            reviewers.prevent_self_review !== true ||
+            environment.deployment_branch_policy?.protected_branches !== true ||
+            environment.deployment_branch_policy?.custom_branch_policies !== false
+          ) fail("environment_unprotected");
           appendFileSync(
             required("GITHUB_OUTPUT"),
             `trusted_main_sha=${dispatchSha}\n`,
@@ -135,9 +159,33 @@ jobs:
           );
           NODE
 
+  release-evidence:
+    name: Verify exact recovery release evidence
+    needs: trust-bootstrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout immutable release verifier
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_main_sha }}
+      - name: Require exact PostgreSQL release-gate evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_RELEASE_GATE_SHA: ${{ inputs.release_commit_sha }}
+        run: |
+          set -euo pipefail
+          node scripts/release-gate-evidence.mjs verify
+
   recover:
     name: Complete restored PG17 cutover
-    needs: trust-bootstrap
+    needs: [trust-bootstrap, release-evidence]
+    environment: production-release
     if: ${{ inputs.confirmation == 'RECOVER_EXISTING_PG17' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 70
@@ -252,7 +300,12 @@ jobs:
                 -H "Content-Type: application/json" \
                 --data-binary '{"ipAllowList":[]}' \
                 "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
-                -o /dev/null || true
+                -o /dev/null || return 1
+              render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
+                | jq -e --arg targetDbId "$TARGET_DB_ID" '
+                    .id == $targetDbId and .ipAllowList == []
+                  ' >/dev/null || return 1
+              firewall_open=0
             fi
           }
           compensate_recovery_fleet() {
@@ -321,7 +374,10 @@ jobs:
                 fi
               fi
             fi
-            close_firewall
+            if ! close_firewall; then
+              echo "::error::Recovery could not prove the database firewall closed."
+              cleanup_status=1
+            fi
             rm -f "$work"/*secret* "$work"/*url* "$work"/*env.json "$work/connection-info.json"
             exit "$cleanup_status"
           }
@@ -336,6 +392,28 @@ jobs:
           trap 'terminate_recovery 129' HUP
           trap 'terminate_recovery 130' INT
           trap 'terminate_recovery 143' TERM
+
+          # Validate the complete fleet before the first provider mutation.
+          service_scope_filter='
+            (.service // .)
+            | .id == $serviceId
+              and (.ownerId // .owner.id) == $ownerId
+              and .environmentId == $environmentId
+              and .type == $serviceType
+              and (.suspended == "suspended" or .suspended == "not_suspended")
+          '
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            service_type=web_service
+            if [[ "$service_id" == "$WORKER_SERVICE_ID" ]]; then
+              service_type=background_worker
+            fi
+            render_api "https://api.render.com/v1/services/$service_id" \
+              | jq -e --arg serviceId "$service_id" \
+                --arg ownerId "$RENDER_OWNER_ID" \
+                --arg environmentId "$RENDER_ENVIRONMENT_ID" \
+                --arg serviceType "$service_type" \
+                "$service_scope_filter" >/dev/null
+          done
 
           # Converge both an initially live set and a partially suspended set
           # to the same fail-closed barrier. No database or credential mutation
@@ -465,10 +543,11 @@ jobs:
             cidrBlock: $cidr,
             description: "temporary GitHub PG17 cutover recovery"
           }]}' > "$work/firewall.json"
+          # Arm cleanup before the PATCH: an accepted request can lose its response.
+          firewall_open=1
           render_api -X PATCH -H "Content-Type: application/json" \
             --data-binary @"$work/firewall.json" \
             "https://api.render.com/v1/postgres/$TARGET_DB_ID" -o /dev/null
-          firewall_open=1
 
           render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID/connection-info" \
             > "$work/connection-info.json"
@@ -1621,7 +1700,8 @@ jobs:
 
   register-release:
     name: Register verified Review Action release
-    needs: trust-bootstrap
+    needs: [trust-bootstrap, release-evidence]
+    environment: production-release
     if: ${{ inputs.confirmation == 'REGISTER_VERIFIED_REVIEW_ACTION_RELEASE' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -1670,6 +1750,9 @@ jobs:
           [[ "$API_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
           [[ "$WORKER_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
           [[ "$WEB_SERVICE_ID" =~ ^srv-[a-z0-9-]+$ ]]
+          [[ "$API_SERVICE_ID" != "$WORKER_SERVICE_ID" ]]
+          [[ "$API_SERVICE_ID" != "$WEB_SERVICE_ID" ]]
+          [[ "$WORKER_SERVICE_ID" != "$WEB_SERVICE_ID" ]]
           if [[ -n "$OPERATOR_REPOSITORY" ]]; then
             [[ "$OPEN_GLOBAL_EMERGENCY" == "true" ]]
             [[ -n "$OPERATOR_WORKSPACE_ID" ]]
@@ -1725,23 +1808,325 @@ jobs:
               -H "Authorization: Bearer $RENDER_API_KEY" \
               "$@"
           }
+          render_inventory_api() {
+            local absolute_deadline="$1"
+            local remaining request_timeout
+            shift
+            remaining=$((absolute_deadline - SECONDS))
+            if (( remaining <= 0 )); then
+              echo "::error::Render inventory deadline expired before request" >&2
+              return 124
+            fi
+            request_timeout="$remaining"
+            if (( request_timeout > 20 )); then
+              request_timeout=20
+            fi
+            curl --fail --silent --show-error \
+              --connect-timeout 5 --max-time "$request_timeout" \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+          recovery_deployment_inventory_filter='
+            def recovery_deployment_identity($deploy):
+              ([
+                  $deploy.commit.id?,
+                  $deploy.commit.sha?,
+                  $deploy.commitId?
+                ] | map(select(. != null))) as $commitCandidates
+              | ([
+                  $deploy.image.sha?,
+                  $deploy.image.digest?,
+                  $deploy.imageDigest?
+                ] | map(select(. != null))) as $imageCandidates
+              | if (
+                  ($commitCandidates | length) >= 1
+                  and all(
+                    $commitCandidates[];
+                    type == "string" and test("^[a-f0-9]{40}$")
+                  )
+                  and (($commitCandidates | unique | length) == 1)
+                  and (($imageCandidates | length) == 0)
+                ) then {
+                  kind: "git",
+                  commitSha: $commitCandidates[0]
+                }
+                elif (
+                  ($commitCandidates | length) == 0
+                  and ($imageCandidates | length) >= 1
+                  and all(
+                    $imageCandidates[];
+                    type == "string" and test("^sha256:[a-f0-9]{64}$")
+                  )
+                  and (($imageCandidates | unique | length) == 1)
+                ) then {
+                  kind: "image",
+                  imageDigest: $imageCandidates[0]
+                }
+                elif (
+                  ($commitCandidates | length) == 0
+                  and ($imageCandidates | length) == 0
+                ) then {kind: "missing"}
+                else {kind: "invalid"}
+                end;
+            def recovery_deployment_status_class($status):
+              if ([
+                "created",
+                "queued",
+                "build_in_progress",
+                "pre_deploy_in_progress",
+                "update_in_progress",
+                "live"
+              ] | index($status)) != null then "active"
+              elif ([
+                "build_failed",
+                "pre_deploy_failed",
+                "update_failed",
+                "canceled",
+                "deactivated",
+                "failed"
+              ] | index($status)) != null or ($status | endswith("_failed"))
+              then "terminal"
+              else "unknown"
+              end;
+            (if type == "array" then .
+             elif ((.deploys? | type) == "array") then .deploys
+             elif type == "object" then [.]
+             else error("recovery_deployment_shape")
+             end)
+            | map(.deploy // .)
+            | map(
+                . as $deploy
+                | recovery_deployment_identity($deploy) as $identity
+                | ($deploy.status
+                    | if type == "string" and length > 0 then .
+                      else error("recovery_deployment_status")
+                      end) as $status
+                | {
+                    serviceId: (
+                      ($deploy.serviceId // $serviceId) as $observedServiceId
+                      | if (
+                          ($observedServiceId | type) == "string"
+                          and $observedServiceId == $serviceId
+                        ) then $observedServiceId
+                        else error("recovery_deployment_service_identity")
+                        end
+                    ),
+                    deployId: (
+                      $deploy.id
+                      | if type == "string" and test("^dep-[a-z0-9-]+$")
+                        then .
+                        else error("recovery_deployment_id")
+                        end
+                    ),
+                    observedStatus: $status,
+                    statusClass: recovery_deployment_status_class($status),
+                    createdAt: (
+                      ($deploy.createdAt // null)
+                      | if . == null or type == "string" then .
+                        else error("recovery_deployment_created_at")
+                        end
+                    ),
+                    deploymentIdentityKind: $identity.kind,
+                    observedCommitSha: ($identity.commitSha // null),
+                    observedImageDigest: ($identity.imageDigest // null)
+                  }
+              )
+          '
+          fetch_recovery_deployment_inventory() {
+            local absolute_deadline all_deployments cursor encoded_cursor entries
+            local entry_count final_entries final_inventory final_snapshot
+            local first_page_snapshot next_cursor page page_inventory raw_page
+            local seen_cursors service_id url
+            service_id="$1"
+            absolute_deadline="$2"
+            all_deployments='[]'
+            cursor=""
+            page=0
+            seen_cursors='[]'
+            while true; do
+              page=$((page + 1))
+              if (( page > 50 )); then
+                echo "::error::Render deployment inventory exceeded 50 pages for $service_id" >&2
+                return 1
+              fi
+              url="https://api.render.com/v1/services/$service_id/deploys?limit=100"
+              if [[ -n "$cursor" ]]; then
+                encoded_cursor="$(
+                  node -e '
+                    process.stdout.write(encodeURIComponent(process.argv[1]));
+                  ' "$cursor"
+                )"
+                url="$url&cursor=$encoded_cursor"
+              fi
+              raw_page="$(render_inventory_api "$absolute_deadline" "$url")"
+              entries="$(
+                jq -ce '
+                  if type == "array" then .
+                  elif ((.deploys? | type) == "array") then .deploys
+                  else error("recovery_deployment_page_shape")
+                  end
+                ' <<<"$raw_page"
+              )"
+              entry_count="$(jq -er 'length' <<<"$entries")"
+              page_inventory="$(
+                jq -ce --arg serviceId "$service_id" \
+                  "$recovery_deployment_inventory_filter" <<<"$entries"
+              )"
+              if (( page == 1 )); then
+                first_page_snapshot="$(
+                  jq -c '
+                    map({
+                      serviceId,
+                      deployId,
+                      observedStatus,
+                      statusClass,
+                      createdAt,
+                      deploymentIdentityKind,
+                      observedCommitSha,
+                      observedImageDigest
+                    })
+                  ' <<<"$page_inventory"
+                )"
+              fi
+              all_deployments="$(
+                jq -c --argjson page "$page_inventory" '. + $page' \
+                  <<<"$all_deployments"
+              )"
+              if (( entry_count < 100 )); then
+                break
+              fi
+              next_cursor="$(
+                jq -er '
+                  if type == "array" then .[-1].cursor
+                  elif ((.nextCursor? | type) == "string") then .nextCursor
+                  elif ((.cursor? | type) == "string") then .cursor
+                  else .deploys[-1].cursor
+                  end
+                  | select(type == "string" and length > 0)
+                ' <<<"$raw_page"
+              )"
+              if jq -e --arg cursor "$next_cursor" \
+                'index($cursor) != null' <<<"$seen_cursors" >/dev/null; then
+                echo "::error::Render deployment inventory repeated cursor for $service_id" >&2
+                return 1
+              fi
+              seen_cursors="$(
+                jq -c --arg cursor "$next_cursor" '. + [$cursor]' \
+                  <<<"$seen_cursors"
+              )"
+              cursor="$next_cursor"
+            done
+            # Cursor pagination is not a point-in-time snapshot. A concurrent
+            # deployment would be inserted at the head, so require the entire
+            # normalized first page to remain byte-for-byte stable around the
+            # exhaustive traversal before trusting its active-deploy set.
+            raw_page="$(
+              render_inventory_api "$absolute_deadline" \
+                "https://api.render.com/v1/services/$service_id/deploys?limit=100"
+            )"
+            final_entries="$(
+              jq -ce '
+                if type == "array" then .
+                elif ((.deploys? | type) == "array") then .deploys
+                else error("recovery_deployment_page_shape")
+                end
+              ' <<<"$raw_page"
+            )"
+            final_inventory="$(
+              jq -ce --arg serviceId "$service_id" \
+                "$recovery_deployment_inventory_filter" <<<"$final_entries"
+            )"
+            final_snapshot="$(
+              jq -c '
+                map({
+                  serviceId,
+                  deployId,
+                  observedStatus,
+                  statusClass,
+                  createdAt,
+                  deploymentIdentityKind,
+                  observedCommitSha,
+                  observedImageDigest
+                })
+              ' <<<"$final_inventory"
+            )"
+            if [[ "$final_snapshot" != "$first_page_snapshot" ]]; then
+              echo "::error::Render deployment inventory head changed during pagination for $service_id" >&2
+              return 1
+            fi
+            jq -e '
+              ([.[].deployId] | length) == ([.[].deployId] | unique | length)
+            ' <<<"$all_deployments" >/dev/null
+            printf '%s\n' "$all_deployments"
+          }
+          fetch_registration_deployment_inventory() {
+            local service_id="$1" absolute_deadline="$2" inventory
+            inventory="$(fetch_recovery_deployment_inventory "$service_id" "$absolute_deadline")" || return 1
+            jq -ce '
+              if all(.deploymentIdentityKind == "git" or .deploymentIdentityKind == "missing") then
+                map({
+                  id: .deployId,
+                  serviceId,
+                  status: .observedStatus,
+                  commitId: .observedCommitSha,
+                  createdAt
+                })
+              else error("registration_deployment_provenance") end
+            ' <<<"$inventory"
+          }
+
           close_firewall() {
             if [[ "$firewall_open" -eq 1 ]]; then
               render_api -X PATCH \
                 -H "Content-Type: application/json" \
                 --data-binary '{"ipAllowList":[]}' \
                 "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
-                -o /dev/null || true
+                -o /dev/null || return 1
+              render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" \
+                | jq -e --arg targetDbId "$TARGET_DB_ID" '
+                    .id == $targetDbId and .ipAllowList == []
+                  ' >/dev/null || return 1
+              firewall_open=0
             fi
           }
           cleanup() {
-            close_firewall
+            local cleanup_status=$?
+            trap - EXIT
+            set +e
+            if ! close_firewall; then
+              echo "::error::Registration could not prove the database firewall closed."
+              cleanup_status=1
+            fi
             rm -f "$work/api-env.json" "$work/api-env-object.json" \
               "$work/connection-info.json" "$work/operator-input.json" \
               "$work/investigation-env-value.json" \
               "$work"/investigation-service-env-*.json
+            exit "$cleanup_status"
           }
           trap cleanup EXIT
+
+          # Validate the complete fleet before the first provider mutation.
+          service_scope_filter='
+            (.service // .)
+            | .id == $serviceId
+              and (.ownerId // .owner.id) == $ownerId
+              and .environmentId == $environmentId
+              and .type == $serviceType
+              and (.suspended == "suspended" or .suspended == "not_suspended")
+          '
+          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            service_type=web_service
+            if [[ "$service_id" == "$WORKER_SERVICE_ID" ]]; then
+              service_type=background_worker
+            fi
+            render_api "https://api.render.com/v1/services/$service_id" \
+              | jq -e --arg serviceId "$service_id" \
+                --arg ownerId "$RENDER_OWNER_ID" \
+                --arg environmentId "$RENDER_ENVIRONMENT_ID" \
+                --arg serviceType "$service_type" \
+                "$service_scope_filter" >/dev/null
+          done
 
           render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID" > "$work/target.json"
           jq -e \
@@ -1927,10 +2312,11 @@ jobs:
             cidrBlock: $cidr,
             description: "temporary verified release registration"
           }]}' > "$work/firewall.json"
+          # Arm cleanup before the PATCH: an accepted request can lose its response.
+          firewall_open=1
           render_api -X PATCH -H "Content-Type: application/json" \
             --data-binary @"$work/firewall.json" \
             "https://api.render.com/v1/postgres/$TARGET_DB_ID" -o /dev/null
-          firewall_open=1
           render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID/connection-info" \
             > "$work/connection-info.json"
 
@@ -2469,8 +2855,7 @@ jobs:
               ' "$work/live-service-preflight.json"
             )"
             before_deploys="$(
-              render_api \
-                "https://api.render.com/v1/services/$service_id/deploys?limit=20"
+              fetch_registration_deployment_inventory "$service_id" "$((SECONDS + 120))"
             )"
             before_deploy_snapshot="$(
               jq -ce --arg serviceId "$service_id" '
@@ -2537,8 +2922,7 @@ jobs:
               reconciliation_candidates='[]'
               while (( SECONDS < reconciliation_deadline )); do
                 recent_deploys="$(
-                  render_api \
-                    "https://api.render.com/v1/services/$service_id/deploys?limit=20"
+                  fetch_registration_deployment_inventory "$service_id" "$reconciliation_deadline"
                 )"
                 reconciliation_candidates="$(
                   jq -ce \
