@@ -194,7 +194,15 @@ jobs:
           jq -e --arg id "$service_id" '
             (.service // .) | .id == $id and .suspended == "not_suspended"
           ' <<<"$service" >/dev/null
-          before_health="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 "$service_url/health")"
+          initial_health_deadline=$((SECONDS + 300))
+          before_health=""
+          while (( SECONDS < initial_health_deadline )); do
+            before_health="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 "$service_url/health" || true)"
+            if jq -e '.ok == true and .marker == "initial"' <<<"$before_health" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 5
+          done
           jq -e '.ok == true and .marker == "initial"' <<<"$before_health" >/dev/null
 
           request="$(jq -nc --arg commitId "$candidate_commit" '{clearCache:"do_not_clear", commitId:$commitId}')"
