@@ -585,7 +585,7 @@ export function isActivationPrincipalRoleCapabilityPermitted(
 export const effectivePrincipalInventorySqlSha256 = createHash("sha256")
   .update(effectivePrincipalInventorySql)
   .digest("hex");
-const activationMigrationExclusionSql = `SET LOCAL lock_timeout = '5000ms';
+export const activationMigrationExclusionSql = `SET LOCAL lock_timeout = '5000ms';
 SET LOCAL statement_timeout = '120000ms';
 SELECT pg_advisory_xact_lock(1381126735, 1129271120);`;
 
