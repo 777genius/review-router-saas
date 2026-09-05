@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import {
+  mapConfigToRuntimeEnv,
+  parseReviewConfiguration,
+  safeDefaultReviewConfiguration,
+} from "@reviewrouter/features-review-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CodexRotatingReviewActionV2Mode,
@@ -11,16 +16,23 @@ import {
   workflowDocumentSemanticSha256,
   renderReviewRouterReusableWorkflow,
   renderCanonicalHostedPoolWorkflowV2,
+  provisionReviewRouterWorkflow,
+  PrismaWorkflowProvisioningRepository,
+  OctokitWorkflowSetupGateway,
+  renderReviewRouterWorkflowFiles,
 } from "@reviewrouter/features-workflow-provisioning";
 import {
   createProvisioningPrisma,
   initialCandidate,
 } from "../../../../packages/features/workflow-provisioning/src/tests/provisioning-prisma-fixture";
 
+import { WorkflowGitHubFixture } from "../../../../packages/features/workflow-provisioning/src/tests/workflow-github-fixture";
+
 const mocks = vi.hoisted(() => ({
   getPrisma: vi.fn(),
   createOctokit: vi.fn(),
   runtime: vi.fn(),
+  readiness: vi.fn(),
   namespace: vi.fn(),
   audit: vi.fn(),
   activateCodex: vi.fn(),
@@ -31,6 +43,18 @@ const mocks = vi.hoisted(() => ({
   validateActive: vi.fn(),
   persistReplacement: vi.fn(),
 }));
+vi.mock("../../src/server/workflow-setup-readiness", async (original) => {
+  const actual =
+    await original<
+      typeof import("../../src/server/workflow-setup-readiness")
+    >();
+  return {
+    ...actual,
+    isWorkflowSetupAlreadyCurrent: mocks.readiness.mockImplementation(
+      actual.isWorkflowSetupAlreadyCurrent,
+    ),
+  };
+});
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("next/navigation", () => ({ redirect: vi.fn() }));
 vi.mock("../../src/server/hosted-pool-dashboard", () => ({}));
@@ -1007,6 +1031,184 @@ describe("hosted setup recovery composition", () => {
     mocks.ledgerActivate.mockResolvedValue({ status: "activated" });
   });
   afterEach(() => vi.unstubAllEnvs());
+
+  it.each([
+    ["explicit", "matching"],
+    ["reusable", "matching"],
+    ["explicit", "recorded_style_mismatch"],
+    ["reusable", "recorded_style_mismatch"],
+    ["explicit", "wrong_action_ref"],
+    ["explicit", "ambiguous_style"],
+  ] as const)(
+    "confirms rendered generic %s with %s evidence",
+    async (workflowStyle, scenario) => {
+      const f = fixture("main", "valid", "generic");
+      vi.stubEnv("REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK", "0");
+      f.state.replace(null);
+      const remote = new WorkflowGitHubFixture();
+      const config = parseReviewConfiguration({
+        ...safeDefaultReviewConfiguration,
+        providers: [
+          {
+            kind: "openrouter" as const,
+            authMode: "openrouter_api_key" as const,
+            model: "openai/gpt-5",
+          },
+        ],
+      });
+      mocks.runtime.mockResolvedValue({ config });
+      const staticRuntimeEnv = mapConfigToRuntimeEnv(config);
+      const setup = await provisionReviewRouterWorkflow(
+        {
+          workspaceId: "workspace_1",
+          repositoryId: "repository_1",
+          installationId: "installation_1",
+          owner: "acme",
+          name: "widget",
+          defaultBranch: "main",
+          workflowStyle,
+          actionRef,
+          apiUrl: "https://api.reviewrouter.test",
+          runtimeConfigMode: "oidc",
+          conflictReviewFallbackEnabled: false,
+          staticRuntimeEnv,
+        },
+        {
+          provisioning: new PrismaWorkflowProvisioningRepository(
+            f.state.prisma as never,
+          ),
+          setupGateway: new OctokitWorkflowSetupGateway(remote),
+        },
+      );
+      const provisioned = { ...f.state.current()! };
+      expect(provisioned).toMatchObject({
+        status: "setup_pr_open",
+        revision: 1,
+        workflowStyle,
+        pullRequestHeadSha: setup.headSha,
+      });
+      remote.branches.set("main", setup.headSha);
+      if (scenario === "recorded_style_mismatch")
+        f.state.replace({
+          ...provisioned,
+          workflowStyle: workflowStyle === "explicit" ? "reusable" : "explicit",
+        });
+      const before = { ...f.state.current()! };
+      const reads: { path: unknown; ref: unknown; source: string }[] = [];
+      const request = vi.fn(
+        async (route: string, parameters?: Record<string, unknown>) => {
+          if (route === "GET /repos/{owner}/{repo}/pulls/{pull_number}")
+            return {
+              data: {
+                merged: true,
+                state: "closed",
+                base: { ref: "main" },
+                head: { ref: setup.branch, sha: setup.headSha },
+              },
+            };
+          const response = await remote.request(route, parameters);
+          if (route !== "GET /repos/{owner}/{repo}/contents/{path}")
+            return response;
+          let source = Buffer.from(
+            (response.data as { content: string }).content,
+            "base64",
+          ).toString("utf8");
+          if (scenario === "wrong_action_ref")
+            source = source.replaceAll(
+              actionRef,
+              `777genius/review-router@${"c".repeat(40)}`,
+            );
+          if (scenario === "ambiguous_style")
+            source += `\n  duplicate:\n    uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@${"a".repeat(40)}\n`;
+          reads.push({ path: parameters?.path, ref: parameters?.ref, source });
+          return {
+            data: {
+              type: "file",
+              encoding: "base64",
+              path: parameters?.path,
+              content: Buffer.from(source).toString("base64"),
+              sha: createHash("sha1")
+                .update(`blob ${Buffer.byteLength(source)}\0`)
+                .update(source)
+                .digest("hex"),
+            },
+          };
+        },
+      );
+      mocks.createOctokit.mockResolvedValue({ request });
+      f.state.workflowProvisioning.updateMany.mockClear();
+      f.state.workflowProvisioning.create.mockClear();
+      const result = await confirmSetupPullRequestMergedClientAction(f.form);
+      const ready = await mocks.readiness.mock.results[0]!.value;
+      console.info(
+        "actual-generic-style-effect",
+        JSON.stringify({
+          workflowStyle,
+          scenario,
+          result,
+          ready,
+          before,
+          after: f.state.current(),
+          reads: reads.map(({ source, ...read }) => ({
+            ...read,
+            sha256: createHash("sha256").update(source).digest("hex"),
+          })),
+        }),
+      );
+      expect(reads).toHaveLength(1);
+      expect(reads[0]).toMatchObject({
+        path: provisioned.workflowPath,
+        ref: "main",
+      });
+      if (scenario === "matching" || scenario === "recorded_style_mismatch") {
+        const rendered = renderReviewRouterWorkflowFiles({
+          actionRef,
+          apiUrl: "https://api.reviewrouter.test",
+          runtimeConfigMode: "oidc",
+          workflowStyle,
+          conflictReviewFallbackEnabled: false,
+          staticRuntimeEnv,
+        });
+        const workflow = rendered.find(
+          (file) => file.path === provisioned.workflowPath,
+        );
+        expect(workflow && "content" in workflow && workflow.content).toBe(
+          reads[0]!.source,
+        );
+        expect(ready).toBe(true);
+      } else expect(ready).toBe(false);
+      if (scenario === "matching") {
+        expect(result.params).toHaveProperty("notice", "setup_pr_merged");
+        expect(f.state.current()).toEqual({
+          ...before,
+          status: "configured",
+          revision: 2,
+        });
+        expect(f.state.workflowProvisioning.updateMany).toHaveBeenCalledTimes(
+          1,
+        );
+        expect(await mocks.activateCodex.mock.results[0]!.value).toEqual({
+          status: "not_configured",
+        });
+      } else {
+        expect(result.params).toHaveProperty(
+          "error",
+          scenario === "recorded_style_mismatch"
+            ? "github_operation_failed"
+            : "setup_pr_not_merged",
+        );
+        expect(f.state.current()).toEqual(before);
+        expect(f.state.workflowProvisioning.updateMany).not.toHaveBeenCalled();
+        expect(mocks.activateCodex).not.toHaveBeenCalled();
+        expect(mocks.audit).not.toHaveBeenCalled();
+      }
+      expect(f.state.workflowProvisioning.create).not.toHaveBeenCalled();
+      expect(f.updateBinding).not.toHaveBeenCalled();
+      expect(f.configWrites).not.toHaveBeenCalled();
+      expect(mocks.setRepositorySource).not.toHaveBeenCalled();
+      expect(mocks.ledgerActivate).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["stored_active_configured", "stored_active_setup_pr_open"])(
     "reconfirms the active hosted stored-head workflow without changing authentication: %s",

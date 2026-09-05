@@ -74,6 +74,23 @@ const { isWorkflowSetupAlreadyCurrent } = await vi.importActual<
   typeof import("../../src/server/workflow-setup-readiness")
 >("../../src/server/workflow-setup-readiness");
 
+function reusableWorkflowResponse() {
+  return {
+    data: {
+      type: "file",
+      encoding: "base64",
+      content: Buffer.from(
+        renderReviewRouterReusableWorkflow({
+          actionRef: resolveReviewRouterActionRef(),
+          apiUrl: "https://api.reviewrouter.test",
+          runtimeConfigMode: "oidc",
+          conflictReviewFallbackEnabled: true,
+        }),
+      ).toString("base64"),
+    },
+  };
+}
+
 describe("dashboard setup PR recovery", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -88,20 +105,26 @@ describe("dashboard setup PR recovery", () => {
     });
     mocks.assertWorkspaceFeatureEntitlement.mockResolvedValue(undefined);
     mocks.createGitHubAppInstallationOctokit.mockResolvedValue({
-      request: vi.fn(async () => ({
-        data: {
-          merged: true,
-          state: "closed",
-          base: { ref: "main" },
-          head: { ref: "reviewrouter/setup", sha: "b".repeat(40) },
-        },
-      })),
+      request: vi.fn(async (route: string) =>
+        route.includes("/contents/")
+          ? reusableWorkflowResponse()
+          : {
+              data: {
+                merged: true,
+                state: "closed",
+                base: { ref: "main" },
+                head: { ref: "reviewrouter/setup", sha: "b".repeat(40) },
+              },
+            },
+      ),
     });
     mocks.activateConfirmedCodexNamespaceAfterWorkflowMerge.mockResolvedValue(
       undefined,
     );
     mocks.recordAuditEvent.mockResolvedValue(undefined);
-    mocks.isWorkflowSetupAlreadyCurrent.mockResolvedValue(true);
+    mocks.isWorkflowSetupAlreadyCurrent.mockImplementation(
+      isWorkflowSetupAlreadyCurrent,
+    );
     mocks.resolveReviewRuntimeEnv.mockResolvedValue({
       config: {
         providers: [
@@ -270,7 +293,11 @@ describe("dashboard setup PR recovery", () => {
         },
         hostedCodexRepositoryBinding: { findFirst: vi.fn(async () => null) },
       });
-      const request = vi.fn(async () => ({ data: {} }));
+      const request = vi.fn(async (route: string) =>
+        route.includes("/contents/")
+          ? reusableWorkflowResponse()
+          : { data: {} },
+      );
       mocks.createGitHubAppInstallationOctokit.mockResolvedValue({ request });
       if (scenario === "workflow_absent")
         mocks.isWorkflowSetupAlreadyCurrent.mockResolvedValue(false);

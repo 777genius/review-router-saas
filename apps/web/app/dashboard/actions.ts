@@ -77,6 +77,7 @@ import {
   readCanonicalHostedPoolWorkflowMetadata,
   workflowDocumentSemanticSha256,
   WorkflowSourceTrust,
+  type ReviewRouterWorkflowStyle,
 } from "@reviewrouter/features-workflow-provisioning";
 import {
   confirmCodexRotatingSetupReadiness,
@@ -1597,6 +1598,10 @@ async function confirmSetupPullRequestMergedMutation(
       : isConflictReviewFallbackAllowedForRepository(repository.fullName);
     const verifiedWorkflowActionRef =
       codexWorkflow?.actionRef ?? resolveReviewRouterActionRef();
+    let genericWorkflowStyle: ReviewRouterWorkflowStyle | undefined;
+    const workflowProbe = new OctokitRepositoryWorkflowProbe({
+      createRequester: async () => workflowOctokit,
+    });
     // Hosted readiness uses the canonical, commit-pinned verifier in the hosted
     // activation adapter, with the attempt fence below before its first write.
     const workflowReady = hostedWorkflowRequired
@@ -1625,9 +1630,49 @@ async function confirmSetupPullRequestMergedMutation(
               : {}),
           },
           {
-            workflowProbe: new OctokitRepositoryWorkflowProbe({
-              createRequester: async () => workflowOctokit,
-            }),
+            workflowProbe: {
+              probeWorkflow: (input) =>
+                workflowProbe.probeWorkflow(
+                  codexWorkflow
+                    ? input
+                    : {
+                        ...input,
+                        expectedContentValidator: (workflow) => {
+                          if (
+                            input.expectedContentValidator &&
+                            !input.expectedContentValidator(workflow)
+                          )
+                            return false;
+                          // Classify the same bytes the probe checks for action
+                          // and provider markers, never the stored setup style.
+                          const refs = workflow
+                            .split(/\r?\n/)
+                            .map(
+                              (line) =>
+                                line
+                                  .trim()
+                                  .match(
+                                    /^-?\s*uses:\s*["']?([^"'\s#]+)["']?/,
+                                  )?.[1],
+                            );
+                          const explicit = refs.includes(
+                            input.expectedActionRef,
+                          );
+                          const reusable = refs.includes(
+                            input.expectedActionRef.replace(
+                              "@",
+                              "/.github/workflows/reviewrouter-reusable.yml@",
+                            ),
+                          );
+                          if (explicit === reusable) return false;
+                          genericWorkflowStyle = explicit
+                            ? "explicit"
+                            : "reusable";
+                          return true;
+                        },
+                      },
+                ),
+            },
           },
         );
 
@@ -1656,16 +1701,20 @@ async function confirmSetupPullRequestMergedMutation(
       throw new Error("setup_pr_not_merged");
     }
 
+    if (!codexWorkflow && !genericWorkflowStyle)
+      throw new Error("workflow_provisioning_match_not_found");
     let verifiedWorkflowArtifact = {
       workflowPath: codexWorkflow
         ? defaultCodexRotatingWorkflowPath
         : defaultWorkflowPath,
-      workflowStyle: "reusable" as const,
+      workflowStyle: codexWorkflow
+        ? ("reusable" as const)
+        : genericWorkflowStyle!,
       actionVersion: verifiedWorkflowActionRef,
     };
     const assertCurrentSetup = async (artifact: {
       readonly workflowPath: string;
-      readonly workflowStyle: "reusable";
+      readonly workflowStyle: ReviewRouterWorkflowStyle;
       readonly actionVersion: string;
     }) => {
       // Probes can outlive a transfer or replacement attempt. Refuse activation
