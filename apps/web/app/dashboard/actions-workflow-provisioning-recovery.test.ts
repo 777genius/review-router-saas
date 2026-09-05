@@ -53,6 +53,10 @@ vi.mock("../../src/server/codex-rotating-workflow-activation", () => ({
 vi.mock("../../src/server/hosted-pool-workflow-activation", () => ({
   activateConfirmedHostedPoolBindingAfterWorkflowMerge: vi.fn(),
 }));
+vi.mock("../../src/server/hosted-pool-dashboard", () => ({}));
+vi.mock("../../src/server/prisma-hosted-pool-mutations", () => ({
+  createPrismaHostedPoolDashboardMutationPort: vi.fn(),
+}));
 vi.mock("../../src/server/workflow-public-api-url", () => ({
   resolveWorkflowPublicApiUrl: () => "https://api.reviewrouter.test",
 }));

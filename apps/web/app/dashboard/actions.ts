@@ -1378,6 +1378,23 @@ async function confirmSetupPullRequestMergedMutation(
       });
       throw new Error("setup_pr_wrong_base_branch");
     }
+    const hostedBinding = await prisma.hostedCodexRepositoryBinding.findFirst({
+      where: {
+        repositoryConnectionId: repositoryId,
+        workspaceId,
+        status: { in: ["pending_activation", "active"] },
+        tombstonedAt: null,
+        repository: {
+          workspaceId,
+          installationId: repository.installationId,
+          provider: "github",
+          selected: true,
+          archived: false,
+          installation: { status: "active" },
+        },
+      },
+      select: { id: true, status: true, revision: true, stateVersion: true },
+    });
     const resolvedRuntime = setupPullRequestMerged
       ? null
       : await loadResolvedReviewRuntime({
@@ -1385,6 +1402,17 @@ async function confirmSetupPullRequestMergedMutation(
           workspaceId,
           repositoryId,
         });
+    // A pending binding selects the hosted install even while the old runtime
+    // configuration is still repository-owned. Active hosted recovery must not
+    // be mistaken for the separate switch back to repository secrets.
+    const hostedWorkflowRequired =
+      hostedBinding?.status === "pending_activation" ||
+      resolvedRuntime?.config.providers.some(
+        (provider) =>
+          provider.authMode === "codex_subscription_oauth_hosted_pool",
+      ) === true;
+    if (hostedWorkflowRequired && !hostedBinding)
+      throw new Error("hosted_pool_binding_activation_conflict");
     const workflowProviderKind =
       resolvedRuntime === null
         ? undefined
@@ -1397,7 +1425,7 @@ async function confirmSetupPullRequestMergedMutation(
       });
     }
     const codexRotatingProviderInstanceId =
-      resolvedRuntime === null
+      resolvedRuntime === null || hostedWorkflowRequired
         ? undefined
         : resolveCodexRotatingProviderInstanceId({
             config: resolvedRuntime.config,
@@ -1436,53 +1464,57 @@ async function confirmSetupPullRequestMergedMutation(
     const conflictReviewFallbackAllowed = codexRotatingProviderInstanceId
       ? false
       : isConflictReviewFallbackAllowedForRepository(repository.fullName);
-    const verifiedWorkflowActionRef = setupPullRequestMerged
-      ? null
-      : codexRotatingProviderInstanceId
-        ? await resolveCodexRotatingProvisioningActionRef({
-            prisma,
-            inspection: codexRotatingWorkflowNamespaceInspection!,
-            octokit,
-            owner: repository.owner,
-            name: repository.name,
-            defaultBranch: repository.defaultBranch,
-            expectedRepositoryId:
-              githubRepository.githubRepositoryId.toString(),
-            expectedRepositoryFullName: repository.fullName,
-            expectedProviderInstanceId: codexRotatingProviderInstanceId,
-          })
-        : resolveReviewRouterActionRef();
-    const workflowReady = setupPullRequestMerged
-      ? true
-      : await isWorkflowSetupAlreadyCurrent(
-          {
-            githubInstallationId:
-              githubRepository.installation.githubInstallationId.toString(),
-            owner: repository.owner,
-            name: repository.name,
-            defaultBranch: setupBaseBranch,
-            actionRef: verifiedWorkflowActionRef!,
-            conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
-            ...(codexRotatingProviderInstanceId
-              ? {
-                  codexRotatingProviderInstanceId,
-                  codexRotatingWorkflowSecretNamespace:
-                    codexRotatingWorkflowSecretNamespace!,
-                  forkAgenticSandboxEnabled,
-                  ...(codexRotatingSecretInputs ?? {}),
-                  ...(codexRotatingV2Provisioning ?? {}),
-                }
-              : {}),
-            ...(workflowProviderKind
-              ? { providerKind: workflowProviderKind }
-              : {}),
-          },
-          {
-            workflowProbe: new OctokitRepositoryWorkflowProbe({
-              createRequester: async () => octokit,
-            }),
-          },
-        );
+    const verifiedWorkflowActionRef =
+      setupPullRequestMerged || hostedWorkflowRequired
+        ? null
+        : codexRotatingProviderInstanceId
+          ? await resolveCodexRotatingProvisioningActionRef({
+              prisma,
+              inspection: codexRotatingWorkflowNamespaceInspection!,
+              octokit,
+              owner: repository.owner,
+              name: repository.name,
+              defaultBranch: repository.defaultBranch,
+              expectedRepositoryId:
+                githubRepository.githubRepositoryId.toString(),
+              expectedRepositoryFullName: repository.fullName,
+              expectedProviderInstanceId: codexRotatingProviderInstanceId,
+            })
+          : resolveReviewRouterActionRef();
+    // Hosted readiness uses the canonical, commit-pinned verifier in the hosted
+    // activation adapter, with the attempt fence below before its first write.
+    const workflowReady =
+      setupPullRequestMerged || hostedWorkflowRequired
+        ? true
+        : await isWorkflowSetupAlreadyCurrent(
+            {
+              githubInstallationId:
+                githubRepository.installation.githubInstallationId.toString(),
+              owner: repository.owner,
+              name: repository.name,
+              defaultBranch: setupBaseBranch,
+              actionRef: verifiedWorkflowActionRef!,
+              conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
+              ...(codexRotatingProviderInstanceId
+                ? {
+                    codexRotatingProviderInstanceId,
+                    codexRotatingWorkflowSecretNamespace:
+                      codexRotatingWorkflowSecretNamespace!,
+                    forkAgenticSandboxEnabled,
+                    ...(codexRotatingSecretInputs ?? {}),
+                    ...(codexRotatingV2Provisioning ?? {}),
+                  }
+                : {}),
+              ...(workflowProviderKind
+                ? { providerKind: workflowProviderKind }
+                : {}),
+            },
+            {
+              workflowProbe: new OctokitRepositoryWorkflowProbe({
+                createRequester: async () => octokit,
+              }),
+            },
+          );
 
     if (!setupPullRequestMerged && !workflowReady) {
       if (
@@ -1509,16 +1541,20 @@ async function confirmSetupPullRequestMergedMutation(
       throw new Error("setup_pr_not_merged");
     }
 
-    const hostedBinding = await prisma.hostedCodexRepositoryBinding.findFirst({
-      where: {
-        repositoryConnectionId: repositoryId,
-        workspaceId,
-        status: { in: ["pending_activation", "active"] },
-        tombstonedAt: null,
-      },
-      select: { id: true, status: true, revision: true },
-    });
-    if (historicalMergedSetupPullRequest) {
+    let verifiedWorkflowArtifact = verifiedWorkflowActionRef
+      ? {
+          workflowPath: codexRotatingProviderInstanceId
+            ? defaultCodexRotatingWorkflowPath
+            : defaultWorkflowPath,
+          workflowStyle: "reusable" as const,
+          actionVersion: verifiedWorkflowActionRef,
+        }
+      : null;
+    const assertCurrentSetup = async (artifact: {
+      readonly workflowPath: string;
+      readonly workflowStyle: "reusable";
+      readonly actionVersion: string;
+    }) => {
       // Probes can outlive a transfer or replacement attempt. Refuse activation
       // for stale recovery evidence; the authority still fences the final write.
       const currentRepository = await prisma.repositoryConnection.findFirst({
@@ -1538,39 +1574,75 @@ async function confirmSetupPullRequestMergedMutation(
       });
       if (
         currentRepository?.defaultBranch !== setupBaseBranch ||
-        !currentProvisioning ||
-        currentProvisioning.workspaceId !== workspaceId ||
-        currentProvisioning.installationId !== repository.installationId ||
-        currentProvisioning.attemptId !== setupProvisioning!.attemptId ||
-        currentProvisioning.revision !== setupProvisioning!.revision ||
-        currentProvisioning.pullRequestHeadSha !== null ||
-        currentProvisioning.branch !== setupProvisioning!.branch ||
-        currentProvisioning.pullRequestUrl !==
-          setupProvisioning!.pullRequestUrl ||
-        currentProvisioning.workflowPath !==
-          (codexRotatingProviderInstanceId
-            ? ".github/workflows/reviewrouter-codex.yml"
-            : ".github/workflows/reviewrouter.yml") ||
-        currentProvisioning.workflowStyle !== "reusable" ||
-        currentProvisioning.actionVersion !== verifiedWorkflowActionRef
+        (setupProvisioning === null
+          ? currentProvisioning !== null
+          : !currentProvisioning ||
+            currentProvisioning.workspaceId !== workspaceId ||
+            currentProvisioning.installationId !== repository.installationId ||
+            currentProvisioning.attemptId !== setupProvisioning.attemptId ||
+            currentProvisioning.revision !== setupProvisioning.revision ||
+            currentProvisioning.pullRequestHeadSha !==
+              setupProvisioning.pullRequestHeadSha ||
+            currentProvisioning.branch !== setupProvisioning.branch ||
+            currentProvisioning.pullRequestUrl !==
+              setupProvisioning.pullRequestUrl ||
+            ((historicalMergedSetupPullRequest ||
+              setupProvisioning.pullRequestHeadSha !== null) &&
+              (currentProvisioning.workflowPath !== artifact.workflowPath ||
+                currentProvisioning.workflowStyle !== artifact.workflowStyle ||
+                currentProvisioning.actionVersion !== artifact.actionVersion)))
       )
         throw new Error("workflow_provisioning_match_not_found");
-    }
-    if (hostedBinding?.status === "pending_activation") {
-      await activateConfirmedHostedPoolBindingAfterWorkflowMerge({
-        prisma,
-        octokit,
-        workspaceId,
-        repositoryId,
-        githubRepositoryId: githubRepository.githubRepositoryId.toString(),
-        owner: repository.owner,
-        name: repository.name,
-        defaultBranch: repository.defaultBranch,
-        expectedRepositoryFullName: repository.fullName,
-        expectedApiUrl: resolveWorkflowPublicApiUrl(),
-        now: new Date(),
-      });
+    };
+    if (hostedWorkflowRequired) {
+      const activation =
+        await activateConfirmedHostedPoolBindingAfterWorkflowMerge({
+          prisma,
+          octokit,
+          workspaceId,
+          repositoryId,
+          githubRepositoryId: githubRepository.githubRepositoryId.toString(),
+          owner: repository.owner,
+          name: repository.name,
+          defaultBranch: repository.defaultBranch,
+          installationId: repository.installationId,
+          expectedBinding: hostedBinding!,
+          expectedRepositoryFullName: repository.fullName,
+          expectedApiUrl: resolveWorkflowPublicApiUrl(),
+          now: new Date(),
+          beforeActivation: async (artifact) => {
+            await assertCurrentSetup(artifact);
+            const currentBinding =
+              await prisma.hostedCodexRepositoryBinding.findFirst({
+                where: {
+                  id: hostedBinding!.id,
+                  repositoryConnectionId: repositoryId,
+                  workspaceId,
+                  status: hostedBinding!.status,
+                  revision: hostedBinding!.revision,
+                  stateVersion: hostedBinding!.stateVersion,
+                  tombstonedAt: null,
+                  repository: {
+                    workspaceId,
+                    installationId: repository.installationId,
+                    provider: "github",
+                    selected: true,
+                    archived: false,
+                    installation: { status: "active" },
+                  },
+                },
+                select: { id: true },
+              });
+            if (!currentBinding)
+              throw new Error("hosted_pool_binding_activation_conflict");
+          },
+        });
+      if (activation.status === "not_configured")
+        throw new Error("hosted_pool_binding_activation_conflict");
+      verifiedWorkflowArtifact = activation;
     } else {
+      if (historicalMergedSetupPullRequest)
+        await assertCurrentSetup(verifiedWorkflowArtifact!);
       await activateConfirmedCodexNamespaceAfterWorkflowMerge({
         prisma,
         octokit,
@@ -1622,11 +1694,9 @@ async function confirmSetupPullRequestMergedMutation(
         baseBranch: setupBaseBranch,
         branch: setupProvisioning?.branch ?? "reviewrouter/setup",
         status: "configured",
-        workflowPath: codexRotatingProviderInstanceId
-          ? ".github/workflows/reviewrouter-codex.yml"
-          : ".github/workflows/reviewrouter.yml",
-        workflowStyle: "reusable",
-        actionVersion: verifiedWorkflowActionRef!,
+        workflowPath: verifiedWorkflowArtifact!.workflowPath,
+        workflowStyle: verifiedWorkflowArtifact!.workflowStyle,
+        actionVersion: verifiedWorkflowArtifact!.actionVersion,
       });
     }
     await recordAuditEvent(
