@@ -112,7 +112,7 @@ jobs:
               "$@"
           }
           render_mutation() {
-            curl --fail --silent --show-error \
+            curl --fail-with-body --silent --show-error \
               --connect-timeout 10 --max-time 60 \
               -H "Accept: application/json" \
               -H "Authorization: Bearer $RENDER_API_KEY" \
@@ -143,7 +143,7 @@ jobs:
                 and (.ownerId // .owner.id) == $owner
                 and .name == $name
                 and .type == "web_service"
-                and .suspended == "not_suspended"
+                and (.suspended == "not_suspended" or .suspended == "suspended")
             ' <<<"$service" >/dev/null
           inventory="$(render_read "https://api.render.com/v1/services/$service_id/deploys?limit=20")"
           jq -e --arg sha "$initial_commit" '
@@ -156,9 +156,13 @@ jobs:
             ' <<<"$inventory" >/dev/null
 
           touched=1
-          render_mutation -X POST \
-            "https://api.render.com/v1/services/$service_id/suspend" \
-            -o /dev/null
+          current_state="$(jq -er '(.service // .).suspended' <<<"$service")"
+          if [[ "$current_state" != "suspended" ]]; then
+            echo "phase=suspend"
+            render_mutation -X POST \
+              "https://api.render.com/v1/services/$service_id/suspend" \
+              -o /dev/null
+          fi
           suspension_deadline=$((SECONDS + 300))
           while (( SECONDS < suspension_deadline )); do
             service="$(render_read "https://api.render.com/v1/services/$service_id")"
@@ -174,6 +178,7 @@ jobs:
           ' <<<"$service" >/dev/null
 
           request="$(jq -nc --arg commitId "$candidate_commit" '{clearCache:"do_not_clear", commitId:$commitId}')"
+          echo "phase=create_deploy_while_suspended"
           response="$(render_mutation -X POST -H "Content-Type: application/json" \
             --data-binary "$request" \
             "https://api.render.com/v1/services/$service_id/deploys")"
