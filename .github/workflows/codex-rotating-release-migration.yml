@@ -177,8 +177,28 @@ jobs:
             (.service // .) | .id == $id and .suspended == "suspended"
           ' <<<"$service" >/dev/null
 
+          echo "phase=resume_before_exact_deploy"
+          render_mutation -X POST \
+            "https://api.render.com/v1/services/$service_id/resume" \
+            -o /dev/null
+          resume_deadline=$((SECONDS + 300))
+          while (( SECONDS < resume_deadline )); do
+            service="$(render_read "https://api.render.com/v1/services/$service_id")"
+            if jq -e --arg id "$service_id" '
+              (.service // .) | .id == $id and .suspended == "not_suspended"
+            ' <<<"$service" >/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+          jq -e --arg id "$service_id" '
+            (.service // .) | .id == $id and .suspended == "not_suspended"
+          ' <<<"$service" >/dev/null
+          before_health="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 "$service_url/health")"
+          jq -e '.ok == true and .marker == "initial"' <<<"$before_health" >/dev/null
+
           request="$(jq -nc --arg commitId "$candidate_commit" '{clearCache:"do_not_clear", commitId:$commitId}')"
-          echo "phase=create_deploy_while_suspended"
+          echo "phase=create_exact_deploy_after_resume"
           set +e
           response="$(render_mutation -X POST -H "Content-Type: application/json" \
             --data-binary "$request" \
@@ -201,7 +221,7 @@ jobs:
           while (( SECONDS < deploy_deadline )); do
             service="$(render_read "https://api.render.com/v1/services/$service_id")"
             jq -e --arg id "$service_id" '
-              (.service // .) | .id == $id and .suspended == "suspended"
+              (.service // .) | .id == $id and .suspended == "not_suspended"
             ' <<<"$service" >/dev/null
             deploy="$(render_read "https://api.render.com/v1/services/$service_id/deploys/$deploy_id")"
             status="$(jq -er '(.deploy // .).status' <<<"$deploy")"
@@ -222,23 +242,6 @@ jobs:
               and ($deploy.commit.id // $deploy.commit.sha // $deploy.commitId) == $sha
           ' <<<"$deploy" >/dev/null
           service="$(render_read "https://api.render.com/v1/services/$service_id")"
-          jq -e --arg id "$service_id" '
-            (.service // .) | .id == $id and .suspended == "suspended"
-          ' <<<"$service" >/dev/null
-
-          render_mutation -X POST \
-            "https://api.render.com/v1/services/$service_id/resume" \
-            -o /dev/null
-          resume_deadline=$((SECONDS + 300))
-          while (( SECONDS < resume_deadline )); do
-            service="$(render_read "https://api.render.com/v1/services/$service_id")"
-            if jq -e --arg id "$service_id" '
-              (.service // .) | .id == $id and .suspended == "not_suspended"
-            ' <<<"$service" >/dev/null; then
-              break
-            fi
-            sleep 5
-          done
           jq -e --arg id "$service_id" '
             (.service // .) | .id == $id and .suspended == "not_suspended"
           ' <<<"$service" >/dev/null
