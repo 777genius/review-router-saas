@@ -13,6 +13,7 @@ import {
 } from "./run-hosted-pool-production-canary";
 import type { HostedPoolControlPort } from "./hosted-pool-production-control";
 import { renderCanonicalHostedPoolWorkflowV2 } from "../packages/features/workflow-provisioning/src/domain/hosted-pool-workflow-template";
+import { canaryPhaseFixture } from "./hosted-pool-canary-phase-recovery.fixture";
 
 vi.mock("../packages/platform/db/src/index.js", () => ({
   createPrismaClient: () => ({
@@ -248,7 +249,11 @@ function kit() {
     [15, evidence(15, "dropped")],
   ]);
   const canary: HostedPoolCanaryPort = {
-    preflight: vi.fn(async () => ({ exact: true })),
+    preflight: vi.fn(async () => ({
+      exact: true,
+      repositoryBindingId: "binding-canary",
+      bindingRevision: "1",
+    })),
     rerun,
     waitForCompletion: vi.fn(async () => undefined),
     evidence: vi.fn(async (runId) => values.get(runId)!),
@@ -320,6 +325,11 @@ function kit() {
       terminalUnknownRequests: 1,
     })),
     setFaultPlan: vi.fn(async () => undefined),
+    prepareCanaryPhase: vi.fn(async () => undefined),
+    reconcileCanaryPhase: vi.fn(async (scope) => ({
+      receiptId: scope.planIdHash,
+      status: scope.phase === "dropped_response" ? "unchanged" : "restored",
+    })),
   };
   return { config, canary, deployment, control, rerun, setFlags };
 }
@@ -703,6 +713,117 @@ describe("hosted pool one-shot production canary", () => {
     expect(result.records).not.toContainEqual(
       expect.objectContaining({ phase: "certification_blocked" }),
     );
+  });
+
+  it("runs all five controller phases against one evolving two-account domain and the production recovery adapter", async () => {
+    const k = kit();
+    const f = canaryPhaseFixture();
+    const states: string[] = [];
+    const canary: HostedPoolCanaryPort = {
+      ...k.canary,
+      rerun: vi.fn(async (runId) => {
+        f.run(runId, f.scopes.get(runId)?.phase);
+      }),
+      evidence: async (runId) => f.observations.get(runId)!,
+    };
+    const control: HostedPoolControlPort = {
+      ...k.control,
+      prepareCanaryPhase: f.prepare,
+      setFaultPlan: async (token) => {
+        if (token) {
+          const phase = (
+            Object.keys(k.config.faultPlans) as Array<
+              keyof typeof k.config.faultPlans
+            >
+          ).find((p) => k.config.faultPlans[p] === token)!;
+          await f.stage(f.scopes.get(k.config.runs[phase])!);
+        }
+      },
+      reconcileCanaryPhase: async (scope, observed) => {
+        states.push(f.accounts[0]!.availability.status);
+        return f.recovery.reconcileCanaryPhase(scope, observed);
+      },
+    };
+    const result = await runHostedPoolProductionCanary({
+      ...k,
+      canary,
+      control,
+      execute: true,
+      executeConfirmation: "EXECUTE ONE SHOT HOSTED POOL CANARY",
+      rollbackConfirmation: "ROLL BACK HOSTED POOL AFTER CANARY",
+      sleep: async () => undefined,
+    });
+    expect(result.result, JSON.stringify(result.records)).toBe("passed");
+    expect(vi.mocked(canary.rerun).mock.calls.map(([id]) => id)).toEqual([
+      11, 12, 13, 14, 15,
+    ]);
+    expect(states).toEqual(["quarantined", "cooldown", "healthy"]);
+    expect(f.accounts.map((a) => a.healthVersion)).toEqual([5, 1]);
+    expect(f.restoreCount).toBe(2);
+    expect(f.grants.map((g) => g.backupAccountId)).toEqual(
+      Array(5).fill("account-b"),
+    );
+    expect(
+      f.grants
+        .flatMap((g) => g.relayRequests[0].upstreamAttempts)
+        .filter((a) => a.dispatchStartedAt !== null),
+    ).toHaveLength(5);
+    expect(result.records.at(-1)).toMatchObject({
+      phase: "ordered_rollback",
+      outcome: "passed",
+    });
+  });
+
+  it.each([
+    "stage_response_lost",
+    "cancellation_failed",
+    "health_reconciliation_failed",
+  ])("stops before the next run and rolls back after %s", async (failure) => {
+    const k = kit();
+    let staged = false;
+    let cleanupAttempts = 0;
+    const restore = vi.fn(async () => {
+      throw new Error("health_reconciliation_failed");
+    });
+    const control: HostedPoolControlPort = {
+      ...k.control,
+      reconcileCanaryPhase: restore,
+      setFaultPlan: vi.fn(async (token) => {
+        if (token) {
+          staged = true;
+          if (failure === "stage_response_lost") throw new Error(failure);
+        } else if (staged) {
+          cleanupAttempts++;
+          if (failure === "cancellation_failed") throw new Error(failure);
+          staged = false;
+        }
+      }),
+    };
+    const result = await runHostedPoolProductionCanary({
+      ...k,
+      control,
+      execute: true,
+      executeConfirmation: "EXECUTE ONE SHOT HOSTED POOL CANARY",
+      rollbackConfirmation: "ROLL BACK HOSTED POOL AFTER CANARY",
+      sleep: async () => undefined,
+    });
+    expect(result.result).toBe("failed");
+    expect(k.rerun.mock.calls.map(([id]) => id)).toEqual(
+      failure === "stage_response_lost" ? [11, 12] : [11, 12, 13],
+    );
+    expect(cleanupAttempts).toBe(failure === "cancellation_failed" ? 2 : 1);
+    expect(restore).toHaveBeenCalledTimes(
+      failure === "health_reconciliation_failed" ? 1 : 0,
+    );
+    expect(result.records.at(-1)?.phase).toBe(
+      failure === "cancellation_failed"
+        ? "ordered_rollback_failed"
+        : "ordered_rollback",
+    );
+    expect(k.setFlags).toHaveBeenCalledWith({
+      REVIEW_ROUTER_ENABLE_HOSTED_CODEX_RELAY: "0",
+    });
+    expect(await control.readRuntimeGate()).toMatchObject({ status: "closed" });
   });
 
   it("requires strict overlap between the two upstream effect intervals", () => {

@@ -1,0 +1,332 @@
+import { describe, expect, it } from "vitest";
+import { canaryPhaseFixture } from "./hosted-pool-canary-phase-recovery.fixture";
+
+type Fixture = ReturnType<typeof canaryPhaseFixture>;
+async function failedPhase(
+  phase: "unauthorized" | "rate_limited" = "unauthorized",
+) {
+  const f = canaryPhaseFixture();
+  const scope = f.scopeFor(phase);
+  await f.prepare(scope);
+  await f.stage(scope);
+  const observed = f.run(scope.runId, phase);
+  return { f, scope, observed };
+}
+
+describe("bounded synthetic phase health reconciliation", () => {
+  it("reproduces the actual 401 -> fresh 429 backup_unavailable without restoration", async () => {
+    const { f } = await failedPhase();
+    expect(f.accounts[0]!.availability.status).toBe("quarantined");
+    f.scopes.set(14, f.scopeFor("rate_limited"));
+    expect(() => f.run(14, "rate_limited")).toThrow("backup_unavailable");
+    expect(f.restoreCount).toBe(0);
+  });
+
+  it("executes both real failover transitions and restores only their exact health increments", async () => {
+    const f = canaryPhaseFixture();
+    for (const phase of [
+      "unauthorized",
+      "rate_limited",
+      "dropped_response",
+    ] as const) {
+      const scope = f.scopeFor(phase);
+      await f.prepare(scope);
+      await f.stage(scope);
+      const observed = f.run(scope.runId, phase);
+      expect(observed.primaryAccountId).toBe("account-a");
+      expect(observed.backupAccountId).toBe("account-b");
+      expect(f.accounts[0]!.availability.status).toBe(
+        {
+          unauthorized: "quarantined",
+          rate_limited: "cooldown",
+          dropped_response: "healthy",
+        }[phase],
+      );
+      const result = await f.recovery.reconcileCanaryPhase(scope, observed);
+      expect(result.status).toBe(
+        phase === "dropped_response" ? "unchanged" : "restored",
+      );
+      expect(f.accounts.map((a) => a.availability.status)).toEqual([
+        "healthy",
+        "healthy",
+      ]);
+    }
+    expect(f.accounts.map((a) => a.healthVersion)).toEqual([5, 1]);
+    expect(f.restoreCount).toBe(2);
+    expect(f.grants.map((g) => g.failoverCount)).toEqual([1, 1, 0]);
+    expect(
+      f.grants.map((g) => g.relayRequests[0].upstreamAttempts.length),
+    ).toEqual([2, 2, 1]);
+  });
+
+  it.each(["unauthorized", "rate_limited"] as const)(
+    "recognizes a lost %s commit response and replay without repeating health effects",
+    async (phase) => {
+      const { f, scope, observed } = await failedPhase(phase);
+      f.loseCommitResponse();
+      const receipt = await f.recovery.reconcileCanaryPhase(scope, observed);
+      expect(await f.recovery.reconcileCanaryPhase(scope, observed)).toEqual(
+        receipt,
+      );
+      expect(f.restoreCount).toBe(1);
+      expect(f.accounts[0]!.healthVersion).toBe(3);
+      expect(
+        f.events.filter((e) => e.action.endsWith("phase_reconciled")),
+      ).toHaveLength(1);
+      f.changeAccount(0, {
+        availability: { status: "quarantined", reason: "real_401" },
+        healthVersion: 4,
+      });
+      await expect(
+        f.recovery.reconcileCanaryPhase(scope, observed),
+      ).rejects.toThrow("recovery_hold");
+      expect(f.accounts[0]!.availability.status).toBe("quarantined");
+      expect(f.restoreCount).toBe(1);
+    },
+  );
+
+  const refusals: Array<[string, (f: Fixture) => void]> = [
+    ["health drift", (f) => f.changeAccount(0, { healthVersion: 3 })],
+    [
+      "generation drift",
+      (f) =>
+        f.changeAccount(0, {
+          credential: { ...f.accounts[0]!.credential, authGeneration: 2 },
+        }),
+    ],
+    [
+      "wrong attempt generation",
+      (f) => {
+        f.grants[0].relayRequests[0].upstreamAttempts[0].credentialGeneration =
+          2n;
+      },
+    ],
+    [
+      "expired credential",
+      (f) =>
+        f.changeAccount(0, {
+          credential: { ...f.accounts[0]!.credential, expiresAt: f.now() },
+        }),
+    ],
+    [
+      "expired grant",
+      (f) => {
+        f.grants[0].expiresAt = f.now();
+      },
+    ],
+    [
+      "expiry quarantine",
+      (f) =>
+        f.changeAccount(0, {
+          availability: { status: "quarantined", reason: "expiry" },
+          healthVersion: 3,
+        }),
+    ],
+    ["restore quarantine", (f) => f.setRestoreItems(1)],
+    [
+      "paused account",
+      (f) =>
+        f.changeAccount(0, {
+          availability: { status: "paused", reason: "operator" },
+        }),
+    ],
+    [
+      "backup genuine failure",
+      (f) =>
+        f.changeAccount(1, {
+          availability: { status: "quarantined", reason: "real_401" },
+          healthVersion: 2,
+        }),
+    ],
+    [
+      "real non-synthetic failure",
+      (f) => {
+        f.events.splice(
+          f.events.findIndex((e) => e.action.endsWith("plan_consumed")),
+          1,
+        );
+      },
+    ],
+    [
+      "real provider response",
+      (f) => {
+        f.grants[0].relayRequests[0].upstreamAttempts[0].dispatchStartedAt =
+          f.now();
+      },
+    ],
+    [
+      "unproved effect hash",
+      (f) => {
+        f.grants[0].relayRequests[0].upstreamAttempts[0].terminalEvidenceHash =
+          "0".repeat(64);
+      },
+    ],
+    [
+      "wrong phase",
+      (f) => {
+        f.events.at(-1).metadata.phase = "synthetic_rate_limited";
+      },
+    ],
+    [
+      "wrong run",
+      (f) => {
+        f.events.at(-1).metadata.runId = "99";
+      },
+    ],
+    [
+      "wrong run attempt",
+      (f) => {
+        f.events.at(-1).metadata.runAttempt = 3;
+      },
+    ],
+    [
+      "wrong binding",
+      (f) => {
+        f.events.at(-1).metadata.bindingId = "other-binding";
+      },
+    ],
+    [
+      "wrong binding revision",
+      (f) => {
+        f.events.at(-1).metadata.bindingRevision = "2";
+      },
+    ],
+    [
+      "wrong Action",
+      (f) => {
+        f.events.at(-1).metadata.actionRef =
+          `777genius/review-router@${"b".repeat(40)}`;
+      },
+    ],
+    [
+      "binding lifecycle drift",
+      (f) => {
+        f.binding.stateVersion = 2n;
+      },
+    ],
+    [
+      "duplicate consumption",
+      (f) => {
+        f.events.push({ ...f.events.at(-1), id: "duplicate" });
+      },
+    ],
+    [
+      "duplicate grant",
+      (f) => {
+        f.grants.push({ ...f.grants[0], id: "duplicate" });
+      },
+    ],
+    [
+      "duplicate effect",
+      (f) => {
+        f.grants[0].relayRequests[0].upstreamAttempts.push(
+          f.grants[0].relayRequests[0].upstreamAttempts[1],
+        );
+      },
+    ],
+    [
+      "unknown backup outcome",
+      (f) => {
+        f.grants[0].relayRequests[0].upstreamAttempts[1].state =
+          "terminal_unknown";
+      },
+    ],
+    ["other unknown provider effect", (f) => f.setUncertainEffects(1)],
+    [
+      "canceled plan",
+      (f) => {
+        f.events.push({
+          ...f.events.at(-1),
+          action: "hosted_codex_canary_fault_plan_canceled",
+          id: "canceled",
+        });
+      },
+    ],
+    ["CAS conflict", (f) => f.failCas()],
+    ["receipt insert rollback", (f) => f.failReceipt()],
+  ];
+  it.each(refusals)(
+    "holds without restoration for %s",
+    async (_name, mutate) => {
+      const { f, scope, observed } = await failedPhase();
+      mutate(f);
+      const before = structuredClone(f.accounts);
+      await expect(
+        f.recovery.reconcileCanaryPhase(scope, observed),
+      ).rejects.toThrow("recovery_hold");
+      expect(f.accounts).toEqual(before);
+      expect(f.restoreCount).toBe(0);
+      expect(
+        f.events.filter((e) => e.action.endsWith("phase_reconciled")),
+      ).toHaveLength(0);
+    },
+  );
+
+  it("does not infer a completed recovery from healthy state without its receipt", async () => {
+    const { f, scope, observed } = await failedPhase();
+    f.changeAccount(0, {
+      availability: { status: "healthy" },
+      healthVersion: 3,
+    });
+    await expect(
+      f.recovery.reconcileCanaryPhase(scope, observed),
+    ).rejects.toThrow("recovery_hold");
+    expect(f.restoreCount).toBe(0);
+  });
+
+  it("cannot prepare twice or prepare an unhealthy dedicated pool", async () => {
+    const { f, scope } = await failedPhase();
+    await expect(f.prepare(scope)).rejects.toThrow("already_prepared");
+    await expect(f.prepare(f.scopeFor("rate_limited"))).rejects.toThrow(
+      "pool_not_healthy",
+    );
+  });
+
+  it("requires the effect generation to equal the durable preparation even when observation agrees", async () => {
+    const { f, scope, observed } = await failedPhase();
+    f.grants[0].relayRequests[0].upstreamAttempts[0].credentialGeneration = 2n;
+    const wrongGeneration = {
+      ...observed,
+      attempts: observed.attempts.map((a, i) =>
+        i === 0 ? { ...a, credentialGeneration: "2" } : a,
+      ),
+    };
+    await expect(
+      f.recovery.reconcileCanaryPhase(scope, wrongGeneration),
+    ).rejects.toThrow("recovery_hold");
+    expect(f.restoreCount).toBe(0);
+  });
+
+  it("binds the durable receipt to exact health versions and refuses receipt tampering", async () => {
+    const { f, scope, observed } = await failedPhase();
+    const result = await f.recovery.reconcileCanaryPhase(scope, observed);
+    const receipt = f.events.find((e) => e.id === result.receiptId);
+    expect(receipt.metadata).toMatchObject({
+      accountId: "account-a",
+      credentialGeneration: "1",
+      preparedHealthVersion: "1",
+      dispositionHealthVersion: "2",
+      reconciledHealthVersion: "3",
+    });
+    receipt.metadata.proofHash = "0".repeat(64);
+    await expect(
+      f.recovery.reconcileCanaryPhase(scope, observed),
+    ).rejects.toThrow("recovery_hold");
+    expect(f.restoreCount).toBe(1);
+  });
+
+  it("refuses a different cooldown despite the expected version", async () => {
+    const { f, scope, observed } = await failedPhase("rate_limited");
+    f.changeAccount(0, {
+      availability: {
+        status: "cooldown",
+        reason: "real_quota",
+        until: new Date(f.now().getTime() + 3_600_000),
+      },
+    });
+    await expect(
+      f.recovery.reconcileCanaryPhase(scope, observed),
+    ).rejects.toThrow("recovery_hold");
+    expect(f.restoreCount).toBe(0);
+  });
+});

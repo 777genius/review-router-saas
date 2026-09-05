@@ -10,6 +10,10 @@ import {
 import { reconcileExpiredInvocationGrants } from "../packages/features/hosted-account-pool/src/application/use-cases/reconcile-expired-invocation-grants.js";
 import { PrismaInvocationGrantRepository } from "../packages/features/hosted-account-pool/src/infrastructure/prisma/prisma-invocation-grant-repository.js";
 import { fetchBoundedJson } from "./lib/bounded-json-response.js";
+import {
+  createPrismaCanaryPhaseRecovery,
+  type CanaryPhaseRecoveryPort,
+} from "./hosted-pool-canary-phase-recovery";
 
 export const hostedPoolFlagNames = Object.freeze([
   "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL",
@@ -67,6 +71,8 @@ export type HostedPoolControlPort = Readonly<{
   >;
   counts(): Promise<HostedPoolCounts>;
   setFaultPlan?(token: string | null): Promise<void>;
+  prepareCanaryPhase?: CanaryPhaseRecoveryPort["prepareCanaryPhase"];
+  reconcileCanaryPhase?: CanaryPhaseRecoveryPort["reconcileCanaryPhase"];
 }>;
 
 export class HostedPoolRollbackError extends AggregateError {
@@ -672,6 +678,7 @@ export function createRenderHostedPoolControlPort(input: {
     return gate;
   };
   return {
+    ...createPrismaCanaryPhaseRecovery(prisma),
     readRuntimeGate,
     async ensureRuntimeClosure(gate, reasonCode, changedByHash) {
       const reasonHash = createHash("sha256")
