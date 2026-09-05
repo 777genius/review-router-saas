@@ -283,9 +283,69 @@ jobs:
           [[ "$complete" -eq 1 ]]
           trap - EXIT
 
+  disposable-render-journal-probe:
+    name: Disposable Render journal save-only probe
+    if: ${{ inputs.confirmation == 'PROBE_DISPOSABLE_RENDER_JOURNAL' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+    steps:
+      - name: Prove suspended environment journal is save-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          service_id=srv-dadmkmon74is73an837g
+          owner_id=tea-d11m6c0dl3ps73cuh2gg
+          service_name=rr-render-recovery-e2e-20260905
+          journal_key=RR_DISPOSABLE_RECOVERY_JOURNAL
+          expected_ref=refs/heads/test/render-suspended-deploy-e2e-20260905
+          [[ "$GITHUB_REPOSITORY" == "777genius/review-router-saas" ]]
+          [[ "$GITHUB_REF" == "$expected_ref" ]]
+          test -n "$RENDER_API_KEY"
+          render_read() {
+            curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" "$@"
+          }
+          render_write() {
+            curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 60 \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" "$@"
+          }
+          service="$(render_read "https://api.render.com/v1/services/$service_id")"
+          jq -e --arg id "$service_id" --arg owner "$owner_id" --arg name "$service_name" '
+            (.service // .)
+            | .id == $id and (.ownerId // .owner.id) == $owner
+              and .name == $name and .suspended == "suspended"
+          ' <<<"$service" >/dev/null
+          before="$(render_read "https://api.render.com/v1/services/$service_id/deploys?limit=100")"
+          before_ids="$(jq -c '(if type == "array" then . else .deploys end) | map((.deploy // .).id)' <<<"$before")"
+          value="$(jq -nc --arg run "$GITHUB_RUN_ID" '{schemaVersion:1, phase:"probe", runId:$run} | tojson')"
+          payload="$(jq -nc --arg value "$value" '{value:$value}')"
+          render_write -X PUT -H "Content-Type: application/json" \
+            --data-binary "$payload" \
+            "https://api.render.com/v1/services/$service_id/env-vars/$journal_key" \
+            -o /dev/null
+          observed="$(render_read "https://api.render.com/v1/services/$service_id/env-vars")"
+          jq -e --arg key "$journal_key" --arg value "$value" '
+            map(.envVar // .) | map(select(.key == $key))
+            | length == 1 and .[0].value == $value
+          ' <<<"$observed" >/dev/null
+          sleep 10
+          after="$(render_read "https://api.render.com/v1/services/$service_id/deploys?limit=100")"
+          after_ids="$(jq -c '(if type == "array" then . else .deploys end) | map((.deploy // .).id)' <<<"$after")"
+          [[ "$after_ids" == "$before_ids" ]]
+          service="$(render_read "https://api.render.com/v1/services/$service_id")"
+          jq -e --arg id "$service_id" '
+            (.service // .) | .id == $id and .suspended == "suspended"
+          ' <<<"$service" >/dev/null
+          jq -nc --arg serviceId "$service_id" --argjson deployIds "$after_ids" \
+            '{serviceId:$serviceId, suspended:true, journalReadback:true, deploymentSetUnchanged:true, deployIds:$deployIds}'
+
   trust-bootstrap:
     name: Verify protected main dispatch
-    if: ${{ inputs.confirmation != 'PROBE_DISPOSABLE_RENDER_ONLY' }}
+    if: ${{ !startsWith(inputs.confirmation, 'PROBE_DISPOSABLE_RENDER_') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
