@@ -259,12 +259,6 @@ jobs:
           work="$RUNNER_TEMP/reviewrouter-pg17-recovery"
           mkdir -p "$work"
           rm -f "$work/worker-effect-fence.json"
-          # The environment approval and protected-main bootstrap authenticate
-          # this retained source independently of copied DB canary rows.
-          node --input-type=module <<'NODE'
-          import {parseRecoveryJson, validateRecoveryWorkerSource} from "./scripts/render-recovery-journal.mjs";
-          validateRecoveryWorkerSource(parseRecoveryJson(process.env.RECOVERY_WORKER_SOURCE_JSON ?? "null"));
-          NODE
           firewall_open=0
           render_api() {
             if [[ " $* " == *" -X "* ]]; then
@@ -421,8 +415,10 @@ jobs:
           NODE
           }
           establish_recovery_barriers() {
-            # Reconcile retained early compensation before any new DB effect.
-            capture_worker_effect_fence || return 1
+            # Retain the original ACL on every replica before advancing beyond
+            # resumable bootstrap. Every later barrier needs this exact receipt
+            # for compensation, even before workerFence is attached.
+            retain_bootstrap_compensation_fence || return 1
             close_recovery_admission || return 1
             persist_recovery_phase admission_closed || return 1
             set_recovery_maintenance true || return 1
@@ -1443,8 +1439,10 @@ jobs:
             local reference
             reference="$(printf '%s' "$response" | node scripts/render-recovery-journal.mjs read-phase "${2:-expand}")" || return 1
             if [[ "${2:-expand}" == reference ]]; then
-              printf '%s\n' "$reference"
-              return
+              printf '%s\n' "$reference" || return 1
+              # A bare return inside EXIT cleanup inherits the failing exit
+              # status even after a successful authenticated reference read.
+              return 0
             fi
             if jq -e '.schemaVersion == 3' <<<"$reference" >/dev/null; then
               printf '%s' "$reference" > "$work/phase-reference.json" || return 1
@@ -1590,6 +1588,16 @@ jobs:
               writeFileSync(`${work}/recovery-journal.json`, JSON.stringify(journal) + "\n", {mode:0o600});
             }
           }
+          NODE
+          # Source evidence is an activation prerequisite, never closure authority.
+          # Validate only after immutable scope, nonterminal admission, and durable
+          # compensation evidence are established so a missing receipt still closes
+          # barriers left open by an interrupted recovery.
+          # The environment approval and protected-main bootstrap authenticate
+          # this retained source independently of copied DB canary rows.
+          node --input-type=module <<'NODE'
+          import {parseRecoveryJson, validateRecoveryWorkerSource} from "./scripts/render-recovery-journal.mjs";
+          validateRecoveryWorkerSource(parseRecoveryJson(process.env.RECOVERY_WORKER_SOURCE_JSON ?? "null"));
           NODE
           # Mutable drift rejects forward progress with fail-closed cleanup armed.
           assert_recovery_target_identity
@@ -3132,8 +3140,10 @@ jobs:
             local reference
             reference="$(printf '%s' "$response" | node scripts/render-recovery-journal.mjs read-phase "${2:-expand}")" || return 1
             if [[ "${2:-expand}" == reference ]]; then
-              printf '%s\n' "$reference"
-              return
+              printf '%s\n' "$reference" || return 1
+              # A bare return inside EXIT cleanup inherits the failing exit
+              # status even after a successful authenticated reference read.
+              return 0
             fi
             if jq -e '.schemaVersion == 3' <<<"$reference" >/dev/null; then
               printf '%s' "$reference" > "$work/phase-reference.json" || return 1

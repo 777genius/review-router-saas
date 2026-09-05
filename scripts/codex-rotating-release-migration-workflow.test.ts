@@ -554,7 +554,7 @@ ${opening}
   it("resumes each exact service before deployment and verifies it before advancing", () => {
     const loop = recover.indexOf("resume_result='[]'");
     const resume = recover.indexOf(
-      '"https://api.render.com/v1/services/$service_id/resume"',
+      "render_deploy_mutation resume -X POST",
       loop,
     );
     const online = recover.indexOf(
@@ -562,14 +562,15 @@ ${opening}
       resume,
     );
     const deploy = recover.indexOf(
-      "render_deploy_mutation resume -X POST",
+      'render_deploy_mutation "$deploy_intent_deadline" -X POST',
       online,
     );
     const verified = recover.indexOf(
       '> "$work/verified-deployment-$service_id.json"',
       deploy,
     );
-    expect(loop).toBeGreaterThan(0);
+    for (const marker of [loop, resume, online, deploy, verified])
+      expect(marker).toBeGreaterThanOrEqual(0);
     expect(resume).toBeGreaterThan(loop);
     expect(online).toBeGreaterThan(resume);
     expect(deploy).toBeGreaterThan(online);
@@ -2358,6 +2359,9 @@ describe("retained Render recovery journal", () => {
     const end = recover.indexOf("\n          NODE", marker);
     return recover.slice(start, end).replace(/^ {10}/gmu, "");
   })();
+  // Independently retained predecessor evidence, fixed before any simulated
+  // target observation or drift. Never synthesize this from the restarted DB.
+  const recoveryWorkerSourceJson = JSON.stringify(r8Fixture().source);
   const startupCase = (phase: string) => {
     const environment = [
       { key: "DATABASE_URL", value: "postgresql://role:fake@db/test" },
@@ -2632,6 +2636,7 @@ ${bash}`,
               ...subprocessEnv,
               RUNNER_TEMP: root,
               DRIFT: drift,
+              RECOVERY_WORKER_SOURCE_JSON: recoveryWorkerSourceJson,
               RENDER_API_KEY: "test-only",
               RENDER_OWNER_ID: recoveryProductionScope.ownerId,
               RENDER_ENVIRONMENT_ID: recoveryProductionScope.environmentId,
@@ -2694,12 +2699,26 @@ ${bash}`,
         checkpoint,
         driftRole: checkpoint.split(":")[0]!,
       })),
-    ].flatMap((point) =>
-      ["autodeploy", "repo", "branch"].map((drift) => ({ ...point, drift })),
-    ),
+    ]
+      .flatMap((point) =>
+        ["autodeploy", "repo", "branch"].map((drift) => ({ ...point, drift })),
+      )
+      .concat(
+        [
+          "absent_source",
+          "malformed_source",
+          "invalid_source",
+          "duplicate_source",
+        ].map((drift) => ({
+          checkpoint: "barriers_open",
+          driftRole: "worker",
+          drift,
+        })),
+      ),
   )(
-    "closes every crash barrier before rejecting startup $drift drift on $driftRole at $checkpoint",
+    "closes every crash barrier exactly once before rejecting startup $drift on $driftRole at $checkpoint",
     ({ checkpoint, drift, driftRole }) => {
+      const sourceFailure = drift.endsWith("_source");
       const root = mkdtempSync(join(tmpdir(), "recovery-startup-drift-"));
       const work = join(root, "reviewrouter-pg17-recovery");
       mkdirSync(work);
@@ -2717,10 +2736,17 @@ ${bash}`,
         let state = loadRecoveryJournal(fixture.state, fixture.state.tuple);
         const { fence } = fixture;
         if (state.phase === "frozen") {
+          // The original ACL is durable before the first database barrier;
+          // credentials are generated only after all barriers are verified.
+          if (checkpoint !== "services_suspended")
+            state = retainBootstrapCompensationFence(state, fence.before);
           state.bootstrapPhase = checkpoint;
           if (
-            bootstrapCheckpoints.indexOf(checkpoint) >=
-            bootstrapCheckpoints.indexOf("worker_fence_intent")
+            ![
+              "services_suspended",
+              "admission_closed",
+              "maintenance_enabled",
+            ].includes(checkpoint)
           )
             state.workerFence = fence;
         }
@@ -2748,21 +2774,20 @@ ${bash}`,
               ["pending", "resume_intent"].includes(state.services[role].phase)
             )
               writeFileSync(join(work, `suspended-${role}`), "");
-          if (
-            state.phase === "prepared" ||
-            bootstrapCheckpoints.indexOf(checkpoint) >=
-              bootstrapCheckpoints.indexOf("maintenance_enabled")
-          )
+          if (state.workerFence || checkpoint === "maintenance_enabled")
             for (const role of ["api", "web"])
               writeFileSync(join(work, `maintenance-${role}`), "");
-          if (
-            state.phase === "prepared" ||
-            bootstrapCheckpoints.indexOf(checkpoint) >=
-              bootstrapCheckpoints.indexOf("barriers_verified")
-          )
+          if (state.workerFence && checkpoint !== "worker_fence_intent")
             writeFileSync(join(work, "fenced"), "");
           if (["validated", "services_suspended"].includes(checkpoint))
             writeFileSync(join(work, "firewall-closed"), "");
+        }
+        if (sourceFailure) {
+          expect(existsSync(join(work, "recovery-journal.json"))).toBe(false);
+          writeFileSync(
+            join(work, "worker-effect-fence.json"),
+            JSON.stringify({ ...fence, role: "untrusted_local_worker" }),
+          );
         }
         const activationCalls = serviceCheckpoint
           ? readFileSync(join(work, "calls"), "utf8")
@@ -2853,7 +2878,7 @@ curl() {
     fi
     jq -nc --arg role "$role" --arg owner "$RENDER_OWNER_ID" --arg environment "$RENDER_ENVIRONMENT_ID" --arg drift "$DRIFT" --arg driftRole "$DRIFT_ROLE" --argjson suspended "$(test -f "$work/suspended-$role" && printf true || printf false)" --argjson maintenance "$(test -f "$work/maintenance-$role" && printf true || printf false)" '
       {id:("srv-"+$role),name:("reviewrouter-"+$role),type:(if $role == "worker" then "background_worker" else "web_service" end),ownerId:$owner,environmentId:$environment,repo:"https://github.com/777genius/review-router-saas",branch:"main",autoDeploy:"no",suspended:(if $suspended then "suspended" else "not_suspended" end),serviceDetails:{maintenanceMode:{enabled:$maintenance,uri:""}}}
-      | if $role != $driftRole then . elif $drift == "autodeploy" then .autoDeploy="yes" elif $drift == "repo" then .repo="https://github.com/drift/repo" else .branch="drift" end'
+      | if $role != $driftRole then . elif $drift == "autodeploy" then .autoDeploy="yes" elif $drift == "repo" then .repo="https://github.com/drift/repo" elif $drift == "branch" then .branch="drift" else . end'
   else printf unexpected-read >> "$work/effects"; return 99; fi
 }
 docker() {
@@ -2881,12 +2906,28 @@ ${bash}`,
           ],
           {
             encoding: "utf8",
-            timeout: 20000,
+            // Successful early cleanup now authenticates all retained receipts.
+            timeout: 45000,
             env: {
               ...subprocessEnv,
               RUNNER_TEMP: root,
               DRIFT: drift,
               DRIFT_ROLE: driftRole,
+              RECOVERY_WORKER_SOURCE_JSON:
+                drift === "malformed_source"
+                  ? "{"
+                  : drift === "invalid_source"
+                    ? "{}"
+                    : drift === "duplicate_source"
+                      ? recoveryWorkerSourceJson.replace(
+                          '"schemaVersion":1',
+                          '"schemaVersion":1,"schemaVersion":1',
+                        )
+                      : recoveryWorkerSourceJson,
+              // Override any host receipt to model an actually absent secret.
+              ...(drift === "absent_source"
+                ? { RECOVERY_WORKER_SOURCE_JSON: undefined }
+                : {}),
               RENDER_API_KEY: "test-only",
               RENDER_OWNER_ID: recoveryProductionScope.ownerId,
               RENDER_ENVIRONMENT_ID: recoveryProductionScope.environmentId,
@@ -2903,7 +2944,15 @@ ${bash}`,
         expect(result.stdout, result.stdout + result.stderr).not.toContain(
           "::error::",
         );
-        expect(result.stderr).toBe("");
+        if (sourceFailure) {
+          expect(result.stderr).toContain(
+            drift === "malformed_source"
+              ? "json_syntax"
+              : drift === "duplicate_source"
+                ? "json_duplicate_member"
+                : "worker_runtime_retained_source",
+          );
+        } else expect(result.stderr).toBe("");
         for (const role of recoveryRoles)
           expect(existsSync(join(work, `suspended-${role}`))).toBe(true);
         for (const role of ["api", "web"])
@@ -2945,19 +2994,22 @@ ${bash}`,
             .endsWith("PATCH https://api.render.com/v1/postgres/dpg-target"),
         ).toBe(true);
         const requests = readFileSync(join(work, "requests"), "utf8");
-        expect(requests.match(/drift-check:[^\n]+/gu)).toEqual([
-          "drift-check:1:1",
-        ]);
+        expect(requests.match(/drift-check:[^\n]+/gu)).toEqual(
+          sourceFailure ? null : ["drift-check:1:1"],
+        );
         for (const role of recoveryRoles) {
           const phaseRead = requests.indexOf(`srv-${role}/env-vars`);
           expect(phaseRead).toBeGreaterThanOrEqual(0);
-          expect(phaseRead).toBeLessThan(requests.indexOf("drift-check:"));
+          expect(phaseRead).toBeLessThan(
+            requests.indexOf(sourceFailure ? "PATCH" : "drift-check:"),
+          );
         }
-        expect(requests.indexOf("drift-check:")).toBeLessThan(
-          requests.indexOf("PATCH"),
-        );
+        if (!sourceFailure)
+          expect(requests.indexOf("drift-check:")).toBeLessThan(
+            requests.indexOf("PATCH"),
+          );
         expect(requests.match(/snapshot:[^\n]+/gu)).toEqual(
-          state.workerFence
+          state.workerFence || state.bootstrapCompensationFence
             ? ["snapshot:fenced"]
             : ["snapshot:before", "snapshot:fenced"],
         );
@@ -2991,16 +3043,27 @@ ${bash}`,
           expect(recoveryContinuationMode(next)).toBe("bootstrap");
           for (const role of recoveryRoles)
             expect(
-              JSON.parse(
-                readFileSync(join(work, `retained-${role}.json`), "utf8"),
+              expandRecoveryJournal(
+                JSON.parse(
+                  readFileSync(join(work, `retained-${role}.json`), "utf8"),
+                ),
+                inventories,
               ),
             ).toEqual(next);
+        } else if (state.phase === "frozen") {
+          expect(state.bootstrapCompensationFence).toEqual(fence);
+          expect(
+            recoveryCompensationFence([state, state, state], state.tuple),
+          ).toEqual(fence);
+          expect(() => recoveryContinuationMode(state)).toThrow(
+            "preparation_missing",
+          );
         }
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
     },
-    30000,
+    60000,
   );
 
   it.each([
@@ -3827,7 +3890,7 @@ fi
             readFileSync(join(root, `srv-${role}.json`), "utf8"),
           );
           return value?.schemaVersion === 3
-            ? expandRecoveryJournal(value, fixture.inventories)
+            ? expandRecoveryJournal(value, inventories)
             : value;
         });
         expect(
@@ -5232,6 +5295,58 @@ exit 1
 });
 
 describe("PR247 recovery barrier regressions through extracted Bash", () => {
+  it.each(["none", "transport", "malformed"])(
+    "preserves authenticated reference readback status during EXIT cleanup: %s",
+    (failure) => {
+      const work = mkdtempSync(join(tmpdir(), "recovery-cleanup-readback-"));
+      try {
+        const reference = compactRecoveryJournal(r8Fixture().fresh);
+        writeFileSync(
+          join(work, "response.json"),
+          failure === "malformed"
+            ? "{"
+            : JSON.stringify([
+                { key: recoveryJournalKey, value: JSON.stringify(reference) },
+              ]),
+        );
+        const result = spawnSync(
+          "bash",
+          [
+            "-c",
+            `set -euo pipefail
+work="$1"; failure="$2"
+render_inventory_api() { cat "$work/response.json"; [[ "$failure" != transport ]]; }
+${extractRecoveryBashFunction("read_recovery_phase")}
+cleanup() {
+  local status=$? observed
+  if observed="$(read_recovery_phase srv-api reference)"; then
+    printf '%s' "$observed"
+  else
+    printf rejected
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+exit 17`,
+            "bash",
+            work,
+            failure,
+          ],
+          { env: subprocessEnv, encoding: "utf8", timeout: 5000 },
+        );
+        expect(result.status, result.stderr).toBe(17);
+        if (failure === "none")
+          expect(JSON.parse(result.stdout)).toEqual(reference);
+        else expect(result.stdout).toBe("rejected");
+        if (failure === "malformed")
+          expect(result.stderr).toContain("json_syntax");
+        else expect(result.stderr).toBe("");
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    },
+  );
+
   const before = {
     database: workerDatabaseFixture,
     owner: "schema_owner",
@@ -5271,6 +5386,7 @@ describe("PR247 recovery barrier regressions through extracted Bash", () => {
   };
   it.each([
     "none",
+    "retain",
     "close",
     "admission_read",
     "admission_closed",
@@ -5289,7 +5405,10 @@ describe("PR247 recovery barrier regressions through extracted Bash", () => {
         writeFileSync(join(work, "closed.json"), JSON.stringify(closed));
         writeFileSync(
           join(work, "recovery-journal.json"),
-          JSON.stringify({ revision: 0 }),
+          JSON.stringify({
+            ...advanceRecoveryPhase(r8Fixture().fresh, "frozen"),
+            bootstrapPhase: "services_suspended",
+          }),
         );
         const marker = recover.indexOf(
           '          establish_recovery_barriers\n          persist_recovery_phase "credential_rotation_intent"',
@@ -5303,12 +5422,16 @@ describe("PR247 recovery barrier regressions through extracted Bash", () => {
           "close_recovery_admission",
           "assert_recovery_admission_closed",
           "capture_worker_effect_fence",
+          "retain_bootstrap_compensation_fence",
           "worker_fence_sql",
           "assert_worker_effect_fenced",
           "establish_recovery_barriers",
         ]
           .map((name) => extractRecoveryBashFunction(name))
           .join("\n");
+        const persistPhase = extractRecoveryBashFunction(
+          "persist_recovery_phase",
+        ).replace("persist_recovery_phase()", "persist_phase_actual()");
         const script = `set -euo pipefail
 work="$1"
 failure="$2"
@@ -5318,7 +5441,11 @@ assert_recovery_fleet_identity() { :; }
 step() { printf '%s\\n' "$1" >> "$work/events"; [[ "$failure" != "$1" ]]; }
 set_recovery_maintenance() { step maintenance; }
 assert_recovery_maintenance() { :; }
-persist_recovery_phase() { step "$1"; }
+persist_recovery_journal() {
+  if jq -e '.bootstrapPhase == "services_suspended"' "$work/recovery-journal.json" >/dev/null; then step retain || return 28; fi
+  jq -c . "$work/recovery-journal.json" >> "$work/retained.jsonl"
+}
+persist_recovery_phase() { step "$1" && persist_phase_actual "$1"; }
 docker() {
   if [[ " $* " == *" -i "* ]]; then
     sql="$(cat)"
@@ -5339,6 +5466,7 @@ node() {
   command node "$@" <<<"$program"
 }
 ${functions}
+${persistPhase}
 ${bootstrap}`;
         const result = spawnSync(
           "bash",
@@ -5352,6 +5480,7 @@ ${bootstrap}`;
           expect(result.status, result.stderr).toBe(77);
           expect(events).toEqual([
             "snapshot",
+            "retain",
             "close",
             "admission_read",
             "admission_closed",
@@ -5365,6 +5494,28 @@ ${bootstrap}`;
             "credential_rotation_intent",
             "credential_generation",
           ]);
+          const retained = readFileSync(join(work, "retained.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((line) =>
+              loadRecoveryJournal(JSON.parse(line), r8Fixture().tuple),
+            );
+          expect(retained.map((state) => state.bootstrapPhase)).toEqual([
+            "services_suspended",
+            "admission_closed",
+            "maintenance_enabled",
+            "worker_fence_intent",
+            "barriers_verified",
+            "credential_rotation_intent",
+          ]);
+          for (const state of retained) {
+            expect(state.bootstrapCompensationFence).toEqual(
+              planWorkerEffectFence(before),
+            );
+            expect(
+              recoveryCompensationFence([state, state, state], state.tuple),
+            ).toEqual(planWorkerEffectFence(before));
+          }
         } else {
           expect(result.status).not.toBe(0);
           expect(events).not.toContain("credential_generation");
@@ -8089,10 +8240,10 @@ function r8VerifyService(
 describe("PR247 R8 permission and durable runtime boundaries", () => {
   it("executes trust with effective job permissions and rejects removal of actions:read", () => {
     const permissionBlock = trustBootstrap.match(
-      /\n    permissions:\n((?:      [^\n]+\n)+)/u,
+      /\n {4}permissions:\n((?: {6}[^\n]+\n)+)/u,
     )![1]!;
     const permissions = Object.fromEntries(
-      [...permissionBlock.matchAll(/      ([a-z-]+): (read|write)/gu)].map(
+      [...permissionBlock.matchAll(/ {6}([a-z-]+): (read|write)/gu)].map(
         (match) => [match[1], match[2]],
       ),
     );
@@ -8674,7 +8825,7 @@ describe("R10 exact recovery remediation", () => {
     });
   }
 
-  it("takes the retained source only from the protected release environment before effects", () => {
+  it("validates protected source evidence after closure admission and before activation", () => {
     assert.match(recover, /environment: production-release/u);
     assert.match(
       recover,
@@ -8684,10 +8835,24 @@ describe("R10 exact recovery remediation", () => {
       extractRecoveryBashFunction("assert_recovery_worker_runtime"),
       /parseRecoveryJson\(process\.env\.RECOVERY_WORKER_SOURCE_JSON \?\? "null"\)/u,
     );
-    assert.ok(
-      recover.indexOf("validateRecoveryWorkerSource(parseRecoveryJson") <
-        recover.indexOf("          firewall_open=0"),
-    );
+    const markers = [
+      "          trap cleanup EXIT",
+      "          recovery_closure=1 assert_recovery_target_identity",
+      "          recovery_closure=1 assert_recovery_fleet_identity",
+      '          prior_recovery_phases="$(assert_recovery_nonterminal)"',
+      "          suspension_guard_armed=1",
+      "          firewall_open=1",
+      '          const replicas = parseRecoveryReplicaResponse(readFileSync(`${work}/recovery-resume-state.json`, "utf8"));',
+      "          validateRecoveryWorkerSource(parseRecoveryJson",
+      "          # Mutable drift rejects forward progress",
+    ];
+    let previous = -1;
+    for (const marker of markers) {
+      const position = recover.indexOf(marker, previous + 1);
+      assert.ok(position >= 0, `missing marker: ${marker}`);
+      assert.ok(position > previous, `out of order: ${marker}`);
+      previous = position;
+    }
     assert.doesNotMatch(recover, /RECOVERY_WORKER_SOURCE_JSON\s*=/u);
   });
 
