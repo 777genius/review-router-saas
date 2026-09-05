@@ -1340,6 +1340,9 @@ async function confirmSetupPullRequestMergedMutation(
     const setupPullRequestStatus = setupPullRequestInspection?.status ?? null;
     // Migrated PRs have no immutable head binding. They must independently
     // verify the installed workflow before using the fenced recovery path.
+    const historicalMergedSetupPullRequest =
+      setupPullRequestInspection?.merged === true &&
+      setupProvisioning?.pullRequestHeadSha === null;
     const setupPullRequestMerged =
       setupPullRequestStatus === "merged" &&
       setupProvisioning?.pullRequestHeadSha != null;
@@ -1350,17 +1353,19 @@ async function confirmSetupPullRequestMergedMutation(
           setupPullRequestInspection?.headSha)
     )
       throw new Error("workflow_provisioning_match_not_found");
-    const setupBaseBranch =
-      (setupPullRequestStatus === "merged" && !setupPullRequestMerged
-        ? null
-        : setupPullRequestInspection?.baseBranch) ??
-      (await resolveDashboardSetupBaseBranch({
-        octokit,
-        owner: repository.owner,
-        name: repository.name,
-        defaultBranch: repository.defaultBranch,
-      }));
-    if (setupPullRequestStatus === "wrong_base_branch") {
+    const setupBaseBranch = historicalMergedSetupPullRequest
+      ? repository.defaultBranch
+      : (setupPullRequestInspection?.baseBranch ??
+        (await resolveDashboardSetupBaseBranch({
+          octokit,
+          owner: repository.owner,
+          name: repository.name,
+          defaultBranch: repository.defaultBranch,
+        })));
+    if (
+      setupPullRequestStatus === "wrong_base_branch" &&
+      !historicalMergedSetupPullRequest
+    ) {
       await markRepositoryWorkflowSetupNeedsAttention({
         prisma,
         repositoryId,
@@ -1513,6 +1518,44 @@ async function confirmSetupPullRequestMergedMutation(
       },
       select: { id: true, status: true, revision: true },
     });
+    if (historicalMergedSetupPullRequest) {
+      // Probes can outlive a transfer or replacement attempt. Refuse activation
+      // for stale recovery evidence; the authority still fences the final write.
+      const currentRepository = await prisma.repositoryConnection.findFirst({
+        where: {
+          id: repositoryId,
+          workspaceId,
+          installationId: repository.installationId,
+          provider: "github",
+          selected: true,
+          archived: false,
+          installation: { status: "active" },
+        },
+        select: { defaultBranch: true },
+      });
+      const currentProvisioning = await prisma.workflowProvisioning.findUnique({
+        where: { repositoryId },
+      });
+      if (
+        currentRepository?.defaultBranch !== setupBaseBranch ||
+        !currentProvisioning ||
+        currentProvisioning.workspaceId !== workspaceId ||
+        currentProvisioning.installationId !== repository.installationId ||
+        currentProvisioning.attemptId !== setupProvisioning!.attemptId ||
+        currentProvisioning.revision !== setupProvisioning!.revision ||
+        currentProvisioning.pullRequestHeadSha !== null ||
+        currentProvisioning.branch !== setupProvisioning!.branch ||
+        currentProvisioning.pullRequestUrl !==
+          setupProvisioning!.pullRequestUrl ||
+        currentProvisioning.workflowPath !==
+          (codexRotatingProviderInstanceId
+            ? ".github/workflows/reviewrouter-codex.yml"
+            : ".github/workflows/reviewrouter.yml") ||
+        currentProvisioning.workflowStyle !== "reusable" ||
+        currentProvisioning.actionVersion !== verifiedWorkflowActionRef
+      )
+        throw new Error("workflow_provisioning_match_not_found");
+    }
     if (hostedBinding?.status === "pending_activation") {
       await activateConfirmedHostedPoolBindingAfterWorkflowMerge({
         prisma,

@@ -14,6 +14,8 @@ export type SetupPullRequestStatus =
 
 export type SetupPullRequestInspection = {
   readonly status: SetupPullRequestStatus;
+  // A matching setup PR may be merged even when its base is no longer allowed.
+  readonly merged: boolean;
   readonly baseBranch: string | null;
   readonly headSha: string | null;
 };
@@ -36,15 +38,17 @@ export async function inspectSetupPullRequest(
         status: (await setupBranchExists({ ...input, setupBranch }, octokit))
           ? "closed"
           : "branch_deleted",
+        merged: false,
         baseBranch: null,
         headSha: null,
       };
     }
-    return { status: "closed", baseBranch: null, headSha: null };
+    return { status: "closed", merged: false, baseBranch: null, headSha: null };
   }
 
   const setupBranchMatches =
     !setupBranch || pullRequest.headRef === setupBranch;
+  const merged = pullRequest.merged && setupBranchMatches;
   if (
     setupBranchMatches &&
     input.allowedBaseBranches &&
@@ -54,14 +58,16 @@ export async function inspectSetupPullRequest(
   ) {
     return {
       status: "wrong_base_branch",
+      merged,
       headSha: pullRequest.headSha,
       baseBranch: pullRequest.baseRef,
     };
   }
 
-  if (pullRequest.merged && setupBranchMatches) {
+  if (merged) {
     return {
       status: "merged",
+      merged,
       headSha: pullRequest.headSha,
       baseBranch: pullRequest.baseRef,
     };
@@ -73,6 +79,7 @@ export async function inspectSetupPullRequest(
   ) {
     return {
       status: "branch_deleted",
+      merged,
       headSha: pullRequest.headSha,
       baseBranch: pullRequest.baseRef,
     };
@@ -81,6 +88,7 @@ export async function inspectSetupPullRequest(
   if (pullRequest.state === "closed") {
     return {
       status: "closed",
+      merged,
       headSha: pullRequest.headSha,
       baseBranch: pullRequest.baseRef,
     };
@@ -88,6 +96,7 @@ export async function inspectSetupPullRequest(
 
   return {
     status: "open",
+    merged,
     headSha: pullRequest.headSha,
     baseBranch: pullRequest.baseRef,
   };
