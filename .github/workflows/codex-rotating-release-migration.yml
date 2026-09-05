@@ -79,8 +79,190 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  disposable-render-suspended-deploy-probe:
+    name: Disposable Render suspended deploy probe
+    if: ${{ inputs.confirmation == 'PROBE_DISPOSABLE_RENDER_ONLY' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+    steps:
+      - name: Prove exact suspended deploy and resume behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          service_id=srv-dadmkmon74is73an837g
+          owner_id=tea-d11m6c0dl3ps73cuh2gg
+          service_name=rr-render-recovery-e2e-20260905
+          initial_commit=0d4ea22dbb92ce1c9ad1b5ed8083409b5f44a5e5
+          candidate_commit=f0bea0b542fc370bd380bd8b07dae97426dc389b
+          service_url=https://rr-render-recovery-e2e-20260905.onrender.com
+          expected_ref=refs/heads/test/render-suspended-deploy-e2e-20260905
+          [[ "$GITHUB_REPOSITORY" == "777genius/review-router-saas" ]]
+          [[ "$GITHUB_REF" == "$expected_ref" ]]
+          [[ "$service_id" == srv-dadmkmon74is73an837g ]]
+          [[ "$candidate_commit" =~ ^[a-f0-9]{40}$ ]]
+          test -n "$RENDER_API_KEY"
+
+          render_read() {
+            curl --fail --silent --show-error \
+              --connect-timeout 5 --max-time 20 \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+          render_mutation() {
+            curl --fail --silent --show-error \
+              --connect-timeout 10 --max-time 60 \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+          touched=0
+          complete=0
+          cleanup() {
+            status=$?
+            trap - EXIT
+            set +e
+            if [[ "$touched" -eq 1 ]]; then
+              render_mutation -X POST \
+                "https://api.render.com/v1/services/$service_id/suspend" \
+                -o /dev/null
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          service="$(render_read "https://api.render.com/v1/services/$service_id")"
+          jq -e \
+            --arg id "$service_id" \
+            --arg owner "$owner_id" \
+            --arg name "$service_name" '
+              (.service // .)
+              | .id == $id
+                and (.ownerId // .owner.id) == $owner
+                and .name == $name
+                and .type == "web_service"
+                and .suspended == "not_suspended"
+            ' <<<"$service" >/dev/null
+          inventory="$(render_read "https://api.render.com/v1/services/$service_id/deploys?limit=20")"
+          jq -e --arg sha "$initial_commit" '
+            (if type == "array" then . else .deploys end)
+            | map(.deploy // .)
+            | length >= 1
+              and .[0].status == "live"
+              and (.[0].commit.id // .[0].commit.sha // .[0].commitId) == $sha
+              and ([.[] | select(.status != "live" and (.status | endswith("_failed") | not) and .status != "canceled" and .status != "deactivated")] | length) == 0
+            ' <<<"$inventory" >/dev/null
+
+          touched=1
+          render_mutation -X POST \
+            "https://api.render.com/v1/services/$service_id/suspend" \
+            -o /dev/null
+          suspension_deadline=$((SECONDS + 300))
+          while (( SECONDS < suspension_deadline )); do
+            service="$(render_read "https://api.render.com/v1/services/$service_id")"
+            if jq -e --arg id "$service_id" '
+              (.service // .) | .id == $id and .suspended == "suspended"
+            ' <<<"$service" >/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+          jq -e --arg id "$service_id" '
+            (.service // .) | .id == $id and .suspended == "suspended"
+          ' <<<"$service" >/dev/null
+
+          request="$(jq -nc --arg commitId "$candidate_commit" '{clearCache:"do_not_clear", commitId:$commitId}')"
+          response="$(render_mutation -X POST -H "Content-Type: application/json" \
+            --data-binary "$request" \
+            "https://api.render.com/v1/services/$service_id/deploys")"
+          deploy_id="$(jq -er --arg service "$service_id" --arg sha "$candidate_commit" '
+            (.deploy // .) as $deploy
+            | select(($deploy.serviceId // $service) == $service)
+            | select(($deploy.commit.id // $deploy.commit.sha // $deploy.commitId) == $sha)
+            | $deploy.id
+            | select(type == "string" and test("^dep-[a-z0-9-]+$"))
+          ' <<<"$response")"
+
+          deploy_deadline=$((SECONDS + 900))
+          while (( SECONDS < deploy_deadline )); do
+            service="$(render_read "https://api.render.com/v1/services/$service_id")"
+            jq -e --arg id "$service_id" '
+              (.service // .) | .id == $id and .suspended == "suspended"
+            ' <<<"$service" >/dev/null
+            deploy="$(render_read "https://api.render.com/v1/services/$service_id/deploys/$deploy_id")"
+            status="$(jq -er '(.deploy // .).status' <<<"$deploy")"
+            if [[ "$status" == "live" ]]; then
+              break
+            fi
+            if [[ "$status" == *_failed || "$status" == "failed" || "$status" == "canceled" || "$status" == "deactivated" ]]; then
+              jq -c . <<<"$deploy"
+              exit 1
+            fi
+            sleep 10
+          done
+          jq -e --arg id "$deploy_id" --arg service "$service_id" --arg sha "$candidate_commit" '
+            (.deploy // .) as $deploy
+            | $deploy.id == $id
+              and ($deploy.serviceId // $service) == $service
+              and $deploy.status == "live"
+              and ($deploy.commit.id // $deploy.commit.sha // $deploy.commitId) == $sha
+          ' <<<"$deploy" >/dev/null
+          service="$(render_read "https://api.render.com/v1/services/$service_id")"
+          jq -e --arg id "$service_id" '
+            (.service // .) | .id == $id and .suspended == "suspended"
+          ' <<<"$service" >/dev/null
+
+          render_mutation -X POST \
+            "https://api.render.com/v1/services/$service_id/resume" \
+            -o /dev/null
+          resume_deadline=$((SECONDS + 300))
+          while (( SECONDS < resume_deadline )); do
+            service="$(render_read "https://api.render.com/v1/services/$service_id")"
+            if jq -e --arg id "$service_id" '
+              (.service // .) | .id == $id and .suspended == "not_suspended"
+            ' <<<"$service" >/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+          jq -e --arg id "$service_id" '
+            (.service // .) | .id == $id and .suspended == "not_suspended"
+          ' <<<"$service" >/dev/null
+
+          health_deadline=$((SECONDS + 300))
+          while (( SECONDS < health_deadline )); do
+            health="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 "$service_url/health" || true)"
+            if jq -e '.ok == true and .marker == "candidate"' <<<"$health" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 5
+          done
+          jq -e '.ok == true and .marker == "candidate"' <<<"$health" >/dev/null
+          printf '%s\n' "$deploy" | jq -c '{deploy: (.deploy // .) | {id, serviceId, status, commit}}'
+          printf '%s\n' "$health" | jq -c .
+
+          render_mutation -X POST \
+            "https://api.render.com/v1/services/$service_id/suspend" \
+            -o /dev/null
+          final_deadline=$((SECONDS + 300))
+          while (( SECONDS < final_deadline )); do
+            service="$(render_read "https://api.render.com/v1/services/$service_id")"
+            if jq -e --arg id "$service_id" '
+              (.service // .) | .id == $id and .suspended == "suspended"
+            ' <<<"$service" >/dev/null; then
+              complete=1
+              break
+            fi
+            sleep 5
+          done
+          [[ "$complete" -eq 1 ]]
+          trap - EXIT
+
   trust-bootstrap:
     name: Verify protected main dispatch
+    if: ${{ inputs.confirmation != 'PROBE_DISPOSABLE_RENDER_ONLY' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
