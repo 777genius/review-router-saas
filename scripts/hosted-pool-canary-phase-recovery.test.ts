@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { assertCanaryPhasePostgresResult } from "./hosted-pool-canary-phase-gate.mjs";
 import { canaryPhaseFixture } from "./hosted-pool-canary-phase-recovery.fixture";
 
 type Fixture = ReturnType<typeof canaryPhaseFixture>;
 async function failedPhase(
   phase: "unauthorized" | "rate_limited" = "unauthorized",
+  refreshBackup = false,
 ) {
-  const f = canaryPhaseFixture();
+  const f = canaryPhaseFixture({ refreshBackup });
   const scope = f.scopeFor(phase);
   await f.prepare(scope);
   await f.stage(scope);
@@ -84,6 +86,179 @@ describe("bounded synthetic phase health reconciliation", () => {
       expect(f.restoreCount).toBe(1);
     },
   );
+
+  it.each(["unauthorized", "rate_limited"] as const)(
+    "proves backup writeback during %s and replays a lost restoration response without writing B",
+    async (phase) => {
+      const { f, scope, observed } = await failedPhase(phase, true);
+      const backup = structuredClone(f.accounts[1]);
+      expect(observed.attempts.map((a) => a.credentialGeneration)).toEqual([
+        "1",
+        "2",
+      ]);
+      f.loseCommitResponse();
+      const receipt = await f.recovery.reconcileCanaryPhase(scope, observed);
+      expect(await f.recovery.reconcileCanaryPhase(scope, observed)).toEqual(
+        receipt,
+      );
+      expect(f.accounts[1]).toEqual(backup);
+      expect(f.restoreCount).toBe(1);
+      expect(
+        f.prisma.hostedCodexAccount.updateMany.mock.calls.map(
+          ([input]: any) => input.where.id,
+        ),
+      ).toEqual(["account-a"]);
+    },
+  );
+
+  it("walks every persisted backup writeback from preparation through the successful effect", async () => {
+    const f = canaryPhaseFixture({ refreshBackup: true });
+    const scope = f.scopeFor("unauthorized");
+    await f.prepare(scope);
+    await f.stage(scope);
+    f.refreshBackup("account-b", f.now());
+    const observed = f.run(scope.runId, scope.phase);
+    expect(observed.attempts[1]!.credentialGeneration).toBe("3");
+    expect(
+      (await f.recovery.reconcileCanaryPhase(scope, observed)).status,
+    ).toBe("restored");
+    expect(f.accounts[1]!.healthVersion).toBe(3);
+  });
+
+  const refreshRefusals: Array<[string, (f: Fixture) => void]> = [
+    [
+      "missing activation",
+      (f) => {
+        f.credentialRows.at(-1).generationReceipts = [];
+      },
+    ],
+    [
+      "unrelated predecessor",
+      (f) => {
+        f.credentialRows.at(-1).generationReceipts[0].previousReceiptHash =
+          "0".repeat(64);
+      },
+    ],
+    [
+      "missing generation in chain",
+      (f) => {
+        f.credentialRows.at(-1).accountId = "unrelated";
+      },
+    ],
+    [
+      "missing refresh envelope",
+      (f) => {
+        f.credentialRows.at(-1).envelopeRevisions = [];
+      },
+    ],
+    [
+      "restored envelope",
+      (f) => {
+        f.credentialRows.at(-1).envelopeRevisions[0].reason = "restore";
+      },
+    ],
+    [
+      "newer envelope revision",
+      (f) => {
+        f.credentialRows.at(-1).envelopeRevisions[0].revision = 2n;
+      },
+    ],
+    [
+      "unrelated fence",
+      (f) => {
+        f.credentialRows.at(-1).envelopeRevisions[0].fenceEpoch = 9n;
+      },
+    ],
+    [
+      "unrelated writeback owner",
+      (f) => {
+        f.credentialRows.at(-1).envelopeRevisions[0].fenceOwnerIdHash =
+          "0".repeat(64);
+      },
+    ],
+    [
+      "broken writeback hash",
+      (f) => {
+        f.credentialRows.at(-1).envelopeRevisions[0].idempotencyKeyHash =
+          "0".repeat(64);
+      },
+    ],
+    [
+      "unrelated incarnation",
+      (f) => {
+        f.credentialRows.at(-1).databaseIncarnation = "other";
+      },
+    ],
+    [
+      "receipt after successful effect",
+      (f) => {
+        f.credentialRows.at(-1).generationReceipts[0].occurredAt = f.now();
+      },
+    ],
+    [
+      "receipt before preparation",
+      (f) => {
+        f.credentialRows.at(-1).generationReceipts[0].occurredAt = new Date(0);
+      },
+    ],
+    [
+      "independent backup health change",
+      (f) => f.changeAccount(1, { healthVersion: 4 }),
+    ],
+    [
+      "independent backup failure",
+      (f) =>
+        f.changeAccount(1, {
+          availability: { status: "quarantined", reason: "real_401" },
+          healthVersion: 3,
+        }),
+    ],
+    [
+      "later valid backup writeback",
+      (f) => f.refreshBackup("account-b", f.now()),
+    ],
+    ["refreshed primary", (f) => f.refreshBackup("account-a", f.now())],
+    [
+      "independent primary failure",
+      (f) => f.changeAccount(0, { healthVersion: 3 }),
+    ],
+    [
+      "unknown backup effect",
+      (f) => {
+        f.grants[0].relayRequests[0].upstreamAttempts[1].state =
+          "terminal_unknown";
+      },
+    ],
+    ["unrelated unknown effect", (f) => f.setUncertainEffects(1)],
+  ];
+  it.each(refreshRefusals)(
+    "holds a refreshed backup for %s",
+    async (_name, mutate) => {
+      const { f, scope, observed } = await failedPhase("unauthorized", true);
+      mutate(f);
+      const before = structuredClone(f.accounts);
+      await expect(
+        f.recovery.reconcileCanaryPhase(scope, observed),
+      ).rejects.toThrow("recovery_hold");
+      expect(f.accounts).toEqual(before);
+      expect(f.restoreCount).toBe(0);
+    },
+  );
+
+  it("requires the preparation's activation anchor for backup refresh", async () => {
+    const f = canaryPhaseFixture({ refreshBackup: true });
+    const scope = f.scopeFor("unauthorized");
+    // Absence at preparation cannot be repaired retroactively by a later row.
+    const activation = f.credentialRows[1].generationReceipts.pop();
+    await f.prepare(scope);
+    f.credentialRows[1].generationReceipts.push(activation);
+    await f.stage(scope);
+    const observed = f.run(scope.runId, scope.phase);
+    await expect(
+      f.recovery.reconcileCanaryPhase(scope, observed),
+    ).rejects.toThrow("recovery_hold");
+    expect(f.restoreCount).toBe(0);
+  });
 
   const refusals: Array<[string, (f: Fixture) => void]> = [
     ["health drift", (f) => f.changeAccount(0, { healthVersion: 3 })],
@@ -328,5 +503,62 @@ describe("bounded synthetic phase health reconciliation", () => {
       f.recovery.reconcileCanaryPhase(scope, observed),
     ).rejects.toThrow("recovery_hold");
     expect(f.restoreCount).toBe(0);
+  });
+});
+
+describe("required canary PostgreSQL gate", () => {
+  const passing = () => ({
+    success: true,
+    numTotalTests: 1,
+    numPassedTests: 1,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTodoTests: 0,
+    testResults: [
+      {
+        name: "/repo/scripts/hosted-pool-canary-phase-recovery.postgres.test.ts",
+        status: "passed",
+        assertionResults: [
+          {
+            title:
+              "runs authenticated 401 -> backup credential writeback -> 429 -> dropped persistence, recovers a lost commit, and preserves a newer real failure",
+            status: "passed",
+          },
+        ],
+      },
+    ],
+  });
+  it("accepts an executed passing regression", () => {
+    expect(() => assertCanaryPhasePostgresResult(passing())).not.toThrow();
+  });
+  it.each(["pending", "skipped", "todo", "failed"])(
+    "rejects a green process with a %s regression",
+    (status) => {
+      const report = passing();
+      report.testResults[0]!.assertionResults[0]!.status = status;
+      expect(() => assertCanaryPhasePostgresResult(report)).toThrow(
+        "required_regression_not_passed",
+      );
+    },
+  );
+  it.each([
+    "missing suite",
+    "missing test",
+    "other suite",
+    "other test",
+    "inconsistent totals",
+  ])("rejects %s", (missing) => {
+    const report = passing();
+    if (missing === "missing suite") report.testResults = [];
+    if (missing === "missing test")
+      report.testResults[0]!.assertionResults = [];
+    if (missing === "other suite")
+      report.testResults[0]!.name = "/repo/scripts/other.postgres.test.ts";
+    if (missing === "other test")
+      report.testResults[0]!.assertionResults[0]!.title = "unrelated test";
+    if (missing === "inconsistent totals") report.numPassedTests = 0;
+    expect(() => assertCanaryPhasePostgresResult(report)).toThrow(
+      "required_regression_not_passed",
+    );
   });
 });

@@ -33,7 +33,7 @@ export const phaseHash = (value: string) =>
  * real domain; the production recovery adapter performs every restoration.
  * Only DB I/O and successful disposable provider/publication effects are modeled.
  */
-export function canaryPhaseFixture() {
+export function canaryPhaseFixture(options: { refreshBackup?: boolean } = {}) {
   let time = Date.parse("2026-09-05T12:00:00.000Z");
   const now = () => new Date(time);
   let accounts = ["account-a", "account-b"].map((id, priority) =>
@@ -81,6 +81,84 @@ export function canaryPhaseFixture() {
       tombstonedAt: null,
     },
   };
+  // Metadata projection of the real persisted version/envelope/activation
+  // contract. PostgreSQL coverage generates refresh rows through production CAS.
+  const credentialRows: any[] = accounts.map((a) => ({
+    id: `credential-${a.id}-1`,
+    accountId: a.id,
+    generation: 1n,
+    credentialExpiresAt: a.credential.expiresAt,
+    databaseIncarnation: "disposable-incarnation",
+    envelopeRevisions: [],
+    generationReceipts: [
+      {
+        receiptHash: phaseHash(`enrolled-${a.id}`),
+        mutationFenceEpoch: 1n,
+        previousReceiptHash: phaseHash(`created-${a.id}`),
+        actorIdHash: phaseHash(a.id),
+        occurredAt: now(),
+      },
+    ],
+  }));
+  const credentialMetadata = (row: any) => {
+    const metadata = { ...row };
+    delete metadata.accountId;
+    return metadata;
+  };
+  const refreshBackup = (accountId: string, at: Date) => {
+    const index = accounts.findIndex((a) => a.id === accountId);
+    const before = accounts[index]!;
+    const previous = credentialRows
+      .filter((v) => v.accountId === accountId)
+      .at(-1)!;
+    const generation = previous.generation + 1n;
+    const epoch =
+      previous.generation === 1n
+        ? 1n
+        : previous.generationReceipts[0].mutationFenceEpoch + 1n;
+    const actorIdHash = phaseHash(`refresh-owner-${accountId}-${generation}`);
+    const receiptHash = phaseHash(`writeback-${accountId}-${generation}`);
+    credentialRows.push({
+      id: `credential-${accountId}-${generation}`,
+      accountId,
+      generation,
+      credentialExpiresAt: null,
+      databaseIncarnation: previous.databaseIncarnation,
+      envelopeRevisions: [
+        {
+          id: `envelope-${accountId}-${generation}`,
+          databaseIncarnation: previous.databaseIncarnation,
+          revision: 1n,
+          reason: "refresh",
+          fenceEpoch: epoch,
+          fenceOwnerIdHash: actorIdHash,
+          actorIdHash,
+          idempotencyKeyHash: phaseHash(
+            `refresh\0${accountId}\0${generation}\0${receiptHash}`,
+          ),
+          createdAt: at,
+        },
+      ],
+      generationReceipts: [
+        {
+          receiptHash,
+          previousReceiptHash: previous.generationReceipts[0].receiptHash,
+          mutationFenceEpoch: epoch,
+          actorIdHash,
+          occurredAt: at,
+        },
+      ],
+    });
+    accounts[index] = {
+      ...before,
+      credential: {
+        ...before.credential,
+        authGeneration: Number(generation),
+        expiresAt: null,
+      },
+      healthVersion: before.healthVersion + 1,
+    };
+  };
   const accountRow = (a: HostedPoolAccount) => ({
     id: a.id,
     state: a.availability.status,
@@ -92,11 +170,11 @@ export function canaryPhaseFixture() {
     tombstonedAt: null,
     credentialVersions: [
       {
-        id: `credential-${a.id}`,
+        ...credentialMetadata(
+          credentialRows.filter((v) => v.accountId === a.id).at(-1)!,
+        ),
         generation: BigInt(a.credential.authGeneration),
         credentialExpiresAt: a.credential.expiresAt,
-        databaseIncarnation: "disposable-incarnation",
-        envelopeRevisions: [],
       },
     ],
   });
@@ -109,6 +187,19 @@ export function canaryPhaseFixture() {
         : event[key] === value;
     });
   const tx: any = {
+    hostedCodexCredentialVersion: {
+      findMany: async ({ where }: any) =>
+        structuredClone(
+          credentialRows
+            .filter(
+              (v) =>
+                v.accountId === where.accountId &&
+                v.generation > where.generation.gt &&
+                v.generation <= where.generation.lte,
+            )
+            .map(credentialMetadata),
+        ),
+    },
     hostedCodexRepositoryBinding: {
       findMany: async () => [
         {
@@ -341,6 +432,8 @@ export function canaryPhaseFixture() {
         a.id === result.failedAccount.id ? result.failedAccount : a,
       );
     }
+    if (failed && options.refreshBackup)
+      refreshBackup(grant.activeAccountId, at(5));
     const effect = (
       ordinal: number,
       accountId: string,
@@ -502,6 +595,8 @@ export function canaryPhaseFixture() {
   };
   return {
     prisma,
+    credentialRows,
+    refreshBackup,
     recovery,
     prepare,
     stage,

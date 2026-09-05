@@ -49,10 +49,30 @@ const accountSelect = {
       generation: true,
       credentialExpiresAt: true,
       databaseIncarnation: true,
+      generationReceipts: {
+        where: { kind: "activated" },
+        select: {
+          receiptHash: true,
+          previousReceiptHash: true,
+          mutationFenceEpoch: true,
+          actorIdHash: true,
+          occurredAt: true,
+        },
+      },
       envelopeRevisions: {
         orderBy: { revision: "desc" },
         take: 1,
-        select: { id: true, databaseIncarnation: true },
+        select: {
+          id: true,
+          databaseIncarnation: true,
+          revision: true,
+          reason: true,
+          fenceEpoch: true,
+          fenceOwnerIdHash: true,
+          actorIdHash: true,
+          idempotencyKeyHash: true,
+          createdAt: true,
+        },
       },
     },
   },
@@ -151,16 +171,22 @@ export function createPrismaCanaryPhaseRecovery(
               prepared.createdAt,
               now(),
             );
-            requireProof(
-              proof.grant.relayRequests[0]!.upstreamAttempts.every(
-                (attempt) =>
-                  attempt.credentialGeneration?.toString() ===
-                  snapshot.inventory.accounts.find(
-                    (account) => account.id === attempt.accountId,
-                  )?.activeGeneration,
-              ),
-              "effect_generation_mismatch",
+            const backupRefresh = await readBackupRefresh(
+              tx,
+              scope,
+              snapshot.inventory,
+              inventory,
+              proof,
+              prepared.createdAt,
             );
+            const expectedInventory = {
+              ...snapshot.inventory,
+              accounts: snapshot.inventory.accounts.map((account) =>
+                account.id === backupRefresh?.account.id
+                  ? backupRefresh.account
+                  : account,
+              ),
+            };
             const receiptId = `canary-phase-reconciled-${scope.planIdHash}`;
             const status =
               scope.phase === "dropped_response" ? "unchanged" : "restored";
@@ -170,7 +196,7 @@ export function createPrismaCanaryPhaseRecovery(
             const receipt = {
               scope,
               preparationHash: digest(snapshot),
-              proofHash: digest(proof),
+              proofHash: digest({ ...proof, backupRefresh }),
               cooldownUntil: proof.cooldownUntil,
               accountId: proof.primaryAccountId,
               credentialGeneration: primaryBefore.activeGeneration,
@@ -199,7 +225,7 @@ export function createPrismaCanaryPhaseRecovery(
                 "receipt_mismatch",
               );
               assertAccountDelta(
-                snapshot.inventory,
+                expectedInventory,
                 inventory,
                 proof.primaryAccountId,
                 status === "restored" ? 2n : 0n,
@@ -213,7 +239,7 @@ export function createPrismaCanaryPhaseRecovery(
             const failedState =
               scope.phase === "unauthorized" ? "quarantined" : "cooldown";
             assertAccountDelta(
-              snapshot.inventory,
+              expectedInventory,
               inventory,
               proof.primaryAccountId,
               status === "restored" ? 1n : 0n,
@@ -231,7 +257,7 @@ export function createPrismaCanaryPhaseRecovery(
                   poolId: scope.poolId,
                   state: failedState,
                   healthVersion: BigInt(account.healthVersion),
-                  activeGeneration: BigInt(account.activeGeneration),
+                  activeGeneration: BigInt(account.activeGeneration!),
                   cooldownUntil: proof.cooldownUntil
                     ? new Date(proof.cooldownUntil)
                     : null,
@@ -360,16 +386,141 @@ async function readInventory(
   }) as unknown as Inventory;
 }
 
+type Snapshot<T> = T extends bigint | Date
+  ? string
+  : T extends Array<infer Item>
+    ? Array<Snapshot<Item>>
+    : T extends object
+      ? { [Key in keyof T]: Snapshot<T[Key]> }
+      : T;
 type Inventory = {
   workspaceId: string;
-  accounts: Array<{
-    id: string;
-    healthVersion: string;
-    activeGeneration: string;
-    state: string;
-    cooldownUntil: string | null;
-  }>;
+  accounts: Array<
+    Snapshot<
+      Prisma.HostedCodexAccountGetPayload<{ select: typeof accountSelect }>
+    >
+  >;
 };
+
+async function readBackupRefresh(
+  tx: Prisma.TransactionClient,
+  scope: CanaryPhaseScope,
+  before: Inventory,
+  after: Inventory,
+  proof: Awaited<ReturnType<typeof readPhaseProof>>,
+  preparedAt: Date,
+) {
+  const [primaryEffect, backupEffect] =
+    proof.grant.relayRequests[0]!.upstreamAttempts;
+  const primary = before.accounts.find((a) => a.id === proof.primaryAccountId)!;
+  // The synthetic primary must ALWAYS retain its prepared generation. Only a
+  // successful backup effect can authorize a separately proven refresh delta.
+  requireProof(
+    primaryEffect?.credentialGeneration?.toString() ===
+      primary.activeGeneration,
+    "effect_generation_mismatch",
+  );
+  if (!backupEffect) return null;
+  const backup = before.accounts.find((a) => a.id === backupEffect.accountId)!;
+  const current = after.accounts.find((a) => a.id === backup.id)!;
+  requireProof(
+    backupEffect.credentialGeneration?.toString() === current.activeGeneration,
+    "effect_generation_mismatch",
+  );
+  if (current.activeGeneration === backup.activeGeneration) return null;
+
+  const firstGeneration = BigInt(backup.activeGeneration!);
+  const lastGeneration = BigInt(current.activeGeneration!);
+  const anchor = backup.credentialVersions[0]!.generationReceipts[0];
+  requireProof(
+    lastGeneration > firstGeneration &&
+      anchor &&
+      backup.credentialVersions[0]!.generationReceipts.length === 1,
+    "backup_refresh_anchor_missing",
+  );
+  const versions = await tx.hostedCodexCredentialVersion.findMany({
+    where: {
+      workspaceId: before.workspaceId,
+      poolId: scope.poolId,
+      accountId: backup.id,
+      generation: { gt: firstGeneration, lte: lastGeneration },
+    },
+    orderBy: { generation: "asc" },
+    select: accountSelect.credentialVersions.select,
+  });
+  requireProof(
+    BigInt(versions.length) === lastGeneration - firstGeneration,
+    "backup_refresh_chain_missing",
+  );
+  let previousHash = anchor.receiptHash;
+  let previousEpoch = BigInt(anchor.mutationFenceEpoch);
+  let previousTime = preparedAt;
+  for (const [index, version] of versions.entries()) {
+    const receipt = version.generationReceipts[0];
+    const envelope = version.envelopeRevisions[0];
+    // Production session CAS atomically writes the activated receipt, revision-1
+    // refresh envelope and healthy generation/health increments. The immutable
+    // receipt chain and envelope's writeback hash bind this exact transition.
+    // Enrollment and the first acquired refresh fence both start at epoch 1;
+    // subsequent refresh fences must advance. The mutable fence may already be
+    // released or reused; it is
+    // not a durable receipt and cannot replace these persisted fence terms.
+    requireProof(
+      version.generation === firstGeneration + BigInt(index) + 1n &&
+        version.databaseIncarnation ===
+          backup.credentialVersions[0]!.databaseIncarnation &&
+        version.credentialExpiresAt === null &&
+        version.generationReceipts.length === 1 &&
+        receipt &&
+        receipt.previousReceiptHash === previousHash &&
+        receipt.mutationFenceEpoch > 0n &&
+        (receipt.mutationFenceEpoch > previousEpoch ||
+          (version.generation === 2n &&
+            receipt.mutationFenceEpoch === previousEpoch)) &&
+        /^[a-f0-9]{64}$/u.test(receipt.receiptHash) &&
+        /^[a-f0-9]{64}$/u.test(receipt.actorIdHash) &&
+        receipt.occurredAt >= previousTime &&
+        receipt.occurredAt <= backupEffect.createdAt &&
+        envelope?.revision === 1n &&
+        envelope.reason === "refresh" &&
+        envelope.databaseIncarnation === version.databaseIncarnation &&
+        envelope.fenceEpoch === receipt.mutationFenceEpoch &&
+        envelope.fenceOwnerIdHash === receipt.actorIdHash &&
+        envelope.actorIdHash === receipt.actorIdHash &&
+        envelope.createdAt >= previousTime &&
+        envelope.createdAt <= receipt.occurredAt &&
+        envelope.idempotencyKeyHash ===
+          createHash("sha256")
+            .update(
+              `refresh\0${backup.id}\0${version.generation}\0${receipt.receiptHash}`,
+            )
+            .digest("hex"),
+      "backup_refresh_writeback_unproved",
+    );
+    previousHash = receipt.receiptHash;
+    previousEpoch = receipt.mutationFenceEpoch;
+    previousTime = receipt.occurredAt;
+  }
+  const expected = {
+    ...backup,
+    activeGeneration: lastGeneration.toString(),
+    healthVersion: (
+      BigInt(backup.healthVersion) +
+      lastGeneration -
+      firstGeneration
+    ).toString(),
+    credentialVersions: json([
+      versions.at(-1)!,
+    ]) as unknown as typeof backup.credentialVersions,
+  };
+  // Retain every other prepared account term, including healthy/no cooldown and
+  // lifecycle metadata. This proves the backup's post-state without writing it.
+  requireProof(
+    digest(expected) === digest(current),
+    "account_health_or_generation_drift",
+  );
+  return { account: expected, versions };
+}
 
 function assertAccountDelta(
   before: Inventory,

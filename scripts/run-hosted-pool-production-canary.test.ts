@@ -715,64 +715,79 @@ describe("hosted pool one-shot production canary", () => {
     );
   });
 
-  it("runs all five controller phases against one evolving two-account domain and the production recovery adapter", async () => {
-    const k = kit();
-    const f = canaryPhaseFixture();
-    const states: string[] = [];
-    const canary: HostedPoolCanaryPort = {
-      ...k.canary,
-      rerun: vi.fn(async (runId) => {
-        f.run(runId, f.scopes.get(runId)?.phase);
-      }),
-      evidence: async (runId) => f.observations.get(runId)!,
-    };
-    const control: HostedPoolControlPort = {
-      ...k.control,
-      prepareCanaryPhase: f.prepare,
-      setFaultPlan: async (token) => {
-        if (token) {
-          const phase = (
-            Object.keys(k.config.faultPlans) as Array<
-              keyof typeof k.config.faultPlans
-            >
-          ).find((p) => k.config.faultPlans[p] === token)!;
-          await f.stage(f.scopes.get(k.config.runs[phase])!);
-        }
-      },
-      reconcileCanaryPhase: async (scope, observed) => {
-        states.push(f.accounts[0]!.availability.status);
-        return f.recovery.reconcileCanaryPhase(scope, observed);
-      },
-    };
-    const result = await runHostedPoolProductionCanary({
-      ...k,
-      canary,
-      control,
-      execute: true,
-      executeConfirmation: "EXECUTE ONE SHOT HOSTED POOL CANARY",
-      rollbackConfirmation: "ROLL BACK HOSTED POOL AFTER CANARY",
-      sleep: async () => undefined,
-    });
-    expect(result.result, JSON.stringify(result.records)).toBe("passed");
-    expect(vi.mocked(canary.rerun).mock.calls.map(([id]) => id)).toEqual([
-      11, 12, 13, 14, 15,
-    ]);
-    expect(states).toEqual(["quarantined", "cooldown", "healthy"]);
-    expect(f.accounts.map((a) => a.healthVersion)).toEqual([5, 1]);
-    expect(f.restoreCount).toBe(2);
-    expect(f.grants.map((g) => g.backupAccountId)).toEqual(
-      Array(5).fill("account-b"),
-    );
-    expect(
-      f.grants
-        .flatMap((g) => g.relayRequests[0].upstreamAttempts)
-        .filter((a) => a.dispatchStartedAt !== null),
-    ).toHaveLength(5);
-    expect(result.records.at(-1)).toMatchObject({
-      phase: "ordered_rollback",
-      outcome: "passed",
-    });
-  });
+  it.each([false, true])(
+    "runs all five controller phases with backup refresh=%s against the production recovery adapter",
+    async (refreshBackup) => {
+      const k = kit();
+      const f = canaryPhaseFixture({ refreshBackup });
+      const states: string[] = [];
+      const canary: HostedPoolCanaryPort = {
+        ...k.canary,
+        rerun: vi.fn(async (runId) => {
+          f.run(runId, f.scopes.get(runId)?.phase);
+        }),
+        evidence: async (runId) => f.observations.get(runId)!,
+      };
+      const control: HostedPoolControlPort = {
+        ...k.control,
+        prepareCanaryPhase: f.prepare,
+        setFaultPlan: async (token) => {
+          if (token) {
+            const phase = (
+              Object.keys(k.config.faultPlans) as Array<
+                keyof typeof k.config.faultPlans
+              >
+            ).find((p) => k.config.faultPlans[p] === token)!;
+            await f.stage(f.scopes.get(k.config.runs[phase])!);
+          }
+        },
+        reconcileCanaryPhase: async (scope, observed) => {
+          states.push(f.accounts[0]!.availability.status);
+          return f.recovery.reconcileCanaryPhase(scope, observed);
+        },
+      };
+      const result = await runHostedPoolProductionCanary({
+        ...k,
+        canary,
+        control,
+        execute: true,
+        executeConfirmation: "EXECUTE ONE SHOT HOSTED POOL CANARY",
+        rollbackConfirmation: "ROLL BACK HOSTED POOL AFTER CANARY",
+        sleep: async () => undefined,
+      });
+      expect(result.result, JSON.stringify(result.records)).toBe("passed");
+      expect(vi.mocked(canary.rerun).mock.calls.map(([id]) => id)).toEqual([
+        11, 12, 13, 14, 15,
+      ]);
+      expect(states).toEqual(["quarantined", "cooldown", "healthy"]);
+      expect(f.accounts.map((a) => a.healthVersion)).toEqual([
+        5,
+        refreshBackup ? 3 : 1,
+      ]);
+      expect(f.accounts.map((a) => a.credential.authGeneration)).toEqual([
+        1,
+        refreshBackup ? 3 : 1,
+      ]);
+      expect(
+        f.prisma.hostedCodexAccount.updateMany.mock.calls.map(
+          ([input]: any) => input.where.id,
+        ),
+      ).toEqual(["account-a", "account-a"]);
+      expect(f.restoreCount).toBe(2);
+      expect(f.grants.map((g) => g.backupAccountId)).toEqual(
+        Array(5).fill("account-b"),
+      );
+      expect(
+        f.grants
+          .flatMap((g) => g.relayRequests[0].upstreamAttempts)
+          .filter((a) => a.dispatchStartedAt !== null),
+      ).toHaveLength(5);
+      expect(result.records.at(-1)).toMatchObject({
+        phase: "ordered_rollback",
+        outcome: "passed",
+      });
+    },
+  );
 
   it.each([
     "stage_response_lost",

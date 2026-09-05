@@ -18,6 +18,13 @@ import {
   FetchHostedCodexStreamingRelay,
   PrismaHostedCodexRelayAuthorization,
 } from "../packages/features/hosted-account-pool/src/infrastructure/http/prisma-hosted-codex-relay";
+import { PrismaHostedCredentialEnrollment } from "../packages/features/hosted-account-pool/src/infrastructure/prisma/prisma-hosted-account-pool-adapters";
+import { PrismaHostedCodexSessionPersistence } from "../packages/features/hosted-account-pool/src/infrastructure/prisma/prisma-hosted-codex-session-persistence";
+import { PrismaHostedCodexMutationFence } from "../packages/features/hosted-account-pool/src/infrastructure/prisma/prisma-hosted-codex-mutation-fence";
+import {
+  CredentialEnvelopeVault,
+  EnvCredentialKeyring,
+} from "../packages/features/hosted-account-pool/src/infrastructure/crypto/credential-envelope-vault";
 import { createPrismaHostedCodexCanaryFaultPlanPort } from "../apps/api/src/hosted-codex-canary-fault-plan";
 import {
   createPrismaCanaryPhaseRecovery,
@@ -40,6 +47,8 @@ vi.mock(
 );
 
 const url = process.env.REVIEW_ROUTER_CANARY_PHASE_PG17_URL;
+if (process.env.REVIEW_ROUTER_RUN_HOSTED_POOL_POSTGRES_E2E === "1" && !url)
+  throw new Error("canary_phase_pg17_required_url_missing");
 if (url) {
   const parsed = new URL(url);
   if (
@@ -89,7 +98,104 @@ describe.skipIf(!url)(
           },
         }),
     );
+    const databaseIncarnation = "disposable-phase-incarnation";
+    const databaseResourceIdentity = "disposable-phase-database-resource";
+    const fingerprintPepper = Buffer.alloc(32, 29);
+    const vault = new CredentialEnvelopeVault(
+      new EnvCredentialKeyring({
+        REVIEW_ROUTER_HOSTED_CODEX_KEK_CURRENT_ID: "disposable",
+        REVIEW_ROUTER_HOSTED_CODEX_KEK_KEYRING_JSON: JSON.stringify({
+          disposable: Buffer.alloc(32, 17).toString("base64"),
+        }),
+      }),
+    );
+    const persistence = new PrismaHostedCodexSessionPersistence(
+      prisma,
+      vault,
+      databaseIncarnation,
+      databaseResourceIdentity,
+      fingerprintPepper,
+    );
+    const fences = new PrismaHostedCodexMutationFence(prisma);
     let runtimeEpoch = 0n;
+
+    function authFixture(accountId: string) {
+      const claims = Buffer.from(
+        JSON.stringify({
+          iss: "https://auth.openai.com",
+          sub: accountId,
+          "https://api.openai.com/auth": { chatgpt_account_id: accountId },
+        }),
+      ).toString("base64url");
+      return Buffer.from(
+        JSON.stringify({
+          auth_mode: "chatgpt",
+          tokens: {
+            access_token: "test-fixture-literal",
+            refresh_token: "fixture-fixture-literal",
+            id_token: `e30.${claims}.placeholder-fixture-literal`,
+          },
+          last_refresh: new Date().toISOString(),
+        }),
+      );
+    }
+
+    async function refreshSession(accountId: string, runId: number) {
+      const before = await prisma.hostedCodexAccount.findUniqueOrThrow({
+        where: { id: accountId },
+        select: { activeGeneration: true, healthVersion: true },
+      });
+      const current = await persistence.read(accountId);
+      expect(current?.generation).toBe(Number(before.activeGeneration));
+      current!.authJsonBytes.fill(0);
+      const lease = await fences.acquire({
+        accountId,
+        runId: String(runId),
+        attempt: 2,
+        ttlMs: 30_000,
+        restoredGenerationHash: current!.generationHash,
+      });
+      if (lease.status !== "granted")
+        throw new Error("fixture_refresh_fence_denied");
+      const nextAuthJsonBytes = authFixture(accountId);
+      const nextGenerationHash = createHash("sha256")
+        .update(nextAuthJsonBytes)
+        .digest("hex");
+      const idempotencyKey = `phase-refresh-${runId}-${accountId}`;
+      try {
+        await fences.markWritebackStarted({ leaseId: lease.leaseId });
+        expect(
+          await persistence.compareAndSwap({
+            accountId,
+            expectedGeneration: current!.generation,
+            nextAuthJsonBytes,
+            nextGenerationHash,
+            idempotencyKey,
+            leaseId: lease.leaseId,
+          }),
+        ).toMatchObject({
+          status: "accepted",
+          generation: current!.generation + 1,
+        });
+        await fences.markWritebackCommitted({
+          leaseId: lease.leaseId,
+          nextGenerationHash,
+          idempotencyKey,
+        });
+      } finally {
+        nextAuthJsonBytes.fill(0);
+      }
+      expect(
+        await prisma.hostedCodexAccount.findUniqueOrThrow({
+          where: { id: accountId },
+          select: { state: true, activeGeneration: true, healthVersion: true },
+        }),
+      ).toEqual({
+        state: "healthy",
+        activeGeneration: before.activeGeneration! + 1n,
+        healthVersion: before.healthVersion + 1n,
+      });
+    }
 
     beforeAll(async () => {
       const version = await prisma.$queryRaw<
@@ -191,43 +297,23 @@ describe.skipIf(!url)(
           isDefault: true,
         },
       });
+      const enrollment = new PrismaHostedCredentialEnrollment(
+        prisma,
+        vault,
+        databaseIncarnation,
+        databaseResourceIdentity,
+        fingerprintPepper,
+      );
       for (const [priority, id] of ["phase-a", "phase-b"].entries()) {
-        await prisma.hostedCodexAccount.create({
-          data: {
-            id,
-            workspaceId: "phase-workspace",
-            poolId: "phase-pool",
-            label: id,
-            priority,
-            accountFingerprint: sha(id),
-          },
-        });
-        await prisma.hostedCodexCredentialVersion.create({
-          data: {
-            id: `credential-${id}`,
-            workspaceId: "phase-workspace",
-            poolId: "phase-pool",
-            accountId: id,
-            generation: 1n,
-            databaseIncarnation: "disposable-phase-incarnation",
-            envelopeVersion: 1,
-            encryptionAlgorithm: "aes-256-gcm",
-            keyId: "disposable",
-            aadHash: sha(id),
-            generationHash: sha(id),
-            ciphertextHash: sha(id),
-            encryptedCiphertext: "not-a-provider-credential",
-            envelopeMetadata: {},
-            credentialExpiresAt: new Date(Date.now() + 3_600_000),
-          },
-        });
-        await prisma.hostedCodexAccount.update({
-          where: { id },
-          data: {
-            state: "healthy",
-            activeGeneration: 1n,
-            healthVersion: { increment: 1 },
-          },
+        await enrollment.importCodexAuth({
+          workspaceId: workspaceId("phase-workspace"),
+          poolId: hostedPoolId("phase-pool"),
+          accountId: hostedAccountId(id),
+          label: id,
+          priority,
+          expectedPoolRevision: priority + 1,
+          authJsonBytes: authFixture(id),
+          now: new Date(),
         });
       }
       await prisma.hostedCodexRepositoryBinding.create({
@@ -301,7 +387,13 @@ describe.skipIf(!url)(
       const issued = new Date();
       const accounts = await prisma.hostedCodexAccount.findMany({
         where: { poolId: "phase-pool" },
-        select: { id: true, state: true, healthVersion: true, priority: true },
+        select: {
+          id: true,
+          state: true,
+          healthVersion: true,
+          priority: true,
+          activeGeneration: true,
+        },
       });
       expect(accounts.every((a) => a.state === "healthy")).toBe(true);
       const id = invocationGrantId(`phase-grant-${runId}`);
@@ -322,7 +414,7 @@ describe.skipIf(!url)(
             credential: {
               credentialRef: "fixture-metadata-only",
               subjectFingerprint: a.id,
-              authGeneration: 1,
+              authGeneration: Number(a.activeGeneration),
               validatedAt: issued,
               expiresAt: expires,
             },
@@ -376,11 +468,30 @@ describe.skipIf(!url)(
         requestBytes: body.length,
       });
       const runtime = {
-        ensureFreshSession: async () => ({
-          accessToken: "fixture-fixture-literal",
-          chatgptAccountId: "disposable-account",
-          credentialGeneration: 1,
-        }),
+        ensureFreshSession: async ({ accountId }: { accountId: string }) => {
+          // The actual relay calls this separately for A and B. Refresh B through
+          // production custody/fence/CAS before the relay prepares B's effect.
+          if (accountId === "phase-b") {
+            expect(
+              await prisma.hostedCodexAccount.findUniqueOrThrow({
+                where: { id: "phase-a" },
+                select: { state: true },
+              }),
+            ).toEqual({
+              state: phase === "unauthorized" ? "quarantined" : "cooldown",
+            });
+            await refreshSession(accountId, runId);
+          }
+          const current = await prisma.hostedCodexAccount.findUniqueOrThrow({
+            where: { id: accountId },
+            select: { activeGeneration: true },
+          });
+          return {
+            accessToken: "fixture-fixture-literal",
+            chatgptAccountId: accountId,
+            credentialGeneration: Number(current.activeGeneration),
+          };
+        },
         classifyFailure: () => ({ code: "unknown" }),
       };
       const relay = new FetchHostedCodexStreamingRelay(
@@ -433,11 +544,11 @@ describe.skipIf(!url)(
           attemptId: a.id,
           credentialGeneration: a.credentialGeneration!.toString(),
         })),
-      } as CanaryRunEvidence;
+      } as unknown as CanaryRunEvidence;
       return { scope, observed, stored };
     }
 
-    it("runs actual authenticated 401 -> 429 -> dropped relay persistence, recovers a lost commit, and preserves a newer real failure", async () => {
+    it("runs authenticated 401 -> backup credential writeback -> 429 -> dropped persistence, recovers a lost commit, and preserves a newer real failure", async () => {
       for (const [index, phase] of [
         "unauthorized",
         "rate_limited",
@@ -459,6 +570,22 @@ describe.skipIf(!url)(
             dropped_response: "healthy",
           }[phase]!,
         );
+        const backupBefore = await prisma.hostedCodexAccount.findUniqueOrThrow({
+          where: { id: "phase-b" },
+        });
+        expect(backupBefore.activeGeneration).toBe(
+          phase === "unauthorized" ? 2n : 3n,
+        );
+        expect(backupBefore.healthVersion).toBe(
+          phase === "unauthorized" ? 2n : 3n,
+        );
+        if (phase !== "dropped_response") {
+          expect(
+            stored.relayRequests[0]!.upstreamAttempts.map(
+              (a) => a.credentialGeneration,
+            ),
+          ).toEqual([1n, backupBefore.activeGeneration]);
+        }
         let lost = false;
         const wrapped = new Proxy(prisma, {
           get(target, key) {
@@ -478,6 +605,11 @@ describe.skipIf(!url)(
         expect(await recovery.reconcileCanaryPhase(scope, observed)).toEqual(
           receipt,
         );
+        expect(
+          await prisma.hostedCodexAccount.findUniqueOrThrow({
+            where: { id: "phase-b" },
+          }),
+        ).toEqual(backupBefore);
         const after = await prisma.hostedCodexAccount.findUniqueOrThrow({
           where: { id: "phase-a" },
           select: { state: true, healthVersion: true },
