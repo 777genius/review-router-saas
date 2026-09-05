@@ -19,6 +19,15 @@ import {
   liveV70V89CatalogProjectionRoutines,
 } from "../adapters/live-v70-v72-catalog-digest.mjs";
 
+import { canonicalPrismaMigrationNames } from "../../../../../scripts/lib/canonical-prisma-migration-catalog.mjs";
+import {
+  assertRenderSchemaHandoffCatalog,
+  readRenderSchemaHandoffCatalog,
+  readReviewedRenderManagedContract,
+  renderManagedMigrationPhases,
+  renderSchemaHandoffCheckoutExtension,
+} from "../../../../../scripts/lib/render-schema-handoff-policy.mjs";
+
 const migrationRoot = "packages/platform/db/prisma/migrations";
 const sha256 = (value: string | Buffer) =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -56,6 +65,65 @@ describe("canonical release migration transition", () => {
     expect(sha256(Buffer.concat(framed))).toBe(
       canonicalReleaseMigrationArtifact.migrationBundleSha256,
     );
+  });
+
+  it("keeps canonical95 checkout admission separate from managed92 authority", () => {
+    type Row = { migrationName: string; checksum: string };
+    const names: readonly string[] = canonicalPrismaMigrationNames;
+    const full = names.map((migrationName) => ({
+      migrationName,
+      checksum: sha256(
+        readFileSync(`${migrationRoot}/${migrationName}/migration.sql`),
+      ).slice(7),
+    }));
+    const manifest = (rows: readonly Row[]) =>
+      sha256(
+        rows.map((row) => `${row.migrationName}:${row.checksum}`).join(","),
+      );
+    const managed: readonly Row[] = readRenderSchemaHandoffCatalog();
+    expect(full).toHaveLength(95);
+    expect(manifest(full)).toBe(canonicalReleaseMigrationPostManifestIdentity);
+    expect(full).toEqual([...managed, ...renderSchemaHandoffCheckoutExtension]);
+    expect(full.slice(-3)).toEqual(
+      canonicalReleaseMigrationEntries
+        .slice(-3)
+        .map(({ migrationName, migrationSqlSha256: checksum }) => ({
+          migrationName,
+          checksum,
+        })),
+    );
+    expect(managed).toHaveLength(92);
+    expect(() => assertRenderSchemaHandoffCatalog(managed)).not.toThrow();
+    expect(() => assertRenderSchemaHandoffCatalog(full)).toThrow(
+      "migration_catalog",
+    );
+    for (const phase of [
+      "managed-retained-upgrade",
+      "managed-schema-handoff",
+    ] as const) {
+      const contract = renderManagedMigrationPhases[phase];
+      expect(manifest(managed.slice(0, contract.baselineCount))).toBe(
+        contract.baselineManifest,
+      );
+      expect(manifest(managed.slice(0, contract.targetCount))).toBe(
+        contract.targetManifest,
+      );
+      expect(() => readReviewedRenderManagedContract(phase)).toThrow(
+        "managed_independent_review_missing",
+      );
+    }
+    expect(canonicalReleaseMigrationArtifact.preManifestIdentity).not.toBe(
+      manifest(managed.slice(0, 76)),
+    );
+    expect(canonicalReleaseMigrationEntries).toHaveLength(19);
+    expect(canonicalReleaseMigrationResumeManifestIdentities).toEqual([
+      canonicalReleaseMigrationArtifact.preManifestIdentity,
+      manifest(full),
+    ]);
+    expect(canonicalReleaseMigrationResumeManifestIdentities).not.toContain(
+      manifest(managed),
+    );
+    expect(activationCatalogRawPromotionTrustRoot.status).toBe("pending");
   });
 
   it("accepts only the trusted pre-manifest and completed post-manifest replay", () => {
