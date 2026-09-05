@@ -1403,21 +1403,21 @@ async function createHarness(
       createdAt: now,
     },
   });
-  await prisma.repositoryConnection.create({
-    data: {
-      id: repositoryConnectionId,
-      workspaceId,
-      provider: "github",
-      sourceBaseUrl: "https://github.com",
-      externalRepositoryId: `external-${suffix}`,
-      scmRepositoryIdentityId,
-      owner: "reviewrouter-test",
-      name: `execution-${suffix}`,
-      fullName: `reviewrouter-test/execution-${suffix}`,
-      defaultBranch: "main",
-      visibility: "private",
-    },
-  });
+  // This fixture stops at 000079; current Prisma create also inserts the
+  // inventoryGeneration default added in 000091. Keep the INSERT historical.
+  await prisma.$executeRaw`
+    INSERT INTO "RepositoryConnection" (
+      "id", "workspaceId", "provider", "sourceBaseUrl", "externalRepositoryId",
+      "scmRepositoryIdentityId", "owner", "name", "fullName", "defaultBranch",
+      "visibility", "updatedAt"
+    ) VALUES (
+      ${repositoryConnectionId}, ${workspaceId}, 'github'::"ScmProvider",
+      ${"https://github.com"}, ${`external-${suffix}`}, ${scmRepositoryIdentityId},
+      ${"reviewrouter-test"}, ${`execution-${suffix}`},
+      ${`reviewrouter-test/execution-${suffix}`}, ${"main"},
+      'private'::"RepositoryVisibility", ${now}
+    )
+  `;
   await prisma.scmRepositoryIdentity.update({
     where: { scmRepositoryIdentityId },
     data: {
@@ -1779,6 +1779,7 @@ async function cleanupScope(workspaceId: string): Promise<void> {
   });
   const repository = await prisma.repositoryConnection.findFirst({
     where: { workspaceId },
+    select: { id: true, scmRepositoryIdentityId: true },
   });
   if (repository !== null) {
     await prisma.scmRepositoryIdentity.updateMany({
@@ -1791,7 +1792,10 @@ async function cleanupScope(workspaceId: string): Promise<void> {
         unboundAt: new Date(),
       },
     });
-    await prisma.repositoryConnection.delete({ where: { id: repository.id } });
+    await prisma.repositoryConnection.delete({
+      where: { id: repository.id },
+      select: { id: true },
+    });
     if (repository.scmRepositoryIdentityId !== null) {
       await prisma.scmRepositoryIdentity.delete({
         where: { scmRepositoryIdentityId: repository.scmRepositoryIdentityId },
