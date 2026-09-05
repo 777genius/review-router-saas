@@ -648,11 +648,11 @@ jobs:
           assert_recovery_trusted_topology() {
             WORK="$work" node --input-type=module <<'NODE' || return 1
           import {readFileSync} from "node:fs";
-          import {recoveryProductionScope, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
+          import {recoveryProductionScope, recoveryRoles, recoveryTopologyAuthorityValid} from "./scripts/render-recovery-journal.mjs";
           const trusted = JSON.parse(readFileSync(`${process.env.WORK}/trusted-topology.json`, "utf8"));
           if (trusted.ownerId !== recoveryProductionScope.ownerId || trusted.environmentId !== recoveryProductionScope.environmentId ||
-            trusted.repository !== recoveryProductionScope.repository || !/^[1-9][0-9]*$/.test(trusted.sourceRunId) ||
-            !/^sha256:[a-f0-9]{64}$/.test(trusted.artifactDigest) ||
+            trusted.repository !== recoveryProductionScope.repository || !recoveryTopologyAuthorityValid(trusted, process.env.GITHUB_SHA) ||
+            process.env.TARGET_DB_ID !== trusted.targetDbId ||
             process.env.RENDER_OWNER_ID !== trusted.ownerId || process.env.RENDER_ENVIRONMENT_ID !== trusted.environmentId ||
             JSON.stringify(Object.keys(trusted.services ?? {}).sort()) !== JSON.stringify([...recoveryRoles].sort()) ||
             recoveryRoles.some(role => process.env[`${role.toUpperCase()}_SERVICE_ID`] !== trusted.services[role]?.id)) {
@@ -1013,8 +1013,8 @@ jobs:
                   "$recovery_service_observation_filter" <<<"$service"
               )" || return 1
               observations="$(
-                jq -c --argjson observation "$observation" \
-                  '. + [$observation]' <<<"$observations"
+                jq -c --slurpfile observation <(printf '%s' "$observation") \
+                  '$observation[0] as $observation | . + [$observation]' <<<"$observations"
               )" || return 1
             done <<<"$role_rows"
             printf '%s\n' "$observations" > "$output_path" || return 1
@@ -1113,6 +1113,7 @@ jobs:
                 url="$url&cursor=$encoded_cursor"
               fi
               raw_page="$(render_inventory_api "$absolute_deadline" "$url")" || return 1
+              printf '%s' "$raw_page" | node scripts/render-recovery-journal.mjs validate-json || return 1
               entries="$(
                 jq -ce '
                   if type == "array" then .
@@ -1143,9 +1144,10 @@ jobs:
                 )" || return 1
               fi
               all_deployments="$(
-                jq -c --argjson page "$page_inventory" '. + $page' \
+                jq -c --slurpfile page <(printf '%s' "$page_inventory") '$page[0] as $page | . + $page' \
                   <<<"$all_deployments"
               )" || return 1
+              printf '%s' "$all_deployments" | node scripts/render-recovery-journal.mjs validate-json || return 1
               if (( entry_count < 100 )); then
                 break
               fi
@@ -1159,6 +1161,7 @@ jobs:
                   | select(type == "string" and length > 0)
                 ' <<<"$raw_page"
               )" || return 1
+              (( ${#next_cursor} <= 4096 )) || return 1
               if jq -e --arg cursor "$next_cursor" \
                 'index($cursor) != null' <<<"$seen_cursors" >/dev/null; then
                 echo "::error::Render deployment inventory repeated cursor for $service_id" >&2
@@ -1178,6 +1181,7 @@ jobs:
               render_inventory_api "$absolute_deadline" \
                 "https://api.render.com/v1/services/$service_id/deploys?limit=100"
             )" || return 1
+            printf '%s' "$raw_page" | node scripts/render-recovery-journal.mjs validate-json || return 1
             final_entries="$(
               jq -ce '
                 if type == "array" then .
@@ -1225,6 +1229,7 @@ jobs:
               render_inventory_api "$absolute_deadline" \
                 "https://api.render.com/v1/services/$service_id/deploys/$expected_deploy_id"
             )" || return 1
+            printf '%s' "$exact" | node scripts/render-recovery-journal.mjs validate-json || return 1
             exact_observations="$(
               jq -ce --arg serviceId "$service_id" \
                 "$recovery_deployment_inventory_filter" <<<"$exact"
@@ -1259,8 +1264,8 @@ jobs:
               <<<"$inventory" >/dev/null || return 1
             exact_deployment="$(jq -ce '.[0]' <<<"$exact_observations")" || return 1
             jq -nc \
-              --argjson exact "$exact_deployment" \
-              --argjson inventory "$inventory" '
+              --slurpfile exact <(printf '%s' "$exact_deployment") \
+              --slurpfile inventory <(printf '%s' "$inventory") '$exact[0] as $exact | $inventory[0] as $inventory |
                 {
                   deployment: ($exact + {
                     latestDeployId: $inventory[0].deployId,
@@ -1300,29 +1305,29 @@ jobs:
               observation="$(jq -c '.deployment' <<<"$binding_observation")" || return 1
               inventory="$(jq -c '.inventory' <<<"$binding_observation")" || return 1
               observations="$(
-                jq -c --argjson observation "$observation" \
-                  '. + [$observation]' <<<"$observations"
+                jq -c --slurpfile observation <(printf '%s' "$observation") \
+                  '$observation[0] as $observation | . + [$observation]' <<<"$observations"
               )" || return 1
               inventories="$(
                 jq -c --arg serviceId "$service_id" \
-                  --argjson deployments "$inventory" \
-                  '. + [{serviceId: $serviceId, deployments: $deployments}]' \
+                  --slurpfile deployments <(printf '%s' "$inventory") \
+                  '$deployments[0] as $deployments | . + [{serviceId: $serviceId, deployments: $deployments}]' \
                   <<<"$inventories"
               )" || return 1
             done <<<"$binding_rows"
             jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
               "$recovery_deployment_set_filter" <<<"$observations" >/dev/null || return 1
             # Independently bind the fleet evidence to the retained IDs.
-            jq -e --argjson bindings "$bindings_json" '
+            jq -e --slurpfile bindings <(printf '%s' "$bindings_json") '$bindings[0] as $bindings |
               all(.[]; . as $observed
                 | any($bindings[]; .serviceId == $observed.serviceId
                     and .deployId == $observed.deployId)
                 and .latestDeployId == .deployId
                 and .activeDeployIds == [.deployId])
             ' <<<"$observations" >/dev/null || return 1
-            jq -n --argjson deployments "$observations" \
-              --argjson inventories "$inventories" \
-              '{deployments: $deployments, inventories: $inventories}' \
+            jq -n --slurpfile deployments <(printf '%s' "$observations") \
+              --slurpfile inventories <(printf '%s' "$inventories") \
+              '$deployments[0] as $deployments | $inventories[0] as $inventories | {deployments: $deployments, inventories: $inventories}' \
               > "$output_path"
           }
 
@@ -1334,16 +1339,13 @@ jobs:
           read_recovery_phase() {
             local service_id="$1" response
             response="$(render_inventory_api "$((SECONDS + 30))" "https://api.render.com/v1/services/$service_id/env-vars")" || return $?
-            RESPONSE="$response" node --input-type=module <<'NODE'
-          import { readRecoveryPhaseResponse } from "./scripts/render-recovery-journal.mjs";
-          process.stdout.write(JSON.stringify(readRecoveryPhaseResponse(process.env.RESPONSE)) + "\n");
-          NODE
+            printf '%s' "$response" | node scripts/render-recovery-journal.mjs read-phase
           }
           read_recovery_replicas() {
             local service_id observed replicas='[]'
             for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
               observed="$(read_recovery_phase "$service_id")" || return $?
-              replicas="$(jq -c --argjson state "$observed" '. + [$state]' <<<"$replicas")" || return $?
+              replicas="$(printf '%s\n%s\n' "$replicas" "$observed" | jq -cs '.[0] + [.[1]]')" || return $?
             done
             printf '%s\n' "$replicas"
           }
@@ -1395,6 +1397,24 @@ jobs:
           NODE
             persist_recovery_journal
           }
+          assert_recovery_retained_inventories() {
+            local retained_service_id deadline="$((SECONDS + 120))"
+            assert_recovery_config_unchanged || return 1
+            for retained_service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              fetch_recovery_deployment_inventory "$retained_service_id" "$deadline" \
+                > "$work/retained-$retained_service_id-inventory.json" || return 1
+            done
+            WORK="$work" node --input-type=module <<'NODE' || return 1
+          import {readFileSync} from "node:fs";
+          import {parseRecoveryJson, assertRecoveryRetainedInventory, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const state = parseRecoveryJson(readFileSync(`${work}/recovery-journal.json`, "utf8"));
+          for (const role of recoveryRoles) {
+            const id = state.tuple.services[role].id;
+            assertRecoveryRetainedInventory(state, role, parseRecoveryJson(readFileSync(`${work}/retained-${id}-inventory.json`, "utf8")));
+          }
+          NODE
+          }
           journal_service_phase() {
             jq -er --arg role "$role" '.services[$role].phase' "$work/recovery-journal.json"
           }
@@ -1420,9 +1440,9 @@ jobs:
           printf '%s\n' "$prior_recovery_phases" > "$work/recovery-resume-state.json"
           WORK="$work" node --input-type=module <<'NODE'
           import {readFileSync, writeFileSync} from "node:fs";
-          import {parseRecoveryJson, recoveryCompensationFence, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
+          import {parseRecoveryJson, parseRecoveryReplicaResponse, recoveryCompensationFence, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
           const work = process.env.WORK;
-          const replicas = parseRecoveryJson(readFileSync(`${work}/recovery-resume-state.json`, "utf8"));
+          const replicas = parseRecoveryReplicaResponse(readFileSync(`${work}/recovery-resume-state.json`, "utf8"));
           if (!replicas.every(value => value === null)) {
             const expected = structuredClone(replicas[0]?.tuple ?? {});
             Object.assign(expected, {targetDbId:process.env.TARGET_DB_ID, ownerId:process.env.RENDER_OWNER_ID,
@@ -1448,10 +1468,10 @@ jobs:
           done
           WORK="$work" node --input-type=module <<'NODE'
           import {readFileSync, writeFileSync} from "node:fs";
-          import {parseRecoveryJson, createRecoveryJournal, loadRecoveryReplicas, recoveryConfigFingerprint,
-            recoveryRoles, recoveryContinuationMode, recoveryCompensationFence, assertRecoveryPreEffectInventory, assertRecoveryDeploymentInventory} from "./scripts/render-recovery-journal.mjs";
+          import {parseRecoveryJson, parseRecoveryReplicaResponse, createRecoveryJournal, loadRecoveryReplicas, recoveryConfigFingerprint,
+            recoveryRoles, recoveryContinuationMode, recoveryCompensationFence, assertRecoveryRetainedInventory} from "./scripts/render-recovery-journal.mjs";
           const work = process.env.WORK;
-          const read = name => parseRecoveryJson(readFileSync(`${work}/${name}`, "utf8"));
+          const read = name => (name === "recovery-resume-state.json" ? parseRecoveryReplicaResponse : parseRecoveryJson)(readFileSync(`${work}/${name}`, "utf8"));
           const retained = read("recovery-resume-state.json");
           const inventories = {};
           const services = {};
@@ -1491,10 +1511,7 @@ jobs:
             // Never rotate again to manufacture a fresh starting point.
             const bootstrapUnstarted = recoveryContinuationMode(journal) === "bootstrap";
             for (const role of recoveryRoles) {
-              if (bootstrapUnstarted) assertRecoveryPreEffectInventory(journal, role, inventories[role]);
-              if (["deploy_bound", "verified"].includes(journal.services[role].phase)) {
-                assertRecoveryDeploymentInventory(journal, role, inventories[role], true);
-              }
+              assertRecoveryRetainedInventory(journal, role, inventories[role]);
               const fingerprint = bootstrapUnstarted ? journal.tuple.services[role].configFingerprint : journal.runtimeConfigFingerprints[role].fingerprint;
               if (services[role].configFingerprint !== fingerprint) throw new Error("recovery_retained_configuration_drift");
             }
@@ -1568,8 +1585,8 @@ jobs:
           jq -n \
             --arg phase "services_suspended" \
             --arg runId "$GITHUB_RUN_ID" \
-            --argjson services "$suspension_observations" \
-            '{phase: $phase, runId: $runId, services: $services}' \
+            --slurpfile services <(printf '%s' "$suspension_observations") \
+            '$services[0] as $services | {phase: $phase, runId: $runId, services: $services}' \
             > "$work/recovery-phase.json"
 
           open_recovery_database
@@ -1902,6 +1919,7 @@ jobs:
               "$WORKER_SERVICE_ID") role=worker ;;
               "$WEB_SERVICE_ID") role=web ;;
             esac
+            assert_recovery_retained_inventories
             printf '{}\n' > "$work/journal-transition-evidence.json"
             if [[ "$(journal_service_phase)" == pending ]]; then
               advance_recovery_service resume_intent
@@ -1937,8 +1955,8 @@ jobs:
             before_deploy_ids="$(jq -c '[.[].deployId]' <<<"$before_inventory")"
             deploy_intent_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
             deploy_intent_epoch="$(date -u -d "$deploy_intent_at" +%s)"
-            jq -nc --argjson inventory "$before_inventory" --argjson intentEpoch "$deploy_intent_epoch" \
-              '{inventory:$inventory,intentEpoch:$intentEpoch}' > "$work/journal-transition-evidence.json"
+            jq -nc --slurpfile inventory <(printf '%s' "$before_inventory") --argjson intentEpoch "$deploy_intent_epoch" \
+              '$inventory[0] as $inventory | {inventory:$inventory,intentEpoch:$intentEpoch}' > "$work/journal-transition-evidence.json"
             advance_recovery_service deploy_intent
             assert_recovery_admission_closed
             assert_worker_effect_fenced
@@ -1964,6 +1982,7 @@ jobs:
             deploy_id="$(jq -r --arg role "$role" '.services[$role].deployId // ""' "$work/recovery-journal.json")"
             direct_observations=""
             if [[ "$deploy_mutation_status" -eq 0 ]]; then
+              printf '%s' "$deploy_response" | node scripts/render-recovery-journal.mjs validate-json
               direct_observations="$(
                 jq -ce --arg serviceId "$service_id" \
                   "$recovery_deployment_inventory_filter" \
@@ -1984,8 +2003,8 @@ jobs:
                   exit 1
                 fi
                 jq -e --arg deployId "$deploy_id" \
-                  --argjson beforeDeployIds "$before_deploy_ids" \
-                  '($beforeDeployIds | index($deployId)) == null' \
+                  --slurpfile beforeDeployIds <(printf '%s' "$before_deploy_ids") \
+                  '$beforeDeployIds[0] as $beforeDeployIds | ($beforeDeployIds | index($deployId)) == null' \
                   <<<"{}" >/dev/null
               fi
             fi
@@ -2012,21 +2031,21 @@ jobs:
                 reconciliation_candidates="$(
                   jq -ce \
                     --arg serviceId "$service_id" \
-                    --argjson beforeDeployIds "$before_deploy_ids" \
-                    --argjson beforeInventory "$before_inventory" \
+                    --slurpfile beforeDeployIds <(printf '%s' "$before_deploy_ids") \
+                    --slurpfile beforeInventory <(printf '%s' "$before_inventory") \
                     --argjson intentDeadlineEpoch "$((deploy_intent_epoch + 120))" \
                     --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
                     --argjson intentEpoch "$deploy_intent_epoch" \
                     --argjson observationEpoch "$observation_epoch" \
-                    "$recovery_reconciliation_filter" \
+                    "\$beforeDeployIds[0] as \$beforeDeployIds | \$beforeInventory[0] as \$beforeInventory | $recovery_reconciliation_filter" \
                     <<<"$recent_inventory"
                 )"
                 jq -n \
                   --arg serviceId "$service_id" \
                   --arg intentAt "$deploy_intent_at" \
                   --argjson mutationExitStatus "$deploy_mutation_status" \
-                  --argjson beforeDeployIds "$before_deploy_ids" \
-                  --argjson candidates "$reconciliation_candidates" '
+                  --slurpfile beforeDeployIds <(printf '%s' "$before_deploy_ids") \
+                  --slurpfile candidates <(printf '%s' "$reconciliation_candidates") '$beforeDeployIds[0] as $beforeDeployIds | $candidates[0] as $candidates |
                     {
                       serviceId: $serviceId,
                       intentAt: $intentAt,
@@ -2068,8 +2087,8 @@ jobs:
             fi
             [[ "$deploy_id" =~ ^dep-[a-z0-9-]+$ ]]
             jq -e --arg deployId "$deploy_id" \
-              --argjson beforeDeployIds "$before_deploy_ids" \
-              '($beforeDeployIds | index($deployId)) == null' \
+              --slurpfile beforeDeployIds <(printf '%s' "$before_deploy_ids") \
+              '$beforeDeployIds[0] as $beforeDeployIds | ($beforeDeployIds | index($deployId)) == null' \
               <<<"{}" >/dev/null
             if [[ "$(journal_service_phase)" == deploy_intent ]]; then
               jq -nc --arg deployId "$deploy_id" '{deployId:$deployId}' > "$work/journal-transition-evidence.json"
@@ -2083,11 +2102,11 @@ jobs:
             deploy_creation_evidence="$(
               jq -c \
                 --arg serviceId "$service_id" \
-                --argjson beforeDeployIds "$before_deploy_ids" \
+                --slurpfile beforeDeployIds <(printf '%s' "$before_deploy_ids") \
                 --arg deployId "$deploy_id" \
                 --arg intentAt "$deploy_intent_at" \
                 --argjson mutationExitStatus "$deploy_mutation_status" \
-                --argjson reconciled "$reconciled" '
+                --argjson reconciled "$reconciled" '$beforeDeployIds[0] as $beforeDeployIds |
                   . + [{
                     serviceId: $serviceId,
                     beforeDeployIds: $beforeDeployIds,
@@ -2114,14 +2133,15 @@ jobs:
                   render_inventory_api "$deployment_deadline" \
                     "https://api.render.com/v1/services/$service_id/deploys/$deploy_id"
                 )"
+                printf '%s' "$deploy_response" | node scripts/render-recovery-journal.mjs validate-json
                 observations="$(
                   jq -ce --arg serviceId "$service_id" \
                     "$recovery_deployment_inventory_filter" <<<"$deploy_response"
                 )"
                 observation="$(jq -ce 'if length == 1 then .[0] else error("recovery_exact_deploy_shape") end' <<<"$observations")"
                 deployment_observations="$(
-                  jq -c --argjson observation "$observation" \
-                    '. + [$observation]' <<<"$deployment_observations"
+                  jq -c --slurpfile observation <(printf '%s' "$observation") \
+                    '$observation[0] as $observation | . + [$observation]' <<<"$deployment_observations"
                 )"
                 if jq -e \
                   --arg serviceId "$service_id" \
@@ -2172,8 +2192,8 @@ jobs:
             and ([.[].deployId] | unique | length == 3)
           ' <<<"$deploy_bindings" >/dev/null
           jq -n --arg phase "target_deploys_created" --arg runId "$GITHUB_RUN_ID" \
-            --argjson deploys "$deploy_bindings" \
-            '{phase: $phase, runId: $runId, deploys: $deploys}' \
+            --slurpfile deploys <(printf '%s' "$deploy_bindings") \
+            '$deploys[0] as $deploys | {phase: $phase, runId: $runId, deploys: $deploys}' \
             > "$work/recovery-phase.json"
 
           online_deadline=$((SECONDS + 600))
@@ -2639,6 +2659,7 @@ jobs:
                 url="$url&cursor=$encoded_cursor"
               fi
               raw_page="$(render_inventory_api "$absolute_deadline" "$url")" || return 1
+              printf '%s' "$raw_page" | node scripts/render-recovery-journal.mjs validate-json || return 1
               entries="$(
                 jq -ce '
                   if type == "array" then .
@@ -2669,9 +2690,10 @@ jobs:
                 )" || return 1
               fi
               all_deployments="$(
-                jq -c --argjson page "$page_inventory" '. + $page' \
+                jq -c --slurpfile page <(printf '%s' "$page_inventory") '$page[0] as $page | . + $page' \
                   <<<"$all_deployments"
               )" || return 1
+              printf '%s' "$all_deployments" | node scripts/render-recovery-journal.mjs validate-json || return 1
               if (( entry_count < 100 )); then
                 break
               fi
@@ -2685,6 +2707,7 @@ jobs:
                   | select(type == "string" and length > 0)
                 ' <<<"$raw_page"
               )" || return 1
+              (( ${#next_cursor} <= 4096 )) || return 1
               if jq -e --arg cursor "$next_cursor" \
                 'index($cursor) != null' <<<"$seen_cursors" >/dev/null; then
                 echo "::error::Render deployment inventory repeated cursor for $service_id" >&2
@@ -2704,6 +2727,7 @@ jobs:
               render_inventory_api "$absolute_deadline" \
                 "https://api.render.com/v1/services/$service_id/deploys?limit=100"
             )" || return 1
+            printf '%s' "$raw_page" | node scripts/render-recovery-journal.mjs validate-json || return 1
             final_entries="$(
               jq -ce '
                 if type == "array" then .
@@ -2870,11 +2894,11 @@ jobs:
           assert_recovery_trusted_topology() {
             WORK="$work" node --input-type=module <<'NODE' || return 1
           import {readFileSync} from "node:fs";
-          import {recoveryProductionScope, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
+          import {recoveryProductionScope, recoveryRoles, recoveryTopologyAuthorityValid} from "./scripts/render-recovery-journal.mjs";
           const trusted = JSON.parse(readFileSync(`${process.env.WORK}/trusted-topology.json`, "utf8"));
           if (trusted.ownerId !== recoveryProductionScope.ownerId || trusted.environmentId !== recoveryProductionScope.environmentId ||
-            trusted.repository !== recoveryProductionScope.repository || !/^[1-9][0-9]*$/.test(trusted.sourceRunId) ||
-            !/^sha256:[a-f0-9]{64}$/.test(trusted.artifactDigest) ||
+            trusted.repository !== recoveryProductionScope.repository || !recoveryTopologyAuthorityValid(trusted, process.env.GITHUB_SHA) ||
+            process.env.TARGET_DB_ID !== trusted.targetDbId ||
             process.env.RENDER_OWNER_ID !== trusted.ownerId || process.env.RENDER_ENVIRONMENT_ID !== trusted.environmentId ||
             JSON.stringify(Object.keys(trusted.services ?? {}).sort()) !== JSON.stringify([...recoveryRoles].sort()) ||
             recoveryRoles.some(role => process.env[`${role.toUpperCase()}_SERVICE_ID`] !== trusted.services[role]?.id)) {
@@ -2946,16 +2970,13 @@ jobs:
           read_recovery_phase() {
             local service_id="$1" response
             response="$(render_inventory_api "$((SECONDS + 30))" "https://api.render.com/v1/services/$service_id/env-vars")" || return $?
-            RESPONSE="$response" node --input-type=module <<'NODE'
-          import { readRecoveryPhaseResponse } from "./scripts/render-recovery-journal.mjs";
-          process.stdout.write(JSON.stringify(readRecoveryPhaseResponse(process.env.RESPONSE)) + "\n");
-          NODE
+            printf '%s' "$response" | node scripts/render-recovery-journal.mjs read-phase
           }
           read_recovery_replicas() {
             local service_id observed replicas='[]'
             for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
               observed="$(read_recovery_phase "$service_id")" || return $?
-              replicas="$(jq -c --argjson state "$observed" '. + [$state]' <<<"$replicas")" || return $?
+              replicas="$(printf '%s\n%s\n' "$replicas" "$observed" | jq -cs '.[0] + [.[1]]')" || return $?
             done
             printf '%s\n' "$replicas"
           }
@@ -2975,6 +2996,7 @@ jobs:
           live_service_preflight='[]'
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
             deploys="$(render_api "https://api.render.com/v1/services/$service_id/deploys?limit=1")"
+            printf '%s' "$deploys" | node scripts/render-recovery-journal.mjs validate-json
             observation="$(
               jq -ce --arg serviceId "$service_id" '
                 (if type == "array" then .[0] else (.deploys[0] // .[0]) end)
@@ -2991,7 +3013,7 @@ jobs:
               ' <<<"$deploys"
             )"
             live_service_preflight="$(
-              jq -c --argjson observation "$observation" '. + [$observation]' \
+              jq -c --slurpfile observation <(printf '%s' "$observation") '$observation[0] as $observation | . + [$observation]' \
                 <<<"$live_service_preflight"
             )"
           done
@@ -3341,6 +3363,9 @@ jobs:
               .update(credential, "utf8")
               .digest("hex"),
           };
+          // Retained fleet history is save-only metadata, never process config.
+          // A valid journal can exceed the kernel's per-environment-entry limit.
+          delete operatorEnv.REVIEW_ROUTER_PG17_RECOVERY_PHASE;
           const preflight = spawnSync(
             "node",
             [
@@ -3561,8 +3586,8 @@ jobs:
             before_inventory="$(jq -ce --arg serviceId "$service_id" "$recovery_deployment_inventory_filter" <<<"$before_deploys")"
             jq -e --arg id "$before_deploy_id" \
               '[.[] | select(.statusClass == "active") | .deployId] == [$id]' <<<"$before_inventory" >/dev/null
-            jq -nc --argjson inventory "$before_inventory" --argjson epoch "$deploy_intent_epoch" \
-              '{beforeInventory:$inventory,intentEpoch:$epoch,intentDeadlineEpoch:($epoch+120)}' > "$work/registration-intent-$service_id.json"
+            jq -nc --slurpfile inventory <(printf '%s' "$before_inventory") --argjson epoch "$deploy_intent_epoch" \
+              '$inventory[0] as $inventory | {beforeInventory:$inventory,intentEpoch:$epoch,intentDeadlineEpoch:($epoch+120)}' > "$work/registration-intent-$service_id.json"
             assert_recovery_admission_closed
             set +e
             deploy="$(
@@ -3574,6 +3599,7 @@ jobs:
             set -e
             deploy_id=""
             if [[ "$deploy_mutation_status" -eq 0 ]]; then
+              printf '%s' "$deploy" | node scripts/render-recovery-journal.mjs validate-json
               deploy_id="$(
                 jq -r '
                   if type == "object" then (.id // .deploy.id // empty)
@@ -3600,16 +3626,16 @@ jobs:
                 recent_inventory="$(jq -ce --arg serviceId "$service_id" "$recovery_deployment_inventory_filter" <<<"$recent_deploys")"
                 observation_epoch="$(date -u +%s.%N)"
                 reconciliation_candidates="$(jq -ce --arg serviceId "$service_id" \
-                  --argjson beforeDeployIds "$before_deploy_ids" --argjson beforeInventory "$before_inventory" \
+                  --slurpfile beforeDeployIds <(printf '%s' "$before_deploy_ids") --slurpfile beforeInventory <(printf '%s' "$before_inventory") \
                   --arg releaseCommitSha "$RELEASE_COMMIT_SHA" --argjson intentEpoch "$deploy_intent_epoch" \
                   --argjson intentDeadlineEpoch "$((deploy_intent_epoch + 120))" --argjson observationEpoch "$observation_epoch" \
-                  "$recovery_reconciliation_filter" <<<"$recent_inventory")"
+                  "\$beforeDeployIds[0] as \$beforeDeployIds | \$beforeInventory[0] as \$beforeInventory | $recovery_reconciliation_filter" <<<"$recent_inventory")"
                 jq -n \
                   --arg serviceId "$service_id" \
                   --arg beforeDeployId "$before_deploy_id" \
                   --arg intentAt "$deploy_intent_at" \
                   --argjson mutationExitStatus "$deploy_mutation_status" \
-                  --argjson candidates "$reconciliation_candidates" '
+                  --slurpfile candidates <(printf '%s' "$reconciliation_candidates") '$candidates[0] as $candidates |
                     {
                       serviceId: $serviceId,
                       beforeDeployId: $beforeDeployId,
@@ -3660,11 +3686,11 @@ jobs:
               jq -c \
                 --arg serviceId "$service_id" \
                 --arg beforeDeployId "$before_deploy_id" \
-                --argjson beforeDeployIds "$before_deploy_ids" \
+                --slurpfile beforeDeployIds <(printf '%s' "$before_deploy_ids") \
                 --arg deployId "$deploy_id" \
                 --arg intentAt "$deploy_intent_at" \
                 --argjson mutationExitStatus "$deploy_mutation_status" \
-                --argjson reconciled "$reconciled" '
+                --argjson reconciled "$reconciled" '$beforeDeployIds[0] as $beforeDeployIds |
                   . + [{
                     serviceId: $serviceId,
                     beforeDeployId: $beforeDeployId,
@@ -3690,6 +3716,7 @@ jobs:
                 render_api \
                   "https://api.render.com/v1/services/$service_id/deploys/$deploy_id"
               )"
+              printf '%s' "$deploy" | node scripts/render-recovery-journal.mjs validate-json
               status="$(jq -er '(.deploy // .).status' <<<"$deploy")"
               observed_commit_sha="$(
                 jq -er '
@@ -3758,10 +3785,10 @@ jobs:
             deploy_intent_epoch="$(jq -er '.intentEpoch' "$work/registration-intent-$service_id.json")"
             intent_deadline_epoch="$(jq -er '.intentDeadlineEpoch' "$work/registration-intent-$service_id.json")"
             recent_inventory="$(jq -ce --arg serviceId "$service_id" "$recovery_deployment_inventory_filter" <<<"$latest_deploys")"
-            candidates="$(jq -ce --arg serviceId "$service_id" --argjson beforeInventory "$before_inventory" \
-              --argjson beforeDeployIds "$before_deploy_ids" --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
+            candidates="$(jq -ce --arg serviceId "$service_id" --slurpfile beforeInventory <(printf '%s' "$before_inventory") \
+              --slurpfile beforeDeployIds <(printf '%s' "$before_deploy_ids") --arg releaseCommitSha "$RELEASE_COMMIT_SHA" \
               --argjson intentEpoch "$deploy_intent_epoch" --argjson intentDeadlineEpoch "$intent_deadline_epoch" \
-              --argjson observationEpoch "$(date -u +%s.%N)" "$recovery_reconciliation_filter" <<<"$recent_inventory")"
+              --argjson observationEpoch "$(date -u +%s.%N)" "\$beforeInventory[0] as \$beforeInventory | \$beforeDeployIds[0] as \$beforeDeployIds | $recovery_reconciliation_filter" <<<"$recent_inventory")"
             jq -e --arg id "$expected_deploy_id" 'length == 1 and .[0].deployId == $id' <<<"$candidates" >/dev/null
             jq -e --arg id "$expected_deploy_id" \
               '[.[] | select(.statusClass == "active") | .deployId] == [$id]' <<<"$recent_inventory" >/dev/null
@@ -3784,8 +3811,8 @@ jobs:
               ' <<<"$latest_deploys"
             )"
             current_deployments="$(
-              jq -c --argjson observation "$current_deployment" \
-                '. + [$observation]' <<<"$current_deployments"
+              jq -c --slurpfile observation <(printf '%s' "$current_deployment") \
+                '$observation[0] as $observation | . + [$observation]' <<<"$current_deployments"
             )"
             printf '%s\n' "$current_deployments" \
               > "$work/current-deployment-result.json"

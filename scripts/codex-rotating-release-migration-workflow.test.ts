@@ -29,6 +29,9 @@ import {
   recoveryRestartAction,
   recoveryRoles,
   recoveryProductionScope,
+  recoveryBootstrapBoundary,
+  recoveryBootstrapTopology,
+  parseRecoveryReplicaResponse,
   planWorkerEffectFence,
   workerEffectFenceSql,
   workerFenceSnapshotSql,
@@ -1725,7 +1728,7 @@ render_inventory_api() {
   fi
 }
 jq() {
-  if [[ "$SCENARIO" == construction-failure && "$*" == *"--argjson exact"* ]]; then return 23; fi
+  if [[ "$SCENARIO" == construction-failure && "$*" == *"--slurpfile exact"* ]]; then return 23; fi
   command jq "$@"
 }
 set -e
@@ -2384,7 +2387,7 @@ describe("retained Render recovery journal", () => {
           state = advanceRecoveryService(state, role, "verified", {
             inventory: [
               {
-                ...inventory(role)[0],
+                ...inventory(role)[0]!,
                 deployId: `dep-target-${role}`,
                 observedCommitSha: releaseCommitSha,
                 createdAt: "2026-09-05T01:00:01Z",
@@ -2541,6 +2544,7 @@ describe("retained Render recovery journal", () => {
           JSON.stringify({
             ...recoveryProductionScope,
             sourceRunId: "123",
+            targetDbId: "dpg-target",
             artifactDigest: `sha256:${"a".repeat(64)}`,
             services: Object.fromEntries(
               recoveryRoles.map((role) => [role, { id: `srv-${role}` }]),
@@ -2745,6 +2749,7 @@ ${bash}`,
           JSON.stringify({
             ...recoveryProductionScope,
             sourceRunId: "123",
+            targetDbId: "dpg-target",
             artifactDigest: `sha256:${"a".repeat(64)}`,
             services: Object.fromEntries(
               recoveryRoles.map((role) => [role, { id: `srv-${role}` }]),
@@ -3549,6 +3554,7 @@ ${tail}
       .join("\n");
     const script = `set -euo pipefail
 work="$1"
+touch "$work/calls"
 crash="$2"
 lost="$3"
 GITHUB_RUN_ID=123
@@ -3578,7 +3584,7 @@ render_deploy_mutation() {
   printf 'deploy:%s\\n' "$id" >> "$work/calls"
   date -u +%Y-%m-%dT%H:%M:%SZ > "$work/$id.deployed"
   [[ "$lost" != true ]] || return 28
-  exact_response "$id"
+  if [[ -f "$work/raw-post.json" ]]; then cat "$work/raw-post.json"; else exact_response "$id"; fi
 }
 exact_response() {
   local id="$1"
@@ -3592,10 +3598,10 @@ render_inventory_api() {
 fetch_recovery_deployment_inventory() {
   local id="$1" previous observed defect
   defect="$(cat "$work/inventory-defect" 2>/dev/null || true)"
-  previous="$(jq -nc --arg id "$id" '[{serviceId:$id,deployId:("dep-old-"+($id|ltrimstr("srv-"))),statusClass:"active",observedStatus:"live",deploymentIdentityKind:"git",observedCommitSha:"${"b".repeat(40)}",observedImageDigest:null,createdAt:"2026-09-05T00:00:00Z"}]')"
+  previous="$(jq -c --arg role "\${id#srv-}" '.services[$role].beforeInventory' "$work/recovery-journal.json")"
   if [[ -f "$work/$id.deployed" ]]; then
-    observed="$(jq -nc --arg id "$id" --arg sha "$RELEASE_COMMIT_SHA" --arg created "$(cat "$work/$id.deployed")" --argjson previous "$previous" \\
-      '[{serviceId:$id,deployId:("dep-target-"+$id),statusClass:"active",observedStatus:"live",deploymentIdentityKind:"git",observedCommitSha:$sha,observedImageDigest:null,createdAt:$created}]+($previous|map(.statusClass="terminal"|.observedStatus="deactivated"))')"
+    observed="$(jq -nc --arg id "$id" --arg sha "$RELEASE_COMMIT_SHA" --arg created "$(cat "$work/$id.deployed")" --slurpfile previous <(printf '%s' "$previous") \\
+      '$previous[0] as $previous | [{serviceId:$id,deployId:("dep-target-"+$id),statusClass:"active",observedStatus:"live",deploymentIdentityKind:"git",observedCommitSha:$sha,observedImageDigest:null,createdAt:$created}]+($previous|map(.statusClass="terminal"|.observedStatus="deactivated"))')"
     case "$defect" in
       missing_history) observed="$(jq -c '.[0:1]' <<<"$observed")" ;;
       changed_history) observed="$(jq -c '.[1].observedCommitSha="${"d".repeat(40)}"' <<<"$observed")" ;;
@@ -3619,6 +3625,7 @@ persist_recovery_journal() {
   printf 'persist:%s\\n' "$checkpoint" >> "$work/calls"
   [[ "$checkpoint" != "$crash" ]] || exit 97
 }
+${extractRecoveryBashFunction("assert_recovery_retained_inventories")}
 ${extractRecoveryBashFunction("journal_service_phase")}
 ${extractRecoveryBashFunction("advance_recovery_service")}
 ${extractRecoveryBashFunction("observe_bound_recovery_deployment")}
@@ -3843,6 +3850,393 @@ ${activation}
     },
     30000,
   );
+  // Exercise admission and the actual first service-loop iteration in one
+  // process. Controls reach the provider stub; defects must reach neither
+  // resume nor deploy, including drift in services later in the fleet.
+  const retainedCheckpoints = ["prepared", ...serviceCheckpoints];
+  it.each(
+    retainedCheckpoints.flatMap((checkpoint) =>
+      ["none", "queued", "build_in_progress", "configuration"].flatMap(
+        (defect) =>
+          ["startup", "before_resume"].map((boundary) => ({
+            checkpoint,
+            defect,
+            boundary,
+          })),
+      ),
+    ),
+  )(
+    "rejects $defect at $boundary across startup and service loop from $checkpoint",
+    ({ checkpoint, defect, boundary }) => {
+      const work = mkdtempSync(join(tmpdir(), "recovery-integrated-retained-"));
+      try {
+        const fixture = startupCase("prepared");
+        let state = fixture.state;
+        const observed = structuredClone(inventories);
+        if (checkpoint !== "prepared") {
+          const [stopRole, stopPhase] = checkpoint.split(":");
+          activation: for (const role of recoveryRoles) {
+            for (const phase of [
+              "resume_intent",
+              "resumed",
+              "deploy_intent",
+              "deploy_bound",
+              "verified",
+            ]) {
+              state = advanceRecoveryService(state, role, phase, {
+                inventory:
+                  phase === "verified" ? observed[role] : inventories[role],
+                intentEpoch: epoch,
+                deployId: `dep-target-${role}`,
+              });
+              if (phase === "deploy_bound")
+                observed[role] = [
+                  {
+                    ...inventory(role)[0]!,
+                    deployId: `dep-target-${role}`,
+                    observedCommitSha: releaseCommitSha,
+                    createdAt: "2026-09-05T01:00:01Z",
+                  },
+                  ...inventory(role).map((item) => ({
+                    ...item,
+                    statusClass: "terminal",
+                    observedStatus: "deactivated",
+                  })),
+                ];
+              if (role === stopRole && phase === stopPhase) break activation;
+            }
+          }
+        }
+        const driftRole =
+          checkpoint === "prepared" ? "web" : checkpoint.split(":")[0]!;
+        writeFileSync(
+          join(work, "recovery-resume-state.json"),
+          JSON.stringify([state, state, state]),
+        );
+        for (const role of recoveryRoles) {
+          const env = JSON.stringify(fixture.environment);
+          const history = JSON.stringify(observed[role]);
+          writeFileSync(join(work, `initial-srv-${role}-env.json`), env);
+          writeFileSync(
+            join(work, `initial-srv-${role}-inventory.json`),
+            history,
+          );
+          writeFileSync(join(work, `loop-srv-${role}-env.json`), env);
+          writeFileSync(join(work, `loop-srv-${role}-inventory.json`), history);
+        }
+        const prefix = boundary === "startup" ? "initial" : "loop";
+        if (defect === "configuration")
+          writeFileSync(
+            join(work, `${prefix}-srv-${driftRole}-env.json`),
+            JSON.stringify([
+              ...fixture.environment,
+              { key: "DRIFT", value: "true" },
+            ]),
+          );
+        else if (defect !== "none")
+          writeFileSync(
+            join(work, `${prefix}-srv-${driftRole}-inventory.json`),
+            JSON.stringify([
+              ...observed[driftRole]!,
+              {
+                ...inventory(driftRole)[0],
+                deployId: "dep-unrelated",
+                observedStatus: defect,
+                statusClass: "active",
+              },
+            ]),
+          );
+        const loopStart = recover.indexOf(
+          '          for service_id in "$API_SERVICE_ID"',
+          recover.indexOf("          deploy_bindings='[]'"),
+        );
+        const loopEnd = recover.indexOf(
+          "            resume_deadline=",
+          loopStart,
+        );
+        expect(loopStart).toBeGreaterThan(0);
+        const loop =
+          recover.slice(loopStart, loopEnd).replace(/^ {10}/gmu, "") +
+          "\ndone\n";
+        const result = spawnSync(
+          "bash",
+          [
+            "-c",
+            `set -euo pipefail
+work="$WORK"
+node --input-type=module <<'NODE'
+${startupScript}
+NODE
+render_inventory_api() { local id="\${2%/env-vars}"; cat "$work/loop-\${id##*/}-env.json"; }
+fetch_recovery_deployment_inventory() { cat "$work/loop-$1-inventory.json"; }
+persist_recovery_journal() { :; }
+assert_recovery_service_suspended() { :; }
+assert_recovery_maintenance() { :; }
+assert_recovery_admission_closed() { :; }
+assert_worker_effect_fenced() { :; }
+render_deploy_mutation() { printf '%s\\n' "$*" >> "$work/effects"; exit 87; }
+${extractRecoveryBashFunction("assert_recovery_config_unchanged")}
+${extractRecoveryBashFunction("assert_recovery_retained_inventories")}
+${extractRecoveryBashFunction("journal_service_phase")}
+${extractRecoveryBashFunction("advance_recovery_service")}
+${loop}`,
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              ...subprocessEnv,
+              WORK: work,
+              API_SERVICE_ID: "srv-api",
+              WORKER_SERVICE_ID: "srv-worker",
+              WEB_SERVICE_ID: "srv-web",
+              TARGET_DB_ID: tuple.targetDbId,
+              RENDER_OWNER_ID: tuple.ownerId,
+              RENDER_ENVIRONMENT_ID: tuple.environmentId,
+              RELEASE_COMMIT_SHA: releaseCommitSha,
+              GITHUB_RUN_ID: "new-run",
+            },
+            timeout: 15000,
+          },
+        );
+        expect(result.status, result.stderr).toBe(defect === "none" ? 87 : 1);
+        expect(existsSync(join(work, "effects"))).toBe(defect === "none");
+        if (defect !== "none")
+          expect(result.stderr).toMatch(
+            /recovery_(?:retained_configuration_drift|configuration_drift|unexpected_preintent_history|deployment_unrelated_history|reconciliation_candidate)/,
+          );
+        else
+          expect(readFileSync(join(work, "effects"), "utf8")).toContain(
+            "/resume",
+          );
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([150, 400])(
+    "reopens and resumes a real retained fleet with %i history records per service",
+    (count) => {
+      const work = mkdtempSync(join(tmpdir(), "recovery-large-resume-"));
+      try {
+        const fixture = startupCase("prepared");
+        const environment = fixture.environment;
+        const state = loadRecoveryJournal(fixture.state, fixture.state.tuple);
+        for (const role of recoveryRoles)
+          state.services[role].beforeInventory = Array.from(
+            { length: count },
+            (_, index) => ({
+              ...inventory(role)[0]!,
+              deployId:
+                index === 0
+                  ? `dep-old-${role}`
+                  : `dep-history-${role}-${index}`,
+              observedStatus: index === 0 ? "live" : "deactivated",
+              statusClass: index === 0 ? "active" : "terminal",
+            }),
+          );
+        const raw = JSON.stringify([
+          ...environment,
+          { key: recoveryJournalKey, value: JSON.stringify(state) },
+        ]);
+        expect(Buffer.byteLength(raw)).toBeGreaterThan(128 * 1024);
+        expect(Buffer.byteLength(raw)).toBeLessThan(1024 * 1024);
+        writeFileSync(join(work, "response.json"), raw);
+        for (const role of recoveryRoles) {
+          writeFileSync(
+            join(work, `initial-srv-${role}-env.json`),
+            JSON.stringify(environment),
+          );
+          writeFileSync(
+            join(work, `initial-srv-${role}-inventory.json`),
+            JSON.stringify(state.services[role].beforeInventory),
+          );
+        }
+        const reopened = spawnSync(
+          "bash",
+          [
+            "-c",
+            `set -euo pipefail
+work="$WORK"
+render_inventory_api() { cat "$work/response.json"; }
+${extractRecoveryBashFunction("read_recovery_phase")}
+${extractRecoveryBashFunction("read_recovery_replicas")}
+read_recovery_replicas > "$work/recovery-resume-state.json"
+node --input-type=module <<'NODE'
+${startupScript}
+NODE
+`,
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              ...subprocessEnv,
+              WORK: work,
+              API_SERVICE_ID: "srv-api",
+              WORKER_SERVICE_ID: "srv-worker",
+              WEB_SERVICE_ID: "srv-web",
+              TARGET_DB_ID: tuple.targetDbId,
+              RENDER_OWNER_ID: tuple.ownerId,
+              RENDER_ENVIRONMENT_ID: tuple.environmentId,
+              RELEASE_COMMIT_SHA: releaseCommitSha,
+              GITHUB_RUN_ID: "new-run",
+            },
+            timeout: 20000,
+          },
+        );
+        expect(reopened.status, reopened.stderr).toBe(0);
+        expect(
+          parseRecoveryReplicaResponse(
+            readFileSync(join(work, "recovery-resume-state.json"), "utf8"),
+          ),
+        ).toEqual([state, state, state]);
+        const first = runActivation(work, "api:deploy_intent");
+        expect(first.status, first.stderr).toBe(97);
+        // The lost POST response is discovered from exact retained history.
+        const pending = JSON.parse(
+          readFileSync(join(work, "recovery-journal.json"), "utf8"),
+        );
+        writeFileSync(
+          join(work, "srv-api.deployed"),
+          new Date(pending.services.api.intentEpoch * 1000).toISOString(),
+        );
+        const resumed = runActivation(work, "");
+        expect(resumed.status, resumed.stderr).toBe(0);
+        const final = loadRecoveryJournal(
+          readFileSync(join(work, "recovery-journal.json"), "utf8"),
+          state.tuple,
+        );
+        expect(
+          recoveryRoles.every(
+            (role) => final.services[role].phase === "verified",
+          ),
+        ).toBe(true);
+        expect(readFileSync(join(work, "calls"), "utf8")).not.toContain(
+          "deploy:srv-api",
+        );
+        for (const source of [recover, registerRelease]) {
+          // The transport accepts its exact 1 MiB bound, rejects the next byte,
+          // and exercises both production readers with real large journal data.
+          const response = JSON.stringify([
+            ...environment,
+            { key: recoveryJournalKey, value: JSON.stringify(final) },
+          ]);
+          expect(Buffer.byteLength(response)).toBeLessThan(1024 * 1024);
+          for (const extra of [0, 1]) {
+            writeFileSync(
+              join(work, "response.json"),
+              response +
+                " ".repeat(1024 * 1024 - Buffer.byteLength(response) + extra),
+            );
+            const read = spawnSync(
+              "bash",
+              [
+                "-c",
+                `set -euo pipefail
+render_inventory_api() { cat "$WORK/response.json"; }
+${extractRecoveryBashFunction("read_recovery_phase", source)}
+read_recovery_phase srv-api`,
+              ],
+              {
+                env: { ...subprocessEnv, WORK: work },
+                encoding: "utf8",
+                maxBuffer: 4 * 1024 * 1024,
+              },
+            );
+            expect(read.status === 0, read.stderr).toBe(extra === 0);
+            if (!extra) expect(JSON.parse(read.stdout)).toEqual(final);
+            else {
+              expect(read.stderr).toContain("recovery_json_size");
+              expect(read.stdout).toBe("");
+            }
+          }
+        }
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    },
+    60000,
+  );
+
+  it.each(["literal", "escaped", "nested"])(
+    "rejects %s duplicate members in recovery deployment POST before adoption",
+    (defect) => {
+      const work = mkdtempSync(join(tmpdir(), "recovery-raw-post-"));
+      try {
+        writeFileSync(
+          join(work, "recovery-journal.json"),
+          JSON.stringify(prepared()),
+        );
+        const raw = rawDeploymentDuplicate(defect);
+        writeFileSync(join(work, "raw-post.json"), raw);
+        const result = runActivation(work, "");
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("recovery_json_duplicate_member");
+        expect(
+          readFileSync(join(work, "calls"), "utf8")
+            .split("\n")
+            .filter((line) => line.startsWith("deploy:")),
+        ).toEqual(["deploy:srv-api"]);
+        expect(
+          JSON.parse(readFileSync(join(work, "recovery-journal.json"), "utf8"))
+            .services.api.phase,
+        ).toBe("deploy_intent");
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    },
+  );
+  it("executes the complete credential-staging preparation heredoc", () => {
+    const work = mkdtempSync(join(tmpdir(), "recovery-staged-preparation-"));
+    try {
+      const { state }: { state: ReturnType<typeof attachRecoveryPreparation> } =
+        startupCase("prepared");
+      writeFileSync(
+        join(work, "recovery-config-fingerprints.json"),
+        JSON.stringify(state.runtimeConfigFingerprints),
+      );
+      writeFileSync(
+        join(work, "worker-effect-fence.json"),
+        JSON.stringify(state.workerFence),
+      );
+      const frozen = { ...state, phase: "frozen" };
+      delete frozen.runtimeConfigFingerprints;
+      delete frozen.workerFence;
+      writeFileSync(
+        join(work, "recovery-journal.json"),
+        JSON.stringify(frozen),
+      );
+      const marker = recover.indexOf(
+        "          import {parseRecoveryJson, attachRecoveryPreparation}",
+      );
+      const start = recover.lastIndexOf(
+        '          WORK="$work" node --input-type=module',
+        marker,
+      );
+      const end =
+        recover.indexOf("\n          NODE", marker) + "\n          NODE".length;
+      expect(marker).toBeGreaterThan(start);
+      expect(start).toBeGreaterThan(0);
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -euo pipefail\nwork="$WORK"\n${recover.slice(start, end).replace(/^ {10}/gmu, "")}`,
+        ],
+        { encoding: "utf8", env: { ...subprocessEnv, WORK: work } },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(
+        JSON.parse(readFileSync(join(work, "recovery-journal.json"), "utf8")),
+      ).toMatchObject({
+        phase: "prepared",
+        workerFence: state.workerFence,
+        runtimeConfigFingerprints: state.runtimeConfigFingerprints,
+      });
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("staged credential readback boundary", () => {
@@ -4779,6 +5173,7 @@ describe("authenticated topology and revalidation in actual workflow Bash", () =
         JSON.stringify({
           ...recoveryProductionScope,
           sourceRunId: "123",
+          targetDbId: "dpg-target",
           artifactDigest: `sha256:${"a".repeat(64)}`,
           services: Object.fromEntries(
             recoveryRoles.map((role) => [role, { id: `srv-${role}` }]),
@@ -5001,6 +5396,7 @@ describe("existing release topology authority", () => {
         const manifest = {
           recoveryRunId: "123",
           targetVersion: 17,
+          targetDbId: "dpg-target",
           releaseCommitSha: sha,
           resumedServices: recoveryRoles.map((role) => ({
             role,
@@ -5026,6 +5422,7 @@ describe("existing release topology authority", () => {
         const fixture = {
           run: {
             id: 123,
+            workflow_id: 7,
             head_sha: sha,
             head_branch: "main",
             run_attempt: 1,
@@ -5037,18 +5434,24 @@ describe("existing release topology authority", () => {
             head_repository: { id: defect === "wrong_run" ? 99 : 42 },
           },
           jobs: {
-            total_count: defect === "torn_inventory" ? 4 : 3,
+            total_count: defect === "torn_inventory" ? 5 : 4,
             jobs: [
               "Verify protected main dispatch",
               "Verify exact recovery release evidence",
               "Complete restored PG17 cutover",
+              "Register verified Review Action release",
             ].map((name) => ({
               name,
               head_sha: sha,
               run_id: 123,
               run_attempt: 1,
               status: "completed",
-              conclusion: defect === "failed_job" ? "failure" : "success",
+              conclusion:
+                defect === "failed_job"
+                  ? "failure"
+                  : name === "Register verified Review Action release"
+                    ? "skipped"
+                    : "success",
             })),
           },
           artifact: {
@@ -5070,7 +5473,10 @@ globalThis.fetch=async url => {
  let body;
  if(url.endsWith("/zip")) return {ok:true,url:"https://api.github.com/test-archive",arrayBuffer:async()=>readFileSync(process.env.RUNNER_TEMP+"/archive.zip")};
  if(url.endsWith("/review-router-saas")) body={id:42,full_name:"777genius/review-router-saas"};
- else if(url.includes("/workflows/")) body={workflow_runs:[fixture.run]};
+ else if(url.endsWith("/branches/main")) body={protected:true,commit:{sha:fixture.run.head_sha}};
+ else if(url.endsWith("/environments/production-release")) body=${JSON.stringify(topologyEnvironmentPolicy())};
+ else if(url.includes("/workflows/") && !url.includes("/runs?")) body={id:7,path:fixture.run.path,state:"active"};
+ else if(url.includes("/runs?")) body={total_count:1,workflow_runs:[fixture.run]};
  else if(url.includes("/jobs?")) body=fixture.jobs;
  else if(url.includes("/artifacts?")) {const artifacts=${defect === "duplicate_artifact" ? "[fixture.artifact,fixture.artifact]" : "[fixture.artifact]"}; body={total_count:artifacts.length,artifacts};}
  else throw new Error("unmocked network forbidden:"+url);
@@ -5097,6 +5503,7 @@ ${program}`,
               RUNNER_TEMP: root,
               GH_TOKEN: "test-only",
               TRUSTED_MAIN_SHA: sha,
+              ...topologyDispatchIdentity(sha),
             },
             timeout: 15000,
           },
@@ -5117,6 +5524,7 @@ ${program}`,
               web: { id: "srv-web" },
             },
             sourceRunId: "123",
+            targetDbId: "dpg-target",
             artifactDigest: digest,
           });
       } finally {
@@ -5294,6 +5702,9 @@ describe("registration deployment uses the same authoritative reconciliation", (
       "extra_terminal",
       "after_window",
       "competing_active",
+      "raw_literal",
+      "raw_escaped",
+      "raw_nested",
     ].flatMap((defect) => [false, true].map((lost) => ({ defect, lost }))),
   )(
     "executes registration creation with $defect and lost=$lost",
@@ -5309,6 +5720,11 @@ describe("registration deployment uses the same authoritative reconciliation", (
             })),
           ),
         );
+        if (defect.startsWith("raw_"))
+          writeFileSync(
+            join(work, "raw-post.json"),
+            rawDeploymentDuplicate(defect.slice(4)),
+          );
         const start = registerRelease.indexOf("          deploys='[]'");
         const end = registerRelease.indexOf(
           "          deadline=$((SECONDS + 900))",
@@ -5345,6 +5761,7 @@ render_deploy_mutation() {
   created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   [[ "$defect" != after_window ]] || created="$(date -u -d "@$((deploy_intent_epoch+121))" +%Y-%m-%dT%H:%M:%SZ)"
   printf '%s' "$created" > "$work/$id.created"
+  if [[ -f "$work/raw-post.json" ]]; then cat "$work/raw-post.json"; return 0; fi
   [[ "$lost" != true ]] || return 28
   jq -nc --arg id "dep-target-\${id#srv-}" --arg sha "$RELEASE_COMMIT_SHA" '{id:$id,status:"live",commit:{id:$sha}}'
 }
@@ -5365,6 +5782,8 @@ ${registerRelease.slice(start, end).replace(/^ {10}/gmu, "")}
           },
         );
         expect(result.status === 0, result.stderr).toBe(defect === "none");
+        if (defect.startsWith("raw_"))
+          expect(result.stderr).toContain("recovery_json_duplicate_member");
         if (defect === "competing_active")
           expect(existsSync(join(work, "calls"))).toBe(false);
         else
@@ -5560,6 +5979,7 @@ describe("r36 immutable compensation authority despite configuration drift", () 
         const trusted = {
           ...recoveryProductionScope,
           sourceRunId: "123",
+          targetDbId: "dpg-target",
           artifactDigest: `sha256:${"a".repeat(64)}`,
           services: Object.fromEntries(
             recoveryRoles.map((role) => [role, { id: `srv-${role}` }]),
@@ -5886,5 +6306,759 @@ printf '%s' "$replicas"
     expect(extractRecoveryBashFunction("read_recovery_phase", recover)).toBe(
       extractRecoveryBashFunction("read_recovery_phase", registerRelease),
     );
+  });
+});
+
+function rawDeploymentDuplicate(defect: string) {
+  const good = JSON.stringify({
+    id: "dep-target",
+    status: "live",
+    createdAt: "2026-09-05T01:00:01Z",
+    commit: { id: releaseCommitSha },
+  });
+  if (defect === "none") return good;
+  if (defect === "literal")
+    return good.replace('"status":"live"', '"status":"failed","status":"live"');
+  if (defect === "escaped")
+    return good.replace(
+      '"id":"dep-target"',
+      '"id":"dep-wrong","i\\u0064":"dep-target"',
+    );
+  return good.replace(
+    '"commit":{"id":',
+    '"commit":{"id":"' + "b".repeat(40) + '","i\\u0064":',
+  );
+}
+
+describe("raw deployment response transport", () => {
+  it.each(
+    [recover, registerRelease].flatMap((source, operation) =>
+      ["none", "literal", "escaped", "nested"].flatMap((defect) =>
+        ["first_page", "final_page"].map((boundary) => ({
+          source,
+          operation,
+          defect,
+          boundary,
+        })),
+      ),
+    ),
+  )(
+    "validates raw $operation $boundary bytes before normalization: $defect",
+    ({ source, defect, boundary }) => {
+      const work = mkdtempSync(join(tmpdir(), "recovery-raw-history-"));
+      try {
+        writeFileSync(
+          join(work, "valid.json"),
+          `[${rawDeploymentDuplicate("none")}]`,
+        );
+        writeFileSync(
+          join(work, "ambiguous.json"),
+          `[${rawDeploymentDuplicate(defect)}]`,
+        );
+        const result = spawnSync(
+          "bash",
+          [
+            "-c",
+            `set -euo pipefail
+work="$1"
+render_inventory_api() {
+  if [[ -f "$work/read" ]]; then cat "$work/${boundary === "final_page" ? "ambiguous" : "valid"}.json";
+  else touch "$work/read"; cat "$work/${boundary === "first_page" ? "ambiguous" : "valid"}.json"; fi
+}
+${extractRecoveryBashFunction("fetch_recovery_deployment_inventory", source)}
+observed="$(fetch_recovery_deployment_inventory srv-api 999)"
+printf '%s' "$observed"`,
+            "bash",
+            work,
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              ...subprocessEnv,
+              recovery_deployment_inventory_filter:
+                recoveryDeploymentInventoryFilter,
+            },
+            timeout: 10000,
+          },
+        );
+        expect(result.status === 0, result.stderr).toBe(defect === "none");
+        if (defect !== "none") {
+          expect(result.stderr).toContain("recovery_json_duplicate_member");
+          expect(result.stdout).toBe("");
+        } else
+          expect(JSON.parse(result.stdout)[0].observedCommitSha).toBe(
+            releaseCommitSha,
+          );
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+function topologyEnvironmentPolicy() {
+  return {
+    name: "production-release",
+    protection_rules: [
+      {
+        type: "required_reviewers",
+        prevent_self_review: true,
+        reviewers: [{ type: "User", reviewer: { id: 1 } }],
+      },
+    ],
+    deployment_branch_policy: {
+      protected_branches: true,
+      custom_branch_policies: false,
+    },
+  };
+}
+function topologyDispatchIdentity(sha: string) {
+  return {
+    GITHUB_REPOSITORY: String(recoveryProductionScope.repository),
+    GITHUB_EVENT_NAME: "workflow_dispatch",
+    GITHUB_REF: "refs/heads/main",
+    GITHUB_SHA: sha,
+    GITHUB_WORKFLOW_SHA: sha,
+    GITHUB_WORKFLOW_REF: `${recoveryProductionScope.repository}/.github/workflows/codex-rotating-release-migration.yml@refs/heads/main`,
+  };
+}
+
+// Real git ancestry and source bytes, with the actual checked-in parent workflow
+// (three jobs, recovery skipped for registration). No fabricated recovery at 421.
+// Only HTTP is stubbed; any unanticipated endpoint rejects without networking.
+function topologySourceFixture(work: string) {
+  const git = (...args: string[]) => {
+    const result = spawnSync("git", args, {
+      cwd: work,
+      encoding: "utf8",
+      env: {
+        ...subprocessEnv,
+        GIT_AUTHOR_NAME: "Offline fixture",
+        GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+        GIT_COMMITTER_NAME: "Offline fixture",
+        GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+      },
+    });
+    if (result.status !== 0) throw new Error(result.stderr);
+    return result.stdout.trim();
+  };
+  git("init", "--quiet");
+  const objects = spawnSync(
+    "git",
+    ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
+    { encoding: "utf8" },
+  ).stdout.trim();
+  writeFileSync(join(work, ".git/objects/info/alternates"), objects + "\n");
+  const base = "14f8e5668cafc271c406d8eebf0446ae21a8dbad";
+  git("read-tree", base);
+  for (const file of [
+    "scripts/render-recovery-journal.mjs",
+    "scripts/lib/github-actions-trusted-evidence.mjs",
+    ".github/workflows/codex-rotating-release-migration.yml",
+  ]) {
+    mkdirSync(join(work, file.slice(0, file.lastIndexOf("/"))), {
+      recursive: true,
+    });
+    writeFileSync(join(work, file), readFileSync(file));
+    git("add", file);
+  }
+  const head = git(
+    "commit-tree",
+    git("write-tree"),
+    "-p",
+    base,
+    "-m",
+    "test: exact offline bootstrap source",
+  );
+  git("update-ref", "HEAD", head);
+  return { head, git };
+}
+
+describe("protected main first recovery bootstrap with real historical workflow", () => {
+  it.each([
+    "no_history",
+    "parent_registration",
+    "older_registration",
+    "new_registration",
+    "paginated_registration",
+    "new_receipt",
+    "receipt_after_parent",
+    "receipt_on_second_page",
+    "bootstrap_replay",
+    "wrong_commit",
+    "missing_job",
+    "extra_job",
+    "failed_job",
+    "skipped_trust",
+    "wrong_job_attempt",
+    "wrong_job_head",
+    "wrong_job_run",
+    "untrusted_version",
+    "ancestry_mismatch",
+    "stale_boundary",
+    "replay_parent",
+    "historical_success",
+    "candidate_missing_gate",
+    "candidate_failed_gate",
+    "historical_extra_gate",
+    "failed_recovery",
+    "wrong_repository",
+    "wrong_event",
+    "wrong_branch",
+    "wrong_workflow",
+    "wrong_path",
+    "wrong_conclusion",
+    "wrong_run_id",
+    "wrong_attempt",
+    "wrong_dispatch_repository",
+    "wrong_dispatch_event",
+    "wrong_dispatch_ref",
+    "wrong_dispatch_sha",
+    "wrong_workflow_ref",
+    "wrong_workflow_sha",
+    "unprotected_main",
+    "stale_main",
+    "wrong_environment",
+    "no_reviewers",
+    "self_review",
+    "custom_branches",
+    "unprotected_branches",
+    "duplicate_review_rule",
+    "source_helper_drift",
+    "source_workflow_drift",
+    "source_checkout_drift",
+    "truncated_history",
+    "duplicate_run",
+    "history_over_limit",
+    "workflow_disabled",
+    "wrong_workflow_path",
+    "artifact_id",
+    "artifact_run",
+    "artifact_digest",
+    "archive_bytes",
+    "missing_artifact",
+    "expired_artifact",
+    "duplicate_artifact",
+    "manifest_run",
+    "manifest_revision",
+    "manifest_target",
+    "manifest_ancestry",
+    "raw_manifest_duplicate",
+  ])("authenticates source/receipt without fallback: %s", (defect) => {
+    const work = mkdtempSync(join(tmpdir(), "recovery-source-bootstrap-"));
+    try {
+      const { head, git } = topologySourceFixture(work);
+      const parent = recoveryBootstrapBoundary.headSha;
+      const path = ".github/workflows/codex-rotating-release-migration.yml";
+      const historicalWorkflow = git("show", `${parent}:${path}`);
+      const historicalJobs = [
+        ...historicalWorkflow.matchAll(/^ {4}name: (.+)$/gmu),
+      ].map((match) => match[1]!);
+      expect(historicalJobs).toEqual([
+        "Verify protected main dispatch",
+        "Complete restored PG17 cutover",
+        "Register verified Review Action release",
+      ]);
+      expect(historicalWorkflow).not.toContain(
+        "Verify exact recovery release evidence",
+      );
+      expect(git("rev-parse", `${parent}:${path}`)).toBe(
+        recoveryBootstrapBoundary.workflowBlob,
+      );
+      const candidateJobs = [...workflow.matchAll(/^ {4}name: (.+)$/gmu)].map(
+        (match) => match[1]!,
+      );
+      const run = (id: number, sha: string, recovery = false) => ({
+        id,
+        run_attempt: 1,
+        workflow_id: 7,
+        path,
+        head_sha: sha,
+        head_branch: "main",
+        event: "workflow_dispatch",
+        status: "completed",
+        conclusion: "success",
+        repository: { id: 42 },
+        head_repository: { id: 42 },
+        jobs: (sha === parent ? historicalJobs : candidateJobs).map((name) => ({
+          name,
+          head_sha: sha,
+          run_id: id,
+          run_attempt: 1,
+          status: "completed",
+          conclusion:
+            name ===
+            (recovery
+              ? "Register verified Review Action release"
+              : "Complete restored PG17 cutover")
+              ? "skipped"
+              : "success",
+        })),
+      });
+      const receiptDefects = [
+        "new_receipt",
+        "receipt_after_parent",
+        "receipt_on_second_page",
+        "bootstrap_replay",
+        "candidate_missing_gate",
+        "candidate_failed_gate",
+        "artifact_id",
+        "artifact_run",
+        "artifact_digest",
+        "archive_bytes",
+        "missing_artifact",
+        "expired_artifact",
+        "duplicate_artifact",
+        "manifest_run",
+        "manifest_revision",
+        "manifest_target",
+        "manifest_ancestry",
+        "raw_manifest_duplicate",
+      ];
+      const receipt = run(200, head, true);
+      let runs = receiptDefects.includes(defect)
+        ? [receipt]
+        : [run(123, parent)];
+      if (["receipt_after_parent", "bootstrap_replay"].includes(defect))
+        runs.unshift(run(300, parent));
+      if (defect === "no_history") runs = [];
+      if (defect === "new_registration") runs = [run(123, head)];
+      if (["paginated_registration", "receipt_on_second_page"].includes(defect))
+        runs = [
+          ...Array.from({ length: 100 }, (_, i) => run(i + 301, parent)),
+          ...(defect === "receipt_on_second_page"
+            ? [receipt]
+            : [run(123, parent)]),
+        ];
+      if (defect === "older_registration") {
+        const older = git("rev-parse", `${parent}^2`);
+        expect(git("rev-parse", `${older}:${path}`)).toBe(
+          recoveryBootstrapBoundary.workflowBlob,
+        );
+        runs = [run(123, parent)];
+        runs[0]!.head_sha = older;
+        for (const job of runs[0]!.jobs) job.head_sha = older;
+      }
+      const first = runs[0];
+      if (defect === "wrong_commit") first!.head_sha = head;
+      if (defect === "missing_job") first!.jobs.shift();
+      if (defect === "extra_job")
+        first!.jobs.push({ ...first!.jobs[0]!, name: "Extra job" });
+      if (defect === "failed_job") first!.jobs[0]!.conclusion = "failure";
+      if (defect === "skipped_trust") first!.jobs[0]!.conclusion = "skipped";
+      if (defect === "wrong_job_attempt") first!.jobs[0]!.run_attempt = 2;
+      if (defect === "wrong_job_run") first!.jobs[0]!.run_id = 124;
+      if (defect === "wrong_job_head") first!.jobs[0]!.head_sha = head;
+      if (defect === "untrusted_version") {
+        writeFileSync(
+          join(work, path),
+          workflow.replace(
+            "    name: Verify exact recovery release evidence",
+            "    name: Untrusted version",
+          ),
+        );
+        git("add", path);
+        first!.head_sha = git(
+          "commit-tree",
+          git("write-tree"),
+          "-p",
+          parent,
+          "-m",
+          "test: untrusted workflow",
+        );
+        git("update-ref", "HEAD", first!.head_sha);
+      }
+      if (defect === "historical_success") runs = [run(123, parent, true)];
+      if (defect === "failed_recovery") first!.jobs[1]!.conclusion = "failure";
+      if (defect === "historical_extra_gate")
+        first!.jobs.push({
+          ...first!.jobs[0]!,
+          name: "Verify exact recovery release evidence",
+        });
+      if (defect === "candidate_missing_gate") receipt.jobs.splice(1, 1);
+      if (defect === "candidate_failed_gate")
+        receipt.jobs[1]!.conclusion = "failure";
+      if (defect === "wrong_repository") first!.head_repository.id = 99;
+      if (defect === "wrong_event") first!.event = "push";
+      if (defect === "wrong_branch") first!.head_branch = "feature";
+      if (defect === "wrong_workflow") first!.workflow_id = 8;
+      if (defect === "wrong_path") first!.path = "other.yml";
+      if (defect === "wrong_conclusion") first!.conclusion = "failure";
+      if (defect === "wrong_run_id") first!.id = 0;
+      if (defect === "wrong_attempt") first!.run_attempt = 0;
+      let consumer = head;
+      if (defect === "untrusted_version") consumer = first!.head_sha;
+      if (defect === "ancestry_mismatch")
+        consumer = git(
+          "commit-tree",
+          git("write-tree"),
+          "-p",
+          parent,
+          "-m",
+          "test: unrelated branch",
+        );
+      if (defect === "ancestry_mismatch") runs = [run(123, head)];
+      if (defect === "stale_boundary")
+        consumer = git("rev-parse", `${parent}^1`);
+      if (defect === "replay_parent") consumer = parent;
+      const identity = topologyDispatchIdentity(consumer);
+      if (defect === "wrong_dispatch_repository")
+        identity.GITHUB_REPOSITORY = "untrusted/repo";
+      if (defect === "wrong_dispatch_event")
+        identity.GITHUB_EVENT_NAME = "pull_request";
+      if (defect === "wrong_dispatch_ref")
+        identity.GITHUB_REF = "refs/heads/feature";
+      if (defect === "wrong_dispatch_sha") identity.GITHUB_SHA = parent;
+      if (defect === "wrong_workflow_ref")
+        identity.GITHUB_WORKFLOW_REF = identity.GITHUB_WORKFLOW_REF.replace(
+          "@refs/heads/main",
+          "@refs/heads/feature",
+        );
+      if (defect === "wrong_workflow_sha")
+        identity.GITHUB_WORKFLOW_SHA = parent;
+      const branch = {
+        protected: defect !== "unprotected_main",
+        commit: { sha: defect === "stale_main" ? parent : consumer },
+      };
+      const policy = topologyEnvironmentPolicy();
+      if (defect === "wrong_environment") policy.name = "staging";
+      if (defect === "no_reviewers") policy.protection_rules[0]!.reviewers = [];
+      if (defect === "self_review")
+        policy.protection_rules[0]!.prevent_self_review = false;
+      if (defect === "custom_branches")
+        policy.deployment_branch_policy.custom_branch_policies = true;
+      if (defect === "unprotected_branches")
+        policy.deployment_branch_policy.protected_branches = false;
+      if (defect === "duplicate_review_rule")
+        policy.protection_rules.push({ ...policy.protection_rules[0]! });
+      if (defect === "source_helper_drift")
+        writeFileSync(
+          join(work, "scripts/render-recovery-journal.mjs"),
+          readFileSync(
+            join(work, "scripts/render-recovery-journal.mjs"),
+            "utf8",
+          ) + "\n// drift\n",
+        );
+      if (defect === "source_workflow_drift")
+        writeFileSync(join(work, path), workflow + "\n# drift\n");
+      if (defect === "source_checkout_drift") git("update-ref", "HEAD", parent);
+      if (defect === "duplicate_run") runs.push({ ...first! });
+      const manifest = {
+        recoveryRunId: defect === "manifest_run" ? "999" : "200",
+        targetVersion: 17,
+        targetDbId: defect === "manifest_target" ? "" : "dpg-from-receipt",
+        releaseCommitSha:
+          defect === "manifest_ancestry" ? "e".repeat(40) : head,
+        resumedServices: recoveryRoles.map((role) => ({
+          role,
+          serviceId: `srv-new-${role}`,
+          suspended: "not_suspended",
+          type: role === "worker" ? "background_worker" : "web_service",
+        })),
+        serviceRevisions: recoveryRoles.map((role) => ({
+          serviceId: `srv-new-${role}`,
+          observedCommitSha: defect === "manifest_revision" ? parent : head,
+          deploymentIdentityKind: "git",
+          observedImageDigest: null,
+          observedStatus: "live",
+        })),
+      };
+      let manifestBytes = JSON.stringify(manifest);
+      if (defect === "raw_manifest_duplicate")
+        manifestBytes = manifestBytes.replace(
+          '"targetVersion":17',
+          '"targetVersion":16,"targetVersion":17',
+        );
+      const archive = recoveryFixtureZip(
+        "recovery-manifest.json",
+        Buffer.from(manifestBytes),
+      );
+      const digest = `sha256:${createHash("sha256").update(archive).digest("hex")}`;
+      const artifact = {
+        id: defect === "artifact_id" ? 0 : 456,
+        name: "reviewrouter-pg17-recovery-200",
+        workflow_run: { id: defect === "artifact_run" ? 999 : 200 },
+        expired: defect === "expired_artifact",
+        digest:
+          defect === "artifact_digest" ? `sha256:${"0".repeat(64)}` : digest,
+      };
+      writeFileSync(
+        join(work, "archive.zip"),
+        defect === "archive_bytes"
+          ? Buffer.concat([archive, Buffer.from("tampered")])
+          : archive,
+      );
+      writeFileSync(
+        join(work, "fixture.json"),
+        JSON.stringify({ runs, branch, policy, artifact, defect, path }),
+      );
+      writeFileSync(
+        join(work, "mock.mjs"),
+        `
+import {readFileSync,appendFileSync} from 'node:fs';
+const f=JSON.parse(readFileSync('fixture.json','utf8'));
+globalThis.fetch=async url=>{
+ appendFileSync('reads',url+'\\n');
+ if(url.endsWith('/zip'))return {ok:true,url:'https://api.github.com/archive',arrayBuffer:async()=>readFileSync('archive.zip')};
+ let body;
+ if(url.endsWith('/review-router-saas'))body={id:42,full_name:'777genius/review-router-saas'};
+ else if(url.endsWith('/branches/main'))body=f.branch;
+ else if(url.endsWith('/environments/production-release'))body=f.policy;
+ else if(url.includes('/runs?')){const page=Number(new URL(url).searchParams.get('page'));body={total_count:f.defect==='history_over_limit'?1001:f.runs.length+(f.defect==='truncated_history'?1:0),workflow_runs:f.runs.slice((page-1)*100,page*100)};}
+ else if(url.includes('/workflows/'))body={id:7,path:f.defect==='wrong_workflow_path'?'other.yml':f.path,state:f.defect==='workflow_disabled'?'disabled':'active'};
+ else if(url.includes('/jobs?')){const run=f.runs.find(r=>url.includes('/runs/'+r.id+'/'));if(!run)throw new Error('missing fixture');body={total_count:run.jobs.length,jobs:run.jobs};}
+ else if(url.includes('/artifacts?')){const artifacts=f.defect==='missing_artifact'?[]:f.defect==='duplicate_artifact'?[f.artifact,f.artifact]:[f.artifact];body={total_count:artifacts.length,artifacts};}
+ else throw new Error('unmocked network forbidden:'+url);
+ return {ok:true,json:async()=>body};
+};`,
+      );
+      const result = spawnSync(
+        process.execPath,
+        ["--import", join(work, "mock.mjs"), "--input-type=module"],
+        {
+          cwd: work,
+          encoding: "utf8",
+          env: { ...subprocessEnv, ...identity, CONSUMER: consumer },
+          timeout: 20000,
+          input: `import {authenticateRecoveryTopology} from './scripts/render-recovery-journal.mjs';process.stdout.write(JSON.stringify(await authenticateRecoveryTopology('test-only',process.env.CONSUMER)));`,
+        },
+      );
+      const bootstrap = [
+        "no_history",
+        "parent_registration",
+        "older_registration",
+        "new_registration",
+        "paginated_registration",
+      ].includes(defect);
+      const newReceipt = [
+        "new_receipt",
+        "receipt_after_parent",
+        "receipt_on_second_page",
+        "bootstrap_replay",
+      ].includes(defect);
+      expect(result.status === 0, result.stderr).toBe(bootstrap || newReceipt);
+      expect(result.stderr).not.toContain("unmocked network");
+      if (bootstrap)
+        expect(JSON.parse(result.stdout)).toEqual({
+          ...recoveryBootstrapTopology,
+          sourceKind: "protected_main_bootstrap",
+          sourceSha: consumer,
+          boundarySha: parent,
+          environment: "production-release",
+        });
+      else if (newReceipt) {
+        const topology = JSON.parse(result.stdout);
+        expect(topology).toEqual({
+          ...recoveryProductionScope,
+          targetDbId: "dpg-from-receipt",
+          services: Object.fromEntries(
+            recoveryRoles.map((role) => [role, { id: `srv-new-${role}` }]),
+          ),
+          sourceRunId: "200",
+          artifactDigest: digest,
+        });
+        expect(topology.sourceKind).toBeUndefined();
+      } else expect(result.stdout).toBe("");
+      if (defect === "candidate_missing_gate")
+        expect(result.stderr).toContain("recovery_topology_job_set");
+      if (defect === "historical_success")
+        expect(result.stderr).toContain(
+          "recovery_topology_unaccepted_historical_receipt",
+        );
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  it.each(
+    [recover, registerRelease].flatMap((source, operation) =>
+      [
+        "none",
+        "owner",
+        "environment",
+        "database",
+        "api",
+        "worker",
+        "web",
+        "boundary",
+        "source",
+        "policy",
+        "kind",
+      ].map((defect) => ({ source, operation, defect })),
+    ),
+  )(
+    "binds exact source bootstrap topology before provider effects in operation $operation: $defect",
+    ({ source, defect }) => {
+      const work = mkdtempSync(join(tmpdir(), "recovery-bootstrap-target-"));
+      try {
+        const sha = "a".repeat(40);
+        const topology: any = {
+          ...structuredClone(recoveryBootstrapTopology),
+          sourceKind: "protected_main_bootstrap",
+          sourceSha: sha,
+          boundarySha: recoveryBootstrapBoundary.headSha,
+          environment: "production-release",
+        };
+        if (defect === "owner") topology.ownerId = "tea-other";
+        if (defect === "environment") topology.environmentId = "evm-other";
+        if (defect === "database") topology.targetDbId = "dpg-other";
+        if (["api", "worker", "web"].includes(defect))
+          topology.services[defect].id = "srv-other";
+        if (defect === "boundary") topology.boundarySha = "b".repeat(40);
+        if (defect === "source") topology.sourceSha = "b".repeat(40);
+        if (defect === "policy") topology.environment = "staging";
+        if (defect === "kind") topology.sourceKind = "secret_bootstrap";
+        writeFileSync(
+          join(work, "trusted-topology.json"),
+          JSON.stringify(topology),
+        );
+        const result = spawnSync(
+          "bash",
+          [
+            "-c",
+            `set -euo pipefail
+work="$WORK"
+${extractRecoveryBashFunction("assert_recovery_trusted_topology", source)}
+assert_recovery_trusted_topology
+printf effect > "$work/effect"`,
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              ...subprocessEnv,
+              WORK: work,
+              GITHUB_SHA: sha,
+              TARGET_DB_ID: topology.targetDbId,
+              RENDER_OWNER_ID: topology.ownerId,
+              RENDER_ENVIRONMENT_ID: topology.environmentId,
+              API_SERVICE_ID: topology.services.api.id,
+              WORKER_SERVICE_ID: topology.services.worker.id,
+              WEB_SERVICE_ID: topology.services.web.id,
+            },
+          },
+        );
+        expect(result.status === 0, result.stderr).toBe(defect === "none");
+        expect(existsSync(join(work, "effect"))).toBe(defect === "none");
+        if (defect !== "none")
+          expect(result.stderr).toContain("recovery_untrusted_topology");
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+describe("raw exact deployment polling in both operations", () => {
+  it.each(
+    [recover, registerRelease].flatMap((source, operation) =>
+      ["none", "literal", "escaped", "nested"].map((defect) => ({
+        source,
+        operation,
+        defect,
+      })),
+    ),
+  )(
+    "validates exact GET before jq in operation $operation: $defect",
+    ({ source, operation, defect }) => {
+      const work = mkdtempSync(join(tmpdir(), "recovery-raw-exact-"));
+      try {
+        const marker = source.indexOf(
+          operation === 0
+            ? "            deployment_deadline="
+            : "          deadline=$((SECONDS + 900))",
+        );
+        const start = source.indexOf(
+          operation === 0
+            ? '                deploy_response="$('
+            : '              deploy="$(',
+          marker,
+        );
+        const end = source.indexOf(
+          operation === 0
+            ? '                observation="$('
+            : '              statuses="$(',
+          start,
+        );
+        expect(marker).toBeGreaterThan(0);
+        expect(start).toBeGreaterThan(marker);
+        expect(end).toBeGreaterThan(start);
+        writeFileSync(join(work, "raw.json"), rawDeploymentDuplicate(defect));
+        const result = spawnSync(
+          "bash",
+          [
+            "-c",
+            `set -euo pipefail
+service_id=srv-api
+deploy_id=dep-target
+deployment_deadline=999
+render_inventory_api() { cat "$WORK/raw.json"; }
+render_api() { cat "$WORK/raw.json"; }
+${source.slice(start, end).replace(/^ {10}/gmu, "")}
+printf accepted`,
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              ...subprocessEnv,
+              WORK: work,
+              recovery_deployment_inventory_filter:
+                recoveryDeploymentInventoryFilter,
+            },
+          },
+        );
+        expect(result.status === 0, result.stderr).toBe(defect === "none");
+        expect(result.stdout).toBe(defect === "none" ? "accepted" : "");
+        if (defect !== "none")
+          expect(result.stderr).toContain("recovery_json_duplicate_member");
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+describe("registration operator process environment", () => {
+  it("excludes a retained 1 MiB journal from every operator invocation", () => {
+    const work = mkdtempSync(
+      join(tmpdir(), "registration-large-operator-env-"),
+    );
+    try {
+      const start = registerRelease.indexOf("          const operatorEnv = {");
+      const end = registerRelease.indexOf(
+        "          const preflight = spawnSync(",
+        start,
+      );
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const raw = JSON.stringify({ history: "a".repeat(1024 * 1024 - 14) });
+      expect(Buffer.byteLength(raw)).toBe(1024 * 1024);
+      writeFileSync(
+        join(work, "env.json"),
+        JSON.stringify({
+          REVIEW_ROUTER_PG17_RECOVERY_PHASE: raw,
+          RUNTIME_FLAG: "preserved",
+        }),
+      );
+      const result = spawnSync(process.execPath, ["--input-type=module"], {
+        encoding: "utf8",
+        env: { ...subprocessEnv, WORK: work },
+        input: `
+import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
+const apiEnv=JSON.parse(readFileSync(process.env.WORK+'/env.json','utf8'));
+const credential='test-only';
+const databaseUrl=new URL('postgres://test-only@localhost/test');
+${registerRelease.slice(start, end).replace(/^ {10}/gmu, "")}
+const child=spawnSync(process.execPath,['-e', 'if(process.env.REVIEW_ROUTER_PG17_RECOVERY_PHASE!==undefined || process.env.RUNTIME_FLAG!=="preserved") process.exit(1); process.stdout.write("started");'],{env:operatorEnv,encoding:'utf8'});
+if(child.error)throw child.error;
+if(child.status!==0)throw new Error(child.stderr);
+process.stdout.write(child.stdout);`,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe("started");
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
   });
 });

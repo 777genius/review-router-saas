@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { readFileSync, readSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 export const recoveryJournalKey = "REVIEW_ROUTER_PG17_RECOVERY_PHASE";
 export const recoveryRoles = Object.freeze(["api", "worker", "web"]);
@@ -41,8 +43,12 @@ const sha = (value) =>
 // Each object has its own decoded-key set, including escaped-equivalent keys.
 // Bound input, recursion and total values independently of the supplied shape.
 export function parseRecoveryJson(raw) {
+  return parseBoundedRecoveryJson(raw, 1024 * 1024, 100000);
+}
+
+function parseBoundedRecoveryJson(raw, maxBytes, maxValues) {
   fail(
-    typeof raw === "string" && Buffer.byteLength(raw, "utf8") <= 1024 * 1024,
+    typeof raw === "string" && Buffer.byteLength(raw, "utf8") <= maxBytes,
     "json_size",
   );
   const parse = (input) => {
@@ -69,7 +75,7 @@ export function parseRecoveryJson(raw) {
     throw new Error("recovery_json_syntax");
   };
   const value = (depth) => {
-    fail(depth <= 64 && ++values <= 100000, "json_complexity");
+    fail(depth <= 64 && ++values <= maxValues, "json_complexity");
     whitespace();
     const char = raw[offset];
     if (char === "{" || char === "[") {
@@ -114,6 +120,36 @@ export function parseRecoveryJson(raw) {
   fail(offset === raw.length, "json_syntax");
   // Native parsing validates string escapes, literals and number grammar.
   return parse(raw);
+}
+
+// Replicas repeat the same bounded journal three times. The transport envelope
+// has its own bound; it never enlarges the authority accepted for one journal.
+export function parseRecoveryReplicaResponse(raw) {
+  const replicas = parseBoundedRecoveryJson(raw, 3 * 1024 * 1024 + 64, 300004);
+  fail(Array.isArray(replicas) && replicas.length === 3, "replica_count");
+  return replicas.map((value) => parseRecoveryJson(JSON.stringify(value)));
+}
+
+// Read one bounded response from stdin before parsing. No response is placed in
+// argv/environment, and temporary byte buffers are cleared even on rejection.
+export function readRecoveryJsonInput() {
+  const bytes = Buffer.alloc(1024 * 1024 + 1);
+  let used = 0;
+  try {
+    while (used < bytes.length) {
+      const count = readSync(0, bytes, used, bytes.length - used, null);
+      if (count === 0) break;
+      used += count;
+    }
+    fail(used <= 1024 * 1024, "json_size");
+    const raw = new globalThis.TextDecoder("utf-8", { fatal: true }).decode(
+      bytes.subarray(0, used),
+    );
+    parseRecoveryJson(raw);
+    return raw;
+  } finally {
+    bytes.fill(0);
+  }
 }
 
 // Only save-only journal metadata is excluded. Every runtime key, including
@@ -856,6 +892,52 @@ export function assertRecoveryPreEffectInventory(journal, role, inventory) {
   );
 }
 
+// Admission at every retained checkpoint precedes resuming any predecessor.
+// A retained POST intent permits observation only, including zero candidates;
+// changed history, competing jobs, and effects outside its window reject.
+export function assertRecoveryRetainedInventory(journal, role, inventory) {
+  const state = loadRecoveryJournal(journal, journal.tuple);
+  fail(recoveryRoles.includes(role), "retained_role");
+  const service = state.services[role];
+  if (["pending", "resume_intent", "resumed"].includes(service.phase))
+    return assertRecoveryPreEffectInventory(state, role, inventory);
+  if (["deploy_bound", "verified"].includes(service.phase))
+    return assertRecoveryDeploymentInventory(
+      state,
+      role,
+      inventory,
+      service.phase !== "verified",
+    );
+  validateInventory(inventory, state.tuple.services[role].id);
+  const beforeIds = new Set(
+    service.deployBeforeInventory.map((item) => item.deployId),
+  );
+  const additions = inventory.filter((item) => !beforeIds.has(item.deployId));
+  if (additions.length === 0) {
+    return assertRecoveryPreEffectInventory(
+      {
+        ...state,
+        services: {
+          ...state.services,
+          [role]: {
+            ...service,
+            beforeInventory: service.deployBeforeInventory,
+          },
+        },
+      },
+      role,
+      inventory,
+    );
+  }
+  const bound = reconcileRecoveryDeploy(
+    state,
+    role,
+    inventory,
+    service.intentDeadlineEpoch,
+  );
+  return assertRecoveryDeploymentInventory(bound, role, inventory, true);
+}
+
 // Production identity is anchored in the checked-in workspace/environment and
 // the latest successful, protected-main recovery receipt, never dispatch IDs.
 export const recoveryProductionScope = Object.freeze({
@@ -864,11 +946,69 @@ export const recoveryProductionScope = Object.freeze({
   repository: "777genius/review-router-saas",
 });
 
+// First recovery has no historical receipt. This reviewed, source-controlled
+// tuple is the sole bootstrap authority; dispatch inputs and repository secrets
+// cannot replace it. Historical registration runs establish absence only.
+export const recoveryBootstrapBoundary = Object.freeze({
+  headSha: "42134d9b8c263915340f910786b6826824bf30b5",
+  workflowBlob: "351255c5592d58460f3c58b1bf38ff87428a0d11",
+});
+export const recoveryBootstrapTopology = Object.freeze({
+  ...recoveryProductionScope,
+  targetDbId: "dpg-da32ipmk1f9s73dttm90-a",
+  services: Object.freeze({
+    api: Object.freeze({ id: "srv-d7s6hgbeo5us73djlp00" }),
+    worker: Object.freeze({ id: "srv-d7s6hhjeo5us73djlqn0" }),
+    web: Object.freeze({ id: "srv-d7s6hf3eo5us73djlndg" }),
+  }),
+});
+
+// The local authority file preserves the distinction between source bootstrap
+// and an immutable Actions receipt. Never fabricate a historical artifact ID.
+export function recoveryTopologyAuthorityValid(topology, sourceSha) {
+  if (topology.sourceKind === "protected_main_bootstrap") {
+    return (
+      sha(sourceSha) &&
+      equal(topology, {
+        ...recoveryBootstrapTopology,
+        sourceKind: "protected_main_bootstrap",
+        sourceSha,
+        boundarySha: recoveryBootstrapBoundary.headSha,
+        environment: "production-release",
+      })
+    );
+  }
+  return (
+    topology.sourceKind === undefined &&
+    /^[1-9][0-9]*$/.test(topology.sourceRunId) &&
+    /^sha256:[a-f0-9]{64}$/.test(topology.artifactDigest)
+  );
+}
+
 export async function authenticateRecoveryTopology(token, trustedMainSha) {
   const { execFileSync } = await import("node:child_process");
-  const { readExactZipEntries } =
+  const { readExactZipEntries, gitBlobSha } =
     await import("./lib/github-actions-trusted-evidence.mjs");
-  fail(/^[a-f0-9]{40}$/.test(trustedMainSha), "topology_trusted_main");
+  const path = ".github/workflows/codex-rotating-release-migration.yml";
+  const git = (...args) =>
+    execFileSync("git", args, { encoding: "utf8", stdio: "pipe" }).trim();
+  fail(sha(trustedMainSha), "topology_trusted_main");
+  git(
+    "merge-base",
+    "--is-ancestor",
+    recoveryBootstrapBoundary.headSha,
+    trustedMainSha,
+  );
+  fail(
+    process.env.GITHUB_REPOSITORY === recoveryProductionScope.repository &&
+      process.env.GITHUB_EVENT_NAME === "workflow_dispatch" &&
+      process.env.GITHUB_REF === "refs/heads/main" &&
+      process.env.GITHUB_SHA === trustedMainSha &&
+      process.env.GITHUB_WORKFLOW_SHA === trustedMainSha &&
+      process.env.GITHUB_WORKFLOW_REF ===
+        `${recoveryProductionScope.repository}/${path}@refs/heads/main`,
+    "topology_dispatch_identity",
+  );
   const prefix = `https://api.github.com/repos/${recoveryProductionScope.repository}`;
   const get = async (path) => {
     const response = await globalThis.fetch(`${prefix}${path}`, {
@@ -884,35 +1024,120 @@ export async function authenticateRecoveryTopology(token, trustedMainSha) {
   };
   const repository = await get("");
   fail(
-    repository.full_name === recoveryProductionScope.repository,
+    repository.full_name === recoveryProductionScope.repository &&
+      Number.isSafeInteger(repository.id) &&
+      repository.id > 0,
     "topology_repository",
   );
-  const path = ".github/workflows/codex-rotating-release-migration.yml";
-  const listing = await get(
-    "/actions/workflows/codex-rotating-release-migration.yml/runs?branch=main&status=success&per_page=100",
+  const branch = await get("/branches/main");
+  fail(
+    branch.protected === true && branch.commit?.sha === trustedMainSha,
+    "topology_protected_main",
+  );
+  const environment = await get("/environments/production-release");
+  const reviewers = environment.protection_rules?.filter(
+    (rule) => rule.type === "required_reviewers",
   );
   fail(
-    Array.isArray(listing.workflow_runs) && listing.workflow_runs.length > 0,
-    "topology_history_missing",
+    environment.name === "production-release" &&
+      reviewers?.length === 1 &&
+      Array.isArray(reviewers[0].reviewers) &&
+      reviewers[0].reviewers.length > 0 &&
+      reviewers[0].prevent_self_review === true &&
+      environment.deployment_branch_policy?.protected_branches === true &&
+      environment.deployment_branch_policy?.custom_branch_policies === false,
+    "topology_environment_policy",
   );
-  // API ordering is newest first. Never skip a broken recovery receipt to adopt
-  // older IDs; skipped registration-only runs cannot confer recovery authority.
-  for (const run of listing.workflow_runs) {
+
+  // Prove absence over the complete bounded history, not just its first page.
+  // A truncated/changed listing is never permission to bootstrap. Inspect all
+  // successful runs before selecting the newest recovery, irrespective of order.
+  const runs = [];
+  let total;
+  for (let page = 1; page <= 10; page++) {
+    const listing = await get(
+      `/actions/workflows/codex-rotating-release-migration.yml/runs?branch=main&status=success&per_page=100&page=${page}`,
+    );
+    total ??= listing.total_count;
+    fail(
+      Number.isSafeInteger(total) &&
+        total >= 0 &&
+        total <= 1000 &&
+        listing.total_count === total &&
+        Array.isArray(listing.workflow_runs) &&
+        listing.workflow_runs.length === Math.min(100, total - runs.length),
+      "topology_run_inventory",
+    );
+    runs.push(...listing.workflow_runs);
+    if (runs.length === total) break;
+  }
+  fail(
+    runs.length === total &&
+      new Set(runs.map((run) => run.id)).size === runs.length,
+    "topology_run_inventory",
+  );
+  const workflow = await get(
+    "/actions/workflows/codex-rotating-release-migration.yml",
+  );
+  fail(
+    Number.isSafeInteger(workflow.id) &&
+      workflow.id > 0 &&
+      workflow.path === path &&
+      workflow.state === "active",
+    "topology_workflow_identity",
+  );
+  const receipts = [];
+  for (const run of runs) {
     fail(
       run.path === path &&
+        run.workflow_id === workflow.id &&
+        Number.isSafeInteger(run.id) &&
+        run.id > 0 &&
+        Number.isSafeInteger(run.run_attempt) &&
+        run.run_attempt > 0 &&
         run.head_branch === "main" &&
         run.event === "workflow_dispatch" &&
         run.status === "completed" &&
         run.conclusion === "success" &&
         run.repository?.id === repository.id &&
         run.head_repository?.id === repository.id &&
-        /^[a-f0-9]{40}$/.test(run.head_sha),
+        sha(run.head_sha),
       "topology_run_identity",
     );
-    execFileSync(
-      "git",
-      ["merge-base", "--is-ancestor", run.head_sha, trustedMainSha],
-      { stdio: "pipe" },
+    git("merge-base", "--is-ancestor", run.head_sha, trustedMainSha);
+    const blob = git("rev-parse", `${run.head_sha}:${path}`);
+    const historical = blob === recoveryBootstrapBoundary.workflowBlob;
+    if (historical)
+      git(
+        "merge-base",
+        "--is-ancestor",
+        run.head_sha,
+        recoveryBootstrapBoundary.headSha,
+      );
+    else {
+      fail(
+        run.head_sha !== recoveryBootstrapBoundary.headSha,
+        "topology_workflow_version",
+      );
+      git(
+        "merge-base",
+        "--is-ancestor",
+        recoveryBootstrapBoundary.headSha,
+        run.head_sha,
+      );
+    }
+    const requiredNames = [
+      "Verify protected main dispatch",
+      ...(!historical ? ["Verify exact recovery release evidence"] : []),
+      "Complete restored PG17 cutover",
+      "Register verified Review Action release",
+    ];
+    const sourceNames = [
+      ...git("show", `${run.head_sha}:${path}`).matchAll(/^ {4}name: (.+)$/gm),
+    ].map((match) => match[1]);
+    fail(
+      equal(sourceNames.sort(), [...requiredNames].sort()),
+      "topology_workflow_version",
     );
     const jobs = await get(
       `/actions/runs/${run.id}/jobs?filter=latest&per_page=100`,
@@ -923,27 +1148,37 @@ export async function authenticateRecoveryTopology(token, trustedMainSha) {
         jobs.total_count <= 100,
       "topology_job_inventory",
     );
-    const recovery = jobs.jobs.filter(
+    fail(
+      equal(jobs.jobs.map((job) => job.name).sort(), [...requiredNames].sort()),
+      "topology_job_set",
+    );
+    const recovery = jobs.jobs.find(
       (job) => job.name === "Complete restored PG17 cutover",
     );
-    fail(recovery.length === 1, "topology_recovery_job");
-    if (recovery[0].conclusion === "skipped") continue;
-    for (const name of [
-      "Verify protected main dispatch",
-      "Verify exact recovery release evidence",
-      "Complete restored PG17 cutover",
-    ]) {
-      const matching = jobs.jobs.filter((job) => job.name === name);
+    for (const job of jobs.jobs) {
+      const skipped =
+        job.name ===
+        (recovery.conclusion === "skipped"
+          ? "Complete restored PG17 cutover"
+          : "Register verified Review Action release");
       fail(
-        matching.length === 1 &&
-          matching[0].conclusion === "success" &&
-          matching[0].status === "completed" &&
-          matching[0].head_sha === run.head_sha &&
-          matching[0].run_id === run.id &&
-          matching[0].run_attempt === run.run_attempt,
+        job.conclusion === (skipped ? "skipped" : "success") &&
+          job.status === "completed" &&
+          job.head_sha === run.head_sha &&
+          job.run_id === run.id &&
+          job.run_attempt === run.run_attempt,
         "topology_trusted_job",
       );
     }
+    if (recovery.conclusion === "skipped") continue;
+    // There is no accepted historical recovery artifact at this boundary.
+    // An alleged historical success blocks bootstrap; it cannot confer authority.
+    fail(!historical, "topology_unaccepted_historical_receipt");
+    receipts.push(run);
+  }
+  // Even an expired/missing/malformed newest receipt must fail below, with no
+  // catch/fallback. Once recovery has succeeded, source bootstrap is unusable.
+  for (const run of receipts.sort((a, b) => b.id - a.id)) {
     const artifacts = await get(
       `/actions/runs/${run.id}/artifacts?per_page=100`,
     );
@@ -959,7 +1194,9 @@ export async function authenticateRecoveryTopology(token, trustedMainSha) {
     fail(matching.length === 1, "topology_receipt_ambiguous");
     const artifact = matching[0];
     fail(
-      artifact.expired === false &&
+      Number.isSafeInteger(artifact.id) &&
+        artifact.id > 0 &&
+        artifact.expired === false &&
         artifact.workflow_run?.id === run.id &&
         /^sha256:[a-f0-9]{64}$/.test(artifact.digest),
       "topology_receipt_identity",
@@ -990,12 +1227,18 @@ export async function authenticateRecoveryTopology(token, trustedMainSha) {
     );
     const bytes = readExactZipEntries(archive).get("recovery-manifest.json");
     fail(bytes, "topology_receipt_missing");
-    const manifest = JSON.parse(bytes.toString("utf8"));
+    const manifest = parseRecoveryJson(bytes.toString("utf8"));
     fail(
       String(manifest.recoveryRunId) === String(run.id) &&
         manifest.targetVersion === 17 &&
+        /^dpg-[a-z0-9-]+$/.test(manifest.targetDbId) &&
         /^[a-f0-9]{40}$/.test(manifest.releaseCommitSha),
       "topology_manifest_identity",
+    );
+    execFileSync(
+      "git",
+      ["merge-base", "--is-ancestor", manifest.releaseCommitSha, run.head_sha],
+      { stdio: "pipe" },
     );
     const services = {};
     fail(
@@ -1036,9 +1279,40 @@ export async function authenticateRecoveryTopology(token, trustedMainSha) {
     return {
       ...recoveryProductionScope,
       services,
+      targetDbId: manifest.targetDbId,
       sourceRunId: String(run.id),
       artifactDigest: artifact.digest,
     };
   }
-  throw new Error("recovery_topology_history_missing");
+  // Source must be exactly the protected dispatch commit. In particular an
+  // older release checkout, edited helper, or replay at the parent cannot use
+  // the bootstrap tuple. This is checked only after ruling out every receipt.
+  fail(
+    trustedMainSha !== recoveryBootstrapBoundary.headSha &&
+      git("rev-parse", "HEAD") === trustedMainSha &&
+      git(
+        "rev-parse",
+        `${trustedMainSha}:scripts/render-recovery-journal.mjs`,
+      ) === gitBlobSha(readFileSync(new URL(import.meta.url))) &&
+      git("rev-parse", `${trustedMainSha}:${path}`) ===
+        gitBlobSha(readFileSync(path)),
+    "topology_bootstrap_source",
+  );
+  return {
+    ...recoveryBootstrapTopology,
+    sourceKind: "protected_main_bootstrap",
+    sourceSha: trustedMainSha,
+    boundarySha: recoveryBootstrapBoundary.headSha,
+    environment: "production-release",
+  };
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  const raw = readRecoveryJsonInput();
+  if (process.argv[2] === "read-phase")
+    process.stdout.write(JSON.stringify(readRecoveryPhaseResponse(raw)) + "\n");
+  else fail(process.argv[2] === "validate-json", "command");
 }
