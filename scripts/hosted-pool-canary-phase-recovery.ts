@@ -26,6 +26,11 @@ const targetType = "hosted_codex_canary_phase_recovery";
 const actor = "operator:production-canary";
 const preparedAction = "hosted_codex_canary_phase_prepared";
 const reconciledAction = "hosted_codex_canary_phase_reconciled";
+// Prisma 7 defaults interactive transactions to 5s. Allow 30s for this
+// sequential metadata graph, including receipt-only observation after an
+// uncertain commit. Keep its default 2s acquisition bound for the one-client
+// canary pool; Serializable/CAS and failure-to-HOLD semantics are unchanged.
+const transactionTimeoutMs = 30_000;
 const phases = {
   unauthorized: "synthetic_unauthorized",
   rate_limited: "synthetic_rate_limited",
@@ -126,7 +131,11 @@ export function createPrismaCanaryPhaseRecovery(
             },
           });
         },
-        { isolationLevel: "Serializable" },
+        {
+          isolationLevel: "Serializable",
+          maxWait: 2_000,
+          timeout: transactionTimeoutMs,
+        },
       );
     },
     async reconcileCanaryPhase(scope, evidence) {
@@ -285,7 +294,11 @@ export function createPrismaCanaryPhaseRecovery(
             });
             return { receiptId, status } as const;
           },
-          { isolationLevel: "Serializable" },
+          {
+            isolationLevel: "Serializable",
+            maxWait: 2_000,
+            timeout: transactionTimeoutMs,
+          },
         );
       try {
         return await reconcile(false);

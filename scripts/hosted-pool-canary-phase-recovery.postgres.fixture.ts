@@ -1,7 +1,158 @@
 import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
+import { expect } from "vitest";
+import type { CanaryPhaseScope } from "./hosted-pool-canary-phase-recovery";
+import type { CanaryRunEvidence } from "./hosted-pool-production-ports";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+
+/** Read persisted relay evidence. This fixture never runs publication; the
+ * production read adapter requires publication for successful relay attempts,
+ * so it cannot represent this deliberately incomplete production canary.
+ */
+export async function readCanaryPgObservation(
+  prisma: PrismaClient,
+  grantId: string,
+  scope: CanaryPhaseScope,
+) {
+  const stored = await prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
+    where: { id: grantId },
+    include: {
+      binding: {
+        select: { workflowActionRef: true, attestedGithubRepositoryId: true },
+      },
+      commentRefreshCapability: { select: { revokedAt: true } },
+      relayRequests: {
+        include: { upstreamAttempts: { orderBy: { attemptOrdinal: "asc" } } },
+        orderBy: { ordinal: "asc" },
+      },
+    },
+  });
+  const source = await prisma.reviewRequestedIntent.findUniqueOrThrow({
+    where: { requestId: stored.reviewRequestId },
+    select: {
+      headSha: true,
+      sourceRunId: true,
+      sourceRunAttempt: true,
+      executionId: true,
+    },
+  });
+  expect(source.sourceRunId).toBe(String(scope.runId));
+  expect(source.sourceRunAttempt).toBe("2");
+  if (
+    !source.executionId ||
+    !stored.binding.workflowActionRef ||
+    !stored.binding.attestedGithubRepositoryId
+  )
+    throw new Error("canary_pg_source_or_binding_missing");
+  expect(
+    await prisma.reviewPublicationAttemptV2.count({
+      where: { executionId: source.executionId },
+    }),
+  ).toBe(0);
+  expect(stored.relayRequests).toHaveLength(1);
+  const request = stored.relayRequests[0]!;
+  const events = await prisma.auditEvent.findMany({
+    where: {
+      workspaceId: stored.workspaceId,
+      action: "hosted_codex_canary_fault_plan_consumed",
+      metadata: { path: ["runId"], equals: String(scope.runId) },
+    },
+    select: { targetId: true, metadata: true, createdAt: true },
+    orderBy: { createdAt: "asc" },
+  });
+  expect(events).toHaveLength(1);
+  const faultPlanConsumptions = events.map((event) => {
+    const exactMetadata = {
+      planIdHash: scope.planIdHash,
+      phase: (
+        {
+          unauthorized: "synthetic_unauthorized",
+          rate_limited: "synthetic_rate_limited",
+          dropped_response: "drop_after_response_started",
+        } as const
+      )[scope.phase],
+      repositoryId: String(scope.repositoryId),
+      runAttempt: 2,
+      actionRef: `777genius/review-router@${scope.actionSha}`,
+      bindingId: scope.repositoryBindingId,
+      bindingRevision: scope.bindingRevision,
+      requestOrdinal: 1,
+      attemptOrdinal: 1,
+      injectionPoint:
+        scope.phase === "dropped_response"
+          ? ("after_response_started" as const)
+          : ("before_provider_fetch" as const),
+    };
+    expect(event.targetId).toBe(scope.planIdHash);
+    expect(event.metadata).toMatchObject({
+      ...exactMetadata,
+      runId: String(scope.runId),
+    });
+    return { ...exactMetadata, consumedAt: event.createdAt.toISOString() };
+  });
+  const observed: CanaryRunEvidence = {
+    runId: Number(source.sourceRunId),
+    sourceRunAttempt: 2,
+    sourceHeadSha: source.headSha,
+    sourceExecutionId: source.executionId,
+    grantId: stored.id,
+    invocationId: stored.invocationId,
+    workspaceId: stored.workspaceId,
+    githubRepositoryId: stored.binding.attestedGithubRepositoryId.toString(),
+    actionRef: stored.binding.workflowActionRef,
+    activeAccountId: stored.activeAccountId,
+    primaryAccountId: stored.primaryAccountId,
+    backupAccountId: stored.backupAccountId,
+    failoverCount: stored.failoverCount,
+    grantStatus: stored.status,
+    grantRevokedAt: stored.revokedAt?.toISOString() ?? null,
+    commentRefreshRevokedAt:
+      stored.commentRefreshCapability?.revokedAt?.toISOString() ?? null,
+    repositoryBindingId: stored.repositoryBindingId,
+    bindingRevision: stored.bindingRevision.toString(),
+    issuedAt: stored.issuedAt.toISOString(),
+    completedAt: request.completedAt?.toISOString() ?? null,
+    requestId: request.id,
+    requestOrdinal: request.ordinal,
+    requestErrorCode: request.errorCode,
+    requestReceivedAt: request.receivedAt.toISOString(),
+    requestStartedAt: request.startedAt?.toISOString() ?? null,
+    successfulResponseStartedAt:
+      request.successfulResponseStartedAt?.toISOString() ?? null,
+    providerInvocationKey: stored.providerInvocationKey,
+    providerResponseIdHash:
+      request.upstreamAttempts.find((attempt) => attempt.state === "succeeded")
+        ?.providerResponseIdHash ?? null,
+    publicationAttemptId: null,
+    appBotPublicationCount: 0,
+    nonAppBotPublicationCount: 0,
+    publicationObjects: [],
+    faultPlanConsumptionCount: faultPlanConsumptions.length,
+    faultPlanConsumptions,
+    requestStatuses: stored.relayRequests.map((relay) => relay.status),
+    attempts: request.upstreamAttempts.map((attempt) => {
+      if (attempt.credentialGeneration === null)
+        throw new Error("canary_pg_effect_generation_missing");
+      return {
+        attemptId: attempt.id,
+        relayRequestId: attempt.relayRequestId,
+        grantId: attempt.grantId,
+        ordinal: attempt.attemptOrdinal,
+        state: attempt.state,
+        errorCode: attempt.errorCode,
+        accountId: attempt.accountId,
+        credentialGeneration: attempt.credentialGeneration.toString(),
+        dispatchStartedAt: attempt.dispatchStartedAt?.toISOString() ?? null,
+        responseStartedAt: attempt.responseStartedAt?.toISOString() ?? null,
+        providerResponseIdHash: attempt.providerResponseIdHash,
+        completedAt: attempt.completedAt?.toISOString() ?? null,
+        createdAt: attempt.createdAt.toISOString(),
+      };
+    }),
+  };
+  return { stored, observed };
+}
 
 /** Minimal, real FK graph for the canary's source execution, no publication. */
 export async function seedCanaryPgSourceCatalog(prisma: PrismaClient) {

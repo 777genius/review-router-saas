@@ -31,8 +31,8 @@ import {
   type CanaryPhaseScope,
 } from "./hosted-pool-canary-phase-recovery";
 import { createRenderHostedPoolControlPort } from "./hosted-pool-production-control";
-import type { CanaryRunEvidence } from "./hosted-pool-production-ports";
 import {
+  readCanaryPgObservation,
   seedCanaryPgSourceCatalog,
   seedCanaryPgSourceExecution,
 } from "./hosted-pool-canary-phase-recovery.postgres.fixture";
@@ -516,35 +516,12 @@ describe.skipIf(!url)(
         for await (const chunk of response.body) void chunk;
       }
       await control.setFaultPlan!(null);
-      const stored = await prisma.hostedCodexInvocationGrant.findUniqueOrThrow({
-        where: { id },
-        include: {
-          relayRequests: {
-            include: {
-              upstreamAttempts: { orderBy: { attemptOrdinal: "asc" } },
-            },
-          },
-        },
-      });
-      // The operator adapter re-reads the complete state graph itself. These are
-      // the immutable observation identities used to bind the controller result.
-      const observed = {
-        runId,
-        sourceRunAttempt: 2,
-        sourceHeadSha: headSha,
-        sourceExecutionId: `execution-${runId}`,
-        grantId: id,
-        workspaceId: "phase-workspace",
-        githubRepositoryId: "123456789",
-        repositoryBindingId: "phase-binding",
-        bindingRevision: "1",
-        actionRef: claims.action_ref,
-        requestId: authorization.requestId,
-        attempts: stored.relayRequests[0]!.upstreamAttempts.map((a) => ({
-          attemptId: a.id,
-          credentialGeneration: a.credentialGeneration!.toString(),
-        })),
-      } as unknown as CanaryRunEvidence;
+      const { stored, observed } = await readCanaryPgObservation(
+        prisma,
+        id,
+        scope,
+      );
+      expect(observed.requestId).toBe(authorization.requestId);
       return { scope, observed, stored };
     }
 
@@ -559,6 +536,26 @@ describe.skipIf(!url)(
           101 + index,
         );
         expect(stored.failoverCount).toBe(phase === "dropped_response" ? 0 : 1);
+        expect(observed.publicationAttemptId).toBeNull();
+        expect(observed.publicationObjects).toEqual([]);
+        expect(observed.appBotPublicationCount).toBe(0);
+        expect(observed.nonAppBotPublicationCount).toBe(0);
+        if (phase === "dropped_response") {
+          expect(observed.grantStatus).toBe("revoked");
+          expect(observed.grantRevokedAt).not.toBeNull();
+          expect(observed.commentRefreshRevokedAt).not.toBeNull();
+          expect(observed.requestStatuses).toEqual(["terminal_unknown"]);
+          expect(observed.requestErrorCode).toBe("ambiguous_dropped_response");
+          expect(observed.providerResponseIdHash).toBeNull();
+          expect(observed.attempts).toHaveLength(1);
+          expect(observed.attempts[0]).toMatchObject({
+            state: "terminal_unknown",
+            errorCode: "ambiguous_dropped_response",
+            dispatchStartedAt: expect.any(String),
+            responseStartedAt: expect.any(String),
+            completedAt: expect.any(String),
+          });
+        }
         const before = await prisma.hostedCodexAccount.findUniqueOrThrow({
           where: { id: "phase-a" },
           select: { state: true, healthVersion: true },
@@ -602,6 +599,7 @@ describe.skipIf(!url)(
         });
         const recovery = createPrismaCanaryPhaseRecovery(wrapped);
         const receipt = await recovery.reconcileCanaryPhase(scope, observed);
+        expect(lost).toBe(true);
         expect(await recovery.reconcileCanaryPhase(scope, observed)).toEqual(
           receipt,
         );

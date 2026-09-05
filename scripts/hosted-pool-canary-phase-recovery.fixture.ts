@@ -235,7 +235,40 @@ export function canaryPhaseFixture(options: { refreshBackup?: boolean } = {}) {
     },
     hostedCodexRestoreItem: { count: async () => restoreItems },
     hostedCodexRelayRequest: { count: async () => 0 },
-    hostedCodexUpstreamEffectAttempt: { count: async () => uncertainEffects },
+    hostedCodexUpstreamEffectAttempt: {
+      count: async ({
+        where,
+      }: {
+        where: {
+          poolId: string;
+          state: string | { in: readonly string[] };
+          grantId?: { not: string };
+        };
+      }) => {
+        // Effects live under their recorded grant/request graph. Preserve the
+        // extra fault injection, but never let it replace persisted evidence.
+        const graph: Array<{
+          poolId: string;
+          relayRequests: Array<{
+            upstreamAttempts: Array<{ state: string; grantId: string }>;
+          }>;
+        }> = grants;
+        return (
+          uncertainEffects +
+          graph
+            .filter((grant) => grant.poolId === where.poolId)
+            .flatMap((grant) => grant.relayRequests)
+            .flatMap((request) => request.upstreamAttempts)
+            .filter(
+              (attempt) =>
+                (typeof where.state === "string"
+                  ? attempt.state === where.state
+                  : where.state.in.includes(attempt.state)) &&
+                (!where.grantId || attempt.grantId !== where.grantId.not),
+            ).length
+        );
+      },
+    },
     hostedCodexInvocationGrant: {
       count: async ({ where }: any) =>
         grants.filter(

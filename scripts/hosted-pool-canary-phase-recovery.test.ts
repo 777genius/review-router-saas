@@ -16,6 +16,110 @@ async function failedPhase(
 }
 
 describe("bounded synthetic phase health reconciliation", () => {
+  it("counts recorded effects by pool, state and exact dropped grant exclusion", async () => {
+    const f = canaryPhaseFixture();
+    const scope = f.scopeFor("dropped_response");
+    await f.prepare(scope);
+    await f.stage(scope);
+    const observed = f.run(scope.runId, scope.phase);
+    const count = f.prisma.hostedCodexUpstreamEffectAttempt.count;
+    const where = { poolId: scope.poolId, state: "terminal_unknown" };
+    expect(await count({ where })).toBe(1);
+    expect(
+      await count({ where: { ...where, grantId: { not: observed.grantId } } }),
+    ).toBe(0);
+    expect(
+      await count({ where: { ...where, grantId: { not: "unrelated" } } }),
+    ).toBe(1);
+    expect(await count({ where: { ...where, poolId: "other-pool" } })).toBe(0);
+    expect(
+      await count({
+        where: {
+          ...where,
+          state: { in: ["prepared", "dispatching", "response_started"] },
+        },
+      }),
+    ).toBe(0);
+    expect(
+      await f.recovery.reconcileCanaryPhase(scope, observed),
+    ).toMatchObject({ status: "unchanged" });
+    expect(f.restoreCount).toBe(0);
+    f.setUncertainEffects(1);
+    expect(await count({ where })).toBe(2);
+    expect(
+      await count({ where: { ...where, grantId: { not: observed.grantId } } }),
+    ).toBe(1);
+  });
+
+  it.each(["terminal_unknown", "prepared", "dispatching", "response_started"])(
+    "holds dropped reconciliation when an unrelated recorded effect is %s",
+    async (state) => {
+      const f = canaryPhaseFixture();
+      f.run(99);
+      const scope = f.scopeFor("dropped_response");
+      await f.prepare(scope);
+      await f.stage(scope);
+      const observed = f.run(scope.runId, scope.phase);
+      f.grants[0].relayRequests[0].upstreamAttempts[0].state = state;
+      const before = structuredClone(f.accounts);
+      await expect(
+        f.recovery.reconcileCanaryPhase(scope, observed),
+      ).rejects.toMatchObject({
+        cause: { message: "hosted_pool_canary_phase_pending_effects" },
+      });
+      expect(f.accounts).toEqual(before);
+      expect(f.restoreCount).toBe(0);
+      expect(
+        f.events.filter((e) => e.action.endsWith("phase_reconciled")),
+      ).toHaveLength(0);
+    },
+  );
+
+  it("bounds preparation, reconciliation and lost-commit observation without repeating writes", async () => {
+    const { f, scope, observed } = await failedPhase();
+    const options = {
+      isolationLevel: "Serializable",
+      maxWait: 2_000,
+      timeout: 30_000,
+    };
+    expect(
+      f.prisma.$transaction.mock.calls.map((call: unknown[]) => call[1]),
+    ).toEqual([options]);
+    f.loseCommitResponse();
+    await f.recovery.reconcileCanaryPhase(scope, observed);
+    expect(
+      f.prisma.$transaction.mock.calls.map((call: unknown[]) => call[1]),
+    ).toEqual([options, options, options]);
+    expect(f.prisma.hostedCodexAccount.updateMany).toHaveBeenCalledTimes(1);
+    expect(f.restoreCount).toBe(1);
+  });
+
+  it("bounds receipt-only observation after a failed write and does not retry mutation", async () => {
+    const { f, scope, observed } = await failedPhase();
+    f.failReceipt();
+    await expect(
+      f.recovery.reconcileCanaryPhase(scope, observed),
+    ).rejects.toMatchObject({
+      cause: {
+        message: "hosted_pool_canary_phase_reconciliation_outcome_unknown",
+      },
+    });
+    expect(
+      f.prisma.$transaction.mock.calls.map((call: unknown[]) => call[1]),
+    ).toEqual(
+      Array.from({ length: 3 }, () => ({
+        isolationLevel: "Serializable",
+        maxWait: 2_000,
+        timeout: 30_000,
+      })),
+    );
+    expect(f.prisma.hostedCodexAccount.updateMany).toHaveBeenCalledTimes(1);
+    expect(f.restoreCount).toBe(0);
+    expect(
+      f.events.filter((e) => e.action.endsWith("phase_reconciled")),
+    ).toHaveLength(0);
+  });
+
   it("reproduces the actual 401 -> fresh 429 backup_unavailable without restoration", async () => {
     const { f } = await failedPhase();
     expect(f.accounts[0]!.availability.status).toBe("quarantined");
@@ -457,6 +561,31 @@ describe("bounded synthetic phase health reconciliation", () => {
     );
   });
 
+  it("refuses preparation after dispatch even without a preparation receipt", async () => {
+    const f = canaryPhaseFixture();
+    const scope = f.scopeFor("unauthorized");
+    f.run(scope.runId);
+    await expect(f.prepare(scope)).rejects.toThrow("run_already_dispatched");
+    expect(f.events).toHaveLength(0);
+    expect(f.restoreCount).toBe(0);
+  });
+
+  it("refuses reconciliation against a different prepared scope", async () => {
+    const { f, scope, observed } = await failedPhase();
+    await expect(
+      f.recovery.reconcileCanaryPhase(
+        { ...scope, runId: scope.runId + 1 },
+        observed,
+      ),
+    ).rejects.toMatchObject({
+      cause: { message: "hosted_pool_canary_phase_preparation_scope_mismatch" },
+    });
+    expect(f.restoreCount).toBe(0);
+    expect(
+      f.events.filter((e) => e.action.endsWith("phase_reconciled")),
+    ).toHaveLength(0);
+  });
+
   it("requires the effect generation to equal the durable preparation even when observation agrees", async () => {
     const { f, scope, observed } = await failedPhase();
     f.grants[0].relayRequests[0].upstreamAttempts[0].credentialGeneration = 2n;
@@ -547,6 +676,12 @@ describe("required canary PostgreSQL gate", () => {
     "other suite",
     "other test",
     "inconsistent totals",
+    "failed report",
+    "failed suite",
+    "duplicate suite",
+    "failed total",
+    "pending total",
+    "todo total",
   ])("rejects %s", (missing) => {
     const report = passing();
     if (missing === "missing suite") report.testResults = [];
@@ -557,6 +692,13 @@ describe("required canary PostgreSQL gate", () => {
     if (missing === "other test")
       report.testResults[0]!.assertionResults[0]!.title = "unrelated test";
     if (missing === "inconsistent totals") report.numPassedTests = 0;
+    if (missing === "failed report") report.success = false;
+    if (missing === "failed suite") report.testResults[0]!.status = "failed";
+    if (missing === "duplicate suite")
+      report.testResults.push(report.testResults[0]!);
+    if (missing === "failed total") report.numFailedTests = 1;
+    if (missing === "pending total") report.numPendingTests = 1;
+    if (missing === "todo total") report.numTodoTests = 1;
     expect(() => assertCanaryPhasePostgresResult(report)).toThrow(
       "required_regression_not_passed",
     );
