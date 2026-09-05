@@ -18,6 +18,7 @@ import {
 import {
   renderCanonicalCodexRotatingInteractionWorkflowV1,
   renderCanonicalCodexRotatingInteractionWorkflowV2,
+  renderCanonicalCodexRotatingInteractionWorkflowV3,
 } from "@reviewrouter/features-workflow-provisioning";
 import {
   isLoopbackHostname,
@@ -614,6 +615,11 @@ export class OctokitCodexRotatingGitHubSecretGateway
       return { compatible: true };
     }
     const expectedInteractionWorkflows = [
+      renderCanonicalCodexRotatingInteractionWorkflowV3({
+        actionRef: metadata.actionRef,
+        apiUrl: this.expectedApiUrl,
+        runtimeConfigMode: "oidc",
+      }),
       renderCanonicalCodexRotatingInteractionWorkflowV2({
         actionRef: metadata.actionRef,
         apiUrl: this.expectedApiUrl,
@@ -1499,7 +1505,7 @@ function inspectReviewV2InteractionWorkflow(
 
   const expectedWorkflow =
     expectedActionRef && expectedActionCommitSha
-      ? renderCanonicalCodexRotatingInteractionWorkflowV2({
+      ? renderCanonicalCodexRotatingInteractionWorkflowV3({
           actionRef: expectedActionRef,
           apiUrl: expectedApiUrl,
           runtimeConfigMode: "oidc",

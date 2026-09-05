@@ -25,6 +25,7 @@ import {
   renderCodexRotatingAdvisoryWorkflow,
   renderCanonicalCodexRotatingInteractionWorkflowV1,
   renderCanonicalCodexRotatingInteractionWorkflowV2,
+  renderCanonicalCodexRotatingInteractionWorkflowV3,
   renderCodexRotatingInteractionWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
 } from "../domain/workflow-template";
@@ -329,9 +330,9 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("runs-on: ubuntu-24.04");
     expect(workflow).toContain("permissions: {}\n\njobs:");
     expect(workflow).toContain(
-      "    permissions:\n      contents: read\n      issues: read\n      pull-requests: read\n      id-token: write",
+      "    permissions:\n      actions: write\n      contents: read\n      issues: read\n      pull-requests: read\n      id-token: write",
     );
-    expect(workflow).not.toContain("actions: write");
+    expect(workflow).toContain("actions: write");
     expect(workflow).not.toContain("pull-requests: write");
     expect(workflow).not.toContain("issues: write");
     expect(workflow).toContain("repository: 777genius/review-router");
@@ -362,6 +363,16 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).not.toContain("OPENAI_API_KEY");
     expect(
       workflowDocumentSemanticSha256(
+        renderCanonicalCodexRotatingInteractionWorkflowV3({
+          actionRef:
+            "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+          apiUrl: "https://reviewrouter.site",
+          runtimeConfigMode: "oidc",
+        }),
+      ),
+    ).toBe("0d58d9a498409fad2b20c65d3ea09ed5c180c6b04d3e3b17faa58e20a031448f");
+    expect(
+      workflowDocumentSemanticSha256(
         renderCanonicalCodexRotatingInteractionWorkflowV2({
           actionRef:
             "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
@@ -386,6 +397,53 @@ describe("renderReviewRouterWorkflow", () => {
         workflow.replace("  workflow_dispatch:", "  workflow_dispatch: .nan"),
       ),
     ).toBe(false);
+  });
+
+  it.each(["main", "v1", "v1.2.3"])(
+    "rejects mutable %s runtime refs before granting app-first rerun authority",
+    (runtimeRef) => {
+      const options = {
+        actionRef: `777genius/review-router@${runtimeRef}`,
+        apiUrl: "https://reviewrouter.site",
+        runtimeConfigMode: "oidc" as const,
+      };
+
+      expect(() =>
+        renderCanonicalCodexRotatingInteractionWorkflowV3(options),
+      ).toThrow("invalid_app_first_interaction_reusable_workflow_runtime_ref");
+      expect(() => renderCodexRotatingInteractionWorkflow(options)).toThrow(
+        "invalid_app_first_interaction_reusable_workflow_runtime_ref",
+      );
+      expect(() =>
+        renderCanonicalCodexRotatingInteractionWorkflowV2(options),
+      ).not.toThrow();
+      expect(() =>
+        renderCanonicalCodexRotatingInteractionWorkflowV1(options),
+      ).not.toThrow();
+    },
+  );
+
+  it.each(["a".repeat(39), "a".repeat(41), `${"a".repeat(39)}z`])(
+    "rejects malformed %s runtime refs before granting app-first rerun authority",
+    (runtimeRef) => {
+      expect(() =>
+        renderCodexRotatingInteractionWorkflow({
+          actionRef: `777genius/review-router@${runtimeRef}`,
+          apiUrl: "https://reviewrouter.site",
+          runtimeConfigMode: "oidc",
+        }),
+      ).toThrow("invalid_reusable_workflow_runtime_ref");
+    },
+  );
+
+  it("accepts an uppercase immutable runtime SHA", () => {
+    expect(() =>
+      renderCodexRotatingInteractionWorkflow({
+        actionRef: `777genius/review-router@${"A".repeat(40)}`,
+        apiUrl: "https://reviewrouter.site",
+        runtimeConfigMode: "oidc",
+      }),
+    ).not.toThrow();
   });
 
   it("exports readiness markers for the dedicated rotating Codex workflow", () => {

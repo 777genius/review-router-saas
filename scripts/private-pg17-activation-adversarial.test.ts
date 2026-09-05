@@ -1,6 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   activationAuthorityProvisioningSql,
@@ -16,11 +25,14 @@ import {
   disposablePg17CanonicalRoleBootstrapSetupSql,
   disposablePg17TargetRoleFoundationSql,
   disposableSqlConfiguration,
+  materializeCanonicalPreReleasePrisma,
   persistRehearsalSourceOwnedReceipt,
+  resolvePreReleaseMigrationExclusions,
 } from "./rehearse-private-pg17-rollout.mjs";
 import {
   canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyTrustRootReadiness,
+  canonicalReleaseMigrationArtifact,
 } from "../packages/features/release-rollout/src/index.js";
 import { sourceLegacyAmbiguityFixture } from "../test/fixtures/source-legacy-ambiguity";
 
@@ -149,7 +161,85 @@ describe("PG17 production migration baseline fixture ordering", () => {
       "provider_scope_concurrency_authority_roles_partial:reviewrouter_release_migration_missing",
     );
   });
+
+  it("materializes the exact canonical pre-release migration boundary", () => {
+    const sourcePrisma = fileURLToPath(
+      new URL("../packages/platform/db/prisma", import.meta.url),
+    );
+    const directory = mkdtempSync(
+      join(tmpdir(), "reviewrouter-pg17-pre-release-"),
+    );
+    const destinationPrisma = join(directory, "prisma");
+    try {
+      const actual = readdirSync(join(sourcePrisma, "migrations"), {
+        withFileTypes: true,
+      })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort();
+      const excluded = new Set(resolvePreReleaseMigrationExclusions(actual));
+      materializeCanonicalPreReleasePrisma(sourcePrisma, destinationPrisma);
+      const materialized = readdirSync(join(destinationPrisma, "migrations"), {
+        withFileTypes: true,
+      })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort();
+
+      expect(materialized).toEqual(
+        actual.filter((migration) => !excluded.has(migration)),
+      );
+      expect(materialized).toContain(
+        "000086_comment_token_custody_r18_remediation",
+      );
+      expect(materialized).not.toContain(
+        "000087_codex_oauth_v4_v5_workflow_reattestation",
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
+
+const deployCanonicalPreReleaseBaseline = (databaseUrl: string) => {
+  const directory = mkdtempSync(
+    join(tmpdir(), "reviewrouter-pg17-adversarial-seed-"),
+  );
+  try {
+    const prismaDirectory = materializeCanonicalPreReleasePrisma(
+      fileURLToPath(new URL("../packages/platform/db/prisma", import.meta.url)),
+      join(directory, "prisma"),
+    );
+    const configPath = join(directory, "prisma.config.mjs");
+    writeFileSync(
+      configPath,
+      `export default { schema: ${JSON.stringify(join(prismaDirectory, "schema.prisma"))}, migrations: { path: ${JSON.stringify(join(prismaDirectory, "migrations"))} }, datasource: { url: process.env.DATABASE_URL } };\n`,
+      { mode: 0o600 },
+    );
+    return spawnSync(
+      "pnpm",
+      [
+        "--filter",
+        "@reviewrouter/platform-db",
+        "exec",
+        "prisma",
+        "migrate",
+        "deploy",
+        "--config",
+        configPath,
+      ],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        encoding: "utf8",
+        env: { ...process.env, DATABASE_URL: databaseUrl },
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: 600_000,
+      },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
 
 const persistAdditionalSourceOwnedReceipt = (
   context: CaseContext,
@@ -372,19 +462,8 @@ const initializeSeed = () => {
         canonicalReleaseAuthorityRoleFoundationSql,
       ),
     () =>
-      spawnSync(
-        "pnpm",
-        ["--filter", "@reviewrouter/platform-db", "db:migrate:deploy"],
-        {
-          cwd: new URL("..", import.meta.url),
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            DATABASE_URL: `postgresql://${adminUsername}:disposable-bootstrap@127.0.0.1:${publishedPort(seedContainer)}/${databaseName}?sslmode=disable`,
-          },
-          maxBuffer: 16 * 1024 * 1024,
-          timeout: 600_000,
-        },
+      deployCanonicalPreReleaseBaseline(
+        `postgresql://${adminUsername}:disposable-bootstrap@127.0.0.1:${publishedPort(seedContainer)}/${databaseName}?sslmode=disable`,
       ),
   );
   expect(
@@ -479,7 +558,7 @@ const initializeSeed = () => {
     seedContainer,
     adminUsername,
     roleProvisioningSql(configuration, {
-      ownerAuthorizedInitialRuntimeGateClosed: true,
+      ownerAuthorizedInitialRuntimeGateClosed: false,
     }),
   );
   expect(
@@ -632,19 +711,11 @@ const initializeSeed = () => {
     installerUsername,
     "SELECT system_identifier::text FROM pg_catalog.pg_control_system();",
   );
-  const migrationChecksum = psqlAs(
-    seedContainer,
-    installerUsername,
-    "SELECT reviewrouter_activation.read_activation_migration_manifest_identity();",
-  );
-  const expectedPostCatalogDigest = psqlAs(
-    seedContainer,
-    installerUsername,
-    `SET search_path = pg_catalog, pg_temp;
-     ${fencedLiveV70V72CatalogDigestSql}`,
-  )
-    .split("\n")
-    .at(-1);
+  const expectedPostManifestIdentity =
+    canonicalReleaseMigrationArtifact.postManifestIdentity;
+  const expectedPostCatalogDigest =
+    canonicalReleaseMigrationArtifact.postCatalogDigest;
+  expect(expectedPostManifestIdentity).toMatch(/^sha256:[a-f0-9]{64}$/u);
   expect(expectedPostCatalogDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
   const transitionSha256 = `sha256:${"1".repeat(64)}`;
   const previousReceiptSha256 = `sha256:${"2".repeat(64)}`;
@@ -656,7 +727,7 @@ const initializeSeed = () => {
       `SELECT reviewrouter_activation.install_migration_permit(
         '${rolloutId}','1','${systemIdentifier}','${"c".repeat(64)}',
         '${transitionSha256}','${previousReceiptSha256}',
-        '${migrationChecksum}','${expectedPostCatalogDigest}',
+        '${expectedPostManifestIdentity}','${expectedPostCatalogDigest}',
         '${JSON.stringify(sourceLegacyAmbiguity).replaceAll("'", "''")}'::jsonb,
         '${eligibilityCutoff}'::timestamptz,1,'${nonce}');`,
     ),
@@ -885,6 +956,74 @@ const runtimeAclAuthoritySnapshotSql = `SELECT jsonb_build_object(
     ORDER BY membership.roleid,membership.member,membership.grantor),'[]'::jsonb)
     FROM pg_auth_members membership)
 )::text;`;
+
+const phaseAclTupleSnapshotSql = `WITH relation_acl AS (
+  SELECT relation.relname,grantee.rolname AS grantee,
+    grantor.rolname AS grantor,acl.privilege_type,acl.is_grantable
+  FROM pg_class relation
+  JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+  CROSS JOIN LATERAL aclexplode(coalesce(
+    relation.relacl,acldefault('r',relation.relowner)
+  )) acl
+  JOIN pg_roles grantee ON grantee.oid=acl.grantee
+  JOIN pg_roles grantor ON grantor.oid=acl.grantor
+  WHERE namespace.nspname='public'
+), column_acl AS (
+  SELECT relation.relname,attribute.attname,grantee.rolname AS grantee,
+    grantor.rolname AS grantor,acl.privilege_type,acl.is_grantable
+  FROM pg_class relation
+  JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+  JOIN pg_attribute attribute ON attribute.attrelid=relation.oid
+  CROSS JOIN LATERAL aclexplode(attribute.attacl) acl
+  JOIN pg_roles grantee ON grantee.oid=acl.grantee
+  JOIN pg_roles grantor ON grantor.oid=acl.grantor
+  WHERE namespace.nspname='public'
+    AND attribute.attnum>0 AND NOT attribute.attisdropped
+), expected_relation_acl AS (
+  SELECT * FROM relation_acl
+  WHERE grantor='reviewrouter_release_schema_owner'
+    AND grantee IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker')
+    AND NOT is_grantable
+    AND (
+      privilege_type='INSERT' AND relname IN (
+        'CodexOAuthProviderInstance','CodexOAuthSecretNamespace',
+        'CodexOAuthSetupDispatchAttempt','CodexOAuthSetupPayloadClaim'
+      )
+      OR privilege_type='UPDATE' AND relname IN (
+        'CodexOAuthSecretNamespace','CodexOAuthSetupDispatchAttempt',
+        'CodexOAuthSetupPayloadClaim'
+      )
+    )
+), expected_column_acl AS (
+  SELECT * FROM column_acl
+  WHERE grantor='reviewrouter_release_schema_owner'
+    AND grantee IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker')
+    AND NOT is_grantable AND privilege_type='UPDATE'
+    AND relname='CodexOAuthProviderInstance'
+    AND attname IN (
+      'activeAccountIdentityHash','activeLeaseExpiresAt','activeLeaseId',
+      'activeSecretNamespaceEpoch','activeSecretNamespaceId',
+      'activeSecretNamespaceName','latestGeneration','latestGenerationHash',
+      'mutationEpoch','mutationOwner','mutationOwnerId','updatedAt','state'
+    )
+)
+SELECT jsonb_build_object(
+  'relation',count(*) FILTER (WHERE kind='relation'),
+  'column',count(*) FILTER (WHERE kind='column'),
+  'total',count(*),
+  'oldPoolInsert',(
+    SELECT count(*) FROM relation_acl
+    WHERE relname='HostedCodexPool' AND privilege_type='INSERT'
+      AND grantor='reviewrouter_release_schema_owner'
+      AND grantee IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker')
+      AND NOT is_grantable
+  )
+)::text
+FROM (
+  SELECT 'relation' AS kind FROM expected_relation_acl
+  UNION ALL
+  SELECT 'column' AS kind FROM expected_column_acl
+) expected_acl;`;
 
 const attestDisposableCaptureSql = () => `
 DO $attest_disposable_capture$
@@ -1474,7 +1613,7 @@ describePg17(
               'migration-quarantine','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}',31,'${"1f".padStart(32, "0")}',
               '${evidenceFor("migration-quarantine")}'::jsonb,
-              '${eligibilityCutoff}'::timestamptz,true);`,
+              '${eligibilityCutoff}'::timestamptz,true,false);`,
             ).stderr,
           ).toContain("release migration target permit unavailable");
 
@@ -1549,7 +1688,7 @@ describePg17(
             'migration-completed','${context.systemIdentifier}','${witness}',
             '${transition}','${previous}',32,'${nonce}',
             '${evidenceFor("migration-completed")}'::jsonb,
-            '${eligibilityCutoff}'::timestamptz,true);`,
+            '${eligibilityCutoff}'::timestamptz,true,false);`,
           );
           expect(
             context.psqlResultAs(
@@ -1623,7 +1762,7 @@ describePg17(
               'migration-completed','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}',32,'${nonce}',
               '${evidenceFor("migration-completed")}'::jsonb,
-              '${eligibilityCutoff}'::timestamptz,true);`,
+              '${eligibilityCutoff}'::timestamptz,true,false);`,
             ).stderr,
           ).toContain(
             "release migration executor replay ACL gate mode conflict",
@@ -1696,7 +1835,7 @@ describePg17(
             'migration-open','${context.systemIdentifier}','${witness}',
             '${transition}','${previous}',33,'${openNonce}',
             '${evidenceFor("migration-open")}'::jsonb,
-            '${eligibilityCutoff}'::timestamptz,false);`,
+            '${eligibilityCutoff}'::timestamptz,false,false);`,
           );
           expect(projectedOpenAttempt.status).not.toBe(0);
           expect(projectedOpenAttempt.stderr).toContain(
@@ -1771,6 +1910,8 @@ describePg17(
               alternativeGrantorDigest: string;
               alternativeGrantorEntry: string;
               forbiddenWriteDigest: string;
+              preactivationPhaseAcl: unknown;
+              activatedPhaseAcl: unknown;
             }
           | undefined;
         return isolatedCase(
@@ -1787,11 +1928,26 @@ describePg17(
               evidence?.alternativeGrantorBaseline,
             );
             expect(evidence?.activatedDigest).toBe(evidence?.baselineDigest);
+            expect(evidence?.preactivationPhaseAcl).toEqual({
+              column: 0,
+              oldPoolInsert: 0,
+              relation: 0,
+              total: 0,
+            });
+            expect(evidence?.activatedPhaseAcl).toEqual({
+              column: 39,
+              oldPoolInsert: 3,
+              relation: 21,
+              total: 60,
+            });
           },
           (context) => {
             const baselineDigest = context.psqlAs(
               installerUsername,
               fencedLiveV70V72CatalogDigestSql,
+            );
+            const preactivationPhaseAcl = JSON.parse(
+              context.psqlAs(installerUsername, phaseAclTupleSnapshotSql),
             );
             context.psqlAs(
               adversarialAdminUsername,
@@ -1858,16 +2014,161 @@ describePg17(
               alternativeGrantorBaseline,
               alternativeGrantorDigest,
               alternativeGrantorEntry,
+              activatedPhaseAcl: JSON.parse(
+                context.psqlAs(installerUsername, phaseAclTupleSnapshotSql),
+              ),
               activatedDigest: context.psqlAs(
                 installerUsername,
                 fencedLiveV70V72CatalogDigestSql,
               ),
               baselineDigest,
               forbiddenWriteDigest,
+              preactivationPhaseAcl,
             };
           },
         );
       })(),
+      120_000,
+    );
+
+    it(
+      "keeps non-allowlisted phase ACL drift digest-visible",
+      isolatedCase(
+        "phase-acl-negative-drift",
+        () => {},
+        (context) => {
+          const digest = () =>
+            context.psqlAs(installerUsername, fencedLiveV70V72CatalogDigestSql);
+          const baselineDigest = digest();
+          const expectVisibleDrift = (
+            label: string,
+            grantSql: string,
+            revokeSql: string,
+          ) => {
+            context.psqlAs(adversarialAdminUsername, grantSql);
+            expect(digest(), label).not.toBe(baselineDigest);
+            context.psqlAs(adversarialAdminUsername, revokeSql);
+            expect(digest(), `${label} cleanup`).toBe(baselineDigest);
+          };
+
+          expectVisibleDrift(
+            "extra DELETE",
+            `GRANT DELETE ON TABLE public."CodexOAuthProviderInstance"
+             TO reviewrouter_api;`,
+            `REVOKE DELETE ON TABLE public."CodexOAuthProviderInstance"
+             FROM reviewrouter_api;`,
+          );
+          expectVisibleDrift(
+            "non-allowlisted column UPDATE",
+            `GRANT UPDATE ("id") ON TABLE public."CodexOAuthProviderInstance"
+             TO reviewrouter_api;`,
+            `REVOKE UPDATE ("id") ON TABLE public."CodexOAuthProviderInstance"
+             FROM reviewrouter_api;`,
+          );
+          expectVisibleDrift(
+            "non-allowlisted column INSERT",
+            `GRANT INSERT ("state") ON TABLE public."CodexOAuthProviderInstance"
+             TO reviewrouter_api;`,
+            `REVOKE INSERT ("state") ON TABLE public."CodexOAuthProviderInstance"
+             FROM reviewrouter_api;`,
+          );
+          expectVisibleDrift(
+            "grant option",
+            `GRANT INSERT ON TABLE public."CodexOAuthProviderInstance"
+             TO reviewrouter_api WITH GRANT OPTION;`,
+            `REVOKE GRANT OPTION FOR INSERT
+             ON TABLE public."CodexOAuthProviderInstance"
+             FROM reviewrouter_api;
+           REVOKE INSERT ON TABLE public."CodexOAuthProviderInstance"
+             FROM reviewrouter_api;`,
+          );
+          expectVisibleDrift(
+            "routine EXECUTE",
+            `GRANT EXECUTE ON FUNCTION
+             public.reviewrouter_read_runtime_generation_witness_proofs(text,text)
+             TO reviewrouter_web;`,
+            `REVOKE EXECUTE ON FUNCTION
+             public.reviewrouter_read_runtime_generation_witness_proofs(text,text)
+             FROM reviewrouter_web;`,
+          );
+          expectVisibleDrift(
+            "default privilege",
+            `ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_schema_owner
+             IN SCHEMA public GRANT TRUNCATE ON TABLES TO reviewrouter_api;`,
+            `ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_schema_owner
+             IN SCHEMA public REVOKE TRUNCATE ON TABLES FROM reviewrouter_api;`,
+          );
+          expectVisibleDrift(
+            "schema privilege",
+            "GRANT CREATE ON SCHEMA public TO reviewrouter_api;",
+            "REVOKE CREATE ON SCHEMA public FROM reviewrouter_api;",
+          );
+
+          context.psqlAs(
+            adversarialAdminUsername,
+            `CREATE ROLE rr_phase_acl_grantee NOLOGIN;
+           GRANT SELECT ON TABLE public."CodexOAuthProviderInstance"
+             TO rr_phase_acl_grantee;`,
+          );
+          const explicitSelectBaseline = digest();
+          context.psqlAs(
+            adversarialAdminUsername,
+            `GRANT INSERT ON TABLE public."CodexOAuthProviderInstance"
+             TO rr_phase_acl_grantee;`,
+          );
+          expect(digest(), "wrong grantee").not.toBe(explicitSelectBaseline);
+          context.psqlAs(
+            adversarialAdminUsername,
+            `REVOKE INSERT ON TABLE public."CodexOAuthProviderInstance"
+             FROM rr_phase_acl_grantee;`,
+          );
+          expect(digest(), "wrong grantee cleanup").toBe(
+            explicitSelectBaseline,
+          );
+          context.psqlAs(
+            adversarialAdminUsername,
+            `REVOKE SELECT ON TABLE public."CodexOAuthProviderInstance"
+             FROM rr_phase_acl_grantee;
+           DROP ROLE rr_phase_acl_grantee;`,
+          );
+          expect(digest(), "explicit SELECT baseline cleanup").toBe(
+            baselineDigest,
+          );
+
+          context.psqlAs(
+            adversarialAdminUsername,
+            `CREATE ROLE rr_phase_acl_grantor NOLOGIN;
+           GRANT INSERT ON TABLE public."CodexOAuthProviderInstance"
+             TO rr_phase_acl_grantor WITH GRANT OPTION;`,
+          );
+          const wrongGrantorBaseline = digest();
+          context.psqlAs(
+            adversarialAdminUsername,
+            `SET ROLE rr_phase_acl_grantor;
+           GRANT INSERT ON TABLE public."CodexOAuthProviderInstance"
+             TO reviewrouter_api;
+           RESET ROLE;`,
+          );
+          expect(digest(), "wrong grantor").not.toBe(wrongGrantorBaseline);
+          context.psqlAs(
+            adversarialAdminUsername,
+            `SET ROLE rr_phase_acl_grantor;
+           REVOKE INSERT ON TABLE public."CodexOAuthProviderInstance"
+             FROM reviewrouter_api;
+           RESET ROLE;`,
+          );
+          expect(digest(), "wrong grantor cleanup").toBe(wrongGrantorBaseline);
+          context.psqlAs(
+            adversarialAdminUsername,
+            `REVOKE INSERT ON TABLE public."CodexOAuthProviderInstance"
+             FROM rr_phase_acl_grantor;
+           DROP ROLE rr_phase_acl_grantor;`,
+          );
+          expect(digest(), "wrong grantor baseline cleanup").toBe(
+            baselineDigest,
+          );
+        },
+      ),
       120_000,
     );
 

@@ -6,7 +6,10 @@ import {
   recordAuditEvent,
   type AuditLogRepositoryPort,
 } from "@reviewrouter/features-audit-log";
-import { renderReviewRouterWorkflowFiles } from "../../domain/workflow-template";
+import {
+  renderCanonicalCodexRotatingInteractionWorkflowV3,
+  renderReviewRouterWorkflowFiles,
+} from "../../domain/workflow-template";
 import {
   createProvisionWorkflowPlan,
   type ProvisionWorkflowInput,
@@ -28,6 +31,14 @@ export async function provisionReviewRouterWorkflow(
   dependencies: ProvisionReviewRouterWorkflowDependencies,
 ) {
   const plan = createProvisionWorkflowPlan(input);
+  if (plan.codexRotatingProviderInstanceId) {
+    renderCanonicalCodexRotatingInteractionWorkflowV3({
+      actionRef: plan.actionRef,
+      apiUrl: plan.apiUrl,
+      runtimeConfigMode: plan.runtimeConfigMode,
+    });
+  }
+
   if (dependencies.enabled === false) {
     await dependencies.provisioning.markFailed({
       workspaceId: plan.workspaceId,

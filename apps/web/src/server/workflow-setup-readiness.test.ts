@@ -10,20 +10,25 @@ import {
   CodexRotatingT0WorkflowSchemaVersion,
   createVersionedProviderSecretNamespace,
   defaultCodexRotatingWorkflowPath,
+  defaultInteractionWorkflowPath,
   defaultWorkflowPath,
+  renderCanonicalCodexRotatingInteractionWorkflowV2,
+  renderCodexRotatingInteractionWorkflow,
   renderCodexRotatingAdvisoryWorkflow,
 } from "@reviewrouter/features-workflow-provisioning";
 import { isWorkflowSetupAlreadyCurrent } from "./workflow-setup-readiness";
 
 class CapturingWorkflowProbe implements RepositoryWorkflowProbePort {
   public input: RepositoryWorkflowProbeInput | null = null;
+  public readonly inputs: RepositoryWorkflowProbeInput[] = [];
 
   constructor(private readonly check: RepositoryWorkflowCheck) {}
 
   async probeWorkflow(
     input: RepositoryWorkflowProbeInput,
   ): Promise<RepositoryWorkflowCheck> {
-    this.input = input;
+    this.input ??= input;
+    this.inputs.push(input);
     return this.check;
   }
 }
@@ -72,6 +77,14 @@ function canonicalV4Workflow(
   });
 }
 
+function canonicalV3InteractionWorkflow(): string {
+  return renderCodexRotatingInteractionWorkflow({
+    actionRef: versionedActionRef,
+    apiUrl: "https://api.reviewrouter.site",
+    runtimeConfigMode: "oidc",
+  });
+}
+
 function canonicalV5Workflow(): string {
   return renderCodexRotatingAdvisoryWorkflow({
     actionRef: versionedActionRef,
@@ -84,20 +97,27 @@ function canonicalV5Workflow(): string {
   });
 }
 
-function checkVersionedWorkflowReadiness(input: {
-  readonly workflow: string;
-  readonly workflowSchemaVersion:
-    | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
-    | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5;
-  readonly secretNamespace: typeof v4SecretNamespace;
-}): Promise<boolean> {
+function checkVersionedWorkflowReadiness(
+  input: {
+    readonly workflow: string;
+    readonly workflowSchemaVersion:
+      | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+      | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV5;
+    readonly secretNamespace: typeof v4SecretNamespace;
+  },
+  interactionWorkflow = canonicalV3InteractionWorkflow(),
+): Promise<boolean> {
   const probe = new OctokitRepositoryWorkflowProbe({
     createRequester: async () => ({
-      request: async () => ({
+      request: async (_route, parameters) => ({
         data: {
           type: "file",
           encoding: "base64",
-          content: Buffer.from(input.workflow).toString("base64"),
+          content: Buffer.from(
+            parameters?.path === defaultInteractionWorkflowPath
+              ? interactionWorkflow
+              : input.workflow,
+          ).toString("base64"),
         },
       }),
     }),
@@ -112,17 +132,26 @@ function checkVersionedWorkflowReadiness(input: {
       codexRotatingWorkflowSchemaVersion: input.workflowSchemaVersion,
       codexRotatingWorkflowSecretNamespace: input.secretNamespace,
     },
-    { workflowProbe: probe },
+    {
+      workflowProbe: probe,
+      resolvePublicApiUrl: () => "https://api.reviewrouter.site",
+    },
   );
 }
 
-function checkV4WorkflowReadiness(workflow: string): Promise<boolean> {
-  return checkVersionedWorkflowReadiness({
-    workflow,
-    workflowSchemaVersion:
-      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
-    secretNamespace: v4SecretNamespace,
-  });
+function checkV4WorkflowReadiness(
+  workflow: string,
+  interactionWorkflow = canonicalV3InteractionWorkflow(),
+): Promise<boolean> {
+  return checkVersionedWorkflowReadiness(
+    {
+      workflow,
+      workflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+      secretNamespace: v4SecretNamespace,
+    },
+    interactionWorkflow,
+  );
 }
 
 function checkV5WorkflowReadiness(workflow: string): Promise<boolean> {
@@ -341,6 +370,11 @@ describe("workflow setup readiness", () => {
         ],
       ],
     });
+    expect(probe.inputs[1]).toMatchObject({
+      workflowPath: defaultInteractionWorkflowPath,
+      expectedActionRef:
+        "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+    });
   });
 
   it("requires fork sandbox markers when rotating Codex fork mode is enabled", async () => {
@@ -354,6 +388,8 @@ describe("workflow setup readiness", () => {
       isWorkflowSetupAlreadyCurrent(
         {
           ...readinessInput,
+          actionRef:
+            "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
           codexRotatingProviderInstanceId: "codex-rotating:123456",
           forkAgenticSandboxEnabled: true,
         },
@@ -442,6 +478,19 @@ describe("workflow setup readiness", () => {
     await expect(checkV4WorkflowReadiness(canonicalV4Workflow())).resolves.toBe(
       true,
     );
+  });
+
+  it("does not treat the prior V2 interaction workflow as current", async () => {
+    await expect(
+      checkV4WorkflowReadiness(
+        canonicalV4Workflow(),
+        renderCanonicalCodexRotatingInteractionWorkflowV2({
+          actionRef: versionedActionRef,
+          apiUrl: "https://api.reviewrouter.site",
+          runtimeConfigMode: "oidc",
+        }),
+      ),
+    ).resolves.toBe(false);
   });
 
   it("accepts a canonical schema-v5 workflow when setup PR metadata is missing", async () => {
