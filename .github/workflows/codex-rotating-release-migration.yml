@@ -285,7 +285,7 @@ jobs:
 
   disposable-render-journal-probe:
     name: Disposable Render journal save-only probe
-    if: ${{ inputs.confirmation == 'PROBE_DISPOSABLE_RENDER_JOURNAL' }}
+    if: ${{ inputs.confirmation == 'PROBE_DISPOSABLE_RENDER_JOURNAL' || inputs.confirmation == 'PROBE_DISPOSABLE_RENDER_LIVE_JOURNAL' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -300,6 +300,10 @@ jobs:
           service_name=rr-render-recovery-e2e-20260905
           journal_key=RR_DISPOSABLE_RECOVERY_JOURNAL
           expected_ref=refs/heads/test/render-suspended-deploy-e2e-20260905
+          live_mode=0
+          if [[ "${{ inputs.confirmation }}" == "PROBE_DISPOSABLE_RENDER_LIVE_JOURNAL" ]]; then
+            live_mode=1
+          fi
           [[ "$GITHUB_REPOSITORY" == "777genius/review-router-saas" ]]
           [[ "$GITHUB_REF" == "$expected_ref" ]]
           test -n "$RENDER_API_KEY"
@@ -319,6 +323,23 @@ jobs:
             | .id == $id and (.ownerId // .owner.id) == $owner
               and .name == $name and .suspended == "suspended"
           ' <<<"$service" >/dev/null
+          if [[ "$live_mode" -eq 1 ]]; then
+            render_write -X POST \
+              "https://api.render.com/v1/services/$service_id/resume" \
+              -o /dev/null
+            live_deadline=$((SECONDS + 300))
+            while (( SECONDS < live_deadline )); do
+              service="$(render_read "https://api.render.com/v1/services/$service_id")"
+              health="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 https://rr-render-recovery-e2e-20260905.onrender.com/health || true)"
+              if jq -e '(.service // .).suspended == "not_suspended"' <<<"$service" >/dev/null \
+                && jq -e '.ok == true and .marker == "candidate"' <<<"$health" >/dev/null 2>&1; then
+                break
+              fi
+              sleep 5
+            done
+            jq -e '(.service // .).suspended == "not_suspended"' <<<"$service" >/dev/null
+            jq -e '.ok == true and .marker == "candidate"' <<<"$health" >/dev/null
+          fi
           before="$(render_read "https://api.render.com/v1/services/$service_id/deploys?limit=100")"
           before_ids="$(jq -c '(if type == "array" then . else .deploys end) | map((.deploy // .).id)' <<<"$before")"
           value="$(jq -nc --arg run "$GITHUB_RUN_ID" '{schemaVersion:1, phase:"probe", runId:$run} | tojson')"
@@ -337,11 +358,20 @@ jobs:
           after_ids="$(jq -c '(if type == "array" then . else .deploys end) | map((.deploy // .).id)' <<<"$after")"
           [[ "$after_ids" == "$before_ids" ]]
           service="$(render_read "https://api.render.com/v1/services/$service_id")"
-          jq -e --arg id "$service_id" '
-            (.service // .) | .id == $id and .suspended == "suspended"
+          expected_state=suspended
+          if [[ "$live_mode" -eq 1 ]]; then expected_state=not_suspended; fi
+          jq -e --arg id "$service_id" --arg state "$expected_state" '
+            (.service // .) | .id == $id and .suspended == $state
           ' <<<"$service" >/dev/null
-          jq -nc --arg serviceId "$service_id" --argjson deployIds "$after_ids" \
-            '{serviceId:$serviceId, suspended:true, journalReadback:true, deploymentSetUnchanged:true, deployIds:$deployIds}'
+          if [[ "$live_mode" -eq 1 ]]; then
+            health="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 https://rr-render-recovery-e2e-20260905.onrender.com/health)"
+            jq -e '.ok == true and .marker == "candidate"' <<<"$health" >/dev/null
+            render_write -X POST \
+              "https://api.render.com/v1/services/$service_id/suspend" \
+              -o /dev/null
+          fi
+          jq -nc --arg serviceId "$service_id" --arg state "$expected_state" --argjson deployIds "$after_ids" \
+            '{serviceId:$serviceId, observedState:$state, journalReadback:true, deploymentSetUnchanged:true, deployIds:$deployIds}'
 
   trust-bootstrap:
     name: Verify protected main dispatch
