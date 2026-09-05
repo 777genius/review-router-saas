@@ -583,7 +583,7 @@ jobs:
             # Local snapshots (including an already-fenced ACL) are never
             # restoration authority. Re-read authenticated durable replicas at
             # the mutation boundary, even when no local journal survived.
-            read_recovery_replicas > "$work/compensation-replicas.json" || return 1
+            read_recovery_replicas reference > "$work/compensation-replicas.json" || return 1
             WORK="$work" node --input-type=module <<'NODE' || return 1
           import {readFileSync, writeFileSync} from "node:fs";
           import {parseRecoveryReplicaResponse, recoveryCompensationFence, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
@@ -1467,14 +1467,19 @@ jobs:
           read_recovery_replicas() {
             local service_id observed replicas='[]'
             for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-              observed="$(read_recovery_phase "$service_id")" || return $?
+              observed="$(read_recovery_phase "$service_id" "${1:-expand}")" || return $?
+              if [[ "${1:-expand}" == reference ]]; then
+                # The shared raw reader validated the compact envelope and journal.
+                # Its retained fence needs no deployment-history IO for closure.
+                observed="$(jq -c '.journal // .' <<<"$observed")" || return 1
+              fi
               replicas="$(printf '%s\n%s\n' "$replicas" "$observed" | jq -cs '.[0] + [.[1]]')" || return $?
             done
             printf '%s\n' "$replicas"
           }
           assert_recovery_nonterminal() {
             local replicas
-            replicas="$(read_recovery_replicas)" || return 1
+            replicas="$(read_recovery_replicas "${1:-expand}")" || return 1
             if jq -e 'any(.[]; .registration != null or .phase == "fleet_verified_closed" or .phase == "complete")' <<<"$replicas" >/dev/null; then
               echo "::error::Recovery is already complete, fleet_verified_closed, or holds registration authority; these receipts authorize no recovery effects." >&2
               return 1
@@ -1558,11 +1563,33 @@ jobs:
           NODE
             persist_recovery_journal
           }
-          prior_recovery_phases="$(assert_recovery_nonterminal)"
-          # A nonterminal crash may have left every barrier open. Arm closure
-          # before any local staging or mutable desired-configuration validation.
+          prior_recovery_phases="$(assert_recovery_nonterminal reference)"
+          # Authenticate immutable scope and retained original fence evidence before
+          # arming destructive closure. Compact authority never permits activation.
+          printf '%s\n' "$prior_recovery_phases" > "$work/recovery-resume-state.json"
+          WORK="$work" node --input-type=module <<'NODE'
+          import {readFileSync} from "node:fs";
+          import {parseRecoveryReplicaResponse, recoveryCompensationFence, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const replicas = parseRecoveryReplicaResponse(readFileSync(`${work}/recovery-resume-state.json`, "utf8"));
+          if (!replicas.every(value => value === null)) {
+            const expected = structuredClone(replicas[0]?.tuple ?? {});
+            Object.assign(expected, {targetDbId:process.env.TARGET_DB_ID, ownerId:process.env.RENDER_OWNER_ID,
+              environmentId:process.env.RENDER_ENVIRONMENT_ID, releaseCommitSha:process.env.RELEASE_COMMIT_SHA});
+            expected.services = Object.fromEntries(recoveryRoles.map(role => [role, {
+              ...expected.services?.[role], id:process.env[`${role.toUpperCase()}_SERVICE_ID`],
+              name:`reviewrouter-${role}`, type:role === "worker" ? "background_worker" : "web_service",
+              ownerId:expected.ownerId, environmentId:expected.environmentId,
+              repo:"https://github.com/777genius/review-router-saas", branch:"main", autoDeploy:"no"
+            }]));
+            recoveryCompensationFence(replicas, expected);
+          }
+          NODE
+          # A nonterminal crash may have left every barrier open. History IO can
+          # fail independently; compensation must already be armed when it starts.
           suspension_guard_armed=1
           firewall_open=1
+          prior_recovery_phases="$(assert_recovery_nonterminal)"
           printf '%s\n' "$prior_recovery_phases" > "$work/recovery-resume-state.json"
           WORK="$work" node --input-type=module <<'NODE'
           import {readFileSync, writeFileSync} from "node:fs";
@@ -3029,7 +3056,8 @@ jobs:
             fi
             rm -f "$work/api-env.json" "$work/api-env-object.json" \
               "$work/connection-info.json" "$work/operator-input.json" \
-              "$work/investigation-env-value.json" \
+              "$work/investigation-env-value.json" "$work/registration-owned-env.json" \
+              "$work/registration-owned-env-next.json" \
               "$work"/investigation-service-env-*.json \
               "$work"/initial-*-env.json "$work"/current-*-env.json
             exit "$cleanup_status"
@@ -3168,14 +3196,19 @@ jobs:
           read_recovery_replicas() {
             local service_id observed replicas='[]'
             for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-              observed="$(read_recovery_phase "$service_id")" || return $?
+              observed="$(read_recovery_phase "$service_id" "${1:-expand}")" || return $?
+              if [[ "${1:-expand}" == reference ]]; then
+                # The shared raw reader validated the compact envelope and journal.
+                # Its retained fence needs no deployment-history IO for closure.
+                observed="$(jq -c '.journal // .' <<<"$observed")" || return 1
+              fi
               replicas="$(printf '%s\n%s\n' "$replicas" "$observed" | jq -cs '.[0] + [.[1]]')" || return $?
             done
             printf '%s\n' "$replicas"
           }
           assert_recovery_nonterminal() {
             local replicas
-            replicas="$(read_recovery_replicas)" || return 1
+            replicas="$(read_recovery_replicas "${1:-expand}")" || return 1
             if jq -e 'any(.[]; .phase == "fleet_verified_closed" or .phase == "complete")' <<<"$replicas" >/dev/null; then
               echo "::error::Recovery is already complete or fleet_verified_closed; terminal receipts authorize no effects." >&2
               return 1
@@ -3273,6 +3306,13 @@ jobs:
           NODE
             persist_recovery_journal
           }
+          retain_registration_intended_value() {
+            local key="$1" payload="$2"
+            jq --arg key "$key" --slurpfile payload "$payload" \
+              'map(select(.key != $key)) + [{key:$key,value:$payload[0].value}]' \
+              "$work/registration-owned-env.json" > "$work/registration-owned-env-next.json" || return 1
+            mv "$work/registration-owned-env-next.json" "$work/registration-owned-env.json"
+          }
           retain_registration_configuration() {
             local service_id
             for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
@@ -3280,13 +3320,34 @@ jobs:
             done
             WORK="$work" node --input-type=module <<'NODE' || return 1
           import {readFileSync, writeFileSync} from "node:fs";
-          import {parseRecoveryJson, recoveryRoles, recoveryConfigFingerprint, retainRegistrationConfiguration} from "./scripts/render-recovery-journal.mjs";
+          import {parseRecoveryJson, recoveryRoles, recoveryEnvironmentEntries, recoveryJournalKey, recoveryConfigFingerprint, retainRegistrationConfiguration} from "./scripts/render-recovery-journal.mjs";
           const work = process.env.WORK;
           const read = name => parseRecoveryJson(readFileSync(`${work}/${name}`, "utf8"));
           const state = read("recovery-journal.json");
+          // First readback proves the actual writes and preserves every other
+          // baseline value. Later runners must still match the immutable fingerprint.
+          const intended = state.runtimeConfigFingerprints ? null : new Map(
+            recoveryEnvironmentEntries(read("registration-owned-env.json")).map(({key,value}) => [key,value]));
+          if (intended && (!intended.has("REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON") || intended.has(recoveryJournalKey)))
+            throw new Error("recovery_registration_intended_configuration_missing");
           const fingerprints = Object.fromEntries(recoveryRoles.map(role => {
             const serviceId = state.tuple.services[role].id;
-            return [role, {serviceId, fingerprint:recoveryConfigFingerprint(readFileSync(`${work}/current-${serviceId}-env.json`, "utf8"))}];
+            const environment = readFileSync(`${work}/current-${serviceId}-env.json`, "utf8");
+            const observed = new Map(recoveryEnvironmentEntries(environment).map(({key,value}) => [key,value]));
+            if (intended) {
+              const baseline = readFileSync(`${work}/initial-${serviceId}-env.json`, "utf8");
+              if (recoveryConfigFingerprint(baseline) !== state.tuple.services[role].configFingerprint)
+                throw new Error("recovery_registration_baseline_mismatch");
+              for (const [key,value] of intended) {
+                if (observed.get(key) !== value) throw new Error("recovery_registration_owned_configuration_mismatch");
+              }
+              const nonOwned = entries => entries.filter(({key}) => key !== recoveryJournalKey && !intended.has(key));
+              const before = new Map(nonOwned(recoveryEnvironmentEntries(baseline)).map(({key,value}) => [key,value]));
+              const after = nonOwned(recoveryEnvironmentEntries(environment));
+              if (before.size !== after.length || after.some(({key,value}) => before.get(key) !== value))
+                throw new Error("recovery_registration_non_owned_configuration_drift");
+            }
+            return [role, {serviceId, fingerprint:recoveryConfigFingerprint(environment)}];
           }));
           const next = retainRegistrationConfiguration(state, fingerprints, state.registrationResult ?? read("registration-result.json"));
           writeFileSync(`${work}/recovery-journal.json`, JSON.stringify(next) + "\n", {mode:0o600});
@@ -3375,6 +3436,7 @@ jobs:
           # A retained deployment configuration authorizes observation only. The
           # operator and environment staging already completed before its intent.
           if ! jq -e '.runtimeConfigFingerprints != null' "$work/recovery-journal.json" >/dev/null; then
+          printf '[]\n' > "$work/registration-owned-env.json"
           read_registration_environment "$API_SERVICE_ID" \
             > "$work/api-env.json"
           jq -e '
@@ -3423,6 +3485,7 @@ jobs:
               local value="$3"
               jq -n --arg value "$value" '{value: $value}' \
                 > "$work/investigation-env-value.json"
+              retain_registration_intended_value "$key" "$work/investigation-env-value.json" || return 1
               render_api -X PUT -H "Content-Type: application/json" \
                 --data-binary @"$work/investigation-env-value.json" \
                 "https://api.render.com/v1/services/$service_id/env-vars/$key" \
@@ -3849,6 +3912,7 @@ jobs:
 
           jq -n --rawfile value "$work/updated-attestations.json" \
             '{value: ($value | rtrimstr("\n"))}' > "$work/attestations-env.json"
+          retain_registration_intended_value REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON "$work/attestations-env.json"
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
             render_api -X PUT -H "Content-Type: application/json" \
               --data-binary @"$work/attestations-env.json" \

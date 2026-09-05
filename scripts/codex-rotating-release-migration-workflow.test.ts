@@ -7848,8 +7848,8 @@ render_inventory_api() {
     if [[ "$crash" == torn_intent && "$id" == srv-api ]] && jq -e '(.journal // .).services.api.phase == "deploy_intent"' "$remote/$id.journal.json" >/dev/null; then kill -KILL "$$"; fi
   else
     if [[ -f "$remote/$id.journal.json" ]]; then
-      jq -nc --arg key "$recovery_phase_key" --rawfile value "$remote/$id.journal.json" --arg defect "$defect" '[{key:"FIXTURE",value:(if $defect == "config" then "drift" else "stable" end)},{key:$key,value:$value}]'
-    else printf '[{"key":"FIXTURE","value":"stable"}]'; fi
+      jq -nc --arg key "$recovery_phase_key" --rawfile value "$remote/$id.journal.json" --arg defect "$defect" '[{key:"REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON",value:"[]"},{key:"FIXTURE",value:(if $defect == "config" then "drift" else "stable" end)},{key:$key,value:$value}]'
+    else printf '[{"key":"REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON","value":"[]"},{"key":"FIXTURE","value":"stable"}]'; fi
   fi
 }
 fetch_registration_deployment_inventory() {
@@ -7883,6 +7883,7 @@ ${registerRelease.slice(registerRelease.indexOf('          assert_recovery_nonte
 initialize_registration_journal
 ${registerRelease.slice(registerRelease.indexOf('          runner_ip="$(curl --fail'), registerRelease.indexOf("          # A retained deployment configuration")).replace(/^ {10}/gmu, "")}
 jq -nc --arg sha "$ACTION_COMMIT_SHA" '{actionCommitSha:$sha,releaseStatus:"created",producerReleaseId:"fixture"}' > "$work/registration-result.json"
+printf '[{"key":"REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON","value":"[]"}]' > "$work/registration-owned-env.json"
 retain_registration_configuration
 ${creation}
 close_firewall
@@ -8839,9 +8840,11 @@ describe("R10 exact recovery remediation", () => {
       "          trap cleanup EXIT",
       "          recovery_closure=1 assert_recovery_target_identity",
       "          recovery_closure=1 assert_recovery_fleet_identity",
-      '          prior_recovery_phases="$(assert_recovery_nonterminal)"',
+      '          prior_recovery_phases="$(assert_recovery_nonterminal reference)"',
+      "            recoveryCompensationFence(replicas, expected);",
       "          suspension_guard_armed=1",
       "          firewall_open=1",
+      '          prior_recovery_phases="$(assert_recovery_nonterminal)"',
       '          const replicas = parseRecoveryReplicaResponse(readFileSync(`${work}/recovery-resume-state.json`, "utf8"));',
       "          validateRecoveryWorkerSource(parseRecoveryJson",
       "          # Mutable drift rejects forward progress",
@@ -9276,4 +9279,541 @@ render_deploy_mutation 1788560520 -X POST https://api.render.com/v1/services/srv
       }
     });
   }
+});
+
+describe("R17 compact admission before history IO", () => {
+  it.each([
+    "history_failure",
+    "history_mismatch",
+    "exact",
+    "terminal",
+    "torn_terminal",
+    "registration",
+    "foreign_scope",
+    "foreign_replica",
+    "missing_replica",
+    "invalid_reference",
+    "duplicate_member",
+  ])("executes startup and EXIT closure with %s", (scenario) => {
+    const work = mkdtempSync(join(tmpdir(), "pr247-r17-admission-"));
+    try {
+      const fixture = r8Fixture();
+      let state = fixture.state;
+      const inventories: Record<string, unknown[]> = {};
+      const epoch = Date.parse("2026-09-05T01:00:00Z") / 1000;
+      // A real compact reference requiring history expansion, after all services
+      // verified but before terminal persistence (maintenance/grants may be open).
+      for (const role of recoveryRoles) {
+        const before = [
+          ...fixture.inventories[role]!,
+          {
+            ...fixture.inventories[role]![0]!,
+            deployId: `dep-history-${role}`,
+            observedStatus: "deactivated",
+            statusClass: "terminal",
+            createdAt: "2026-09-04T00:00:00Z",
+          },
+        ];
+        state.services[role].beforeInventory = before;
+        state = advanceRecoveryService(state, role, "resume_intent");
+        state = advanceRecoveryService(state, role, "resumed");
+        state = advanceRecoveryService(state, role, "deploy_intent", {
+          inventory: before,
+          intentEpoch: epoch,
+        });
+        state = advanceRecoveryService(state, role, "deploy_bound", {
+          deployId: `dep-target-${role}`,
+        });
+        inventories[role] = [
+          {
+            ...before[0],
+            deployId: `dep-target-${role}`,
+            observedCommitSha: releaseCommitSha,
+            createdAt: "2026-09-05T01:00:01Z",
+          },
+          ...before.map((item) => ({
+            ...item,
+            observedStatus: "deactivated",
+            statusClass: "terminal",
+          })),
+        ];
+        state = advanceRecoveryService(state, role, "verified", {
+          inventory: inventories[role],
+        });
+      }
+      const terminal = advanceRecoveryPhase(state, "fleet_verified_closed");
+      const replicas = recoveryRoles.map(() => compactRecoveryJournal(state));
+      if (scenario === "terminal")
+        replicas.fill(
+          compactRecoveryJournal(advanceRecoveryPhase(terminal, "complete")),
+        );
+      if (scenario === "torn_terminal")
+        replicas[2] = compactRecoveryJournal(terminal);
+      if (scenario === "registration")
+        replicas.fill(compactRecoveryJournal(registrationFixture().state));
+      if (scenario === "foreign_scope")
+        for (const replica of replicas)
+          replica.journal.tuple.targetDbId = "dpg-foreign";
+      if (scenario === "foreign_replica")
+        replicas[2]!.journal.tuple.services.worker.id = "srv-foreign";
+      if (scenario === "invalid_reference")
+        (
+          replicas[2]!.histories as Record<
+            "worker",
+            { beforeInventory: { count: number } }
+          >
+        ).worker.beforeInventory.count = 0;
+      for (const [index, role] of recoveryRoles.entries()) {
+        let response = JSON.stringify([
+          { key: recoveryJournalKey, value: JSON.stringify(replicas[index]) },
+        ]);
+        if (scenario === "missing_replica" && role === "web") response = "[]";
+        if (scenario === "duplicate_member" && role === "web")
+          response = response.replace(
+            '"value":',
+            '"value":"untrusted","value":',
+          );
+        writeFileSync(join(work, `${role}-env.json`), response);
+        const inventory = structuredClone(inventories[role]!);
+        if (scenario === "history_mismatch")
+          (inventory[2] as { deployId: string }).deployId =
+            `dep-substituted-${role}`;
+        writeFileSync(
+          join(work, `${role}-history.json`),
+          JSON.stringify(inventory),
+        );
+      }
+      const start = recover.indexOf("          prior_recovery_phases=");
+      const end = recover.indexOf(
+        "          # Source evidence is an activation prerequisite",
+        start,
+      );
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -euo pipefail
+work="$1"
+scenario="$2"
+suspension_guard_armed=0
+firewall_open=0
+recovery_complete=0
+render_inventory_api() {
+  local url="\${@: -1}" id
+  id="\${url#*services/srv-}"; id="\${id%%/*}"
+  printf 'reference:%s\\n' "$id" >> "$work/events"
+  cat "$work/$id-env.json"
+}
+fetch_recovery_deployment_inventory() {
+  printf 'history:%s\\n' "$1" >> "$work/events"
+  if [[ "$scenario" == history_failure ]]; then return 28; fi
+  cat "$work/\${1#srv-}-history.json"
+}
+set_recovery_maintenance() { printf 'maintenance\\n' >> "$work/events"; }
+compensate_recovery_fleet() { printf 'suspend\\n' >> "$work/events"; }
+open_recovery_database() { printf 'connectivity\\n' >> "$work/events"; }
+close_recovery_admission() { printf 'admission\\n' >> "$work/events"; }
+assert_recovery_target_identity() { :; }
+assert_recovery_fleet_identity() { :; }
+assert_worker_effect_fenced() { :; }
+assert_recovery_admission_closed() { :; }
+docker() { printf 'refence\\n' >> "$work/events"; }
+close_firewall() { if [[ "$firewall_open" == 1 ]]; then printf 'firewall\\n' >> "$work/events"; fi; }
+${["read_recovery_phase", "read_recovery_replicas", "assert_recovery_nonterminal", "retain_bootstrap_compensation_fence", "compensate_worker_effect_fence", "worker_fence_sql", "cleanup"].map((name) => extractRecoveryBashFunction(name)).join("\n")}
+trap cleanup EXIT
+${recover.slice(start, end).replace(/^ {10}/gmu, "")}
+printf 'forward\\n' >> "$work/events"
+exit 77
+`,
+          "bash",
+          work,
+          scenario,
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...subprocessEnv,
+            TARGET_DB_ID: fixture.tuple.targetDbId,
+            RENDER_OWNER_ID: fixture.tuple.ownerId,
+            RENDER_ENVIRONMENT_ID: fixture.tuple.environmentId,
+            RELEASE_COMMIT_SHA: releaseCommitSha,
+            API_SERVICE_ID: "srv-api",
+            WORKER_SERVICE_ID: "srv-worker",
+            WEB_SERVICE_ID: "srv-web",
+          },
+          timeout: 15000,
+        },
+      );
+      expect(result.status, result.stderr).not.toBe(0);
+      const events = readFileSync(join(work, "events"), "utf8")
+        .trim()
+        .split("\n");
+      const admitted = [
+        "history_failure",
+        "history_mismatch",
+        "exact",
+      ].includes(scenario);
+      expect(
+        events.filter((event) =>
+          ["maintenance", "suspend", "refence", "firewall"].includes(event),
+        ),
+        result.stderr,
+      ).toEqual(
+        admitted ? ["maintenance", "suspend", "refence", "firewall"] : [],
+      );
+      expect(events.includes("forward"), result.stderr).toBe(
+        scenario === "exact",
+      );
+      expect(events.some((event) => event.startsWith("history:"))).toBe(
+        admitted,
+      );
+      if (admitted) {
+        expect(
+          JSON.parse(
+            readFileSync(join(work, "worker-effect-fence.json"), "utf8"),
+          ),
+        ).toEqual(fixture.fence);
+        expect(
+          readFileSync(join(work, "worker-refence.sql"), "utf8"),
+        ).toContain('REVOKE UPDATE ON public."OutboxEvent"');
+        expect(events.slice(events.indexOf("maintenance"))).not.toContain(
+          "history:srv-api",
+        );
+      }
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("R17 intended registration configuration readback", () => {
+  const attestationKey =
+    "REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON";
+  it.each([
+    "exact",
+    "stale_attestation",
+    "database_drift",
+    "non_owned_added",
+    "non_owned_removed",
+    "missing_intent",
+  ])("executes retention and caller deploy gate with %s", (scenario) => {
+    const work = mkdtempSync(join(tmpdir(), "pr247-r17-config-"));
+    try {
+      const fixture = registrationFixture();
+      const intended = [
+        { key: attestationKey, value: '[{"producerReleaseId":"fixture-new"}]' },
+      ];
+      const baseline = [
+        {
+          key: "DATABASE_URL",
+          value: "postgresql://fixture:synthetic@db.invalid/baseline",
+        },
+        { key: "NON_OWNED", value: "keep" },
+        { key: attestationKey, value: "[]" },
+      ];
+      for (const role of recoveryRoles)
+        fixture.tuple.services[role]!.configFingerprint =
+          recoveryConfigFingerprint(baseline);
+      const state = createRegistrationJournal(
+        fixture.tuple,
+        fixture.inventories,
+        fixture.binding,
+      );
+      writeFileSync(join(work, "recovery-journal.json"), JSON.stringify(state));
+      writeFileSync(
+        join(work, "registration-result.json"),
+        JSON.stringify(fixture.result),
+      );
+      if (scenario !== "missing_intent")
+        writeFileSync(
+          join(work, "registration-owned-env.json"),
+          JSON.stringify(intended),
+        );
+      for (const role of recoveryRoles) {
+        writeFileSync(
+          join(work, `initial-srv-${role}-env.json`),
+          JSON.stringify(baseline),
+        );
+        let observed = baseline.map((entry) =>
+          entry.key === attestationKey ? intended[0]! : entry,
+        );
+        if (role === "worker") {
+          if (scenario === "stale_attestation") observed = baseline;
+          if (scenario === "database_drift")
+            observed = observed.map((entry) =>
+              entry.key === "DATABASE_URL"
+                ? {
+                    ...entry,
+                    value:
+                      "postgresql://fixture:synthetic@db.invalid/concurrent",
+                  }
+                : entry,
+            );
+          if (scenario === "non_owned_added")
+            observed = [...observed, { key: "CONCURRENT", value: "new" }];
+          if (scenario === "non_owned_removed")
+            observed = observed.filter((entry) => entry.key !== "NON_OWNED");
+        }
+        writeFileSync(
+          join(work, `remote-srv-${role}.json`),
+          JSON.stringify(
+            [
+              ...observed,
+              {
+                key: recoveryJournalKey,
+                value: JSON.stringify(compactRecoveryJournal(state)),
+              },
+            ]
+              .reverse()
+              .map((envVar) => ({ envVar })),
+          ),
+        );
+      }
+      const start = registerRelease.indexOf(
+        "          retain_registration_configuration\n",
+      );
+      const end = registerRelease.indexOf("          for service_id in", start);
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -euo pipefail
+work="$1"
+render_inventory_api() {
+  local url="\${@: -1}" id
+  id="\${url#*services/}"; id="\${id%%/*}"
+  cat "$work/remote-$id.json"
+}
+persist_recovery_journal() { printf 'persist\\n' >> "$work/events"; }
+render_deploy_mutation() { printf 'deploy\\n' >> "$work/events"; }
+${["read_registration_environment", "retain_registration_configuration"].map((name) => extractRecoveryBashFunction(name, registerRelease)).join("\n")}
+${registerRelease.slice(start, end).replace(/^ {10}/gmu, "")}
+render_deploy_mutation
+`,
+          "bash",
+          work,
+        ],
+        {
+          env: {
+            ...subprocessEnv,
+            API_SERVICE_ID: "srv-api",
+            WORKER_SERVICE_ID: "srv-worker",
+            WEB_SERVICE_ID: "srv-web",
+            RELEASE_COMMIT_SHA: releaseCommitSha,
+          },
+          encoding: "utf8",
+        },
+      );
+      const accepted = scenario === "exact";
+      expect(result.status === 0, result.stderr).toBe(accepted);
+      expect(existsSync(join(work, "events"))).toBe(accepted);
+      expect(existsSync(join(work, "deploy-request.json"))).toBe(accepted);
+      const retained = JSON.parse(
+        readFileSync(join(work, "recovery-journal.json"), "utf8"),
+      );
+      if (accepted) {
+        expect(readFileSync(join(work, "events"), "utf8")).toBe(
+          "persist\ndeploy\n",
+        );
+        expect(retained.runtimeConfigFingerprints.worker.fingerprint).toBe(
+          recoveryConfigFingerprint(
+            JSON.stringify([
+              ...baseline.filter((entry) => entry.key !== attestationKey),
+              ...intended,
+            ]),
+          ),
+        );
+      } else expect(retained).toEqual(state);
+      expect(result.stdout + result.stderr).not.toContain("postgresql://");
+      expect(result.stdout + result.stderr).not.toContain("fixture-new");
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("R17 registration intended payload callers", () => {
+  const keys = [
+    "RECORDING_ENABLED",
+    "SHADOW_ENABLED",
+    "CONTEXT_CRITIC_ENABLED",
+    "VERIFIED_CLEAN_ENABLED",
+    "CROSS_REVISION_REPLAY_ENABLED",
+    "PRODUCTION_EFFECTS_ENABLED",
+    "EMERGENCY_DISABLED",
+    "SELECTORS_JSON",
+  ].map((key) => `REVIEW_ROUTER_REVIEW_INVESTIGATION_${key}`);
+  it.each([
+    ...["preserve", "shadow", "production"].map((profile) => ({
+      profile,
+      drift: "",
+    })),
+    ...keys.map((drift) => ({ profile: "production", drift })),
+  ])(
+    "retains every actual $profile write before PUT and rejects drift in '$drift'",
+    ({ profile, drift }) => {
+      const work = mkdtempSync(join(tmpdir(), "pr247-r17-config-callers-"));
+      try {
+        const fixture = registrationFixture();
+        fixture.binding.investigationRolloutProfile = profile;
+        const attestationKey =
+          "REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON";
+        const producer = `reviewrouter-action.${fixture.binding.actionCommitSha.slice(0, 12)}`;
+        const intendedAttestation = JSON.stringify([
+          {
+            actionCommitSha: fixture.binding.actionCommitSha,
+            producerReleaseId: producer,
+          },
+        ]);
+        const baseline = [
+          { key: attestationKey, value: "[]" },
+          {
+            key: "DATABASE_URL",
+            value: "postgresql://fixture:synthetic@db.invalid/baseline",
+          },
+          ...keys.map((key) => ({ key, value: "preserved" })),
+        ];
+        for (const role of recoveryRoles) {
+          fixture.tuple.services[role]!.configFingerprint =
+            recoveryConfigFingerprint(baseline);
+          writeFileSync(
+            join(work, `initial-srv-${role}-env.json`),
+            JSON.stringify(baseline),
+          );
+          writeFileSync(
+            join(work, `remote-srv-${role}.json`),
+            JSON.stringify(baseline),
+          );
+        }
+        const state = createRegistrationJournal(
+          fixture.tuple,
+          fixture.inventories,
+          fixture.binding,
+        );
+        writeFileSync(
+          join(work, "recovery-journal.json"),
+          JSON.stringify(state),
+        );
+        writeFileSync(
+          join(work, "registration-result.json"),
+          JSON.stringify(fixture.result),
+        );
+        writeFileSync(
+          join(work, "updated-attestations.json"),
+          intendedAttestation + "\n",
+        );
+        // Extract initialization/optional investigation writes, and the actual
+        // attestation PUT loop. The operator/network lane between them is excluded.
+        const init = registerRelease.indexOf(
+          "          printf '[]\\n' > \"$work/registration-owned-env.json\"",
+        );
+        expect(init).toBeGreaterThan(0);
+        const investigation = registerRelease.indexOf(
+          '          if [[ "$INVESTIGATION_ROLLOUT_PROFILE" != "preserve" ]]',
+          init,
+        );
+        const investigationEnd = registerRelease.indexOf(
+          '          read_registration_environment "$API_SERVICE_ID"',
+          investigation,
+        );
+        const attestation = registerRelease.indexOf(
+          '          jq -n --rawfile value "$work/updated-attestations.json"',
+        );
+        const attestationEnd = registerRelease.indexOf(
+          "\n          fi\n          retain_registration_configuration",
+          attestation,
+        );
+        const caller = registerRelease.indexOf(
+          "          retain_registration_configuration\n",
+          attestationEnd,
+        );
+        const callerEnd = registerRelease.indexOf(
+          "          for service_id in",
+          caller,
+        );
+        const result = spawnSync(
+          "bash",
+          [
+            "-c",
+            `set -euo pipefail
+umask 077
+work="$1"
+drift="$2"
+render_inventory_api() {
+  local url="\${@: -1}" id
+  id="\${url#*services/}"; id="\${id%%/*}"
+  cat "$work/remote-$id.json"
+}
+render_api() {
+  local arg previous="" payload="" url="" id key
+  for arg in "$@"; do
+    [[ "$previous" != --data-binary ]] || payload="\${arg#@}"
+    [[ "$arg" != https:* ]] || url="$arg"
+    previous="$arg"
+  done
+  id="\${url#*services/}"; id="\${id%%/*}"; key="\${url##*/}"
+  # Every mutation must have retained its precise payload first.
+  jq -e --arg key "$key" --slurpfile payload "$payload" 'map(select(.key == $key)) | length == 1 and .[0].value == $payload[0].value' "$work/registration-owned-env.json" >/dev/null
+  jq --arg key "$key" --slurpfile payload "$payload" 'map(select(.key != $key)) + [{key:$key,value:$payload[0].value}]' "$work/remote-$id.json" > "$work/next.json"
+  mv "$work/next.json" "$work/remote-$id.json"
+  printf '%s:%s\\n' "$id" "$key" >> "$work/writes"
+}
+persist_recovery_journal() { touch "$work/persisted"; }
+render_deploy_mutation() { touch "$work/deploy"; }
+${["read_registration_environment", "retain_registration_intended_value", "retain_registration_configuration"].map((name) => extractRecoveryBashFunction(name, registerRelease)).join("\n")}
+${registerRelease.slice(init, investigationEnd).replace(/^ {10}/gmu, "")}
+${registerRelease.slice(attestation, attestationEnd).replace(/^ {10}/gmu, "")}
+if [[ -n "$drift" ]]; then
+  jq --arg key "$drift" 'map(if .key == $key then .value="stale" else . end)' "$work/remote-srv-worker.json" > "$work/next.json"
+  mv "$work/next.json" "$work/remote-srv-worker.json"
+fi
+${registerRelease.slice(caller, callerEnd).replace(/^ {10}/gmu, "")}
+render_deploy_mutation
+`,
+            "bash",
+            work,
+            drift,
+          ],
+          {
+            env: {
+              ...subprocessEnv,
+              API_SERVICE_ID: "srv-api",
+              WORKER_SERVICE_ID: "srv-worker",
+              WEB_SERVICE_ID: "srv-web",
+              RELEASE_COMMIT_SHA: releaseCommitSha,
+              ACTION_COMMIT_SHA: fixture.binding.actionCommitSha,
+              INVESTIGATION_ROLLOUT_PROFILE: profile,
+              INVESTIGATION_PRODUCER_RELEASE_ID: producer,
+              OPERATOR_WORKSPACE_ID: "fixture-workspace",
+              INVESTIGATION_REPOSITORY_CONNECTION_ID: "fixture-repository",
+            },
+            encoding: "utf8",
+            timeout: 15000,
+          },
+        );
+        expect(result.status === 0, result.stderr).toBe(drift === "");
+        expect(existsSync(join(work, "persisted"))).toBe(drift === "");
+        expect(existsSync(join(work, "deploy"))).toBe(drift === "");
+        const owned = JSON.parse(
+          readFileSync(join(work, "registration-owned-env.json"), "utf8"),
+        ) as { key: string; value: string }[];
+        expect(owned.map((entry) => entry.key).sort()).toEqual(
+          [attestationKey, ...(profile === "preserve" ? [] : keys)].sort(),
+        );
+        expect(owned.find((entry) => entry.key === attestationKey)?.value).toBe(
+          intendedAttestation,
+        );
+        expect(
+          readFileSync(join(work, "writes"), "utf8").trim().split("\n"),
+        ).toHaveLength(owned.length * 3);
+        if (drift)
+          expect(result.stderr).toContain(
+            "recovery_registration_owned_configuration_mismatch",
+          );
+        expect(result.stdout + result.stderr).not.toContain("postgresql://");
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    },
+  );
 });
