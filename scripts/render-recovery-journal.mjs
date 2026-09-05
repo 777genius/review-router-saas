@@ -164,7 +164,7 @@ export function recoveryConfigFingerprint(environment) {
   );
 }
 
-function recoveryEnvironmentEntries(environment) {
+export function recoveryEnvironmentEntries(environment) {
   if (typeof environment === "string")
     environment = parseRecoveryJson(environment);
   fail(Array.isArray(environment), "environment_shape");
@@ -323,6 +323,99 @@ function validateInventory(inventory, serviceId) {
   );
 }
 
+// Registration uses the same replicated journal and ordered intent/effect
+// transitions. Its immutable binding distinguishes it from database recovery;
+// neither operation may reinterpret the other's retained authority.
+export function validateRegistrationBinding(binding) {
+  const keys = [
+    "actionCommitSha",
+    "operatorRepository",
+    "operatorWorkspaceId",
+    "investigationRolloutProfile",
+    "investigationRepositoryConnectionId",
+    "investigationProducerReleaseId",
+  ];
+  fail(
+    binding &&
+      equal(Object.keys(binding).sort(), keys.sort()) &&
+      keys.every((key) => typeof binding[key] === "string"),
+    "registration_binding",
+  );
+  fail(
+    /^[a-f0-9]{40}$/.test(binding.actionCommitSha) &&
+      ["preserve", "shadow", "production"].includes(
+        binding.investigationRolloutProfile,
+      ),
+    "registration_binding",
+  );
+  return globalThis.structuredClone(binding);
+}
+
+export function createRegistrationJournal(tuple, inventories, binding) {
+  let state = createRecoveryJournal(tuple, inventories);
+  state.registration = validateRegistrationBinding(binding);
+  for (const role of recoveryRoles)
+    assertRecoveryPreEffectInventory(state, role, inventories[role]);
+  state = advanceRecoveryPhase(state, "frozen");
+  return advanceRecoveryPhase(state, "prepared");
+}
+
+export function loadRegistrationReplicas(replicas, expectedTuple, binding) {
+  const state = loadRecoveryReplicas(replicas, expectedTuple);
+  fail(
+    equal(state.registration, validateRegistrationBinding(binding)),
+    "registration_binding_mismatch",
+  );
+  fail(state.phase === "prepared", "registration_phase");
+  return state;
+}
+
+export function retainRegistrationConfiguration(journal, fingerprints, result) {
+  const state = loadRecoveryJournal(journal, journal.tuple);
+  validateRegistrationBinding(state.registration);
+  validateRuntimeFingerprints(state, fingerprints);
+  if (state.runtimeConfigFingerprints !== undefined) {
+    fail(
+      equal(state.runtimeConfigFingerprints, fingerprints),
+      "registration_configuration_drift",
+    );
+    return state;
+  }
+  fail(
+    recoveryRoles.every((role) => state.services[role].phase === "pending"),
+    "registration_configuration_missing",
+  );
+  validateRegistrationResult(state, result);
+  state.runtimeConfigFingerprints = globalThis.structuredClone(fingerprints);
+  state.registrationResult = globalThis.structuredClone(result);
+  state.revision += 1;
+  return loadRecoveryJournal(state, state.tuple);
+}
+
+function validateRegistrationResult(state, result) {
+  fail(
+    result?.actionCommitSha === state.registration.actionCommitSha &&
+      ["created", "restored"].includes(result.releaseStatus) &&
+      typeof result.producerReleaseId === "string" &&
+      result.producerReleaseId.length > 0,
+    "registration_result",
+  );
+}
+
+function validateRuntimeFingerprints(state, fingerprints) {
+  fail(
+    fingerprints &&
+      equal(Object.keys(fingerprints).sort(), [...recoveryRoles].sort()),
+    "preparation_roles",
+  );
+  for (const role of recoveryRoles)
+    fail(
+      fingerprints[role].serviceId === state.tuple.services[role].id &&
+        /^[a-f0-9]{64}$/.test(fingerprints[role].fingerprint),
+      "preparation_configuration",
+    );
+}
+
 export function createRecoveryJournal(tuple, inventories) {
   validateRecoveryTuple(tuple);
   const services = {};
@@ -412,7 +505,67 @@ export function loadRecoveryJournal(value, expectedTuple) {
       indexes.every((index) => index === effects.length - 1),
       "journal_incomplete_fleet",
     );
+  if (state.registration !== undefined) {
+    validateRegistrationBinding(state.registration);
+    fail(
+      state.workerFence === undefined &&
+        state.bootstrapCompensationFence === undefined &&
+        state.bootstrapPhase === undefined,
+      "registration_recovery_evidence",
+    );
+    if (state.runtimeConfigFingerprints !== undefined) {
+      validateRuntimeFingerprints(state, state.runtimeConfigFingerprints);
+      validateRegistrationResult(state, state.registrationResult);
+    }
+    if (indexes.some((index) => index > 0))
+      fail(
+        state.runtimeConfigFingerprints !== undefined,
+        "registration_configuration_missing",
+      );
+  }
+  if (state.bootstrapCompensationFence !== undefined) {
+    fail(
+      equal(
+        planWorkerEffectFence(state.bootstrapCompensationFence.before),
+        state.bootstrapCompensationFence,
+      ),
+      "bootstrap_compensation_evidence",
+    );
+    if (state.workerFence !== undefined)
+      fail(
+        equal(state.workerFence, state.bootstrapCompensationFence),
+        "bootstrap_compensation_changed",
+      );
+  }
   return state;
+}
+
+// This is the original ACL observation, retained before compensation removes
+// UPDATE. An already-fenced snapshot alone never authorizes a future GRANT.
+export function retainBootstrapCompensationFence(journal, observed) {
+  const state = loadRecoveryJournal(journal, journal.tuple);
+  fail(
+    recoveryContinuationMode(state) === "bootstrap",
+    "bootstrap_compensation_phase",
+  );
+  if (state.bootstrapCompensationFence !== undefined) {
+    reconcileBootstrapCompensationFence(state, observed);
+    return state;
+  }
+  state.bootstrapCompensationFence = planWorkerEffectFence(observed);
+  state.revision += 1;
+  return loadRecoveryJournal(state, state.tuple);
+}
+
+export function reconcileBootstrapCompensationFence(journal, observed) {
+  const state = loadRecoveryJournal(journal, journal.tuple);
+  const fence = state.bootstrapCompensationFence;
+  fail(
+    fence !== undefined &&
+      (equal(observed, fence.before) || equal(observed, fence.fenced)),
+    "bootstrap_compensation_snapshot",
+  );
+  return globalThis.structuredClone(fence);
 }
 
 export function advanceRecoveryPhase(journal, nextPhase) {
@@ -765,17 +918,7 @@ export function loadRecoveryReplicas(replicas, expectedTuple) {
 export function attachRecoveryPreparation(journal, fingerprints, workerFence) {
   const state = loadRecoveryJournal(journal, journal.tuple);
   fail(state.phase === "frozen", "preparation_phase");
-  fail(
-    equal(Object.keys(fingerprints).sort(), [...recoveryRoles].sort()),
-    "preparation_roles",
-  );
-  for (const role of recoveryRoles) {
-    fail(
-      fingerprints[role].serviceId === state.tuple.services[role].id &&
-        /^[a-f0-9]{64}$/.test(fingerprints[role].fingerprint),
-      "preparation_configuration",
-    );
-  }
+  validateRuntimeFingerprints(state, fingerprints);
   fail(
     equal(planWorkerEffectFence(workerFence.before), workerFence),
     "preparation_worker_evidence",
@@ -814,6 +957,7 @@ export function validateRecoveryPreparation(journal) {
 
 export function recoveryContinuationMode(journal) {
   const state = loadRecoveryJournal(journal, journal.tuple);
+  fail(state.registration === undefined, "registration_not_recovery");
   fail(
     !["fleet_verified_closed", "complete"].includes(state.phase),
     "already_complete",
@@ -829,7 +973,9 @@ export function recoveryContinuationMode(journal) {
     );
     if (state.phase === "validated")
       fail(
-        state.revision === 0 && state.bootstrapPhase === undefined,
+        state.revision ===
+          (state.bootstrapCompensationFence === undefined ? 0 : 1) &&
+          state.bootstrapPhase === undefined,
         "bootstrap_validated_history",
       );
     return "bootstrap";
@@ -848,7 +994,9 @@ export function recoveryCompensationFence(replicas, expectedTuple) {
   const journals = replicas.map((value) =>
     loadRecoveryJournal(value, expectedTuple),
   );
-  const fences = journals.map((state) => state.workerFence ?? null);
+  const fences = journals.map(
+    (state) => state.workerFence ?? state.bootstrapCompensationFence ?? null,
+  );
   if (fences.every((value) => value === null)) return null;
   fail(
     fences.every((value) => value !== null && equal(value, fences[0])),
@@ -879,9 +1027,12 @@ export function assertRecoveryPreEffectInventory(journal, role, inventory) {
     "unexpected_preintent_history",
   );
   fail(
-    !inventory.some(
-      (item) => item.observedCommitSha === state.tuple.releaseCommitSha,
-    ),
+    state.registration !== undefined
+      ? inventory[0].observedCommitSha === state.tuple.releaseCommitSha &&
+          inventory[0].deploymentIdentityKind === "git"
+      : !inventory.some(
+          (item) => item.observedCommitSha === state.tuple.releaseCommitSha,
+        ),
     "observed_preintent_effect",
   );
   fail(
@@ -1314,5 +1465,9 @@ if (
   const raw = readRecoveryJsonInput();
   if (process.argv[2] === "read-phase")
     process.stdout.write(JSON.stringify(readRecoveryPhaseResponse(raw)) + "\n");
+  else if (process.argv[2] === "read-environment")
+    process.stdout.write(
+      JSON.stringify(recoveryEnvironmentEntries(raw)) + "\n",
+    );
   else fail(process.argv[2] === "validate-json", "command");
 }

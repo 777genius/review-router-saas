@@ -390,19 +390,25 @@ jobs:
               sh -ceu 'psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atf /work/worker-fence-observe.sql' \
               > "$work/worker-fence-before.json" || return 1
             WORK="$work" PURPOSE="$purpose" node --input-type=module <<'NODE' || return 1
-          import { readFileSync, writeFileSync } from "node:fs";
-          import { planWorkerEffectFence, planWorkerCompensationFence } from "./scripts/render-recovery-journal.mjs";
+          import { existsSync, readFileSync, writeFileSync } from "node:fs";
+          import { parseRecoveryJson, reconcileBootstrapCompensationFence, planWorkerEffectFence, planWorkerCompensationFence } from "./scripts/render-recovery-journal.mjs";
           const work = process.env.WORK;
-          const evidence = (process.env.PURPOSE === "compensation" ? planWorkerCompensationFence : planWorkerEffectFence)(JSON.parse(readFileSync(`${work}/worker-fence-before.json`, "utf8")));
+          const observed = parseRecoveryJson(readFileSync(`${work}/worker-fence-before.json`, "utf8"));
+          const journalPath = `${work}/recovery-journal.json`;
+          const journal = existsSync(journalPath) ? parseRecoveryJson(readFileSync(journalPath, "utf8")) : null;
+          const evidence = journal?.bootstrapCompensationFence
+            ? reconcileBootstrapCompensationFence(journal, observed)
+            : (process.env.PURPOSE === "compensation" ? planWorkerCompensationFence : planWorkerEffectFence)(observed);
           writeFileSync(`${work}/worker-effect-fence.json`, JSON.stringify(evidence) + "\n", { mode: 0o600 });
           NODE
           }
           establish_recovery_barriers() {
+            # Reconcile retained early compensation before any new DB effect.
+            capture_worker_effect_fence || return 1
             close_recovery_admission || return 1
             persist_recovery_phase admission_closed || return 1
             set_recovery_maintenance true || return 1
             persist_recovery_phase maintenance_enabled || return 1
-            capture_worker_effect_fence || return 1
             jq --slurpfile fence "$work/worker-effect-fence.json" \
               '.workerFence = $fence[0] | .revision += 1' "$work/recovery-journal.json" > "$work/journal-next.json" || return 1
             mv "$work/journal-next.json" "$work/recovery-journal.json" || return 1
@@ -506,12 +512,31 @@ jobs:
             fi
             export DATABASE_URL="$external_url"
           }
+          retain_bootstrap_compensation_fence() {
+            # Only admitted, unanimous bootstrap journals can retain restoration
+            # authority. Persist and read back all replicas before the REVOKE.
+            [[ -f "$work/recovery-journal.json" ]] || return 0
+            if ! jq -e '.phase == "validated" or (.phase == "frozen" and .bootstrapPhase == "services_suspended")' "$work/recovery-journal.json" >/dev/null; then
+              return 0
+            fi
+            capture_worker_effect_fence compensation || return 1
+            WORK="$work" node --input-type=module <<'NODE' || return 1
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, retainBootstrapCompensationFence} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const read = name => parseRecoveryJson(readFileSync(`${work}/${name}`, "utf8"));
+          const state = retainBootstrapCompensationFence(read("recovery-journal.json"), read("worker-fence-before.json"));
+          writeFileSync(`${work}/recovery-journal.json`, JSON.stringify(state) + "\n", {mode:0o600});
+          NODE
+            persist_recovery_journal
+          }
           compensate_worker_effect_fence() {
             local recovery_closure=1
             # Evidence is staged before rejecting torn phase replicas. It conveys
             # exact REVOKE authority only; recovery itself remains rejected.
             open_recovery_database || return 1
             close_recovery_admission || return 1
+            retain_bootstrap_compensation_fence || return 1
             if [[ ! -f "$work/worker-effect-fence.json" ]]; then
               capture_worker_effect_fence compensation || return 1
             fi
@@ -1352,8 +1377,8 @@ jobs:
           assert_recovery_nonterminal() {
             local replicas
             replicas="$(read_recovery_replicas)" || return 1
-            if jq -e 'any(.[]; .phase == "fleet_verified_closed" or .phase == "complete")' <<<"$replicas" >/dev/null; then
-              echo "::error::Recovery is already complete or fleet_verified_closed; terminal receipts authorize no effects." >&2
+            if jq -e 'any(.[]; .registration != null or .phase == "fleet_verified_closed" or .phase == "complete")' <<<"$replicas" >/dev/null; then
+              echo "::error::Recovery is already complete, fleet_verified_closed, or holds registration authority; these receipts authorize no recovery effects." >&2
               return 1
             fi
             printf '%s\n' "$replicas"
@@ -1440,7 +1465,7 @@ jobs:
           printf '%s\n' "$prior_recovery_phases" > "$work/recovery-resume-state.json"
           WORK="$work" node --input-type=module <<'NODE'
           import {readFileSync, writeFileSync} from "node:fs";
-          import {parseRecoveryJson, parseRecoveryReplicaResponse, recoveryCompensationFence, recoveryRoles} from "./scripts/render-recovery-journal.mjs";
+          import {parseRecoveryJson, parseRecoveryReplicaResponse, recoveryCompensationFence, recoveryRoles, loadRecoveryReplicas, recoveryContinuationMode} from "./scripts/render-recovery-journal.mjs";
           const work = process.env.WORK;
           const replicas = parseRecoveryReplicaResponse(readFileSync(`${work}/recovery-resume-state.json`, "utf8"));
           if (!replicas.every(value => value === null)) {
@@ -1455,6 +1480,12 @@ jobs:
             }]));
             const evidence = recoveryCompensationFence(replicas, expected);
             if (evidence) writeFileSync(`${work}/worker-effect-fence.json`, JSON.stringify(evidence) + "\n", {mode:0o600});
+            if (replicas.every(state => state?.phase === "validated" ||
+              (state?.phase === "frozen" && state.bootstrapPhase === "services_suspended"))) {
+              const journal = loadRecoveryReplicas(replicas, expected);
+              recoveryContinuationMode(journal);
+              writeFileSync(`${work}/recovery-journal.json`, JSON.stringify(journal) + "\n", {mode:0o600});
+            }
           }
           NODE
           # Mutable drift rejects forward progress with fail-closed cleanup armed.
@@ -2871,7 +2902,8 @@ jobs:
             rm -f "$work/api-env.json" "$work/api-env-object.json" \
               "$work/connection-info.json" "$work/operator-input.json" \
               "$work/investigation-env-value.json" \
-              "$work"/investigation-service-env-*.json
+              "$work"/investigation-service-env-*.json \
+              "$work"/initial-*-env.json "$work"/current-*-env.json
             exit "$cleanup_status"
           }
           trap cleanup EXIT
@@ -2967,6 +2999,11 @@ jobs:
 
 
           recovery_phase_key="REVIEW_ROUTER_PG17_RECOVERY_PHASE"
+          read_registration_environment() {
+            local service_id="$1" response
+            response="$(render_inventory_api "$((SECONDS + 30))" "https://api.render.com/v1/services/$service_id/env-vars")" || return $?
+            printf '%s' "$response" | node scripts/render-recovery-journal.mjs read-environment
+          }
           read_recovery_phase() {
             local service_id="$1" response
             response="$(render_inventory_api "$((SECONDS + 30))" "https://api.render.com/v1/services/$service_id/env-vars")" || return $?
@@ -2989,44 +3026,197 @@ jobs:
             fi
             printf '%s\n' "$replicas"
           }
-          assert_recovery_nonterminal > /dev/null
+          persist_recovery_journal() {
+            local service_id observed
+            WORK="$work" node --input-type=module <<'NODE' || return 1
+          import {readFileSync} from "node:fs";
+          import {parseRecoveryJson, loadRecoveryJournal} from "./scripts/render-recovery-journal.mjs";
+          const state = parseRecoveryJson(readFileSync(`${process.env.WORK}/recovery-journal.json`, "utf8"));
+          loadRecoveryJournal(state, state.tuple);
+          NODE
+            jq -c '{value: tojson}' "$work/recovery-journal.json" > "$work/recovery-phase-env.json" || return 1
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              render_inventory_api "$((SECONDS + 30))" -X PUT -H "Content-Type: application/json" \
+                --data-binary @"$work/recovery-phase-env.json" \
+                "https://api.render.com/v1/services/$service_id/env-vars/$recovery_phase_key" -o /dev/null || return 1
+            done
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              observed="$(read_recovery_phase "$service_id")" || return 1
+              jq -e --slurpfile expected "$work/recovery-journal.json" \
+                '. == $expected[0]' <<<"$observed" >/dev/null || return 1
+            done
+          }
+          journal_service_phase() {
+            jq -er --arg role "$role" '.services[$role].phase' "$work/recovery-journal.json"
+          }
+          advance_recovery_service() {
+            local next_phase="$1"
+            WORK="$work" ROLE="$role" NEXT_PHASE="$next_phase" node --input-type=module <<'NODE' || return 1
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, advanceRecoveryService} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const path = `${work}/recovery-journal.json`;
+          const state = parseRecoveryJson(readFileSync(path, "utf8"));
+          const evidence = parseRecoveryJson(readFileSync(`${work}/journal-transition-evidence.json`, "utf8"));
+          const next = advanceRecoveryService(state, process.env.ROLE, process.env.NEXT_PHASE, evidence);
+          writeFileSync(path, JSON.stringify(next) + "\n", {mode: 0o600});
+          NODE
+            persist_recovery_journal
+          }
+          initialize_registration_journal() {
+            local service_id
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              read_registration_environment "$service_id" > "$work/initial-$service_id-env.json" || return 1
+              fetch_recovery_deployment_inventory "$service_id" "$((SECONDS + 120))" > "$work/initial-$service_id-inventory.json" || return 1
+            done
+            WORK="$work" node --input-type=module <<'NODE' || return 1
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, parseRecoveryReplicaResponse, recoveryRoles, recoveryConfigFingerprint,
+            createRegistrationJournal, loadRegistrationReplicas, assertRecoveryRetainedInventory} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const read = name => parseRecoveryJson(readFileSync(`${work}/${name}`, "utf8"));
+          const replicas = parseRecoveryReplicaResponse(readFileSync(`${work}/recovery-resume-state.json`, "utf8"));
+          const inventories = {}, services = {};
+          for (const role of recoveryRoles) {
+            const id = process.env[`${role.toUpperCase()}_SERVICE_ID`];
+            inventories[role] = read(`initial-${id}-inventory.json`);
+            services[role] = {id, name:`reviewrouter-${role}`, type:role === "worker" ? "background_worker" : "web_service",
+              ownerId:process.env.RENDER_OWNER_ID, environmentId:process.env.RENDER_ENVIRONMENT_ID,
+              repo:"https://github.com/777genius/review-router-saas", branch:"main", autoDeploy:"no",
+              configFingerprint:recoveryConfigFingerprint(readFileSync(`${work}/initial-${id}-env.json`, "utf8"))};
+          }
+          const binding = {actionCommitSha:process.env.ACTION_COMMIT_SHA, operatorRepository:process.env.OPERATOR_REPOSITORY ?? "",
+            operatorWorkspaceId:process.env.OPERATOR_WORKSPACE_ID ?? "", investigationRolloutProfile:process.env.INVESTIGATION_ROLLOUT_PROFILE ?? "preserve",
+            investigationRepositoryConnectionId:process.env.INVESTIGATION_REPOSITORY_CONNECTION_ID ?? "",
+            investigationProducerReleaseId:process.env.INVESTIGATION_PRODUCER_RELEASE_ID ?? ""};
+          const tuple = {operationId:process.env.GITHUB_RUN_ID, targetDbId:process.env.TARGET_DB_ID,
+            ownerId:process.env.RENDER_OWNER_ID, environmentId:process.env.RENDER_ENVIRONMENT_ID,
+            releaseCommitSha:process.env.RELEASE_COMMIT_SHA, services};
+          let state;
+          if (replicas.every(value => value === null)) state = createRegistrationJournal(tuple, inventories, binding);
+          else {
+            tuple.operationId = replicas[0]?.tuple?.operationId;
+            for (const role of recoveryRoles) tuple.services[role].configFingerprint = replicas[0]?.tuple?.services?.[role]?.configFingerprint;
+            state = loadRegistrationReplicas(replicas, tuple, binding);
+            for (const role of recoveryRoles) {
+              assertRecoveryRetainedInventory(state, role, inventories[role]);
+              if (state.runtimeConfigFingerprints && recoveryConfigFingerprint(readFileSync(`${work}/initial-${services[role].id}-env.json`, "utf8")) !== state.runtimeConfigFingerprints[role].fingerprint)
+                throw new Error("recovery_registration_configuration_drift");
+            }
+          }
+          writeFileSync(`${work}/recovery-journal.json`, JSON.stringify(state) + "\n", {mode:0o600});
+          writeFileSync(`${work}/live-service-preflight.json`, JSON.stringify(recoveryRoles.map(role => {
+            const previous = state.services[role].beforeInventory[0];
+            return {serviceId:state.tuple.services[role].id, deployId:previous.deployId,
+              observedStatus:previous.observedStatus, observedCommitSha:previous.observedCommitSha,
+              evidenceKind:"retained_preintent_inventory"};
+          })) + "\n", {mode:0o600});
+          NODE
+            persist_recovery_journal
+          }
+          retain_registration_configuration() {
+            local service_id
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              read_registration_environment "$service_id" > "$work/current-$service_id-env.json" || return 1
+            done
+            WORK="$work" node --input-type=module <<'NODE' || return 1
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, recoveryRoles, recoveryConfigFingerprint, retainRegistrationConfiguration} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const read = name => parseRecoveryJson(readFileSync(`${work}/${name}`, "utf8"));
+          const state = read("recovery-journal.json");
+          const fingerprints = Object.fromEntries(recoveryRoles.map(role => {
+            const serviceId = state.tuple.services[role].id;
+            return [role, {serviceId, fingerprint:recoveryConfigFingerprint(readFileSync(`${work}/current-${serviceId}-env.json`, "utf8"))}];
+          }));
+          const next = retainRegistrationConfiguration(state, fingerprints, state.registrationResult ?? read("registration-result.json"));
+          writeFileSync(`${work}/recovery-journal.json`, JSON.stringify(next) + "\n", {mode:0o600});
+          writeFileSync(`${work}/registration-result.json`, JSON.stringify(next.registrationResult) + "\n", {mode:0o600});
+          writeFileSync(`${work}/recovery-config-fingerprints.json`, JSON.stringify(next.runtimeConfigFingerprints) + "\n", {mode:0o600});
+          NODE
+            persist_recovery_journal
+          }
+
+          assert_recovery_config_unchanged() {
+            local service_id
+            for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+              render_inventory_api "$((SECONDS + 30))" \
+                "https://api.render.com/v1/services/$service_id/env-vars" \
+                > "$work/current-$service_id-env.json" || return 1
+            done
+            WORK="$work" node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { recoveryConfigFingerprint } from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const expected = JSON.parse(readFileSync(`${work}/recovery-config-fingerprints.json`, "utf8"));
+          for (const { serviceId, fingerprint } of Object.values(expected)) {
+            if (recoveryConfigFingerprint(readFileSync(`${work}/current-${serviceId}-env.json`, "utf8")) !== fingerprint) {
+              throw new Error("recovery_configuration_drift");
+            }
+          }
+          NODE
+          }
+          verify_registration_service() {
+            local deadline=$((SECONDS + 900)) inventory
+            while (( SECONDS < deadline )); do
+              inventory="$(fetch_recovery_deployment_inventory "$service_id" "$deadline")" || return 1
+              printf '%s\n' "$inventory" > "$work/registration-verify-inventory.json" || return 1
+              WORK="$work" ROLE="$role" node --input-type=module <<'NODE' || return 1
+          import {readFileSync} from "node:fs";
+          import {parseRecoveryJson, assertRecoveryDeploymentInventory} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK;
+          const read = name => parseRecoveryJson(readFileSync(`${work}/${name}`, "utf8"));
+          assertRecoveryDeploymentInventory(read("recovery-journal.json"), process.env.ROLE, read("registration-verify-inventory.json"), true);
+          NODE
+              if jq -e --arg id "$deploy_id" '[.[] | select(.statusClass == "active") | .deployId] == [$id] and .[0].observedStatus == "live"' <<<"$inventory" >/dev/null; then
+                if [[ "$(journal_service_phase)" == deploy_bound ]]; then
+                  jq -nc --slurpfile inventory "$work/registration-verify-inventory.json" '{inventory:$inventory[0]}' > "$work/journal-transition-evidence.json" || return 1
+                  advance_recovery_service verified || return 1
+                fi
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+
+          assert_recovery_nonterminal > "$work/recovery-resume-state.json"
+          # A previous runner may have lost its firewall-close response. Arm
+          # exact-scope cleanup before rejecting any retained registration drift.
+          if jq -e 'any(.[]; .registration != null)' "$work/recovery-resume-state.json" >/dev/null; then
+            firewall_open=1
+          fi
           assert_recovery_target_identity
           assert_recovery_fleet_identity
 
-          live_service_preflight='[]'
-          for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
-            deploys="$(render_api "https://api.render.com/v1/services/$service_id/deploys?limit=1")"
-            printf '%s' "$deploys" | node scripts/render-recovery-journal.mjs validate-json
-            observation="$(
-              jq -ce --arg serviceId "$service_id" '
-                (if type == "array" then .[0] else (.deploys[0] // .[0]) end)
-                | (.deploy // .) as $deploy
-                | {
-                    serviceId: $serviceId,
-                    deployId: ($deploy.id | select(type == "string" and length > 0)),
-                    observedStatus: ($deploy.status | select(type == "string")),
-                    observedCommitSha: (
-                      ($deploy.commit.id // $deploy.commit.sha // $deploy.commitId)
-                      | select(type == "string" and test("^[a-f0-9]{40}$"))
-                    )
-                  }
-              ' <<<"$deploys"
-            )"
-            live_service_preflight="$(
-              jq -c --slurpfile observation <(printf '%s' "$observation") '$observation[0] as $observation | . + [$observation]' \
-                <<<"$live_service_preflight"
-            )"
-          done
-          printf '%s\n' "$live_service_preflight" \
-            > "$work/live-service-preflight.json"
-          jq -e --arg releaseCommitSha "$RELEASE_COMMIT_SHA" '
-            length == 3
-            and ([.[].serviceId] | unique | length == 3)
-            and all(.observedStatus == "live")
-            and all(.observedCommitSha == $releaseCommitSha)
-          ' "$work/live-service-preflight.json" >/dev/null
+          initialize_registration_journal
 
-          render_api "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars" \
+          # Reacquire admin connectivity on every runner, including observation-only retries.
+          runner_ip="$(curl --fail --silent --show-error --max-time 30 https://api.ipify.org)"
+          [[ "$runner_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          jq -n --arg cidr "$runner_ip/32" '{ipAllowList: [{
+            cidrBlock: $cidr,
+            description: "temporary verified release registration"
+          }]}' > "$work/firewall.json"
+          # Arm cleanup before the PATCH: an accepted request can lose its response.
+          firewall_open=1
+          render_api -X PATCH -H "Content-Type: application/json" \
+            --data-binary @"$work/firewall.json" \
+            "https://api.render.com/v1/postgres/$TARGET_DB_ID" -o /dev/null
+          render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID/connection-info" \
+            > "$work/connection-info.json"
+
+          DATABASE_URL="$(jq -er '.externalConnectionString' "$work/connection-info.json")"
+          export DATABASE_URL
+          assert_recovery_admission_closed
+
+          assert_recovery_target_identity
+          assert_recovery_fleet_identity
+
+          # A retained deployment configuration authorizes observation only. The
+          # operator and environment staging already completed before its intent.
+          if ! jq -e '.runtimeConfigFingerprints != null' "$work/recovery-journal.json" >/dev/null; then
+          read_registration_environment "$API_SERVICE_ID" \
             > "$work/api-env.json"
           jq -e '
             map(.envVar // .)
@@ -3107,7 +3297,7 @@ jobs:
                   "${investigation_env_keys[$index]}" \
                   "${investigation_env_values[$index]}"
               done
-              render_api "https://api.render.com/v1/services/$service_id/env-vars" \
+              read_registration_environment "$service_id" \
                 > "$work/investigation-service-env-$service_id.json"
               jq -e \
                 --arg productionEffects "$production_effects" \
@@ -3137,7 +3327,7 @@ jobs:
               > "$work/investigation-env-proof.json"
           fi
 
-          render_api "https://api.render.com/v1/services/$API_SERVICE_ID/env-vars" \
+          read_registration_environment "$API_SERVICE_ID" \
             > "$work/api-env.json"
           jq -e '
             map(.envVar // .)
@@ -3162,26 +3352,6 @@ jobs:
             --manifest "$work/release-manifest.json" \
             --action-repo "$work/action" >/dev/null
 
-          runner_ip="$(curl --fail --silent --show-error --max-time 30 https://api.ipify.org)"
-          [[ "$runner_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
-          jq -n --arg cidr "$runner_ip/32" '{ipAllowList: [{
-            cidrBlock: $cidr,
-            description: "temporary verified release registration"
-          }]}' > "$work/firewall.json"
-          # Arm cleanup before the PATCH: an accepted request can lose its response.
-          firewall_open=1
-          render_api -X PATCH -H "Content-Type: application/json" \
-            --data-binary @"$work/firewall.json" \
-            "https://api.render.com/v1/postgres/$TARGET_DB_ID" -o /dev/null
-          render_api "https://api.render.com/v1/postgres/$TARGET_DB_ID/connection-info" \
-            > "$work/connection-info.json"
-
-          DATABASE_URL="$(jq -er '.externalConnectionString' "$work/connection-info.json")"
-          export DATABASE_URL
-          assert_recovery_admission_closed
-
-          assert_recovery_target_identity
-          assert_recovery_fleet_identity
           WORK="$work" ACTION_COMMIT_SHA="$ACTION_COMMIT_SHA" node --input-type=module <<'NODE'
           import { createHash, randomBytes } from "node:crypto";
           import { readFileSync, writeFileSync } from "node:fs";
@@ -3527,6 +3697,9 @@ jobs:
               -o /dev/null
           done
 
+          fi
+          retain_registration_configuration
+
           deploys='[]'
           deploy_creation_evidence='[]'
           printf '%s\n' "$deploy_creation_evidence" \
@@ -3535,6 +3708,8 @@ jobs:
             '{clearCache: "do_not_clear", commitId: $commitId}' \
             > "$work/deploy-request.json"
           for service_id in "$API_SERVICE_ID" "$WORKER_SERVICE_ID" "$WEB_SERVICE_ID"; do
+            role="$(jq -er --arg id "$service_id" '.tuple.services | to_entries[] | select(.value.id == $id) | .key' "$work/recovery-journal.json")"
+            if [[ "$(journal_service_phase)" == pending ]]; then
             before_deploy_id="$(
               jq -er --arg serviceId "$service_id" '
                 map(select(.serviceId == $serviceId))
@@ -3588,7 +3763,25 @@ jobs:
               '[.[] | select(.statusClass == "active") | .deployId] == [$id]' <<<"$before_inventory" >/dev/null
             jq -nc --slurpfile inventory <(printf '%s' "$before_inventory") --argjson epoch "$deploy_intent_epoch" \
               '$inventory[0] as $inventory | {beforeInventory:$inventory,intentEpoch:$epoch,intentDeadlineEpoch:($epoch+120)}' > "$work/registration-intent-$service_id.json"
+            jq -nc --slurpfile inventory <(printf '%s' "$before_inventory") --argjson intentEpoch "$deploy_intent_epoch" \
+              '{inventory:$inventory[0],intentEpoch:$intentEpoch}' > "$work/journal-transition-evidence.json"
+            WORK="$work" ROLE="$role" node --input-type=module <<'NODE'
+          import {readFileSync, writeFileSync} from "node:fs";
+          import {parseRecoveryJson, advanceRecoveryService} from "./scripts/render-recovery-journal.mjs";
+          const work = process.env.WORK, role = process.env.ROLE;
+          const read = name => parseRecoveryJson(readFileSync(`${work}/${name}`, "utf8"));
+          let state = read("recovery-journal.json");
+          // Services are already online. These observation-only transitions and
+          // their deploy intent are committed in one replicated checkpoint.
+          state = advanceRecoveryService(state, role, "resume_intent");
+          state = advanceRecoveryService(state, role, "resumed");
+          state = advanceRecoveryService(state, role, "deploy_intent", read("journal-transition-evidence.json"));
+          writeFileSync(`${work}/recovery-journal.json`, JSON.stringify(state) + "\n", {mode:0o600});
+          NODE
+            persist_recovery_journal
             assert_recovery_admission_closed
+            assert_recovery_config_unchanged
+            (( $(date -u +%s) <= deploy_intent_epoch + 120 ))
             set +e
             deploy="$(
               render_deploy_mutation -X POST -H "Content-Type: application/json" \
@@ -3597,6 +3790,19 @@ jobs:
             )"
             deploy_mutation_status=$?
             set -e
+            else
+              # Retained intent is never permission for another POST, even when
+              # no deployment is visible or the original response was lost.
+              deploy=""
+              deploy_mutation_status=125
+              before_inventory="$(jq -ce --arg role "$role" '.services[$role].deployBeforeInventory' "$work/recovery-journal.json")"
+              before_deploy_ids="$(jq -c '[.[].deployId]' <<<"$before_inventory")"
+              before_deploy_id="$(jq -er '.[0].deployId' <<<"$before_inventory")"
+              deploy_intent_epoch="$(jq -er --arg role "$role" '.services[$role].intentEpoch' "$work/recovery-journal.json")"
+              deploy_intent_at="$(date -u -d "@$deploy_intent_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+            fi
+            jq -nc --slurpfile inventory <(printf '%s' "$before_inventory") --argjson epoch "$deploy_intent_epoch" \
+              '{beforeInventory:$inventory[0],intentEpoch:$epoch,intentDeadlineEpoch:($epoch+120)}' > "$work/registration-intent-$service_id.json"
             deploy_id=""
             if [[ "$deploy_mutation_status" -eq 0 ]]; then
               printf '%s' "$deploy" | node scripts/render-recovery-journal.mjs validate-json
@@ -3613,7 +3819,7 @@ jobs:
             fi
             reconciled=true
             response_deploy_id="$deploy_id"
-            deploy_id=""
+            deploy_id="$(jq -r --arg role "$role" '.services[$role].deployId // ""' "$work/recovery-journal.json")"
             if [[ -z "$deploy_id" ]]; then
               stable_candidate_id=""
               stable_candidate_observations=0
@@ -3675,6 +3881,12 @@ jobs:
             fi
             [[ "$deploy_id" =~ ^dep-[a-z0-9-]+$ ]]
             [[ "$deploy_id" != "$before_deploy_id" ]]
+            if [[ "$(journal_service_phase)" == deploy_intent ]]; then
+              jq -nc --arg deployId "$deploy_id" '{deployId:$deployId}' > "$work/journal-transition-evidence.json"
+              advance_recovery_service deploy_bound
+            fi
+            assert_recovery_config_unchanged
+            verify_registration_service
             deploys="$(
               jq -c \
                 --arg serviceId "$service_id" \
@@ -3840,6 +4052,10 @@ jobs:
         with:
           name: reviewrouter-release-registration-${{ github.run_id }}
           path: |
+            ${{ runner.temp }}/reviewrouter-release-registration/recovery-journal.json
+            ${{ runner.temp }}/reviewrouter-release-registration/trusted-topology.json
+            ${{ runner.temp }}/reviewrouter-release-registration/recovery-config-fingerprints.json
+            ${{ runner.temp }}/reviewrouter-release-registration/registration-intent-*.json
             ${{ runner.temp }}/reviewrouter-release-registration/admission-closed-result.json
             ${{ runner.temp }}/reviewrouter-release-registration/release-manifest.json
             ${{ runner.temp }}/reviewrouter-release-registration/environment-preflight.json
