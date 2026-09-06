@@ -168,6 +168,13 @@ export function partitionRenderSchemaHandoffCheckout(catalog) {
 // deliberately filters names and caches its inventory; managed admission must
 // reject hidden additions without changing that separate canonical contract.
 export function readRenderSchemaHandoffCatalog() {
+  return partitionRenderSchemaHandoffCheckout(
+    readRenderManagedCheckoutInventory(),
+  );
+}
+
+/** @returns {ReadonlyArray<Readonly<{migrationName: string, checksum: string}>>} */
+export function readRenderManagedCheckoutInventory() {
   const directory = new URL(
     "../../packages/platform/db/prisma/migrations/",
     import.meta.url,
@@ -200,7 +207,8 @@ export function readRenderSchemaHandoffCatalog() {
         ? 1
         : 0,
   );
-  return partitionRenderSchemaHandoffCheckout(catalog);
+  partitionRenderSchemaHandoffCheckout(catalog);
+  return Object.freeze(catalog);
 }
 
 export function assertRenderSchemaHandoffLedger(catalog, ledger, phase) {
@@ -319,7 +327,16 @@ const ledgerKeys = [
 
 export function inspectRenderManagedLedger(catalog, ledger, phase) {
   assertRenderSchemaHandoffCatalog(catalog);
-  const contract = renderManagedMigrationPhase(phase);
+  return inspectRenderManagedLedgerRows(
+    catalog,
+    ledger,
+    renderManagedMigrationPhase(phase),
+  );
+}
+
+// Internal strict row validator. Public phase wrappers must first pin the catalog
+// and bounds; this helper is evidence validation, never phase admission.
+export function inspectRenderManagedLedgerRows(catalog, ledger, contract) {
   if (
     !Array.isArray(ledger) ||
     ledger.length < contract.baselineCount ||
