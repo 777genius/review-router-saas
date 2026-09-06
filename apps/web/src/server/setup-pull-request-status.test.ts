@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { inspectSetupPullRequestStatus } from "./setup-pull-request-status";
+import {
+  inspectSetupPullRequest,
+  inspectSetupPullRequestStatus,
+} from "./setup-pull-request-status";
 
 describe("inspectSetupPullRequestStatus", () => {
   it("treats a merged setup PR as merged without requiring the branch to still exist", async () => {
@@ -94,6 +97,54 @@ describe("inspectSetupPullRequestStatus", () => {
 
     expect(status).toBe("wrong_base_branch");
   });
+
+  it.each([true, false])(
+    "preserves matching PR merge evidence (%s) independently of a renamed default branch",
+    async (merged) => {
+      const input = { ...setupInput(), allowedBaseBranches: ["main"] };
+      const octokit = requester(async () => ({
+        data: {
+          merged,
+          state: merged ? "closed" : "open",
+          head: { ref: input.setupBranch, sha: "b".repeat(40) },
+          base: { ref: "master" },
+        },
+      }));
+      expect(await inspectSetupPullRequest(input, octokit)).toEqual({
+        status: "wrong_base_branch",
+        merged,
+        baseBranch: "master",
+        headSha: "b".repeat(40),
+      });
+      // Status-only consumers must still refuse wrong-base PR evidence.
+      expect(await inspectSetupPullRequestStatus(input, octokit)).toBe(
+        "wrong_base_branch",
+      );
+    },
+  );
+
+  it.each(["different_branch", "missing_pr"])(
+    "does not retain merged setup evidence for %s",
+    async (scenario) => {
+      const inspection = await inspectSetupPullRequest(
+        setupInput(),
+        requester(async () => {
+          if (scenario === "missing_pr")
+            throw Object.assign(new Error("not found"), { status: 404 });
+          return {
+            data: {
+              merged: true,
+              state: "closed",
+              head: { ref: "unrelated/branch", sha: "b".repeat(40) },
+              base: { ref: "master" },
+            },
+          };
+        }),
+      );
+      expect(inspection.merged).toBe(false);
+      expect(inspection.status).not.toBe("merged");
+    },
+  );
 });
 
 function setupInput(): {

@@ -35,12 +35,23 @@ class CapturingSetupGateway implements WorkflowSetupGatewayPort {
     return {
       url: "https://github.com/777genius/example/pull/1",
       number: 1,
+      headSha: "b".repeat(40),
       branch: input.setupBranch,
     };
   }
 }
 
 class CapturingProvisioningRepository implements WorkflowProvisioningRepositoryPort {
+  async beginAttempt(record: WorkflowProvisioningRecord) {
+    return {
+      workspaceId: record.workspaceId,
+      repositoryId: record.repositoryId,
+      installationId: record.installationId,
+      attemptId: "attempt-1",
+      branch: `${record.branch}/attempt-1`,
+      revision: 0,
+    };
+  }
   public opened: WorkflowProvisioningRecord | null = null;
   public failed: WorkflowProvisioningRecord | null = null;
 
@@ -73,6 +84,7 @@ class StaticWorkflowProvisioningTarget implements WorkflowProvisioningTargetPort
 
 const activeTarget = {
   workspaceId: "workspace-1",
+  installationId: "installation-1",
   repositoryId: "repo-1",
   owner: "777genius",
   name: "example",
@@ -92,6 +104,7 @@ describe("provisionReviewRouterWorkflow", () => {
     const pullRequest = await provisionReviewRouterWorkflow(
       {
         workspaceId: "workspace-1",
+        installationId: "installation-1",
         repositoryId: "repo-1",
         owner: "777genius",
         name: "example",
@@ -154,7 +167,7 @@ describe("provisionReviewRouterWorkflow", () => {
     );
     expect(provisioning.opened).toMatchObject({
       status: "setup_pr_open",
-      branch: "reviewrouter/setup",
+      branch: "reviewrouter/setup/attempt-1",
       workflowStyle: "reusable",
       actionVersion: "777genius/review-router@v1",
     });
@@ -175,6 +188,7 @@ describe("provisionReviewRouterWorkflow", () => {
       provisionReviewRouterWorkflow(
         {
           workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           owner: "777genius",
           name: "example",
@@ -208,6 +222,7 @@ describe("provisionReviewRouterWorkflow", () => {
       provisionReviewRouterWorkflow(
         {
           workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           owner: "777genius",
           name: "example",
@@ -238,6 +253,7 @@ describe("provisionReviewRouterWorkflow", () => {
       provisionReviewRouterWorkflow(
         {
           workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           owner: "777genius",
           name: "example",
@@ -269,6 +285,7 @@ describe("provisionReviewRouterWorkflow", () => {
       provisionReviewRouterWorkflow(
         {
           workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           owner: "777genius",
           name: "example",
@@ -298,6 +315,7 @@ describe("provisionReviewRouterWorkflow", () => {
     await provisionReviewRouterWorkflow(
       {
         workspaceId: "workspace-1",
+        installationId: "installation-1",
         repositoryId: "repo-1",
         owner: "777genius",
         name: "example",
@@ -352,6 +370,7 @@ describe("provisionReviewRouterWorkflow", () => {
     await provisionReviewRouterWorkflow(
       {
         workspaceId: "workspace-1",
+        installationId: "installation-1",
         repositoryId: "repo-1",
         owner: "777genius",
         name: "example",
@@ -460,6 +479,7 @@ describe("provisionReviewRouterWorkflow", () => {
       provisionReviewRouterWorkflow(
         {
           workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           owner: "777genius",
           name: "example",
@@ -494,6 +514,7 @@ describe("provisionReviewRouterWorkflow", () => {
       provisionReviewRouterWorkflow(
         {
           workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           owner: "777genius",
           name: "example",
@@ -527,6 +548,8 @@ describe("provisionReviewRouterWorkflow", () => {
     await expect(
       provisionRepositoryReviewRouterWorkflow(
         {
+          workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           actionRef: "777genius/review-router@v1",
           apiUrl: "https://app.reviewrouter.dev",
@@ -571,6 +594,8 @@ describe("provisionReviewRouterWorkflow", () => {
     await expect(
       provisionRepositoryReviewRouterWorkflow(
         {
+          workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           actionRef: "777genius/review-router@v1",
           apiUrl: "https://app.reviewrouter.dev",
@@ -604,6 +629,8 @@ describe("provisionReviewRouterWorkflow", () => {
     await expect(
       provisionRepositoryReviewRouterWorkflow(
         {
+          workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           actionRef: `777genius/review-router@${"a".repeat(40)}`,
           apiUrl: "https://app.reviewrouter.dev",
@@ -646,6 +673,8 @@ describe("provisionReviewRouterWorkflow", () => {
 
     await provisionRepositoryReviewRouterWorkflow(
       {
+        workspaceId: "workspace-1",
+        installationId: "installation-1",
         repositoryId: "repo-1",
         actionRef: `777genius/review-router@${"a".repeat(40)}`,
         apiUrl: "https://app.reviewrouter.dev",
@@ -678,6 +707,8 @@ describe("provisionReviewRouterWorkflow", () => {
     await expect(
       provisionRepositoryReviewRouterWorkflow(
         {
+          workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           actionRef: `777genius/review-router@${"a".repeat(40)}`,
           apiUrl: "https://app.reviewrouter.dev",

@@ -179,6 +179,9 @@ try {
   if (repository.githubRepositoryId.toString() !== repositoryView.numericId) {
     throw new Error("codex_rotating_e2e_synced_repository_id_mismatch");
   }
+  if (!repository.installationId) {
+    throw new Error("synced repository is missing internal installation id");
+  }
   trace("seed-rotating-codex-auth");
   const setup = await seedRotatingCodexAuth({
     workspaceId: repository.workspaceId,
@@ -201,7 +204,8 @@ try {
   const setupPullRequest = workflowCurrent
     ? null
     : await provisionRotatingWorkflow({
-        installationId,
+        githubInstallationId: installationId,
+        installationId: repository.installationId,
         workspaceId: repository.workspaceId,
         repositoryId: repository.id,
         owner: repository.owner,
@@ -442,6 +446,7 @@ async function findSyncedRepository(repositoryFullName: string) {
         select: {
           id: true,
           workspaceId: true,
+          installationId: true,
           provider: true,
           githubRepositoryId: true,
           owner: true,
@@ -542,7 +547,8 @@ async function seedRotatingCodexAuth(input: {
 }
 
 async function provisionRotatingWorkflow(input: {
-  readonly installationId: number;
+  readonly githubInstallationId: number;
+  readonly installationId: string;
   readonly workspaceId: string;
   readonly repositoryId: string;
   readonly owner: string;
@@ -555,9 +561,11 @@ async function provisionRotatingWorkflow(input: {
   readonly number: number;
   readonly branch: string;
 }> {
-  const octokit = await app.getInstallationOctokit(input.installationId);
+  const octokit = await app.getInstallationOctokit(input.githubInstallationId);
   return provisionRepositoryReviewRouterWorkflow(
     {
+      workspaceId: input.workspaceId,
+      installationId: input.installationId,
       repositoryId: input.repositoryId,
       actionRef,
       apiUrl,

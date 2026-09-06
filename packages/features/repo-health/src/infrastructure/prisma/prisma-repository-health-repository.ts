@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { RepositoryHealthRepositoryPort } from "../../application/ports/repository-health-repository-port";
 import type { RepositoryHealthInput } from "../../domain/repository-health";
+import { projectRepositorySetupStatus } from "@reviewrouter/features-workflow-provisioning";
 
 export class PrismaRepositoryHealthRepository implements RepositoryHealthRepositoryPort {
   constructor(private readonly prisma: PrismaClient) {}
@@ -18,6 +19,12 @@ export class PrismaRepositoryHealthRepository implements RepositoryHealthReposit
         fullName: true,
         defaultBranch: true,
         setupStatus: true,
+        provisioning: {
+          where: { workspaceId, repository: { workspaceId } },
+          orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+          take: 1,
+          select: { status: true },
+        },
         installation: {
           select: { githubInstallationId: true },
         },
@@ -53,7 +60,11 @@ export class PrismaRepositoryHealthRepository implements RepositoryHealthReposit
           defaultBranch: repository.defaultBranch,
           githubInstallationId:
             repository.installation.githubInstallationId.toString(),
-          setupStatus: repository.setupStatus,
+          setupStatus: projectRepositorySetupStatus({
+            workflowProvisioningStatus:
+              repository.provisioning[0]?.status ?? null,
+            legacySetupStatus: repository.setupStatus,
+          }),
           expectedActionRef: "",
           latestProviderHealth: latestHealth?.providerHealth ?? null,
           latestProviderSetupState: latestHealth?.providerSetupState ?? null,
