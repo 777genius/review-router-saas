@@ -17,7 +17,6 @@ import {
 } from "@reviewrouter/features-hosted-account-pool";
 import { switchRepositoryConfigurationAuthMode } from "@reviewrouter/features-workflow-provisioning";
 export { switchRepositoryConfigurationAuthMode } from "@reviewrouter/features-workflow-provisioning";
-import type { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import { assertHostedCodexProductionReadiness } from "@reviewrouter/platform-config";
 import type { HostedPoolDashboardMutationPort } from "./hosted-pool-dashboard";
