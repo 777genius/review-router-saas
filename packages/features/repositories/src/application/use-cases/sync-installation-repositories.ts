@@ -20,6 +20,9 @@ export async function syncInstallationRepositories(
   githubInstallationId: string,
   dependencies: SyncInstallationRepositoriesDependencies,
 ): Promise<RepositorySyncResult> {
+  const inventoryGeneration =
+    await dependencies.repositories.beginInstallationInventory();
+  const syncedAt = dependencies.clock.now();
   const repositories =
     await dependencies.github.listInstallationRepositories(
       githubInstallationId,
@@ -29,11 +32,11 @@ export async function syncInstallationRepositories(
     repositories,
     dependencies.syncPolicy,
   );
-  const syncedAt = dependencies.clock.now();
   const result = await dependencies.repositories.syncInstallationRepositories({
     githubInstallationId,
     repositories: policyResult.repositories,
     syncedAt,
+    inventoryGeneration,
   });
   if (dependencies.repositoryIdentities) {
     await dependencies.repositoryIdentities.synchronizeRepositoryIdentities({

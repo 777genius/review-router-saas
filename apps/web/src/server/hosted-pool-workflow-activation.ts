@@ -19,20 +19,27 @@ type GitHubRequester = {
   ): Promise<{ data: unknown }>;
 };
 
+export type VerifiedHostedPoolWorkflow = {
+  readonly workflowPath: string;
+  readonly workflowStyle: "reusable";
+  readonly actionVersion: string;
+  readonly bindingId: string;
+  readonly bindingRevision: number;
+  readonly workflowSourceCommitSha: string;
+};
+
 export type HostedPoolWorkflowActivationResult =
   | { readonly status: "not_configured" }
-  | {
+  | (VerifiedHostedPoolWorkflow & {
       readonly status: "already_active" | "activated";
-      readonly bindingId: string;
-      readonly bindingRevision: number;
-      readonly workflowSourceCommitSha: string;
-    };
+    });
 
 export async function activateConfirmedHostedPoolBindingAfterWorkflowMerge(input: {
   readonly prisma: PrismaClient;
   readonly octokit: GitHubRequester;
   readonly workspaceId: string;
   readonly repositoryId: string;
+  readonly installationId: string;
   readonly githubRepositoryId: string;
   readonly owner: string;
   readonly name: string;
@@ -40,16 +47,44 @@ export async function activateConfirmedHostedPoolBindingAfterWorkflowMerge(input
   readonly expectedRepositoryFullName: string;
   readonly expectedApiUrl: string;
   readonly now: Date;
+  readonly expectedBinding?: {
+    readonly id: string;
+    readonly revision: bigint;
+    readonly stateVersion: bigint;
+    readonly status: string;
+  };
+  // Readiness is established by the canonical verifier below. Let the caller
+  // fence its setup attempt against that exact artifact before any effects.
+  readonly beforeActivation?: (
+    workflow: VerifiedHostedPoolWorkflow,
+  ) => Promise<void>;
 }): Promise<HostedPoolWorkflowActivationResult> {
+  const repositoryScope = {
+    workspaceId: input.workspaceId,
+    installationId: input.installationId,
+    provider: "github",
+    selected: true,
+    archived: false,
+    installation: { status: "active" },
+  } as const;
   const binding = await input.prisma.hostedCodexRepositoryBinding.findFirst({
     where: {
       repositoryConnectionId: input.repositoryId,
       workspaceId: input.workspaceId,
       status: { in: ["pending_activation", "active"] },
       tombstonedAt: null,
+      repository: repositoryScope,
     },
   });
   if (!binding) return { status: "not_configured" };
+  if (
+    input.expectedBinding &&
+    (binding.id !== input.expectedBinding.id ||
+      binding.revision !== input.expectedBinding.revision ||
+      binding.stateVersion !== input.expectedBinding.stateVersion ||
+      binding.status !== input.expectedBinding.status)
+  )
+    throw new Error("hosted_pool_binding_activation_conflict");
 
   const repositoryResponse = await input.octokit.request(
     "GET /repos/{owner}/{repo}",
@@ -134,17 +169,23 @@ export async function activateConfirmedHostedPoolBindingAfterWorkflowMerge(input
     throw new Error("hosted_workflow_default_head_changed");
   }
 
+  const verifiedWorkflow: VerifiedHostedPoolWorkflow = {
+    workflowPath: attestation.workflowPath,
+    workflowStyle: "reusable",
+    actionVersion: metadata.actionRef,
+    bindingId: binding.id,
+    bindingRevision,
+    workflowSourceCommitSha,
+  };
   if (binding.status === "active") {
     assertStoredAttestationMatches(binding, {
       ...attestation,
       actionRef: metadata.actionRef,
     });
-    return {
-      status: "already_active",
-      bindingId: binding.id,
-      bindingRevision,
-      workflowSourceCommitSha,
-    };
+  }
+  await input.beforeActivation?.(verifiedWorkflow);
+  if (binding.status === "active") {
+    return { status: "already_active", ...verifiedWorkflow };
   }
 
   await input.prisma.$transaction(async (transaction) => {
@@ -165,6 +206,7 @@ export async function activateConfirmedHostedPoolBindingAfterWorkflowMerge(input
         revision: binding.revision,
         stateVersion: binding.stateVersion,
         tombstonedAt: null,
+        repository: repositoryScope,
       },
       data: {
         status: "active",
@@ -188,9 +230,7 @@ export async function activateConfirmedHostedPoolBindingAfterWorkflowMerge(input
 
   return {
     status: "activated",
-    bindingId: binding.id,
-    bindingRevision,
-    workflowSourceCommitSha,
+    ...verifiedWorkflow,
   };
 }
 
@@ -248,12 +288,14 @@ function readGitHubCommitSha(data: unknown): string {
 function readGitHubWorkflowBlob(data: unknown) {
   const blob = data as {
     type?: unknown;
+    path?: unknown;
     encoding?: unknown;
     content?: unknown;
     sha?: unknown;
   } | null;
   if (
     blob?.type !== "file" ||
+    blob.path !== defaultCodexRotatingWorkflowPath ||
     blob.encoding !== "base64" ||
     typeof blob.content !== "string" ||
     typeof blob.sha !== "string" ||

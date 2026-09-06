@@ -55,13 +55,15 @@ describe("activation catalog policy deployment authorization", () => {
     ).toThrow("activation_catalog_policy_digest_mismatch");
   });
 
-  it("authorizes exact configured digests after reviewed raw promotion", () => {
+  it("blocks even exact configured digests until fresh raw promotion", () => {
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
-      status: "ready",
-      reason: "reviewed-raw",
+      status: "blocked",
+      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
     });
     expect(() =>
       trustedActivationCatalogPoliciesFromEnvironment(configured),
-    ).not.toThrow();
+    ).toThrow(
+      "activation_catalog_policy_trust_root_blocked:fresh-authenticated-raw-capture-and-independent-review-required",
+    );
   });
 });

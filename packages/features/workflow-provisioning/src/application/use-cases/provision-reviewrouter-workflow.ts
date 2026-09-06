@@ -39,12 +39,24 @@ export async function provisionReviewRouterWorkflow(
     });
   }
 
+  const attempt = await dependencies.provisioning.beginAttempt({
+    workspaceId: plan.workspaceId,
+    repositoryId: plan.repositoryId,
+    installationId: plan.installationId,
+    status: "not_started",
+    branch: plan.setupBranch,
+    workflowPath: plan.workflowPath,
+    workflowStyle: plan.workflowStyle,
+    actionVersion: plan.actionRef,
+  });
+
   if (dependencies.enabled === false) {
     await dependencies.provisioning.markFailed({
+      ...attempt,
       workspaceId: plan.workspaceId,
       repositoryId: plan.repositoryId,
       status: "failed",
-      branch: plan.setupBranch,
+      branch: attempt.branch,
       workflowPath: plan.workflowPath,
       workflowStyle: plan.workflowStyle,
       actionVersion: plan.actionRef,
@@ -119,11 +131,12 @@ export async function provisionReviewRouterWorkflow(
         owner: plan.owner,
         repo: plan.name,
         baseBranch: plan.defaultBranch,
-        setupBranch: plan.setupBranch,
+        setupBranch: attempt.branch,
         workflowFiles,
       });
 
     await dependencies.provisioning.markSetupPullRequestOpen({
+      ...attempt,
       workspaceId: plan.workspaceId,
       repositoryId: plan.repositoryId,
       status: "setup_pr_open",
@@ -132,6 +145,7 @@ export async function provisionReviewRouterWorkflow(
       workflowStyle: plan.workflowStyle,
       actionVersion: plan.actionRef,
       pullRequestUrl: pullRequest.url,
+      pullRequestHeadSha: pullRequest.headSha,
       errorMessage: null,
     });
     if (dependencies.auditLog) {
@@ -159,10 +173,11 @@ export async function provisionReviewRouterWorkflow(
   } catch (error: unknown) {
     const message = safeWorkflowProvisioningErrorSummary(error);
     await dependencies.provisioning.markFailed({
+      ...attempt,
       workspaceId: plan.workspaceId,
       repositoryId: plan.repositoryId,
       status: "failed",
-      branch: plan.setupBranch,
+      branch: attempt.branch,
       workflowPath: plan.workflowPath,
       workflowStyle: plan.workflowStyle,
       actionVersion: plan.actionRef,
@@ -178,7 +193,7 @@ export async function provisionReviewRouterWorkflow(
           targetType: "repository",
           targetId: plan.repositoryId,
           metadata: {
-            branch: plan.setupBranch,
+            branch: attempt.branch,
             workflowPath: plan.workflowPath,
             workflowStyle: plan.workflowStyle,
             actionVersion: plan.actionRef,

@@ -441,22 +441,26 @@ describe("disposable dual-version rehearsal", () => {
       }),
     ).rejects.toThrow("private_pg17_rehearsal_control_readiness_timeout");
   });
-  it("authorizes the reviewed schema-v5 trust root", () => {
+  it("keeps the changed workflow schema behind fresh catalog review", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual(
       reviewedActivationCatalogPolicyDigests,
     );
-    expect(rehearsalActivationCatalogPolicyAuthorization).toEqual(
-      canonicalActivationCatalogPolicyDigests,
-    );
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
-      status: "ready",
-      reason: "reviewed-raw",
+      status: "blocked",
+      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
     });
     expect(() =>
       authorizeCanonicalActivationCatalogPolicies(
         rehearsalActivationCatalogPolicyAuthorization,
       ),
-    ).not.toThrow();
+    ).toThrow("activation_catalog_policy_digest_mismatch");
+    expect(() =>
+      authorizeCanonicalActivationCatalogPolicies(
+        canonicalActivationCatalogPolicyDigests,
+      ),
+    ).toThrow(
+      "activation_catalog_policy_trust_root_blocked:fresh-authenticated-raw-capture-and-independent-review-required",
+    );
   });
   it("allows loaded disposable catalog observations without changing production timing", () => {
     expect(rehearsalReadinessPolicy).toEqual({
@@ -1267,6 +1271,9 @@ describe("disposable dual-version rehearsal", () => {
       "000087_codex_oauth_v4_v5_workflow_reattestation",
       "000088_codex_oauth_reattestation_mutation_owner_fence",
       "000089_codex_oauth_v4_v5_staged_compatibility",
+      "000089_workflow_provisioning_writer_quiescence",
+      "000090_workflow_provisioning_attempt_authority",
+      "000091_workflow_provisioning_artifact_and_inventory",
     ]);
     expect(exclusions).not.toContain("000067_review_live_progress");
     expect(exclusions).not.toContain(
