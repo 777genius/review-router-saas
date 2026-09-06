@@ -10,6 +10,7 @@ import {
   PrismaHostedPoolRepository,
   PrismaInvocationGrantRepository,
   PrismaHostedCommentTokenMintLedger,
+  PrismaHostedCodexRelayAuthorization,
   createDefaultHostedAccountPool,
   issueHostedPoolInvocationGrant,
   hostedAccountId,
@@ -150,7 +151,7 @@ describe.skipIf(!enabled)(
   "public eligibility on actual PostgreSQL guards",
   () => {
     it.each(["public", "private", "internal"] as const)(
-      "binds and prepares/dispatched mint authority for %s",
+      "authorizes binding, comment mint, and model relay for %s",
       async (visibility) => {
         const fixture = await repositoryFixture(visibility);
         const prepared = await prepare(fixture);
@@ -160,6 +161,18 @@ describe.skipIf(!enabled)(
           { where: { id: `${fixture.id}-mint` } },
         );
         expect(mint.state).toBe("dispatching");
+        // Reach the actual model relay admission, not just comment-token minting.
+        const relay = await authorizeRelay(fixture);
+        expect(relay).toMatchObject({
+          grantId: fixture.grantId,
+          workspaceId: workspace,
+          poolId: pool,
+        });
+        expect(
+          await prisma.hostedCodexRelayRequest.count({
+            where: { grantId: fixture.grantId },
+          }),
+        ).toBe(1);
       },
     );
 
@@ -178,6 +191,14 @@ describe.skipIf(!enabled)(
         await expect(dispatchMint(fixture)).rejects.toThrow(
           "hosted_comment_mint_dispatch_conflict",
         );
+        await expect(authorizeRelay(fixture)).rejects.toThrow(
+          "hosted_grant_authority_mismatch",
+        );
+        expect(
+          await prisma.hostedCodexRelayRequest.count({
+            where: { grantId: fixture.grantId },
+          }),
+        ).toBe(0);
       },
     );
 
@@ -214,6 +235,14 @@ describe.skipIf(!enabled)(
         await expect(dispatchMint(fixture)).rejects.toThrow(
           "hosted_comment_mint_dispatch_conflict",
         );
+        await expect(authorizeRelay(fixture)).rejects.toThrow(
+          "hosted_grant_authority_mismatch",
+        );
+        expect(
+          await prisma.hostedCodexRelayRequest.count({
+            where: { grantId: fixture.grantId },
+          }),
+        ).toBe(0);
       } finally {
         await prisma.gitHubInstallation.update({
           where: { id: installation },
@@ -399,5 +428,16 @@ async function dispatchMint(
     now: instant,
     dispatchAuthorizedUntil: new Date(instant.getTime() + 15_000),
     unsafeUntil: new Date(instant.getTime() + 61 * 60_000),
+  });
+}
+
+async function authorizeRelay(
+  fixture: Awaited<ReturnType<typeof repositoryFixture>>,
+) {
+  return new PrismaHostedCodexRelayAuthorization(prisma).authorize({
+    opaqueGrant: sha256(`${fixture.id}-token`),
+    requestOrdinal: 1,
+    idempotencyKey: `${fixture.id}-model-relay`,
+    requestBytes: 100,
   });
 }
