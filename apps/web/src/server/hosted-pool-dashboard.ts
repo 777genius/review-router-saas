@@ -180,9 +180,9 @@ export async function changeHostedRepositorySessionSource(
     throw new Error("repository_not_found");
   if (
     input.source === "hosted_workspace_pool" &&
-    repository.visibility !== "private"
+    !isHostedPoolVisibilityEligible(repository.visibility)
   ) {
-    throw new Error("hosted_pool_private_repository_required");
+    throw new Error("hosted_pool_repository_visibility_ineligible");
   }
   return dependencies.mutations.setRepositorySource({
     ...input,
@@ -235,6 +235,14 @@ function toRepositoryView(
           ? "active"
           : "pending"
       : "legacy",
-    eligible: repository.visibility === "private",
+    eligible: isHostedPoolVisibilityEligible(repository.visibility),
   };
+}
+
+function isHostedPoolVisibilityEligible(visibility: string): boolean {
+  return (
+    visibility === "public" ||
+    visibility === "private" ||
+    visibility === "internal"
+  );
 }

@@ -107,3 +107,73 @@ function createReader(request: ReturnType<typeof vi.fn>) {
     app,
   );
 }
+
+describe("server PR identity reader", () => {
+  const authorityInput = {
+    githubInstallationId: "456",
+    owner: "owner",
+    repository: "repo",
+    pullRequestNumber: 42,
+  };
+  it("reads base/head repository IDs and exact PR revision through installation authority", async () => {
+    const request = vi.fn().mockResolvedValue({
+      data: {
+        number: 42,
+        state: "open",
+        base: { repo: { id: 123 } },
+        head: { repo: { id: 999 }, sha: revisionSha },
+      },
+    });
+    await expect(
+      createReader(request).readPullRequestAuthority(authorityInput),
+    ).resolves.toEqual({
+      number: 42,
+      state: "open",
+      baseRepositoryId: "123",
+      headRepositoryId: "999",
+      headSha: revisionSha,
+    });
+    expect(request).toHaveBeenCalledWith(
+      "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+      {
+        owner: "owner",
+        repo: "repo",
+        pull_number: 42,
+      },
+    );
+  });
+  it("retains a deleted head as missing authority", async () => {
+    const request = vi.fn().mockResolvedValue({
+      data: {
+        number: 42,
+        state: "open",
+        base: { repo: { id: 123 } },
+        head: { repo: null, sha: revisionSha },
+      },
+    });
+    await expect(
+      createReader(request).readPullRequestAuthority(authorityInput),
+    ).resolves.toMatchObject({ headRepositoryId: null });
+  });
+  it("returns a safe fixed failure without GitHub request metadata", async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValue(new Error("fake-sensitive-installation-header"));
+    await expect(
+      createReader(request).readPullRequestAuthority(authorityInput),
+    ).rejects.toThrow(/^hosted_pull_request_authority_unavailable$/);
+  });
+  it.each([0, -1, 1.5, Number.NaN])(
+    "rejects invalid PR number %s without a request",
+    async (pullRequestNumber) => {
+      const request = vi.fn();
+      await expect(
+        createReader(request).readPullRequestAuthority({
+          ...authorityInput,
+          pullRequestNumber,
+        }),
+      ).rejects.toThrow("hosted_pull_request_number_invalid");
+      expect(request).not.toHaveBeenCalled();
+    },
+  );
+});

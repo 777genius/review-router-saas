@@ -5,27 +5,49 @@
 - Verdict: **GO**
 - BLOCKER: **0**
 - HIGH: **0**
-- Decision ID: `RR-PR259-RAW-GO-FB81C02D-248C90A6-20260904-R2`
-- Reviewed at: `2026-09-04T16:05:58.180Z`
+- Decision ID: `RR-PR264-RAW-GO-0D8AD35D-20260906-R3`
+- Reviewed at: `2026-09-06T16:27:14.761Z`
 
 ## Capture identities
 
-- Base commit: `b086fc56d4040e056d958d2ee5d83f3ab3c123e9`
-- Audited head: `fb81c02d23f1a0110695070949bbb59d32936c1f`
-- Audited tree: `214129466ca77a0e5a3cfb955928d4fce3ec6b61`
-- Workflow run: `33890593187`
+- Base commit: `0ff2a4625e3432f7030f9fb2a014af5cdbdf1265`
+- Audited head: `0d8ad35d70a749cbdf4f525769b37e448e729c69`
+- Audited tree: `397c10c91ad36781cb35be163615fdeded2a3f14`
+- Workflow run: `34044879249`
 - Run attempt: `1`
-- Job: `101081018756`
-- Artifact ID: `9943755695`
-- Artifact name: `activation-catalog-policy-fb81c02d23f1a0110695070949bbb59d32936c1f-1`
+- Job: `101518052947`
+- Artifact ID: `9992807225`
+- Artifact name: `activation-catalog-policy-0d8ad35d70a749cbdf4f525769b37e448e729c69-1`
 
 ## Raw captures
 
 | Selection | Label | Bytes | Raw SHA-256 |
-| --- | --- | ---: | --- |
-| selected | `activation-catalog-policy-candidate-1.json` | `2677685` | `248c90a630f14af561d54eb8b008210ced08cbc0c2d6c1d8a9a5258fbba91ea0` |
-| corroborating | `activation-catalog-policy-candidate-2.json` | `2677685` | `e498cc7452e39fabfcabbdbb54052e09d4cdaec4ace57871232bf2b06a762e04` |
+| --- | --- | --- | --- |
+| selected | `activation-catalog-policy-candidate-1.json` | `2681152` | `f314b8a0027bac214b1d00846c45163fba44337e7c59d906afe723ebefd7d5d7` |
+| corroborating | `activation-catalog-policy-candidate-2.json` | `2681152` | `2ada5f2d165b27c0c4605b410826c7775c70c8e91a594ad117a0d436e31a5d6e` |
 
-Capture-set digest: `sha256:15bcedf548ec76ad46e45601effa425e10271c6d31e829a255ffe1092155a91d`
+Capture-set digest: `sha256:58dd7ed5afa145bbd5aa4d0509001d84a3aecda27f9241d8571db899ea4a7997`
 Source PostgreSQL image: `postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60`
 Target PostgreSQL image: `postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4`
+
+I independently reviewed the supplied raw bytes and audited source. The 223084-byte archive has SHA-256 `e02ef7027eeb154cee3d80fc84763f45a28294528da578f80921869d2684c1fb`, matching the supplied GitHub artifact metadata. Its only two members equal the corresponding downloaded JSON files byte-for-byte. The supplied run, job, and artifact metadata agree on the captured commit and run identity. Job 101518052947 completed successfully; capture step 8 and upload step 9 succeeded. Overall CI was still `in_progress`, with no conclusion at collection. The full cutover and release-gate evidence steps were skipped in capture mode; this review does not declare overall CI green.
+
+I ran the audited `scripts/lib/activation-catalog-capture-pair.mjs` against the actual pair successfully. An independent recursive comparison found exactly four differences. Disposable identities are `rr-disposable-34044879249-1-a` and `rr-disposable-34044879249-1-b`; configured identities are `target.internal:32769/review_router` and `target.internal:32772/review_router`; system identifiers are `7682457021154238502` and `7682457128499306534`. Custody evidence digests are respectively `sha256:28e5e25293623cb17f7e5a167a29a891524e0fc1d69f771cd53df9c9c74277ac` and `sha256:5b84e4b17290207b50845a901357906666d754106ea1d1be73934ad6db75b355`. Both self-hashes validate. All other values, including both complete policies, are invariant. The shared recovery witness is `cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc`, the explicit disposable rehearsal fixture, not evidence of production recovery.
+
+The audited Git custody and capture-surface validators passed against `review-inputs/audited`, requiring the exact captured checkout and tree. The base is an ancestor of the audited head. The outer HEAD remained the requested baseline, and tracked worktrees remained clean. I reviewed the actual baseline-to-capture source changes, including SQL96, migration transition identities, and rehearsal inclusion. The existing trust-root file describes an earlier capture; I did not substitute those earlier raw identities for this pair or modify that file.
+
+Independently hashing all 96 ordered migration names and SQL checksums reproduces postmanifest `sha256:5faad7059a2f57055086dd1571e87706c261a486e8952334401f1d91cc41c97b`. SQL96 has SHA-256 `d1b49b764f406004227f3af9e23e3a4b36268b73d76f8e7b19828d508d8c8826` and is included in the canonical pending release entries. Evaluating the audited live projection reproduces SQL digest `sha256:23f865f463e6c7fc249f73ed5af13d62af11f528066e9637d7bc3c0c6d973b94`. The captured observed digest `sha256:4413b55476ac02968f5d6f05ca698549e2904dd98591bc706fc5c0b21fbbd2f8` passes the actual transition binding. The projection includes both SQL96 routines’ definitions, owners, security modes, search paths, and ACLs, together with attached trigger facts. Its history branch requires the exact postmanifest96 identity. These checks establish source and capture binding; I did not independently query or recreate the database.
+
+Both phases passed the actual production normalization validator under native Node. Each contains 11 roles, six bootstrap memberships, nine self-reachability edges, 127 relation security records, and two extensions. Login restrictions, absence of superuser/BYPASSRLS/replication/database-creation/role-creation attributes, and bootstrap membership options satisfy the production profile. I independently recomputed every effective-permission set from grants, reachability, PUBLIC permissions, and membership administration edges; both phases matched exactly.
+
+The phase change adds 993 grants and removes none. Roles, memberships, reachability, extensions, and row-security records remain identical. I inspected the actual runtime ACL application and gate SQL, including the capture routine’s subtransaction rollback after observing activated permissions. PUBLIC receives only schema/type usage. Application roles have no table access to comment-token mint or revocation-proof tables and retain only table-read access to RepositoryConnection. Custody retains constrained ledger routines and the intended refresh-use insert and four refresh-capability update columns. Phase normalization does not authorize arbitrary ACL differences; the live projection suppresses only enumerated phase-varying privilege tuples.
+
+Comparison with the baseline generated policy identified the WorkflowProvisioning unique-index replacement from migration90 and RepositoryInventoryGeneration sequence from migration91, including activated application sequence usage. These differences match the actual migration SQL and runtime grants. They do not represent additional SQL96 authority changes.
+
+I compared each SQL96 function definition against its latest preceding definition across the migration inventory. The mint guard matches migration83 and the complete prepare-authority guard matches migration86 exactly except for adding public visibility and the replacement declaration where needed. No other SQL statements remain after removing those two definitions and comments. Runtime-gate share locking, installation/workspace/repository binding checks, active pool and grant checks, expiry/revocation checks, revision and epoch fences, immutable mint fields, state transitions, and revocation-proof requirements remain intact. The prepare guard retains SECURITY DEFINER, its custody session-user restriction, and `pg_catalog, pg_temp` search path. CREATE OR REPLACE preserves existing ownership, ACLs, function identities, and trigger attachment; no new grants or trigger weakening appear in SQL96.
+
+The canonical preactivation digest is `sha256:a0a2d7bfbf361012c06c2435f111fd677ae2a07bf9bca2ce60dc5e00067da4c5`; activated is `sha256:6da321706c77cdaf15344d32209ffc5b936dae3630522a6e078c7f1336bf2e2a`; artifact is `sha256:abda62f9316c446711a3b6c350c7eeb89660c50837dbcdaed97d41bbd44fb590`. The pure audited raw-promotion renderer produces 2680528 bytes with SHA-256 `d6ff4e160988fa4f08c26c7450245de9ad49601a1c6673a29693f9d63edbb52e`. Projection source SHA-256 is `fd5af44217464f11370343293708bc316fe3d60c762125f0808a465da12cd15e`; normalization source SHA-256 is `7b23d64a1f2160398cdeb9194b0a3f3583e5566a1b20a0b2009caaf7ddbe0da1`. I constructed the full ActivationCatalogRawCaptureEvidence from this pair, actual metadata, workflow image pins, and this decision ID. The actual evidence validator and externally bound pair validator accepted it. The capture-set digest excludes only kind, version, and captureSetSha256 as specified.
+
+I separately inspected follow-up commit `a8aeeabb6897a067e751eb852fe661310d95490c`. Its sole change adds `await applyPublicEligibilityMigration(canaryDirectory, canaryPhaseDatabaseUrl)` immediately after the canary’s OAuth V5 migrations and before migration-count comparison. The helper adds and deploys SQL96, checks exactly one completed migration record, and compares both guard identities/security attributes and trigger attachments before and after. This closes the identified missing96 canary setup defect at source level. I did not run the database harness or claim a successful follow-up CI execution. The captured head is the follow-up’s ancestor, and its only changed path, `scripts/run-hosted-pool-postgres-e2e.mjs`, lies outside the existing capture surface. Thus this follow-up preserves capture ancestry and surface identity; the captures remain attributed to actual captured commit 0d8ad35d70a749cbdf4f525769b37e448e729c69.
+
+I read the raw promotion, provenance, normalization, Git custody, and review-evidence validators, including exact report-byte/runtime-summary binding and required terminal runtime fields. The actual markdown validator accepted the required field layout. I did not manufacture a reviewer runtime receipt or execute promotion. Validation used read-only native scripts and source inspection, with no dependency installs, database operations, deployment, credentials, GitHub mutations, or additional workers. No unresolved BLOCKER or HIGH finding remains within this bounded capture and follow-up source review. The review took approximately six minutes.

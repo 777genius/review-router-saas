@@ -1,4 +1,68 @@
 {
-  "status": "pending",
-  "reason": "fresh-authenticated-raw-capture-and-independent-review-required"
+  "status": "ready",
+  "optIn": "promote-reviewed-activation-catalog-raw-v1",
+  "evidence": {
+    "kind": "reviewrouter-activation-catalog-raw-capture-evidence",
+    "version": 1,
+    "selectedCaptureId": "activation-catalog-policy-candidate-1.json",
+    "captures": [
+      {
+        "label": "activation-catalog-policy-candidate-1.json",
+        "bytes": 2681152,
+        "sha256": "f314b8a0027bac214b1d00846c45163fba44337e7c59d906afe723ebefd7d5d7"
+      },
+      {
+        "label": "activation-catalog-policy-candidate-2.json",
+        "bytes": 2681152,
+        "sha256": "2ada5f2d165b27c0c4605b410826c7775c70c8e91a594ad117a0d436e31a5d6e"
+      }
+    ],
+    "capture": {
+      "baseCommit": "0ff2a4625e3432f7030f9fb2a014af5cdbdf1265",
+      "auditedHead": "0d8ad35d70a749cbdf4f525769b37e448e729c69",
+      "auditedTree": "397c10c91ad36781cb35be163615fdeded2a3f14",
+      "workflowRunId": "34044879249",
+      "runAttempt": 1,
+      "jobId": "101518052947",
+      "artifactId": "9992807225",
+      "artifactName": "activation-catalog-policy-0d8ad35d70a749cbdf4f525769b37e448e729c69-1"
+    },
+    "postgresImages": {
+      "sourcePg16": "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+      "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
+    },
+    "reviewResult": "GO",
+    "reviewDecisionId": "RR-PR264-RAW-GO-0D8AD35D-20260906-R3",
+    "projectionSha256": "sha256:23f865f463e6c7fc249f73ed5af13d62af11f528066e9637d7bc3c0c6d973b94",
+    "liveCatalogDigest": "sha256:4413b55476ac02968f5d6f05ca698549e2904dd98591bc706fc5c0b21fbbd2f8",
+    "postManifestIdentity": "sha256:5faad7059a2f57055086dd1571e87706c261a486e8952334401f1d91cc41c97b",
+    "recoveryWitnessSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "canonicalDigests": {
+      "preactivation": "sha256:a0a2d7bfbf361012c06c2435f111fd677ae2a07bf9bca2ce60dc5e00067da4c5",
+      "activated": "sha256:6da321706c77cdaf15344d32209ffc5b936dae3630522a6e078c7f1336bf2e2a",
+      "artifact": "sha256:abda62f9316c446711a3b6c350c7eeb89660c50837dbcdaed97d41bbd44fb590"
+    },
+    "generatedArtifactSource": {
+      "bytes": 2680528,
+      "sha256": "d6ff4e160988fa4f08c26c7450245de9ad49601a1c6673a29693f9d63edbb52e"
+    },
+    "captureSetSha256": "sha256:58dd7ed5afa145bbd5aa4d0509001d84a3aecda27f9241d8571db899ea4a7997"
+  },
+  "independentReview": {
+    "contractVersion": 1,
+    "reviewArtifact": {
+      "repositoryPath": "docs/release-evidence/activation-catalog-policy-raw-independent-review.md",
+      "bytes": 9466,
+      "sha256": "a61899e68d40c6de20c81fa8de4382c0d539f27becae8e1762f1bb67b15b19b1"
+    },
+    "reviewerRuntime": {
+      "repositoryPath": "docs/release-evidence/activation-catalog-policy-raw-reviewer-runtime.json",
+      "bytes": 9990,
+      "sha256": "0995c701eed915eb9f5580cec82dde3e5212f2177bd1eec805dd33862bc217c5"
+    },
+    "reviewerRunId": "rr-minimal-catalog96-raw-review-r3",
+    "reviewerTaskId": "rr-minimal-catalog96-raw-review-r3",
+    "reviewedAt": "2026-09-06T16:27:14.761Z",
+    "completedAt": "2026-09-06T16:28:37.053Z"
+  }
 }

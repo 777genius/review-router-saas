@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { stripAtomicMigrationEnvelope } from "../run-codex-rotating-release-migration.mjs";
@@ -42,9 +43,9 @@ const input = () => ({
 });
 
 describe("bounded managed89-to92 transaction construction", () => {
-  it("keeps the reader-to-builder boundary at92 for either complete checkout", () => {
-    expect([92, 95]).toContain(
-      readdirSync("packages/platform/db/prisma/migrations").length,
+  it("keeps the reader-to-builder boundary at92 for the exact96 checkout", () => {
+    expect(readdirSync("packages/platform/db/prisma/migrations")).toHaveLength(
+      96,
     );
     expect(catalog).toHaveLength(92);
     const sql = renderSchemaHandoffTransaction(input());
@@ -59,18 +60,31 @@ describe("bounded managed89-to92 transaction construction", () => {
     );
     for (const row of catalog)
       expect(terminal).toContain(`('${row.migrationName}','${row.checksum}')`);
-    for (const row of renderSchemaHandoffCheckoutExtension) {
+    const extensions = [
+      ...renderSchemaHandoffCheckoutExtension,
+      {
+        migrationName: "000096_hosted_pool_public_repository_eligibility",
+        checksum: createHash("sha256")
+          .update(
+            readFileSync(
+              "packages/platform/db/prisma/migrations/000096_hosted_pool_public_repository_eligibility/migration.sql",
+            ),
+          )
+          .digest("hex"),
+      },
+    ];
+    for (const row of extensions) {
       expect(sql).not.toContain(row.migrationName);
       expect(sql).not.toContain(row.checksum);
     }
-    const extensionLedger = renderSchemaHandoffCheckoutExtension.map(
+    const extensionLedger = extensions.map(
       (row: { migrationName: string; checksum: string }, index: number) => ({
         ...ledger(1)[0]!,
         ...row,
         id: `00000000-0000-0000-0000-${String(93 + index).padStart(12, "0")}`,
       }),
     );
-    for (const count of [1, 2, 3])
+    for (const count of [1, 2, 3, 4])
       expect(() =>
         renderSchemaHandoffTransaction({
           ...input(),

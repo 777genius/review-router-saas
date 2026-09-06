@@ -52,7 +52,7 @@ export type HostedCodexGrantAdmission = {
   readonly repository: string;
   readonly owner: string;
   readonly selected: boolean;
-  readonly visibility: "private" | "internal";
+  readonly visibility: "public" | "private" | "internal";
   readonly installationStatus: string;
   readonly bindingId: string;
   readonly bindingRevision: number;
@@ -159,6 +159,7 @@ export class HostedCodexGrantIssuer implements HostedCodexGrantIssuerPort {
       },
     });
     if (
+      admission.visibility !== "public" &&
       admission.visibility !== "private" &&
       admission.visibility !== "internal"
     ) {
@@ -569,4 +570,37 @@ function readCapabilityKey(
 function definedString<K extends string>(key: K, value: string | undefined) {
   const normalized = value?.trim();
   return normalized ? ({ [key]: normalized } as Record<K, string>) : {};
+}
+
+/** Facts read by the server from GitHub's installation-scoped pull request API.
+ * Client checks and the caller YAML are never a source for these facts.
+ */
+export type HostedPoolPullRequestAuthority = Readonly<{
+  number: number;
+  state: string;
+  baseRepositoryId: string;
+  headRepositoryId: string | null;
+  headSha: string;
+}>;
+
+export function assertHostedPoolPullRequestAuthority(input: {
+  readonly githubRepositoryId: string;
+  readonly pullRequestNumber: number;
+  readonly reviewHeadSha: string;
+  readonly pullRequest: HostedPoolPullRequestAuthority;
+}): void {
+  const observed = input.pullRequest;
+  if (
+    !/^[1-9][0-9]*$/u.test(input.githubRepositoryId) ||
+    !Number.isSafeInteger(input.pullRequestNumber) ||
+    input.pullRequestNumber < 1 ||
+    !/^[a-f0-9]{40}$/u.test(input.reviewHeadSha) ||
+    observed.number !== input.pullRequestNumber ||
+    observed.state !== "open" ||
+    observed.baseRepositoryId !== input.githubRepositoryId ||
+    observed.headRepositoryId !== input.githubRepositoryId ||
+    observed.headSha !== input.reviewHeadSha
+  ) {
+    throw new Error("hosted_pull_request_authority_mismatch");
+  }
 }
