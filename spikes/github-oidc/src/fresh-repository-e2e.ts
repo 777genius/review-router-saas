@@ -323,6 +323,12 @@ async function provisionSetupPullRequest(installationId: number): Promise<{
       );
     }
 
+    if (!repository.installationId) {
+      throw new Error(
+        `Repository ${targetRepo} is missing its internal installationId`,
+      );
+    }
+
     await saveRequestedReviewConfiguration({
       prisma,
       workspaceId: repository.workspaceId,
@@ -339,7 +345,7 @@ async function provisionSetupPullRequest(installationId: number): Promise<{
     return await provisionReviewRouterWorkflow(
       {
         workspaceId: repository.workspaceId,
-        installationId: repository.installationId!,
+        installationId: repository.installationId,
         repositoryId: repository.id,
         owner: repository.owner,
         name: repository.name,

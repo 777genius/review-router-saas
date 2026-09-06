@@ -68,6 +68,12 @@ try {
     );
   }
 
+  if (!repository.installationId) {
+    throw new Error(
+      `Repository ${targetRepo} is missing its internal installationId`,
+    );
+  }
+
   const staticRuntimeEnv = await loadStaticRuntimeEnv({
     prisma,
     workspaceId: repository.workspaceId,
@@ -77,7 +83,7 @@ try {
   const pullRequest = await provisionReviewRouterWorkflow(
     {
       workspaceId: repository.workspaceId,
-      installationId: repository.installationId!,
+      installationId: repository.installationId,
       repositoryId: repository.id,
       owner: repository.owner,
       name: repository.name,
