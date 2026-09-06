@@ -245,7 +245,9 @@ describe("activation catalog raw review trust root", () => {
       root.evidence.capture.auditedHead,
     );
     expect(activationCatalogRawTrustRootReadiness(root).status).toBe("ready");
-    expect(() => loadActivationCatalogRawPromotionTrustRoot(root)).not.toThrow();
+    expect(() =>
+      loadActivationCatalogRawPromotionTrustRoot(root),
+    ).not.toThrow();
     expect(() =>
       assertActivationCatalogPolicyReviewEvidence(buffers, root),
     ).not.toThrow();
@@ -313,7 +315,9 @@ describe("activation catalog raw review trust root", () => {
           { ...buffers, reviewerRuntime },
           bindReviewerRuntime(root, reviewerRuntime),
         ),
-      ).toThrow("activation_catalog_policy_raw_review_materialization_mismatch");
+      ).toThrow(
+        "activation_catalog_policy_raw_review_materialization_mismatch",
+      );
     },
   );
 
