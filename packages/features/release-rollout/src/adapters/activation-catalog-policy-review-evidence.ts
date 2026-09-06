@@ -470,7 +470,10 @@ const assertRawRuntime = (
     value.taskId !== review.reviewerTaskId ||
     value.updatedAt !== review.completedAt ||
     !exactRecord(value.details, ["baseCommit"]) ||
-    value.details.baseCommit !== expected.evidence.capture.baseCommit ||
+    value.details.baseCommit !==
+      (review.contractVersion === 2
+        ? expected.evidence.capture.auditedHead
+        : expected.evidence.capture.baseCommit) ||
     !Array.isArray(value.blockers) ||
     value.blockers.length !== 0 ||
     !Array.isArray(value.changedFiles) ||
@@ -492,7 +495,10 @@ const assertRawActivationCatalogPolicyReviewEvidence = (
   buffers: ActivationCatalogRawReviewEvidenceBuffers,
   expected: ActivationCatalogRawPromotionTrustRootReady,
 ): void => {
-  if (expected.independentReview.contractVersion !== 1)
+  if (
+    expected.independentReview.contractVersion !== 1 &&
+    expected.independentReview.contractVersion !== 2
+  )
     throw new Error("activation_catalog_policy_raw_review_contract_invalid");
   const markdown = exactRawFile(
     buffers.reviewArtifact,

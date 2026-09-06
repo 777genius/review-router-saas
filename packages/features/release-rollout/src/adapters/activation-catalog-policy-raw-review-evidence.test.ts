@@ -158,8 +158,12 @@ function unboundRoot(): ActivationCatalogRawPromotionTrustRootReady {
   };
 }
 
-function fixture(frozen = true) {
+function fixture(frozen = true, contractVersion: 1 | 2 = 1) {
   let root = unboundRoot();
+  root = {
+    ...root,
+    independentReview: { ...root.independentReview, contractVersion },
+  };
   const reviewArtifact = rawReviewArtifact(root.evidence.captureSetSha256);
   const runtime = {
     status: "done",
@@ -175,7 +179,12 @@ function fixture(frozen = true) {
     provider: "codex",
     runId: root.independentReview.reviewerRunId,
     taskId: root.independentReview.reviewerTaskId,
-    details: { baseCommit: root.evidence.capture.baseCommit },
+    details: {
+      baseCommit:
+        contractVersion === 2
+          ? root.evidence.capture.auditedHead
+          : root.evidence.capture.baseCommit,
+    },
     updatedAt: root.independentReview.completedAt,
   };
   const reviewerRuntime = Buffer.from(
@@ -229,6 +238,84 @@ describe("activation catalog raw review trust root", () => {
       assertActivationCatalogPolicyReviewEvidence(buffers, root),
     ).not.toThrow();
   });
+
+  it("accepts v2 runtime at the audited head with the distinct capture base intact", () => {
+    const { root, buffers } = fixture(true, 2);
+    expect(root.evidence.capture.baseCommit).not.toBe(
+      root.evidence.capture.auditedHead,
+    );
+    expect(activationCatalogRawTrustRootReadiness(root).status).toBe("ready");
+    expect(() => loadActivationCatalogRawPromotionTrustRoot(root)).not.toThrow();
+    expect(() =>
+      assertActivationCatalogPolicyReviewEvidence(buffers, root),
+    ).not.toThrow();
+  });
+
+  it.each([
+    [1, capture.auditedHead],
+    [1, "d".repeat(40)],
+    [2, capture.baseCommit],
+    [2, "d".repeat(40)],
+  ] as const)(
+    "rejects v%s runtime bound to wrong base %s",
+    (version, baseCommit) => {
+      const { root, buffers } = fixture(true, version);
+      const runtime = JSON.parse(buffers.reviewerRuntime.toString("utf8"));
+      runtime.details.baseCommit = baseCommit;
+      const reviewerRuntime = Buffer.from(
+        `${JSON.stringify(runtime, null, 2)}\n`,
+      );
+      expect(() =>
+        assertActivationCatalogPolicyReviewEvidence(
+          { ...buffers, reviewerRuntime },
+          bindReviewerRuntime(root, reviewerRuntime),
+        ),
+      ).toThrow(
+        "activation_catalog_policy_raw_reviewer_runtime_evidence_invalid",
+      );
+    },
+  );
+
+  it.each([0, 3, "2", null, undefined])(
+    "rejects unknown review contract version %s at both boundaries",
+    (contractVersion) => {
+      const { root, buffers } = fixture();
+      const invalid = {
+        ...root,
+        independentReview: { ...root.independentReview, contractVersion },
+      };
+      expect(activationCatalogRawTrustRootReadiness(invalid).status).toBe(
+        "pending",
+      );
+      expect(() => loadActivationCatalogRawPromotionTrustRoot(invalid)).toThrow(
+        "activation_catalog_policy_raw_trust_root_invalid",
+      );
+      expect(() =>
+        assertActivationCatalogPolicyReviewEvidence(
+          buffers,
+          invalid as ActivationCatalogRawPromotionTrustRootReady,
+        ),
+      ).toThrow("activation_catalog_policy_raw_review_contract_invalid");
+    },
+  );
+
+  it.each([1, 2] as const)(
+    "rejects v%s hash-bound runtime/report materialization mismatch",
+    (version) => {
+      const { root, buffers } = fixture(true, version);
+      const runtime = JSON.parse(buffers.reviewerRuntime.toString("utf8"));
+      runtime.evidence[1] += "\n";
+      const reviewerRuntime = Buffer.from(
+        `${JSON.stringify(runtime, null, 2)}\n`,
+      );
+      expect(() =>
+        assertActivationCatalogPolicyReviewEvidence(
+          { ...buffers, reviewerRuntime },
+          bindReviewerRuntime(root, reviewerRuntime),
+        ),
+      ).toThrow("activation_catalog_policy_raw_review_materialization_mismatch");
+    },
+  );
 
   it("accepts only deeply immutable ready roots", () => {
     const { root } = fixture();
@@ -318,7 +405,7 @@ describe("activation catalog raw review trust root", () => {
     [
       "review version",
       (root: any) => {
-        root.independentReview.contractVersion = 2;
+        root.independentReview.contractVersion = 3;
       },
     ],
     [

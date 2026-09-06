@@ -23,7 +23,8 @@ export type ActivationCatalogRawPromotionTrustRootReady = Readonly<{
   optIn: typeof activationCatalogRawPromotionOptIn;
   evidence: ActivationCatalogRawCaptureEvidence;
   independentReview: Readonly<{
-    contractVersion: 1;
+    // V1 binds the historical capture base; V2 binds the reviewed audited head.
+    contractVersion: 1 | 2;
     reviewArtifact: Readonly<{
       repositoryPath: typeof activationCatalogRawReviewArtifactRepositoryPath;
       bytes: number;
@@ -144,7 +145,7 @@ export function activationCatalogRawTrustRootReadiness(
         "reviewedAt",
         "completedAt",
       ]) ||
-      review.contractVersion !== 1 ||
+      (review.contractVersion !== 1 && review.contractVersion !== 2) ||
       !exactRawRootRecord(review.reviewArtifact, [
         "repositoryPath",
         "bytes",
