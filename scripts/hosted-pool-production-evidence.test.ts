@@ -1545,6 +1545,282 @@ describe("attempt-attributed Actions job checks", () => {
     started_at: "2026-08-24T00:00:00Z",
     completed_at: "2026-08-24T00:01:00Z",
   };
+  it("R3 text-only historical RR mutation remains publication evidence", async () => {
+    const f = await pipelineFixture();
+    const historical = {
+      ...check,
+      output: {
+        title: "Review",
+        summary: "Complete",
+        text: "<!-- reviewrouter:summary --> old",
+      },
+    };
+    const baseline = await captureHostedPoolPublicationSnapshot(
+      fakeGitHub([[], [], [], [historical]]),
+      scope,
+    );
+    f.pages[3]!.push(
+      {
+        ...historical,
+        output: {
+          ...historical.output,
+          text: "<!-- reviewrouter:summary --> changed",
+        },
+      },
+      { ...check, id: 902 },
+    );
+    const github = fakeGitHub(
+      f.pages,
+      [],
+      [{ ...job, check_run_url: job.check_run_url.replace("/901", "/902") }],
+    );
+    const evidence = await collectExactHostedPoolPublicationEvidence(github, {
+      ...window,
+      baseline,
+    });
+    expect(evidence.nonAppBotPublicationCount).toBe(1);
+    const observed = evidence.publicationObjects.find(
+      (item) => item.externalObjectId === "901",
+    )!;
+    expect(observed.bodyHash).toBe(baseline.artifacts[0]!.bodyHash);
+    expect(observed).not.toHaveProperty("checkTextHash");
+    await expect(read(f.prisma, evidence as never)).rejects.toThrow(
+      "publication_",
+    );
+  });
+
+  it("R3 queued Actions null clocks survive an unchanged baseline", async () => {
+    const f = await pipelineFixture();
+    const queued = {
+      ...check,
+      status: "queued",
+      conclusion: null,
+      started_at: null,
+      completed_at: null,
+    };
+    const baseline = await captureHostedPoolPublicationSnapshot(
+      fakeGitHub([[], [], [], [queued]]),
+      scope,
+    );
+    expect(baseline.artifacts[0]!.publishedAt).toBeNull();
+    f.pages[3]!.push(queued, { ...check, id: 902 });
+    const github = fakeGitHub(
+      f.pages,
+      [],
+      [{ ...job, check_run_url: job.check_run_url.replace("/901", "/902") }],
+    );
+    const evidence = await collectExactHostedPoolPublicationEvidence(github, {
+      ...window,
+      baseline,
+    });
+    expect(evidence.nonAppBotPublicationCount).toBe(0);
+    await expect(read(f.prisma, evidence as never)).resolves.toMatchObject({
+      publicationAttemptId: "publication-attempt-1",
+    });
+  });
+
+  it("R3 mixed-case repository job URL keeps exact attribution", async () => {
+    const f = await pipelineFixture();
+    f.pages[3]!.push(check);
+    const repository = "Owner/Disposable";
+    const baseline = await captureHostedPoolPublicationSnapshot(
+      fakeGitHub([[], [], []]),
+      { ...scope, repository },
+    );
+    const github = fakeGitHub(
+      f.pages,
+      [],
+      [
+        {
+          ...job,
+          check_run_url:
+            "https://api.github.com/repos/Owner/Disposable/check-runs/901",
+        },
+      ],
+    );
+    const evidence = await collectExactHostedPoolPublicationEvidence(github, {
+      ...window,
+      repository,
+      baseline,
+    });
+    expect(evidence.nonAppBotPublicationCount).toBe(0);
+    await expect(read(f.prisma, evidence as never)).resolves.toMatchObject({
+      publicationAttemptId: "publication-attempt-1",
+    });
+  });
+
+  it("R3 malformed output text cannot qualify for job exclusion", async () => {
+    const f = await pipelineFixture();
+    f.pages[3]!.push({ ...check, output: { ...check.output, text: 42 } });
+    await expect(
+      collectExactHostedPoolPublicationEvidence(
+        fakeGitHub(f.pages, [], [job]),
+        { ...window, baseline: f.baseline },
+      ),
+    ).rejects.toThrow("publication_identity_invalid");
+  });
+
+  it.each([undefined, null, "", "ordinary text"])(
+    "accepts optional or nullable check text %s without changing receipt hashes",
+    async (text) => {
+      const f = await pipelineFixture();
+      const managed = f.pages[3]![0] as any;
+      managed.output.text = text;
+      const evidence = await f.collect();
+      expect(
+        evidence.publicationObjects.find((item) => item.kind === "check_run")!
+          .bodyHash,
+      ).toBe(f.rendered.managedCheck!.bodyHash);
+      await expect(read(f.prisma, evidence as never)).resolves.toMatchObject({
+        publicationAttemptId: "publication-attempt-1",
+      });
+    },
+  );
+
+  it.each([false, 0, [], {}])(
+    "rejects malformed text %j before snapshot capture",
+    async (text) => {
+      await expect(
+        captureHostedPoolPublicationSnapshot(
+          fakeGitHub([
+            [],
+            [],
+            [],
+            [{ ...check, output: { ...check.output, text } }],
+          ]),
+          scope,
+        ),
+      ).rejects.toThrow("publication_identity_invalid");
+    },
+  );
+
+  it("detects text changes between the two final observations", async () => {
+    const f = await pipelineFixture();
+    const github = fakeGitHub(f.pages);
+    const original = github.request.getMockImplementation()!;
+    let captures = 0;
+    github.request.mockImplementation(async (method, path) => {
+      if (path.includes("/check-runs?")) {
+        captures++;
+        return {
+          check_runs: f.pages[3]!.map((item: any) => ({
+            ...item,
+            output: { ...item.output, text: String(captures) },
+          })),
+        };
+      }
+      return original(method, path);
+    });
+    await expect(
+      collectExactHostedPoolPublicationEvidence(github, {
+        ...window,
+        baseline: f.baseline,
+      }),
+    ).rejects.toThrow("publication_observation_incomplete");
+  });
+
+  it.each([
+    {
+      status: "in_progress",
+      conclusion: null,
+      started_at: check.started_at,
+      completed_at: null,
+    },
+    {
+      status: "completed",
+      conclusion: "skipped",
+      started_at: null,
+      completed_at: check.completed_at,
+    },
+  ])("retains real clocks for ordinary $status checks", async (clocks) => {
+    const baseline = await captureHostedPoolPublicationSnapshot(
+      fakeGitHub([[], [], [], [{ ...check, ...clocks }]]),
+      scope,
+    );
+    expect(baseline.artifacts[0]!.publishedAt).toBe(
+      new Date(clocks.completed_at ?? clocks.started_at!).toISOString(),
+    );
+  });
+
+  it.each([
+    "RR",
+    "expected app",
+    "completed",
+    "invalid clock",
+    "missing clocks",
+  ])("does not relax null-clock validation for %s", async (mutation) => {
+    const queued: any = {
+      ...check,
+      status: "queued",
+      conclusion: null,
+      started_at: null,
+      completed_at: null,
+    };
+    if (mutation === "RR")
+      queued.output = {
+        title: "Review",
+        summary: "Complete",
+        text: "reviewrouter:summary",
+      };
+    if (mutation === "expected app") queued.app = { slug: "reviewrouter-app" };
+    if (mutation === "RR" || mutation === "expected app") {
+      queued.conclusion = "success";
+      queued.output = {
+        ...queued.output,
+        title: "Review",
+        summary: "Complete",
+      };
+    }
+    if (mutation === "completed") queued.status = "completed";
+    if (mutation === "invalid clock") queued.started_at = "invalid";
+    if (mutation === "missing clocks") delete queued.started_at;
+    await expect(
+      captureHostedPoolPublicationSnapshot(
+        fakeGitHub([[], [], [], [queued]]),
+        scope,
+      ),
+    ).rejects.toThrow("publication_timestamp_invalid");
+  });
+
+  it("does not exclude a newly observed queued check without exact completed-job proof", async () => {
+    const f = await pipelineFixture();
+    f.pages[3]!.push({
+      ...check,
+      status: "queued",
+      conclusion: null,
+      started_at: null,
+      completed_at: null,
+    });
+    await expect(
+      collectExactHostedPoolPublicationEvidence(
+        fakeGitHub(f.pages, [], [job]),
+        { ...window, baseline: f.baseline },
+      ),
+    ).rejects.toThrow("publication_timestamp_invalid");
+  });
+
+  it.each([
+    "https://api.github.com/Repos/Owner/Disposable/check-runs/901",
+    "https://api.github.com/repos/Owner/Disposable/Check-runs/901",
+    "https://API.github.com/repos/Owner/Disposable/check-runs/901",
+    "http://api.github.com/repos/Owner/Disposable/check-runs/901",
+    "https://api.github.com:443/repos/Owner/Disposable/check-runs/901",
+    "https://api.github.com/repos/Owner/Disposable/check-runs/901#fragment",
+    "https://api.github.com/repos/Owner/Disposable/check-runs/901/",
+    "https://api.github.com/repos/Owner/Disposable/check-runs/901\n",
+    "https://api.github.com/repos/%4fwner/Disposable/check-runs/901",
+  ])("keeps URL structure strict: %s", async (check_run_url) => {
+    const f = await pipelineFixture();
+    const repository = "Owner/Disposable";
+    const baseline = { ...f.baseline, repository };
+    await expect(
+      collectExactHostedPoolPublicationEvidence(
+        fakeGitHub(f.pages, [], [{ ...job, check_run_url }]),
+        { ...window, repository, baseline },
+      ),
+    ).rejects.toThrow("publication_jobs_invalid");
+  });
+
   it.each([true, false])(
     "excludes only a proven job check (null output=%s)",
     async (nullable) => {

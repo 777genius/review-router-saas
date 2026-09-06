@@ -664,9 +664,17 @@ async function readExactSourceAndPublicationGraph(
 
 type PublicationKind =
   HostedPoolPublicationEvidence["publicationObjects"][number]["kind"];
-type SnapshotArtifact =
-  HostedPoolPublicationEvidence["publicationObjects"][number] &
-    Readonly<{ hasMarker: boolean; checkConclusion?: string | null }>;
+type SnapshotArtifact = Omit<
+  HostedPoolPublicationEvidence["publicationObjects"][number],
+  "publishedAt"
+> &
+  Readonly<{
+    publishedAt: string | null;
+    hasMarker: boolean;
+    checkConclusion?: string | null;
+    // Snapshot comparison only; bodyHash remains the canonical receipt join hash.
+    checkTextHash?: string;
+  }>;
 
 /** Bounded PR inventory; bodies are hashed and never retained. */
 export type HostedPoolPublicationSnapshot = Readonly<{
@@ -725,7 +733,18 @@ function assertSnapshot(snapshot: HostedPoolPublicationSnapshot): void {
       typeof item.authorLogin !== "string" ||
       !item.authorLogin.trim() ||
       typeof item.hasMarker !== "boolean" ||
-      !Number.isFinite(Date.parse(item.publishedAt)) ||
+      (item.kind === "check_run" &&
+        (typeof item.checkTextHash !== "string" ||
+          !/^[a-f0-9]{64}$/u.test(item.checkTextHash))) ||
+      (item.publishedAt === null
+        ? !(
+            item.kind === "check_run" &&
+            item.authorLogin === "github-actions[bot]" &&
+            !item.hasMarker &&
+            item.state === "queued" &&
+            item.checkConclusion === null
+          )
+        : !Number.isFinite(Date.parse(item.publishedAt))) ||
       seen.has(artifactKey(item))
     )
       throw new Error("hosted_pool_canary_publication_identity_invalid");
@@ -774,6 +793,14 @@ export async function captureHostedPoolPublicationSnapshot(
         );
       return items.map((item: any): SnapshotArtifact => {
         const check = index === 3;
+        const text = item?.output?.text;
+        if (
+          check &&
+          text !== undefined &&
+          text !== null &&
+          typeof text !== "string"
+        )
+          throw new Error("hosted_pool_canary_publication_identity_invalid");
         const markerText = check
           ? [
               item?.name,
@@ -856,7 +883,14 @@ export async function captureHostedPoolPublicationSnapshot(
           item.completed_at,
         ].filter((value) => value !== undefined && value !== null);
         if (
-          !timestamps.length ||
+          (!timestamps.length &&
+            !(
+              ordinaryActionsCheck &&
+              item.status === "queued" &&
+              item.conclusion === null &&
+              item.started_at === null &&
+              item.completed_at === null
+            )) ||
           timestamps.some(
             (value) =>
               typeof value !== "string" || !Number.isFinite(Date.parse(value)),
@@ -880,6 +914,7 @@ export async function captureHostedPoolPublicationSnapshot(
                 headSha: item.head_sha,
                 state: item.status,
                 checkConclusion: item.conclusion,
+                checkTextHash: digest(canonicalJson({ text: text ?? null })),
               }
             : {}),
           ...(index === 1
@@ -898,9 +933,11 @@ export async function captureHostedPoolPublicationSnapshot(
               }
             : {}),
           hasMarker,
-          publishedAt: new Date(
-            Math.max(...timestamps.map((value) => Date.parse(value))),
-          ).toISOString(),
+          publishedAt: timestamps.length
+            ? new Date(
+                Math.max(...timestamps.map((value) => Date.parse(value))),
+              ).toISOString()
+            : null,
         };
       });
     }),
@@ -999,12 +1036,19 @@ export async function collectExactHostedPoolPublicationEvidence(
     { status: string; conclusion: string | null }
   >();
   const jobIds = new Set<string>();
-  const prefix = `https://api.github.com/repos/${repository}/check-runs/`;
   for (const job of jobsPage.jobs) {
+    // Only the repository segments are case-insensitive; do not normalize the URL.
+    const match =
+      typeof job?.check_run_url === "string"
+        ? /^https:\/\/api\.github\.com\/repos\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)\/check-runs\/([1-9][0-9]*)$/u.exec(
+            job.check_run_url,
+          )
+        : null;
     const checkId =
-      typeof job?.check_run_url === "string" &&
-      job.check_run_url.startsWith(prefix)
-        ? job.check_run_url.slice(prefix.length)
+      match !== null &&
+      match[0] === job.check_run_url &&
+      match[1]!.toLowerCase() === repository
+        ? match[2]!
         : "";
     if (
       !validObjectId(job?.id) ||
@@ -1068,15 +1112,20 @@ export async function collectExactHostedPoolPublicationEvidence(
       /\[bot\]$/iu.test(item.authorLogin) ||
       /\[bot\]$/iu.test(previous?.authorLogin ?? "");
     if (!relevant) return [];
+    // A nullable inventory clock is never publication evidence.
+    if (item.publishedAt === null)
+      throw new Error("hosted_pool_canary_publication_timestamp_invalid");
     // Never silently discard a changed bot artifact because its timestamp is outside the window.
     if (new Date(item.publishedAt) > new Date(current.captureCompletedAt))
       throw new Error("hosted_pool_canary_publication_observation_incomplete");
     const {
       hasMarker: _hasMarker,
       checkConclusion: _checkConclusion,
+      checkTextHash: _checkTextHash,
+      publishedAt,
       ...object
     } = item;
-    return [object];
+    return [{ ...object, publishedAt }];
   });
   const appBotPublicationCount = publicationObjects.filter(
     (item) => item.authorLogin === input.expectedAppBot.toLowerCase(),
