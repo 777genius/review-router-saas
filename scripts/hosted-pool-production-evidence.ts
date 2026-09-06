@@ -662,8 +662,6 @@ async function readExactSourceAndPublicationGraph(
   return { executionId: intent.executionId, publicationAttemptId };
 }
 
-type PublicationKind =
-  HostedPoolPublicationEvidence["publicationObjects"][number]["kind"];
 type SnapshotArtifact = Omit<
   HostedPoolPublicationEvidence["publicationObjects"][number],
   "publishedAt"
@@ -1069,7 +1067,9 @@ export async function collectExactHostedPoolPublicationEvidence(
   const current = await captureHostedPoolPublicationSnapshot(github, input);
   const confirmed = await captureHostedPoolPublicationSnapshot(github, input);
   if (
-    Date.parse(current.capturedAt) < input.finishedAt.getTime() ||
+    // GitHub run timestamps and the local capture clock can differ slightly.
+    Date.parse(current.capturedAt) <
+      input.finishedAt.getTime() - GITHUB_RUN_CLOCK_TOLERANCE_MS ||
     Date.parse(confirmed.capturedAt) < Date.parse(current.captureCompletedAt) ||
     canonicalJson(current.artifacts) !== canonicalJson(confirmed.artifacts) ||
     canonicalJson(current.lifecycleThreads) !==
@@ -1116,16 +1116,32 @@ export async function collectExactHostedPoolPublicationEvidence(
     if (item.publishedAt === null)
       throw new Error("hosted_pool_canary_publication_timestamp_invalid");
     // Never silently discard a changed bot artifact because its timestamp is outside the window.
-    if (new Date(item.publishedAt) > new Date(current.captureCompletedAt))
+    if (
+      Date.parse(item.publishedAt) >
+      Date.parse(current.captureCompletedAt) + GITHUB_RUN_CLOCK_TOLERANCE_MS
+    )
       throw new Error("hosted_pool_canary_publication_observation_incomplete");
-    const {
-      hasMarker: _hasMarker,
-      checkConclusion: _checkConclusion,
-      checkTextHash: _checkTextHash,
-      publishedAt,
-      ...object
-    } = item;
-    return [{ ...object, publishedAt }];
+    // Project only public evidence fields; snapshot metadata stays internal.
+    return [
+      {
+        kind: item.kind,
+        externalObjectId: item.externalObjectId,
+        bodyHash: item.bodyHash,
+        authorLogin: item.authorLogin,
+        publishedAt: item.publishedAt,
+        ...(item.headSha !== undefined ? { headSha: item.headSha } : {}),
+        ...(item.state !== undefined ? { state: item.state } : {}),
+        ...(item.parentReviewId !== undefined
+          ? { parentReviewId: item.parentReviewId }
+          : {}),
+        ...(item.placementHash !== undefined
+          ? { placementHash: item.placementHash }
+          : {}),
+        ...(item.submitHash !== undefined
+          ? { submitHash: item.submitHash }
+          : {}),
+      },
+    ];
   });
   const appBotPublicationCount = publicationObjects.filter(
     (item) => item.authorLogin === input.expectedAppBot.toLowerCase(),

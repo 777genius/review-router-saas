@@ -712,7 +712,7 @@ const comment = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 function fakeGitHub(
-  pages: unknown[][],
+  pages: readonly (readonly unknown[])[],
   threads: { id: string; isResolved: boolean }[] = [],
   jobs: unknown[] = [],
 ) {
@@ -1667,6 +1667,11 @@ describe("attempt-attributed Actions job checks", () => {
       const managed = f.pages[3]![0] as any;
       managed.output.text = text;
       const evidence = await f.collect();
+      for (const object of evidence.publicationObjects) {
+        for (const field of ["hasMarker", "checkConclusion", "checkTextHash"]) {
+          expect(object).not.toHaveProperty(field);
+        }
+      }
       expect(
         evidence.publicationObjects.find((item) => item.kind === "check_run")!
           .bodyHash,
@@ -1963,6 +1968,76 @@ describe("attempt-attributed Actions job checks", () => {
 });
 
 describe("canonical requiredness and publication clock precision", () => {
+  it.each(
+    [1000, 5000, 5001].flatMap((skew) =>
+      [false, true].map((skewFinish) => ({ skew, skewFinish })),
+    ),
+  )(
+    "bounds immutable publication skew $skew ms (skew finish: $skewFinish)",
+    async ({ skew, skewFinish }) => {
+      const baseline = await captureHostedPoolPublicationSnapshot(
+        fakeGitHub([[], [], []]),
+        scope,
+      );
+      const publishedAt = new Date(window.now().getTime() + skew).toISOString();
+      // Both observations return the same frozen server object: only the
+      // GitHub/local clock offset differs, never the publication content.
+      const artifact = Object.freeze(comment({ updated_at: publishedAt }));
+      const pages = Object.freeze([artifact]);
+      const finishedAt = skewFinish ? new Date(publishedAt) : window.finishedAt;
+      const github = fakeGitHub([pages, [], []]);
+      const pending = collectExactHostedPoolPublicationEvidence(github, {
+        ...window,
+        baseline,
+        finishedAt,
+      });
+      if (skew <= 5000) {
+        const evidence = await pending;
+        expect(evidence.publicationObjects).toEqual([
+          {
+            kind: "issue_comment",
+            externalObjectId: "101",
+            bodyHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+            authorLogin: "reviewrouter-app[bot]",
+            publishedAt,
+          },
+        ]);
+      } else {
+        await expect(pending).rejects.toThrow(
+          "publication_observation_incomplete",
+        );
+      }
+      expect(
+        github.request.mock.calls.filter(([, path]) =>
+          path.includes("/issues/"),
+        ),
+      ).toHaveLength(2);
+    },
+  );
+
+  it.each([
+    [0, -1, 0, 0],
+    [0, 1, 0, 1],
+    [0, 0, 1, 0],
+  ])("keeps local capture ordering strict for %j", async (...offsets) => {
+    const baseline = await captureHostedPoolPublicationSnapshot(
+      fakeGitHub([[], [], []]),
+      scope,
+    );
+    let index = 0;
+    await expect(
+      collectExactHostedPoolPublicationEvidence(fakeGitHub([[], [], []]), {
+        ...window,
+        baseline,
+        now: () => new Date(window.now().getTime() + offsets[index++]!),
+      }),
+    ).rejects.toThrow(
+      offsets[1]! > offsets[2]!
+        ? "publication_observation_incomplete"
+        : "publication_scope_invalid",
+    );
+  });
+
   it.each(["superseded_no_effect", "failed_no_effect"])(
     "rejects inline downgrade to %s with all effects removed",
     async (state) => {
