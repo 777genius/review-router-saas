@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   assertRenderManagedRoleBranch,
@@ -111,6 +113,47 @@ describe("two managed histories and full Prisma ledger observations", () => {
       expect(() => readReviewedRenderManagedContract(phase)).toThrow(
         "managed_independent_review_missing",
       );
+  });
+
+  it("keeps SQL96 pending outside both managed ledger boundaries", () => {
+    const migration96 = {
+      migrationName: "000096_hosted_pool_public_repository_eligibility",
+      checksum: createHash("sha256")
+        .update(
+          readFileSync(
+            new URL(
+              "../../packages/platform/db/prisma/migrations/000096_hosted_pool_public_repository_eligibility/migration.sql",
+              import.meta.url,
+            ),
+          ),
+        )
+        .digest("hex"),
+    };
+    const checkout = [
+      ...catalog,
+      ...renderSchemaHandoffCheckoutExtension,
+      migration96,
+    ];
+    const managed = partitionRenderSchemaHandoffCheckout(checkout);
+    expect(managed).toEqual(catalog);
+    for (const phase of [retained, handoff]) {
+      const baseline = renderManagedMigrationPhase(phase).baselineCount;
+      expect(
+        inspectRenderManagedLedger(managed, rows(baseline), phase),
+      ).toEqual(inspectRenderManagedLedger(catalog, rows(baseline), phase));
+      const complete = checkout.map((row, index) => ({
+        ...rows(1)[0]!,
+        ...row,
+        id: `00000000-0000-0000-0000-${String(index).padStart(12, "0")}`,
+      }));
+      for (const count of [93, 94, 95, 96])
+        expect(() =>
+          inspectRenderManagedLedger(managed, complete.slice(0, count), phase),
+        ).toThrow("managed_ledger_count");
+    }
+    expect(
+      inspectRenderManagedLedger(managed, rows(92), handoff).pending,
+    ).toEqual([]);
   });
 
   it("binds 76 to the exact source prefix, independently of row count", () => {

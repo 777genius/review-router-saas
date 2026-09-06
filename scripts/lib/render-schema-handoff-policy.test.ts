@@ -23,14 +23,30 @@ import {
   renderSchemaHandoffMigrationContract as contract,
 } from "./render-schema-handoff-policy.mjs";
 
+import { canonicalPrismaMigrationNames } from "./canonical-prisma-migration-catalog.mjs";
+
 type CatalogRow = { migrationName: string; checksum: string };
 const catalog: readonly CatalogRow[] = readRenderSchemaHandoffCatalog();
 const extension: readonly CatalogRow[] = renderSchemaHandoffCheckoutExtension;
 const expanded = [...catalog, ...extension];
+const migration96 = {
+  migrationName: "000096_hosted_pool_public_repository_eligibility",
+  checksum: createHash("sha256")
+    .update(
+      readFileSync(
+        new URL(
+          "../../packages/platform/db/prisma/migrations/000096_hosted_pool_public_repository_eligibility/migration.sql",
+          import.meta.url,
+        ),
+      ),
+    )
+    .digest("hex"),
+};
+const checkout96 = [...expanded, migration96];
 
 describe("explicit checkout partition with an unchanged managed92 validator", () => {
-  it("projects exactly92 and exactly95 to the same ordered rows", () => {
-    for (const source of [catalog, expanded]) {
+  it("projects exactly92, exactly95 and exactly96 to the same ordered rows", () => {
+    for (const source of [catalog, expanded, checkout96]) {
       const before = structuredClone(source);
       const managed = partitionRenderSchemaHandoffCheckout(source);
       expect(managed).toEqual(catalog);
@@ -49,18 +65,51 @@ describe("explicit checkout partition with an unchanged managed92 validator", ()
     ).toBe("6c62ac869a47211043f8fffdd7af105cb6bd677b65462033195d41e7d7aafa2e");
   });
 
-  it("rejects drift or removal of every original and extension identity", () => {
-    for (const source of [catalog, expanded]) {
+  it("rejects drift and incomplete histories while allowing removal of SQL96", () => {
+    for (const source of [catalog, expanded, checkout96]) {
       for (const [index] of source.entries()) {
         const changed = source.map((row) => ({ ...row }));
         changed[index]!.checksum = "0".repeat(64);
         expect(() => partitionRenderSchemaHandoffCheckout(changed)).toThrow();
-        expect(() =>
-          partitionRenderSchemaHandoffCheckout(
-            source.filter((_, i) => i !== index),
-          ),
-        ).toThrow();
+        const removed = source.filter((_, i) => i !== index);
+        if (source === checkout96 && index === 95)
+          expect(partitionRenderSchemaHandoffCheckout(removed)).toEqual(
+            catalog,
+          );
+        else
+          expect(() => partitionRenderSchemaHandoffCheckout(removed)).toThrow();
       }
+    }
+  });
+
+  it("pins checkout96 to actual canonical SQL bytes", () => {
+    expect(checkout96.map((row) => row.migrationName)).toEqual(
+      canonicalPrismaMigrationNames,
+    );
+    expect(
+      createHash("sha256")
+        .update(
+          checkout96
+            .map((row) => `${row.migrationName}:${row.checksum}`)
+            .join(","),
+        )
+        .digest("hex"),
+    ).toBe("5faad7059a2f57055086dd1571e87706c261a486e8952334401f1d91cc41c97b");
+    expect(() => assertRenderSchemaHandoffCatalog(checkout96)).toThrow(
+      "migration_catalog",
+    );
+  });
+
+  it("rejects SQL96 with any incomplete historical extension tail", () => {
+    for (let bits = 0; bits < 7; bits++) {
+      const partial = extension.filter((_, i) => bits & (1 << i));
+      expect(() =>
+        partitionRenderSchemaHandoffCheckout([
+          ...catalog,
+          ...partial,
+          migration96,
+        ]),
+      ).toThrow();
     }
   });
 
@@ -74,10 +123,15 @@ describe("explicit checkout partition with an unchanged managed92 validator", ()
     expect(partitionRenderSchemaHandoffCheckout(catalog)).toEqual(catalog);
   });
 
-  it.each(["000000_unknown", "000050_unknown", "999999_unknown"])(
-    "rejects %s as an addition or replacement in either checkout",
+  it.each([
+    "000000_unknown",
+    "000050_unknown",
+    "000097_unknown",
+    "999999_unknown",
+  ])(
+    "rejects %s as an addition or replacement in every admitted checkout",
     (migrationName) => {
-      for (const source of [catalog, expanded]) {
+      for (const source of [catalog, expanded, checkout96]) {
         const unknown = { migrationName, checksum: "a".repeat(64) };
         for (const changed of [
           [...source, unknown],
@@ -93,7 +147,7 @@ describe("explicit checkout partition with an unchanged managed92 validator", ()
   );
 
   it("never normalizes duplicate/reordered/malformed rows or infers numeric identities", () => {
-    for (const source of [catalog, expanded]) {
+    for (const source of [catalog, expanded, checkout96]) {
       for (const changed of [
         [...source].reverse(),
         [source[0], ...source.slice(0, -1)],
@@ -111,9 +165,7 @@ describe("explicit checkout partition with an unchanged managed92 validator", ()
   });
 });
 
-// The checkpoint batch runs these real modules in a disposable95 checkout built
-// from committed PR244 SQL. On original92 this also exercises the unextended
-// reader; after integration the same tests cover95 without fixture SQL copies.
+// Exercise the real96 inventory and both historical checkouts with actual SQL bytes.
 describe("complete filesystem checkout inventory", () => {
   const directories: string[] = [];
   afterEach(() => {
@@ -151,32 +203,35 @@ describe("complete filesystem checkout inventory", () => {
     };
   }
 
-  it("reads the complete checkout and original92 as identical frozen92 rows", async () => {
+  it("reads checkout96, historical95 and original92 as identical frozen92 rows", async () => {
     const fixture = await checkout();
     const inventory = readdirSync(fixture.migrations).sort();
     expect(inventory).toEqual(fixture.canonical.canonicalPrismaMigrationNames);
-    expect([92, 95]).toContain(inventory.length);
+    expect(inventory).toHaveLength(96);
     const actual = fixture.read();
     expect(actual).toEqual(catalog);
     expect(Object.isFrozen(actual)).toBe(true);
     expect(actual.every(Object.isFrozen)).toBe(true);
-    if (inventory.length === 95) {
-      const bytes = extension.map((row) =>
-        readFileSync(
-          join(fixture.migrations, row.migrationName, "migration.sql"),
-        ),
-      );
-      for (const bits of [1, 2, 3, 4, 5, 6]) {
-        for (const [index, row] of extension.entries()) {
-          const path = join(fixture.migrations, row.migrationName);
-          rmSync(path, { recursive: true, force: true });
-          if (bits & (1 << index)) {
-            mkdirSync(path);
-            writeFileSync(join(path, "migration.sql"), bytes[index]!);
-          }
+    rmSync(join(fixture.migrations, migration96.migrationName), {
+      recursive: true,
+    });
+    expect(readdirSync(fixture.migrations)).toHaveLength(95);
+    expect(fixture.read()).toEqual(actual);
+    const bytes = extension.map((row) =>
+      readFileSync(
+        join(fixture.migrations, row.migrationName, "migration.sql"),
+      ),
+    );
+    for (const bits of [1, 2, 3, 4, 5, 6]) {
+      for (const [index, row] of extension.entries()) {
+        const path = join(fixture.migrations, row.migrationName);
+        rmSync(path, { recursive: true, force: true });
+        if (bits & (1 << index)) {
+          mkdirSync(path);
+          writeFileSync(join(path, "migration.sql"), bytes[index]!);
         }
-        expect(() => fixture.read()).toThrow("checkout_extension");
       }
+      expect(() => fixture.read()).toThrow("checkout_extension");
     }
     for (const row of extension)
       rmSync(join(fixture.migrations, row.migrationName), {
@@ -190,6 +245,7 @@ describe("complete filesystem checkout inventory", () => {
   it.each([
     "000000_unknown",
     "000050_unknown",
+    "000097_unknown",
     "999999_unknown",
     ".hidden",
     "README",
@@ -238,7 +294,9 @@ describe("complete filesystem checkout inventory", () => {
       rmSync(sql);
       expect(() => fixture.read()).toThrow("checkout_inventory");
       rmSync(directory, { recursive: true });
-      expect(() => fixture.read()).toThrow();
+      if (name === migration96.migrationName)
+        expect(fixture.read()).toEqual(catalog);
+      else expect(() => fixture.read()).toThrow();
       mkdirSync(directory);
       writeFileSync(sql, bytes);
     }

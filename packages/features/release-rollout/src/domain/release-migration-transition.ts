@@ -160,6 +160,10 @@ export const canonicalReleaseMigrationEntries = Object.freeze([
     "000091_workflow_provisioning_artifact_and_inventory",
     "086a7e2a38e1c3fa67ba44edcdac198af46327fd380eaeb2d13849ac6d22a562",
   ],
+  [
+    "000096_hosted_pool_public_repository_eligibility",
+    "d1b49b764f406004227f3af9e23e3a4b36268b73d76f8e7b19828d508d8c8826",
+  ],
 ] as const).map(([name, checksum]) =>
   Object.freeze({ migrationName: name, migrationSqlSha256: checksum }),
 );
@@ -189,14 +193,14 @@ const canonicalReleaseMigrationPostCatalogDigest = (() => {
 
 export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
-    "sha256:807c545c3578d0915bff07d227a8e2c126394516f21e54682349a09668631a65",
+    "sha256:d73617e2645fe2796f784c024a826a57343f20e7ea66187ec3dc0fd6c5a4d7ca",
   preManifestIdentity:
     "sha256:c0ab0520ee922e695b2954f0a0af81ffd0ad6fb57f41ec3ddc124fe7c8a781eb",
   orderedPendingEntriesSha256: deriveOrderedPendingEntriesSha256(
     canonicalReleaseMigrationEntries,
   ),
   migrationBundleSha256:
-    "sha256:e998d1df8d5cedf03ea31cc563e5f8f80b578cf0fbfe299c6524c81648b1f7c8",
+    "sha256:2438821c79ae824a083147a750867a0eb876c0632b0e6afe4cce99e0bba24e22",
   postManifestIdentity: canonicalReleaseMigrationPostManifestIdentity,
   postCatalogDigest: canonicalReleaseMigrationPostCatalogDigest,
 });

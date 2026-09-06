@@ -17,6 +17,7 @@ import {
   canonicalActivationCatalogPolicyTrustRootReadiness,
   reviewedActivationCatalogPolicyDigests,
 } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-contract.js";
+import { canonicalPrismaMigrationNames } from "./lib/canonical-prisma-migration-catalog.mjs";
 import { assertActivationCatalogCapturePair } from "./lib/activation-catalog-capture-pair.mjs";
 import {
   assertDisposableCaptureTarget,
@@ -34,6 +35,7 @@ import {
   disposableProviderScopeConcurrencyExerciseSql,
   disposableSqlConfiguration,
   disposableTargetPublicTableAclCanonicalizationSql,
+  materializeCanonicalPreReleasePrisma,
   normalizeRehearsalDockerInvocation,
   resolveRehearsalCaptureOnlyConfiguration,
   resolvePreReleaseMigrationExclusions,
@@ -1274,6 +1276,7 @@ describe("disposable dual-version rehearsal", () => {
       "000089_workflow_provisioning_writer_quiescence",
       "000090_workflow_provisioning_attempt_authority",
       "000091_workflow_provisioning_artifact_and_inventory",
+      "000096_hosted_pool_public_repository_eligibility",
     ]);
     expect(exclusions).not.toContain("000067_review_live_progress");
     expect(exclusions).not.toContain(
@@ -1310,6 +1313,16 @@ describe("disposable dual-version rehearsal", () => {
     expect(migrationManifestIdentity(migrationNames)).toBe(
       canonicalReleaseMigrationArtifact.postManifestIdentity,
     );
+    // Historical95 checkout retains its exact immutable identity.
+    expect(
+      migrationManifestIdentity(
+        migrationNames.filter(
+          (name) => name !== "000096_hosted_pool_public_repository_eligibility",
+        ),
+      ),
+    ).toBe(
+      "sha256:6c62ac869a47211043f8fffdd7af105cb6bd677b65462033195d41e7d7aafa2e",
+    );
     expect(() =>
       resolvePreReleaseMigrationExclusions([
         ...migrationNames,
@@ -1319,9 +1332,37 @@ describe("disposable dual-version rehearsal", () => {
     expect(() =>
       resolvePreReleaseMigrationExclusions([
         ...migrationNames,
-        "000075_future_review_migration",
+        "000097_future_review_migration",
       ]),
     ).toThrow("private_pg17_rehearsal_migration_boundary_unclassified");
+  });
+  it("excludes SQL96 only from the historical fixture and preserves current source bytes", () => {
+    const source = "packages/platform/db/prisma";
+    const migration = "000096_hosted_pool_public_repository_eligibility";
+    const sourceSql = join(source, "migrations", migration, "migration.sql");
+    const before = readFileSync(sourceSql);
+    const root = mkdtempSync(join(tmpdir(), "rr-pre-release96-"));
+    try {
+      const destination = materializeCanonicalPreReleasePrisma(
+        source,
+        join(root, "prisma"),
+      );
+      const historical = readdirSync(join(destination, "migrations"));
+      expect(historical).not.toContain(migration);
+      expect(migrationManifestIdentity(historical)).toBe(
+        canonicalReleaseMigrationArtifact.preManifestIdentity,
+      );
+      const current = readdirSync(join(source, "migrations"));
+      expect(current).toContain(migration);
+      expect(readFileSync(sourceSql)).toEqual(before);
+      expect([...current].sort()).toEqual(canonicalPrismaMigrationNames);
+      expect(canonicalPrismaMigrationNames).toContain(migration);
+      expect(migrationManifestIdentity(current)).toBe(
+        "sha256:5faad7059a2f57055086dd1571e87706c261a486e8952334401f1d91cc41c97b",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
   it("canonicalizes only the disposable PUBLIC table-read drift", () => {
     const sql = disposableTargetPublicTableAclCanonicalizationSql();

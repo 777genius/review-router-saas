@@ -113,6 +113,16 @@ export const renderSchemaHandoffCheckoutExtension = Object.freeze([
   }),
 ]);
 
+// Checkout96 admission only; SQL96 remains pending outside managed repair.
+const checkout96Extensions = Object.freeze([
+  ...renderSchemaHandoffCheckoutExtension,
+  Object.freeze({
+    migrationName: "000096_hosted_pool_public_repository_eligibility",
+    checksum:
+      "d1b49b764f406004227f3af9e23e3a4b36268b73d76f8e7b19828d508d8c8826",
+  }),
+]);
+
 export function partitionRenderSchemaHandoffCheckout(catalog) {
   if (
     !Array.isArray(catalog) ||
@@ -128,7 +138,7 @@ export function partitionRenderSchemaHandoffCheckout(catalog) {
   const managed = [];
   let extensions = 0;
   for (const row of catalog) {
-    const extension = renderSchemaHandoffCheckoutExtension.find(
+    const extension = checkout96Extensions.find(
       (entry) => entry.migrationName === row.migrationName,
     );
     if (!extension) managed.push(row);
@@ -137,11 +147,17 @@ export function partitionRenderSchemaHandoffCheckout(catalog) {
       extensions++;
     }
   }
-  if (extensions !== 0 && extensions !== 3) fail("checkout_extension");
+  if (![0, 3, 4].includes(extensions)) fail("checkout_extension");
   if (
     extensions === 3 &&
     manifest(catalog) !==
       "sha256:6c62ac869a47211043f8fffdd7af105cb6bd677b65462033195d41e7d7aafa2e"
+  )
+    fail("checkout_manifest");
+  if (
+    extensions === 4 &&
+    manifest(catalog) !==
+      "sha256:5faad7059a2f57055086dd1571e87706c261a486e8952334401f1d91cc41c97b"
   )
     fail("checkout_manifest");
   assertRenderSchemaHandoffCatalog(managed);
