@@ -42,7 +42,8 @@
     "@reviewrouter/shared": "workspace:*",
     "@trpc/server": "^11.17.0",
     "fastify": "^5.10.0",
-    "zod": "^4.4.2"
+    "zod": "^4.4.2",
+    "@reviewrouter/platform-locks": "workspace:*"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",

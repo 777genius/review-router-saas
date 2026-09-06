@@ -1,3 +1,4 @@
+import { createDefaultHostedPoolOperatorConnect } from "./hosted-pool-workflow-operator-composition.js";
 import {
   createHostedPoolOperatorComposition,
   type HostedPoolOperatorConnect,
@@ -390,9 +391,12 @@ export async function createApiApp(
           prisma,
           env: reviewActionV2Env,
           credentialSha256: operatorCredentialSha256,
-          ...(options.hostedPoolOperatorConnect
-            ? { connect: options.hostedPoolOperatorConnect }
-            : {}),
+          connect:
+            options.hostedPoolOperatorConnect ??
+            createDefaultHostedPoolOperatorConnect({
+              prisma,
+              env: reviewActionV2Env,
+            }),
         })
       : undefined);
   if (hostedPoolOperatorDependencies)

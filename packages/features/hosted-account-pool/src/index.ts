@@ -48,5 +48,7 @@ export {
   recordSuccessfulProviderResponse as recordHostedPoolSuccessfulProviderResponse,
   recordProviderResponseStarted as recordHostedPoolProviderResponseStarted,
 } from "./application/use-cases/manage-invocation-grant";
+export * from "./application/use-cases/ensure-repository-uses-default-pool";
 export * from "./application/use-cases/reconnect-hosted-account";
 export * from "./application/use-cases/operator-import-hosted-account";
+export * from "./application/use-cases/operator-connect-repository";
