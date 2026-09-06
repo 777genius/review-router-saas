@@ -788,7 +788,9 @@ function assertAuthority(
     authority.repositoryProvider !== "github" ||
     !authority.repositorySelected ||
     authority.repositoryArchived ||
-    !["private", "internal"].includes(authority.repositoryVisibility) ||
+    !["public", "private", "internal"].includes(
+      authority.repositoryVisibility,
+    ) ||
     !authority.githubRepositoryId ||
     !authority.installationRowId ||
     authority.installationStatus !== "active" ||
@@ -1032,7 +1034,7 @@ async function currentAuthority(
       AND binding."workspaceId" = ${mint.workspaceId} AND binding."poolId" = ${mint.poolId} AND binding."repositoryConnectionId" = ${mint.repositoryConnectionId}
       AND pool."status" = 'active' AND pool."revision" = ${mint.poolRevision} AND pool."authzEpoch" = ${mint.poolAuthzEpoch}
       AND repository."updatedAt" = ${mint.repositoryUpdatedAt} AND repository."provider" = 'github' AND repository."selected"
-      AND NOT repository."archived" AND repository."visibility" IN ('private','internal')
+      AND NOT repository."archived" AND repository."visibility" IN ('public','private','internal')
       AND repository."githubRepositoryId" = ${mint.githubRepositoryId} AND repository."fullName" = ${mint.repositoryFullName}
       AND repository."installationId" = ${mint.githubInstallationRowId}
       AND installation."updatedAt" = ${mint.installationUpdatedAt}

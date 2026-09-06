@@ -97,11 +97,76 @@ describe("hosted pool dashboard boundary", () => {
     expect(authJson.every((byte) => byte === 0)).toBe(true);
   });
 
-  it("rejects public repositories before a hosted binding mutation", async () => {
+  it("rejects unknown visibility before a hosted binding mutation", async () => {
     const dependencies = mutationDependencies({
       getRepository: vi.fn(async () => ({
         id: "repo-1",
         workspaceId: "workspace-1",
+        fullName: "acme/public",
+        visibility: "unknown",
+      })),
+    });
+    await expect(
+      changeHostedRepositorySessionSource(
+        {
+          workspaceId: "workspace-1",
+          repositoryId: "repo-1",
+          source: "hosted_workspace_pool",
+          expectedVersion: 0,
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow("hosted_pool_repository_visibility_ineligible");
+    expect(dependencies.mutations.setRepositorySource).not.toHaveBeenCalled();
+  });
+
+  it.each(["public", "private", "internal"])(
+    "allows %s visibility consistently in mutation and read model",
+    async (visibility) => {
+      const repository = {
+        id: "repo-1",
+        workspaceId: "workspace-1",
+        fullName: "acme/repo",
+        visibility,
+      };
+      const dependencies = mutationDependencies({
+        getRepository: vi.fn(async () => repository),
+      });
+      await expect(
+        changeHostedRepositorySessionSource(
+          {
+            workspaceId: "workspace-1",
+            repositoryId: "repo-1",
+            source: "hosted_workspace_pool",
+            expectedVersion: 0,
+          },
+          dependencies,
+        ),
+      ).resolves.toEqual({ activation: "pending" });
+      expect(dependencies.mutations.setRepositorySource).toHaveBeenCalledOnce();
+      const view = await loadHostedPoolDashboardView({
+        workspaceId: "workspace-1",
+        repositories: [repository],
+        featureEnabled: true,
+        entitled: true,
+        queries: {
+          getDefaultPoolSummary: vi.fn(async () => null),
+          listAccountSummaries: vi.fn(async () => []),
+          getRepositoryBindingSummary: vi.fn(async () => null),
+        },
+      });
+      expect(view.repositories[0]).toMatchObject({
+        eligible: true,
+        activation: "legacy",
+      });
+    },
+  );
+
+  it("does not treat public visibility as workspace authorization", async () => {
+    const dependencies = mutationDependencies({
+      getRepository: vi.fn(async () => ({
+        id: "repo-1",
+        workspaceId: "other-workspace",
         fullName: "acme/public",
         visibility: "public",
       })),
@@ -116,7 +181,7 @@ describe("hosted pool dashboard boundary", () => {
         },
         dependencies,
       ),
-    ).rejects.toThrow("hosted_pool_private_repository_required");
+    ).rejects.toThrow("repository_not_found");
     expect(dependencies.mutations.setRepositorySource).not.toHaveBeenCalled();
   });
 

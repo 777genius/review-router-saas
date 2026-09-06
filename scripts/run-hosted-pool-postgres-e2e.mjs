@@ -80,6 +80,9 @@ const hostedPoolStagedMigrations = [
   },
 ];
 
+const publicEligibilityMigration =
+  "000096_hosted_pool_public_repository_eligibility";
+
 const codexOAuthV5Migrations = [
   "000087_codex_oauth_v4_v5_workflow_reattestation",
   "000088_codex_oauth_reattestation_mutation_owner_fence",
@@ -138,6 +141,10 @@ try {
     }
     await prepareCodexOAuthV5ReleaseAuthority(migrationDatabaseUrl);
     applyCodexOAuthV5Migrations(rehearsalDirectory, migrationDatabaseUrl);
+    await applyPublicEligibilityMigration(
+      rehearsalDirectory,
+      migrationDatabaseUrl,
+    );
 
     const migrationCount = await countAppliedMigrations(migrationDatabaseUrl);
     runMigrationDeploy(rehearsalDirectory, migrationDatabaseUrl);
@@ -155,6 +162,7 @@ try {
     runMigrationDeploy(rehearsalDirectory, databaseUrl);
     await prepareCodexOAuthV5ReleaseAuthority(databaseUrl);
     applyCodexOAuthV5Migrations(rehearsalDirectory, databaseUrl);
+    await applyPublicEligibilityMigration(rehearsalDirectory, databaseUrl);
     await applyProductionRuntimeAcl(databaseUrl, database);
     await prepareProviderScopeConcurrencyReleaseAuthority(databaseUrl);
     await proveProviderScopeConcurrencyRollout(
@@ -172,6 +180,20 @@ try {
             custodyDatabaseUrl,
           REVIEW_ROUTER_HOSTED_POOL_E2E_API_DATABASE_URL: apiDatabaseUrl,
           REVIEW_ROUTER_RUN_HOSTED_POOL_POSTGRES_E2E: "1",
+        },
+      );
+      run(
+        vitestBinary,
+        [
+          "run",
+          "scripts/hosted-pool-e2e/hosted-pool-public-eligibility.postgres.test.ts",
+        ],
+        {
+          REVIEW_ROUTER_HOSTED_POOL_E2E_DATABASE_URL: databaseUrl,
+          REVIEW_ROUTER_HOSTED_POOL_E2E_CUSTODY_DATABASE_URL:
+            custodyDatabaseUrl,
+          REVIEW_ROUTER_HOSTED_POOL_E2E_API_DATABASE_URL: apiDatabaseUrl,
+          REVIEW_ROUTER_RUN_HOSTED_POOL_PUBLIC_PG: "1",
         },
       );
     } finally {
@@ -632,6 +654,7 @@ function prepareMigrationRehearsal({ excludeHostedPoolMigrations }) {
     join(directory, "prisma.config.ts"),
   );
   const excludedMigrations = new Set([
+    publicEligibilityMigration,
     ...codexOAuthV5Migrations,
     ...(excludeHostedPoolMigrations
       ? hostedPoolStagedMigrations.map((migration) => migration.name)
@@ -780,4 +803,44 @@ function reservePort() {
       server.close((error) => (error ? reject(error) : resolve(address.port)));
     });
   });
+}
+
+async function applyPublicEligibilityMigration(directory, url) {
+  const client = new pg.Client({ connectionString: url });
+  await client.connect();
+  try {
+    // Compare actual catalog identity/security before and after the additive
+    // migration. No new role grants, trigger toggles, or body rewriting.
+    const catalogSql = `
+      SELECT p.oid::text, p.proname, p.proowner::text, p.proacl::text,
+        p.prosecdef, p.proconfig, p.prorettype::text, p.proargtypes::text,
+        t.oid::text AS trigger_oid, t.tgenabled, pg_get_triggerdef(t.oid) AS trigger_definition
+      FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      JOIN pg_trigger t ON t.tgfoid=p.oid
+      WHERE n.nspname='public' AND p.proname IN
+        ('hosted_codex_comment_token_mint_guard', 'hosted_codex_comment_token_prepare_authority_complete')
+      ORDER BY p.proname, t.oid
+    `;
+    const before = (await client.query(catalogSql)).rows;
+    if (before.length !== 2)
+      throw new Error("hosted_public_eligibility_prior_guards_missing");
+    addMigration(directory, publicEligibilityMigration);
+    runMigrationDeploy(directory, url);
+    const after = (await client.query(catalogSql)).rows;
+    if (JSON.stringify(after) !== JSON.stringify(before)) {
+      throw new Error("hosted_public_eligibility_guard_security_drift");
+    }
+    const applied = await client.query(
+      `
+      SELECT count(*)::int AS count FROM "_prisma_migrations"
+      WHERE migration_name=$1 AND finished_at IS NOT NULL AND rolled_back_at IS NULL
+    `,
+      [publicEligibilityMigration],
+    );
+    if (applied.rows[0]?.count !== 1)
+      throw new Error("hosted_public_eligibility_migration_not_committed");
+    console.log("hosted_public_eligibility_guard_catalog_preserved:2");
+  } finally {
+    await client.end();
+  }
 }

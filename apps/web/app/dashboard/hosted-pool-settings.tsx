@@ -54,7 +54,7 @@ export function HostedPoolSettingsPanel({
             </Badge>
           </div>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
-            Add workspace-owned Codex sessions for explicitly opted-in private
+            Add workspace-owned Codex sessions for explicitly opted-in GitHub
             repositories. ReviewRouter stores the session and transiently relays
             model prompts, tool results, and responses.
           </p>
@@ -249,7 +249,7 @@ export function RepositorySessionSourceSelector({
                     value: "hosted_workspace_pool",
                     label: "Hosted workspace pool",
                     description:
-                      "Private repositories only. Activates after the exact workflow update.",
+                      "Selected GitHub repositories. Activates after the exact workflow update.",
                   },
                 ]
               : []),
@@ -265,7 +265,7 @@ export function RepositorySessionSourceSelector({
       </DashboardActionForm>
       {!repository.eligible ? (
         <p className="mt-2 text-xs text-amber-200/80">
-          Hosted pool is limited to private repositories in this release.
+          This repository is not eligible for the hosted pool.
         </p>
       ) : !hostedPoolReady ? (
         <p className="mt-2 text-xs text-amber-200/80">

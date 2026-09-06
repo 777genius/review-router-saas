@@ -12,6 +12,44 @@ export class OctokitHostedWorkflowSourceReader implements HostedWorkflowSourceRe
       app ?? new App({ appId: input.appId, privateKey: input.privateKey });
   }
 
+  async readPullRequestAuthority(
+    input: Parameters<
+      HostedWorkflowSourceReaderPort["readPullRequestAuthority"]
+    >[0],
+  ) {
+    const installationId = parsePositiveSafeInteger(
+      input.githubInstallationId,
+      "hosted_workflow_installation_id_invalid",
+    );
+    if (
+      !Number.isSafeInteger(input.pullRequestNumber) ||
+      input.pullRequestNumber < 1
+    ) {
+      throw new Error("hosted_pull_request_number_invalid");
+    }
+    try {
+      const octokit = await this.app.getInstallationOctokit(installationId);
+      const { data } = await octokit.request(
+        "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+        {
+          owner: input.owner,
+          repo: input.repository,
+          pull_number: input.pullRequestNumber,
+        },
+      );
+      return {
+        number: data.number,
+        state: data.state,
+        baseRepositoryId: String(data.base.repo.id),
+        headRepositoryId: data.head.repo ? String(data.head.repo.id) : null,
+        headSha: data.head.sha,
+      };
+    } catch {
+      // Never surface installation-token request metadata through an API error.
+      throw new Error("hosted_pull_request_authority_unavailable");
+    }
+  }
+
   async readWorkflowAtRevision(
     input: Parameters<
       HostedWorkflowSourceReaderPort["readWorkflowAtRevision"]

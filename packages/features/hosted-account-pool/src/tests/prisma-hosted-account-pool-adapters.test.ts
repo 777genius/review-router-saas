@@ -180,7 +180,7 @@ describe("Prisma hosted pool admin adapters", () => {
           provider: "github",
           selected: true,
           archived: false,
-          visibility: { in: ["private", "internal"] },
+          visibility: { in: ["public", "private", "internal"] },
         }),
       }),
     );
@@ -188,6 +188,74 @@ describe("Prisma hosted pool admin adapters", () => {
       transaction.hostedCodexRepositoryBinding.create,
     ).not.toHaveBeenCalled();
   });
+
+  it.each(["public", "private", "internal"])(
+    "binds an eligible %s repository without changing tenant or installation scope",
+    async (visibility) => {
+      const transaction = {
+        repositoryConnection: {
+          findFirst: vi.fn(
+            async ({ where }: { where: { visibility: { in: string[] } } }) => {
+              expect(where).toEqual({
+                id: "repository-1",
+                workspaceId: workspace,
+                provider: "github",
+                selected: true,
+                archived: false,
+                visibility: { in: ["public", "private", "internal"] },
+                installation: {
+                  is: { workspaceId: workspace, status: "active" },
+                },
+              });
+              return where.visibility.in.includes(visibility)
+                ? { id: "repository-1" }
+                : null;
+            },
+          ),
+        },
+        hostedCodexPool: {
+          findFirst: vi.fn(async ({ where }: { where: object }) => {
+            expect(where).toEqual({
+              id: pool,
+              workspaceId: workspace,
+              isDefault: true,
+              status: "active",
+              tombstonedAt: null,
+            });
+            return { id: pool };
+          }),
+        },
+        hostedCodexRepositoryBinding: { create: vi.fn(), updateMany: vi.fn() },
+      };
+      const bindings = new PrismaHostedPoolBindingRepository(
+        fakePrisma(transaction),
+      );
+      await expect(
+        bindings.save({
+          binding: {
+            bindingId: hostedBindingId("binding-1"),
+            repositoryId: repositoryId("repository-1"),
+            workspaceId: workspace,
+            poolId: pool,
+            authMode: "codex_subscription_oauth_hosted_pool",
+            status: "pending_activation",
+            revision: 1,
+            stateVersion: 1,
+            attestedBindingRevision: null,
+            activatedAt: null,
+            drainingAt: null,
+            boundAt: now,
+            updatedAt: now,
+          },
+          expectedRevision: null,
+          expectedStateVersion: null,
+        }),
+      ).resolves.toBe(true);
+      expect(
+        transaction.hostedCodexRepositoryBinding.create,
+      ).toHaveBeenCalledOnce();
+    },
+  );
 
   it("uses exact binding identity and revision for update CAS", async () => {
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
