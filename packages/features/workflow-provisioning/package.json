@@ -19,13 +19,6 @@
     "@reviewrouter/protocol-review-workflow": "workspace:*",
     "@reviewrouter/shared": "workspace:*"
   },
-  "devDependencies": {
-    "@reviewrouter/features-repo-health": "workspace:*",
-    "@reviewrouter/features-repositories": "workspace:*",
-    "@reviewrouter/features-support-diagnostics": "workspace:*",
-    "@reviewrouter/platform-db": "workspace:*",
-    "@reviewrouter/platform-locks": "workspace:*"
-  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"

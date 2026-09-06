@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
-import { projectRepositorySetupStatus } from "../domain/workflow-provisioning";
-import { PrismaWorkflowProvisioningRepository } from "../infrastructure/prisma/prisma-workflow-provisioning-repository";
-import { PrismaWorkflowProvisioningStatusAuthority } from "../infrastructure/prisma/prisma-workflow-provisioning-status-authority";
+import { projectRepositorySetupStatus } from "@reviewrouter/features-workflow-provisioning";
+import { PrismaWorkflowProvisioningRepository } from "@reviewrouter/features-workflow-provisioning";
+import { PrismaWorkflowProvisioningStatusAuthority } from "@reviewrouter/features-workflow-provisioning";
 import {
   conflict,
   createProvisioningPrisma,
   identity,
   initialCandidate,
   record,
-} from "./provisioning-prisma-fixture";
+} from "../../../../../packages/features/workflow-provisioning/src/tests/provisioning-prisma-fixture";
 
 describe("provisioning attempt writers", () => {
   it("records the attempt before work, persists its PR and ignores stale failure/completion", async () => {

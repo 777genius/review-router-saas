@@ -1,10 +1,10 @@
 import { PostgresLeaseLock } from "@reviewrouter/platform-locks";
-import { WorkflowGitHubFixture } from "./workflow-github-fixture";
-import { OctokitWorkflowSetupGateway } from "../infrastructure/github/octokit-workflow-setup-gateway";
-import { provisionReviewRouterWorkflow } from "../application/use-cases/provision-reviewrouter-workflow";
-import { PrismaWorkflowProvisioningTarget } from "../infrastructure/prisma/prisma-workflow-provisioning-target";
-import { provisionRepositoryReviewRouterWorkflow } from "../application/use-cases/provision-repository-reviewrouter-workflow";
-import { assertDisposableWorkflowDatabase } from "./disposable-database";
+import { WorkflowGitHubFixture } from "../../../../../packages/features/workflow-provisioning/src/tests/workflow-github-fixture";
+import { OctokitWorkflowSetupGateway } from "@reviewrouter/features-workflow-provisioning";
+import { provisionReviewRouterWorkflow } from "@reviewrouter/features-workflow-provisioning";
+import { PrismaWorkflowProvisioningTarget } from "@reviewrouter/features-workflow-provisioning";
+import { provisionRepositoryReviewRouterWorkflow } from "@reviewrouter/features-workflow-provisioning";
+import { assertDisposableWorkflowDatabase } from "../../../../../packages/features/workflow-provisioning/src/tests/disposable-database";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -18,9 +18,9 @@ import {
 } from "@reviewrouter/features-repositories";
 import { PrismaRepositoryHealthRepository } from "@reviewrouter/features-repo-health";
 import { PrismaSupportDiagnosticsRepository } from "@reviewrouter/features-support-diagnostics";
-import { PrismaWorkflowProvisioningRepository } from "../infrastructure/prisma/prisma-workflow-provisioning-repository";
-import { PrismaWorkflowProvisioningStatusAuthority } from "../infrastructure/prisma/prisma-workflow-provisioning-status-authority";
-import { PrismaWorkflowProvisioningQuery } from "../infrastructure/prisma/prisma-workflow-provisioning-query";
+import { PrismaWorkflowProvisioningRepository } from "@reviewrouter/features-workflow-provisioning";
+import { PrismaWorkflowProvisioningStatusAuthority } from "@reviewrouter/features-workflow-provisioning";
+import { PrismaWorkflowProvisioningQuery } from "@reviewrouter/features-workflow-provisioning";
 import { withDrainedTargetAuthorityPools } from "../../../../../scripts/lib/quiesced-target-authority";
 
 const databaseUrl = process.env.REVIEW_ROUTER_TEST_DATABASE_URL;
@@ -105,7 +105,7 @@ withDatabase("WorkflowProvisioning PostgreSQL concurrency and transfer", () => {
   it("migrates deterministic authority and invalidates pre-existing cross-workspace rows", async () => {
     const migration = readFileSync(
       new URL(
-        "../../../../platform/db/prisma/migrations/000090_workflow_provisioning_attempt_authority/migration.sql",
+        "../../../../../packages/platform/db/prisma/migrations/000090_workflow_provisioning_attempt_authority/migration.sql",
         import.meta.url,
       ),
       "utf8",
@@ -173,7 +173,7 @@ withDatabase("WorkflowProvisioning PostgreSQL concurrency and transfer", () => {
   it("drains capture target authority pools while preserving the old writer fence before 000090", async () => {
     const guard = readFileSync(
       new URL(
-        "../../../../platform/db/prisma/migrations/000089_workflow_provisioning_writer_quiescence/migration.sql",
+        "../../../../../packages/platform/db/prisma/migrations/000089_workflow_provisioning_writer_quiescence/migration.sql",
         import.meta.url,
       ),
       "utf8",

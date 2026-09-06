@@ -7,7 +7,7 @@ import {
   createProvisioningPrisma,
   initialCandidate,
   record,
-} from "./provisioning-prisma-fixture";
+} from "../../../../../packages/features/workflow-provisioning/src/tests/provisioning-prisma-fixture";
 
 function deferred() {
   let resolve!: () => void;

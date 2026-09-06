@@ -957,22 +957,6 @@ importers:
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
-    devDependencies:
-      '@reviewrouter/features-repo-health':
-        specifier: workspace:*
-        version: link:../repo-health
-      '@reviewrouter/features-repositories':
-        specifier: workspace:*
-        version: link:../repositories
-      '@reviewrouter/features-support-diagnostics':
-        specifier: workspace:*
-        version: link:../support-diagnostics
-      '@reviewrouter/platform-db':
-        specifier: workspace:*
-        version: link:../../platform/db
-      '@reviewrouter/platform-locks':
-        specifier: workspace:*
-        version: link:../../platform/locks
 
   packages/platform/config:
     dependencies:
