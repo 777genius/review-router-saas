@@ -1,3 +1,4 @@
+import { registerOperatorReconnectPostgresTests } from "./operator-reconnect-postgres-cases";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPrismaClient } from "../../packages/platform/db/src/index";
@@ -25,11 +26,12 @@ import {
 // Explicitly supplied, disposable, fully migrated PG17 only. Missing evidence
 // is a skip, never a successful PostgreSQL certification. No provider is called.
 const databaseUrl = process.env.REVIEW_ROUTER_HOSTED_POOL_E2E_DATABASE_URL;
+const apiUrl = process.env.REVIEW_ROUTER_HOSTED_POOL_E2E_API_DATABASE_URL;
 const custodyUrl =
   process.env.REVIEW_ROUTER_HOSTED_POOL_E2E_CUSTODY_DATABASE_URL;
 const enabled = process.env.REVIEW_ROUTER_RUN_HOSTED_POOL_PUBLIC_PG === "1";
 if (enabled) {
-  for (const value of [databaseUrl, custodyUrl]) {
+  for (const value of [databaseUrl, custodyUrl, apiUrl]) {
     if (!value)
       throw new Error("public_eligibility_disposable_database_required");
     const parsed = new URL(value);
@@ -51,6 +53,8 @@ const installation = `${prefix}-installation`;
 const now = new Date();
 let prisma: ReturnType<typeof createPrismaClient>;
 let custody: ReturnType<typeof createPrismaClient>;
+let api: ReturnType<typeof createPrismaClient>;
+let vault: CredentialEnvelopeVault;
 let epoch: bigint;
 let ordinal = 0;
 // Distinct safe fake GitHub IDs in a disposable database, never provider IDs.
@@ -59,6 +63,7 @@ const githubInstallationId = BigInt(Date.now());
 beforeAll(async () => {
   if (!enabled) return;
   prisma = createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 2 });
+  api = createPrismaClient({ databaseUrl: apiUrl!, poolMax: 2 });
   custody = createPrismaClient({ databaseUrl: custodyUrl!, poolMax: 2 });
   const version = await prisma.$queryRaw<
     Array<{ version: string }>
@@ -96,7 +101,7 @@ beforeAll(async () => {
   await new PrismaHostedPoolRepository(prisma).insertDefault(
     createDefaultHostedAccountPool({ id: pool, workspaceId: workspace, now }),
   );
-  const vault = new CredentialEnvelopeVault(
+  vault = new CredentialEnvelopeVault(
     new EnvCredentialKeyring({
       REVIEW_ROUTER_HOSTED_CODEX_KEK_CURRENT_ID: "fixture",
       REVIEW_ROUTER_HOSTED_CODEX_KEK_KEYRING_JSON: JSON.stringify({
@@ -141,6 +146,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!enabled) return;
+  await api?.$disconnect();
   await custody?.$disconnect();
   await prisma?.$disconnect();
   // Immutable ledgers belong to this entire disposable database; the supplying
@@ -430,6 +436,16 @@ async function dispatchMint(
     unsafeUntil: new Date(instant.getTime() + 61 * 60_000),
   });
 }
+
+registerOperatorReconnectPostgresTests(enabled, () => ({
+  owner: prisma,
+  api,
+  vault,
+  workspace,
+  pool,
+  accountId: `${prefix}-account`,
+  subject: prefix,
+}));
 
 async function authorizeRelay(
   fixture: Awaited<ReturnType<typeof repositoryFixture>>,

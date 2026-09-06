@@ -1,3 +1,11 @@
+import {
+  createHostedPoolOperatorComposition,
+  type HostedPoolOperatorConnect,
+} from "./hosted-pool-operator-composition.js";
+import {
+  registerHostedPoolOperatorRoutes,
+  type HostedPoolOperatorDependencies,
+} from "./hosted-pool-operator-routes.js";
 import { createHash, randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import { fastifyTRPCPlugin } from "@trpc/server/adapters/fastify";
@@ -187,6 +195,8 @@ export type CreateApiAppOptions = {
   readonly actionControlPlaneEnabled?: boolean;
   readonly memoryServiceEnabled?: boolean;
   readonly healthDependencies?: readonly HealthDependencyPort[];
+  readonly hostedPoolOperatorDependencies?: HostedPoolOperatorDependencies;
+  readonly hostedPoolOperatorConnect?: HostedPoolOperatorConnect;
   readonly hostedCodexRelayDependencies?: RegisterHostedCodexRelayRoutesDependencies;
   readonly prisma?: PrismaClient;
   readonly commentTokenCustodyPrisma?: PrismaClient;
@@ -372,6 +382,21 @@ export async function createApiApp(
       rolloutStartedAt: new Date(runtimeRolloutStartedAt),
     });
   }
+
+  const hostedPoolOperatorDependencies =
+    options.hostedPoolOperatorDependencies ??
+    (prisma && operatorCredentialSha256
+      ? createHostedPoolOperatorComposition({
+          prisma,
+          env: reviewActionV2Env,
+          credentialSha256: operatorCredentialSha256,
+          ...(options.hostedPoolOperatorConnect
+            ? { connect: options.hostedPoolOperatorConnect }
+            : {}),
+        })
+      : undefined);
+  if (hostedPoolOperatorDependencies)
+    await registerHostedPoolOperatorRoutes(app, hostedPoolOperatorDependencies);
 
   const operatorReviewConfigDependencies =
     options.operatorReviewConfigDependencies ??
