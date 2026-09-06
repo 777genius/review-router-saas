@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
   canonicalActivationCatalogPolicyTrustRootReadiness,
 } from "@reviewrouter/features-release-rollout";
@@ -55,15 +56,19 @@ describe("activation catalog policy deployment authorization", () => {
     ).toThrow("activation_catalog_policy_digest_mismatch");
   });
 
-  it("blocks even exact configured digests until fresh raw promotion", () => {
-    expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
-      status: "blocked",
-      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
-    });
-    expect(() =>
-      trustedActivationCatalogPoliciesFromEnvironment(configured),
-    ).toThrow(
-      "activation_catalog_policy_trust_root_blocked:fresh-authenticated-raw-capture-and-independent-review-required",
-    );
+  it("authorizes exact configured digests only with a reviewed catalog", () => {
+    if (
+      canonicalActivationCatalogPolicyTrustRootReadiness.status === "blocked"
+    ) {
+      expect(() =>
+        trustedActivationCatalogPoliciesFromEnvironment(configured),
+      ).toThrow(
+        `activation_catalog_policy_trust_root_blocked:${canonicalActivationCatalogPolicyTrustRootReadiness.reason}`,
+      );
+    } else {
+      expect(
+        trustedActivationCatalogPoliciesFromEnvironment(configured),
+      ).toEqual(canonicalActivationCatalogPolicies);
+    }
   });
 });

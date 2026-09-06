@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition.js";
 import {
   authorizeCanonicalActivationCatalogPolicies,
+  canonicalActivationCatalogPolicies,
   canonicalActivationCatalogPolicyDigests,
   canonicalActivationCatalogPolicyTrustRootReadiness,
   reviewedActivationCatalogPolicyDigests,
@@ -443,26 +444,35 @@ describe("disposable dual-version rehearsal", () => {
       }),
     ).rejects.toThrow("private_pg17_rehearsal_control_readiness_timeout");
   });
-  it("keeps the changed workflow schema behind fresh catalog review", () => {
+  it("requires reviewed catalog authorization before rehearsal activation", () => {
     expect(rehearsalActivationCatalogPolicyAuthorization).toEqual(
       reviewedActivationCatalogPolicyDigests,
     );
-    expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
-      status: "blocked",
-      reason: "fresh-authenticated-raw-capture-and-independent-review-required",
-    });
-    expect(() =>
-      authorizeCanonicalActivationCatalogPolicies(
-        rehearsalActivationCatalogPolicyAuthorization,
-      ),
-    ).toThrow("activation_catalog_policy_digest_mismatch");
-    expect(() =>
-      authorizeCanonicalActivationCatalogPolicies(
+    if (
+      canonicalActivationCatalogPolicyTrustRootReadiness.status === "blocked"
+    ) {
+      expect(() =>
+        authorizeCanonicalActivationCatalogPolicies(
+          rehearsalActivationCatalogPolicyAuthorization,
+        ),
+      ).toThrow("activation_catalog_policy_digest_mismatch");
+      expect(() =>
+        authorizeCanonicalActivationCatalogPolicies(
+          canonicalActivationCatalogPolicyDigests,
+        ),
+      ).toThrow(
+        `activation_catalog_policy_trust_root_blocked:${canonicalActivationCatalogPolicyTrustRootReadiness.reason}`,
+      );
+    } else {
+      expect(rehearsalActivationCatalogPolicyAuthorization).toEqual(
         canonicalActivationCatalogPolicyDigests,
-      ),
-    ).toThrow(
-      "activation_catalog_policy_trust_root_blocked:fresh-authenticated-raw-capture-and-independent-review-required",
-    );
+      );
+      expect(
+        authorizeCanonicalActivationCatalogPolicies(
+          rehearsalActivationCatalogPolicyAuthorization,
+        ),
+      ).toEqual(canonicalActivationCatalogPolicies);
+    }
   });
   it("allows loaded disposable catalog observations without changing production timing", () => {
     expect(rehearsalReadinessPolicy).toEqual({

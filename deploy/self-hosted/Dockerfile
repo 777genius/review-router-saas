@@ -13,8 +13,8 @@ ENV CI=1 \
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates openssl postgresql-client \
   && rm -rf /var/lib/apt/lists/* \
-  && corepack enable \
-  && corepack prepare pnpm@10.33.0 --activate
+  && corepack disable pnpm \
+  && npm install --global --ignore-scripts --no-audit --no-fund pnpm@10.33.0
 
 FROM base AS build
 ARG REVIEW_ROUTER_WEB_URL

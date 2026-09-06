@@ -238,7 +238,7 @@ describe("Codex rotating release migration workflow", () => {
     expect(registerRelease).toContain("current-deployment-result.json");
   });
 
-  it("provisions custody through migration 000091 without exposing credentials", () => {
+  it("provisions custody through migration 000096 without exposing credentials", () => {
     expect(workflow).toContain(
       'username: "reviewrouter_comment_token_custody"',
     );
@@ -257,8 +257,8 @@ describe("Codex rotating release migration workflow", () => {
     );
     expect(workflow).toContain("canonicalPrismaMigrationCatalog");
     expect(canonicalPrismaMigrationCatalog).toEqual({
-      appliedMigrationCount: 95,
-      latestMigration: "000091_workflow_provisioning_artifact_and_inventory",
+      appliedMigrationCount: 96,
+      latestMigration: "000096_hosted_pool_public_repository_eligibility",
     });
     expect(workflow).toContain(".runtimeRoleCount == 5");
     expect(workflow).toContain(".custodyFunction == true");
