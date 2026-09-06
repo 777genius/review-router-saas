@@ -1,3 +1,6 @@
+/** GitHub run timestamps may have second precision and bounded clock skew. */
+export const GITHUB_RUN_CLOCK_TOLERANCE_MS = 5_000;
+
 import type {
   HostedPoolGitHubRequestPort,
   HostedPoolPublicationEvidence,
