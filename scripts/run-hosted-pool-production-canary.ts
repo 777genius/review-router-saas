@@ -30,6 +30,7 @@ import {
   readExactHostedPoolRunEvidence,
 } from "./hosted-pool-production-evidence";
 import { verifyHostedPoolRollbackEvidence } from "./hosted-pool-production-rollback-verification";
+import type { CanaryPhaseScope } from "./hosted-pool-canary-phase-recovery";
 export type {
   CanaryRunEvidence,
   HostedPoolCanaryConfig,
@@ -312,6 +313,17 @@ export async function runHostedPoolProductionCanary(input: {
 
   let outcome = "passed";
   try {
+    if (
+      !input.control.prepareCanaryPhase ||
+      !input.control.reconcileCanaryPhase ||
+      !input.control.setFaultPlan
+    )
+      throw new Error("hosted_pool_canary_phase_recovery_control_missing");
+    if (
+      typeof preflight.repositoryBindingId !== "string" ||
+      typeof preflight.bindingRevision !== "string"
+    )
+      throw new Error("hosted_pool_canary_phase_recovery_binding_missing");
     const protectedScope = await executeHostedPoolControl({
       command: "rollback",
       execute: true,
@@ -374,11 +386,24 @@ export async function runHostedPoolProductionCanary(input: {
       ["dropped_response", "dropped"],
     ] as const) {
       const runId = input.config.runs[phase];
-      if (!input.control.setFaultPlan)
-        throw new Error("hosted_pool_canary_fault_plan_control_missing");
-      await input.control.setFaultPlan(input.config.faultPlans[phase]);
+      const scope: CanaryPhaseScope = {
+        phase,
+        runId,
+        poolId: input.config.poolId,
+        accountIds: input.config.accountIds,
+        repositoryId: input.config.repositoryId,
+        actionSha: input.config.actionSha,
+        repositoryBindingId: preflight.repositoryBindingId,
+        bindingRevision: preflight.bindingRevision,
+        planIdHash: createHash("sha256")
+          .update(input.config.faultPlans[phase], "utf8")
+          .digest("hex"),
+      };
       let observed: CanaryRunEvidence;
       try {
+        await input.control.prepareCanaryPhase(scope);
+        // Stage may commit and lose its response. Cancellation must still run.
+        await input.control.setFaultPlan(input.config.faultPlans[phase]);
         await input.canary.rerun(runId);
         await input.canary.waitForCompletion(
           runId,
@@ -399,11 +424,16 @@ export async function runHostedPoolProductionCanary(input: {
         assertStableDroppedEvidence(observed, quiesced);
         observed = quiesced;
       }
+      const reconciliation = await input.control.reconcileCanaryPhase(
+        scope,
+        observed,
+      );
       records.push({
         phase,
         classification: expected,
         at: now().toISOString(),
         evidence: observed,
+        reconciliation,
       });
     }
   } catch (error) {
