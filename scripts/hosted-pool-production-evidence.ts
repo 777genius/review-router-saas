@@ -1,4 +1,15 @@
 import { createHash } from "node:crypto";
+import { GITHUB_RUN_CLOCK_TOLERANCE_MS } from "./hosted-pool-production-github-dispatch";
+import { canonicalReviewPublicationJson as canonicalJson } from "../packages/features/review-publishing/src/v2/domain/canonical-review-publication-json";
+import {
+  renderCanonicalReviewPublication,
+  resolveReviewPublicationRenderPolicyVersion,
+  type ReviewPublicationRenderingSource,
+  type ReviewPublicationOccurrenceState,
+} from "../packages/features/review-publishing/src/v2/domain/canonical-review-publication-renderer";
+import { ReviewPublicationProjectionCoverage } from "../packages/features/review-publishing/src/v2/domain/review-publication-operation-planning";
+const digest = (value: string) =>
+  createHash("sha256").update(value, "utf8").digest("hex");
 import type { PrismaClient } from "@prisma/client";
 import type {
   CanaryRunEvidence,
@@ -19,12 +30,22 @@ export async function readExactHostedPoolRunEvidence(input: {
   publication: HostedPoolPublicationEvidence;
 }): Promise<CanaryRunEvidence> {
   if (
+    !Number.isSafeInteger(input.publication.appBotPublicationCount) ||
+    input.publication.appBotPublicationCount < 0 ||
+    !Number.isSafeInteger(input.publication.nonAppBotPublicationCount) ||
+    input.publication.nonAppBotPublicationCount < 0 ||
+    input.publication.publicationObjects.some(
+      (object) =>
+        !publicationKinds.includes(object.kind) ||
+        !validObjectId(object.externalObjectId) ||
+        !/^[a-f0-9]{64}$/u.test(object.bodyHash),
+    ) ||
     input.publication.appBotPublicationCount +
       input.publication.nonAppBotPublicationCount !==
       input.publication.publicationObjects.length ||
     new Set(
-      input.publication.publicationObjects.map(
-        (publication) => publication.externalObjectId,
+      input.publication.publicationObjects.map((publication) =>
+        artifactKey(publication),
       ),
     ).size !== input.publication.publicationObjects.length
   )
@@ -203,14 +224,23 @@ async function readExactSourceAndPublicationGraph(
   const attempts = await prisma.reviewPublicationAttemptV2.findMany({
     where: {
       executionId: intent.executionId,
-      reviewedHeadSha: input.sourceHeadSha,
-      state: "terminal",
-      terminalOutcome: "succeeded",
     },
-    select: { publicationAttemptId: true },
+    select: {
+      publicationAttemptId: true,
+      executionId: true,
+      reviewedHeadSha: true,
+      state: true,
+      terminalOutcome: true,
+      generation: true,
+      projectionHash: true,
+      reviewRevisionHash: true,
+    },
   });
   if (!input.requirePublication) {
     if (
+      (input.publication.lifecycleThreads ?? []).some(
+        (thread) => thread.changed,
+      ) ||
       attempts.length !== 0 ||
       input.publication.publicationObjects.length !== 0 ||
       input.publication.appBotPublicationCount !== 0 ||
@@ -224,56 +254,150 @@ async function readExactSourceAndPublicationGraph(
   const observations = await prisma.reviewEvidenceObservation.findMany({
     where: {
       sourceExecutionId: intent.executionId,
-      providerInvocationKey: input.grant.providerInvocationKey,
-      sourceHeadSha: input.sourceHeadSha,
-      sourceRunId: String(input.runId),
-      sourceRunAttempt: "2",
     },
-    select: { observationId: true },
+    select: {
+      observationId: true,
+      sourceExecutionId: true,
+      providerInvocationKey: true,
+      sourceHeadSha: true,
+      sourceRunId: true,
+      sourceRunAttempt: true,
+    },
   });
-  if (observations.length !== 1)
+  if (
+    observations.length !== 1 ||
+    observations[0]?.sourceExecutionId !== intent.executionId ||
+    observations[0]?.providerInvocationKey !==
+      input.grant.providerInvocationKey ||
+    observations[0]?.sourceHeadSha !== input.sourceHeadSha ||
+    observations[0]?.sourceRunId !== String(input.runId) ||
+    observations[0]?.sourceRunAttempt !== "2"
+  )
     throw new Error(
       `hosted_pool_canary_provider_observation_mismatch:${input.runId}`,
     );
   const references = await prisma.reviewExecutionObservationRefV2.findMany({
     where: {
       executionId: intent.executionId,
-      observationId: observations[0]!.observationId,
-      providerInvocationKey: input.grant.providerInvocationKey,
     },
-    select: { observationRefId: true },
+    select: {
+      observationRefId: true,
+      executionId: true,
+      observationId: true,
+      providerInvocationKey: true,
+    },
   });
-  if (references.length !== 1)
+  if (
+    references.length !== 1 ||
+    references[0]?.executionId !== intent.executionId ||
+    references[0]?.observationId !== observations[0]!.observationId ||
+    references[0]?.providerInvocationKey !== input.grant.providerInvocationKey
+  )
     throw new Error(
       `hosted_pool_canary_provider_observation_mismatch:${input.runId}`,
     );
-  if (attempts.length !== 1 || input.publication.publicationObjects.length < 1)
+  if (
+    attempts.length !== 1 ||
+    input.publication.publicationObjects.length < 1 ||
+    attempts[0]?.executionId !== intent.executionId ||
+    attempts[0]?.reviewedHeadSha !== input.sourceHeadSha ||
+    attempts[0]?.state !== "terminal" ||
+    attempts[0]?.terminalOutcome !== "succeeded"
+  )
     throw new Error(
       `hosted_pool_canary_publication_graph_invalid:${input.runId}`,
     );
   const publicationAttemptId = attempts[0]!.publicationAttemptId;
-  const [operations, receipts, effects] = await Promise.all([
-    prisma.reviewPublicationOperationV2.findMany({
-      where: { publicationAttemptId },
-      select: { publicationOperationId: true, bodyHash: true, state: true },
-    }),
+  const invalid = () => {
+    throw new Error(
+      `hosted_pool_canary_publication_graph_invalid:${input.runId}`,
+    );
+  };
+  const operations = await prisma.reviewPublicationOperationV2.findMany({
+    where: { publicationAttemptId },
+    select: {
+      publicationOperationId: true,
+      publicationAttemptId: true,
+      publicationKind: true,
+      targetCommitId: true,
+      bodyHash: true,
+      state: true,
+      required: true,
+      chunkIndex: true,
+      markerHash: true,
+      renderPolicyVersion: true,
+      dependsOnOperationId: true,
+    },
+  });
+  const operationIds = operations.map(
+    (operation) => operation.publicationOperationId,
+  );
+  // OR exposes cross-attempt links instead of hiding them behind an attempt filter.
+  const linkedScope = {
+    OR: [
+      { publicationAttemptId },
+      { publicationOperationId: { in: operationIds } },
+    ],
+  };
+  const [receipts, effects] = await Promise.all([
     prisma.reviewPublicationReceiptV2.findMany({
-      where: { publicationAttemptId },
+      where: linkedScope,
       select: {
+        receiptId: true,
+        publicationAttemptId: true,
         publicationOperationId: true,
         canonicalEffectId: true,
         canonicalExternalObjectId: true,
+        status: true,
       },
     }),
     prisma.reviewPublicationExternalEffectV2.findMany({
-      where: { publicationAttemptId },
+      where: linkedScope,
       select: {
         effectId: true,
+        publicationAttemptId: true,
         publicationOperationId: true,
         externalObjectId: true,
+        effectKind: true,
       },
     }),
   ]);
+  const unique = (ids: readonly string[]) =>
+    ids.every((id) => typeof id === "string" && id.length > 0) &&
+    new Set(ids).size === ids.length;
+  const successful = operations.filter(
+    (operation) => operation.state === "completed",
+  );
+  const objects = input.publication.publicationObjects;
+  if (
+    !unique(operationIds) ||
+    !unique(effects.map((effect) => effect.effectId)) ||
+    !unique(receipts.map((receipt) => receipt.receiptId)) ||
+    !unique(receipts.map((receipt) => receipt.publicationOperationId)) ||
+    !unique(receipts.map((receipt) => receipt.canonicalEffectId)) ||
+    receipts.length !== successful.length ||
+    operations.some(
+      (operation) =>
+        operation.publicationAttemptId !== publicationAttemptId ||
+        operation.targetCommitId !== input.sourceHeadSha ||
+        (operation.state !== "completed" &&
+          !(
+            !operation.required &&
+            (operation.state === "superseded_no_effect" ||
+              operation.state === "failed_no_effect")
+          )),
+    )
+  )
+    invalid();
+  // Multiple reports may be legitimate, but require correction/canonical-selection proofs
+  // beyond this bounded reader. Never collapse or discard the additional reports.
+  if (
+    effects.length !== receipts.length ||
+    !unique(effects.map((effect) => effect.publicationOperationId))
+  )
+    throw new Error(
+      `hosted_pool_canary_publication_effect_history_unsupported:${input.runId}`,
+    );
   const operationById = new Map(
     operations.map((operation) => [
       operation.publicationOperationId,
@@ -283,93 +407,702 @@ async function readExactSourceAndPublicationGraph(
   const effectById = new Map(
     effects.map((effect) => [effect.effectId, effect]),
   );
-  const receiptByObject = new Map(
-    receipts.map((receipt) => [receipt.canonicalExternalObjectId, receipt]),
+  const receiptByOperation = new Map(
+    receipts.map((receipt) => [receipt.publicationOperationId, receipt]),
   );
-  const objectsValid = input.publication.publicationObjects.every((object) => {
-    const receipt = receiptByObject.get(object.externalObjectId);
-    const operation = receipt
-      ? operationById.get(receipt.publicationOperationId)
-      : undefined;
-    const effect = receipt
-      ? effectById.get(receipt.canonicalEffectId)
-      : undefined;
-    return (
-      operation?.state === "completed" &&
-      operation.bodyHash === object.bodyHash &&
-      effect?.publicationOperationId === receipt?.publicationOperationId &&
-      effect?.externalObjectId === object.externalObjectId
-    );
+  const objectByKey = new Map(
+    objects.map((object) => [artifactKey(object), object]),
+  );
+  const joined = new Set<string>();
+  const reviewOwners = new Map<string, number>();
+  const threads = input.publication.lifecycleThreads ?? [];
+  if (
+    !unique(threads.map((thread) => thread.threadId)) ||
+    threads.some(
+      (thread) =>
+        typeof thread.resolve !== "boolean" ||
+        typeof thread.changed !== "boolean",
+    )
+  )
+    invalid();
+  const joinedThreads = new Set<string>();
+
+  // The final submitted review cannot reveal its overwritten create body. Read the
+  // persisted finalized projection, bind it to this attempt and use the SAME renderer.
+  const artifact = await prisma.finalizedReviewProjectionArtifactV2.findUnique({
+    where: { executionId: intent.executionId },
   });
-  if (!objectsValid)
+  const publicationAttempt = attempts[0]!;
+  if (
+    !artifact ||
+    artifact.executionId !== intent.executionId ||
+    artifact.reviewedHeadSha !== input.sourceHeadSha ||
+    artifact.generation !== publicationAttempt.generation ||
+    artifact.reviewRevisionHash !== publicationAttempt.reviewRevisionHash ||
+    artifact.projectionHash !== publicationAttempt.projectionHash ||
+    digest(artifact.projectionEnvelopeCanonicalJson) !== artifact.projectionHash
+  )
     throw new Error(
-      `hosted_pool_canary_publication_graph_invalid:${input.runId}`,
+      `hosted_pool_canary_publication_rendering_facts_missing:${input.runId}`,
     );
+  const projection = JSON.parse(artifact!.projectionEnvelopeCanonicalJson) as {
+    envelopeVersion: string;
+    publishing: ReviewPublicationRenderingSource;
+    occurrences: { state: ReviewPublicationOccurrenceState }[];
+  };
+  if (
+    canonicalJson(projection) !== artifact!.projectionEnvelopeCanonicalJson ||
+    projection.envelopeVersion !== "review_projection.v1" ||
+    !["completed", "partial"].includes(artifact!.coverageState)
+  )
+    invalid();
+  const policy = resolveReviewPublicationRenderPolicyVersion(
+    artifact!.projectionPolicyVersion,
+  );
+  const rendered = renderCanonicalReviewPublication(
+    {
+      coverage:
+        artifact!.coverageState === "partial"
+          ? ReviewPublicationProjectionCoverage.Partial
+          : ReviewPublicationProjectionCoverage.Completed,
+      renderPolicyVersion: policy,
+      targetCommitId: input.sourceHeadSha,
+      occurrenceStates: projection.occurrences.map((entry) => entry.state),
+      source: projection.publishing,
+    },
+    {
+      digestUtf8: digest,
+      utf8ByteLength: (value) => Buffer.byteLength(value, "utf8"),
+    },
+  );
+  const expected = new Map<string, { markerHash: string; bodyHash: string }>([
+    ["summary:0", rendered.summary],
+    ...(rendered.managedCheck
+      ? [["managed_check:0", rendered.managedCheck] as const]
+      : []),
+    ...rendered.inlineReviews.flatMap((chunk) => [
+      [`pending_review_create:${chunk.chunkIndex}`, chunk.create] as const,
+      [`pending_review_submit:${chunk.chunkIndex}`, chunk.submit] as const,
+    ]),
+    ...rendered.lifecycle.map(
+      (entry) => [`thread_lifecycle:${entry.chunkIndex}`, entry] as const,
+    ),
+  ]);
+  if (
+    operations.length !== expected.size ||
+    !unique(operations.map((op) => `${op.publicationKind}:${op.chunkIndex}`))
+  )
+    invalid();
+  for (const operation of operations) {
+    if (
+      ![
+        "summary",
+        "managed_check",
+        "pending_review_create",
+        "pending_review_submit",
+        "thread_lifecycle",
+      ].includes(operation.publicationKind)
+    )
+      throw new Error(
+        `hosted_pool_canary_publication_kind_unsupported:${operation.publicationKind}:${input.runId}`,
+      );
+    const facts = expected.get(
+      `${operation.publicationKind}:${operation.chunkIndex}`,
+    );
+    if (
+      // Every operation generated by the canonical planner for this projection is
+      // required. Stored optional flags cannot downgrade these rendering facts.
+      !facts ||
+      operation.required !== true ||
+      operation.markerHash !== facts.markerHash ||
+      operation.bodyHash !== facts.bodyHash ||
+      operation.renderPolicyVersion !== policy
+    )
+      invalid();
+  }
+  for (const receipt of receipts) {
+    const operation = operationById.get(receipt.publicationOperationId);
+    const effect = effectById.get(receipt.canonicalEffectId);
+    if (
+      !operation ||
+      operation.state !== "completed" ||
+      receipt.status !== "succeeded" ||
+      receipt.publicationAttemptId !== publicationAttemptId ||
+      effect?.publicationAttemptId !== publicationAttemptId ||
+      effect.publicationOperationId !== receipt.publicationOperationId ||
+      effect.externalObjectId !== receipt.canonicalExternalObjectId ||
+      (effect.effectKind !== "mutation_acknowledged" &&
+        effect.effectKind !== "marker_reconciled")
+    )
+      invalid();
+    const op = operation!;
+    if (op.publicationKind === "thread_lifecycle") {
+      const lifecycle = rendered.lifecycle.find(
+        (entry) => entry.chunkIndex === op.chunkIndex,
+      );
+      const thread = threads.find(
+        (entry) =>
+          `thread:${entry.threadId}` === receipt.canonicalExternalObjectId,
+      );
+      if (
+        !thread ||
+        !lifecycle ||
+        thread.threadId !== lifecycle.threadId ||
+        thread.resolve !== lifecycle.resolve ||
+        joinedThreads.has(thread.threadId)
+      )
+        invalid();
+      joinedThreads.add(thread!.threadId);
+      continue;
+    }
+    const kind =
+      op.publicationKind === "summary"
+        ? "issue_comment"
+        : op.publicationKind === "managed_check"
+          ? "check_run"
+          : "review";
+    const namespace =
+      kind === "issue_comment"
+        ? "issue-comment"
+        : kind === "check_run"
+          ? "check-run"
+          : "review";
+    const prefix = `${namespace}:`;
+    const canonicalId = receipt.canonicalExternalObjectId;
+    if (
+      !canonicalId.startsWith(prefix) ||
+      !validObjectId(canonicalId.slice(prefix.length))
+    )
+      invalid();
+    const key = `${kind}:${canonicalId.slice(prefix.length)}`;
+    const object = objectByKey.get(key);
+    if (!object) invalid();
+    if (kind !== "review") {
+      if (
+        joined.has(key) ||
+        object!.bodyHash !== op.bodyHash ||
+        (kind === "check_run" &&
+          (object!.headSha !== input.sourceHeadSha ||
+            object!.state !== "completed"))
+      )
+        invalid();
+    } else {
+      if (
+        object!.headSha !== input.sourceHeadSha ||
+        object!.state !== "COMMENTED"
+      )
+        invalid();
+      if (reviewOwners.has(key) && reviewOwners.get(key) !== op.chunkIndex)
+        invalid();
+      reviewOwners.set(key, op.chunkIndex);
+      const chunk = rendered.inlineReviews.find(
+        (entry) => entry.chunkIndex === op.chunkIndex,
+      );
+      if (!chunk) invalid();
+      const create = operations.find(
+        (entry) =>
+          entry.publicationKind === "pending_review_create" &&
+          entry.chunkIndex === op.chunkIndex,
+      );
+      const submit = operations.find(
+        (entry) =>
+          entry.publicationKind === "pending_review_submit" &&
+          entry.chunkIndex === op.chunkIndex,
+      );
+      if (
+        !create ||
+        !submit ||
+        create.dependsOnOperationId !== null ||
+        submit.dependsOnOperationId !== create.publicationOperationId ||
+        receiptByOperation.get(create.publicationOperationId)
+          ?.canonicalExternalObjectId !== canonicalId ||
+        receiptByOperation.get(submit.publicationOperationId)
+          ?.canonicalExternalObjectId !== canonicalId ||
+        object!.submitHash !== chunk!.submit.bodyHash ||
+        object!.bodyHash !== digest(chunk!.submit.reviewBody)
+      )
+        invalid();
+      // Child identity, membership, head and full placement are independently observed.
+      const children = objects.filter(
+        (entry) =>
+          entry.kind === "review_comment" &&
+          entry.parentReviewId === object!.externalObjectId,
+      );
+      const expectedComments = chunk!.create.comments
+        .map(
+          (comment) =>
+            `${digest(canonicalJson(comment))}:${digest(comment.body)}`,
+        )
+        .sort();
+      if (
+        children.length !== expectedComments.length ||
+        children.some(
+          (child) =>
+            child.headSha !== input.sourceHeadSha ||
+            child.authorLogin !== object!.authorLogin,
+        ) ||
+        canonicalJson(
+          children
+            .map((child) => `${child.placementHash}:${child.bodyHash}`)
+            .sort(),
+        ) !== canonicalJson(expectedComments)
+      )
+        invalid();
+      for (const child of children) joined.add(artifactKey(child));
+    }
+    joined.add(key);
+  }
+  if (
+    joined.size !== objects.length ||
+    threads.some(
+      (thread) => thread.changed && !joinedThreads.has(thread.threadId),
+    )
+  )
+    invalid();
   return { executionId: intent.executionId, publicationAttemptId };
 }
 
-/** Captures immutable publication object identities for later DB-ledger joining. */
+type PublicationKind =
+  HostedPoolPublicationEvidence["publicationObjects"][number]["kind"];
+type SnapshotArtifact =
+  HostedPoolPublicationEvidence["publicationObjects"][number] &
+    Readonly<{ hasMarker: boolean; checkConclusion?: string | null }>;
+
+/** Bounded PR inventory; bodies are hashed and never retained. */
+export type HostedPoolPublicationSnapshot = Readonly<{
+  repository: string;
+  pullRequestNumber: number;
+  sourceHeadSha: string;
+  capturedAt: string;
+  captureCompletedAt: string;
+  lifecycleThreads: readonly { threadId: string; resolve: boolean }[];
+  artifacts: readonly SnapshotArtifact[];
+}>;
+
+const publicationKinds = [
+  "issue_comment",
+  "review_comment",
+  "review",
+  "check_run",
+] as const;
+const artifactKey = (item: { kind: string; externalObjectId: string }) =>
+  `${item.kind}:${item.externalObjectId}`;
+const validObjectId = (value: unknown): boolean =>
+  (typeof value === "string" && /^[1-9][0-9]*$/u.test(value)) ||
+  (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
+
+function assertSnapshot(snapshot: HostedPoolPublicationSnapshot): void {
+  if (
+    !snapshot ||
+    !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/iu.test(snapshot.repository) ||
+    !Number.isSafeInteger(snapshot.pullRequestNumber) ||
+    snapshot.pullRequestNumber < 1 ||
+    !/^[a-f0-9]{40}$/u.test(snapshot.sourceHeadSha) ||
+    !Number.isFinite(Date.parse(snapshot.capturedAt)) ||
+    !Number.isFinite(Date.parse(snapshot.captureCompletedAt)) ||
+    Date.parse(snapshot.capturedAt) > Date.parse(snapshot.captureCompletedAt) ||
+    !Array.isArray(snapshot.lifecycleThreads) ||
+    snapshot.lifecycleThreads.some(
+      (thread) =>
+        !thread ||
+        typeof thread.threadId !== "string" ||
+        !thread.threadId ||
+        typeof thread.resolve !== "boolean",
+    ) ||
+    new Set(snapshot.lifecycleThreads.map((thread) => thread.threadId)).size !==
+      snapshot.lifecycleThreads.length ||
+    !Array.isArray(snapshot.artifacts)
+  )
+    throw new Error("hosted_pool_canary_publication_scope_invalid");
+  const seen = new Set<string>();
+  for (const item of snapshot.artifacts) {
+    if (
+      !item ||
+      !publicationKinds.includes(item.kind) ||
+      !validObjectId(item.externalObjectId) ||
+      typeof item.externalObjectId !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(item.bodyHash) ||
+      typeof item.authorLogin !== "string" ||
+      !item.authorLogin.trim() ||
+      typeof item.hasMarker !== "boolean" ||
+      !Number.isFinite(Date.parse(item.publishedAt)) ||
+      seen.has(artifactKey(item))
+    )
+      throw new Error("hosted_pool_canary_publication_identity_invalid");
+    seen.add(artifactKey(item));
+  }
+  if (
+    publicationKinds.some(
+      (kind) =>
+        snapshot.artifacts.filter((item) => item.kind === kind).length >= 100,
+    )
+  )
+    throw new Error("hosted_pool_canary_publication_pagination_unsupported");
+}
+
+export async function captureHostedPoolPublicationSnapshot(
+  github: HostedPoolGitHubRequestPort,
+  input: {
+    repository: string;
+    pullRequestNumber: number;
+    sourceHeadSha: string;
+    now?: (() => Date) | undefined;
+  },
+): Promise<HostedPoolPublicationSnapshot> {
+  const capturedAt = (input.now ?? (() => new Date()))().toISOString();
+  assertSnapshot({
+    ...input,
+    capturedAt,
+    captureCompletedAt: capturedAt,
+    lifecycleThreads: [],
+    artifacts: [],
+  });
+  const repository = input.repository.toLowerCase();
+  const endpoints = [
+    `/repos/${repository}/issues/${input.pullRequestNumber}/comments?per_page=100`,
+    `/repos/${repository}/pulls/${input.pullRequestNumber}/comments?per_page=100`,
+    `/repos/${repository}/pulls/${input.pullRequestNumber}/reviews?per_page=100`,
+    `/repos/${repository}/commits/${input.sourceHeadSha}/check-runs?per_page=100&filter=all`,
+  ];
+  const pages = await Promise.all(
+    endpoints.map(async (path, index) => {
+      const response: any = await github.request("GET", path);
+      const items = index === 3 ? response?.check_runs : response;
+      if (!Array.isArray(items) || items.length >= 100)
+        throw new Error(
+          "hosted_pool_canary_publication_pagination_unsupported",
+        );
+      return items.map((item: any): SnapshotArtifact => {
+        const check = index === 3;
+        const markerText = check
+          ? [
+              item?.name,
+              item?.output?.title,
+              item?.output?.summary,
+              item?.output?.text,
+            ]
+              .filter((value) => typeof value === "string")
+              .join("\n")
+          : item?.body;
+        const hasMarker =
+          /(?:reviewrouter(?::|-)|review-router-finding:)/iu.test(
+            markerText ?? "",
+          );
+        // Null output is normal for Actions jobs, but never relax RR payloads.
+        // This normalization alone does NOT authorize exclusion from publications.
+        const ordinaryActionsCheck =
+          check && item?.app?.slug === "github-actions" && !hasMarker;
+        const title =
+          ordinaryActionsCheck && item?.output?.title === null
+            ? ""
+            : item?.output?.title;
+        const summary =
+          ordinaryActionsCheck && item?.output?.summary === null
+            ? ""
+            : item?.output?.summary;
+        const body = check
+          ? canonicalJson({
+              conclusion: item?.conclusion,
+              name: item?.name,
+              summary,
+              title,
+            })
+          : item?.body;
+        const author = check
+          ? item?.app?.slug && `${item.app.slug}[bot]`
+          : item?.user?.login;
+        if (
+          !item ||
+          !validObjectId(item.id) ||
+          typeof body !== "string" ||
+          typeof author !== "string" ||
+          !author.trim() ||
+          (check &&
+            [
+              ordinaryActionsCheck && item.conclusion === null
+                ? ""
+                : item.conclusion,
+              item.name,
+              summary,
+              title,
+              item.head_sha,
+              item.status,
+            ].some((value) => typeof value !== "string"))
+        )
+          throw new Error("hosted_pool_canary_publication_identity_invalid");
+        if (
+          index === 1 &&
+          (!validObjectId(item.pull_request_review_id) ||
+            typeof item.path !== "string" ||
+            !Number.isSafeInteger(item.line ?? item.original_line) ||
+            (item.line ?? item.original_line) < 1 ||
+            item.side !== "RIGHT" ||
+            (item.start_side != null && item.start_side !== "RIGHT") ||
+            (item.start_line != null &&
+              (!Number.isSafeInteger(item.start_line) || item.start_line < 1)))
+        )
+          throw new Error("hosted_pool_canary_publication_placement_invalid");
+        if (
+          (index === 1 || index === 2 || check) &&
+          !/^[a-f0-9]{40}$/u.test(check ? item.head_sha : item.commit_id)
+        )
+          throw new Error("hosted_pool_canary_publication_head_invalid");
+        // An edit's timestamp is evidence, even when the original creation predates dispatch.
+        const timestamps = [
+          item.created_at,
+          item.submitted_at,
+          item.updated_at,
+          item.started_at,
+          item.completed_at,
+        ].filter((value) => value !== undefined && value !== null);
+        if (
+          !timestamps.length ||
+          timestamps.some(
+            (value) =>
+              typeof value !== "string" || !Number.isFinite(Date.parse(value)),
+          )
+        )
+          throw new Error("hosted_pool_canary_publication_timestamp_invalid");
+        return {
+          kind: publicationKinds[index]!,
+          externalObjectId: String(item.id),
+          bodyHash: digest(body),
+          authorLogin: author.toLowerCase(),
+          ...(index === 2
+            ? {
+                headSha: item.commit_id,
+                state: item.state,
+                submitHash: digest(canonicalJson({ body, event: "COMMENT" })),
+              }
+            : {}),
+          ...(check
+            ? {
+                headSha: item.head_sha,
+                state: item.status,
+                checkConclusion: item.conclusion,
+              }
+            : {}),
+          ...(index === 1
+            ? {
+                headSha: item.commit_id,
+                parentReviewId: String(item.pull_request_review_id),
+                placementHash: digest(
+                  canonicalJson({
+                    body,
+                    path: item.path,
+                    line: item.line ?? item.original_line,
+                    startLine:
+                      item.start_line ?? item.original_start_line ?? null,
+                  }),
+                ),
+              }
+            : {}),
+          hasMarker,
+          publishedAt: new Date(
+            Math.max(...timestamps.map((value) => Date.parse(value))),
+          ).toISOString(),
+        };
+      });
+    }),
+  );
+  // Read-only GraphQL query; REST review comments do not expose thread resolution.
+  const [owner, name] = repository.split("/");
+  const response: any = await github.request("POST", "/graphql", {
+    query:
+      "query CanaryPublicationThreads($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved} pageInfo{hasNextPage}}}}}",
+    variables: { owner, name, number: input.pullRequestNumber },
+  });
+  const threadPage = response?.data?.repository?.pullRequest?.reviewThreads;
+  if (
+    response?.errors ||
+    !Array.isArray(threadPage?.nodes) ||
+    threadPage.pageInfo?.hasNextPage !== false ||
+    threadPage.nodes.length >= 100 ||
+    threadPage.nodes.some(
+      (node: any) =>
+        typeof node?.id !== "string" ||
+        !node.id ||
+        typeof node.isResolved !== "boolean",
+    ) ||
+    new Set(threadPage.nodes.map((node: any) => node.id)).size !==
+      threadPage.nodes.length
+  )
+    throw new Error(
+      "hosted_pool_canary_publication_lifecycle_observation_missing",
+    );
+  const snapshot = {
+    repository,
+    sourceHeadSha: input.sourceHeadSha,
+    capturedAt,
+    captureCompletedAt: (input.now ?? (() => new Date()))().toISOString(),
+    lifecycleThreads: threadPage.nodes.map((node: any) => ({
+      threadId: node.id as string,
+      resolve: node.isResolved as boolean,
+    })),
+    pullRequestNumber: input.pullRequestNumber,
+    artifacts: pages.flat(),
+  };
+  assertSnapshot(snapshot);
+  return snapshot;
+}
+
+/** Compare every identity against pre-dispatch evidence, through the observation cutoff. */
 export async function collectExactHostedPoolPublicationEvidence(
   github: HostedPoolGitHubRequestPort,
   input: {
     repository: string;
     pullRequestNumber: number;
     expectedAppBot: string;
+    exactRunId: number;
     startedAt: Date;
     finishedAt: Date;
+    baseline: HostedPoolPublicationSnapshot;
+    sourceHeadSha: string;
+    dispatchedAt: Date;
+    now?: (() => Date) | undefined;
   },
 ): Promise<HostedPoolPublicationEvidence> {
-  const endpoints = [
-    [
-      "issue_comment",
-      `/repos/${input.repository}/issues/${input.pullRequestNumber}/comments?per_page=100`,
-    ],
-    [
-      "review_comment",
-      `/repos/${input.repository}/pulls/${input.pullRequestNumber}/comments?per_page=100`,
-    ],
-    [
-      "review",
-      `/repos/${input.repository}/pulls/${input.pullRequestNumber}/reviews?per_page=100`,
-    ],
-  ] as const;
-  const pages = await Promise.all(
-    endpoints.map(async ([kind, path]) => {
-      const items = await github.request("GET", path);
-      if (!Array.isArray(items) || items.length >= 100)
-        throw new Error(
-          "hosted_pool_canary_publication_pagination_unsupported",
-        );
-      return items.map((item) => ({ kind, item: item as any }));
-    }),
+  assertSnapshot(input.baseline);
+  if (
+    input.baseline.repository.toLowerCase() !==
+      input.repository.toLowerCase() ||
+    input.baseline.pullRequestNumber !== input.pullRequestNumber ||
+    input.baseline.sourceHeadSha !== input.sourceHeadSha ||
+    !Number.isFinite(input.dispatchedAt.getTime()) ||
+    Date.parse(input.baseline.captureCompletedAt) >
+      input.dispatchedAt.getTime() ||
+    input.startedAt.getTime() <
+      input.dispatchedAt.getTime() - GITHUB_RUN_CLOCK_TOLERANCE_MS ||
+    !Number.isSafeInteger(input.exactRunId) ||
+    input.exactRunId < 1 ||
+    !input.expectedAppBot.trim() ||
+    !Number.isFinite(input.startedAt.getTime()) ||
+    !Number.isFinite(input.finishedAt.getTime()) ||
+    input.finishedAt < input.startedAt
+  )
+    throw new Error("hosted_pool_canary_publication_scope_invalid");
+  // The attempt-specific jobs endpoint is the supported check/run relation.
+  // Bounded, read-only and fail closed on ambiguous or malformed attribution.
+  const repository = input.repository.toLowerCase();
+  const jobsPage: any = await github.request(
+    "GET",
+    `/repos/${repository}/actions/runs/${input.exactRunId}/attempts/2/jobs?per_page=100`,
   );
-  const publicationObjects = pages.flat().flatMap(({ kind, item }) => {
-    const body = String(item?.body ?? "");
-    const publishedAt = initialPublicationTimestamp(item);
-    const id = item?.id;
+  if (
+    !Array.isArray(jobsPage?.jobs) ||
+    jobsPage.jobs.length >= 100 ||
+    jobsPage.total_count !== jobsPage.jobs.length
+  )
+    throw new Error("hosted_pool_canary_publication_jobs_invalid");
+  const jobsByCheck = new Map<
+    string,
+    { status: string; conclusion: string | null }
+  >();
+  const jobIds = new Set<string>();
+  const prefix = `https://api.github.com/repos/${repository}/check-runs/`;
+  for (const job of jobsPage.jobs) {
+    const checkId =
+      typeof job?.check_run_url === "string" &&
+      job.check_run_url.startsWith(prefix)
+        ? job.check_run_url.slice(prefix.length)
+        : "";
     if (
-      !publishedAt ||
-      publishedAt < input.startedAt ||
-      publishedAt > input.finishedAt ||
-      !/(?:reviewrouter(?::|-)|review-router-finding:)/iu.test(body)
+      !validObjectId(job?.id) ||
+      jobIds.has(String(job.id)) ||
+      job.run_id !== input.exactRunId ||
+      job.run_attempt !== 2 ||
+      job.head_sha !== input.sourceHeadSha ||
+      !validObjectId(checkId) ||
+      jobsByCheck.has(checkId) ||
+      job.status !== "completed" ||
+      typeof job.conclusion !== "string" ||
+      !job.conclusion
+    )
+      throw new Error("hosted_pool_canary_publication_jobs_invalid");
+    jobIds.add(String(job.id));
+    jobsByCheck.set(checkId, job);
+  }
+  const current = await captureHostedPoolPublicationSnapshot(github, input);
+  const confirmed = await captureHostedPoolPublicationSnapshot(github, input);
+  if (
+    Date.parse(current.capturedAt) < input.finishedAt.getTime() ||
+    Date.parse(confirmed.capturedAt) < Date.parse(current.captureCompletedAt) ||
+    canonicalJson(current.artifacts) !== canonicalJson(confirmed.artifacts) ||
+    canonicalJson(current.lifecycleThreads) !==
+      canonicalJson(confirmed.lifecycleThreads)
+  )
+    throw new Error("hosted_pool_canary_publication_observation_incomplete");
+  const before = new Map(
+    input.baseline.artifacts.map((item) => [artifactKey(item), item]),
+  );
+  const after = new Map(
+    current.artifacts.map((item) => [artifactKey(item), item]),
+  );
+  // Even an unmarked deletion cannot be attributed safely from this bounded inventory.
+  if (input.baseline.artifacts.some((item) => !after.has(artifactKey(item))))
+    throw new Error("hosted_pool_canary_publication_deleted");
+  const publicationObjects = current.artifacts.flatMap((item) => {
+    const previous = before.get(artifactKey(item));
+    if (previous && canonicalJson(previous) === canonicalJson(item)) return [];
+    if (previous?.hasMarker && !item.hasMarker)
+      throw new Error("hosted_pool_canary_publication_marker_removed");
+    const job =
+      item.kind === "check_run"
+        ? jobsByCheck.get(item.externalObjectId)
+        : undefined;
+    if (
+      job &&
+      item.authorLogin === "github-actions[bot]" &&
+      item.authorLogin !== input.expectedAppBot.toLowerCase() &&
+      !item.hasMarker &&
+      !previous?.hasMarker &&
+      item.headSha === input.sourceHeadSha &&
+      item.state === job.status &&
+      item.checkConclusion === job.conclusion
     )
       return [];
-    if ((typeof id !== "number" && typeof id !== "string") || String(id) === "")
-      throw new Error("hosted_pool_canary_publication_identity_invalid");
-    return [
-      {
-        kind,
-        externalObjectId: String(id),
-        bodyHash: createHash("sha256").update(body, "utf8").digest("hex"),
-        authorLogin: String(item?.user?.login ?? "").toLowerCase(),
-        publishedAt: publishedAt.toISOString(),
-      },
-    ];
+    const relevant =
+      item.hasMarker ||
+      previous?.hasMarker ||
+      item.authorLogin === input.expectedAppBot.toLowerCase() ||
+      /\[bot\]$/iu.test(item.authorLogin) ||
+      /\[bot\]$/iu.test(previous?.authorLogin ?? "");
+    if (!relevant) return [];
+    // Never silently discard a changed bot artifact because its timestamp is outside the window.
+    if (new Date(item.publishedAt) > new Date(current.captureCompletedAt))
+      throw new Error("hosted_pool_canary_publication_observation_incomplete");
+    const {
+      hasMarker: _hasMarker,
+      checkConclusion: _checkConclusion,
+      ...object
+    } = item;
+    return [object];
   });
   const appBotPublicationCount = publicationObjects.filter(
     (item) => item.authorLogin === input.expectedAppBot.toLowerCase(),
   ).length;
+  const beforeThreads = new Map(
+    input.baseline.lifecycleThreads.map((thread) => [
+      thread.threadId,
+      thread.resolve,
+    ]),
+  );
+  if (
+    input.baseline.lifecycleThreads.some(
+      (thread) =>
+        !current.lifecycleThreads.some(
+          (entry) => entry.threadId === thread.threadId,
+        ),
+    )
+  )
+    throw new Error("hosted_pool_canary_publication_deleted");
   return {
+    lifecycleThreads: current.lifecycleThreads.map((thread) => ({
+      ...thread,
+      changed:
+        beforeThreads.has(thread.threadId) &&
+        beforeThreads.get(thread.threadId) !== thread.resolve,
+    })),
     appBotPublicationCount,
     nonAppBotPublicationCount:
       publicationObjects.length - appBotPublicationCount,
@@ -377,23 +1110,11 @@ export async function collectExactHostedPoolPublicationEvidence(
   };
 }
 
-function initialPublicationTimestamp(item: any): Date | null {
-  for (const value of [
-    item?.created_at,
-    item?.submitted_at,
-    item?.updated_at,
-  ]) {
-    const timestamp = new Date(String(value ?? ""));
-    if (Number.isFinite(timestamp.getTime())) return timestamp;
-  }
-  return null;
-}
-
 /** Reads the two immutable live Render deploys without deployment authority. */
 export function createRenderHostedPoolDeploymentEvidencePort(input: {
   apiKey: string;
   serviceIds: readonly [string, string];
-  now?: () => Date;
+  now?: (() => Date) | undefined;
   fetchImpl?: typeof fetch;
   renderTimeoutMs?: number;
   renderMaxResponseBytes?: number;

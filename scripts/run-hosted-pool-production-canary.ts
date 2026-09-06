@@ -23,8 +23,13 @@ import type {
   HostedPoolCanaryPort,
   HostedPoolDeploymentEvidencePort,
 } from "./hosted-pool-production-ports";
-import { assertCanonicalAttemptOnePullRequestRun } from "./hosted-pool-production-github-dispatch";
 import {
+  assertCanonicalAttemptOnePullRequestRun,
+  GITHUB_RUN_CLOCK_TOLERANCE_MS,
+} from "./hosted-pool-production-github-dispatch";
+import {
+  captureHostedPoolPublicationSnapshot,
+  type HostedPoolPublicationSnapshot,
   collectExactHostedPoolPublicationEvidence,
   createRenderHostedPoolDeploymentEvidencePort,
   readExactHostedPoolRunEvidence,
@@ -158,7 +163,8 @@ export function assertFreshAttemptTwoRun(
     String(run.head_sha ?? "").toLowerCase() !== input.sourceHeadSha ||
     !Number.isFinite(startedAt.getTime()) ||
     !Number.isFinite(finishedAt.getTime()) ||
-    startedAt.getTime() < input.rerunRequestedAt.getTime() - 5_000 ||
+    startedAt.getTime() <
+      input.rerunRequestedAt.getTime() - GITHUB_RUN_CLOCK_TOLERANCE_MS ||
     finishedAt < startedAt
   )
     throw new Error(`hosted_pool_canary_run_timestamps_invalid:${input.runId}`);
@@ -740,6 +746,7 @@ export function createGitHubHostedPoolCanaryPort(input: {
   });
   const pullRequests = new Map<number, number>();
   const sourceHeads = new Map<number, string>();
+  const publicationBaselines = new Map<number, HostedPoolPublicationSnapshot>();
   const rerunRequestedAt = new Map<number, Date>();
   const attemptWindows = new Map<
     number,
@@ -987,6 +994,25 @@ export function createGitHubHostedPoolCanaryPort(input: {
         throw new Error(
           "hosted_pool_canary_hosted_dependency_contract_invalid",
         );
+      // Capture every original source PR/head before any run can be dispatched.
+      // Keep these snapshots for all evidence reads, including quiescence.
+      for (const runId of Object.values(config.runs)) {
+        publicationBaselines.set(
+          runId,
+          await captureHostedPoolPublicationSnapshot(
+            {
+              request: (method, path, body) =>
+                request(input.repositoryToken, method, path, body),
+            },
+            {
+              repository: hostedPoolCanaryTarget.fullName,
+              pullRequestNumber: pullRequests.get(runId)!,
+              sourceHeadSha: sourceHeads.get(runId)!,
+              now: input.now,
+            },
+          ),
+        );
+      }
       return {
         repositoryId: config.repositoryId,
         installationId: config.installationId,
@@ -1004,7 +1030,17 @@ export function createGitHubHostedPoolCanaryPort(input: {
       };
     },
     async rerun(runId) {
-      rerunRequestedAt.set(runId, (input.now ?? (() => new Date()))());
+      const baseline = publicationBaselines.get(runId);
+      const dispatchedAt = (input.now ?? (() => new Date()))();
+      if (
+        !baseline ||
+        !Number.isFinite(dispatchedAt.getTime()) ||
+        Date.parse(baseline.captureCompletedAt) > dispatchedAt.getTime()
+      )
+        throw new Error(
+          `hosted_pool_canary_publication_scope_missing:${runId}`,
+        );
+      rerunRequestedAt.set(runId, dispatchedAt);
       await request(
         input.repositoryToken,
         "POST",
@@ -1041,12 +1077,16 @@ export function createGitHubHostedPoolCanaryPort(input: {
       const prNumber = pullRequests.get(runId);
       const sourceHeadSha = sourceHeads.get(runId);
       const attemptWindow = attemptWindows.get(runId);
+      const baseline = publicationBaselines.get(runId);
+      const dispatchedAt = rerunRequestedAt.get(runId);
       if (
         !prNumber ||
         !sourceHeadSha ||
         !expectedAppBot ||
         !expectedBinding ||
-        !attemptWindow
+        !attemptWindow ||
+        !baseline ||
+        !dispatchedAt
       )
         throw new Error(
           `hosted_pool_canary_publication_scope_missing:${runId}`,
@@ -1060,6 +1100,11 @@ export function createGitHubHostedPoolCanaryPort(input: {
           repository: hostedPoolCanaryTarget.fullName,
           pullRequestNumber: prNumber,
           expectedAppBot,
+          exactRunId: runId,
+          sourceHeadSha,
+          baseline,
+          dispatchedAt,
+          now: input.now,
           ...attemptWindow,
         },
       );

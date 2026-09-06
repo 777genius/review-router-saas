@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   assertClassifiedOutcome,
@@ -12,11 +13,19 @@ import {
   type HostedPoolCanaryPort,
 } from "./run-hosted-pool-production-canary";
 import type { HostedPoolControlPort } from "./hosted-pool-production-control";
+import * as publicationEvidence from "./hosted-pool-production-evidence";
+import { hostedPoolWorkflowSemanticSha256 } from "../packages/features/workflow-provisioning/src/domain/hosted-pool-workflow-template";
 import { renderCanonicalHostedPoolWorkflowV2 } from "../packages/features/workflow-provisioning/src/domain/hosted-pool-workflow-template";
 import { canaryPhaseFixture } from "./hosted-pool-canary-phase-recovery.fixture";
 
+const publicationDb = vi.hoisted(() => ({
+  hostedCodexRepositoryBinding: { findMany: vi.fn() },
+  reviewConfiguration: { findMany: vi.fn() },
+}));
+
 vi.mock("../packages/platform/db/src/index.js", () => ({
   createPrismaClient: () => ({
+    ...publicationDb,
     $disconnect: vi.fn(async () => undefined),
   }),
 }));
@@ -931,5 +940,262 @@ describe("hosted pool one-shot production canary", () => {
     expect(setFlags).toHaveBeenCalledWith({
       REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL: "0",
     });
+  });
+});
+
+describe("single-repository publication baseline integration", () => {
+  function publicationKit() {
+    const config = parseHostedPoolCanaryConfig(env);
+    const repository = "777genius/rr-codex-rotating-e2e";
+    const headSha = "d".repeat(40);
+    const blobSha = "e".repeat(40);
+    const workflow = renderCanonicalHostedPoolWorkflowV2({
+      actionRef: `777genius/review-router@${sha}`,
+      apiUrl: "https://reviewrouter.example",
+      providerInstanceId: "hosted-pool:repository:123456789",
+      bindingId: "binding-canary",
+      bindingRevision: 1,
+    });
+    publicationDb.hostedCodexRepositoryBinding.findMany.mockResolvedValue([
+      {
+        id: "binding-canary",
+        poolId: config.poolId,
+        revision: 1n,
+        workflowActionRef: `777genius/review-router@${sha}`,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSourceCommitSha: headSha,
+        workflowSourceBlobSha: blobSha,
+        workflowSourceSha256: createHash("sha256")
+          .update(workflow)
+          .digest("hex"),
+        workflowSemanticSha256: hostedPoolWorkflowSemanticSha256(workflow),
+        repositoryConnectionId: "connection-canary",
+        repository: {
+          githubRepositoryId: BigInt(config.repositoryId),
+          fullName: repository,
+          installation: {
+            githubInstallationId: BigInt(config.installationId),
+            status: "active",
+          },
+        },
+        pool: {
+          status: "active",
+          accounts: config.accountIds.map((id) => ({ id, state: "healthy" })),
+        },
+      },
+    ]);
+    publicationDb.reviewConfiguration.findMany.mockResolvedValue([
+      {
+        versions: [
+          {
+            fastMode: false,
+            providerAuthMode: "codex_subscription_oauth_hosted_pool",
+            providers: [
+              {
+                fastMode: false,
+                providerAuthMode: "codex_subscription_oauth_hosted_pool",
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    let clock = new Date("2026-09-06T00:00:00.000Z");
+    const dispatched = new Set<number>();
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const path = String(url).replace("https://api.github.com", "");
+      let body: unknown;
+      if (path === `/repos/${repository}`)
+        body = {
+          id: config.repositoryId,
+          full_name: repository,
+          archived: false,
+          visibility: "private",
+          default_branch: "main",
+        };
+      else if (path.endsWith("/installation"))
+        body = { id: config.installationId, app_slug: config.appSlug };
+      else if (path.endsWith("/commits/main")) body = { sha: headSha };
+      else if (path.includes("/contents/"))
+        body = {
+          sha: blobSha,
+          content: Buffer.from(workflow).toString("base64"),
+        };
+      else if (path.startsWith("/repos/777genius/review-router-saas/pulls/"))
+        body = {
+          number: config.releasePullRequestNumber,
+          state: "open",
+          merged: false,
+          merged_at: null,
+          head: { sha: releaseSha },
+          merge_commit_sha: "c".repeat(40),
+          base: { repo: { full_name: "777genius/review-router-saas" } },
+        };
+      else if (/\/actions\/runs\/\d+\/rerun$/.test(path)) {
+        expect(init?.method).toBe("POST");
+        dispatched.add(Number(path.split("/").at(-2)));
+        return new Response(null, { status: 204 });
+      } else if (path.includes("/attempts/2/jobs?"))
+        body = { total_count: 0, jobs: [] };
+      else if (/\/actions\/runs\/\d+$/.test(path)) {
+        const id = Number(path.split("/").at(-1));
+        body = {
+          id,
+          repository: { id: config.repositoryId },
+          run_attempt: dispatched.has(id) ? 2 : 1,
+          status: "completed",
+          conclusion: "success",
+          event: "pull_request",
+          head_sha: headSha,
+          path: ".github/workflows/reviewrouter-codex.yml",
+          pull_requests: [
+            { number: id + 100, base: { repo: { id: config.repositoryId } } },
+          ],
+          run_started_at: "2026-09-06T00:00:00.000Z",
+          updated_at: "2026-09-06T00:00:01.000Z",
+        };
+      } else if (/\/pulls\/\d+$/.test(path))
+        body = {
+          number: Number(path.split("/").at(-1)),
+          state: "open",
+          merge_commit_sha: "c".repeat(40),
+          head: { sha: headSha, repo: { id: config.repositoryId } },
+          base: { repo: { id: config.repositoryId } },
+        };
+      else if (path.includes("/check-runs?")) body = { check_runs: [] };
+      else if (path.endsWith("?per_page=100")) body = [];
+      else if (path === "/graphql")
+        body = {
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } },
+              },
+            },
+          },
+        };
+      else throw new Error(`unexpected fixture request: ${path}`);
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const canary = createGitHubHostedPoolCanaryPort({
+      appJwt: "fixture",
+      repositoryToken: "fixture",
+      databaseUrl: "postgresql://fixture.invalid/reviewrouter",
+      now: () => clock,
+    });
+    return {
+      config,
+      repository,
+      headSha,
+      canary,
+      fetchMock,
+      setClock: (value: string) => {
+        clock = new Date(value);
+      },
+    };
+  }
+
+  it("captures all original PRs before dispatch and retains exact baselines through repeated evidence reads", async () => {
+    const k = publicationKit();
+    const collect = vi.spyOn(
+      publicationEvidence,
+      "collectExactHostedPoolPublicationEvidence",
+    );
+    const read = vi
+      .spyOn(publicationEvidence, "readExactHostedPoolRunEvidence")
+      .mockResolvedValue({} as CanaryRunEvidence);
+    try {
+      const preflight = await k.canary.preflight(k.config);
+      expect(preflight.allowlist).toEqual([k.config.repositoryId]);
+      expect(
+        k.fetchMock.mock.calls.filter(([url]) =>
+          String(url).endsWith("/graphql"),
+        ),
+      ).toHaveLength(Object.values(k.config.runs).length);
+      expect(
+        k.fetchMock.mock.calls.some(([url]) => String(url).endsWith("/rerun")),
+      ).toBe(false);
+      // GitHub's whole-second timestamp may precede the local dispatch by up to five seconds.
+      k.setClock("2026-09-06T00:00:05.000Z");
+      for (const runId of Object.values(k.config.runs)) {
+        await k.canary.rerun(runId);
+        await k.canary.waitForCompletion(runId, "success");
+        await k.canary.evidence(runId);
+        k.setClock("2026-09-06T00:00:05.000Z");
+      }
+      const first = collect.mock.calls[0]![1];
+      expect(first).toMatchObject({
+        repository: k.repository,
+        pullRequestNumber: k.config.runs.simultaneous_a + 100,
+        exactRunId: k.config.runs.simultaneous_a,
+        sourceHeadSha: k.headSha,
+        dispatchedAt: new Date("2026-09-06T00:00:05.000Z"),
+        baseline: {
+          capturedAt: "2026-09-06T00:00:00.000Z",
+          captureCompletedAt: "2026-09-06T00:00:00.000Z",
+        },
+      });
+      k.setClock("2026-09-06T00:01:00.000Z");
+      await k.canary.evidence(k.config.runs.simultaneous_a);
+      const last = collect.mock.calls.at(-1)![1];
+      expect(last.baseline).toBe(first.baseline);
+      expect(last.dispatchedAt).toBe(first.dispatchedAt);
+      expect(last.sourceHeadSha).toBe(first.sourceHeadSha);
+      expect(read.mock.calls[0]![0]).toMatchObject({
+        runId: first.exactRunId,
+        runAttempt: 2,
+        sourceHeadSha: k.headSha,
+        repositoryBindingId: "binding-canary",
+        bindingRevision: 1n,
+        publication: {
+          appBotPublicationCount: 0,
+          nonAppBotPublicationCount: 0,
+        },
+      });
+    } finally {
+      collect.mockRestore();
+      read.mockRestore();
+      await k.canary.disconnect();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(["2026-09-05T23:59:59.999Z", "invalid"])(
+    "rejects dispatch clock %s before sending a rerun",
+    async (clock) => {
+      const k = publicationKit();
+      try {
+        await k.canary.preflight(k.config);
+        k.setClock(clock);
+        await expect(
+          k.canary.rerun(k.config.runs.simultaneous_a),
+        ).rejects.toThrow("hosted_pool_canary_publication_scope_missing");
+        expect(
+          k.fetchMock.mock.calls.some(([url]) =>
+            String(url).endsWith("/rerun"),
+          ),
+        ).toBe(false);
+      } finally {
+        await k.canary.disconnect();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it("rejects rerun and evidence without an original source baseline", async () => {
+    const k = publicationKit();
+    try {
+      await expect(k.canary.rerun(11)).rejects.toThrow(
+        "hosted_pool_canary_publication_scope_missing",
+      );
+      await expect(k.canary.evidence(11)).rejects.toThrow(
+        "hosted_pool_canary_publication_scope_missing",
+      );
+      expect(k.fetchMock).not.toHaveBeenCalled();
+    } finally {
+      await k.canary.disconnect();
+      vi.unstubAllGlobals();
+    }
   });
 });
