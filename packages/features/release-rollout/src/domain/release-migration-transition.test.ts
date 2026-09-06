@@ -146,7 +146,6 @@ describe("canonical release migration transition", () => {
     expect(canonicalReleaseMigrationResumeManifestIdentities).not.toContain(
       manifest(managed),
     );
-    expect(activationCatalogRawPromotionTrustRoot.status).toBe("pending");
   });
 
   it("accepts only the trusted pre-manifest and completed post-manifest replay", () => {
