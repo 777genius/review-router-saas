@@ -1,9 +1,17 @@
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { basename, dirname, join } from "node:path";
 import pg from "pg";
+import { assertCanaryPhasePostgresResult } from "./hosted-pool-canary-phase-gate.mjs";
 import { runProviderScopeConcurrencyOperation } from "./manage-review-provider-scope-concurrency.mjs";
 import { runtimeGrantStatements } from "./run-codex-rotating-release-migration.mjs";
 
@@ -21,6 +29,7 @@ const image =
 const suffix = randomBytes(6).toString("hex");
 const container = `reviewrouter-hosted-pool-e2e-${suffix}`;
 const database = `reviewrouter_hosted_pool_e2e_${suffix}`;
+const canaryPhaseDatabase = `reviewrouter_canary_phase_${suffix}`;
 const migrationDatabase = `reviewrouter_hosted_pool_migration_${suffix}`;
 const password = randomBytes(24).toString("base64url");
 const port = await reservePort();
@@ -34,6 +43,7 @@ if (
 }
 const hostNetwork = dockerNetwork === "host";
 const databaseUrl = `postgresql://postgres:${password}@127.0.0.1:${port}/${database}?schema=public`;
+const canaryPhaseDatabaseUrl = `postgresql://postgres:${password}@127.0.0.1:${port}/${canaryPhaseDatabase}`;
 const migrationDatabaseUrl = `postgresql://postgres:${password}@127.0.0.1:${port}/${migrationDatabase}?schema=public`;
 const custodyPassword = randomBytes(24).toString("base64url");
 const apiPassword = randomBytes(24).toString("base64url");
@@ -162,6 +172,48 @@ try {
       databaseUrl,
     );
     await proveCustodyCredentialRotation(databaseUrl, custodyDatabaseUrl);
+    // Recovery requires an empty Workspace table and its own migrated loopback
+    // database. Reuse this disposable container and the existing migration path.
+    run("docker", [
+      "exec",
+      container,
+      "createdb",
+      "--username",
+      "postgres",
+      ...(hostNetwork ? ["--port", String(port)] : []),
+      canaryPhaseDatabase,
+    ]);
+    await grantMigrationSchemaOwnerAuthority(canaryPhaseDatabaseUrl);
+    const canaryDirectory = prepareMigrationRehearsal({
+      excludeHostedPoolMigrations: false,
+    });
+    rehearsalDirectories.push(canaryDirectory);
+    runMigrationDeploy(canaryDirectory, canaryPhaseDatabaseUrl);
+    await prepareCodexOAuthV5ReleaseAuthority(canaryPhaseDatabaseUrl);
+    applyCodexOAuthV5Migrations(canaryDirectory, canaryPhaseDatabaseUrl);
+    if (
+      (await countAppliedMigrations(canaryPhaseDatabaseUrl)) !==
+      (await countAppliedMigrations(databaseUrl))
+    )
+      throw new Error("canary_phase_pg17_migration_count_mismatch");
+    const canaryReport = join(canaryDirectory, "canary-phase-vitest.json");
+    run(
+      vitestBinary,
+      [
+        "run",
+        "scripts/hosted-pool-canary-phase-recovery.postgres.test.ts",
+        "--reporter=default",
+        "--reporter=json",
+        `--outputFile=${canaryReport}`,
+      ],
+      {
+        REVIEW_ROUTER_CANARY_PHASE_PG17_URL: canaryPhaseDatabaseUrl,
+        REVIEW_ROUTER_RUN_HOSTED_POOL_POSTGRES_E2E: "1",
+      },
+    );
+    assertCanaryPhasePostgresResult(
+      JSON.parse(readFileSync(canaryReport, "utf8")),
+    );
     try {
       run(
         vitestBinary,
