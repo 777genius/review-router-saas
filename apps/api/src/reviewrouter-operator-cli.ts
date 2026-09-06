@@ -8,6 +8,8 @@ import { ReviewReasoningEffort } from "@reviewrouter/features-review-config/revi
 import { isScmProvider, type ScmProvider } from "@reviewrouter/shared/scm";
 import { ReviewInvestigationPromotionRequestVersion } from "./review-investigation-operator-routes.js";
 
+import { executePoolCli, poolCliOptions } from "./reviewrouter-pool-cli.js";
+
 type OperatorCliEnvironment = Readonly<Record<string, string | undefined>>;
 type OperatorCliFetch = typeof fetch;
 
@@ -39,6 +41,7 @@ export async function executeReviewRouterOperatorCli(
     return { usage: usageText() };
   }
   if (
+    !poolCliOptions(command) &&
     command !== "config get" &&
     command !== "config set" &&
     command !== "investigation status" &&
@@ -46,7 +49,10 @@ export async function executeReviewRouterOperatorCli(
   ) {
     throw new Error("reviewrouter_operator_command_unknown");
   }
-  assertAllowedOptions(parsed, allowedOptions(command));
+  assertAllowedOptions(
+    parsed,
+    poolCliOptions(command) ?? allowedOptions(command),
+  );
 
   const { apiUrl, credential } = await readOperatorProfile(
     parsed,
@@ -55,6 +61,43 @@ export async function executeReviewRouterOperatorCli(
     command,
   );
   const fetchImpl = dependencies.fetchImpl ?? fetch;
+
+  if (poolCliOptions(command)) {
+    return executePoolCli({
+      command,
+      options: parsed.options,
+      request: async (method, pathname, body) => {
+        try {
+          return await requestJson(
+            new URL(pathname, apiUrl),
+            {
+              method,
+              headers: {
+                ...operatorHeaders(credential),
+                "content-type": "application/json",
+              },
+              redirect: "error",
+              ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+            },
+            fetchImpl,
+          );
+        } catch (error) {
+          for (const code of [
+            "hosted_pool_conflict",
+            "hosted_pool_github_app_permissions_required",
+          ]) {
+            if (
+              error instanceof Error &&
+              error.message === `reviewrouter_operator_api_error:409:${code}`
+            )
+              throw new Error(code, { cause: error });
+          }
+          // Transport and server failures may contain reflected request bytes.
+          throw new Error("hosted_pool_request_failed", { cause: error });
+        }
+      },
+    });
+  }
 
   if (command === "investigation status") {
     const investigationId = requireOption(parsed, "investigation-id");
@@ -379,6 +422,11 @@ function readOption(parsed: ParsedArguments, name: string): string | undefined {
 function usageText(): string {
   return [
     "ReviewRouter operator CLI",
+    "  reviewrouter pool status --workspace SLUG",
+    "  reviewrouter pool accounts import --workspace SLUG --label LABEL --auth-file PATH",
+    "  reviewrouter pool accounts replace --workspace SLUG --account-id ID --expected-generation N --expected-health-version N --auth-file PATH",
+    "  reviewrouter pool accounts pause|resume --workspace SLUG --account-id ID --expected-health-version N",
+    "  reviewrouter pool repositories connect --workspace SLUG (--repo OWNER/REPO | --all) [--dry-run]",
     "",
     "  reviewrouter config get --repo OWNER/REPO [--workspace SLUG] [--provider github|gitlab] [--source-base-url URL] [--profile PATH]",
     "  reviewrouter config set --repo OWNER/REPO --effort low|medium|high|xhigh|max|ultra [--reason TEXT] [--workspace SLUG] [--provider github|gitlab] [--source-base-url URL] [--profile PATH]",
@@ -402,6 +450,15 @@ async function main(): Promise<void> {
     return;
   }
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  if (
+    result &&
+    typeof result === "object" &&
+    "status" in result &&
+    (result.status === "partial_failure" ||
+      result.status === "reconcile_required")
+  ) {
+    process.exitCode = 1;
+  }
 }
 
 const entrypoint = process.argv[1];

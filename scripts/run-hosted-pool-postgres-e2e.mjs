@@ -18,10 +18,16 @@ import { runtimeGrantStatements } from "./run-codex-rotating-release-migration.m
 const mode = process.argv[2];
 const prismaBinary = join(process.cwd(), "node_modules/.bin/prisma");
 const vitestBinary = join(process.cwd(), "node_modules/.bin/vitest");
-if (mode && mode !== "--migration-only" && mode !== "--postgres-only") {
+if (
+  mode &&
+  mode !== "--migration-only" &&
+  mode !== "--postgres-only" &&
+  mode !== "--operator-only"
+) {
   throw new Error("hosted_pool_e2e_mode_invalid");
 }
-const runMigration = mode !== "--postgres-only";
+const runBuiltOperator = mode === "--operator-only";
+const runMigration = mode !== "--postgres-only" && !runBuiltOperator;
 const runPostgresE2e = mode !== "--migration-only";
 
 const image =
@@ -227,31 +233,47 @@ try {
       JSON.parse(readFileSync(canaryReport, "utf8")),
     );
     try {
-      run(
-        vitestBinary,
-        ["run", "scripts/hosted-pool-e2e/hosted-pool-postgres.e2e.test.ts"],
-        {
-          REVIEW_ROUTER_HOSTED_POOL_E2E_DATABASE_URL: databaseUrl,
-          REVIEW_ROUTER_HOSTED_POOL_E2E_CUSTODY_DATABASE_URL:
-            custodyDatabaseUrl,
-          REVIEW_ROUTER_HOSTED_POOL_E2E_API_DATABASE_URL: apiDatabaseUrl,
-          REVIEW_ROUTER_RUN_HOSTED_POOL_POSTGRES_E2E: "1",
-        },
-      );
-      run(
-        vitestBinary,
-        [
-          "run",
-          "scripts/hosted-pool-e2e/hosted-pool-public-eligibility.postgres.test.ts",
-        ],
-        {
-          REVIEW_ROUTER_HOSTED_POOL_E2E_DATABASE_URL: databaseUrl,
-          REVIEW_ROUTER_HOSTED_POOL_E2E_CUSTODY_DATABASE_URL:
-            custodyDatabaseUrl,
-          REVIEW_ROUTER_HOSTED_POOL_E2E_API_DATABASE_URL: apiDatabaseUrl,
-          REVIEW_ROUTER_RUN_HOSTED_POOL_PUBLIC_PG: "1",
-        },
-      );
+      if (runBuiltOperator) {
+        run(
+          process.execPath,
+          [
+            "--conditions=production",
+            "scripts/hosted-pool-e2e/built-operator-cli.postgres.mjs",
+          ],
+          {
+            NODE_ENV: "test",
+            REVIEW_ROUTER_HOSTED_POOL_E2E_DATABASE_URL: databaseUrl,
+            REVIEW_ROUTER_HOSTED_POOL_E2E_API_DATABASE_URL: apiDatabaseUrl,
+            REVIEW_ROUTER_RUN_BUILT_OPERATOR_PG: "1",
+          },
+        );
+      } else {
+        run(
+          vitestBinary,
+          ["run", "scripts/hosted-pool-e2e/hosted-pool-postgres.e2e.test.ts"],
+          {
+            REVIEW_ROUTER_HOSTED_POOL_E2E_DATABASE_URL: databaseUrl,
+            REVIEW_ROUTER_HOSTED_POOL_E2E_CUSTODY_DATABASE_URL:
+              custodyDatabaseUrl,
+            REVIEW_ROUTER_HOSTED_POOL_E2E_API_DATABASE_URL: apiDatabaseUrl,
+            REVIEW_ROUTER_RUN_HOSTED_POOL_POSTGRES_E2E: "1",
+          },
+        );
+        run(
+          vitestBinary,
+          [
+            "run",
+            "scripts/hosted-pool-e2e/hosted-pool-public-eligibility.postgres.test.ts",
+          ],
+          {
+            REVIEW_ROUTER_HOSTED_POOL_E2E_DATABASE_URL: databaseUrl,
+            REVIEW_ROUTER_HOSTED_POOL_E2E_CUSTODY_DATABASE_URL:
+              custodyDatabaseUrl,
+            REVIEW_ROUTER_HOSTED_POOL_E2E_API_DATABASE_URL: apiDatabaseUrl,
+            REVIEW_ROUTER_RUN_HOSTED_POOL_PUBLIC_PG: "1",
+          },
+        );
+      }
     } finally {
       const evidencePath =
         process.env.REVIEW_ROUTER_HOSTED_CERTIFICATION_DB_EXPORT?.trim();

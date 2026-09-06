@@ -128,6 +128,21 @@ export class PrismaHostedCodexSessionPersistence implements HostedCodexSessionPe
     );
   }
 
+  /** Explicit relogin entry point. Never calls read(), which is serving-only. */
+  async reconnect(input: {
+    readonly accountId: string;
+    readonly workspaceId: string;
+    readonly poolId: string;
+    readonly expectedGeneration: number;
+    readonly expectedHealthVersion: number;
+    readonly nextAuthJsonBytes: Uint8Array;
+    readonly nextGenerationHash: string;
+    readonly idempotencyKey: string;
+    readonly leaseId: string;
+  }) {
+    return this.writeGeneration(input, input);
+  }
+
   async compareAndSwap(input: {
     readonly accountId: string;
     readonly expectedGeneration: number;
@@ -136,16 +151,45 @@ export class PrismaHostedCodexSessionPersistence implements HostedCodexSessionPe
     readonly idempotencyKey: string;
     readonly leaseId: string;
   }) {
+    return this.writeGeneration(input);
+  }
+
+  private async writeGeneration(
+    input: {
+      readonly accountId: string;
+      readonly expectedGeneration: number;
+      readonly nextAuthJsonBytes: Uint8Array;
+      readonly nextGenerationHash: string;
+      readonly idempotencyKey: string;
+      readonly leaseId: string;
+    },
+    reconnect?: {
+      readonly workspaceId: string;
+      readonly poolId: string;
+      readonly expectedHealthVersion: number;
+    },
+  ) {
     const nextGeneration = input.expectedGeneration + 1;
+    if (!Number.isSafeInteger(nextGeneration) || nextGeneration < 1) {
+      throw new Error("hosted_codex_generation_out_of_range");
+    }
     const leaseAuthority = hostedCodexMutationLeaseAuthority(input.leaseId);
     if (leaseAuthority.accountId !== input.accountId) {
       throw new Error("hosted_codex_mutation_fence_invalid");
     }
     const receiptHash = sha256(
-      `${input.accountId}\u0000${input.leaseId}\u0000${input.idempotencyKey}\u0000${nextGeneration}`,
+      `${reconnect ? "operator-reconnect:" : ""}${input.accountId}\u0000${input.leaseId}\u0000${input.idempotencyKey}\u0000${nextGeneration}`,
     );
     const replay = await this.findAuthorizedReplay(receiptHash, leaseAuthority);
     if (replay) {
+      if (
+        reconnect &&
+        (replay.workspaceId !== reconnect.workspaceId ||
+          replay.poolId !== reconnect.poolId ||
+          replay.credentialVersion.generationHash !== input.nextGenerationHash)
+      ) {
+        throw new Error("hosted_codex_reconnect_conflict");
+      }
       return {
         status: "idempotent_replay" as const,
         generation: toSafeNumber(replay.generation),
@@ -158,14 +202,29 @@ export class PrismaHostedCodexSessionPersistence implements HostedCodexSessionPe
     if (!account || account.activeGeneration === null) {
       throw new Error("hosted_codex_account_not_found");
     }
+    if (
+      reconnect &&
+      (account.workspaceId !== reconnect.workspaceId ||
+        account.poolId !== reconnect.poolId ||
+        account.tombstonedAt !== null ||
+        account.state !== "paused" ||
+        account.healthVersion !== BigInt(reconnect.expectedHealthVersion))
+    ) {
+      throw new Error("hosted_codex_reconnect_conflict");
+    }
     if (account.activeGeneration !== BigInt(input.expectedGeneration)) {
       return this.staleResult(account.id, account.activeGeneration);
+    }
+    if (!reconnect && account.state === "paused") {
+      throw new Error("hosted_codex_account_not_servable");
     }
     const nextFingerprint = fingerprintCodexAuthJson(
       input.nextAuthJsonBytes,
       this.fingerprintPepper,
     );
     if (nextFingerprint !== account.accountFingerprint) {
+      // Operator mistakes must have no effects, including quarantine effects.
+      if (reconnect) throw new Error("hosted_codex_account_identity_drift");
       await this.prisma.$transaction(async (transaction) => {
         await lockMutationFence(transaction, {
           accountId: input.accountId,
@@ -177,6 +236,8 @@ export class PrismaHostedCodexSessionPersistence implements HostedCodexSessionPe
             id: account.id,
             accountFingerprint: account.accountFingerprint,
             activeGeneration: BigInt(input.expectedGeneration),
+            healthVersion: account.healthVersion,
+            state: account.state,
           },
           data: {
             state: "restore_quarantined",
@@ -284,12 +345,22 @@ export class PrismaHostedCodexSessionPersistence implements HostedCodexSessionPe
           where: {
             id: account.id,
             activeGeneration: BigInt(input.expectedGeneration),
+            // Fence refresh against concurrent administrative pause as well.
+            healthVersion: account.healthVersion,
+            state: reconnect ? "paused" : account.state,
+            ...(reconnect
+              ? {
+                  workspaceId: reconnect.workspaceId,
+                  poolId: reconnect.poolId,
+                  tombstonedAt: null,
+                }
+              : {}),
           },
           data: {
             activeGeneration: BigInt(nextGeneration),
-            state: "healthy",
+            state: reconnect ? "paused" : "healthy",
             healthVersion: { increment: 1 },
-            lastHealthyAt: new Date(),
+            ...(reconnect ? {} : { lastHealthyAt: new Date() }),
           },
         });
         if (updated.count !== 1) {
@@ -317,6 +388,15 @@ export class PrismaHostedCodexSessionPersistence implements HostedCodexSessionPe
           leaseAuthority,
         );
         if (committed) {
+          if (
+            reconnect &&
+            committed.credentialVersion.generationHash !==
+              input.nextGenerationHash
+          ) {
+            throw new Error("hosted_codex_reconnect_conflict", {
+              cause: error,
+            });
+          }
           return {
             status: "idempotent_replay" as const,
             generation: toSafeNumber(committed.generation),
