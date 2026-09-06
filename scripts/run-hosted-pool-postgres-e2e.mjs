@@ -199,7 +199,10 @@ try {
     runMigrationDeploy(canaryDirectory, canaryPhaseDatabaseUrl);
     await prepareCodexOAuthV5ReleaseAuthority(canaryPhaseDatabaseUrl);
     applyCodexOAuthV5Migrations(canaryDirectory, canaryPhaseDatabaseUrl);
-    await applyPublicEligibilityMigration(canaryDirectory, canaryPhaseDatabaseUrl);
+    await applyPublicEligibilityMigration(
+      canaryDirectory,
+      canaryPhaseDatabaseUrl,
+    );
     if (
       (await countAppliedMigrations(canaryPhaseDatabaseUrl)) !==
       (await countAppliedMigrations(databaseUrl))
