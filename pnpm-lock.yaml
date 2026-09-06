@@ -252,6 +252,9 @@ importers:
       '@reviewrouter/platform-db':
         specifier: workspace:*
         version: link:../../packages/platform/db
+      '@reviewrouter/platform-locks':
+        specifier: workspace:*
+        version: link:../../packages/platform/locks
       '@reviewrouter/platform-logger':
         specifier: workspace:*
         version: link:../../packages/platform/logger

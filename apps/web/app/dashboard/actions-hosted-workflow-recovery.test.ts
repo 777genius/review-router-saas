@@ -122,6 +122,8 @@ vi.mock("../../src/server/prisma-hosted-pool-mutations", async () => {
   const { readFileSync } = await import("node:fs");
   const ts = await import("typescript");
   const configuration = await import("@reviewrouter/features-review-config");
+  const { switchRepositoryConfigurationAuthMode } =
+    await import("@reviewrouter/features-workflow-provisioning");
   const identifiers =
     await import("../../../../packages/features/hosted-account-pool/src/domain/identifiers");
   const useCase =
@@ -199,6 +201,7 @@ vi.mock("../../src/server/prisma-hosted-pool-mutations", async () => {
       ...configuration,
       ...identifiers,
       ...useCase,
+      switchRepositoryConfigurationAuthMode,
       constructAdapters: (prisma: unknown, authority: unknown) => ({
         bindings: new adapters.PrismaHostedPoolBindingRepository(prisma),
         authModeSwitch: new adapters.PrismaRepositoryAuthModeSwitch(
@@ -211,7 +214,6 @@ vi.mock("../../src/server/prisma-hosted-pool-mutations", async () => {
       "createPrismaHostedPoolDashboardMutationPort",
       "createRepositoryConfigurationAuthority",
       "switchRepositoryConfigurationAuthMode",
-      "withCodexAuthMode",
     ],
   );
   mocks.switchConfiguration.mockImplementation(

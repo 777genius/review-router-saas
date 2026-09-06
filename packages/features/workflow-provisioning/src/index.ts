@@ -33,3 +33,5 @@ export * from "./infrastructure/prisma/prisma-workflow-provisioning-repository";
 export * from "./infrastructure/prisma/prisma-workflow-provisioning-status-authority";
 export * from "./infrastructure/prisma/prisma-workflow-provisioning-target";
 export * from "./infrastructure/prisma/workflow-provisioning-transaction";
+export * from "./infrastructure/prisma/prisma-hosted-pool-workflow-activation";
+export * from "./infrastructure/prisma/prisma-hosted-pool-configuration";
