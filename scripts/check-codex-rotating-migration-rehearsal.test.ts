@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
@@ -162,54 +162,29 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
-  it("rehearses every canonical migration from 000060 through 000091 in order", () => {
+  it("rehearses every checked-in rotating migration from 000060 in order", () => {
     const inventory =
       /JSON\.stringify\(\[([\s\S]+?)\]\),\n\s+"rehearsal migration inventory/u.exec(
         source,
       )?.[1];
 
     expect(inventory).toBeDefined();
-    expect(
-      [...(inventory ?? "").matchAll(/migration\d+[A-Za-z]*Name/gu)].map(
-        ([name]) => name,
-      ),
-    ).toEqual([
-      "migration60Name",
-      "migration61Name",
-      "migration62Name",
-      "migration63Name",
-      "migration64Name",
-      "migration65Name",
-      "migration66Name",
-      "migration67Name",
-      "migration68Name",
-      "migration69Name",
-      "migration70Name",
-      "migration71Name",
-      "migration72RetireName",
-      "migration72CanaryName",
-      "migration73Name",
-      "migration74Name",
-      "migration75Name",
-      "migration76Name",
-      "migration77Name",
-      "migration78Name",
-      "migration79Name",
-      "migration79ScopeName",
-      "migration80Name",
-      "migration81Name",
-      "migration82Name",
-      "migration83Name",
-      "migration84Name",
-      "migration85Name",
-      "migration86Name",
-      "migration87Name",
-      "migration88Name",
-      "migration89Name",
-      "migration89QuiescenceName",
-      "migration90Name",
-      "migration91Name",
-    ]);
+    const declaredNames = Object.fromEntries(
+      [
+        ...source.matchAll(
+          /const (migration\d+[A-Za-z]*Name) =\s*"([^"]+)";/gu,
+        ),
+      ].map(([, variable, name]) => [variable, name]),
+    );
+    const rehearsedNames = [
+      ...(inventory ?? "").matchAll(/migration\d+[A-Za-z]*Name/gu),
+    ].map(([variable]) => declaredNames[variable]);
+    const checkedInNames = readdirSync(
+      resolve(import.meta.dirname, "../packages/platform/db/prisma/migrations"),
+    )
+      .filter((name) => /^0000(?:6[0-9]|[7-9][0-9])_/u.test(name))
+      .sort();
+    expect(rehearsedNames).toEqual(checkedInNames);
     expect(source).toContain(
       'const migration67Name = "000067_review_live_progress"',
     );
@@ -533,7 +508,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).not.toContain("applyOrdinaryPostReleaseMigrations");
     expect(source).not.toContain("assertMigrationAbsentFromHistory");
     expect(source).toContain("proveMigrateDeployNoOp(providerAdmin)");
-    expect(source).toContain("combined 000060 through 000091 rehearsal passed");
+    expect(source).toContain("combined 000060 through 000096 rehearsal passed");
   });
 
   it("rehearses rejection of legacy active namespace schemas 1 through 3", () => {
