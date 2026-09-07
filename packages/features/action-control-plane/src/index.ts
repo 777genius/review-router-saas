@@ -62,3 +62,39 @@ export * from "./infrastructure/config/static-action-runtime-compatibility-polic
 export * from "./infrastructure/session/jose-action-session-token-service.js";
 export * from "./infrastructure/session/jose-action-conflict-review-posting-session-token-service.js";
 export * from "./interface/http/register-action-control-plane-routes.js";
+export {
+  createForkReview,
+  createForkEffect,
+  createForkRequest,
+  assertSameForkReview,
+  assertSameForkRequest,
+  type ForkLogicalFacts,
+  type ForkReview,
+  type ForkSlot,
+  type ForkEffect,
+  type ForkProviderFacts,
+  type ForkPublicationFacts,
+  type ForkRequest,
+} from "./domain/certified-fork-effect-identity.js";
+export {
+  forkAuthorityHash,
+  prepareForkEffect,
+  transitionForkEffect,
+  type ForkAuthority,
+  type ForkEvidence,
+  type ForkAttempt,
+  type ForkStop,
+  type ForkEffectState,
+  type ForkCommand,
+} from "./domain/certified-fork-effect-state.js";
+export {
+  createForkReviewFromOutcome,
+  createForkOutput,
+  freezeForkInventory,
+  createForkOutcome,
+  type ForkOutput,
+  type ForkDurability,
+  type ForkInventoryEntry,
+  type ForkInventory,
+  type ForkOutcome,
+} from "./domain/certified-fork-effect-outcome.js";
