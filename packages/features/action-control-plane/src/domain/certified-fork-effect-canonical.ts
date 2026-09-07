@@ -5,10 +5,20 @@ export type Parser<T> = (value: unknown) => T;
 export function requireFact(condition: unknown): asserts condition {
   if (!condition) throw new Error("certified_fork_effect_contract_rejected");
 }
-function data(value: object) {
+function data(value: object, expected?: readonly string[]) {
   requireFact(!types.isProxy(value));
+  const keys = Reflect.ownKeys(value);
+  requireFact(keys.length <= (expected?.length ?? 256));
+  const allowed = expected && new Set(expected);
+  requireFact(
+    (!expected || keys.length === expected.length) &&
+      keys.every(
+        (key) =>
+          typeof key === "string" &&
+          (allowed ? allowed.has(key) : /^[A-Za-z][A-Za-z0-9]*$/u.test(key)),
+      ),
+  );
   const descriptors = Object.getOwnPropertyDescriptors(value);
-  requireFact(Reflect.ownKeys(value).every((key) => typeof key === "string"));
   for (const descriptor of Object.values(descriptors)) {
     requireFact("value" in descriptor);
   }
@@ -17,10 +27,9 @@ function data(value: object) {
 export function record<S extends Record<string, Parser<unknown>>>(shape: S) {
   return (value: unknown): { readonly [K in keyof S]: ReturnType<S[K]> } => {
     requireFact(typeof value === "object" && value !== null);
-    const descriptors = data(value);
-    requireFact(Object.getPrototypeOf(value) === Object.prototype);
     const keys = Object.keys(shape).sort();
-    requireFact(Object.keys(descriptors).sort().join("|") === keys.join("|"));
+    const descriptors = data(value, keys);
+    requireFact(Object.getPrototypeOf(value) === Object.prototype);
     const result: Record<string, unknown> = {};
     for (const key of keys) {
       requireFact(descriptors[key]?.enumerable);
@@ -39,8 +48,10 @@ export function list<T>(parse: Parser<T>): Parser<readonly T[]> {
       Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype,
     );
     requireFact(value.length <= 256);
-    const descriptors = data(value);
-    requireFact(Object.keys(descriptors).length === value.length + 1);
+    const descriptors = data(value, [
+      "length",
+      ...Array.from({ length: value.length }, (_, i) => String(i)),
+    ]);
     const result: T[] = [];
     for (let i = 0; i < value.length; i++) {
       requireFact(descriptors[String(i)]?.enumerable);

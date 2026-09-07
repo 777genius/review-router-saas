@@ -14,8 +14,8 @@ import {
   sha,
 } from "./certified-fork-effect-canonical.js";
 // Structural read contract keeps identity independent of the later outcome layer.
-// Runtime outcome provenance is still mandatory for generation admission.
-type ForkPredecessor = Readonly<{
+// Outcome authority and effect/admission enforcement belong to stack2.
+export type ForkPredecessor = Readonly<{
   review: ForkReview;
   outcomeHash: string;
   status:
@@ -44,10 +44,20 @@ export type ForkReview = Readonly<{
   bindingHash: string;
   admissionHash: string | null;
 }>;
+const predecessorFacts = record({
+  review: (value: unknown) => authentic("review", value as ForkReview),
+  outcomeHash: hash,
+  status: choice(
+    "completed",
+    "stopped_no_effect",
+    "stopped_with_effect",
+    "output_unavailable",
+  ),
+});
 const admissionFacts = record({ admissionHash: hash });
-/** Generation > 0 requires an explicit admission and a resolved, sealed predecessor.
+/** Generation > 0 requires an explicit admission and a structurally resolved predecessor.
  * Identical inputs are idempotent. Composition must CAS the admitted generation;
- * pure construction cannot arbitrate concurrent callers or authenticate admission. */
+ * pure construction cannot authenticate outcomes/admission or arbitrate callers. */
 export function createForkReview(
   facts: ForkLogicalFacts,
   bindingHash: string,
@@ -59,17 +69,15 @@ export function createForkReview(
   const { generation, ...family } = parsed;
   const familyKey = fingerprint("fork-review-family", family);
   const admitted = admission === null ? null : admissionFacts(admission);
-  if (generation === "0")
-    requireFact(predecessor === null && admitted === null);
+  const prior = predecessor === null ? null : predecessorFacts(predecessor);
+  if (generation === "0") requireFact(prior === null && admitted === null);
   else {
-    requireFact(predecessor !== null && admitted !== null);
-    authentic("outcome", predecessor);
+    requireFact(prior !== null && admitted !== null);
     requireFact(
-      predecessor.review.familyKey === familyKey &&
-        predecessor.review.bindingHash === binding,
+      prior.review.familyKey === familyKey &&
+        prior.review.bindingHash === binding,
     );
-    requireFact(generation === next(predecessor.review.facts.generation));
-    requireFact(predecessor.status !== "unresolved");
+    requireFact(generation === next(prior.review.facts.generation));
   }
   return artifact("review", {
     facts: parsed,
@@ -77,8 +85,7 @@ export function createForkReview(
     familyKey,
     bindingHash: binding,
     admissionHash:
-      admitted &&
-      fingerprint("fork-generation", [admitted, predecessor!.outcomeHash]),
+      admitted && fingerprint("fork-generation", [admitted, prior]),
   });
 }
 const slotFacts = record({

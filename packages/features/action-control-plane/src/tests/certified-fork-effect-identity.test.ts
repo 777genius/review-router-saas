@@ -197,3 +197,131 @@ it("keeps trust injection and provenance constructors out of package exports", (
     expect(root).not.toContain(internal);
   expect(root).not.toMatch(/export\s+\*[^;]*certified-fork-effect/u);
 });
+
+const resolvedStatuses = [
+  "completed",
+  "stopped_no_effect",
+  "stopped_with_effect",
+  "output_unavailable",
+] as const;
+const predecessor = {
+  review,
+  outcomeHash: h(30),
+  status: "completed" as const,
+};
+const admission = { admissionHash: h(31) };
+const generationOne = { ...logical, generation: "1" };
+const advance = (prior: unknown = predecessor, admitted = admission) =>
+  makeReview(generationOne, h(1), prior as typeof predecessor, admitted);
+it.each(resolvedStatuses)(
+  "admits and deduplicates generation 1: %s",
+  (status) => {
+    const prior = { ...predecessor, status };
+    const first = advance(prior);
+    expect(first.facts.generation).toBe("1");
+    expect(first.logicalKey).not.toBe(review.logicalKey);
+    expect(first.familyKey).toBe(review.familyKey);
+    expect(first.bindingHash).toBe(review.bindingHash);
+    expect(first.admissionHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(sameReview(first, advance({ ...prior }))).toBe(first);
+    const slot = { stage: "provider", role: "review", slot: 1 } as const;
+    expect(makeEffect(first, slot).effectKey).toBe(
+      makeEffect(advance({ ...prior }), slot).effectKey,
+    );
+    expect(makeEffect(first, slot).effectKey).not.toBe(effect.effectKey);
+    rejects(() => sameReview(first, advance({ ...prior, outcomeHash: h(32) })));
+    rejects(() => sameReview(first, advance(prior, { admissionHash: h(32) })));
+    for (const other of resolvedStatuses.filter((value) => value !== status))
+      rejects(() => sameReview(first, advance({ ...prior, status: other })));
+    const second = makeReview(
+      { ...logical, generation: "2" },
+      h(1),
+      { ...prior, review: first },
+      admission,
+    );
+    expect(second.facts.generation).toBe("2");
+    const substituted = advance(prior, { admissionHash: h(33) });
+    rejects(() =>
+      sameReview(
+        second,
+        makeReview(
+          { ...logical, generation: "2" },
+          h(1),
+          { ...prior, review: substituted },
+          admission,
+        ),
+      ),
+    );
+  },
+);
+it("rejects missing, unresolved, malformed and substituted predecessors", () => {
+  for (const bad of [
+    null,
+    {},
+    { ...predecessor, status: "unresolved" },
+    { ...predecessor, status: "unknown" },
+    { ...predecessor, status: undefined },
+    { ...predecessor, outcomeHash: "A".repeat(64) },
+    { ...predecessor, outcomeHash: undefined },
+    { ...predecessor, extra: "untrusted" },
+    { ...predecessor, review: { ...review } },
+    { ...predecessor, review: JSON.parse(JSON.stringify(review)) },
+    { ...predecessor, review: { ...review, logicalKey: h(99) } },
+    {
+      ...predecessor,
+      review: makeReview({ ...logical, headSha: "c".repeat(40) }, h(1)),
+    },
+    { ...predecessor, review: makeReview(logical, h(99)) },
+    { ...predecessor, review: advance() },
+  ])
+    rejects(() => advance(bad));
+  rejects(() => makeReview(generationOne, h(1), predecessor));
+  rejects(() =>
+    makeReview(generationOne, h(1), predecessor, { admissionHash: "bad" }),
+  );
+  rejects(() => makeReview(logical, h(1), predecessor, admission));
+  for (const generation of ["2", "3"])
+    rejects(() =>
+      makeReview({ ...logical, generation }, h(1), predecessor, admission),
+    );
+  for (const clone of [{ ...review }, JSON.parse(JSON.stringify(review))]) {
+    rejects(() => sameReview(review, clone));
+    rejects(() => makeEffect(clone, effect.slot));
+    rejects(() => makeRequest(clone, effect, facts));
+  }
+});
+it("rejects hostile predecessor metadata without invoking callbacks", () => {
+  let calls = 0;
+  const trap = () => {
+    calls++;
+    throw new Error("must not execute");
+  };
+  for (const bad of [
+    {
+      ...predecessor,
+      get review() {
+        return trap();
+      },
+    },
+    {
+      ...predecessor,
+      get status() {
+        return trap();
+      },
+    },
+    {
+      ...predecessor,
+      get outcomeHash() {
+        return trap();
+      },
+    },
+    new Proxy(predecessor, { get: trap, ownKeys: trap, getPrototypeOf: trap }),
+    { ...predecessor, review: new Proxy(review, { get: trap, ownKeys: trap }) },
+    Object.assign(Object.create(null), predecessor),
+    Object.assign(Object.create({ inherited: true }), predecessor),
+    { ...predecessor, [Symbol("extra")]: true },
+    { ...predecessor, outcomeHash: { toString: trap } },
+  ])
+    rejects(() => advance(bad));
+  expect(calls).toBe(0);
+});
