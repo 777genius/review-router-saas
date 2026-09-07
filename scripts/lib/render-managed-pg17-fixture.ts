@@ -494,3 +494,71 @@ export async function waitFor(predicate: () => boolean, timeout = 15_000) {
     await delay(50);
   }
 }
+
+// Fixture-only predecessor construction through the accepted libraries. No
+// production receipt is issued. Seed SQL must contain disposable data only.
+export async function prepareManaged92Fixture(
+  pg: ReturnType<typeof managedPg17Fixture>,
+  database: string,
+  seedSql: string,
+) {
+  if (!/^[a-z][a-z0-9_]*$/u.test(database)) throw new Error("fixture_database");
+  const policy = await import("./render-schema-handoff-policy.mjs");
+  const { renderRetainedLedgerGuard, renderManagedCoordinatorExclusionSql } =
+    await import("./render-retained-exclusion.mjs");
+  const { renderSchemaHandoffTransaction } =
+    await import("./render-schema-handoff-transaction.mjs");
+  pg.query(
+    "postgres",
+    `CREATE ROLE reviewrouter LOGIN; CREATE DATABASE ${database} OWNER reviewrouter;`,
+    "postgres",
+  );
+  await pg.apply(database, 76, "rr-cutover-fixture-baseline").result;
+  pg.query(database, `ALTER SCHEMA public OWNER TO reviewrouter; ${seedSql}`);
+  pg.query(
+    "postgres",
+    `CREATE ROLE reviewrouter_release_schema_owner;
+    CREATE ROLE reviewrouter_release_migration LOGIN;
+    CREATE ROLE reviewrouter_comment_token_custody LOGIN;
+    CREATE ROLE reviewrouter_api LOGIN;
+    CREATE ROLE cutover_inherited;
+    GRANT reviewrouter_release_schema_owner TO reviewrouter
+    WITH ADMIN TRUE, INHERIT FALSE, SET FALSE GRANTED BY postgres;`,
+    "postgres",
+  );
+  const retainedBinding = {
+    operationId: randomUUID(),
+    implementationSha: "7870300e71932d8b8cf185004641470d0283cf11",
+    custodyDigest: policy.renderManagedEvidenceDigest(
+      JSON.parse(pg.query(database, policy.renderManagedLedgerSql)),
+    ),
+  };
+  const guard = renderRetainedLedgerGuard(retainedBinding);
+  pg.query(
+    database,
+    `GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_schema_owner;
+    ${policy.renderManagedTemporaryMembershipSql}
+    BEGIN; ${renderManagedCoordinatorExclusionSql} ${guard.installSql} COMMIT;`,
+  );
+  await pg.apply(database, 89, guard.applicationName).result;
+  pg.query(
+    database,
+    `BEGIN; ${renderManagedCoordinatorExclusionSql} ${guard.verifySql}
+    ALTER TABLE public."ReviewProviderScopeConcurrencyControl" OWNER TO reviewrouter_release_schema_owner;
+    ALTER TABLE public."ReviewInvocationLeaseV2" OWNER TO reviewrouter_release_schema_owner;
+    REVOKE CREATE ON SCHEMA public FROM reviewrouter_release_schema_owner;
+    ${policy.renderManagedMembershipCleanupSql} COMMIT;`,
+  );
+  const originalMembership = JSON.parse(
+    pg.query(database, policy.renderManagedMembershipSql),
+  )[0];
+  pg.query(
+    database,
+    renderSchemaHandoffTransaction({
+      ledger: JSON.parse(pg.query(database, policy.renderManagedLedgerSql)),
+      retainedBinding,
+      originalMembership,
+    }) + "\nCOMMIT;",
+  );
+  return { originalMembership };
+}

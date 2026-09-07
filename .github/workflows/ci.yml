@@ -374,7 +374,7 @@ jobs:
           REVIEW_ROUTER_REQUIRE_HANDOFF_PG17: "1"
         run: |
           docker pull postgres:17.10@sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317
-          pnpm exec vitest run scripts/render-schema-handoff-repair.pg17.real.test.ts scripts/render-retained-exclusion.pg17.real.test.ts
+          pnpm exec vitest run scripts/render-schema-handoff-repair.pg17.real.test.ts scripts/render-retained-exclusion.pg17.real.test.ts scripts/render-managed-workflow-cutover.pg17.real.test.ts
 
       - name: Review Action v2 handoff contract tests
         run: pnpm protocol:handoff:test
