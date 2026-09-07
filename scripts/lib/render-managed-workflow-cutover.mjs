@@ -343,6 +343,64 @@ export function assertRenderManagedWorkflowCutoverTerminal({
     fail("terminal_custody");
 }
 
+// Validate the compared facts locally before the shared equality-only comparator.
+// Match source-owned canonical instants/digests and positive safe permit epochs.
+// Nonces are opaque: existing producers include both hex tokens and UUIDs.
+function assertReconciliationFacts(permit, observation) {
+  const digest = (value) =>
+    typeof value === "string" && /^sha256:[a-f0-9]{64}$/u.test(value);
+  const epoch = (value) => Number.isSafeInteger(value) && value >= 1;
+  const nonce = (value) => typeof value === "string" && value.length > 0;
+  const instant = (value) =>
+    typeof value === "string" &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString() === value;
+  const system = (value) =>
+    typeof value === "string" && /^[1-9][0-9]{0,19}$/u.test(value);
+  const facts = [
+    [
+      permit,
+      {
+        rolloutId: (value) =>
+          typeof value === "string" &&
+          /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(value),
+        expectedPreviousReceiptSha256: digest,
+        transitionSha256: digest,
+        targetSystemIdentifier: system,
+        targetRecoveryWitnessSha256: digest,
+        epoch,
+        nonce,
+        eligibilityCutoff: instant,
+      },
+    ],
+    [permit?.sourceLegacyAmbiguity, { inventorySha256: digest }],
+    [
+      observation,
+      {
+        transitionSha256: digest,
+        migrationArtifactDigest: digest,
+        migrationBundleSha256: digest,
+        preManifestIdentity: digest,
+        postManifestIdentity: digest,
+        postCatalogDigest: digest,
+        permitEpoch: epoch,
+        permitNonce: nonce,
+        targetSystemIdentifier: system,
+        targetRecoveryWitnessSha256: digest,
+        sourceLegacyAmbiguitySha256: digest,
+        eligibilityCutoff: instant,
+      },
+    ],
+  ];
+  for (const [record, validators] of facts) {
+    if (!record || typeof record !== "object" || Array.isArray(record))
+      fail("reconciliation_facts");
+    for (const [key, validate] of Object.entries(validators))
+      if (!Object.hasOwn(record, key) || !validate(record[key]))
+        fail("reconciliation_facts");
+  }
+}
+
 // Evidence for the existing durable begin/complete/fail protocol, not another
 // release state machine. Never returns SQL or permission to replay/activate.
 /** @param {Record<string, unknown>} evidence Untrusted observations; missing facts hold closed. */
@@ -404,6 +462,7 @@ export function reconcileRenderManagedWorkflowCutover({
         requiresSameAuthorityOperation: true,
       });
     }
+    assertReconciliationFacts(permit, observation);
     assertReleaseMigrationTransitionIntegrity(transition);
     if (
       transition.transitionSha256 !== binding.transitionSha256 ||

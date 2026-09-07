@@ -354,6 +354,184 @@ it("constructs an explicit four-body transaction with complete fenced evidence c
   expect(
     reconcileRenderManagedWorkflowCutover({ ...evidence, ledger: pre }),
   ).toMatchObject({ status: "uncommitted-candidate", replay: false });
+  // Each row mutates both sides together, so equality alone cannot reject it.
+  const digestInvalid = [
+    "",
+    "sha256:abc",
+    "a".repeat(64),
+    `sha256:${"A".repeat(64)}`,
+    1,
+    false,
+    {},
+    [],
+  ];
+  const pairedFacts = [
+    [
+      "permit.epoch",
+      "observation.permitEpoch",
+      [
+        0,
+        -1,
+        1.5,
+        NaN,
+        Infinity,
+        -Infinity,
+        Number.MAX_SAFE_INTEGER + 1,
+        "1",
+        true,
+        {},
+        [],
+      ],
+    ],
+    ["permit.nonce", "observation.permitNonce", ["", 1, true, {}, []]],
+    [
+      "permit.eligibilityCutoff",
+      "observation.eligibilityCutoff",
+      [
+        "",
+        "invalid",
+        0,
+        true,
+        {},
+        [],
+        "2026-09-06",
+        "2026-09-06T00:00:00Z",
+        "2026-02-30T00:00:00.000Z",
+        "2026-09-06T00:00:00.000+00:00",
+      ],
+    ],
+    [
+      "permit.sourceLegacyAmbiguity.inventorySha256",
+      "observation.sourceLegacyAmbiguitySha256",
+      digestInvalid,
+    ],
+    [
+      "permit.targetSystemIdentifier",
+      "observation.targetSystemIdentifier",
+      ["", "0", "-1", "1.5", "01", "1".repeat(21), 1, true, {}, []],
+    ],
+    [
+      "permit.targetRecoveryWitnessSha256",
+      "observation.targetRecoveryWitnessSha256",
+      digestInvalid,
+    ],
+    [
+      "transition.transitionSha256",
+      "observation.transitionSha256",
+      digestInvalid,
+    ],
+    [
+      "transition.migrationArtifactDigest",
+      "observation.migrationArtifactDigest",
+      digestInvalid,
+    ],
+    [
+      "transition.migrationBundleSha256",
+      "observation.migrationBundleSha256",
+      digestInvalid,
+    ],
+    [
+      "transition.preManifestIdentity",
+      "observation.preManifestIdentity",
+      digestInvalid,
+    ],
+    [
+      "transition.postManifestIdentity",
+      "observation.postManifestIdentity",
+      digestInvalid,
+    ],
+    [
+      "transition.postCatalogDigest",
+      "observation.postCatalogDigest",
+      digestInvalid,
+    ],
+    [
+      "permit.rolloutId",
+      "binding.operationId",
+      ["", "invalid", 1, true, {}, []],
+    ],
+    [
+      "permit.expectedPreviousReceiptSha256",
+      "binding.predecessorReceiptSha256",
+      digestInvalid,
+    ],
+    ["permit.transitionSha256", "transition.transitionSha256", digestInvalid],
+  ] as const;
+  const omitted = Symbol("omitted");
+  const setFact = (input: object, path: string, value: unknown) => {
+    const keys = path.split(".");
+    let record = input as Record<string, unknown>;
+    for (const key of keys.slice(0, -1))
+      record = record[key] as Record<string, unknown>;
+    const key = keys.at(-1)!;
+    if (value === omitted) delete record[key];
+    else record[key] = value;
+  };
+  for (const [left, right, malformed] of pairedFacts) {
+    for (const value of [omitted, undefined, null, ...malformed]) {
+      for (const paths of [[left], [right], [left, right]]) {
+        const incomplete = structuredClone(evidence);
+        for (const path of paths) setFact(incomplete, path, value);
+        expect(
+          reconcileRenderManagedWorkflowCutover(incomplete),
+          `${paths.join(" / ")}: ${String(value)}`,
+        ).toEqual({ status: "hold-closed", replay: false });
+      }
+    }
+  }
+  for (const path of [
+    "permit",
+    "observation",
+    "permit.sourceLegacyAmbiguity",
+  ]) {
+    for (const value of [
+      omitted,
+      undefined,
+      null,
+      false,
+      1,
+      "invalid",
+      [],
+      {},
+    ]) {
+      const incomplete = structuredClone(evidence);
+      setFact(incomplete, path, value);
+      expect(reconcileRenderManagedWorkflowCutover(incomplete), path).toEqual({
+        status: "hold-closed",
+        replay: false,
+      });
+    }
+  }
+  // Boundary values and opaque non-UUID nonces remain valid comparisons.
+  for (const [left, right, values] of [
+    ["permit.epoch", "observation.permitEpoch", [1, Number.MAX_SAFE_INTEGER]],
+    [
+      "permit.nonce",
+      "observation.permitNonce",
+      ["a".repeat(32), "opaque:permit-token", randomUUID()],
+    ],
+    [
+      "permit.eligibilityCutoff",
+      "observation.eligibilityCutoff",
+      ["1970-01-01T00:00:00.000Z", "+010000-01-01T00:00:00.000Z"],
+    ],
+    [
+      "permit.sourceLegacyAmbiguity.inventorySha256",
+      "observation.sourceLegacyAmbiguitySha256",
+      [`sha256:${"0".repeat(64)}`, `sha256:${"f".repeat(64)}`],
+    ],
+  ] as const) {
+    for (const value of values) {
+      const valid = structuredClone(evidence);
+      setFact(valid, left, value);
+      setFact(valid, right, value);
+      expect(reconcileRenderManagedWorkflowCutover(valid)).toEqual({
+        status: "committed-candidate",
+        replay: false,
+        requiresDurableCompletion: true,
+      });
+    }
+  }
   for (const change of [
     { original92: undefined },
     { durableBinding: undefined },
