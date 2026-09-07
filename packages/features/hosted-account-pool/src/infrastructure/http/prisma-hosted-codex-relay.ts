@@ -349,7 +349,9 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         accountId = await this.switchToBackup(
           input.authorization,
           failure,
-          null,
+          failure === "rate_limited"
+            ? new Date(this.now().getTime() + 15 * 60_000)
+            : null,
         );
         failedOver = true;
         continue;
