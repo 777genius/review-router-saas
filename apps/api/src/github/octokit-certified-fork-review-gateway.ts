@@ -32,6 +32,9 @@ type RepositorySnapshot = Readonly<{
   fullName: string;
   private: boolean;
   visibility: string;
+  fork: boolean;
+  parentId: string | null;
+  sourceId: string | null;
 }>;
 
 type PullRequestSnapshot = Readonly<{
@@ -49,6 +52,9 @@ type PullRequestSnapshot = Readonly<{
   changedFiles: number;
 }>;
 
+// GitHub exposes at most 300 compare files; 301..500 cannot be certified
+// even though the shared packet budget remains 500. Commit pagination cannot help.
+const githubCompareMaxFiles = 300;
 const maxPatchBytes = 240_000;
 const maxChangedLines = 20_000;
 const githubRequestTimeoutMs = 15_000;
@@ -100,62 +106,51 @@ export class OctokitCertifiedForkReviewGateway implements CertifiedForkReviewGat
       throw new Error("certified_fork_diff_budget_exceeded");
     }
 
+    if (expectedChangedFiles > githubCompareMaxFiles) {
+      throw new Error("certified_fork_diff_api_limit_exceeded");
+    }
+    const [owner, repo] = splitRepository(input.binding.baseRepository);
+    const compare = responseData(
+      await octokit.request("GET /repos/{owner}/{repo}/compare/{basehead}", {
+        owner,
+        repo,
+        basehead: `${input.binding.baseSha}...${input.binding.reviewHeadSha}`,
+        page: 1,
+        per_page: 1,
+      }),
+    );
+    if (!isPlainRecord(compare))
+      throw new Error("certified_fork_files_invalid");
+    const baseCommit = dataProperty(compare, "base_commit");
+    if (
+      !isPlainRecord(baseCommit) ||
+      dataProperty(baseCommit, "sha") !== input.binding.baseSha
+    ) {
+      throw new Error("certified_fork_tuple_mismatch");
+    }
+    // Three-dot comparisons may legitimately have an older merge base.
+    const rawFiles = snapshotFiles(dataProperty(compare, "files"));
+    if (rawFiles.length !== expectedChangedFiles) {
+      throw new Error("certified_fork_files_incomplete");
+    }
     const files: CertifiedForkReviewFile[] = [];
     let patchBytes = 0;
     let changedLines = 0;
-    for (
-      let page = 1;
-      page <= Math.ceil(certifiedForkReviewMaxFiles / 100);
-      page += 1
-    ) {
-      const pullRequest = await validateTuple(octokit, input.binding);
-      if (pullRequest.changedFiles > certifiedForkReviewMaxFiles) {
+    for (const rawFile of rawFiles) {
+      const file = parseGitHubFile(rawFile);
+      patchBytes += Buffer.byteLength(file.patch, "utf8");
+      changedLines += file.additions + file.deletions;
+      if (patchBytes > maxPatchBytes || changedLines > maxChangedLines) {
         throw new Error("certified_fork_diff_budget_exceeded");
       }
-      if (pullRequest.changedFiles !== expectedChangedFiles) {
-        throw new Error("certified_fork_tuple_mismatch");
-      }
-      const [owner, repo] = splitRepository(input.binding.baseRepository);
-      const response = await octokit.request(
-        "GET /repos/{owner}/{repo}/pulls/{pull_number}/files",
-        {
-          owner,
-          repo,
-          pull_number: input.binding.pullRequestNumber,
-          per_page: 100,
-          page,
-        },
-      );
-      if (!Array.isArray(response.data)) {
-        throw new Error("certified_fork_files_invalid");
-      }
-      for (const rawFile of response.data) {
-        const file = parseGitHubFile(rawFile);
-        const filePatchBytes = Buffer.byteLength(file.patch, "utf8");
-        patchBytes += filePatchBytes;
-        changedLines += file.additions + file.deletions;
-        if (
-          files.length >= certifiedForkReviewMaxFiles ||
-          filePatchBytes > certifiedForkReviewMaxFilePatchBytes ||
-          patchBytes > maxPatchBytes ||
-          changedLines > maxChangedLines
-        ) {
-          throw new Error("certified_fork_diff_budget_exceeded");
-        }
-        files.push(file);
-      }
-      if (files.length === expectedChangedFiles || response.data.length < 100) {
-        break;
-      }
-      if (page === Math.ceil(certifiedForkReviewMaxFiles / 100)) {
-        throw new Error("certified_fork_diff_pagination_exceeded");
-      }
+      files.push(file);
     }
     if (files.length !== expectedChangedFiles) {
       throw new Error("certified_fork_files_incomplete");
     }
     const finalPullRequest = await validateTuple(octokit, input.binding);
     if (
+      finalPullRequest.relationship !== initialPullRequest.relationship ||
       finalPullRequest.changedFiles !== expectedChangedFiles ||
       finalPullRequest.baseSha !== input.binding.baseSha.toLowerCase() ||
       finalPullRequest.headSha !== input.binding.reviewHeadSha.toLowerCase()
@@ -232,7 +227,7 @@ export class OctokitCertifiedForkReviewGateway implements CertifiedForkReviewGat
 async function validateTuple(
   octokit: Requester,
   binding: CertifiedForkReviewBinding,
-): Promise<PullRequestSnapshot> {
+): Promise<PullRequestSnapshot & { relationship: string }> {
   if (
     binding.trustDomain !== "fork" ||
     !/^[a-f0-9]{40}$/u.test(binding.baseSha) ||
@@ -264,10 +259,12 @@ async function validateTuple(
       }),
     ],
   );
-  const base = parseRepository(baseResponse.data);
-  const source = parseRepository(sourceResponse.data);
-  const pullRequest = parsePullRequest(pullRequestResponse.data);
+  const base = parseRepository(responseData(baseResponse));
+  const source = parseRepository(responseData(sourceResponse));
+  const pullRequest = parsePullRequest(responseData(pullRequestResponse));
   if (
+    !source.fork ||
+    source.sourceId !== (base.fork ? base.sourceId : base.id) ||
     base.id !== binding.baseRepositoryId ||
     source.id !== binding.sourceRepositoryId ||
     normalizeRepositoryName(base.fullName) !==
@@ -294,7 +291,17 @@ async function validateTuple(
   ) {
     throw new Error("certified_fork_tuple_mismatch");
   }
-  return pullRequest;
+  return {
+    ...pullRequest,
+    relationship: JSON.stringify([
+      base.fork,
+      base.parentId,
+      base.sourceId,
+      source.fork,
+      source.parentId,
+      source.sourceId,
+    ]),
+  };
 }
 
 function parseRepository(value: unknown): RepositorySnapshot {
@@ -305,7 +312,28 @@ function parseRepository(value: unknown): RepositorySnapshot {
   const fullName = dataProperty(value, "full_name");
   const privateValue = dataProperty(value, "private");
   const visibility = dataProperty(value, "visibility");
+  const fork = dataProperty(value, "fork");
+  let parentId: string | null = null;
+  let sourceId: string | null = null;
+  if (fork === true) {
+    const parent = dataProperty(value, "parent");
+    const source = dataProperty(value, "source");
+    if (!isPlainRecord(parent) || !isPlainRecord(source))
+      throw new Error("certified_fork_repository_invalid");
+    const parentValue = dataProperty(parent, "id");
+    const sourceValue = dataProperty(source, "id");
+    if (
+      !isIdentifier(parentValue) ||
+      !isIdentifier(sourceValue) ||
+      String(parentValue) === String(idValue) ||
+      String(sourceValue) === String(idValue)
+    )
+      throw new Error("certified_fork_repository_invalid");
+    parentId = String(parentValue);
+    sourceId = String(sourceValue);
+  }
   if (
+    typeof fork !== "boolean" ||
     !isIdentifier(idValue) ||
     typeof fullName !== "string" ||
     typeof privateValue !== "boolean" ||
@@ -318,6 +346,9 @@ function parseRepository(value: unknown): RepositorySnapshot {
     fullName,
     private: privateValue,
     visibility,
+    fork,
+    parentId,
+    sourceId,
   };
 }
 
@@ -404,15 +435,14 @@ function parseGitHubFile(value: unknown): CertifiedForkReviewFile {
     !isNonnegativeInteger(additions) ||
     !isNonnegativeInteger(deletions) ||
     typeof patch !== "string" ||
-    patch.length === 0 ||
-    patch.includes("GIT binary patch") ||
-    patch.includes("Binary files ")
+    patch.length === 0
   ) {
     throw new Error("certified_fork_file_unsupported");
   }
   if (Buffer.byteLength(patch, "utf8") > certifiedForkReviewMaxFilePatchBytes) {
     throw new Error("certified_fork_diff_budget_exceeded");
   }
+  validatePatch(patch, additions, deletions);
   const normalizedStatus = status === "deleted" ? "removed" : status;
   if (!["added", "modified", "removed", "renamed"].includes(normalizedStatus)) {
     throw new Error("certified_fork_file_unsupported");
@@ -473,7 +503,8 @@ function dataProperty(value: Record<string, unknown>, key: string): unknown {
 
 function isIdentifier(value: unknown): value is string | number {
   return (
-    (typeof value === "number" || typeof value === "string") &&
+    ((typeof value === "number" && Number.isSafeInteger(value)) ||
+      typeof value === "string") &&
     /^[1-9][0-9]*$/u.test(String(value))
   );
 }
@@ -484,4 +515,121 @@ function isPositiveInteger(value: unknown): value is number {
 
 function isNonnegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function responseData(value: unknown): unknown {
+  if (!isPlainRecord(value))
+    throw new Error("certified_fork_response_accessor");
+  return dataProperty(value, "data");
+}
+
+function snapshotFiles(value: unknown): unknown[] {
+  const invalid = () => new Error("certified_fork_files_invalid");
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    isProxy(value) ||
+    !Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype
+  )
+    throw invalid();
+  const length = Object.getOwnPropertyDescriptor(value, "length");
+  if (
+    !length ||
+    !("value" in length) ||
+    length.enumerable ||
+    length.configurable ||
+    !isNonnegativeInteger(length.value) ||
+    length.value > githubCompareMaxFiles
+  )
+    throw invalid();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(descriptors).length !== length.value + 1) throw invalid();
+  for (let index = 0; index < length.value; index += 1) {
+    const descriptor = descriptors[String(index)];
+    if (
+      !descriptor ||
+      !("value" in descriptor) ||
+      !descriptor.enumerable ||
+      !descriptor.configurable ||
+      !descriptor.writable
+    )
+      throw invalid();
+  }
+  const snapshot: unknown[] = [];
+  for (let index = 0; index < length.value; index += 1)
+    snapshot.push(descriptors[String(index)]!.value);
+  return snapshot;
+}
+
+// Local structural completeness proof for GitHub's bounded textual patch.
+function validatePatch(
+  patch: string,
+  additions: number,
+  deletions: number,
+): void {
+  const invalid = () => new Error("certified_fork_file_unsupported");
+  const lines = patch.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  let oldRemaining = 0;
+  let newRemaining = 0;
+  let hunks = 0;
+  let added = 0;
+  let deleted = 0;
+  let markerAllowed = false;
+  for (const line of lines) {
+    const structural = line.endsWith("\r") ? line.slice(0, -1) : line;
+    if (structural.startsWith("@@")) {
+      if (oldRemaining !== 0 || newRemaining !== 0) throw invalid();
+      const match =
+        /^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@(?: .*)?$/u.exec(
+          structural,
+        );
+      if (!match) throw invalid();
+      const oldStart = Number(match[1]);
+      const oldCount = Number(match[2] ?? "1");
+      const newStart = Number(match[3]);
+      const newCount = Number(match[4] ?? "1");
+      if (
+        ![oldStart, oldCount, newStart, newCount].every(isNonnegativeInteger) ||
+        (oldStart === 0 && oldCount !== 0) ||
+        (newStart === 0 && newCount !== 0) ||
+        !Number.isSafeInteger(oldStart + oldCount) ||
+        !Number.isSafeInteger(newStart + newCount)
+      )
+        throw invalid();
+      oldRemaining = oldCount;
+      newRemaining = newCount;
+      hunks += 1;
+      markerAllowed = false;
+      continue;
+    }
+    if (structural === "\\ No newline at end of file") {
+      if (!markerAllowed) throw invalid();
+      markerAllowed = false;
+      continue;
+    }
+    if (hunks === 0 || (oldRemaining === 0 && newRemaining === 0))
+      throw invalid();
+    if (line.startsWith(" ")) {
+      oldRemaining -= 1;
+      newRemaining -= 1;
+    } else if (line.startsWith("+")) {
+      newRemaining -= 1;
+      added += 1;
+    } else if (line.startsWith("-")) {
+      oldRemaining -= 1;
+      deleted += 1;
+    } else throw invalid();
+    if (oldRemaining < 0 || newRemaining < 0) throw invalid();
+    markerAllowed = true;
+  }
+  if (
+    hunks === 0 ||
+    oldRemaining !== 0 ||
+    newRemaining !== 0 ||
+    added !== additions ||
+    deleted !== deletions
+  )
+    throw invalid();
 }
