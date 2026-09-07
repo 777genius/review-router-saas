@@ -15,6 +15,8 @@ import type { WorkflowSetupGatewayPort } from "../ports/workflow-setup-gateway-p
 import type { WorkflowProvisioningTargetPort } from "../ports/workflow-provisioning-target-port";
 
 export type ProvisionRepositoryReviewRouterWorkflowInput = {
+  readonly workspaceId: string;
+  readonly installationId: string;
   readonly repositoryId: string;
   readonly actionRef: string;
   readonly apiUrl: string;
@@ -42,11 +44,15 @@ export async function provisionRepositoryReviewRouterWorkflow(
     readonly auditMetadata?: Readonly<Record<string, unknown>>;
   },
 ) {
-  const target = await dependencies.targets.findWorkflowProvisioningTarget(
-    input.repositoryId,
-  );
+  const target =
+    await dependencies.targets.findWorkflowProvisioningTarget(input);
 
-  if (!target) {
+  if (
+    !target ||
+    target.workspaceId !== input.workspaceId ||
+    target.installationId !== input.installationId ||
+    target.repositoryId !== input.repositoryId
+  ) {
     throw new Error("repository_not_found");
   }
   if (!target.selected) {
@@ -69,8 +75,9 @@ export async function provisionRepositoryReviewRouterWorkflow(
 
   return provisionReviewRouterWorkflow(
     {
-      workspaceId: target.workspaceId,
-      repositoryId: target.repositoryId,
+      workspaceId: input.workspaceId,
+      installationId: input.installationId,
+      repositoryId: input.repositoryId,
       owner: target.owner,
       name: target.name,
       defaultBranch: target.defaultBranch,

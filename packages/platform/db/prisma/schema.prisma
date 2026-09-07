@@ -175,6 +175,7 @@ model RepositoryConnection {
   archived                Boolean               @default(false)
   stargazersCount         Int                   @default(0)
   setupStatus             RepositorySetupStatus @default(not_configured)
+  inventoryGeneration     BigInt                @default(0)
   lastSyncedAt            DateTime?
   createdAt               DateTime              @default(now())
   updatedAt               DateTime              @updatedAt
@@ -2705,6 +2706,9 @@ model ConflictReviewPostingIntent {
 
 model WorkflowProvisioning {
   id             String                     @id @default(cuid())
+  attemptId      String                     @default(cuid())
+  revision       Int                        @default(0)
+  installationId String?
   workspaceId    String
   repositoryId   String
   status         WorkflowProvisioningStatus @default(not_started)
@@ -2712,6 +2716,7 @@ model WorkflowProvisioning {
   workflowPath   String
   workflowStyle  String                     @default("explicit")
   actionVersion  String
+  pullRequestHeadSha String?
   pullRequestUrl String?
   errorMessage   String?
   createdAt      DateTime                   @default(now())
@@ -2720,7 +2725,7 @@ model WorkflowProvisioning {
   workspace  Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   repository RepositoryConnection @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
 
-  @@unique([repositoryId, branch])
+  @@unique([repositoryId])
   @@index([workspaceId, status])
   @@index([repositoryId, status])
 }

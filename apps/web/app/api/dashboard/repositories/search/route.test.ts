@@ -163,6 +163,39 @@ describe("dashboard repository search route", () => {
     );
   });
 
+  it("searches with the latest workflow provisioning status instead of legacy setup status", async () => {
+    mocks.getDashboardWorkspaceScope.mockResolvedValue({
+      kind: "workspace_ids",
+      workspaceIds: ["workspace_1"],
+    });
+    mocks.listGitHubUserRepositoryAccess.mockResolvedValue({
+      status: "ready",
+      workspaceIds: [],
+      repositoryIds: new Set<string>(),
+      directConfigRepositoryIds: new Set<string>(),
+      checkedAt: null,
+    });
+    mocks.repositoryConnectionFindMany.mockResolvedValue([
+      repositoryRow({
+        id: "repo_failed",
+        fullName: "fin-int/failed",
+        setupStatus: "configured",
+        provisioningStatus: "failed",
+      }),
+    ]);
+
+    const response = await GET(
+      nextRequest(
+        "http://localhost/api/dashboard/repositories/search?workspace=fin-int&q=needs%20attention",
+      ),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      repositoryIds: ["repo_failed"],
+      total: 1,
+    });
+  });
+
   it("does not count legacy Codex setup as ready for rotating Codex policy", async () => {
     mocks.getDashboardWorkspaceScope.mockResolvedValue({
       kind: "workspace_ids",
@@ -401,6 +434,16 @@ function nextRequest(url: string) {
 function repositoryRow(input: {
   readonly id: string;
   readonly fullName: string;
+  readonly setupStatus?:
+    | "not_configured"
+    | "setup_pr_open"
+    | "configured"
+    | "needs_attention";
+  readonly provisioningStatus?:
+    | "not_started"
+    | "setup_pr_open"
+    | "configured"
+    | "failed";
 }) {
   const [owner = "", name = ""] = input.fullName.split("/");
   return {
@@ -411,7 +454,10 @@ function repositoryRow(input: {
     name,
     defaultBranch: "main",
     visibility: "private",
-    setupStatus: "configured",
+    setupStatus: input.setupStatus ?? "configured",
+    provisioning: input.provisioningStatus
+      ? [{ status: input.provisioningStatus }]
+      : [],
     selected: true,
     archived: false,
     stargazersCount: 0,

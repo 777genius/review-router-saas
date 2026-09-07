@@ -30,6 +30,7 @@ import {
 } from "@reviewrouter/features-org-ruleset-provisioning";
 import {
   listRepositoryWorkflowProvisioning,
+  projectRepositorySetupStatus,
   PrismaWorkflowProvisioningQuery,
 } from "@reviewrouter/features-workflow-provisioning";
 import { redirect } from "next/navigation";
@@ -1730,6 +1731,7 @@ function WorkspaceCard({
   const workspaceHealth = summarizeWorkspaceSetupReadiness({
     repositories,
     health,
+    provisioning,
     providerSetup,
     repositoryConfigs,
     activeConfig,
@@ -2583,6 +2585,7 @@ function ReadinessInlineStat({
 function summarizeWorkspaceSetupReadiness({
   repositories,
   health,
+  provisioning,
   providerSetup,
   repositoryConfigs,
   activeConfig,
@@ -2590,6 +2593,7 @@ function summarizeWorkspaceSetupReadiness({
 }: {
   readonly repositories: DashboardWorkspaceData["repositories"];
   readonly health: DashboardWorkspaceData["health"];
+  readonly provisioning: DashboardWorkspaceData["provisioning"];
   readonly providerSetup: DashboardWorkspaceData["providerSetup"];
   readonly repositoryConfigs: DashboardWorkspaceData["repositoryConfigs"];
   readonly activeConfig: ReviewConfiguration;
@@ -2597,6 +2601,9 @@ function summarizeWorkspaceSetupReadiness({
 }): WorkspaceHealthSummary {
   const repositoryHealthById = new Map(
     health.map((item) => [item.repositoryId, item] as const),
+  );
+  const repositoryProvisioningById = new Map(
+    provisioning.map((item) => [item.repositoryId, item] as const),
   );
   const configuredProviderSetupByRepositoryId =
     buildConfiguredProviderSetupByRepositoryId({
@@ -2622,6 +2629,11 @@ function summarizeWorkspaceSetupReadiness({
   const counts = repositories.reduce(
     (accumulator, repository) => {
       const repositoryHealth = repositoryHealthById.get(repository.id);
+      const setupStatus = projectRepositorySetupStatus({
+        workflowProvisioningStatus:
+          repositoryProvisioningById.get(repository.id)?.status ?? null,
+        legacySetupStatus: repository.setupStatus,
+      });
       const effectiveHealthStatus =
         repositoryHealthStatusWithProviderSetupReadiness({
           repositoryId: repository.id,
@@ -2633,7 +2645,7 @@ function summarizeWorkspaceSetupReadiness({
         effectiveHealthStatus,
       );
       const setupProgressStep = repositorySetupProgressStep({
-        setupStatus: repository.setupStatus,
+        setupStatus,
         healthStatus: effectiveHealthStatus,
         workflowCurrent,
         providerSetupConfirmed: isRepositoryProviderSetupConfirmed({
@@ -2802,6 +2814,13 @@ function RepositoryTable({
     const repositoryProvisioning = repositoryProvisioningById.get(
       repository.id,
     );
+    const projectedRepository = {
+      ...repository,
+      setupStatus: projectRepositorySetupStatus({
+        workflowProvisioningStatus: repositoryProvisioning?.status ?? null,
+        legacySetupStatus: repository.setupStatus,
+      }),
+    };
     const setupPullRequestUrl = safeGitHubDashboardLink(
       repositoryProvisioning?.pullRequestUrl ?? "",
     );
@@ -2815,7 +2834,7 @@ function RepositoryTable({
       });
     const workflowCurrent = workflowSetupAlreadyCurrent(effectiveHealthStatus);
     const setupProgressStep = repositorySetupProgressStep({
-      setupStatus: repository.setupStatus,
+      setupStatus: projectedRepository.setupStatus,
       healthStatus: effectiveHealthStatus,
       workflowCurrent,
       setupNeedsAttention: isSetupRecoveryIssue(setupIssue),
@@ -2839,13 +2858,13 @@ function RepositoryTable({
       stargazersCount: repository.stargazersCount,
       archived: repository.archived,
       selected: repository.selected,
-      setupStatus: repository.setupStatus,
+      setupStatus: projectedRepository.setupStatus,
       healthStatus: effectiveHealthStatus,
       healthSummary: repositoryHealth?.summary,
     });
 
     return {
-      repository,
+      repository: projectedRepository,
       repositoryHealth,
       setupPullRequestUrl,
       setupIssue,

@@ -18,9 +18,10 @@ export class PrismaWorkflowProvisioningQuery implements WorkflowProvisioningQuer
     const rows = await this.prisma.workflowProvisioning.findMany({
       where: {
         workspaceId: input.workspaceId,
+        repository: { workspaceId: input.workspaceId },
         repositoryId: { in: [...input.repositoryIds] },
       },
-      orderBy: [{ repositoryId: "asc" }, { updatedAt: "desc" }],
+      orderBy: [{ repositoryId: "asc" }, { updatedAt: "desc" }, { id: "desc" }],
     });
 
     const latestByRepository = new Map<

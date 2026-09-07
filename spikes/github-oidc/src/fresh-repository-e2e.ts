@@ -313,12 +313,19 @@ async function provisionSetupPullRequest(installationId: number): Promise<{
         owner: true,
         name: true,
         defaultBranch: true,
+        installationId: true,
       },
     });
 
     if (!repository) {
       throw new Error(
         `Repository ${targetRepo} was not synced into ReviewRouter DB`,
+      );
+    }
+
+    if (!repository.installationId) {
+      throw new Error(
+        `Repository ${targetRepo} is missing its internal installationId`,
       );
     }
 
@@ -338,6 +345,7 @@ async function provisionSetupPullRequest(installationId: number): Promise<{
     return await provisionReviewRouterWorkflow(
       {
         workspaceId: repository.workspaceId,
+        installationId: repository.installationId,
         repositoryId: repository.id,
         owner: repository.owner,
         name: repository.name,

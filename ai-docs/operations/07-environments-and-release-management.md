@@ -461,6 +461,36 @@ Release order for database-backed changes:
 Do not deploy application code that depends on a schema change before
 `migrate deploy` has succeeded in that environment.
 
+### Workflow provisioning attempt cutover (000089 workflow guard through 000091)
+
+This batch is a quiesced upgrade. Migration `000090` requires attempt identity
+and removes the old `(repositoryId, branch)` writer key. Old provisioning and
+installation inventory writers must never overlap the new schema or resume
+after this cutover. The preceding
+`000089_workflow_provisioning_writer_quiescence` migration fails closed while
+a non-administrator runtime principal can connect and mutate either
+`WorkflowProvisioning` or `RepositoryConnection`, or while such a session is
+still connected. It also rejects direct invocation by the named runtime roles.
+
+Use the existing runtime ACL gate to revoke CONNECT and writes from every
+web/API/worker principal (including inherited and column grants). Runtime
+credentials must be distinct from the reserved migration principal; services
+must never use a superuser or migration credential. Stop and drain every old
+web/API/worker process and installation-sync consumer before applying this
+batch. The migration checks the database fence and sessions, not feature flags.
+An active session must be drained even after CONNECT is revoked.
+
+Keep the ACL gate closed through migrations 000090 and 000091 and deployment
+of the exact new web/API/worker binaries. Only the existing release authority
+may reopen it after fleet convergence. A partial migration or deployment stays
+closed. Old-binary rollback is forbidden after 000090; restore the pre-upgrade
+database with the fleet stopped, or fix forward under the closed gate.
+
+The new migration bytes and post-manifest invalidate the previous activation
+catalog capture. Its trust root is pending until fresh authenticated captures
+and independent review prove the new catalog. Production remains HOLD; old
+capture digests must never be relabeled as evidence for the new manifest.
+
 ### Provider-scope concurrency bridge
 
 Migration `000079_remove_account_wide_provider_lane_serialization` installs a

@@ -14,7 +14,10 @@ export type SetupPullRequestStatus =
 
 export type SetupPullRequestInspection = {
   readonly status: SetupPullRequestStatus;
+  // A matching setup PR may be merged even when its base is no longer allowed.
+  readonly merged: boolean;
   readonly baseBranch: string | null;
+  readonly headSha: string | null;
 };
 
 export async function inspectSetupPullRequest(
@@ -35,14 +38,17 @@ export async function inspectSetupPullRequest(
         status: (await setupBranchExists({ ...input, setupBranch }, octokit))
           ? "closed"
           : "branch_deleted",
+        merged: false,
         baseBranch: null,
+        headSha: null,
       };
     }
-    return { status: "closed", baseBranch: null };
+    return { status: "closed", merged: false, baseBranch: null, headSha: null };
   }
 
   const setupBranchMatches =
     !setupBranch || pullRequest.headRef === setupBranch;
+  const merged = pullRequest.merged && setupBranchMatches;
   if (
     setupBranchMatches &&
     input.allowedBaseBranches &&
@@ -50,25 +56,50 @@ export async function inspectSetupPullRequest(
     pullRequest.baseRef &&
     !input.allowedBaseBranches.includes(pullRequest.baseRef)
   ) {
-    return { status: "wrong_base_branch", baseBranch: pullRequest.baseRef };
+    return {
+      status: "wrong_base_branch",
+      merged,
+      headSha: pullRequest.headSha,
+      baseBranch: pullRequest.baseRef,
+    };
   }
 
-  if (pullRequest.merged && setupBranchMatches) {
-    return { status: "merged", baseBranch: pullRequest.baseRef };
+  if (merged) {
+    return {
+      status: "merged",
+      merged,
+      headSha: pullRequest.headSha,
+      baseBranch: pullRequest.baseRef,
+    };
   }
 
   if (
     setupBranch &&
     !(await setupBranchExists({ ...input, setupBranch }, octokit))
   ) {
-    return { status: "branch_deleted", baseBranch: pullRequest.baseRef };
+    return {
+      status: "branch_deleted",
+      merged,
+      headSha: pullRequest.headSha,
+      baseBranch: pullRequest.baseRef,
+    };
   }
 
   if (pullRequest.state === "closed") {
-    return { status: "closed", baseBranch: pullRequest.baseRef };
+    return {
+      status: "closed",
+      merged,
+      headSha: pullRequest.headSha,
+      baseBranch: pullRequest.baseRef,
+    };
   }
 
-  return { status: "open", baseBranch: pullRequest.baseRef };
+  return {
+    status: "open",
+    merged,
+    headSha: pullRequest.headSha,
+    baseBranch: pullRequest.baseRef,
+  };
 }
 
 export async function inspectSetupPullRequestStatus(
@@ -95,6 +126,7 @@ async function readPullRequest(
   readonly merged: boolean;
   readonly state: string | null;
   readonly headRef: string | null;
+  readonly headSha: string | null;
   readonly baseRef: string | null;
 } | null> {
   try {
@@ -142,19 +174,28 @@ function parsePullRequest(data: unknown): {
   readonly merged: boolean;
   readonly state: string | null;
   readonly headRef: string | null;
+  readonly headSha: string | null;
   readonly baseRef: string | null;
 } {
   if (typeof data !== "object" || data === null) {
-    return { merged: false, state: null, headRef: null, baseRef: null };
+    return {
+      merged: false,
+      state: null,
+      headRef: null,
+      headSha: null,
+      baseRef: null,
+    };
   }
 
   const pullRequest = data as {
     readonly merged?: unknown;
     readonly state?: unknown;
-    readonly head?: { readonly ref?: unknown };
+    readonly head?: { readonly ref?: unknown; readonly sha?: unknown };
     readonly base?: { readonly ref?: unknown };
   };
   return {
+    headSha:
+      typeof pullRequest.head?.sha === "string" ? pullRequest.head.sha : null,
     merged: pullRequest.merged === true,
     state: typeof pullRequest.state === "string" ? pullRequest.state : null,
     headRef:

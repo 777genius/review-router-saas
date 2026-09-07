@@ -28,6 +28,10 @@ class CapturingRepositoryStore implements RepositoryConnectionRepositoryPort {
     syncedAt: Date;
   } | null = null;
 
+  async beginInstallationInventory() {
+    return 1n;
+  }
+
   async syncInstallationRepositories(input: {
     githubInstallationId: string;
     repositories: readonly GitHubRepositorySnapshot[];

@@ -148,6 +148,22 @@ export const canonicalReleaseMigrationEntries = Object.freeze([
     "000089_codex_oauth_v4_v5_staged_compatibility",
     "bd35157bc11c84dd181ba7f2edf589503d75cb359c12e9a93bf4a884f94c9db7",
   ],
+  [
+    "000089_workflow_provisioning_writer_quiescence",
+    "92496088bff5e074c19a74a5a9dacdc38cb8794fac0abec605121eb3b61b29f8",
+  ],
+  [
+    "000090_workflow_provisioning_attempt_authority",
+    "ca3fbbdc19b72ac75c0b31a5ddae887028191ec8c333b769853fc88f2cf37a49",
+  ],
+  [
+    "000091_workflow_provisioning_artifact_and_inventory",
+    "086a7e2a38e1c3fa67ba44edcdac198af46327fd380eaeb2d13849ac6d22a562",
+  ],
+  [
+    "000096_hosted_pool_public_repository_eligibility",
+    "d1b49b764f406004227f3af9e23e3a4b36268b73d76f8e7b19828d508d8c8826",
+  ],
 ] as const).map(([name, checksum]) =>
   Object.freeze({ migrationName: name, migrationSqlSha256: checksum }),
 );
@@ -177,14 +193,14 @@ const canonicalReleaseMigrationPostCatalogDigest = (() => {
 
 export const canonicalReleaseMigrationArtifact = Object.freeze({
   migrationArtifactDigest:
-    "sha256:706f21ce004aecbdaba32dac7af9f3a266534b638f2daf906e7a26630b0111b7",
+    "sha256:d73617e2645fe2796f784c024a826a57343f20e7ea66187ec3dc0fd6c5a4d7ca",
   preManifestIdentity:
     "sha256:c0ab0520ee922e695b2954f0a0af81ffd0ad6fb57f41ec3ddc124fe7c8a781eb",
   orderedPendingEntriesSha256: deriveOrderedPendingEntriesSha256(
     canonicalReleaseMigrationEntries,
   ),
   migrationBundleSha256:
-    "sha256:6438ef7b8dd4d753a58cfc05bf100cfe6e1a7ed077cc5abcbec9b7cbba565a70",
+    "sha256:2438821c79ae824a083147a750867a0eb876c0632b0e6afe4cce99e0bba24e22",
   postManifestIdentity: canonicalReleaseMigrationPostManifestIdentity,
   postCatalogDigest: canonicalReleaseMigrationPostCatalogDigest,
 });

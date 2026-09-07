@@ -9,6 +9,8 @@ type RequestCall = {
 
 class FakeRequester {
   public readonly calls: RequestCall[] = [];
+  private readonly files = new Map<string, string | null>();
+  private setupBranch: string | null = null;
   private contentReadCount = 0;
   private pullReadCount = 0;
   private putFailureConsumed = false;
@@ -46,6 +48,8 @@ class FakeRequester {
 
     if (route === "GET /repos/{owner}/{repo}/git/ref/{ref}") {
       const branch = String(parameters?.ref ?? "").replace(/^heads\//, "");
+      if (branch === this.setupBranch)
+        return { data: { object: { sha: "b".repeat(40) } } };
       const existingBranches = this.options.existingBranches ?? ["main"];
       if (!existingBranches.includes(branch)) {
         throw Object.assign(new Error("not found"), { status: 404 });
@@ -57,6 +61,7 @@ class FakeRequester {
         /^refs\/heads\//,
         "",
       );
+      this.setupBranch = branch;
       const existingBranches = this.options.existingBranches ?? ["main"];
       if (existingBranches.includes(branch)) {
         throw Object.assign(new Error("reference already exists"), {
@@ -69,7 +74,12 @@ class FakeRequester {
       return { data: {} };
     }
     if (route === "GET /repos/{owner}/{repo}/contents/{path}") {
-      const existingWorkflowYaml = this.nextExistingWorkflowYaml();
+      const path = String(parameters?.path);
+      const existingWorkflowYaml =
+        parameters?.ref === "b".repeat(40) && this.files.has(path)
+          ? (this.files.get(path) ?? null)
+          : this.nextExistingWorkflowYaml();
+      this.files.set(path, existingWorkflowYaml);
       if (existingWorkflowYaml === null) {
         throw Object.assign(new Error("not found"), { status: 404 });
       }
@@ -89,9 +99,14 @@ class FakeRequester {
           status: this.options.failPutOnceStatus,
         });
       }
+      this.files.set(
+        String(parameters?.path),
+        Buffer.from(String(parameters?.content), "base64").toString(),
+      );
       return { data: {} };
     }
     if (route === "DELETE /repos/{owner}/{repo}/contents/{path}") {
+      this.files.set(String(parameters?.path), null);
       return { data: {} };
     }
     if (route === "GET /repos/{owner}/{repo}/pulls") {
@@ -113,9 +128,12 @@ class FakeRequester {
         });
       }
       return {
-        data: this.options.postPullRequest ?? {
-          html_url: "https://github.com/777genius/example/pull/11",
-          number: 11,
+        data: {
+          head: { sha: "b".repeat(40) },
+          ...(this.options.postPullRequest ?? {
+            html_url: "https://github.com/777genius/example/pull/11",
+            number: 11,
+          }),
         },
       };
     }
@@ -136,6 +154,7 @@ class FakeRequester {
         data: {
           html_url: `https://github.com/777genius/example/pull/${pullNumber}`,
           number: pullNumber,
+          head: { sha: "b".repeat(40) },
         },
       };
     }
@@ -524,7 +543,7 @@ describe("OctokitWorkflowSetupGateway", () => {
       requester.calls.filter(
         (call) => call.route === "GET /repos/{owner}/{repo}/contents/{path}",
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     expect(
       requester.calls.filter(
         (call) => call.route === "PUT /repos/{owner}/{repo}/contents/{path}",

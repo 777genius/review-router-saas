@@ -127,7 +127,9 @@ export class PrismaHostedCodexRelayAuthorization implements HostedCodexRelayAuth
       binding.repository.githubRepositoryId === null ||
       binding.repository.installation === null ||
       binding.repository.installation.status !== "active" ||
-      !["private", "internal"].includes(binding.repository.visibility) ||
+      !["public", "private", "internal"].includes(
+        binding.repository.visibility,
+      ) ||
       !accountUsable
     )
       throw new Error("hosted_grant_authority_mismatch");
@@ -347,7 +349,9 @@ export class FetchHostedCodexStreamingRelay implements HostedCodexStreamingRelay
         accountId = await this.switchToBackup(
           input.authorization,
           failure,
-          null,
+          failure === "rate_limited"
+            ? new Date(this.now().getTime() + 15 * 60_000)
+            : null,
         );
         failedOver = true;
         continue;

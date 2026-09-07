@@ -4205,17 +4205,17 @@ describe("hosted pool production adapters on disposable PostgreSQL 17", () => {
     );
 
     await prisma.$executeRawUnsafe(
-      `UPDATE "RepositoryConnection" SET "visibility"='public' WHERE "id"='${repository}'`,
+      `UPDATE "RepositoryConnection" SET "selected"=false WHERE "id"='${repository}'`,
     );
     try {
       await expect(
-        directPrepare({ ...base, mintId: `${base.mintId}-public` }),
+        directPrepare({ ...base, mintId: `${base.mintId}-unselected` }),
       ).rejects.toThrow(
         "hosted_codex_comment_token_mint_insert_authority_invalid",
       );
     } finally {
       await prisma.$executeRawUnsafe(
-        `UPDATE "RepositoryConnection" SET "visibility"='private' WHERE "id"='${repository}'`,
+        `UPDATE "RepositoryConnection" SET "selected"=true WHERE "id"='${repository}'`,
       );
     }
 

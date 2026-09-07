@@ -124,16 +124,28 @@ export type HostedPoolGitHubRequestPort = Readonly<{
   ): Promise<unknown>;
 }>;
 
+export type HostedPoolLifecycleEvidence = Readonly<{
+  threadId: string;
+  resolve: boolean;
+  changed: boolean;
+}>;
+
 export type HostedPoolPublicationEvidence = Readonly<{
+  lifecycleThreads?: readonly HostedPoolLifecycleEvidence[];
   appBotPublicationCount: number;
   nonAppBotPublicationCount: number;
   publicationObjects: readonly HostedPoolPublicationObjectEvidence[];
 }>;
 
 export type HostedPoolPublicationObjectEvidence = Readonly<{
-  kind: "issue_comment" | "review_comment" | "review";
+  kind: "issue_comment" | "review_comment" | "review" | "check_run";
   externalObjectId: string;
   bodyHash: string;
   authorLogin: string;
   publishedAt: string;
+  headSha?: string;
+  state?: string;
+  parentReviewId?: string;
+  placementHash?: string;
+  submitHash?: string;
 }>;

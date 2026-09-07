@@ -67,6 +67,7 @@ export function safeDashboardErrorCode(error: unknown): string {
       "workflow_provisioning_disabled",
       "hosted_pool_feature_disabled",
       "hosted_pool_private_repository_required",
+      "hosted_pool_repository_visibility_ineligible",
       "hosted_pool_binding_revision_conflict",
       "hosted_default_pool_not_found",
       "hosted_account_not_found",

@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   assertReleaseMigrationTransition,
+  assertReleaseMigrationTransitionIntegrity,
   assertReleaseMigrationObservation,
   canonicalReleaseMigrationArtifact,
   canonicalReleaseMigrationEntries,
@@ -19,6 +20,14 @@ import {
   liveV70V89CatalogProjectionRoutines,
 } from "../adapters/live-v70-v72-catalog-digest.mjs";
 
+import { canonicalPrismaMigrationNames } from "../../../../../scripts/lib/canonical-prisma-migration-catalog.mjs";
+import {
+  assertRenderSchemaHandoffCatalog,
+  readRenderSchemaHandoffCatalog,
+  readReviewedRenderManagedContract,
+  renderManagedMigrationPhases,
+} from "../../../../../scripts/lib/render-schema-handoff-policy.mjs";
+
 const migrationRoot = "packages/platform/db/prisma/migrations";
 const sha256 = (value: string | Buffer) =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -33,6 +42,29 @@ const canonicalJson = (value: unknown): string => {
 };
 
 describe("canonical release migration transition", () => {
+  it("pins SQL96 and the exact canonical96 identities without changing the pre-manifest", () => {
+    expect(canonicalReleaseMigrationEntries).toHaveLength(20);
+    expect(canonicalReleaseMigrationEntries.at(-1)).toEqual({
+      migrationName: "000096_hosted_pool_public_repository_eligibility",
+      migrationSqlSha256:
+        "d1b49b764f406004227f3af9e23e3a4b36268b73d76f8e7b19828d508d8c8826",
+    });
+    const names = canonicalReleaseMigrationEntries.map(
+      (entry) => entry.migrationName,
+    );
+    expect(names).toEqual([...new Set(names)].sort());
+    expect(canonicalReleaseMigrationArtifact).toMatchObject({
+      preManifestIdentity:
+        "sha256:c0ab0520ee922e695b2954f0a0af81ffd0ad6fb57f41ec3ddc124fe7c8a781eb",
+      migrationArtifactDigest:
+        "sha256:d73617e2645fe2796f784c024a826a57343f20e7ea66187ec3dc0fd6c5a4d7ca",
+      migrationBundleSha256:
+        "sha256:2438821c79ae824a083147a750867a0eb876c0632b0e6afe4cce99e0bba24e22",
+      postManifestIdentity:
+        "sha256:5faad7059a2f57055086dd1571e87706c261a486e8952334401f1d91cc41c97b",
+    });
+  });
+
   it("is generated from the exact checked-in migration SQL bytes", () => {
     const entries = canonicalReleaseMigrationEntries.map((entry) => {
       const bytes = readFileSync(
@@ -55,6 +87,64 @@ describe("canonical release migration transition", () => {
     });
     expect(sha256(Buffer.concat(framed))).toBe(
       canonicalReleaseMigrationArtifact.migrationBundleSha256,
+    );
+  });
+
+  it("keeps canonical96 checkout admission separate from managed92 authority", () => {
+    type Row = { migrationName: string; checksum: string };
+    const names: readonly string[] = canonicalPrismaMigrationNames;
+    const full = names.map((migrationName) => ({
+      migrationName,
+      checksum: sha256(
+        readFileSync(`${migrationRoot}/${migrationName}/migration.sql`),
+      ).slice(7),
+    }));
+    const manifest = (rows: readonly Row[]) =>
+      sha256(
+        rows.map((row) => `${row.migrationName}:${row.checksum}`).join(","),
+      );
+    const managed: readonly Row[] = readRenderSchemaHandoffCatalog();
+    expect(full).toHaveLength(96);
+    expect(manifest(full)).toBe(canonicalReleaseMigrationPostManifestIdentity);
+    expect(full.slice(0, 92)).toEqual(managed);
+    expect(full.slice(-4)).toEqual(
+      canonicalReleaseMigrationEntries
+        .slice(-4)
+        .map(({ migrationName, migrationSqlSha256: checksum }) => ({
+          migrationName,
+          checksum,
+        })),
+    );
+    expect(managed).toHaveLength(92);
+    expect(() => assertRenderSchemaHandoffCatalog(managed)).not.toThrow();
+    expect(() => assertRenderSchemaHandoffCatalog(full)).toThrow(
+      "migration_catalog",
+    );
+    for (const phase of [
+      "managed-retained-upgrade",
+      "managed-schema-handoff",
+    ] as const) {
+      const contract = renderManagedMigrationPhases[phase];
+      expect(manifest(managed.slice(0, contract.baselineCount))).toBe(
+        contract.baselineManifest,
+      );
+      expect(manifest(managed.slice(0, contract.targetCount))).toBe(
+        contract.targetManifest,
+      );
+      expect(() => readReviewedRenderManagedContract(phase)).toThrow(
+        "managed_independent_review_missing",
+      );
+    }
+    expect(canonicalReleaseMigrationArtifact.preManifestIdentity).not.toBe(
+      manifest(managed.slice(0, 76)),
+    );
+    expect(canonicalReleaseMigrationEntries).toHaveLength(20);
+    expect(canonicalReleaseMigrationResumeManifestIdentities).toEqual([
+      canonicalReleaseMigrationArtifact.preManifestIdentity,
+      manifest(full),
+    ]);
+    expect(canonicalReleaseMigrationResumeManifestIdentities).not.toContain(
+      manifest(managed),
     );
   });
 
@@ -90,9 +180,10 @@ describe("canonical release migration transition", () => {
       roots[0],
       roots.at(-1),
     ]);
-    expect(roots.slice(1, -1)).not.toContain(
-      canonicalReleaseMigrationResumeManifestIdentities[0],
-    );
+    for (const partialRoot of roots.slice(1, -1))
+      expect(canonicalReleaseMigrationResumeManifestIdentities).not.toContain(
+        partialRoot,
+      );
   });
 
   it("rejects any worker alteration of a server-trusted transition", () => {
@@ -111,13 +202,65 @@ describe("canonical release migration transition", () => {
     ).toThrow("release_migration_transition_untrusted");
   });
 
+  it.each([
+    "reordered",
+    "checksum drift",
+    "SQL96 omitted",
+    "duplicate",
+    "unknown SQL",
+    "newer SQL",
+  ])("rejects %s even when transport digests are recomputed", (alteration) => {
+    const trusted = createReleaseMigrationTransition({
+      commitSha: "d".repeat(40),
+      releaseImageDigest: `sha256:${"e".repeat(64)}`,
+    });
+    const entries = [...trusted.orderedMigrationEntries];
+    const sql96 = entries.pop()!;
+    switch (alteration) {
+      case "reordered":
+        entries.unshift(sql96);
+        break;
+      case "checksum drift":
+        entries.push({ ...sql96, migrationSqlSha256: "f".repeat(64) });
+        break;
+      case "SQL96 omitted":
+        break;
+      case "duplicate":
+        entries.push(sql96, sql96);
+        break;
+      case "unknown SQL":
+        entries.push({ ...sql96, migrationName: "000096_unknown_sql" });
+        break;
+      case "newer SQL":
+        entries.push(sql96, { ...sql96, migrationName: "000097_unknown_sql" });
+        break;
+    }
+    const unsigned = {
+      ...trusted,
+      orderedMigrationEntries: entries,
+      orderedPendingEntriesSha256: deriveOrderedPendingEntriesSha256(entries),
+      migrationArtifactDigest: sha256(canonicalJson(entries)),
+    };
+    Reflect.deleteProperty(unsigned, "transitionSha256");
+    const altered = {
+      ...unsigned,
+      transitionSha256: sha256(canonicalJson(unsigned)),
+    };
+    expect(() =>
+      assertReleaseMigrationTransitionIntegrity(altered),
+    ).not.toThrow();
+    expect(() => assertReleaseMigrationTransition(altered, trusted)).toThrow(
+      "release_migration_transition_untrusted",
+    );
+  });
+
   it("derives the ordered-pending digest and rejects an independently supplied value", () => {
     const trusted = createReleaseMigrationTransition({
       commitSha: "d".repeat(40),
       releaseImageDigest: `sha256:${"e".repeat(64)}`,
     });
     expect(trusted.orderedPendingEntriesSha256).toBe(
-      "sha256:b2d48e4647f53f3da00ef06bcd917eb8dfc46523ed05e01aa496305014126dbd",
+      "sha256:12d2486941e14109803908a21c3da47d3a241eaea88e6e3bf5e7944d1471f73a",
     );
     expect(trusted.orderedPendingEntriesSha256).toBe(
       deriveOrderedPendingEntriesSha256(trusted.orderedMigrationEntries),

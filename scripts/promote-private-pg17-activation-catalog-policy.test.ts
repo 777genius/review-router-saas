@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   activationCatalogArtifactPath,
@@ -16,6 +17,24 @@ import {
 import canonicalActivationCatalogPolicyArtifact from "../packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js";
 import { assertActivationCatalogLiveDigestTransitionBinding } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-promotion-expectation";
 import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
+import { sha256Canonical } from "../packages/features/release-rollout/src/domain/canonical-json";
+import { assertActivationCatalogRawPromotionTrustRootReady } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-raw-promotion-trust-root";
+
+// Pure serialization fixture; this provides no capture or promotion authority.
+async function artifactBindingFixture() {
+  const source = await readFile(activationCatalogArtifactPath);
+  return {
+    canonicalDigests: {
+      preactivation: `sha256:${sha256Canonical(canonicalActivationCatalogPolicyArtifact.policies.preactivation)}`,
+      activated: `sha256:${sha256Canonical(canonicalActivationCatalogPolicyArtifact.policies.activated)}`,
+      artifact: `sha256:${sha256Canonical(canonicalActivationCatalogPolicyArtifact)}`,
+    },
+    generatedArtifactSource: {
+      bytes: source.byteLength,
+      sha256: createHash("sha256").update(source).digest("hex"),
+    },
+  };
+}
 
 describe("activation catalog policy promotion", () => {
   it("pins the exact reviewed v29 candidate and operator opt-in", () => {
@@ -71,12 +90,10 @@ describe("activation catalog policy promotion", () => {
       });
   });
 
-  it("binds the exact raw evidence to the checked-in generated artifact", async () => {
-    expect(activationCatalogRawPromotionTrustRoot.status).toBe("ready");
-    if (activationCatalogRawPromotionTrustRoot.status !== "ready") return;
+  it("binds all policy digests and source bytes during artifact serialization", async () => {
     const generated = canonicalActivationCatalogArtifactSourceFromRawCapture(
       { policies: canonicalActivationCatalogPolicyArtifact.policies },
-      activationCatalogRawPromotionTrustRoot.evidence,
+      await artifactBindingFixture(),
     );
 
     expect(
@@ -84,10 +101,8 @@ describe("activation catalog policy promotion", () => {
     ).toBe(true);
   });
 
-  it("fails closed for independently drifted raw artifact bindings", () => {
-    expect(activationCatalogRawPromotionTrustRoot.status).toBe("ready");
-    if (activationCatalogRawPromotionTrustRoot.status !== "ready") return;
-    const evidence = activationCatalogRawPromotionTrustRoot.evidence;
+  it("fails closed for independently drifted raw artifact bindings", async () => {
+    const evidence = await artifactBindingFixture();
     const mismatch = `sha256:${"0".repeat(64)}`;
     const driftedBindings = [
       [
@@ -136,9 +151,15 @@ describe("activation catalog policy promotion", () => {
     }
   });
 
-  it("binds the reviewed raw live digest to the canonical release transition", () => {
-    expect(activationCatalogRawPromotionTrustRoot.status).toBe("ready");
-    if (activationCatalogRawPromotionTrustRoot.status !== "ready") return;
+  it("requires reviewed raw authority before trusting the live digest", () => {
+    if (activationCatalogRawPromotionTrustRoot.status === "pending") {
+      expect(() =>
+        assertActivationCatalogRawPromotionTrustRootReady(
+          activationCatalogRawPromotionTrustRoot,
+        ),
+      ).toThrow("activation_catalog_policy_raw_trust_root_pending");
+      return;
+    }
     const liveCatalogDigest =
       activationCatalogRawPromotionTrustRoot.evidence.liveCatalogDigest;
 

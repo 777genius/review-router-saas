@@ -1,6 +1,7 @@
 export type WorkflowSetupPullRequest = {
   readonly url: string;
   readonly number: number;
+  readonly headSha: string;
   readonly branch: string;
   readonly baseBranch?: string;
 };

@@ -16,6 +16,8 @@ import {
 } from "@reviewrouter/features-workflow-provisioning";
 import {
   HostedCodexGrantIssuer,
+  assertHostedPoolPullRequestAuthority,
+  type HostedPoolPullRequestAuthority,
   type HostedCodexGrantAdmission,
 } from "./hosted-codex-grant-composition.js";
 
@@ -53,6 +55,7 @@ describe("HostedCodexGrantIssuer", () => {
       'api_url: "https://attacker.example/collect"',
     );
     const fixture = createFixture({
+      visibility: "public",
       workflowContents: exfiltratingCaller,
       workflowSourceBlobSha: "9".repeat(40),
     });
@@ -113,8 +116,40 @@ describe("HostedCodexGrantIssuer", () => {
     );
   });
 
-  it("rejects public repositories before consuming replay state or issuing grants", async () => {
-    const fixture = createFixture({ visibility: "public" as never });
+  it.each(["public", "private", "internal"] as const)(
+    "issues a grant and requests initial publication authority for %s",
+    async (visibility) => {
+      const fixture = createFixture(
+        { visibility },
+        { repository_visibility: visibility },
+      );
+      await expect(fixture.issuer.issue(request())).resolves.toMatchObject({
+        protocolVersion: 1,
+      });
+      expect(fixture.insert).toHaveBeenCalledOnce();
+      expect(fixture.commentTokens.issueInitial).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    { selected: false },
+    { installationStatus: "suspended" },
+    { installationStatus: "deleted" },
+    { githubRepositoryId: "999" },
+    { repository: "other/repository" },
+  ])(
+    "public visibility preserves current repository authority: %j",
+    async (authority) => {
+      const fixture = createFixture({ visibility: "public", ...authority });
+      await expect(fixture.issuer.issue(request())).rejects.toThrow();
+      expect(fixture.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+      expect(fixture.insert).not.toHaveBeenCalled();
+      expect(fixture.commentTokens.issueInitial).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects unknown visibility before consuming replay state or issuing grants", async () => {
+    const fixture = createFixture({ visibility: "unknown" as never });
     await expect(fixture.issuer.issue(request())).rejects.toThrow(
       "hosted_repository_visibility_ineligible",
     );
@@ -123,7 +158,7 @@ describe("HostedCodexGrantIssuer", () => {
   });
 
   it("rejects stale client binding revisions before consuming OIDC", async () => {
-    const fixture = createFixture();
+    const fixture = createFixture({ visibility: "public" });
     await expect(
       fixture.issuer.issue({ ...request(), bindingVersion: 6 }),
     ).rejects.toThrow("hosted_grant_binding_mismatch");
@@ -131,7 +166,10 @@ describe("HostedCodexGrantIssuer", () => {
   });
 
   it("rejects pull_request_target claims before consuming OIDC", async () => {
-    const fixture = createFixture({}, { event_name: "pull_request_target" });
+    const fixture = createFixture(
+      { visibility: "public" },
+      { event_name: "pull_request_target" },
+    );
     await expect(fixture.issuer.issue(request())).rejects.toThrow(
       "hosted_workflow_claims_mismatch",
     );
@@ -455,3 +493,47 @@ function claims() {
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
+
+describe("server-observed Hosted pull request authority", () => {
+  const admitted = {
+    githubRepositoryId: "123",
+    pullRequestNumber: 42,
+    reviewHeadSha,
+  };
+  const observed: HostedPoolPullRequestAuthority = {
+    number: 42,
+    state: "open",
+    baseRepositoryId: "123",
+    headRepositoryId: "123",
+    headSha: reviewHeadSha,
+  };
+
+  it("accepts the exact same-repository admitted head", () => {
+    expect(() =>
+      assertHostedPoolPullRequestAuthority({
+        ...admitted,
+        pullRequest: observed,
+      }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    ["external fork", { headRepositoryId: "999" }],
+    ["deleted head repository", { headRepositoryId: null }],
+    ["wrong base repository", { baseRepositoryId: "999" }],
+    ["wrong PR", { number: 43 }],
+    ["closed PR", { state: "closed" }],
+    ["head advanced", { headSha: "9".repeat(40) }],
+    ["missing head", { headSha: "" }],
+  ] as const)("denies %s even with a forged client check", (_label, patch) => {
+    // Extra client-supplied flags are deliberately not part of server authority.
+    const forgedRequest = { sameRepository: true, fork: false };
+    expect(() =>
+      assertHostedPoolPullRequestAuthority({
+        ...forgedRequest,
+        ...admitted,
+        pullRequest: { ...observed, ...patch },
+      }),
+    ).toThrow("hosted_pull_request_authority_mismatch");
+  });
+});

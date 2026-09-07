@@ -11,12 +11,20 @@ import {
   canonicalHostedPoolReusableWorkflowIdentity,
   type HostedPoolWorkflowSourceAttestation,
 } from "@reviewrouter/features-workflow-provisioning";
-import type {
-  HostedCodexGrantAdmission,
-  HostedCodexGrantAdmissionPort,
+import {
+  assertHostedPoolPullRequestAuthority,
+  type HostedPoolPullRequestAuthority,
+  type HostedCodexGrantAdmission,
+  type HostedCodexGrantAdmissionPort,
 } from "./hosted-codex-grant-composition.js";
 
 export interface HostedWorkflowSourceReaderPort {
+  readPullRequestAuthority(input: {
+    readonly githubInstallationId: string;
+    readonly owner: string;
+    readonly repository: string;
+    readonly pullRequestNumber: number;
+  }): Promise<HostedPoolPullRequestAuthority>;
   readWorkflowAtRevision(input: {
     readonly githubInstallationId: string;
     readonly owner: string;
@@ -169,6 +177,19 @@ export class PrismaHostedCodexGrantAdmission implements HostedCodexGrantAdmissio
       reviewRevisionHash: reviewRequest.reviewRevisionHash,
     });
     const { headSha: reviewHeadSha, reviewRevisionHash } = reviewIdentity;
+    const pullRequest = await this.workflowSources.readPullRequestAuthority({
+      githubInstallationId:
+        repository.installation.githubInstallationId.toString(),
+      owner: repository.owner,
+      repository: repository.name,
+      pullRequestNumber: reviewRequest.pullRequestNumber,
+    });
+    assertHostedPoolPullRequestAuthority({
+      githubRepositoryId: repository.githubRepositoryId.toString(),
+      pullRequestNumber: reviewRequest.pullRequestNumber,
+      reviewHeadSha,
+      pullRequest,
+    });
     const callerRevisionSha = requireCommitSha(
       input.claims.workflow_sha ?? "",
       "hosted_workflow_caller_revision_invalid",
@@ -367,8 +388,10 @@ function parseAttestation(
   };
 }
 
-function parseEligibleVisibility(value: string): "private" | "internal" {
-  if (value !== "private" && value !== "internal") {
+function parseEligibleVisibility(
+  value: string,
+): "public" | "private" | "internal" {
+  if (value !== "public" && value !== "private" && value !== "internal") {
     throw new Error("hosted_repository_visibility_ineligible");
   }
   return value;

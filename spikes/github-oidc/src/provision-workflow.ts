@@ -58,12 +58,19 @@ try {
       owner: true,
       name: true,
       defaultBranch: true,
+      installationId: true,
     },
   });
 
   if (!repository) {
     throw new Error(
       `Repository ${targetRepo} is not synced. Run spike:github:sync-repositories first.`,
+    );
+  }
+
+  if (!repository.installationId) {
+    throw new Error(
+      `Repository ${targetRepo} is missing its internal installationId`,
     );
   }
 
@@ -76,6 +83,7 @@ try {
   const pullRequest = await provisionReviewRouterWorkflow(
     {
       workspaceId: repository.workspaceId,
+      installationId: repository.installationId,
       repositoryId: repository.id,
       owner: repository.owner,
       name: repository.name,

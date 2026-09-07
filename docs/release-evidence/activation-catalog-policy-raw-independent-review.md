@@ -5,27 +5,41 @@
 - Verdict: **GO**
 - BLOCKER: **0**
 - HIGH: **0**
-- Decision ID: `RR-PR251-RAW-CATALOG-GO-5FCA28E9-DB9DE379-20260902`
-- Reviewed at: `2026-09-02T16:50:10.750Z`
+- Decision ID: `RR-PAIRED143-RAW-GO-FA02CEA6-20260906-R1`
+- Reviewed at: `2026-09-06T18:33:34.926Z`
 
 ## Capture identities
 
-- Base commit: `aa74add1eeca3618ff3bbe141ef4fff2dd8d985c`
-- Audited head: `5fca28e9a3adf42632640fba7926caebf0af6ea2`
-- Audited tree: `b857e2c14f61da84e355b1cecb323e101bad54cc`
-- Workflow run: `33656389299`
+- Base commit: `ededadfd69ceb86097e1f434914954c657de9382`
+- Audited head: `fa02cea69d497725054b2af6bc8a8b919d5ce1ea`
+- Audited tree: `dd5f625a4fadbfc88c7b6d22173f3547862cfbaa`
+- Workflow run: `34051546658`
 - Run attempt: `1`
-- Job: `100336203703`
-- Artifact ID: `9857015173`
-- Artifact name: `activation-catalog-policy-5fca28e9a3adf42632640fba7926caebf0af6ea2-1`
+- Job: `101535957676`
+- Artifact ID: `9994718614`
+- Artifact name: `activation-catalog-policy-fa02cea69d497725054b2af6bc8a8b919d5ce1ea-1`
 
 ## Raw captures
 
 | Selection | Label | Bytes | Raw SHA-256 |
-| --- | --- | ---: | --- |
-| selected | `activation-catalog-policy-candidate-1.json` | `2677685` | `db9de379250974c233848f62f0ff048d6bc0a9fe15129a3391dc7862655f3f23` |
-| corroborating | `activation-catalog-policy-candidate-2.json` | `2677685` | `95da734b82acf0ad008b696f33cacbe2ce9e00ef97b22e99b873abf4e5b023dd` |
+| --- | --- | --- | --- |
+| selected | `activation-catalog-policy-candidate-1.json` | `2681152` | `fb4efd511bfc2986c2419fbc25f261bad4b66443fc65ac0dd710179cd730c48a` |
+| corroborating | `activation-catalog-policy-candidate-2.json` | `2681152` | `1720e3e3e729ef5559d23a05fa2fc9c27272896f221d70f6cfd75c9396a19976` |
 
-Capture-set digest: `sha256:53abe3656d28ce61a8c1c8d9d2dc874e99c70a225698a28f30243d738062f72a`
+Capture-set digest: `sha256:5ef912ae37782533a52fd78c4f523a59828670ecd6be5b8fda48b686881543e8`
 Source PostgreSQL image: `postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60`
 Target PostgreSQL image: `postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4`
+
+I independently hashed the 223082-byte archive to `6f2e438991147eb85ca64f4107c088c16cdf9989ab2000bef4712a7c5473dc3e`, matching supplied artifact metadata. Its only two members equal the raw files byte-for-byte. Supplied run/job/artifact metadata bind this head to attempt 1; job 101535957676 and capture/upload steps 8/9 succeeded. The run snapshot remains in_progress with null conclusion; full disposable cutover and release-gate evidence steps were skipped. This bounded GO does not certify overall CI, full cutover or production.
+
+Independent recursive comparison found exactly four differences: disposable identities `rr-disposable-34051546658-1-a` / `rr-disposable-34051546658-1-b`; configured identities `target.internal:32769/review_router` / `target.internal:32772/review_router`; system identifiers `7682489885552324647` / `7682490046664749093`; and custody evidence hashes `sha256:5ce9cc7465aea37cbfd80d52e3c61bdea5516293078a47ebcfdef38ce60c8be3` / `sha256:137b1dcd6f1864145025799b1db87b999c44883ffaafe590ecb874e32ea09871`. Native pair validation verified both self-hashes and every remaining invariant. The all-c recovery witness is a disposable fixture, not production recovery evidence.
+
+Native Git custody and capture-surface validators passed with exact audited checkout/tree enforcement. Both the outer baseline and accepted source `8d23292b8a046a967350b15aa6f828ce0cbae9a3` are ancestors. The complete declared capture surface differs from that source only in four CI environment pin lines. All 96 migration SQL files, projection/transition sources, production normalization and capture harness are unchanged. SQL96 hashes to `d1b49b764f406004227f3af9e23e3a4b36268b73d76f8e7b19828d508d8c8826`.
+
+Both complete new policy objects equal both accepted raw policies, including every field. I verified the previous archive/raw hashes and applied the native externally bound pair validator against the committed trust root. The native review-evidence validator verified the committed accepted report and completed runtime, including exact output-summary materialization. This supports reuse of RR-CONNECT-RAW-GO-8D23292B-20260906-R1's SQL96 guard-preservation, effective-permission and phase-ACL analysis without repeating the historical semantic audit.
+
+Both new captures passed production normalization for both phases. The native pure renderer verified canonical preactivation `sha256:a0a2d7bfbf361012c06c2435f111fd677ae2a07bf9bca2ce60dc5e00067da4c5`, activated `sha256:6da321706c77cdaf15344d32209ffc5b936dae3630522a6e078c7f1336bf2e2a`, and artifact `sha256:abda62f9316c446711a3b6c350c7eeb89660c50837dbcdaed97d41bbd44fb590`. Generated source is 2680528 bytes with SHA-256 `d6ff4e160988fa4f08c26c7450245de9ad49601a1c6673a29693f9d63edbb52e`. Invariant projection is `sha256:23f865f463e6c7fc249f73ed5af13d62af11f528066e9637d7bc3c0c6d973b94`, observed catalog `sha256:4413b55476ac02968f5d6f05ca698549e2904dd98591bc706fc5c0b21fbbd2f8`, and postmanifest `sha256:5faad7059a2f57055086dd1571e87706c261a486e8952334401f1d91cc41c97b`.
+
+CI lines 64–67 consistently pin paired checkout and hosted-pool verification to Action `ad9ff93b18583f260f7c9f883c3e405df09d6236`, tag `v1.0.143`, and dist SHA-256 `50ab18a77d8cfacab4048a21fdc2c98d4868feb1008fff03ac2c332d4a4d0ac9`. Lines 621–652 validate the immutable ref, check out that SHA, verify HEAD, and invoke the native tuple verifier against that checkout with a step-scoped rotating-ref override. The verifier checks clean checkout, both tag resolutions and actual dist bytes. The global rotating ref at line 57 remains `777genius/review-router@08f6bc1481fd284fa82adfa47cda05c76b161b00`; its other consumers retain their existing scope. These pins change no SQL authority. Release run 34051161353 success, the separate exact-Action-checkout verification and version-only Action review are supplied upstream evidence; no Action checkout or release-run artifact was available here to independently repeat those proofs.
+
+I constructed the capture evidence from actual metadata, raw hashes, workflow image pins and this decision; native evidence and externally bound pair validators accepted it. Capture-set hashing excludes exactly kind, version and captureSetSha256; reviewedAt is recorded separately. The actual markdown validator accepted this report in memory. Validation used read-only native Node/source and Python archive inspection; Node needed in-memory extension/JSON loading hooks, with no validator logic changes. No installs, network, database, deployment, code/trust-root edits or additional workers were used. Both worktrees remained clean and outer HEAD stayed at the requested baseline. New runtime receipt creation and final materialization remain the runtime's responsibility.

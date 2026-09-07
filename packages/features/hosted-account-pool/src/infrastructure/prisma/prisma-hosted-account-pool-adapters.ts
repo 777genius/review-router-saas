@@ -782,7 +782,7 @@ async function isEligibleRepository(
       provider: "github",
       selected: true,
       archived: false,
-      visibility: { in: ["private", "internal"] },
+      visibility: { in: ["public", "private", "internal"] },
       installation: {
         is: { workspaceId: binding.workspaceId, status: "active" },
       },

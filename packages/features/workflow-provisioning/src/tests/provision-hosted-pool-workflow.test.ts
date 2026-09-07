@@ -8,6 +8,7 @@ import {
 
 const target = {
   workspaceId: "workspace-1",
+  installationId: "installation-1",
   repositoryId: "repo-1",
   owner: "777genius",
   name: "example",
@@ -24,6 +25,7 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
       async (input: WorkflowSetupGatewayInput) => ({
         url: "https://github.com/777genius/example/pull/7",
         number: 7,
+        headSha: "b".repeat(40),
         branch: input.setupBranch,
         baseBranch: input.baseBranch,
       }),
@@ -31,6 +33,8 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
     const markSetupPullRequestOpen = vi.fn(async () => undefined);
     await provisionHostedPoolRepositoryWorkflow(
       {
+        workspaceId: "workspace-1",
+        installationId: "installation-1",
         repositoryId: "repo-1",
         actionRef: `777genius/review-router@${"a".repeat(40)}`,
         apiUrl: "https://api.reviewrouter.test",
@@ -44,6 +48,12 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
         },
         setupGateway: { createOrUpdateSetupPullRequest },
         provisioning: {
+          beginAttempt: vi.fn(async (record) => ({
+            ...record,
+            attemptId: "attempt-1",
+            branch: `${record.branch}/attempt-1`,
+            revision: 0,
+          })),
           markSetupPullRequestOpen,
           markFailed: vi.fn(async () => undefined),
         },
@@ -54,7 +64,7 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
     if (!request) throw new Error("setup request missing");
     expect(request).toMatchObject({
       baseBranch: "main",
-      setupBranch: "reviewrouter/setup",
+      setupBranch: "reviewrouter/setup/attempt-1",
       setupMode: "hosted_pool",
     });
     const hosted = request.workflowFiles.find(
@@ -88,6 +98,7 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
       async (input: WorkflowSetupGatewayInput) => ({
         url: "https://github.com/777genius/example/pull/8",
         number: 8,
+        headSha: "b".repeat(40),
         branch: input.setupBranch,
         baseBranch: input.baseBranch,
       }),
@@ -95,6 +106,8 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
 
     await provisionHostedPoolRepositoryWorkflow(
       {
+        workspaceId: "workspace-1",
+        installationId: "installation-1",
         repositoryId: "repo-1",
         ...hostedPoolWorkflowV2GoldenOptions,
       },
@@ -104,6 +117,12 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
         },
         setupGateway: { createOrUpdateSetupPullRequest },
         provisioning: {
+          beginAttempt: vi.fn(async (record) => ({
+            ...record,
+            attemptId: "attempt-1",
+            branch: `${record.branch}/attempt-1`,
+            revision: 0,
+          })),
           markSetupPullRequestOpen: vi.fn(async () => undefined),
           markFailed: vi.fn(async () => undefined),
         },
@@ -126,6 +145,8 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
     await expect(
       provisionHostedPoolRepositoryWorkflow(
         {
+          workspaceId: "workspace-1",
+          installationId: "installation-1",
           repositoryId: "repo-1",
           actionRef: `777genius/review-router@${"a".repeat(40)}`,
           apiUrl: "https://api.reviewrouter.test",
@@ -143,6 +164,12 @@ describe("provisionHostedPoolRepositoryWorkflow", () => {
             }),
           },
           provisioning: {
+            beginAttempt: vi.fn(async (record) => ({
+              ...record,
+              attemptId: "attempt-1",
+              branch: `${record.branch}/attempt-1`,
+              revision: 0,
+            })),
             markSetupPullRequestOpen: vi.fn(async () => undefined),
             markFailed,
           },

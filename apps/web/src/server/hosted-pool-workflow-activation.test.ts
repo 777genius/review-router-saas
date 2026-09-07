@@ -120,6 +120,7 @@ function createFixture(finalHead = commitSha, source = workflow) {
     .mockResolvedValueOnce({
       data: {
         type: "file",
+        path: ".github/workflows/reviewrouter-codex.yml",
         encoding: "base64",
         content: Buffer.from(source).toString("base64"),
         sha: blobSha,
@@ -139,6 +140,7 @@ function createFixture(finalHead = commitSha, source = workflow) {
       octokit: { request },
       workspaceId: "workspace-1",
       repositoryId: "repo-1",
+      installationId: "installation-1",
       githubRepositoryId: "1228051727",
       owner: "777genius",
       name: "example",

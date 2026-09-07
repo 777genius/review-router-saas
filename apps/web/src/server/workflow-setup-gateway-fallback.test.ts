@@ -22,6 +22,7 @@ class CapturingGateway implements WorkflowSetupGatewayPort {
       url: "https://github.com/777genius/example/pull/1",
       number: 1,
       branch: input.setupBranch,
+      headSha: "b".repeat(40),
     };
   }
 }
@@ -54,6 +55,7 @@ describe("AppFirstWorkflowSetupGateway", () => {
       url: "https://github.com/777genius/example/pull/1",
       number: 1,
       branch: "reviewrouter/setup",
+      headSha: "b".repeat(40),
     });
 
     expect(primary.calls).toHaveLength(1);

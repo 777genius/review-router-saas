@@ -1,4 +1,7 @@
+import type { WorkflowProvisioningScope } from "./workflow-provisioning-repository-port";
+
 export type WorkflowProvisioningTarget = {
+  readonly installationId: string;
   readonly workspaceId: string;
   readonly repositoryId: string;
   readonly owner: string;
@@ -12,6 +15,6 @@ export type WorkflowProvisioningTarget = {
 
 export interface WorkflowProvisioningTargetPort {
   findWorkflowProvisioningTarget(
-    repositoryId: string,
+    scope: WorkflowProvisioningScope,
   ): Promise<WorkflowProvisioningTarget | null>;
 }
