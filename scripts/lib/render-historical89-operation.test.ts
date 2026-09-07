@@ -192,8 +192,14 @@ describe("historical89 in-place operation", () => {
     };
     const malformedPlans = [
       { ...validPlan, coordinates: undefined },
-      { ...validPlan, coordinates: { epoch: 0, generation: 1, nonce: "0".repeat(32) } },
-      { ...validPlan, coordinates: { epoch: 1, generation: 1, nonce: "not-a-nonce" } },
+      {
+        ...validPlan,
+        coordinates: { epoch: 0, generation: 1, nonce: "0".repeat(32) },
+      },
+      {
+        ...validPlan,
+        coordinates: { epoch: 1, generation: 1, nonce: "not-a-nonce" },
+      },
       { ...validPlan, reviewedTerminalCatalogDigest: "" },
       { ...validPlan, reviewedTerminalCatalogDigest: undefined },
       { ...validPlan, identityDigest: "" },

@@ -879,7 +879,9 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
     pg.query("postgres", "CREATE ROLE rr_foreign_observer LOGIN;", "postgres");
     const foreign = pg.session(db, "rr_foreign_observer");
     try {
-      foreign.write("SELECT 'backend:'||pg_backend_pid();\n\\echo foreign-ready\n");
+      foreign.write(
+        "SELECT 'backend:'||pg_backend_pid();\n\\echo foreign-ready\n",
+      );
       await waitFor(() => foreign.stdout().includes("foreign-ready"));
       const pid = foreign.stdout().match(/backend:(\d+)/u)![1];
       expect(() => pg.query(db, renderHistorical89SessionDrainSql)).toThrow(
@@ -918,7 +920,11 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
       }
     } finally {
       await foreign.terminateAndWait();
-      pg.query("postgres", "DROP ROLE IF EXISTS rr_foreign_observer;", "postgres");
+      pg.query(
+        "postgres",
+        "DROP ROLE IF EXISTS rr_foreign_observer;",
+        "postgres",
+      );
     }
   }, 60_000);
 });
