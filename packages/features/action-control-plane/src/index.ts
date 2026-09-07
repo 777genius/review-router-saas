@@ -76,3 +76,25 @@ export {
   type ForkPublicationFacts,
   type ForkRequest,
 } from "./domain/certified-fork-effect-identity.js";
+export {
+  forkAuthorityHash,
+  prepareForkEffect,
+  transitionForkEffect,
+  type ForkAuthority,
+  type ForkEvidence,
+  type ForkAttempt,
+  type ForkStop,
+  type ForkEffectState,
+  type ForkCommand,
+} from "./domain/certified-fork-effect-state.js";
+export {
+  createForkReviewFromOutcome,
+  createForkOutput,
+  freezeForkInventory,
+  createForkOutcome,
+  type ForkOutput,
+  type ForkDurability,
+  type ForkInventoryEntry,
+  type ForkInventory,
+  type ForkOutcome,
+} from "./domain/certified-fork-effect-outcome.js";
