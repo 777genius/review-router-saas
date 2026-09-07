@@ -86,7 +86,9 @@ export async function validateCurrentCertifiedForkReviewOutput(
   const githubInstallationId = values.githubInstallationId;
   if (
     typeof githubInstallationId !== "string" ||
-    !/^[1-9][0-9]*$/u.test(githubInstallationId)
+    !/^[1-9][0-9]*$/u.test(githubInstallationId) ||
+    !Number.isSafeInteger(Number(githubInstallationId)) ||
+    Number(githubInstallationId) < 1
   ) {
     throw new Error("certified_fork_review_installation_invalid");
   }

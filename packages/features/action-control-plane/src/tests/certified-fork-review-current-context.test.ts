@@ -204,6 +204,55 @@ describe("gateway-backed certified fork current context", () => {
     },
   );
 
+  it("accepts the maximum safe installation ID with one call per entry point", async () => {
+    const g = gateway();
+    const githubInstallationId = String(Number.MAX_SAFE_INTEGER);
+    await expect(
+      prepareCurrentCertifiedForkReview(
+        { ...prepareInput(), githubInstallationId },
+        { gateway: g },
+      ),
+    ).resolves.toEqual(prepare());
+    expect(g.prepareContext).toHaveBeenCalledWith({
+      githubInstallationId,
+      binding: binding(),
+    });
+    calls(g, 1, 0);
+    const input = { ...publishInput(), githubInstallationId };
+    await expect(
+      validateCurrentCertifiedForkReviewOutput(input, { gateway: g }),
+    ).resolves.toEqual(
+      publishCertifiedForkReview(inputWithoutInstallation(input)),
+    );
+    expect(g.assertContextCurrent).toHaveBeenCalledWith({
+      githubInstallationId,
+      binding: binding(),
+      expectedContextHash: input.prepared.contextHash,
+    });
+    calls(g, 1, 1);
+  });
+
+  it.each([String(Number.MAX_SAFE_INTEGER + 1), "9".repeat(400)])(
+    "rejects oversized installation ID %s before any gateway call",
+    async (githubInstallationId) => {
+      const g = gateway();
+      await expect(
+        prepareCurrentCertifiedForkReview(
+          { ...prepareInput(), githubInstallationId },
+          { gateway: g },
+        ),
+      ).rejects.toThrow("certified_fork_review_installation_invalid");
+      calls(g, 0, 0);
+      await expect(
+        validateCurrentCertifiedForkReviewOutput(
+          { ...publishInput(), githubInstallationId },
+          { gateway: g },
+        ),
+      ).rejects.toThrow("certified_fork_review_installation_invalid");
+      calls(g, 0, 0);
+    },
+  );
+
   it("rejects invalid identities and all malformed binding fields locally", async () => {
     const g = gateway();
     const callback = vi.fn((): never => {
