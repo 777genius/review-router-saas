@@ -329,7 +329,26 @@ export function reconcileHistorical89InPlaceOperation(input) {
     fenceHeld,
   } = input;
   const reasons = [];
-  if (!plan || plan.kind !== phase.kind || keysOf(plan.binding) === null)
+  // Validated before any branch is chosen: `resume-same-operation` never
+  // touches coordinates/reviewedTerminalCatalogDigest/identityDigest below,
+  // but they still describe the operation this reconciliation is bound to,
+  // so a malformed plan must fail here regardless of which outcome the
+  // schema/ledger observations would otherwise classify it as.
+  if (
+    !plan ||
+    plan.kind !== phase.kind ||
+    keysOf(plan.binding) === null ||
+    // `plan.coordinates` carries two extra fields beyond the bare
+    // epoch/generation/nonce triple (see `permitCoordinates` above), so this
+    // checks the fields reconciliation actually reads rather than an exact
+    // key set that would drift out of sync with that shape.
+    keysOf(plan.coordinates) === null ||
+    !positive(plan.coordinates.epoch) ||
+    !positive(plan.coordinates.generation) ||
+    !nonceValue(plan.coordinates.nonce) ||
+    !digest(plan.reviewedTerminalCatalogDigest) ||
+    !digest(plan.identityDigest)
+  )
     return fenced(["plan_untrusted"]);
   // A fence that is not still held makes every other observation unusable: the
   // database could have been reopened to writers between the two reads.

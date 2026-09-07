@@ -220,16 +220,40 @@ function projection(sql) {
 
 const connectAclProjection = projection(renderHistorical89ConnectAclSql);
 
-/** Terminate every remaining nonsuperuser backend on this database. */
+/**
+ * Terminate every remaining nonsuperuser backend on this database.
+ *
+ * `pg_terminate_backend` itself requires the caller to hold the privileges of
+ * the target backend's role, or of `pg_signal_backend`, or be a superuser -
+ * the same `has_privs_of_role` test PostgreSQL runs internally, restated here
+ * with `pg_has_role(..., 'USAGE')`. Checking it against every candidate BEFORE
+ * calling `pg_terminate_backend` on any of them turns a mid-drain permission
+ * error - which would leave some backends already terminated and others not -
+ * into a single clear precondition failure with nothing yet touched.
+ */
 export const renderHistorical89SessionDrainSql = `DO $drain$
 DECLARE remaining integer;
 BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_catalog.pg_stat_activity a
+    JOIN pg_catalog.pg_roles r ON r.oid=a.usesysid
+    WHERE a.datname=pg_catalog.current_database()
+      AND a.pid<>pg_catalog.pg_backend_pid() AND NOT r.rolsuper
+      AND NOT pg_catalog.pg_has_role(current_user, r.oid, 'USAGE')
+      AND NOT pg_catalog.pg_has_role(current_user, 'pg_signal_backend', 'USAGE')
+  ) THEN
+    RAISE EXCEPTION 'historical89_terminate_privilege_missing';
+  END IF;
   PERFORM pg_catalog.pg_terminate_backend(a.pid)
   FROM pg_catalog.pg_stat_activity a
   JOIN pg_catalog.pg_roles r ON r.oid=a.usesysid
   WHERE a.datname=pg_catalog.current_database()
     AND a.pid<>pg_catalog.pg_backend_pid() AND NOT r.rolsuper;
   FOR i IN 1..50 LOOP
+    -- pg_stat_activity is cached for the lifetime of a transaction; without
+    -- clearing that snapshot this loop would keep re-reading the state from
+    -- before PERFORM above ran and never observe a terminated backend leave.
+    PERFORM pg_catalog.pg_stat_clear_snapshot();
     SELECT count(*) INTO remaining FROM pg_catalog.pg_stat_activity a
     JOIN pg_catalog.pg_roles r ON r.oid=a.usesysid
     WHERE a.datname=pg_catalog.current_database()

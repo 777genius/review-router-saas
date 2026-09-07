@@ -109,8 +109,15 @@ describe("historical89 in-place operation", () => {
   });
 
   it("fences every reconciliation it cannot resolve", () => {
+    const plan = {
+      kind: renderHistorical89AdmissionPhase.kind,
+      binding: admission,
+      coordinates: { epoch: 1, generation: 1, nonce: "0".repeat(32) },
+      reviewedTerminalCatalogDigest: `sha256:${"d".repeat(64)}`,
+      identityDigest: `sha256:${"e".repeat(64)}`,
+    };
     const base = {
-      plan: { kind: renderHistorical89AdmissionPhase.kind, binding: admission },
+      plan,
       backendState: "terminated",
       rollbackConfirmed: true,
       ledger: [],
@@ -147,7 +154,7 @@ describe("historical89 in-place operation", () => {
     expect(
       reconcileHistorical89InPlaceOperation({
         ...base,
-        plan: { kind: "other", binding: admission },
+        plan: { ...plan, kind: "other" },
       } as never),
     ).toMatchObject({ decision: "fenced", reasons: ["plan_untrusted"] });
     // Every outcome, including the fenced ones, refuses replay.
@@ -156,5 +163,49 @@ describe("historical89 in-place operation", () => {
         reconcileHistorical89InPlaceOperation({ ...base, ...change } as never)
           .replay,
       ).toBe(false);
+  });
+
+  it("rejects malformed coordinates/reviewedTerminalCatalogDigest/identityDigest before classifying the outcome", () => {
+    // These fields are only read inside the committed-candidate branch below,
+    // but the gate must reject a malformed plan up front regardless of which
+    // outcome (committed-candidate or resume-same-operation) the schema/ledger
+    // observations would otherwise select.
+    const validPlan = {
+      kind: renderHistorical89AdmissionPhase.kind,
+      binding: admission,
+      coordinates: { epoch: 1, generation: 1, nonce: "0".repeat(32) },
+      reviewedTerminalCatalogDigest: `sha256:${"d".repeat(64)}`,
+      identityDigest: `sha256:${"e".repeat(64)}`,
+    };
+    // resume-same-operation shape: uncommitted candidate, no receipt.
+    const resumeBase = {
+      backendState: "terminated" as const,
+      rollbackConfirmed: true,
+      ledger: [],
+      terminalCatalog: {},
+      gate: {},
+      memberships: [],
+      originalMembership: {},
+      aclDelta: undefined,
+      receipt: null,
+      fenceHeld: true,
+    };
+    const malformedPlans = [
+      { ...validPlan, coordinates: undefined },
+      { ...validPlan, coordinates: { epoch: 0, generation: 1, nonce: "0".repeat(32) } },
+      { ...validPlan, coordinates: { epoch: 1, generation: 1, nonce: "not-a-nonce" } },
+      { ...validPlan, reviewedTerminalCatalogDigest: "" },
+      { ...validPlan, reviewedTerminalCatalogDigest: undefined },
+      { ...validPlan, identityDigest: "" },
+      { ...validPlan, identityDigest: undefined },
+    ];
+    for (const malformed of malformedPlans) {
+      expect(
+        reconcileHistorical89InPlaceOperation({
+          ...resumeBase,
+          plan: malformed,
+        } as never),
+      ).toMatchObject({ decision: "fenced", reasons: ["plan_untrusted"] });
+    }
   });
 });

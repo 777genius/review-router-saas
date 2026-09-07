@@ -180,6 +180,24 @@ describe("managed in-place authority service", () => {
     );
   });
 
+  it("refuses a permit bound to the wrong nonce or a different but internally consistent topology", async () => {
+    const wrongNonce = build({
+      openOperation: async () => ({ ...permit, nonce: "1".repeat(32) }),
+    });
+    await expect(wrongNonce.service.claim(claim)).rejects.toThrow(
+      "managed_in_place_permit_binding_conflict",
+    );
+    const wrongTopology = build({
+      openOperation: async () => ({
+        ...permit,
+        topology: { ...topology, databaseOid: "99999" },
+      }),
+    });
+    await expect(wrongTopology.service.claim(claim)).rejects.toThrow(
+      "managed_in_place_permit_binding_conflict",
+    );
+  });
+
   it("refuses to act when the execution boundary is not ready", async () => {
     const { service } = build({}, managedInPlaceTargetManifest);
     await expect(service.claim(claim)).rejects.toThrow(
@@ -212,6 +230,38 @@ describe("managed in-place authority service", () => {
     await expect(
       terminal.service.begin({ operationId, expectedEpoch: 1 }),
     ).rejects.toThrow("managed_in_place_permit_terminal");
+  });
+
+  it("refuses an advanced permit bound to the wrong nonce or a drifted topology", async () => {
+    const wrongNonce = build({
+      advanceEpoch: async () => ({
+        ...permit,
+        epoch: permit.epoch + 1,
+        nonce: "8".repeat(32),
+      }),
+    });
+    await expect(
+      wrongNonce.service.begin({
+        operationId,
+        expectedEpoch: 1,
+        nextNonce: "9".repeat(32),
+      }),
+    ).rejects.toThrow("managed_in_place_permit_advance_invalid");
+    const wrongTopology = build({
+      advanceEpoch: async () => ({
+        ...permit,
+        epoch: permit.epoch + 1,
+        nonce: "9".repeat(32),
+        topology: { ...topology, databaseOid: "99999" },
+      }),
+    });
+    await expect(
+      wrongTopology.service.begin({
+        operationId,
+        expectedEpoch: 1,
+        nextNonce: "9".repeat(32),
+      }),
+    ).rejects.toThrow("managed_in_place_permit_advance_invalid");
   });
 
   it("completes only from a bound receipt read after execution", async () => {

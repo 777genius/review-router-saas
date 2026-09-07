@@ -37,6 +37,7 @@ import {
 import {
   renderHistorical89AdmissionRestrictionSql,
   renderHistorical89ConnectAclSql,
+  renderHistorical89SessionDrainSql,
 } from "./lib/render-historical89-execution-boundary.mjs";
 import {
   historical89InPlaceCustodyBinding,
@@ -869,4 +870,55 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
         } as never),
       ).toMatchObject({ decision: "fenced", replay: false });
   }, 300_000);
+
+  it("refuses to drain a foreign backend without terminate privilege, and succeeds once granted", async () => {
+    // A role reviewrouter never created and has no membership in - unlike
+    // reviewrouter_api or reviewrouter_release_migration, which reviewrouter's
+    // own CREATEROLE already lets it terminate through inherited privileges.
+    const db = clone();
+    pg.query("postgres", "CREATE ROLE rr_foreign_observer LOGIN;", "postgres");
+    const foreign = pg.session(db, "rr_foreign_observer");
+    try {
+      foreign.write("SELECT 'backend:'||pg_backend_pid();\n\\echo foreign-ready\n");
+      await waitFor(() => foreign.stdout().includes("foreign-ready"));
+      const pid = foreign.stdout().match(/backend:(\d+)/u)![1];
+      expect(() => pg.query(db, renderHistorical89SessionDrainSql)).toThrow(
+        "historical89_terminate_privilege_missing",
+      );
+      // Fail-fast: the precondition rejects before any backend, including ones
+      // it COULD have terminated, is touched.
+      expect(
+        pg.query(
+          db,
+          `SELECT count(*) FROM pg_stat_activity WHERE pid=${pid}`,
+          "postgres",
+        ),
+      ).toBe("1");
+      pg.query(
+        "postgres",
+        "GRANT pg_signal_backend TO reviewrouter;",
+        "postgres",
+      );
+      try {
+        pg.query(db, renderHistorical89SessionDrainSql);
+        await waitFor(
+          () =>
+            pg.query(
+              db,
+              `SELECT count(*) FROM pg_stat_activity WHERE pid=${pid}`,
+              "postgres",
+            ) === "0",
+        );
+      } finally {
+        pg.query(
+          "postgres",
+          "REVOKE pg_signal_backend FROM reviewrouter;",
+          "postgres",
+        );
+      }
+    } finally {
+      await foreign.terminateAndWait();
+      pg.query("postgres", "DROP ROLE IF EXISTS rr_foreign_observer;", "postgres");
+    }
+  }, 60_000);
 });

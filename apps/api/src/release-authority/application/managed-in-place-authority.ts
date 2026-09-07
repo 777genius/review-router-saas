@@ -20,6 +20,25 @@ import {
 import type { ReleaseAuthorityFencedAttestation } from "./services.js";
 
 /**
+ * Field-by-field topology equality. Used both when binding a freshly opened
+ * permit to the request that opened it, and when binding an epoch-advanced
+ * permit to the one it was advanced from - in-place topology never changes
+ * mid-operation, so any drift here is a custody-port defect, not a retry.
+ */
+function managedInPlaceTopologyMatches(
+  a: ManagedInPlaceTopology,
+  b: ManagedInPlaceTopology,
+): boolean {
+  return (
+    a.providerDatabaseResourceId === b.providerDatabaseResourceId &&
+    a.systemIdentifier === b.systemIdentifier &&
+    a.databaseOid === b.databaseOid &&
+    a.databaseName === b.databaseName &&
+    a.recoveryWitnessSha256 === b.recoveryWitnessSha256
+  );
+}
+
+/**
  * Application service for the typed in-place mode.
  *
  * `ReleaseAuthorityService` keeps its relocation semantics untouched, including
@@ -162,7 +181,9 @@ export class ManagedInPlaceAuthorityService {
           permit.admissionIdentityDigest !== input.admissionIdentityDigest ||
           permit.terminalCatalogDigest !== input.terminalCatalogDigest ||
           permit.externalFenceSha256 !== input.externalFenceSha256 ||
-          permit.generation !== input.generation
+          permit.generation !== input.generation ||
+          permit.nonce !== input.nonce ||
+          !managedInPlaceTopologyMatches(permit.topology, topology)
         )
           throw new Error("managed_in_place_permit_binding_conflict");
         return permit;
@@ -205,7 +226,9 @@ export class ManagedInPlaceAuthorityService {
           advanced.operationId !== current.operationId ||
           advanced.generation !== current.generation ||
           advanced.epoch !== current.epoch + 1 ||
-          advanced.nonce === current.nonce
+          advanced.nonce === current.nonce ||
+          advanced.nonce !== input.nextNonce ||
+          !managedInPlaceTopologyMatches(advanced.topology, current.topology)
         )
           throw new Error("managed_in_place_permit_advance_invalid");
         return advanced;
