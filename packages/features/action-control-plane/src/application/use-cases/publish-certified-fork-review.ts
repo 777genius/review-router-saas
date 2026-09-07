@@ -1,4 +1,7 @@
-import type { CertifiedForkReviewBinding } from "../ports/certified-fork-review-port.js";
+import type {
+  CertifiedForkReviewBinding,
+  CertifiedForkReviewGatewayPort,
+} from "../ports/certified-fork-review-port.js";
 import {
   certifiedForkReviewModelOutputHash,
   parseCertifiedForkReviewModelOutput,
@@ -8,6 +11,7 @@ import {
   type CertifiedForkReviewPromptPacket,
 } from "./certified-fork-review-packet.js";
 import {
+  assertCertifiedForkReviewBindingMatches,
   parseCertifiedForkReviewBinding,
   serializeCertifiedForkReviewBinding,
 } from "./certified-fork-review-binding.js";
@@ -67,4 +71,48 @@ export function publishCertifiedForkReview(
     modelOutput,
     outputHash,
   });
+}
+
+// Validation only: a ready result is not a durable publication permit.
+export async function validateCurrentCertifiedForkReviewOutput(
+  input: unknown,
+  { gateway }: { gateway: CertifiedForkReviewGatewayPort },
+): Promise<CertifiedForkReviewPublishResult> {
+  const values = readExactRecord(
+    input,
+    ["githubInstallationId", "prepared", "binding", "modelOutput"],
+    "certified_fork_review_publish_input_invalid",
+  );
+  const githubInstallationId = values.githubInstallationId;
+  if (
+    typeof githubInstallationId !== "string" ||
+    !/^[1-9][0-9]*$/u.test(githubInstallationId) ||
+    !Number.isSafeInteger(Number(githubInstallationId)) ||
+    Number(githubInstallationId) < 1
+  ) {
+    throw new Error("certified_fork_review_installation_invalid");
+  }
+  const result = publishCertifiedForkReview({
+    prepared: values.prepared,
+    binding: values.binding,
+    modelOutput: values.modelOutput,
+  });
+  if (result.status === "stale") return result;
+  const context = readExactRecord(
+    await gateway.assertContextCurrent(
+      Object.freeze({
+        githubInstallationId,
+        binding: result.binding,
+        expectedContextHash: result.contextHash,
+      }),
+    ),
+    ["promptPacket"],
+    "certified_fork_review_context_invalid",
+  );
+  const packet = parseCertifiedForkReviewPromptPacket(context.promptPacket);
+  assertCertifiedForkReviewBindingMatches(result.binding, packet.binding);
+  if (packet.contextHash !== result.contextHash) {
+    throw new Error("certified_fork_review_context_hash_mismatch");
+  }
+  return result;
 }
