@@ -562,3 +562,66 @@ export async function prepareManaged92Fixture(
   );
   return { originalMembership };
 }
+
+// The four reviewed provider default-ACL rows, created BY postgres so that
+// defaclrole is postgres and defaclnamespace is 0, exactly as observed on the
+// historical production database. PostgreSQL initializes a new object from the
+// CREATING role's defaults, so these never initialize a reviewrouter-created
+// object - which is the fact the creator-aware qualifier has to be exercised
+// against, rather than against an artificially empty catalog.
+const providerDefaultAclSql = `ALTER DEFAULT PRIVILEGES
+  GRANT SELECT, UPDATE, USAGE ON SEQUENCES TO postgres, reviewrouter;
+ALTER DEFAULT PRIVILEGES GRANT USAGE ON TYPES TO PUBLIC, postgres, reviewrouter;
+ALTER DEFAULT PRIVILEGES GRANT EXECUTE ON FUNCTIONS TO PUBLIC, postgres, reviewrouter;
+ALTER DEFAULT PRIVILEGES GRANT ALL ON TABLES TO postgres, reviewrouter;`;
+
+// Fixture-only construction of an AUTHENTICALLY GUARDLESS historical 89
+// baseline: the retained ledger guard is never installed, because the database
+// this models never had the retained phase custody that guard represents. No
+// production receipt, custody or admission is issued. Seed SQL must contain
+// disposable data only.
+export async function prepareHistorical89Fixture(
+  pg: ReturnType<typeof managedPg17Fixture>,
+  database: string,
+  seedSql: string,
+) {
+  if (!/^[a-z][a-z0-9_]*$/u.test(database)) throw new Error("fixture_database");
+  const policy = await import("./render-schema-handoff-policy.mjs");
+  pg.query(
+    "postgres",
+    `CREATE ROLE reviewrouter LOGIN; CREATE DATABASE ${database} OWNER reviewrouter;`,
+    "postgres",
+  );
+  pg.query(database, providerDefaultAclSql, "postgres");
+  await pg.apply(database, 76, "rr-historical89-fixture-baseline").result;
+  pg.query(database, `ALTER SCHEMA public OWNER TO reviewrouter; ${seedSql}`);
+  pg.query(
+    "postgres",
+    `CREATE ROLE reviewrouter_release_schema_owner;
+    CREATE ROLE reviewrouter_release_migration LOGIN;
+    CREATE ROLE reviewrouter_comment_token_custody LOGIN;
+    CREATE ROLE reviewrouter_api LOGIN;
+    CREATE ROLE historical_inherited;
+    GRANT reviewrouter_release_schema_owner TO reviewrouter
+    WITH ADMIN TRUE, INHERIT FALSE, SET FALSE GRANTED BY postgres;`,
+    "postgres",
+  );
+  pg.query(
+    database,
+    `GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_schema_owner;
+    ${policy.renderManagedTemporaryMembershipSql}`,
+  );
+  await pg.apply(database, 89, "rr-historical89-fixture-89").result;
+  pg.query(
+    database,
+    `BEGIN;
+    ALTER TABLE public."ReviewProviderScopeConcurrencyControl" OWNER TO reviewrouter_release_schema_owner;
+    ALTER TABLE public."ReviewInvocationLeaseV2" OWNER TO reviewrouter_release_schema_owner;
+    REVOKE CREATE ON SCHEMA public FROM reviewrouter_release_schema_owner;
+    ${policy.renderManagedMembershipCleanupSql} COMMIT;`,
+  );
+  const originalMembership = JSON.parse(
+    pg.query(database, policy.renderManagedMembershipSql),
+  )[0];
+  return { originalMembership };
+}

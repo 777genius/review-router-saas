@@ -19,7 +19,12 @@ const canonicalLock = `locktype='advisory' AND pid=pg_catalog.pg_backend_pid()
 const prismaLock = `locktype='advisory' AND pid=pg_catalog.pg_backend_pid()
   AND database=(SELECT oid FROM pg_catalog.pg_database WHERE datname=pg_catalog.current_database())
   AND classid=0 AND objid=72707369 AND objsubid=1 AND mode='ExclusiveLock' AND granted`;
-const coordinatorGuard = `DO $coordinator$ BEGIN
+// The coordinator identity and exclusion proof. Exported so a composed in-place
+// operation reuses the SAME requirement instead of restating it: the caller must
+// be reviewrouter and must already hold BOTH the canonical and the Prisma
+// advisory locks in this transaction. Reuse does not relax the retained guard's
+// own binding requirement below.
+export const renderManagedCoordinatorGuardSql = `DO $coordinator$ BEGIN
   IF session_user <> 'reviewrouter' OR current_user <> 'reviewrouter'
      OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_locks WHERE ${canonicalLock})
      OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_locks WHERE ${prismaLock}) THEN
@@ -117,7 +122,7 @@ END
   const argumentsHex = Buffer.from(
     keys.map((k) => binding[k]).join("\0") + "\0",
   ).toString("hex");
-  const verifySql = `${coordinatorGuard}
+  const verifySql = `${renderManagedCoordinatorGuardSql}
 DO $identity$ BEGIN
   IF (SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
       WHERE n.nspname='public' AND p.proname='${guardName}') <> 1
@@ -141,7 +146,7 @@ DO $identity$ BEGIN
     RAISE EXCEPTION 'render_retained_guard_drift';
   END IF;
 END $identity$;`;
-  const installSql = `${coordinatorGuard}
+  const installSql = `${renderManagedCoordinatorGuardSql}
 CREATE FUNCTION public.${guardName}() RETURNS trigger LANGUAGE plpgsql
 SET search_path = pg_catalog, public AS $body$${body}$body$;
 REVOKE ALL ON FUNCTION public.${guardName}() FROM PUBLIC;

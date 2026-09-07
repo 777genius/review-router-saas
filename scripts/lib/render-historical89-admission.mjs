@@ -442,7 +442,7 @@ SELECT jsonb_build_object(
         'privilege',a.privilege_type,'grantable',a.is_grantable
       ) ORDER BY a.grantee,a.grantor,a.privilege_type),'[]'::jsonb)
       FROM pg_catalog.aclexplode(
-        COALESCE(o.acl,pg_catalog.acldefault(o.acltype,o.ownerid))) a
+        COALESCE(o.acl,pg_catalog.acldefault(o.acltype::"char",o.ownerid))) a
       LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=a.grantee
       LEFT JOIN pg_catalog.pg_roles grantor ON grantor.oid=a.grantor
     )
@@ -499,22 +499,35 @@ const readObjectAclRows = (observation) => {
  * @param baseline projection taken before the operation
  * @param terminal projection taken after the operation
  * @param creators reviewed creating roles from assertHistorical89Creators
+ * @param owners reviewed roles a created object may be OWNED by at the end of
+ *   the operation. It defaults to `creators`, which is the only correct value
+ *   when the operation performs no ownership transfer. A composed operation
+ *   that applies the reviewed 89->92 ownership handover must pass the reviewed
+ *   terminal owner set explicitly and pin it in its own source: the immutable
+ *   087/089 bodies re-own what they create to the CURRENT owner of
+ *   CodexOAuthSecretNamespace, and PostgreSQL rewrites the object's ACL owner
+ *   and grantor entries with it. Creating role and terminal owner are two
+ *   different facts; only the creating role decides which default ACLs
+ *   initialized the object, and that remains `creators`.
  */
 export function assertHistorical89CreatedObjectAcl({
   baseline,
   terminal,
   creators,
+  owners = creators,
 }) {
-  if (!distinctNames(creators)) fail("object_acl_unknown");
+  if (!distinctNames(creators) || !distinctNames(owners))
+    fail("object_acl_unknown");
   const before = readObjectAclRows(baseline);
   const after = readObjectAclRows(terminal);
   const created = [...after.values()].filter((row) => !before.has(row.oid));
   if (created.length === 0) fail("object_acl_no_created_objects");
   for (const row of created) {
     // The creator, not a later ALTER ... OWNER TO, decides which defaults
-    // initialized the object. An object owned outside the reviewed set means
-    // the non-inheritance argument was never established for it.
-    if (!creators.includes(row.owner)) fail("object_acl_creator");
+    // initialized the object. An object owned outside the reviewed terminal
+    // owner set means the non-inheritance argument was never established for
+    // it, or an unreviewed transfer happened.
+    if (!owners.includes(row.owner)) fail("object_acl_creator");
     const seen = new Set();
     for (const entry of row.effective) {
       if (
@@ -537,7 +550,8 @@ export function assertHistorical89CreatedObjectAcl({
       // carries PUBLIC EXECUTE and is rejected exactly like an explicit grant.
       if (entry.grantee === "PUBLIC") fail("object_acl_public_grant");
       if (entry.grantable) fail("object_acl_grant_option");
-      if (!creators.includes(entry.grantor)) fail("object_acl_grantor");
+      // A reviewed ownership transfer rewrites every grantor to the new owner.
+      if (!owners.includes(entry.grantor)) fail("object_acl_grantor");
     }
     // acldefault always yields the owner's own privileges, so a null raw ACL
     // can never decode to nothing. An empty effective set with a null raw is a
