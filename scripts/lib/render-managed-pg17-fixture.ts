@@ -62,13 +62,21 @@ export function managedPg17Fixture() {
   ];
   const query = (database: string, source: string, role = "reviewrouter") =>
     checked(psql(database, role).slice(host.length), source);
-  const session = (database: string, role = "reviewrouter") =>
+  // The composed in-place transaction embeds two complete catalog observations
+  // and exceeds the process helper's default input budget, so this fixture
+  // states the maximum the helper itself allows rather than truncating proof.
+  const session = (
+    database: string,
+    role = "reviewrouter",
+    maxInputBytes = 16 * 1024 * 1024,
+  ) =>
     spawnMigration89Process({
       binary: "docker",
       args: psql(database, role),
       environment,
       input: undefined,
       keepStdinOpen: true,
+      maxInputBytes,
       timeoutMs: 60_000,
     });
   const cleanup = () => {
@@ -339,6 +347,7 @@ export function managedPg17Fixture() {
       input: undefined,
       args: psql(database, "reviewrouter", "6543"),
       keepStdinOpen: true,
+      maxInputBytes: 16 * 1024 * 1024,
       timeoutMs: 60_000,
     });
     return {
@@ -587,9 +596,14 @@ export async function prepareHistorical89Fixture(
 ) {
   if (!/^[a-z][a-z0-9_]*$/u.test(database)) throw new Error("fixture_database");
   const policy = await import("./render-schema-handoff-policy.mjs");
+  // The observed production owner is a NON-superuser with CREATEROLE/CREATEDB.
+  // Modelling it without CREATEROLE would make the fresh operation custody
+  // untestable for the wrong reason and hide whether a non-superuser owner can
+  // actually establish it.
   pg.query(
     "postgres",
-    `CREATE ROLE reviewrouter LOGIN; CREATE DATABASE ${database} OWNER reviewrouter;`,
+    `CREATE ROLE reviewrouter LOGIN CREATEROLE CREATEDB;
+     CREATE DATABASE ${database} OWNER reviewrouter;`,
     "postgres",
   );
   pg.query(database, providerDefaultAclSql, "postgres");

@@ -10,6 +10,14 @@ import {
   assertOneShotMutationPermit,
   RecoveryEffectKind,
   assertRecoveryEffectObservation,
+  assertManagedInPlaceTopology,
+  assertManagedInPlaceTransitionIntegrity,
+  managedInPlaceTargetManifest,
+  ManagedInPlaceTransitionType,
+  type ManagedInPlaceEffectReceipt,
+  type ManagedInPlaceOperationPermit,
+  type ManagedInPlaceTopology,
+  type ManagedInPlaceTransitionV1,
   type RecoveryEffectAuthorityPort,
   type MutationExecutionReceipt,
   type ProviderMutationReconciliation,
@@ -40,6 +48,7 @@ import {
   serviceTransitionAppendRequest,
   serviceTransitionBeginRequest,
 } from "./service-transition-http-validation.js";
+import type { ManagedInPlaceClaimBinding } from "../application/managed-in-place-authority.js";
 type PublicService<Service> = Pick<Service, keyof Service>;
 
 export type ReleaseRolloutLedgerRouteDependencies = {
@@ -270,6 +279,9 @@ const positiveRunId = /^[1-9][0-9]{0,39}$/u;
 const migrationName = /^\d{6}_[a-z0-9_]+$/u;
 const imageDigest = /^sha256:[a-f0-9]{64}$/u;
 const permitNonce = /^[a-f0-9]{32}$/u;
+const operationIdentifier = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
+const providerDatabaseResource = /^dpg-[a-z0-9]+-a$/u;
+const postgresDatabaseName = /^[a-z_][a-z0-9_]{0,62}$/u;
 
 const invalidMigrationRequest = (): never => {
   throw Object.assign(new Error("release_migration_request_invalid"), {
@@ -425,6 +437,240 @@ export const rolloutClaimRequest = (value: unknown): RolloutClaimBinding => {
       rawSha256,
     ),
     migrationTransition: migrationTransitionRequest(body.migrationTransition),
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Typed in-place transport
+// ---------------------------------------------------------------------------
+//
+// The three parsers above keep rejecting `sourceSystemIdentifier ===
+// targetSystemIdentifier`, because a relocation request with equal identifiers
+// is malformed. The parsers below are the other mode and require the opposite:
+// one database, named identically on both sides, plus an explicit discriminator
+// that a relocation payload does not carry. Neither parser can produce the
+// other's shape, so no request can cross between the two modes.
+
+const managedInPlaceTopologyRequest = (
+  value: unknown,
+): ManagedInPlaceTopology => {
+  const body = record(value);
+  if (
+    !exactKeys(body, [
+      "providerDatabaseResourceId",
+      "systemIdentifier",
+      "databaseOid",
+      "databaseName",
+      "recoveryWitnessSha256",
+    ]) ||
+    !stringMatching(
+      body.providerDatabaseResourceId,
+      providerDatabaseResource,
+    ) ||
+    !stringMatching(body.systemIdentifier, postgresSystemIdentifier) ||
+    !stringMatching(body.databaseOid, postgresSystemIdentifier) ||
+    !stringMatching(body.databaseName, postgresDatabaseName) ||
+    !stringMatching(body.recoveryWitnessSha256, rawSha256)
+  )
+    invalidMigrationRequest();
+  return {
+    providerDatabaseResourceId: requiredPattern(
+      body.providerDatabaseResourceId,
+      providerDatabaseResource,
+    ),
+    systemIdentifier: requiredPattern(
+      body.systemIdentifier,
+      postgresSystemIdentifier,
+    ),
+    databaseOid: requiredPattern(body.databaseOid, postgresSystemIdentifier),
+    databaseName: requiredPattern(body.databaseName, postgresDatabaseName),
+    recoveryWitnessSha256: requiredPattern(
+      body.recoveryWitnessSha256,
+      rawSha256,
+    ),
+  };
+};
+
+const managedInPlaceTransitionRequest = (
+  value: unknown,
+): ManagedInPlaceTransitionV1 => {
+  const body = record(value);
+  if (
+    body.transitionType !== ManagedInPlaceTransitionType ||
+    !stringMatching(body.commitSha, commitSha) ||
+    !stringMatching(body.releaseImageDigest, sha256Digest) ||
+    !stringMatching(body.providerDatabaseResourceId, providerDatabaseResource)
+  )
+    invalidMigrationRequest();
+  try {
+    assertManagedInPlaceTransitionIntegrity(body as ManagedInPlaceTransitionV1);
+  } catch {
+    invalidMigrationRequest();
+  }
+  return body as unknown as ManagedInPlaceTransitionV1;
+};
+
+export const managedInPlaceClaimRequest = (
+  value: unknown,
+): ManagedInPlaceClaimBinding => {
+  const body = record(value);
+  if (
+    !exactKeys(body, [
+      "operationId",
+      "transition",
+      "admissionIdentityDigest",
+      "externalFenceSha256",
+      "terminalCatalogDigest",
+      "generation",
+      "nonce",
+      "source",
+      "target",
+    ]) ||
+    !stringMatching(body.operationId, operationIdentifier) ||
+    !stringMatching(body.admissionIdentityDigest, sha256Digest) ||
+    !stringMatching(body.externalFenceSha256, sha256Digest) ||
+    !stringMatching(body.terminalCatalogDigest, sha256Digest) ||
+    !Number.isSafeInteger(body.generation) ||
+    Number(body.generation) < 1 ||
+    !stringMatching(body.nonce, permitNonce)
+  )
+    invalidMigrationRequest();
+  const transition = managedInPlaceTransitionRequest(body.transition);
+  const source = managedInPlaceTopologyRequest(body.source);
+  const target = managedInPlaceTopologyRequest(body.target);
+  try {
+    assertManagedInPlaceTopology({ source, target });
+  } catch {
+    invalidMigrationRequest();
+  }
+  if (
+    source.providerDatabaseResourceId !== transition.providerDatabaseResourceId
+  )
+    invalidMigrationRequest();
+  return {
+    operationId: requiredPattern(body.operationId, operationIdentifier),
+    transition,
+    admissionIdentityDigest: requiredPattern(
+      body.admissionIdentityDigest,
+      sha256Digest,
+    ),
+    externalFenceSha256: requiredPattern(
+      body.externalFenceSha256,
+      sha256Digest,
+    ),
+    terminalCatalogDigest: requiredPattern(
+      body.terminalCatalogDigest,
+      sha256Digest,
+    ),
+    generation: Number(body.generation),
+    nonce: requiredPattern(body.nonce, permitNonce),
+    source,
+    target,
+  };
+};
+
+export const managedInPlacePermitRequest = (
+  value: unknown,
+): ManagedInPlaceOperationPermit => {
+  const body = record(value);
+  if (
+    !exactKeys(body, [
+      "transitionType",
+      "schemaVersion",
+      "operationId",
+      "transitionSha256",
+      "admissionIdentityDigest",
+      "topology",
+      "externalFenceSha256",
+      "terminalCatalogDigest",
+      "generation",
+      "epoch",
+      "nonce",
+      "state",
+    ]) ||
+    body.transitionType !== ManagedInPlaceTransitionType ||
+    body.schemaVersion !== 1 ||
+    !stringMatching(body.operationId, operationIdentifier) ||
+    !stringMatching(body.transitionSha256, sha256Digest) ||
+    !stringMatching(body.admissionIdentityDigest, sha256Digest) ||
+    !stringMatching(body.externalFenceSha256, sha256Digest) ||
+    !stringMatching(body.terminalCatalogDigest, sha256Digest) ||
+    !Number.isSafeInteger(body.generation) ||
+    Number(body.generation) < 1 ||
+    !Number.isSafeInteger(body.epoch) ||
+    Number(body.epoch) < 1 ||
+    !stringMatching(body.nonce, permitNonce) ||
+    (body.state !== "open" && body.state !== "terminal")
+  )
+    invalidMigrationRequest();
+  const topology = managedInPlaceTopologyRequest(body.topology);
+  return {
+    transitionType: ManagedInPlaceTransitionType,
+    schemaVersion: 1,
+    operationId: requiredPattern(body.operationId, operationIdentifier),
+    transitionSha256: requiredPattern(body.transitionSha256, sha256Digest),
+    admissionIdentityDigest: requiredPattern(
+      body.admissionIdentityDigest,
+      sha256Digest,
+    ),
+    topology,
+    externalFenceSha256: requiredPattern(
+      body.externalFenceSha256,
+      sha256Digest,
+    ),
+    terminalCatalogDigest: requiredPattern(
+      body.terminalCatalogDigest,
+      sha256Digest,
+    ),
+    generation: Number(body.generation),
+    epoch: Number(body.epoch),
+    nonce: requiredPattern(body.nonce, permitNonce),
+    state: body.state as "open" | "terminal",
+  };
+};
+
+export const managedInPlaceEffectReceiptRequest = (
+  value: unknown,
+): ManagedInPlaceEffectReceipt => {
+  const body = record(value);
+  if (
+    !exactKeys(body, [
+      "transitionType",
+      "operationId",
+      "generation",
+      "epoch",
+      "nonce",
+      "ledgerManifest",
+      "terminalCatalogDigest",
+      "effectFingerprint",
+      "permitState",
+    ]) ||
+    body.transitionType !== ManagedInPlaceTransitionType ||
+    !stringMatching(body.operationId, operationIdentifier) ||
+    !Number.isSafeInteger(body.generation) ||
+    Number(body.generation) < 1 ||
+    !Number.isSafeInteger(body.epoch) ||
+    Number(body.epoch) < 1 ||
+    !stringMatching(body.nonce, permitNonce) ||
+    body.ledgerManifest !== managedInPlaceTargetManifest ||
+    !stringMatching(body.terminalCatalogDigest, sha256Digest) ||
+    !stringMatching(body.effectFingerprint, sha256Digest) ||
+    body.permitState !== "terminal"
+  )
+    invalidMigrationRequest();
+  return {
+    transitionType: ManagedInPlaceTransitionType,
+    operationId: requiredPattern(body.operationId, operationIdentifier),
+    generation: Number(body.generation),
+    epoch: Number(body.epoch),
+    nonce: requiredPattern(body.nonce, permitNonce),
+    ledgerManifest: managedInPlaceTargetManifest,
+    terminalCatalogDigest: requiredPattern(
+      body.terminalCatalogDigest,
+      sha256Digest,
+    ),
+    effectFingerprint: requiredPattern(body.effectFingerprint, sha256Digest),
+    permitState: "terminal",
   };
 };
 

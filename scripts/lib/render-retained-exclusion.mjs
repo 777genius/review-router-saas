@@ -12,13 +12,18 @@ DO $engine$ BEGIN
 END $engine$;`;
 
 const guardName = "reviewrouter_managed_retained_ledger_guard";
-const canonicalLock = `locktype='advisory' AND pid=pg_catalog.pg_backend_pid()
+// Exported so a protected routine that must prove it runs INSIDE the
+// coordinator's exclusive transaction states the same predicate rather than a
+// second, drifting copy of it. Both are evaluated for the CURRENT backend.
+export const renderManagedCanonicalLockPredicate = `locktype='advisory' AND pid=pg_catalog.pg_backend_pid()
   AND database=(SELECT oid FROM pg_catalog.pg_database WHERE datname=pg_catalog.current_database())
   AND classid=1381126735 AND objid=1129271120 AND objsubid=2
   AND mode='ExclusiveLock' AND granted`;
-const prismaLock = `locktype='advisory' AND pid=pg_catalog.pg_backend_pid()
+export const renderManagedPrismaLockPredicate = `locktype='advisory' AND pid=pg_catalog.pg_backend_pid()
   AND database=(SELECT oid FROM pg_catalog.pg_database WHERE datname=pg_catalog.current_database())
   AND classid=0 AND objid=72707369 AND objsubid=1 AND mode='ExclusiveLock' AND granted`;
+const canonicalLock = renderManagedCanonicalLockPredicate;
+const prismaLock = renderManagedPrismaLockPredicate;
 // The coordinator identity and exclusion proof. Exported so a composed in-place
 // operation reuses the SAME requirement instead of restating it: the caller must
 // be reviewrouter and must already hold BOTH the canonical and the Prisma

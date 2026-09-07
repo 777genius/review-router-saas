@@ -194,7 +194,16 @@ export function renderHistorical89InPlaceTransaction({
   defaultAcl,
   creatorEvidence,
   gate,
+  preflightSql = "",
 }) {
+  // One explicit splice point, taken BEFORE any body runs and AFTER the
+  // baseline equality check. The execution boundary and the operation custody
+  // are separate concerns that must be re-proved inside this same transaction;
+  // giving them a declared position is what keeps this composition from being
+  // assembled by editing the text of a finished transaction. Everything else
+  // about this builder, including its refusal to authorize anything, is
+  // unchanged when the default empty preflight is used.
+  if (typeof preflightSql !== "string") fail("preflight_sql");
   const { identityDigest, creators, ordered } = assertHistorical89InPlaceInputs(
     {
       admission,
@@ -243,6 +252,7 @@ DO $historical_baseline$ BEGIN
     RAISE EXCEPTION 'historical89_baseline_changed';
   END IF;
 END $historical_baseline$;
+${preflightSql}
 ${renderSchemaHandoffOwnerPreconditionSql}
 ${renderSchemaHandoffOwnershipTransferSql}
 ${renderSchemaHandoffBodiesSql("historical89-body").join("\n")}
@@ -283,6 +293,7 @@ END $historical_terminal$;
     interimVerification: "transaction-local",
     reviewedTerminalOwners,
     markers: renderHistorical89InPlaceMarkers,
+    preflight: preflightSql !== "",
     sql,
     custodyEstablished: false,
     authorizesMutation: false,

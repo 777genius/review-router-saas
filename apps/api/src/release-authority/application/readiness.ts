@@ -323,3 +323,110 @@ export function releaseControlMutationDatabaseIsReady(
       return false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Typed in-place readiness
+// ---------------------------------------------------------------------------
+//
+// `releaseControlDatabaseSetIsReady` above is the relocation contract and is
+// unchanged: it still requires the authority database and the target database
+// to be different resources, because relocation genuinely spans two of them.
+//
+// The in-place mode has the opposite topology and therefore needs its own
+// readiness rather than a relaxed version of that one. Its custody lives in the
+// SAME database it protects, which is the only placement the observed workspace
+// allows, and it carries the execution-boundary facts that must hold before any
+// DDL runs. Nothing below can make the relocation contract accept a colocated
+// topology, and nothing above can make this one accept a split topology.
+
+export type ManagedInPlaceCustodyReadiness = Readonly<{
+  roleName: string;
+  custodyOwnerRoleName: string;
+  custodyReaderRoleName: string;
+  systemIdentifier: string;
+  recoveryWitnessSha256: string;
+  databaseIdentity: RuntimeDatabaseIdentity;
+  postgresMajor: number;
+  applicationMigrationManifestIdentity: string;
+  /** Exact catalog attestation of the reviewed custody objects. */
+  custodyAttested: boolean;
+  custodyOwnerCanLogin: boolean;
+  coordinatorCanAssumeCustodyOwner: boolean;
+  admissionWithdrawn: boolean;
+  fleetQuiesced: boolean;
+  privilegedBackendPresent: boolean;
+  automaticMigrationsDisabled: boolean;
+  externalFenceHeld: boolean;
+  runtimeGateStatus: string;
+}>;
+
+export type TrustedManagedInPlaceIdentity = Readonly<{
+  operationDatabaseIdentity: RuntimeDatabaseIdentity;
+  coordinatorRoleName: string;
+  custodyOwnerRoleName: string;
+  custodyReaderRoleName: string;
+  baselineManifestIdentity: string;
+  targetManifestIdentity: string;
+}>;
+
+export enum ManagedInPlaceReadinessPhase {
+  BeforeExecution = "before_execution",
+  AfterExecution = "after_execution",
+}
+
+/**
+ * Readiness of the one qualified database for one in-place operation.
+ *
+ * Before execution the ledger must be at the baseline manifest; after it, at
+ * the target manifest. Neither phase admits any other manifest, so a partially
+ * applied state is never "ready" for anything.
+ */
+export function managedInPlaceDatabaseIsReady(
+  readiness: ManagedInPlaceCustodyReadiness,
+  trusted: TrustedManagedInPlaceIdentity,
+  phase: ManagedInPlaceReadinessPhase,
+): boolean {
+  const roleName = /^[a-z_][a-z0-9_]{0,62}$/u;
+  const manifest = /^sha256:[a-f0-9]{64}$/u;
+  const expectedManifest =
+    phase === ManagedInPlaceReadinessPhase.BeforeExecution
+      ? trusted.baselineManifestIdentity
+      : trusted.targetManifestIdentity;
+  return (
+    runtimeDatabaseIdentityIsCanonical(trusted.operationDatabaseIdentity) &&
+    roleName.test(trusted.coordinatorRoleName) &&
+    roleName.test(trusted.custodyOwnerRoleName) &&
+    roleName.test(trusted.custodyReaderRoleName) &&
+    new Set([
+      trusted.coordinatorRoleName,
+      trusted.custodyOwnerRoleName,
+      trusted.custodyReaderRoleName,
+    ]).size === 3 &&
+    manifest.test(trusted.baselineManifestIdentity) &&
+    manifest.test(trusted.targetManifestIdentity) &&
+    trusted.baselineManifestIdentity !== trusted.targetManifestIdentity &&
+    readiness.postgresMajor === 17 &&
+    readiness.systemIdentifier === readiness.databaseIdentity.serverIdentity &&
+    /^[0-9]{1,64}$/u.test(readiness.systemIdentifier) &&
+    /^[a-f0-9]{64}$/u.test(readiness.recoveryWitnessSha256) &&
+    readiness.roleName === trusted.coordinatorRoleName &&
+    readiness.custodyOwnerRoleName === trusted.custodyOwnerRoleName &&
+    readiness.custodyReaderRoleName === trusted.custodyReaderRoleName &&
+    // Colocated on purpose, and required to be: this is the same database.
+    runtimeDatabaseIdentityEquals(
+      readiness.databaseIdentity,
+      trusted.operationDatabaseIdentity,
+    ) &&
+    readiness.custodyAttested &&
+    !readiness.custodyOwnerCanLogin &&
+    !readiness.coordinatorCanAssumeCustodyOwner &&
+    readiness.admissionWithdrawn &&
+    readiness.fleetQuiesced &&
+    !readiness.privilegedBackendPresent &&
+    readiness.automaticMigrationsDisabled &&
+    readiness.externalFenceHeld &&
+    // The operation begins closed and ends closed in both phases.
+    readiness.runtimeGateStatus === "closed" &&
+    readiness.applicationMigrationManifestIdentity === expectedManifest
+  );
+}
