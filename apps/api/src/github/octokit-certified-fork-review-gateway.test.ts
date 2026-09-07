@@ -640,6 +640,49 @@ describe("unified hunk completeness", () => {
 });
 
 describe("callback-free response intake", () => {
+  it.each(["coercion-backed", "proxied"])(
+    "rejects %s repository id own-data values without callbacks or traps",
+    async (kind) => {
+      let callbacks = 0;
+      let traps = 0;
+      const coercibleId = {
+        [Symbol.toPrimitive]() {
+          callbacks++;
+          return "101";
+        },
+      };
+      const sourceId =
+        kind === "proxied"
+          ? new Proxy(coercibleId, {
+              get(target, key) {
+                traps++;
+                return Reflect.get(target, key);
+              },
+              getPrototypeOf(target) {
+                traps++;
+                return Reflect.getPrototypeOf(target);
+              },
+              ownKeys(target) {
+                traps++;
+                return Reflect.ownKeys(target);
+              },
+              getOwnPropertyDescriptor(target, key) {
+                traps++;
+                return Reflect.getOwnPropertyDescriptor(target, key);
+              },
+            })
+          : coercibleId;
+      const gateway = fixture(async (route, parameters) =>
+        response(route, parameters, { sourceId }),
+      );
+      // The standard source fixture is a fork with valid parent/source IDs.
+      await expect(gateway.prepareContext(input)).rejects.toThrow(
+        "certified_fork_repository_invalid",
+      );
+      expect(callbacks).toBe(0);
+      expect(traps).toBe(0);
+    },
+  );
   it.each(["repository", "PR", "compare"])(
     "rejects %s envelope getters and proxies without callbacks",
     async (kind) => {

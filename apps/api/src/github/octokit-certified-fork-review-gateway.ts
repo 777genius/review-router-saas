@@ -309,6 +309,10 @@ function parseRepository(value: unknown): RepositorySnapshot {
     throw new Error("certified_fork_repository_invalid");
   }
   const idValue = dataProperty(value, "id");
+  if (!isIdentifier(idValue)) {
+    throw new Error("certified_fork_repository_invalid");
+  }
+  const id = String(idValue);
   const fullName = dataProperty(value, "full_name");
   const privateValue = dataProperty(value, "private");
   const visibility = dataProperty(value, "visibility");
@@ -325,8 +329,8 @@ function parseRepository(value: unknown): RepositorySnapshot {
     if (
       !isIdentifier(parentValue) ||
       !isIdentifier(sourceValue) ||
-      String(parentValue) === String(idValue) ||
-      String(sourceValue) === String(idValue)
+      String(parentValue) === id ||
+      String(sourceValue) === id
     )
       throw new Error("certified_fork_repository_invalid");
     parentId = String(parentValue);
@@ -334,7 +338,6 @@ function parseRepository(value: unknown): RepositorySnapshot {
   }
   if (
     typeof fork !== "boolean" ||
-    !isIdentifier(idValue) ||
     typeof fullName !== "string" ||
     typeof privateValue !== "boolean" ||
     typeof visibility !== "string"
@@ -342,7 +345,7 @@ function parseRepository(value: unknown): RepositorySnapshot {
     throw new Error("certified_fork_repository_invalid");
   }
   return {
-    id: String(idValue),
+    id,
     fullName,
     private: privateValue,
     visibility,
