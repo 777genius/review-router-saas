@@ -147,6 +147,79 @@ describe("certified fork effect identity", () => {
   });
 });
 
+it.each(["provider facts", "payloadHashes"] as const)(
+  "rejects thousands of excess own keys on %s before descriptors or callbacks",
+  (kind) => {
+    const publication = makeEffect(review, {
+      stage: "publication",
+      role: "summary",
+      slot: 1,
+    });
+    const publishFacts = {
+      contextHash: h(2),
+      adapterContractHash: h(3),
+      schemaHash: h(4),
+      outputCommitmentHash: h(5),
+      frozenPlanHash: h(6),
+      appId: "app",
+      installationId: "installation",
+      baseRepositoryId: logical.baseRepositoryId,
+      pullRequest: logical.pullRequest,
+      commitSha: logical.headSha,
+      objectTargetHash: h(7),
+      renderPolicyHash: h(8),
+      payloadHashes: [h(9)],
+      markerHash: h(10),
+    };
+    const input = kind === "provider facts" ? { ...facts } : [h(9)];
+    const submit = (value: typeof input) =>
+      kind === "provider facts"
+        ? makeRequest(review, effect, value as typeof facts)
+        : makeRequest(review, publication, {
+            ...publishFacts,
+            payloadHashes: value as string[],
+          });
+    expect(submit(input).requestHash).toMatch(/^[a-f0-9]{64}$/u);
+    for (let i = 0; i < 4096; i++)
+      Object.defineProperty(input, `extra${i}`, {
+        value: h(1),
+        enumerable: true,
+      });
+    let callbacks = 0;
+    const trap = () => {
+      callbacks++;
+      throw new Error("must not execute");
+    };
+    Object.defineProperty(
+      input,
+      kind === "provider facts" ? "settingsHash" : "0",
+      {
+        get: trap,
+      },
+    );
+    const proxy = new Proxy(input, {
+      get: trap,
+      getPrototypeOf: trap,
+      ownKeys: trap,
+      getOwnPropertyDescriptor: trap,
+    });
+    const descriptors = vi.spyOn(Object, "getOwnPropertyDescriptors");
+    try {
+      for (const hostile of [input, proxy]) {
+        expect(() => submit(hostile)).toThrow(
+          "certified_fork_effect_contract_rejected",
+        );
+        expect(
+          descriptors.mock.calls.filter(([value]) => value === hostile),
+        ).toHaveLength(0);
+        expect(callbacks).toBe(0);
+      }
+    } finally {
+      descriptors.mockRestore();
+    }
+  },
+);
+
 it("rejects oversized arrays before descriptor materialization without callbacks", () => {
   let calls = 0;
   const oversized = new Array(257).fill(h(1));
