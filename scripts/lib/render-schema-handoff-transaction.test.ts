@@ -50,16 +50,20 @@ describe("bounded managed89-to92 transaction construction", () => {
     expect(catalog).toHaveLength(92);
     const sql = renderSchemaHandoffTransaction(input());
     expect(sql).toContain(
-      "(SELECT count(*) FROM public._prisma_migrations) <> 92",
+      "(SELECT count(*) FROM public._prisma_migrations)<>92",
     );
     expect(
       sql.match(/^INSERT INTO public\._prisma_migrations/gmu),
     ).toHaveLength(3);
-    const terminal = sql.slice(
-      sql.indexOf("WITH expected(name,checksum) AS (VALUES "),
-    );
+    // The terminal ledger predicate pins every reviewed identity inline. The
+    // shared builder encodes them as one jsonb_to_recordset literal instead of
+    // a VALUES list; the requirement is unchanged - all 92 must be present.
+    const terminal = sql.slice(sql.indexOf("jsonb_to_recordset("));
+    expect(terminal).toContain('e("migrationName" text,checksum text)');
     for (const row of catalog)
-      expect(terminal).toContain(`('${row.migrationName}','${row.checksum}')`);
+      expect(terminal).toContain(
+        `{"migrationName":"${row.migrationName}","checksum":"${row.checksum}"}`,
+      );
     const extensions = [
       ...renderSchemaHandoffCheckoutExtension,
       {

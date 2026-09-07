@@ -1,11 +1,8 @@
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import {
   assertReleaseMigrationObservation,
   assertReleaseMigrationTransitionIntegrity,
   deriveOrderedPendingEntriesSha256,
 } from "../../packages/features/release-rollout/src/domain/release-migration-transition.ts";
-import { stripAtomicMigrationEnvelope } from "../run-codex-rotating-release-migration.mjs";
 import {
   assertEmptyApplicableRenderDefaultAcl,
   classifyRenderManagedMembership,
@@ -23,6 +20,14 @@ import {
   renderManagedCatalogSql,
 } from "./render-managed-catalog.mjs";
 import { renderManagedCoordinatorExclusionSql } from "./render-retained-exclusion.mjs";
+import {
+  jsonLiteral,
+  literal,
+  projectionOf,
+  readManagedMigrationBody,
+  renderManagedMigrationBodySql,
+  renderManagedTerminalLedgerSql,
+} from "./render-managed-transaction-bodies.mjs";
 
 // Mechanical evidence/SQL only. No registered production review, receipt issuer,
 // activation, connection factory or authorization override exists in this phase.
@@ -46,20 +51,12 @@ const phase = renderManagedWorkflowCutoverPhase;
 const fail = (reason) => {
   throw new Error(`render_managed_cutover_rejected:${reason}`);
 };
-const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const equal = (a, b) =>
   renderManagedEvidenceDigest(a) === renderManagedEvidenceDigest(b);
-// E literals preserve bytes independently of standard_conforming_strings and
-// cannot terminate the surrounding DO dollar quote, even in hostile names.
-const literal = (value) =>
-  `E'${String(value).replaceAll("\\", "\\\\").replaceAll("'", "''").replaceAll("$", "\\044")}'`;
-const json = (value) => `${literal(JSON.stringify(value))}::jsonb`;
+const json = jsonLiteral;
 const ordered = (ledger) =>
   [...ledger].sort((a, b) => (a.migrationName < b.migrationName ? -1 : 1));
-const query = (sql) =>
-  sql
-    .replace(/^SET search_path = pg_catalog, public;\n/u, "")
-    .replace(/;$/u, "");
+const query = (sql) => projectionOf(sql);
 const ledgerQuery = query(renderManagedLedgerSql);
 const membershipQuery = query(renderManagedMembershipSql);
 const catalogQuery = query(renderManagedCatalogSql);
@@ -142,6 +139,107 @@ const securityQuery = `SELECT jsonb_build_object(
  'schemas',(SELECT jsonb_agg(jsonb_build_array(n.oid,n.nspowner,n.nspacl) ORDER BY n.oid) FROM pg_namespace n WHERE n.nspname='public'),
  'database',(SELECT jsonb_build_array(datdba,datacl) FROM pg_database WHERE datname=current_database()))`;
 
+// The closed-gate observation contract. Exported so a composed in-place
+// operation binds the SAME closed-gate requirement rather than restating it.
+export const renderManagedRuntimeGateSql = gateQuery;
+export const assertRenderManagedClosedGate = assertGate;
+// The physical security snapshot projection, reused by any composition that
+// must prove these facts are unchanged across the four cutover bodies.
+export const renderManagedCutoverSecuritySql = securityQuery;
+
+/**
+ * The four immutable 92->96 bodies, verified against the reviewed checkout.
+ *
+ * @param offset marker numbering offset, so a composition that already applied
+ *   earlier bodies keeps one continuous fault-injection sequence.
+ */
+export function renderManagedWorkflowCutoverBodiesSql(
+  marker = "cutover-body",
+  offset = 0,
+) {
+  return readRenderManagedCheckoutInventory()
+    .slice(92)
+    .map((row, index) =>
+      renderManagedMigrationBodySql(
+        row,
+        `${marker}-${offset + index + 1}-complete`,
+      ),
+    );
+}
+
+// Everything the four bodies need, immediately before they run: the physical
+// security snapshot they must not change, the temporary schema-owner membership,
+// the scope-concurrency boundary and the deterministic workflow winner.
+export const renderManagedWorkflowCutoverPreambleSql = `CREATE TEMP TABLE cutover_security ON COMMIT DROP AS ${securityQuery};
+${renderManagedTemporaryMembershipSql}
+LOCK TABLE public."ReviewProviderScopeConcurrencyControl" IN SHARE MODE;
+DO $scope$ BEGIN
+ IF (SELECT count(*) FROM public."ReviewProviderScopeConcurrencyControl")<>1
+ OR EXISTS (SELECT 1 FROM public."ReviewProviderScopeConcurrencyControl" WHERE activated IS DISTINCT FROM false)
+ THEN RAISE EXCEPTION 'cutover_scope_activated'; END IF;
+END $scope$;
+-- Retain the entire deterministic winner, including workspace-transfer effects,
+-- in transaction-local storage. No runtime values enter logs or returned SQL.
+CREATE TEMP TABLE cutover_workflow_expected ON COMMIT DROP AS
+SELECT DISTINCT ON (p."repositoryId") to_jsonb(p)||jsonb_build_object(
+ 'attemptId',p.id,'revision',0,'installationId',r."installationId",'workspaceId',r."workspaceId",
+ 'status',CASE WHEN p."workspaceId"<>r."workspaceId" THEN 'not_started' ELSE p.status::text END,
+ 'pullRequestUrl',CASE WHEN p."workspaceId"<>r."workspaceId" THEN NULL ELSE p."pullRequestUrl" END,
+ 'errorMessage',CASE WHEN p."workspaceId"<>r."workspaceId" THEN NULL ELSE p."errorMessage" END,
+ 'pullRequestHeadSha',NULL) AS evidence
+FROM public."WorkflowProvisioning" p JOIN public."RepositoryConnection" r ON r.id=p."repositoryId"
+ORDER BY p."repositoryId",p."updatedAt" DESC,p.id DESC;`;
+
+/**
+ * Terminal verification of the 92->96 transition: the physical security
+ * snapshot is unchanged, the temporary membership is gone, the gate is still
+ * the same closed gate, the populated workflow data matches the deterministic
+ * winner computed before the bodies, the two replaced routine sources are
+ * exactly the reviewed ones, the new sequence is owner-only, and the ledger is
+ * complete with its reviewed prefix untouched.
+ *
+ * @param prefix reviewed original ledger rows that must survive unchanged
+ */
+export function renderManagedWorkflowCutoverTerminalSql({
+  originalMembership,
+  gate,
+  prefix,
+}) {
+  classifyRenderManagedMembership([originalMembership], originalMembership);
+  assertGate(gate);
+  const catalog = readRenderManagedCheckoutInventory();
+  const cutover96 = readManagedMigrationBody(catalog[95]);
+  const sourceChecks = ["guard", "prepare_authority"]
+    .map((tag, i) => {
+      const body = cutover96.split(`$${tag}$`)[1];
+      if (!body) fail("routine_source");
+      const name = [
+        "hosted_codex_comment_token_mint_guard",
+        "hosted_codex_comment_token_prepare_authority_complete",
+      ][i];
+      return `(SELECT count(*) FROM pg_proc p WHERE p.oid='public.${name}()'::regprocedure AND p.prosrc=${literal(body)})<>1`;
+    })
+    .join(" OR ");
+  return `DO $terminal$ BEGIN
+ IF (${securityQuery}) IS DISTINCT FROM (SELECT jsonb_build_object FROM pg_temp.cutover_security)
+ OR (${membershipQuery}) IS DISTINCT FROM ${json([originalMembership])}
+ OR pg_has_role('reviewrouter','reviewrouter_release_schema_owner','USAGE')
+ OR pg_has_role('reviewrouter','reviewrouter_release_schema_owner','SET')
+ OR (${gateQuery}) IS DISTINCT FROM ${json(gate)} THEN RAISE EXCEPTION 'cutover_security_changed'; END IF;
+ IF (SELECT jsonb_agg(to_jsonb(p) ORDER BY p.id COLLATE "C") FROM public."WorkflowProvisioning" p)
+ IS DISTINCT FROM (SELECT jsonb_agg(evidence ORDER BY (evidence->>'id') COLLATE "C") FROM pg_temp.cutover_workflow_expected)
+ OR EXISTS (SELECT 1 FROM public."RepositoryConnection" WHERE "inventoryGeneration" IS DISTINCT FROM 0)
+ THEN RAISE EXCEPTION 'cutover_terminal_data'; END IF;
+ IF ${sourceChecks} THEN RAISE EXCEPTION 'cutover_routine_source'; END IF;
+ IF NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_sequence s ON s.seqrelid=c.oid
+   WHERE c.oid='public."RepositoryInventoryGeneration"'::regclass AND c.relowner='reviewrouter'::regrole
+   AND c.relacl IS NULL AND s.seqtypid='bigint'::regtype AND s.seqstart=1 AND s.seqincrement=1
+   AND s.seqmin=1 AND s.seqmax=9223372036854775807 AND s.seqcache=1 AND NOT s.seqcycle)
+ OR ${renderManagedTerminalLedgerSql({ ledgerQuery, catalog, count: 96, prefix })}
+ THEN RAISE EXCEPTION 'cutover_terminal_effects'; END IF;
+END $terminal$;`;
+}
+
 // Return an OPEN transaction. The caller must compare complete terminal catalog
 // to its independently reviewed expectation in this same transaction, then use
 // fresh restricted custody and scope-status connections after it finishes.
@@ -184,41 +282,6 @@ export function renderManagedWorkflowCutoverTransaction({
     ) !== phase.orderedPendingEntriesSha256
   )
     fail("pending_identity");
-  const sources = entries.map((row) => {
-    const source = readFileSync(
-      new URL(
-        `../../packages/platform/db/prisma/migrations/${row.migrationName}/migration.sql`,
-        import.meta.url,
-      ),
-      "utf8",
-    );
-    if (sha256(source) !== row.checksum) fail("source_changed");
-    return stripAtomicMigrationEnvelope(source, row.migrationName);
-  });
-  const bodies = entries.map(
-    (
-      row,
-      i,
-    ) => `INSERT INTO public._prisma_migrations(id,checksum,migration_name,started_at,applied_steps_count)
-VALUES (gen_random_uuid()::text,'${row.checksum}','${row.migrationName}',clock_timestamp(),0);
-SET LOCAL search_path = public, pg_temp;
-${sources[i]}
-SET LOCAL search_path = pg_catalog, public;
-UPDATE public._prisma_migrations SET finished_at=clock_timestamp(),applied_steps_count=1
-WHERE migration_name='${row.migrationName}' AND checksum='${row.checksum}' AND finished_at IS NULL;
--- cutover-body-${i + 1}-complete`,
-  );
-  const sourceChecks = ["guard", "prepare_authority"]
-    .map((tag, i) => {
-      const body = sources[3].split(`$${tag}$`)[1];
-      if (!body) fail("routine_source");
-      const name = [
-        "hosted_codex_comment_token_mint_guard",
-        "hosted_codex_comment_token_prepare_authority_complete",
-      ][i];
-      return `(SELECT count(*) FROM pg_proc p WHERE p.oid='public.${name}()'::regprocedure AND p.prosrc=${literal(body)})<>1`;
-    })
-    .join(" OR ");
   return `BEGIN ISOLATION LEVEL READ COMMITTED;
 ${renderManagedCoordinatorExclusionSql}
 SET LOCAL search_path = pg_catalog, public;
@@ -238,53 +301,11 @@ DO $baseline$ BEGIN
  OR pg_has_role('reviewrouter','reviewrouter_release_schema_owner','USAGE')
  OR pg_has_role('reviewrouter','reviewrouter_release_schema_owner','SET') THEN RAISE EXCEPTION 'cutover_owner_access'; END IF;
 END $baseline$;
-CREATE TEMP TABLE cutover_security ON COMMIT DROP AS ${securityQuery};
-${renderManagedTemporaryMembershipSql}
-LOCK TABLE public."ReviewProviderScopeConcurrencyControl" IN SHARE MODE;
-DO $scope$ BEGIN
- IF (SELECT count(*) FROM public."ReviewProviderScopeConcurrencyControl")<>1
- OR EXISTS (SELECT 1 FROM public."ReviewProviderScopeConcurrencyControl" WHERE activated IS DISTINCT FROM false)
- THEN RAISE EXCEPTION 'cutover_scope_activated'; END IF;
-END $scope$;
--- Retain the entire deterministic winner, including workspace-transfer effects,
--- in transaction-local storage. No runtime values enter logs or returned SQL.
-CREATE TEMP TABLE cutover_workflow_expected ON COMMIT DROP AS
-SELECT DISTINCT ON (p."repositoryId") to_jsonb(p)||jsonb_build_object(
- 'attemptId',p.id,'revision',0,'installationId',r."installationId",'workspaceId',r."workspaceId",
- 'status',CASE WHEN p."workspaceId"<>r."workspaceId" THEN 'not_started' ELSE p.status::text END,
- 'pullRequestUrl',CASE WHEN p."workspaceId"<>r."workspaceId" THEN NULL ELSE p."pullRequestUrl" END,
- 'errorMessage',CASE WHEN p."workspaceId"<>r."workspaceId" THEN NULL ELSE p."errorMessage" END,
- 'pullRequestHeadSha',NULL) AS evidence
-FROM public."WorkflowProvisioning" p JOIN public."RepositoryConnection" r ON r.id=p."repositoryId"
-ORDER BY p."repositoryId",p."updatedAt" DESC,p.id DESC;
-${bodies.join("\n")}
+${renderManagedWorkflowCutoverPreambleSql}
+${renderManagedWorkflowCutoverBodiesSql().join("\n")}
 ${renderManagedMembershipCleanupSql}
 -- cutover-membership-cleanup-complete
-DO $terminal$ BEGIN
- IF (${securityQuery}) IS DISTINCT FROM (SELECT jsonb_build_object FROM pg_temp.cutover_security)
- OR (${membershipQuery}) IS DISTINCT FROM ${json([originalMembership])}
- OR pg_has_role('reviewrouter','reviewrouter_release_schema_owner','USAGE')
- OR pg_has_role('reviewrouter','reviewrouter_release_schema_owner','SET')
- OR (${gateQuery}) IS DISTINCT FROM ${json(gate)} THEN RAISE EXCEPTION 'cutover_security_changed'; END IF;
- IF (SELECT jsonb_agg(to_jsonb(p) ORDER BY p.id COLLATE "C") FROM public."WorkflowProvisioning" p)
- IS DISTINCT FROM (SELECT jsonb_agg(evidence ORDER BY (evidence->>'id') COLLATE "C") FROM pg_temp.cutover_workflow_expected)
- OR EXISTS (SELECT 1 FROM public."RepositoryConnection" WHERE "inventoryGeneration" IS DISTINCT FROM 0)
- THEN RAISE EXCEPTION 'cutover_terminal_data'; END IF;
- IF ${sourceChecks} THEN RAISE EXCEPTION 'cutover_routine_source'; END IF;
- IF NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_sequence s ON s.seqrelid=c.oid
-   WHERE c.oid='public."RepositoryInventoryGeneration"'::regclass AND c.relowner='reviewrouter'::regrole
-   AND c.relacl IS NULL AND s.seqtypid='bigint'::regtype AND s.seqstart=1 AND s.seqincrement=1
-   AND s.seqmin=1 AND s.seqmax=9223372036854775807 AND s.seqcache=1 AND NOT s.seqcycle)
- OR (SELECT count(*) FROM public._prisma_migrations)<>96
- OR jsonb_path_query_array((${ledgerQuery}),'$[0 to 91]') IS DISTINCT FROM ${json(ordered(ledger))}
- OR EXISTS (SELECT 1 FROM public._prisma_migrations m LEFT JOIN jsonb_to_recordset(${json(catalog)}) e("migrationName" text,checksum text)
-   ON e."migrationName"=m.migration_name AND e.checksum=m.checksum WHERE e.checksum IS NULL
-   OR m.id !~ '^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$'
-   OR m.started_at IS NULL OR m.finished_at IS NULL OR m.finished_at<m.started_at OR m.rolled_back_at IS NOT NULL
-   OR m.applied_steps_count<>1 OR COALESCE(m.logs,'')<>'')
- OR EXISTS (SELECT 1 FROM public._prisma_migrations GROUP BY migration_name HAVING count(*)<>1)
- THEN RAISE EXCEPTION 'cutover_terminal_effects'; END IF;
-END $terminal$;
+${renderManagedWorkflowCutoverTerminalSql({ originalMembership, gate, prefix: ordered(ledger) })}
 -- Complete reviewed catalog and restricted status verification remain mandatory.
 `;
 }

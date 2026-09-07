@@ -1,5 +1,6 @@
 export * from "./domain/release-rollout";
 export * from "./domain/release-migration-transition";
+export * from "./domain/managed-in-place-transition";
 export * from "./domain/release-authority-contract";
 export * from "./domain/sanitized-diagnostic.js";
 export * from "./domain/trusted-rollout-evidence";
