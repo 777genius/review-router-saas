@@ -7,7 +7,14 @@ if (!raw) {
   process.exit(1);
 }
 const u = new URL(raw);
-console.log("host:", u.hostname, "port:", u.port || 5432, "sslmode:", u.searchParams.get("sslmode"));
+console.log(
+  "host:",
+  u.hostname,
+  "port:",
+  u.port || 5432,
+  "sslmode:",
+  u.searchParams.get("sslmode"),
+);
 
 try {
   const r = await dns.lookup(u.hostname);
@@ -18,7 +25,11 @@ try {
 }
 
 await new Promise((resolve) => {
-  const socket = net.createConnection({ host: u.hostname, port: Number(u.port || 5432), timeout: 8000 });
+  const socket = net.createConnection({
+    host: u.hostname,
+    port: Number(u.port || 5432),
+    timeout: 8000,
+  });
   socket.on("connect", () => {
     console.log("tcp_connect: ok");
     socket.end();
