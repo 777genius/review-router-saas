@@ -12,6 +12,7 @@ import type {
   ReviewRunAuthorizationTokenPort,
   ReviewRunAuthorizationTokenProfile,
   VerifiedReviewRunAuthorizationToken,
+  VerifiedReviewRunAuthorizationTokenWithMetadata,
 } from "../../application/ports/platform-ports";
 import type { ReviewRunAuthorization } from "../../domain/review-run-authorization";
 import {
@@ -86,6 +87,26 @@ export class ReviewRunAuthorizationSignedCapabilityAdapter implements ReviewRunA
       now: input.now,
     });
     return parseContextClaims(claims, this.tokenProfile);
+  }
+
+  async verifyWithMetadata(input: {
+    readonly token: string;
+    readonly now: Date;
+  }): Promise<VerifiedReviewRunAuthorizationTokenWithMetadata> {
+    if (!this.codec.verifyWithMetadata) {
+      throw new Error("review_run_authorization_verified_metadata_unavailable");
+    }
+    const verified = await this.codec.verifyWithMetadata({
+      ...input,
+      expectedIssuer: this.tokenProfile.issuer,
+      expectedAudience: CapabilityAudience.ReviewRun,
+      expectedKind: CapabilityKind.RunAuthorization,
+    });
+    return Object.freeze({
+      ...parseContextClaims(verified.claims, this.tokenProfile),
+      authenticatedKeyId: verified.authenticatedKeyId,
+      notBefore: new Date(verified.claims.notBefore),
+    });
   }
 
   private assertTokenProfile(authorization: ReviewRunAuthorization): void {
