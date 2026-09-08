@@ -52,9 +52,13 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
     // confined to the owned-container test executor and cannot expose production.
     const metadataPairs = new Map<string, Map<string, string>>();
     let hashCalls = 0;
+    let dumpCalls = 0;
+    let restoreCalls = 0;
     const commands: CommandExecutor = {
       execute(command, args, options) {
         const started = Date.now();
+        if (command === "pg_dump") dumpCalls++;
+        if (command === "pg_restore") restoreCalls++;
         try {
           const result = route(args).execute(command, args, options);
           const sql = args.at(-1) ?? "";
@@ -153,6 +157,7 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
       await source.start();
       await prepareHistorical89Fixture(source, database, seed);
       const sourceScope = read(source, recoveryScopeSql);
+      expect(sourceScope.unsupportedMaterializedViews).toBe(0);
       expect(sourceScope.unsupportedInternalTriggerModes).toBe(0);
       expect(sourceScope.unsupportedRewriteRules).toBe(0);
       expect(Number(source.query(database, `SELECT count(*) FROM pg_trigger t
@@ -317,6 +322,50 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
       },
       180_000,
     );
+    it("rejects a target materialized view before restore", async () => {
+      const f = await fixture();
+      try {
+        f.target.query(database, "CREATE MATERIALIZED VIEW public.recovery_matview AS SELECT 1 AS value", "postgres");
+        const targetScope = read(f.target, recoveryScopeSql);
+        expect(targetScope.unsupportedMaterializedViews).toBe(1);
+        expect(targetScope.unsupportedRewriteRules).toBe(1);
+        const before = restoreCalls;
+        // Existing target relations fail the earlier empty-target gate.
+        await expect(f.restore()).rejects.toThrow(new Error("historical89_recovery_target_not_empty"));
+        expect(restoreCalls).toBe(before);
+        expect(f.target.query(database, "SELECT value FROM public.recovery_matview", "postgres")).toBe("1");
+      } finally {
+        f.target.cleanup();
+      }
+    }, 180_000);
+    it("supports ordinary view scope but rejects a source materialized view before backup", async () => {
+      source.query(database, "CREATE VIEW public.recovery_view AS SELECT 1 AS value", "postgres");
+      try {
+        const ordinary = read(source, recoveryScopeSql);
+        expect(ordinary.relations).toContainEqual(expect.objectContaining({ name: "recovery_view", kind: "v" }));
+        expect(ordinary.unsupportedMaterializedViews).toBe(0);
+        expect(ordinary.unsupportedRewriteRules).toBe(0);
+        source.query(database, "CREATE MATERIALIZED VIEW public.recovery_matview AS SELECT 1 AS value", "postgres");
+        try {
+          const materialized = read(source, recoveryScopeSql);
+          expect(materialized.unsupportedMaterializedViews).toBe(1);
+          expect(materialized.unsupportedRewriteRules).toBe(1);
+          const before = dumpCalls;
+          await expect(captureRecoveryArtifact({
+            sourceUrl, expectedSource: sourceIdentity, directory: join(root, "source-matview-rejected"),
+            reviewedPlan: plan, exclusionReference: "fixture-no-writers",
+            consistencyReference: "fixture-no-writers", commands,
+          })).rejects.toThrow(new Error("historical89_recovery_unsupported_materialized_views"));
+          expect(dumpCalls).toBe(before);
+        } finally {
+          source.query(database, "DROP MATERIALIZED VIEW public.recovery_matview", "postgres");
+        }
+      } finally {
+        source.query(database, "DROP VIEW public.recovery_view", "postgres");
+      }
+      expect(read(source, recoveryScopeSql).unsupportedMaterializedViews).toBe(0);
+      expect(read(source, recoveryScopeSql).unsupportedRewriteRules).toBe(0);
+    }, 180_000);
     it("rejects a source user rewrite rule before capturing a dump", async () => {
       source.query(database, 'CREATE RULE recovery_ignore_insert AS ON INSERT TO public."Workspace" DO INSTEAD NOTHING', "postgres");
       try {

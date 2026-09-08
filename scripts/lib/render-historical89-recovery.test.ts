@@ -104,6 +104,8 @@ function setup() {
   const passfiles: string[] = [],
     calls: { command: string; args: readonly string[] }[] = [];
   const state = {
+    materializedView: false,
+    targetMaterializedView: false,
     internalTriggerMode: false,
     rewriteRule: false,
     sourceUnsupported: false,
@@ -191,6 +193,7 @@ function setup() {
           schemas: ["public"],
           settings: 0,
           extensions: [{ name: "plpgsql", version: "1.0" }],
+          unsupportedMaterializedViews: (isTarget && state.targetMaterializedView) || (state.materializedView && (state.sourceUnsupported || (isTarget && state.restored))) ? 1 : 0,
           unsupportedTypes: 0,
           unsupportedCatalog: 0,
           unsupportedInternalTriggerModes: state.internalTriggerMode && (state.sourceUnsupported || (isTarget && state.restored)) ? 1 : 0,
@@ -361,6 +364,7 @@ describe("bounded historical89 recovery evidence", () => {
     );
   });
   it.each([
+    ["materializedView", "unsupported_materialized_views"],
     ["internalTriggerMode", "unsupported_internal_trigger_modes"],
     ["rewriteRule", "unsupported_rewrite_rules"],
   ] as const)("rejects restored %s after a passing baseline", async (field, reason) => {
@@ -374,6 +378,7 @@ describe("bounded historical89 recovery evidence", () => {
     f.cleaned();
   });
   it.each([
+    ["materializedView", "unsupported_materialized_views"],
     ["internalTriggerMode", "unsupported_internal_trigger_modes"],
     ["rewriteRule", "unsupported_rewrite_rules"],
   ] as const)("rejects source %s before dump", async (field, reason) => {
@@ -382,6 +387,15 @@ describe("bounded historical89 recovery evidence", () => {
     f.state[field] = true;
     await expect(f.capture()).rejects.toThrow(new Error(`historical89_recovery_${reason}`));
     expect(f.calls.some(c => c.command === "pg_dump")).toBe(false);
+    f.cleaned();
+  });
+  it("rejects target materialized views before mutation", async () => {
+    const f = setup();
+    const artifact = await f.capture();
+    f.state.targetMaterializedView = true;
+    await expect(f.restore(artifact)).rejects.toThrow(
+      new Error("historical89_recovery_unsupported_materialized_views"));
+    expect(f.mutations()).toHaveLength(0);
     f.cleaned();
   });
   it("reports a fixed catalog category without leaking raw observations", async () => {
