@@ -132,6 +132,11 @@ jobs:
           REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_COMMENT_TOKEN_CUSTODY_DATABASE_URL }}
         run: node scripts/diagnose-migration-role.mjs
 
+      - name: Check Render API connection-info (no credentials printed)
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: node scripts/check-render-connection-info.mjs
+
       - name: Run historical89 in-place operation
         env:
           REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
