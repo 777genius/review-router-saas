@@ -1,3 +1,4 @@
+import type { RepositoryReleaseSelector } from "./review-action-v2-repository-release-selection";
 import {
   buildActionOidcReplayNonceKey,
   validateOidcClaimsAgainstRepository,
@@ -396,6 +397,7 @@ export interface TrustedProducerReleaseMaterializerPort {
 }
 
 export type ReviewActionV2RunControlHandlerDependencies = {
+  readonly repositoryReleaseSelector?: RepositoryReleaseSelector;
   readonly oidcVerifier: GitHubActionsOidcTokenVerifierPort;
   readonly oidcAudience: string;
   readonly actionRepositories: ActionControlPlaneRepositoryPort;
@@ -456,13 +458,31 @@ async function authorizeReviewRun(
   readonly result: ReviewRunAuthorizeResult;
 }> {
   assertPublishedOffer(request);
-  const resolved = await resolveVerifiedIdentity(
-    request.oidcToken,
-    dependencies,
-  );
-  await dependencies.trustedProducerReleaseMaterializer?.ensureRegistered(
-    resolved.producerRelease,
-  );
+  let resolved = await resolveVerifiedIdentity(request.oidcToken, dependencies);
+  const attestedBaseRelease = resolved.producerRelease;
+  const selectedRelease = await dependencies.repositoryReleaseSelector?.select({
+    ...resolved.identity,
+    actionCommitSha: resolved.producerRelease.actionCommitSha,
+    baseRelease: resolved.producerRelease,
+  });
+  if (
+    selectedRelease &&
+    selectedRelease.producerReleaseId !==
+      resolved.producerRelease.producerReleaseId
+  ) {
+    resolved = {
+      ...resolved,
+      producerRelease: selectedRelease,
+      facts: {
+        ...resolved.facts,
+        producerReleaseId: selectedRelease.producerReleaseId,
+      },
+    };
+  } else {
+    await dependencies.trustedProducerReleaseMaterializer?.ensureRegistered(
+      resolved.producerRelease,
+    );
+  }
   await assertRegisteredRelease(resolved.facts, dependencies);
   const resolvedReviewInvestigation =
     await dependencies.reviewInvestigationCapability?.resolve({
@@ -490,6 +510,10 @@ async function authorizeReviewRun(
   const outcome = await dependencies.authorizations.authorizeReviewRun({
     verifiedIdentity: resolved.identity,
     producerReleaseId: resolved.facts.producerReleaseId,
+    ...(selectedRelease &&
+    selectedRelease.producerReleaseId !== attestedBaseRelease.producerReleaseId
+      ? { expectedBaseProducerRelease: attestedBaseRelease }
+      : {}),
     protocolOfferHash,
     oidcReplayKeyHash,
     providerVoteLanes: resolved.facts.providerVoteLanes,
