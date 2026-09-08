@@ -49,6 +49,8 @@ import {
   assertGitHubAppCommentAuthor,
   expectedGitHubAppBotLogin,
 } from "./review-comment-identity.js";
+// @ts-expect-error -- Spikes excludes JS declarations; type the pure boundary below.
+import { captureReviewRouterComments as captureComments } from "../../../scripts/lib/certified-fork-e2e-evidence.mjs";
 import { assertDisposableRepositoryProvenance } from "./codex-rotating-live-e2e-provenance.js";
 
 type RepositoryView = {
@@ -90,11 +92,24 @@ type IssueCommentView = {
 };
 
 type ReviewCommentView = {
+  readonly id: number;
+  readonly commit_id: string;
   readonly path: string;
   readonly line: number | null;
   readonly body: string;
   readonly user: { readonly login: string };
 };
+
+const captureReviewRouterComments = captureComments as (input: {
+  advisory: readonly IssueCommentView[];
+  inline: readonly ReviewCommentView[];
+  expectedAuthor: string;
+}) => readonly {
+  id: number;
+  surface: "advisory" | "inline";
+  author: string;
+  reviewedCommit: string | null;
+}[];
 
 loadEnvFiles();
 
@@ -945,6 +960,11 @@ async function runReviewPullRequest(input: {
   readonly latestGeneration: number;
   readonly advisoryCommentId: number | null;
   readonly inlineCommentCount: number;
+  readonly commentObservations: ReturnType<typeof captureReviewRouterComments>;
+  readonly observationScope: "ordinary-pr-author-login-only";
+  readonly runId: number;
+  readonly runAttempt: number;
+  readonly reviewHeadSha: string;
 }> {
   const repoWorkdir = join(workdir, `repo-${input.label}`);
   run("gh", ["repo", "clone", targetRepo, repoWorkdir, "--", "--depth=1"]);
@@ -1019,12 +1039,30 @@ async function runReviewPullRequest(input: {
     );
   }
 
-  const advisoryComment =
-    reviewMode === "clean" ? await waitForReviewRouterComment(prNumber) : null;
+  const advisoryComments =
+    reviewMode === "clean" ? await waitForReviewRouterComment(prNumber) : [];
   const inlineComments =
     reviewMode === "finding"
       ? await waitForReviewRouterInlineComments(prNumber)
       : [];
+  // Snapshot both surfaces in either ordinary scenario, including all pages.
+  // These are real login/commit observations, not certified-fork attestations.
+  const commentObservations = captureReviewRouterComments({
+    advisory: readPullRequestComments<IssueCommentView>(prNumber, "issues"),
+    inline: readPullRequestComments<ReviewCommentView>(prNumber, "pulls"),
+    expectedAuthor: expectedCommentAuthor,
+  });
+  for (const comment of [...advisoryComments, ...inlineComments]) {
+    if (
+      !commentObservations.some(
+        (observed) =>
+          observed.id === comment.id &&
+          observed.surface === ("commit_id" in comment ? "inline" : "advisory"),
+      )
+    ) {
+      throw new Error("codex_rotating_e2e_comment_disappeared");
+    }
+  }
   const provider = await readProviderState(input.providerInstanceId);
   const completedWritebacks = provider.completedWritebacks;
   if (
@@ -1093,7 +1131,12 @@ async function runReviewPullRequest(input: {
     runConclusion: completedRun.conclusion,
     completedWritebacks,
     latestGeneration: provider.latestGeneration,
-    advisoryCommentId: advisoryComment?.id ?? null,
+    advisoryCommentId: advisoryComments[0]?.id ?? null,
+    commentObservations,
+    observationScope: "ordinary-pr-author-login-only",
+    runId: completedRun.databaseId,
+    runAttempt: completedRun.attempt,
+    reviewHeadSha: authoredHeadSha,
     inlineCommentCount: inlineComments.length,
   };
 }
@@ -1236,24 +1279,42 @@ async function getRun(
   ) as WorkflowRunView;
 }
 
+function readPullRequestComments<T>(
+  prNumber: number,
+  surface: "issues" | "pulls",
+): T[] {
+  const pages: unknown = JSON.parse(
+    run("gh", [
+      "api",
+      "--paginate",
+      "--slurp",
+      `repos/${targetRepo}/${surface}/${prNumber}/comments?per_page=100`,
+    ]),
+  );
+  if (!Array.isArray(pages) || !pages.every(Array.isArray)) {
+    throw new Error("codex_rotating_e2e_invalid_comment_pages");
+  }
+  return pages.flat() as T[];
+}
+
 async function waitForReviewRouterComment(
   prNumber: number,
-): Promise<IssueCommentView> {
+): Promise<IssueCommentView[]> {
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
-    const comments = JSON.parse(
-      run("gh", ["api", `repos/${targetRepo}/issues/${prNumber}/comments`]),
-    ) as IssueCommentView[];
-    const comment = comments.find((candidate) =>
-      candidate.body.includes("<!-- reviewrouter:codex-oauth-rotating"),
+    const comments = readPullRequestComments<IssueCommentView>(
+      prNumber,
+      "issues",
     );
-    if (comment) {
-      assertGitHubAppCommentAuthor({
-        actualLogin: comment.user.login,
-        expectedLogin: expectedCommentAuthor,
-        surface: "advisory",
-      });
-      return comment;
+    const observations = captureReviewRouterComments({
+      advisory: comments,
+      inline: [],
+      expectedAuthor: expectedCommentAuthor,
+    });
+    if (observations.length > 0) {
+      return comments.filter((comment) =>
+        observations.some((item) => item.id === comment.id),
+      );
     }
     await sleep(3_000);
   }
@@ -1265,9 +1326,15 @@ async function waitForReviewRouterInlineComments(
 ): Promise<ReviewCommentView[]> {
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
-    const comments = JSON.parse(
-      run("gh", ["api", `repos/${targetRepo}/pulls/${prNumber}/comments`]),
-    ) as ReviewCommentView[];
+    const comments = readPullRequestComments<ReviewCommentView>(
+      prNumber,
+      "pulls",
+    );
+    captureReviewRouterComments({
+      advisory: [],
+      inline: comments,
+      expectedAuthor: expectedCommentAuthor,
+    });
     const markerComments = comments.filter((comment) =>
       comment.body.includes("<!-- review-router-inline:"),
     );

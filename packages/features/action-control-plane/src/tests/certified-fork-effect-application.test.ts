@@ -7,7 +7,10 @@ import {
   reconcileCertifiedForkEffect as reconcile,
   type ForkReconciliationInput,
 } from "../application/use-cases/reconcile-certified-fork-effect.js";
-import { replayForkLedger } from "../application/services/certified-fork-effect-ledger.js";
+import {
+  commandHash,
+  replayForkLedger,
+} from "../application/services/certified-fork-effect-ledger.js";
 import {
   SerializedForkRepository,
   seed,
@@ -114,6 +117,60 @@ describe("certified fork PR A application (no reservation entry point)", () => {
     expect(results.filter((x) => x.status === "fulfilled")).toHaveLength(1);
     expect(r.commits).toBe(1);
   });
+  it.each(["commandId", "commandHash"] as const)(
+    "rejects same-generation preflight receipt with mismatched %s before acquisition",
+    async (field) => {
+      const r = new SerializedForkRepository();
+      const input = r.admit();
+      const snapshot = snapshotOf(await claim(r.dependencies, input));
+      const durable = r.loadReview.bind(r);
+      const loaded = await durable(snapshot.familyKey, input.commandId);
+      const load = vi.spyOn(r, "loadReview").mockResolvedValue({
+        ...loaded,
+        receipt: {
+          ...loaded.receipt!,
+          [field]: field === "commandId" ? "other" : h(999),
+        },
+      });
+      const transaction = vi.spyOn(r, "acquireClaim");
+      const deps = r.dependencies;
+      const before = r.serialize();
+      await expect(claim(deps, input)).rejects.toThrow();
+      expect(load).toHaveBeenCalledExactlyOnceWith(
+        snapshot.familyKey,
+        input.commandId,
+      );
+      expect(transaction).not.toHaveBeenCalled();
+      expect(r.commits).toBe(1);
+      expect(r.serialize()).toBe(before);
+    },
+  );
+  it.each(["exact", "commandId", "commandHash"] as const)(
+    "rejects absent-row fabricated preflight receipt with %s identity before acquisition",
+    async (identity) => {
+      const r = new SerializedForkRepository();
+      const input = r.admit();
+      const load = vi.spyOn(r, "loadReview").mockResolvedValueOnce({
+        snapshot: null,
+        receipt: {
+          ownerHash: input.ownerHash,
+          commandId: identity === "commandId" ? "other" : input.commandId,
+          commandHash:
+            identity === "commandHash" ? h(999) : commandHash("acquire", input),
+          reviewHash: h(998),
+          version: "1",
+        },
+      });
+      const transaction = vi.spyOn(r, "acquireClaim");
+      const deps = r.dependencies;
+      const before = r.serialize();
+      await expect(claim(deps, input)).rejects.toThrow();
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(transaction).not.toHaveBeenCalled();
+      expect(r.commits).toBe(0);
+      expect(r.serialize()).toBe(before);
+    },
+  );
   it("samples storage time under lock, rejects expired renewal and increments takeover fence", async () => {
     const r = new SerializedForkRepository();
     const input = r.admit();
