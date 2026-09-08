@@ -302,6 +302,7 @@ const preReleaseMigrationBoundary = Object.freeze({
     "000090_workflow_provisioning_attempt_authority",
     "000091_workflow_provisioning_artifact_and_inventory",
     "000096_hosted_pool_public_repository_eligibility",
+    "000098_certified_fork_effect_archive",
   ]),
   retained: Object.freeze([
     "000067_review_live_progress",

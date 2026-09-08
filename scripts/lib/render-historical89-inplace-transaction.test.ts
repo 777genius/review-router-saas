@@ -1,3 +1,4 @@
+import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -29,7 +30,7 @@ import {
   renderHistorical89InPlaceTransaction,
 } from "./render-historical89-inplace-transaction.mjs";
 
-const inventory = readRenderManagedCheckoutInventory();
+const inventory = readRenderHistorical96CheckoutInventory();
 const ledger = (count: number) =>
   inventory.slice(0, count).map((r, i) => ({
     migrationName: r.migrationName,
@@ -212,6 +213,7 @@ const build = (overrides: Record<string, unknown> = {}) =>
 describe("composed historical89 to96 in-place transaction", () => {
   it("applies exactly the seven immutable bodies in one uncommitted transaction", () => {
     const { sql } = build();
+    expect(sql).not.toContain("000098_certified_fork_effect_archive");
     expect(
       sql.match(/^BEGIN ISOLATION LEVEL READ COMMITTED;$/gmu),
     ).toHaveLength(1);
@@ -232,7 +234,7 @@ describe("composed historical89 to96 in-place transaction", () => {
       );
     }
     // Application order is the reviewed order, not directory order chance.
-    const positions = pending.map((row) => sql.indexOf(row.checksum));
+    const positions = pending.map((row) => sql.indexOf(row.checksum!));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(sql).not.toMatch(/migrate resolve|REASSIGN OWNED|DROP OWNED/u);
   });
@@ -517,6 +519,13 @@ describe("composed historical89 to96 in-place transaction", () => {
     expect(checked.ordered).toHaveLength(89);
     expect(inspectHistorical89InPlaceLedger(ledger(89)).count).toBe(89);
     expect(inspectHistorical89InPlaceLedger(ledger(96)).count).toBe(96);
+    const archive = readRenderManagedCheckoutInventory()[96]!;
+    expect(() =>
+      inspectHistorical89InPlaceLedger([
+        ...ledger(96),
+        { ...ledger(96)[95]!, ...archive },
+      ]),
+    ).toThrow("count");
     expect(() => inspectHistorical89InPlaceLedger(ledger(92))).toThrow(
       "managed_ledger_count",
     );
