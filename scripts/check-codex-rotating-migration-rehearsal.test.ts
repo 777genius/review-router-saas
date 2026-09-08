@@ -249,7 +249,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       'const migration89Name = "000089_codex_oauth_v4_v5_staged_compatibility"',
     );
     expect(source).toContain(
-      "for (const migrationName of rotatingMigrationNames)",
+      "for (const { migrationName } of historical)",
     );
     expect(source).toContain(
       "proveMigrationRunnerHistory(url, migrationName, true)",
