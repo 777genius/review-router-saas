@@ -4,6 +4,7 @@ import { dirname, basename, resolve, join, parse } from "node:path";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import {
+  assertPairExportPublishable,
   readExactReviewInvestigationPair,
   validateSelection,
   type TrustedPairScope,
@@ -59,7 +60,11 @@ export async function readBoundedJson(
   }
 }
 /** Linux operator environment. Directory descriptor anchors writes against parent replacement. */
-export async function writeRestrictedArtifact(path: string, artifact: unknown) {
+export async function writeRestrictedArtifact(
+  path: string,
+  artifact: unknown,
+  beforePublish: () => void,
+) {
   const absolute = resolve(path);
   await checkPath(dirname(absolute));
   const directory = await open(
@@ -88,6 +93,7 @@ export async function writeRestrictedArtifact(path: string, artifact: unknown) {
       await file.close();
     }
     // Hard link publishes complete content atomically and refuses any existing entry, including symlinks.
+    beforePublish();
     await link(temporary, `${anchored}/${basename(absolute)}`);
     await unlink(temporary);
     temporary = undefined;
@@ -97,7 +103,10 @@ export async function writeRestrictedArtifact(path: string, artifact: unknown) {
     await directory.close();
   }
 }
-export async function main(args: string[]): Promise<number> {
+export async function main(
+  args: string[],
+  clock: () => number = Date.now,
+): Promise<number> {
   try {
     if (
       args.length !== 4 ||
@@ -113,7 +122,7 @@ export async function main(args: string[]): Promise<number> {
     const selection = validateSelection(
       await readBoundedJson(args[1]!),
       trusted,
-      Date.now(),
+      clock(),
     );
     const { createPrismaClient } =
       await import("../packages/platform/db/src/index");
@@ -135,12 +144,14 @@ export async function main(args: string[]): Promise<number> {
               observations: new PrismaReviewObservationStore(client),
               shadows: new PrismaInvestigationShadowEvidenceStore(client),
             },
-            Date.now(),
+            clock,
           );
         },
         { isolationLevel: "RepeatableRead", timeout: 15000, maxWait: 5000 },
       );
-      await writeRestrictedArtifact(args[3]!, artifact);
+      await writeRestrictedArtifact(args[3]!, artifact, () =>
+        assertPairExportPublishable(artifact, clock),
+      );
     } finally {
       await prisma.$disconnect();
     }

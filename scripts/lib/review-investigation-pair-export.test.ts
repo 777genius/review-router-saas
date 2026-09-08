@@ -26,6 +26,7 @@ import {
 } from "../../packages/features/review-evidence/src/domain/investigation-shadow-evidence";
 import { stableJson } from "../../packages/features/review-evidence/src/domain/provider-invocation-manifest";
 import {
+  assertPairExportPublishable,
   readExactReviewInvestigationPair,
   legacyKeys,
   shadowKeys,
@@ -34,8 +35,10 @@ import {
 } from "./review-investigation-pair-export";
 import {
   readBoundedJson,
-  writeRestrictedArtifact,
+  writeRestrictedArtifact as writeGuardedArtifact,
 } from "../export-review-investigation-pair";
+const writeRestrictedArtifact = (path: string, artifact: unknown) =>
+  writeGuardedArtifact(path, artifact, () => {});
 const hash = (v: string | Uint8Array) =>
   createHash("sha256").update(v).digest("hex");
 function fixture() {
@@ -153,7 +156,7 @@ async function run(f: Fixture, missing?: "legacy" | "shadow") {
         },
       },
     },
-    shadowIssuedAtMs + 2000,
+    () => shadowIssuedAtMs + 2000,
   );
 }
 test("retained historical exact pair, expired reuse TTL and certificate, version offset, separate model labels and verifiable body", async () => {
@@ -424,13 +427,18 @@ test("denied selection never reads stores, storage error sanitized", async () =>
       { ...f.s, extra: true },
       f.trusted,
       ports,
-      shadowIssuedAtMs,
+      () => shadowIssuedAtMs,
     ),
     { message: "pair_export_unavailable_or_denied" },
   );
   assert.equal(calls, 0);
   await assert.rejects(
-    readExactReviewInvestigationPair(f.s, f.trusted, ports, shadowIssuedAtMs),
+    readExactReviewInvestigationPair(
+      f.s,
+      f.trusted,
+      ports,
+      () => shadowIssuedAtMs,
+    ),
     { message: "pair_export_unavailable_or_denied" },
   );
 });
@@ -476,3 +484,91 @@ test("concurrent publication has one complete winner, no partial files", async (
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+function expiringFixture(expiry: "policy" | "legacy" | "shadow") {
+  const f = fixture();
+  const deadline =
+    expiry === "shadow" ? f.r.retainUntilMs : shadowIssuedAtMs + 10000;
+  f.trusted.validUntilMs = deadline + (expiry === "policy" ? 0 : 1000);
+  f.l = {
+    ...f.l,
+    retainUntilMs: deadline + (expiry === "legacy" ? 0 : 1000),
+  };
+  return f;
+}
+
+for (const expiry of ["policy", "legacy", "shadow"] as const) {
+  for (const offset of [-1, 0, 1]) {
+    test(`delayed reads recheck ${expiry} expiry at offset ${offset}`, async () => {
+      const f = expiringFixture(expiry);
+      const deadline =
+        expiry === "policy"
+          ? f.trusted.validUntilMs
+          : expiry === "legacy"
+            ? f.l.retainUntilMs
+            : f.r.retainUntilMs;
+      let now = shadowIssuedAtMs + 2000;
+      const result = readExactReviewInvestigationPair(
+        f.s,
+        f.trusted,
+        {
+          observations: { findById: async () => f.l },
+          shadows: {
+            findById: async () => {
+              await Promise.resolve();
+              now = deadline + offset;
+              return f.r;
+            },
+          },
+        },
+        () => now,
+      );
+      if (offset < 0) {
+        const artifact = await result;
+        assert.equal(artifact.body.exportedAtMs, now);
+      } else {
+        await assert.rejects(result, {
+          message: "pair_export_unavailable_or_denied",
+        });
+      }
+    });
+  }
+  for (const phase of ["before preparation", "during preparation"] as const) {
+    test(`publication rejects ${expiry} expiry ${phase}`, async () => {
+      const artifact = await run(expiringFixture(expiry));
+      const deadline =
+        expiry === "policy"
+          ? artifact.body.verifiedBindings.trustedScope.validUntilMs
+          : expiry === "legacy"
+            ? artifact.body.legacy.retainUntilMs
+            : artifact.body.investigation.retainUntilMs;
+      let now = shadowIssuedAtMs + 2000;
+      const dir = await mkdtemp(join(tmpdir(), "pair-export-expiry-"));
+      try {
+        if (phase === "before preparation") now = deadline;
+        await assert.rejects(
+          writeGuardedArtifact(
+            join(dir, "pair.json"),
+            {
+              toJSON() {
+                // Advance while the writer awaits filesystem preparation,
+                // after serialization but before sync/close/publication.
+                if (phase === "during preparation") {
+                  queueMicrotask(() => {
+                    now = deadline;
+                  });
+                }
+                return artifact;
+              },
+            },
+            () => assertPairExportPublishable(artifact, () => now),
+          ),
+          { message: "pair_export_unavailable_or_denied" },
+        );
+        assert.deepEqual(await readdir(dir), []);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  }
+}

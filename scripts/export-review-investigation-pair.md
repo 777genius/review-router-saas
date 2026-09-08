@@ -34,7 +34,11 @@ and `shadowKeys` lists. Unknown fields, oversized input, wildcards, and separate
 pairs fail closed. Expected provider and actual model are independent on each side.
 Only prompt-only, agentic-unbounded, or context-gateway legacy profiles are permitted.
 No discovery or candidate/TTL lookup is used. Reads share a read-only repeatable-read
-transaction. Policy authorization is checked before reads and again before building output.
+transaction. An injected clock supplies fresh time before reads and after both reads.
+Policy authorization and the original immutable retention deadlines are checked again
+immediately before the atomic publication call, after asynchronous filesystem preparation.
+Expiry at the current millisecond is denied; failed publication checks remove the temporary
+file. Historical reuse TTL and certificate expiry remain distinct from retention expiry.
 
 The versioned artifact retains both domain records with separate labels, all available
 provenance, canonical certificate, retention metadata, accounting and stored/recomputed

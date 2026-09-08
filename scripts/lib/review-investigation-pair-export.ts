@@ -342,15 +342,30 @@ export async function readExactReviewInvestigationPair(
     observations: Pick<ReviewObservationQueryPort, "findById">;
     shadows: Pick<InvestigationShadowEvidenceQueryPort, "findById">;
   },
-  nowMs: number,
+  clock: () => number = Date.now,
 ) {
   try {
-    const s = validateSelection(selection, trusted, nowMs);
+    const s = validateSelection(selection, trusted, clock());
     const l = await ports.observations.findById(s.legacyObservationId);
     const r = await ports.shadows.findById(s.shadowEvidenceId);
     if (!l || !r) return fail();
-    return await buildPairExport(s, trusted, l, r, nowMs);
+    return await buildPairExport(s, trusted, l, r, clock());
   } catch {
     return fail();
   }
+}
+
+/** Recheck the original policy and retained records at the publication boundary. */
+export function assertPairExportPublishable(
+  artifact: Awaited<ReturnType<typeof buildPairExport>>,
+  clock: () => number = Date.now,
+): void {
+  const nowMs = clock();
+  const { body } = artifact;
+  const selection = validateSelection(
+    body.selection,
+    body.verifiedBindings.trustedScope,
+    nowMs,
+  );
+  assertPairBinding(selection, body.legacy, body.investigation, nowMs);
 }
