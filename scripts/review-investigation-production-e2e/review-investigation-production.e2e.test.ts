@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { createPrismaClient, type PrismaClient } from "../../packages/platform/db/src/index.js";
+import { assertFixtureOwnership } from "./support/investigation-control-plane-child.fixture.js";
+import type { Boot, Snapshot } from "./support/investigation-control-plane-process.fixture.js";
 import {
   InvestigationEvaluationImportStatus,
   InvestigationPromotionDecision,
@@ -12,6 +16,7 @@ import {
 } from "../../packages/features/review-evidence/src/index.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  conflictingCommitRequest,
   createReviewInvestigationProductionE2EHarness,
   resetReviewInvestigationProductionE2EDatabase,
   type ReviewInvestigationProductionE2EHarness,
@@ -243,3 +248,109 @@ function requiredHarness(
   if (!value) throw new Error("review_investigation_e2e_harness_missing");
   return value;
 }
+
+// Separate from the legacy suite's unconditional resets: assignment must be
+// established before the first destructive operation for this scenario.
+describeWithDatabase.sequential("owned control-plane process persistence", () => {
+  it("restores durable investigation state after OS process restart", async () => {
+    const started = performance.now();
+    const runId = process.env.REVIEW_ROUTER_ITEM11_RUN_ID ?? "";
+    const claim = randomUUID();
+    let fixture: ReviewInvestigationProductionE2EHarness | undefined;
+    let claimed = false;
+    let checkpoint: Snapshot | undefined;
+    const boots: Boot[] = [];
+    const withOwner = async (action: (client: PrismaClient) => Promise<void>) => {
+      const client = createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 1 });
+      try {
+        await assertFixtureOwnership(client, databaseUrl!, runId);
+        await action(client);
+      } finally { await client.$disconnect(); }
+    };
+    try {
+      await withOwner(async (client) => {
+        const count = await client.$executeRaw`
+          UPDATE item11_fixture_owner SET claim_token = ${claim}
+          WHERE run_id = ${runId} AND claim_token IS NULL`;
+        expect(count).toBe(1);
+        claimed = true;
+      });
+      await resetReviewInvestigationProductionE2EDatabase(databaseUrl!);
+      fixture = await createReviewInvestigationProductionE2EHarness(databaseUrl!);
+      boots.push(await fixture.startControlPlaneProcess(runId));
+      const flow = await fixture.runWithFinding({
+        label: `os-restart-${runId}`, expandRelations: true,
+        terminalSource: InvestigationTelemetrySource.Shadow,
+        checkpoint: async ({ request, read }) => {
+          const running = fixture!;
+          checkpoint = await running.controlPlane.snapshot(read.investigationId);
+          expect(checkpoint.investigation.version.toString()).toBe(read.investigationVersion);
+          expect(checkpoint.investigation.dossierDigest).toBe(read.dossierDigest);
+          expect(checkpoint.investigation.activeTurnId).toBeNull();
+          expect(checkpoint.investigation.findings).toHaveLength(1);
+          expect(checkpoint.investigation.turnProvenance).not.toEqual([]);
+          expect(checkpoint.turns.some((turn) => turn.state === "committed" && turn.acceptedAttestationId && turn.sanitizedOutcomeHash)).toBe(true);
+          expect(checkpoint.receipts.length).toBeGreaterThan(0);
+          expect(checkpoint.receipts.every((receipt) => receipt.acceptedAttestationId && receipt.acceptedAttestationHash && receipt.evidenceDigest)).toBe(true);
+          expect(checkpoint.obligations.some((obligation) => obligation.state === "open")).toBe(true);
+          expect(checkpoint.leases.length).toBeGreaterThan(0);
+          expect(checkpoint.leases.every((lease) => lease.state === "released")).toBe(true);
+          const observations = await running.client.reviewEvidenceObservation.count();
+          expect(observations).toBe(1);
+          boots.push(await running.replaceControlPlaneProcess());
+          expect(boots[0]!.pid).not.toBe(process.pid);
+          expect(boots[1]!.pid).not.toBe(boots[0]!.pid);
+          expect(boots[1]!.nonce).not.toBe(boots[0]!.nonce);
+          expect(await running.controlPlane.snapshot(read.investigationId)).toEqual(checkpoint);
+          const replay = await running.controlPlane.invoke("commit", request);
+          expect(replay.result).toMatchObject({ investigationVersion: read.investigationVersion, dossierDigest: read.dossierDigest });
+          expect(await running.controlPlane.snapshot(read.investigationId)).toEqual(checkpoint);
+          expect(checkpoint.commands.filter((command) => command.commandId === request.idempotencyKey)).toHaveLength(1);
+          await expect(running.controlPlane.invoke("commit", await conflictingCommitRequest(request)))
+            .rejects.toThrow("item11_investigation_idempotency_conflict");
+          expect(await running.controlPlane.snapshot(read.investigationId)).toEqual(checkpoint);
+          expect(await running.client.reviewEvidenceObservation.count()).toBe(observations);
+        },
+      });
+      expect(checkpoint).toBeDefined();
+      const terminal = await fixture.controlPlane.snapshot(flow.investigationId);
+      expect(terminal.investigation.investigationId).toBe(checkpoint!.investigation.investigationId);
+      expect(await fixture.client.reviewInvestigation.count({ where: { naturalIdentityHash: checkpoint!.investigation.naturalIdentityHash } })).toBe(1);
+      expect(terminal.investigation.state).toBe("concluded");
+      expect(terminal.turns.some((turn) => turn.purpose === "critic" && turn.state === "committed")).toBe(true);
+      expect(terminal.certificates).toHaveLength(1);
+      expect(terminal.shadows).toHaveLength(1);
+      expect(terminal.telemetry).toHaveLength(1);
+      expect(flow.expansionObligationCount).toBe(1);
+      expect(await fixture.verifyAcceptedCertificate(flow)).toMatchObject({ status: InvestigationCertificateVerificationStatus.Accepted, conclusion: InvestigationCertificateConclusion.Findings });
+      expect(terminal.investigation.findings).toEqual(checkpoint!.investigation.findings);
+      for (const receipt of checkpoint!.receipts) {
+        const retained = terminal.receipts.find((value) => value.receiptId === receipt.receiptId)!;
+        expect(retained).toBeDefined();
+        // Conclusion may extend evidence retention; all evidence bindings stay exact.
+        expect(retained.retainUntil.getTime()).toBeGreaterThanOrEqual(receipt.retainUntil.getTime());
+        expect({ ...retained, retainUntil: receipt.retainUntil }).toEqual(receipt);
+      }
+      expect(await fixture.client.reviewEvidenceObservation.count()).toBe(1);
+      expect(await fixture.client.reviewPublicationAttemptV2.count()).toBe(0);
+      expect(fixture.base.fakeGitHub.comments).toHaveLength(0);
+      expect(fixture.base.fakeGitHub.checkRuns).toHaveLength(0);
+    } finally {
+      // If close cannot establish death this throws before any database reset.
+      await fixture?.close();
+      if (claimed) {
+        await withOwner(async (client) => {
+          const rows = await client.$queryRaw<Array<{ claim_token: string }>>`SELECT claim_token FROM item11_fixture_owner`;
+          expect(rows).toEqual([{ claim_token: claim }]);
+        });
+        await resetReviewInvestigationProductionE2EDatabase(databaseUrl!);
+      }
+      console.info("item11 resource measurements", {
+        durationMs: Math.round(performance.now() - started),
+        parentRssBytes: process.memoryUsage().rss,
+        childBootRssBytes: boots.map((boot) => boot.rss),
+        childLaunches: boots.length, configuredConnectionCeiling: 14,
+      });
+    }
+  }, 120_000);
+});

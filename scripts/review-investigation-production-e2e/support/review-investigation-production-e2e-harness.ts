@@ -1,8 +1,15 @@
+import {
+  reviewActionV2ContextReplayKeysEnv,
+  reviewActionV2ContextSessionSecretEnv,
+} from "../../../apps/api/src/review-action-v2-context-attestation-composition.js";
+import { OwnedControlPlane, type Boot, type FixtureConfig } from "./investigation-control-plane-process.fixture.js";
+import { isDeepStrictEqual } from "node:util";
 import { Buffer } from "node:buffer";
 import {
   createHash,
   generateKeyPairSync,
   randomUUID,
+  randomBytes,
   sign,
   type KeyObject,
 } from "node:crypto";
@@ -105,6 +112,8 @@ import {
 } from "../../../packages/protocol-review-action-v2/src/index.js";
 import {
   composeReviewActionV2ProductionRoutes,
+  reviewActionV2CapabilityKeysEnv,
+  reviewInvestigationLeaseCapabilityKeysEnv,
   reviewInvestigationPrivateMaterialActiveKeyIdEnv,
   reviewInvestigationPrivateMaterialKeysEnv,
   reviewInvestigationPrivateMaterialTtlEnv,
@@ -229,6 +238,7 @@ type InvestigationFlowInput = Readonly<{
   terminalSource:
     | InvestigationTelemetrySource.Shadow
     | InvestigationTelemetrySource.DisposableFixture;
+  checkpoint?: (input: { request: ReviewInvestigationTurnCommitRequest; read: InvestigationRead }) => Promise<void>;
   restartAfterFirstCommit?: boolean;
   restartAfterFindingCommit?: boolean;
 }>;
@@ -240,6 +250,45 @@ export class ReviewInvestigationProductionE2EHarness {
   readonly coverageProfileHash: string;
   readonly promotionTrustProfile: InvestigationPromotionTrustProfile;
   readonly promotionProfile: InvestigationPromotionProfileIdentity;
+  private processReplaced = false;
+  private processConfig: FixtureConfig | null = null;
+  private ownedChild: OwnedControlPlane | null = null;
+  get controlPlane(): OwnedControlPlane {
+    return requiredValue(this.ownedChild, "item11_child_missing");
+  }
+  async startControlPlaneProcess(runId: string): Promise<Boot> {
+    ensure(!this.ownedChild, "item11_already_started");
+    this.processConfig = { runId, databaseUrl: this.databaseUrl, env: this.base.env };
+    this.ownedChild = new OwnedControlPlane(runId);
+    const boot = await this.ownedChild.start(this.processConfig);
+    this.routes = {
+      ...this.routes,
+      investigation: {
+        ...this.routes.investigation,
+        openV2: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("open", request) },
+        planTurn: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("plan", request) },
+        commitTurn: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("commit", request) },
+        conclude: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("conclude", request) },
+        acquireLease: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("acquire", request) },
+        releaseLease: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("release", request) },
+      },
+      execution: {
+        ...this.routes.execution,
+        acquireLease: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("executionAcquire", request) },
+        releaseLease: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("executionRelease", request) },
+      },
+    };
+    return boot;
+  }
+  async replaceControlPlaneProcess(): Promise<Boot> {
+    const config = requiredValue(this.processConfig, "item11_config_missing");
+    ensure(!this.processReplaced, "item11_two_launch_limit");
+    await this.controlPlane.killAtCheckpoint();
+    this.processReplaced = true;
+    // Assignment is deliberately after confirmed close; failed cleanup retains A.
+    this.ownedChild = new OwnedControlPlane(config.runId);
+    return this.ownedChild.start(config);
+  }
   private prisma: PrismaClient;
   private routes: ReviewActionV2ProductionRoutes;
   private restartedPrisma: PrismaClient | null = null;
@@ -287,10 +336,15 @@ export class ReviewInvestigationProductionE2EHarness {
       },
       protocolMaxAttemptsPerSlot: providerAttemptBudget,
       environmentOverrides: {
+        [reviewActionV2ContextSessionSecretEnv]: randomBytes(32).toString("base64"),
+        [reviewActionV2ContextReplayKeysEnv]: JSON.stringify([{ keyId: "review-v2-e2e-context-key", secretBase64: randomBytes(32).toString("base64") }]),
+        REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON: ephemeralSigningKeys("review-v2-e2e-key"),
+        [reviewActionV2CapabilityKeysEnv]: ephemeralSigningKeys("review-v2-e2e-key"),
+        [reviewInvestigationLeaseCapabilityKeysEnv]: ephemeralSigningKeys("review-v2-e2e-investigation-lease-key"),
         [reviewInvestigationPrivateMaterialActiveKeyIdEnv]:
           privateMaterialKeyId,
         [reviewInvestigationPrivateMaterialKeysEnv]: JSON.stringify({
-          [privateMaterialKeyId]: Buffer.alloc(32, 11).toString("base64url"),
+          [privateMaterialKeyId]: randomBytes(32).toString("base64url"),
         }),
         [reviewInvestigationPrivateMaterialTtlEnv]: "3600000",
       },
@@ -342,11 +396,13 @@ export class ReviewInvestigationProductionE2EHarness {
   }
 
   async close(): Promise<void> {
+    await this.ownedChild?.close();
     await this.restartedPrisma?.$disconnect();
     await this.base.close();
   }
 
   async restartControlPlane(): Promise<void> {
+    ensure(!this.ownedChild, "item11_in_process_restart_forbidden");
     await this.restartedPrisma?.$disconnect();
     this.restartedPrisma = createPrismaClient({
       databaseUrl: this.databaseUrl,
@@ -460,6 +516,7 @@ export class ReviewInvestigationProductionE2EHarness {
         `${input.label}-discovery-${discoveryOrdinal}`,
       );
       current = commit.read;
+      if (discoveryOrdinal === 1) await input.checkpoint?.({ request: commit.request, read: commit.read });
       if (discoveryOrdinal === 1 && input.restartAfterFirstCommit) {
         await this.restartControlPlane();
       }
@@ -528,6 +585,8 @@ export class ReviewInvestigationProductionE2EHarness {
       current,
       `${input.label}-conclude`,
     );
+    const terminalBeforeReplay = this.ownedChild
+      ? await this.controlPlane.snapshot(concluded.read.investigationId) : null;
     const concludeReplay = await requiredHandler(
       this.routes.investigation.conclude,
     ).execute(concluded.request);
@@ -536,6 +595,9 @@ export class ReviewInvestigationProductionE2EHarness {
         concluded.read.investigationVersion,
       "duplicate_conclude_not_idempotent",
     );
+    if (terminalBeforeReplay) {
+      ensure(isDeepStrictEqual(terminalBeforeReplay, await this.controlPlane.snapshot(concluded.read.investigationId)), "item11_conclude_replay_mutated");
+    }
     this.routes = this.composeRoutes(this.prisma);
 
     const expansionObligationCount =
@@ -743,6 +805,10 @@ export class ReviewInvestigationProductionE2EHarness {
     prisma: PrismaClient,
     investigationTelemetrySamples?: ReviewInvestigationTerminalTelemetrySamplePort,
   ): ReviewActionV2ProductionRoutes {
+    if (this.ownedChild) {
+      ensure(!investigationTelemetrySamples, "item11_local_telemetry_override_forbidden");
+      return this.routes;
+    }
     return composeReviewActionV2ProductionRoutes({
       enabled: true,
       env: this.base.env,
@@ -1789,7 +1855,7 @@ function disposableFixtureTerminalSamples(
   };
 }
 
-async function conflictingCommitRequest(
+export async function conflictingCommitRequest(
   request: ReviewInvestigationTurnCommitRequest,
 ): Promise<ReviewInvestigationTurnCommitRequest> {
   const parsed = record(JSON.parse(request.turnObservationCanonicalJson));
@@ -1932,3 +1998,7 @@ function sha256(value: string): string {
 }
 
 const zeroHash = "0".repeat(64);
+
+function ephemeralSigningKeys(keyId: string): string {
+  return JSON.stringify([{ keyId, secretBase64: randomBytes(32).toString("base64"), verifyUntil: null }]);
+}
