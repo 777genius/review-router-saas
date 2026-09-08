@@ -127,6 +127,7 @@ describe("historical89 in-place operation", () => {
       originalMembership: {},
       aclDelta: undefined,
       receipt: null,
+      currentPermit: null,
       fenceHeld: true,
     };
     expect(
@@ -188,6 +189,7 @@ describe("historical89 in-place operation", () => {
       originalMembership: {},
       aclDelta: undefined,
       receipt: null,
+      currentPermit: null,
       fenceHeld: true,
     };
     const malformedPlans = [
