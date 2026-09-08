@@ -405,7 +405,10 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
         aclDelta: delta,
         receipt,
         currentPermit: JSON.parse(
-          pg.query(prepared.db, renderManagedOperationCurrentPermitSql(plan.binding)),
+          pg.query(
+            prepared.db,
+            renderManagedOperationCurrentPermitSql(plan.binding),
+          ),
         ),
         fenceHeld: true,
       } as never),
@@ -760,7 +763,10 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
       aclDelta: undefined,
       receipt: null,
       currentPermit: JSON.parse(
-        pg.query(prepared.db, renderManagedOperationCurrentPermitSql(plan.binding)),
+        pg.query(
+          prepared.db,
+          renderManagedOperationCurrentPermitSql(plan.binding),
+        ),
       ),
       fenceHeld: true,
     };
@@ -850,7 +856,10 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
       } as never),
       receipt,
       currentPermit: JSON.parse(
-        pg.query(prepared.db, renderManagedOperationCurrentPermitSql(plan.binding)),
+        pg.query(
+          prepared.db,
+          renderManagedOperationCurrentPermitSql(plan.binding),
+        ),
       ),
       fenceHeld: true,
     };

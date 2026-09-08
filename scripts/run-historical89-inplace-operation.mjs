@@ -395,7 +395,9 @@ async function run() {
       let reader;
       try {
         const request = parseHistorical89Verification(
-          readFileSync(requireEnv("REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH")),
+          readFileSync(
+            requireEnv("REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH"),
+          ),
           requireEnv("REVIEW_ROUTER_HISTORICAL89_OPERATION_ID"),
           requireEnv("REVIEW_ROUTER_HISTORICAL89_VERIFICATION_SHA256"),
         );

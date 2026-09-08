@@ -22,9 +22,7 @@ import {
   inspectHistorical89InPlaceLedger,
   renderHistorical89InPlaceTransaction,
 } from "./lib/render-historical89-inplace-transaction.mjs";
-import {
-  renderManagedOperationCustodyBootstrap,
-} from "./lib/render-managed-operation-custody.mjs";
+import { renderManagedOperationCustodyBootstrap } from "./lib/render-managed-operation-custody.mjs";
 import {
   renderHistorical89AdmissionRestrictionSql,
   renderHistorical89ConnectAclSql,
@@ -39,7 +37,10 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { persistentFixtureClient } from "./lib/render-managed-pg17-persistent.fixture";
-import { parseHistorical89Verification, verifyHistorical89Already96 } from "./lib/verify-historical89-already96.mjs";
+import {
+  parseHistorical89Verification,
+  verifyHistorical89Already96,
+} from "./lib/verify-historical89-already96.mjs";
 
 const seed = `INSERT INTO "Workspace" (id,slug,name,"updatedAt") VALUES ('old','old','old',now()),('new','new','new',now());
 INSERT INTO "GitHubInstallation" (id,"workspaceId","githubInstallationId","accountLogin","accountType","repositorySelection","updatedAt")
@@ -116,7 +117,9 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
   // Disposable qualification declarations only, never production recovery/fence evidence.
   const preconditionsOf = (db: string, connectAcl: unknown) => ({
     recovery: {
-      recoveryIdentitySha256: renderManagedEvidenceDigest({ offlineRecovery: db }),
+      recoveryIdentitySha256: renderManagedEvidenceDigest({
+        offlineRecovery: db,
+      }),
       artifactDigest: renderManagedEvidenceDigest({ offlineArtifact: db }),
       qualifiedAt: "2026-09-07T00:00:00.000Z",
       restoreVerified: true,
@@ -128,7 +131,13 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
     },
     automation: {
       automaticMigrationsDisabled: true,
-      declaredServices: [{ serviceId: "srv-offlineapi", autoDeploy: "no", suspended: "suspended" }],
+      declaredServices: [
+        {
+          serviceId: "srv-offlineapi",
+          autoDeploy: "no",
+          suspended: "suspended",
+        },
+      ],
     },
     fence: {
       externalFenceSha256: renderManagedEvidenceDigest({ offlineFence: db }),
@@ -157,7 +166,9 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
         "postgres",
       ),
       databaseName: db,
-      recoveryIdentitySha256: renderManagedEvidenceDigest({ offlineRecovery: db }),
+      recoveryIdentitySha256: renderManagedEvidenceDigest({
+        offlineRecovery: db,
+      }),
       externalFenceSha256: renderManagedEvidenceDigest({ offlineFence: db }),
     };
     const binding = historical89InPlaceCustodyBinding(identity as never);
@@ -179,7 +190,9 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
       pendingEntriesSha256: renderHistorical89PendingDigest(
         readHistorical89PendingIdentities(),
       ),
-      authorizedBinaryArtifactDigest: renderManagedEvidenceDigest({ offlineBinary: true }),
+      authorizedBinaryArtifactDigest: renderManagedEvidenceDigest({
+        offlineBinary: true,
+      }),
       baselineManifest: phase.baselineManifest,
       targetManifest: phase.targetManifest,
       originalLedgerDigest:
@@ -245,10 +258,18 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
   const directory = mkdtempSync(join(tmpdir(), "rr-startup96-realpg-request-"));
   beforeAll(async () => {
     await pg.start();
-    ({ originalMembership } = await prepareHistorical89Fixture(pg, "historical89", seed));
+    ({ originalMembership } = await prepareHistorical89Fixture(
+      pg,
+      "historical89",
+      seed,
+    ));
   }, 240_000);
   afterAll(() => {
-    try { pg.cleanup(); } finally { rmSync(directory, { recursive: true, force: true }); }
+    try {
+      pg.cleanup();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("verifies the committed request through real shared snapshots and rejects another operation", async () => {
@@ -257,57 +278,118 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
     // Capture ORIGINAL fixture bytes before permit/effect; this is not a
     // production persistence implementation or an independent approval root.
     const path = join(directory, "request.json");
-    const bytes = Buffer.from(JSON.stringify({ version: 1,
-      admission: prepared.shared.admission, coordinates,
-      reviewedTerminalCatalogDigest: digest, originalMembership,
-      baselineObjectAcl: prepared.baselineObjectAcl,
-      creatorEvidence: prepared.shared.creatorEvidence }));
+    const bytes = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        admission: prepared.shared.admission,
+        coordinates,
+        reviewedTerminalCatalogDigest: digest,
+        originalMembership,
+        baselineObjectAcl: prepared.baselineObjectAcl,
+        creatorEvidence: prepared.shared.creatorEvidence,
+      }),
+    );
     const hash = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
     writeFileSync(path, bytes, { flag: "wx", mode: 0o600, flush: true });
-    const request = parseHistorical89Verification(readFileSync(path), plan.operationId, hash);
+    const request = parseHistorical89Verification(
+      readFileSync(path),
+      plan.operationId,
+      hash,
+    );
     openPermit(prepared, plan);
     pg.query(prepared.db, plan.transactionSql);
-    expect(inspectHistorical89InPlaceLedger(ledger(prepared.db)).count).toBe(96);
-    const receipt = read(prepared.db, plan.effectReadSql, "reviewrouter_operation_custody_reader");
+    expect(inspectHistorical89InPlaceLedger(ledger(prepared.db)).count).toBe(
+      96,
+    );
+    const receipt = read(
+      prepared.db,
+      plan.effectReadSql,
+      "reviewrouter_operation_custody_reader",
+    );
     expect(receipt.permitState).toBe("terminal");
     const client = persistentFixtureClient(pg, prepared.db, "reviewrouter");
-    const reader = persistentFixtureClient(pg, prepared.db, "reviewrouter_operation_custody_reader");
-    const identitySql = "SELECT jsonb_build_object('pid',pg_backend_pid(),'session',session_user,'current',current_user);";
+    const reader = persistentFixtureClient(
+      pg,
+      prepared.db,
+      "reviewrouter_operation_custody_reader",
+    );
+    const identitySql =
+      "SELECT jsonb_build_object('pid',pg_backend_pid(),'session',session_user,'current',current_user);";
     let pids: number[] = [];
     try {
       const a = (await client.query(identitySql)).rows[0].value as any;
       const b = (await reader.query(identitySql)).rows[0].value as any;
       pids = [a.pid, b.pid];
       expect(a.session).toBe("reviewrouter");
-      expect(b).toMatchObject({ session: "reviewrouter_operation_custody_reader", current: "reviewrouter_operation_custody_reader" });
+      expect(b).toMatchObject({
+        session: "reviewrouter_operation_custody_reader",
+        current: "reviewrouter_operation_custody_reader",
+      });
       expect(a.pid).not.toBe(b.pid);
       expect(pids).not.toContain(receipt.backendPid);
-      await expect(verifyHistorical89Already96(client, reader, request)).resolves.toMatchObject({
-        outcome: "already-96", receiptDigest: receipt.effectFingerprint,
-        verification: "read-only-snapshot", authorizesProductionMutation: false });
+      await expect(
+        verifyHistorical89Already96(client, reader, request),
+      ).resolves.toMatchObject({
+        outcome: "already-96",
+        receiptDigest: receipt.effectFingerprint,
+        verification: "read-only-snapshot",
+        authorizesProductionMutation: false,
+      });
       for (const connection of [client, reader]) {
-        expect(connection.queries).toContain("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;");
+        expect(connection.queries).toContain(
+          "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;",
+        );
         expect(connection.queries.at(-1)).toBe("ROLLBACK;");
       }
       expect(readFileSync(path)).toEqual(bytes);
       expect(client.queries).toContain("SELECT pg_export_snapshot();");
-      expect(reader.queries.some(sql => /^SET TRANSACTION SNAPSHOT '[A-Fa-f0-9]+-[A-Fa-f0-9]+-[0-9]+';$/.test(sql))).toBe(true);
+      expect(
+        reader.queries.some((sql) =>
+          /^SET TRANSACTION SNAPSHOT '[A-Fa-f0-9]+-[A-Fa-f0-9]+-[0-9]+';$/.test(
+            sql,
+          ),
+        ),
+      ).toBe(true);
       // A separately parsed durable request for another operation cannot borrow
       // this real current permit or its protected receipt: custody itself is
       // operation-bound and PostgreSQL rejects its attestation first.
       const otherId = randomUUID();
-      const otherBytes = Buffer.from(JSON.stringify({ ...JSON.parse(bytes.toString()),
-        admission: { ...request.admission, operationId: otherId } }));
-      const other = parseHistorical89Verification(otherBytes, otherId,
-        `sha256:${createHash("sha256").update(otherBytes).digest("hex")}`);
-      await expect(verifyHistorical89Already96(client, reader, other)).rejects.toThrow("custody_attestation_failed");
-      for (const connection of [client, reader]) expect(connection.queries.at(-1)).toBe("ROLLBACK;");
-      const states = read(prepared.db, `SELECT jsonb_agg(jsonb_build_object('state',state,'xact',xact_start)) FROM pg_stat_activity WHERE pid IN (${pids.join(",")});`, "postgres");
-      expect(states).toEqual([{ state: "idle", xact: null }, { state: "idle", xact: null }]);
+      const otherBytes = Buffer.from(
+        JSON.stringify({
+          ...JSON.parse(bytes.toString()),
+          admission: { ...request.admission, operationId: otherId },
+        }),
+      );
+      const other = parseHistorical89Verification(
+        otherBytes,
+        otherId,
+        `sha256:${createHash("sha256").update(otherBytes).digest("hex")}`,
+      );
+      await expect(
+        verifyHistorical89Already96(client, reader, other),
+      ).rejects.toThrow("custody_attestation_failed");
+      for (const connection of [client, reader])
+        expect(connection.queries.at(-1)).toBe("ROLLBACK;");
+      const states = read(
+        prepared.db,
+        `SELECT jsonb_agg(jsonb_build_object('state',state,'xact',xact_start)) FROM pg_stat_activity WHERE pid IN (${pids.join(",")});`,
+        "postgres",
+      );
+      expect(states).toEqual([
+        { state: "idle", xact: null },
+        { state: "idle", xact: null },
+      ]);
     } finally {
       await Promise.allSettled([client.end(), reader.end()]);
-      if (pids.length) await waitFor(() => pg.query(prepared.db,
-        `SELECT count(*) FROM pg_stat_activity WHERE pid IN (${pids.join(",")})`, "postgres") === "0");
+      if (pids.length)
+        await waitFor(
+          () =>
+            pg.query(
+              prepared.db,
+              `SELECT count(*) FROM pg_stat_activity WHERE pid IN (${pids.join(",")})`,
+              "postgres",
+            ) === "0",
+        );
     }
   }, 300_000);
 });

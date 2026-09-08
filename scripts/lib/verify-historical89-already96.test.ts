@@ -1,7 +1,14 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { readRenderManagedCheckoutInventory, renderManagedEvidenceDigest } from "./render-schema-handoff-policy.mjs";
-import { readHistorical89PendingIdentities, renderHistorical89AdmissionPhase as phase, renderHistorical89PendingDigest } from "./render-historical89-admission.mjs";
+import {
+  readRenderManagedCheckoutInventory,
+  renderManagedEvidenceDigest,
+} from "./render-schema-handoff-policy.mjs";
+import {
+  readHistorical89PendingIdentities,
+  renderHistorical89AdmissionPhase as phase,
+  renderHistorical89PendingDigest,
+} from "./render-historical89-admission.mjs";
 
 const inventory = readRenderManagedCheckoutInventory();
 const ledger = (count: number) =>
@@ -226,49 +233,121 @@ const after = () => ({
   ],
 });
 
-
 import { afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseHistorical89Verification, verifyHistorical89Already96 } from "./verify-historical89-already96.mjs";
-import { renderManagedLedgerSql, renderManagedMembershipSql } from "./render-schema-handoff-policy.mjs";
+import {
+  parseHistorical89Verification,
+  verifyHistorical89Already96,
+} from "./verify-historical89-already96.mjs";
+import {
+  renderManagedLedgerSql,
+  renderManagedMembershipSql,
+} from "./render-schema-handoff-policy.mjs";
 import { renderManagedCatalogSql } from "./render-managed-catalog.mjs";
 import { renderHistorical89ObjectAclSql } from "./render-historical89-admission.mjs";
 
 // Synthetic unit evidence only. Real validators run; no production or PG proof.
-const document = () => ({ version: 1, admission: admission(),
-  coordinates: {epoch: 1, generation: 1, nonce: "0".repeat(32)},
+const document = () => ({
+  version: 1,
+  admission: admission(),
+  coordinates: { epoch: 1, generation: 1, nonce: "0".repeat(32) },
   reviewedTerminalCatalogDigest: renderManagedEvidenceDigest(baselineCatalog),
-  originalMembership, baselineObjectAcl: before, creatorEvidence: creatorEvidence() });
+  originalMembership,
+  baselineObjectAcl: before,
+  creatorEvidence: creatorEvidence(),
+});
 const bytesOf = (doc = document()) => Buffer.from(JSON.stringify(doc));
-const hashOf = (bytes: Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-const requestOf = () => { const bytes = bytesOf(); return parseHistorical89Verification(bytes, admission().operationId, hashOf(bytes)); };
+const hashOf = (bytes: Buffer) =>
+  `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+const requestOf = () => {
+  const bytes = bytesOf();
+  return parseHistorical89Verification(
+    bytes,
+    admission().operationId,
+    hashOf(bytes),
+  );
+};
 function fixture() {
   const request = requestOf();
-  const permit = { ...request.binding, kind: phase.kind,
-    admissionIdentityDigest: request.identityDigest, terminalCatalogDigest: request.reviewedTerminalCatalogDigest,
-    epoch: "1", generation: "1", nonce: request.coordinates.nonce, state: "terminal" };
-  const receipt = {kind: phase.kind, operationId: request.binding.operationId,
-    epoch: "1", generation: "1", nonce: request.coordinates.nonce,
-    ledgerManifest: phase.targetManifest, terminalCatalogDigest: request.reviewedTerminalCatalogDigest,
-    effectFingerprint: "", backendPid: 123, transactionId: "456", recordedAt: "2026-09-07T00:00:00.000Z", permitState: "terminal"};
-  receipt.effectFingerprint = `sha256:${createHash("sha256").update([
-    receipt.kind, receipt.operationId, request.identityDigest,
-    request.binding.systemIdentifier, request.binding.databaseOid, request.binding.databaseName,
-    request.binding.recoveryIdentitySha256, request.binding.externalFenceSha256,
-    receipt.generation, receipt.epoch, receipt.nonce, receipt.ledgerManifest, receipt.terminalCatalogDigest,
-  ].join("\n")).digest("hex")}`;
-  const state: any = { permit, receipt, ledger: ledger(96), catalog: baselineCatalog,
-    gate, memberships: [originalMembership], acl: after(), backend: false,
-    identity: {systemIdentifier: request.binding.systemIdentifier, databaseOid: request.binding.databaseOid, databaseName: request.binding.databaseName},
-    role: {session: "reviewrouter_operation_custody_reader", current: "reviewrouter_operation_custody_reader"}, fail: "", ambiguous: "" };
+  const permit = {
+    ...request.binding,
+    kind: phase.kind,
+    admissionIdentityDigest: request.identityDigest,
+    terminalCatalogDigest: request.reviewedTerminalCatalogDigest,
+    epoch: "1",
+    generation: "1",
+    nonce: request.coordinates.nonce,
+    state: "terminal",
+  };
+  const receipt = {
+    kind: phase.kind,
+    operationId: request.binding.operationId,
+    epoch: "1",
+    generation: "1",
+    nonce: request.coordinates.nonce,
+    ledgerManifest: phase.targetManifest,
+    terminalCatalogDigest: request.reviewedTerminalCatalogDigest,
+    effectFingerprint: "",
+    backendPid: 123,
+    transactionId: "456",
+    recordedAt: "2026-09-07T00:00:00.000Z",
+    permitState: "terminal",
+  };
+  receipt.effectFingerprint = `sha256:${createHash("sha256")
+    .update(
+      [
+        receipt.kind,
+        receipt.operationId,
+        request.identityDigest,
+        request.binding.systemIdentifier,
+        request.binding.databaseOid,
+        request.binding.databaseName,
+        request.binding.recoveryIdentitySha256,
+        request.binding.externalFenceSha256,
+        receipt.generation,
+        receipt.epoch,
+        receipt.nonce,
+        receipt.ledgerManifest,
+        receipt.terminalCatalogDigest,
+      ].join("\n"),
+    )
+    .digest("hex")}`;
+  const state: any = {
+    permit,
+    receipt,
+    ledger: ledger(96),
+    catalog: baselineCatalog,
+    gate,
+    memberships: [originalMembership],
+    acl: after(),
+    backend: false,
+    identity: {
+      systemIdentifier: request.binding.systemIdentifier,
+      databaseOid: request.binding.databaseOid,
+      databaseName: request.binding.databaseName,
+    },
+    role: {
+      session: "reviewrouter_operation_custody_reader",
+      current: "reviewrouter_operation_custody_reader",
+    },
+    fail: "",
+    ambiguous: "",
+  };
   const queries: string[] = [];
-  const makeClient = () => ({ connectionParameters: {host: "unit.invalid", port: 5432, database: "review_router_dimy"},
-    connect: async () => {}, end: async () => {},
+  const makeClient = () => ({
+    connectionParameters: {
+      host: "unit.invalid",
+      port: 5432,
+      database: "review_router_dimy",
+    },
+    connect: async () => {},
+    end: async () => {},
     query: async (sql: string) => {
       queries.push(sql);
-      if (state.fail && sql.includes(state.fail)) throw new Error("injected read failure");
+      if (state.fail && sql.includes(state.fail))
+        throw new Error("injected read failure");
       let value: any;
       if (sql === renderManagedLedgerSql) value = state.ledger;
       else if (sql === renderManagedCatalogSql) value = state.catalog;
@@ -276,102 +355,234 @@ function fixture() {
       else if (sql === renderHistorical89ObjectAclSql) value = state.acl;
       else if (sql.includes("pg_control_system")) value = state.identity;
       else if (sql.includes("custody_current_permit(")) value = state.permit;
-      else if (sql.includes("pg_export_snapshot")) value = "00000001-00000002-1";
+      else if (sql.includes("pg_export_snapshot"))
+        value = "00000001-00000002-1";
       else if (sql.includes("'session',session_user")) value = state.role;
       else if (sql.includes("custody_read_effect(")) value = state.receipt;
       else if (sql.includes("pg_stat_activity")) value = state.backend;
       else if (sql.includes("gateStatus")) value = state.gate;
-      else return {rows: []};
-      return {rows: state.ambiguous && sql.includes(state.ambiguous) ? [{value}, {value}] : [{value}]};
-    } });
-  return {request, state, queries, client: makeClient(), reader: makeClient()};
+      else return { rows: [] };
+      return {
+        rows:
+          state.ambiguous && sql.includes(state.ambiguous)
+            ? [{ value }, { value }]
+            : [{ value }],
+      };
+    },
+  });
+  return {
+    request,
+    state,
+    queries,
+    client: makeClient(),
+    reader: makeClient(),
+  };
 }
 
 describe("already96 verified read-only startup", () => {
   it("accepts authentic bound terminal evidence and current exact96 postconditions", async () => {
     const f = fixture();
-    await expect(verifyHistorical89Already96(f.client, f.reader, f.request)).resolves.toMatchObject({outcome: "already-96", receiptDigest: f.state.receipt.effectFingerprint, authorizesProductionMutation: false});
-    expect(f.queries.filter(q => q.startsWith("BEGIN"))).toEqual(Array(2).fill("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;"));
-    expect(f.queries).toContain("SET TRANSACTION SNAPSHOT '00000001-00000002-1';");
-    expect(f.queries.filter(q => q === "ROLLBACK;")).toHaveLength(2);
-    expect(f.queries.filter(q => !q.startsWith("DO $custody_attestation$")).join("\n")).not.toMatch(/LIMIT 1|custody_open_operation\(|custody_record_effect\(|UPDATE |INSERT |ALTER /);
+    await expect(
+      verifyHistorical89Already96(f.client, f.reader, f.request),
+    ).resolves.toMatchObject({
+      outcome: "already-96",
+      receiptDigest: f.state.receipt.effectFingerprint,
+      authorizesProductionMutation: false,
+    });
+    expect(f.queries.filter((q) => q.startsWith("BEGIN"))).toEqual(
+      Array(2).fill("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;"),
+    );
+    expect(f.queries).toContain(
+      "SET TRANSACTION SNAPSHOT '00000001-00000002-1';",
+    );
+    expect(f.queries.filter((q) => q === "ROLLBACK;")).toHaveLength(2);
+    expect(
+      f.queries
+        .filter((q) => !q.startsWith("DO $custody_attestation$"))
+        .join("\n"),
+    ).not.toMatch(
+      /LIMIT 1|custody_open_operation\(|custody_record_effect\(|UPDATE |INSERT |ALTER /,
+    );
   });
   it.each([
-    ["missing receipt", (s: any) => s.receipt = null],
-    ["unreadable receipt", (s: any) => s.fail = "SELECT COALESCE(release_operation_custody.custody_read_effect"],
-    ["ambiguous receipt", (s: any) => s.ambiguous = "SELECT COALESCE(release_operation_custody.custody_read_effect"],
-    ["missing permit", (s: any) => s.permit = null],
-    ["open permit", (s: any) => s.permit.state = "open"],
-    ["stale permit", (s: any) => s.permit.epoch = "2"],
-    ["wrong permit binding", (s: any) => s.permit.externalFenceSha256 = digest(9)],
-    ["unreadable permit", (s: any) => s.fail = "SELECT release_operation_custody.custody_current_permit"],
-    ["ambiguous permit", (s: any) => s.ambiguous = "SELECT release_operation_custody.custody_current_permit"],
-    ["wrong receipt operation", (s: any) => s.receipt.operationId = "22222222-2222-2222-2222-222222222222"],
-    ["stale receipt nonce", (s: any) => s.receipt.nonce = "1".repeat(32)],
-    ["wrong receipt generation", (s: any) => s.receipt.generation = "2"],
-    ["tampered fingerprint", (s: any) => s.receipt.effectFingerprint = digest(9)],
-    ["wrong receipt manifest", (s: any) => s.receipt.ledgerManifest = phase.baselineManifest],
-    ["wrong reader", (s: any) => s.role.current = "reviewrouter"],
-    ["wrong database", (s: any) => s.identity.databaseOid = "999"],
-    ["custody attestation fails", (s: any) => s.fail = "DO $custody_attestation$"],
-    ["snapshot import fails", (s: any) => s.fail = "SET TRANSACTION SNAPSHOT"],
-    ["backend alive", (s: any) => s.backend = true],
+    ["missing receipt", (s: any) => (s.receipt = null)],
+    [
+      "unreadable receipt",
+      (s: any) =>
+        (s.fail =
+          "SELECT COALESCE(release_operation_custody.custody_read_effect"),
+    ],
+    [
+      "ambiguous receipt",
+      (s: any) =>
+        (s.ambiguous =
+          "SELECT COALESCE(release_operation_custody.custody_read_effect"),
+    ],
+    ["missing permit", (s: any) => (s.permit = null)],
+    ["open permit", (s: any) => (s.permit.state = "open")],
+    ["stale permit", (s: any) => (s.permit.epoch = "2")],
+    [
+      "wrong permit binding",
+      (s: any) => (s.permit.externalFenceSha256 = digest(9)),
+    ],
+    [
+      "unreadable permit",
+      (s: any) =>
+        (s.fail = "SELECT release_operation_custody.custody_current_permit"),
+    ],
+    [
+      "ambiguous permit",
+      (s: any) =>
+        (s.ambiguous =
+          "SELECT release_operation_custody.custody_current_permit"),
+    ],
+    [
+      "wrong receipt operation",
+      (s: any) =>
+        (s.receipt.operationId = "22222222-2222-2222-2222-222222222222"),
+    ],
+    ["stale receipt nonce", (s: any) => (s.receipt.nonce = "1".repeat(32))],
+    ["wrong receipt generation", (s: any) => (s.receipt.generation = "2")],
+    [
+      "tampered fingerprint",
+      (s: any) => (s.receipt.effectFingerprint = digest(9)),
+    ],
+    [
+      "wrong receipt manifest",
+      (s: any) => (s.receipt.ledgerManifest = phase.baselineManifest),
+    ],
+    ["wrong reader", (s: any) => (s.role.current = "reviewrouter")],
+    ["wrong database", (s: any) => (s.identity.databaseOid = "999")],
+    [
+      "custody attestation fails",
+      (s: any) => (s.fail = "DO $custody_attestation$"),
+    ],
+    [
+      "snapshot import fails",
+      (s: any) => (s.fail = "SET TRANSACTION SNAPSHOT"),
+    ],
+    ["backend alive", (s: any) => (s.backend = true)],
     ["partial ledger", (s: any) => s.ledger.pop()],
-    ["wrong checksum", (s: any) => s.ledger[95].checksum = "a".repeat(64)],
-    ["retained row changed", (s: any) => s.ledger[0].id = "changed"],
-    ["catalog drift", (s: any) => s.catalog = {...s.catalog, facts: []}],
-    ["gate open", (s: any) => s.gate = {...gate, gateStatus: "open"}],
-    ["gate changed", (s: any) => s.gate = {...gate, revision: "8"}],
-    ["membership drift", (s: any) => s.memberships = []],
+    ["wrong checksum", (s: any) => (s.ledger[95].checksum = "a".repeat(64))],
+    ["retained row changed", (s: any) => (s.ledger[0].id = "changed")],
+    ["catalog drift", (s: any) => (s.catalog = { ...s.catalog, facts: [] })],
+    ["gate open", (s: any) => (s.gate = { ...gate, gateStatus: "open" })],
+    ["gate changed", (s: any) => (s.gate = { ...gate, revision: "8" })],
+    ["membership drift", (s: any) => (s.memberships = [])],
     ["ACL drift", (s: any) => s.acl.rows.pop()],
-    ["unreadable ledger", (s: any) => s.fail = renderManagedLedgerSql],
-    ["unreadable catalog", (s: any) => s.fail = renderManagedCatalogSql],
-    ["unreadable ACL", (s: any) => s.fail = renderHistorical89ObjectAclSql],
-    ["unreadable membership", (s: any) => s.fail = renderManagedMembershipSql],
-    ["unreadable gate", (s: any) => s.fail = "SELECT jsonb_build_object('gateStatus'"],
+    ["unreadable ledger", (s: any) => (s.fail = renderManagedLedgerSql)],
+    ["unreadable catalog", (s: any) => (s.fail = renderManagedCatalogSql)],
+    ["unreadable ACL", (s: any) => (s.fail = renderHistorical89ObjectAclSql)],
+    [
+      "unreadable membership",
+      (s: any) => (s.fail = renderManagedMembershipSql),
+    ],
+    [
+      "unreadable gate",
+      (s: any) => (s.fail = "SELECT jsonb_build_object('gateStatus'"),
+    ],
   ])("rejects %s", async (_name, mutate) => {
-    const f = fixture(); (mutate as Function)(f.state);
-    await expect(verifyHistorical89Already96(f.client, f.reader, f.request)).rejects.toThrow();
+    const f = fixture();
+    (mutate as Function)(f.state);
+    await expect(
+      verifyHistorical89Already96(f.client, f.reader, f.request),
+    ).rejects.toThrow();
   });
   it("rejects different reader endpoints", async () => {
-    const f = fixture(); f.reader.connectionParameters.host = "elsewhere.invalid";
-    await expect(verifyHistorical89Already96(f.client, f.reader, f.request)).rejects.toThrow("reader_endpoint_mismatch");
+    const f = fixture();
+    f.reader.connectionParameters.host = "elsewhere.invalid";
+    await expect(
+      verifyHistorical89Already96(f.client, f.reader, f.request),
+    ).rejects.toThrow("reader_endpoint_mismatch");
   });
   it("requires independently pinned original request bytes and explicit operation", () => {
     const bytes = bytesOf();
-    for (const [id, hash] of [["", hashOf(bytes)], [admission().operationId, ""], [admission().operationId, digest(9)], ["other", hashOf(bytes)]])
+    for (const [id, hash] of [
+      ["", hashOf(bytes)],
+      [admission().operationId, ""],
+      [admission().operationId, digest(9)],
+      ["other", hashOf(bytes)],
+    ])
       expect(() => parseHistorical89Verification(bytes, id, hash)).toThrow();
-    const bad = bytesOf({...document(), coordinates: {epoch: 0, generation: 1, nonce: "0".repeat(32)}});
-    expect(() => parseHistorical89Verification(bad, admission().operationId, hashOf(bad))).toThrow("coordinates");
-    const unbound = bytesOf({...document(), originalMembership: {...originalMembership, adminOption: false}});
-    expect(() => parseHistorical89Verification(unbound, admission().operationId, hashOf(unbound))).toThrow("original_membership_binding");
+    const bad = bytesOf({
+      ...document(),
+      coordinates: { epoch: 0, generation: 1, nonce: "0".repeat(32) },
+    });
+    expect(() =>
+      parseHistorical89Verification(bad, admission().operationId, hashOf(bad)),
+    ).toThrow("coordinates");
+    const unbound = bytesOf({
+      ...document(),
+      originalMembership: { ...originalMembership, adminOption: false },
+    });
+    expect(() =>
+      parseHistorical89Verification(
+        unbound,
+        admission().operationId,
+        hashOf(unbound),
+      ),
+    ).toThrow("original_membership_binding");
   });
 });
 
-const runtime = vi.hoisted(() => ({clients: [] as any[]}));
-vi.mock("pg", () => ({default: {Client: function () { return runtime.clients.shift(); }}}));
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+const runtime = vi.hoisted(() => ({ clients: [] as any[] }));
+vi.mock("pg", () => ({
+  default: {
+    Client: function () {
+      return runtime.clients.shift();
+    },
+  },
+}));
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 describe("native runner startup exit contract", () => {
-  it.each(["valid", "missing request", "receipt unavailable", "permit stale"])("%s", async (mode) => {
-    const f = fixture();
-    if (mode === "receipt unavailable") f.state.fail = "SELECT COALESCE(release_operation_custody.custody_read_effect";
-    if (mode === "permit stale") f.state.permit.epoch = "2";
-    runtime.clients = [f.client, f.reader];
-    const dir = mkdtempSync(join(tmpdir(), "rr-startup96-unit-"));
-    const path = join(dir, "request.json"); const bytes = bytesOf(); writeFileSync(path, bytes);
-    vi.stubEnv("REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL", "postgres://unit@unit.invalid/review_router_dimy");
-    vi.stubEnv("REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH", mode === "missing request" ? "" : path);
-    vi.stubEnv("REVIEW_ROUTER_HISTORICAL89_OPERATION_ID", admission().operationId);
-    vi.stubEnv("REVIEW_ROUTER_HISTORICAL89_VERIFICATION_SHA256", hashOf(bytes));
-    const exit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
-    const output = vi.spyOn(console, "log").mockImplementation(() => {});
-    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      vi.resetModules();
-      await import("../run-historical89-inplace-operation.mjs");
-      expect(errors).not.toHaveBeenCalled();
-      expect(exit).toHaveBeenCalledWith(mode === "valid" ? 0 : 1);
-      expect(JSON.parse(output.mock.calls[0][0])).toMatchObject({outcome: mode === "valid" ? "already-96" : "fenced-unresolved"});
-    } finally { rmSync(dir, {recursive: true, force: true}); }
-  });
+  it.each(["valid", "missing request", "receipt unavailable", "permit stale"])(
+    "%s",
+    async (mode) => {
+      const f = fixture();
+      if (mode === "receipt unavailable")
+        f.state.fail =
+          "SELECT COALESCE(release_operation_custody.custody_read_effect";
+      if (mode === "permit stale") f.state.permit.epoch = "2";
+      runtime.clients = [f.client, f.reader];
+      const dir = mkdtempSync(join(tmpdir(), "rr-startup96-unit-"));
+      const path = join(dir, "request.json");
+      const bytes = bytesOf();
+      writeFileSync(path, bytes);
+      vi.stubEnv(
+        "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL",
+        "postgres://unit@unit.invalid/review_router_dimy",
+      );
+      vi.stubEnv(
+        "REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH",
+        mode === "missing request" ? "" : path,
+      );
+      vi.stubEnv(
+        "REVIEW_ROUTER_HISTORICAL89_OPERATION_ID",
+        admission().operationId,
+      );
+      vi.stubEnv(
+        "REVIEW_ROUTER_HISTORICAL89_VERIFICATION_SHA256",
+        hashOf(bytes),
+      );
+      const exit = vi
+        .spyOn(process, "exit")
+        .mockImplementation(() => undefined as never);
+      const output = vi.spyOn(console, "log").mockImplementation(() => {});
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        vi.resetModules();
+        await import("../run-historical89-inplace-operation.mjs");
+        expect(errors).not.toHaveBeenCalled();
+        expect(exit).toHaveBeenCalledWith(mode === "valid" ? 0 : 1);
+        expect(JSON.parse(output.mock.calls[0][0])).toMatchObject({
+          outcome: mode === "valid" ? "already-96" : "fenced-unresolved",
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
