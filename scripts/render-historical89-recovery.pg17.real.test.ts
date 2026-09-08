@@ -11,6 +11,7 @@ import {
   captureRecoveryArtifact,
   verifyReviewedRestore,
   recoveryIdentitySql,
+  recoveryScopeSql,
   type RecoveryIdentity,
   type ReviewedRecoveryPlan,
 } from "./lib/render-historical89-recovery";
@@ -151,6 +152,13 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
       };
       await source.start();
       await prepareHistorical89Fixture(source, database, seed);
+      const sourceScope = read(source, recoveryScopeSql);
+      expect(sourceScope.unsupportedInternalTriggerModes).toBe(0);
+      expect(sourceScope.unsupportedRewriteRules).toBe(0);
+      expect(Number(source.query(database, `SELECT count(*) FROM pg_trigger t
+        JOIN pg_constraint k ON k.oid=t.tgconstraint
+        JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND t.tgisinternal AND k.contype='f'`, "postgres"))).toBeGreaterThan(0);
       sourceIdentity = read(source, recoveryIdentitySql);
       expect(sourceIdentity.systemIdentifier).not.toBe(
         read(referenceModel, recoveryIdentitySql).systemIdentifier,
@@ -273,6 +281,22 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
       ["ACL", 'GRANT SELECT ON public."Workspace" TO historical_inherited'],
       ["RLS", 'ALTER TABLE public."Workspace" ENABLE ROW LEVEL SECURITY'],
       ["membership", "GRANT reviewrouter_api TO historical_inherited"],
+      ["internal FK trigger", `DO $drift$
+        DECLARE chosen record;
+        BEGIN
+          SELECT n.nspname,c.relname,t.tgname INTO STRICT chosen
+          FROM pg_trigger t JOIN pg_constraint k ON k.oid=t.tgconstraint
+          JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname='public' AND t.tgisinternal AND k.contype='f' AND t.tgenabled='O'
+          ORDER BY c.relname,t.tgname LIMIT 1;
+          EXECUTE format('ALTER TABLE %I.%I DISABLE TRIGGER %I', chosen.nspname,chosen.relname,chosen.tgname);
+          IF (SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+              JOIN pg_namespace n ON n.oid=c.relnamespace
+              WHERE n.nspname='public' AND t.tgisinternal AND t.tgenabled<>'O') <> 1 THEN
+            RAISE EXCEPTION 'expected exactly one disabled internal trigger';
+          END IF;
+        END $drift$`],
+      ["rewrite rule", 'CREATE RULE recovery_ignore_insert AS ON INSERT TO public."Workspace" DO INSTEAD NOTHING'],
     ])(
       "rejects actual restored %s drift",
       async (kind, sql) => {
@@ -283,6 +307,8 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
             ledger: "restored_ledger_mismatch", owner: "restored_owners_mismatch",
             ACL: "restored_grants_mismatch", RLS: "restored_rls_mismatch",
             membership: "restored_memberships_mismatch",
+            "internal FK trigger": "unsupported_internal_trigger_modes",
+            "rewrite rule": "unsupported_rewrite_rules",
           };
           await expect(f.restore()).rejects.toThrow(new Error(`historical89_recovery_${causes[kind]}`));
         } finally {
@@ -291,6 +317,20 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
       },
       180_000,
     );
+    it("rejects a source user rewrite rule before capturing a dump", async () => {
+      source.query(database, 'CREATE RULE recovery_ignore_insert AS ON INSERT TO public."Workspace" DO INSTEAD NOTHING', "postgres");
+      try {
+        expect(read(source, recoveryScopeSql).unsupportedRewriteRules).toBe(1);
+        await expect(captureRecoveryArtifact({
+          sourceUrl, expectedSource: sourceIdentity, directory: join(root, "source-rule-rejected"),
+          reviewedPlan: plan, exclusionReference: "fixture-no-writers",
+          consistencyReference: "fixture-no-writers", commands,
+        })).rejects.toThrow(new Error("historical89_recovery_unsupported_rewrite_rules"));
+      } finally {
+        source.query(database, 'DROP RULE recovery_ignore_insert ON public."Workspace"', "postgres");
+      }
+      expect(read(source, recoveryScopeSql).unsupportedRewriteRules).toBe(0);
+    }, 180_000);
     it("rejects changed real dump bytes before restoring anything", async () => {
       const f = await fixture();
       const path = join(f.artifact.directory, "recovery.dump");

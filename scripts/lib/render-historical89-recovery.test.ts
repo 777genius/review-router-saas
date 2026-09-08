@@ -104,6 +104,9 @@ function setup() {
   const passfiles: string[] = [],
     calls: { command: string; args: readonly string[] }[] = [];
   const state = {
+    internalTriggerMode: false,
+    rewriteRule: false,
+    sourceUnsupported: false,
     empty: true,
     restored: false,
     corruptData: false,
@@ -180,6 +183,8 @@ function setup() {
           extensions: [{ name: "plpgsql", version: "1.0" }],
           unsupportedTypes: 0,
           unsupportedCatalog: 0,
+          unsupportedInternalTriggerModes: state.internalTriggerMode && (state.sourceUnsupported || (isTarget && state.restored)) ? 1 : 0,
+          unsupportedRewriteRules: state.rewriteRule && (state.sourceUnsupported || (isTarget && state.restored)) ? 1 : 0,
           visible: !state.rls,
           database: { owner: "reviewrouter", connectionLimit: -1 },
         };
@@ -340,6 +345,30 @@ describe("bounded historical89 recovery evidence", () => {
     expect(JSON.stringify(result)).not.toMatch(
       /fixture-secret|postgresql:|PGDMP/,
     );
+  });
+  it.each([
+    ["internalTriggerMode", "unsupported_internal_trigger_modes"],
+    ["rewriteRule", "unsupported_rewrite_rules"],
+  ] as const)("rejects restored %s after a passing baseline", async (field, reason) => {
+    const f = setup();
+    const artifact = await f.capture();
+    await f.restore(artifact);
+    f.state.restored = false;
+    f.state[field] = true;
+    await expect(f.restore(artifact)).rejects.toThrow(new Error(`historical89_recovery_${reason}`));
+    expect(f.state.restored).toBe(true);
+    f.cleaned();
+  });
+  it.each([
+    ["internalTriggerMode", "unsupported_internal_trigger_modes"],
+    ["rewriteRule", "unsupported_rewrite_rules"],
+  ] as const)("rejects source %s before dump", async (field, reason) => {
+    const f = setup();
+    f.state.sourceUnsupported = true;
+    f.state[field] = true;
+    await expect(f.capture()).rejects.toThrow(new Error(`historical89_recovery_${reason}`));
+    expect(f.calls.some(c => c.command === "pg_dump")).toBe(false);
+    f.cleaned();
   });
   it("reports a fixed catalog category without leaking raw observations", async () => {
     const f = setup();

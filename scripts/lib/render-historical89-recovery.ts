@@ -99,6 +99,7 @@ const limitations = Object.freeze([
   "No production mutation or rollout authorization.",
   "Writer exclusion and consistency references are external and unverified; the root must maintain exclusion through verification.",
   "Logical equivalence covers public-schema historical89 on PG17 with plpgsql only, no role/database settings, and database connection limit -1; unsupported catalogs fail closed. Passwords and authentication are not captured or reconstructed.",
+  "Internal triggers must retain PostgreSQL default origin mode (O); disabled, replica and always internal modes are unsupported on both source and restore. User rewrite rules are unsupported; only standard origin-mode view _RETURN rules are allowed.",
   "Same-process artifact handle required; root owns private artifact retention and disposable cluster cleanup, including failed restores.",
 ]);
 function frozen<T>(value: T): T {
@@ -165,6 +166,11 @@ function identity(
 }
 // No OIDs in this logical projection; physical identity is checked separately.
 // Reject families not covered by the reusable catalog/principal verifier.
+// pg_dump recreates internal constraint triggers with origin mode (O). Only that
+// default is supported: reject D/R/A on source and restore, without comparing
+// generated RI_ConstraintTrigger names or physical OIDs. User modes remain compared.
+// Only standard origin-mode view _RETURN rules are exempt from rejection;
+// every other public rewrite rule (including disabled rules) is unsupported.
 export const recoveryScopeSql = `SELECT json_build_object(
  'schemas',(SELECT json_agg(nspname ORDER BY nspname) FROM pg_namespace WHERE nspname !~ '^pg_' AND nspname<>'information_schema'),
  'settings',(SELECT count(*) FROM pg_db_role_setting),
@@ -175,6 +181,8 @@ export const recoveryScopeSql = `SELECT json_build_object(
  'unsupportedCatalog',(SELECT count(*) FROM pg_seclabel) + (SELECT count(*) FROM pg_shseclabel) + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.prokind='a'),
  'relations',(SELECT coalesce(json_agg(json_build_object('name',c.relname,'kind',c.relkind,'persistence',c.relpersistence,'options',c.reloptions,'replicaIdentity',c.relreplident,'accessMethod',am.amname,'partitionKey',pg_get_partkeydef(c.oid),'partitionBound',pg_get_expr(c.relpartbound,c.oid),'parents',(SELECT json_agg(pn.nspname||'.'||parent.relname ORDER BY inh.inhseqno) FROM pg_inherits inh JOIN pg_class parent ON parent.oid=inh.inhparent JOIN pg_namespace pn ON pn.oid=parent.relnamespace WHERE inh.inhrelid=c.oid)) ORDER BY c.relname),'[]') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_am am ON am.oid=c.relam WHERE n.nspname='public'),
  'columnProperties',(SELECT coalesce(json_agg(json_build_object('table',c.relname,'column',a.attname,'collation',cn.nspname||'.'||coll.collname,'storage',a.attstorage,'compression',a.attcompression,'options',a.attoptions) ORDER BY c.relname,a.attnum),'[]') FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_collation coll ON coll.oid=a.attcollation LEFT JOIN pg_namespace cn ON cn.oid=coll.collnamespace WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped),
+ 'unsupportedInternalTriggerModes',(SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND t.tgisinternal AND t.tgenabled<>'O'),
+ 'unsupportedRewriteRules',(SELECT count(*) FROM pg_rewrite r JOIN pg_class c ON c.oid=r.ev_class JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT (c.relkind IN ('v','m') AND r.rulename='_RETURN' AND r.ev_type='1' AND r.is_instead AND r.ev_enabled='O')),
  'triggerModes',(SELECT coalesce(json_agg(json_build_object('table',c.relname,'trigger',t.tgname,'enabled',t.tgenabled) ORDER BY c.relname,t.tgname),'[]') FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal),
  'visible', (SELECT rolsuper OR rolbypassrls OR NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relrowsecurity AND (c.relforcerowsecurity OR NOT pg_has_role(current_user,c.relowner,'USAGE'))) FROM pg_roles WHERE rolname=current_user))`;
 export const recoveryEmptySql = `SELECT json_build_object('empty',
@@ -215,6 +223,10 @@ function exactSequences(commands: CommandExecutor, url: string) {
 }
 function scope(commands: CommandExecutor, url: string) {
   const s = query(commands, url, recoveryScopeSql);
+  if (s.unsupportedInternalTriggerModes !== 0)
+    fail("unsupported_internal_trigger_modes");
+  if (s.unsupportedRewriteRules !== 0)
+    fail("unsupported_rewrite_rules");
   if (
     !equal(s.schemas, ["public"]) ||
     s.settings !== 0 ||
