@@ -1,9 +1,21 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
+const wrapperUrl = new URL(
+  "./run-subscription-runtime-live-e2e.mjs",
+  import.meta.url,
+);
+const wrapperPath = fileURLToPath(wrapperUrl);
 const tempDir = mkdtempSync(join(tmpdir(), "reviewrouter-live-e2e-smoke-"));
 
 try {
@@ -15,8 +27,9 @@ try {
   }
 
   const env = {
-    ...process.env,
-    PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+    PATH: binDir,
+    HOME: tempDir,
+    TMPDIR: tempDir,
     REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "1",
     REVIEW_ROUTER_CODEX_ROTATING_E2E_API_URL:
       "https://api.reviewrouter.example",
@@ -33,16 +46,68 @@ try {
     REVIEW_ROUTER_SUBSCRIPTION_RUNTIME_LIVE_E2E_SKIP_ENV_FILES: "1",
   };
 
-  const prereq = spawnSync(
-    process.execPath,
-    ["scripts/run-subscription-runtime-live-e2e.mjs", "--check-only"],
-    {
-      cwd: process.cwd(),
-      encoding: "utf8",
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
+  // Reject every runtime import and task environment read. This process can
+  // load only the actual workspace wrapper and its pure evidence module.
+  const guard = join(tempDir, "offline-guard.mjs");
+  const allowed = [
+    wrapperUrl.href,
+    new URL("./lib/certified-fork-e2e-evidence.mjs", import.meta.url).href,
+  ];
+  writeFileSync(
+    guard,
+    `
+import { registerHooks } from "node:module";
+const allowed = ${JSON.stringify(allowed)};
+globalThis.fetch = () => { throw new Error("forbidden-network"); };
+registerHooks({ resolve(specifier, context, next) {
+  const result = next(specifier, context);
+  if (!allowed.includes(result.url)) throw new Error("forbidden-runtime-import");
+  return result;
+} });
+process.env = new Proxy(process.env, { get(target, key) {
+  if (/^(REVIEW|GITHUB|CODEX|DATABASE|CLAUDE)/.test(String(key)))
+    throw new Error("forbidden-task-env-read");
+  return target[key];
+} });
+`,
   );
+  for (const args of [
+    ["--certified-fork-plan"],
+    ["--certified-fork"],
+    ["--certified-fork-plan", "--check-only"],
+    ["--certified-fork-plan=true"],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      ["--import", guard, wrapperPath, ...args],
+      {
+        cwd: tempDir,
+        encoding: "utf8",
+        env,
+      },
+    );
+    const expectedExit =
+      args.length === 1 && args[0] === "--certified-fork-plan" ? 0 : 1;
+    if (result.status !== expectedExit || result.stderr !== "")
+      fail(
+        "certified routing must have no runtime imports or environment reads",
+        result,
+      );
+    const evidence = JSON.parse(result.stdout);
+    if (
+      evidence.status !== "blocked" ||
+      evidence.authenticity !== "unverified" ||
+      evidence.unmetGates.length === 0
+    )
+      fail("offline plan must never certify live execution", result);
+  }
+
+  const prereq = spawnSync(process.execPath, [wrapperPath, "--check-only"], {
+    cwd: tempDir,
+    encoding: "utf8",
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   if (prereq.status !== 0) {
     fail("check-only live E2E readiness should pass with stubs", prereq);
   }
@@ -152,9 +217,9 @@ try {
 
   const rotatingActionFallback = spawnSync(
     process.execPath,
-    ["scripts/run-subscription-runtime-live-e2e.mjs", "--check-only"],
+    [wrapperPath, "--check-only"],
     {
-      cwd: process.cwd(),
+      cwd: tempDir,
       encoding: "utf8",
       env: {
         ...env,
@@ -176,9 +241,9 @@ try {
 
   const generalActionOnly = spawnSync(
     process.execPath,
-    ["scripts/run-subscription-runtime-live-e2e.mjs", "--check-only"],
+    [wrapperPath, "--check-only"],
     {
-      cwd: process.cwd(),
+      cwd: tempDir,
       encoding: "utf8",
       env: {
         ...env,
@@ -204,9 +269,9 @@ try {
 
   const overbroadAllowlist = spawnSync(
     process.execPath,
-    ["scripts/run-subscription-runtime-live-e2e.mjs", "--check-only"],
+    [wrapperPath, "--check-only"],
     {
-      cwd: process.cwd(),
+      cwd: tempDir,
       encoding: "utf8",
       env: {
         ...env,
@@ -230,9 +295,9 @@ try {
 
   const loopbackAlias = spawnSync(
     process.execPath,
-    ["scripts/run-subscription-runtime-live-e2e.mjs", "--check-only"],
+    [wrapperPath, "--check-only"],
     {
-      cwd: process.cwd(),
+      cwd: tempDir,
       encoding: "utf8",
       env: {
         ...env,
@@ -251,16 +316,12 @@ try {
     );
   }
 
-  const guardedRun = spawnSync(
-    process.execPath,
-    ["scripts/run-subscription-runtime-live-e2e.mjs"],
-    {
-      cwd: process.cwd(),
-      encoding: "utf8",
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  const guardedRun = spawnSync(process.execPath, [wrapperPath], {
+    cwd: tempDir,
+    encoding: "utf8",
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   if (guardedRun.status === 0) {
     fail("live E2E run must require explicit mutation opt-in", guardedRun);
   }
@@ -272,7 +333,26 @@ try {
     fail("guarded run should explain the explicit mutation opt-in", guardedRun);
   }
 
+  const ordinary = spawnSync(process.execPath, [wrapperPath], {
+    cwd: tempDir,
+    encoding: "utf8",
+    env: { ...env, REVIEW_ROUTER_RUN_SUBSCRIPTION_RUNTIME_LIVE_E2E: "1" },
+  });
+  if (ordinary.status !== 0 || !ordinary.stdout.includes("live E2E completed"))
+    fail(
+      "ordinary opted-in invocation should still route to the stub runner",
+      ordinary,
+    );
   const calls = readFileSync(callsFile, "utf8");
+  if (
+    calls.split(
+      "pnpm exec tsx spikes/github-oidc/src/codex-rotating-live-e2e.ts",
+    ).length !== 2
+  )
+    fail(
+      "only the ordinary opted-in invocation may start the stub runner",
+      ordinary,
+    );
   for (const path of [
     "action.yml",
     "action-dist/index.cjs",
@@ -294,7 +374,7 @@ try {
 }
 
 function writeStub(binDir, name, content) {
-  spawnSync("mkdir", ["-p", binDir], { stdio: "ignore" });
+  mkdirSync(binDir, { recursive: true });
   writeFileSync(join(binDir, name), content, { mode: 0o755 });
 }
 
@@ -346,16 +426,12 @@ exit 1
 }
 
 function runCheckOnly(env, overrides) {
-  return spawnSync(
-    process.execPath,
-    ["scripts/run-subscription-runtime-live-e2e.mjs", "--check-only"],
-    {
-      cwd: process.cwd(),
-      encoding: "utf8",
-      env: { ...env, ...overrides },
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  return spawnSync(process.execPath, [wrapperPath, "--check-only"], {
+    cwd: tempDir,
+    encoding: "utf8",
+    env: { ...env, ...overrides },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 }
 
 function fail(message, result) {

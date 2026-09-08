@@ -1,4 +1,9 @@
 import {
+  reconcileCertifiedForkEffect,
+  type ForkReconciliationInput,
+} from "../../application/use-cases/reconcile-certified-fork-effect.js";
+import { manageCertifiedForkClaim } from "../../application/use-cases/claim-certified-fork-review.js";
+import {
   fingerprint,
   next,
   requireFact,
@@ -726,4 +731,34 @@ export const success: Partial<ForkEvidence> = {
 export function snapshotOf(result: ForkBoundaryResult): ForkLedgerSnapshot {
   requireFact("loaded" in result && result.loaded.snapshot);
   return result.loaded.snapshot;
+}
+export async function change(
+  r: SerializedForkRepository,
+  expected: ForkLedgerSnapshot,
+  commandId: string,
+  command: ForkReconciliationInput,
+) {
+  return snapshotOf(
+    await reconcileCertifiedForkEffect(r.dependencies, {
+      expected,
+      commandId,
+      command,
+    }),
+  );
+}
+export async function lease(
+  r: SerializedForkRepository,
+  expected: ForkLedgerSnapshot,
+  operation: "renew" | "release",
+  commandId: string,
+  ttlMs = 100,
+) {
+  return snapshotOf(
+    await manageCertifiedForkClaim(r.dependencies, {
+      expected,
+      operation,
+      commandId,
+      ttlMs,
+    }),
+  );
 }
