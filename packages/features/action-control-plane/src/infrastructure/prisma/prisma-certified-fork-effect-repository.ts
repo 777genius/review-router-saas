@@ -110,11 +110,16 @@ export interface ForkArchiveTrustedHooks {
   committed(loaded: ForkLoadedReview): void;
 }
 
-const selection = `v.*, r."commandId", r."commandHash", r."ownerHash", r."operation",
+export const forkArchiveJoinedQuery = `SELECT v.*, r."commandId", r."commandHash", r."ownerHash", r."operation",
   c."proof", c."proofSha256", c."formatVersion" AS "checkpointFormat",
   c."prefixLength", c."prefixHash", c."anchorHash", c."positionCommandId",
-  c."positionCommandHash", c."state"`;
-function decode(row: Record<string, unknown>): ForkArchiveVersion {
+  c."positionCommandHash", c."state"
+  FROM public."CertifiedForkVersion" v
+  LEFT JOIN public."CertifiedForkReceipt" r USING ("familyKey", "version", "reviewHash")
+  LEFT JOIN public."CertifiedForkCheckpoint" c USING ("familyKey", "version", "reviewHash")`;
+export function decodeForkArchiveJoinedRow(
+  row: Record<string, unknown>,
+): ForkArchiveVersion {
   requireFact(row.formatVersion === 1 && row.checkpointFormat === 1);
   const version = archiveCounter(row.version);
   const snapshot = archiveSnapshot({
@@ -207,14 +212,12 @@ async function readVersion(
   version: string,
 ): Promise<ForkArchiveVersion> {
   const { rows } = await sql.query(
-    `SELECT ${selection} FROM public."CertifiedForkVersion" v
-    LEFT JOIN public."CertifiedForkReceipt" r USING ("familyKey", "version", "reviewHash")
-    LEFT JOIN public."CertifiedForkCheckpoint" c USING ("familyKey", "version", "reviewHash")
+    `${forkArchiveJoinedQuery}
     WHERE v."familyKey"=$1 AND v."version"=$2::bigint`,
     [family, version],
   );
   requireFact(rows.length === 1); // Missing version/checkpoint/receipt fails closed.
-  return decode(rows[0]!);
+  return decodeForkArchiveJoinedRow(rows[0]!);
 }
 async function storageTime(sql: RetainedFactSql): Promise<number> {
   const { rows } = await sql.query(
