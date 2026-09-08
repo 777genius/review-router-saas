@@ -162,20 +162,51 @@ function setup() {
         state.restored = true;
         return { stdout: "" };
       }
-      if (state.restored && isTarget && state.corruptCatalog && sql.includes("'kind','object'"))
-        return { stdout: JSON.stringify({ private: "token=secret postgresql://secret@dpg-hidden/private" }) };
+      if (
+        state.restored &&
+        isTarget &&
+        state.corruptCatalog &&
+        sql.includes("'kind','object'")
+      )
+        return {
+          stdout: JSON.stringify({
+            private: "token=secret postgresql://secret@dpg-hidden/private",
+          }),
+        };
       if (state.metadataAclOrder && sql.includes("'kind','object'")) {
-        const acl = ["private-role=r/private-grantor", "other-role=r*/private-grantor"];
-        return { stdout: JSON.stringify([{ kind: "object", schema: "public",
-          name: "private-relation", type: "r", owner: "private-owner",
-          acl: state.restored && isTarget ? acl.reverse() : acl }]) };
+        const acl = [
+          "private-role=r/private-grantor",
+          "other-role=r*/private-grantor",
+        ];
+        return {
+          stdout: JSON.stringify([
+            {
+              kind: "object",
+              schema: "public",
+              name: "private-relation",
+              type: "r",
+              owner: "private-owner",
+              acl: state.restored && isTarget ? acl.reverse() : acl,
+            },
+          ]),
+        };
       }
       if (state.metadataCheck && sql.includes("'kind','constraint'")) {
-        const definition = state.restored && isTarget
-          ? `CHECK ((a > 0) AND (b > 0) AND (c > ${state.corruptCheck ? 1 : 0}))`
-          : "CHECK (((a > 0) AND (b > 0)) AND (c > 0))";
-        return { stdout: JSON.stringify([{ kind: "constraint", schema: "public",
-          table: "fixture", name: "fixture_check", definition }]) };
+        const definition =
+          state.restored && isTarget
+            ? `CHECK ((a > 0) AND (b > 0) AND (c > ${state.corruptCheck ? 1 : 0}))`
+            : "CHECK (((a > 0) AND (b > 0)) AND (c > 0))";
+        return {
+          stdout: JSON.stringify([
+            {
+              kind: "constraint",
+              schema: "public",
+              table: "fixture",
+              name: "fixture_check",
+              definition,
+            },
+          ]),
+        };
       }
       let value: unknown = null;
       if (sql === recoveryIdentitySql)
@@ -193,11 +224,24 @@ function setup() {
           schemas: ["public"],
           settings: 0,
           extensions: [{ name: "plpgsql", version: "1.0" }],
-          unsupportedMaterializedViews: (isTarget && state.targetMaterializedView) || (state.materializedView && (state.sourceUnsupported || (isTarget && state.restored))) ? 1 : 0,
+          unsupportedMaterializedViews:
+            (isTarget && state.targetMaterializedView) ||
+            (state.materializedView &&
+              (state.sourceUnsupported || (isTarget && state.restored)))
+              ? 1
+              : 0,
           unsupportedTypes: 0,
           unsupportedCatalog: 0,
-          unsupportedInternalTriggerModes: state.internalTriggerMode && (state.sourceUnsupported || (isTarget && state.restored)) ? 1 : 0,
-          unsupportedRewriteRules: state.rewriteRule && (state.sourceUnsupported || (isTarget && state.restored)) ? 1 : 0,
+          unsupportedInternalTriggerModes:
+            state.internalTriggerMode &&
+            (state.sourceUnsupported || (isTarget && state.restored))
+              ? 1
+              : 0,
+          unsupportedRewriteRules:
+            state.rewriteRule &&
+            (state.sourceUnsupported || (isTarget && state.restored))
+              ? 1
+              : 0,
           visible: !state.rls,
           database: { owner: "reviewrouter", connectionLimit: -1 },
         };
@@ -212,18 +256,20 @@ function setup() {
           database: "recovery",
           sessionPrincipal: "reviewrouter",
           roles: [{ ...role, createRole: state.targetRole && isTarget }],
-          memberships: state.unknownMembership || (state.restored && isTarget && state.corruptMembership)
-            ? [
-                {
-                  member: "unknown",
-                  role: "reviewrouter",
-                  grantor: "postgres",
-                  setOption: true,
-                  inheritOption: true,
-                  adminOption: true,
-                },
-              ]
-            : [],
+          memberships:
+            state.unknownMembership ||
+            (state.restored && isTarget && state.corruptMembership)
+              ? [
+                  {
+                    member: "unknown",
+                    role: "reviewrouter",
+                    grantor: "postgres",
+                    setOption: true,
+                    inheritOption: true,
+                    adminOption: true,
+                  },
+                ]
+              : [],
           grants:
             state.restored &&
             isTarget &&
@@ -243,12 +289,28 @@ function setup() {
               : [],
           roleReachability: state.missingVisibility ? undefined : [],
           rowSecurity: state.ownerBearingRls
-            ? [{ schema: "public", table: "fixture",
-                owner: state.restored && isTarget && state.corruptOwner ? "other-owner" : "reviewrouter",
-                enabled: state.restored && isTarget && state.corruptRls, forced: false }]
+            ? [
+                {
+                  schema: "public",
+                  table: "fixture",
+                  owner:
+                    state.restored && isTarget && state.corruptOwner
+                      ? "other-owner"
+                      : "reviewrouter",
+                  enabled: state.restored && isTarget && state.corruptRls,
+                  forced: false,
+                },
+              ]
             : state.restored && isTarget && state.corruptRls
-            ? [{ schema: "public", table: "fixture", enabled: true, forced: false }]
-            : [],
+              ? [
+                  {
+                    schema: "public",
+                    table: "fixture",
+                    enabled: true,
+                    forced: false,
+                  },
+                ]
+              : [],
           extensions: [],
           unsupportedAuthorityFamilies: state.unsupported
             ? ["event-trigger"]
@@ -298,8 +360,12 @@ function setup() {
       consistencyReference: "root-consistency-1",
       commands,
     });
-  const restore = (artifact: Awaited<ReturnType<typeof capture>>,
-    metadataDiagnostic?: Parameters<typeof verifyReviewedRestore>[0]["metadataDiagnostic"]) =>
+  const restore = (
+    artifact: Awaited<ReturnType<typeof capture>>,
+    metadataDiagnostic?: Parameters<
+      typeof verifyReviewedRestore
+    >[0]["metadataDiagnostic"],
+  ) =>
     verifyReviewedRestore({
       artifact,
       metadataDiagnostic,
@@ -367,16 +433,21 @@ describe("bounded historical89 recovery evidence", () => {
     ["materializedView", "unsupported_materialized_views"],
     ["internalTriggerMode", "unsupported_internal_trigger_modes"],
     ["rewriteRule", "unsupported_rewrite_rules"],
-  ] as const)("rejects restored %s after a passing baseline", async (field, reason) => {
-    const f = setup();
-    const artifact = await f.capture();
-    await f.restore(artifact);
-    f.state.restored = false;
-    f.state[field] = true;
-    await expect(f.restore(artifact)).rejects.toThrow(new Error(`historical89_recovery_${reason}`));
-    expect(f.state.restored).toBe(true);
-    f.cleaned();
-  });
+  ] as const)(
+    "rejects restored %s after a passing baseline",
+    async (field, reason) => {
+      const f = setup();
+      const artifact = await f.capture();
+      await f.restore(artifact);
+      f.state.restored = false;
+      f.state[field] = true;
+      await expect(f.restore(artifact)).rejects.toThrow(
+        new Error(`historical89_recovery_${reason}`),
+      );
+      expect(f.state.restored).toBe(true);
+      f.cleaned();
+    },
+  );
   it.each([
     ["materializedView", "unsupported_materialized_views"],
     ["internalTriggerMode", "unsupported_internal_trigger_modes"],
@@ -385,8 +456,10 @@ describe("bounded historical89 recovery evidence", () => {
     const f = setup();
     f.state.sourceUnsupported = true;
     f.state[field] = true;
-    await expect(f.capture()).rejects.toThrow(new Error(`historical89_recovery_${reason}`));
-    expect(f.calls.some(c => c.command === "pg_dump")).toBe(false);
+    await expect(f.capture()).rejects.toThrow(
+      new Error(`historical89_recovery_${reason}`),
+    );
+    expect(f.calls.some((c) => c.command === "pg_dump")).toBe(false);
     f.cleaned();
   });
   it("rejects target materialized views before mutation", async () => {
@@ -394,7 +467,8 @@ describe("bounded historical89 recovery evidence", () => {
     const artifact = await f.capture();
     f.state.targetMaterializedView = true;
     await expect(f.restore(artifact)).rejects.toThrow(
-      new Error("historical89_recovery_unsupported_materialized_views"));
+      new Error("historical89_recovery_unsupported_materialized_views"),
+    );
     expect(f.mutations()).toHaveLength(0);
     f.cleaned();
   });
@@ -405,62 +479,99 @@ describe("bounded historical89 recovery evidence", () => {
     f.state.restored = false;
     f.state.corruptCatalog = true;
     await expect(f.restore(a)).rejects.toThrow(
-      new Error("historical89_recovery_restored_equivalence_acl_ownership_defaults"),
+      new Error(
+        "historical89_recovery_restored_equivalence_acl_ownership_defaults",
+      ),
     );
     f.cleaned();
   });
   it("observes real verifier metadata calls without accepting ACL reordering or adding queries", async () => {
-    const run = async (report?: Parameters<typeof verifyReviewedRestore>[0]["metadataDiagnostic"]) => {
+    const run = async (
+      report?: Parameters<
+        typeof verifyReviewedRestore
+      >[0]["metadataDiagnostic"],
+    ) => {
       const f = setup();
       f.state.metadataAclOrder = true;
       const artifact = await f.capture();
       const before = f.calls.length;
       await expect(f.restore(artifact, report)).rejects.toThrow(
-        new Error("historical89_recovery_restored_equivalence_acl_ownership_defaults"));
+        new Error(
+          "historical89_recovery_restored_equivalence_acl_ownership_defaults",
+        ),
+      );
       f.cleaned();
       return f.calls.length - before;
     };
     const reports: unknown[] = [];
-    const observedCalls = await run(diagnostic => reports.push(diagnostic));
-    expect(reports).toContainEqual(expect.objectContaining({
-      category: "acl_ownership_defaults", sourceRecords: 1, targetRecords: 1,
-      aclOrderOnly: 1, paths: ["records[0].acl"],
-    }));
+    const observedCalls = await run((diagnostic) => reports.push(diagnostic));
+    expect(reports).toContainEqual(
+      expect.objectContaining({
+        category: "acl_ownership_defaults",
+        sourceRecords: 1,
+        targetRecords: 1,
+        aclOrderOnly: 1,
+        paths: ["records[0].acl"],
+      }),
+    );
     expect(JSON.stringify(reports)).not.toMatch(/private|other-role/);
     expect(await run()).toBe(observedCalls);
-    expect(await run(() => { throw new Error("private-callback-error"); })).toBe(observedCalls);
+    expect(
+      await run(() => {
+        throw new Error("private-callback-error");
+      }),
+    ).toBe(observedCalls);
   });
-  it.each([false, true])("classifies canonical CHECK metadata with row drift (constraint drift: %s)", async (corruptCheck) => {
-    const f = setup();
-    f.state.metadataCheck = true;
-    const artifact = await f.capture();
-    await f.restore(artifact);
-    f.state.restored = false;
-    f.state.corruptData = true;
-    f.state.corruptCheck = corruptCheck;
-    const reports: ReturnType<typeof recoveryMetadataDifference>[] = [];
-    await expect(f.restore(artifact, diagnostic => {
-      if (diagnostic.category === "constraints_indexes_triggers") reports.push(diagnostic);
-      throw new Error("private-callback-error");
-    })).rejects.toThrow(new Error(`historical89_recovery_restored_equivalence_${
-      corruptCheck ? "constraints_indexes_triggers_and_rows" : "rows"}`));
-    expect(reports).toHaveLength(1);
-    expect(reports[0]).toMatchObject({ rawEqual: !corruptCheck, parsedEqual: !corruptCheck });
-    f.cleaned();
-  });
+  it.each([false, true])(
+    "classifies canonical CHECK metadata with row drift (constraint drift: %s)",
+    async (corruptCheck) => {
+      const f = setup();
+      f.state.metadataCheck = true;
+      const artifact = await f.capture();
+      await f.restore(artifact);
+      f.state.restored = false;
+      f.state.corruptData = true;
+      f.state.corruptCheck = corruptCheck;
+      const reports: ReturnType<typeof recoveryMetadataDifference>[] = [];
+      await expect(
+        f.restore(artifact, (diagnostic) => {
+          if (diagnostic.category === "constraints_indexes_triggers")
+            reports.push(diagnostic);
+          throw new Error("private-callback-error");
+        }),
+      ).rejects.toThrow(
+        new Error(
+          `historical89_recovery_restored_equivalence_${
+            corruptCheck ? "constraints_indexes_triggers_and_rows" : "rows"
+          }`,
+        ),
+      );
+      expect(reports).toHaveLength(1);
+      expect(reports[0]).toMatchObject({
+        rawEqual: !corruptCheck,
+        parsedEqual: !corruptCheck,
+      });
+      f.cleaned();
+    },
+  );
   it.each([
     ["corruptOwner", "restored_owners_mismatch"],
     ["corruptRls", "restored_rls_mismatch"],
-  ] as const)("classifies %s with an owner-bearing RLS snapshot", async (field, reason) => {
-    const f = setup();
-    f.state.ownerBearingRls = true;
-    const artifact = await f.capture();
-    await f.restore(artifact);
-    f.state.restored = false;
-    f.state[field] = true;
-    await expect(f.restore(artifact)).rejects.toThrow(new Error(`historical89_recovery_${reason}`));
-    f.cleaned();
-  });
+  ] as const)(
+    "classifies %s with an owner-bearing RLS snapshot",
+    async (field, reason) => {
+      const f = setup();
+      f.state.ownerBearingRls = true;
+      const artifact = await f.capture();
+      await f.restore(artifact);
+      f.state.restored = false;
+      f.state[field] = true;
+      await expect(f.restore(artifact)).rejects.toThrow(
+        new Error(`historical89_recovery_${reason}`),
+      );
+      f.cleaned();
+    },
+  );
   it("refuses an existing artifact without overwriting it", async () => {
     const f = setup();
     await f.capture();
@@ -527,7 +638,9 @@ describe("bounded historical89 recovery evidence", () => {
         corruptRls: "restored_rls_mismatch",
         corruptMembership: "restored_memberships_mismatch",
       };
-      await expect(f.restore(a)).rejects.toThrow(new Error(`historical89_recovery_${causes[kind]}`));
+      await expect(f.restore(a)).rejects.toThrow(
+        new Error(`historical89_recovery_${causes[kind]}`),
+      );
       expect(f.state.restored).toBe(true);
       expect(existsSync(join(f.directory, "recovery.dump"))).toBe(true);
       expect(existsSync(join(f.directory, "restore-input"))).toBe(false);
@@ -638,11 +751,17 @@ describe("bounded historical89 recovery evidence", () => {
   });
 });
 
-
 describe("bounded recovery metadata diagnostics (no equivalence projection)", () => {
-  const row = { kind: "object", schema: "public", name: "private-name",
-    type: "r", owner: "private-owner", acl: ["secret-a", "secret-b"] };
-  const compare = (a: unknown, b: unknown) => recoveryMetadataDifference(JSON.stringify(a), JSON.stringify(b));
+  const row = {
+    kind: "object",
+    schema: "public",
+    name: "private-name",
+    type: "r",
+    owner: "private-owner",
+    acl: ["secret-a", "secret-b"],
+  };
+  const compare = (a: unknown, b: unknown) =>
+    recoveryMetadataDifference(JSON.stringify(a), JSON.stringify(b));
   it("identifies ACL order only without emitting ACL or identity values", () => {
     const result = compare([row], [{ ...row, acl: [...row.acl].reverse() }]);
     expect(result.paths).toEqual(["records[0].acl"]);
@@ -652,25 +771,50 @@ describe("bounded recovery metadata diagnostics (no equivalence projection)", ()
   });
   it("retains owner, grant option, grantor and definition differences", () => {
     for (const field of ["owner", "acl", "definition"]) {
-      const result = compare([row], [{ ...row, [field]: field === "acl" ? ["role=r*/other-grantor"] : "changed" }]);
+      const result = compare(
+        [row],
+        [
+          {
+            ...row,
+            [field]: field === "acl" ? ["role=r*/other-grantor"] : "changed",
+          },
+        ],
+      );
       expect(result.paths).toContain(`records[0].${field}`);
       expect(result.aclOrderOnly).toBe(0);
     }
   });
   it("separates raw representation and row order from field drift", () => {
     const other = { ...row, name: "other" };
-    expect(compare([row, other], [other, row])).toMatchObject({ parsedEqual: false, differences: 0 });
-    expect(recoveryMetadataDifference(JSON.stringify([row]), JSON.stringify([row], null, 2)))
-      .toMatchObject({ rawEqual: false, parsedEqual: true, differences: 0 });
+    expect(compare([row, other], [other, row])).toMatchObject({
+      parsedEqual: false,
+      differences: 0,
+    });
+    expect(
+      recoveryMetadataDifference(
+        JSON.stringify([row]),
+        JSON.stringify([row], null, 2),
+      ),
+    ).toMatchObject({ rawEqual: false, parsedEqual: true, differences: 0 });
   });
   it("reports missing identities and duplicates without masking them", () => {
-    expect(compare([row], [{ ...row, name: "renamed" }]))
-      .toMatchObject({ missingSource: 1, missingTarget: 1 });
-    expect(compare([row, row], [row]).paths).toEqual(["records[0].duplicateIdentity"]);
+    expect(compare([row], [{ ...row, name: "renamed" }])).toMatchObject({
+      missingSource: 1,
+      missingTarget: 1,
+    });
+    expect(compare([row, row], [row]).paths).toEqual([
+      "records[0].duplicateIdentity",
+    ]);
   });
   it("bounds paths and never emits unexpected field names or definitions", () => {
-    const a = Array.from({length: 100}, (_, i) => ({ ...row, name: `n${i}` }));
-    const result = compare(a, a.map(r => ({ ...r, owner: "changed", "secret-key": "secret-value" })));
+    const a = Array.from({ length: 100 }, (_, i) => ({
+      ...row,
+      name: `n${i}`,
+    }));
+    const result = compare(
+      a,
+      a.map((r) => ({ ...r, owner: "changed", "secret-key": "secret-value" })),
+    );
     expect(result.paths).toHaveLength(64);
     expect(result.truncated).toBe(true);
     expect(JSON.stringify(result)).not.toContain("secret");
@@ -678,18 +822,34 @@ describe("bounded recovery metadata diagnostics (no equivalence projection)", ()
   });
 });
 
-
 describe("offline fixture identifiable metadata differences", () => {
-  const compare = (a: unknown[], b: unknown[]) => disposableRecoveryMetadataValues(JSON.stringify(a), JSON.stringify(b));
-  const row = { kind: "object", schema: "public", name: "fixture_table", type: "r", owner: "fixture_owner", acl: null };
+  const compare = (a: unknown[], b: unknown[]) =>
+    disposableRecoveryMetadataValues(JSON.stringify(a), JSON.stringify(b));
+  const row = {
+    kind: "object",
+    schema: "public",
+    name: "fixture_table",
+    type: "r",
+    owner: "fixture_owner",
+    acl: null,
+  };
   it("maps exact diagnostic identity order, preserving ACL defaults, grantor and grant option", () => {
     const other = { ...row, name: "aaa" };
     const right = { ...row, acl: ["fixture_reader=r*/fixture_owner"] };
-    expect(compare([row, other], [other, right])).toEqual([{
-      path: "records[1].acl", kind: "object", schema: "public", name: "fixture_table",
-      table: null, type: "r", owner: "fixture_owner", field: "acl",
-      left: null, right: ["fixture_reader=r*/fixture_owner"],
-    }]);
+    expect(compare([row, other], [other, right])).toEqual([
+      {
+        path: "records[1].acl",
+        kind: "object",
+        schema: "public",
+        name: "fixture_table",
+        table: null,
+        type: "r",
+        owner: "fixture_owner",
+        field: "acl",
+        left: null,
+        right: ["fixture_reader=r*/fixture_owner"],
+      },
+    ]);
   });
   it("maps every measured path at full fixture catalog sizes despite reversed SQL row order", () => {
     for (const [count, indices, kind, field] of [
@@ -697,40 +857,86 @@ describe("offline fixture identifiable metadata differences", () => {
       [671, [18, 20, 158, 226, 426, 631, 632, 635], "object", "acl"],
     ] as const) {
       const source = Array.from({ length: count }, (_, i) => ({
-        kind, schema: "public", name: `fixture_${String(i).padStart(4, "0")}`,
-        ...(field === "acl" ? { type: "r", owner: "fixture_owner", acl: null }
+        kind,
+        schema: "public",
+        name: `fixture_${String(i).padStart(4, "0")}`,
+        ...(field === "acl"
+          ? { type: "r", owner: "fixture_owner", acl: null }
           : { table: "fixture_table", definition: "UNIQUE (id)" }),
       }));
       const selected = new Set<number>(indices);
-      const target = source.map((r, i) => selected.has(i) ? { ...r,
-        [field]: field === "acl" ? ["fixture_reader=r*/fixture_owner"] : "UNIQUE NULLS NOT DISTINCT (id)",
-      } : r);
+      const target = source.map((r, i) =>
+        selected.has(i)
+          ? {
+              ...r,
+              [field]:
+                field === "acl"
+                  ? ["fixture_reader=r*/fixture_owner"]
+                  : "UNIQUE NULLS NOT DISTINCT (id)",
+            }
+          : r,
+      );
       const result = compare([...source].reverse(), target);
-      expect(result.map(r => r.path)).toEqual(indices.map(i => `records[${i}].${field}`));
-      expect(result.map(r => r.name)).toEqual(indices.map(i => source[i]!.name));
+      expect(result.map((r) => r.path)).toEqual(
+        indices.map((i) => `records[${i}].${field}`),
+      );
+      expect(result.map((r) => r.name)).toEqual(
+        indices.map((i) => source[i]!.name),
+      );
       expect(result).toHaveLength(indices.length);
     }
   });
   it("retains exact constraint and index definitions", () => {
     for (const kind of ["constraint", "index"]) {
-      const a = { kind, schema: "public", table: "fixture_table", name: "fixture_key", definition: "UNIQUE NULLS NOT DISTINCT (id) DEFERRABLE" };
-      expect(compare([a], [{ ...a, definition: "UNIQUE (id)" }])[0]).toMatchObject({
-        left: a.definition, right: "UNIQUE (id)", field: "definition",
+      const a = {
+        kind,
+        schema: "public",
+        table: "fixture_table",
+        name: "fixture_key",
+        definition: "UNIQUE NULLS NOT DISTINCT (id) DEFERRABLE",
+      };
+      expect(
+        compare([a], [{ ...a, definition: "UNIQUE (id)" }])[0],
+      ).toMatchObject({
+        left: a.definition,
+        right: "UNIQUE (id)",
+        field: "definition",
       });
     }
   });
   it("rejects routine bodies, trigger definitions, unknown fields, missing and duplicate identities", () => {
     for (const kind of ["function", "trigger"]) {
-      expect(() => compare([{ ...row, kind, definition: "body" }], [{ ...row, kind, definition: "other" }])).toThrow("fixture_metadata_difference_kind");
+      expect(() =>
+        compare(
+          [{ ...row, kind, definition: "body" }],
+          [{ ...row, kind, definition: "other" }],
+        ),
+      ).toThrow("fixture_metadata_difference_kind");
     }
-    expect(() => compare([row], [{ ...row, owner: "other" }])).toThrow("fixture_metadata_difference_field");
-    expect(() => compare([row], [])).toThrow("fixture_metadata_difference_field");
-    expect(() => compare([row, row], [row])).toThrow("fixture_metadata_difference_bound");
+    expect(() => compare([row], [{ ...row, owner: "other" }])).toThrow(
+      "fixture_metadata_difference_field",
+    );
+    expect(() => compare([row], [])).toThrow(
+      "fixture_metadata_difference_field",
+    );
+    expect(() => compare([row, row], [row])).toThrow(
+      "fixture_metadata_difference_bound",
+    );
   });
   it("bounds record and value output, and emits nothing for equal catalogs", () => {
     expect(compare([row], [row])).toEqual([]);
-    const rows = Array.from({ length: 11 }, (_, i) => ({ ...row, name: String(i) }));
-    expect(() => compare(rows, rows.map(r => ({ ...r, acl: [] })))).toThrow("fixture_metadata_difference_bound");
-    expect(() => compare([row], [{ ...row, acl: ["a".repeat(8192)] }])).toThrow("fixture_metadata_difference_value_bound");
+    const rows = Array.from({ length: 11 }, (_, i) => ({
+      ...row,
+      name: String(i),
+    }));
+    expect(() =>
+      compare(
+        rows,
+        rows.map((r) => ({ ...r, acl: [] })),
+      ),
+    ).toThrow("fixture_metadata_difference_bound");
+    expect(() => compare([row], [{ ...row, acl: ["a".repeat(8192)] }])).toThrow(
+      "fixture_metadata_difference_value_bound",
+    );
   });
 });

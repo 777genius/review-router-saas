@@ -35,9 +35,7 @@
       "type": "r",
       "owner": "reviewrouter",
       "field": "acl",
-      "left": [
-        "reviewrouter=arwdDxtm/reviewrouter"
-      ],
+      "left": ["reviewrouter=arwdDxtm/reviewrouter"],
       "right": null
     },
     {
@@ -49,9 +47,7 @@
       "type": "r",
       "owner": "reviewrouter",
       "field": "acl",
-      "left": [
-        "reviewrouter=arwdDxtm/reviewrouter"
-      ],
+      "left": ["reviewrouter=arwdDxtm/reviewrouter"],
       "right": null
     },
     {
@@ -63,9 +59,7 @@
       "type": "r",
       "owner": "reviewrouter",
       "field": "acl",
-      "left": [
-        "reviewrouter=arwdDxtm/reviewrouter"
-      ],
+      "left": ["reviewrouter=arwdDxtm/reviewrouter"],
       "right": null
     },
     {
@@ -77,9 +71,7 @@
       "type": "r",
       "owner": "reviewrouter",
       "field": "acl",
-      "left": [
-        "reviewrouter=arwdDxtm/reviewrouter"
-      ],
+      "left": ["reviewrouter=arwdDxtm/reviewrouter"],
       "right": null
     },
     {
@@ -91,9 +83,7 @@
       "type": "r",
       "owner": "reviewrouter",
       "field": "acl",
-      "left": [
-        "reviewrouter=arwdDxtm/reviewrouter"
-      ],
+      "left": ["reviewrouter=arwdDxtm/reviewrouter"],
       "right": null
     },
     {
@@ -105,9 +95,7 @@
       "type": "r",
       "owner": "reviewrouter",
       "field": "acl",
-      "left": [
-        "reviewrouter=arwdDxtm/reviewrouter"
-      ],
+      "left": ["reviewrouter=arwdDxtm/reviewrouter"],
       "right": null
     },
     {
@@ -119,9 +107,7 @@
       "type": "r",
       "owner": "reviewrouter",
       "field": "acl",
-      "left": [
-        "reviewrouter=arwdDxtm/reviewrouter"
-      ],
+      "left": ["reviewrouter=arwdDxtm/reviewrouter"],
       "right": null
     },
     {
@@ -133,9 +119,7 @@
       "type": "r",
       "owner": "reviewrouter",
       "field": "acl",
-      "left": [
-        "reviewrouter=arwdDxtm/reviewrouter"
-      ],
+      "left": ["reviewrouter=arwdDxtm/reviewrouter"],
       "right": null
     }
   ]

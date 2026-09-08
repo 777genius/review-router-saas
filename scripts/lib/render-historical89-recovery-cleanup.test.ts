@@ -53,7 +53,12 @@ it.each(["container", "directory", "both", "none"])(
 
     // Assert before the safety afterEach, so a missing finally cannot pass.
     expect(process.env.PATH).toBe(originalPath);
-    expect(attempted).toEqual(["target1", "target2", "source", "referenceModel"]);
+    expect(attempted).toEqual([
+      "target1",
+      "target2",
+      "source",
+      "referenceModel",
+    ]);
     expect(rmSync).toHaveBeenCalledExactlyOnceWith("/mock/recovery", {
       recursive: true,
       force: true,

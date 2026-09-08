@@ -42,13 +42,19 @@ function checkRecoveryProcess(result: ReturnType<typeof spawnSync>) {
   if (!result.error && result.status === 0) return;
   const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
   const category =
-    code === "ETIMEDOUT" ? "timeout"
-    : code === "ENOBUFS" ? "output_limit"
-    : code === "ENOENT" ? "binary_missing"
-    : code === "EACCES" || code === "EPERM" ? "permission_denied"
-    : result.error ? "spawn_failed"
-    : result.signal ? "signalled"
-    : "nonzero_exit";
+    code === "ETIMEDOUT"
+      ? "timeout"
+      : code === "ENOBUFS"
+        ? "output_limit"
+        : code === "ENOENT"
+          ? "binary_missing"
+          : code === "EACCES" || code === "EPERM"
+            ? "permission_denied"
+            : result.error
+              ? "spawn_failed"
+              : result.signal
+                ? "signalled"
+                : "nonzero_exit";
   throw new RecoveryFixtureProcessFailure(category);
 }
 
@@ -637,7 +643,9 @@ export function managedPg17Fixture() {
               : "rejected";
           // Raw causes can contain SQL, credentials or subprocess output; expose only the closed category.
           // eslint-disable-next-line preserve-caught-error
-          throw new Error(`fixture_recovery_execute_failed:${phase}:${category}`);
+          throw new Error(
+            `fixture_recovery_execute_failed:${phase}:${category}`,
+          );
         }
       },
       async hashStdout(command, args, options = {}) {

@@ -230,8 +230,7 @@ function scope(commands: CommandExecutor, url: string) {
     fail("unsupported_materialized_views");
   if (s.unsupportedInternalTriggerModes !== 0)
     fail("unsupported_internal_trigger_modes");
-  if (s.unsupportedRewriteRules !== 0)
-    fail("unsupported_rewrite_rules");
+  if (s.unsupportedRewriteRules !== 0) fail("unsupported_rewrite_rules");
   if (
     !equal(s.schemas, ["public"]) ||
     s.settings !== 0 ||
@@ -401,7 +400,9 @@ export async function captureRecoveryArtifact(input: {
     };
     const plan = frozen(structuredClone(input.reviewedPlan));
     const source = identity(commands, input.sourceUrl, input.expectedSource);
-    const adapter = new PostgreSqlGenerationAdapter(recoverySemanticCommands(commands));
+    const adapter = new PostgreSqlGenerationAdapter(
+      recoverySemanticCommands(commands),
+    );
     const initialScope = scope(commands, input.sourceUrl);
     if (initialScope.database.owner !== plan.databaseOwner)
       fail("database_owner_plan_mismatch");
@@ -591,18 +592,29 @@ function databaseReconstructionSql(
 // Diagnostic comparison only: never used to authorize equivalence. Identity
 // values stay private; emitted paths contain only fixed field names and indices.
 export function recoveryMetadataDifference(source: string, target: string) {
-  const left = JSON.parse(source), right = JSON.parse(target);
+  const left = JSON.parse(source),
+    right = JSON.parse(target);
   const rows = (value: unknown): Record<string, unknown>[] => {
     if (value === null) return [];
-    if (!Array.isArray(value) || value.length > 10000 || value.some(row =>
-      !row || typeof row !== "object" || Array.isArray(row)))
+    if (
+      !Array.isArray(value) ||
+      value.length > 10000 ||
+      value.some((row) => !row || typeof row !== "object" || Array.isArray(row))
+    )
       throw new Error("recovery_metadata_diagnostic_shape");
     return value;
   };
-  const a = rows(left), b = rows(right);
-  const identity = (row: Record<string, unknown>) => canonicalJson(
-    [row.kind, row.schema, row.table ?? null, row.name ?? null,
-      row.type ?? null, row.kind === "default" ? row.owner : null]);
+  const a = rows(left),
+    b = rows(right);
+  const identity = (row: Record<string, unknown>) =>
+    canonicalJson([
+      row.kind,
+      row.schema,
+      row.table ?? null,
+      row.name ?? null,
+      row.type ?? null,
+      row.kind === "default" ? row.owner : null,
+    ]);
   const group = (values: Record<string, unknown>[]) => {
     const result = new Map<string, Record<string, unknown>[]>();
     for (const row of values) {
@@ -611,53 +623,98 @@ export function recoveryMetadataDifference(source: string, target: string) {
     }
     return result;
   };
-  const ga = group(a), gb = group(b);
+  const ga = group(a),
+    gb = group(b);
   const paths: string[] = [];
-  let differences = 0, missingSource = 0, missingTarget = 0, aclOrderOnly = 0;
-  const add = (path: string) => { differences++; if (paths.length < 64) paths.push(path); };
-  const fields = ["kind", "schema", "table", "name", "type", "owner", "acl", "definition"];
+  let differences = 0,
+    missingSource = 0,
+    missingTarget = 0,
+    aclOrderOnly = 0;
+  const add = (path: string) => {
+    differences++;
+    if (paths.length < 64) paths.push(path);
+  };
+  const fields = [
+    "kind",
+    "schema",
+    "table",
+    "name",
+    "type",
+    "owner",
+    "acl",
+    "definition",
+  ];
   let index = 0;
   for (const key of [...new Set([...ga.keys(), ...gb.keys()])].sort()) {
-    const x = ga.get(key) ?? [], y = gb.get(key) ?? [];
-    if (!x.length) { missingSource += y.length; add(`records[${index}].missingSource`); }
-    else if (!y.length) { missingTarget += x.length; add(`records[${index}].missingTarget`); }
-    else if (x.length !== 1 || y.length !== 1) add(`records[${index}].duplicateIdentity`);
+    const x = ga.get(key) ?? [],
+      y = gb.get(key) ?? [];
+    if (!x.length) {
+      missingSource += y.length;
+      add(`records[${index}].missingSource`);
+    } else if (!y.length) {
+      missingTarget += x.length;
+      add(`records[${index}].missingTarget`);
+    } else if (x.length !== 1 || y.length !== 1)
+      add(`records[${index}].duplicateIdentity`);
     else {
       for (const field of fields) {
         if (equal(x[0][field] ?? null, y[0][field] ?? null)) continue;
         add(`records[${index}].${field}`);
-        if (field === "acl" && Array.isArray(x[0].acl) && Array.isArray(y[0].acl)
-          && equal([...x[0].acl].sort(), [...y[0].acl].sort())) aclOrderOnly++;
+        if (
+          field === "acl" &&
+          Array.isArray(x[0].acl) &&
+          Array.isArray(y[0].acl) &&
+          equal([...x[0].acl].sort(), [...y[0].acl].sort())
+        )
+          aclOrderOnly++;
       }
-      if (!equal(Object.keys(x[0]).sort(), Object.keys(y[0]).sort()) ||
-          Object.keys(x[0]).some(field => !fields.includes(field)) ||
-          Object.keys(y[0]).some(field => !fields.includes(field)))
+      if (
+        !equal(Object.keys(x[0]).sort(), Object.keys(y[0]).sort()) ||
+        Object.keys(x[0]).some((field) => !fields.includes(field)) ||
+        Object.keys(y[0]).some((field) => !fields.includes(field))
+      )
         add(`records[${index}].unrecognizedShape`);
     }
     index++;
   }
-  return { sourceRecords: a.length, targetRecords: b.length,
-    rawEqual: source === target, parsedEqual: equal(left, right),
-    missingSource, missingTarget, aclOrderOnly, differences, paths,
-    truncated: differences > paths.length };
+  return {
+    sourceRecords: a.length,
+    targetRecords: b.length,
+    rawEqual: source === target,
+    parsedEqual: equal(left, right),
+    missingSource,
+    missingTarget,
+    aclOrderOnly,
+    differences,
+    paths,
+    truncated: differences > paths.length,
+  };
 }
-export type RecoveryMetadataDiagnostic = ReturnType<typeof recoveryMetadataDifference> & {
+export type RecoveryMetadataDiagnostic = ReturnType<
+  typeof recoveryMetadataDifference
+> & {
   category: "acl_ownership_defaults" | "constraints_indexes_triggers";
 };
 // Observe existing verifier inputs without changing SQL, output or equivalence.
 // Only fixed category names escape this scope; values, names and digests do not.
-function restoreDiagnostics(commands: CommandExecutor, sourceUrl: string, targetUrl: string, report?: (diagnostic: RecoveryMetadataDiagnostic) => void) {
+function restoreDiagnostics(
+  commands: CommandExecutor,
+  sourceUrl: string,
+  targetUrl: string,
+  report?: (diagnostic: RecoveryMetadataDiagnostic) => void,
+) {
   const metadata = new Map<string, Map<string, string>>();
   const host = (url: string) => new URL(url).hostname;
   const observations = new Map<string, Map<string, string>>();
   const category = (sql: string) => {
     if (sql.startsWith("COPY ")) return "rows";
     if (sql.includes("'kind','object'")) return "acl_ownership_defaults";
-    if (sql.includes("'kind','constraint'")) return "constraints_indexes_triggers";
+    if (sql.includes("'kind','constraint'"))
+      return "constraints_indexes_triggers";
     if (sql.includes("'kind','function'")) return "functions_views_schemas";
     if (sql.includes("'force',c.relforcerowsecurity")) return "policies_rls";
     if (sql.includes("'notNull',a.attnotnull")) return "columns_defaults";
-    if (sql.includes('row_to_json(m)')) return "migration_history";
+    if (sql.includes("row_to_json(m)")) return "migration_history";
     if (sql.includes("'lastValue'")) return "sequences";
     return "other";
   };
@@ -667,7 +724,11 @@ function restoreDiagnostics(commands: CommandExecutor, sourceUrl: string, target
     const values = observations.get(sql) ?? new Map<string, string>();
     values.set(side!, hash(value));
     const kind = category(sql);
-    if (report && (kind === "acl_ownership_defaults" || kind === "constraints_indexes_triggers")) {
+    if (
+      report &&
+      (kind === "acl_ownership_defaults" ||
+        kind === "constraints_indexes_triggers")
+    ) {
       const pair = metadata.get(kind) ?? new Map<string, string>();
       pair.set(side!, value);
       metadata.set(kind, pair);
@@ -693,16 +754,22 @@ function restoreDiagnostics(commands: CommandExecutor, sourceUrl: string, target
     mismatch() {
       const categories = new Set<string>();
       for (const [category, pair] of metadata) {
-        const left = pair.get(host(sourceUrl)), right = pair.get(host(targetUrl));
+        const left = pair.get(host(sourceUrl)),
+          right = pair.get(host(targetUrl));
         if (left !== undefined && right !== undefined) {
-          try { report?.({ category: category as RecoveryMetadataDiagnostic["category"],
-            ...recoveryMetadataDifference(left, right) }); } catch {
+          try {
+            report?.({
+              category: category as RecoveryMetadataDiagnostic["category"],
+              ...recoveryMetadataDifference(left, right),
+            });
+          } catch {
             // Diagnostics cannot replace or suppress the original verifier failure.
           }
         }
       }
       for (const [sql, values] of observations) {
-        const left = values.get(host(sourceUrl)), right = values.get(host(targetUrl));
+        const left = values.get(host(sourceUrl)),
+          right = values.get(host(targetUrl));
         if (left !== undefined && right !== undefined && left !== right)
           categories.add(category(sql));
       }
@@ -753,7 +820,9 @@ export async function verifyReviewedRestore(input: {
       fail("artifact_changed");
     if (query(commands, input.targetUrl, recoveryEmptySql).empty !== true)
       fail("target_not_empty");
-    const adapter = new PostgreSqlGenerationAdapter(recoverySemanticCommands(commands));
+    const adapter = new PostgreSqlGenerationAdapter(
+      recoverySemanticCommands(commands),
+    );
     const sourceNow = (
       await adapter.verifyEquivalence(
         input.sourceUrl,
@@ -828,7 +897,8 @@ export async function verifyReviewedRestore(input: {
     const restoredInventory = inventory(adapter, input.targetUrl, plan, false);
     if (!equal(restoredInventory.memberships, state.inventory.memberships))
       fail("restored_memberships_mismatch");
-    const owners = (i: EffectivePrincipalInventory) => i.grants.filter(g => g.capability.startsWith("owner:"));
+    const owners = (i: EffectivePrincipalInventory) =>
+      i.grants.filter((g) => g.capability.startsWith("owner:"));
     if (!equal(owners(restoredInventory), owners(state.inventory)))
       fail("restored_owners_mismatch");
     if (!equal(restoredInventory.rowSecurity, state.inventory.rowSecurity))
@@ -842,22 +912,53 @@ export async function verifyReviewedRestore(input: {
       fail("restored_ledger_mismatch");
     phase = "restored_scope";
     const restoredScope = scope(commands, input.targetUrl);
-    if (!equal(restoredScope.exactSequences, (state.scope as ReturnType<typeof scope>).exactSequences))
+    if (
+      !equal(
+        restoredScope.exactSequences,
+        (state.scope as ReturnType<typeof scope>).exactSequences,
+      )
+    )
       fail("restored_sequences_mismatch");
-    for (const key of ["schemas", "settings", "extensions", "database", "types", "unsupportedTypes", "unsupportedCatalog", "relations", "columnProperties", "triggerModes", "visible"] as const) {
-      if (!equal(restoredScope[key], (state.scope as ReturnType<typeof scope>)[key]))
-        fail(`restored_scope_${key.replace(/[A-Z]/g, c => "_" + c.toLowerCase())}_mismatch`);
+    for (const key of [
+      "schemas",
+      "settings",
+      "extensions",
+      "database",
+      "types",
+      "unsupportedTypes",
+      "unsupportedCatalog",
+      "relations",
+      "columnProperties",
+      "triggerModes",
+      "visible",
+    ] as const) {
+      if (
+        !equal(
+          restoredScope[key],
+          (state.scope as ReturnType<typeof scope>)[key],
+        )
+      )
+        fail(
+          `restored_scope_${key.replace(/[A-Z]/g, (c) => "_" + c.toLowerCase())}_mismatch`,
+        );
     }
     if (!equal(restoredScope, state.scope)) fail("restored_scope_mismatch");
     phase = "restored_equivalence";
     // Observe canonical verifier inputs, including normalized CHECK definitions.
-    const diagnostics = restoreDiagnostics(recoverySemanticCommands(commands), input.sourceUrl, input.targetUrl, input.metadataDiagnostic);
+    const diagnostics = restoreDiagnostics(
+      recoverySemanticCommands(commands),
+      input.sourceUrl,
+      input.targetUrl,
+      input.metadataDiagnostic,
+    );
     let result;
     try {
-      result = await new PostgreSqlGenerationAdapter(diagnostics.commands).verifyEquivalence(
-        input.sourceUrl, input.targetUrl, ["public"],
-        { source: plan.policy, target: plan.policy },
-      );
+      result = await new PostgreSqlGenerationAdapter(
+        diagnostics.commands,
+      ).verifyEquivalence(input.sourceUrl, input.targetUrl, ["public"], {
+        source: plan.policy,
+        target: plan.policy,
+      });
     } catch {
       fail(`restored_equivalence_${diagnostics.mismatch()}`);
     }
