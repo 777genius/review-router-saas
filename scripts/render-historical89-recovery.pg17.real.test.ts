@@ -1,5 +1,6 @@
+import { cleanupHistorical89RecoveryFixture } from "./lib/render-historical89-recovery-cleanup.fixture";
 import { disposableRecoveryMetadataValues } from "./lib/render-historical89-recovery-metadata.fixture";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -106,7 +107,6 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
     beforeAll(() => {
       vi.stubEnv("PATH", "/usr/local/bin:/usr/bin:/bin");
     });
-    afterAll(() => vi.unstubAllEnvs());
 
     beforeAll(async () => {
       root = mkdtempSync(join(tmpdir(), "rr-historical89-recovery-real-"));
@@ -190,17 +190,7 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
       baselineResult = await baseline.restore();
     }, 180_000);
     afterAll(() => {
-      // Attempt every cleanup even if one container reports an identity failure.
-      const errors: unknown[] = [];
-      for (const pg of [...targets, source, referenceModel]) {
-        try {
-          pg.cleanup();
-        } catch (e) {
-          errors.push(e);
-        }
-      }
-      if (root) rmSync(root, { recursive: true, force: true });
-      if (errors.length) throw new Error("recovery_fixture_cleanup_failed");
+      cleanupHistorical89RecoveryFixture([...targets, source, referenceModel], root);
     }, 120_000);
     async function fixture(drift?: string) {
       const target = managedPg17Fixture();
