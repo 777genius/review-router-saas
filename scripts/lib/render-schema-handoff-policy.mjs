@@ -124,7 +124,7 @@ const checkoutExtensions = Object.freeze([
   Object.freeze({
     migrationName: "000098_certified_fork_effect_archive",
     checksum:
-      "a4cc23ebee762b64ab12e13beac101be66196e6bb7db884b7b6d01dcf0b8715e",
+      "c983a0f284d85680b0356e3f209f349ea3d78cd3228ccd5b580fa13377168933",
   }),
 ]);
 
@@ -168,7 +168,7 @@ export function partitionRenderSchemaHandoffCheckout(catalog) {
   if (
     extensions === 5 &&
     manifest(catalog) !==
-      "sha256:13e1e72e03a7ea6adad842f11fc4cd50dc2efeec73b2a4bb1502691711b367f3"
+      "sha256:70379dce97b0a04474620da7e073a8b8ddf5ba85abba1438cd573d5fff15d612"
   )
     fail("checkout_manifest");
   assertRenderSchemaHandoffCatalog(managed);

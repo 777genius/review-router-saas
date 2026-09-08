@@ -9,21 +9,48 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '5min';
 DO $roles$
+DECLARE r text;
 BEGIN
   IF current_user <> session_user THEN RAISE EXCEPTION 'certified_fork_deployer_session_precondition'; END IF;
+  -- Roles are cluster-wide. Validate every preexisting role under the original
+  -- deployer BEFORE creating the helper or installing any temporary membership.
+  FOREACH r IN ARRAY ARRAY['reviewrouter_certified_fork_owner', 'reviewrouter_certified_fork_writer', 'reviewrouter_certified_fork_reader'] LOOP
+    IF EXISTS (SELECT FROM pg_auth_members m JOIN pg_roles p ON p.oid=m.roleid
+      WHERE p.rolname=r) THEN
+      RAISE EXCEPTION 'certified_fork_existing_membership: %', r;
+    END IF;
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = r AND
+      (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls OR rolinherit)) THEN
+      RAISE EXCEPTION 'certified_fork_unsafe_role: %', r;
+    END IF;
+    IF EXISTS (SELECT FROM pg_auth_members m JOIN pg_roles p ON p.oid=m.member
+      WHERE p.rolname=r) THEN
+      RAISE EXCEPTION 'certified_fork_role_membership_precondition: %', r;
+    END IF;
+    IF EXISTS (SELECT FROM pg_database WHERE datname=current_database()
+      AND datdba=(SELECT oid FROM pg_roles WHERE rolname=r)) OR EXISTS
+      (SELECT FROM pg_namespace WHERE nspname='public' AND nspowner=(SELECT oid FROM pg_roles WHERE rolname=r)) THEN
+      RAISE EXCEPTION 'certified_fork_schema_owner_precondition: %', r;
+    END IF;
+  END LOOP;
+  -- With all prior memberships forbidden, only a superuser has legitimate
+  -- ADMIN authority on an existing owner. CREATEROLE alone does not confer it.
+  -- Fresh non-superuser deployment still obtains ADMIN through helper creation.
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname='reviewrouter_certified_fork_owner')
+    AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname=current_user) THEN
+    RAISE EXCEPTION 'certified_fork_existing_owner_admin_precondition';
+  END IF;
   CREATE ROLE reviewrouter_certified_fork_creator NOLOGIN NOSUPERUSER NOCREATEDB CREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
   EXECUTE format('GRANT reviewrouter_certified_fork_creator TO %I WITH INHERIT FALSE, SET TRUE GRANTED BY %I', current_user, current_user);
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname='reviewrouter_certified_fork_owner') THEN
+    EXECUTE format('GRANT reviewrouter_certified_fork_owner TO reviewrouter_certified_fork_creator WITH ADMIN TRUE, INHERIT FALSE, SET TRUE GRANTED BY %I', current_user);
+  END IF;
 END $roles$;
 SET LOCAL ROLE reviewrouter_certified_fork_creator;
 DO $roles$
 DECLARE r text;
 BEGIN
   FOREACH r IN ARRAY ARRAY['reviewrouter_certified_fork_owner', 'reviewrouter_certified_fork_writer', 'reviewrouter_certified_fork_reader'] LOOP
-    -- Existing deployment authority must never be silently retained.
-    IF EXISTS (SELECT FROM pg_auth_members m JOIN pg_roles p ON p.oid=m.roleid
-      WHERE p.rolname=r) THEN
-      RAISE EXCEPTION 'certified_fork_existing_membership: %', r;
-    END IF;
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS', r);
     END IF;
@@ -36,12 +63,14 @@ BEGIN
       (SELECT FROM pg_namespace WHERE nspname='public' AND nspowner=(SELECT oid FROM pg_roles WHERE rolname=r)) THEN
       RAISE EXCEPTION 'certified_fork_schema_owner_precondition: %', r;
     END IF;
-    -- Only the disposable creator's automatic membership is accepted.
+    -- Only the disposable creator's automatic ADMIN or the validated deployer's
+    -- temporary owner ADMIN membership is accepted; no runtime edge is allowed.
     -- DROP ROLE removes that edge without impersonating its grantor.
     IF EXISTS (SELECT FROM pg_auth_members m JOIN pg_roles p ON p.oid=m.roleid
       WHERE m.member=(SELECT oid FROM pg_roles WHERE rolname=r)) OR EXISTS
       (SELECT FROM pg_auth_members m WHERE m.roleid=(SELECT oid FROM pg_roles WHERE rolname=r)
-       AND m.member<>(SELECT oid FROM pg_roles WHERE rolname=current_user)) THEN
+       AND (m.member<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
+         OR NOT m.admin_option OR m.inherit_option)) THEN
       RAISE EXCEPTION 'certified_fork_role_membership_precondition: %', r;
     END IF;
   END LOOP;
@@ -106,6 +135,10 @@ CREATE TABLE public."CertifiedForkCheckpoint" (
   "version" bigint NOT NULL CHECK ("version" BETWEEN 0 AND 999999999999999999),
   "reviewHash" text NOT NULL CHECK ("reviewHash" ~ '^[a-f0-9]{64}$'),
   "proof" text NOT NULL CHECK (length("proof") BETWEEN 1 AND 4096),
+  "proofSha256" bytea NOT NULL,
+  CONSTRAINT "CertifiedForkCheckpoint_proofSha256_check" CHECK (
+    pg_catalog.octet_length("proofSha256") = 32 AND
+    "proofSha256" = pg_catalog.sha256(pg_catalog.convert_to("proof", 'UTF8'))),
   "formatVersion" integer NOT NULL,
   "prefixLength" integer NOT NULL,
   "prefixHash" text NOT NULL CHECK ("prefixHash" ~ '^[a-f0-9]{64}$'),
@@ -114,11 +147,19 @@ CREATE TABLE public."CertifiedForkCheckpoint" (
   "positionCommandHash" text NOT NULL CHECK ("positionCommandHash" ~ '^[a-f0-9]{64}$'),
   "state" jsonb NOT NULL,
   PRIMARY KEY ("familyKey", "version"),
-  UNIQUE ("proof"),
   CHECK ("version" >= 1 AND "formatVersion" = 1 AND "prefixLength" >= 0),
   CHECK ((jsonb_typeof("state") = 'object' AND jsonb_typeof("state"->'review') = 'object'
     AND jsonb_typeof("state"->'states') = 'array' AND "state" ?& ARRAY['review','states','inventory','outcome']) IS TRUE)
 );
+-- A fixed 32-byte stored key preserves the full 1..4096-character opaque token.
+-- The repository supplies this untrusted digest; the CHECK binds it to UTF8 bytes.
+-- convert_to is STABLE: allowed in CHECK, not an index expression/generated column.
+-- Digest collisions fail closed as unique violations, atomically rejecting the command.
+-- Readers must query proofSha256 AND exact full token UTF8 bytes, then authenticate
+-- the capability separately. Digest knowledge/equality supplies no authority.
+CREATE UNIQUE INDEX "CertifiedForkCheckpoint_proof_sha256_key"
+  ON public."CertifiedForkCheckpoint" ("proofSha256");
+
 ALTER TABLE public."CertifiedForkFamily" ADD CONSTRAINT "CertifiedForkFamily_tip_fkey"
   FOREIGN KEY ("familyKey", "tipVersion") REFERENCES public."CertifiedForkVersion" ("familyKey", "version")
   ON DELETE NO ACTION ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED;

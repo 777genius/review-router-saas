@@ -1,27 +1,48 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { managedPg17Fixture } from "../../../../scripts/lib/render-managed-pg17-fixture.js";
+import { managedPg17Fixture } from "./lib/render-managed-pg17-fixture.js";
 
 // Always executes when selected: unavailable Docker is a FAILED gate, never a skip.
 // This fixture accepts no URL/identity and uses a unique labelled PG17.10 container
 // with --network=none, no host mounts/ports, and guaranteed owned-container cleanup.
 const migration = readFileSync(
   new URL(
-    "../prisma/migrations/000098_certified_fork_effect_archive/migration.sql",
+    "../packages/platform/db/prisma/migrations/000098_certified_fork_effect_archive/migration.sql",
     import.meta.url,
   ),
   "utf8",
 );
+// Deterministic SHA-256 blocks encoded as printable ASCII, not compressible repeats.
+// This is an opaque storage fixture, never an authenticated proof.
+const longProof = Array.from({ length: 96 }, (_, i) =>
+  createHash("sha256")
+    .update(`certified-fork-proof-boundary:${i}`)
+    .digest("base64"),
+)
+  .join("")
+  .slice(0, 4096);
 const h = (n: number) => n.toString(16).padStart(64, "0");
 const quote = (v: unknown) =>
   `'${(typeof v === "string" ? v : JSON.stringify(v)).replaceAll("'", "''")}'`;
-const insert = (table: string, row: Record<string, unknown>) =>
+const proofDigest = (proof: string) =>
+  createHash("sha256").update(proof, "utf8").digest("hex");
+const rawInsert = (table: string, row: Record<string, unknown>) =>
   `INSERT INTO public."CertifiedFork${table}" (${Object.keys(row)
     .map((k) => `"${k}"`)
     .join(",")}) VALUES (${Object.values(row)
     .map((v) => (v === null ? "NULL" : quote(v)))
     .join(",")});`;
+// Normal repository-style writes compute the digest from the final proof value.
+// Raw insertion below deliberately bypasses this helper for adversarial inputs.
+const insert = (table: string, row: Record<string, unknown>) =>
+  rawInsert(
+    table,
+    table === "Checkpoint"
+      ? { ...row, proofSha256: `\\x${proofDigest(String(row.proof))}` }
+      : row,
+  );
+
 function artifacts(version = 1, operation = "acquireClaim") {
   const familyKey = h(1),
     reviewHash = h(2);
@@ -95,12 +116,12 @@ function artifacts(version = 1, operation = "acquireClaim") {
   };
   return { row, receipt, checkpoint };
 }
-function command(a = artifacts(), omit = "") {
+function command(a = artifacts(), omit = "", rawCheckpoint = false) {
   const version = a.row.version;
   return `BEGIN; ${version === "1" ? insert("Family", { familyKey: a.row.familyKey, tipVersion: "1" }) : ""}
     ${omit === "version" ? "" : insert("Version", a.row)}
     ${omit === "receipt" ? "" : insert("Receipt", a.receipt)}
-    ${omit === "checkpoint" ? "" : insert("Checkpoint", a.checkpoint)}
+    ${omit === "checkpoint" ? "" : (rawCheckpoint ? rawInsert : insert)("Checkpoint", a.checkpoint)}
     ${version === "1" ? "" : `UPDATE public."CertifiedForkFamily" SET "tipVersion"=${quote(version)} WHERE "familyKey"=${quote(a.row.familyKey)};`}
     COMMIT;`;
 }
@@ -112,6 +133,128 @@ const catalog = `SELECT jsonb_build_object(
   'acl',(SELECT jsonb_agg(jsonb_build_array(relname,pg_get_userbyid(relowner),relacl::text) ORDER BY relname) FROM pg_class WHERE relname IN ('CertifiedForkFamily','CertifiedForkVersion','CertifiedForkReceipt','CertifiedForkCheckpoint')));`;
 
 describe("CertifiedFork disposable REAL PG17 schema", () => {
+  it("reuses safe cluster roles across databases with authorized ADMIN and atomic denial", async () => {
+    const pg = managedPg17Fixture();
+    const first = `certified_first_${randomUUID().replaceAll("-", "")}`;
+    const second = `certified_second_${randomUUID().replaceAll("-", "")}`;
+    try {
+      await pg.start();
+      pg.query(
+        "postgres",
+        `CREATE ROLE reviewrouter LOGIN CREATEROLE CREATEDB;
+        CREATE ROLE disposable_app LOGIN; CREATE ROLE disposable_parent;
+        CREATE DATABASE ${first} OWNER postgres;
+        CREATE DATABASE ${second} OWNER reviewrouter;`,
+        "postgres",
+      );
+      const query = (db: string, sql: string) => pg.query(db, sql, "postgres");
+      const globalState = () =>
+        query(
+          "postgres",
+          `SELECT jsonb_build_object(
+        'roles',(SELECT jsonb_agg(to_jsonb(r) ORDER BY rolname) FROM pg_roles r WHERE rolname LIKE 'reviewrouter_certified_fork_%'),
+        'memberships',(SELECT jsonb_agg(to_jsonb(m) ORDER BY roleid,member,grantor) FROM pg_auth_members m));`,
+        );
+      const clean = () => {
+        expect(
+          query(
+            "postgres",
+            "SELECT count(*) FROM pg_roles WHERE rolname='reviewrouter_certified_fork_creator'",
+          ),
+        ).toBe("0");
+        expect(
+          query(
+            "postgres",
+            `SELECT count(*) FROM pg_auth_members m
+          WHERE m.roleid IN (SELECT oid FROM pg_roles WHERE rolname LIKE 'reviewrouter_certified_fork_%')
+             OR m.member IN (SELECT oid FROM pg_roles WHERE rolname LIKE 'reviewrouter_certified_fork_%')`,
+          ),
+        ).toBe("0");
+      };
+      // Exactly the checked-in SQL, twice on one cluster, as CI's dev/test deploys.
+      query(first, migration);
+      clean();
+      query(first, command());
+      query(
+        first,
+        "CREATE TABLE public.disposable_sentinel (id integer PRIMARY KEY, data text); INSERT INTO public.disposable_sentinel VALUES (1,'retain');",
+      );
+      const firstState = () =>
+        query(first, catalog) +
+        query(
+          first,
+          `SELECT jsonb_build_object(
+        'functions',(SELECT jsonb_agg(jsonb_build_array(p.oid,pg_get_functiondef(p.oid),p.proowner,p.proacl) ORDER BY p.oid) FROM pg_proc p WHERE proname LIKE 'certified_fork_%'),
+        'schema',(SELECT to_jsonb(n) FROM pg_namespace n WHERE nspname='public'),
+        'sentinel',(SELECT jsonb_agg(to_jsonb(t)) FROM public.disposable_sentinel t),
+        'family',(SELECT jsonb_agg(to_jsonb(t)) FROM public."CertifiedForkFamily" t),
+        'version',(SELECT jsonb_agg(to_jsonb(t)) FROM public."CertifiedForkVersion" t),
+        'receipt',(SELECT jsonb_agg(to_jsonb(t)) FROM public."CertifiedForkReceipt" t),
+        'checkpoint',(SELECT jsonb_agg(to_jsonb(t)) FROM public."CertifiedForkCheckpoint" t));`,
+        );
+      const beforeFirst = firstState();
+      const beforeGlobal = globalState();
+      const denied = (error: RegExp, deployer = "postgres") => {
+        const before = globalState();
+        const beforeSecond = query(second, catalog);
+        expect(() => pg.query(second, migration, deployer)).toThrow(error);
+        expect(globalState()).toBe(before);
+        expect(query(second, catalog)).toBe(beforeSecond);
+        expect(firstState()).toBe(beforeFirst);
+        expect(
+          query(
+            second,
+            "SELECT count(*) FROM pg_roles WHERE rolname='reviewrouter_certified_fork_creator'",
+          ),
+        ).toBe("0");
+      };
+      denied(
+        /certified_fork_existing_owner_admin_precondition/u,
+        "reviewrouter",
+      );
+      // A superuser must still reject unsafe prior role attributes and both
+      // directions of membership, preserving rather than scrubbing prior grants.
+      for (const role of ["owner", "writer", "reader"]) {
+        const name = `reviewrouter_certified_fork_${role}`;
+        query("postgres", `ALTER ROLE ${name} LOGIN`);
+        denied(/certified_fork_unsafe_role/u);
+        query("postgres", `ALTER ROLE ${name} NOLOGIN`);
+        query(
+          "postgres",
+          `GRANT ${name} TO disposable_app WITH ADMIN TRUE, INHERIT FALSE, SET FALSE GRANTED BY postgres`,
+        );
+        denied(/certified_fork_existing_membership/u);
+        query(
+          "postgres",
+          `REVOKE ${name} FROM disposable_app GRANTED BY postgres RESTRICT`,
+        );
+        query("postgres", `GRANT disposable_parent TO ${name}`);
+        denied(/certified_fork_role_membership_precondition/u);
+        query(
+          "postgres",
+          `REVOKE disposable_parent FROM ${name} GRANTED BY postgres RESTRICT`,
+        );
+      }
+      expect(globalState()).toBe(beforeGlobal);
+      // Fail after temporary ADMIN/SET installation to prove transactional cleanup.
+      query(
+        second,
+        'CREATE TABLE public."CertifiedForkFamily" (sentinel text)',
+      );
+      denied(/relation "CertifiedForkFamily" already exists/u);
+      query(second, 'DROP TABLE public."CertifiedForkFamily"');
+      query(second, migration);
+      clean(); // No runtime fixture grants have been installed in either DB.
+      expect(globalState()).toBe(beforeGlobal);
+      expect(firstState()).toBe(beforeFirst);
+      expect(query(second, catalog)).toBe(query(first, catalog));
+      expect(
+        query(second, 'SELECT count(*) FROM public."CertifiedForkFamily"'),
+      ).toBe("0");
+    } finally {
+      pg.cleanup();
+    }
+  }, 180_000);
   it("proves fresh/representative-upgrade parity and raw SQL archive/ACL invariants", async () => {
     const catalogs: unknown[] = [];
     for (const upgrade of [false, true]) {
@@ -119,6 +262,17 @@ describe("CertifiedFork disposable REAL PG17 schema", () => {
       const db = `certified_fork_${randomUUID().replaceAll("-", "")}`;
       try {
         await pg.start();
+        // PG17 pg_proc.dat marks textsend and convert_to STABLE (s), sha256
+        // IMMUTABLE (i). Check the real catalog without altering volatility.
+        expect(
+          pg.query(
+            "postgres",
+            `SELECT string_agg(proname || ':' || provolatile::text, ',' ORDER BY proname)
+          FROM pg_proc WHERE oid IN ('pg_catalog.textsend(text)'::regprocedure,
+            'pg_catalog.convert_to(text,name)'::regprocedure, 'pg_catalog.sha256(bytea)'::regprocedure)`,
+            "postgres",
+          ),
+        ).toBe("convert_to:s,sha256:i,textsend:s");
         pg.query(
           "postgres",
           `CREATE ROLE reviewrouter LOGIN CREATEROLE CREATEDB; CREATE ROLE disposable_app LOGIN; CREATE ROLE disposable_inherited; GRANT disposable_inherited TO disposable_app; CREATE DATABASE ${db} OWNER reviewrouter;`,
@@ -273,7 +427,104 @@ describe("CertifiedFork disposable REAL PG17 schema", () => {
             writer('SELECT count(*) FROM public."CertifiedForkVersion"'),
           ).toBe("0");
         }
-        writer(command()); // REAL first deferred cyclic commit, including zero-event position.
+        // Each rejection must preserve all four artifacts and the family tip.
+        const archiveSnapshot = () =>
+          writer(`SELECT jsonb_build_array(
+          (SELECT jsonb_agg(to_jsonb(t) ORDER BY "familyKey") FROM public."CertifiedForkFamily" t),
+          (SELECT jsonb_agg(to_jsonb(t) ORDER BY "familyKey","version") FROM public."CertifiedForkVersion" t),
+          (SELECT jsonb_agg(to_jsonb(t) ORDER BY "familyKey","version") FROM public."CertifiedForkReceipt" t),
+          (SELECT jsonb_agg(to_jsonb(t) ORDER BY "familyKey","version") FROM public."CertifiedForkCheckpoint" t));`);
+        const rejectsAtomically = (
+          a: ReturnType<typeof artifacts>,
+          error: RegExp,
+          rawCheckpoint = false,
+        ) => {
+          const before = archiveSnapshot();
+          expect(() => writer(command(a, "", rawCheckpoint))).toThrow(error);
+          expect(archiveSnapshot()).toBe(before);
+        };
+        // Explicit missing, NULL, malformed-size, and wrong-content digests.
+        for (const digest of [
+          undefined,
+          null,
+          "\\x",
+          `\\x${"00".repeat(31)}`,
+          `\\x${"00".repeat(33)}`,
+          `\\x${"00".repeat(32)}`,
+        ]) {
+          const badDigest = artifacts();
+          if (digest !== undefined) badDigest.checkpoint.proofSha256 = digest;
+          rejectsAtomically(
+            badDigest,
+            digest == null
+              ? /null value in column "proofSha256"/u
+              : /CertifiedForkCheckpoint_proofSha256_check/u,
+            true,
+          );
+        }
+        const emptyProof = artifacts();
+        emptyProof.checkpoint.proof = "";
+        rejectsAtomically(emptyProof, /CertifiedForkCheckpoint_proof_check/u);
+        expect(longProof).toHaveLength(4096);
+        expect(longProof).toMatch(/^[\x20-\x7e]+$/u);
+        const oversized = artifacts();
+        oversized.checkpoint.proof = `${longProof}x`;
+        rejectsAtomically(oversized, /CertifiedForkCheckpoint_proof_check/u);
+        const fullProof = artifacts();
+        fullProof.checkpoint.proof = longProof;
+        writer(command(fullProof)); // REAL four-artifact commit with full-length proof.
+        // Digest narrows lookup; exact UTF8 equality is mandatory, not authentication.
+        const readProof = (digest: string, token: string) =>
+          pg.query(
+            db,
+            `SELECT "proof" FROM public."CertifiedForkCheckpoint"
+           WHERE "proofSha256" = decode(${quote(digest)}, 'hex')
+             AND pg_catalog.convert_to("proof", 'UTF8') = pg_catalog.convert_to(${quote(token)}::text, 'UTF8')`,
+            "disposable_reader",
+          );
+        expect(readProof(proofDigest(longProof), longProof)).toBe(longProof);
+        expect(
+          readProof(proofDigest(longProof), `${longProof.slice(0, -1)}!`),
+        ).toBe("");
+        expect(readProof("00".repeat(32), longProof)).toBe("");
+        expect(
+          writer(
+            'SELECT octet_length("proofSha256") FROM public."CertifiedForkCheckpoint"',
+          ),
+        ).toBe("32");
+        // A forged collision cannot alias or replace the stored full proof.
+        const forgedCollision = artifacts(2, "renewClaim");
+        forgedCollision.checkpoint.proofSha256 = `\\x${proofDigest(longProof)}`;
+        rejectsAtomically(
+          forgedCollision,
+          /CertifiedForkCheckpoint_proofSha256_check/u,
+          true,
+        );
+        // Non-ASCII UTF8 (including a combining sequence) roundtrips unchanged.
+        const unicodeProof = artifacts(2, "renewClaim");
+        unicodeProof.checkpoint.proof = "é/e\u0301/🔐";
+        const beforeUnicode = archiveSnapshot();
+        expect(
+          writer(
+            command(unicodeProof).replace(
+              /COMMIT;$/u,
+              `SET CONSTRAINTS ALL IMMEDIATE; SELECT "proof" FROM public."CertifiedForkCheckpoint" WHERE "proofSha256" = decode(${quote(proofDigest(String(unicodeProof.checkpoint.proof)))}, 'hex') AND pg_catalog.convert_to("proof", 'UTF8') = pg_catalog.convert_to(${quote(unicodeProof.checkpoint.proof)}::text, 'UTF8'); ROLLBACK;`,
+            ),
+          ),
+        ).toBe(unicodeProof.checkpoint.proof);
+        expect(archiveSnapshot()).toBe(beforeUnicode);
+        const duplicateProof = artifacts(2, "renewClaim");
+        duplicateProof.checkpoint.proof = longProof;
+        rejectsAtomically(
+          duplicateProof,
+          /CertifiedForkCheckpoint_proof_sha256_key/u,
+        );
+        const oversizedNext = artifacts(2, "renewClaim");
+        oversizedNext.checkpoint.proof = `${longProof}x`;
+        rejectsAtomically(
+          oversizedNext,
+          /CertifiedForkCheckpoint_proof_check/u,
+        );
         expect(
           writer(
             'SELECT "claimExpiresAtMs"::text FROM public."CertifiedForkVersion"',
@@ -387,6 +638,100 @@ describe("CertifiedFork disposable REAL PG17 schema", () => {
             'SELECT "revisions"->0->>\'revision\' FROM public."CertifiedForkVersion" WHERE "version"=5',
           ),
         ).toBe("999999999999999999");
+        // Exercise actual nonempty retained prefixes with ordinary writer triggers.
+        // These inputs satisfy SQL shape only; no proof authenticity is asserted.
+        const event = (at: number, kind = "prepare") => ({
+          at,
+          authorityProof: null,
+          input: { kind },
+        });
+        const successor = (version: number, operation = "compareAndCommit") => {
+          const a = artifacts(version, operation);
+          Object.assign(a.row, {
+            fence: "2",
+            claimEpoch: "2",
+            claimOwnerHash: h(30),
+          });
+          a.receipt.ownerHash = h(30);
+          return a;
+        };
+        const withEvents = (
+          a: ReturnType<typeof artifacts>,
+          events: unknown[],
+        ) => {
+          a.row.events = events;
+          a.checkpoint.prefixLength = events.length;
+          return a;
+        };
+        writer(
+          command(withEvents(successor(6), [event(5), event(6, "begin")])),
+        );
+        rejectsAtomically(
+          withEvents(successor(7), [event(5)]),
+          /certified_fork_event_prefix/u,
+        );
+        rejectsAtomically(
+          withEvents(successor(7), [event(5, "begin"), event(6)]),
+          /certified_fork_event_prefix/u,
+        );
+        rejectsAtomically(
+          withEvents(successor(7), [event(5), event(6, "begin"), event(5)]),
+          /certified_fork_event_time/u,
+        );
+        // Last retained event predates prior commit, so this isolates appended-time guard.
+        const retained = withEvents(successor(7), [
+          event(5),
+          event(6, "begin"),
+        ]);
+        writer(command(retained));
+        rejectsAtomically(
+          withEvents(successor(8), [event(5), event(6, "begin"), event(6)]),
+          /certified_fork_appended_event_time/u,
+        );
+        const releaseEvents = withEvents(successor(8, "releaseClaim"), [
+          event(5),
+          event(6, "begin"),
+          event(8, "stop"),
+        ]);
+        Object.assign(releaseEvents.row, {
+          claimOwnerHash: null,
+          claimHash: null,
+          claimEpoch: null,
+          claimExpiresAtMs: null,
+        });
+        const advance = (
+          version: number,
+          generation = "1",
+          operation = "acquireClaim",
+        ) => {
+          const a = successor(version, operation);
+          Object.assign(a.row, { generation, fence: "3", claimEpoch: "3" });
+          (a.row.seed as { facts: { generation: string } }).facts.generation =
+            generation;
+          // checkpoint.review.facts shares this seed's facts by construction.
+          return withEvents(a, [event(version)]);
+        };
+        rejectsAtomically(advance(8), /certified_fork_acquire_claim/u);
+        writer(command(releaseEvents));
+        rejectsAtomically(
+          advance(9, "2"),
+          /certified_fork_history_progression/u,
+        );
+        rejectsAtomically(
+          advance(9, "1", "compareAndCommit"),
+          /certified_fork_history_progression/u,
+        );
+        writer(command(advance(9)));
+        expect(
+          writer(
+            'SELECT "generation"::text FROM public."CertifiedForkVersion" WHERE "version"=9',
+          ),
+        ).toBe("1");
+        expect(
+          writer(
+            'SELECT "prefixLength" FROM public."CertifiedForkCheckpoint" WHERE "version"=9',
+          ),
+        ).toBe("1");
         // Isolate SQL bigint domains from sequential history: maintenance fixture
         // disables USER triggers only inside a rolled-back transaction. FKs/CHECKs
         // remain active; no high-counter imported history is committed or authorized.

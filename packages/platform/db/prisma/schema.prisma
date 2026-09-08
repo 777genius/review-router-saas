@@ -3719,7 +3719,10 @@ model CertifiedForkCheckpoint {
   familyKey           String                @db.Text
   version             BigInt                @db.BigInt
   reviewHash          String                @db.Text
-  proof               String                @unique @db.Text
+  /// SQL098 checks the supplied digest against full proof UTF8 bytes; collisions reject.
+  /// Adapter lookups must compare full token bytes and authenticate; hash is not authority.
+  proof               String                @db.Text
+  proofSha256         Bytes                 @unique(map: "CertifiedForkCheckpoint_proof_sha256_key") @db.ByteA
   formatVersion       Int
   prefixLength        Int
   prefixHash          String                @db.Text

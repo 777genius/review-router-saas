@@ -103,6 +103,8 @@ const migration89QuiescenceName =
 const migration90Name = "000090_workflow_provisioning_attempt_authority";
 const migration91Name = "000091_workflow_provisioning_artifact_and_inventory";
 const migration96Name = "000096_hosted_pool_public_repository_eligibility";
+// Checkout-only: excluded from the frozen pre/post migration execution.
+const migration98Name = "000098_certified_fork_effect_archive";
 const postgresLockTimeoutFailure = Object.freeze({
   sqlState: "55P03",
   message: "canceling statement due to lock timeout",
@@ -188,6 +190,7 @@ assert(
       migration90Name,
       migration91Name,
       migration96Name,
+      migration98Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );

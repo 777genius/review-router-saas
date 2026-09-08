@@ -28,10 +28,11 @@ describe("CertifiedFork schema contract (catalog execution is a separate real PG
         .split("\n);")[0]!;
       const model = prisma.split(`model ${table} {`)[1]!.split("\n}")[0]!;
       for (const [, name, type, required] of ddl.matchAll(
-        /^ {2}"(\w+)" (text|bigint|integer|jsonb|varchar\(64\))( NOT NULL)?/gmu,
+        /^ {2}"(\w+)" (text|bytea|bigint|integer|jsonb|varchar\(64\))( NOT NULL)?/gmu,
       )) {
         const tsType = {
           text: "String",
+          bytea: "Bytes",
           bigint: "BigInt",
           integer: "Int",
           jsonb: "Json",
@@ -44,6 +45,34 @@ describe("CertifiedFork schema contract (catalog execution is a separate real PG
         );
       }
     }
+  });
+
+  it("bounds proof index keys without reducing the opaque token contract", () => {
+    expect(sql).toContain('length("proof") BETWEEN 1 AND 4096');
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX "CertifiedForkCheckpoint_proof_sha256_key"',
+    );
+    expect(sql).toContain(
+      'ON public."CertifiedForkCheckpoint" ("proofSha256")',
+    );
+    expect(sql).toContain('"proofSha256" bytea NOT NULL');
+    expect(sql).toContain('pg_catalog.octet_length("proofSha256") = 32 AND');
+    expect(sql).toContain(
+      '"proofSha256" = pg_catalog.sha256(pg_catalog.convert_to("proof", \'UTF8\'))',
+    );
+    expect(sql).not.toMatch(
+      /textsend|\bIMMUTABLE\b|GENERATED\s+ALWAYS|\bmd5\s*\(/iu,
+    );
+    expect(sql).not.toContain('UNIQUE ("proof")');
+    expect(sql).not.toMatch(/CREATE EXTENSION/iu);
+    const model = prisma
+      .split("model CertifiedForkCheckpoint {")[1]!
+      .split("\n}")[0]!;
+    expect(model).toMatch(/proof\s+String\s+@db.Text/u);
+    expect(model).not.toMatch(/proof\s+[^\n]*@unique/u);
+    expect(model).toMatch(
+      /proofSha256\s+Bytes\s+@unique\(map: "CertifiedForkCheckpoint_proof_sha256_key"\) @db.ByteA/u,
+    );
   });
 
   it("declares explicit unique FK targets and exactly the two deferred cycles", () => {
@@ -67,6 +96,30 @@ describe("CertifiedFork schema contract (catalog execution is a separate real PG
     expect(sql).toContain('"positionCommandId" varchar(64) NOT NULL');
     expect(sql).toContain('"positionCommandHash" text NOT NULL');
     expect(sql).toContain('"claimEpoch" = "fence"');
+  });
+
+  it("validates global roles before temporary grants and requires real reuse authority", () => {
+    const createHelper = sql.indexOf(
+      "CREATE ROLE reviewrouter_certified_fork_creator",
+    );
+    for (const precondition of [
+      "certified_fork_existing_membership",
+      "certified_fork_unsafe_role",
+      "certified_fork_role_membership_precondition",
+      "certified_fork_schema_owner_precondition",
+      "certified_fork_existing_owner_admin_precondition",
+    ]) {
+      expect(sql.indexOf(precondition)).toBeGreaterThan(0);
+      expect(sql.indexOf(precondition)).toBeLessThan(createHelper);
+    }
+    expect(sql).toContain(
+      "AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname=current_user)",
+    );
+    expect(sql).toContain(
+      "GRANT reviewrouter_certified_fork_owner TO reviewrouter_certified_fork_creator WITH ADMIN TRUE, INHERIT FALSE, SET TRUE GRANTED BY %I",
+    );
+    expect(sql).toContain("OR NOT m.admin_option OR m.inherit_option");
+    expect(sql).not.toMatch(/SET (?:LOCAL )?ROLE postgres/u);
   });
 
   it("reserves mutation for the isolated writer and strips actual default grants", () => {
