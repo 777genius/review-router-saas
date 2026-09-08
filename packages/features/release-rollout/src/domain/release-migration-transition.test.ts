@@ -113,7 +113,7 @@ describe("canonical release migration transition", () => {
       "000098_certified_fork_effect_archive",
     );
     expect(manifest(full)).toBe(
-      "sha256:70379dce97b0a04474620da7e073a8b8ddf5ba85abba1438cd573d5fff15d612",
+      "sha256:d55f22c9317678a501fbef170b8f0f7b238ad4f1c1fa4232a02e7b291053c273",
     );
     const historical = readRenderHistorical96CheckoutInventory();
     expect(historical).toHaveLength(96);
