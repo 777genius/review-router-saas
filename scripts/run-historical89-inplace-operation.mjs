@@ -4,9 +4,9 @@
 // custody and records one protected operation-bound receipt" test in
 // scripts/render-historical89-custody.pg17.real.test.ts, rebuilt as a script
 // against a real `pg` connection instead of the disposable psql fixture. It
-// invents no domain logic of its own: every accept/reject decision is made by
-// the already-reviewed library functions under scripts/lib/. This file only
-// adds connection handling, ordering glue and JSON reporting.
+// reuses the reviewed schema and custody validators under scripts/lib/.
+// Startup verification additionally requires an independently pinned durable
+// request and reads current evidence through a shared read-only snapshot.
 //
 // Like the library it calls, this script never claims production
 // authorization: `plan.authorization.authorizesProductionMutation` is false
@@ -22,6 +22,11 @@
 // left to the coordinator, matching PLAN.md section 1C/2.
 import pg from "pg";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import {
+  parseHistorical89Verification,
+  verifyHistorical89Already96,
+} from "./lib/verify-historical89-already96.mjs";
 import {
   renderManagedEvidenceDigest,
   renderManagedLedgerSql,
@@ -385,24 +390,28 @@ async function run() {
     const currentLedger = await readOne(client, renderManagedLedgerSql);
     const currentInspect = inspectHistorical89InPlaceLedger(currentLedger);
     if (currentInspect.count === phase.targetCount) {
-      // Idempotent: already at 96. Best-effort receipt lookup only; a 96
-      // reached by any path other than this custody mechanism has no receipt
-      // to find, and that is reported as null rather than treated as failure.
-      let receiptDigest = null;
+      // A prior invocation's identity and expectations cannot be recovered
+      // from LIMIT 1 or inferred from a receipt. Require the durable request.
+      let reader;
       try {
-        const effectReadSql = `SELECT release_operation_custody.custody_read_effect(
-          (SELECT operation_id FROM release_operation_custody.operation_permit LIMIT 1)
-        )::jsonb;`;
-        const receipt = await readReceipt(readerUrl, effectReadSql);
-        receiptDigest = receipt?.effectFingerprint ?? null;
+        const request = parseHistorical89Verification(
+          readFileSync(requireEnv("REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH")),
+          requireEnv("REVIEW_ROUTER_HISTORICAL89_OPERATION_ID"),
+          requireEnv("REVIEW_ROUTER_HISTORICAL89_VERIFICATION_SHA256"),
+        );
+        reader = await connect(readerUrl);
+        return await verifyHistorical89Already96(client, reader, request);
       } catch {
-        receiptDigest = null;
+        return {
+          outcome: "fenced-unresolved",
+          receiptDigest: null,
+          timestamp: new Date().toISOString(),
+          // Do not report connection strings or untrusted evidence values.
+          reason: "already96_verification_failed",
+        };
+      } finally {
+        if (reader) await reader.end().catch(() => {});
       }
-      return {
-        outcome: "already-96",
-        receiptDigest,
-        timestamp: new Date().toISOString(),
-      };
     }
     if (currentInspect.count !== phase.baselineCount)
       fail(`unexpected_ledger_state:count=${currentInspect.count}`);
