@@ -1,7 +1,7 @@
+import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
-  readRenderManagedCheckoutInventory,
   renderManagedEvidenceDigest,
   renderSchemaHandoffMigrationContract,
 } from "./render-schema-handoff-policy.mjs";
@@ -91,7 +91,7 @@ export const renderHistorical89PendingBodies = Object.freeze([
  * cannot be silently added to or removed from the operation.
  */
 export function readHistorical89PendingIdentities() {
-  const inventory = readRenderManagedCheckoutInventory();
+  const inventory = readRenderHistorical96CheckoutInventory();
   if (inventory.length !== phase.targetCount) fail("checkout96_required");
   const baseline = inventory.filter(
     (row) => !renderHistorical89PendingBodies.includes(row.migrationName),
