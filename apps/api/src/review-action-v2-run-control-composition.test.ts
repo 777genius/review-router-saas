@@ -603,7 +603,7 @@ describe("Review Action v2 run-control composition", () => {
     );
   });
 
-  it("registers an immutable variant and carries selection through capability, admission, replay and renewal", async () => {
+  async function registerSelectedVariant() {
     const base = (await kit.store.findProducerReleaseById("release_v2"))!;
     const baseProfile =
       (await kit.store.findProtocolLimitsProfileById("limits_v2"))!;
@@ -700,9 +700,118 @@ describe("Review Action v2 run-control composition", () => {
       ]),
       kit.store,
     );
+    return { base, baseProfile, selector };
+  }
+
+  it("denies admission when the base is revoked after selection, without authorization or defaults", async () => {
+    const { base, selector } = await registerSelectedVariant();
+    let resume!: () => void;
+    let selected!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      selected = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const ensureRegistered = vi.fn();
+    const create = vi.spyOn(kit.store, "createOrRestoreReviewRunAuthorization");
+    const admit = vi.spyOn(
+      kit.store,
+      "createOrRestoreReviewRunAuthorizationAtomically",
+    );
+    const handlers = createReviewActionV2RunControlHandlers({
+      ...dependencies,
+      repositoryReleaseSelector: selector,
+      trustedProducerReleaseMaterializer: { ensureRegistered },
+      reviewInvestigationCapability: {
+        resolve: async () => {
+          selected();
+          await gate;
+          return null;
+        },
+      },
+    });
+    const pending = handlers.authorize!.execute(authorizeRequest());
+    await paused;
+    expect(admit).not.toHaveBeenCalled();
+    await kit.store.revokeProducerRelease({
+      producerReleaseId: base.producerReleaseId,
+      revokedAt: kit.clock.now(),
+    });
+    resume();
+    await expect(pending).rejects.toMatchObject({
+      statusCode: 412,
+      errorCode: ReviewActionV2ProtocolErrorCode.StalePrecondition,
+    });
+    expect(admit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidate: expect.objectContaining({
+          producerReleaseId: "padel_release",
+        }),
+        fence: expect.objectContaining({ expectedBaseProducerRelease: base }),
+      }),
+    );
+    expect(create).not.toHaveBeenCalled();
+    const candidate = admit.mock.calls[0]![0].candidate;
+    expect(
+      await kit.store.findReviewRunAuthorizationById(candidate.authorizationId),
+    ).toBeNull();
+    expect(ensureRegistered).not.toHaveBeenCalled();
+  });
+
+  it("preserves trusted-base revocation denial on renewal without selecting again", async () => {
+    const { base, selector } = await registerSelectedVariant();
+    const select = vi.fn(selector.select);
+    const handlers = createReviewActionV2RunControlHandlers({
+      ...dependencies,
+      repositoryReleaseSelector: { select },
+    });
+    const first = await handlers.authorize!.execute(authorizeRequest());
+    await kit.store.revokeProducerRelease({
+      producerReleaseId: base.producerReleaseId,
+      revokedAt: kit.clock.now(),
+    });
+    select.mockRejectedValue(new Error("renewal must not select"));
+    await expect(
+      handlers.renew!.execute(
+        await renewRequest(
+          first.result.authorizationId!,
+          first.result.authorizationToken!,
+          dependencies,
+        ),
+      ),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(
+      await kit.store.findReviewRunAuthorizationById(
+        first.result.authorizationId!,
+      ),
+    ).toMatchObject({
+      producerReleaseId: "padel_release",
+    });
+  });
+
+  it("registers an immutable variant and carries selection through capability, admission, replay and renewal", async () => {
+    const { base, baseProfile, selector } = await registerSelectedVariant();
     const select = vi.fn(selector.select);
     const ensureRegistered = vi.fn();
-    const resolve = vi.fn(async () => null);
+    const descriptor = {
+      authorizationDescriptorVersion: 3 as const,
+      capability: reviewInvestigationCapabilityV1,
+      coverageProfileHash: hash("5"),
+      policyHash: hash("6"),
+      extensionCanonicalizerDigest:
+        reviewInvestigationExtensionV1.canonicalizerDigest,
+      extensionId: reviewInvestigationExtensionV1.extensionId,
+      extensionSchemaDigest: reviewInvestigationExtensionV1.schemaDigest,
+      providerCapabilities: [
+        {
+          providerKind: "codex" as const,
+          capabilities: Object.values(InvestigationRolloutCapability).sort(),
+        },
+      ],
+    } as const;
+    const resolve = vi.fn(async () => descriptor);
     const selectedDependencies = {
       ...dependencies,
       repositoryReleaseSelector: { select },
@@ -713,6 +822,20 @@ describe("Review Action v2 run-control composition", () => {
       createReviewActionV2RunControlHandlers(selectedDependencies);
     const first = await handlers.authorize!.execute(authorizeRequest());
     expect(first.statusCode).toBe(201);
+    expect(
+      JSON.parse(first.result.authorizationFactsCanonicalJson!)
+        .reviewInvestigation,
+    ).toEqual(descriptor);
+    const persisted = await kit.store.findReviewRunAuthorizationById(
+      first.result.authorizationId!,
+    );
+    expect(persisted?.producerReleaseId).toBe("padel_release");
+    expect(
+      JSON.parse(
+        persisted!.reviewInvestigationAuthorizationDescriptorCanonicalJson!,
+      ),
+    ).toEqual(descriptor);
+    expect(persisted).not.toHaveProperty("expectedBaseProducerRelease");
     expect(JSON.parse(first.result.protocolLimitsCanonicalJson!)).toMatchObject(
       { maxLeaseDurationMs: 2_100_000, maxResultReportDurationMs: 2_400_000 },
     );
@@ -741,6 +864,13 @@ describe("Review Action v2 run-control composition", () => {
       ),
     );
     expect(renewed.statusCode).toBe(200);
+    expect(
+      JSON.parse(
+        (await kit.store.findReviewRunAuthorizationById(
+          first.result.authorizationId!,
+        ))!.reviewInvestigationAuthorizationDescriptorCanonicalJson!,
+      ),
+    ).toEqual(descriptor);
     select.mockImplementation(selector.select);
     claimsByToken.set("oidc-stopped-run", {
       ...oidcClaims("stopped-run-jti"),

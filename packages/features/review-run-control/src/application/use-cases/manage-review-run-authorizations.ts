@@ -1,3 +1,4 @@
+import type { ProducerRelease } from "../../domain/producer-release";
 import type {
   ReviewRunAuthorization,
   ReviewRunRevision,
@@ -146,6 +147,7 @@ export class ManageReviewRunAuthorizations {
   async authorizeReviewRun(input: {
     readonly verifiedIdentity: VerifiedScmRunIdentity;
     readonly producerReleaseId: string;
+    readonly expectedBaseProducerRelease?: ProducerRelease;
     readonly protocolOfferHash: string;
     readonly oidcReplayKeyHash: string;
     readonly providerVoteLanes: readonly ProviderVoteLane[];
@@ -214,6 +216,12 @@ export class ManageReviewRunAuthorizations {
             repositoryIdentityVersion: eligibility.repository.version,
             mutationAuthorityVersion: eligibility.authority.version,
             producerRelease: eligibility.release,
+            ...(input.expectedBaseProducerRelease
+              ? {
+                  expectedBaseProducerRelease:
+                    input.expectedBaseProducerRelease,
+                }
+              : {}),
             protocolLimitsDigest: eligibility.limits.limitsDigest,
             operationalSloDigest: eligibility.slo.sloDigest,
             safetySnapshot: eligibility.safety,
