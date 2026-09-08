@@ -1,7 +1,5 @@
 import { decodeProtectedHeader, jwtVerify, SignJWT } from "jose";
 import {
-  CapabilityAudience,
-  CapabilityKind,
   CapabilityVerificationError,
   CapabilityVerificationErrorCode,
   validateSignedCapabilityClaims,
@@ -11,6 +9,8 @@ import {
 import type {
   CapabilityKeyRingPort,
   SignedCapabilityCodecPort,
+  SignedCapabilityVerificationInput,
+  VerifiedSignedCapability,
 } from "../application/signed-capability-codec-port";
 
 export class JoseRotatingCapabilityCodec implements SignedCapabilityCodecPort {
@@ -55,13 +55,15 @@ export class JoseRotatingCapabilityCodec implements SignedCapabilityCodecPort {
     };
   }
 
-  async verify(input: {
-    readonly token: string;
-    readonly expectedIssuer: string;
-    readonly expectedAudience: CapabilityAudience;
-    readonly expectedKind: CapabilityKind;
-    readonly now: Date;
-  }): Promise<SignedCapabilityClaims> {
+  async verify(
+    input: SignedCapabilityVerificationInput,
+  ): Promise<SignedCapabilityClaims> {
+    return (await this.verifyWithMetadata(input)).claims;
+  }
+
+  async verifyWithMetadata(
+    input: SignedCapabilityVerificationInput,
+  ): Promise<VerifiedSignedCapability> {
     let keyId: string;
     try {
       const header = decodeProtectedHeader(input.token);
@@ -88,13 +90,17 @@ export class JoseRotatingCapabilityCodec implements SignedCapabilityCodecPort {
     }
 
     try {
-      const { payload } = await jwtVerify(input.token, key.secret, {
-        algorithms: ["HS256"],
-        issuer: input.expectedIssuer,
-        audience: input.expectedAudience,
-        clockTolerance: this.maximumClockSkewSeconds,
-        currentDate: input.now,
-      });
+      const { payload, protectedHeader } = await jwtVerify(
+        input.token,
+        key.secret,
+        {
+          algorithms: ["HS256"],
+          issuer: input.expectedIssuer,
+          audience: input.expectedAudience,
+          clockTolerance: this.maximumClockSkewSeconds,
+          currentDate: input.now,
+        },
+      );
       if (payload.capability_kind !== input.expectedKind) {
         throw new CapabilityVerificationError(
           CapabilityVerificationErrorCode.WrongKind,
@@ -115,7 +121,7 @@ export class JoseRotatingCapabilityCodec implements SignedCapabilityCodecPort {
           CapabilityVerificationErrorCode.WrongAudience,
         );
       }
-      return validateSignedCapabilityClaims({
+      const claims = validateSignedCapabilityClaims({
         capabilityId: payload.jti,
         kind: payload.capability_kind,
         audience: payload.aud,
@@ -130,6 +136,13 @@ export class JoseRotatingCapabilityCodec implements SignedCapabilityCodecPort {
         expiresAt: fromNumericDate(payload.exp),
         payload: payload.capability_payload,
       });
+      // Only the header returned by successful signature verification is evidence.
+      if (protectedHeader.kid !== keyId) {
+        throw new CapabilityVerificationError(
+          CapabilityVerificationErrorCode.Invalid,
+        );
+      }
+      return { claims, authenticatedKeyId: protectedHeader.kid };
     } catch (error) {
       if (error instanceof CapabilityVerificationError) throw error;
       const code = joseErrorCode(error);
