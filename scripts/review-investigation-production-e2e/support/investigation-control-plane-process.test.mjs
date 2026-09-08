@@ -99,3 +99,21 @@ test("IPC timeout is not death evidence and a late reply is ignored", async (t) 
   f.child.emit("close", 0, null);
   await f.owner.close();
 });
+
+test("IPC failures retain safe operation and phase and redact unexpected fields", async () => {
+  const f = fixture();
+  await f.ready();
+  const failed = assert.rejects(f.owner.invoke("commit", {}),
+    /^Error: item11_investigation_idempotency_conflict operation=commit phase=execute class=Error$/);
+  f.child.emit("message", { id: f.child.sent.at(-1).id, error: {
+    code: "investigation_idempotency_conflict", operation: "commit", phase: "execute", errorClass: "Error",
+    request: "secret", stack: "secret",
+  } });
+  await failed;
+  const redacted = assert.rejects(f.owner.invoke("open", {}),
+    /^Error: item11_child_operation_failed operation=unknown phase=unknown class=UnknownError$/);
+  f.child.emit("message", { id: f.child.sent.at(-1).id, error: "secret" });
+  await redacted;
+  f.child.emit("close", 0, null);
+  await f.owner.close();
+});

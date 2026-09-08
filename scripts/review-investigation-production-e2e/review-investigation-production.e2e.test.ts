@@ -253,6 +253,7 @@ function requiredHarness(
 // established before the first destructive operation for this scenario.
 describeWithDatabase.sequential("owned control-plane process persistence", () => {
   it("restores durable investigation state after OS process restart", async () => {
+    const databaseUrl = process.env.REVIEW_ROUTER_ITEM11_DATABASE_URL ?? process.env.REVIEW_ROUTER_TEST_DATABASE_URL;
     const started = performance.now();
     const runId = process.env.REVIEW_ROUTER_ITEM11_RUN_ID ?? "";
     const claim = randomUUID();

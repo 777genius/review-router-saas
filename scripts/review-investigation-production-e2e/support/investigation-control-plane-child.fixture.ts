@@ -1,3 +1,4 @@
+import { childDiagnostic, type ChildPhase } from "./child-diagnostics.fixture.js";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { createPrismaClient, type PrismaClient } from "../../../packages/platform/db/src/index.js";
@@ -23,8 +24,8 @@ export async function durableSnapshot(prisma: PrismaClient, investigationId: str
   return { investigation, obligations, turns, receipts, commands, leases, executionLeases, certificates, shadows, telemetry };
 }
 
-// The marker is provisioned by the operator on a NEW database, never by this
-// test. Exact name + run marker + exclusive advisory lock establish assignment;
+// The marker is provisioned by the operator or CI wrapper on a NEW database.
+// Exact name + run marker establish assignment; the parent claims it via CAS;
 // a localhost/test-name heuristic alone must never authorize TRUNCATE.
 export async function assertFixtureOwnership(prisma: PrismaClient, databaseUrl: string, runId: string) {
   if (!/^[a-f0-9]{32}$/.test(runId)) throw new Error("item11_invalid_run_id");
@@ -44,7 +45,7 @@ async function childMain() {
   let handlers: Handlers | undefined;
   let shuttingDown = false;
   let configured = false;
-  const diagnostics: string[] = [];
+  let terminalDiagnostic = false;
   // No parent fetch monkeypatch crosses an OS boundary. There are no allowed
   // network fixture responses for these persisted-authority handler operations.
   globalThis.fetch = async () => { throw new Error("item11_external_fetch_denied"); };
@@ -57,7 +58,9 @@ async function childMain() {
   process.on("disconnect", () => { void shutdown(); });
   process.on("message", (message: Message) => {
     void (async () => {
+      let phase: ChildPhase = "dispatch";
       const reply = (value: unknown) => {
+        phase = "reply";
         if (process.connected) process.send?.({ id: message.id, value });
       };
       try {
@@ -66,17 +69,21 @@ async function childMain() {
         if (message.operation === "configure") {
           if (configured) throw new Error("already_configured");
           configured = true;
+          phase = "client";
           prisma = createPrismaClient({ databaseUrl: message.config.databaseUrl, poolMax: 2 });
+          phase = "ownership";
           await assertFixtureOwnership(prisma, message.config.databaseUrl, message.config.runId);
+          phase = "composition";
           const routes = composeReviewActionV2ProductionRoutes({
             enabled: true, env: message.config.env, prisma,
             runtime: { readServerTime: async () => new Date(), createRequestId: () => `item11-${randomUUID()}` },
-            recordInvestigationOperationsDiagnostic: (code) => { diagnostics.push(code); },
+            recordInvestigationOperationsDiagnostic: () => { terminalDiagnostic = true; },
           });
           const required = <T>(value: T | undefined): NonNullable<T> => {
             if (!value) throw new Error("handler_missing");
             return value;
           };
+          phase = "handlers";
           handlers = {
             open: required(routes.investigation.openV2), plan: required(routes.investigation.planTurn),
             commit: required(routes.investigation.commitTurn), conclude: required(routes.investigation.conclude),
@@ -87,9 +94,10 @@ async function childMain() {
           return;
         }
         if (!handlers || !prisma) throw new Error("not_ready");
-        if (message.operation === "snapshot") { reply(await durableSnapshot(prisma, message.investigationId)); return; }
+        if (message.operation === "snapshot") { phase = "snapshot"; reply(await durableSnapshot(prisma, message.investigationId)); return; }
         let result: unknown;
         // Fixed typed operations: no arbitrary method name, query or evaluation.
+        phase = "execute";
         switch (message.operation) {
           case "open": result = await handlers.open.execute(message.request); break;
           case "plan": result = await handlers.plan.execute(message.request); break;
@@ -101,13 +109,13 @@ async function childMain() {
           case "executionRelease": result = await handlers.executionRelease.execute(message.request); break;
           default: throw new Error("operation_denied");
         }
-        if (diagnostics.length) throw new Error("terminal_diagnostic");
+        phase = "terminal_diagnostic";
+        if (terminalDiagnostic) throw new Error("terminal_diagnostic");
         reply(result);
       } catch (error) {
-        // Only this documented domain rejection is transported verbatim.
-        const code = error instanceof Error && error.message === "investigation_idempotency_conflict"
-          ? "investigation_idempotency_conflict" : "child_operation_failed";
-        if (process.connected) process.send?.({ id: message.id, error: code });
+        if (process.connected) process.send?.({
+          id: message.id, error: childDiagnostic(error, message.operation, phase),
+        });
       }
     })();
   });

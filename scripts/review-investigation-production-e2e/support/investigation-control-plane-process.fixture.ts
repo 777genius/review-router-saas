@@ -1,3 +1,4 @@
+import { formatChildDiagnostic } from "./child-diagnostics.fixture.ts";
 import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -31,7 +32,7 @@ export type Message = { [K in Operation]: { id: string; operation: K; request: R
   | { id: string; operation: "configure"; config: FixtureConfig }
   | { id: string; operation: "shutdown" };
 
-type Reply = { id: string; value?: unknown; error?: string };
+type Reply = { id: string; value?: unknown; error?: unknown };
 const fail = (code: string) => new Error(`item11_${code}`);
 
 // A close event (including a signal exit) is positive death evidence. Neither
@@ -69,7 +70,7 @@ export class OwnedControlPlane {
       const pending = this.pending.get(reply.id);
       if (!pending) return;
       this.pending.delete(reply.id);
-      if (reply.error) pending.reject(fail(reply.error));
+      if (reply.error) pending.reject(fail(formatChildDiagnostic(reply.error)));
       else pending.resolve(reply.value);
     });
   }
