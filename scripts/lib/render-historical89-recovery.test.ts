@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import {
+  recoveryMetadataDifference,
   captureRecoveryArtifact,
   verifyReviewedRestore,
   recoveryIdentitySql,
@@ -110,6 +111,7 @@ function setup() {
     corruptAcl: false,
     corruptOwner: false,
     corruptCatalog: false,
+    metadataAclOrder: false,
     corruptRls: false,
     corruptMembership: false,
     missingVisibility: false,
@@ -153,6 +155,12 @@ function setup() {
       }
       if (state.restored && isTarget && state.corruptCatalog && sql.includes("'kind','object'"))
         return { stdout: JSON.stringify({ private: "token=secret postgresql://secret@dpg-hidden/private" }) };
+      if (state.metadataAclOrder && sql.includes("'kind','object'")) {
+        const acl = ["private-role=r/private-grantor", "other-role=r*/private-grantor"];
+        return { stdout: JSON.stringify([{ kind: "object", schema: "public",
+          name: "private-relation", type: "r", owner: "private-owner",
+          acl: state.restored && isTarget ? acl.reverse() : acl }]) };
+      }
       let value: unknown = null;
       if (sql === recoveryIdentitySql)
         value = isTarget
@@ -267,9 +275,11 @@ function setup() {
       consistencyReference: "root-consistency-1",
       commands,
     });
-  const restore = (artifact: Awaited<ReturnType<typeof capture>>) =>
+  const restore = (artifact: Awaited<ReturnType<typeof capture>>,
+    metadataDiagnostic?: Parameters<typeof verifyReviewedRestore>[0]["metadataDiagnostic"]) =>
     verifyReviewedRestore({
       artifact,
+      metadataDiagnostic,
       sourceUrl,
       targetUrl,
       disposableTarget: {
@@ -340,6 +350,27 @@ describe("bounded historical89 recovery evidence", () => {
       new Error("historical89_recovery_restored_equivalence_acl_ownership_defaults"),
     );
     f.cleaned();
+  });
+  it("observes real verifier metadata calls without accepting ACL reordering or adding queries", async () => {
+    const run = async (report?: Parameters<typeof verifyReviewedRestore>[0]["metadataDiagnostic"]) => {
+      const f = setup();
+      f.state.metadataAclOrder = true;
+      const artifact = await f.capture();
+      const before = f.calls.length;
+      await expect(f.restore(artifact, report)).rejects.toThrow(
+        new Error("historical89_recovery_restored_equivalence_acl_ownership_defaults"));
+      f.cleaned();
+      return f.calls.length - before;
+    };
+    const reports: unknown[] = [];
+    const observedCalls = await run(diagnostic => reports.push(diagnostic));
+    expect(reports).toContainEqual(expect.objectContaining({
+      category: "acl_ownership_defaults", sourceRecords: 1, targetRecords: 1,
+      aclOrderOnly: 1, paths: ["records[0].acl"],
+    }));
+    expect(JSON.stringify(reports)).not.toMatch(/private|other-role/);
+    expect(await run()).toBe(observedCalls);
+    expect(await run(() => { throw new Error("private-callback-error"); })).toBe(observedCalls);
   });
   it("refuses an existing artifact without overwriting it", async () => {
     const f = setup();
@@ -515,5 +546,45 @@ describe("bounded historical89 recovery evidence", () => {
     await expect(f.restore(artifact)).rejects.toThrow("unsupported_role_name");
     expect(f.mutations()).toHaveLength(0);
     f.cleaned();
+  });
+});
+
+
+describe("bounded recovery metadata diagnostics (no equivalence projection)", () => {
+  const row = { kind: "object", schema: "public", name: "private-name",
+    type: "r", owner: "private-owner", acl: ["secret-a", "secret-b"] };
+  const compare = (a: unknown, b: unknown) => recoveryMetadataDifference(JSON.stringify(a), JSON.stringify(b));
+  it("identifies ACL order only without emitting ACL or identity values", () => {
+    const result = compare([row], [{ ...row, acl: [...row.acl].reverse() }]);
+    expect(result.paths).toEqual(["records[0].acl"]);
+    expect(result.aclOrderOnly).toBe(1);
+    expect(result.parsedEqual).toBe(false);
+    expect(JSON.stringify(result)).not.toMatch(/secret|private/);
+  });
+  it("retains owner, grant option, grantor and definition differences", () => {
+    for (const field of ["owner", "acl", "definition"]) {
+      const result = compare([row], [{ ...row, [field]: field === "acl" ? ["role=r*/other-grantor"] : "changed" }]);
+      expect(result.paths).toContain(`records[0].${field}`);
+      expect(result.aclOrderOnly).toBe(0);
+    }
+  });
+  it("separates raw representation and row order from field drift", () => {
+    const other = { ...row, name: "other" };
+    expect(compare([row, other], [other, row])).toMatchObject({ parsedEqual: false, differences: 0 });
+    expect(recoveryMetadataDifference(JSON.stringify([row]), JSON.stringify([row], null, 2)))
+      .toMatchObject({ rawEqual: false, parsedEqual: true, differences: 0 });
+  });
+  it("reports missing identities and duplicates without masking them", () => {
+    expect(compare([row], [{ ...row, name: "renamed" }]))
+      .toMatchObject({ missingSource: 1, missingTarget: 1 });
+    expect(compare([row, row], [row]).paths).toEqual(["records[0].duplicateIdentity"]);
+  });
+  it("bounds paths and never emits unexpected field names or definitions", () => {
+    const a = Array.from({length: 100}, (_, i) => ({ ...row, name: `n${i}` }));
+    const result = compare(a, a.map(r => ({ ...r, owner: "changed", "secret-key": "secret-value" })));
+    expect(result.paths).toHaveLength(64);
+    expect(result.truncated).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("secret");
+    expect(() => compare({}, [])).toThrow("recovery_metadata_diagnostic_shape");
   });
 });

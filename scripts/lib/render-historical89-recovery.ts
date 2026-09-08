@@ -570,9 +570,66 @@ function databaseReconstructionSql(
   }
   return `BEGIN; ALTER DATABASE ${db} OWNER TO ${owner}; SET LOCAL ROLE ${owner}; REVOKE ALL ON DATABASE ${db} FROM PUBLIC, ${plan.roles.map((r) => identifier(r.name)).join(", ")}; ${grants.join(" ")} COMMIT;`;
 }
+// Diagnostic comparison only: never used to authorize equivalence. Identity
+// values stay private; emitted paths contain only fixed field names and indices.
+export function recoveryMetadataDifference(source: string, target: string) {
+  const left = JSON.parse(source), right = JSON.parse(target);
+  const rows = (value: unknown): Record<string, unknown>[] => {
+    if (value === null) return [];
+    if (!Array.isArray(value) || value.length > 10000 || value.some(row =>
+      !row || typeof row !== "object" || Array.isArray(row)))
+      throw new Error("recovery_metadata_diagnostic_shape");
+    return value;
+  };
+  const a = rows(left), b = rows(right);
+  const identity = (row: Record<string, unknown>) => canonicalJson(
+    [row.kind, row.schema, row.table ?? null, row.name ?? null,
+      row.type ?? null, row.kind === "default" ? row.owner : null]);
+  const group = (values: Record<string, unknown>[]) => {
+    const result = new Map<string, Record<string, unknown>[]>();
+    for (const row of values) {
+      const key = identity(row);
+      result.set(key, [...(result.get(key) ?? []), row]);
+    }
+    return result;
+  };
+  const ga = group(a), gb = group(b);
+  const paths: string[] = [];
+  let differences = 0, missingSource = 0, missingTarget = 0, aclOrderOnly = 0;
+  const add = (path: string) => { differences++; if (paths.length < 64) paths.push(path); };
+  const fields = ["kind", "schema", "table", "name", "type", "owner", "acl", "definition"];
+  let index = 0;
+  for (const key of [...new Set([...ga.keys(), ...gb.keys()])].sort()) {
+    const x = ga.get(key) ?? [], y = gb.get(key) ?? [];
+    if (!x.length) { missingSource += y.length; add(`records[${index}].missingSource`); }
+    else if (!y.length) { missingTarget += x.length; add(`records[${index}].missingTarget`); }
+    else if (x.length !== 1 || y.length !== 1) add(`records[${index}].duplicateIdentity`);
+    else {
+      for (const field of fields) {
+        if (equal(x[0][field] ?? null, y[0][field] ?? null)) continue;
+        add(`records[${index}].${field}`);
+        if (field === "acl" && Array.isArray(x[0].acl) && Array.isArray(y[0].acl)
+          && equal([...x[0].acl].sort(), [...y[0].acl].sort())) aclOrderOnly++;
+      }
+      if (!equal(Object.keys(x[0]).sort(), Object.keys(y[0]).sort()) ||
+          Object.keys(x[0]).some(field => !fields.includes(field)) ||
+          Object.keys(y[0]).some(field => !fields.includes(field)))
+        add(`records[${index}].unrecognizedShape`);
+    }
+    index++;
+  }
+  return { sourceRecords: a.length, targetRecords: b.length,
+    rawEqual: source === target, parsedEqual: equal(left, right),
+    missingSource, missingTarget, aclOrderOnly, differences, paths,
+    truncated: differences > paths.length };
+}
+export type RecoveryMetadataDiagnostic = ReturnType<typeof recoveryMetadataDifference> & {
+  category: "acl_ownership_defaults" | "constraints_indexes_triggers";
+};
 // Observe existing verifier inputs without changing SQL, output or equivalence.
 // Only fixed category names escape this scope; values, names and digests do not.
-function restoreDiagnostics(commands: CommandExecutor, sourceUrl: string, targetUrl: string) {
+function restoreDiagnostics(commands: CommandExecutor, sourceUrl: string, targetUrl: string, report?: (diagnostic: RecoveryMetadataDiagnostic) => void) {
+  const metadata = new Map<string, Map<string, string>>();
   const host = (url: string) => new URL(url).hostname;
   const observations = new Map<string, Map<string, string>>();
   const category = (sql: string) => {
@@ -591,6 +648,12 @@ function restoreDiagnostics(commands: CommandExecutor, sourceUrl: string, target
     const sql = args.at(-1)!;
     const values = observations.get(sql) ?? new Map<string, string>();
     values.set(side!, hash(value));
+    const kind = category(sql);
+    if (report && (kind === "acl_ownership_defaults" || kind === "constraints_indexes_triggers")) {
+      const pair = metadata.get(kind) ?? new Map<string, string>();
+      pair.set(side!, value);
+      metadata.set(kind, pair);
+    }
     observations.set(sql, values);
   };
   const observed: CommandExecutor = {
@@ -611,6 +674,15 @@ function restoreDiagnostics(commands: CommandExecutor, sourceUrl: string, target
     commands: observed,
     mismatch() {
       const categories = new Set<string>();
+      for (const [category, pair] of metadata) {
+        const left = pair.get(host(sourceUrl)), right = pair.get(host(targetUrl));
+        if (left !== undefined && right !== undefined) {
+          try { report?.({ category: category as RecoveryMetadataDiagnostic["category"],
+            ...recoveryMetadataDifference(left, right) }); } catch {
+            // Diagnostics cannot replace or suppress the original verifier failure.
+          }
+        }
+      }
       for (const [sql, values] of observations) {
         const left = values.get(host(sourceUrl)), right = values.get(host(targetUrl));
         if (left !== undefined && right !== undefined && left !== right)
@@ -624,6 +696,7 @@ export async function verifyReviewedRestore(input: {
   artifact: RecoveryArtifact;
   sourceUrl: string;
   targetUrl: string;
+  metadataDiagnostic?: (diagnostic: RecoveryMetadataDiagnostic) => void;
   disposableTarget: {
     purpose: "historical89-disposable-restore";
     reviewReference: string;
@@ -759,7 +832,7 @@ export async function verifyReviewedRestore(input: {
     }
     if (!equal(restoredScope, state.scope)) fail("restored_scope_mismatch");
     phase = "restored_equivalence";
-    const diagnostics = restoreDiagnostics(commands, input.sourceUrl, input.targetUrl);
+    const diagnostics = restoreDiagnostics(commands, input.sourceUrl, input.targetUrl, input.metadataDiagnostic);
     let result;
     try {
       result = await new PostgreSqlGenerationAdapter(diagnostics.commands).verifyEquivalence(

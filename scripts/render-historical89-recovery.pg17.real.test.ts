@@ -179,6 +179,7 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
           artifact,
           sourceUrl,
           targetUrl,
+          metadataDiagnostic: diagnostic => console.info(`recovery_metadata_difference ${JSON.stringify(diagnostic)}`),
           disposableTarget: {
             purpose: "historical89-disposable-restore",
             reviewReference: "owned-offline-container",
