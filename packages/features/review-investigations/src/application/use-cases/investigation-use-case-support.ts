@@ -100,7 +100,9 @@ export async function requireValidDossierDigest(
 }
 
 export async function requireCurrentExecution(input: {
-  readonly transactionalVerdict?: InvestigationExecutionAuthorityVerdict;
+  readonly transactionalVerdict?:
+    | InvestigationExecutionAuthorityVerdict
+    | undefined;
   readonly authority: InvestigationExecutionAuthorityPort;
   readonly investigation: Pick<
     ReviewInvestigation,
