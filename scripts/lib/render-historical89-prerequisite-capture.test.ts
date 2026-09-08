@@ -1,7 +1,7 @@
+import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
 import { describe, expect, it, vi } from "vitest";
 import { captureHistorical89Prerequisites } from "./render-historical89-prerequisite-capture.mjs";
 import {
-  readRenderManagedCheckoutInventory,
   renderManagedEvidenceDigest,
   renderManagedLedgerSql,
   renderManagedMembershipSql,
@@ -26,7 +26,7 @@ const source = {
   commit: "b3f27bf3ceb41a3dcb1ed7dca66edda55704c3d3",
   label: "disposable-fixture",
 };
-const inventory = readRenderManagedCheckoutInventory();
+const inventory = readRenderHistorical96CheckoutInventory();
 const ledger = (count: number) =>
   inventory.slice(0, count).map((r, i) => ({
     migrationName: r.migrationName,
@@ -123,6 +123,7 @@ function harness(values = fixture(), failAt?: string, code = "42501") {
       }) => {
         expect(query_timeout).toBe(5000);
         const name = text.startsWith("WITH capture") ? names[index++] : text;
+        if (name === undefined) throw new Error("unexpected capture query");
         sequence.push(name);
         if (name === failAt)
           throw Object.assign(new Error("password=secret-provider-body"), {
@@ -132,7 +133,7 @@ function harness(values = fixture(), failAt?: string, code = "42501") {
           });
         if (text === "ROLLBACK") return { command: "ROLLBACK", rows: [] };
         if (!text.startsWith("WITH capture"))
-          return { command: text.split(" ")[0], rows: [] };
+          return { command: text.split(" ")[0]!, rows: [] };
         expect(text).toContain("AS MATERIALIZED");
         const byteLimit = name === "catalog" ? 8 * 1024 * 1024 : 2_000_000;
         expect(text).toContain(`octet_length(value::text)<=${byteLimit}`);
@@ -181,6 +182,14 @@ describe("read-only historical89 prerequisite capture", () => {
       expect(result.rollbackConfirmed).toBe(true);
       expect(result.observations).toEqual(values);
       expect(result.ledgerObservation?.count).toBe(count);
+      expect(result.unresolvedCapabilities).not.toContain(
+        "ledger-history-not-qualified",
+      );
+      expect(
+        result.migrationIdentities?.some(
+          (row) => row.migrationName === "000098_certified_fork_effect_archive",
+        ),
+      ).toBe(false);
       expect(result.migrationIdentities).toEqual(
         readHistorical89PendingIdentities(),
       );

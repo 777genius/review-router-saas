@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   assertReleaseMigrationTransition,
@@ -24,9 +24,12 @@ import { canonicalPrismaMigrationNames } from "../../../../../scripts/lib/canoni
 import {
   assertRenderSchemaHandoffCatalog,
   readRenderSchemaHandoffCatalog,
+  readRenderManagedCheckoutInventory,
   readReviewedRenderManagedContract,
   renderManagedMigrationPhases,
 } from "../../../../../scripts/lib/render-schema-handoff-policy.mjs";
+
+import { readRenderHistorical96CheckoutInventory } from "../../../../../scripts/lib/render-historical96-checkout.mjs";
 
 const migrationRoot = "packages/platform/db/prisma/migrations";
 const sha256 = (value: string | Buffer) =>
@@ -90,7 +93,7 @@ describe("canonical release migration transition", () => {
     );
   });
 
-  it("keeps canonical96 checkout admission separate from managed92 authority", () => {
+  it("keeps full97 source admission separate from historical96 and managed92 authority", () => {
     type Row = { migrationName: string; checksum: string };
     const names: readonly string[] = canonicalPrismaMigrationNames;
     const full = names.map((migrationName) => ({
@@ -104,10 +107,22 @@ describe("canonical release migration transition", () => {
         rows.map((row) => `${row.migrationName}:${row.checksum}`).join(","),
       );
     const managed: readonly Row[] = readRenderSchemaHandoffCatalog();
-    expect(full).toHaveLength(96);
-    expect(manifest(full)).toBe(canonicalReleaseMigrationPostManifestIdentity);
-    expect(full.slice(0, 92)).toEqual(managed);
-    expect(full.slice(-4)).toEqual(
+    expect(full).toHaveLength(97);
+    expect(full).toEqual(readRenderManagedCheckoutInventory());
+    expect(full.at(-1)?.migrationName).toBe(
+      "000098_certified_fork_effect_archive",
+    );
+    expect(manifest(full)).toBe(
+      "sha256:d55f22c9317678a501fbef170b8f0f7b238ad4f1c1fa4232a02e7b291053c273",
+    );
+    const historical = readRenderHistorical96CheckoutInventory();
+    expect(historical).toHaveLength(96);
+    expect(historical).toEqual(full.slice(0, 96));
+    expect(manifest(historical)).toBe(
+      canonicalReleaseMigrationPostManifestIdentity,
+    );
+    expect(historical.slice(0, 92)).toEqual(managed);
+    expect(historical.slice(-4)).toEqual(
       canonicalReleaseMigrationEntries
         .slice(-4)
         .map(({ migrationName, migrationSqlSha256: checksum }) => ({
@@ -118,6 +133,9 @@ describe("canonical release migration transition", () => {
     expect(managed).toHaveLength(92);
     expect(() => assertRenderSchemaHandoffCatalog(managed)).not.toThrow();
     expect(() => assertRenderSchemaHandoffCatalog(full)).toThrow(
+      "migration_catalog",
+    );
+    expect(() => assertRenderSchemaHandoffCatalog(historical)).toThrow(
       "migration_catalog",
     );
     for (const phase of [
@@ -141,8 +159,11 @@ describe("canonical release migration transition", () => {
     expect(canonicalReleaseMigrationEntries).toHaveLength(20);
     expect(canonicalReleaseMigrationResumeManifestIdentities).toEqual([
       canonicalReleaseMigrationArtifact.preManifestIdentity,
-      manifest(full),
+      manifest(historical),
     ]);
+    expect(canonicalReleaseMigrationResumeManifestIdentities).not.toContain(
+      manifest(full),
+    );
     expect(canonicalReleaseMigrationResumeManifestIdentities).not.toContain(
       manifest(managed),
     );
@@ -152,18 +173,10 @@ describe("canonical release migration transition", () => {
     const pending = new Set<string>(
       canonicalReleaseMigrationEntries.map((entry) => entry.migrationName),
     );
-    const installed = readdirSync(migrationRoot)
-      .filter((name) => /^\d{6}_[a-z0-9_]+$/u.test(name))
-      .filter((name) => !pending.has(name))
-      .map(
-        (name) =>
-          [
-            name,
-            createHash("sha256")
-              .update(readFileSync(`${migrationRoot}/${name}/migration.sql`))
-              .digest("hex"),
-          ] as const,
-      );
+    // Replay belongs to the immutable historical release, after full source admission.
+    const installed = readRenderHistorical96CheckoutInventory()
+      .filter(({ migrationName }) => !pending.has(migrationName))
+      .map(({ migrationName, checksum }) => [migrationName, checksum] as const);
     const root = () =>
       sha256(
         [...installed]

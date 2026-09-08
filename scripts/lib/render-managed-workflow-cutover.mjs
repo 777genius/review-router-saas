@@ -1,3 +1,4 @@
+import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
 import {
   assertReleaseMigrationObservation,
   assertReleaseMigrationTransitionIntegrity,
@@ -7,7 +8,6 @@ import {
   assertEmptyApplicableRenderDefaultAcl,
   classifyRenderManagedMembership,
   inspectRenderManagedLedgerRows,
-  readRenderManagedCheckoutInventory,
   renderManagedEvidenceDigest,
   renderManagedLedgerSql,
   renderManagedMembershipSql,
@@ -64,7 +64,7 @@ const gateQuery = `SELECT jsonb_build_object('gateStatus',status,'authzEpoch',"a
   FROM public."HostedCodexRuntimeGate" WHERE id='global'`;
 
 export function inspectRenderManagedWorkflowCutoverLedger(ledger, original92) {
-  const catalog = readRenderManagedCheckoutInventory();
+  const catalog = readRenderHistorical96CheckoutInventory();
   if (catalog.length !== 96) fail("checkout96_required");
   const result = inspectRenderManagedLedgerRows(catalog, ledger, phase);
   if (original92 !== undefined) {
@@ -157,7 +157,7 @@ export function renderManagedWorkflowCutoverBodiesSql(
   marker = "cutover-body",
   offset = 0,
 ) {
-  return readRenderManagedCheckoutInventory()
+  return readRenderHistorical96CheckoutInventory()
     .slice(92)
     .map((row, index) =>
       renderManagedMigrationBodySql(
@@ -207,7 +207,7 @@ export function renderManagedWorkflowCutoverTerminalSql({
 }) {
   classifyRenderManagedMembership([originalMembership], originalMembership);
   assertGate(gate);
-  const catalog = readRenderManagedCheckoutInventory();
+  const catalog = readRenderHistorical96CheckoutInventory();
   const cutover96 = readManagedMigrationBody(catalog[95]);
   const sourceChecks = ["guard", "prepare_authority"]
     .map((tag, i) => {
@@ -271,7 +271,7 @@ export function renderManagedWorkflowCutoverTransaction({
     "reviewrouter",
     "reviewrouter_release_schema_owner",
   ]);
-  const catalog = readRenderManagedCheckoutInventory();
+  const catalog = readRenderHistorical96CheckoutInventory();
   const entries = catalog.slice(92);
   if (
     deriveOrderedPendingEntriesSha256(

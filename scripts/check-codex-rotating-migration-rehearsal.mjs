@@ -1,9 +1,18 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
+import { readRenderHistorical96CheckoutInventory } from "./lib/render-historical96-checkout.mjs";
 import { codexRotatingProductionWriterBaseObservationSql } from "./capture-codex-rotating-production-writer.mjs";
 import {
   codexRotatingFunctions,
@@ -103,6 +112,8 @@ const migration89QuiescenceName =
 const migration90Name = "000090_workflow_provisioning_attempt_authority";
 const migration91Name = "000091_workflow_provisioning_artifact_and_inventory";
 const migration96Name = "000096_hosted_pool_public_repository_eligibility";
+// Checkout-only: excluded from the frozen pre/post migration execution.
+const migration98Name = "000098_certified_fork_effect_archive";
 const postgresLockTimeoutFailure = Object.freeze({
   sqlState: "55P03",
   message: "canceling statement due to lock timeout",
@@ -188,6 +199,7 @@ assert(
       migration90Name,
       migration91Name,
       migration96Name,
+      migration98Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -6005,19 +6017,21 @@ async function proveQuarantineCleanupPathV2(adminUrl, clients) {
 }
 
 function migrationHistoryDigest(url, migrationNames) {
-  const migrationNameSql = migrationNames.map(quoteLiteral).join(",");
+  const migrationNameSql = migrationNames?.map(quoteLiteral).join(",");
   return psql(url, [
     "-Atc",
     String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
       FROM "_prisma_migrations" m
-      WHERE migration_name IN (${migrationNameSql})`,
+      ${migrationNames ? `WHERE migration_name IN (${migrationNameSql})` : ""}`,
   ]).stdout.trim();
 }
 
 function proveMigrateDeployNoOp(url) {
-  const before = migrationHistoryDigest(url, rotatingMigrationNames);
+  const historical = readRenderHistorical96CheckoutInventory();
+  // Compare every history row, including any unexpected checkout-only effects.
+  const before = migrationHistoryDigest(url);
   const rerun = migrateDeploy(url);
-  const after = migrationHistoryDigest(url, rotatingMigrationNames);
+  const after = migrationHistoryDigest(url);
   assert(
     before === after,
     "post-success migrate deploy changed migration history",
@@ -6028,7 +6042,7 @@ function proveMigrateDeployNoOp(url) {
       .includes("no pending migrations"),
     "post-success migrate deploy did not report a no-op",
   );
-  for (const migrationName of rotatingMigrationNames) {
+  for (const { migrationName } of historical) {
     proveMigrationRunnerHistory(url, migrationName, true);
   }
 }
@@ -6301,11 +6315,48 @@ async function terminateChild(child) {
 }
 
 function migrateDeploy(url, requireSuccess = true) {
-  return prisma(
-    url,
-    ["migrate", "deploy", "--config", "prisma.config.ts"],
-    requireSuccess,
-  );
+  // Admit the full checkout before selecting the immutable historical96 scope.
+  // Prisma deploy has no "through migration" flag: give it an isolated catalog.
+  const historical = readRenderHistorical96CheckoutInventory();
+  const directory = mkdtempSync(join(tmpdir(), "rr-historical96-deploy-"));
+  try {
+    const boundedMigrations = join(directory, "migrations");
+    mkdirSync(boundedMigrations);
+    for (const { migrationName, checksum } of historical) {
+      const sql = readFileSync(
+        join(migrationsDirectory, migrationName, "migration.sql"),
+      );
+      assert(
+        createHash("sha256").update(sql).digest("hex") === checksum,
+        `historical96_deploy_source_mismatch:${migrationName}`,
+      );
+      mkdirSync(join(boundedMigrations, migrationName));
+      writeFileSync(
+        join(boundedMigrations, migrationName, "migration.sql"),
+        sql,
+      );
+    }
+    const config = join(directory, "prisma.config.mjs");
+    writeFileSync(
+      config,
+      `import { readFileSync } from "node:fs";
+export default {
+  schema: ${JSON.stringify(join(dbDirectory, "prisma/schema.prisma"))},
+  migrations: { path: ${JSON.stringify(boundedMigrations)} },
+  datasource: { url: process.env.REVIEW_ROUTER_DATABASE_URL_FILE
+    ? readFileSync(process.env.REVIEW_ROUTER_DATABASE_URL_FILE, "utf8").trim()
+    : (process.env.DATABASE_URL ?? "") },
+};
+`,
+    );
+    return prisma(
+      url,
+      ["migrate", "deploy", "--config", config],
+      requireSuccess,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 function migrateResolve(url, resolution, name) {
@@ -6331,6 +6382,18 @@ function prisma(url, args, requireSuccess = true) {
           args: [process.env.npm_execpath, "exec", "prisma", ...args],
         }
       : { executable: "pnpm", args: ["exec", "prisma", ...args] };
+  // Prisma renders the resolved --config path relative to its process cwd.
+  // Bind that exact display path before spawn; stderr is never its authority.
+  const configIndex = args.indexOf("--config");
+  const prismaInvocation = Object.freeze({
+    configDisplayPath: relative(
+      dbDirectory,
+      resolve(
+        dbDirectory,
+        configIndex === -1 ? "prisma.config.ts" : args[configIndex + 1],
+      ),
+    ),
+  });
   const credential = createDatabaseCredentialBoundary(url);
   try {
     const result = spawnSync(command.executable, command.args, {
@@ -6348,7 +6411,7 @@ function prisma(url, args, requireSuccess = true) {
         signal: result.signal,
         timedOut: result.error?.code === "ETIMEDOUT",
       });
-    return result;
+    return { ...result, prismaInvocation };
   } finally {
     credential.cleanup();
   }

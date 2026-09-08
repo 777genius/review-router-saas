@@ -1,3 +1,4 @@
+import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
 import {
   readHistorical89PendingIdentities,
   renderHistorical89AdmissionPhase,
@@ -6,7 +7,6 @@ import {
 } from "./render-historical89-admission.mjs";
 import {
   inspectRenderManagedLedgerRows,
-  readRenderManagedCheckoutInventory,
   renderManagedEvidenceDigest,
   renderManagedLedgerSql,
   renderManagedMembershipSql,
@@ -233,7 +233,7 @@ export async function captureHistorical89Prerequisites({
     // Immutable source identities are checked before broad DB projections.
     stage = "source";
     result.migrationIdentities = readHistorical89PendingIdentities();
-    const inventory = readRenderManagedCheckoutInventory();
+    const inventory = readRenderHistorical96CheckoutInventory();
     for (const [name, sql] of Object.entries(projections)) {
       const value = await read(name, sql);
       if (!validProjection(name, value)) throw error("missing-facts");

@@ -1,3 +1,4 @@
+import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
 import {
   assertHistorical89AdmissionIdentity,
   assertHistorical89CreatedObjectAcl,
@@ -10,7 +11,6 @@ import {
 import {
   classifyRenderManagedMembership,
   inspectRenderManagedLedgerRows,
-  readRenderManagedCheckoutInventory,
   renderManagedEvidenceDigest,
   renderManagedLedgerSql,
   renderManagedMembershipCleanupSql,
@@ -125,7 +125,7 @@ export const renderHistorical89InPlaceMarkers = Object.freeze([
  * two durable endpoints are admissible; a partial count is never a position.
  */
 export function inspectHistorical89InPlaceLedger(ledger) {
-  const catalog = readRenderManagedCheckoutInventory();
+  const catalog = readRenderHistorical96CheckoutInventory();
   if (catalog.length !== phase.targetCount) fail("checkout96_required");
   return inspectRenderManagedLedgerRows(catalog, ledger, phase);
 }

@@ -1,3 +1,4 @@
+import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
 import { readFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -9,14 +10,14 @@ import {
 } from "./render-managed-workflow-cutover.mjs";
 import {
   inspectRenderManagedLedger,
-  readRenderManagedCheckoutInventory,
   readRenderSchemaHandoffCatalog,
   readReviewedRenderManagedContract,
+  readRenderManagedCheckoutInventory,
   renderManagedEvidenceDigest,
 } from "./render-schema-handoff-policy.mjs";
 import { deriveOrderedPendingEntriesSha256 } from "../../packages/features/release-rollout/src/domain/release-migration-transition";
 
-const catalog = readRenderManagedCheckoutInventory();
+const catalog = readRenderHistorical96CheckoutInventory();
 const rows = catalog.map((entry, i) => ({
   ...entry,
   id: randomUUID(),
@@ -89,6 +90,21 @@ describe("bounded managed atomic workflow cutover", () => {
     expect(() =>
       readReviewedRenderManagedContract("managed-schema-handoff"),
     ).toThrow("independent_review_missing");
+  });
+  it("rejects a ledger containing the checkout-only migration098", () => {
+    const archive = readRenderManagedCheckoutInventory()[96]!;
+    expect(() =>
+      inspectRenderManagedWorkflowCutoverLedger(
+        [...rows, { ...rows[95]!, ...archive, id: randomUUID() }],
+        pre,
+      ),
+    ).toThrow("count");
+    expect(() =>
+      inspectRenderManagedWorkflowCutoverLedger(
+        [...rows.slice(0, 95), { ...rows[95]!, ...archive }],
+        pre,
+      ),
+    ).toThrow();
   });
   it.each([0, 76, 89, 91, 93, 94, 95, 97])(
     "rejects nonendpoint count %i",
@@ -216,6 +232,8 @@ it("constructs an explicit four-body transaction with complete fenced evidence c
     binding,
   };
   const sql = renderManagedWorkflowCutoverTransaction(input);
+  expect(sql).not.toContain("000098_certified_fork_effect_archive");
+  expect(sql).toContain("(SELECT count(*) FROM public._prisma_migrations)<>96");
   expect(sql.match(/^BEGIN ISOLATION/gmu)).toHaveLength(1);
   expect(sql).not.toMatch(/^COMMIT\s*;/mu);
   expect(sql.match(/^INSERT INTO public\._prisma_migrations/gmu)).toHaveLength(
