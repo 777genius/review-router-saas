@@ -57,7 +57,9 @@ function checkRecoveryProcess(result: ReturnType<typeof spawnSync>) {
 export function managedPg17Fixture() {
   const token = randomUUID();
   const name = `rr-retained-${token}`;
-  const environment = { PATH: process.env.PATH, LANG: "C.UTF-8" };
+  // Docker runs only from trusted system tool directories, independent of pnpm.
+  // Adapter options are still validated separately, before any Docker call.
+  const environment = { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" };
   const host = ["--host", "unix:///var/run/docker.sock"];
   const image =
     "postgres:17.10@sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317";

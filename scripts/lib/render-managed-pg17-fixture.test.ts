@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { managedPg17Fixture } from "./render-managed-pg17-fixture";
-import { PostgreSqlGenerationAdapter } from "../../packages/features/release-rollout/src/adapters/postgres-generation";
+import { assertSafeProcessBoundary } from "../../packages/features/release-rollout/src/adapters/process-command";
+import { decomposePostgresConnection, PostgreSqlGenerationAdapter } from "../../packages/features/release-rollout/src/adapters/postgres-generation";
 
 vi.mock("node:child_process", async (original) => ({
   ...await original<typeof import("node:child_process")>(),
@@ -45,6 +46,36 @@ describe("recovery fixture bounded diagnostics", () => {
     expect(Object.keys(options!.env!).sort()).toEqual(["LANG", "PATH"]);
   });
 
+  it("identifies only PATH in CI-like decomposition and isolates the test before adapter calls", () => {
+    vi.stubEnv("PATH", "/work/node_modules/.pnpm/vitest@3.2.0/node_modules/.bin:/usr/bin");
+    vi.stubEnv("LANG", "unsafe fixture locale");
+    const fixture = managedPg17Fixture();
+    const adapter = new PostgreSqlGenerationAdapter(fixture.recoveryCommands("dpg-source"));
+    const url = "postgresql://postgres:disposable@dpg-source/fixture";
+    const connection = decomposePostgresConnection(url);
+    try {
+      // Field-name-only diagnosis; no values, SQL or credentials in failures.
+      const rejected = Object.entries(connection.env).flatMap(([name, value]) => {
+        try { assertSafeProcessBoundary("psql", [], { [name]: value }); return []; }
+        catch { return [name]; }
+      });
+      expect(rejected).toEqual(["PATH"]);
+      expect(() => assertSafeProcessBoundary("psql", connection.args)).not.toThrow();
+    } finally { connection.cleanup(); }
+    expect(() => adapter.inventoryEffectivePrincipals(url))
+      .toThrow("fixture_recovery_execute_failed:boundary:rejected");
+    expect(spawnMock).not.toHaveBeenCalled();
+    // Same already-imported adapter and already-created fixture: decomposition
+    // reads current PATH, not an import-time snapshot. Docker is independently fixed.
+    vi.stubEnv("PATH", "/usr/local/bin:/usr/bin:/bin");
+    expect(adapter.inventoryEffectivePrincipals(url)).toMatchObject(inventory);
+    for (const call of spawnMock.mock.calls)
+      expect(call[2]?.env).toEqual({ PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" });
+    expect(spawnMock.mock.calls[1]![2]).toMatchObject({
+      input: expect.any(String), timeout: 30_000, maxBuffer: 16 * 1024 * 1024,
+    });
+  });
+
   it("retains rejection of inherited PATH outside the safe grammar", () => {
     vi.stubEnv("PATH", "/tmp/unsafe path:/usr/bin");
     expect(() => new PostgreSqlGenerationAdapter(managedPg17Fixture().recoveryCommands("dpg-source"))
@@ -53,11 +84,18 @@ describe("recovery fixture bounded diagnostics", () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it("rejects explicit credentials and SQL secrets before Docker", () => {
+  it("rejects explicit credentials and SQL secrets before Docker", async () => {
     for (const run of [
       () => managedPg17Fixture().recoveryCommands("dpg-source").execute("psql", args, { env: { PGPASSWORD: secret } }),
       () => managedPg17Fixture().recoveryCommands("dpg-source").execute("psql", [...args.slice(0, -1), secret]),
     ]) expect(run).toThrow("fixture_recovery_execute_failed:boundary:rejected");
+    const commands = managedPg17Fixture().recoveryCommands("dpg-source");
+    for (const env of [{ PATH: "/tmp/fixture@unsafe/bin" }, { LANG: "C;fixture" }, { PGPASSWORD: "fixture-only" }]) {
+      expect(() => commands.execute("psql", args, { env }))
+        .toThrow("fixture_recovery_execute_failed:boundary:rejected");
+      await expect(commands.hashStdout("psql", args, { env })).rejects.toThrow();
+    }
+    await expect(commands.hashStdout("psql", [...args.slice(0, -1), secret])).rejects.toThrow();
     expect(spawnMock).not.toHaveBeenCalled();
   });
 

@@ -2,7 +2,7 @@ import { disposableRecoveryMetadataValues } from "./lib/render-historical89-reco
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   managedPg17Fixture,
   prepareHistorical89Fixture,
@@ -100,6 +100,14 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
     };
     const read = (pg: ReturnType<typeof managedPg17Fixture>, sql: string) =>
       JSON.parse(pg.query(database, sql, "postgres"));
+    // decomposePostgresConnection reads PATH at invocation, whereas fixtures
+    // above already captured their Docker environment. Control both surfaces;
+    // never rewrite options at the executor boundary to hide rejected inputs.
+    beforeAll(() => {
+      vi.stubEnv("PATH", "/usr/local/bin:/usr/bin:/bin");
+    });
+    afterAll(() => vi.unstubAllEnvs());
+
     beforeAll(async () => {
       root = mkdtempSync(join(tmpdir(), "rr-historical89-recovery-real-"));
       // An independent fixture model supplies TEST expectations before inspecting
