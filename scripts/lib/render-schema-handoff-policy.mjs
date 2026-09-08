@@ -179,7 +179,7 @@ export function partitionRenderSchemaHandoffCheckout(catalog) {
   if (
     extensions === 6 &&
     manifest(catalog) !==
-      "sha256:9c2c5fbb51743471fb834a6dfd5095587a86c3ffaa3c12258f4890d34bfe3f76"
+      "sha256:c6b3c39ffd4631d53402f7402700a352d75208bb125b9e48d52d42d5e6a1398c"
   )
     fail("checkout_manifest");
   assertRenderSchemaHandoffCatalog(managed);

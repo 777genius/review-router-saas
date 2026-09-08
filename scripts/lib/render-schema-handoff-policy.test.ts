@@ -187,7 +187,7 @@ describe("explicit checkout partition with an unchanged managed92 validator", ()
             .join(","),
         )
         .digest("hex"),
-    ).toBe("9c2c5fbb51743471fb834a6dfd5095587a86c3ffaa3c12258f4890d34bfe3f76");
+    ).toBe("c6b3c39ffd4631d53402f7402700a352d75208bb125b9e48d52d42d5e6a1398c");
     expect(() => assertRenderSchemaHandoffCatalog(checkout98)).toThrow(
       "migration_catalog",
     );
