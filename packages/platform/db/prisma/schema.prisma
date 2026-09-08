@@ -3660,3 +3660,76 @@ enum ReviewExecutionCheckpointState {
   active
   finalized
 }
+
+// Durable per-command archive. Migration 000098 owns deferred cycles, checks and ACLs.
+model CertifiedForkFamily {
+  familyKey  String                 @db.Text
+  tipVersion BigInt                 @db.BigInt
+  tip        CertifiedForkVersion   @relation("CertifiedForkTip", fields: [familyKey, tipVersion], references: [familyKey, version], onDelete: NoAction, onUpdate: NoAction, map: "CertifiedForkFamily_tip_fkey")
+  versions   CertifiedForkVersion[] @relation("CertifiedForkMembership")
+
+  @@id([familyKey])
+}
+
+model CertifiedForkVersion {
+  familyKey        String                    @db.Text
+  version          BigInt                    @db.BigInt
+  formatVersion    Int
+  reviewHash       String                    @db.Text
+  generation       BigInt                    @db.BigInt
+  seed             Json                      @db.JsonB
+  admissionProof   String                    @db.Text
+  fence            BigInt                    @db.BigInt
+  claimOwnerHash   String?                   @db.Text
+  claimHash        String?                   @db.Text
+  claimEpoch       BigInt?                   @db.BigInt
+  claimExpiresAtMs BigInt?                   @db.BigInt
+  events           Json                      @db.JsonB
+  ledgerHash       String                    @db.Text
+  outcomeHash      String?                   @db.Text
+  revisions        Json                      @db.JsonB
+  committedAtMs    BigInt                    @db.BigInt
+  family           CertifiedForkFamily       @relation("CertifiedForkMembership", fields: [familyKey], references: [familyKey], onDelete: NoAction, onUpdate: NoAction, map: "CertifiedForkVersion_family_fkey")
+  tips             CertifiedForkFamily[]     @relation("CertifiedForkTip")
+  checkpoint       CertifiedForkCheckpoint   @relation("CertifiedForkRequiredCheckpoint", fields: [familyKey, version], references: [familyKey, version], onDelete: NoAction, onUpdate: NoAction, map: "CertifiedForkVersion_checkpoint_fkey")
+  checkpoints      CertifiedForkCheckpoint[] @relation("CertifiedForkCheckpointVersion")
+  receipts         CertifiedForkReceipt[]
+
+  @@id([familyKey, version])
+  @@unique([familyKey, version, reviewHash])
+}
+
+model CertifiedForkReceipt {
+  familyKey   String                    @db.Text
+  commandId   String                    @db.VarChar(64)
+  commandHash String                    @db.Text
+  ownerHash   String                    @db.Text
+  reviewHash  String                    @db.Text
+  version     BigInt                    @db.BigInt
+  operation   String                    @db.Text
+  snapshot    CertifiedForkVersion      @relation(fields: [familyKey, version, reviewHash], references: [familyKey, version, reviewHash], onDelete: NoAction, onUpdate: NoAction, map: "CertifiedForkReceipt_version_fkey")
+  checkpoints CertifiedForkCheckpoint[]
+
+  @@id([familyKey, commandId])
+  @@unique([familyKey, version])
+  @@unique([familyKey, version, reviewHash, commandId, commandHash])
+}
+
+model CertifiedForkCheckpoint {
+  familyKey           String                @db.Text
+  version             BigInt                @db.BigInt
+  reviewHash          String                @db.Text
+  proof               String                @unique @db.Text
+  formatVersion       Int
+  prefixLength        Int
+  prefixHash          String                @db.Text
+  anchorHash          String                @db.Text
+  positionCommandId   String                @db.VarChar(64)
+  positionCommandHash String                @db.Text
+  state               Json                  @db.JsonB
+  snapshot            CertifiedForkVersion  @relation("CertifiedForkCheckpointVersion", fields: [familyKey, version, reviewHash], references: [familyKey, version, reviewHash], onDelete: NoAction, onUpdate: NoAction, map: "CertifiedForkCheckpoint_version_fkey")
+  requiredBy          CertifiedForkVersion? @relation("CertifiedForkRequiredCheckpoint")
+  receipt             CertifiedForkReceipt  @relation(fields: [familyKey, version, reviewHash, positionCommandId, positionCommandHash], references: [familyKey, version, reviewHash, commandId, commandHash], onDelete: NoAction, onUpdate: NoAction, map: "CertifiedForkCheckpoint_receipt_fkey")
+
+  @@id([familyKey, version])
+}
