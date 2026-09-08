@@ -1370,6 +1370,18 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
           limit: 10,
         }),
       ).resolves.toBe(0);
+      // Recovery's Unauthorized verdict must match the persisted authority.
+      const authorizationId = `authorization-${seed.investigationId}`;
+      await harness.prisma.reviewRunAuthorization.update({
+        where: { authorizationId },
+        data: { state: "revoked" },
+      });
+      await expect(
+        harness.prisma.reviewRunAuthorization.findUniqueOrThrow({
+          where: { authorizationId },
+          select: { state: true },
+        }),
+      ).resolves.toEqual({ state: "revoked" });
       await expect(
         new ReconcileExpiredActiveTurn(
           store,
