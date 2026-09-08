@@ -2,7 +2,11 @@ import {
   reviewActionV2ContextReplayKeysEnv,
   reviewActionV2ContextSessionSecretEnv,
 } from "../../../apps/api/src/review-action-v2-context-attestation-composition.js";
-import { OwnedControlPlane, type Boot, type FixtureConfig } from "./investigation-control-plane-process.fixture.js";
+import {
+  OwnedControlPlane,
+  type Boot,
+  type FixtureConfig,
+} from "./investigation-control-plane-process.fixture.js";
 import { isDeepStrictEqual } from "node:util";
 import { Buffer } from "node:buffer";
 import {
@@ -238,7 +242,10 @@ type InvestigationFlowInput = Readonly<{
   terminalSource:
     | InvestigationTelemetrySource.Shadow
     | InvestigationTelemetrySource.DisposableFixture;
-  checkpoint?: (input: { request: ReviewInvestigationTurnCommitRequest; read: InvestigationRead }) => Promise<void>;
+  checkpoint?: (input: {
+    request: ReviewInvestigationTurnCommitRequest;
+    read: InvestigationRead;
+  }) => Promise<void>;
   restartAfterFirstCommit?: boolean;
   restartAfterFindingCommit?: boolean;
 }>;
@@ -258,26 +265,63 @@ export class ReviewInvestigationProductionE2EHarness {
   }
   async startControlPlaneProcess(runId: string): Promise<Boot> {
     ensure(!this.ownedChild, "item11_already_started");
-    const { owner, repo, installationId, pullRequestNumber } = this.base.fakeGitHub.options;
-    this.processConfig = { runId, databaseUrl: this.databaseUrl, env: this.base.env,
-      revisionFixture: { owner, repo, installationId, pullRequestNumber, revision: { ...this.base.fakeGitHub.revision } } };
+    const { owner, repo, installationId, pullRequestNumber } =
+      this.base.fakeGitHub.options;
+    this.processConfig = {
+      runId,
+      databaseUrl: this.databaseUrl,
+      env: this.base.env,
+      revisionFixture: {
+        owner,
+        repo,
+        installationId,
+        pullRequestNumber,
+        revision: { ...this.base.fakeGitHub.revision },
+      },
+    };
     this.ownedChild = new OwnedControlPlane(runId);
     const boot = await this.ownedChild.start(this.processConfig);
     this.routes = {
       ...this.routes,
       investigation: {
         ...this.routes.investigation,
-        openV2: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("open", request) },
-        planTurn: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("plan", request) },
-        commitTurn: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("commit", request) },
-        conclude: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("conclude", request) },
-        acquireLease: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("acquire", request) },
-        releaseLease: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("release", request) },
+        openV2: {
+          capabilityEnabled: true,
+          execute: (request) => this.controlPlane.invoke("open", request),
+        },
+        planTurn: {
+          capabilityEnabled: true,
+          execute: (request) => this.controlPlane.invoke("plan", request),
+        },
+        commitTurn: {
+          capabilityEnabled: true,
+          execute: (request) => this.controlPlane.invoke("commit", request),
+        },
+        conclude: {
+          capabilityEnabled: true,
+          execute: (request) => this.controlPlane.invoke("conclude", request),
+        },
+        acquireLease: {
+          capabilityEnabled: true,
+          execute: (request) => this.controlPlane.invoke("acquire", request),
+        },
+        releaseLease: {
+          capabilityEnabled: true,
+          execute: (request) => this.controlPlane.invoke("release", request),
+        },
       },
       execution: {
         ...this.routes.execution,
-        acquireLease: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("executionAcquire", request) },
-        releaseLease: { capabilityEnabled: true, execute: (request) => this.controlPlane.invoke("executionRelease", request) },
+        acquireLease: {
+          capabilityEnabled: true,
+          execute: (request) =>
+            this.controlPlane.invoke("executionAcquire", request),
+        },
+        releaseLease: {
+          capabilityEnabled: true,
+          execute: (request) =>
+            this.controlPlane.invoke("executionRelease", request),
+        },
       },
     };
     return boot;
@@ -338,11 +382,21 @@ export class ReviewInvestigationProductionE2EHarness {
       },
       protocolMaxAttemptsPerSlot: providerAttemptBudget,
       environmentOverrides: {
-        [reviewActionV2ContextSessionSecretEnv]: randomBytes(32).toString("base64"),
-        [reviewActionV2ContextReplayKeysEnv]: JSON.stringify([{ keyId: "review-v2-e2e-context-key", secretBase64: randomBytes(32).toString("base64") }]),
-        REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON: ephemeralSigningKeys("review-v2-e2e-key"),
-        [reviewActionV2CapabilityKeysEnv]: ephemeralSigningKeys("review-v2-e2e-key"),
-        [reviewInvestigationLeaseCapabilityKeysEnv]: ephemeralSigningKeys("review-v2-e2e-investigation-lease-key"),
+        [reviewActionV2ContextSessionSecretEnv]:
+          randomBytes(32).toString("base64"),
+        [reviewActionV2ContextReplayKeysEnv]: JSON.stringify([
+          {
+            keyId: "review-v2-e2e-context-key",
+            secretBase64: randomBytes(32).toString("base64"),
+          },
+        ]),
+        REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON:
+          ephemeralSigningKeys("review-v2-e2e-key"),
+        [reviewActionV2CapabilityKeysEnv]:
+          ephemeralSigningKeys("review-v2-e2e-key"),
+        [reviewInvestigationLeaseCapabilityKeysEnv]: ephemeralSigningKeys(
+          "review-v2-e2e-investigation-lease-key",
+        ),
         [reviewInvestigationPrivateMaterialActiveKeyIdEnv]:
           privateMaterialKeyId,
         [reviewInvestigationPrivateMaterialKeysEnv]: JSON.stringify({
@@ -476,7 +530,7 @@ export class ReviewInvestigationProductionE2EHarness {
         current,
         `${input.label}-discovery-${discoveryOrdinal}`,
         // Keep real search obligations unfinished at the finding checkpoint.
-        input.checkpoint ? 1 : 16,
+        input.checkpoint && !restartedAfterFindingCommit ? 1 : 16,
       );
       const lease = await this.acquireInvestigationTurnLease(
         execution,
@@ -529,7 +583,10 @@ export class ReviewInvestigationProductionE2EHarness {
         !restartedAfterFindingCommit
       ) {
         if (input.checkpoint) {
-          await input.checkpoint({ request: commit.request, read: commit.read });
+          await input.checkpoint({
+            request: commit.request,
+            read: commit.read,
+          });
         } else {
           await this.restartControlPlane();
         }
@@ -541,7 +598,8 @@ export class ReviewInvestigationProductionE2EHarness {
       "investigation_finding_fixture_not_committed",
     );
     ensure(
-      !(input.restartAfterFindingCommit || input.checkpoint) || restartedAfterFindingCommit,
+      !(input.restartAfterFindingCommit || input.checkpoint) ||
+        restartedAfterFindingCommit,
       "investigation_finding_restart_not_exercised",
     );
     if (current.nextAction === ReviewInvestigationNextAction.RunCritic) {
@@ -593,7 +651,8 @@ export class ReviewInvestigationProductionE2EHarness {
       `${input.label}-conclude`,
     );
     const terminalBeforeReplay = this.ownedChild
-      ? await this.controlPlane.snapshot(concluded.read.investigationId) : null;
+      ? await this.controlPlane.snapshot(concluded.read.investigationId)
+      : null;
     const concludeReplay = await requiredHandler(
       this.routes.investigation.conclude,
     ).execute(concluded.request);
@@ -603,7 +662,13 @@ export class ReviewInvestigationProductionE2EHarness {
       "duplicate_conclude_not_idempotent",
     );
     if (terminalBeforeReplay) {
-      ensure(isDeepStrictEqual(terminalBeforeReplay, await this.controlPlane.snapshot(concluded.read.investigationId)), "item11_conclude_replay_mutated");
+      ensure(
+        isDeepStrictEqual(
+          terminalBeforeReplay,
+          await this.controlPlane.snapshot(concluded.read.investigationId),
+        ),
+        "item11_conclude_replay_mutated",
+      );
     }
     this.routes = this.composeRoutes(this.prisma);
 
@@ -813,7 +878,10 @@ export class ReviewInvestigationProductionE2EHarness {
     investigationTelemetrySamples?: ReviewInvestigationTerminalTelemetrySamplePort,
   ): ReviewActionV2ProductionRoutes {
     if (this.ownedChild) {
-      ensure(!investigationTelemetrySamples, "item11_local_telemetry_override_forbidden");
+      ensure(
+        !investigationTelemetrySamples,
+        "item11_local_telemetry_override_forbidden",
+      );
       return this.routes;
     }
     return composeReviewActionV2ProductionRoutes({
@@ -2008,5 +2076,11 @@ function sha256(value: string): string {
 const zeroHash = "0".repeat(64);
 
 function ephemeralSigningKeys(keyId: string): string {
-  return JSON.stringify([{ keyId, secretBase64: randomBytes(32).toString("base64"), verifyUntil: null }]);
+  return JSON.stringify([
+    {
+      keyId,
+      secretBase64: randomBytes(32).toString("base64"),
+      verifyUntil: null,
+    },
+  ]);
 }
