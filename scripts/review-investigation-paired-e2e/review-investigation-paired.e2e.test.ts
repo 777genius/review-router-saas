@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -318,56 +319,146 @@ describeWithDatabase.sequential(
       });
     }, 180_000);
 
-    it("replays prepared evidence from a certified source into a new revision", async () => {
-      const fixture = requireHarness(harness);
-      const sourceAction = await fixture.run(PairedActionScenario.Success);
-      expect(sourceAction).toMatchObject({
-        ok: true,
-        scenario: PairedActionScenario.Success,
-      });
-      const sourceInvestigation =
-        await fixture.prisma.reviewInvestigation.findFirstOrThrow({
-          where: {
-            reviewRevisionHash: fixture.repository.reviewRevisionHash,
-          },
-          select: { investigationId: true, state: true },
+    it.each(["independent", "dependency"] as const)(
+      "replays %s evidence and completes the target with a fresh critic", async (change) => {
+        const fixture = requireHarness(harness);
+        const sourceAction = await fixture.run(PairedActionScenario.Success);
+        expect(sourceAction).toMatchObject({
+          ok: true,
+          scenario: PairedActionScenario.Success,
         });
-      expect(sourceInvestigation.state).toBe("concluded");
+        const sourceInvestigation =
+          await fixture.prisma.reviewInvestigation.findFirstOrThrow({
+            where: {
+              reviewRevisionHash: fixture.repository.reviewRevisionHash,
+            },
+          });
+        const sourceSnapshot = await replaySnapshot(fixture, sourceInvestigation.investigationId);
+        expect(sourceInvestigation.state).toBe("concluded");
+        const callerHash = createHash("sha256").update("src/caller-a.ts").digest("hex");
+        expect(sourceSnapshot.obligations.some((obligation) => {
+          const requirement = JSON.parse(obligation.canonicalRequirement);
+          return obligation.state === "satisfied" &&
+            requirement.kind === "complete_relation_context" &&
+            requirement.requiredPathHashes.includes(callerHash);
+        })).toBe(true);
 
-      const targetRevision = await fixture.advanceReviewRevision();
-      const action = await fixture.run(PairedActionScenario.ReplayPrepared);
-      const persistedState = await investigationFailureState(fixture);
+        const targetRevision = await fixture.advanceReviewRevision(change);
+        const action = await fixture.run(PairedActionScenario.ReplayPrepared);
+        const persistedState = await investigationFailureState(fixture);
 
-      expect(
-        action,
-        actionFailureMessage(action, fixture, persistedState),
-      ).toMatchObject({
-        ok: true,
-        scenario: PairedActionScenario.ReplayPrepared,
-        releaseManifestHash: fixture.releaseManifestHash,
-        replayPreparationMissing: false,
-        sourceInvestigationId: sourceInvestigation.investigationId,
-      });
-      expect(action.preparedObligationCount).toBeGreaterThan(0);
-      const replayed =
-        await fixture.prisma.reviewInvestigation.findFirstOrThrow({
-          where: { reviewRevisionHash: targetRevision.reviewRevisionHash },
-          select: { investigationId: true, state: true },
+        expect(
+          action,
+          actionFailureMessage(action, fixture, persistedState),
+        ).toMatchObject({
+          ok: true,
+          scenario: PairedActionScenario.ReplayPrepared,
+          releaseManifestHash: fixture.releaseManifestHash,
+          replayPreparationMissing: false,
+          sourceInvestigationId: sourceInvestigation.investigationId,
         });
-      expect(action.replayedInvestigationId).toBe(replayed.investigationId);
-      await expect(
-        fixture.prisma.reviewInvestigationReceipt.count({
-          where: {
-            investigationId: replayed.investigationId,
-            replayProofId: { not: null },
-          },
-        }),
-      ).resolves.toBeGreaterThan(0);
-      await expect(
-        fixture.prisma.reviewContextTargetReplayProof.count(),
-      ).resolves.toBeGreaterThan(0);
-      expect(fixture.diagnostics).toEqual([]);
-    }, 240_000);
+        expect(action.preparedObligationCount).toBeGreaterThan(0);
+        const replayed =
+          await fixture.prisma.reviewInvestigation.findFirstOrThrow({
+            where: { reviewRevisionHash: targetRevision.reviewRevisionHash },
+          });
+        expect(action.replayedInvestigationId).toBe(replayed.investigationId);
+        await expect(
+          fixture.prisma.reviewInvestigationReceipt.count({
+            where: {
+              investigationId: replayed.investigationId,
+              replayProofId: { not: null },
+            },
+          }),
+        ).resolves.toBeGreaterThan(0);
+        await expect(
+          fixture.prisma.reviewContextTargetReplayProof.count(),
+        ).resolves.toBeGreaterThan(0);
+        // Preparation must never carry the source's clean conclusion forward.
+        expect(replayed.certificateId).toBeNull();
+        expect(replayed.conclusion).toBeNull();
+        expect(replayed.criticDecision).toBeNull();
+        expect(replayed.semanticTurns).toBe(0);
+        expect(action.observation).toBeUndefined();
+        const preparedSnapshot = await replaySnapshot(fixture, replayed.investigationId);
+        expect(preparedSnapshot.certificates).toEqual([]);
+        expect(preparedSnapshot.turns).toEqual([]);
+        const hits = preparedSnapshot.receipts.filter((receipt) => receipt.replayProofId !== null);
+        expect(hits.length).toBeGreaterThan(0);
+        for (const receipt of hits) {
+          await expect(fixture.prisma.reviewContextTargetReplayProof.findUniqueOrThrow({
+            where: { replayProofId: receipt.replayProofId! },
+          })).resolves.toMatchObject({
+            targetExecutionId: replayed.executionId,
+            targetWorkSlotId: replayed.workSlotId,
+            targetReviewRevisionHash: targetRevision.reviewRevisionHash,
+            targetCheckoutTreeOid: targetRevision.headTreeSha,
+          });
+        }
+        const open = preparedSnapshot.obligations.filter((obligation) => obligation.state === "open");
+        const hitIds = new Set(hits.map((receipt) => receipt.obligationId));
+        const sourceIds = new Set(sourceSnapshot.obligations.map((obligation) => obligation.obligationId));
+        for (const obligation of preparedSnapshot.obligations) {
+          expect(sourceIds.has(obligation.obligationId)).toBe(true);
+          const requirement = JSON.parse(obligation.canonicalRequirement) as { kind: string };
+          // The changed caller leaves the reviewed contract bytes intact. Search
+          // evidence covering that caller must miss; unrelated file reads must hit.
+          if (requirement.kind === "complete_changed_file") {
+            expect(obligation.state).toBe("satisfied");
+            expect(hitIds.has(obligation.obligationId)).toBe(true);
+          }
+          if (obligation.state === "open") {
+            expect(preparedSnapshot.receipts.some((receipt) => receipt.obligationId === obligation.obligationId)).toBe(false);
+          }
+        }
+        if (change === "dependency") {
+          expect(open.length).toBeGreaterThan(0);
+          expect(open.every((obligation) => JSON.parse(obligation.canonicalRequirement).kind === "complete_page_chain")).toBe(true);
+        }
+        await expect(replaySnapshot(fixture, sourceInvestigation.investigationId)).resolves.toEqual(sourceSnapshot);
+
+        // Resume through the real recording adapter, leases, gateway and turn runner.
+        const completed = await fixture.run(PairedActionScenario.Success);
+        expect(completed, actionFailureMessage(completed, fixture, await investigationFailureState(fixture))).toMatchObject({
+          ok: true,
+          observation: { qualityFlags: expect.arrayContaining(["investigation_verified_clean"]) },
+        });
+        const terminal = await replaySnapshot(fixture, replayed.investigationId);
+        expect(terminal.investigation).toMatchObject({
+          state: "concluded", conclusion: "verified_clean", criticDecision: "accept",
+          reviewRevisionHash: targetRevision.reviewRevisionHash,
+        });
+        expect(terminal.certificates).toHaveLength(1);
+        const certificate = terminal.certificates[0]!;
+        expect(certificate).toMatchObject({
+          certificateId: completed.observation!.investigationCertificateId,
+          certificateHash: completed.observation!.investigationCertificateHash,
+          terminalOutcomeHash: completed.observation!.payloadHash,
+          investigationId: replayed.investigationId,
+          reviewRevisionHash: targetRevision.reviewRevisionHash,
+          terminalVersion: terminal.investigation.version,
+          conclusion: "verified_clean", criticDecision: "accept",
+          terminalActualModel: "gpt-paired-e2e",
+        });
+        expect(certificate.certificateId).not.toBe(sourceInvestigation.certificateId);
+        expect(certificate.certificateHash).not.toBe(sourceSnapshot.certificates[0]!.certificateHash);
+        expect(certificate.criticAttestationId).not.toBe(sourceSnapshot.certificates[0]!.criticAttestationId);
+        const critics = terminal.turns.filter((turn) => turn.purpose === "critic");
+        expect(critics).toHaveLength(1);
+        expect(critics[0]).toMatchObject({ state: "committed", acceptedAttestationId: certificate.criticAttestationId });
+        expect(certificate.criticAttestationId).toEqual(expect.any(String));
+        expect(terminal.turns.every((turn) => turn.state === "committed" && turn.acceptedAttestationId !== null)).toBe(true);
+        expect(terminal.obligations.every((obligation) => obligation.state === "satisfied")).toBe(true);
+        const discoveryIds = new Set(terminal.turns.filter((turn) => turn.purpose === "discovery").flatMap((turn) => turn.obligationIds as string[]));
+        for (const obligation of open) expect(discoveryIds.has(obligation.obligationId)).toBe(true);
+        for (const receipt of hits) {
+          expect(discoveryIds.has(receipt.obligationId)).toBe(false);
+          expect(terminal.receipts.find((item) => item.obligationId === receipt.obligationId)).toEqual(receipt);
+        }
+        expect(terminal.receipts.every((receipt) => receipt.reviewRevisionHash === targetRevision.reviewRevisionHash)).toBe(true);
+        await expect(replaySnapshot(fixture, sourceInvestigation.investigationId)).resolves.toEqual(sourceSnapshot);
+        expect(fixture.diagnostics).toEqual([]);
+    }, 360_000);
   },
 );
 
@@ -439,4 +530,16 @@ async function resolveActionRef(sourceDir: string): Promise<string> {
   return (
     await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: sourceDir })
   ).stdout.trim();
+}
+
+async function replaySnapshot(fixture: PairedActionSaasE2EHarness, investigationId: string) {
+  const where = { investigationId };
+  const [investigation, obligations, receipts, turns, certificates] = await Promise.all([
+    fixture.prisma.reviewInvestigation.findUniqueOrThrow({ where }),
+    fixture.prisma.reviewInvestigationObligation.findMany({ where, orderBy: { obligationId: "asc" } }),
+    fixture.prisma.reviewInvestigationReceipt.findMany({ where, orderBy: { obligationId: "asc" } }),
+    fixture.prisma.reviewInvestigationTurn.findMany({ where, orderBy: { turnOrdinal: "asc" } }),
+    fixture.prisma.reviewInvestigationCertificate.findMany({ where, orderBy: { certificateId: "asc" } }),
+  ]);
+  return { investigation, obligations, receipts, turns, certificates };
 }

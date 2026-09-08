@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -298,14 +298,16 @@ async function executeScenario(
       {},
       compatibilityKey,
     ).assemble(invocation);
-  const ownerIdHash = sha256(`paired-owner:${executionId}`);
+  // A second process resumes the prepared target after the first released its lease.
+  const invocationAttempt = randomUUID();
+  const ownerIdHash = sha256(`paired-owner:${executionId}:${invocationAttempt}`);
   const leaseOutcome = await controlPlane.acquireInvocationLease({
     authorization,
-    idempotencyKey: sha256(`paired-lease:${executionId}`),
+    idempotencyKey: sha256(`paired-lease:${executionId}:${invocationAttempt}`),
     execution,
     workSlot: assignment.workSlot,
     manifest,
-    acquireRequestId: sha256(`paired-acquire:${executionId}`),
+    acquireRequestId: sha256(`paired-acquire:${executionId}:${invocationAttempt}`),
     ownerIdHash,
   });
   if (
@@ -863,7 +865,7 @@ function emitResult(result: unknown): void {
 
 let requestOrdinal = 0;
 function requestIdFactory(): () => string {
-  return () => `paired-action-request-${++requestOrdinal}`;
+  return () => `paired-action-request-${process.pid}-${++requestOrdinal}-${randomUUID()}`;
 }
 
 function sha256(value: string | Uint8Array): string {

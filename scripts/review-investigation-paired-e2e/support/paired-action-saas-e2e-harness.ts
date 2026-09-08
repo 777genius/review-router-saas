@@ -475,12 +475,14 @@ export class PairedActionSaasE2EHarness {
     }
   }
 
-  async advanceReviewRevision(): Promise<DisposableRepository> {
+  async advanceReviewRevision(
+    change: "independent" | "dependency" = "independent",
+  ): Promise<DisposableRepository> {
     this.repository = await advanceDisposableRepository(this.repository, {
       workspaceId: this.workspaceId,
       repositoryConnectionId: this.repositoryConnectionId,
       scmRepositoryIdentityId: this.scmRepositoryIdentityId,
-    });
+    }, change);
     this.fakeGitHub.revision = {
       baseSha: this.repository.baseSha,
       mergeBaseSha: this.repository.mergeBaseSha,
@@ -1015,10 +1017,14 @@ async function advanceDisposableRepository(
     repositoryConnectionId: string;
     scmRepositoryIdentityId: string;
   }>,
+  change: "independent" | "dependency",
 ): Promise<DisposableRepository> {
   await writeFile(
-    path.join(repository.root, "src/independent.ts"),
-    "export const independentValue = 1;\n",
+    path.join(repository.root, change === "dependency"
+      ? "src/caller-a.ts" : "src/independent.ts"),
+    change === "dependency"
+      ? 'import { sharedValue } from "./contract";\nexport const callerA = sharedValue + 1;\n'
+      : "export const independentValue = 1;\n",
   );
   await git(repository.root, ["add", "-A"]);
   await git(repository.root, ["commit", "-qm", "test: paired replay target"]);
