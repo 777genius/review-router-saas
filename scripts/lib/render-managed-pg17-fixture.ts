@@ -635,6 +635,8 @@ export function managedPg17Fixture() {
             error instanceof RecoveryFixtureProcessFailure
               ? error.category
               : "rejected";
+          // Raw causes can contain SQL, credentials or subprocess output; expose only the closed category.
+          // eslint-disable-next-line preserve-caught-error
           throw new Error(`fixture_recovery_execute_failed:${phase}:${category}`);
         }
       },
