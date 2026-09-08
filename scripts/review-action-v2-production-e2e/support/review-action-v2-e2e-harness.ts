@@ -244,7 +244,7 @@ export class ReviewActionV2E2EHarness {
       if (request.method === "GET") await options.beforeFakeGitHubRead?.(request);
       return fakeGitHub.fetch(input, init);
     };
-    const env = Object.freeze({
+    const env: Readonly<Record<string, string>> = Object.freeze({
       ...productionEnv({
         appPrivateKey: appKeys.privateKey
           .export({ type: "pkcs8", format: "pem" })

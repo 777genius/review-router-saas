@@ -101,10 +101,13 @@ describeWithDatabase.sequential(
         terminalSource: InvestigationTelemetrySource.Shadow,
         boundary: async (stage, replay, investigationId) => {
           if (stage !== "committed" && stage !== "terminal") return;
+          if (investigationId === undefined) {
+            throw new Error("review_investigation_e2e_investigation_id_missing");
+          }
           stages.push(stage);
           const before = await fixture.boundarySnapshot();
           fixture.emergency.disabled = true;
-          expect((await fixture.restoreBoundary(investigationId!)).result.status).toBe("found");
+          expect((await fixture.restoreBoundary(investigationId)).result.status).toBe("found");
           await replay();
           expect(await fixture.boundarySnapshot()).toEqual(before);
           expect(before.investigations[0]!.findings).not.toEqual([]);
