@@ -483,7 +483,7 @@ describe("already96 verified read-only startup", () => {
     ],
   ])("rejects %s", async (_name, mutate) => {
     const f = fixture();
-    (mutate as Function)(f.state);
+    (mutate as (state: typeof f.state) => void)(f.state);
     await expect(
       verifyHistorical89Already96(f.client, f.reader, f.request),
     ).rejects.toThrow();

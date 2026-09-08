@@ -821,7 +821,8 @@ describe("current permit reconciliation", () => {
     });
   }
   it("omitted current permit fails closed", () => {
-    const { currentPermit: omitted, ...evidence } = evidenceBase;
+    const evidence = { ...evidenceBase };
+    Reflect.deleteProperty(evidence, "currentPermit");
     fenced(evidence);
   });
   for (const [field, values] of Object.entries({

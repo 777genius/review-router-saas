@@ -50,7 +50,9 @@ export function persistentFixtureClient(
                 else {
                   try {
                     value = JSON.parse(text);
-                  } catch {}
+                  } catch {
+                    // Preserve plain PostgreSQL text when it is not JSON.
+                  }
                 }
                 return { value };
               })
