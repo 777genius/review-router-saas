@@ -184,6 +184,11 @@ export class PairedActionSaasE2EHarness {
   private readonly originalFetch: typeof globalThis.fetch;
   private readonly temporaryRoot: string;
   private oidcOrdinal = 0;
+  private runOidcToken?: Readonly<{
+    identity: string;
+    token: string;
+    expiresAt: number;
+  }>;
 
   private constructor(input: {
     prisma: PrismaClient;
@@ -503,8 +508,30 @@ export class PairedActionSaasE2EHarness {
   }
 
   private async signOidcToken(): Promise<string> {
+    // A second scenario resumes the same workflow run/attempt. Authorize
+    // restores only the original OIDC replay identity with unchanged facts
+    // and protocol offer; a fresh jti conflicts with the existing run owner.
+    const identity = canonicalJson({
+      sourceRunId: this.fakeGitHub.sourceRunId,
+      sourceRunAttempt: "1",
+      baseSha: this.repository.baseSha,
+      mergeBaseSha: this.repository.mergeBaseSha,
+      headSha: this.repository.headSha,
+      reviewRevisionHash: this.repository.reviewRevisionHash,
+      actionRef: this.actionRef,
+      releaseManifestHash: this.releaseManifestHash,
+    });
+    const issuedAt = Math.floor(Date.now() / 1_000);
+    if (this.runOidcToken?.identity === identity) {
+      // Do not silently mint a new identity or extend the resume window.
+      if (issuedAt >= this.runOidcToken.expiresAt) {
+        throw new Error("paired_action_resume_oidc_token_expired");
+      }
+      return this.runOidcToken.token;
+    }
+    const expiresAt = issuedAt + 10 * 60;
     this.oidcOrdinal += 1;
-    return new SignJWT({
+    const token = await new SignJWT({
       sub: `repo:${owner}/${repo}:pull_request`,
       repository: `${owner}/${repo}`,
       repository_id: githubRepositoryId,
@@ -523,9 +550,11 @@ export class PairedActionSaasE2EHarness {
       .setProtectedHeader({ alg: "RS256", kid: this.oidcKeyId })
       .setIssuer("https://token.actions.githubusercontent.com")
       .setAudience("reviewrouter-paired-e2e")
-      .setIssuedAt()
-      .setExpirationTime("10m")
+      .setIssuedAt(issuedAt)
+      .setExpirationTime(expiresAt)
       .sign(this.oidcPrivateKey);
+    this.runOidcToken = Object.freeze({ identity, token, expiresAt });
+    return token;
   }
 }
 
