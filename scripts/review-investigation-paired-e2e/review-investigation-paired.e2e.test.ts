@@ -503,7 +503,6 @@ describeWithDatabase.sequential(
           terminalOutcomeHash: completed.observation!.payloadHash,
           investigationId: replayed.investigationId,
           reviewRevisionHash: targetRevision.reviewRevisionHash,
-          terminalVersion: terminal.investigation.version,
           conclusion: "verified_clean", criticDecision: "accept",
           terminalActualModel: "gpt-paired-e2e",
         });
@@ -513,6 +512,23 @@ describeWithDatabase.sequential(
         const critics = terminal.turns.filter((turn) => turn.purpose === "critic");
         expect(critics).toHaveLength(1);
         expect(critics[0]).toMatchObject({ state: "committed", acceptedAttestationId: certificate.criticAttestationId });
+        // Committing the accepted critic advances its leased version once.
+        // The certificate binds that ready-to-conclude version; concluding
+        // advances the aggregate once more and checkpoints the resulting version.
+        expect(certificate.terminalVersion).toBe(critics[0]!.leasedAtVersion + 1n);
+        expect(terminal.investigation.version).toBe(certificate.terminalVersion + 1n);
+        expect(terminal.investigation.certificateId).toBe(certificate.certificateId);
+        const checkpoint = await fixture.prisma.reviewInvestigationReplayEvidenceCheckpoint.findUniqueOrThrow({
+          where: { checkpointId: terminal.investigation.replayEvidenceCheckpointId! },
+        });
+        expect(checkpoint).toMatchObject({
+          sourceInvestigationId: replayed.investigationId,
+          sourceInvestigationVersion: terminal.investigation.version,
+          sourceState: "concluded",
+          sourceConclusion: "verified_clean",
+          reviewRevisionHash: certificate.reviewRevisionHash,
+          sourceDossierDigest: certificate.dossierDigest,
+        });
         expect(certificate.criticAttestationId).toEqual(expect.any(String));
         expect(terminal.turns.every((turn) => turn.state === "committed" && turn.acceptedAttestationId !== null)).toBe(true);
         expect(terminal.obligations.every((obligation) => obligation.state === "satisfied")).toBe(true);

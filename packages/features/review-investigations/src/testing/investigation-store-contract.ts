@@ -233,7 +233,9 @@ export function createInvestigationStoreContractSeed(
       repositoryConnectionId: `connection-${suffix}`,
       scmRepositoryIdentityId: `repository-${suffix}`,
       pullRequestNumber: 42,
-      trustDomain: options.trustDomain ?? "trusted-local",
+      // Match the persisted ReviewTrustDomainV2 authorization value; authority
+      // checks intentionally compare this scope binding without normalization.
+      trustDomain: options.trustDomain ?? "trusted_local",
       authorizationScopeHash: digest(`authorization-scope-${suffix}`),
     },
     revision: {
