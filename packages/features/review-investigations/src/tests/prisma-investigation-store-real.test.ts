@@ -35,7 +35,6 @@ import {
   reviewInvestigationCoverageProfileV4,
   investigationDossierCanonicalValue,
 } from "../index";
-import { PlanNextInvestigationTurn } from "../application/use-cases/plan-next-investigation-turn";
 import { RestoreReviewInvestigation } from "../application/use-cases/restore-review-investigation";
 import { ReconcileExpiredActiveTurn } from "../application/use-cases/reconcile-expired-active-turn";
 import { HydrateInvestigationTurnObligations } from "../application/use-cases/hydrate-investigation-turn-obligations";

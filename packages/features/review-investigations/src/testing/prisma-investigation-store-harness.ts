@@ -336,4 +336,3 @@ export async function cleanup(
   });
   await prisma.workspace.deleteMany({ where: { id: seed.scope.workspaceId } });
 }
-
