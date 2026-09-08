@@ -43,6 +43,11 @@ export type VerifiedReviewRunAuthorizationToken = {
 };
 
 export interface ReviewRunAuthorizationTokenPort {
+  /** Absent on legacy implementations; never synthesize authenticated metadata. */
+  verifyWithMetadata?(input: {
+    readonly token: string;
+    readonly now: Date;
+  }): Promise<VerifiedReviewRunAuthorizationTokenWithMetadata>;
   profile(): ReviewRunAuthorizationTokenProfile;
   activeKeyId(): Promise<string>;
   issue(
@@ -53,3 +58,9 @@ export interface ReviewRunAuthorizationTokenPort {
     readonly now: Date;
   }): Promise<VerifiedReviewRunAuthorizationToken>;
 }
+
+export type VerifiedReviewRunAuthorizationTokenWithMetadata =
+  VerifiedReviewRunAuthorizationToken & {
+    readonly authenticatedKeyId: string;
+    readonly notBefore: Date;
+  };
