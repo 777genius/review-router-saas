@@ -22,6 +22,36 @@ import { setTimeout as delay } from "node:timers/promises";
 import { spawnMigration89Process } from "../codex-rotating-migration89-process.mjs";
 import { readRenderSchemaHandoffCatalog } from "./render-schema-handoff-policy.mjs";
 
+// Closed diagnostic vocabulary: never expose child output, arbitrary errno,
+// command arguments, environment values, or the original cause.
+class RecoveryFixtureProcessFailure extends Error {
+  constructor(
+    readonly category:
+      | "timeout"
+      | "output_limit"
+      | "binary_missing"
+      | "permission_denied"
+      | "spawn_failed"
+      | "signalled"
+      | "nonzero_exit",
+  ) {
+    super(category);
+  }
+}
+function checkRecoveryProcess(result: ReturnType<typeof spawnSync>) {
+  if (!result.error && result.status === 0) return;
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  const category =
+    code === "ETIMEDOUT" ? "timeout"
+    : code === "ENOBUFS" ? "output_limit"
+    : code === "ENOENT" ? "binary_missing"
+    : code === "EACCES" || code === "EPERM" ? "permission_denied"
+    : result.error ? "spawn_failed"
+    : result.signal ? "signalled"
+    : "nonzero_exit";
+  throw new RecoveryFixtureProcessFailure(category);
+}
+
 // Only an owned, labelled, offline container. No database URL, Docker context,
 // image override, host mount, published port or ambient credential is accepted.
 export function managedPg17Fixture() {
@@ -449,13 +479,14 @@ export function managedPg17Fixture() {
     alias: "dpg-source" | "dpg-target",
   ): CommandExecutor => {
     const owned = () => {
-      const facts = checked([
+      const result = docker([
         "inspect",
         "--format",
         '{{ index .Config.Labels "reviewrouter.retained.proof" }}|{{.HostConfig.NetworkMode}}',
         name,
       ]);
-      if (facts !== `${token}|none`)
+      checkRecoveryProcess(result);
+      if (result.stdout.trim() !== `${token}|none`)
         throw new Error("fixture_recovery_identity");
     };
     const parse = (args: readonly string[]) => {
@@ -474,14 +505,32 @@ export function managedPg17Fixture() {
     };
     return {
       execute(command, args, options = {}) {
+        let phase:
+          | "boundary"
+          | "identity"
+          | "connection"
+          | "command_form"
+          | "query"
+          | "restore_input"
+          | "archive_process"
+          | "archive_output" = "boundary";
         try {
           assertSafeProcessBoundary(command, args, options.env);
+          phase = "identity";
           owned();
+          phase = "connection";
           const { role, database, rest } = parse(args);
+          phase = "command_form";
           if (command === "psql") {
             if (rest.at(-2) !== "--command")
               throw new Error("fixture_recovery_sql_form");
-            return { stdout: query(database, rest.at(-1)!, role) };
+            phase = "query";
+            const result = docker(
+              psql(database, role).slice(host.length),
+              rest.at(-1)!,
+            );
+            checkRecoveryProcess(result);
+            return { stdout: result.stdout.trim() };
           }
           let input: Buffer | undefined, file: string | undefined;
           if (
@@ -497,6 +546,7 @@ export function managedPg17Fixture() {
             rest[0] === "--exit-on-error" &&
             rest[1] === "--single-transaction"
           ) {
+            phase = "restore_input";
             const fd = openSync(
               rest[2]!,
               constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -535,6 +585,7 @@ export function managedPg17Fixture() {
               closeSync(fd);
             }
           } else throw new Error("fixture_recovery_command");
+          phase = "archive_process";
           const result = spawnSync(
             "docker",
             [
@@ -562,9 +613,9 @@ export function managedPg17Fixture() {
               maxBuffer: 64 * 1024 * 1024,
             },
           );
-          if (result.error || result.status !== 0)
-            throw new Error("fixture_recovery_process");
+          checkRecoveryProcess(result);
           if (file) {
+            phase = "archive_output";
             const parent = dirname(file),
               stat = lstatSync(parent);
             if (
@@ -577,8 +628,12 @@ export function managedPg17Fixture() {
             writeFileSync(file, result.stdout, { flag: "wx", mode: 0o600 });
           }
           return { stdout: "" };
-        } catch {
-          throw new Error("fixture_recovery_execute_failed");
+        } catch (error) {
+          const category =
+            error instanceof RecoveryFixtureProcessFailure
+              ? error.category
+              : "rejected";
+          throw new Error(`fixture_recovery_execute_failed:${phase}:${category}`);
         }
       },
       async hashStdout(command, args, options = {}) {
