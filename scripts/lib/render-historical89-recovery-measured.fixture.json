@@ -1,0 +1,142 @@
+{
+  "constraints_indexes_triggers": [
+    {
+      "path": "records[34].definition",
+      "kind": "constraint",
+      "schema": "public",
+      "table": "CodexOAuthSetupDispatchAttempt",
+      "name": "CodexOAuthSetupDispatchAttempt_lifecycle_check",
+      "type": null,
+      "owner": null,
+      "field": "definition",
+      "left": "CHECK ((((ordinal >= 1) AND (ordinal <= 3)) AND (status = ANY (ARRAY['dispatch_authorized'::text, 'confirmed'::text, 'retired_ambiguous'::text, 'retired_confirmed'::text])) AND (\"dispatchExpiresAt\" > \"authorizedAt\") AND ((\"definiteResponseCode\" IS NULL) OR (\"definiteResponseCode\" = ANY (ARRAY[201, 204]))) AND (((status = ANY (ARRAY['confirmed'::text, 'retired_confirmed'::text])) AND (\"definiteResponseCode\" = ANY (ARRAY[201, 204])) AND (\"confirmedAt\" IS NOT NULL)) OR ((status = ANY (ARRAY['dispatch_authorized'::text, 'retired_ambiguous'::text])) AND (\"definiteResponseCode\" IS NULL) AND (\"confirmedAt\" IS NULL))) AND (((status = ANY (ARRAY['retired_ambiguous'::text, 'retired_confirmed'::text])) AND (\"retiredAt\" IS NOT NULL)) OR (status <> ALL (ARRAY['retired_ambiguous'::text, 'retired_confirmed'::text])))))",
+      "right": "CHECK (((ordinal >= 1) AND (ordinal <= 3) AND (status = ANY (ARRAY['dispatch_authorized'::text, 'confirmed'::text, 'retired_ambiguous'::text, 'retired_confirmed'::text])) AND (\"dispatchExpiresAt\" > \"authorizedAt\") AND ((\"definiteResponseCode\" IS NULL) OR (\"definiteResponseCode\" = ANY (ARRAY[201, 204]))) AND (((status = ANY (ARRAY['confirmed'::text, 'retired_confirmed'::text])) AND (\"definiteResponseCode\" = ANY (ARRAY[201, 204])) AND (\"confirmedAt\" IS NOT NULL)) OR ((status = ANY (ARRAY['dispatch_authorized'::text, 'retired_ambiguous'::text])) AND (\"definiteResponseCode\" IS NULL) AND (\"confirmedAt\" IS NULL))) AND (((status = ANY (ARRAY['retired_ambiguous'::text, 'retired_confirmed'::text])) AND (\"retiredAt\" IS NOT NULL)) OR (status <> ALL (ARRAY['retired_ambiguous'::text, 'retired_confirmed'::text])))))"
+    },
+    {
+      "path": "records[128].definition",
+      "kind": "constraint",
+      "schema": "public",
+      "table": "HostedCodexInvocationGrant",
+      "name": "HostedCodexInvocationGrant_output_budget_check",
+      "type": null,
+      "owner": null,
+      "field": "definition",
+      "left": "CHECK ((((\"maxResponseBytes\" >= 1) AND (\"maxResponseBytes\" <= 104857600)) AND ((\"maxOutputTokens\" >= 1) AND (\"maxOutputTokens\" <= 100000))))",
+      "right": "CHECK (((\"maxResponseBytes\" >= 1) AND (\"maxResponseBytes\" <= 104857600) AND ((\"maxOutputTokens\" >= 1) AND (\"maxOutputTokens\" <= 100000))))"
+    }
+  ],
+  "acl_ownership_defaults": [
+    {
+      "path": "records[18].acl",
+      "kind": "object",
+      "schema": "public",
+      "table": null,
+      "name": "CodexOAuthDatabaseAuthorityKey",
+      "type": "r",
+      "owner": "reviewrouter",
+      "field": "acl",
+      "left": [
+        "reviewrouter=arwdDxtm/reviewrouter"
+      ],
+      "right": null
+    },
+    {
+      "path": "records[20].acl",
+      "kind": "object",
+      "schema": "public",
+      "table": null,
+      "name": "CodexOAuthDatabaseAuthorityReceipt",
+      "type": "r",
+      "owner": "reviewrouter",
+      "field": "acl",
+      "left": [
+        "reviewrouter=arwdDxtm/reviewrouter"
+      ],
+      "right": null
+    },
+    {
+      "path": "records[158].acl",
+      "kind": "object",
+      "schema": "public",
+      "table": null,
+      "name": "HostedCodexCommentTokenRevocationProof",
+      "type": "r",
+      "owner": "reviewrouter",
+      "field": "acl",
+      "left": [
+        "reviewrouter=arwdDxtm/reviewrouter"
+      ],
+      "right": null
+    },
+    {
+      "path": "records[226].acl",
+      "kind": "object",
+      "schema": "public",
+      "table": null,
+      "name": "HostedCodexRuntimeClosure",
+      "type": "r",
+      "owner": "reviewrouter",
+      "field": "acl",
+      "left": [
+        "reviewrouter=arwdDxtm/reviewrouter"
+      ],
+      "right": null
+    },
+    {
+      "path": "records[426].acl",
+      "kind": "object",
+      "schema": "public",
+      "table": null,
+      "name": "ReviewInvestigationMaintenanceCheckpoint",
+      "type": "r",
+      "owner": "reviewrouter",
+      "field": "acl",
+      "left": [
+        "reviewrouter=arwdDxtm/reviewrouter"
+      ],
+      "right": null
+    },
+    {
+      "path": "records[631].acl",
+      "kind": "object",
+      "schema": "public",
+      "table": null,
+      "name": "RuntimeCanaryChallenge",
+      "type": "r",
+      "owner": "reviewrouter",
+      "field": "acl",
+      "left": [
+        "reviewrouter=arwdDxtm/reviewrouter"
+      ],
+      "right": null
+    },
+    {
+      "path": "records[632].acl",
+      "kind": "object",
+      "schema": "public",
+      "table": null,
+      "name": "RuntimeCanaryChallengeProof",
+      "type": "r",
+      "owner": "reviewrouter",
+      "field": "acl",
+      "left": [
+        "reviewrouter=arwdDxtm/reviewrouter"
+      ],
+      "right": null
+    },
+    {
+      "path": "records[635].acl",
+      "kind": "object",
+      "schema": "public",
+      "table": null,
+      "name": "RuntimeGenerationWitnessProof",
+      "type": "r",
+      "owner": "reviewrouter",
+      "field": "acl",
+      "left": [
+        "reviewrouter=arwdDxtm/reviewrouter"
+      ],
+      "right": null
+    }
+  ]
+}

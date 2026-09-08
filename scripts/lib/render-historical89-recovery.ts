@@ -1,3 +1,4 @@
+import { recoverySemanticCommands } from "./render-historical89-recovery-semantics";
 import { createHash } from "node:crypto";
 import {
   constants,
@@ -383,7 +384,7 @@ export async function captureRecoveryArtifact(input: {
     };
     const plan = frozen(structuredClone(input.reviewedPlan));
     const source = identity(commands, input.sourceUrl, input.expectedSource);
-    const adapter = new PostgreSqlGenerationAdapter(commands);
+    const adapter = new PostgreSqlGenerationAdapter(recoverySemanticCommands(commands));
     const initialScope = scope(commands, input.sourceUrl);
     if (initialScope.database.owner !== plan.databaseOwner)
       fail("database_owner_plan_mismatch");
@@ -735,7 +736,7 @@ export async function verifyReviewedRestore(input: {
       fail("artifact_changed");
     if (query(commands, input.targetUrl, recoveryEmptySql).empty !== true)
       fail("target_not_empty");
-    const adapter = new PostgreSqlGenerationAdapter(commands);
+    const adapter = new PostgreSqlGenerationAdapter(recoverySemanticCommands(commands));
     const sourceNow = (
       await adapter.verifyEquivalence(
         input.sourceUrl,
@@ -835,7 +836,7 @@ export async function verifyReviewedRestore(input: {
     const diagnostics = restoreDiagnostics(commands, input.sourceUrl, input.targetUrl, input.metadataDiagnostic);
     let result;
     try {
-      result = await new PostgreSqlGenerationAdapter(diagnostics.commands).verifyEquivalence(
+      result = await new PostgreSqlGenerationAdapter(recoverySemanticCommands(diagnostics.commands)).verifyEquivalence(
         input.sourceUrl, input.targetUrl, ["public"],
         { source: plan.policy, target: plan.policy },
       );
