@@ -6331,7 +6331,10 @@ function migrateDeploy(url, requireSuccess = true) {
         `historical96_deploy_source_mismatch:${migrationName}`,
       );
       mkdirSync(join(boundedMigrations, migrationName));
-      writeFileSync(join(boundedMigrations, migrationName, "migration.sql"), sql);
+      writeFileSync(
+        join(boundedMigrations, migrationName, "migration.sql"),
+        sql,
+      );
     }
     const config = join(directory, "prisma.config.mjs");
     writeFileSync(
