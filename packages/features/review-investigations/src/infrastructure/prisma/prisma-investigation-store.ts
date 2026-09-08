@@ -2931,12 +2931,12 @@ async function lockInvestigationAuthorization(
   investigation: ReviewInvestigation,
 ): Promise<void> {
   await transaction.$queryRaw(Prisma.sql`
-    SELECT authorization."authorizationId"
-    FROM "ReviewRunAuthorization" AS authorization
+    SELECT auth_row."authorizationId"
+    FROM "ReviewRunAuthorization" AS auth_row
     JOIN "ReviewExecutionV2" AS execution
-      ON execution."authorizationId" = authorization."authorizationId"
+      ON execution."authorizationId" = auth_row."authorizationId"
     WHERE execution."executionId" = ${investigation.executionId}
-    FOR UPDATE OF authorization
+    FOR UPDATE OF auth_row
   `);
 }
 
