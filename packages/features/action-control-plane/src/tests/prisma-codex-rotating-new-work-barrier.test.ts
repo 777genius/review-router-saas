@@ -414,6 +414,21 @@ describe("Prisma Codex rotating new-work barrier", () => {
 
   it.each([
     ["valid non-expired", {}, true],
+    [
+      "deadline reached during namespace wait",
+      { namespaceClock: "2026-08-10T01:00:00Z" },
+      false,
+    ],
+    [
+      "deadline passed during namespace wait",
+      { namespaceClock: "2026-08-10T01:00:00.001Z" },
+      false,
+    ],
+    [
+      "before deadline after namespace wait",
+      { namespaceClock: "2026-08-10T00:59:59.999Z" },
+      true,
+    ],
     ["expired", { retireAt: new Date("2026-08-08T23:59:59Z") }, false],
     ["absent", { absent: true }, false],
     ["retired", { status: "retired" }, false],
@@ -473,7 +488,12 @@ describe("Prisma Codex rotating new-work barrier", () => {
         generationHashSalt: "generation-salt",
         accountFingerprintSalt: "account-salt",
       };
+      let databaseNow = new Date("2026-08-09T00:00:00Z");
       const queryRaw = vi.fn(async (query: unknown) => {
+        if (isNamespaceLock(query) && "namespaceClock" in changed) {
+          // Model elapsed database time while the namespace acquisition waits.
+          databaseNow = new Date(changed.namespaceClock);
+        }
         if (isCompatibilityLock(query)) {
           return "absent" in changed && changed.absent ? [] : [compatibility];
         }
@@ -495,7 +515,7 @@ describe("Prisma Codex rotating new-work barrier", () => {
         {
           actionOwnerRepo: "reviewrouter/action",
           databaseRecoveryWitness,
-          transactionClock: fixedClock("2026-08-09T00:00:00Z"),
+          transactionClock: { now: async () => new Date(databaseNow) },
         },
       );
       const result = repository.acquirePrelease({
