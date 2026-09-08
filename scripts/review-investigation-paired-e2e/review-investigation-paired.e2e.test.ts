@@ -566,7 +566,18 @@ describeWithDatabase.sequential(
         }
         for (const receipt of hits) {
           expect(discoveryIds.has(receipt.obligationId)).toBe(false);
-          expect(terminal.receipts.find((item) => item.obligationId === receipt.obligationId)).toEqual(receipt);
+          const terminalReceipt = terminal.receipts.find((item) => item.obligationId === receipt.obligationId);
+          expect(terminalReceipt).toBeDefined();
+          const { retainUntil: originalRetainUntil, ...originalEvidence } = receipt;
+          const { retainUntil: terminalRetainUntil, ...terminalEvidence } = terminalReceipt!;
+          // Certificate persistence extends receipt retention in PrismaInvestigationStore.
+          // Every other field, including replay proof and operation receipt IDs, is immutable.
+          expect(terminalEvidence).toEqual(originalEvidence);
+          expect(originalRetainUntil).toBeInstanceOf(Date);
+          expect(terminalRetainUntil).toBeInstanceOf(Date);
+          expect(Number.isFinite(originalRetainUntil.getTime())).toBe(true);
+          expect(Number.isFinite(terminalRetainUntil.getTime())).toBe(true);
+          expect(terminalRetainUntil.getTime()).toBeGreaterThanOrEqual(originalRetainUntil.getTime());
         }
         expect(terminal.receipts.every((receipt) => receipt.reviewRevisionHash === targetRevision.reviewRevisionHash)).toBe(true);
         await expect(replaySnapshot(fixture, sourceInvestigation.investigationId)).resolves.toEqual(sourceSnapshot);
