@@ -443,6 +443,21 @@ describe("CertifiedFork disposable REAL PG17 schema", () => {
           expect(() => writer(command(a, "", rawCheckpoint))).toThrow(error);
           expect(archiveSnapshot()).toBe(before);
         };
+        // Generation zero has no admission input, predecessor or derived hash.
+        for (const field of ["admissionHash", "predecessor"]) {
+          const bad = artifacts();
+          Object.assign(bad.row.seed as object, { [field]: h(81) });
+          rejectsAtomically(bad, /certified_fork_checkpoint_consistency/u);
+        }
+        const badZeroReview = artifacts();
+        Object.assign(
+          (badZeroReview.checkpoint.state as { review: object }).review,
+          { admissionHash: h(82) },
+        );
+        rejectsAtomically(
+          badZeroReview,
+          /certified_fork_checkpoint_consistency/u,
+        );
         // Explicit missing, NULL, malformed-size, and wrong-content digests.
         for (const digest of [
           undefined,
@@ -708,7 +723,15 @@ describe("CertifiedFork disposable REAL PG17 schema", () => {
           Object.assign(a.row, { generation, fence: "3", claimEpoch: "3" });
           (a.row.seed as { facts: { generation: string } }).facts.generation =
             generation;
-          // checkpoint.review.facts shares this seed's facts by construction.
+          Object.assign(a.row.seed as object, {
+            admissionHash: h(81),
+            predecessor: "test-predecessor-reference",
+          });
+          (
+            a.checkpoint.state as { review: { admissionHash: string | null } }
+          ).review.admissionHash = h(82);
+          // Different input/derived hashes are structurally valid; SQL does not
+          // authenticate this fixture's domain admission or predecessor capability.
           return withEvents(a, [event(version)]);
         };
         rejectsAtomically(advance(8), /certified_fork_acquire_claim/u);
@@ -720,6 +743,42 @@ describe("CertifiedFork disposable REAL PG17 schema", () => {
         rejectsAtomically(
           advance(9, "1", "compareAndCommit"),
           /certified_fork_history_progression/u,
+        );
+        for (const invalid of [null, "", "bad", "A".repeat(64), 123]) {
+          const badInput = advance(9);
+          Object.assign(badInput.row.seed as object, {
+            admissionHash: invalid,
+          });
+          rejectsAtomically(badInput, /certified_fork_checkpoint_consistency/u);
+          const badDerived = advance(9);
+          Object.assign(
+            (badDerived.checkpoint.state as { review: object }).review,
+            { admissionHash: invalid },
+          );
+          rejectsAtomically(
+            badDerived,
+            /certified_fork_checkpoint_consistency/u,
+          );
+        }
+        for (const invalid of [null, "", 123, "p".repeat(4097)]) {
+          const bad = advance(9);
+          Object.assign(bad.row.seed as object, { predecessor: invalid });
+          rejectsAtomically(bad, /certified_fork_checkpoint_consistency/u);
+        }
+        for (const field of ["admissionHash", "predecessor"]) {
+          const missing = advance(9);
+          delete (missing.row.seed as Record<string, unknown>)[field];
+          rejectsAtomically(missing, /check constraint/u);
+        }
+        const missingReviewHash = advance(9);
+        delete (
+          missingReviewHash.checkpoint.state as {
+            review: Record<string, unknown>;
+          }
+        ).review.admissionHash;
+        rejectsAtomically(
+          missingReviewHash,
+          /certified_fork_checkpoint_consistency/u,
         );
         writer(command(advance(9)));
         expect(
