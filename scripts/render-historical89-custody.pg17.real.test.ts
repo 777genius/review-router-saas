@@ -30,6 +30,7 @@ import {
 import {
   assertManagedOperationEffectReceipt,
   renderManagedOperationAdvanceEpochSql,
+  renderManagedOperationCurrentPermitSql,
   renderManagedOperationCustodyBootstrap,
   renderManagedOperationCustodyProjectionSql,
   renderManagedOperationRecordEffectSql,
@@ -403,6 +404,9 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
         originalMembership,
         aclDelta: delta,
         receipt,
+        currentPermit: JSON.parse(
+          pg.query(prepared.db, renderManagedOperationCurrentPermitSql(plan.binding)),
+        ),
         fenceHeld: true,
       } as never),
     ).toMatchObject({
@@ -755,6 +759,9 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
       originalMembership,
       aclDelta: undefined,
       receipt: null,
+      currentPermit: JSON.parse(
+        pg.query(prepared.db, renderManagedOperationCurrentPermitSql(plan.binding)),
+      ),
       fenceHeld: true,
     };
     expect(
@@ -842,6 +849,9 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
         creators: plan.creators,
       } as never),
       receipt,
+      currentPermit: JSON.parse(
+        pg.query(prepared.db, renderManagedOperationCurrentPermitSql(plan.binding)),
+      ),
       fenceHeld: true,
     };
     expect(

@@ -42,7 +42,10 @@ import {
   inspectHistorical89InPlaceLedger,
   renderHistorical89InPlaceTransaction,
 } from "./lib/render-historical89-inplace-transaction.mjs";
-import { renderManagedOperationCustodyBootstrap } from "./lib/render-managed-operation-custody.mjs";
+import {
+  renderManagedOperationCurrentPermitSql,
+  renderManagedOperationCustodyBootstrap,
+} from "./lib/render-managed-operation-custody.mjs";
 import {
   renderHistorical89AdmissionRestrictionSql,
   renderHistorical89ConnectAclSql,
@@ -317,11 +320,16 @@ async function reconcileAfter(mainUrl, readerUrl, plan, opts) {
   let terminalLedger;
   let gateNow;
   let membershipNow;
+  let currentPermit;
   try {
     terminalLedger = await readOne(post, renderManagedLedgerSql);
     terminalCatalog = await readOne(post, renderManagedCatalogSql);
     gateNow = await readOne(post, gateSql);
     membershipNow = await readOne(post, renderManagedMembershipSql);
+    currentPermit = await readOne(
+      post,
+      renderManagedOperationCurrentPermitSql(plan.binding),
+    );
   } finally {
     await post.end().catch(() => {});
   }
@@ -329,7 +337,8 @@ async function reconcileAfter(mainUrl, readerUrl, plan, opts) {
   try {
     receipt = await readReceipt(readerUrl, plan.effectReadSql);
   } catch {
-    receipt = null;
+    // A failed read is unknown evidence, not proof that no receipt exists.
+    receipt = undefined;
   }
   const inspected = inspectHistorical89InPlaceLedger(terminalLedger);
   const rollbackConfirmed = inspected.count === phase.baselineCount;
@@ -361,6 +370,7 @@ async function reconcileAfter(mainUrl, readerUrl, plan, opts) {
     originalMembership: opts.originalMembership,
     aclDelta,
     receipt,
+    currentPermit,
     fenceHeld: true,
   });
   return { reconciliation, receipt };
