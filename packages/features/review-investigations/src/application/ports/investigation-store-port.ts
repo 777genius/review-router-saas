@@ -40,8 +40,13 @@ export type InvestigationStoreCommitGuard =
     }>
   | Readonly<{
       kind: InvestigationStoreCommitGuardKind.ExecutionAuthority;
-      /** Invoked under the store lock before a new write. */
-      requireCurrentExecution?: () => Promise<void>;
+      /** Invoked under the store lock before a new write. A transactional
+       * adapter supplies its fenced verdict; the callback must use it instead
+       * of opening another authority read. Without a verdict (memory adapter),
+       * the callback checks application authority under the memory lock. */
+      requireCurrentExecution?: (
+        transactionalVerdict?: InvestigationExecutionAuthorityVerdict,
+      ) => Promise<void>;
       expectedVerdict: InvestigationExecutionAuthorityVerdict;
       resultAdmission?: TurnResultAdmissionKind;
       admittedAt?: string;
@@ -104,7 +109,10 @@ export interface InvestigationStorePort {
     readonly expectedVersion: number;
     readonly commandId: string;
     readonly commandHash: string;
-    readonly requireCurrentExecution: () => Promise<void>;
+    /** Same verdict-consumption contract as the ExecutionAuthority guard. */
+    readonly requireCurrentExecution: (
+      transactionalVerdict?: InvestigationExecutionAuthorityVerdict,
+    ) => Promise<void>;
   }): Promise<InvestigationStoreCommitResult>;
   restoreCommand(input: {
     readonly commandId: string;

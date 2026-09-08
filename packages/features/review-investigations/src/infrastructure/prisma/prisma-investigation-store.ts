@@ -523,13 +523,14 @@ export class PrismaInvestigationStore
               current,
             );
           }
-          await input.requireCurrentExecution();
+          await lockInvestigationAuthorization(transaction, current);
           const now = await investigationDatabaseNow(transaction);
           const verdict = await executionAuthorityVerdict(
             transaction,
             current,
             now,
           );
+          await input.requireCurrentExecution(verdict);
           if (verdict !== InvestigationExecutionAuthorityVerdict.Current) {
             throw new Error(`investigation_execution_${verdict}`);
           }
@@ -2752,16 +2753,19 @@ async function commitGuardIsCurrent(
   if (
     input.guard.kind === InvestigationStoreCommitGuardKind.ExecutionAuthority
   ) {
-    await input.guard.requireCurrentExecution?.();
+    await lockInvestigationAuthorization(transaction, current);
   }
   const databaseNow = await investigationDatabaseNow(transaction);
   if (
     input.guard.kind === InvestigationStoreCommitGuardKind.ExecutionAuthority
   ) {
-    return (
-      (await executionAuthorityVerdict(transaction, current, databaseNow)) ===
-      input.guard.expectedVerdict
+    const verdict = await executionAuthorityVerdict(
+      transaction,
+      current,
+      databaseNow,
     );
+    await input.guard.requireCurrentExecution?.(verdict);
+    return verdict === input.guard.expectedVerdict;
   }
   if (
     input.guard.kind === InvestigationStoreCommitGuardKind.ExpiredActiveTurn
@@ -2914,6 +2918,26 @@ function resultAdmissionDeadlineIsCurrent(
     investigation.activeTurn !== null &&
     effectiveDeadline <= new Date(investigation.activeTurn.expiresAt)
   );
+}
+
+// Lock order: execution scope, investigation (when present), authorization.
+// Authorization termination/renewal take their own advisory lock then update
+// this row, but never acquire our scope/investigation locks. We deliberately
+// do not acquire their advisory lock: the row fence also covers direct updates
+// and expiry sweeps, without introducing a reverse advisory-lock dependency.
+// Take this lock BEFORE reading currency/time and hold it through the receipt.
+async function lockInvestigationAuthorization(
+  transaction: Prisma.TransactionClient,
+  investigation: ReviewInvestigation,
+): Promise<void> {
+  await transaction.$queryRaw(Prisma.sql`
+    SELECT authorization."authorizationId"
+    FROM "ReviewRunAuthorization" AS authorization
+    JOIN "ReviewExecutionV2" AS execution
+      ON execution."authorizationId" = authorization."authorizationId"
+    WHERE execution."executionId" = ${investigation.executionId}
+    FOR UPDATE OF authorization
+  `);
 }
 
 async function executionAuthorityVerdict(

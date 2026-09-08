@@ -156,8 +156,9 @@ export class OpenReviewInvestigation {
           expectedVersion: existing.version,
           commandId: command.commandId,
           commandHash,
-          requireCurrentExecution: () =>
+          requireCurrentExecution: (transactionalVerdict) =>
             requireCurrentExecution({
+              transactionalVerdict,
               authority: this.authority,
               investigation: existing,
             }),
@@ -182,8 +183,9 @@ export class OpenReviewInvestigation {
       guard: {
         kind: InvestigationStoreCommitGuardKind.ExecutionAuthority,
         expectedVerdict: InvestigationExecutionAuthorityVerdict.Current,
-        requireCurrentExecution: () =>
+        requireCurrentExecution: (transactionalVerdict) =>
           requireCurrentExecution({
+            transactionalVerdict,
             authority: this.authority,
             investigation,
           }),

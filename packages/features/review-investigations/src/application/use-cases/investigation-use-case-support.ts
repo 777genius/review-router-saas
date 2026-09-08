@@ -100,13 +100,16 @@ export async function requireValidDossierDigest(
 }
 
 export async function requireCurrentExecution(input: {
+  readonly transactionalVerdict?: InvestigationExecutionAuthorityVerdict;
   readonly authority: InvestigationExecutionAuthorityPort;
   readonly investigation: Pick<
     ReviewInvestigation,
     "scope" | "revision" | "executionId" | "workSlotId" | "providerVoteLaneId"
   >;
 }): Promise<void> {
-  const verdict = await input.authority.check(input.investigation);
+  const verdict =
+    input.transactionalVerdict ??
+    (await input.authority.check(input.investigation));
   if (verdict !== InvestigationExecutionAuthorityVerdict.Current) {
     throw new Error(`investigation_execution_${verdict}`);
   }

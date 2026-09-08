@@ -79,6 +79,9 @@ import {
   ReviewInvestigationAbortReason,
   ReviewInvestigationTurnPurpose,
 } from "../domain/review-investigation-types";
+import { PrismaReviewExecutionStore } from "../../../review-executions/src/infrastructure/prisma/prisma-review-execution-store";
+import { PrismaReviewRunAuthorizationRepository } from "../../../review-run-control/src/infrastructure/prisma/prisma-review-run-authorization-repository";
+import { ReviewRunAuthorizationState } from "../../../review-run-control/src/domain/review-run-control-types";
 import { FixedInvestigationClock } from "../testing/investigation-test-kit";
 
 const databaseUrl = process.env.REVIEW_ROUTER_TEST_DATABASE_URL;
@@ -148,7 +151,7 @@ async function createLeaseHarness(): Promise<InvestigationLeaseStoreContractHarn
 }
 
 describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
-  it("reconciles concurrent opens into one target and continues after receipt-only adoption", async () => {
+  it("uses production authority with poolMax=1 for concurrent opens, adoption and continuation", async () => {
     const base = createInvestigationStoreContractSeed(
       `open-db-${randomUUID()}`,
     );
@@ -170,9 +173,14 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
       naturalIdentityHash,
       investigationId: `investigation-${naturalIdentityHash.slice(0, 32)}`,
     };
-    const harness = await createHarness(seed);
+    const harness = await createHarness(seed, 86_400_000, 1);
     try {
-      const authority = new CurrentInvestigationExecutionAuthority();
+      const { ProductionInvestigationExecutionAuthority } =
+        await import("../../../../../apps/api/src/review-action-v2-investigation-composition");
+      const authority = new ProductionInvestigationExecutionAuthority(
+        new PrismaReviewExecutionStore(harness.prisma),
+        new PrismaReviewRunAuthorizationRepository(harness.prisma),
+      );
       const clock = new FixedInvestigationClock(new Date());
       const open = new OpenReviewInvestigation(
         harness.store,
@@ -248,6 +256,181 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
       await harness.dispose();
     }
   });
+
+  it.each(["adoption", "creation"] as const)(
+    "%s fences revocation until receipt commit and rejects an already revoked authorization",
+    async (operation) => {
+      const seed = createInvestigationStoreContractSeed(
+        `revoke-${randomUUID()}`,
+      );
+      const harness = await createHarness(seed, 86_400_000, 1);
+      const revoker = createPrismaClient({
+        databaseUrl: databaseUrl!,
+        poolMax: 1,
+      });
+      const observer = createPrismaClient({
+        databaseUrl: databaseUrl!,
+        poolMax: 1,
+      });
+      let release!: () => void;
+      let reached!: () => void;
+      const paused = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      const resume = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let admission: Promise<unknown> | undefined;
+      let revocation: Promise<unknown> | undefined;
+      try {
+        if (operation === "adoption") {
+          await harness.store.commit({
+            investigation: seed,
+            expectedVersion: null,
+            commandId: `seed-${seed.investigationId}`,
+            commandHash: "1".repeat(64),
+            transition: { kind: InvestigationStoreTransitionKind.Opened },
+          });
+        }
+        const authorizationId = `authorization-${seed.investigationId}`;
+        const authorization =
+          await revoker.reviewRunAuthorization.findUniqueOrThrow({
+            where: { authorizationId },
+          });
+        const [backend] = await revoker.$queryRaw<Array<{ pid: number }>>`
+          SELECT pg_backend_pid() AS pid
+        `;
+        // Both clients have one connection; identify the admission backend so
+        // the regression proves which transaction is blocking termination.
+        const [admissionBackend] = await harness.prisma.$queryRaw<
+          Array<{ pid: number }>
+        >`
+          SELECT pg_backend_pid() AS pid
+        `;
+        const write = (
+          commandId: string,
+          check: (
+            verdict?: InvestigationExecutionAuthorityVerdict,
+          ) => Promise<void>,
+          investigation = seed,
+        ) => {
+          const common = {
+            investigation,
+            commandId,
+            commandHash: "2".repeat(64),
+          };
+          return operation === "adoption"
+            ? harness.store.adopt({
+                ...common,
+                expectedVersion: seed.version,
+                requireCurrentExecution: check,
+              })
+            : harness.store.commit({
+                ...common,
+                expectedVersion: null,
+                transition: { kind: InvestigationStoreTransitionKind.Opened },
+                guard: {
+                  kind: InvestigationStoreCommitGuardKind.ExecutionAuthority,
+                  expectedVerdict:
+                    InvestigationExecutionAuthorityVerdict.Current,
+                  requireCurrentExecution: check,
+                },
+              });
+        };
+        const commandId = `admitted-${seed.investigationId}`;
+        admission = write(commandId, async (verdict) => {
+          expect(verdict).toBe(InvestigationExecutionAuthorityVerdict.Current);
+          reached();
+          await resume;
+        });
+        // Surface a failed admission instead of waiting forever for the barrier.
+        await Promise.race([
+          paused,
+          admission.then(() => {
+            throw new Error("admission_did_not_pause");
+          }),
+        ]);
+        revocation = new PrismaReviewRunAuthorizationRepository(
+          revoker,
+        ).terminateReviewRunAuthorization({
+          authorizationId,
+          expectedVersion: authorization.version,
+          state: ReviewRunAuthorizationState.Revoked,
+          at: new Date(),
+        });
+        // Keep early failures handled while observing the database; the original
+        // promise is still asserted below and drained in finally.
+        void revocation.catch(() => undefined);
+        // Observe an actual PostgreSQL lock wait, never infer blocking from time.
+        const deadline = Date.now() + 3_000;
+        let blocked = false;
+        while (Date.now() < deadline) {
+          const [row] = await observer.$queryRaw<Array<{ blocked: boolean }>>`
+            SELECT ${admissionBackend!.pid}::int = ANY(pg_blocking_pids(${backend!.pid})) AS blocked
+          `;
+          if (row?.blocked) {
+            blocked = true;
+            break;
+          }
+        }
+        expect(blocked).toBe(true);
+        expect(
+          await observer.reviewRunAuthorization.findUnique({
+            where: { authorizationId },
+            select: { state: true, version: true },
+          }),
+        ).toEqual({ state: "active", version: authorization.version });
+        expect(
+          await observer.reviewInvestigationCommandReceipt.count({
+            where: { commandId },
+          }),
+        ).toBe(0);
+        release();
+        await expect(admission).resolves.toMatchObject({
+          status: InvestigationStoreCommitStatus.Committed,
+        });
+        await expect(revocation).resolves.toMatchObject({
+          authorization: { state: ReviewRunAuthorizationState.Revoked },
+        });
+        expect(
+          await observer.reviewInvestigationCommandReceipt.count({
+            where: { commandId },
+          }),
+        ).toBe(1);
+        const rejectedId = `rejected-${seed.investigationId}`;
+        await expect(
+          write(
+            rejectedId,
+            async (verdict) => {
+              expect(verdict).toBe(
+                InvestigationExecutionAuthorityVerdict.Unauthorized,
+              );
+              throw new Error(`investigation_execution_${verdict}`);
+            },
+            operation === "creation"
+              ? {
+                  ...seed,
+                  investigationId: rejectedId,
+                  naturalIdentityHash: "3".repeat(64),
+                }
+              : seed,
+          ),
+        ).rejects.toThrow("investigation_execution_unauthorized");
+        expect(
+          await observer.reviewInvestigationCommandReceipt.count({
+            where: { commandId: rejectedId },
+          }),
+        ).toBe(0);
+      } finally {
+        release();
+        await Promise.allSettled([admission, revocation]);
+        await revoker.$disconnect();
+        await observer.$disconnect();
+        await harness.dispose();
+      }
+    },
+    15_000,
+  );
 
   it("persists exactly one adoption receipt and rejects transactionally superseded execution", async () => {
     const seed = createInvestigationStoreContractSeed(
@@ -1724,8 +1907,9 @@ type PrismaInvestigationStoreHarness = InvestigationStoreContractHarness &
 async function createHarness(
   seed: ReviewInvestigation,
   operationalRetentionMs = 86_400_000,
+  poolMax = 6,
 ): Promise<PrismaInvestigationStoreHarness> {
-  const prisma = createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 6 });
+  const prisma = createPrismaClient({ databaseUrl: databaseUrl!, poolMax });
   await seedExecution(prisma, seed);
   const store = new PrismaInvestigationStore(prisma, {
     operationalRetentionMs,
