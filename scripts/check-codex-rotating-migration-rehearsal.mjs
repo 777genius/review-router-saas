@@ -114,6 +114,7 @@ const migration91Name = "000091_workflow_provisioning_artifact_and_inventory";
 const migration96Name = "000096_hosted_pool_public_repository_eligibility";
 // Checkout-only: excluded from the frozen pre/post migration execution.
 const migration98Name = "000098_certified_fork_effect_archive";
+const migration99Name = "000099_certified_fork_proof_facts";
 const postgresLockTimeoutFailure = Object.freeze({
   sqlState: "55P03",
   message: "canceling statement due to lock timeout",
@@ -200,6 +201,7 @@ assert(
       migration91Name,
       migration96Name,
       migration98Name,
+      migration99Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -6331,7 +6333,10 @@ function migrateDeploy(url, requireSuccess = true) {
         `historical96_deploy_source_mismatch:${migrationName}`,
       );
       mkdirSync(join(boundedMigrations, migrationName));
-      writeFileSync(join(boundedMigrations, migrationName, "migration.sql"), sql);
+      writeFileSync(
+        join(boundedMigrations, migrationName, "migration.sql"),
+        sql,
+      );
     }
     const config = join(directory, "prisma.config.mjs");
     writeFileSync(

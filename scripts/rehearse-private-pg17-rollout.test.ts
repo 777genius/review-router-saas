@@ -1288,6 +1288,7 @@ describe("disposable dual-version rehearsal", () => {
       "000091_workflow_provisioning_artifact_and_inventory",
       "000096_hosted_pool_public_repository_eligibility",
       "000098_certified_fork_effect_archive",
+      "000099_certified_fork_proof_facts",
     ]);
     expect(exclusions).not.toContain("000067_review_live_progress");
     expect(exclusions).not.toContain(
@@ -1324,7 +1325,9 @@ describe("disposable dual-version rehearsal", () => {
     expect(
       migrationManifestIdentity(
         migrationNames.filter(
-          (name) => name !== "000098_certified_fork_effect_archive",
+          (name) =>
+            name !== "000098_certified_fork_effect_archive" &&
+            name !== "000099_certified_fork_proof_facts",
         ),
       ),
     ).toBe(canonicalReleaseMigrationArtifact.postManifestIdentity);
@@ -1334,7 +1337,8 @@ describe("disposable dual-version rehearsal", () => {
         migrationNames.filter(
           (name) =>
             name !== "000096_hosted_pool_public_repository_eligibility" &&
-            name !== "000098_certified_fork_effect_archive",
+            name !== "000098_certified_fork_effect_archive" &&
+            name !== "000099_certified_fork_proof_facts",
         ),
       ),
     ).toBe(
@@ -1353,9 +1357,24 @@ describe("disposable dual-version rehearsal", () => {
       ]),
     ).toThrow("private_pg17_rehearsal_migration_boundary_unclassified");
   });
+  it("rejects missing, duplicate, renamed, and arbitrary future boundary entries", () => {
+    const names = readdirSync("packages/platform/db/prisma/migrations");
+    const exact99 = "000099_certified_fork_proof_facts";
+    for (const candidate of [
+      names.filter((name) => name !== exact99),
+      [...names, exact99],
+      names.map((name) => (name === exact99 ? "000099_unknown" : name)),
+      [...names, "000100_future_migration"],
+    ]) {
+      expect(() => resolvePreReleaseMigrationExclusions(candidate)).toThrow(
+        "private_pg17_rehearsal_migration_boundary_unclassified",
+      );
+    }
+  });
   it.each([
     "000096_hosted_pool_public_repository_eligibility",
     "000098_certified_fork_effect_archive",
+    "000099_certified_fork_proof_facts",
   ])(
     "excludes %s only from the historical fixture and preserves current source bytes",
     (migration) => {
@@ -1381,7 +1400,9 @@ describe("disposable dual-version rehearsal", () => {
         expect(
           migrationManifestIdentity(
             current.filter(
-              (name) => name !== "000098_certified_fork_effect_archive",
+              (name) =>
+                name !== "000098_certified_fork_effect_archive" &&
+                name !== "000099_certified_fork_proof_facts",
             ),
           ),
         ).toBe(
