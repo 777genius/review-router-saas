@@ -267,6 +267,124 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
     }
   });
 
+  it("restores a concurrent duplicate creation after intervening revocation", async () => {
+    const seed = createInvestigationStoreContractSeed(`duplicate-${randomUUID()}`);
+    const harness = await createHarness(seed, 86_400_000, 1);
+    const duplicateClient = createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 1 });
+    const revoker = createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 1 });
+    const observer = createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 1 });
+    let release!: () => void;
+    let reached!: () => void;
+    const paused = new Promise<void>((resolve) => { reached = resolve; });
+    const resume = new Promise<void>((resolve) => { release = resolve; });
+    let first: ReturnType<PrismaInvestigationStore["commit"]> | undefined;
+    let duplicate: ReturnType<PrismaInvestigationStore["commit"]> | undefined;
+    let revocation: Promise<unknown> | undefined;
+    try {
+      const [firstBackend] = await harness.prisma.$queryRaw<Array<{ pid: number }>>`
+        SELECT pg_backend_pid() AS pid
+      `;
+      const [duplicateBackend] = await duplicateClient.$queryRaw<Array<{ pid: number }>>`
+        SELECT pg_backend_pid() AS pid
+      `;
+      const [revokerBackend] = await revoker.$queryRaw<Array<{ pid: number }>>`
+        SELECT pg_backend_pid() AS pid
+      `;
+      const commandId = `duplicate-create-${seed.investigationId}`;
+      let guardCalls = 0;
+      const input = {
+        investigation: seed,
+        expectedVersion: null,
+        commandId,
+        commandHash: "2".repeat(64),
+        transition: { kind: InvestigationStoreTransitionKind.Opened },
+        guard: {
+          kind: InvestigationStoreCommitGuardKind.ExecutionAuthority,
+          expectedVerdict: InvestigationExecutionAuthorityVerdict.Current,
+          requireCurrentExecution: async (verdict?: InvestigationExecutionAuthorityVerdict) => {
+            guardCalls += 1;
+            if (verdict !== InvestigationExecutionAuthorityVerdict.Current) {
+              throw new Error(`investigation_execution_${verdict}`);
+            }
+            reached();
+            await resume;
+          },
+        },
+      } as const;
+      first = harness.store.commit(input);
+      await Promise.race([paused, first.then(() => {
+        throw new Error("first_creation_did_not_pause");
+      })]);
+      const waitForScopeBlock = async (pid: number, pending: Promise<unknown>) => {
+        const finished = pending.then(() => { throw new Error("writer_completed_before_release"); });
+        void finished.catch(() => undefined);
+        const deadline = Date.now() + 3_000;
+        while (Date.now() < deadline) {
+          const [row] = await Promise.race([
+            observer.$queryRaw<Array<{ blocked: boolean }>>`
+              SELECT ${firstBackend!.pid}::int = ANY(pg_blocking_pids(${pid}))
+                AND EXISTS (
+                  SELECT 1 FROM pg_locks
+                  WHERE pid = ${pid} AND locktype = 'advisory' AND NOT granted
+                ) AS blocked
+            `,
+            finished,
+          ]);
+          if (row?.blocked) return;
+        }
+        throw new Error("scope_lock_wait_not_observed");
+      };
+      const scopeKey = JSON.stringify([
+        seed.scope.workspaceId,
+        seed.scope.repositoryConnectionId,
+        seed.scope.scmRepositoryIdentityId,
+        seed.scope.pullRequestNumber,
+      ]);
+      // Queue revocation on the scope first, so it commits between the two
+      // creates. The first create already holds both scope and authorization.
+      revocation = revoker.$transaction(async (transaction) => {
+        await transaction.$executeRaw(Prisma.sql`
+          SELECT pg_advisory_xact_lock(hashtextextended(${scopeKey}, 0))
+        `);
+        await transaction.reviewRunAuthorization.update({
+          where: { authorizationId: `authorization-${seed.investigationId}` },
+          data: { state: "revoked", version: { increment: 1 } },
+        });
+      });
+      await waitForScopeBlock(revokerBackend!.pid, revocation);
+      duplicate = new PrismaInvestigationStore(duplicateClient).commit(input);
+      // This wait is reachable only AFTER fastRestore misses. Waiting on the
+      // first create's guard alone would allow a merely sequential restore.
+      await waitForScopeBlock(duplicateBackend!.pid, duplicate);
+      expect(await observer.reviewInvestigationCommandReceipt.count({
+        where: { commandId },
+      })).toBe(0);
+      release();
+      const committed = await first;
+      await revocation;
+      expect(committed.status).toBe(InvestigationStoreCommitStatus.Committed);
+      await expect(duplicate).resolves.toMatchObject({
+        status: InvestigationStoreCommitStatus.Restored,
+        investigation: committed.investigation,
+      });
+      expect(guardCalls).toBe(1);
+      expect(await observer.reviewRunAuthorization.findUniqueOrThrow({
+        where: { authorizationId: `authorization-${seed.investigationId}` },
+        select: { state: true },
+      })).toEqual({ state: "revoked" });
+      expect(await observer.reviewInvestigationCommandReceipt.count({
+        where: { commandId },
+      })).toBe(1);
+    } finally {
+      release();
+      await Promise.allSettled([first, duplicate, revocation]);
+      await duplicateClient.$disconnect();
+      await revoker.$disconnect();
+      await observer.$disconnect();
+      await harness.dispose();
+    }
+  }, 15_000);
+
   it.each(["adoption", "creation"] as const)(
     "%s fences revocation until receipt commit and rejects an already revoked authorization",
     async (operation) => {
