@@ -48,7 +48,11 @@ describe("repository inventory ownership order", () => {
       repositoryConnection,
       $queryRaw: vi.fn(async () => [{ generation: ++generation }]),
       $transaction: async (work: (client: typeof tx) => Promise<unknown>) =>
-        work(tx),
+        work({
+          ...tx,
+          $queryRaw: vi.fn(async () => [{ locked: 1 }]),
+          gitHubInstallation: prisma.gitHubInstallation,
+        } as typeof tx),
       gitHubInstallation: {
         findUnique: vi.fn(
           async ({ where }: { where: { githubInstallationId: bigint } }) =>
