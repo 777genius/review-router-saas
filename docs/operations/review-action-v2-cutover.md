@@ -410,7 +410,13 @@ pnpm review-v2:admin release register --bundle FILE --confirm release
 Follow this runbook's maintenance artifact identity checks before registration.
 Do not change the Action pin or trusted base attestation. The selector only reads
 already registered records; missing, revoked, mismatched, or invalid records deny
-matched admission and never invoke default profile materialization.
+matched admission and never invoke default profile materialization. Fresh selected
+admission also carries the attested base immutable identity as a transient
+precondition: the existing serializable admission transaction rechecks that base
+is registered and unchanged before creating an authorization. Revocation committed
+after selection and before admission therefore denies the request. Authorization
+and execution remain pinned to the selected release; renewal and replay restoration
+retain their existing semantics. No additional persisted field is introduced.
 
 Stage the binding in the maintenance environment and run the read-only preflight:
 

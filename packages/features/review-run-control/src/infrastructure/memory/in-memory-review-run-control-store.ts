@@ -812,6 +812,19 @@ export class InMemoryReviewRunControlStore
         ReviewMutationLaneKind.HostedReviewRouterApp,
       ),
     );
+    if (fence.expectedBaseProducerRelease) {
+      const base = this.releases.get(
+        fence.expectedBaseProducerRelease.producerReleaseId,
+      );
+      if (
+        !base ||
+        base.state !== ProducerReleaseState.Registered ||
+        producerReleaseImmutableKey(base) !==
+          producerReleaseImmutableKey(fence.expectedBaseProducerRelease)
+      ) {
+        return false;
+      }
+    }
     const release = this.releases.get(candidate.producerReleaseId);
     const limits = this.limits.get(candidate.protocolLimitsProfileId);
     const slo = this.slos.get(candidate.operationalSloProfileId);

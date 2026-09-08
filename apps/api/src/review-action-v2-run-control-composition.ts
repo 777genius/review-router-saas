@@ -459,6 +459,7 @@ async function authorizeReviewRun(
 }> {
   assertPublishedOffer(request);
   let resolved = await resolveVerifiedIdentity(request.oidcToken, dependencies);
+  const attestedBaseRelease = resolved.producerRelease;
   const selectedRelease = await dependencies.repositoryReleaseSelector?.select({
     ...resolved.identity,
     actionCommitSha: resolved.producerRelease.actionCommitSha,
@@ -509,6 +510,10 @@ async function authorizeReviewRun(
   const outcome = await dependencies.authorizations.authorizeReviewRun({
     verifiedIdentity: resolved.identity,
     producerReleaseId: resolved.facts.producerReleaseId,
+    ...(selectedRelease &&
+    selectedRelease.producerReleaseId !== attestedBaseRelease.producerReleaseId
+      ? { expectedBaseProducerRelease: attestedBaseRelease }
+      : {}),
     protocolOfferHash,
     oidcReplayKeyHash,
     providerVoteLanes: resolved.facts.providerVoteLanes,
