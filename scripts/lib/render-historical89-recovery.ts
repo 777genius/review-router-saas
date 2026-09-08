@@ -482,7 +482,7 @@ export async function captureRecoveryArtifact(input: {
     if (created) rmSync(input.directory, { recursive: true, force: true });
     if (
       error instanceof Error &&
-      /^historical89_recovery_[a-z_]+$/.test(error.message)
+      /^historical89_recovery_[a-z0-9_]+$/.test(error.message)
     )
       throw error;
     fail("capture_failed");
@@ -570,6 +570,56 @@ function databaseReconstructionSql(
   }
   return `BEGIN; ALTER DATABASE ${db} OWNER TO ${owner}; SET LOCAL ROLE ${owner}; REVOKE ALL ON DATABASE ${db} FROM PUBLIC, ${plan.roles.map((r) => identifier(r.name)).join(", ")}; ${grants.join(" ")} COMMIT;`;
 }
+// Observe existing verifier inputs without changing SQL, output or equivalence.
+// Only fixed category names escape this scope; values, names and digests do not.
+function restoreDiagnostics(commands: CommandExecutor, sourceUrl: string, targetUrl: string) {
+  const host = (url: string) => new URL(url).hostname;
+  const observations = new Map<string, Map<string, string>>();
+  const category = (sql: string) => {
+    if (sql.startsWith("COPY ")) return "rows";
+    if (sql.includes("'kind','object'")) return "acl_ownership_defaults";
+    if (sql.includes("'kind','constraint'")) return "constraints_indexes_triggers";
+    if (sql.includes("'kind','function'")) return "functions_views_schemas";
+    if (sql.includes("'force',c.relforcerowsecurity")) return "policies_rls";
+    if (sql.includes("'notNull',a.attnotnull")) return "columns_defaults";
+    if (sql.includes('row_to_json(m)')) return "migration_history";
+    if (sql.includes("'lastValue'")) return "sequences";
+    return "other";
+  };
+  const record = (args: readonly string[], value: string) => {
+    const side = args[args.indexOf("--host") + 1];
+    const sql = args.at(-1)!;
+    const values = observations.get(sql) ?? new Map<string, string>();
+    values.set(side!, hash(value));
+    observations.set(sql, values);
+  };
+  const observed: CommandExecutor = {
+    execute(command, args, options) {
+      const result = commands.execute(command, args, options);
+      record(args, result.stdout);
+      return result;
+    },
+    async hashStdout(command, args, options) {
+      const result = await commands.hashStdout(command, args, options);
+      record(args, canonicalJson(result));
+      return result;
+    },
+    executeExpectingFailure: (command, args, options) =>
+      commands.executeExpectingFailure(command, args, options),
+  };
+  return {
+    commands: observed,
+    mismatch() {
+      const categories = new Set<string>();
+      for (const [sql, values] of observations) {
+        const left = values.get(host(sourceUrl)), right = values.get(host(targetUrl));
+        if (left !== undefined && right !== undefined && left !== right)
+          categories.add(category(sql));
+      }
+      return [...categories].sort().join("_and_") || "unclassified";
+    },
+  };
+}
 export async function verifyReviewedRestore(input: {
   artifact: RecoveryArtifact;
   sourceUrl: string;
@@ -580,6 +630,7 @@ export async function verifyReviewedRestore(input: {
     expectedIdentity: RecoveryIdentity;
   };
 }) {
+  let phase = "preflight";
   try {
     const state = custody.get(input.artifact);
     if (!state) fail("unmeasured_artifact_handle");
@@ -659,10 +710,13 @@ export async function verifyReviewedRestore(input: {
       if (query(commands, input.targetUrl, recoveryEmptySql).empty !== true)
         fail("target_not_empty");
       const databaseSql = databaseReconstructionSql(target.database, plan);
+      phase = "role_reconstruction";
       reconstruct(commands, input.targetUrl, adapter, plan);
+      phase = "database_reconstruction";
       executeSql(commands, input.targetUrl, databaseSql);
       const c = decomposePostgresConnection(input.targetUrl);
       try {
+        phase = "pg_restore";
         commands.execute(
           "pg_restore",
           [
@@ -679,12 +733,42 @@ export async function verifyReviewedRestore(input: {
     } finally {
       rmSync(pinDir, { recursive: true, force: true });
     }
-    const result = await adapter.verifyEquivalence(
-      input.sourceUrl,
-      input.targetUrl,
-      ["public"],
-      { source: plan.policy, target: plan.policy },
-    );
+    phase = "restored_security";
+    const restoredInventory = inventory(adapter, input.targetUrl, plan, false);
+    if (!equal(restoredInventory.memberships, state.inventory.memberships))
+      fail("restored_memberships_mismatch");
+    if (!equal(restoredInventory.rowSecurity, state.inventory.rowSecurity))
+      fail("restored_rls_mismatch");
+    const owners = (i: EffectivePrincipalInventory) => i.grants.filter(g => g.capability.startsWith("owner:"));
+    if (!equal(owners(restoredInventory), owners(state.inventory)))
+      fail("restored_owners_mismatch");
+    if (!equal(restoredInventory.grants, state.inventory.grants))
+      fail("restored_grants_mismatch");
+    if (!equal(restoredInventory, state.inventory))
+      fail("restored_principals_mismatch");
+    phase = "restored_ledger";
+    if (!equal(ledger(commands, input.targetUrl), a.ledger))
+      fail("restored_ledger_mismatch");
+    phase = "restored_scope";
+    const restoredScope = scope(commands, input.targetUrl);
+    if (!equal(restoredScope.exactSequences, (state.scope as ReturnType<typeof scope>).exactSequences))
+      fail("restored_sequences_mismatch");
+    for (const key of ["schemas", "settings", "extensions", "database", "types", "unsupportedTypes", "unsupportedCatalog", "relations", "columnProperties", "triggerModes", "visible"] as const) {
+      if (!equal(restoredScope[key], (state.scope as ReturnType<typeof scope>)[key]))
+        fail(`restored_scope_${key.replace(/[A-Z]/g, c => "_" + c.toLowerCase())}_mismatch`);
+    }
+    if (!equal(restoredScope, state.scope)) fail("restored_scope_mismatch");
+    phase = "restored_equivalence";
+    const diagnostics = restoreDiagnostics(commands, input.sourceUrl, input.targetUrl);
+    let result;
+    try {
+      result = await new PostgreSqlGenerationAdapter(diagnostics.commands).verifyEquivalence(
+        input.sourceUrl, input.targetUrl, ["public"],
+        { source: plan.policy, target: plan.policy },
+      );
+    } catch {
+      fail(`restored_equivalence_${diagnostics.mismatch()}`);
+    }
     if (
       !equal(result.evidence, state.evidence) ||
       !equal(scope(commands, input.targetUrl), state.scope) ||
@@ -721,9 +805,9 @@ export async function verifyReviewedRestore(input: {
   } catch (error) {
     if (
       error instanceof Error &&
-      /^historical89_recovery_[a-z_]+$/.test(error.message)
+      /^historical89_recovery_[a-z0-9_]+$/.test(error.message)
     )
       throw error;
-    fail("restore_verification_failed");
+    fail(`restore_${phase}_failed`);
   }
 }

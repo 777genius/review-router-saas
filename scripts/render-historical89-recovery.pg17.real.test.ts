@@ -28,7 +28,7 @@ const sourceUrl = `postgresql://postgres:fixture-only@dpg-source/${database}?ssl
 const targetUrl = `postgresql://postgres:fixture-only@dpg-target/${database}?sslmode=disable`;
 const seed = `INSERT INTO "Workspace" (id,slug,name,"updatedAt") VALUES ('recovery','recovery','disposable recovery',now()); CREATE SEQUENCE public.recovery_sequence; SELECT setval('public.recovery_sequence',9223372036854775806,true);`;
 const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
-(enabled ? describe : describe.skip)(
+(enabled ? describe.sequential : describe.skip)(
   "historical89 actual custom dump and disposable restore, offline PG17.10",
   () => {
     const source = managedPg17Fixture(),
@@ -37,7 +37,45 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
     let root: string,
       sourceIdentity: RecoveryIdentity,
       plan: ReviewedRecoveryPlan;
-    let ordinal = 0;
+    let sharedArtifact: Awaited<ReturnType<typeof captureRecoveryArtifact>>;
+    let activeTarget: ReturnType<typeof managedPg17Fixture>;
+    let activeDrift: string | undefined;
+    let baseline: Awaited<ReturnType<typeof fixture>>;
+    let baselineResult: Awaited<ReturnType<typeof verifyReviewedRestore>>;
+    // Tests are serial: one immutable artifact, distinct owned target clusters.
+    const left = source.recoveryCommands("dpg-source");
+    const route = (args: readonly string[]) => args.includes("dpg-source")
+      ? left : activeTarget.recoveryCommands("dpg-target");
+    let hashCalls = 0;
+    const commands: CommandExecutor = {
+      execute(command, args, options) {
+        const started = Date.now();
+        try {
+          const result = route(args).execute(command, args, options);
+          if (command === "pg_restore" && activeDrift) {
+            const driftStarted = Date.now();
+            try {
+              activeTarget.query(database, `SET lock_timeout='5s'; SET statement_timeout='15s'; ${activeDrift}`, "postgres");
+            } catch {
+              throw new Error("recovery_fixture_drift_command_failed");
+            } finally {
+              console.info(`recovery_measurement drift_ms=${Date.now() - driftStarted}`);
+            }
+          }
+          return result;
+        } finally {
+          if (command === "pg_restore" || command === "pg_dump")
+            console.info(`recovery_measurement ${command}_ms=${Date.now() - started}`);
+        }
+      },
+      async hashStdout(command, args, options) {
+        const result = await route(args).hashStdout(command, args, options);
+        if (++hashCalls % 100 === 0)
+          console.info(`recovery_measurement completed_hash_calls=${hashCalls}`);
+        return result;
+      },
+      executeExpectingFailure: (command, args, options) => route(args).executeExpectingFailure(command, args, options),
+    };
     const read = (pg: ReturnType<typeof managedPg17Fixture>, sql: string) =>
       JSON.parse(pg.query(database, sql, "postgres"));
     beforeAll(async () => {
@@ -100,7 +138,19 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
       expect(sourceIdentity.systemIdentifier).not.toBe(
         read(referenceModel, recoveryIdentitySql).systemIdentifier,
       );
+      const captureStarted = Date.now();
+      sharedArtifact = await captureRecoveryArtifact({
+        sourceUrl, expectedSource: sourceIdentity, directory: join(root, "capture"),
+        reviewedPlan: plan, exclusionReference: "fixture-no-writers",
+        consistencyReference: "fixture-no-writers", commands,
+      });
+      console.info(`recovery_measurement capture_ms=${Date.now() - captureStarted}`);
     }, 240_000);
+    beforeAll(async () => {
+      // A failing baseline fails the suite setup; no negative can pass vacuously.
+      baseline = await fixture();
+      baselineResult = await baseline.restore();
+    }, 180_000);
     afterAll(() => {
       // Attempt every cleanup even if one container reports an identity failure.
       const errors: unknown[] = [];
@@ -120,34 +170,12 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
       await target.start();
       target.query("postgres", `CREATE DATABASE ${database};`, "postgres");
       const expectedIdentity = read(target, recoveryIdentitySql);
-      const left = source.recoveryCommands("dpg-source"),
-        right = target.recoveryCommands("dpg-target");
-      const route = (args: readonly string[]) =>
-        args.includes("dpg-source") ? left : right;
-      const commands: CommandExecutor = {
-        execute(command, args, options) {
-          const result = route(args).execute(command, args, options);
-          // Deliberate faults AFTER actual pg_restore, before verifier reads.
-          if (command === "pg_restore" && drift)
-            target.query(database, drift, "postgres");
-          return result;
-        },
-        hashStdout: (command, args, options) =>
-          route(args).hashStdout(command, args, options),
-        executeExpectingFailure: (command, args, options) =>
-          route(args).executeExpectingFailure(command, args, options),
-      };
-      const artifact = await captureRecoveryArtifact({
-        sourceUrl,
-        expectedSource: sourceIdentity,
-        directory: join(root, `capture-${++ordinal}`),
-        reviewedPlan: plan,
-        exclusionReference: "fixture-no-writers",
-        consistencyReference: "fixture-no-writers",
-        commands,
-      });
-      const restore = () =>
-        verifyReviewedRestore({
+      activeTarget = target;
+      activeDrift = drift;
+      const artifact = sharedArtifact;
+      const restore = async () => {
+        const started = Date.now();
+        try { return await verifyReviewedRestore({
           artifact,
           sourceUrl,
           targetUrl,
@@ -156,13 +184,16 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
             reviewReference: "owned-offline-container",
             expectedIdentity,
           },
-        });
+        }); } finally {
+          console.info(`recovery_measurement verify_ms=${Date.now() - started}`);
+        }
+      };
       return { target, artifact, restore };
     }
     it("restores source89 actual rows, sequence state, original ledger, owners, grants and effective principals", async () => {
-      const f = await fixture();
+      const f = baseline;
       try {
-        const result = await f.restore();
+        const result = baselineResult;
         expect(
           readFileSync(join(f.artifact.directory, "recovery.dump"))
             .subarray(0, 5)
@@ -225,10 +256,16 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
       ["membership", "GRANT reviewrouter_api TO historical_inherited"],
     ])(
       "rejects actual restored %s drift",
-      async (_kind, sql) => {
+      async (kind, sql) => {
         const f = await fixture(sql);
         try {
-          await expect(f.restore()).rejects.toThrow(/^historical89_recovery_/);
+          const causes: Record<string, string> = {
+            row: "restored_equivalence_rows", sequence: "restored_sequences_mismatch",
+            ledger: "restored_ledger_mismatch", owner: "restored_owners_mismatch",
+            ACL: "restored_grants_mismatch", RLS: "restored_rls_mismatch",
+            membership: "restored_memberships_mismatch",
+          };
+          await expect(f.restore()).rejects.toThrow(new Error(`historical89_recovery_${causes[kind]}`));
         } finally {
           f.target.cleanup();
         }
@@ -237,9 +274,9 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
     );
     it("rejects changed real dump bytes before restoring anything", async () => {
       const f = await fixture();
+      const path = join(f.artifact.directory, "recovery.dump");
+      const original = readFileSync(path);
       try {
-        const path = join(f.artifact.directory, "recovery.dump"),
-          original = readFileSync(path);
         const corrupt = Buffer.from(original);
         corrupt[corrupt.length - 1] ^= 1;
         writeFileSync(path, corrupt);
@@ -253,6 +290,7 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
         ).toBe("0");
         expect(readFileSync(path)).toEqual(corrupt);
       } finally {
+        writeFileSync(path, original);
         f.target.cleanup();
       }
     }, 180_000);

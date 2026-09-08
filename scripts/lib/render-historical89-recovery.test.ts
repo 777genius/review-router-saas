@@ -109,6 +109,9 @@ function setup() {
     corruptLedger: false,
     corruptAcl: false,
     corruptOwner: false,
+    corruptCatalog: false,
+    corruptRls: false,
+    corruptMembership: false,
     missingVisibility: false,
     rls: false,
     unsupported: false,
@@ -148,6 +151,8 @@ function setup() {
         state.restored = true;
         return { stdout: "" };
       }
+      if (state.restored && isTarget && state.corruptCatalog && sql.includes("'kind','object'"))
+        return { stdout: JSON.stringify({ private: "token=secret postgresql://secret@dpg-hidden/private" }) };
       let value: unknown = null;
       if (sql === recoveryIdentitySql)
         value = isTarget
@@ -180,7 +185,7 @@ function setup() {
           database: "recovery",
           sessionPrincipal: "reviewrouter",
           roles: [{ ...role, createRole: state.targetRole && isTarget }],
-          memberships: state.unknownMembership
+          memberships: state.unknownMembership || (state.restored && isTarget && state.corruptMembership)
             ? [
                 {
                   member: "unknown",
@@ -210,7 +215,9 @@ function setup() {
                 ]
               : [],
           roleReachability: state.missingVisibility ? undefined : [],
-          rowSecurity: [],
+          rowSecurity: state.restored && isTarget && state.corruptRls
+            ? [{ schema: "public", table: "fixture", enabled: true, forced: false }]
+            : [],
           extensions: [],
           unsupportedAuthorityFamilies: state.unsupported
             ? ["event-trigger"]
@@ -323,6 +330,17 @@ describe("bounded historical89 recovery evidence", () => {
       /fixture-secret|postgresql:|PGDMP/,
     );
   });
+  it("reports a fixed catalog category without leaking raw observations", async () => {
+    const f = setup();
+    const a = await f.capture();
+    await f.restore(a);
+    f.state.restored = false;
+    f.state.corruptCatalog = true;
+    await expect(f.restore(a)).rejects.toThrow(
+      new Error("historical89_recovery_restored_equivalence_acl_ownership_defaults"),
+    );
+    f.cleaned();
+  });
   it("refuses an existing artifact without overwriting it", async () => {
     const f = setup();
     await f.capture();
@@ -370,13 +388,26 @@ describe("bounded historical89 recovery evidence", () => {
     "corruptLedger",
     "corruptAcl",
     "corruptOwner",
+    "corruptRls",
+    "corruptMembership",
   ] as const)(
     "fails closed on restored %s and retains artifact",
     async (kind) => {
       const f = setup();
       const a = await f.capture();
+      await f.restore(a);
+      f.state.restored = false;
       f.state[kind] = true;
-      await expect(f.restore(a)).rejects.toThrow("historical89_recovery_");
+      const causes = {
+        corruptData: "restored_equivalence_rows",
+        corruptSequence: "restored_sequences_mismatch",
+        corruptLedger: "ledger_not_full89",
+        corruptAcl: "restored_grants_mismatch",
+        corruptOwner: "restored_owners_mismatch",
+        corruptRls: "restored_rls_mismatch",
+        corruptMembership: "restored_memberships_mismatch",
+      };
+      await expect(f.restore(a)).rejects.toThrow(new Error(`historical89_recovery_${causes[kind]}`));
       expect(f.state.restored).toBe(true);
       expect(existsSync(join(f.directory, "recovery.dump"))).toBe(true);
       expect(existsSync(join(f.directory, "restore-input"))).toBe(false);
@@ -412,7 +443,7 @@ describe("bounded historical89 recovery evidence", () => {
     const a = await f.capture();
     f.state.throwRestore = true;
     await expect(f.restore(a)).rejects.toThrow(
-      "historical89_recovery_restore_verification_failed",
+      "historical89_recovery_restore_pg_restore_failed",
     );
     expect(existsSync(join(f.directory, "recovery.dump"))).toBe(true);
     expect(existsSync(join(f.directory, "restore-input"))).toBe(false);
