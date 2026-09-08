@@ -40,6 +40,10 @@ import {
   reviewInvestigationCoverageProfileV4,
   investigationDossierCanonicalValue,
 } from "../index";
+import { OpenReviewInvestigation } from "../application/use-cases/open-review-investigation";
+import { PlanNextInvestigationTurn } from "../application/use-cases/plan-next-investigation-turn";
+import { digestBackedInvestigationManifestIdentity } from "../testing/digest-backed-investigation-manifest-identity";
+import { CurrentInvestigationExecutionAuthority } from "../testing/investigation-test-kit";
 import { RestoreReviewInvestigation } from "../application/use-cases/restore-review-investigation";
 import { ReconcileExpiredActiveTurn } from "../application/use-cases/reconcile-expired-active-turn";
 import { HydrateInvestigationTurnObligations } from "../application/use-cases/hydrate-investigation-turn-obligations";
@@ -144,6 +148,87 @@ async function createLeaseHarness(): Promise<InvestigationLeaseStoreContractHarn
 }
 
 describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
+  it("reconciles concurrent opens into one target and continues after receipt-only adoption", async () => {
+    const base = createInvestigationStoreContractSeed(`open-db-${randomUUID()}`);
+    const digest = new NodeSha256InvestigationDigest();
+    const naturalIdentityHash = await digest.digestUtf8(canonicalJson({
+      scope: base.scope, revision: base.revision, executionId: base.executionId,
+      workSlotId: base.workSlotId, stableReviewUnitKey: base.stableReviewUnitKey,
+      providerVoteLaneId: base.providerVoteLaneId,
+      coverageContractVersion: base.contract.coverageContractVersion,
+      runtimeProfileVersion: base.contract.runtimeProfileVersion,
+    }));
+    const seed = { ...base, naturalIdentityHash,
+      investigationId: `investigation-${naturalIdentityHash.slice(0, 32)}` };
+    const harness = await createHarness(seed);
+    try {
+      const authority = new CurrentInvestigationExecutionAuthority();
+      const clock = new FixedInvestigationClock(new Date());
+      const open = new OpenReviewInvestigation(harness.store, authority, digest,
+        digestBackedInvestigationManifestIdentity(digest), clock);
+      const command = { commandId: `open-a-${seed.investigationId}`,
+        scope: seed.scope, revision: seed.revision, executionId: seed.executionId,
+        workSlotId: seed.workSlotId, stableReviewUnitKey: seed.stableReviewUnitKey,
+        providerVoteLaneId: seed.providerVoteLaneId, providerStrategyId: seed.providerStrategyId,
+        runtimeProfile: seed.runtimeProfile, contract: seed.contract, policy: seed.policy,
+        seedObligations: seed.obligations.map(item => ({ kind: item.kind,
+          canonicalSubject: item.canonicalSubject, canonicalRequirement: item.canonicalRequirement,
+          riskPriority: item.riskPriority })), initialReceipts: [] };
+      const [first, second] = await Promise.all([open.execute(command),
+        open.execute({ ...command, commandId: `open-b-${seed.investigationId}` })]);
+      expect(first).toEqual(second);
+      const before = await harness.store.findById(first.investigationId);
+      const adopted = { ...command, commandId: `open-c-${seed.investigationId}` };
+      expect(await open.execute(adopted)).toEqual(first);
+      expect(await open.execute(adopted)).toEqual(first);
+      expect(await harness.store.findById(first.investigationId)).toEqual(before);
+      expect(await harness.prisma.reviewInvestigationCommandReceipt.count({
+        where: { commandId: adopted.commandId },
+      })).toBe(1);
+      await expect(open.execute({ ...adopted, providerStrategyId: "conflicting-strategy" }))
+        .rejects.toThrow("investigation_idempotency_conflict");
+      const continued = await new PlanNextInvestigationTurn(harness.store, authority, digest, clock)
+        .execute({ commandId: `continue-${seed.investigationId}`,
+          investigationId: first.investigationId, expectedVersion: first.version,
+          leaseDurationMs: 60_000, maxObligationsForTurn: 1 });
+      expect(continued.investigationId).toBe(first.investigationId);
+      expect(continued.version).toBe(first.version + 1);
+    } finally { await harness.dispose(); }
+  });
+
+  it("persists exactly one adoption receipt and rejects transactionally superseded execution", async () => {
+    const seed = createInvestigationStoreContractSeed(`adopt-db-${randomUUID()}`);
+    const harness = await createHarness(seed);
+    try {
+      await harness.store.commit({ investigation: seed, expectedVersion: null,
+        commandId: `create-${seed.investigationId}`, commandHash: "1".repeat(64),
+        transition: { kind: InvestigationStoreTransitionKind.Opened } });
+      const before = await harness.prisma.reviewInvestigation.findUniqueOrThrow({
+        where: { investigationId: seed.investigationId },
+      });
+      const aggregate = await harness.store.findById(seed.investigationId);
+      const input = { investigation: aggregate!, expectedVersion: aggregate!.version,
+        commandId: `adopt-${seed.investigationId}`, commandHash: "2".repeat(64),
+        requireCurrentExecution: async () => {} };
+      await Promise.all([harness.store.adopt(input), harness.store.adopt(input)]);
+      expect(await harness.prisma.reviewInvestigationCommandReceipt.count({
+        where: { commandId: input.commandId },
+      })).toBe(1);
+      expect(await harness.prisma.reviewInvestigation.findUniqueOrThrow({
+        where: { investigationId: seed.investigationId },
+      })).toEqual(before);
+      expect(await harness.store.findById(seed.investigationId)).toEqual(aggregate);
+      // The application callback says current; the database must independently reject it.
+      await harness.prisma.reviewExecutionStreamV2.updateMany({
+        where: { activeExecutionId: seed.executionId }, data: { activeExecutionId: null },
+      });
+      const stale = { ...input, commandId: `stale-${seed.investigationId}` };
+      await expect(harness.store.adopt(stale)).rejects.toThrow("investigation_execution_superseded");
+      expect(await harness.store.restoreCommand(stale)).toBeNull();
+      expect(await harness.store.findById(seed.investigationId)).toEqual(aggregate);
+    } finally { await harness.dispose(); }
+  });
+
   it("fences expiry recovery until the database clock reaches the turn deadline", async () => {
     const suffix = `db-expiry-fence-${randomUUID()}`;
     const seed = await withValidTestDossierDigest(
