@@ -114,15 +114,22 @@ jobs:
           node-version: 24
 
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - name: Check database host reachability (no credentials printed)
+        env:
+          REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
+        run: node scripts/check-db-reachability.mjs
 
       - name: Run historical89 in-place operation
         env:
           REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
-        run: node --import tsx scripts/run-historical89-inplace-operation.mjs | tee historical89-result.json
+        run: |
+          set -o pipefail
+          node --import tsx scripts/run-historical89-inplace-operation.mjs | tee historical89-result.json
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
           name: historical89-inplace-result-${{ github.run_id }}
           path: historical89-result.json
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 90
