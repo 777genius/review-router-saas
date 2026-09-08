@@ -119,12 +119,27 @@ jobs:
           REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
         run: node scripts/check-db-reachability.mjs
 
+      - name: Temporarily open Render DB access if IP-restricted
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_POSTGRES_ID: dpg-da32ipmk1f9s73dttm90-a
+          RENDER_ALLOWLIST_BACKUP_PATH: /tmp/render-allowlist-backup.json
+        run: node scripts/open-render-db-access.mjs
+
       - name: Run historical89 in-place operation
         env:
           REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
         run: |
           set -o pipefail
           node --import tsx scripts/run-historical89-inplace-operation.mjs | tee historical89-result.json
+
+      - name: Restore original Render DB access list
+        if: always()
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_POSTGRES_ID: dpg-da32ipmk1f9s73dttm90-a
+          RENDER_ALLOWLIST_BACKUP_PATH: /tmp/render-allowlist-backup.json
+        run: node scripts/restore-render-db-access.mjs
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
