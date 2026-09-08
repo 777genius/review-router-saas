@@ -1,4 +1,9 @@
 import {
+  EnvironmentInvestigationRolloutPolicyQuery,
+  RunControlInvestigationEmergencyStopQuery,
+} from "../../../packages/features/review-investigation-operations/src/composition/index.js";
+import { ReviewInvestigationRolloutGuard } from "../../../apps/api/src/review-investigation-rollout-guard.js";
+import {
   reviewActionV2ContextReplayKeysEnv,
   reviewActionV2ContextSessionSecretEnv,
 } from "../../../apps/api/src/review-action-v2-context-attestation-composition.js";
@@ -35,6 +40,11 @@ import {
 } from "../../../packages/features/review-context-attestation/src/index.js";
 import { PrismaContextAttestationStore } from "../../../packages/features/review-context-attestation/src/composition/index.js";
 import {
+  ProviderResultCompletionStatus,
+  ReviewObservationQualityFlag,
+  prepareReviewObservationPayload,
+  reviewReuseEligibilityPolicyVersion,
+  type ReviewObservationPayload,
   InvestigationCertificateConclusion,
   InvestigationCertificateVerificationStatus,
   ProviderExecutionProfile,
@@ -74,6 +84,7 @@ import {
   PrismaInvestigationStore,
 } from "../../../packages/features/review-investigations/src/composition/index.js";
 import {
+  ResolveInvestigationRollout,
   InvestigationEvaluationAttestationVersion,
   InvestigationEvaluationSignatureAlgorithm,
   InvestigationLegacyComparison,
@@ -237,6 +248,12 @@ export type CompletedInvestigationFlow = Readonly<{
 }>;
 
 type InvestigationFlowInput = Readonly<{
+  attachSetup?: boolean;
+  boundary?: (
+    stage: "admission" | "planning" | "active" | "committed" | "conclusion" | "terminal",
+    operation: () => Promise<unknown>,
+    investigationId?: string,
+  ) => Promise<void>;
   label: string;
   expandRelations: boolean;
   terminalSource:
@@ -251,6 +268,15 @@ type InvestigationFlowInput = Readonly<{
 }>;
 
 export class ReviewInvestigationProductionE2EHarness {
+  readonly emergency: {
+    disabled: boolean;
+    reads: number;
+    beforeRead?: (request: Request) => Promise<void>;
+  };
+  private readonly completed = new Map<string, {
+    execution: InvestigationExecution;
+    concludeRequest: ReviewInvestigationConcludeRequest;
+  }>();
   readonly base: ReviewActionV2E2EHarness;
   readonly databaseUrl: string;
   readonly policyHash: string;
@@ -351,7 +377,9 @@ export class ReviewInvestigationProductionE2EHarness {
     promotionTrustProfile: InvestigationPromotionTrustProfile;
     evaluatorPrivateKey: KeyObject;
     evaluationPublicKeysJson: string;
+    emergency: ReviewInvestigationProductionE2EHarness["emergency"];
   }) {
+    this.emergency = input.emergency;
     this.databaseUrl = input.databaseUrl;
     this.base = input.base;
     this.prisma = input.base.prisma;
@@ -374,7 +402,17 @@ export class ReviewInvestigationProductionE2EHarness {
     const coverageProfileHash = sha256(
       canonicalJson(reviewInvestigationCoverageProfileV10),
     );
+    const emergency: ReviewInvestigationProductionE2EHarness["emergency"] = {
+      disabled: false,
+      reads: 0,
+    };
     const base = await createReviewActionV2E2EHarness(databaseUrl, {
+      investigationProductionEffects: true,
+      beforeFakeGitHubRead: async request => emergency.beforeRead?.(request),
+      investigationEmergencyValue: () => {
+        emergency.reads += 1;
+        return emergency.disabled ? "1" : "0";
+      },
       investigationProfile: {
         coverageProfileHash,
         policyHash,
@@ -428,6 +466,7 @@ export class ReviewInvestigationProductionE2EHarness {
         }),
       });
     return new ReviewInvestigationProductionE2EHarness({
+      emergency,
       databaseUrl,
       base,
       policyHash,
@@ -483,13 +522,16 @@ export class ReviewInvestigationProductionE2EHarness {
   private async runTerminal(
     input: InvestigationFlowInput & Readonly<{ includeFinding: boolean }>,
   ): Promise<CompletedInvestigationFlow> {
-    const execution = await this.createExecution();
+    const execution = await this.createExecution(input.attachSetup ?? false);
     const { opened: open, duplicateOpenVersion } = await (async () => {
       const lease = await this.acquireTurnLease(
         execution,
         `${input.label}-open`,
       );
       try {
+        await input.boundary?.("admission", () =>
+          this.openInvestigation(execution, input.label),
+        );
         const opened = await this.openInvestigation(execution, input.label);
         const duplicateOpen = await requiredHandler(
           this.routes.investigation.openV2,
@@ -525,12 +567,22 @@ export class ReviewInvestigationProductionE2EHarness {
     let restartedAfterFindingCommit = false;
     while (current.nextAction === ReviewInvestigationNextAction.RunTurn) {
       discoveryOrdinal += 1;
+      await input.boundary?.(
+        "planning",
+        () => this.planTurn(execution, current, `${input.label}-blocked-plan`),
+        current.investigationId,
+      );
       const plan = await this.planTurn(
         execution,
         current,
         `${input.label}-discovery-${discoveryOrdinal}`,
         // Keep real search obligations unfinished at the finding checkpoint.
         input.checkpoint && !restartedAfterFindingCommit ? 1 : 16,
+      );
+      await input.boundary?.(
+        "active",
+        () => requiredHandler(this.routes.investigation.planTurn).execute(plan.request),
+        plan.read.investigationId,
       );
       const lease = await this.acquireInvestigationTurnLease(
         execution,
@@ -572,6 +624,11 @@ export class ReviewInvestigationProductionE2EHarness {
         execution,
         lease,
         `${input.label}-discovery-${discoveryOrdinal}`,
+      );
+      await input.boundary?.(
+        "committed",
+        () => requiredHandler(this.routes.investigation.commitTurn).execute(commit.request),
+        commit.read.investigationId,
       );
       current = commit.read;
       if (discoveryOrdinal === 1 && input.restartAfterFirstCommit) {
@@ -645,11 +702,25 @@ export class ReviewInvestigationProductionE2EHarness {
         disposableFixtureTerminalSamples(this.prisma),
       );
     }
+    await input.boundary?.(
+      "conclusion",
+      () => this.conclude(execution, current, `${input.label}-conclude`),
+      current.investigationId,
+    );
     const concluded = await this.conclude(
       execution,
       current,
       `${input.label}-conclude`,
     );
+    this.completed.set(concluded.read.investigationId, {
+      execution,
+      concludeRequest: concluded.request,
+    });
+    await input.boundary?.(
+        "terminal",
+        () => requiredHandler(this.routes.investigation.conclude).execute(concluded.request),
+        concluded.read.investigationId,
+      );
     const terminalBeforeReplay = this.ownedChild
       ? await this.controlPlane.snapshot(concluded.read.investigationId)
       : null;
@@ -670,7 +741,9 @@ export class ReviewInvestigationProductionE2EHarness {
         "item11_conclude_replay_mutated",
       );
     }
-    this.routes = this.composeRoutes(this.prisma);
+    if (input.terminalSource === InvestigationTelemetrySource.DisposableFixture) {
+      this.routes = this.composeRoutes(this.prisma);
+    }
 
     const expansionObligationCount =
       await this.prisma.reviewInvestigationObligation.count({
@@ -723,7 +796,18 @@ export class ReviewInvestigationProductionE2EHarness {
     const verifier = new ReviewInvestigationCertificateVerificationAdapter(
       store,
       new NodeSha256InvestigationDigest(),
-      { async assertAllowed() {} },
+      new ReviewInvestigationRolloutGuard(new ResolveInvestigationRollout(
+        new EnvironmentInvestigationRolloutPolicyQuery(this.base.env),
+        new RunControlInvestigationEmergencyStopQuery({
+          findApplicable: async () => (await this.prisma.reviewSafetyEmergencyControl.findMany({
+            where: { OR: [
+              { policyScope: "global" },
+              { workspaceId: this.base.workspaceId, repositoryConnectionId: null },
+              { repositoryConnectionId: this.base.repositoryConnectionId },
+            ] },
+          })).map(control => ({ global: control.policyScope === "global", stopped: control.stopped })),
+        }),
+      )),
     );
     const decision = await verifier.verifyAcceptedCertificate({
       certificateId: flow.certificateId,
@@ -733,7 +817,8 @@ export class ReviewInvestigationProductionE2EHarness {
       providerKind: ReviewProviderKind.Codex,
       providerVoteIdentityHash: investigation.providerVoteLaneId,
       terminalOutcomeHash: certificate.terminalOutcomeHash,
-      expectedConclusion: InvestigationCertificateConclusion.Findings,
+      expectedConclusion: certificate.conclusion === "findings"
+        ? InvestigationCertificateConclusion.Findings : InvestigationCertificateConclusion.VerifiedClean,
       producerReleaseId: certificate.producerReleaseId,
       nowMs: Date.now(),
     });
@@ -742,6 +827,111 @@ export class ReviewInvestigationProductionE2EHarness {
       `investigation_certificate_not_accepted:${decision.reason}`,
     );
     return decision;
+  }
+
+  async retryTerminalBoundary(investigationId: string) {
+    const completed = requiredValue(
+      this.completed.get(investigationId), "boundary_flow_missing",
+    );
+    return requiredHandler(this.routes.investigation.conclude).execute(completed.concludeRequest);
+  }
+
+  async restoreBoundary(investigationId: string) {
+    const authorization = requiredValue(
+      this.authorization, "boundary_authorization_missing",
+    );
+    return requiredHandler(this.routes.investigation.restore).execute({
+      ...envelope(`restore-${randomUUID()}`),
+      ...authorization,
+      investigationId,
+    });
+  }
+
+  // Snapshot complete durable rows, not only counts: identity, expiry, dossier,
+  // Findings, provenance, accepted observations and artifact hashes all matter.
+  async boundarySnapshot() {
+    const [
+      investigations, turns, leases, receipts, certificates,
+      observations, artifacts, outbox, shadows,
+    ] = await Promise.all([
+      this.prisma.reviewInvestigation.findMany({ orderBy: { investigationId: "asc" } }),
+      this.prisma.reviewInvestigationTurn.findMany({ orderBy: { turnId: "asc" } }),
+      this.prisma.reviewInvestigationLease.findMany({ orderBy: { leaseId: "asc" } }),
+      this.prisma.reviewInvestigationReceipt.findMany({ orderBy: { receiptId: "asc" } }),
+      this.prisma.reviewInvestigationCertificate.findMany({ orderBy: { certificateId: "asc" } }),
+      this.prisma.reviewEvidenceObservation.findMany({ orderBy: { observationId: "asc" } }),
+      this.prisma.finalizedReviewProjectionArtifactV2.findMany({ orderBy: { artifactId: "asc" } }),
+      this.prisma.outboxEvent.findMany({ orderBy: { id: "asc" } }),
+      this.prisma.reviewInvestigationShadowEvidence.findMany({
+        orderBy: { shadowEvidenceId: "asc" },
+        select: { shadowEvidenceId: true, recordHash: true, certificateHash: true,
+          terminalPayloadHash: true, terminalObservationCanonicalJson: true },
+      }),
+    ]);
+    return {
+      investigations, turns, leases, receipts, certificates,
+      observations, artifacts, outbox, shadows,
+    };
+  }
+
+  async prepareCertificateAcceptance(flow: CompletedInvestigationFlow) {
+    const { execution } = requiredValue(
+      this.completed.get(flow.investigationId), "boundary_flow_missing",
+    );
+    const aggregate = requiredValue(
+      await new PrismaInvestigationStore(this.prisma).findById(flow.investigationId),
+      "boundary_investigation_missing",
+    );
+    const certificate = requiredValue(
+      aggregate.certificate, "boundary_certificate_missing",
+    );
+    const payload = prepareReviewObservationPayload(
+      JSON.parse(certificate.terminalObservationCanonicalJson) as ReviewObservationPayload,
+    );
+    ensure(
+      sha256(canonicalJson(payload.payload)) === certificate.terminalOutcomeHash,
+      "boundary_payload_hash_mismatch",
+    );
+    const lease = await this.acquireTurnLease(execution, `${flow.investigationId}-accept`);
+    const request = await withBodyHash(ReviewActionV2OperationId.ReviewEvidenceCommit, {
+      ...envelope(`${flow.investigationId}-evidence`),
+      authorizationToken: execution.flow.authorizationToken,
+      leaseCapability: lease.leaseCapability,
+      idempotencyKey: `${flow.investigationId}-evidence`, requestBodyHash: zeroHash,
+      attemptId: lease.attemptId, sourceLeaseId: lease.leaseId,
+      ownerIdHash: execution.flow.ownerIdHash, fencingToken: lease.fencingToken,
+      completionStatus: ProviderResultCompletionStatus.Success,
+      schemaValidated: true,
+      fullyConsumed: true,
+      actualModel: requiredString(certificate.terminalActualModel),
+      contextDependencyAttestationId: null,
+      contextDependencyAttestationHash: null,
+      investigationCertificateId: certificate.certificateId,
+      investigationCertificateHash: certificate.certificateHash,
+      payloadCanonicalJson: canonicalJson(payload.payload), payloadHash: certificate.terminalOutcomeHash,
+      qualityFlags: payload.findingCount > 0
+        ? [ReviewObservationQualityFlag.InvestigationFindings] : [],
+      transportAttemptCount: 1,
+    });
+    return {
+      accept: () => requiredHandler(this.routes.evidence.commit).execute(request),
+      attach: async (observationId: string) => {
+        const attach = await withBodyHash(ReviewActionV2OperationId.ReviewExecutionObservationAttach, {
+          ...envelope(`${flow.investigationId}-attach`),
+          authorizationToken: execution.flow.authorizationToken, leaseCapability: lease.leaseCapability,
+          idempotencyKey: `${flow.investigationId}-attach`, requestBodyHash: zeroHash,
+          executionId: execution.flow.executionId, workSlotId: execution.flow.workSlotId, observationId,
+          providerInvocationKey: execution.flow.providerInvocationKey,
+          providerVoteIdentityHash: execution.providerVoteLaneId, payloadHash: certificate.terminalOutcomeHash,
+          byteCount: payload.byteCount, findingCount: payload.findingCount,
+          eligibilityPolicyVersion: reviewReuseEligibilityPolicyVersion,
+        });
+        return requiredHandler(this.routes.execution.attachObservation).execute(attach);
+      },
+      finalize: (observationId: string) => this.base.finalize(execution.flow, {
+        investigation: { observationId, findings: payload.payload.normalizedFindings },
+      }),
+    };
   }
 
   async importEvaluation(flow: CompletedInvestigationFlow, label: string) {
@@ -925,11 +1115,11 @@ export class ReviewInvestigationProductionE2EHarness {
     });
   }
 
-  private async createExecution(): Promise<InvestigationExecution> {
+  private async createExecution(attachSetup = false): Promise<InvestigationExecution> {
     this.authorization ??= await this.base.authorize();
     const setupFlow = await this.base.createCommittedFlow({
       slotCount: 2,
-      attachSlotCount: 0,
+      attachSlotCount: attachSetup ? 1 : 0,
       attemptBudget: providerAttemptBudget,
       authorization: this.authorization,
     });

@@ -56,6 +56,187 @@ describeWithDatabase.sequential(
       await resetReviewInvestigationProductionE2EDatabase(databaseUrl!);
     });
 
+    // Each parameter is a separately reset, newly prepared database case. The
+    // switch changes before the named read; this does not assert a commit fence.
+    for (const boundary of ["admission", "planning", "active", "conclusion"] as const) {
+      it(`denies investigation ${boundary} without stopping legacy review`, async () => {
+        const fixture = requiredHarness(harness);
+        let exercised = false;
+        await fixture.runWithFinding({
+          label: `disable-${boundary}`, expandRelations: false,
+          terminalSource: InvestigationTelemetrySource.Shadow,
+          boundary: async (stage, operation, investigationId) => {
+            if (stage !== boundary || exercised) return;
+            exercised = true;
+            const before = await fixture.boundarySnapshot();
+            const reads = fixture.emergency.reads;
+            fixture.emergency.disabled = true;
+            await expect(operation()).rejects.toMatchObject({
+              statusCode: 403, issues: ["investigation_rollout_emergency_disabled"],
+            });
+            expect(fixture.emergency.reads).toBeGreaterThan(reads);
+            expect(await fixture.boundarySnapshot()).toEqual(before);
+            if (investigationId) {
+              expect((await fixture.restoreBoundary(investigationId)).result).toMatchObject({
+                status: "found", investigationId,
+              });
+              expect(await fixture.boundarySnapshot()).toEqual(before);
+            }
+            // Resume only after the disabled attempt and durable assertions;
+            // the same composed handlers supply the enabled positive control.
+            fixture.emergency.disabled = false;
+          },
+        });
+        expect(exercised).toBe(true);
+        fixture.emergency.disabled = true;
+        await assertLegacyContinuity(fixture);
+      }, 120_000);
+    }
+
+    it("restores immutable Findings and matching committed/terminal retries while disabled", async () => {
+      const fixture = requiredHarness(harness);
+      const stages: string[] = [];
+      await fixture.runWithFinding({
+        label: "disabled-restore", expandRelations: false,
+        terminalSource: InvestigationTelemetrySource.Shadow,
+        boundary: async (stage, replay, investigationId) => {
+          if (stage !== "committed" && stage !== "terminal") return;
+          stages.push(stage);
+          const before = await fixture.boundarySnapshot();
+          fixture.emergency.disabled = true;
+          expect((await fixture.restoreBoundary(investigationId!)).result.status).toBe("found");
+          await replay();
+          expect(await fixture.boundarySnapshot()).toEqual(before);
+          expect(before.investigations[0]!.findings).not.toEqual([]);
+          if (stage === "terminal") {
+            expect(before.certificates).toHaveLength(1);
+            // Repair only the disposable non-authoritative projection. Neither
+            // this replay nor restore may issue a replacement certificate.
+            await fixture.client.reviewInvestigationShadowEvidence.deleteMany({ where: { investigationId } });
+            await replay();
+            expect(await fixture.client.reviewInvestigationShadowEvidence.findMany({ where: { investigationId } })).toEqual([
+              expect.objectContaining({ certificateHash: before.certificates[0]!.certificateHash, authority: "non_authoritative" }),
+            ]);
+            expect(await fixture.boundarySnapshot()).toEqual(before);
+          }
+          fixture.emergency.disabled = false;
+        },
+      });
+      expect(stages).toContain("committed");
+      expect(stages).toContain("terminal");
+    }, 120_000);
+
+    for (const conclusion of ["findings", "verified_clean"] as const) {
+      for (const boundary of ["evidence", "finalization", "worker", "enabled"] as const) {
+        it(`${conclusion}: ${boundary} preserves investigation authority`, async () => {
+          const fixture = requiredHarness(harness);
+          const input = { label: `${conclusion}-${boundary}`, expandRelations: false, attachSetup: true,
+            terminalSource: InvestigationTelemetrySource.Shadow } as const;
+          const flow = conclusion === "findings"
+            ? await fixture.runWithFinding(input) : await fixture.runVerifiedClean(input);
+          expect(await fixture.verifyAcceptedCertificate(flow)).toMatchObject({
+            status: InvestigationCertificateVerificationStatus.Accepted, conclusion,
+          });
+          const prepared = await fixture.prepareCertificateAcceptance(flow);
+          if (boundary === "evidence") {
+            const before = await fixture.boundarySnapshot();
+            const reads = fixture.emergency.reads;
+            fixture.emergency.disabled = true;
+            expect((await prepared.accept()).result).toMatchObject({
+              status: "rejected", rejectionReason: "investigation_certificate_not_accepted",
+            });
+            expect(fixture.emergency.reads).toBeGreaterThan(reads);
+            expect(await fixture.boundarySnapshot()).toEqual(before);
+            fixture.emergency.disabled = false;
+          }
+          const accepted = await prepared.accept();
+          expect(accepted.result.status).toBe("accepted");
+          const observationId = accepted.result.observationId!;
+          expect((await prepared.attach(observationId)).result.status).toBe("applied");
+          const before = await fixture.boundarySnapshot();
+          expect(before.observations.find(row => row.observationId === observationId)).toMatchObject({
+            investigationCertificateId: flow.certificateId,
+            investigationCertificateHash: flow.certificateHash,
+            executionProfile: "investigation_gateway_v1",
+          });
+          if (boundary === "finalization") {
+            const reads = fixture.emergency.reads;
+            fixture.emergency.disabled = true;
+            await expect(prepared.finalize(observationId)).rejects.toMatchObject({
+              statusCode: 403, issues: ["investigation_rollout_emergency_disabled"],
+            });
+            expect(fixture.emergency.reads).toBeGreaterThan(reads);
+            expect(await fixture.boundarySnapshot()).toEqual(before);
+            fixture.emergency.disabled = false;
+          }
+          expect((await prepared.finalize(observationId)).result.status).toBe("applied");
+          const finalized = await fixture.boundarySnapshot();
+          expect(finalized.artifacts).toHaveLength(before.artifacts.length + 1);
+          expect(finalized.outbox).toHaveLength(before.outbox.length + 1);
+          expect(finalized.observations).toEqual(before.observations);
+          expect(finalized.artifacts[0]!.findingCount).toBe(conclusion === "findings" ? 1 : 0);
+          expect(finalized.artifacts[0]!.projectionEnvelope).toMatchObject({
+            authoritativeObservationIds: [observationId],
+            coverage: { state: "complete" },
+            publishing: { summary: { allClear: conclusion === "verified_clean" } },
+          });
+          let postBeginReads: number | undefined;
+          if (boundary === "worker") {
+            fixture.emergency.beforeRead = async request => {
+              if (!new URL(request.url).pathname.endsWith("/pulls/42")) return;
+              const begun = await fixture.client.reviewPublicationOperationAttemptV2.count();
+              if (begun === 0 || postBeginReads !== undefined) return;
+              expect(fixture.base.fakeGitHub.comments).toHaveLength(0);
+              expect(fixture.base.fakeGitHub.checkRuns).toHaveLength(0);
+              postBeginReads = fixture.emergency.reads;
+              fixture.emergency.disabled = true;
+            };
+          }
+          await fixture.base.processFinalizedOutbox();
+          await fixture.base.runWorkerUntilSettled();
+          delete fixture.emergency.beforeRead;
+          if (boundary === "worker") {
+            expect(await fixture.client.reviewPublicationAuditTombstoneV2.findMany()).toEqual(
+              expect.arrayContaining([expect.objectContaining({
+                finalOutcome: "failed_no_effect",
+                finalReason: "publication_effect_gate_disabled",
+              })]),
+            );
+            expect(postBeginReads).toBeDefined();
+            expect(fixture.emergency.reads).toBeGreaterThan(postBeginReads!);
+            expect(fixture.base.fakeGitHub.comments).toHaveLength(0);
+            expect(fixture.base.fakeGitHub.checkRuns).toHaveLength(0);
+            expect(fixture.base.fakeGitHub.calls.filter(call =>
+              ["POST", "PATCH", "PUT", "DELETE"].includes(call.method) &&
+              /\/(comments|reviews|check-runs)(?:\/|$)/u.test(call.pathname))).toEqual([]);
+            expect(await fixture.client.reviewPublicationAttemptV2.findMany()).toEqual([
+              expect.objectContaining({ terminalOutcome: "failed_no_effect" }),
+            ]);
+          } else {
+            expect(await fixture.client.reviewPublicationAttemptV2.findMany()).toEqual([
+              expect.objectContaining({ terminalOutcome: "succeeded" }),
+            ]);
+            expect(fixture.base.fakeGitHub.comments.length).toBeGreaterThan(0);
+            expect(fixture.base.fakeGitHub.checkRuns.length).toBeGreaterThan(0);
+            if (conclusion === "findings") {
+              expect(fixture.base.fakeGitHub.comments.some(comment => comment.body.includes("Investigation Findings"))).toBe(true);
+              expect(fixture.base.fakeGitHub.checkRuns.some(check => check.conclusion === "failure")).toBe(true);
+            }
+          }
+          const settled = await fixture.boundarySnapshot();
+          expect(settled.certificates).toEqual(finalized.certificates);
+          expect(settled.investigations).toEqual(finalized.investigations);
+          expect(settled.observations).toEqual(finalized.observations);
+          expect(settled.artifacts).toEqual(finalized.artifacts);
+          fixture.emergency.disabled = true;
+          expect((await fixture.restoreBoundary(flow.investigationId)).result.status).toBe("found");
+          await fixture.retryTerminalBoundary(flow.investigationId);
+          expect(await fixture.boundarySnapshot()).toEqual(settled);
+          await assertLegacyContinuity(fixture);
+        }, 120_000);
+      }
+    }
+
     it("survives restart, preserves record-only authority, and promotes only signed evaluated evidence", async () => {
       const fixture = requiredHarness(harness);
       const shadow = await fixture.runVerifiedClean({
@@ -248,6 +429,23 @@ describeWithDatabase.sequential(
     }, 120_000);
   },
 );
+
+async function assertLegacyContinuity(fixture: ReviewInvestigationProductionE2EHarness) {
+  expect(fixture.emergency.disabled).toBe(true);
+  const authorization = await fixture.base.authorize();
+  expect(authorization.authorizationToken.length).toBeGreaterThan(0);
+
+  const legacy = await fixture.base.createCommittedFlow({ authorization });
+  expect((await fixture.base.finalize(legacy)).result.status).toBe("applied");
+  await fixture.base.processFinalizedOutbox();
+  await fixture.base.runWorkerUntilSettled();
+  expect(await fixture.client.reviewPublicationAttemptV2.findMany({ where: { executionId: legacy.executionId } })).toEqual([
+    expect.objectContaining({ terminalOutcome: "succeeded" }),
+  ]);
+  expect(fixture.base.fakeGitHub.comments.some(comment => comment.body.includes("Review complete"))).toBe(true);
+  expect(fixture.base.fakeGitHub.checkRuns.some(check => check.conclusion === "success")).toBe(true);
+  expect(fixture.emergency.disabled).toBe(true);
+}
 
 function requiredHarness(
   value: ReviewInvestigationProductionE2EHarness | null,
