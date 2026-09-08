@@ -268,23 +268,42 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
   });
 
   it("restores a concurrent duplicate creation after intervening revocation", async () => {
-    const seed = createInvestigationStoreContractSeed(`duplicate-${randomUUID()}`);
+    const seed = createInvestigationStoreContractSeed(
+      `duplicate-${randomUUID()}`,
+    );
     const harness = await createHarness(seed, 86_400_000, 1);
-    const duplicateClient = createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 1 });
-    const revoker = createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 1 });
-    const observer = createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 1 });
+    const duplicateClient = createPrismaClient({
+      databaseUrl: databaseUrl!,
+      poolMax: 1,
+    });
+    const revoker = createPrismaClient({
+      databaseUrl: databaseUrl!,
+      poolMax: 1,
+    });
+    const observer = createPrismaClient({
+      databaseUrl: databaseUrl!,
+      poolMax: 1,
+    });
     let release!: () => void;
     let reached!: () => void;
-    const paused = new Promise<void>((resolve) => { reached = resolve; });
-    const resume = new Promise<void>((resolve) => { release = resolve; });
+    const paused = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const resume = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     let first: ReturnType<PrismaInvestigationStore["commit"]> | undefined;
     let duplicate: ReturnType<PrismaInvestigationStore["commit"]> | undefined;
     let revocation: Promise<unknown> | undefined;
     try {
-      const [firstBackend] = await harness.prisma.$queryRaw<Array<{ pid: number }>>`
+      const [firstBackend] = await harness.prisma.$queryRaw<
+        Array<{ pid: number }>
+      >`
         SELECT pg_backend_pid() AS pid
       `;
-      const [duplicateBackend] = await duplicateClient.$queryRaw<Array<{ pid: number }>>`
+      const [duplicateBackend] = await duplicateClient.$queryRaw<
+        Array<{ pid: number }>
+      >`
         SELECT pg_backend_pid() AS pid
       `;
       const [revokerBackend] = await revoker.$queryRaw<Array<{ pid: number }>>`
@@ -301,7 +320,9 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
         guard: {
           kind: InvestigationStoreCommitGuardKind.ExecutionAuthority,
           expectedVerdict: InvestigationExecutionAuthorityVerdict.Current,
-          requireCurrentExecution: async (verdict?: InvestigationExecutionAuthorityVerdict) => {
+          requireCurrentExecution: async (
+            verdict?: InvestigationExecutionAuthorityVerdict,
+          ) => {
             guardCalls += 1;
             if (verdict !== InvestigationExecutionAuthorityVerdict.Current) {
               throw new Error(`investigation_execution_${verdict}`);
@@ -312,11 +333,19 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
         },
       } as const;
       first = harness.store.commit(input);
-      await Promise.race([paused, first.then(() => {
-        throw new Error("first_creation_did_not_pause");
-      })]);
-      const waitForScopeBlock = async (pid: number, pending: Promise<unknown>) => {
-        const finished = pending.then(() => { throw new Error("writer_completed_before_release"); });
+      await Promise.race([
+        paused,
+        first.then(() => {
+          throw new Error("first_creation_did_not_pause");
+        }),
+      ]);
+      const waitForScopeBlock = async (
+        pid: number,
+        pending: Promise<unknown>,
+      ) => {
+        const finished = pending.then(() => {
+          throw new Error("writer_completed_before_release");
+        });
         void finished.catch(() => undefined);
         const deadline = Date.now() + 3_000;
         while (Date.now() < deadline) {
@@ -356,9 +385,11 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
       // This wait is reachable only AFTER fastRestore misses. Waiting on the
       // first create's guard alone would allow a merely sequential restore.
       await waitForScopeBlock(duplicateBackend!.pid, duplicate);
-      expect(await observer.reviewInvestigationCommandReceipt.count({
-        where: { commandId },
-      })).toBe(0);
+      expect(
+        await observer.reviewInvestigationCommandReceipt.count({
+          where: { commandId },
+        }),
+      ).toBe(0);
       release();
       const committed = await first;
       await revocation;
@@ -368,13 +399,17 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
         investigation: committed.investigation,
       });
       expect(guardCalls).toBe(1);
-      expect(await observer.reviewRunAuthorization.findUniqueOrThrow({
-        where: { authorizationId: `authorization-${seed.investigationId}` },
-        select: { state: true },
-      })).toEqual({ state: "revoked" });
-      expect(await observer.reviewInvestigationCommandReceipt.count({
-        where: { commandId },
-      })).toBe(1);
+      expect(
+        await observer.reviewRunAuthorization.findUniqueOrThrow({
+          where: { authorizationId: `authorization-${seed.investigationId}` },
+          select: { state: true },
+        }),
+      ).toEqual({ state: "revoked" });
+      expect(
+        await observer.reviewInvestigationCommandReceipt.count({
+          where: { commandId },
+        }),
+      ).toBe(1);
     } finally {
       release();
       await Promise.allSettled([first, duplicate, revocation]);

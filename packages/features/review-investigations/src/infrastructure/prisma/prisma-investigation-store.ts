@@ -584,7 +584,10 @@ export class PrismaInvestigationStore
                 transaction,
                 input.investigation,
               );
-              const lockedRestore = await restoreCommitResult(transaction, input);
+              const lockedRestore = await restoreCommitResult(
+                transaction,
+                input,
+              );
               if (lockedRestore !== null) return lockedRestore;
               if (
                 !(await commitGuardIsCurrent(
