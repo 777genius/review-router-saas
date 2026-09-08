@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { acquireCurrentScopeGuards } from "@reviewrouter/platform-db";
 import {
   cloneReviewMutationAuthority,
   type ReviewMutationAuthority,
@@ -41,6 +42,12 @@ export class PrismaReviewMutationAuthorityRepository
   async initializeReviewMutationAuthority(authority: ReviewMutationAuthority) {
     const key = authorityKey(authority);
     return this.prisma.$transaction(async (transaction) => {
+      // The SCM ID is not a repository storage ID. Its binding can be absent or
+      // move across workspaces, so guard every candidate scope before consulting
+      // identity/authority rows or taking the existing mutation key.
+      await acquireCurrentScopeGuards(transaction, [
+        { scope: "global", mode: "exclusive" },
+      ]);
       await lockReviewRunControlKey(transaction, "mutation-authority", key);
       const existingRow = await transaction.reviewMutationAuthority.findUnique({
         where: {
@@ -82,6 +89,12 @@ export class PrismaReviewMutationAuthorityRepository
   }) {
     const key = authorityKey(input.authority);
     return this.prisma.$transaction(async (transaction) => {
+      // The SCM ID is not a repository storage ID. Its binding can be absent or
+      // move across workspaces, so guard every candidate scope before consulting
+      // identity/authority rows or taking the existing mutation key.
+      await acquireCurrentScopeGuards(transaction, [
+        { scope: "global", mode: "exclusive" },
+      ]);
       await lockReviewRunControlKey(transaction, "mutation-authority", key);
       const currentRow = await transaction.reviewMutationAuthority.findUnique({
         where: {
