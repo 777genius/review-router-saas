@@ -1,3 +1,4 @@
+import { disposableRecoveryMetadataValues } from "./lib/render-historical89-recovery-metadata.fixture";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,12 +47,28 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
     const left = source.recoveryCommands("dpg-source");
     const route = (args: readonly string[]) => args.includes("dpg-source")
       ? left : activeTarget.recoveryCommands("dpg-target");
+    // Capture the exact verifier SQL outputs without extra queries. This seam is
+    // confined to the owned-container test executor and cannot expose production.
+    const metadataPairs = new Map<string, Map<string, string>>();
     let hashCalls = 0;
     const commands: CommandExecutor = {
       execute(command, args, options) {
         const started = Date.now();
         try {
           const result = route(args).execute(command, args, options);
+          const sql = args.at(-1) ?? "";
+          if (command === "psql" && (sql.includes("'kind','object'") || sql.includes("'kind','constraint'"))) {
+            const pair = metadataPairs.get(sql) ?? new Map<string, string>();
+            pair.set(args.includes("dpg-source") ? "source" : "target", result.stdout);
+            metadataPairs.set(sql, pair);
+            if (pair.has("source") && pair.has("target")) {
+              const category = sql.includes("'kind','object'") ? "acl_ownership_defaults" : "constraints_indexes_triggers";
+              try { console.info(`recovery_fixture_metadata_values ${JSON.stringify({ category,
+                differences: disposableRecoveryMetadataValues(pair.get("source")!, pair.get("target")!) })}`); } catch {
+                console.info(`recovery_fixture_metadata_values_rejected category=${category}`);
+              }
+            }
+          }
           if (command === "pg_restore" && activeDrift) {
             const driftStarted = Date.now();
             try {
@@ -170,6 +187,7 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
       await target.start();
       target.query("postgres", `CREATE DATABASE ${database};`, "postgres");
       const expectedIdentity = read(target, recoveryIdentitySql);
+      metadataPairs.clear();
       activeTarget = target;
       activeDrift = drift;
       const artifact = sharedArtifact;

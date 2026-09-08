@@ -1,3 +1,4 @@
+import { disposableRecoveryMetadataValues } from "./render-historical89-recovery-metadata.fixture";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   mkdtempSync,
@@ -586,5 +587,62 @@ describe("bounded recovery metadata diagnostics (no equivalence projection)", ()
     expect(result.truncated).toBe(true);
     expect(JSON.stringify(result)).not.toContain("secret");
     expect(() => compare({}, [])).toThrow("recovery_metadata_diagnostic_shape");
+  });
+});
+
+
+describe("offline fixture identifiable metadata differences", () => {
+  const compare = (a: unknown[], b: unknown[]) => disposableRecoveryMetadataValues(JSON.stringify(a), JSON.stringify(b));
+  const row = { kind: "object", schema: "public", name: "fixture_table", type: "r", owner: "fixture_owner", acl: null };
+  it("maps exact diagnostic identity order, preserving ACL defaults, grantor and grant option", () => {
+    const other = { ...row, name: "aaa" };
+    const right = { ...row, acl: ["fixture_reader=r*/fixture_owner"] };
+    expect(compare([row, other], [other, right])).toEqual([{
+      path: "records[1].acl", kind: "object", schema: "public", name: "fixture_table",
+      table: null, type: "r", owner: "fixture_owner", field: "acl",
+      left: null, right: ["fixture_reader=r*/fixture_owner"],
+    }]);
+  });
+  it("maps every measured path at full fixture catalog sizes despite reversed SQL row order", () => {
+    for (const [count, indices, kind, field] of [
+      [1074, [34, 128], "constraint", "definition"],
+      [671, [18, 20, 158, 226, 426, 631, 632, 635], "object", "acl"],
+    ] as const) {
+      const source = Array.from({ length: count }, (_, i) => ({
+        kind, schema: "public", name: `fixture_${String(i).padStart(4, "0")}`,
+        ...(field === "acl" ? { type: "r", owner: "fixture_owner", acl: null }
+          : { table: "fixture_table", definition: "UNIQUE (id)" }),
+      }));
+      const selected = new Set<number>(indices);
+      const target = source.map((r, i) => selected.has(i) ? { ...r,
+        [field]: field === "acl" ? ["fixture_reader=r*/fixture_owner"] : "UNIQUE NULLS NOT DISTINCT (id)",
+      } : r);
+      const result = compare([...source].reverse(), target);
+      expect(result.map(r => r.path)).toEqual(indices.map(i => `records[${i}].${field}`));
+      expect(result.map(r => r.name)).toEqual(indices.map(i => source[i]!.name));
+      expect(result).toHaveLength(indices.length);
+    }
+  });
+  it("retains exact constraint and index definitions", () => {
+    for (const kind of ["constraint", "index"]) {
+      const a = { kind, schema: "public", table: "fixture_table", name: "fixture_key", definition: "UNIQUE NULLS NOT DISTINCT (id) DEFERRABLE" };
+      expect(compare([a], [{ ...a, definition: "UNIQUE (id)" }])[0]).toMatchObject({
+        left: a.definition, right: "UNIQUE (id)", field: "definition",
+      });
+    }
+  });
+  it("rejects routine bodies, trigger definitions, unknown fields, missing and duplicate identities", () => {
+    for (const kind of ["function", "trigger"]) {
+      expect(() => compare([{ ...row, kind, definition: "body" }], [{ ...row, kind, definition: "other" }])).toThrow("fixture_metadata_difference_kind");
+    }
+    expect(() => compare([row], [{ ...row, owner: "other" }])).toThrow("fixture_metadata_difference_field");
+    expect(() => compare([row], [])).toThrow("fixture_metadata_difference_field");
+    expect(() => compare([row, row], [row])).toThrow("fixture_metadata_difference_bound");
+  });
+  it("bounds record and value output, and emits nothing for equal catalogs", () => {
+    expect(compare([row], [row])).toEqual([]);
+    const rows = Array.from({ length: 11 }, (_, i) => ({ ...row, name: String(i) }));
+    expect(() => compare(rows, rows.map(r => ({ ...r, acl: [] })))).toThrow("fixture_metadata_difference_bound");
+    expect(() => compare([row], [{ ...row, acl: ["a".repeat(8192)] }])).toThrow("fixture_metadata_difference_value_bound");
   });
 });
