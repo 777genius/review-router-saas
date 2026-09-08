@@ -1,3 +1,10 @@
+import {
+  renderHistorical89PreparationPrepare,
+  renderHistorical89PreparationReadSql,
+  renderHistorical89PreparationService,
+  renderHistorical89PreparationObserve,
+  renderHistorical89PreparationFinalize,
+} from "./lib/render-historical89-preparation-custody.mjs";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -927,4 +934,371 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
       );
     }
   }, 60_000);
+
+  // Staged preparation deliberately uses no fabricated future fence/recovery.
+  // Every query below uses a fresh fixture connection; effects are disposable.
+  const stagedIdentity = (db: string) => ({
+    operationId: randomUUID(),
+    systemIdentifier: pg.query(
+      db,
+      "SELECT system_identifier::text FROM pg_control_system()",
+    ),
+    databaseOid: pg.query(
+      db,
+      "SELECT oid::text FROM pg_database WHERE datname=current_database()",
+    ),
+    databaseName: db,
+    sourceCommit: "fc6366bbc09fe03fa71b0e22744e33d6004ba9ef",
+    artifactReference: renderManagedEvidenceDigest({ disposableArtifact: db }),
+    approvalReference: renderManagedEvidenceDigest({ unapprovedReference: db }),
+    baselineReference: renderManagedEvidenceDigest({ ledger: ledger(db) }),
+    fleetReference: renderManagedEvidenceDigest({
+      serviceIds: ["srv-disposable"],
+    }),
+    serviceIds: ["srv-disposable"],
+  });
+  type StagedIdentity = ReturnType<typeof stagedIdentity>;
+  const stageService = (
+    b: StagedIdentity,
+    expectedRevision: number,
+    phase: string,
+    digest: string,
+  ) =>
+    read(
+      b.databaseName,
+      renderHistorical89PreparationService(b, {
+        expectedRevision,
+        serviceId: "srv-disposable",
+        phase,
+        digest,
+      }).sql,
+    );
+  const stageObservation = (
+    b: StagedIdentity,
+    expectedRevision: number,
+    kind: string,
+    digest: string,
+  ) =>
+    read(
+      b.databaseName,
+      renderHistorical89PreparationObserve(b, {
+        expectedRevision,
+        kind,
+        digest,
+      }).sql,
+    );
+  const observedStaging = () => {
+    const b = stagedIdentity(clone());
+    read(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+    stageService(
+      b,
+      1,
+      "intent",
+      renderManagedEvidenceDigest({ intent: "disposable-stop" }),
+    );
+    stageService(
+      b,
+      2,
+      "result",
+      renderManagedEvidenceDigest({ observed: "disposable-stopped" }),
+    );
+    const binding = {
+      operationId: b.operationId,
+      systemIdentifier: b.systemIdentifier,
+      databaseOid: b.databaseOid,
+      databaseName: b.databaseName,
+      recoveryIdentitySha256: renderManagedEvidenceDigest({
+        observedRecovery: "disposable",
+      }),
+      externalFenceSha256: renderManagedEvidenceDigest({
+        observedFence: "disposable",
+      }),
+    };
+    stageObservation(
+      b,
+      3,
+      "recoveryIdentitySha256",
+      binding.recoveryIdentitySha256,
+    );
+    stageObservation(b, 4, "externalFenceSha256", binding.externalFenceSha256);
+    return { b, binding };
+  };
+
+  it("stages and reads across connections before CONNECT withdrawal, preserving original grantors", () => {
+    const db = clone();
+    const original = connectAclOf(db);
+    const b = stagedIdentity(db);
+    const prepared = read(db, renderHistorical89PreparationPrepare(b).sql);
+    expect(prepared.revision).toBe("1");
+    expect(prepared.evidence).toEqual({});
+    expect(prepared.independentlyApproved).toBe(false);
+    expect(prepared.originalConnect.entries).toEqual(
+      expect.arrayContaining(
+        original.entries.filter(
+          (entry: { privilege: string }) => entry.privilege === "CONNECT",
+        ),
+      ),
+    );
+    pg.query(db, renderHistorical89AdmissionRestrictionSql(connectAclOf(db)));
+    const restoredRead = read(
+      db,
+      renderHistorical89PreparationReadSql(b),
+      "reviewrouter_operation_custody_reader",
+    );
+    expect(restoredRead).toEqual(prepared);
+    expect(() =>
+      pg.query(
+        db,
+        renderHistorical89PreparationReadSql({ ...b, databaseOid: "99999999" }),
+        "reviewrouter_operation_custody_reader",
+      ),
+    ).toThrow("preparation_database_identity");
+    expect(read(db, renderHistorical89PreparationPrepare(b).sql)).toEqual(
+      prepared,
+    );
+    expect(() =>
+      pg.query(
+        db,
+        renderHistorical89PreparationPrepare({
+          ...b,
+          operationId: randomUUID(),
+        }).sql,
+      ),
+    ).toThrow("preparation_identity_conflict");
+    expect(() =>
+      pg.query(
+        db,
+        renderHistorical89PreparationPrepare({
+          ...b,
+          approvalReference: renderManagedEvidenceDigest({ changed: true }),
+        }).sql,
+      ),
+    ).toThrow("preparation_identity_conflict");
+  });
+
+  it("requires committed service intent, enforces stale CAS, and refuses contradictory observations", () => {
+    const b = stagedIdentity(clone());
+    read(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+    const d = renderManagedEvidenceDigest({ disposable: "intent" });
+    const other = renderManagedEvidenceDigest({ disposable: "other" });
+    expect(() => stageService(b, 1, "result", d)).toThrow(
+      "preparation_intent_before_result",
+    );
+    expect(stageService(b, 1, "intent", d).revision).toBe("2");
+    // Exact last-request retry after a lost commit ACK does not advance again.
+    expect(stageService(b, 1, "intent", d).revision).toBe("2");
+    expect(() => stageService(b, 1, "result", d)).toThrow(
+      "preparation_stale_revision",
+    );
+    expect(stageService(b, 2, "intent", d).revision).toBe("2");
+    expect(() => stageService(b, 2, "intent", other)).toThrow(
+      "preparation_service_conflict",
+    );
+    expect(stageService(b, 2, "result", d).revision).toBe("3");
+    expect(() => stageService(b, 3, "result", other)).toThrow(
+      "preparation_service_conflict",
+    );
+    expect(stageObservation(b, 3, "recoveryIdentitySha256", d).revision).toBe(
+      "4",
+    );
+    expect(() =>
+      stageObservation(b, 4, "recoveryIdentitySha256", other),
+    ).toThrow("preparation_evidence_conflict");
+    expect(stageObservation(b, 4, "recoveryIdentitySha256", d).revision).toBe(
+      "4",
+    );
+  });
+
+  it("finalizes only actual recorded bindings, installs accepted routines once, and preserves restore entries", () => {
+    const { b, binding } = observedStaging();
+    const before = read(
+      b.databaseName,
+      renderHistorical89PreparationReadSql(b),
+    );
+    const wrong = {
+      ...binding,
+      externalFenceSha256: renderManagedEvidenceDigest({ wrong: true }),
+    };
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationFinalize(b, wrong, 5).sql,
+      ),
+    ).toThrow("preparation_finalization_binding");
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationFinalize(b, binding, 4).sql,
+      ),
+    ).toThrow("preparation_stale_revision");
+    const sql = renderHistorical89PreparationFinalize(b, binding, 5).sql;
+    const finalized = read(b.databaseName, sql);
+    expect(finalized.revision).toBe("6");
+    expect(finalized.originalConnect).toEqual(before.originalConnect);
+    expect(read(b.databaseName, sql)).toEqual(finalized);
+    expect(
+      read(
+        b.databaseName,
+        renderHistorical89PreparationReadSql(b, binding),
+        "reviewrouter_operation_custody_reader",
+      ),
+    ).toEqual(finalized);
+    // The accepted attestation is also used by the existing final operation API.
+    pg.query(
+      b.databaseName,
+      renderManagedOperationCustodyBootstrap(binding).verifySql,
+    );
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationFinalize(b, wrong, 5).sql,
+      ),
+    ).toThrow("preparation_finalization_conflict");
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationFinalize(b, binding, 6).sql,
+      ),
+    ).toThrow("preparation_finalization_conflict");
+    expect(() =>
+      stageObservation(
+        b,
+        6,
+        "externalFenceSha256",
+        binding.externalFenceSha256,
+      ),
+    ).toThrow("preparation_use_final_binding");
+    expect(
+      pg.query(
+        b.databaseName,
+        "SELECT count(*) FROM release_operation_custody.operation_permit",
+        "postgres",
+      ),
+    ).toBe("0");
+  });
+
+  it("refuses finalization before required service results and observations exist", () => {
+    const b = stagedIdentity(clone());
+    read(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+    const d = renderManagedEvidenceDigest({ disposable: true });
+    const binding = {
+      operationId: b.operationId,
+      systemIdentifier: b.systemIdentifier,
+      databaseOid: b.databaseOid,
+      databaseName: b.databaseName,
+      recoveryIdentitySha256: d,
+      externalFenceSha256: d,
+    };
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationFinalize(b, binding, 1).sql,
+      ),
+    ).toThrow("preparation_finalization_binding");
+    stageObservation(b, 1, "recoveryIdentitySha256", d);
+    stageObservation(b, 2, "externalFenceSha256", d);
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationFinalize(b, binding, 3).sql,
+      ),
+    ).toThrow("preparation_finalization_binding");
+  });
+
+  it("does not adopt an impostor schema or existing role", () => {
+    let db = clone();
+    let b = stagedIdentity(db);
+    pg.query(db, "CREATE SCHEMA release_operation_custody");
+    expect(() =>
+      pg.query(db, renderHistorical89PreparationPrepare(b).sql),
+    ).toThrow("preparation_catalog_attestation");
+    db = clone();
+    b = stagedIdentity(db);
+    pg.query(db, "CREATE ROLE reviewrouter_operation_custody_reader LOGIN");
+    expect(() =>
+      pg.query(db, renderHistorical89PreparationPrepare(b).sql),
+    ).toThrow("preparation_roles_present");
+  });
+
+  it.each([
+    "ALTER TABLE release_operation_custody.historical89_preparation ADD COLUMN impostor text",
+    "ALTER TABLE release_operation_custody.historical89_preparation ALTER COLUMN services SET DEFAULT '{}'::jsonb",
+    "ALTER TABLE release_operation_custody.historical89_preparation DISABLE TRIGGER historical89_preparation_immutable",
+    "DROP TRIGGER historical89_preparation_immutable ON release_operation_custody.historical89_preparation; CREATE TRIGGER historical89_preparation_immutable BEFORE INSERT OR UPDATE OF identity OR DELETE ON release_operation_custody.historical89_preparation FOR EACH ROW EXECUTE FUNCTION release_operation_custody.historical89_preparation_immutable(); ALTER TABLE release_operation_custody.historical89_preparation ENABLE ALWAYS TRIGGER historical89_preparation_immutable",
+    "CREATE OR REPLACE FUNCTION release_operation_custody.historical89_preparation_immutable() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'",
+    "GRANT UPDATE ON release_operation_custody.historical89_preparation TO reviewrouter_operation_custody_reader",
+    "GRANT EXECUTE ON FUNCTION release_operation_custody.historical89_preparation_immutable() TO PUBLIC",
+    "GRANT reviewrouter_operation_custody_owner TO reviewrouter_operation_custody_reader WITH SET TRUE",
+    "CREATE FUNCTION release_operation_custody.impostor() RETURNS integer LANGUAGE sql AS 'SELECT 1'",
+  ])("rejects staged routine/catalog/ACL drift: %s", (tamper) => {
+    const b = stagedIdentity(clone());
+    pg.query(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+    pg.query(b.databaseName, tamper, "postgres");
+    expect(() =>
+      pg.query(b.databaseName, renderHistorical89PreparationPrepare(b).sql),
+    ).toThrow("preparation_catalog_attestation");
+  });
+
+  it("denies restricted-role writes and owner-only transitions", () => {
+    const b = stagedIdentity(clone());
+    pg.query(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+    for (const role of [
+      "reviewrouter",
+      "reviewrouter_operation_custody_reader",
+      "reviewrouter_api",
+    ])
+      for (const statement of [
+        "UPDATE release_operation_custody.historical89_preparation SET revision=revision+1",
+        "DELETE FROM release_operation_custody.historical89_preparation",
+        "TRUNCATE release_operation_custody.historical89_preparation",
+      ])
+        expect(() => pg.query(b.databaseName, statement, role)).toThrow(
+          /permission denied/u,
+        );
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationService(b, {
+          expectedRevision: 1,
+          serviceId: "srv-disposable",
+          phase: "intent",
+          digest: renderManagedEvidenceDigest({ disposable: true }),
+        }).sql,
+        "reviewrouter_operation_custody_reader",
+      ),
+    ).toThrow("preparation_database_identity");
+  });
+
+  it("enforces immutable identity, original grants, and monotonic revision in the table itself", () => {
+    const b = stagedIdentity(clone());
+    pg.query(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+    for (const update of [
+      "identity=jsonb_set(identity,'{operationId}',to_jsonb('99999999-2222-3333-4444-555555555555'::text))",
+      "original_connect='{}'::jsonb",
+    ])
+      expect(() =>
+        pg.query(
+          b.databaseName,
+          `UPDATE release_operation_custody.historical89_preparation SET ${update},revision=revision+1`,
+          "postgres",
+        ),
+      ).toThrow("preparation_identity_immutable");
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        "UPDATE release_operation_custody.historical89_preparation SET revision=revision+2",
+        "postgres",
+      ),
+    ).toThrow("preparation_revision");
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        "DELETE FROM release_operation_custody.historical89_preparation",
+        "postgres",
+      ),
+    ).toThrow("preparation_delete_forbidden");
+    expect(
+      read(b.databaseName, renderHistorical89PreparationReadSql(b)).revision,
+    ).toBe("1");
+  });
 });
