@@ -823,11 +823,11 @@ export async function verifyReviewedRestore(input: {
     const restoredInventory = inventory(adapter, input.targetUrl, plan, false);
     if (!equal(restoredInventory.memberships, state.inventory.memberships))
       fail("restored_memberships_mismatch");
-    if (!equal(restoredInventory.rowSecurity, state.inventory.rowSecurity))
-      fail("restored_rls_mismatch");
     const owners = (i: EffectivePrincipalInventory) => i.grants.filter(g => g.capability.startsWith("owner:"));
     if (!equal(owners(restoredInventory), owners(state.inventory)))
       fail("restored_owners_mismatch");
+    if (!equal(restoredInventory.rowSecurity, state.inventory.rowSecurity))
+      fail("restored_rls_mismatch");
     if (!equal(restoredInventory.grants, state.inventory.grants))
       fail("restored_grants_mismatch");
     if (!equal(restoredInventory, state.inventory))
@@ -845,10 +845,11 @@ export async function verifyReviewedRestore(input: {
     }
     if (!equal(restoredScope, state.scope)) fail("restored_scope_mismatch");
     phase = "restored_equivalence";
-    const diagnostics = restoreDiagnostics(commands, input.sourceUrl, input.targetUrl, input.metadataDiagnostic);
+    // Observe canonical verifier inputs, including normalized CHECK definitions.
+    const diagnostics = restoreDiagnostics(recoverySemanticCommands(commands), input.sourceUrl, input.targetUrl, input.metadataDiagnostic);
     let result;
     try {
-      result = await new PostgreSqlGenerationAdapter(recoverySemanticCommands(diagnostics.commands)).verifyEquivalence(
+      result = await new PostgreSqlGenerationAdapter(diagnostics.commands).verifyEquivalence(
         input.sourceUrl, input.targetUrl, ["public"],
         { source: plan.policy, target: plan.policy },
       );

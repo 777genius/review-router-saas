@@ -116,6 +116,9 @@ function setup() {
     corruptOwner: false,
     corruptCatalog: false,
     metadataAclOrder: false,
+    metadataCheck: false,
+    corruptCheck: false,
+    ownerBearingRls: false,
     corruptRls: false,
     corruptMembership: false,
     missingVisibility: false,
@@ -164,6 +167,13 @@ function setup() {
         return { stdout: JSON.stringify([{ kind: "object", schema: "public",
           name: "private-relation", type: "r", owner: "private-owner",
           acl: state.restored && isTarget ? acl.reverse() : acl }]) };
+      }
+      if (state.metadataCheck && sql.includes("'kind','constraint'")) {
+        const definition = state.restored && isTarget
+          ? `CHECK ((a > 0) AND (b > 0) AND (c > ${state.corruptCheck ? 1 : 0}))`
+          : "CHECK (((a > 0) AND (b > 0)) AND (c > 0))";
+        return { stdout: JSON.stringify([{ kind: "constraint", schema: "public",
+          table: "fixture", name: "fixture_check", definition }]) };
       }
       let value: unknown = null;
       if (sql === recoveryIdentitySql)
@@ -229,7 +239,11 @@ function setup() {
                 ]
               : [],
           roleReachability: state.missingVisibility ? undefined : [],
-          rowSecurity: state.restored && isTarget && state.corruptRls
+          rowSecurity: state.ownerBearingRls
+            ? [{ schema: "public", table: "fixture",
+                owner: state.restored && isTarget && state.corruptOwner ? "other-owner" : "reviewrouter",
+                enabled: state.restored && isTarget && state.corruptRls, forced: false }]
+            : state.restored && isTarget && state.corruptRls
             ? [{ schema: "public", table: "fixture", enabled: true, forced: false }]
             : [],
           extensions: [],
@@ -401,6 +415,37 @@ describe("bounded historical89 recovery evidence", () => {
     expect(JSON.stringify(reports)).not.toMatch(/private|other-role/);
     expect(await run()).toBe(observedCalls);
     expect(await run(() => { throw new Error("private-callback-error"); })).toBe(observedCalls);
+  });
+  it.each([false, true])("classifies canonical CHECK metadata with row drift (constraint drift: %s)", async (corruptCheck) => {
+    const f = setup();
+    f.state.metadataCheck = true;
+    const artifact = await f.capture();
+    await f.restore(artifact);
+    f.state.restored = false;
+    f.state.corruptData = true;
+    f.state.corruptCheck = corruptCheck;
+    const reports: ReturnType<typeof recoveryMetadataDifference>[] = [];
+    await expect(f.restore(artifact, diagnostic => {
+      if (diagnostic.category === "constraints_indexes_triggers") reports.push(diagnostic);
+      throw new Error("private-callback-error");
+    })).rejects.toThrow(new Error(`historical89_recovery_restored_equivalence_${
+      corruptCheck ? "constraints_indexes_triggers_and_rows" : "rows"}`));
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ rawEqual: !corruptCheck, parsedEqual: !corruptCheck });
+    f.cleaned();
+  });
+  it.each([
+    ["corruptOwner", "restored_owners_mismatch"],
+    ["corruptRls", "restored_rls_mismatch"],
+  ] as const)("classifies %s with an owner-bearing RLS snapshot", async (field, reason) => {
+    const f = setup();
+    f.state.ownerBearingRls = true;
+    const artifact = await f.capture();
+    await f.restore(artifact);
+    f.state.restored = false;
+    f.state[field] = true;
+    await expect(f.restore(artifact)).rejects.toThrow(new Error(`historical89_recovery_${reason}`));
+    f.cleaned();
   });
   it("refuses an existing artifact without overwriting it", async () => {
     const f = setup();
