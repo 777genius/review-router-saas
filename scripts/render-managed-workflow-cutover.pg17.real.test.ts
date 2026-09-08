@@ -1,3 +1,4 @@
+import { readRenderHistorical96CheckoutInventory } from "./lib/render-historical96-checkout.mjs";
 import type { ReleaseMigrationTransitionV1 } from "../packages/features/release-rollout/src/domain/release-migration-transition";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -21,7 +22,6 @@ import {
   renderManagedEvidenceDigest,
   renderManagedTerminalCustodySql,
   renderSchemaHandoffDefaultAclSql,
-  readRenderManagedCheckoutInventory,
 } from "./lib/render-schema-handoff-policy.mjs";
 import { renderManagedCatalogSql } from "./lib/render-managed-catalog.mjs";
 import { withDrainedTargetAuthorityPools } from "./lib/quiesced-target-authority";
@@ -465,7 +465,7 @@ VALUES ('a','old','repository','not_started','a','test.yml','v1','https://exampl
         fixture: "offline-PG17.10",
       }),
       migrationArtifactDigest: phase.migrationArtifactDigest,
-      orderedMigrationEntries: readRenderManagedCheckoutInventory()
+      orderedMigrationEntries: readRenderHistorical96CheckoutInventory()
         .slice(92)
         .map((row) => ({
           migrationName: row.migrationName,
