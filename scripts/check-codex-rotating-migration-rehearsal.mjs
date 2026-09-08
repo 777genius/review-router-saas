@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { readRenderHistorical96CheckoutInventory } from "./lib/render-historical96-checkout.mjs";
@@ -6379,6 +6379,18 @@ function prisma(url, args, requireSuccess = true) {
           args: [process.env.npm_execpath, "exec", "prisma", ...args],
         }
       : { executable: "pnpm", args: ["exec", "prisma", ...args] };
+  // Prisma renders the resolved --config path relative to its process cwd.
+  // Bind that exact display path before spawn; stderr is never its authority.
+  const configIndex = args.indexOf("--config");
+  const prismaInvocation = Object.freeze({
+    configDisplayPath: relative(
+      dbDirectory,
+      resolve(
+        dbDirectory,
+        configIndex === -1 ? "prisma.config.ts" : args[configIndex + 1],
+      ),
+    ),
+  });
   const credential = createDatabaseCredentialBoundary(url);
   try {
     const result = spawnSync(command.executable, command.args, {
@@ -6396,7 +6408,7 @@ function prisma(url, args, requireSuccess = true) {
         signal: result.signal,
         timedOut: result.error?.code === "ETIMEDOUT",
       });
-    return result;
+    return { ...result, prismaInvocation };
   } finally {
     credential.cleanup();
   }
