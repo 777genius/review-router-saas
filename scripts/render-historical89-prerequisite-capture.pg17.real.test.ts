@@ -5,6 +5,8 @@ import {
   prepareHistorical89Fixture,
 } from "./lib/render-managed-pg17-fixture";
 import { captureHistorical89Prerequisites } from "./lib/render-historical89-prerequisite-capture.mjs";
+import { renderManagedCatalogSql } from "./lib/render-managed-catalog.mjs";
+import { projectionOf } from "./lib/render-managed-transaction-bodies.mjs";
 import { renderManagedLedgerSql } from "./lib/render-schema-handoff-policy.mjs";
 
 const source = {
@@ -36,8 +38,10 @@ const source = {
     pg.query(
       disposableDB,
       `
+      REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() FROM PUBLIC;
       GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO reviewrouter;
       CREATE ROLE rr_capture_restricted LOGIN;
+      REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() FROM rr_capture_restricted;
       REVOKE ALL ON ALL TABLES IN SCHEMA public FROM rr_capture_restricted;
     `,
       "postgres",
@@ -100,6 +104,37 @@ const source = {
     try {
       const pid = (await client.query("SELECT pg_backend_pid() AS pid")).rows[0]
         .pid;
+      // Numeric-only diagnosis of the exact projection, using the same role and
+      // bounded read-only transaction. Do not raise caps before measuring PG17.
+      let dimensions;
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      try {
+        await client.query("SET LOCAL statement_timeout = '4s'");
+        await client.query("SET LOCAL lock_timeout = '1s'");
+        await client.query("SET LOCAL search_path = pg_catalog, public");
+        dimensions = await client.query(`WITH capture(value) AS MATERIALIZED (
+          ${projectionOf(renderManagedCatalogSql)}
+        ) SELECT octet_length(value::text) AS "sqlBytes",
+          jsonb_array_length(value->'facts') AS "factRows",
+          (SELECT max(jsonb_array_length(a)) FROM jsonb_path_query(
+            value, 'strict $.** ? (@.type() == "array")') AS arrays(a)) AS "maxArrayRows",
+          octet_length(value::text)>2000000 AS exceeded
+        FROM capture LIMIT 2`);
+        // No catalog values, identities or credentials are logged.
+        console.log("catalog projection dimensions", {
+          rows: dimensions.rows,
+          fields: dimensions.fields.map(
+            ({ name, dataTypeID }: { name: string; dataTypeID: number }) => ({
+              name,
+              dataTypeID,
+            }),
+          ),
+        });
+        expect(dimensions.rows).toHaveLength(1);
+        expect(typeof dimensions.rows[0].exceeded).toBe("boolean");
+      } finally {
+        await client.query("ROLLBACK");
+      }
       const result = await captureHistorical89Prerequisites({
         client,
         expected,
@@ -189,6 +224,12 @@ const source = {
     try {
       const pid = (await client.query("SELECT pg_backend_pid() AS pid")).rows[0]
         .pid;
+      expect(
+        (
+          await client.query(`SELECT has_function_privilege(current_user,
+          'pg_catalog.pg_control_system()', 'EXECUTE') AS allowed`)
+        ).rows,
+      ).toEqual([{ allowed: false }]);
       const result = await captureHistorical89Prerequisites({
         client,
         expected: {

@@ -139,7 +139,7 @@ function harness(values = fixture(), failAt?: string, code = "42501") {
         if (index >= 4) expect(text).toContain(projectionSql[index - 4]);
         return {
           command: "SELECT",
-          rows: [{ value: values[name], exceeded: false }],
+          rows: [{ value: values[name], exceeded: false as unknown }],
         };
       },
     ),
@@ -367,6 +367,64 @@ describe("read-only historical89 prerequisite capture", () => {
       expect(result.digests.objectAcl).toBeUndefined();
       expect(result.rollbackConfirmed).toBe(true);
       expect(result.unresolvedCapabilities.join()).toContain("read-cap");
+    },
+  );
+
+  it.each(["bytes", "rows"])(
+    "rejects oversized catalog %s after collecting the ledger without losing prior evidence",
+    async (kind) => {
+      const values = fixture();
+      if (kind === "bytes")
+        values.catalog.facts.push({
+          family: "routine",
+          fact: "x".repeat(2_000_001),
+        });
+      else
+        values.catalog.facts.push(
+          ...Array(20_000).fill({ family: "routine", fact: {} }),
+        );
+      // Isolate each client cap: the row fixture is below the byte cap and the
+      // byte fixture is below the row cap. The server boolean remains false.
+      expect(
+        Buffer.byteLength(JSON.stringify(values.catalog)) > 2_000_000,
+      ).toBe(kind === "bytes");
+      expect(values.catalog.facts.length > 20_000).toBe(kind === "rows");
+      const h = harness(values);
+      const result = await h.run();
+      expect(result.collection.ledger).toBe("collected");
+      expect(result.digests.ledger).toBe(
+        renderManagedEvidenceDigest(values.ledger),
+      );
+      expect(result.collection.catalog).toBe("read-cap");
+      expect(result.observations.catalog).toBeUndefined();
+      expect(result.digests.catalog).toBeUndefined();
+      expect(result.collection.memberships).toBe("not-collected");
+      expect(result.collectionComplete).toBe(false);
+      expect(result.rollbackConfirmed).toBe(true);
+      expect(h.sequence.slice(-2)).toEqual(["catalog", "ROLLBACK"]);
+      expect(h.client.end).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([true, "f", null, undefined])(
+    "fails closed on catalog wrapper exceeded=%s after retaining the ledger",
+    async (exceeded) => {
+      const h = harness();
+      const original = h.client.query.getMockImplementation()!;
+      h.client.query.mockImplementation(async (query) => {
+        const response = await original(query);
+        if (query.text.includes(projectionOf(renderManagedCatalogSql)))
+          return { command: "SELECT", rows: [{ value: null, exceeded }] };
+        return response;
+      });
+      const result = await h.run();
+      expect(result.collection.ledger).toBe("collected");
+      expect(result.collection.catalog).toBe("read-cap");
+      expect(result.collection.memberships).toBe("not-collected");
+      expect(result.digests.catalog).toBeUndefined();
+      expect(result.collectionComplete).toBe(false);
+      expect(result.rollbackConfirmed).toBe(true);
+      expect(h.client.end).not.toHaveBeenCalled();
     },
   );
 
