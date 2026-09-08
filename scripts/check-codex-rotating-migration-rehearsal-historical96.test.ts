@@ -17,7 +17,10 @@ const source = fs.readFileSync(
   "utf8",
 );
 const historical = readRenderHistorical96CheckoutInventory();
-const extension = "000098_certified_fork_effect_archive";
+const extensions = [
+  "000098_certified_fork_effect_archive",
+  "000099_certified_fork_proof_facts",
+];
 function body(name: string) {
   const match = source.match(
     new RegExp(`function ${name}\\([^]*?\\n\\}(?=\\n\\nfunction )`),
@@ -64,10 +67,11 @@ function noOp(
 }
 
 describe("historical96 Prisma deploy boundary", () => {
-  it("gives the actual Prisma config loader all 96 admitted SQL files and excludes only checkout-only 098", () => {
-    expect(
-      fs.existsSync(join(migrationsDirectory, extension, "migration.sql")),
-    ).toBe(true);
+  it("gives the actual Prisma config loader all 96 admitted SQL files and excludes only checkout-only 098/099", () => {
+    for (const extension of extensions)
+      expect(
+        fs.existsSync(join(migrationsDirectory, extension, "migration.sql")),
+      ).toBe(true);
     let directory = "";
     const prisma = vi.fn((url, args, requireSuccess) => {
       expect(url).toBe("disposable-test-url");
@@ -98,7 +102,8 @@ describe("historical96 Prisma deploy boundary", () => {
       expect(config.datasource.url).toBe("");
       const names = fs.readdirSync(config.migrations.path).sort();
       expect(names).toEqual(historical.map((row) => row.migrationName));
-      expect(names).not.toContain(extension);
+      for (const extension of extensions)
+        expect(names).not.toContain(extension);
       for (const row of historical) {
         const bytes = fs.readFileSync(
           join(config.migrations.path, row.migrationName, "migration.sql"),
@@ -188,6 +193,7 @@ describe("historical96 Prisma deploy boundary", () => {
     });
     expect(digest("test-url")).toBe("digest");
     expect(psql.mock.calls[0]![1][1]).not.toContain("WHERE");
+    const extension = extensions[0]!;
     digest("test-url", [extension]);
     expect(psql.mock.calls[1]![1][1]).toContain(
       `WHERE migration_name IN ('${extension}')`,
