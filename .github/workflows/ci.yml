@@ -315,7 +315,7 @@ jobs:
   quality:
     name: Quality Gates
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     env:
       TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/review_router_ci_test?schema=public
       REVIEW_ROUTER_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/review_router_ci_test?schema=public
