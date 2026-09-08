@@ -12,9 +12,12 @@ const headers = {
   "Content-Type": "application/json",
 };
 
-const getRes = await fetch(`https://api.render.com/v1/postgres/${dbId}`, {
-  headers,
-});
+const getRes = await globalThis.fetch(
+  `https://api.render.com/v1/postgres/${dbId}`,
+  {
+    headers,
+  },
+);
 if (!getRes.ok) {
   console.log("get_failed:", getRes.status, await getRes.text());
   process.exit(1);
@@ -42,11 +45,14 @@ const nextList = [
   ...currentList,
   { cidrBlock: "0.0.0.0/0", description: "temp-historical89-migration-runner" },
 ];
-const patchRes = await fetch(`https://api.render.com/v1/postgres/${dbId}`, {
-  method: "PATCH",
-  headers,
-  body: JSON.stringify({ ipAllowList: nextList }),
-});
+const patchRes = await globalThis.fetch(
+  `https://api.render.com/v1/postgres/${dbId}`,
+  {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ ipAllowList: nextList }),
+  },
+);
 if (!patchRes.ok) {
   console.log("patch_failed:", patchRes.status, await patchRes.text());
   process.exit(1);

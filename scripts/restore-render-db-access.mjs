@@ -17,11 +17,14 @@ const headers = {
   Accept: "application/json",
   "Content-Type": "application/json",
 };
-const patchRes = await fetch(`https://api.render.com/v1/postgres/${dbId}`, {
-  method: "PATCH",
-  headers,
-  body: JSON.stringify({ ipAllowList: original }),
-});
+const patchRes = await globalThis.fetch(
+  `https://api.render.com/v1/postgres/${dbId}`,
+  {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ ipAllowList: original }),
+  },
+);
 if (!patchRes.ok) {
   console.log("restore_failed:", patchRes.status, await patchRes.text());
   process.exit(1);
