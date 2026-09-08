@@ -110,3 +110,27 @@ describe("disposable Codex rotating live E2E wiring", () => {
     }
   });
 });
+
+// Source checks complement behavioral pure-fixture and isolated process tests;
+// importing the live module here would initialize production dependencies.
+it("captures both paginated comment surfaces in both ordinary scenarios", () => {
+  expect(harness).toContain('"--paginate"');
+  expect(harness).toContain('"--slurp"');
+  expect(harness).toContain("captureReviewRouterComments({");
+  expect(harness).toContain(
+    'readPullRequestComments<IssueCommentView>(prNumber, "issues")',
+  );
+  expect(harness).toContain(
+    'readPullRequestComments<ReviewCommentView>(prNumber, "pulls")',
+  );
+  expect(harness).not.toContain("comments.find(");
+  expect(harness).toContain("for (const comment of markerComments)");
+  expect(harness).toContain("isExpectedReviewRouterFinding");
+  expect(harness).toContain(
+    'observationScope: "ordinary-pr-author-login-only"',
+  );
+  expect(harness).toContain("runAttempt: completedRun.attempt");
+  expect(
+    wrapper.indexOf("certifiedForkRoute(process.argv.slice(2))"),
+  ).toBeLessThan(wrapper.indexOf('await import("node:child_process")'));
+});
