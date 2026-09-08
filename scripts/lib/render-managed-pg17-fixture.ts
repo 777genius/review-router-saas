@@ -1,7 +1,21 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { Duplex } from "node:stream";
-import { readFileSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  openSync,
+  closeSync,
+  fstatSync,
+  readSync,
+  constants,
+  lstatSync,
+  realpathSync,
+} from "node:fs";
+import {
+  assertSafeProcessBoundary,
+  type CommandExecutor,
+} from "../../packages/features/release-rollout/src/adapters/process-command";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -428,6 +442,189 @@ export function managedPg17Fixture() {
     });
     return stream;
   };
+  // Test-only transparent dpg-* -> loopback mapping inside THIS labelled,
+  // --network none container. Production decomposePostgresConnection is intact.
+  // Only fixed dump/restore forms and the existing psql query surface are used.
+  const recoveryCommands = (
+    alias: "dpg-source" | "dpg-target",
+  ): CommandExecutor => {
+    const owned = () => {
+      const facts = checked([
+        "inspect",
+        "--format",
+        '{{ index .Config.Labels "reviewrouter.retained.proof" }}|{{.HostConfig.NetworkMode}}',
+        name,
+      ]);
+      if (facts !== `${token}|none`)
+        throw new Error("fixture_recovery_identity");
+    };
+    const parse = (args: readonly string[]) => {
+      if (
+        args[0] !== "--host" ||
+        args[1] !== alias ||
+        args[2] !== "--port" ||
+        args[3] !== "5432" ||
+        args[4] !== "--username" ||
+        args[6] !== "--dbname" ||
+        !/^[a-z][a-z0-9_]*$/.test(args[5] ?? "") ||
+        !/^[a-z][a-z0-9_]*$/.test(args[7] ?? "")
+      )
+        throw new Error("fixture_recovery_connection");
+      return { role: args[5]!, database: args[7]!, rest: args.slice(8) };
+    };
+    return {
+      execute(command, args, options = {}) {
+        try {
+          assertSafeProcessBoundary(command, args, options.env);
+          owned();
+          const { role, database, rest } = parse(args);
+          if (command === "psql") {
+            if (rest.at(-2) !== "--command")
+              throw new Error("fixture_recovery_sql_form");
+            return { stdout: query(database, rest.at(-1)!, role) };
+          }
+          let input: Buffer | undefined, file: string | undefined;
+          if (
+            command === "pg_dump" &&
+            rest.length === 3 &&
+            rest[0] === "--format=custom" &&
+            rest[1] === "--file"
+          )
+            file = rest[2];
+          else if (
+            command === "pg_restore" &&
+            rest.length === 3 &&
+            rest[0] === "--exit-on-error" &&
+            rest[1] === "--single-transaction"
+          ) {
+            const fd = openSync(
+              rest[2]!,
+              constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+            );
+            try {
+              const stat = fstatSync(fd);
+              if (
+                !stat.isFile() ||
+                stat.nlink !== 1 ||
+                stat.size < 5 ||
+                stat.size > 64 * 1024 * 1024 ||
+                (stat.mode & 0o777) !== 0o600
+              )
+                throw new Error("fixture_recovery_bound");
+              input = Buffer.alloc(stat.size);
+              let offset = 0;
+              while (offset < input.length) {
+                const n = readSync(
+                  fd,
+                  input,
+                  offset,
+                  input.length - offset,
+                  null,
+                );
+                if (!n) throw new Error("fixture_recovery_truncated");
+                offset += n;
+              }
+              const after = fstatSync(fd);
+              if (
+                input.subarray(0, 5).toString() !== "PGDMP" ||
+                after.size !== stat.size ||
+                after.ctimeMs !== stat.ctimeMs
+              )
+                throw new Error("fixture_recovery_changed");
+            } finally {
+              closeSync(fd);
+            }
+          } else throw new Error("fixture_recovery_command");
+          const result = spawnSync(
+            "docker",
+            [
+              ...host,
+              "exec",
+              "-i",
+              name,
+              command,
+              "-h",
+              "127.0.0.1",
+              "-p",
+              "5432",
+              "-U",
+              role,
+              "-d",
+              database,
+              ...(command === "pg_dump"
+                ? ["--format=custom"]
+                : ["--exit-on-error", "--single-transaction"]),
+            ],
+            {
+              env: environment,
+              input,
+              timeout: 120_000,
+              maxBuffer: 64 * 1024 * 1024,
+            },
+          );
+          if (result.error || result.status !== 0)
+            throw new Error("fixture_recovery_process");
+          if (file) {
+            const parent = dirname(file),
+              stat = lstatSync(parent);
+            if (
+              !stat.isDirectory() ||
+              stat.isSymbolicLink() ||
+              realpathSync(parent) !== parent ||
+              (stat.mode & 0o777) !== 0o700
+            )
+              throw new Error("fixture_recovery_directory");
+            writeFileSync(file, result.stdout, { flag: "wx", mode: 0o600 });
+          }
+          return { stdout: "" };
+        } catch {
+          throw new Error("fixture_recovery_execute_failed");
+        }
+      },
+      async hashStdout(command, args, options = {}) {
+        assertSafeProcessBoundary(command, args, options.env);
+        owned();
+        const { role, database, rest } = parse(args);
+        if (command !== "psql" || rest.at(-2) !== "--command")
+          throw new Error("fixture_recovery_hash_form");
+        return await new Promise((resolve, reject) => {
+          const child = spawn("docker", psql(database, role), {
+            env: environment,
+            stdio: ["pipe", "pipe", "ignore"],
+          });
+          const hash = createHash("sha256");
+          let rows = 0,
+            last = 10,
+            bytes = 0;
+          const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
+          child.stdout.on("data", (chunk: Buffer) => {
+            hash.update(chunk);
+            bytes += chunk.length;
+            for (const b of chunk) if (b === 10) rows++;
+            last = chunk.at(-1) ?? last;
+          });
+          child.once("error", () => {
+            clearTimeout(timer);
+            reject(new Error("fixture_recovery_hash_failed"));
+          });
+          child.once("close", (code) => {
+            clearTimeout(timer);
+            if (code !== 0) reject(new Error("fixture_recovery_hash_failed"));
+            else
+              resolve({
+                rows: rows + (bytes && last !== 10 ? 1 : 0),
+                sha256: `sha256:${hash.digest("hex")}`,
+              });
+          });
+          child.stdin.on("error", () => {});
+          child.stdin.end(rest.at(-1)! + ";\n");
+        });
+      },
+      executeExpectingFailure() {
+        throw new Error("fixture_recovery_denial_unsupported");
+      },
+    };
+  };
   return {
     start,
     cleanup,
@@ -436,6 +633,7 @@ export function managedPg17Fixture() {
     apply,
     loseCommitResponse,
     wireStream,
+    recoveryCommands,
   };
 }
 
