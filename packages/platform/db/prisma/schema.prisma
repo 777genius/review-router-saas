@@ -3736,3 +3736,28 @@ model CertifiedForkCheckpoint {
 
   @@id([familyKey, version])
 }
+
+// Immutable retained producer material; protected writer custody authenticates it.
+// Digest indexes avoid Btree key limits. Readers also compare full identities.
+model CertifiedForkProofFact {
+  proofSha256            Bytes  @id
+  sourceSha256           Bytes  @unique
+  proofId                String
+  formatVersion          Int
+  kind                   String
+  workspaceId            String
+  repositoryConnectionId String
+  familyKey              String
+  reviewHash             String
+  producerKind           String
+  producerId             String
+  producerVersion        String
+  sourceKey              String
+  sourceRevision         String
+  observedAtMs           BigInt
+  validUntilMs           BigInt?
+  payload                Json
+  canonicalBytes         String
+  payloadHash            String
+  createdAtMs            BigInt @default(dbgenerated("(floor((EXTRACT(epoch FROM clock_timestamp()) * (1000)::numeric)))::bigint"))
+}
