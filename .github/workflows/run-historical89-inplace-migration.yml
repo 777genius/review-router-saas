@@ -1,0 +1,128 @@
+name: Run historical89 in-place migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact protected main commit to run this against
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: historical89-inplace-migration-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  trust-bootstrap:
+    name: verify-protected-main-and-production-environment
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      trusted_sha: ${{ steps.trust.outputs.trusted_sha }}
+    steps:
+      - name: Establish immutable trust before repository execution
+        id: trust
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUIRED_ENVIRONMENT: production
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          REVIEW_ROUTER_RELEASE_APPROVAL_MODE: ${{ vars.REVIEW_ROUTER_RELEASE_APPROVAL_MODE }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          // trust-bootstrap-node:start
+          const { appendFileSync } = await import("node:fs");
+          const required = (name) => {
+            const value = process.env[name];
+            if (!value) throw new Error(`historical89_trust_missing:${name}`);
+            return value;
+          };
+          const fail = (reason) => {
+            throw new Error(`historical89_trust_rejected:${reason}`);
+          };
+          const repository = required("GITHUB_REPOSITORY");
+          const sha = required("GITHUB_SHA").toLowerCase();
+          const expectedSha = required("EXPECTED_SHA").toLowerCase();
+          const approvalMode = required("REVIEW_ROUTER_RELEASE_APPROVAL_MODE");
+          if (!["solo_owner", "independent"].includes(approvalMode))
+            fail("approval_mode");
+          if (required("GITHUB_EVENT_NAME") !== "workflow_dispatch") fail("event");
+          if (required("GITHUB_REF") !== "refs/heads/main") fail("workflow_ref");
+          if (!/^[a-f0-9]{40}$/.test(sha)) fail("dispatch_sha");
+          if (sha !== expectedSha) fail("sha_mismatch");
+          const headers = {
+            Authorization: `Bearer ${required("GH_TOKEN")}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          };
+          const get = async (path) => {
+            const response = await fetch(`https://api.github.com${path}`, { headers });
+            if (!response.ok) fail(`github_api_${response.status}`);
+            return response.json();
+          };
+          const branch = await get(`/repos/${repository}/branches/main`);
+          if (branch.protected !== true || branch.commit?.sha?.toLowerCase() !== sha)
+            fail("stale_or_unprotected_main");
+          const environmentName = required("REQUIRED_ENVIRONMENT");
+          const environment = await get(
+            `/repos/${repository}/environments/${encodeURIComponent(environmentName)}`,
+          );
+          const rules = environment.protection_rules;
+          const reviewers = Array.isArray(rules)
+            ? rules.find((rule) => rule?.type === "required_reviewers")
+            : undefined;
+          const branchPolicy = Array.isArray(rules)
+            ? rules.find((rule) => rule?.type === "branch_policy")
+            : undefined;
+          if (
+            !reviewers ||
+            !Array.isArray(reviewers.reviewers) ||
+            reviewers.reviewers.length < 1 ||
+            typeof reviewers.prevent_self_review !== "boolean" ||
+            (approvalMode === "independent" && reviewers.prevent_self_review !== true) ||
+            !branchPolicy ||
+            environment.deployment_branch_policy?.protected_branches !== true
+          ) fail("environment_unprotected");
+          appendFileSync(required("GITHUB_OUTPUT"), `trusted_sha=${sha}\n`, "utf8");
+          // trust-bootstrap-node:end
+          NODE
+
+  run-migration:
+    name: run-historical89-inplace-operation
+    needs: trust-bootstrap
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout verified commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+
+      - name: Run historical89 in-place operation
+        env:
+          REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
+        run: node --import tsx scripts/run-historical89-inplace-operation.mjs | tee historical89-result.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: historical89-inplace-result-${{ github.run_id }}
+          path: historical89-result.json
+          if-no-files-found: error
+          retention-days: 90
