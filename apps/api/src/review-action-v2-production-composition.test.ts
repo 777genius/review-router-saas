@@ -113,6 +113,20 @@ describe("Review Action v2 production composition", () => {
     ).toThrow();
   });
 
+  it("rejects malformed repository release bindings at enabled boot", () => {
+    expect(() =>
+      composeReviewActionV2ProductionRoutes({
+        enabled: true,
+        env: {
+          ...productionEnv(),
+          REVIEW_ROUTER_REVIEW_V2_REPOSITORY_RELEASE_BINDINGS: "{}",
+        },
+        runtime,
+        prisma: inertPrisma(),
+      }),
+    ).toThrow();
+  });
+
   it("constructs Prisma-backed enabled handlers only with complete production config", () => {
     expect(() =>
       composeReviewActionV2ProductionRoutes({

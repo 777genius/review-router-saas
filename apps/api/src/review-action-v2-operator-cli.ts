@@ -1,3 +1,10 @@
+import {
+  createRepositoryReleaseSelector,
+  parseRepositoryReleaseBindings,
+  repositoryReleaseBindingsEnv,
+  type RepositoryReleaseQueries,
+} from "./review-action-v2-repository-release-selection.js";
+import { PrismaProducerReleaseRepository } from "@reviewrouter/features-review-run-control/composition";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -213,6 +220,46 @@ async function main() {
     transactionTimeoutMs: 60_000,
   });
   try {
+    if (command === "release selection-preflight") {
+      const runtime = composeReviewActionV2ReleaseRegistry(prisma);
+      await authenticateOperator(runtime.digest, process.env);
+      const repositories = await prisma.repositoryConnection.findMany({
+        where: {
+          provider: "github",
+          fullName: requireOption(parsed, "repository"),
+          selected: true,
+          archived: false,
+        },
+        select: { id: true, workspaceId: true, scmRepositoryIdentityId: true },
+        take: 2,
+      });
+      if (repositories.length !== 1)
+        throw new Error("review_v2_repository_missing_or_ambiguous");
+      const repository = repositories[0]!;
+      const identity = repository.scmRepositoryIdentityId
+        ? await prisma.scmRepositoryIdentity.findUnique({
+            where: {
+              scmRepositoryIdentityId: repository.scmRepositoryIdentityId,
+            },
+          })
+        : null;
+      if (
+        !identity ||
+        identity.currentWorkspaceId !== repository.workspaceId ||
+        identity.currentRepositoryConnectionId !== repository.id
+      ) {
+        throw new Error("review_v2_repository_identity_unbound");
+      }
+      printJson(
+        await inspectRepositoryReleaseSelection({
+          repositories,
+          raw: process.env[repositoryReleaseBindingsEnv],
+          actionCommitSha: requireOption(parsed, "action-sha"),
+          queries: new PrismaProducerReleaseRepository(prisma),
+        }),
+      );
+      return;
+    }
     if (command === "release register") {
       const runtime = composeReviewActionV2ReleaseRegistry(prisma);
       await authenticateOperator(runtime.digest, process.env);
@@ -866,6 +913,65 @@ async function requireAuthority(
   return authority;
 }
 
+export async function inspectRepositoryReleaseSelection(input: {
+  readonly repositories: readonly {
+    id: string;
+    workspaceId: string;
+    scmRepositoryIdentityId: string | null;
+  }[];
+  readonly raw: string | undefined;
+  readonly actionCommitSha: string;
+  readonly queries: RepositoryReleaseQueries;
+}) {
+  if (input.repositories.length !== 1)
+    throw new Error("review_v2_repository_missing_or_ambiguous");
+  const repository = input.repositories[0]!;
+  const scope = {
+    workspaceId: repository.workspaceId,
+    repositoryConnectionId: repository.id,
+    scmRepositoryIdentityId: repository.scmRepositoryIdentityId,
+    actionCommitSha: input.actionCommitSha,
+  };
+  const binding = parseRepositoryReleaseBindings(input.raw).find(
+    (b) =>
+      b.workspaceId === scope.workspaceId &&
+      b.repositoryConnectionId === scope.repositoryConnectionId &&
+      b.scmRepositoryIdentityId === scope.scmRepositoryIdentityId &&
+      b.actionCommitSha === scope.actionCommitSha,
+  );
+  if (!binding) throw new Error("review_v2_repository_release_binding_missing");
+  const baseRelease = await input.queries.findProducerReleaseById(
+    binding.expectedBaseProducerReleaseId,
+  );
+  if (!baseRelease) throw new Error("review_v2_base_release_missing");
+  const selector = createRepositoryReleaseSelector(input.raw, input.queries);
+  const selected = await selector.select({ ...binding, baseRelease });
+  const base = (await input.queries.findProtocolLimitsProfileById(
+    baseRelease.protocolLimitsProfileId,
+  ))!;
+  const profile = (await input.queries.findProtocolLimitsProfileById(
+    selected.protocolLimitsProfileId,
+  ))!;
+  return {
+    ...scope,
+    expectedBaseProducerReleaseId: baseRelease.producerReleaseId,
+    selectedProducerReleaseId: selected.producerReleaseId,
+    protocolLimitsProfileId: profile.protocolLimitsProfileId,
+    limitsDigest: profile.limitsDigest,
+    configurationDigest: selector.configurationDigest,
+    durations: {
+      before: {
+        maxLeaseDurationMs: base.maxLeaseDurationMs,
+        maxResultReportDurationMs: base.maxResultReportDurationMs,
+      },
+      after: {
+        maxLeaseDurationMs: profile.maxLeaseDurationMs,
+        maxResultReportDurationMs: profile.maxResultReportDurationMs,
+      },
+    },
+  };
+}
+
 async function resolveRepositoryTarget(
   prisma: ReturnType<typeof createPrismaClient>,
   runtime: Pick<
@@ -1307,6 +1413,9 @@ function printUsage() {
   process.stdout.write(`  env-preflight\n`);
   process.stdout.write(`  release env-preflight\n`);
   process.stdout.write(`  status --repo OWNER/REPO\n`);
+  process.stdout.write(
+    `  release selection-preflight --repository OWNER/REPO --action-sha SHA\n`,
+  );
   process.stdout.write(`  release register --bundle FILE --confirm release\n`);
   process.stdout.write(
     `  release revoke --release RELEASE_ID --confirm RELEASE_ID\n`,
