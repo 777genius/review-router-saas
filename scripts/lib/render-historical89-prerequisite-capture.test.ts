@@ -134,7 +134,11 @@ function harness(values = fixture(), failAt?: string, code = "42501") {
         if (!text.startsWith("WITH capture"))
           return { command: text.split(" ")[0], rows: [] };
         expect(text).toContain("AS MATERIALIZED");
-        expect(text).toContain("octet_length(value::text)<=2000000");
+        const byteLimit = name === "catalog" ? 8 * 1024 * 1024 : 2_000_000;
+        expect(text).toContain(`octet_length(value::text)<=${byteLimit}`);
+        expect(text).toContain(
+          `octet_length(value::text)>${byteLimit} AS exceeded`,
+        );
         expect(text).toMatch(/LIMIT 2$/u);
         if (index >= 4) expect(text).toContain(projectionSql[index - 4]);
         return {
@@ -370,6 +374,28 @@ describe("read-only historical89 prerequisite capture", () => {
     },
   );
 
+  it("collects the full catalog above 2MB and below 8MiB without omitting facts", async () => {
+    const values = fixture();
+    values.catalog.facts.push(
+      ...Array.from({ length: 15_038 }, (_, i) => ({
+        family: "routine",
+        fact: { identity: `routine-${i}`, definitionDigest: "x".repeat(240) },
+      })),
+    );
+    const bytes = Buffer.byteLength(JSON.stringify(values.catalog));
+    expect(bytes).toBeGreaterThan(2_000_000);
+    expect(bytes).toBeLessThan(8 * 1024 * 1024);
+    const result = await harness(values).run();
+    expect(result.collectionComplete).toBe(true);
+    expect(result.collection.catalog).toBe("collected");
+    expect(result.observations.catalog).toEqual(values.catalog);
+    expect(result.observations.catalog.facts).toHaveLength(15_039);
+    expect(result.digests.catalog).toBe(
+      renderManagedEvidenceDigest(values.catalog),
+    );
+    expect(result.rollbackConfirmed).toBe(true);
+  });
+
   it.each(["bytes", "rows"])(
     "rejects oversized catalog %s after collecting the ledger without losing prior evidence",
     async (kind) => {
@@ -377,7 +403,7 @@ describe("read-only historical89 prerequisite capture", () => {
       if (kind === "bytes")
         values.catalog.facts.push({
           family: "routine",
-          fact: "x".repeat(2_000_001),
+          fact: "x".repeat(8 * 1024 * 1024 + 1),
         });
       else
         values.catalog.facts.push(
@@ -386,7 +412,7 @@ describe("read-only historical89 prerequisite capture", () => {
       // Isolate each client cap: the row fixture is below the byte cap and the
       // byte fixture is below the row cap. The server boolean remains false.
       expect(
-        Buffer.byteLength(JSON.stringify(values.catalog)) > 2_000_000,
+        Buffer.byteLength(JSON.stringify(values.catalog)) > 8 * 1024 * 1024,
       ).toBe(kind === "bytes");
       expect(values.catalog.facts.length > 20_000).toBe(kind === "rows");
       const h = harness(values);

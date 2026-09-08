@@ -20,6 +20,7 @@ import { projectionOf } from "./render-managed-transaction-bodies.mjs";
 
 const limits = Object.freeze({
   bytes: 2_000_000,
+  catalogBytes: 8 * 1024 * 1024,
   rows: 20_000,
   queryMs: 5_000,
 });
@@ -70,10 +71,10 @@ const projections = {
 // MATERIALIZED avoids evaluating a projection twice. The server limits response
 // bytes before sending JSON. Work inside aggregates is bounded by statement_timeout,
 // not LIMIT 1; row caps additionally reject oversized collected projections.
-function bounded(sql) {
+function bounded(sql, byteLimit) {
   return `WITH capture(value) AS MATERIALIZED (${sql})
-SELECT CASE WHEN octet_length(value::text)<=${limits.bytes} THEN value ELSE NULL END AS value,
-  octet_length(value::text)>${limits.bytes} AS exceeded FROM capture LIMIT 2`;
+SELECT CASE WHEN octet_length(value::text)<=${byteLimit} THEN value ELSE NULL END AS value,
+  octet_length(value::text)>${byteLimit} AS exceeded FROM capture LIMIT 2`;
 }
 const error = (code) => new Error(`historical89_capture:${code}`);
 function checkSize(value) {
@@ -188,12 +189,13 @@ export async function captureHistorical89Prerequisites({
   };
   const read = async (name, sql) => {
     stage = name;
-    const response = await query(bounded(sql));
+    const byteLimit = name === "catalog" ? limits.catalogBytes : limits.bytes;
+    const response = await query(bounded(sql, byteLimit));
     if (response.rows?.length !== 1) throw error("missing-facts");
     const row = response.rows[0];
     if (row.exceeded !== false) throw error("read-cap");
     if (row.value == null) throw error("missing-facts");
-    if (Buffer.byteLength(JSON.stringify(row.value)) > limits.bytes)
+    if (Buffer.byteLength(JSON.stringify(row.value)) > byteLimit)
       throw error("read-cap");
     checkSize(row.value);
     return row.value;
