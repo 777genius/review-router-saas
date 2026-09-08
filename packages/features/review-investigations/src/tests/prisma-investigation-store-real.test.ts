@@ -81,7 +81,18 @@ import {
 } from "../domain/review-investigation-types";
 import { PrismaReviewExecutionStore } from "../../../review-executions/src/infrastructure/prisma/prisma-review-execution-store";
 import { PrismaReviewRunAuthorizationRepository } from "../../../review-run-control/src/infrastructure/prisma/prisma-review-run-authorization-repository";
-import { ReviewRunAuthorizationState } from "../../../review-run-control/src/domain/review-run-control-types";
+import {
+  ProducerDistributionKind,
+  ProducerReleaseState,
+  ReviewCapabilityProfile,
+  ReviewProtocolVersion,
+  ReviewProviderKind,
+  ReviewRunAuthorizationState,
+  ReviewRunAuthorizationTokenAudience,
+  ReviewTrustDomain,
+  REVIEW_RUN_AUTHORIZATION_TOKEN_ISSUER,
+} from "../../../review-run-control/src/domain/review-run-control-types";
+import { ReviewRunAuthorizationTerminateStatus } from "../../../review-run-control/src/application/ports/review-run-authorization-ports";
 import { FixedInvestigationClock } from "../testing/investigation-test-kit";
 
 const databaseUrl = process.env.REVIEW_ROUTER_TEST_DATABASE_URL;
@@ -358,16 +369,22 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
           state: ReviewRunAuthorizationState.Revoked,
           at: new Date(),
         });
-        // Keep early failures handled while observing the database; the original
-        // promise is still asserted below and drained in finally.
-        void revocation.catch(() => undefined);
+        // A mapper rejection (or an unexpected successful termination) must
+        // fail immediately, rather than masquerading as a lock-wait timeout.
+        const terminatedBeforeRelease = revocation.then(() => {
+          throw new Error("revocation_completed_before_release");
+        });
+        void terminatedBeforeRelease.catch(() => undefined);
         // Observe an actual PostgreSQL lock wait, never infer blocking from time.
         const deadline = Date.now() + 3_000;
         let blocked = false;
         while (Date.now() < deadline) {
-          const [row] = await observer.$queryRaw<Array<{ blocked: boolean }>>`
-            SELECT ${admissionBackend!.pid}::int = ANY(pg_blocking_pids(${backend!.pid})) AS blocked
-          `;
+          const [row] = await Promise.race([
+            observer.$queryRaw<Array<{ blocked: boolean }>>`
+              SELECT ${admissionBackend!.pid}::int = ANY(pg_blocking_pids(${backend!.pid})) AS blocked
+            `,
+            terminatedBeforeRelease,
+          ]);
           if (row?.blocked) {
             blocked = true;
             break;
@@ -390,7 +407,21 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
           status: InvestigationStoreCommitStatus.Committed,
         });
         await expect(revocation).resolves.toMatchObject({
-          authorization: { state: ReviewRunAuthorizationState.Revoked },
+          status: ReviewRunAuthorizationTerminateStatus.Terminated,
+          authorization: {
+            authorizationId,
+            state: ReviewRunAuthorizationState.Revoked,
+            version: authorization.version + 1,
+          },
+        });
+        expect(
+          await observer.reviewRunAuthorization.findUnique({
+            where: { authorizationId },
+            select: { state: true, version: true },
+          }),
+        ).toEqual({
+          state: ReviewRunAuthorizationState.Revoked,
+          version: authorization.version + 1,
         });
         expect(
           await observer.reviewInvestigationCommandReceipt.count({
@@ -2077,7 +2108,7 @@ async function seedExecution(
   await prisma.producerRelease.create({
     data: {
       producerReleaseId,
-      distributionKind: "hosted_composite",
+      distributionKind: ProducerDistributionKind.HostedComposite,
       actionCommitSha: producerDigest.slice(0, 40),
       runtimeCommitSha: producerDigest.slice(24, 64),
       wrapperEntrypointDigest: producerDigest,
@@ -2087,10 +2118,10 @@ async function seedExecution(
       schemaDigest: createHash("sha256")
         .update(`schema-${producerDigest}`)
         .digest("hex"),
-      capabilityProfile: "investigation-test",
+      capabilityProfile: ReviewCapabilityProfile.ContextGatewayV2,
       protocolLimitsProfileId: limitsProfileId,
       operationalSloProfileId: sloProfileId,
-      state: "registered",
+      state: ProducerReleaseState.Registered,
       registeredAt: now,
     },
   });
@@ -2108,23 +2139,30 @@ async function seedExecution(
       mergeBaseSha: seed.revision.mergeBaseSha,
       headSha: seed.revision.headSha,
       reviewRevisionHash: seed.revision.reviewRevisionHash,
-      trustDomain: "trusted_local",
+      trustDomain: ReviewTrustDomain.TrustedLocal,
       producerReleaseId,
-      selectedProtocolVersion: "review-action-v2",
+      selectedProtocolVersion: ReviewProtocolVersion.V2,
       schemaDigest: createHash("sha256")
         .update(`schema-${producerDigest}`)
         .digest("hex"),
       protocolLimitsProfileId: limitsProfileId,
       operationalSloProfileId: sloProfileId,
       mutationEpoch: 1n,
-      providerVoteLanes: [],
+      providerVoteLanes: [
+        {
+          providerKind: ReviewProviderKind.Codex,
+          providerVoteIdentityHash: seed.providerVoteLaneId,
+        },
+      ],
       authorizationSafetyDecisionHash: "1".repeat(64),
       protocolOfferHash: "2".repeat(64),
-      oidcReplayKeyHash: `oidc-${seed.investigationId}`,
+      oidcReplayKeyHash: createHash("sha256")
+        .update(`oidc-${seed.investigationId}`)
+        .digest("hex"),
       tokenSigningKeyId: "test-key",
-      tokenIssuer: "reviewrouter-test",
-      tokenAudience: "review-run",
-      state: "active",
+      tokenIssuer: REVIEW_RUN_AUTHORIZATION_TOKEN_ISSUER,
+      tokenAudience: ReviewRunAuthorizationTokenAudience.ReviewRun,
+      state: ReviewRunAuthorizationState.Active,
       expiresAt: new Date(Date.now() + 3_600_000),
       maxExpiresAt: new Date(Date.now() + 7_200_000),
       createdAt: now,
@@ -2152,7 +2190,7 @@ async function seedExecution(
       producerReleaseId,
       mutationEpoch: 1n,
       admissionSafetyDecisionHash: "4".repeat(64),
-      protocolLimitsProfileId: "limits-test",
+      protocolLimitsProfileId: limitsProfileId,
       sourceRunId: `run-${seed.investigationId}`,
       sourceRunAttempt: "1",
       createdAt: now,
