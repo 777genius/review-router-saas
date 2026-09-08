@@ -187,6 +187,137 @@ describe("signed capabilities", () => {
   });
 });
 
+describe("authenticated capability metadata", () => {
+  it("preserves clock tolerance and honors configured key retirement during verification", async () => {
+    const issuer = new JoseRotatingCapabilityCodec(
+      new InMemoryCapabilityKeyRing(firstKey),
+    );
+    const signed = await issuer.sign({
+      ...leaseClaims(),
+      notBefore: new Date(now.getTime() + 20_000),
+    });
+    const codec = new JoseRotatingCapabilityCodec(
+      new ConfiguredCapabilityKeyRing({
+        activeKeyId: "key-2",
+        keys: [
+          { ...firstKey, verifyUntil: new Date(now.getTime() + 60_000) },
+          {
+            keyId: "key-2",
+            secret: new TextEncoder().encode("b".repeat(32)),
+            verifyUntil: null,
+          },
+        ],
+      }),
+    );
+    const input = {
+      token: signed.token,
+      expectedIssuer: "reviewrouter",
+      expectedAudience: CapabilityAudience.ReviewInvocationLease,
+      expectedKind: CapabilityKind.InvocationLease,
+      now,
+    };
+    const verified = await codec.verifyWithMetadata(input);
+    expect(verified.claims.notBefore).toEqual(new Date(now.getTime() + 20_000));
+    expect(verified.authenticatedKeyId).toBe("key-1");
+    expect(await codec.verify(input)).toEqual(verified.claims);
+    await expect(
+      codec.verifyWithMetadata({
+        ...input,
+        now: new Date(now.getTime() + 60_001),
+      }),
+    ).rejects.toMatchObject({
+      code: CapabilityVerificationErrorCode.UnknownKey,
+    });
+  });
+
+  it("authenticates kid and nbf and preserves the claims-only API", async () => {
+    const ring = new InMemoryCapabilityKeyRing(firstKey);
+    const codec = new JoseRotatingCapabilityCodec(ring, 0);
+    const signed = await codec.sign(leaseClaims());
+    ring.rotate({
+      keyId: "key-2",
+      secret: new TextEncoder().encode("b".repeat(32)),
+    });
+    const input = {
+      token: signed.token,
+      expectedIssuer: "reviewrouter",
+      expectedAudience: CapabilityAudience.ReviewInvocationLease,
+      expectedKind: CapabilityKind.InvocationLease,
+      now,
+    };
+    expect(await codec.verifyWithMetadata(input)).toEqual({
+      authenticatedKeyId: "key-1",
+      claims: await codec.verify(input),
+    });
+    for (const [part, patch] of [
+      [0, { kid: "key-2" }],
+      [1, { nbf: now.getTime() / 1000 - 10 }],
+    ] as const) {
+      const pieces = signed.token.split(".");
+      pieces[part] = Buffer.from(
+        JSON.stringify({
+          ...JSON.parse(Buffer.from(pieces[part]!, "base64url").toString()),
+          ...patch,
+        }),
+      ).toString("base64url");
+      await expect(
+        codec.verifyWithMetadata({ ...input, token: pieces.join(".") }),
+      ).rejects.toMatchObject({
+        code: CapabilityVerificationErrorCode.Invalid,
+      });
+    }
+    const pieces = signed.token.split(".");
+    pieces[2] = Buffer.alloc(32).toString("base64url");
+    await expect(
+      codec.verifyWithMetadata({ ...input, token: pieces.join(".") }),
+    ).rejects.toMatchObject({ code: CapabilityVerificationErrorCode.Invalid });
+    for (const [patch, code] of [
+      [
+        { expectedAudience: CapabilityAudience.ReviewRun },
+        CapabilityVerificationErrorCode.WrongAudience,
+      ],
+      [
+        { expectedIssuer: "wrong" },
+        CapabilityVerificationErrorCode.WrongIssuer,
+      ],
+      [
+        { expectedKind: CapabilityKind.CompletionCommand },
+        CapabilityVerificationErrorCode.WrongKind,
+      ],
+      [
+        { now: new Date(now.getTime() + 600_000) },
+        CapabilityVerificationErrorCode.Expired,
+      ],
+    ] as const) {
+      await expect(
+        codec.verifyWithMetadata({ ...input, ...patch }),
+      ).rejects.toMatchObject({ code });
+    }
+    const future = await codec.sign({
+      ...leaseClaims(),
+      notBefore: new Date(now.getTime() + 60_000),
+    });
+    await expect(
+      codec.verifyWithMetadata({ ...input, token: future.token }),
+    ).rejects.toMatchObject({
+      code: CapabilityVerificationErrorCode.NotYetValid,
+    });
+    ring.retire("key-1");
+    await expect(codec.verifyWithMetadata(input)).rejects.toMatchObject({
+      code: CapabilityVerificationErrorCode.UnknownKey,
+    });
+    const unknown = signed.token.split(".");
+    unknown[0] = Buffer.from(
+      JSON.stringify({ alg: "HS256", typ: "JWT", kid: "unknown" }),
+    ).toString("base64url");
+    await expect(
+      codec.verifyWithMetadata({ ...input, token: unknown.join(".") }),
+    ).rejects.toMatchObject({
+      code: CapabilityVerificationErrorCode.UnknownKey,
+    });
+  });
+});
+
 function leaseClaims(): SignedCapabilityClaims {
   return {
     capabilityId: "capability-1",
