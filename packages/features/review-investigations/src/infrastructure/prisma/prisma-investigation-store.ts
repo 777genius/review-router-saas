@@ -495,36 +495,61 @@ export class PrismaInvestigationStore
     input: Parameters<InvestigationStorePort["adopt"]>[0],
   ): Promise<InvestigationStoreCommitResult> {
     try {
-      return await this.prisma.$transaction(async (transaction) => {
-        await lockInvestigationExecutionScope(transaction, input.investigation);
-        await transaction.$queryRaw(Prisma.sql`
+      return await this.prisma.$transaction(
+        async (transaction) => {
+          await lockInvestigationExecutionScope(
+            transaction,
+            input.investigation,
+          );
+          await transaction.$queryRaw(Prisma.sql`
           SELECT "investigationId" FROM "ReviewInvestigation"
           WHERE "investigationId" = ${input.investigation.investigationId}
           FOR UPDATE
         `);
-        const restored = await restoreCommitResult(transaction, input);
-        if (restored) return restored;
-        const current = await loadAggregate(transaction, input.investigation.investigationId);
-        if (!current || current.version !== input.expectedVersion ||
-            current.naturalIdentityHash !== input.investigation.naturalIdentityHash) {
-          return result(InvestigationStoreCommitStatus.ConcurrencyConflict, current);
-        }
-        await input.requireCurrentExecution();
-        const now = await investigationDatabaseNow(transaction);
-        const verdict = await executionAuthorityVerdict(transaction, current, now);
-        if (verdict !== InvestigationExecutionAuthorityVerdict.Current) {
-          throw new Error(`investigation_execution_${verdict}`);
-        }
-        await transaction.reviewInvestigationCommandReceipt.create({ data: {
-          commandId: input.commandId,
-          commandHash: input.commandHash,
-          investigationId: current.investigationId,
-          resultingVersion: BigInt(current.version),
-          createdAt: now,
-          retainUntil: aggregateRetainUntil(current, this.options.operationalRetentionMs),
-        } });
-        return result(InvestigationStoreCommitStatus.Committed, current);
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+          const restored = await restoreCommitResult(transaction, input);
+          if (restored) return restored;
+          const current = await loadAggregate(
+            transaction,
+            input.investigation.investigationId,
+          );
+          if (
+            !current ||
+            current.version !== input.expectedVersion ||
+            current.naturalIdentityHash !==
+              input.investigation.naturalIdentityHash
+          ) {
+            return result(
+              InvestigationStoreCommitStatus.ConcurrencyConflict,
+              current,
+            );
+          }
+          await input.requireCurrentExecution();
+          const now = await investigationDatabaseNow(transaction);
+          const verdict = await executionAuthorityVerdict(
+            transaction,
+            current,
+            now,
+          );
+          if (verdict !== InvestigationExecutionAuthorityVerdict.Current) {
+            throw new Error(`investigation_execution_${verdict}`);
+          }
+          await transaction.reviewInvestigationCommandReceipt.create({
+            data: {
+              commandId: input.commandId,
+              commandHash: input.commandHash,
+              investigationId: current.investigationId,
+              resultingVersion: BigInt(current.version),
+              createdAt: now,
+              retainUntil: aggregateRetainUntil(
+                current,
+                this.options.operationalRetentionMs,
+              ),
+            },
+          });
+          return result(InvestigationStoreCommitStatus.Committed, current);
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      );
     } catch (error) {
       // Only a competing receipt insertion can be reconciled here.
       if (!isUniqueConstraintError(error)) throw error;
@@ -554,9 +579,21 @@ export class PrismaInvestigationStore
               },
             );
             if (input.guard !== undefined) {
-              await lockInvestigationExecutionScope(transaction, input.investigation);
-              if (!(await commitGuardIsCurrent(transaction, input, input.investigation))) {
-                return result(InvestigationStoreCommitStatus.LeaseFenceConflict, null);
+              await lockInvestigationExecutionScope(
+                transaction,
+                input.investigation,
+              );
+              if (
+                !(await commitGuardIsCurrent(
+                  transaction,
+                  input,
+                  input.investigation,
+                ))
+              ) {
+                return result(
+                  InvestigationStoreCommitStatus.LeaseFenceConflict,
+                  null,
+                );
               }
             }
             return this.createAggregate(transaction, {
@@ -2712,7 +2749,9 @@ async function commitGuardIsCurrent(
   current: ReviewInvestigation,
 ): Promise<boolean> {
   if (input.guard === undefined) return true;
-  if (input.guard.kind === InvestigationStoreCommitGuardKind.ExecutionAuthority) {
+  if (
+    input.guard.kind === InvestigationStoreCommitGuardKind.ExecutionAuthority
+  ) {
     await input.guard.requireCurrentExecution?.();
   }
   const databaseNow = await investigationDatabaseNow(transaction);

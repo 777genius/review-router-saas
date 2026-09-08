@@ -40,74 +40,156 @@ export function defineInvestigationStoreContract(
       const seed = createInvestigationStoreContractSeed("adoption");
       const harness = await factory(seed);
       try {
-        await harness.store.commit({ investigation: seed, expectedVersion: null,
-          commandId: "adoption-create", commandHash: "1".repeat(64),
-          transition: { kind: InvestigationStoreTransitionKind.Opened } });
+        await harness.store.commit({
+          investigation: seed,
+          expectedVersion: null,
+          commandId: "adoption-create",
+          commandHash: "1".repeat(64),
+          transition: { kind: InvestigationStoreTransitionKind.Opened },
+        });
         const before = await harness.store.findById(seed.investigationId);
-        const input = { investigation: before!, expectedVersion: before!.version,
-          commandId: "adoption-open", commandHash: "2".repeat(64),
-          requireCurrentExecution: async () => {} };
-        const results = await Promise.all([harness.store.adopt(input), harness.store.adopt(input)]);
-        expect(results.map(item => item.status).sort()).toEqual([
-          InvestigationStoreCommitStatus.Committed, InvestigationStoreCommitStatus.Restored,
-        ].sort());
-        expect(await harness.store.findById(seed.investigationId)).toEqual(before);
+        const input = {
+          investigation: before!,
+          expectedVersion: before!.version,
+          commandId: "adoption-open",
+          commandHash: "2".repeat(64),
+          requireCurrentExecution: async () => {},
+        };
+        const results = await Promise.all([
+          harness.store.adopt(input),
+          harness.store.adopt(input),
+        ]);
+        expect(results.map((item) => item.status).sort()).toEqual(
+          [
+            InvestigationStoreCommitStatus.Committed,
+            InvestigationStoreCommitStatus.Restored,
+          ].sort(),
+        );
+        expect(await harness.store.findById(seed.investigationId)).toEqual(
+          before,
+        );
         const restarted = await harness.restart();
         expect(await restarted.restoreCommand(input)).toMatchObject({
-          status: InvestigationStoreCommitStatus.Restored, investigation: before,
+          status: InvestigationStoreCommitStatus.Restored,
+          investigation: before,
         });
-        expect(await restarted.adopt({ ...input, commandHash: "3".repeat(64) })).toMatchObject({
+        expect(
+          await restarted.adopt({ ...input, commandHash: "3".repeat(64) }),
+        ).toMatchObject({
           status: InvestigationStoreCommitStatus.IdempotencyConflict,
         });
-        expect(await restarted.adopt({ ...input, commandId: "stale-version", expectedVersion: 0 })).toMatchObject({
+        expect(
+          await restarted.adopt({
+            ...input,
+            commandId: "stale-version",
+            expectedVersion: 0,
+          }),
+        ).toMatchObject({
           status: InvestigationStoreCommitStatus.ConcurrencyConflict,
         });
-        await expect(restarted.adopt({ ...input, commandId: "stale-currency",
-          requireCurrentExecution: async () => { throw new Error("execution_stale"); },
-        })).rejects.toThrow("execution_stale");
-        expect(await restarted.restoreCommand({ ...input, commandId: "stale-currency" })).toBeNull();
-        expect(await restarted.adopt({ ...input, commandId: "wrong-identity",
-          investigation: { ...input.investigation, naturalIdentityHash: "f".repeat(64) },
-        })).toMatchObject({ status: InvestigationStoreCommitStatus.ConcurrencyConflict });
-        expect(await restarted.restoreCommand({ ...input, commandId: "wrong-identity" })).toBeNull();
+        await expect(
+          restarted.adopt({
+            ...input,
+            commandId: "stale-currency",
+            requireCurrentExecution: async () => {
+              throw new Error("execution_stale");
+            },
+          }),
+        ).rejects.toThrow("execution_stale");
+        expect(
+          await restarted.restoreCommand({
+            ...input,
+            commandId: "stale-currency",
+          }),
+        ).toBeNull();
+        expect(
+          await restarted.adopt({
+            ...input,
+            commandId: "wrong-identity",
+            investigation: {
+              ...input.investigation,
+              naturalIdentityHash: "f".repeat(64),
+            },
+          }),
+        ).toMatchObject({
+          status: InvestigationStoreCommitStatus.ConcurrencyConflict,
+        });
+        expect(
+          await restarted.restoreCommand({
+            ...input,
+            commandId: "wrong-identity",
+          }),
+        ).toBeNull();
         const collisions = await Promise.all([
           restarted.adopt({ ...input, commandId: "adoption-collision" }),
-          restarted.adopt({ ...input, commandId: "adoption-collision", commandHash: "4".repeat(64) }),
+          restarted.adopt({
+            ...input,
+            commandId: "adoption-collision",
+            commandHash: "4".repeat(64),
+          }),
         ]);
-        expect(collisions.map(item => item.status).sort()).toEqual([
-          InvestigationStoreCommitStatus.Committed, InvestigationStoreCommitStatus.IdempotencyConflict,
-        ].sort());
+        expect(collisions.map((item) => item.status).sort()).toEqual(
+          [
+            InvestigationStoreCommitStatus.Committed,
+            InvestigationStoreCommitStatus.IdempotencyConflict,
+          ].sort(),
+        );
         expect(await restarted.findById(seed.investigationId)).toEqual(before);
-      } finally { await harness.dispose(); }
+      } finally {
+        await harness.dispose();
+      }
     });
 
     it("fences adoption against a concurrent aggregate update", async () => {
       const seed = createInvestigationStoreContractSeed("adoption-update");
       const harness = await factory(seed);
       try {
-        await harness.store.commit({ investigation: seed, expectedVersion: null,
-          commandId: "adoption-update-create", commandHash: "1".repeat(64),
-          transition: { kind: InvestigationStoreTransitionKind.Opened } });
+        await harness.store.commit({
+          investigation: seed,
+          expectedVersion: null,
+          commandId: "adoption-update-create",
+          commandHash: "1".repeat(64),
+          transition: { kind: InvestigationStoreTransitionKind.Opened },
+        });
         const before = (await harness.store.findById(seed.investigationId))!;
         const next = planned(before, "adoption-update-turn");
         const [updated, adopted] = await Promise.all([
-          harness.store.commit({ investigation: next, expectedVersion: before.version,
-            commandId: "adoption-update-plan", commandHash: "2".repeat(64),
-            transition: { kind: InvestigationStoreTransitionKind.TurnPlanned,
-              turnId: "adoption-update-turn" } }),
-          harness.store.adopt({ investigation: before, expectedVersion: before.version,
-            commandId: "adoption-update-open", commandHash: "3".repeat(64),
-            requireCurrentExecution: async () => {} }),
+          harness.store.commit({
+            investigation: next,
+            expectedVersion: before.version,
+            commandId: "adoption-update-plan",
+            commandHash: "2".repeat(64),
+            transition: {
+              kind: InvestigationStoreTransitionKind.TurnPlanned,
+              turnId: "adoption-update-turn",
+            },
+          }),
+          harness.store.adopt({
+            investigation: before,
+            expectedVersion: before.version,
+            commandId: "adoption-update-open",
+            commandHash: "3".repeat(64),
+            requireCurrentExecution: async () => {},
+          }),
         ]);
         expect(updated.status).toBe(InvestigationStoreCommitStatus.Committed);
-        expect([InvestigationStoreCommitStatus.Committed,
-          InvestigationStoreCommitStatus.ConcurrencyConflict]).toContain(adopted.status);
-        expect(await harness.store.findById(seed.investigationId)).toEqual(updated.investigation);
+        expect([
+          InvestigationStoreCommitStatus.Committed,
+          InvestigationStoreCommitStatus.ConcurrencyConflict,
+        ]).toContain(adopted.status);
+        expect(await harness.store.findById(seed.investigationId)).toEqual(
+          updated.investigation,
+        );
         const receipt = await harness.store.restoreCommand({
-          commandId: "adoption-update-open", commandHash: "3".repeat(64),
+          commandId: "adoption-update-open",
+          commandHash: "3".repeat(64),
         });
-        expect(receipt !== null).toBe(adopted.status === InvestigationStoreCommitStatus.Committed);
-      } finally { await harness.dispose(); }
+        expect(receipt !== null).toBe(
+          adopted.status === InvestigationStoreCommitStatus.Committed,
+        );
+      } finally {
+        await harness.dispose();
+      }
     });
 
     it("restores duplicate commands before evaluating optimistic concurrency", async () => {

@@ -285,26 +285,38 @@ export class InMemoryInvestigationStore
       const previous = this.commands.get(input.commandId);
       if (previous) {
         return {
-          status: previous.commandHash === input.commandHash
-            ? InvestigationStoreCommitStatus.Restored
-            : InvestigationStoreCommitStatus.IdempotencyConflict,
-          investigation: previous.commandHash === input.commandHash
-            ? clone(this.investigations.get(previous.investigationId) ?? null)
-            : null,
+          status:
+            previous.commandHash === input.commandHash
+              ? InvestigationStoreCommitStatus.Restored
+              : InvestigationStoreCommitStatus.IdempotencyConflict,
+          investigation:
+            previous.commandHash === input.commandHash
+              ? clone(this.investigations.get(previous.investigationId) ?? null)
+              : null,
         };
       }
-      const current = this.investigations.get(input.investigation.investigationId);
-      if (!current || current.version !== input.expectedVersion ||
-          current.naturalIdentityHash !== input.investigation.naturalIdentityHash) {
-        return { status: InvestigationStoreCommitStatus.ConcurrencyConflict,
-          investigation: clone(current ?? null) };
+      const current = this.investigations.get(
+        input.investigation.investigationId,
+      );
+      if (
+        !current ||
+        current.version !== input.expectedVersion ||
+        current.naturalIdentityHash !== input.investigation.naturalIdentityHash
+      ) {
+        return {
+          status: InvestigationStoreCommitStatus.ConcurrencyConflict,
+          investigation: clone(current ?? null),
+        };
       }
       await input.requireCurrentExecution();
       this.commands.set(input.commandId, {
-        commandHash: input.commandHash, investigationId: current.investigationId,
+        commandHash: input.commandHash,
+        investigationId: current.investigationId,
       });
-      return { status: InvestigationStoreCommitStatus.Committed,
-        investigation: clone(current) };
+      return {
+        status: InvestigationStoreCommitStatus.Committed,
+        investigation: clone(current),
+      };
     });
   }
 
@@ -350,7 +362,10 @@ export class InMemoryInvestigationStore
         transition: input.transition,
         privateMaterials: input.privateMaterials ?? [],
       });
-      if (input.guard?.kind === InvestigationStoreCommitGuardKind.ExecutionAuthority) {
+      if (
+        input.guard?.kind ===
+        InvestigationStoreCommitGuardKind.ExecutionAuthority
+      ) {
         await input.guard.requireCurrentExecution?.();
       }
       if (!this.commitGuardIsCurrent(input, existing ?? input.investigation)) {

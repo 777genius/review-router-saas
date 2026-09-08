@@ -300,14 +300,18 @@ async function executeScenario(
     ).assemble(invocation);
   // A second process resumes the prepared target after the first released its lease.
   const invocationAttempt = randomUUID();
-  const ownerIdHash = sha256(`paired-owner:${executionId}:${invocationAttempt}`);
+  const ownerIdHash = sha256(
+    `paired-owner:${executionId}:${invocationAttempt}`,
+  );
   const leaseOutcome = await controlPlane.acquireInvocationLease({
     authorization,
     idempotencyKey: sha256(`paired-lease:${executionId}:${invocationAttempt}`),
     execution,
     workSlot: assignment.workSlot,
     manifest,
-    acquireRequestId: sha256(`paired-acquire:${executionId}:${invocationAttempt}`),
+    acquireRequestId: sha256(
+      `paired-acquire:${executionId}:${invocationAttempt}`,
+    ),
     ownerIdHash,
   });
   if (
@@ -865,7 +869,8 @@ function emitResult(result: unknown): void {
 
 let requestOrdinal = 0;
 function requestIdFactory(): () => string {
-  return () => `paired-action-request-${process.pid}-${++requestOrdinal}-${randomUUID()}`;
+  return () =>
+    `paired-action-request-${process.pid}-${++requestOrdinal}-${randomUUID()}`;
 }
 
 function sha256(value: string | Uint8Array): string {
