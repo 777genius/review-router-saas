@@ -2,6 +2,8 @@
 # Only the CI PostgreSQL service. Keep the shared test database and legacy tests
 # unchanged; assign a freshly CREATED database to the process-restart scenario.
 set -euo pipefail
+# pnpm run forwards its optional separator; Vitest must not receive it.
+if [[ "${1:-}" == -- ]]; then shift; fi
 pnpm exec tsc --noEmit -p scripts/review-investigation-production-e2e/tsconfig.json
 node --test scripts/review-investigation-production-e2e/support/*.test.mjs
 run_tests() {
@@ -9,6 +11,7 @@ run_tests() {
 }
 # Local callers retain their configured database and optional Vitest arguments.
 if [[ "${CI:-}" != true ]]; then
+  node --input-type=module -e 'import { item11Enabled } from "./scripts/review-investigation-production-e2e/support/item11-gate.fixture.mjs"; item11Enabled(process.env);'
   run_tests "$@"
   exit $?
 fi
@@ -19,7 +22,7 @@ item11_connection="$(node --input-type=module -e '
     const user = decodeURIComponent(u.username), password = decodeURIComponent(u.password);
     if (!["postgres:", "postgresql:"].includes(u.protocol) ||
         !["127.0.0.1", "localhost", "[::1]"].includes(u.hostname) ||
-        u.search || u.hash || !user || /[\r\n\0]/.test(user + password) ||
+        (u.search && u.search !== "?schema=public") || u.hash || !user || /[\r\n\0]/.test(user + password) ||
         (u.port && (!/^\d+$/.test(u.port) || +u.port < 1 || +u.port > 65535))) throw 0;
     process.stdout.write([u.hostname.replace(/^\[|\]$/g, ""), u.port || "5432", user, password, "end"].join("\n"));
   } catch { process.stderr.write("item11_invalid_test_database_url\n"); process.exit(1); }
@@ -91,6 +94,7 @@ REVIEW_ROUTER_ITEM11_DATABASE_URL="$(node -e '
   url.username = process.env.PGUSER;
   url.password = process.env.PGPASSWORD;
   url.pathname = process.argv[1];
+  url.search = "";
   process.stdout.write(url.href);
 ' "$item11_database")"
 DATABASE_URL="$REVIEW_ROUTER_ITEM11_DATABASE_URL" pnpm --dir packages/platform/db db:migrate:deploy
@@ -101,4 +105,5 @@ CREATE TABLE item11_fixture_owner (
 );
 INSERT INTO item11_fixture_owner (run_id) VALUES (:'run_id');
 SQL
+export REVIEW_ROUTER_ITEM11_E2E=1
 run_tests "$@"

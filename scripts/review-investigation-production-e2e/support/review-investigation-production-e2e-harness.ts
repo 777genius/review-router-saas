@@ -475,6 +475,8 @@ export class ReviewInvestigationProductionE2EHarness {
         execution,
         current,
         `${input.label}-discovery-${discoveryOrdinal}`,
+        // Keep real search obligations unfinished at the finding checkpoint.
+        input.checkpoint ? 1 : 16,
       );
       const lease = await this.acquireInvestigationTurnLease(
         execution,
@@ -518,16 +520,19 @@ export class ReviewInvestigationProductionE2EHarness {
         `${input.label}-discovery-${discoveryOrdinal}`,
       );
       current = commit.read;
-      if (discoveryOrdinal === 1) await input.checkpoint?.({ request: commit.request, read: commit.read });
       if (discoveryOrdinal === 1 && input.restartAfterFirstCommit) {
         await this.restartControlPlane();
       }
       if (
         commit.findingCount > 0 &&
-        input.restartAfterFindingCommit &&
+        (input.restartAfterFindingCommit || input.checkpoint) &&
         !restartedAfterFindingCommit
       ) {
-        await this.restartControlPlane();
+        if (input.checkpoint) {
+          await input.checkpoint({ request: commit.request, read: commit.read });
+        } else {
+          await this.restartControlPlane();
+        }
         restartedAfterFindingCommit = true;
       }
     }
@@ -536,7 +541,7 @@ export class ReviewInvestigationProductionE2EHarness {
       "investigation_finding_fixture_not_committed",
     );
     ensure(
-      !input.restartAfterFindingCommit || restartedAfterFindingCommit,
+      !(input.restartAfterFindingCommit || input.checkpoint) || restartedAfterFindingCommit,
       "investigation_finding_restart_not_exercised",
     );
     if (current.nextAction === ReviewInvestigationNextAction.RunCritic) {
@@ -990,6 +995,7 @@ export class ReviewInvestigationProductionE2EHarness {
     execution: InvestigationExecution,
     current: InvestigationRead,
     label: string,
+    maxObligationsForTurn = 16,
   ) {
     const request = await withBodyHash(
       ReviewActionV2OperationId.ReviewInvestigationTurnPlan,
@@ -1002,7 +1008,7 @@ export class ReviewInvestigationProductionE2EHarness {
         expectedVersion: current.investigationVersion,
         dossierDigest: current.dossierDigest,
         leaseDurationMs: 120_000,
-        maxObligationsForTurn: 16,
+        maxObligationsForTurn,
         turnBudgetHash: sha256(`${label}:turn-budget`),
       } satisfies ReviewInvestigationTurnPlanRequest,
     );
