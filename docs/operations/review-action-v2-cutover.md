@@ -369,3 +369,83 @@ pnpm review-v2:admin cohort context-reuse disable \
 
 Prompt-only cross-revision reuse remains disabled. These commands control only
 dependency-attested context-gateway reuse.
+
+### Repository lease-budget release selection (disabled by default)
+
+`REVIEW_ROUTER_REVIEW_V2_REPOSITORY_RELEASE_BINDINGS` is a deployment-owned JSON
+array, read once when composing the admission runtime. Unset or `[]` preserves
+existing selection for every repository. An explicit malformed document rejects
+startup. Each object has exactly these fields (all required):
+
+```json
+{
+  "workspaceId": "EXACT_WORKSPACE_ID",
+  "repositoryConnectionId": "EXACT_REPOSITORY_CONNECTION_ID",
+  "scmRepositoryIdentityId": "EXACT_SCM_REPOSITORY_IDENTITY_ID",
+  "actionCommitSha": "EXACT_40_CHARACTER_LOWERCASE_ACTION_SHA",
+  "expectedBaseProducerReleaseId": "EXISTING_ATTESTED_RELEASE_ID",
+  "selectedProducerReleaseId": "NEW_REGISTERED_RELEASE_ID",
+  "protocolLimitsProfileId": "NEW_REGISTERED_PROFILE_ID",
+  "limitsDigest": "CANONICAL_64_CHARACTER_LOWERCASE_SHA256"
+}
+```
+
+The example is a template, not deployable configuration. Supply validated registry
+identities and digests; never guess artifact metadata. No wildcard, partial scope,
+unknown field, or duplicate repository/Action scope is accepted. An exact scope
+with a changed base release fails closed. Other scopes retain base attestation.
+
+For the Padel policy, copy the authoritative base limits and change only
+`maxLeaseDurationMs` to `2100000` (35 minutes) and
+`maxResultReportDurationMs` to `2400000` (40 minutes). Preserve reconciliation and
+all coverage, attempts, findings, publication, and batch limits. Compute the digest
+using `canonicalReviewProtocolLimits`; allocate new immutable profile and release
+IDs. Preserve every artifact field, capability, investigation/context metadata,
+and the SLO profile. Register using the existing authenticated maintenance command:
+
+```sh
+pnpm review-v2:admin release register --bundle FILE --confirm release
+```
+
+Follow this runbook's maintenance artifact identity checks before registration.
+Do not change the Action pin or trusted base attestation. The selector only reads
+already registered records; missing, revoked, mismatched, or invalid records deny
+matched admission and never invoke default profile materialization.
+
+Stage the binding in the maintenance environment and run the read-only preflight:
+
+```sh
+pnpm review-v2:admin release selection-preflight --repository OWNER/REPO --action-sha EXACT_SHA
+```
+
+This uses the existing operator authentication boundary and requires exactly one
+selected, non-archived GitHub repository with a current identity binding. It runs
+the same registry validation as admission and returns scope IDs, base/selected
+release IDs, profile and configuration digests, and before/after durations. It
+neither registers records nor activates configuration. A preflight is registry
+and scope evidence, not proof of OIDC admission, safety eligibility, or a live
+30-minute invocation. Ensure investigation eligibility recognizes the selected
+release ID with the same approved capabilities before activation.
+
+Activate only the exact Padel scope after local checks and review of a coherent
+SaaS artifact. Converge all admission instances on the same configuration digest;
+a rolling deployment can otherwise disagree about fresh admissions. Selection
+runs after trusted OIDC/repository/revision/base artifact verification and before
+capability resolution and atomic authorization admission. Replays retain existing
+conflict semantics; use a fresh run attempt when changing policy. Existing
+authorizations, renewals, executions, and reporting remain pinned to their records.
+
+The first ownership grant is still at most ten minutes. Timely renewal can extend
+ownership to acquisition + 35 minutes, clamped by execution deadline. Reporting is
+fixed at acquisition + 40 minutes, clamped by authorization expiry at acquisition;
+renewal does not move that reporting deadline. Verify a fresh automatic Padel run
+uses the new release/profile and the full intended review plan, retains
+`gpt-5.6-sol/xhigh`, renews past 600 seconds, permits an approximately 30-minute
+provider invocation, and finalizes/publishes normally with renewed capabilities.
+A short smoke test does not establish this gate. Action timer/capability behavior
+requires the separately owned Action validation.
+
+Rollback removes the binding for future admissions, converges all instances, and
+retains both immutable releases/profiles for existing runs and late reporting.
+Do not alter existing execution `rr:execution:5c067017fa8c5293e113f5edeca1ed437f4ff372`,
+global HOLD/default timing, V5/schema5, migrations 87–89, or PR236 for this policy.
