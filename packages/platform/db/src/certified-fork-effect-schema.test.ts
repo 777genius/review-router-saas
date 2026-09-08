@@ -47,6 +47,27 @@ describe("CertifiedFork schema contract (catalog execution is a separate real PG
     }
   });
 
+  it("keeps original generation admission input distinct from the domain-derived review commitment", () => {
+    expect(sql).not.toContain(
+      `c."state"->'review'->'admissionHash' = v."seed"->'admissionHash'`,
+    );
+    for (const invariant of [
+      `v."generation" = 0`,
+      `v."seed"->'admissionHash' = 'null'::jsonb`,
+      `v."seed"->'predecessor' = 'null'::jsonb`,
+      `c."state"->'review'->'admissionHash' = 'null'::jsonb`,
+      `v."generation" > 0`,
+      `jsonb_typeof(v."seed"->'admissionHash') = 'string'`,
+      `(v."seed"->>'admissionHash') ~ '^[a-f0-9]{64}$'`,
+      `jsonb_typeof(v."seed"->'predecessor') = 'string'`,
+      `length(v."seed"->>'predecessor') BETWEEN 1 AND 4096`,
+      `jsonb_typeof(c."state"->'review'->'admissionHash') = 'string'`,
+      `(c."state"->'review'->>'admissionHash') ~ '^[a-f0-9]{64}$'`,
+    ])
+      expect(sql).toContain(invariant);
+    expect(sql).toContain("SQL\n      -- does not recompute that capability");
+  });
+
   it("bounds proof index keys without reducing the opaque token contract", () => {
     expect(sql).toContain('length("proof") BETWEEN 1 AND 4096');
     expect(sql).toContain(

@@ -231,7 +231,21 @@ BEGIN
       AND c."state"->'review'->'facts' = v."seed"->'facts'
       AND c."state"->'review'->>'familyKey' = v."familyKey"
       AND c."state"->'review'->'bindingHash' = v."seed"->'bindingHash'
-      AND c."state"->'review'->'admissionHash' = v."seed"->'admissionHash'
+      -- Structural admission boundary only: the trusted proof adapter authenticates
+      -- the original admitted input and predecessor, and the domain derives the
+      -- review hash as fingerprint("fork-generation", [admitted, prior]). SQL
+      -- does not recompute that capability or equate it with the original input.
+      AND ((v."generation" = 0
+        AND v."seed"->'admissionHash' = 'null'::jsonb
+        AND v."seed"->'predecessor' = 'null'::jsonb
+        AND c."state"->'review'->'admissionHash' = 'null'::jsonb)
+      OR (v."generation" > 0
+        AND jsonb_typeof(v."seed"->'admissionHash') = 'string'
+        AND (v."seed"->>'admissionHash') ~ '^[a-f0-9]{64}$'
+        AND jsonb_typeof(v."seed"->'predecessor') = 'string'
+        AND length(v."seed"->>'predecessor') BETWEEN 1 AND 4096
+        AND jsonb_typeof(c."state"->'review'->'admissionHash') = 'string'
+        AND (c."state"->'review'->>'admissionHash') ~ '^[a-f0-9]{64}$'))
       AND jsonb_typeof(c."state"->'review'->'logicalKey') = 'string'
       AND (c."state"->'review'->>'logicalKey') ~ '^[a-f0-9]{64}$'
       AND (c."state"->'outcome' = 'null'::jsonb OR jsonb_typeof(c."state"->'outcome') = 'object')
