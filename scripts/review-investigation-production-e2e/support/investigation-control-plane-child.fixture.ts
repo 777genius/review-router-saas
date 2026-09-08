@@ -1,3 +1,4 @@
+import { revisionFetch } from "./revision-fetch.fixture.js";
 import { childDiagnostic, type ChildPhase } from "./child-diagnostics.fixture.js";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
@@ -46,8 +47,7 @@ async function childMain() {
   let shuttingDown = false;
   let configured = false;
   let terminalDiagnostic = false;
-  // No parent fetch monkeypatch crosses an OS boundary. There are no allowed
-  // network fixture responses for these persisted-authority handler operations.
+  // Deny everything until the parent supplies its exact revision fixture.
   globalThis.fetch = async () => { throw new Error("item11_external_fetch_denied"); };
   const shutdown = async () => {
     if (shuttingDown) return;
@@ -73,6 +73,7 @@ async function childMain() {
           prisma = createPrismaClient({ databaseUrl: message.config.databaseUrl, poolMax: 2 });
           phase = "ownership";
           await assertFixtureOwnership(prisma, message.config.databaseUrl, message.config.runId);
+          globalThis.fetch = revisionFetch(message.config.revisionFixture);
           phase = "composition";
           const routes = composeReviewActionV2ProductionRoutes({
             enabled: true, env: message.config.env, prisma,

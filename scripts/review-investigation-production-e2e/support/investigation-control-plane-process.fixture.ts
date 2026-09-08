@@ -1,3 +1,6 @@
+import type { RevisionFixture } from "./revision-fetch.fixture.js";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { formatChildDiagnostic } from "./child-diagnostics.fixture.ts";
 import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -6,6 +9,7 @@ import type { ReviewActionV2ProductionRoutes } from "../../../apps/api/src/revie
 import type { durableSnapshot } from "./investigation-control-plane-child.fixture.js";
 
 export type FixtureConfig = Readonly<{
+  revisionFixture: RevisionFixture;
   runId: string;
   databaseUrl: string;
   env: Readonly<Record<string, string | undefined>>;
@@ -56,6 +60,10 @@ export class OwnedControlPlane {
   )) {
     this.runId = runId;
     this.closeObserved = new Promise((resolve) => { this.resolveClose = resolve; });
+    // Persist uncertainty BEFORE spawning; only observed close clears it.
+    const proofDirectory = process.env.REVIEW_ROUTER_ITEM11_CHILD_PROOF_DIR;
+    const pendingPath = proofDirectory ? join(proofDirectory, randomUUID()) : null;
+    if (pendingPath) writeFileSync(pendingPath, runId, { flag: "wx", mode: 0o600 });
     this.child = spawn();
     this.child.on("spawn", () => {});
     this.child.on("error", () => this.rejectPending(fail("child_error")));
@@ -63,6 +71,7 @@ export class OwnedControlPlane {
     this.child.on("close", (_code, signal) => {
       this.closeSignal = signal;
       this.closed = true;
+      if (pendingPath) unlinkSync(pendingPath);
       this.rejectPending(fail("child_closed"));
       this.resolveClose();
     });

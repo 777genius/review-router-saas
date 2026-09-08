@@ -117,3 +117,25 @@ test("IPC failures retain safe operation and phase and redact unexpected fields"
   f.child.emit("close", 0, null);
   await f.owner.close();
 });
+
+test('database cleanup ledger clears only on positive child close', async () => {
+  const { mkdtempSync, readdirSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const directory = mkdtempSync(join(tmpdir(), 'item11-close-proof-'));
+  const previous = process.env.REVIEW_ROUTER_ITEM11_CHILD_PROOF_DIR;
+  process.env.REVIEW_ROUTER_ITEM11_CHILD_PROOF_DIR = directory;
+  try {
+    const f = fixture();
+    assert.equal(readdirSync(directory).length, 1);
+    f.child.emit('exit', null, 'SIGKILL');
+    assert.equal(readdirSync(directory).length, 1);
+    f.child.emit('close', null, 'SIGKILL');
+    assert.equal(readdirSync(directory).length, 0);
+    await f.owner.close();
+  } finally {
+    if (previous === undefined) delete process.env.REVIEW_ROUTER_ITEM11_CHILD_PROOF_DIR;
+    else process.env.REVIEW_ROUTER_ITEM11_CHILD_PROOF_DIR = previous;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

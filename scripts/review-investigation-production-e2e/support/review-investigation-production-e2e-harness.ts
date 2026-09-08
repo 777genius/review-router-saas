@@ -258,7 +258,9 @@ export class ReviewInvestigationProductionE2EHarness {
   }
   async startControlPlaneProcess(runId: string): Promise<Boot> {
     ensure(!this.ownedChild, "item11_already_started");
-    this.processConfig = { runId, databaseUrl: this.databaseUrl, env: this.base.env };
+    const { owner, repo, installationId, pullRequestNumber } = this.base.fakeGitHub.options;
+    this.processConfig = { runId, databaseUrl: this.databaseUrl, env: this.base.env,
+      revisionFixture: { owner, repo, installationId, pullRequestNumber, revision: { ...this.base.fakeGitHub.revision } } };
     this.ownedChild = new OwnedControlPlane(runId);
     const boot = await this.ownedChild.start(this.processConfig);
     this.routes = {
